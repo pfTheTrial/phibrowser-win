@@ -51,7 +51,9 @@ const SCAN_X = 200
 /** Vertical scan of the sidebar: [{y, px}] every 2px. */
 function scanColumn() {
   const ys = []
-  for (let y = BTN_TOP - 40; y < TABS_TOP + 9 * (ROW_H + ROW_GAP); y += 2) ys.push(y)
+  // Start just above the button: the URL field above it is also a white block,
+  // and must not be mistaken for the calibration target.
+  for (let y = BTN_TOP - 8; y < TABS_TOP + 9 * (ROW_H + ROW_GAP); y += 2) ys.push(y)
   const px = samplePixels(ys.map((y) => [SCAN_X, y]))
   return ys.map((y, i) => ({ y, px: px[i] }))
 }
@@ -81,10 +83,11 @@ function chipRows() {
   const scan = scanColumn()
   const runs = lightRuns(scan)
   assert(runs.length >= 1, `saw the New Window button (runs: ${JSON.stringify(runs)})`)
-  const button = runs[0]  // Topmost light block is the button.
+  // The button is the tallest light block (44px); tab chips are 30px.
+  const button = runs.reduce((a, b) => (b.len > a.len ? b : a), runs[0])
   const offset = button.top - BTN_TOP
   const rows = []
-  for (const run of runs.slice(1)) {
+  for (const run of runs.filter((r) => r.top > button.bottom)) {
     if (run.len < ROW_H - 12) continue  // Ignore stray light pixels.
     const rowTop = run.top - offset
     const idx = Math.round((rowTop - TABS_TOP) / (ROW_H + ROW_GAP))

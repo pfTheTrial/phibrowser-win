@@ -54,8 +54,10 @@ class PhiWindowController {
   void AdoptBrowserAsChild();
   void LayoutContents();
   void PaintSidebar(HDC dc, const RECT& client);
-  // Handles a click in the sidebar (tab rows, close boxes, buttons).
+  // Handles a click in the sidebar (tab rows, close boxes, buttons, toolbar).
   void OnSidebarClick(int x, int y);
+  // Re-reads navigation state (url/title/canGoBack/…) for the toolbar.
+  void RebuildNavState();
 
   // One rendered tab row: what to draw and what a click at that row does.
   struct TabRow {
@@ -66,6 +68,12 @@ class PhiWindowController {
     RECT close_box{};    // The row's close affordance.
   };
   std::vector<TabRow> tabs_;
+
+  // Navigation state for the client toolbar, refreshed with the tab list.
+  std::wstring nav_url_;
+  bool can_go_back_ = false;
+  bool can_go_forward_ = false;
+  bool nav_loading_ = false;
 
   const int64_t window_id_;
   HWND browser_hwnd_;  // Chromium's window, reparented as our child.

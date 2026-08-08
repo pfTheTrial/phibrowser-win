@@ -31,6 +31,16 @@ constexpr COLORREF kButtonInk = RGB(0x2B, 0x2D, 0x31);
 // The "+ New Window" button in the sidebar (client rect coords).
 constexpr RECT kNewWindowButton = {16, 240, 224, 284};
 
+// Toolbar: back / forward / reload buttons and the URL field.
+constexpr RECT kBackButton    = {16, 190, 52, 226};
+constexpr RECT kForwardButton = {56, 190, 92, 226};
+constexpr RECT kReloadButton  = {96, 190, 132, 226};
+constexpr RECT kUrlField      = {16, 146, 224, 182};
+constexpr COLORREF kUrlFieldBg = RGB(0xFF, 0xFF, 0xFF);
+constexpr COLORREF kUrlInk = RGB(0x2B, 0x2D, 0x31);
+constexpr COLORREF kBtnEnabled = RGB(0xFF, 0xFF, 0xFF);
+constexpr COLORREF kBtnDisabled = RGB(0x8C, 0xA4, 0xFF);
+
 // Tab list geometry, below the button.
 constexpr int kTabsTop = 304;
 constexpr int kTabsInset = 12;
@@ -157,7 +167,27 @@ void PhiWindowController::RefreshTabs() {
   }
 }
 
+void PhiWindowController::RebuildNavState() {
+  nav_url_.clear();
+  can_go_back_ = can_go_forward_ = nav_loading_ = false;
+  if (!framework_) {
+    return;
+  }
+  std::optional<base::DictValue> st = base::JSONReader::ReadDict(
+      framework_->NavStateJson(window_id_), base::JSON_PARSE_RFC);
+  if (!st) {
+    return;
+  }
+  if (const std::string* u = st->FindString("url")) {
+    nav_url_ = base::UTF8ToWide(*u);
+  }
+  can_go_back_ = st->FindBool("canGoBack").value_or(false);
+  can_go_forward_ = st->FindBool("canGoForward").value_or(false);
+  nav_loading_ = st->FindBool("loading").value_or(false);
+}
+
 void PhiWindowController::RebuildTabs() {
+  RebuildNavState();
   tabs_.clear();
   if (framework_) {
     std::optional<base::Value> parsed = base::JSONReader::Read(
@@ -193,6 +223,21 @@ void PhiWindowController::RebuildTabs() {
 
 void PhiWindowController::OnSidebarClick(int x, int y) {
   POINT pt = {x, y};
+  if (framework_ && ::PtInRect(&kBackButton, pt)) {
+    framework_->GoBack(window_id_);
+    RefreshTabs();
+    return;
+  }
+  if (framework_ && ::PtInRect(&kForwardButton, pt)) {
+    framework_->GoForward(window_id_);
+    RefreshTabs();
+    return;
+  }
+  if (framework_ && ::PtInRect(&kReloadButton, pt)) {
+    framework_->Reload(window_id_, /*bypass_cache=*/false);
+    RefreshTabs();
+    return;
+  }
   if (::PtInRect(&kNewWindowButton, pt)) {
     if (framework_) {
       framework_->NewWindow(window_id_);
@@ -226,13 +271,33 @@ void PhiWindowController::PaintSidebar(HDC dc, const RECT& client) {
   ::FillRect(dc, &stripe, accent);
   ::DeleteObject(accent);
 
-  std::wstring text = L"Phi client shell\n(Option B: client owns window,\n"
-                      L"Chromium content reparented)\n\nwindowId " +
-                      base::UTF8ToWide(std::to_string(window_id_));
+  std::wstring text =
+      L"Phi  ·  window " + base::UTF8ToWide(std::to_string(window_id_));
   ::SetBkMode(dc, TRANSPARENT);
   ::SetTextColor(dc, kInkColor);
-  RECT text_rc = {16, 20, kSidebarWidth - 12, kNewWindowButton.top - 8};
+  RECT text_rc = {16, 20, kSidebarWidth - 12, kUrlField.top - 8};
   ::DrawTextW(dc, text.c_str(), -1, &text_rc, DT_LEFT | DT_TOP | DT_WORDBREAK);
+
+  // URL field: the client's own address display (Chromium's omnibox is
+  // hollowed away).
+  HBRUSH url_bg = ::CreateSolidBrush(kUrlFieldBg);
+  ::FillRect(dc, &kUrlField, url_bg);
+  ::DeleteObject(url_bg);
+  ::SetTextColor(dc, kUrlInk);
+  RECT url_rc = kUrlField;
+  url_rc.left += 8;
+  url_rc.right -= 8;
+  ::DrawTextW(dc, nav_url_.empty() ? L"(no page)" : nav_url_.c_str(), -1,
+              &url_rc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_PATH_ELLIPSIS);
+
+  // Back / forward / reload, greyed when unavailable.
+  auto draw_button = [&](RECT rect, const wchar_t* glyph, bool enabled) {
+    ::SetTextColor(dc, enabled ? kBtnEnabled : kBtnDisabled);
+    ::DrawTextW(dc, glyph, -1, &rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+  };
+  draw_button(kBackButton, L"<", can_go_back_);
+  draw_button(kForwardButton, L">", can_go_forward_);
+  draw_button(kReloadButton, nav_loading_ ? L"x" : L"R", true);
 
   // "+ New Window" button — proves the slot model (a click spawns a second
   // shell window via the framework).
