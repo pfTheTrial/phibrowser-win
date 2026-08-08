@@ -6,22 +6,129 @@
 
 #include <windows.h>
 
+#include <optional>
 #include <utility>
 
+#include "base/json/json_reader.h"
+#include "base/json/json_writer.h"
 #include "base/logging.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/values.h"
 
 namespace phi_client {
 
 PhiCoordinator::PhiCoordinator() = default;
 PhiCoordinator::~PhiCoordinator() = default;
 
+namespace {
+constexpr wchar_t kMsgClassName[] = L"PhiClientControlMsg";
+constexpr UINT WM_PHI_CONTROL = WM_APP + 1;
+
+// The command marshaled from the I/O thread to the UI thread by SendMessage.
+// The pointers reference stack strings that outlive the blocking SendMessage.
+struct ControlCall {
+  RAW_PTR_EXCLUSION const std::string* type;
+  RAW_PTR_EXCLUSION const std::string* payload;
+  std::string result;
+};
+}  // namespace
+
 void PhiCoordinator::OnFrameworkReady(phi_framework::PhiFramework* framework,
                                      const char* user_data_dir_utf8) {
   framework_ = framework;
-  control_server_.Start(base::UTF8ToWide(user_data_dir_utf8 ? user_data_dir_utf8
-                                                            : ""),
-                        framework);
+
+  // Message-only window on the UI thread (this callback runs on it), so the
+  // control server's I/O thread can marshal framework calls here via
+  // SendMessage.
+  static bool class_registered = [] {
+    WNDCLASSEXW wc = {};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = &PhiCoordinator::MsgWndProc;
+    wc.hInstance = ::GetModuleHandleW(nullptr);
+    wc.lpszClassName = kMsgClassName;
+    return ::RegisterClassExW(&wc) != 0;
+  }();
+  (void)class_registered;
+  msg_hwnd_ = ::CreateWindowExW(0, kMsgClassName, L"", 0, 0, 0, 0, 0,
+                                HWND_MESSAGE, nullptr,
+                                ::GetModuleHandleW(nullptr), this);
+
+  control_server_.Start(
+      base::UTF8ToWide(user_data_dir_utf8 ? user_data_dir_utf8 : ""), this);
+}
+
+// static
+LRESULT CALLBACK PhiCoordinator::MsgWndProc(HWND hwnd,
+                                            UINT msg,
+                                            WPARAM wparam,
+                                            LPARAM lparam) {
+  if (msg == WM_NCCREATE) {
+    auto* cs = reinterpret_cast<CREATESTRUCTW*>(lparam);
+    ::SetWindowLongPtrW(hwnd, GWLP_USERDATA,
+                        reinterpret_cast<LONG_PTR>(cs->lpCreateParams));
+    return ::DefWindowProcW(hwnd, msg, wparam, lparam);
+  }
+  if (msg == WM_PHI_CONTROL) {
+    auto* self = reinterpret_cast<PhiCoordinator*>(
+        ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    auto* call = reinterpret_cast<ControlCall*>(lparam);
+    if (self && call) {
+      call->result = self->ExecuteControlOnUi(*call->type, *call->payload);
+    }
+    return 0;
+  }
+  return ::DefWindowProcW(hwnd, msg, wparam, lparam);
+}
+
+std::string PhiCoordinator::HandleControlCommand(
+    const std::string& type,
+    const std::string& payload_json) {
+  // Called on the control server's I/O thread. Marshal to the UI thread; the
+  // blocking SendMessage runs ExecuteControlOnUi there and returns its result.
+  if (!msg_hwnd_) {
+    return "{\"error\":\"not ready\"}";
+  }
+  ControlCall call{&type, &payload_json, {}};
+  ::SendMessageW(msg_hwnd_, WM_PHI_CONTROL, 0,
+                 reinterpret_cast<LPARAM>(&call));
+  return call.result;
+}
+
+std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
+                                               const std::string& payload_json) {
+  // Runs on the UI thread — safe to touch windows_ and call framework_.
+  base::DictValue out;
+  if (type == "agentSpace.ping") {
+    out.Set("ok", true);
+  } else if (type == "agentSpace.list") {
+    base::ListValue list;
+    for (const auto& [window_id, controller] : windows_) {
+      list.Append(static_cast<double>(window_id));
+    }
+    out.Set("windows", std::move(list));
+  } else if (type == "agentSpace.newWindow") {
+    int64_t source = windows_.empty() ? 0 : windows_.begin()->first;
+    if (framework_) {
+      framework_->NewWindow(source);
+    }
+    out.Set("ok", true);
+  } else if (type == "agentSpace.close") {
+    std::optional<base::DictValue> p =
+        base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
+    int64_t window_id = 0;
+    if (p) {
+      window_id = static_cast<int64_t>(p->FindDouble("windowId").value_or(0));
+    }
+    if (framework_ && window_id) {
+      framework_->CloseBrowserWindow(window_id);
+    }
+    out.Set("ok", framework_ && window_id ? true : false);
+  } else {
+    out.Set("error", "unknown type: " + type);
+  }
+  std::string s;
+  base::JSONWriter::Write(out, &s);
+  return s;
 }
 
 void PhiCoordinator::OnBrowserWindowCreated(int64_t window_id, void* hwnd) {

@@ -5,9 +5,12 @@
 #ifndef PHIBROWSER_WIN_CLIENT_PHI_COORDINATOR_H_
 #define PHIBROWSER_WIN_CLIENT_PHI_COORDINATOR_H_
 
+#include <windows.h>
+
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <string>
 
 #include "base/memory/raw_ptr_exclusion.h"
 #include "chrome/browser/phinomenon/phi_framework/phi_framework_api.h"
@@ -21,7 +24,8 @@ namespace phi_client {
 // ChromeMain; the framework calls it back on the browser UI thread. F2 slice 1
 // only observes window lifecycle and logs it; adopting the HWND and drawing
 // chrome comes next.
-class PhiCoordinator : public phi_framework::PhiFrameworkDelegate {
+class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
+                       public PhiControlDelegate {
  public:
   PhiCoordinator();
   ~PhiCoordinator() override;
@@ -35,12 +39,27 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate {
   void OnBrowserWindowCreated(int64_t window_id, void* hwnd) override;
   void OnBrowserWindowClosing(int64_t window_id) override;
 
+  // PhiControlDelegate (called on the control server's I/O thread):
+  std::string HandleControlCommand(const std::string& type,
+                                   const std::string& payload_json) override;
+
  private:
+  // Runs a control command on the UI thread; returns the JSON response. Called
+  // via SendMessage to msg_hwnd_ from HandleControlCommand.
+  std::string ExecuteControlOnUi(const std::string& type,
+                                 const std::string& payload_json);
+  static LRESULT CALLBACK MsgWndProc(HWND hwnd,
+                                     UINT msg,
+                                     WPARAM wparam,
+                                     LPARAM lparam);
+
   // The framework command interface (a singleton in chrome.dll); non-owning,
   // across a module boundary, so not a raw_ptr.
   RAW_PTR_EXCLUSION phi_framework::PhiFramework* framework_ = nullptr;
   // The unified control/CDP socket.
   PhiControlServer control_server_;
+  // Message-only window on the UI thread; control commands marshal here.
+  HWND msg_hwnd_ = nullptr;
   // One controller per adopted window, keyed by windowId.
   std::map<int64_t, std::unique_ptr<PhiWindowController>> windows_;
 };

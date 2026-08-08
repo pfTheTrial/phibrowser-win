@@ -12,12 +12,20 @@
 
 #include "phibrowser-win/client/phi_control_server.h"
 
+#include <algorithm>
+#include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
+#include "base/base64.h"
+#include "base/json/json_reader.h"
+#include "base/json/json_writer.h"
 #include "base/logging.h"
+#include "base/hash/sha1.h"
 #include "base/memory/raw_ptr_exclusion.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/values.h"
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -100,6 +108,100 @@ std::string RequestPath(const std::string& head) {
   return head.substr(sp1 + 1, sp2 - (sp1 + 1));
 }
 
+// Reads exactly `n` bytes from the pipe into `out`. False on disconnect.
+bool ReadExact(HANDLE pipe, HANDLE ev, size_t n, std::string* out) {
+  out->clear();
+  char buf[4096];
+  while (out->size() < n) {
+    DWORD want = static_cast<DWORD>(
+        std::min<size_t>(sizeof(buf), n - out->size()));
+    DWORD read = 0;
+    if (!OvRead(pipe, ev, buf, want, &read)) {
+      return false;
+    }
+    out->append(buf, read);
+  }
+  return true;
+}
+
+// Server -> client WebSocket text frame (unmasked, single frame).
+bool WsSendText(HANDLE pipe, HANDLE ev, const std::string& text) {
+  std::string frame;
+  frame.push_back(static_cast<char>(0x81));  // FIN + text opcode.
+  const size_t len = text.size();
+  if (len < 126) {
+    frame.push_back(static_cast<char>(len));
+  } else if (len < 65536) {
+    frame.push_back(126);
+    frame.push_back(static_cast<char>((len >> 8) & 0xff));
+    frame.push_back(static_cast<char>(len & 0xff));
+  } else {
+    frame.push_back(127);
+    for (int shift = 56; shift >= 0; shift -= 8) {
+      frame.push_back(static_cast<char>((len >> shift) & 0xff));
+    }
+  }
+  frame += text;
+  return OvWrite(pipe, ev, frame.data(), frame.size());
+}
+
+// Reads one WebSocket message. Returns the opcode (1 text, 8 close, 9 ping,
+// 10 pong) and unmasked payload; accumulates continuation frames. False on
+// disconnect.
+bool WsReadMessage(HANDLE pipe, HANDLE ev, int* opcode, std::string* payload) {
+  payload->clear();
+  int first_opcode = -1;
+  for (;;) {
+    std::string hdr;
+    if (!ReadExact(pipe, ev, 2, &hdr)) {
+      return false;
+    }
+    const uint8_t b0 = static_cast<uint8_t>(hdr[0]);
+    const uint8_t b1 = static_cast<uint8_t>(hdr[1]);
+    const bool fin = (b0 & 0x80) != 0;
+    const int op = b0 & 0x0f;
+    const bool masked = (b1 & 0x80) != 0;
+    uint64_t len = b1 & 0x7f;
+    if (len == 126) {
+      std::string ext;
+      if (!ReadExact(pipe, ev, 2, &ext)) {
+        return false;
+      }
+      len = (static_cast<uint8_t>(ext[0]) << 8) | static_cast<uint8_t>(ext[1]);
+    } else if (len == 127) {
+      std::string ext;
+      if (!ReadExact(pipe, ev, 8, &ext)) {
+        return false;
+      }
+      len = 0;
+      for (int i = 0; i < 8; ++i) {
+        len = (len << 8) | static_cast<uint8_t>(ext[i]);
+      }
+    }
+    std::string mask;
+    if (masked && !ReadExact(pipe, ev, 4, &mask)) {
+      return false;
+    }
+    std::string data;
+    if (len > (16u << 20) || !ReadExact(pipe, ev, len, &data)) {
+      return false;  // Oversized or short.
+    }
+    if (masked) {
+      for (size_t i = 0; i < data.size(); ++i) {
+        data[i] ^= mask[i % 4];
+      }
+    }
+    if (first_opcode < 0) {
+      first_opcode = (op == 0) ? 1 : op;  // Continuation inherits.
+    }
+    payload->append(data);
+    if (fin) {
+      *opcode = first_opcode;
+      return true;
+    }
+  }
+}
+
 // Relay thread context: pumps the DevTools TCP socket back into the pipe.
 struct SockToPipe {
   SOCKET sock;
@@ -136,13 +238,13 @@ PhiControlServer::~PhiControlServer() {
 }
 
 void PhiControlServer::Start(const std::wstring& user_data_dir,
-                             phi_framework::PhiFramework* framework) {
+                             PhiControlDelegate* delegate) {
   if (started_) {
     return;
   }
   started_ = true;
   user_data_dir_ = user_data_dir;
-  framework_ = framework;
+  delegate_ = delegate;
   EnsureWinsock();
 
   pipe_name_ =
@@ -232,10 +334,7 @@ void PhiControlServer::HandleConnection(HANDLE pipe) {
   if (ReadHttpHead(pipe, ev, &head)) {
     const std::string path = RequestPath(head);
     if (path.rfind(kControlPathPrefix, 0) == 0) {
-      // Client control channel — implemented in slice 2. Refuse cleanly.
-      static const char kResp[] =
-          "HTTP/1.1 501 Not Implemented\r\nContent-Length: 0\r\n\r\n";
-      OvWrite(pipe, ev, kResp, sizeof(kResp) - 1);
+      ServeControlChannel(pipe, ev, head);
     } else {
       int port = ResolveDevToolsPort();
       if (port > 0) {
@@ -251,6 +350,75 @@ void PhiControlServer::HandleConnection(HANDLE pipe) {
   ::FlushFileBuffers(pipe);
   ::DisconnectNamedPipe(pipe);
   ::CloseHandle(pipe);
+}
+
+void PhiControlServer::ServeControlChannel(HANDLE pipe,
+                                           HANDLE ev,
+                                           const std::string& head) {
+  // WebSocket handshake: echo the accept key. (Header names are
+  // case-insensitive; the skill sends this exact casing.)
+  const std::string kKeyHeader = "Sec-WebSocket-Key:";
+  size_t k = head.find(kKeyHeader);
+  if (k == std::string::npos) {
+    return;
+  }
+  size_t vstart = k + kKeyHeader.size();
+  while (vstart < head.size() && head[vstart] == ' ') {
+    ++vstart;
+  }
+  size_t vend = head.find("\r\n", vstart);
+  std::string key = head.substr(vstart, vend - vstart);
+  std::string accept = base::Base64Encode(base::SHA1HashString(
+      key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"));
+  std::string resp =
+      "HTTP/1.1 101 Switching Protocols\r\n"
+      "Upgrade: websocket\r\n"
+      "Connection: Upgrade\r\n"
+      "Sec-WebSocket-Accept: " +
+      accept + "\r\n\r\n";
+  if (!OvWrite(pipe, ev, resp.data(), resp.size())) {
+    return;
+  }
+
+  // Message loop: {id, type, payloadJson} -> {id, responseJson|error}.
+  for (;;) {
+    int opcode = 0;
+    std::string msg;
+    if (!WsReadMessage(pipe, ev, &opcode, &msg)) {
+      break;
+    }
+    if (opcode == 8) {  // Close.
+      break;
+    }
+    if (opcode != 1) {  // Ping/pong/other: ignore.
+      continue;
+    }
+    std::optional<base::DictValue> parsed = base::JSONReader::ReadDict(msg, base::JSON_PARSE_RFC);
+    base::DictValue resp_dict;
+    if (parsed) {
+      const base::DictValue& req = *parsed;
+      std::optional<int> id = req.FindInt("id");
+      const std::string* type = req.FindString("type");
+      const std::string* payload = req.FindString("payloadJson");
+      if (id) {
+        resp_dict.Set("id", *id);
+      }
+      if (type && delegate_) {
+        resp_dict.Set("responseJson",
+                      delegate_->HandleControlCommand(
+                          *type, payload ? *payload : std::string("{}")));
+      } else {
+        resp_dict.Set("error", "missing type");
+      }
+    } else {
+      resp_dict.Set("error", "bad json");
+    }
+    std::string out;
+    base::JSONWriter::Write(resp_dict, &out);
+    if (!WsSendText(pipe, ev, out)) {
+      break;
+    }
+  }
 }
 
 int PhiControlServer::ResolveDevToolsPort() {
