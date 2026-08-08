@@ -41,8 +41,17 @@ constexpr COLORREF kUrlInk = RGB(0x2B, 0x2D, 0x31);
 constexpr COLORREF kBtnEnabled = RGB(0xFF, 0xFF, 0xFF);
 constexpr COLORREF kBtnDisabled = RGB(0x8C, 0xA4, 0xFF);
 
-// Tab list geometry, below the button.
-constexpr int kTabsTop = 304;
+// Space chips row (between the button and the tab list).
+constexpr int kSpacesTop = 296;
+constexpr int kSpaceChipH = 32;
+constexpr int kSpaceChipW = 64;
+constexpr int kSpaceChipGap = 6;
+constexpr COLORREF kSpaceActiveBg = RGB(0xFF, 0xFF, 0xFF);
+constexpr COLORREF kSpaceActiveInk = RGB(0x2B, 0x2D, 0x31);
+constexpr COLORREF kSpaceInk = RGB(0xE6, 0xEA, 0xFF);
+
+// Tab list geometry, below the spaces row.
+constexpr int kTabsTop = 344;
 constexpr int kTabsInset = 12;
 constexpr int kTabRowHeight = 30;
 constexpr int kTabRowGap = 4;
@@ -104,6 +113,15 @@ PhiWindowController::PhiWindowController(int64_t window_id,
   }
 
   AdoptBrowserAsChild();
+  // The window the slot was created with backs the default Space.
+  space_browsers_["1"] = window_id_;
+  browser_hwnds_[window_id_] = browser_hwnd_;
+  space_order_.push_back("1");
+  active_space_ = "1";
+  active_browser_ = window_id_;
+  if (framework_) {
+    framework_->SetWindowSpace(window_id_, "1");
+  }
   LayoutContents();
   ::ShowWindow(shell_hwnd_, SW_SHOW);
   LOG(INFO) << "[PhiClient] shell window " << window_id_
@@ -167,6 +185,80 @@ void PhiWindowController::RefreshTabs() {
   }
 }
 
+void PhiWindowController::AttachSpaceBrowser(const std::string& space_id,
+                                             int64_t browser_window_id,
+                                             HWND browser_hwnd) {
+  if (!browser_hwnd || !::IsWindow(browser_hwnd)) {
+    return;
+  }
+  // Reparent it into this shell exactly like the primary browser, then show it
+  // in place of the current Space's.
+  HWND previous = browser_hwnd_;
+  browser_hwnd_ = browser_hwnd;
+  AdoptBrowserAsChild();
+  if (previous && previous != browser_hwnd && ::IsWindow(previous)) {
+    ::ShowWindow(previous, SW_HIDE);
+  }
+  if (space_browsers_.find(space_id) == space_browsers_.end()) {
+    space_order_.push_back(space_id);
+  }
+  space_browsers_[space_id] = browser_window_id;
+  browser_hwnds_[browser_window_id] = browser_hwnd;
+  active_space_ = space_id;
+  active_browser_ = browser_window_id;
+  if (framework_) {
+    framework_->SetWindowSpace(browser_window_id, space_id.c_str());
+  }
+  LayoutContents();
+  RefreshTabs();
+}
+
+bool PhiWindowController::HasSpace(const std::string& space_id) const {
+  return space_browsers_.find(space_id) != space_browsers_.end();
+}
+
+bool PhiWindowController::ShowSpace(const std::string& space_id) {
+  auto it = space_browsers_.find(space_id);
+  if (it == space_browsers_.end()) {
+    return false;
+  }
+  auto hwnd_it = browser_hwnds_.find(it->second);
+  if (hwnd_it == browser_hwnds_.end() || !::IsWindow(hwnd_it->second)) {
+    return false;
+  }
+  if (browser_hwnd_ && browser_hwnd_ != hwnd_it->second &&
+      ::IsWindow(browser_hwnd_)) {
+    ::ShowWindow(browser_hwnd_, SW_HIDE);
+  }
+  browser_hwnd_ = hwnd_it->second;
+  active_space_ = space_id;
+  active_browser_ = it->second;
+  LayoutContents();  // Also re-shows the newly visible child.
+  RefreshTabs();
+  return true;
+}
+
+bool PhiWindowController::ForgetBrowser(int64_t browser_window_id) {
+  browser_hwnds_.erase(browser_window_id);
+  for (auto it = space_browsers_.begin(); it != space_browsers_.end();) {
+    if (it->second == browser_window_id) {
+      std::erase(space_order_, it->first);
+      it = space_browsers_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+  if (active_browser_ == browser_window_id) {
+    active_browser_ = 0;
+    browser_hwnd_ = nullptr;
+    // Fall back to any remaining Space so the slot stays usable.
+    if (!space_order_.empty()) {
+      ShowSpace(space_order_.front());
+    }
+  }
+  return !space_browsers_.empty();
+}
+
 bool PhiWindowController::GetBounds(int* x, int* y, int* w, int* h) const {
   if (!shell_hwnd_ || !::IsWindow(shell_hwnd_)) {
     return false;
@@ -197,7 +289,7 @@ void PhiWindowController::RebuildNavState() {
     return;
   }
   std::optional<base::DictValue> st = base::JSONReader::ReadDict(
-      framework_->NavStateJson(window_id_), base::JSON_PARSE_RFC);
+      framework_->NavStateJson(active_browser_ ? active_browser_ : window_id_), base::JSON_PARSE_RFC);
   if (!st) {
     return;
   }
@@ -214,7 +306,7 @@ void PhiWindowController::RebuildTabs() {
   tabs_.clear();
   if (framework_) {
     std::optional<base::Value> parsed = base::JSONReader::Read(
-        framework_->ListTabsJson(window_id_), base::JSON_PARSE_RFC);
+        framework_->ListTabsJson(active_browser_ ? active_browser_ : window_id_), base::JSON_PARSE_RFC);
     if (parsed && parsed->is_list()) {
       int y = kTabsTop;
       for (const base::Value& v : parsed->GetList()) {
@@ -247,17 +339,17 @@ void PhiWindowController::RebuildTabs() {
 void PhiWindowController::OnSidebarClick(int x, int y) {
   POINT pt = {x, y};
   if (framework_ && ::PtInRect(&kBackButton, pt)) {
-    framework_->GoBack(window_id_);
+    framework_->GoBack(active_browser_ ? active_browser_ : window_id_);
     RefreshTabs();
     return;
   }
   if (framework_ && ::PtInRect(&kForwardButton, pt)) {
-    framework_->GoForward(window_id_);
+    framework_->GoForward(active_browser_ ? active_browser_ : window_id_);
     RefreshTabs();
     return;
   }
   if (framework_ && ::PtInRect(&kReloadButton, pt)) {
-    framework_->Reload(window_id_, /*bypass_cache=*/false);
+    framework_->Reload(active_browser_ ? active_browser_ : window_id_, /*bypass_cache=*/false);
     RefreshTabs();
     return;
   }
@@ -267,15 +359,27 @@ void PhiWindowController::OnSidebarClick(int x, int y) {
     }
     return;
   }
+  for (size_t i = 0; i < space_order_.size() && i < 3; ++i) {
+    RECT chip = {kTabsInset + static_cast<int>(i) * (kSpaceChipW + kSpaceChipGap),
+                 kSpacesTop,
+                 kTabsInset + static_cast<int>(i) * (kSpaceChipW + kSpaceChipGap) +
+                     kSpaceChipW,
+                 kSpacesTop + kSpaceChipH};
+    if (::PtInRect(&chip, pt)) {
+      ShowSpace(space_order_[i]);
+      ::InvalidateRect(shell_hwnd_, nullptr, FALSE);
+      return;
+    }
+  }
   for (const TabRow& row : tabs_) {
     if (!::PtInRect(&row.bounds, pt)) {
       continue;
     }
     if (framework_) {
       if (::PtInRect(&row.close_box, pt)) {
-        framework_->CloseTab(window_id_, row.index);
+        framework_->CloseTab(active_browser_ ? active_browser_ : window_id_, row.index);
       } else {
-        framework_->ActivateTab(window_id_, row.index);
+        framework_->ActivateTab(active_browser_ ? active_browser_ : window_id_, row.index);
       }
     }
     RefreshTabs();
@@ -331,6 +435,26 @@ void PhiWindowController::PaintSidebar(HDC dc, const RECT& client) {
   ::SetTextColor(dc, kButtonInk);
   ::DrawTextW(dc, L"+  New Window", -1, &btn,
               DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+  // Space chips: one per Space this slot hosts; the active one is a chip.
+  for (size_t i = 0; i < space_order_.size() && i < 3; ++i) {
+    const std::string& id = space_order_[i];
+    RECT chip = {kTabsInset + static_cast<int>(i) * (kSpaceChipW + kSpaceChipGap),
+                 kSpacesTop,
+                 kTabsInset + static_cast<int>(i) * (kSpaceChipW + kSpaceChipGap) +
+                     kSpaceChipW,
+                 kSpacesTop + kSpaceChipH};
+    const bool active = (id == active_space_);
+    if (active) {
+      HBRUSH b = ::CreateSolidBrush(kSpaceActiveBg);
+      ::FillRect(dc, &chip, b);
+      ::DeleteObject(b);
+    }
+    ::SetTextColor(dc, active ? kSpaceActiveInk : kSpaceInk);
+    std::wstring label = L"S" + base::UTF8ToWide(id);
+    ::DrawTextW(dc, label.c_str(), -1, &chip,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+  }
 
   // Tab rows, driven by live framework state: the active tab gets a white
   // chip, each row a close box.

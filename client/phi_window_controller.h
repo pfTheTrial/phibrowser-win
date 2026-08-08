@@ -8,6 +8,7 @@
 #include <windows.h>
 
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -43,6 +44,27 @@ class PhiWindowController {
   // Rebuilds `tabs_` from framework state WITHOUT invalidating (paint-time
   // use; RefreshTabs() would recurse through InvalidateRect).
   void RebuildTabs();
+
+  // --- Spaces (client-owned, as on Mac) ------------------------------------
+  // A slot shows ONE Space at a time. Each Space has its own Browser; the
+  // controller swaps which browser child is visible in the shell window.
+
+  // Adopts an additional browser as `space_id`'s content for this slot and
+  // shows it (hiding the previous). Called when the framework reports a
+  // browser created for this slot.
+  void AttachSpaceBrowser(const std::string& space_id,
+                          int64_t browser_window_id,
+                          HWND browser_hwnd);
+  // Shows the Space's browser, hiding the current one. False if unknown.
+  bool ShowSpace(const std::string& space_id);
+  bool HasSpace(const std::string& space_id) const;
+  const std::string& active_space() const { return active_space_; }
+  // The browser window id currently displayed (for tab/nav commands).
+  int64_t active_browser() const { return active_browser_; }
+  // Spaces this slot has a browser for, in creation order.
+  const std::vector<std::string>& space_order() const { return space_order_; }
+  // Drops a browser that went away; returns true if the slot still has one.
+  bool ForgetBrowser(int64_t browser_window_id);
 
   // Shell window geometry (client-owned; no framework round-trip).
   bool GetBounds(int* x, int* y, int* w, int* h) const;
@@ -81,7 +103,13 @@ class PhiWindowController {
   bool nav_loading_ = false;
 
   const int64_t window_id_;
-  HWND browser_hwnd_;  // Chromium's window, reparented as our child.
+  HWND browser_hwnd_;  // The VISIBLE Chromium window, reparented as our child.
+  // Space id -> its browser window id / HWND, plus creation order.
+  std::map<std::string, int64_t> space_browsers_;
+  std::map<int64_t, HWND> browser_hwnds_;
+  std::vector<std::string> space_order_;
+  std::string active_space_;
+  int64_t active_browser_ = 0;
   HWND shell_hwnd_ = nullptr;  // Our client-owned top-level.
   // Owned by the framework (a singleton in chrome.dll); non-owning, and across
   // a module boundary, so not a raw_ptr.

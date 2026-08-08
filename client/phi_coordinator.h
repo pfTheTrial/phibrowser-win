@@ -11,6 +11,8 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "base/memory/raw_ptr_exclusion.h"
 #include "chrome/browser/phinomenon/phi_framework/phi_framework_api.h"
@@ -49,6 +51,9 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // via SendMessage to msg_hwnd_ from HandleControlCommand.
   std::string ExecuteControlOnUi(const std::string& type,
                                  const std::string& payload_json);
+  // Maps a slot id (what callers pass as windowId) to the browser currently
+  // shown in it — the Space's browser, not necessarily the slot's original.
+  int64_t ResolveBrowser(int64_t slot_or_browser) const;
   static LRESULT CALLBACK MsgWndProc(HWND hwnd,
                                      UINT msg,
                                      WPARAM wparam,
@@ -61,8 +66,17 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   PhiControlServer control_server_;
   // Message-only window on the UI thread; control commands marshal here.
   HWND msg_hwnd_ = nullptr;
-  // One controller per adopted window, keyed by windowId.
+  // One controller per SLOT, keyed by the slot's primary windowId.
   std::map<int64_t, std::unique_ptr<PhiWindowController>> windows_;
+  // Every browser window -> the slot hosting it (a slot has one per Space).
+  std::map<int64_t, int64_t> browser_to_slot_;
+  // Spaces are a client concept: ordered ids with display names.
+  std::vector<std::pair<std::string, std::string>> spaces_{{"1", "Space 1"}};
+  int next_space_id_ = 2;
+  // Set while a Space browser is being created, so the next
+  // OnBrowserWindowCreated attaches to that slot instead of opening a shell.
+  int64_t pending_slot_ = 0;
+  std::string pending_space_;
 };
 
 }  // namespace phi_client

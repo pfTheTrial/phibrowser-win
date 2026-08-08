@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process'
 import { test, run, assert, assertEq, sleep, openControl } from './phi-test.mjs'
 
 // Mirrors phi_window_controller.cc.
-const BTN_TOP = 240, TABS_TOP = 304, ROW_H = 30, ROW_GAP = 4
+const BTN_TOP = 240, TABS_TOP = 344, ROW_H = 30, ROW_GAP = 4  // tabs sit below the Spaces chip row
 
 /** Samples pixels on the box via a scheduled task (only the interactive
  *  session can enumerate/capture desktop windows). [[x,y],…] -> ["r,g,b",…] */
