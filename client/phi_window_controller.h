@@ -44,6 +44,11 @@ class PhiWindowController {
   // use; RefreshTabs() would recurse through InvalidateRect).
   void RebuildTabs();
 
+  // Shell window geometry (client-owned; no framework round-trip).
+  bool GetBounds(int* x, int* y, int* w, int* h) const;
+  bool SetBounds(int x, int y, int w, int h);
+  HWND shell_hwnd() const { return shell_hwnd_; }
+
   // Window procedure for the client shell window.
   static LRESULT CALLBACK ShellWndProc(HWND hwnd,
                                        UINT msg,

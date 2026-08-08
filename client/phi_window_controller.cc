@@ -167,6 +167,29 @@ void PhiWindowController::RefreshTabs() {
   }
 }
 
+bool PhiWindowController::GetBounds(int* x, int* y, int* w, int* h) const {
+  if (!shell_hwnd_ || !::IsWindow(shell_hwnd_)) {
+    return false;
+  }
+  RECT r = {};
+  if (!::GetWindowRect(shell_hwnd_, &r)) {
+    return false;
+  }
+  *x = r.left;
+  *y = r.top;
+  *w = r.right - r.left;
+  *h = r.bottom - r.top;
+  return true;
+}
+
+bool PhiWindowController::SetBounds(int x, int y, int w, int h) {
+  if (!shell_hwnd_ || !::IsWindow(shell_hwnd_)) {
+    return false;
+  }
+  return ::SetWindowPos(shell_hwnd_, nullptr, x, y, w, h,
+                        SWP_NOZORDER | SWP_NOACTIVATE) != 0;
+}
+
 void PhiWindowController::RebuildNavState() {
   nav_url_.clear();
   can_go_back_ = can_go_forward_ = nav_loading_ = false;

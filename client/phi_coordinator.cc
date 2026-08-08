@@ -139,6 +139,38 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
       framework_->Navigate(window_id, url.c_str());
     }
     out.Set("ok", ok);
+  } else if (type == "agentSpace.window.bounds") {
+    std::optional<base::DictValue> p =
+        base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
+    int64_t window_id =
+        p ? static_cast<int64_t>(p->FindDouble("windowId").value_or(0)) : 0;
+    auto it = windows_.find(window_id);
+    int x = 0, y = 0, w = 0, h = 0;
+    if (it != windows_.end() && it->second->GetBounds(&x, &y, &w, &h)) {
+      out.Set("x", x);
+      out.Set("y", y);
+      out.Set("width", w);
+      out.Set("height", h);
+      out.Set("ok", true);
+    } else {
+      out.Set("ok", false);
+    }
+  } else if (type == "agentSpace.window.setBounds") {
+    std::optional<base::DictValue> p =
+        base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
+    int64_t window_id = 0;
+    int x = 0, y = 0, w = 0, h = 0;
+    if (p) {
+      window_id = static_cast<int64_t>(p->FindDouble("windowId").value_or(0));
+      x = static_cast<int>(p->FindDouble("x").value_or(0));
+      y = static_cast<int>(p->FindDouble("y").value_or(0));
+      w = static_cast<int>(p->FindDouble("width").value_or(0));
+      h = static_cast<int>(p->FindDouble("height").value_or(0));
+    }
+    auto it = windows_.find(window_id);
+    bool ok = it != windows_.end() && w > 0 && h > 0 &&
+              it->second->SetBounds(x, y, w, h);
+    out.Set("ok", ok);
   } else if (type == "agentSpace.tabs.list") {
     std::optional<base::DictValue> p =
         base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
