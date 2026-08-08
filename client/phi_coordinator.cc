@@ -123,6 +123,22 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
       framework_->CloseBrowserWindow(window_id);
     }
     out.Set("ok", framework_ && window_id ? true : false);
+  } else if (type == "agentSpace.navigate") {
+    std::optional<base::DictValue> p =
+        base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
+    int64_t window_id = 0;
+    std::string url;
+    if (p) {
+      window_id = static_cast<int64_t>(p->FindDouble("windowId").value_or(0));
+      if (const std::string* u = p->FindString("url")) {
+        url = *u;
+      }
+    }
+    bool ok = framework_ && window_id && !url.empty();
+    if (ok) {
+      framework_->Navigate(window_id, url.c_str());
+    }
+    out.Set("ok", ok);
   } else {
     out.Set("error", "unknown type: " + type);
   }
