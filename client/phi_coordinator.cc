@@ -139,6 +139,54 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
       framework_->Navigate(window_id, url.c_str());
     }
     out.Set("ok", ok);
+  } else if (type == "agentSpace.tabs.list") {
+    std::optional<base::DictValue> p =
+        base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
+    int64_t window_id =
+        p ? static_cast<int64_t>(p->FindDouble("windowId").value_or(0)) : 0;
+    if (framework_ && window_id) {
+      std::optional<base::Value> tabs = base::JSONReader::Read(
+          framework_->ListTabsJson(window_id), base::JSON_PARSE_RFC);
+      if (tabs && tabs->is_list()) {
+        out.Set("tabs", std::move(*tabs));
+      }
+    }
+    if (!out.contains("tabs")) {
+      out.Set("tabs", base::ListValue());
+    }
+  } else if (type == "agentSpace.tabs.new") {
+    std::optional<base::DictValue> p =
+        base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
+    int64_t window_id = 0;
+    std::string url;
+    if (p) {
+      window_id = static_cast<int64_t>(p->FindDouble("windowId").value_or(0));
+      if (const std::string* u = p->FindString("url")) {
+        url = *u;
+      }
+    }
+    int index = (framework_ && window_id)
+                    ? framework_->NewTab(window_id, url.c_str())
+                    : -1;
+    out.Set("index", index);
+    out.Set("ok", index >= 0);
+  } else if (type == "agentSpace.tabs.activate" ||
+             type == "agentSpace.tabs.close") {
+    std::optional<base::DictValue> p =
+        base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
+    int64_t window_id = 0;
+    int index = -1;
+    if (p) {
+      window_id = static_cast<int64_t>(p->FindDouble("windowId").value_or(0));
+      index = static_cast<int>(p->FindDouble("index").value_or(-1));
+    }
+    bool ok = false;
+    if (framework_ && window_id && index >= 0) {
+      ok = (type == "agentSpace.tabs.activate")
+               ? framework_->ActivateTab(window_id, index)
+               : framework_->CloseTab(window_id, index);
+    }
+    out.Set("ok", ok);
   } else {
     out.Set("error", "unknown type: " + type);
   }
