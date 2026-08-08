@@ -463,8 +463,45 @@ void PhiControlServer::ProxyToDevTools(HANDLE pipe,
     ::closesocket(sock);
     return;
   }
-  // Forward the already-read request head, then relay both directions.
-  ::send(sock, head.data(), static_cast<int>(head.size()), 0);
+  // Chromium's DevTools server rejects requests whose Host is not localhost or
+  // an IP ("Host header is specified and is not an IP address or localhost"),
+  // so rewrite whatever the pipe client sent to the loopback endpoint we are
+  // proxying to. Callers over a named pipe have no meaningful host anyway.
+  // Rebuild the head line-by-line: drop any Host header (case-insensitively)
+  // and inject the loopback one right after the request line.
+  std::string fwd;
+  {
+    const std::string host_value = "Host: 127.0.0.1:" + std::to_string(port);
+    size_t pos = 0;
+    bool first_line = true;
+    while (pos < head.size()) {
+      size_t eol = head.find("\r\n", pos);
+      if (eol == std::string::npos) {
+        eol = head.size();
+      }
+      std::string line = head.substr(pos, eol - pos);
+      pos = eol + 2;
+      std::string lower;
+      lower.reserve(line.size());
+      for (char c : line) {
+        lower.push_back(static_cast<char>(::tolower(c)));
+      }
+      if (first_line) {
+        fwd += line + "\r\n" + host_value + "\r\n";
+        first_line = false;
+        continue;
+      }
+      if (lower.rfind("host:", 0) == 0) {
+        continue;  // Drop the client's Host.
+      }
+      fwd += line + "\r\n";
+    }
+    if (fwd.size() < 2 || fwd.compare(fwd.size() - 4, 4, "\r\n\r\n") != 0) {
+      fwd += "\r\n";
+    }
+  }
+  // Forward the (rewritten) request head, then relay both directions.
+  ::send(sock, fwd.data(), static_cast<int>(fwd.size()), 0);
 
   SockToPipe ctx{sock, pipe};
   HANDLE back = ::CreateThread(nullptr, 0, &SockToPipeThread, &ctx, 0, nullptr);
