@@ -170,6 +170,41 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
                     : -1;
     out.Set("index", index);
     out.Set("ok", index >= 0);
+  } else if (type == "agentSpace.nav.state") {
+    std::optional<base::DictValue> p =
+        base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
+    int64_t window_id =
+        p ? static_cast<int64_t>(p->FindDouble("windowId").value_or(0)) : 0;
+    if (framework_ && window_id) {
+      std::optional<base::DictValue> st = base::JSONReader::ReadDict(
+          framework_->NavStateJson(window_id), base::JSON_PARSE_RFC);
+      if (st) {
+        out = std::move(*st);
+      }
+    }
+  } else if (type == "agentSpace.nav.back" ||
+             type == "agentSpace.nav.forward" ||
+             type == "agentSpace.nav.reload" ||
+             type == "agentSpace.nav.stop") {
+    std::optional<base::DictValue> p =
+        base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
+    int64_t window_id =
+        p ? static_cast<int64_t>(p->FindDouble("windowId").value_or(0)) : 0;
+    const bool bypass_cache =
+        p ? p->FindBool("bypassCache").value_or(false) : false;
+    bool ok = false;
+    if (framework_ && window_id) {
+      if (type == "agentSpace.nav.back") {
+        ok = framework_->GoBack(window_id);
+      } else if (type == "agentSpace.nav.forward") {
+        ok = framework_->GoForward(window_id);
+      } else if (type == "agentSpace.nav.reload") {
+        ok = framework_->Reload(window_id, bypass_cache);
+      } else {
+        ok = framework_->StopLoading(window_id);
+      }
+    }
+    out.Set("ok", ok);
   } else if (type == "agentSpace.tabs.activate" ||
              type == "agentSpace.tabs.close") {
     std::optional<base::DictValue> p =
