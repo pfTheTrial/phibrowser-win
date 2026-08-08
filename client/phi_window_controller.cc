@@ -6,10 +6,13 @@
 
 #include <windowsx.h>
 
+#include <optional>
 #include <string>
 
+#include "base/json/json_reader.h"
 #include "base/logging.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/values.h"
 
 namespace phi_client {
 
@@ -27,6 +30,16 @@ constexpr COLORREF kButtonInk = RGB(0x2B, 0x2D, 0x31);
 
 // The "+ New Window" button in the sidebar (client rect coords).
 constexpr RECT kNewWindowButton = {16, 240, 224, 284};
+
+// Tab list geometry, below the button.
+constexpr int kTabsTop = 304;
+constexpr int kTabsInset = 12;
+constexpr int kTabRowHeight = 30;
+constexpr int kTabRowGap = 4;
+constexpr int kCloseBoxSize = 16;
+constexpr COLORREF kTabActiveBg = RGB(0xFF, 0xFF, 0xFF);
+constexpr COLORREF kTabActiveInk = RGB(0x2B, 0x2D, 0x31);
+constexpr COLORREF kTabInk = RGB(0xE6, 0xEA, 0xFF);
 
 ATOM EnsureShellClass() {
   static const ATOM atom = [] {
@@ -137,6 +150,71 @@ void PhiWindowController::LayoutContents() {
   }
 }
 
+void PhiWindowController::RefreshTabs() {
+  RebuildTabs();
+  if (shell_hwnd_) {
+    ::InvalidateRect(shell_hwnd_, nullptr, FALSE);
+  }
+}
+
+void PhiWindowController::RebuildTabs() {
+  tabs_.clear();
+  if (framework_) {
+    std::optional<base::Value> parsed = base::JSONReader::Read(
+        framework_->ListTabsJson(window_id_), base::JSON_PARSE_RFC);
+    if (parsed && parsed->is_list()) {
+      int y = kTabsTop;
+      for (const base::Value& v : parsed->GetList()) {
+        if (!v.is_dict()) {
+          continue;
+        }
+        const base::DictValue& d = v.GetDict();
+        TabRow row;
+        row.index = d.FindInt("index").value_or(0);
+        row.active = d.FindBool("active").value_or(false);
+        const std::string* title = d.FindString("title");
+        const std::string* url = d.FindString("url");
+        std::string label = title && !title->empty()
+                                ? *title
+                                : (url ? *url : std::string("(untitled)"));
+        row.title = base::UTF8ToWide(label);
+        row.bounds = {kTabsInset, y, kSidebarWidth - kTabsInset,
+                      y + kTabRowHeight};
+        row.close_box = {row.bounds.right - kCloseBoxSize - 4,
+                         y + (kTabRowHeight - kCloseBoxSize) / 2,
+                         row.bounds.right - 4,
+                         y + (kTabRowHeight + kCloseBoxSize) / 2};
+        tabs_.push_back(std::move(row));
+        y += kTabRowHeight + kTabRowGap;
+      }
+    }
+  }
+}
+
+void PhiWindowController::OnSidebarClick(int x, int y) {
+  POINT pt = {x, y};
+  if (::PtInRect(&kNewWindowButton, pt)) {
+    if (framework_) {
+      framework_->NewWindow(window_id_);
+    }
+    return;
+  }
+  for (const TabRow& row : tabs_) {
+    if (!::PtInRect(&row.bounds, pt)) {
+      continue;
+    }
+    if (framework_) {
+      if (::PtInRect(&row.close_box, pt)) {
+        framework_->CloseTab(window_id_, row.index);
+      } else {
+        framework_->ActivateTab(window_id_, row.index);
+      }
+    }
+    RefreshTabs();
+    return;
+  }
+}
+
 void PhiWindowController::PaintSidebar(HDC dc, const RECT& client) {
   RECT bar = {0, 0, kSidebarWidth, client.bottom};
   HBRUSH band = ::CreateSolidBrush(kBandColor);
@@ -165,6 +243,28 @@ void PhiWindowController::PaintSidebar(HDC dc, const RECT& client) {
   ::SetTextColor(dc, kButtonInk);
   ::DrawTextW(dc, L"+  New Window", -1, &btn,
               DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+  // Tab rows, driven by live framework state: the active tab gets a white
+  // chip, each row a close box.
+  for (const TabRow& row : tabs_) {
+    if (row.bounds.bottom > client.bottom) {
+      break;  // Out of sidebar space.
+    }
+    if (row.active) {
+      HBRUSH chip = ::CreateSolidBrush(kTabActiveBg);
+      ::FillRect(dc, &row.bounds, chip);
+      ::DeleteObject(chip);
+    }
+    ::SetTextColor(dc, row.active ? kTabActiveInk : kTabInk);
+    RECT title_rc = row.bounds;
+    title_rc.left += 8;
+    title_rc.right = row.close_box.left - 4;
+    ::DrawTextW(dc, row.title.c_str(), -1, &title_rc,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    // Close affordance: a small x.
+    ::DrawTextW(dc, L"x", -1, const_cast<RECT*>(&row.close_box),
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+  }
 }
 
 // static
@@ -205,12 +305,9 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
       }
       return 0;
     case WM_LBUTTONDOWN:
-      if (self && self->framework_) {
-        POINT pt = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
-        if (::PtInRect(&kNewWindowButton, pt)) {
-          self->framework_->NewWindow(self->window_id_);
-          return 0;
-        }
+      if (self) {
+        self->OnSidebarClick(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
+        return 0;
       }
       return ::DefWindowProcW(hwnd, msg, wparam, lparam);
     case WM_SIZE:
@@ -222,6 +319,9 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
       PAINTSTRUCT ps = {};
       HDC dc = ::BeginPaint(hwnd, &ps);
       if (self) {
+        // Re-read framework state at paint time: the sidebar then reflects
+        // reality even if a change notification was missed or coalesced.
+        self->RebuildTabs();
         RECT rc = {};
         ::GetClientRect(hwnd, &rc);
         self->PaintSidebar(dc, rc);

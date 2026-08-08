@@ -8,6 +8,8 @@
 #include <windows.h>
 
 #include <cstdint>
+#include <string>
+#include <vector>
 
 #include "base/memory/raw_ptr_exclusion.h"
 #include "chrome/browser/phinomenon/phi_framework/phi_framework_api.h"
@@ -34,6 +36,14 @@ class PhiWindowController {
 
   int64_t window_id() const { return window_id_; }
 
+  // Re-reads tab/nav state from the framework and repaints the sidebar. Called
+  // on the UI thread when the framework reports a change.
+  void RefreshTabs();
+
+  // Rebuilds `tabs_` from framework state WITHOUT invalidating (paint-time
+  // use; RefreshTabs() would recurse through InvalidateRect).
+  void RebuildTabs();
+
   // Window procedure for the client shell window.
   static LRESULT CALLBACK ShellWndProc(HWND hwnd,
                                        UINT msg,
@@ -44,6 +54,18 @@ class PhiWindowController {
   void AdoptBrowserAsChild();
   void LayoutContents();
   void PaintSidebar(HDC dc, const RECT& client);
+  // Handles a click in the sidebar (tab rows, close boxes, buttons).
+  void OnSidebarClick(int x, int y);
+
+  // One rendered tab row: what to draw and what a click at that row does.
+  struct TabRow {
+    int index = 0;
+    bool active = false;
+    std::wstring title;
+    RECT bounds{};       // Row rect in client coords.
+    RECT close_box{};    // The row's close affordance.
+  };
+  std::vector<TabRow> tabs_;
 
   const int64_t window_id_;
   HWND browser_hwnd_;  // Chromium's window, reparented as our child.

@@ -235,8 +235,17 @@ void PhiCoordinator::OnBrowserWindowCreated(int64_t window_id, void* hwnd) {
             << " hwnd=" << hwnd;
   // Option B: the client owns a shell window and reparents Chromium's content
   // in. The shell routes activation back through the framework.
-  windows_[window_id] = std::make_unique<PhiWindowController>(
+  auto controller = std::make_unique<PhiWindowController>(
       window_id, static_cast<HWND>(hwnd), framework_);
+  controller->RefreshTabs();
+  windows_[window_id] = std::move(controller);
+}
+
+void PhiCoordinator::OnTabsChanged(int64_t window_id) {
+  auto it = windows_.find(window_id);
+  if (it != windows_.end()) {
+    it->second->RefreshTabs();
+  }
 }
 
 void PhiCoordinator::OnBrowserWindowClosing(int64_t window_id) {

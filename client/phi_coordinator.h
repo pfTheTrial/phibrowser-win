@@ -38,6 +38,7 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
                         const char* user_data_dir_utf8) override;
   void OnBrowserWindowCreated(int64_t window_id, void* hwnd) override;
   void OnBrowserWindowClosing(int64_t window_id) override;
+  void OnTabsChanged(int64_t window_id) override;
 
   // PhiControlDelegate (called on the control server's I/O thread):
   std::string HandleControlCommand(const std::string& type,
