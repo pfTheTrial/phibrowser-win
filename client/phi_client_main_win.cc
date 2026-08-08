@@ -364,6 +364,17 @@ int main() {
   if (AttemptFastNotify(*command_line))
     return 0;
 
+  // Phi: give Chromium an ephemeral loopback DevTools endpoint. The client's
+  // control server (PhiControlServer) proxies CDP from its unified named pipe
+  // to this port, so callers see one socket for both CDP and client control.
+  // Browser process only; bound to 127.0.0.1; the port is written to
+  // DevToolsActivePort in the user data dir.
+  if (process_type.empty() &&
+      !command_line->HasSwitch("remote-debugging-port")) {
+    base::CommandLine::ForCurrentProcess()->AppendSwitchASCII(
+        "remote-debugging-port", "0");
+  }
+
   // Load and launch the chrome dll. *Everything* happens inside. The framework
   // binds our delegate itself, by resolving this exe's PhiClientCreateDelegate
   // export (see above) once the browser process is up — no pre-ChromeMain

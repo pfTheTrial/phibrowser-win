@@ -9,14 +9,19 @@
 #include <utility>
 
 #include "base/logging.h"
+#include "base/strings/utf_string_conversions.h"
 
 namespace phi_client {
 
 PhiCoordinator::PhiCoordinator() = default;
 PhiCoordinator::~PhiCoordinator() = default;
 
-void PhiCoordinator::OnFrameworkReady(phi_framework::PhiFramework* framework) {
+void PhiCoordinator::OnFrameworkReady(phi_framework::PhiFramework* framework,
+                                     const char* user_data_dir_utf8) {
   framework_ = framework;
+  control_server_.Start(base::UTF8ToWide(user_data_dir_utf8 ? user_data_dir_utf8
+                                                            : ""),
+                        framework);
 }
 
 void PhiCoordinator::OnBrowserWindowCreated(int64_t window_id, void* hwnd) {

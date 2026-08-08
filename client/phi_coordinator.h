@@ -11,6 +11,7 @@
 
 #include "base/memory/raw_ptr_exclusion.h"
 #include "chrome/browser/phinomenon/phi_framework/phi_framework_api.h"
+#include "phibrowser-win/client/phi_control_server.h"
 #include "phibrowser-win/client/phi_window_controller.h"
 
 namespace phi_client {
@@ -29,7 +30,8 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate {
   PhiCoordinator& operator=(const PhiCoordinator&) = delete;
 
   // phi_framework::PhiFrameworkDelegate:
-  void OnFrameworkReady(phi_framework::PhiFramework* framework) override;
+  void OnFrameworkReady(phi_framework::PhiFramework* framework,
+                        const char* user_data_dir_utf8) override;
   void OnBrowserWindowCreated(int64_t window_id, void* hwnd) override;
   void OnBrowserWindowClosing(int64_t window_id) override;
 
@@ -37,6 +39,8 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate {
   // The framework command interface (a singleton in chrome.dll); non-owning,
   // across a module boundary, so not a raw_ptr.
   RAW_PTR_EXCLUSION phi_framework::PhiFramework* framework_ = nullptr;
+  // The unified control/CDP socket.
+  PhiControlServer control_server_;
   // One controller per adopted window, keyed by windowId.
   std::map<int64_t, std::unique_ptr<PhiWindowController>> windows_;
 };
