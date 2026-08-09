@@ -54,8 +54,12 @@ void PhiCoordinator::OnFrameworkReady(phi_framework::PhiFramework* framework,
                                 HWND_MESSAGE, nullptr,
                                 ::GetModuleHandleW(nullptr), this);
 
-  control_server_.Start(
-      base::UTF8ToWide(user_data_dir_utf8 ? user_data_dir_utf8 : ""), this);
+  const std::wstring user_data_dir =
+      base::UTF8ToWide(user_data_dir_utf8 ? user_data_dir_utf8 : "");
+  spaces_path_ = user_data_dir + L"\\PhiSpaces.json";
+  LoadSpaces();
+
+  control_server_.Start(user_data_dir, this);
 }
 
 // static
@@ -93,6 +97,78 @@ std::string PhiCoordinator::HandleControlCommand(
   ::SendMessageW(msg_hwnd_, WM_PHI_CONTROL, 0,
                  reinterpret_cast<LPARAM>(&call));
   return call.result;
+}
+
+void PhiCoordinator::LoadSpaces() {
+  HANDLE f = ::CreateFileW(spaces_path_.c_str(), GENERIC_READ, FILE_SHARE_READ,
+                           nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
+                           nullptr);
+  if (f == INVALID_HANDLE_VALUE) {
+    return;  // First run: keep the built-in default Space.
+  }
+  std::string json;
+  char buf[4096];
+  DWORD read = 0;
+  while (::ReadFile(f, buf, sizeof(buf), &read, nullptr) && read > 0) {
+    json.append(buf, read);
+  }
+  ::CloseHandle(f);
+
+  std::optional<base::DictValue> root =
+      base::JSONReader::ReadDict(json, base::JSON_PARSE_RFC);
+  if (!root) {
+    return;
+  }
+  const base::ListValue* list = root->FindList("spaces");
+  if (!list || list->empty()) {
+    return;
+  }
+  std::vector<Space> loaded;
+  int max_numeric_id = 1;
+  for (const base::Value& v : *list) {
+    if (!v.is_dict()) {
+      continue;
+    }
+    const base::DictValue& d = v.GetDict();
+    const std::string* id = d.FindString("id");
+    const std::string* name = d.FindString("name");
+    const std::string* profile = d.FindString("profileId");
+    if (!id || id->empty()) {
+      continue;
+    }
+    loaded.push_back({*id, name ? *name : ("Space " + *id),
+                      profile && !profile->empty() ? *profile : "Default"});
+    max_numeric_id = std::max(max_numeric_id, atoi(id->c_str()));
+  }
+  if (!loaded.empty()) {
+    spaces_ = std::move(loaded);
+    next_space_id_ = max_numeric_id + 1;
+    LOG(INFO) << "[PhiClient] restored " << spaces_.size() << " spaces";
+  }
+}
+
+void PhiCoordinator::SaveSpaces() const {
+  base::ListValue list;
+  for (const Space& space : spaces_) {
+    base::DictValue d;
+    d.Set("id", space.id);
+    d.Set("name", space.name);
+    d.Set("profileId", space.profile_id);
+    list.Append(std::move(d));
+  }
+  base::DictValue root;
+  root.Set("spaces", std::move(list));
+  std::string json;
+  base::JSONWriter::Write(root, &json);
+
+  HANDLE f = ::CreateFileW(spaces_path_.c_str(), GENERIC_WRITE, 0, nullptr,
+                           CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (f == INVALID_HANDLE_VALUE) {
+    return;
+  }
+  DWORD wrote = 0;
+  ::WriteFile(f, json.data(), static_cast<DWORD>(json.size()), &wrote, nullptr);
+  ::CloseHandle(f);
 }
 
 int64_t PhiCoordinator::ResolveBrowser(int64_t slot_or_browser) const {
@@ -187,6 +263,7 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
       profile_id = "Default";  // A Space always binds exactly one profile.
     }
     spaces_.push_back({id, name, profile_id});
+    SaveSpaces();
     out.Set("id", id);
     out.Set("name", name);
     out.Set("profileId", profile_id);

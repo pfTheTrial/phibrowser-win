@@ -80,6 +80,10 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   };
   std::vector<Space> spaces_{{"1", "Space 1", "Default"}};
   int next_space_id_ = 2;
+  // Where the Space list is persisted (user data dir).
+  std::wstring spaces_path_;
+  void LoadSpaces();
+  void SaveSpaces() const;
   // Set while a Space browser is being created, so the next
   // OnBrowserWindowCreated attaches to that slot instead of opening a shell.
   int64_t pending_slot_ = 0;
