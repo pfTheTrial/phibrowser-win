@@ -6,6 +6,8 @@
 
 #include <windowsx.h>
 
+#include <algorithm>
+#include <iterator>
 #include <optional>
 #include <string>
 #include <vector>
@@ -63,16 +65,8 @@ constexpr int kTabRowGap = 0;
 // From Assets.xcassets/ColorSet: primary-label 85% black, common-border 8%
 // black, sidebar-tab-selected white. The sidebar ground stands in for the Mac's
 // material + per-Space gradient tint, which GDI cannot reproduce.
-// The window ground is the SPACE'S COLOUR — a vertical gradient, as in the Mac
-// screenshots. This is the default (mint) Space tint; per-Space colours arrive
-// with the Space model.
-constexpr COLORREF kTintTop = RGB(0xC9, 0xE7, 0xE3);
-constexpr COLORREF kTintBottom = RGB(0xA4, 0xD9, 0xD4);
-constexpr COLORREF kRowSelectedBg = RGB(0xFF, 0xFF, 0xFF);
-constexpr COLORREF kLabel = RGB(0x26, 0x26, 0x26);
-constexpr COLORREF kLabelDim = RGB(0x8A, 0x8A, 0x8E);
-constexpr COLORREF kBorder = RGB(0xE2, 0xE2, 0xE4);
-constexpr COLORREF kFieldBg = RGB(0xFF, 0xFF, 0xFF);
+// Every colour now comes from the active theme (phi_theme.h), resolved by the
+// coordinator and read at paint time.
 
 // The stock EDIT window proc, saved when the first address field is
 // subclassed. One per process — every EDIT shares the class proc.
@@ -156,6 +150,7 @@ void PhiWindowController::EnsureFont() {
   if (previous) {
     ::DeleteObject(previous);  // Replaced only after nothing else refers to it.
   }
+
 }
 
 PhiWindowController::Layout PhiWindowController::ComputeLayout() {
@@ -336,6 +331,10 @@ POINT PhiWindowController::frame_offset() const {
   return {origin.x - window.left, origin.y - window.top};
 }
 
+void PhiWindowController::ApplyPalette() {
+  RefreshTabs();  // Every colour is read from the host at paint time.
+}
+
 void PhiWindowController::ApplyLayoutMode(PhiLayoutMode mode) {
   if (layout_mode_ == mode) {
     return;
@@ -429,6 +428,9 @@ PhiWindowController::~PhiWindowController() {
   }
   if (ui_font_) {
     ::DeleteObject(ui_font_);
+  }
+  if (url_brush_) {
+    ::DeleteObject(url_brush_);
   }
 }
 
@@ -877,15 +879,7 @@ void PhiWindowController::OnChromeClick(int x, int y) {
   const Layout layout = ComputeLayout();
   POINT pt = {x, y};
   if (host_ && ::PtInRect(&layout.settings, pt)) {
-    // Cycles Performance -> Balanced -> Comfortable. The host applies it to
-    // every slot, so two windows never disagree about the layout.
-    PhiLayoutMode next = PhiLayoutMode::kPerformance;
-    if (layout_mode_ == PhiLayoutMode::kPerformance) {
-      next = PhiLayoutMode::kBalanced;
-    } else if (layout_mode_ == PhiLayoutMode::kBalanced) {
-      next = PhiLayoutMode::kComfortable;
-    }
-    host_->RequestLayoutMode(next);
+    host_->RequestSettings();
     return;
   }
   if (framework_ && ::PtInRect(&layout.back, pt)) {
@@ -1000,6 +994,16 @@ void DrawGlyph(HDC dc, const RECT& r, const wchar_t* glyph, COLORREF ink) {
 void PhiWindowController::PaintChrome(HDC dc,
                                      const Layout& layout,
                                      bool include_child_controls) {
+  static const PhiPalette kFallback =
+      PhiResolvePalette(PhiThemeById("pure"), PhiAppearance::kLight);
+  const PhiPalette& palette = host_ ? host_->Palette() : kFallback;
+  const COLORREF kTintTop = palette.ground_top;
+  const COLORREF kTintBottom = palette.ground_bottom;
+  const COLORREF kRowSelectedBg = palette.card;
+  const COLORREF kLabel = palette.label;
+  const COLORREF kLabelDim = palette.label_dim;
+  const COLORREF kBorder = palette.border;
+  const COLORREF kFieldBg = palette.card;
   // Paint only the bands we own. Whatever is left is the content region, and
   // the reparented browser child covers it. No seam along the content edge:
   // the chrome runs straight into the page.
@@ -1168,6 +1172,23 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
         }
       }
       return 0;
+    case WM_CTLCOLOREDIT:
+      if (self && reinterpret_cast<HWND>(lparam) == self->url_field_ &&
+          self->host_) {
+        const PhiPalette& palette = self->host_->Palette();
+        HDC edit_dc = reinterpret_cast<HDC>(wparam);
+        ::SetTextColor(edit_dc, palette.label);
+        ::SetBkColor(edit_dc, palette.card);
+        if (!self->url_brush_ || self->url_brush_color_ != palette.card) {
+          if (self->url_brush_) {
+            ::DeleteObject(self->url_brush_);
+          }
+          self->url_brush_ = ::CreateSolidBrush(palette.card);
+          self->url_brush_color_ = palette.card;
+        }
+        return reinterpret_cast<LRESULT>(self->url_brush_);
+      }
+      break;
     case WM_LBUTTONDOWN:
       if (self) {
         self->OnChromeClick(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));

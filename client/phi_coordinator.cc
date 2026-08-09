@@ -58,8 +58,10 @@ void PhiCoordinator::OnFrameworkReady(phi_framework::PhiFramework* framework,
       base::UTF8ToWide(user_data_dir_utf8 ? user_data_dir_utf8 : "");
   spaces_path_ = user_data_dir + L"\\PhiSpaces.json";
   layout_path_ = user_data_dir + L"\\PhiLayout.json";
+  theme_path_ = user_data_dir + L"\\PhiTheme.json";
   LoadSpaces();
   LoadLayoutMode();
+  LoadTheme();
 
   control_server_.Start(user_data_dir, this);
 }
@@ -222,6 +224,99 @@ void PhiCoordinator::SaveLayoutMode() const {
   DWORD wrote = 0;
   ::WriteFile(f, json.data(), static_cast<DWORD>(json.size()), &wrote, nullptr);
   ::CloseHandle(f);
+}
+
+void PhiCoordinator::LoadTheme() {
+  palette_ = PhiResolvePalette(PhiThemeById(theme_id_), appearance_);
+  HANDLE f = ::CreateFileW(theme_path_.c_str(), GENERIC_READ, FILE_SHARE_READ,
+                           nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
+                           nullptr);
+  if (f == INVALID_HANDLE_VALUE) {
+    return;  // First run: Pure, following the system appearance (the Mac
+             // defaults).
+  }
+  std::string json;
+  char buf[512];
+  DWORD read = 0;
+  while (::ReadFile(f, buf, sizeof(buf), &read, nullptr) && read > 0) {
+    json.append(buf, read);
+  }
+  ::CloseHandle(f);
+  std::optional<base::DictValue> root =
+      base::JSONReader::ReadDict(json, base::JSON_PARSE_RFC);
+  if (!root) {
+    return;
+  }
+  if (const std::string* id = root->FindString("themeId")) {
+    theme_id_ = PhiThemeById(*id).id;  // Normalises an unknown id to Pure.
+  }
+  if (const std::string* name = root->FindString("appearance")) {
+    PhiAppearance parsed = PhiAppearance::kSystem;
+    if (PhiAppearanceFromName(*name, &parsed)) {
+      appearance_ = parsed;
+    }
+  }
+  palette_ = PhiResolvePalette(PhiThemeById(theme_id_), appearance_);
+  LOG(INFO) << "[PhiClient] theme: " << theme_id_ << " / "
+            << PhiAppearanceName(appearance_);
+}
+
+void PhiCoordinator::SaveTheme() const {
+  base::DictValue root;
+  root.Set("themeId", theme_id_);
+  root.Set("appearance", PhiAppearanceName(appearance_));
+  std::string json;
+  base::JSONWriter::Write(root, &json);
+  HANDLE f = ::CreateFileW(theme_path_.c_str(), GENERIC_WRITE, 0, nullptr,
+                           CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (f == INVALID_HANDLE_VALUE) {
+    return;
+  }
+  DWORD wrote = 0;
+  ::WriteFile(f, json.data(), static_cast<DWORD>(json.size()), &wrote, nullptr);
+  ::CloseHandle(f);
+}
+
+void PhiCoordinator::ApplyTheme() {
+  palette_ = PhiResolvePalette(PhiThemeById(theme_id_), appearance_);
+  SaveTheme();
+  for (const auto& [slot, controller] : windows_) {
+    controller->ApplyPalette();
+  }
+  PhiSettingsWindow::Refresh();
+}
+
+const PhiPalette& PhiCoordinator::Palette() const {
+  return palette_;
+}
+
+std::string PhiCoordinator::ThemeId() const {
+  return theme_id_;
+}
+
+PhiAppearance PhiCoordinator::Appearance() const {
+  return appearance_;
+}
+
+void PhiCoordinator::SetThemeId(const std::string& id) {
+  const std::string normalised = PhiThemeById(id).id;
+  if (normalised == theme_id_) {
+    return;
+  }
+  theme_id_ = normalised;
+  ApplyTheme();
+}
+
+void PhiCoordinator::SetAppearance(PhiAppearance appearance) {
+  if (appearance == appearance_) {
+    return;
+  }
+  appearance_ = appearance;
+  ApplyTheme();
+}
+
+void PhiCoordinator::RequestSettings() {
+  PhiSettingsWindow::Open(this);
 }
 
 PhiLayoutMode PhiCoordinator::LayoutMode() const {
@@ -560,6 +655,48 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
     }
     out.Set("mode", PhiLayoutModeName(layout_mode_));
     out.Set("ok", ok);
+  } else if (type == "agentSpace.theme.get") {
+    out.Set("themeId", theme_id_);
+    out.Set("appearance", PhiAppearanceName(appearance_));
+    base::ListValue names;
+    for (const PhiTheme& theme : PhiBuiltInThemes()) {
+      base::DictValue entry;
+      entry.Set("id", theme.id);
+      entry.Set("name", theme.name);
+      names.Append(std::move(entry));
+    }
+    out.Set("themes", std::move(names));
+    out.Set("dark", palette_.dark);
+    out.Set("ok", true);
+  } else if (type == "agentSpace.theme.set") {
+    std::optional<base::DictValue> p =
+        base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
+    bool ok = false;
+    if (p) {
+      if (const std::string* id = p->FindString("themeId")) {
+        const bool known = *id == PhiThemeById(*id).id;
+        if (known) {
+          SetThemeId(*id);
+          ok = true;
+        }
+      }
+      if (const std::string* name = p->FindString("appearance")) {
+        PhiAppearance parsed = PhiAppearance::kSystem;
+        if (PhiAppearanceFromName(*name, &parsed)) {
+          SetAppearance(parsed);
+          ok = true;
+        }
+      }
+    }
+    out.Set("themeId", theme_id_);
+    out.Set("appearance", PhiAppearanceName(appearance_));
+    out.Set("dark", palette_.dark);
+    out.Set("ok", ok);
+  } else if (type == "agentSpace.settings.open") {
+    RequestSettings();
+    out.Set("hwnd", static_cast<double>(
+                        reinterpret_cast<intptr_t>(PhiSettingsWindow::Handle())));
+    out.Set("ok", PhiSettingsWindow::Handle() != nullptr);
   } else if (type == "agentSpace.window.layout") {
     // The chrome geometry a slot is rendering, so layout can be asserted
     // without going through pixels.

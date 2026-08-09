@@ -14,6 +14,7 @@
 
 #include "base/memory/raw_ptr_exclusion.h"
 #include "chrome/browser/phinomenon/phi_framework/phi_framework_api.h"
+#include "phibrowser-win/client/phi_theme.h"
 
 namespace phi_client {
 
@@ -47,6 +48,11 @@ class PhiSlotHost {
   // Mac, so a new window never disagrees with the one beside it.
   virtual PhiLayoutMode LayoutMode() const = 0;
   virtual void RequestLayoutMode(PhiLayoutMode mode) = 0;
+  // The resolved theme every slot paints with — one setting for the whole
+  // client, like the layout.
+  virtual const PhiPalette& Palette() const = 0;
+  // Opens the settings window (theme, appearance, layout).
+  virtual void RequestSettings() = 0;
 };
 
 // Owns the client-drawn shell window for one browser (the Windows twin of the
@@ -117,6 +123,8 @@ class PhiWindowController {
   // Re-lays the chrome for `mode` and repaints. Cheap: all geometry is derived
   // from the client rect on demand, so nothing is cached across the switch.
   void ApplyLayoutMode(PhiLayoutMode mode);
+  // Repaints for a palette the host just changed.
+  void ApplyPalette();
   // The content region (client coords, physical pixels) the browser child
   // occupies.
   RECT content_rect();
@@ -215,6 +223,11 @@ class PhiWindowController {
                                        WPARAM wparam,
                                        LPARAM lparam);
   HWND url_field_ = nullptr;
+  // The EDIT paints itself in SYSTEM colours, which clash under a dark theme.
+  // WM_CTLCOLOREDIT hands it the palette instead; the brush must outlive the
+  // message, so it is cached and rebuilt only when the colour changes.
+  HBRUSH url_brush_ = nullptr;
+  COLORREF url_brush_color_ = CLR_INVALID;
   // The shell's UI font at `ui_font_dpi_`, used both for the address field and
   // for every label PaintChrome draws, so text and boxes scale together.
   HFONT ui_font_ = nullptr;

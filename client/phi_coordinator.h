@@ -18,6 +18,8 @@
 #include "base/memory/raw_ptr_exclusion.h"
 #include "chrome/browser/phinomenon/phi_framework/phi_framework_api.h"
 #include "phibrowser-win/client/phi_control_server.h"
+#include "phibrowser-win/client/phi_settings_window.h"
+#include "phibrowser-win/client/phi_theme.h"
 #include "phibrowser-win/client/phi_window_controller.h"
 
 namespace phi_client {
@@ -29,7 +31,8 @@ namespace phi_client {
 // chrome comes next.
 class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
                        public PhiControlDelegate,
-                       public PhiSlotHost {
+                       public PhiSlotHost,
+                       public PhiSettingsHost {
  public:
   PhiCoordinator();
   ~PhiCoordinator() override;
@@ -54,6 +57,14 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   void RequestCreateSpace(int64_t slot, bool new_profile) override;
   PhiLayoutMode LayoutMode() const override;
   void RequestLayoutMode(PhiLayoutMode mode) override;
+  const PhiPalette& Palette() const override;
+  void RequestSettings() override;
+
+  // PhiSettingsHost:
+  std::string ThemeId() const override;
+  PhiAppearance Appearance() const override;
+  void SetThemeId(const std::string& id) override;
+  void SetAppearance(PhiAppearance appearance) override;
 
  private:
   // Runs a control command on the UI thread; returns the JSON response. Called
@@ -99,6 +110,15 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   std::wstring layout_path_;
   void LoadLayoutMode();
   void SaveLayoutMode() const;
+  // Theme + appearance, the Mac's ThemeSettings. Persisted beside the layout.
+  std::string theme_id_ = "pure";
+  PhiAppearance appearance_ = PhiAppearance::kSystem;
+  PhiPalette palette_;
+  std::wstring theme_path_;
+  void LoadTheme();
+  void SaveTheme() const;
+  // Recomputes `palette_` and repaints every slot.
+  void ApplyTheme();
   // Set while a Space browser is being created, so the next
   // OnBrowserWindowCreated attaches to that slot instead of opening a shell.
   int64_t pending_slot_ = 0;
