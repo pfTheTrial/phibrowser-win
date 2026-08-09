@@ -57,7 +57,11 @@ struct PhiPalette {
 };
 
 // Resolves `theme` for `appearance`; kSystem asks Windows which it is.
-PhiPalette PhiResolvePalette(const PhiTheme& theme, PhiAppearance appearance);
+// `saturation` is the Mac's slider position, 0..100: how much of the theme's
+// overlay colour reaches the window (OverlaySaturationScale).
+PhiPalette PhiResolvePalette(const PhiTheme& theme,
+                             PhiAppearance appearance,
+                             int saturation = 50);
 // True when Windows is currently set to a dark app appearance.
 bool PhiSystemPrefersDark();
 

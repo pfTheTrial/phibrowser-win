@@ -25,13 +25,14 @@ COLORREF Blend(COLORREF over, COLORREF base, int alpha) {
 }
 
 // How much of the overlay colour reaches the window. The Mac composites the
-// overlay at 0.8 but then desaturates it through the theme's saturation slider
-// (OverlaySaturationScale, 0.1...0.9); with the slider at its default the
-// result is far softer than a flat 0.8 blend. These two constants reproduce
-// that end result directly — the ported model keeps the COLOURS exact and
-// approximates only the compositing the slider drives.
-constexpr int kTintTopAlpha = 84;     // ~0.33
-constexpr int kTintBottomAlpha = 120; // ~0.47
+// overlay at 0.8 and then scales it by the theme's saturation slider
+// (OverlaySaturationScale, 0.1...0.9), so the slider — not the 0.8 — is what
+// the user actually feels. Mapped here onto the same span: slider 0 is barely
+// tinted, 100 is heavily tinted, and the default sits where the Mac's does.
+constexpr int kTintMinAlpha = 20;
+constexpr int kTintMaxAlpha = 160;
+// The gradient's foot is a little stronger than its head.
+constexpr int kTintGradientSpread = 36;
 
 }  // namespace
 
@@ -114,7 +115,15 @@ bool PhiSystemPrefersDark() {
   return false;
 }
 
-PhiPalette PhiResolvePalette(const PhiTheme& theme, PhiAppearance appearance) {
+PhiPalette PhiResolvePalette(const PhiTheme& theme,
+                             PhiAppearance appearance,
+                             int saturation) {
+  saturation = saturation < 0 ? 0 : (saturation > 100 ? 100 : saturation);
+  const int top_alpha =
+      kTintMinAlpha + (kTintMaxAlpha - kTintMinAlpha) * saturation / 100;
+  const int bottom_alpha = top_alpha + kTintGradientSpread > 255
+                               ? 255
+                               : top_alpha + kTintGradientSpread;
   const bool dark = appearance == PhiAppearance::kDark ||
                     (appearance == PhiAppearance::kSystem &&
                      PhiSystemPrefersDark());
@@ -122,9 +131,9 @@ PhiPalette PhiResolvePalette(const PhiTheme& theme, PhiAppearance appearance) {
 
   PhiPalette palette;
   palette.dark = dark;
-  palette.ground_top = Blend(colors.overlay, colors.background, kTintTopAlpha);
+  palette.ground_top = Blend(colors.overlay, colors.background, top_alpha);
   palette.ground_bottom =
-      Blend(colors.overlay, colors.background, kTintBottomAlpha);
+      Blend(colors.overlay, colors.background, bottom_alpha);
   palette.accent = colors.accent;
   if (dark) {
     // primary-label 85% white, common-border 8% white, selected row lifted off
