@@ -107,4 +107,30 @@ test('persist: the chosen layout survives a restart', async () => {
   } finally { ctl.close() }
 })
 
+test('persist: the chosen theme and appearance survive a restart', async () => {
+  let ctl = await openControl()
+  try {
+    const r = await ctl.send('agentSpace.theme.set',
+                             { themeId: 'iris', appearance: 'dark' })
+    assertEq(r.ok, true, 'theme set')
+  } finally { ctl.close() }
+
+  await restartApp()
+
+  ctl = await openControl()
+  try {
+    const r = await ctl.send('agentSpace.theme.get')
+    assertEq(r.themeId, 'iris', 'theme restored')
+    assertEq(r.appearance, 'dark', 'appearance restored')
+    assertEq(r.dark, true, 'and still resolves dark')
+  } finally { ctl.close() }
+
+  // Leave the default behind for the suites that assume it.
+  ctl = await openControl()
+  try {
+    await ctl.send('agentSpace.theme.set',
+                   { themeId: 'pure', appearance: 'light' })
+  } finally { ctl.close() }
+})
+
 run()
