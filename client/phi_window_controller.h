@@ -155,11 +155,17 @@ class PhiWindowController {
     RECT sidebar{};  // Empty in Comfortable.
     RECT top_bar{};  // The band above the content; empty in Performance.
     RECT content{};  // Where the reparented browser child goes.
-    RECT url_field{};
+    // Nav row: the two leading buttons, then the trailing back/forward/reload
+    // group — the Mac header's arrangement (SidebarHeaderView).
+    RECT sidebar_toggle{}, search_tabs{};
     RECT back{}, forward{}, reload{};
-    RECT new_window{};
-    RECT layout_button{};  // Cycles the mode.
-    RECT add_space{}, add_profile_space{};
+    RECT spaces_strip{};   // The band the Space chips live in.
+    RECT url_field{};
+    RECT favorites{};      // Pinned-tab band; empty until the feature lands.
+    RECT new_tab_row{};    // The sidebar's "+ New Tab" row.
+    RECT bottom_bar{};
+    RECT chat{}, downloads{}, memory{}, settings{};
+    RECT add_space{}, add_profile_space{};  // "+" chips at the strip's end.
     int chips_left = 0, chips_top = 0;
     int chips_limit = 0;  // Right edge chips may not cross.
     int tabs_left = 0, tabs_top = 0;
@@ -242,8 +248,10 @@ class PhiWindowController {
   std::vector<SpaceChip> chips_;
   RECT add_space_button_{};
   RECT add_profile_space_button_{};
-  RECT layout_button_{};
   PhiLayoutMode layout_mode_ = PhiLayoutMode::kPerformance;
+  // Placeholder affordances: drawn so the window reads like the Mac one, wired
+  // to nothing yet (chat, downloads, memory, pinned favourites).
+  static constexpr bool kPlaceholderAffordances = true;
 };
 
 }  // namespace phi_client

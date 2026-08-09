@@ -20,55 +20,59 @@ namespace phi_client {
 namespace {
 
 constexpr wchar_t kShellClassName[] = L"PhiClientShell";
+
+// --- Metrics -----------------------------------------------------------------
+// Design units (points at 100%), taken from the Mac client so the two look the
+// same: SidebarViewController's stack, SidebarHeaderView's header and
+// SpacesStripView / SidebarBottomBar's row heights.
 constexpr int kSidebarWidth = 240;
-
-// Placeholder sidebar colors (bold, so the client region is unmistakable).
-constexpr COLORREF kBandColor = RGB(0x5A, 0x78, 0xFF);
-constexpr COLORREF kAccentColor = RGB(0x1A, 0x2A, 0x88);
-constexpr COLORREF kInkColor = RGB(0xFF, 0xFF, 0xFF);
-constexpr COLORREF kButtonColor = RGB(0xFF, 0xFF, 0xFF);
-constexpr COLORREF kButtonInk = RGB(0x2B, 0x2D, 0x31);
-
-// The "+ New Window" button in the sidebar (client rect coords).
-constexpr RECT kNewWindowButton = {16, 240, 224, 284};
-
-// Toolbar: back / forward / reload buttons and the URL field.
-constexpr RECT kBackButton    = {16, 190, 52, 226};
-constexpr RECT kForwardButton = {56, 190, 92, 226};
-constexpr RECT kReloadButton  = {96, 190, 132, 226};
-constexpr RECT kUrlField      = {16, 146, 224, 182};
-constexpr COLORREF kUrlFieldBg = RGB(0xFF, 0xFF, 0xFF);
-constexpr COLORREF kUrlInk = RGB(0x2B, 0x2D, 0x31);
-constexpr COLORREF kBtnEnabled = RGB(0xFF, 0xFF, 0xFF);
-constexpr COLORREF kBtnDisabled = RGB(0x8C, 0xA4, 0xFF);
-
-// Space chips row (between the button and the tab list).
-constexpr int kSpacesTop = 296;
-constexpr int kSpaceChipH = 32;
-constexpr int kSpaceChipW = 64;
-constexpr int kSpaceChipGap = 6;
-constexpr COLORREF kSpaceActiveBg = RGB(0xFF, 0xFF, 0xFF);
-constexpr COLORREF kSpaceActiveInk = RGB(0x2B, 0x2D, 0x31);
-constexpr COLORREF kSpaceInk = RGB(0xE6, 0xEA, 0xFF);
-
-// Tab list geometry, below the spaces row.
-constexpr int kTabsTop = 374;  // below the chips row AND the create buttons
-constexpr int kTabsInset = 12;
-constexpr int kTabRowHeight = 30;
-constexpr int kTabRowGap = 4;
-constexpr int kCloseBoxSize = 16;
-constexpr COLORREF kTabActiveBg = RGB(0xFF, 0xFF, 0xFF);
-constexpr COLORREF kTabActiveInk = RGB(0x2B, 0x2D, 0x31);
-constexpr COLORREF kTabInk = RGB(0xE6, 0xEA, 0xFF);
+constexpr int kEdgeInset = 10;        // Sidebar content inset.
+constexpr int kNavRowTop = 8;         // SidebarHeaderView.defaultSidebarButtonTopOffset
+constexpr int kNavButton = 24;        // Every header button is 24x24.
+constexpr int kNavRowRightInset = 9;  // stackView right inset.
+constexpr int kSpacesStripTop = 40;   // navRow.bottom + 8
+constexpr int kSpacesStripHeight = 32;  // SpacesStripView.sidebarHeight
+constexpr int kSpaceChipHeight = 24;  // 4pt above and below inside the strip.
+constexpr int kAddressBarTop = 84;    // spacesStrip.bottom + 12
+constexpr int kAddressBarHeight = 32;
+constexpr int kHeaderHeight = 120;    // 80 base + 32 strip + 8 gap
+constexpr int kHeaderSpacer = 5;
+constexpr int kFavoritesSpacer = 3;
+constexpr int kTabRowHeight = 36;     // TabGroupCellView.memberRowHeight
+constexpr int kBottomBarHeight = 24;  // SidebarBottomBarState.singleRowHeight
+constexpr int kBottomSpacer = 8;
+constexpr int kCornerRadius = 8;
+// The web content is an inset rounded card floating on the tint, not a flush
+// pane — the single most recognisable thing about Phi's window.
+constexpr int kContentMargin = 8;
+constexpr int kContentRadius = 10;
+constexpr int kFaviconSize = 16;
+constexpr int kNewTabRowHeight = 32;
 
 // Bands used by the two layouts that put navigation above the web content.
-constexpr int kTopBarHeight = 44;      // Balanced / Comfortable toolbar row.
-constexpr int kHTabStripHeight = 34;   // Comfortable horizontal tab strip.
-constexpr int kSpacesRowHeight = 34;   // Comfortable Spaces row.
+constexpr int kTopBarHeight = 44;
+constexpr int kHTabStripHeight = 34;
 constexpr int kHTabWidth = 168;
 constexpr int kHTabGap = 4;
-constexpr int kNavButtonSize = 36;
-constexpr int kLayoutButtonHeight = 34;
+constexpr int kSpaceChipW = 64;
+constexpr int kSpaceChipGap = 6;
+constexpr int kCloseBoxSize = 16;
+constexpr int kTabRowGap = 0;
+
+// --- Palette (light) ---------------------------------------------------------
+// From Assets.xcassets/ColorSet: primary-label 85% black, common-border 8%
+// black, sidebar-tab-selected white. The sidebar ground stands in for the Mac's
+// material + per-Space gradient tint, which GDI cannot reproduce.
+// The window ground is the SPACE'S COLOUR — a vertical gradient, as in the Mac
+// screenshots. This is the default (mint) Space tint; per-Space colours arrive
+// with the Space model.
+constexpr COLORREF kTintTop = RGB(0xC9, 0xE7, 0xE3);
+constexpr COLORREF kTintBottom = RGB(0xA4, 0xD9, 0xD4);
+constexpr COLORREF kRowSelectedBg = RGB(0xFF, 0xFF, 0xFF);
+constexpr COLORREF kLabel = RGB(0x26, 0x26, 0x26);
+constexpr COLORREF kLabelDim = RGB(0x8A, 0x8A, 0x8E);
+constexpr COLORREF kBorder = RGB(0xE2, 0xE2, 0xE4);
+constexpr COLORREF kFieldBg = RGB(0xFF, 0xFF, 0xFF);
 
 // The stock EDIT window proc, saved when the first address field is
 // subclassed. One per process — every EDIT shares the class proc.
@@ -167,115 +171,133 @@ PhiWindowController::Layout PhiWindowController::ComputeLayout() {
   const int w = out.client.right;
   const int h = out.client.bottom;
   const int sidebar = Scaled(kSidebarWidth);
-  const int inset = Scaled(kTabsInset);
-  const int chip_h = Scaled(kSpaceChipH);
-  const int nav = Scaled(kNavButtonSize);
-  const int top_bar = Scaled(kTopBarHeight);
-  const int strip = Scaled(kHTabStripHeight);
-  const int spaces_row = Scaled(kSpacesRowHeight);
-  const int pill_h = Scaled(kLayoutButtonHeight);
+  const int inset = Scaled(kEdgeInset);
+  const int btn = Scaled(kNavButton);
 
-  if (layout_mode_ == PhiLayoutMode::kPerformance) {
-    // Everything in the sidebar. These are the ORIGINAL constants and must stay
-    // put: the pixel suites mirror them.
-    out.sidebar = {0, 0, sidebar, h};
-    out.content = {sidebar, 0, w, h};
-    out.url_field = Scaled(kUrlField);
-    out.back = Scaled(kBackButton);
-    out.forward = Scaled(kForwardButton);
-    out.reload = Scaled(kReloadButton);
-    out.new_window = Scaled(kNewWindowButton);
-    // Tucked into the empty header band above the URL field, clear of every
-    // region the pixel suites scan.
-    out.layout_button = {inset + Scaled(4), Scaled(100), sidebar - inset - Scaled(4),
-                         Scaled(100) + pill_h};
-    out.chips_left = inset;
-    out.chips_top = Scaled(kSpacesTop);
-    out.chips_limit = sidebar - inset;
-    out.add_space = {inset, out.chips_top + chip_h + Scaled(6),
-                     inset + Scaled(100), out.chips_top + chip_h + Scaled(34)};
-    out.add_profile_space = {inset + Scaled(106), out.chips_top + chip_h + Scaled(6),
-                             sidebar - inset,
-                             out.chips_top + chip_h + Scaled(34)};
+  // The nav row, laid out inside `band` (the sidebar in the vertical layouts,
+  // the top bar in Comfortable): two leading buttons, then the back / forward /
+  // reload group trailing — SidebarHeaderView's arrangement.
+  auto place_nav_row = [&](int left, int right, int top) {
+    int x = left + inset;
+    out.sidebar_toggle = {x, top, x + btn, top + btn};
+    x += btn + Scaled(4);
+    out.search_tabs = {x, top, x + btn, top + btn};
+    int r = right - Scaled(kNavRowRightInset);
+    out.reload = {r - btn, top, r, top + btn};
+    r -= btn + Scaled(4);
+    out.forward = {r - btn, top, r, top + btn};
+    r -= btn + Scaled(4);
+    out.back = {r - btn, top, r, top + btn};
+  };
+
+  // The Spaces strip and its two trailing "+" chips (same profile / new
+  // profile). The Mac opens a Create-Space panel from one "+"; until that panel
+  // exists both destinations stay directly reachable.
+  auto place_spaces = [&](int left, int right, int top) {
+    out.spaces_strip = {left, top, right, top + Scaled(kSpacesStripHeight)};
+    const int chip_top = top + Scaled((kSpacesStripHeight - kSpaceChipHeight) / 2);
+    out.chips_left = left + inset;
+    out.chips_top = chip_top;
+    const int add_w = Scaled(kSpaceChipHeight);
+    out.add_profile_space = {right - inset - add_w, chip_top, right - inset,
+                             chip_top + Scaled(kSpaceChipHeight)};
+    out.add_space = {out.add_profile_space.left - Scaled(4) - add_w, chip_top,
+                     out.add_profile_space.left - Scaled(4),
+                     chip_top + Scaled(kSpaceChipHeight)};
+    out.chips_limit = out.add_space.left - Scaled(4);
+  };
+
+  // The bottom bar: chat / downloads / memory leading (placeholders, as on Mac
+  // but not yet wired), settings trailing.
+  auto place_bottom_bar = [&](int left, int right) {
+    const int bar_h = Scaled(kBottomBarHeight);
+    const int top = h - Scaled(kBottomSpacer) - bar_h;
+    out.bottom_bar = {left, top, right, top + bar_h};
+    int x = left + inset;
+    out.chat = {x, top, x + btn, top + bar_h};
+    x += btn + Scaled(6);
+    out.downloads = {x, top, x + btn, top + bar_h};
+    x += btn + Scaled(6);
+    out.memory = {x, top, x + btn, top + bar_h};
+    out.settings = {right - inset - btn, top, right - inset, top + bar_h};
+  };
+
+  if (layout_mode_ == PhiLayoutMode::kComfortable) {
+    // Horizontal tabs on top, then the nav row; no sidebar, so the Spaces strip
+    // and the bottom bar's buttons ride along the toolbar row.
+    const int strip = Scaled(kHTabStripHeight);
+    const int bar = Scaled(kTopBarHeight);
+    out.top_bar = {0, 0, w, strip + bar};
+    const int m = Scaled(kContentMargin);
+    out.content = {m, strip + bar, w - m, h - m};
     out.tabs_left = inset;
-    out.tabs_top = Scaled(kTabsTop);
-    out.tabs_limit = h;
+    out.tabs_top = Scaled(2);
+    out.tabs_limit = w - inset;
+    out.horizontal_tabs = true;
+
+    const int row_top = strip + (bar - btn) / 2;
+    place_nav_row(0, w, row_top);
+    // Address bar between the leading buttons and the trailing nav group.
+    const int url_left = out.search_tabs.right + Scaled(8);
+    const int url_right = out.back.left - Scaled(8);
+    out.url_field = {url_left, row_top, (url_right > url_left + Scaled(80))
+                                            ? url_right
+                                            : url_left + Scaled(80),
+                     row_top + btn};
+    // No room for a Spaces strip in one row: chips follow the tab strip.
+    place_spaces(0, w, 0);
+    out.spaces_strip = {};
+    out.chips_top = -Scaled(1000);  // Off-screen; Comfortable hides the strip.
+    out.chips_limit = 0;
+    out.add_space = {};
+    out.add_profile_space = {};
+    place_bottom_bar(0, w);
+    out.bottom_bar = {};
+    out.chat = out.downloads = out.memory = {};
+    out.settings = {w - inset - btn, Scaled(4), w - inset, Scaled(4) + btn};
     return out;
   }
+
+  // Vertical layouts: the Mac sidebar stack, top to bottom.
+  out.sidebar = {0, 0, sidebar, h};
+  place_nav_row(0, sidebar, Scaled(kNavRowTop));
+  place_spaces(0, sidebar, Scaled(kSpacesStripTop));
 
   if (layout_mode_ == PhiLayoutMode::kBalanced) {
-    // Vertical tabs stay in the sidebar; navigation moves to a band across the
-    // top of the web content, so the sidebar's own rows shift up to fill the
-    // space the toolbar used to occupy.
-    out.sidebar = {0, 0, sidebar, h};
-    out.top_bar = {sidebar, 0, w, top_bar};
-    out.content = {sidebar, top_bar, w, h};
-
-    const int bar_y = (top_bar - nav) / 2;
-    int x = sidebar + Scaled(8);
-    out.back = {x, bar_y, x + nav, bar_y + nav};
-    x += nav + Scaled(4);
-    out.forward = {x, bar_y, x + nav, bar_y + nav};
-    x += nav + Scaled(4);
-    out.reload = {x, bar_y, x + nav, bar_y + nav};
-    x += nav + Scaled(8);
-    out.url_field = {x, bar_y, (w - Scaled(8) > x) ? (w - Scaled(8)) : (x + 1),
-                     bar_y + nav};
-
-    out.layout_button = {inset + Scaled(4), Scaled(20), sidebar - inset - Scaled(4),
-                         Scaled(20) + pill_h};
-    out.new_window = {inset + Scaled(4), Scaled(64), sidebar - inset - Scaled(4),
-                      Scaled(108)};
-    out.chips_left = inset;
-    out.chips_top = Scaled(120);
-    out.chips_limit = sidebar - inset;
-    out.add_space = {inset, Scaled(158), inset + Scaled(100), Scaled(186)};
-    out.add_profile_space = {inset + Scaled(106), Scaled(158), sidebar - inset,
-                             Scaled(186)};
-    out.tabs_left = inset;
-    out.tabs_top = Scaled(198);
-    out.tabs_limit = h;
-    return out;
+    // The address bar moves out of the sidebar and across the content's top.
+    const int bar = Scaled(kTopBarHeight);
+    out.top_bar = {sidebar, 0, w, bar};
+    const int m = Scaled(kContentMargin);
+    out.content = {sidebar + m, bar, w - m, h - m};
+    const int row_top = (bar - btn) / 2;
+    int r = w - Scaled(kNavRowRightInset);
+    out.reload = {r - btn, row_top, r, row_top + btn};
+    r -= btn + Scaled(4);
+    out.forward = {r - btn, row_top, r, row_top + btn};
+    r -= btn + Scaled(4);
+    out.back = {r - btn, row_top, r, row_top + btn};
+    out.url_field = {sidebar + Scaled(8), row_top, out.back.left - Scaled(8),
+                     row_top + btn};
+    // Header ends after the Spaces strip; the tab list starts higher.
+    out.tabs_top = out.spaces_strip.bottom + Scaled(kHeaderSpacer +
+                                                    kFavoritesSpacer);
+  } else {
+    const int m = Scaled(kContentMargin);
+    out.content = {sidebar + m, m, w - m, h - m};
+    out.url_field = {inset, Scaled(kAddressBarTop), sidebar - inset,
+                     Scaled(kAddressBarTop + kAddressBarHeight)};
+    out.tabs_top = Scaled(kHeaderHeight + kHeaderSpacer + kFavoritesSpacer);
   }
 
-  // Comfortable: the traditional stack — horizontal tabs, then the toolbar,
-  // then the Spaces row — with no sidebar at all and the content full width.
-  const int spaces_top = strip + top_bar;
-  out.top_bar = {0, 0, w, spaces_top + spaces_row};
-  out.content = {0, spaces_top + spaces_row, w, h};
-
+  // The pinned-tab band sits between the header and the tab list. Empty until
+  // favourites exist, exactly as on Mac (which mounts a zero-height container).
+  out.favorites = {inset, out.tabs_top, sidebar - inset, out.tabs_top};
+  out.new_tab_row = {inset, out.tabs_top, sidebar - inset,
+                     out.tabs_top + Scaled(kNewTabRowHeight)};
+  out.tabs_top = out.new_tab_row.bottom + Scaled(2);
+  place_bottom_bar(0, sidebar);
   out.tabs_left = inset;
-  out.tabs_top = Scaled(2);
-  out.tabs_limit = w - inset;
-  out.horizontal_tabs = true;
-
-  const int bar_y = strip + (top_bar - nav) / 2;
-  int x = inset;
-  out.back = {x, bar_y, x + nav, bar_y + nav};
-  x += nav + Scaled(4);
-  out.forward = {x, bar_y, x + nav, bar_y + nav};
-  x += nav + Scaled(4);
-  out.reload = {x, bar_y, x + nav, bar_y + nav};
-  x += nav + Scaled(8);
-  const int right_group = Scaled(150 + 8 + 130);  // Layout button + New Window.
-  const int url_right = (w - inset - right_group > x + Scaled(80))
-                            ? (w - inset - right_group)
-                            : (x + Scaled(80));
-  out.url_field = {x, bar_y, url_right, bar_y + nav};
-  out.layout_button = {url_right + Scaled(8), bar_y, url_right + Scaled(158),
-                       bar_y + pill_h};
-  out.new_window = {url_right + Scaled(166), bar_y, url_right + Scaled(296),
-                    bar_y + pill_h};
-
-  out.chips_left = inset;
-  out.chips_top = spaces_top + Scaled(1);
-  out.chips_limit = (w - inset - Scaled(212) > inset)
-                        ? (w - inset - Scaled(212))
-                        : inset;
-  out.add_space = {out.chips_limit + Scaled(6), spaces_top + Scaled(3),
-                   out.chips_limit + Scaled(106), spaces_top + Scaled(31)};
-  out.add_profile_space = {out.chips_limit + Scaled(112), spaces_top + Scaled(3),
-                           out.chips_limit + Scaled(212), spaces_top + Scaled(31)};
+  out.tabs_limit = out.bottom_bar.top - Scaled(kFavoritesSpacer);
   return out;
 }
 
@@ -541,6 +563,14 @@ void PhiWindowController::LayoutContents() {
     ::SetWindowPos(browser_hwnd_, nullptr, layout.content.left,
                    layout.content.top, w > 0 ? w : 0, h > 0 ? h : 0,
                    SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    // Rounded corners on the content itself, so the page reads as a card
+    // floating on the Space tint. A window region clips the child for real —
+    // there is no other way to round a window we do not paint.
+    if (w > 0 && h > 0) {
+      const int radius = Scaled(kContentRadius) * 2;
+      HRGN rgn = ::CreateRoundRectRgn(0, 0, w + 1, h + 1, radius, radius);
+      ::SetWindowRgn(browser_hwnd_, rgn, TRUE);  // Window owns `rgn` now.
+    }
   }
 }
 
@@ -719,7 +749,6 @@ void PhiWindowController::RebuildNavState() {
 void PhiWindowController::RebuildChips() {
   chips_.clear();
   const Layout layout = ComputeLayout();
-  layout_button_ = layout.layout_button;
   add_space_button_ = layout.add_space;
   add_profile_space_button_ = layout.add_profile_space;
   if (!host_) {
@@ -748,7 +777,7 @@ void PhiWindowController::RebuildChips() {
     chip.label = L"S" + base::UTF8ToWide(*id);
     chip.open = HasSpace(*id);
     chip.bounds = {x, layout.chips_top, x + Scaled(kSpaceChipW),
-                   layout.chips_top + Scaled(kSpaceChipH)};
+                   layout.chips_top + Scaled(kSpaceChipHeight)};
     chips_.push_back(std::move(chip));
     x += Scaled(kSpaceChipW + kSpaceChipGap);
   }
@@ -792,7 +821,7 @@ void PhiWindowController::RebuildTabs() {
             break;
           }
           row.bounds = {layout.tabs_left, y,
-                        Scaled(kSidebarWidth - kTabsInset),
+                        Scaled(kSidebarWidth - kEdgeInset),
                         y + Scaled(kTabRowHeight)};
           y += Scaled(kTabRowHeight + kTabRowGap);
         }
@@ -816,7 +845,7 @@ void PhiWindowController::OnChromeClick(int x, int y) {
   }
   const Layout layout = ComputeLayout();
   POINT pt = {x, y};
-  if (host_ && ::PtInRect(&layout.layout_button, pt)) {
+  if (host_ && ::PtInRect(&layout.settings, pt)) {
     // Cycles Performance -> Balanced -> Comfortable. The host applies it to
     // every slot, so two windows never disagree about the layout.
     PhiLayoutMode next = PhiLayoutMode::kPerformance;
@@ -843,10 +872,13 @@ void PhiWindowController::OnChromeClick(int x, int y) {
     RefreshTabs();
     return;
   }
-  if (::PtInRect(&layout.new_window, pt)) {
-    if (framework_) {
-      framework_->NewWindow(window_id_);
-    }
+  if (framework_ && ::PtInRect(&layout.new_tab_row, pt)) {
+    framework_->NewTab(active_browser_ ? active_browser_ : window_id_, "");
+    RefreshTabs();
+    return;
+  }
+  if (framework_ && ::PtInRect(&layout.sidebar_toggle, pt)) {
+    framework_->NewWindow(window_id_);  // Stands in until the toggle lands.
     return;
   }
   RebuildTabs();  // Chips and rows may be stale if no paint has run yet.
@@ -890,57 +922,94 @@ void PhiWindowController::OnChromeClick(int x, int y) {
   }
 }
 
+namespace {
+
+// A filled rounded rect, the Mac client's selection/field shape.
+void FillRounded(HDC dc, const RECT& r, COLORREF fill, int radius) {
+  if (r.right <= r.left || r.bottom <= r.top) {
+    return;
+  }
+  HBRUSH brush = ::CreateSolidBrush(fill);
+  HGDIOBJ old_brush = ::SelectObject(dc, brush);
+  HGDIOBJ old_pen = ::SelectObject(dc, ::GetStockObject(NULL_PEN));
+  ::RoundRect(dc, r.left, r.top, r.right + 1, r.bottom + 1, radius, radius);
+  ::SelectObject(dc, old_pen);
+  ::SelectObject(dc, old_brush);
+  ::DeleteObject(brush);
+}
+
+// A rounded rect with a hairline border — the address field.
+void StrokeRounded(HDC dc, const RECT& r, COLORREF fill, COLORREF border,
+                   int radius) {
+  if (r.right <= r.left || r.bottom <= r.top) {
+    return;
+  }
+  HBRUSH brush = ::CreateSolidBrush(fill);
+  HPEN pen = ::CreatePen(PS_SOLID, 1, border);
+  HGDIOBJ old_brush = ::SelectObject(dc, brush);
+  HGDIOBJ old_pen = ::SelectObject(dc, pen);
+  ::RoundRect(dc, r.left, r.top, r.right, r.bottom, radius, radius);
+  ::SelectObject(dc, old_pen);
+  ::SelectObject(dc, old_brush);
+  ::DeleteObject(pen);
+  ::DeleteObject(brush);
+}
+
+void DrawGlyph(HDC dc, const RECT& r, const wchar_t* glyph, COLORREF ink) {
+  if (r.right <= r.left) {
+    return;
+  }
+  ::SetTextColor(dc, ink);
+  ::DrawTextW(dc, glyph, -1, const_cast<RECT*>(&r),
+              DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+}
+
+}  // namespace
+
 void PhiWindowController::PaintChrome(HDC dc,
                                      const Layout& layout,
                                      bool include_child_controls) {
   // Paint only the bands we own. Whatever is left is the content region, and
-  // the reparented browser child covers it.
-  HBRUSH band = ::CreateSolidBrush(kBandColor);
-  if (layout.sidebar.right > layout.sidebar.left) {
-    ::FillRect(dc, &layout.sidebar, band);
+  // the reparented browser child covers it. No seam along the content edge:
+  // the chrome runs straight into the page.
+  // The Space tint, painted over the WHOLE client area: the content card is
+  // inset, so the ground shows around it on every side. Banded by hand rather
+  // than GradientFill, which lives in msimg32 and is not linked here.
+  ::ExcludeClipRect(dc, layout.content.left, layout.content.top,
+                    layout.content.right, layout.content.bottom);
+  const int height = layout.client.bottom > 0 ? layout.client.bottom : 1;
+  const int bands = 48;
+  for (int i = 0; i < bands; ++i) {
+    RECT band = {0, height * i / bands, layout.client.right,
+                 height * (i + 1) / bands};
+    const int r = GetRValue(kTintTop) +
+                  (GetRValue(kTintBottom) - GetRValue(kTintTop)) * i / bands;
+    const int g = GetGValue(kTintTop) +
+                  (GetGValue(kTintBottom) - GetGValue(kTintTop)) * i / bands;
+    const int b = GetBValue(kTintTop) +
+                  (GetBValue(kTintBottom) - GetBValue(kTintTop)) * i / bands;
+    HBRUSH brush = ::CreateSolidBrush(RGB(r, g, b));
+    ::FillRect(dc, &band, brush);
+    ::DeleteObject(brush);
   }
-  if (layout.top_bar.right > layout.top_bar.left) {
-    ::FillRect(dc, &layout.top_bar, band);
-  }
-  ::DeleteObject(band);
 
-  HBRUSH accent = ::CreateSolidBrush(kAccentColor);
-  if (layout.sidebar.right > layout.sidebar.left) {
-    RECT stripe = {layout.sidebar.right - 3, layout.sidebar.top,
-                   layout.sidebar.right, layout.sidebar.bottom};
-    ::FillRect(dc, &stripe, accent);
-  }
-  if (layout.top_bar.bottom > layout.top_bar.top) {
-    RECT edge = {layout.top_bar.left, layout.top_bar.bottom - 3,
-                 layout.top_bar.right, layout.top_bar.bottom};
-    ::FillRect(dc, &edge, accent);
-  }
-  ::DeleteObject(accent);
+  ::SelectClipRgn(dc, nullptr);
 
   ::SetBkMode(dc, TRANSPARENT);
-  // Labels must scale with the boxes drawn for them; the DC's stock font is a
-  // fixed-size bitmap font that would look tiny at 200%.
   HGDIOBJ previous_font = ui_font_ ? ::SelectObject(dc, ui_font_) : nullptr;
-  if (layout.mode != PhiLayoutMode::kComfortable) {
-    // The sidebar header. Comfortable has no sidebar to put it in.
-    std::wstring text =
-        L"Phi  ·  window " + base::UTF8ToWide(std::to_string(window_id_));
-    ::SetTextColor(dc, kInkColor);
-    RECT text_rc = {Scaled(16), Scaled(20), Scaled(kSidebarWidth - 12),
-                    Scaled((layout.mode == PhiLayoutMode::kPerformance) ? 96
-                                                                        : 18)};
-    if (text_rc.bottom > text_rc.top) {
-      ::DrawTextW(dc, text.c_str(), -1, &text_rc,
-                  DT_LEFT | DT_TOP | DT_WORDBREAK);
-    }
-  }
 
-  // URL field: the box behind the editable EDIT child. The child draws the
-  // text on screen; on the capture path (no children rendered) we draw it here
-  // so a screenshot still shows the address.
-  HBRUSH url_bg = ::CreateSolidBrush(kUrlFieldBg);
-  ::FillRect(dc, &layout.url_field, url_bg);
-  ::DeleteObject(url_bg);
+  // Nav row. Glyphs stand in for the Mac's SF Symbols.
+  DrawGlyph(dc, layout.sidebar_toggle, L"\u25A3", kLabel);   // sidebar toggle
+  DrawGlyph(dc, layout.search_tabs, L"\u2315", kLabel);      // search tabs
+  DrawGlyph(dc, layout.back, L"\u2039", can_go_back_ ? kLabel : kLabelDim);
+  DrawGlyph(dc, layout.forward, L"\u203A",
+            can_go_forward_ ? kLabel : kLabelDim);
+  DrawGlyph(dc, layout.reload, nav_loading_ ? L"\u00D7" : L"\u21BB", kLabel);
+
+  // Address field: a white rounded box with a hairline border. The EDIT child
+  // draws the text on screen; on the capture path (no children rendered) we
+  // draw it here so a screenshot still shows the address.
+  StrokeRounded(dc, layout.url_field, kFieldBg, kBorder, Scaled(kCornerRadius));
   if (include_child_controls) {
     std::wstring shown = nav_url_;
     if (url_field_) {
@@ -951,80 +1020,67 @@ void PhiWindowController::PaintChrome(HDC dc,
       }
       shown.assign(buffer.data());  // What the user actually sees, mid-edit.
     }
-    ::SetTextColor(dc, kUrlInk);
+    ::SetTextColor(dc, kLabel);
     RECT url_rc = layout.url_field;
-    url_rc.left += Scaled(8);
-    url_rc.right -= Scaled(8);
-    ::DrawTextW(dc, shown.empty() ? L"(no page)" : shown.c_str(), -1, &url_rc,
+    url_rc.left += Scaled(10);
+    url_rc.right -= Scaled(10);
+    ::DrawTextW(dc, shown.empty() ? L"Search or enter address" : shown.c_str(),
+                -1, &url_rc,
                 DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_PATH_ELLIPSIS);
   }
 
-  // Back / forward / reload, greyed when unavailable.
-  auto draw_button = [&](RECT rect, const wchar_t* glyph, bool enabled) {
-    ::SetTextColor(dc, enabled ? kBtnEnabled : kBtnDisabled);
-    ::DrawTextW(dc, glyph, -1, &rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-  };
-  draw_button(layout.back, L"<", can_go_back_);
-  draw_button(layout.forward, L">", can_go_forward_);
-  draw_button(layout.reload, nav_loading_ ? L"x" : L"R", true);
-
-  auto draw_pill = [&](RECT r, const wchar_t* text) {
-    if (r.right <= r.left) {
-      return;
-    }
-    HBRUSH b = ::CreateSolidBrush(kButtonColor);
-    ::FillRect(dc, &r, b);
-    ::DeleteObject(b);
-    ::SetTextColor(dc, kButtonInk);
-    ::DrawTextW(dc, text, -1, &r, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-  };
-
-  // "+ New Window" — a click spawns a second shell window via the framework.
-  draw_pill(layout.new_window, L"+  New Window");
-  // The layout switch, showing what a click would give you next.
-  const wchar_t* layout_label = L"Layout: Performance";
-  if (layout.mode == PhiLayoutMode::kBalanced) {
-    layout_label = L"Layout: Balanced";
-  } else if (layout.mode == PhiLayoutMode::kComfortable) {
-    layout_label = L"Layout: Comfortable";
-  }
-  draw_pill(layout.layout_button, layout_label);
-
-  // Space chips: EVERY Space (not only those open here) so any can be entered.
+  // Space chips, then the two "+" chips that create one.
   for (const SpaceChip& chip : chips_) {
     const bool active = (chip.id == active_space_);
     if (active) {
-      HBRUSH b = ::CreateSolidBrush(kSpaceActiveBg);
-      ::FillRect(dc, &chip.bounds, b);
-      ::DeleteObject(b);
+      FillRounded(dc, chip.bounds, kRowSelectedBg, Scaled(kCornerRadius));
     }
-    ::SetTextColor(dc, active ? kSpaceActiveInk : kSpaceInk);
+    ::SetTextColor(dc, active ? kLabel : kLabelDim);
     ::DrawTextW(dc, chip.label.c_str(), -1, const_cast<RECT*>(&chip.bounds),
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE);
   }
-  // Create-Space buttons: same profile as the current Space, or a new profile.
-  draw_pill(layout.add_space, L"+ Space");
-  draw_pill(layout.add_profile_space, L"+ Space & profile");
+  DrawGlyph(dc, layout.add_space, L"+", kLabelDim);
+  DrawGlyph(dc, layout.add_profile_space, L"\u29C9", kLabelDim);
 
-  // Tab rows (a vertical list, or cells along the strip in Comfortable),
-  // driven by live framework state: the active tab gets a white chip, each row
-  // a close box.
+  // Tab rows: the active one gets the white rounded chip, each row a close box.
   for (const TabRow& row : tabs_) {
     if (row.active) {
-      HBRUSH chip = ::CreateSolidBrush(kTabActiveBg);
-      ::FillRect(dc, &row.bounds, chip);
-      ::DeleteObject(chip);
+      FillRounded(dc, row.bounds, kRowSelectedBg, Scaled(kCornerRadius));
     }
-    ::SetTextColor(dc, row.active ? kTabActiveInk : kTabInk);
+    // Favicon slot. A neutral square until favicons are plumbed through —
+    // the row reads like the Mac one either way.
+    RECT favicon = {row.bounds.left + Scaled(10), 0,
+                    row.bounds.left + Scaled(10) + Scaled(kFaviconSize), 0};
+    const int mid = (row.bounds.top + row.bounds.bottom) / 2;
+    favicon.top = mid - Scaled(kFaviconSize) / 2;
+    favicon.bottom = favicon.top + Scaled(kFaviconSize);
+    FillRounded(dc, favicon, kBorder, Scaled(4));
+
+    ::SetTextColor(dc, row.active ? kLabel : kLabelDim);
     RECT title_rc = row.bounds;
-    title_rc.left += Scaled(8);
+    title_rc.left = favicon.right + Scaled(8);
     title_rc.right = row.close_box.left - Scaled(4);
     ::DrawTextW(dc, row.title.c_str(), -1, &title_rc,
                 DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-    // Close affordance: a small x.
-    ::DrawTextW(dc, L"x", -1, const_cast<RECT*>(&row.close_box),
-                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    DrawGlyph(dc, row.close_box, L"\u00D7", kLabelDim);
   }
+
+  // "+ New Tab", the row that heads the Mac sidebar's tab list.
+  if (layout.new_tab_row.right > layout.new_tab_row.left) {
+    RECT row = layout.new_tab_row;
+    row.left += Scaled(10);
+    ::SetTextColor(dc, kLabelDim);
+    ::DrawTextW(dc, L"+   New Tab", -1, &row,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+  }
+
+  // Bottom bar. Chat / downloads / memory are PLACEHOLDERS — drawn so the
+  // window reads like the Mac one, wired to nothing yet.
+  DrawGlyph(dc, layout.chat, L"\u25CB", kLabelDim);
+  DrawGlyph(dc, layout.downloads, L"\u2913", kLabelDim);
+  DrawGlyph(dc, layout.memory, L"\u25C7", kLabelDim);
+  DrawGlyph(dc, layout.settings, L"\u2699", kLabelDim);
+
   if (previous_font) {
     ::SelectObject(dc, previous_font);
   }
