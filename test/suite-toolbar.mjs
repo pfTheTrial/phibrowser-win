@@ -6,19 +6,20 @@ import { test, run, assert, assertEq, sleep, openControl } from './phi-test.mjs'
 // Mirrors phi_window_controller.cc, in DESIGN UNITS (pixels at 100%). The
 // client lays out in PHYSICAL pixels and uicap captures in the same space, so
 // every constant here goes through scale() first.
-const BTN_TOP_D = 240, URL_TOP_D = 146, URL_BOTTOM_D = 182
+// The address field's rect comes FROM THE CLIENT (agentSpace.window.layout),
+// not mirrored here: hand-copied constants drift the moment the chrome moves.
 let DPI = 96
 const scale = (design) => Math.round((design * DPI) / 96)
-let BTN_TOP = BTN_TOP_D, URL_TOP = URL_TOP_D, URL_BOTTOM = URL_BOTTOM_D
-function useDpi(dpi) {
-  DPI = dpi
-  BTN_TOP = scale(BTN_TOP_D)
-  URL_TOP = scale(URL_TOP_D)
-  URL_BOTTOM = scale(URL_BOTTOM_D)
+let URL = { x: 0, y: 0, width: 0, height: 0 }
+function useLayout(l) {
+  DPI = l.dpi
+  URL = l.urlField
 }
 
 function samplePixels(points) {
-  const arg = points.map(([x, y]) => `${x},${y}`).join(';')
+  // PrintWindow(PW_CLIENTONLY) renders from the WINDOW origin, so a client
+  // coordinate lands `frame` further in. The client publishes the insets.
+  const arg = points.map(([x, y]) => `${x + FRAME.x},${y + FRAME.y}`).join(';')
   const ps = [
     `[Environment]::SetEnvironmentVariable('PHI_UICAP_POINTS','${arg}','User')`,
     `[Environment]::SetEnvironmentVariable('PHI_UICAP_HWND','${captureHwnd || 0}','User')`,
@@ -46,35 +47,23 @@ function samplePixels(points) {
 // The HWND of the slot under test; pixel captures target exactly this window
 // (creating a profile can open extra shell windows).
 let captureHwnd = 0
+let FRAME = { x: 0, y: 0 }
 export function setCaptureWindow(h) { captureHwnd = h }
 
 const isLight = (s) => { const [r, g, b] = s.split(',').map(Number); return r > 200 && g > 200 && b > 200 }
 const isDim   = (s) => { const [r, g, b] = s.split(',').map(Number); return b > 200 && r < 200 }
 
-/** Calibrates the frame offset from the New Window button's white block. */
-function frameOffset() {
-  const ys = []
-  for (let y = BTN_TOP - scale(60); y < BTN_TOP + scale(120); y += 2) ys.push(y)
-  const px = samplePixels(ys.map((y) => [scale(200), y]))
-  // The New Window button is the widest light run in this range.
-  let start = -1, best = null
-  for (let i = 0; i < ys.length; i++) {
-    if (isLight(px[i])) { if (start < 0) start = ys[i] }
-    else if (start >= 0) {
-      const len = ys[i] - start
-      if (!best || len > best.len) best = { top: start, len }
-      start = -1
-    }
-  }
-  assert(best, 'located the New Window button')
-  return best.top - BTN_TOP
-}
+// uicap captures the client area in physical pixels, so client coordinates map
+// straight through — nothing to calibrate.
+function frameOffset() { return 0 }
 
 /** Light/dark pattern across the URL field's text line, one char per sample. */
 function urlSignature(offset) {
-  const y = Math.round((URL_TOP + URL_BOTTOM) / 2) + offset
+  const y = Math.round(URL.y + URL.height / 2) + offset
   const pts = []
-  for (let x = scale(24); x < scale(216); x += 3) pts.push([x, y])
+  for (let x = URL.x + scale(12); x < URL.x + URL.width - scale(12); x += 3) {
+    pts.push([x, y])
+  }
   return samplePixels(pts).map((p) => {
     const [r, g, b] = p.split(',').map(Number)
     return r < 150 && g < 150 && b < 150 ? '#' : '.'  // dark glyph on white
@@ -93,8 +82,15 @@ async function firstWindow(ctl) {
   // opens one when a profile is created).
   const h = await ctl.send('agentSpace.window.handle', { windowId: slot })
   setCaptureWindow(h.ok ? h.hwnd : 0)
+  // These assertions are about the SIDEBAR, so pin the layout: another suite
+  // (or a manual poke) may have left the client in Balanced or Comfortable,
+  // where the address bar and tab list live somewhere else entirely.
+  await ctl.send('agentSpace.layout.set', { mode: 'performance' })
+  await sleep(400)
   const l = await ctl.send('agentSpace.window.layout', { windowId: slot })
-  useDpi(l.ok ? l.dpi : 96)
+  assert(l.ok, 'window.layout ok')
+  useLayout(l)
+  FRAME = { x: l.frameLeft || 0, y: l.frameTop || 0 }
   return slot
 }
 

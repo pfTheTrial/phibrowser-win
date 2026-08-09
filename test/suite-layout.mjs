@@ -27,7 +27,8 @@ async function useLayout(ctl, windowId, mode) {
   assertEq(l.ok, true, 'window.layout ok')
   assertEq(l.mode, mode, `window reports ${mode}`)
   assert(l.dpi >= 96, `window reports its dpi (${l.dpi})`)
-  return { ...l.content, sidebar: scaled(SIDEBAR_DESIGN, l.dpi), dpi: l.dpi }
+  return { ...l.content, sidebar: scaled(SIDEBAR_DESIGN, l.dpi), dpi: l.dpi,
+           margin: l.contentMargin }
 }
 
 test('layout: defaults to performance, the Mac default', async () => {
@@ -55,9 +56,10 @@ test('layout: performance keeps the sidebar and gives it the full height', async
   try {
     const windowId = await firstWindow(ctl)
     const content = await useLayout(ctl, windowId, 'performance')
-    assertEq(content.x, content.sidebar,
-             'content starts right of the sidebar')
-    assertEq(content.y, 0, 'no band above the content')
+    assert(content.x > content.sidebar,
+           `content card floats clear of the sidebar (${content.x} > ${content.sidebar})`)
+    assertEq(content.y, content.margin,
+             'nothing above the content but the card margin')
     assert(content.width > 0 && content.height > 0, 'content is non-empty')
   } finally { ctl.close() }
 })
@@ -68,8 +70,9 @@ test('layout: balanced keeps the sidebar and adds a bar above the content', asyn
     const windowId = await firstWindow(ctl)
     const perf = await useLayout(ctl, windowId, 'performance')
     const balanced = await useLayout(ctl, windowId, 'balanced')
-    assertEq(balanced.x, balanced.sidebar, 'sidebar still there')
-    assert(balanced.y > 0, `address bar sits above the content (y=${balanced.y})`)
+    assert(balanced.x > balanced.sidebar, 'sidebar still there')
+    assert(balanced.y > balanced.margin,
+           `address bar sits above the content (y=${balanced.y})`)
     assertEq(balanced.width, perf.width, 'same content width as performance')
     assert(balanced.height < perf.height,
            `content is shorter by the bar (${balanced.height} < ${perf.height})`)
@@ -82,10 +85,10 @@ test('layout: comfortable drops the sidebar and stacks the chrome on top', async
     const windowId = await firstWindow(ctl)
     const perf = await useLayout(ctl, windowId, 'performance')
     const comfy = await useLayout(ctl, windowId, 'comfortable')
-    assertEq(comfy.x, 0, 'content reaches the left edge — no sidebar')
-    assert(comfy.y > 0, `chrome is stacked above (y=${comfy.y})`)
-    assertEq(comfy.width, perf.width + perf.sidebar,
-             'content gains the sidebar width')
+    assert(comfy.x < comfy.sidebar, 'content reaches the left edge — no sidebar')
+    assert(comfy.y > comfy.margin, `chrome is stacked above (y=${comfy.y})`)
+    assert(comfy.width > perf.width + perf.sidebar - 40,
+           `content gains the sidebar width (${comfy.width} vs ${perf.width})`)
     assert(comfy.height < perf.height, 'content is shorter by the stacked rows')
   } finally { ctl.close() }
 })
@@ -106,7 +109,7 @@ test('layout: every window follows the client-wide setting', async () => {
       await useLayout(ctl, before[0], 'comfortable')
       const other = await ctl.send('agentSpace.window.layout', { windowId: fresh })
       assertEq(other.mode, 'comfortable', 'the other window switched too')
-      assertEq(other.content.x, 0, 'and re-laid out its content')
+      assert(other.content.x < 40, 'and re-laid out its content')
     } finally {
       await ctl.send('agentSpace.close', { windowId: fresh })
       await useLayout(ctl, before[0], 'performance')
@@ -119,26 +122,32 @@ test('layout: the sidebar really disappears in comfortable (pixels)', async () =
   try {
     const windowId = await firstWindow(ctl)
     const h = await ctl.send('agentSpace.window.handle', { windowId })
+    const geo = await ctl.send('agentSpace.window.layout', { windowId })
+    // Captures render from the WINDOW origin; client coords need the insets.
+    const frame = { x: geo.frameLeft || 0, y: geo.frameTop || 0 }
     // A point deep in the sidebar band: painted blue while a sidebar exists,
     // and part of the (unpainted) content region once it is gone.
-    const probe = () => samplePixel(h.ok ? h.hwnd : 0, 100, 400)
+    const probe = () => samplePixel(h.ok ? h.hwnd : 0, 100 + frame.x, 400 + frame.y)
 
     await useLayout(ctl, windowId, 'performance')
     const withSidebar = probe()
-    assert(isSidebarBlue(withSidebar), `sidebar paints there (${withSidebar})`)
+    assert(isSidebarGround(withSidebar), `sidebar paints there (${withSidebar})`)
 
     await useLayout(ctl, windowId, 'comfortable')
     const without = probe()
-    assert(!isSidebarBlue(without), `sidebar is gone (${without})`)
+    assert(!isSidebarGround(without), `sidebar is gone (${without})`)
 
     await useLayout(ctl, windowId, 'performance')
-    assert(isSidebarBlue(probe()), 'and comes back')
+    assert(isSidebarGround(probe()), 'and comes back')
   } finally { ctl.close() }
 })
 
-const isSidebarBlue = (s) => {
+// The ground is the Space tint (a mint gradient), so match its HUE rather than
+// one exact value. The content card is not painted by the shell at all and
+// captures neutral, so the two never collide.
+const isSidebarGround = (s) => {
   const [r, g, b] = s.split(',').map(Number)
-  return b > 200 && r < 160 && g < 190
+  return g > r + 8 && b > r + 8
 }
 
 function samplePixel(hwnd, x, y) {

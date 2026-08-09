@@ -6,27 +6,31 @@ import { test, run, assert, assertEq, sleep, openControl } from './phi-test.mjs'
 // Mirrors phi_window_controller.cc, in DESIGN UNITS (pixels at 100%). The
 // client lays out in PHYSICAL pixels and uicap captures in the same space, so
 // every constant here goes through scale() first.
-const BTN_TOP_D = 240, TABS_TOP_D = 374, ROW_H_D = 30, ROW_GAP_D = 4
+// Sidebar stack (SidebarViewController): header 120 + spacer 5 + favourites
+// spacer 3 -> the tab list starts at 128, rows on the Mac's 32pt rhythm.
+const TABS_TOP_D = 128, ROW_H_D = 32, ROW_GAP_D = 0
 const SCAN_XS_D = [40, 90, 140, 190]
 let DPI = 96
 const scale = (design) => Math.round((design * DPI) / 96)
-let BTN_TOP = BTN_TOP_D, TABS_TOP = TABS_TOP_D, ROW_H = ROW_H_D, ROW_GAP = ROW_GAP_D
+let TABS_TOP = 0, ROW_H = 32, ROW_GAP = 0
 let SCAN_XS = SCAN_XS_D
 let SCAN_STEP = 3
-function useDpi(dpi) {
-  DPI = dpi
-  BTN_TOP = scale(BTN_TOP_D)
-  TABS_TOP = scale(TABS_TOP_D)
-  ROW_H = scale(ROW_H_D)
-  ROW_GAP = scale(ROW_GAP_D)
-  SCAN_XS = SCAN_XS_D.map(scale)
+function useLayout(l) {
+  DPI = l.dpi
+  TABS_TOP = l.tabsTop
+  ROW_H = l.rowHeight
+  ROW_GAP = 0
+  SCAN_XS = SCAN_XS_D.map((x) => scale(x))
   SCAN_STEP = Math.max(3, scale(3))
 }
+const scaleOne = (d) => scale(d)
 
 /** Samples pixels on the box via a scheduled task (only the interactive
  *  session can enumerate/capture desktop windows). [[x,y],…] -> ["r,g,b",…] */
 function samplePixels(points) {
-  const arg = points.map(([x, y]) => `${x},${y}`).join(';')
+  // PrintWindow(PW_CLIENTONLY) renders from the WINDOW origin, so a client
+  // coordinate lands `frame` further in. The client publishes the insets.
+  const arg = points.map(([x, y]) => `${x + FRAME.x},${y + FRAME.y}`).join(';')
   const ps = [
     `[Environment]::SetEnvironmentVariable('PHI_UICAP_POINTS','${arg}','User')`,
     `[Environment]::SetEnvironmentVariable('PHI_UICAP_HWND','${captureHwnd || 0}','User')`,
@@ -54,19 +58,21 @@ function samplePixels(points) {
 // The HWND of the slot under test; pixel captures target exactly this window
 // (creating a profile can open extra shell windows).
 let captureHwnd = 0
+let FRAME = { x: 0, y: 0 }
 export function setCaptureWindow(h) { captureHwnd = h }
 
-const isLight = (s) => { const [r, g, b] = s.split(',').map(Number); return r > 200 && g > 200 && b > 200 }
+// The sidebar ground is itself near-white (#F3F3F5), so "light" has to mean
+// the SELECTED row's pure-white chip, not merely pale.
+const isLight = (s) => { const [r, g, b] = s.split(',').map(Number); return r > 250 && g > 250 && b > 250 }
 
-// The capture includes the window frame (both axes), so absolute client coords
-// don't map directly. Approach: sample a GRID over the sidebar, classify each
-// scan line by majority across columns, calibrate the vertical offset from the
-// New Window button (the tallest light block), then decide each row slot by a
-// majority of its own lines. Text can darken individual samples but never a
+// uicap captures the CLIENT AREA in physical pixels, so these coordinates map
+// straight through — no frame calibration. Sample a GRID over the tab list and
+// classify each scan line by majority across columns, then decide each row slot
+// by a majority of its own lines: text darkens individual samples but never a
 // majority of a whole row.
 function gridScan() {
   const ys = []
-  for (let y = BTN_TOP - 8; y < TABS_TOP + 8 * (ROW_H + ROW_GAP); y += SCAN_STEP) {
+  for (let y = TABS_TOP - 8; y < TABS_TOP + 8 * (ROW_H + ROW_GAP); y += SCAN_STEP) {
     ys.push(y)
   }
   const pts = []
@@ -97,13 +103,11 @@ function lightRuns(scan) {
   return runs
 }
 
-/** Which row slots paint the active chip, plus the calibrated frame offset. */
+/** Which row slots paint the active chip. */
 function chipRows() {
   const scan = gridScan()
   const runs = lightRuns(scan)
-  assert(runs.length >= 1, `saw the New Window button (runs: ${JSON.stringify(runs)})`)
-  const button = runs.reduce((a, b) => (b.len > a.len ? b : a), runs[0])
-  const offset = button.top - BTN_TOP
+  const offset = 0
 
   const rows = []
   for (let i = 0; i < 8; i++) {
@@ -124,8 +128,15 @@ async function firstWindow(ctl) {
   // opens one when a profile is created).
   const h = await ctl.send('agentSpace.window.handle', { windowId: slot })
   setCaptureWindow(h.ok ? h.hwnd : 0)
+  // These assertions are about the SIDEBAR, so pin the layout: another suite
+  // (or a manual poke) may have left the client in Balanced or Comfortable,
+  // where the address bar and tab list live somewhere else entirely.
+  await ctl.send('agentSpace.layout.set', { mode: 'performance' })
+  await sleep(400)
   const l = await ctl.send('agentSpace.window.layout', { windowId: slot })
-  useDpi(l.ok ? l.dpi : 96)
+  assert(l.ok, 'window.layout ok')
+  useLayout(l)
+  FRAME = { x: l.frameLeft || 0, y: l.frameTop || 0 }
   return slot
 }
 
