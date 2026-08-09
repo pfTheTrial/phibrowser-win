@@ -232,6 +232,11 @@ class PhiWindowController {
   // for every label PaintChrome draws, so text and boxes scale together.
   HFONT ui_font_ = nullptr;
   UINT ui_font_dpi_ = 0;
+  // Space icons are emoji, which the UI font has no glyphs for; Segoe UI Emoji
+  // does. GDI renders it MONOCHROME — colour emoji need DirectWrite, which is
+  // a much larger change than the icons are worth right now.
+  HFONT emoji_font_ = nullptr;
+  UINT emoji_font_dpi_ = 0;
   UINT dpi_ = 96;
 
   // One rendered tab row: what to draw and what a click at that row does.
@@ -267,6 +272,7 @@ class PhiWindowController {
   struct SpaceChip {
     std::string id;
     std::wstring label;
+    std::wstring icon;  // The Space's emoji, empty when it has none.
     bool open = false;
     RECT bounds{};
   };

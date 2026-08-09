@@ -151,6 +151,26 @@ void PhiWindowController::EnsureFont() {
     ::DeleteObject(previous);  // Replaced only after nothing else refers to it.
   }
 
+  if (emoji_font_ && emoji_font_dpi_ == dpi_) {
+    return;
+  }
+  LOGFONTW emoji = metrics.lfMessageFont;
+  // The unsafe-libc-call gate rules out wcscpy_s; copy the face name directly.
+  const std::wstring emoji_face = L"Segoe UI Emoji";
+  std::fill(std::begin(emoji.lfFaceName), std::end(emoji.lfFaceName), L'\0');
+  std::copy_n(emoji_face.begin(),
+              std::min(emoji_face.size(), std::size(emoji.lfFaceName) - 1),
+              std::begin(emoji.lfFaceName));
+  emoji.lfHeight = -Scaled(14);
+  HFONT emoji_built = ::CreateFontIndirectW(&emoji);
+  if (emoji_built) {
+    HFONT previous_emoji = emoji_font_;
+    emoji_font_ = emoji_built;
+    emoji_font_dpi_ = dpi_;
+    if (previous_emoji) {
+      ::DeleteObject(previous_emoji);
+    }
+  }
 }
 
 PhiWindowController::Layout PhiWindowController::ComputeLayout() {
@@ -428,6 +448,9 @@ PhiWindowController::~PhiWindowController() {
   }
   if (ui_font_) {
     ::DeleteObject(ui_font_);
+  }
+  if (emoji_font_) {
+    ::DeleteObject(emoji_font_);
   }
   if (url_brush_) {
     ::DeleteObject(url_brush_);
@@ -808,6 +831,9 @@ void PhiWindowController::RebuildChips() {
     SpaceChip chip;
     chip.id = *id;
     chip.label = L"S" + base::UTF8ToWide(*id);
+    if (const std::string* icon_text = d.FindString("iconText")) {
+      chip.icon = base::UTF8ToWide(*icon_text);
+    }
     chip.open = HasSpace(*id);
     chip.bounds = {x, layout.chips_top, x + Scaled(kSpaceChipW),
                    layout.chips_top + Scaled(kSpaceChipHeight)};
@@ -1071,8 +1097,15 @@ void PhiWindowController::PaintChrome(HDC dc,
       FillRounded(dc, chip.bounds, kRowSelectedBg, Scaled(kCornerRadius));
     }
     ::SetTextColor(dc, active ? kLabel : kLabelDim);
-    ::DrawTextW(dc, chip.label.c_str(), -1, const_cast<RECT*>(&chip.bounds),
-                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    if (!chip.icon.empty() && emoji_font_) {
+      HGDIOBJ previous_emoji = ::SelectObject(dc, emoji_font_);
+      ::DrawTextW(dc, chip.icon.c_str(), -1, const_cast<RECT*>(&chip.bounds),
+                  DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+      ::SelectObject(dc, previous_emoji);
+    } else {
+      ::DrawTextW(dc, chip.label.c_str(), -1, const_cast<RECT*>(&chip.bounds),
+                  DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    }
   }
   DrawGlyph(dc, layout.add_space, L"+", kLabelDim);
   DrawGlyph(dc, layout.add_profile_space, L"\u29C9", kLabelDim);

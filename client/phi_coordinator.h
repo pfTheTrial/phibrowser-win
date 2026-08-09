@@ -18,6 +18,7 @@
 #include "base/memory/raw_ptr_exclusion.h"
 #include "chrome/browser/phinomenon/phi_framework/phi_framework_api.h"
 #include "phibrowser-win/client/phi_control_server.h"
+#include "phibrowser-win/client/phi_emoji.h"
 #include "phibrowser-win/client/phi_settings_window.h"
 #include "phibrowser-win/client/phi_theme.h"
 #include "phibrowser-win/client/phi_window_controller.h"
@@ -97,8 +98,11 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
     std::string id;
     std::string name;
     std::string profile_id;  // On-disk basename, e.g. "Default".
+    // Icon in the Mac's storage form ("emoji:<id>" / "phi:<id>"), so a Space
+    // means the same thing on both clients.
+    std::string icon = kPhiDefaultSpaceIcon;
   };
-  std::vector<Space> spaces_{{"1", "Space 1", "Default"}};
+  std::vector<Space> spaces_{{"1", "Space 1", "Default", kPhiDefaultSpaceIcon}};
   int next_space_id_ = 2;
   // Where the Space list is persisted (user data dir).
   std::wstring spaces_path_;

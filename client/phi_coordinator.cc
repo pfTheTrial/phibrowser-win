@@ -145,11 +145,14 @@ void PhiCoordinator::LoadSpaces() {
     const std::string* id = d.FindString("id");
     const std::string* name = d.FindString("name");
     const std::string* profile = d.FindString("profileId");
+    const std::string* icon = d.FindString("icon");
     if (!id || id->empty()) {
       continue;
     }
     loaded.push_back({*id, name ? *name : ("Space " + *id),
-                      profile && !profile->empty() ? *profile : "Default"});
+                      profile && !profile->empty() ? *profile : "Default",
+                      icon && PhiIconIsValid(*icon) ? *icon
+                                                    : kPhiDefaultSpaceIcon});
     max_numeric_id = std::max(max_numeric_id, atoi(id->c_str()));
   }
   if (!loaded.empty()) {
@@ -166,6 +169,7 @@ void PhiCoordinator::SaveSpaces() const {
     d.Set("id", space.id);
     d.Set("name", space.name);
     d.Set("profileId", space.profile_id);
+    d.Set("icon", space.icon);
     list.Append(std::move(d));
   }
   base::DictValue root;
@@ -387,6 +391,8 @@ std::string PhiCoordinator::AllSpacesJson() const {
     d.Set("id", space.id);
     d.Set("name", space.name);
     d.Set("profileId", space.profile_id);
+    d.Set("icon", space.icon);
+    d.Set("iconText", PhiIconDisplayText(space.icon));
     list.Append(std::move(d));
   }
   std::string json;
@@ -532,6 +538,8 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
       s.Set("id", space.id);
       s.Set("name", space.name);
       s.Set("profileId", space.profile_id);
+      s.Set("icon", space.icon);
+      s.Set("iconText", PhiIconDisplayText(space.icon));
       s.Set("active",
             it != windows_.end() && it->second->active_space() == space.id);
       s.Set("open", it != windows_.end() && it->second->HasSpace(space.id));
@@ -558,7 +566,7 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
     if (profile_id.empty()) {
       profile_id = "Default";  // A Space always binds exactly one profile.
     }
-    spaces_.push_back({id, name, profile_id});
+    spaces_.push_back({id, name, profile_id, kPhiDefaultSpaceIcon});
     SaveSpaces();
     out.Set("id", id);
     out.Set("name", name);
@@ -654,6 +662,75 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
       RequestLayoutMode(mode);
     }
     out.Set("mode", PhiLayoutModeName(layout_mode_));
+    out.Set("ok", ok);
+  } else if (type == "agentSpace.emoji.groups") {
+    // The catalog the Mac bundles, offered verbatim.
+    base::ListValue groups;
+    for (const PhiEmojiGroup& group : PhiEmojiGroups()) {
+      base::DictValue g;
+      g.Set("name", group.name);
+      g.Set("count", static_cast<int>(group.items.size()));
+      groups.Append(std::move(g));
+    }
+    out.Set("groups", std::move(groups));
+    out.Set("ok", true);
+  } else if (type == "agentSpace.emoji.list") {
+    std::optional<base::DictValue> p =
+        base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
+    std::string want;
+    int limit = 64;
+    if (p) {
+      if (const std::string* g = p->FindString("group")) {
+        want = *g;
+      }
+      limit = static_cast<int>(p->FindDouble("limit").value_or(64));
+    }
+    base::ListValue items;
+    for (const PhiEmojiGroup& group : PhiEmojiGroups()) {
+      if (!want.empty() && group.name != want) {
+        continue;
+      }
+      for (const PhiEmoji& emoji : group.items) {
+        if (static_cast<int>(items.size()) >= limit) {
+          break;
+        }
+        base::DictValue e;
+        e.Set("id", emoji.id);
+        e.Set("text", emoji.text);
+        e.Set("name", emoji.name);
+        items.Append(std::move(e));
+      }
+    }
+    out.Set("emoji", std::move(items));
+    out.Set("ok", true);
+  } else if (type == "agentSpace.spaces.setIcon") {
+    std::optional<base::DictValue> p =
+        base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
+    std::string space_id, icon;
+    if (p) {
+      if (const std::string* s = p->FindString("spaceId")) {
+        space_id = *s;
+      }
+      if (const std::string* i = p->FindString("icon")) {
+        icon = *i;
+      }
+    }
+    bool ok = false;
+    if (PhiIconIsValid(icon)) {
+      for (Space& space : spaces_) {
+        if (space.id != space_id) {
+          continue;
+        }
+        space.icon = icon;
+        SaveSpaces();
+        ok = true;
+        for (const auto& [slot, controller] : windows_) {
+          controller->RefreshTabs();
+        }
+        break;
+      }
+    }
+    out.Set("icon", icon);
     out.Set("ok", ok);
   } else if (type == "agentSpace.theme.get") {
     out.Set("themeId", theme_id_);
