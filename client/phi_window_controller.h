@@ -57,6 +57,12 @@ class PhiWindowController {
   // already settled.
   void RefreshTabs();
 
+  // Marks the sidebar dirty and lets the paint happen at the next idle. Used
+  // for framework-driven notifications, which arrive DURING the change they
+  // describe (a tab being removed is still in the strip) — painting inline
+  // would render the pre-change state and then never correct it.
+  void ScheduleRefresh();
+
   // Rebuilds `tabs_` from framework state WITHOUT invalidating (paint-time
   // use; RefreshTabs() would recurse through InvalidateRect).
   void RebuildTabs();

@@ -641,7 +641,10 @@ void PhiCoordinator::OnTabsChanged(int64_t window_id) {
                                                          : window_id;
   auto it = windows_.find(slot);
   if (it != windows_.end()) {
-    it->second->RefreshTabs();
+    // Deferred: this fires from inside the tab-strip change it reports (a tab
+    // "will be removed" is still in the strip), so the sidebar is repainted
+    // once the browser state has settled.
+    it->second->ScheduleRefresh();
   }
 }
 

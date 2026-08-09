@@ -323,6 +323,12 @@ void PhiWindowController::RefreshTabs() {
   }
 }
 
+void PhiWindowController::ScheduleRefresh() {
+  if (shell_hwnd_) {
+    ::InvalidateRect(shell_hwnd_, nullptr, FALSE);
+  }
+}
+
 void PhiWindowController::AttachSpaceBrowser(const std::string& space_id,
                                              int64_t browser_window_id,
                                              HWND browser_hwnd) {

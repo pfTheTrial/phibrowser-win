@@ -1,7 +1,7 @@
 // Tabs suite: agentSpace.tabs.* over the unified socket, cross-checked
 // against CDP where it proves the tab really exists in the browser.
 import {
-  test, run, assert, assertEq, sleep, openControl, cdpHttp,
+  test, run, assert, assertEq, sleep, openControl, cdpHttp, openCdp,
 } from './phi-test.mjs'
 
 async function firstWindow(ctl) {
@@ -91,6 +91,51 @@ test('tabs: close removes the tab', async () => {
       (t) => t.length === countBefore - 1 && !t.some((x) => x.title.includes(marker)),
       'tab removed')
     assertEq(tabs.filter((x) => x.active).length, 1, 'an active tab remains')
+  } finally { ctl.close() }
+})
+
+test('tabs: a tab the PAGE opens (target=_blank) joins the same window', async () => {
+  const ctl = await openControl()
+  try {
+    const windowId = await firstWindow(ctl)
+    const marker = `opener-${Date.now()}`
+    await ctl.send('agentSpace.tabs.new',
+                   { windowId, url: `data:text/html,<title>${marker}</title>` })
+    await waitTabs(ctl, windowId, (t) => t.some((x) => x.title.includes(marker)),
+                   'opener tab exists')
+    const before = (await ctl.send('agentSpace.tabs.list', { windowId })).tabs
+    const windowsBefore = (await ctl.send('agentSpace.list')).windows.length
+
+    // Drive the OPENER PAGE, not the client: this is the path a real
+    // target=_blank click takes, and the client only learns about it through
+    // the framework's tab notification.
+    const targets = await cdpHttp('/json/list')
+    const page = targets.find((t) => t.type === 'page' && (t.title || '').includes(marker))
+    assert(page, 'found the opener page over CDP')
+    const cdp = await openCdp(new URL(page.webSocketDebuggerUrl).pathname)
+    try {
+      await cdp.send('Runtime.evaluate', {
+        expression: `window.open('about:blank?${marker}', '_blank')`,
+        userGesture: true,  // Without a gesture the popup blocker eats it.
+      })
+    } finally { cdp.close() }
+
+    const tabs = await waitTabs(ctl, windowId,
+      (t) => t.some((x) => x.url.includes(marker) && x.url.startsWith('about:blank')),
+      'the page-opened tab appears in this window')
+    assertEq(tabs.length, before.length + 1, 'exactly one tab was added')
+    assertEq((await ctl.send('agentSpace.list')).windows.length, windowsBefore,
+             'it became a tab here, not a new window')
+    // Leave the window as we found it: indices shift on every close, so
+    // re-list and close the first survivor each time.
+    const mine = (t) => t.url.includes(marker) || t.title.includes(marker)
+    for (;;) {
+      const live = (await ctl.send('agentSpace.tabs.list', { windowId })).tabs
+      const victim = live.find(mine)
+      if (!victim) break
+      await ctl.send('agentSpace.tabs.close', { windowId, index: victim.index })
+      await sleep(150)
+    }
   } finally { ctl.close() }
 })
 
