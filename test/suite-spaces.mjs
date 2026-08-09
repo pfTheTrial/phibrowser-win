@@ -99,6 +99,41 @@ test('spaces: switching back restores the original space tabs', async () => {
   } finally { ctl.close() }
 })
 
+test('spaces: a window that visited two spaces still closes', async () => {
+  const ctl = await openControl()
+  try {
+    // A fresh slot, so closing it cannot disturb the window the other tests use.
+    const before = (await ctl.send('agentSpace.list')).windows
+    await ctl.send('agentSpace.newWindow')
+    let windows = before
+    for (let i = 0; i < 24 && windows.length === before.length; i++) {
+      await sleep(250)
+      windows = (await ctl.send('agentSpace.list')).windows
+    }
+    const slot = windows.find((w) => !before.includes(w))
+    assert(slot, 'new window created')
+
+    // Visiting a second Space gives the slot a SECOND browser; closing only
+    // the first would leave the window on screen (the bug this covers).
+    const created = await ctl.send('agentSpace.spaces.create', { name: 'Closable' })
+    assertEq((await ctl.send('agentSpace.spaces.switch',
+                             { windowId: slot, spaceId: created.id })).ok,
+             true, 'switched the new window to a second space')
+    await sleep(800)
+
+    assertEq((await ctl.send('agentSpace.close', { windowId: slot })).ok, true,
+             'close accepted')
+    let live = windows
+    for (let i = 0; i < 24; i++) {
+      await sleep(250)
+      live = (await ctl.send('agentSpace.list')).windows
+      if (!live.includes(slot)) break
+    }
+    assert(!live.includes(slot),
+           `the window went away (still listed: ${JSON.stringify(live)})`)
+  } finally { ctl.close() }
+})
+
 test('spaces: switching to an unknown space is rejected', async () => {
   const ctl = await openControl()
   try {

@@ -89,6 +89,10 @@ class PhiWindowController {
   const std::vector<std::string>& space_order() const { return space_order_; }
   // Drops a browser that went away; returns true if the slot still has one.
   bool ForgetBrowser(int64_t browser_window_id);
+  // Starts closing the whole slot (its Space browsers, one per Space). MAY
+  // DESTROY `this` before returning — the last browser going away tears the
+  // slot down — so touch nothing on this object afterwards.
+  void RequestClose();
   // Gives the currently shown browser Win32 focus and Chromium activation.
   void FocusActiveBrowser();
 

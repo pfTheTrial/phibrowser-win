@@ -418,6 +418,32 @@ bool PhiWindowController::ForgetBrowser(int64_t browser_window_id) {
   return !space_browsers_.empty();
 }
 
+void PhiWindowController::RequestClose() {
+  // A slot holds ONE BROWSER PER SPACE VISITED, not one per window: closing
+  // only the slot's original browser (the one its window id names) leaves the
+  // other Spaces' browsers alive, the slot survives ForgetBrowser, and the
+  // window refuses to close after a Space switch.
+  //
+  // Snapshot before closing: each close can fire OnBrowserWindowClosing
+  // synchronously, which mutates space_browsers_ — and destroys `this` when
+  // the last browser goes. Everything below is local for that reason.
+  phi_framework::PhiFramework* framework = framework_;
+  HWND shell = shell_hwnd_;
+  std::vector<int64_t> browsers;
+  for (const auto& [space_id, browser_id] : space_browsers_) {
+    browsers.push_back(browser_id);
+  }
+  if (!framework || browsers.empty()) {
+    if (shell && ::IsWindow(shell)) {
+      ::DestroyWindow(shell);
+    }
+    return;
+  }
+  for (int64_t browser_id : browsers) {
+    framework->CloseBrowserWindow(browser_id);
+  }
+}
+
 bool PhiWindowController::GetBounds(int* x, int* y, int* w, int* h) const {
   if (!shell_hwnd_ || !::IsWindow(shell_hwnd_)) {
     return false;
@@ -801,11 +827,12 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
     }
     case WM_CLOSE:
       // Route through Chromium's normal close path (unload handlers, session
-      // bookkeeping). When the Browser actually goes away the framework fires
-      // OnBrowserWindowClosing and the coordinator destroys this controller —
-      // the shell window dies THEN, not here.
-      if (self && self->framework_) {
-        self->framework_->CloseBrowserWindow(self->window_id_);
+      // bookkeeping) for EVERY Space browser this slot hosts. When the last
+      // Browser goes away the framework fires OnBrowserWindowClosing and the
+      // coordinator destroys this controller — the shell window dies THEN, not
+      // here. RequestClose may destroy `self`, so nothing touches it after.
+      if (self) {
+        self->RequestClose();
       } else {
         ::DestroyWindow(hwnd);
       }

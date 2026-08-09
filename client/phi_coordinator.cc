@@ -334,10 +334,19 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
     if (p) {
       window_id = static_cast<int64_t>(p->FindDouble("windowId").value_or(0));
     }
-    if (framework_ && window_id) {
+    // Closing a SLOT means closing every Space browser it hosts, not just the
+    // browser its id names — same reason the shell window's close box does.
+    auto it = windows_.find(window_id);
+    bool ok = false;
+    if (it != windows_.end()) {
+      PhiWindowController* controller = it->second.get();
+      ok = true;  // Set first: the call below may erase `it`.
+      controller->RequestClose();
+    } else if (framework_ && window_id) {
       framework_->CloseBrowserWindow(window_id);
+      ok = true;
     }
-    out.Set("ok", framework_ && window_id ? true : false);
+    out.Set("ok", ok);
   } else if (type == "agentSpace.navigate") {
     std::optional<base::DictValue> p =
         base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
