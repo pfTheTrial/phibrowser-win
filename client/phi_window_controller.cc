@@ -51,7 +51,7 @@ constexpr COLORREF kSpaceActiveInk = RGB(0x2B, 0x2D, 0x31);
 constexpr COLORREF kSpaceInk = RGB(0xE6, 0xEA, 0xFF);
 
 // Tab list geometry, below the spaces row.
-constexpr int kTabsTop = 344;
+constexpr int kTabsTop = 374;  // below the chips row AND the create buttons
 constexpr int kTabsInset = 12;
 constexpr int kTabRowHeight = 30;
 constexpr int kTabRowGap = 4;
@@ -79,10 +79,12 @@ ATOM EnsureShellClass() {
 
 PhiWindowController::PhiWindowController(int64_t window_id,
                                         HWND browser_hwnd,
-                                        phi_framework::PhiFramework* framework)
+                                        phi_framework::PhiFramework* framework,
+                                        PhiSlotHost* host)
     : window_id_(window_id),
       browser_hwnd_(browser_hwnd),
-      framework_(framework) {
+      framework_(framework),
+      host_(host) {
   if (!browser_hwnd_ || !::IsWindow(browser_hwnd_)) {
     LOG(ERROR) << "[PhiClient] adopt: invalid browser HWND for window "
                << window_id_;
@@ -302,8 +304,48 @@ void PhiWindowController::RebuildNavState() {
   nav_loading_ = st->FindBool("loading").value_or(false);
 }
 
+void PhiWindowController::RebuildChips() {
+  chips_.clear();
+  if (!host_) {
+    return;
+  }
+  std::optional<base::Value> parsed =
+      base::JSONReader::Read(host_->AllSpacesJson(), base::JSON_PARSE_RFC);
+  if (!parsed || !parsed->is_list()) {
+    return;
+  }
+  int x = kTabsInset;
+  for (const base::Value& v : parsed->GetList()) {
+    if (!v.is_dict()) {
+      continue;
+    }
+    const base::DictValue& d = v.GetDict();
+    const std::string* id = d.FindString("id");
+    if (!id) {
+      continue;
+    }
+    if (x + kSpaceChipW > kSidebarWidth - kTabsInset) {
+      break;  // Row is full; a scroller is future work.
+    }
+    SpaceChip chip;
+    chip.id = *id;
+    chip.label = L"S" + base::UTF8ToWide(*id);
+    chip.open = HasSpace(*id);
+    chip.bounds = {x, kSpacesTop, x + kSpaceChipW, kSpacesTop + kSpaceChipH};
+    chips_.push_back(std::move(chip));
+    x += kSpaceChipW + kSpaceChipGap;
+  }
+  // Two create buttons on the row below: same profile, and new profile.
+  add_space_button_ = {kTabsInset, kSpacesTop + kSpaceChipH + 6,
+                       kTabsInset + 100, kSpacesTop + kSpaceChipH + 34};
+  add_profile_space_button_ = {kTabsInset + 106, kSpacesTop + kSpaceChipH + 6,
+                               kSidebarWidth - kTabsInset,
+                               kSpacesTop + kSpaceChipH + 34};
+}
+
 void PhiWindowController::RebuildTabs() {
   RebuildNavState();
+  RebuildChips();
   tabs_.clear();
   if (framework_) {
     std::optional<base::Value> parsed = base::JSONReader::Read(
@@ -360,17 +402,29 @@ void PhiWindowController::OnSidebarClick(int x, int y) {
     }
     return;
   }
-  for (size_t i = 0; i < space_order_.size() && i < 3; ++i) {
-    RECT chip = {kTabsInset + static_cast<int>(i) * (kSpaceChipW + kSpaceChipGap),
-                 kSpacesTop,
-                 kTabsInset + static_cast<int>(i) * (kSpaceChipW + kSpaceChipGap) +
-                     kSpaceChipW,
-                 kSpacesTop + kSpaceChipH};
-    if (::PtInRect(&chip, pt)) {
-      ShowSpace(space_order_[i]);
-      ::InvalidateRect(shell_hwnd_, nullptr, FALSE);
-      return;
+  for (const SpaceChip& chip : chips_) {
+    if (!::PtInRect(&chip.bounds, pt)) {
+      continue;
     }
+    if (chip.open) {
+      ShowSpace(chip.id);
+    } else if (host_) {
+      // Not yet in this slot: the owner creates its browser in the Space's
+      // profile and attaches it here.
+      host_->RequestSwitchSpace(window_id_, chip.id);
+    }
+    RefreshTabs();
+    return;
+  }
+  if (host_ && ::PtInRect(&add_space_button_, pt)) {
+    host_->RequestCreateSpace(window_id_, /*new_profile=*/false);
+    RefreshTabs();
+    return;
+  }
+  if (host_ && ::PtInRect(&add_profile_space_button_, pt)) {
+    host_->RequestCreateSpace(window_id_, /*new_profile=*/true);
+    RefreshTabs();
+    return;
   }
   for (const TabRow& row : tabs_) {
     if (!::PtInRect(&row.bounds, pt)) {
@@ -437,25 +491,28 @@ void PhiWindowController::PaintSidebar(HDC dc, const RECT& client) {
   ::DrawTextW(dc, L"+  New Window", -1, &btn,
               DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
-  // Space chips: one per Space this slot hosts; the active one is a chip.
-  for (size_t i = 0; i < space_order_.size() && i < 3; ++i) {
-    const std::string& id = space_order_[i];
-    RECT chip = {kTabsInset + static_cast<int>(i) * (kSpaceChipW + kSpaceChipGap),
-                 kSpacesTop,
-                 kTabsInset + static_cast<int>(i) * (kSpaceChipW + kSpaceChipGap) +
-                     kSpaceChipW,
-                 kSpacesTop + kSpaceChipH};
-    const bool active = (id == active_space_);
+  // Space chips: EVERY Space (not only those open here) so any can be entered.
+  for (const SpaceChip& chip : chips_) {
+    const bool active = (chip.id == active_space_);
     if (active) {
       HBRUSH b = ::CreateSolidBrush(kSpaceActiveBg);
-      ::FillRect(dc, &chip, b);
+      ::FillRect(dc, &chip.bounds, b);
       ::DeleteObject(b);
     }
     ::SetTextColor(dc, active ? kSpaceActiveInk : kSpaceInk);
-    std::wstring label = L"S" + base::UTF8ToWide(id);
-    ::DrawTextW(dc, label.c_str(), -1, &chip,
+    ::DrawTextW(dc, chip.label.c_str(), -1, const_cast<RECT*>(&chip.bounds),
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE);
   }
+  // Create-Space buttons: same profile as the current Space, or a new profile.
+  auto draw_pill = [&](RECT r, const wchar_t* text) {
+    HBRUSH b = ::CreateSolidBrush(kButtonColor);
+    ::FillRect(dc, &r, b);
+    ::DeleteObject(b);
+    ::SetTextColor(dc, kButtonInk);
+    ::DrawTextW(dc, text, -1, &r, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+  };
+  draw_pill(add_space_button_, L"+ Space");
+  draw_pill(add_profile_space_button_, L"+ Space & profile");
 
   // Tab rows, driven by live framework state: the active tab gets a white
   // chip, each row a close box.

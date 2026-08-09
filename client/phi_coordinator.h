@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -27,7 +28,8 @@ namespace phi_client {
 // only observes window lifecycle and logs it; adopting the HWND and drawing
 // chrome comes next.
 class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
-                       public PhiControlDelegate {
+                       public PhiControlDelegate,
+                       public PhiSlotHost {
  public:
   PhiCoordinator();
   ~PhiCoordinator() override;
@@ -45,6 +47,11 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // PhiControlDelegate (called on the control server's I/O thread):
   std::string HandleControlCommand(const std::string& type,
                                    const std::string& payload_json) override;
+
+  // PhiSlotHost (called on the UI thread by a slot's sidebar):
+  std::string AllSpacesJson() const override;
+  void RequestSwitchSpace(int64_t slot, const std::string& space_id) override;
+  void RequestCreateSpace(int64_t slot, bool new_profile) override;
 
  private:
   // Runs a control command on the UI thread; returns the JSON response. Called
@@ -88,6 +95,13 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // OnBrowserWindowCreated attaches to that slot instead of opening a shell.
   int64_t pending_slot_ = 0;
   std::string pending_space_;
+  // A "+ Space & profile" request waiting for its profile to appear (profile
+  // creation is asynchronous). Polled from a WM_TIMER on msg_hwnd_.
+  int64_t pending_profile_slot_ = 0;
+  std::set<std::string> known_profiles_before_;
+  int pending_profile_ticks_ = 0;
+  // Returns true when finished (created the Space, or gave up).
+  bool TryFinishProfileSpace();
 };
 
 }  // namespace phi_client

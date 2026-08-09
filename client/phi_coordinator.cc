@@ -73,6 +73,14 @@ LRESULT CALLBACK PhiCoordinator::MsgWndProc(HWND hwnd,
                         reinterpret_cast<LONG_PTR>(cs->lpCreateParams));
     return ::DefWindowProcW(hwnd, msg, wparam, lparam);
   }
+  if (msg == WM_TIMER) {
+    auto* self = reinterpret_cast<PhiCoordinator*>(
+        ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    if (self && self->TryFinishProfileSpace()) {
+      ::KillTimer(hwnd, 1);
+    }
+    return 0;
+  }
   if (msg == WM_PHI_CONTROL) {
     auto* self = reinterpret_cast<PhiCoordinator*>(
         ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
@@ -169,6 +177,128 @@ void PhiCoordinator::SaveSpaces() const {
   DWORD wrote = 0;
   ::WriteFile(f, json.data(), static_cast<DWORD>(json.size()), &wrote, nullptr);
   ::CloseHandle(f);
+}
+
+bool PhiCoordinator::TryFinishProfileSpace() {
+  if (pending_profile_slot_ == 0 || !framework_) {
+    return true;
+  }
+  if (++pending_profile_ticks_ > 40) {  // ~20s
+    LOG(ERROR) << "[PhiClient] profile creation timed out";
+    pending_profile_slot_ = 0;
+    return true;
+  }
+  std::optional<base::Value> now = base::JSONReader::Read(
+      framework_->ListProfilesJson(), base::JSON_PARSE_RFC);
+  if (!now || !now->is_list()) {
+    return false;
+  }
+  for (const base::Value& v : now->GetList()) {
+    if (!v.is_dict()) {
+      continue;
+    }
+    const std::string* id = v.GetDict().FindString("id");
+    if (!id || known_profiles_before_.count(*id)) {
+      continue;
+    }
+    // The new profile: create its Space and enter it.
+    base::DictValue payload;
+    payload.Set("name", "Space " + std::to_string(next_space_id_));
+    payload.Set("profileId", *id);
+    std::string json;
+    base::JSONWriter::Write(payload, &json);
+    const std::string created =
+        ExecuteControlOnUi("agentSpace.spaces.create", json);
+    std::optional<base::DictValue> r =
+        base::JSONReader::ReadDict(created, base::JSON_PARSE_RFC);
+    const int64_t slot = pending_profile_slot_;
+    pending_profile_slot_ = 0;
+    if (r) {
+      if (const std::string* sid = r->FindString("id")) {
+        RequestSwitchSpace(slot, *sid);
+      }
+    }
+    return true;
+  }
+  return false;
+}
+
+std::string PhiCoordinator::AllSpacesJson() const {
+  base::ListValue list;
+  for (const Space& space : spaces_) {
+    base::DictValue d;
+    d.Set("id", space.id);
+    d.Set("name", space.name);
+    d.Set("profileId", space.profile_id);
+    list.Append(std::move(d));
+  }
+  std::string json;
+  base::JSONWriter::Write(list, &json);
+  return json;
+}
+
+void PhiCoordinator::RequestSwitchSpace(int64_t slot,
+                                        const std::string& space_id) {
+  base::DictValue payload;
+  payload.Set("windowId", static_cast<double>(slot));
+  payload.Set("spaceId", space_id);
+  std::string json;
+  base::JSONWriter::Write(payload, &json);
+  ExecuteControlOnUi("agentSpace.spaces.switch", json);
+}
+
+void PhiCoordinator::RequestCreateSpace(int64_t slot, bool new_profile) {
+  // Same profile as the slot's current Space unless a new one was asked for.
+  std::string profile_id = "Default";
+  auto it = windows_.find(slot);
+  if (it != windows_.end()) {
+    const std::string& active = it->second->active_space();
+    for (const Space& s : spaces_) {
+      if (s.id == active) {
+        profile_id = s.profile_id;
+        break;
+      }
+    }
+  }
+  if (new_profile && framework_) {
+    // Profile creation is asynchronous and the new basename is not known up
+    // front. Snapshot the current profiles, ask for a new one, and finish the
+    // Space (bound to that profile) when it appears — bindings are immutable,
+    // so the Space must not be created against the wrong profile first.
+    known_profiles_before_.clear();
+    std::optional<base::Value> before = base::JSONReader::Read(
+        framework_->ListProfilesJson(), base::JSON_PARSE_RFC);
+    if (before && before->is_list()) {
+      for (const base::Value& v : before->GetList()) {
+        if (v.is_dict()) {
+          if (const std::string* id = v.GetDict().FindString("id")) {
+            known_profiles_before_.insert(*id);
+          }
+        }
+      }
+    }
+    pending_profile_slot_ = slot;
+    pending_profile_ticks_ = 0;
+    framework_->CreateProfile(
+        ("Phi Space " + std::to_string(next_space_id_)).c_str());
+    if (msg_hwnd_) {
+      ::SetTimer(msg_hwnd_, 1, 500, nullptr);
+    }
+    return;
+  }
+  base::DictValue payload;
+  payload.Set("name", "Space " + std::to_string(next_space_id_));
+  payload.Set("profileId", profile_id);
+  std::string json;
+  base::JSONWriter::Write(payload, &json);
+  const std::string created = ExecuteControlOnUi("agentSpace.spaces.create", json);
+  std::optional<base::DictValue> r =
+      base::JSONReader::ReadDict(created, base::JSON_PARSE_RFC);
+  if (r) {
+    if (const std::string* id = r->FindString("id")) {
+      RequestSwitchSpace(slot, *id);
+    }
+  }
 }
 
 int64_t PhiCoordinator::ResolveBrowser(int64_t slot_or_browser) const {
@@ -499,7 +629,7 @@ void PhiCoordinator::OnBrowserWindowCreated(int64_t window_id, void* hwnd) {
     pending_space_.clear();
   }
   auto controller = std::make_unique<PhiWindowController>(
-      window_id, static_cast<HWND>(hwnd), framework_);
+      window_id, static_cast<HWND>(hwnd), framework_, this);
   controller->RefreshTabs();
   windows_[window_id] = std::move(controller);
   browser_to_slot_[window_id] = window_id;

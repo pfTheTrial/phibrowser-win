@@ -17,6 +17,20 @@
 
 namespace phi_client {
 
+// What a slot needs from its owner (the coordinator): the full Space list to
+// draw, and requests that only the owner can service (switching to a Space
+// that has no browser yet must create one in that Space's profile).
+class PhiSlotHost {
+ public:
+  virtual ~PhiSlotHost() = default;
+  // All Spaces as a JSON array string: [{"id","name","profileId"},…]
+  virtual std::string AllSpacesJson() const = 0;
+  virtual void RequestSwitchSpace(int64_t slot, const std::string& space_id) = 0;
+  // Creates a Space in this slot's current profile (`new_profile` = false) or
+  // in a freshly created profile (true), then switches to it.
+  virtual void RequestCreateSpace(int64_t slot, bool new_profile) = 0;
+};
+
 // Owns the client-drawn shell window for one browser (the Windows twin of the
 // Mac MainBrowserWindowController), using the Option-B model
 // (windows-framework-design.md §2.4): the CLIENT owns a top-level window and
@@ -29,7 +43,8 @@ class PhiWindowController {
  public:
   PhiWindowController(int64_t window_id,
                       HWND browser_hwnd,
-                      phi_framework::PhiFramework* framework);
+                      phi_framework::PhiFramework* framework,
+                      PhiSlotHost* host);
   ~PhiWindowController();
 
   PhiWindowController(const PhiWindowController&) = delete;
@@ -44,6 +59,8 @@ class PhiWindowController {
   // Rebuilds `tabs_` from framework state WITHOUT invalidating (paint-time
   // use; RefreshTabs() would recurse through InvalidateRect).
   void RebuildTabs();
+  // Rebuilds the Space chips row from the owner's full Space list.
+  void RebuildChips();
 
   // --- Spaces (client-owned, as on Mac) ------------------------------------
   // A slot shows ONE Space at a time. Each Space has its own Browser; the
@@ -114,6 +131,17 @@ class PhiWindowController {
   // Owned by the framework (a singleton in chrome.dll); non-owning, and across
   // a module boundary, so not a raw_ptr.
   RAW_PTR_EXCLUSION phi_framework::PhiFramework* const framework_;
+  RAW_PTR_EXCLUSION PhiSlotHost* const host_;  // Owns this controller.
+  // The Space list as drawn (id + whether this slot has it open).
+  struct SpaceChip {
+    std::string id;
+    std::wstring label;
+    bool open = false;
+    RECT bounds{};
+  };
+  std::vector<SpaceChip> chips_;
+  RECT add_space_button_{};
+  RECT add_profile_space_button_{};
 };
 
 }  // namespace phi_client
