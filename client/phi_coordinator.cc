@@ -62,9 +62,11 @@ void PhiCoordinator::OnFrameworkReady(phi_framework::PhiFramework* framework,
   spaces_path_ = user_data_dir + L"\\PhiSpaces.json";
   layout_path_ = user_data_dir + L"\\PhiLayout.json";
   theme_path_ = user_data_dir + L"\\PhiTheme.json";
+  prefs_path_ = user_data_dir + L"\\PhiPrefs.json";
   LoadSpaces();
   LoadLayoutMode();
   LoadTheme();
+  LoadPrefs();
   tab_store_.Load(user_data_dir + L"\\PhiTabData.json");
 
   control_server_.Start(user_data_dir, this);
@@ -346,8 +348,151 @@ void PhiCoordinator::RequestOpen(int64_t slot, const std::string& url) {
   }
 }
 
+void PhiCoordinator::LoadPrefs() {
+  HANDLE f = ::CreateFileW(prefs_path_.c_str(), GENERIC_READ, FILE_SHARE_READ,
+                           nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
+                           nullptr);
+  if (f != INVALID_HANDLE_VALUE) {
+    std::string json;
+    char buf[1024];
+    DWORD read = 0;
+    while (::ReadFile(f, buf, sizeof(buf), &read, nullptr) && read > 0) {
+      json.append(buf, read);
+    }
+    ::CloseHandle(f);
+    std::optional<base::DictValue> root =
+        base::JSONReader::ReadDict(json, base::JSON_PARSE_RFC);
+    if (root) {
+      saturation_ = root->FindInt("saturation").value_or(saturation_);
+      always_show_full_url_ =
+          root->FindBool("alwaysShowFullUrl").value_or(always_show_full_url_);
+      if (const std::string* behavior = root->FindString("newTabBehavior")) {
+        new_tab_behavior_ = *behavior == "omnibox"
+                                ? PhiNewTabBehavior::kOmnibox
+                                : PhiNewTabBehavior::kNewTabPage;
+      }
+    }
+  }
+  // The palette depends on the saturation, so resolve it once both are known.
+  palette_ = PhiResolvePalette(PhiThemeById(theme_id_), appearance_, saturation_);
+}
+
+void PhiCoordinator::SavePrefs() const {
+  base::DictValue root;
+  root.Set("saturation", saturation_);
+  root.Set("alwaysShowFullUrl", always_show_full_url_);
+  root.Set("newTabBehavior", new_tab_behavior_ == PhiNewTabBehavior::kOmnibox
+                                 ? "omnibox"
+                                 : "newTabPage");
+  std::string json;
+  base::JSONWriter::Write(root, &json);
+  HANDLE f = ::CreateFileW(prefs_path_.c_str(), GENERIC_WRITE, 0, nullptr,
+                           CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (f == INVALID_HANDLE_VALUE) {
+    return;
+  }
+  DWORD wrote = 0;
+  ::WriteFile(f, json.data(), static_cast<DWORD>(json.size()), &wrote, nullptr);
+  ::CloseHandle(f);
+}
+
+int PhiCoordinator::Saturation() const {
+  return saturation_;
+}
+
+void PhiCoordinator::SetSaturation(int value) {
+  value = value < 0 ? 0 : (value > 100 ? 100 : value);
+  if (value == saturation_) {
+    return;
+  }
+  saturation_ = value;
+  SavePrefs();
+  ApplyTheme();
+}
+
+PhiNewTabBehavior PhiCoordinator::NewTabBehavior() const {
+  return new_tab_behavior_;
+}
+
+void PhiCoordinator::SetNewTabBehavior(PhiNewTabBehavior behavior) {
+  if (behavior == new_tab_behavior_) {
+    return;
+  }
+  new_tab_behavior_ = behavior;
+  SavePrefs();
+  PhiSettingsWindow::Refresh();
+}
+
+bool PhiCoordinator::AlwaysShowFullUrl() const {
+  return always_show_full_url_;
+}
+
+void PhiCoordinator::SetAlwaysShowFullUrl(bool enabled) {
+  if (enabled == always_show_full_url_) {
+    return;
+  }
+  always_show_full_url_ = enabled;
+  SavePrefs();
+  for (const auto& [slot, controller] : windows_) {
+    controller->RefreshTabs();
+  }
+  PhiSettingsWindow::Refresh();
+}
+
+PhiPinScope PhiCoordinator::PinScope() const {
+  return tab_store_.pin_scope();
+}
+
+void PhiCoordinator::SetPinScope(PhiPinScope scope) {
+  if (!tab_store_.SetPinScope(scope)) {
+    return;
+  }
+  for (const auto& [slot, controller] : windows_) {
+    controller->RefreshTabs();
+  }
+  PhiSettingsWindow::Refresh();
+}
+
+std::vector<std::string> PhiCoordinator::SpaceSummaries() const {
+  std::vector<std::string> out;
+  for (const Space& space : spaces_) {
+    out.push_back(space.name + "\t" + PhiIconDisplayText(space.icon) + "\t" +
+                  space.profile_id);
+  }
+  return out;
+}
+
+std::vector<std::string> PhiCoordinator::ProfileSummaries() const {
+  std::vector<std::string> out;
+  if (!framework_) {
+    return out;
+  }
+  std::optional<base::Value> parsed = base::JSONReader::Read(
+      framework_->ListProfilesJson(), base::JSON_PARSE_RFC);
+  if (!parsed || !parsed->is_list()) {
+    return out;
+  }
+  for (const base::Value& value : parsed->GetList()) {
+    if (!value.is_dict()) {
+      continue;
+    }
+    const std::string* id = value.GetDict().FindString("id");
+    const std::string* name = value.GetDict().FindString("name");
+    if (id) {
+      out.push_back(*id + "\t" + (name ? *name : *id));
+    }
+  }
+  return out;
+}
+
+void PhiCoordinator::CreateProfileNamed(const std::string& name) {
+  if (framework_ && !name.empty()) {
+    framework_->CreateProfile(name.c_str());
+  }
+}
+
 void PhiCoordinator::LoadTheme() {
-  palette_ = PhiResolvePalette(PhiThemeById(theme_id_), appearance_);
+  palette_ = PhiResolvePalette(PhiThemeById(theme_id_), appearance_, saturation_);
   HANDLE f = ::CreateFileW(theme_path_.c_str(), GENERIC_READ, FILE_SHARE_READ,
                            nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
                            nullptr);
@@ -398,7 +543,7 @@ void PhiCoordinator::SaveTheme() const {
 }
 
 void PhiCoordinator::ApplyTheme() {
-  palette_ = PhiResolvePalette(PhiThemeById(theme_id_), appearance_);
+  palette_ = PhiResolvePalette(PhiThemeById(theme_id_), appearance_, saturation_);
   SaveTheme();
   for (const auto& [slot, controller] : windows_) {
     controller->ApplyPalette();
@@ -1075,6 +1220,58 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
     out.Set("themeId", theme_id_);
     out.Set("appearance", PhiAppearanceName(appearance_));
     out.Set("dark", palette_.dark);
+    out.Set("ok", ok);
+  } else if (type == "agentSpace.settings.get") {
+    // Everything the settings window shows, in one read.
+    out.Set("section", PhiSettingsWindow::CurrentSection());
+    base::ListValue sections;
+    for (const char* name : {"general", "spaces", "profiles", "shortcuts", "ai",
+                             "account", "developer"}) {
+      sections.Append(name);
+    }
+    out.Set("sections", std::move(sections));
+    out.Set("themeId", theme_id_);
+    out.Set("appearance", PhiAppearanceName(appearance_));
+    out.Set("saturation", saturation_);
+    out.Set("layout", PhiLayoutModeName(layout_mode_));
+    out.Set("newTabBehavior", new_tab_behavior_ == PhiNewTabBehavior::kOmnibox
+                                  ? "omnibox"
+                                  : "newTabPage");
+    out.Set("alwaysShowFullUrl", always_show_full_url_);
+    out.Set("pinScope", PhiPinScopeName(tab_store_.pin_scope()));
+    out.Set("ok", true);
+  } else if (type == "agentSpace.settings.set") {
+    std::optional<base::DictValue> p =
+        base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
+    bool ok = false;
+    if (p) {
+      if (std::optional<int> saturation = p->FindInt("saturation")) {
+        // Out-of-range is clamped, not rejected: a slider cannot overshoot.
+        SetSaturation(*saturation);
+        ok = true;
+      }
+      if (std::optional<bool> full = p->FindBool("alwaysShowFullUrl")) {
+        SetAlwaysShowFullUrl(*full);
+        ok = true;
+      }
+      if (const std::string* behavior = p->FindString("newTabBehavior")) {
+        if (*behavior == "omnibox" || *behavior == "newTabPage") {
+          SetNewTabBehavior(*behavior == "omnibox"
+                                ? PhiNewTabBehavior::kOmnibox
+                                : PhiNewTabBehavior::kNewTabPage);
+          ok = true;
+        }
+      }
+      if (const std::string* section = p->FindString("section")) {
+        ok = PhiSettingsWindow::ShowSection(*section) || ok;
+      }
+    }
+    out.Set("saturation", saturation_);
+    out.Set("alwaysShowFullUrl", always_show_full_url_);
+    out.Set("newTabBehavior", new_tab_behavior_ == PhiNewTabBehavior::kOmnibox
+                                  ? "omnibox"
+                                  : "newTabPage");
+    out.Set("section", PhiSettingsWindow::CurrentSection());
     out.Set("ok", ok);
   } else if (type == "agentSpace.settings.open") {
     RequestSettings();

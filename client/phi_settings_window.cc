@@ -6,7 +6,9 @@
 
 #include <windowsx.h>
 
+#include <algorithm>
 #include <array>
+#include <vector>
 
 #include "base/logging.h"
 #include "base/strings/utf_string_conversions.h"
@@ -17,22 +19,41 @@ namespace {
 
 constexpr wchar_t kClassName[] = L"PhiClientSettings";
 
-// Design units (points at 100%), same convention as the shell chrome.
-constexpr int kWidth = 460;
-// Sum of the sections rather than a guess: margin + title + gap
-// + (label + chips + gap) + (label + 2 swatch rows + gap) + (label + chips)
-// + margin.
-constexpr int kHeight = 24 + 30 + 28 + (22 + 32 + 28) +
-                        (22 + 2 * (56 + 10 + 22) + 28) + (22 + 32) + 24;
+// Design units (points at 100%), the same convention as the shell chrome.
+constexpr int kWidth = 760;
+constexpr int kHeight = 600;
+constexpr int kNavWidth = 180;
 constexpr int kMargin = 24;
-constexpr int kSectionGap = 28;
-constexpr int kTitleHeight = 30;
-constexpr int kLabelHeight = 22;
-constexpr int kChipHeight = 32;
-constexpr int kChipGap = 8;
-constexpr int kSwatch = 56;
+constexpr int kRowHeight = 34;
+constexpr int kRowGap = 10;
+constexpr int kHeaderHeight = 34;
+constexpr int kHintHeight = 22;
+constexpr int kNavRowHeight = 32;
+constexpr int kChipHeight = 28;
+constexpr int kChipGap = 6;
+constexpr int kSwatch = 46;
 constexpr int kSwatchGap = 10;
+constexpr int kToggleWidth = 44;
+constexpr int kToggleHeight = 24;
+constexpr int kSliderHeight = 20;
 constexpr int kRadius = 8;
+// The control column, measured from the window's left edge.
+constexpr int kControlColumn = kNavWidth + 250;
+
+// The Mac's panes (Settings.swift's PaneIdentifiers), in its order.
+struct SectionDef {
+  const char* id;
+  const wchar_t* label;
+};
+constexpr std::array<SectionDef, 7> kSections = {{
+    {"general", L"General"},
+    {"spaces", L"Spaces"},
+    {"profiles", L"Profiles"},
+    {"shortcuts", L"Shortcuts"},
+    {"ai", L"AI"},
+    {"account", L"Account"},
+    {"developer", L"Developer"},
+}};
 
 PhiSettingsWindow* g_instance = nullptr;
 
@@ -65,11 +86,29 @@ void StrokeRounded(HDC dc, const RECT& r, COLORREF fill, COLORREF border,
   ::DeleteObject(brush);
 }
 
+// "a\tb\tc" -> {"a","b","c"}
+std::vector<std::string> SplitTabs(const std::string& value) {
+  std::vector<std::string> parts;
+  size_t start = 0;
+  for (;;) {
+    const size_t tab = value.find('\t', start);
+    if (tab == std::string::npos) {
+      parts.push_back(value.substr(start));
+      return parts;
+    }
+    parts.push_back(value.substr(start, tab - start));
+    start = tab + 1;
+  }
+}
+
 }  // namespace
 
 PhiSettingsWindow::~PhiSettingsWindow() {
   if (font_) {
     ::DeleteObject(font_);
+  }
+  if (title_font_) {
+    ::DeleteObject(title_font_);
   }
 }
 
@@ -99,7 +138,6 @@ PhiSettingsWindow::PhiSettingsWindow(PhiSettingsHost* host) : host_(host) {
   if (const UINT dpi = ::GetDpiForWindow(hwnd_)) {
     dpi_ = dpi;
   }
-  // Size to the design once the real DPI is known.
   RECT frame = {0, 0, Scaled(kWidth), Scaled(kHeight)};
   ::AdjustWindowRectExForDpi(&frame, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
                              FALSE, 0, dpi_);
@@ -132,6 +170,16 @@ void PhiSettingsWindow::EnsureFont() {
   if (previous) {
     ::DeleteObject(previous);
   }
+  // A heavier face for section headers, from the same metrics.
+  LOGFONTW title = metrics.lfMessageFont;
+  title.lfWeight = FW_SEMIBOLD;
+  if (HFONT title_built = ::CreateFontIndirectW(&title)) {
+    HFONT previous_title = title_font_;
+    title_font_ = title_built;
+    if (previous_title) {
+      ::DeleteObject(previous_title);
+    }
+  }
 }
 
 // static
@@ -157,76 +205,245 @@ HWND PhiSettingsWindow::Handle() {
 
 // static
 void PhiSettingsWindow::Refresh() {
-  if (g_instance && g_instance->hwnd_ && ::IsWindow(g_instance->hwnd_)) {
+  if (Handle()) {
     ::InvalidateRect(g_instance->hwnd_, nullptr, TRUE);
   }
 }
 
+// static
+std::string PhiSettingsWindow::CurrentSection() {
+  return g_instance ? g_instance->section_ : std::string();
+}
+
+// static
+bool PhiSettingsWindow::ShowSection(const std::string& name) {
+  for (const SectionDef& section : kSections) {
+    if (name == section.id) {
+      if (g_instance) {
+        g_instance->section_ = name;
+        Refresh();
+      }
+      return true;
+    }
+  }
+  return false;
+}
+
+void PhiSettingsWindow::AddHeader(int* y, const wchar_t* text) {
+  Item item;
+  item.kind = ItemKind::kSectionHeader;
+  item.text = text;
+  item.bounds = {Scaled(kNavWidth + kMargin), *y, Scaled(kWidth - kMargin),
+                 *y + Scaled(kHeaderHeight)};
+  items_.push_back(std::move(item));
+  *y += Scaled(kHeaderHeight);
+}
+
+void PhiSettingsWindow::AddHint(int* y, const wchar_t* text) {
+  Item item;
+  item.kind = ItemKind::kHint;
+  item.text = text;
+  item.bounds = {Scaled(kNavWidth + kMargin), *y, Scaled(kWidth - kMargin),
+                 *y + Scaled(kHintHeight)};
+  items_.push_back(std::move(item));
+  *y += Scaled(kHintHeight + kRowGap);
+}
+
+RECT PhiSettingsWindow::AddRow(int* y, const wchar_t* title, int height) {
+  Item label;
+  label.kind = ItemKind::kRowLabel;
+  label.text = title;
+  label.bounds = {Scaled(kNavWidth + kMargin), *y, Scaled(kControlColumn),
+                  *y + Scaled(height)};
+  items_.push_back(std::move(label));
+  const RECT control = {Scaled(kControlColumn), *y, Scaled(kWidth - kMargin),
+                        *y + Scaled(height)};
+  *y += Scaled(height + kRowGap);
+  return control;
+}
+
+void PhiSettingsWindow::AddChips(const RECT& area,
+                                 const std::vector<std::wstring>& labels,
+                                 int selected_index,
+                                 const std::string& action) {
+  if (labels.empty()) {
+    return;
+  }
+  const int count = static_cast<int>(labels.size());
+  const int width =
+      (area.right - area.left - (count - 1) * Scaled(kChipGap)) / count;
+  const int top = (area.top + area.bottom) / 2 - Scaled(kChipHeight) / 2;
+  for (int i = 0; i < count; ++i) {
+    Item chip;
+    chip.kind = ItemKind::kChip;
+    chip.text = labels[static_cast<size_t>(i)];
+    chip.selected = i == selected_index;
+    chip.value = i;
+    chip.action = action;
+    const int x = area.left + i * (width + Scaled(kChipGap));
+    chip.bounds = {x, top, x + width, top + Scaled(kChipHeight)};
+    items_.push_back(std::move(chip));
+  }
+}
+
+void PhiSettingsWindow::BuildGeneral(int* y) {
+  AddHeader(y, L"Theme");
+  {
+    // The eight built-ins, each drawn in its own tint. Wrapped to whatever the
+    // control column fits — all eight in one row would run off the window.
+    const int available = Scaled(kWidth - kMargin - kControlColumn);
+    const int per_row =
+        std::max(1, (available + Scaled(kSwatchGap)) / Scaled(kSwatch + kSwatchGap));
+    const auto& themes = PhiBuiltInThemes();
+    const int rows =
+        (static_cast<int>(themes.size()) + per_row - 1) / per_row;
+    const RECT row = AddRow(y, L"Color",
+                            rows * kSwatch + (rows - 1) * kSwatchGap);
+    for (size_t i = 0; i < themes.size(); ++i) {
+      const int col = static_cast<int>(i) % per_row;
+      const int line = static_cast<int>(i) / per_row;
+      Item swatch;
+      swatch.kind = ItemKind::kSwatch;
+      swatch.payload = themes[i].id;
+      swatch.selected = host_->ThemeId() == themes[i].id;
+      swatch.swatch = PhiResolvePalette(themes[i], host_->Appearance(),
+                                        host_->Saturation()).ground_bottom;
+      swatch.action = "theme";
+      const int x = row.left + col * Scaled(kSwatch + kSwatchGap);
+      const int top = row.top + line * Scaled(kSwatch + kSwatchGap);
+      swatch.bounds = {x, top, x + Scaled(kSwatch), top + Scaled(kSwatch)};
+      items_.push_back(std::move(swatch));
+    }
+  }
+  {
+    const RECT row = AddRow(y, L"Saturation", kRowHeight);
+    Item slider;
+    slider.kind = ItemKind::kSliderTrack;
+    slider.value = host_->Saturation();
+    slider.action = "saturation";
+    const int mid = (row.top + row.bottom) / 2;
+    slider.bounds = {row.left, mid - Scaled(kSliderHeight) / 2,
+                     row.left + Scaled(240), mid + Scaled(kSliderHeight) / 2};
+    items_.push_back(std::move(slider));
+  }
+  AddHint(y, L"How strongly the theme colour tints the window.");
+
+  AddHeader(y, L"Appearance");
+  AddChips(AddRow(y, L"Layout mode", kRowHeight),
+           {L"Performance", L"Balanced", L"Comfortable"},
+           static_cast<int>(host_->LayoutMode()), "layout");
+  AddChips(AddRow(y, L"Color appearance", kRowHeight),
+           {L"System", L"Light", L"Dark"},
+           static_cast<int>(host_->Appearance()), "appearance");
+
+  AddHeader(y, L"Browsing");
+  AddChips(AddRow(y, L"New tab behavior", kRowHeight),
+           {L"New Tab Page", L"Omnibox"},
+           static_cast<int>(host_->NewTabBehavior()), "newtab");
+  {
+    const RECT row = AddRow(y, L"Always show full URL", kRowHeight);
+    Item toggle;
+    toggle.kind = ItemKind::kToggle;
+    toggle.on = host_->AlwaysShowFullUrl();
+    toggle.action = "fullurl";
+    const int mid = (row.top + row.bottom) / 2;
+    toggle.bounds = {row.left, mid - Scaled(kToggleHeight) / 2,
+                     row.left + Scaled(kToggleWidth),
+                     mid + Scaled(kToggleHeight) / 2};
+    items_.push_back(std::move(toggle));
+  }
+}
+
+void PhiSettingsWindow::BuildSpaces(int* y) {
+  AddHeader(y, L"Pinned tabs");
+  AddChips(AddRow(y, L"Pinned tabs live in", kRowHeight),
+           {L"This Space", L"The profile", L"Everywhere"},
+           static_cast<int>(host_->PinScope()), "pinscope");
+  AddHint(y, L"Where a pinned tab is stored, and so where it shows up.");
+
+  AddHeader(y, L"Spaces");
+  for (const std::string& summary : host_->SpaceSummaries()) {
+    const std::vector<std::string> parts = SplitTabs(summary);
+    Item row;
+    row.kind = ItemKind::kListRow;
+    const std::wstring icon =
+        parts.size() > 1 ? base::UTF8ToWide(parts[1]) : std::wstring();
+    const std::wstring profile =
+        parts.size() > 2 ? base::UTF8ToWide(parts[2]) : std::wstring();
+    row.text = (icon.empty() ? L"" : icon + L"   ") +
+               base::UTF8ToWide(parts.empty() ? std::string() : parts[0]) +
+               (profile.empty() ? L"" : L"   ·   " + profile);
+    row.bounds = {Scaled(kNavWidth + kMargin), *y, Scaled(kWidth - kMargin),
+                  *y + Scaled(kRowHeight)};
+    items_.push_back(std::move(row));
+    *y += Scaled(kRowHeight);
+  }
+}
+
+void PhiSettingsWindow::BuildProfiles(int* y) {
+  AddHeader(y, L"Profiles");
+  for (const std::string& summary : host_->ProfileSummaries()) {
+    const std::vector<std::string> parts = SplitTabs(summary);
+    Item row;
+    row.kind = ItemKind::kListRow;
+    row.text = base::UTF8ToWide(parts.size() > 1 ? parts[1] : summary);
+    if (parts.size() > 1) {
+      row.text += L"   ·   " + base::UTF8ToWide(parts[0]);
+    }
+    row.bounds = {Scaled(kNavWidth + kMargin), *y, Scaled(kWidth - kMargin),
+                  *y + Scaled(kRowHeight)};
+    items_.push_back(std::move(row));
+    *y += Scaled(kRowHeight);
+  }
+  *y += Scaled(kRowGap);
+  Item button;
+  button.kind = ItemKind::kButton;
+  button.text = L"Add profile";
+  button.action = "addprofile";
+  button.bounds = {Scaled(kNavWidth + kMargin), *y,
+                   Scaled(kNavWidth + kMargin + 140), *y + Scaled(kChipHeight)};
+  items_.push_back(std::move(button));
+  *y += Scaled(kChipHeight);
+}
+
+void PhiSettingsWindow::BuildPlaceholder(int* y, const wchar_t* text) {
+  AddHint(y, text);
+}
+
 void PhiSettingsWindow::Rebuild() {
-  choices_.clear();
+  items_.clear();
   if (!host_) {
     return;
   }
-  const int left = Scaled(kMargin);
-  const int right = Scaled(kWidth - kMargin);
-  int y = Scaled(kMargin + kTitleHeight + kSectionGap);
-
-  // Appearance — the Mac's UserAppearanceChoice, same three options.
-  y += Scaled(kLabelHeight);
-  static constexpr std::array<const wchar_t*, 3> kAppearances = {
-      L"System", L"Light", L"Dark"};
-  const int chip_w = (right - left - 2 * Scaled(kChipGap)) / 3;
-  for (int i = 0; i < 3; ++i) {
-    Choice choice;
-    choice.bounds = {left + i * (chip_w + Scaled(kChipGap)), y,
-                     left + i * (chip_w + Scaled(kChipGap)) + chip_w,
-                     y + Scaled(kChipHeight)};
-    choice.label = kAppearances[i];
-    choice.selected = static_cast<int>(host_->Appearance()) == i;
-    choice.kind = 0;
-    choice.index = i;
-    choices_.push_back(std::move(choice));
+  int nav_y = Scaled(kMargin + kHeaderHeight);
+  for (const SectionDef& section : kSections) {
+    Item entry;
+    entry.kind = ItemKind::kNavEntry;
+    entry.text = section.label;
+    entry.payload = section.id;
+    entry.selected = section_ == section.id;
+    entry.action = "section";
+    entry.bounds = {Scaled(kMargin / 2), nav_y, Scaled(kNavWidth - kMargin / 2),
+                    nav_y + Scaled(kNavRowHeight)};
+    items_.push_back(std::move(entry));
+    nav_y += Scaled(kNavRowHeight);
   }
-  y += Scaled(kChipHeight + kSectionGap);
 
-  // Theme — the eight built-ins, drawn as their own tint.
-  y += Scaled(kLabelHeight);
-  const auto& themes = PhiBuiltInThemes();
-  const int per_row = 4;
-  for (size_t i = 0; i < themes.size(); ++i) {
-    const int col = static_cast<int>(i) % per_row;
-    const int row = static_cast<int>(i) / per_row;
-    Choice choice;
-    choice.bounds = {left + col * Scaled(kSwatch + kSwatchGap),
-                     y + row * Scaled(kSwatch + kSwatchGap + kLabelHeight),
-                     left + col * Scaled(kSwatch + kSwatchGap) + Scaled(kSwatch),
-                     y + row * Scaled(kSwatch + kSwatchGap + kLabelHeight) +
-                         Scaled(kSwatch)};
-    choice.label = base::UTF8ToWide(themes[i].name);
-    choice.id = themes[i].id;
-    choice.selected = host_->ThemeId() == themes[i].id;
-    choice.swatch =
-        PhiResolvePalette(themes[i], host_->Appearance()).ground_bottom;
-    choice.kind = 1;
-    choice.index = static_cast<int>(i);
-    choices_.push_back(std::move(choice));
-  }
-  y += 2 * Scaled(kSwatch + kSwatchGap + kLabelHeight) + Scaled(kSectionGap);
-
-  // Layout — the same three modes the sidebar used to cycle through.
-  y += Scaled(kLabelHeight);
-  static constexpr std::array<const wchar_t*, 3> kLayouts = {
-      L"Performance", L"Balanced", L"Comfortable"};
-  for (int i = 0; i < 3; ++i) {
-    Choice choice;
-    choice.bounds = {left + i * (chip_w + Scaled(kChipGap)), y,
-                     left + i * (chip_w + Scaled(kChipGap)) + chip_w,
-                     y + Scaled(kChipHeight)};
-    choice.label = kLayouts[i];
-    choice.selected = static_cast<int>(host_->LayoutMode()) == i;
-    choice.kind = 2;
-    choice.index = i;
-    choices_.push_back(std::move(choice));
+  int y = Scaled(kMargin);
+  if (section_ == "general") {
+    BuildGeneral(&y);
+  } else if (section_ == "spaces") {
+    BuildSpaces(&y);
+  } else if (section_ == "profiles") {
+    BuildProfiles(&y);
+  } else if (section_ == "shortcuts") {
+    BuildPlaceholder(&y, L"Keyboard shortcuts are not wired up yet.");
+  } else if (section_ == "ai") {
+    BuildPlaceholder(&y, L"Phi AI settings are not available on this build.");
+  } else if (section_ == "account") {
+    BuildPlaceholder(&y, L"Sign-in is not available on this build.");
+  } else {
+    BuildPlaceholder(&y, L"Developer tools are not exposed on this build.");
   }
 }
 
@@ -237,64 +454,151 @@ void PhiSettingsWindow::Paint(HDC dc) {
   const PhiPalette& palette = host_->Palette();
   RECT client = {};
   ::GetClientRect(hwnd_, &client);
-  HBRUSH ground = ::CreateSolidBrush(palette.ground_top);
-  ::FillRect(dc, &client, ground);
-  ::DeleteObject(ground);
+
+  // Nav column in the tint, content on the card — the Mac's split.
+  HBRUSH nav_brush = ::CreateSolidBrush(palette.ground_top);
+  RECT nav = {0, 0, Scaled(kNavWidth), client.bottom};
+  ::FillRect(dc, &nav, nav_brush);
+  ::DeleteObject(nav_brush);
+  HBRUSH content_brush = ::CreateSolidBrush(palette.card);
+  RECT content = {Scaled(kNavWidth), 0, client.right, client.bottom};
+  ::FillRect(dc, &content, content_brush);
+  ::DeleteObject(content_brush);
 
   ::SetBkMode(dc, TRANSPARENT);
   HGDIOBJ previous_font = font_ ? ::SelectObject(dc, font_) : nullptr;
 
-  const int left = Scaled(kMargin);
-  const int right = Scaled(kWidth - kMargin);
+  if (title_font_) {
+    ::SelectObject(dc, title_font_);
+  }
   ::SetTextColor(dc, palette.label);
-  RECT title = {left, Scaled(kMargin), right, Scaled(kMargin + kTitleHeight)};
+  RECT title = {Scaled(kMargin / 2 + 12), Scaled(kMargin / 2), Scaled(kNavWidth),
+                Scaled(kMargin / 2 + kHeaderHeight)};
   ::DrawTextW(dc, L"Settings", -1, &title, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+  if (font_) {
+    ::SelectObject(dc, font_);
+  }
 
-  auto section = [&](const wchar_t* text, int top) {
-    RECT r = {left, top, right, top + Scaled(kLabelHeight)};
-    ::SetTextColor(dc, palette.label_dim);
-    ::DrawTextW(dc, text, -1, &r, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-  };
-  int y = Scaled(kMargin + kTitleHeight + kSectionGap);
-  section(L"Appearance", y);
-  y += Scaled(kLabelHeight + kChipHeight + kSectionGap);
-  section(L"Theme", y);
-  y += Scaled(kLabelHeight) + 2 * Scaled(kSwatch + kSwatchGap + kLabelHeight) +
-       Scaled(kSectionGap);
-  section(L"Layout", y);
-
-  for (const Choice& choice : choices_) {
-    if (choice.kind == 1) {
-      // Theme swatch: its own tint, ringed in the accent when selected.
-      FillRounded(dc, choice.bounds, choice.swatch, Scaled(kRadius));
-      if (choice.selected) {
-        StrokeRounded(dc, choice.bounds, choice.swatch, palette.accent,
-                      Scaled(kRadius), Scaled(3));
-      } else {
-        StrokeRounded(dc, choice.bounds, choice.swatch, palette.border,
-                      Scaled(kRadius), 1);
+  for (const Item& item : items_) {
+    RECT bounds = item.bounds;
+    switch (item.kind) {
+      case ItemKind::kNavEntry:
+        if (item.selected) {
+          FillRounded(dc, bounds, palette.card, Scaled(kRadius));
+        }
+        bounds.left += Scaled(12);
+        ::SetTextColor(dc, item.selected ? palette.label : palette.label_dim);
+        ::DrawTextW(dc, item.text.c_str(), -1, &bounds,
+                    DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        break;
+      case ItemKind::kSectionHeader:
+        if (title_font_) {
+          ::SelectObject(dc, title_font_);
+        }
+        ::SetTextColor(dc, palette.label);
+        ::DrawTextW(dc, item.text.c_str(), -1, &bounds,
+                    DT_LEFT | DT_BOTTOM | DT_SINGLELINE);
+        if (font_) {
+          ::SelectObject(dc, font_);
+        }
+        break;
+      case ItemKind::kRowLabel:
+        ::SetTextColor(dc, palette.label);
+        ::DrawTextW(dc, item.text.c_str(), -1, &bounds,
+                    DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        break;
+      case ItemKind::kHint:
+        ::SetTextColor(dc, palette.label_dim);
+        ::DrawTextW(dc, item.text.c_str(), -1, &bounds,
+                    DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        break;
+      case ItemKind::kListRow:
+        ::SetTextColor(dc, palette.label);
+        ::DrawTextW(dc, item.text.c_str(), -1, &bounds,
+                    DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        break;
+      case ItemKind::kChip:
+        if (item.selected) {
+          FillRounded(dc, bounds, palette.accent, Scaled(kRadius));
+        } else {
+          StrokeRounded(dc, bounds, palette.card, palette.border,
+                        Scaled(kRadius), 1);
+        }
+        ::SetTextColor(dc, item.selected ? RGB(0xFF, 0xFF, 0xFF)
+                                         : palette.label_dim);
+        ::DrawTextW(dc, item.text.c_str(), -1, &bounds,
+                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        break;
+      case ItemKind::kSwatch:
+        StrokeRounded(dc, bounds, item.swatch,
+                      item.selected ? palette.accent : palette.border,
+                      Scaled(kRadius), item.selected ? Scaled(3) : 1);
+        break;
+      case ItemKind::kToggle: {
+        const int height = bounds.bottom - bounds.top;
+        FillRounded(dc, bounds, item.on ? palette.accent : palette.border,
+                    height / 2);
+        const int knob = height - Scaled(6);
+        const int left = item.on ? bounds.right - knob - Scaled(3)
+                                 : bounds.left + Scaled(3);
+        RECT dot = {left, bounds.top + Scaled(3), left + knob,
+                    bounds.top + Scaled(3) + knob};
+        FillRounded(dc, dot, RGB(0xFF, 0xFF, 0xFF), knob / 2);
+        break;
       }
-      RECT label = {choice.bounds.left, choice.bounds.bottom,
-                    choice.bounds.right,
-                    choice.bounds.bottom + Scaled(kLabelHeight)};
-      ::SetTextColor(dc, choice.selected ? palette.label : palette.label_dim);
-      ::DrawTextW(dc, choice.label.c_str(), -1, &label,
-                  DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-      continue;
+      case ItemKind::kSliderTrack: {
+        const int mid = (bounds.top + bounds.bottom) / 2;
+        RECT track = {bounds.left, mid - Scaled(2), bounds.right,
+                      mid + Scaled(2)};
+        FillRounded(dc, track, palette.border, Scaled(2));
+        const int span = bounds.right - bounds.left;
+        const int at = bounds.left + span * item.value / 100;
+        RECT filled = {bounds.left, track.top, at, track.bottom};
+        FillRounded(dc, filled, palette.accent, Scaled(2));
+        const int knob = Scaled(14);
+        RECT dot = {at - knob / 2, mid - knob / 2, at + knob / 2,
+                    mid + knob / 2};
+        StrokeRounded(dc, dot, palette.card, palette.accent, knob / 2, 2);
+        break;
+      }
+      case ItemKind::kButton:
+        StrokeRounded(dc, bounds, palette.card, palette.border, Scaled(kRadius),
+                      1);
+        ::SetTextColor(dc, palette.label);
+        ::DrawTextW(dc, item.text.c_str(), -1, &bounds,
+                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        break;
     }
-    if (choice.selected) {
-      FillRounded(dc, choice.bounds, palette.card, Scaled(kRadius));
-    } else {
-      StrokeRounded(dc, choice.bounds, palette.ground_bottom, palette.border,
-                    Scaled(kRadius), 1);
-    }
-    ::SetTextColor(dc, choice.selected ? palette.label : palette.label_dim);
-    ::DrawTextW(dc, choice.label.c_str(), -1, const_cast<RECT*>(&choice.bounds),
-                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
   }
 
   if (previous_font) {
     ::SelectObject(dc, previous_font);
+  }
+}
+
+void PhiSettingsWindow::Apply(const Item& item, int x) {
+  if (item.action == "section") {
+    section_ = item.payload;
+  } else if (item.action == "theme") {
+    host_->SetThemeId(item.payload);
+  } else if (item.action == "appearance") {
+    host_->SetAppearance(static_cast<PhiAppearance>(item.value));
+  } else if (item.action == "layout") {
+    host_->RequestLayoutMode(static_cast<PhiLayoutMode>(item.value));
+  } else if (item.action == "newtab") {
+    host_->SetNewTabBehavior(static_cast<PhiNewTabBehavior>(item.value));
+  } else if (item.action == "fullurl") {
+    host_->SetAlwaysShowFullUrl(!item.on);
+  } else if (item.action == "pinscope") {
+    host_->SetPinScope(static_cast<PhiPinScope>(item.value));
+  } else if (item.action == "saturation") {
+    const int span = item.bounds.right - item.bounds.left;
+    if (span > 0) {
+      const int value = (x - item.bounds.left) * 100 / span;
+      host_->SetSaturation(value < 0 ? 0 : (value > 100 ? 100 : value));
+    }
+  } else if (item.action == "addprofile") {
+    host_->CreateProfileNamed("Profile");
   }
 }
 
@@ -303,21 +607,11 @@ void PhiSettingsWindow::OnClick(int x, int y) {
     return;
   }
   POINT pt = {x, y};
-  for (const Choice& choice : choices_) {
-    if (!::PtInRect(&choice.bounds, pt)) {
+  for (const Item& item : items_) {
+    if (item.action.empty() || !::PtInRect(&item.bounds, pt)) {
       continue;
     }
-    switch (choice.kind) {
-      case 0:
-        host_->SetAppearance(static_cast<PhiAppearance>(choice.index));
-        break;
-      case 1:
-        host_->SetThemeId(choice.id);
-        break;
-      default:
-        host_->RequestLayoutMode(static_cast<PhiLayoutMode>(choice.index));
-        break;
-    }
+    Apply(item, x);
     ::InvalidateRect(hwnd_, nullptr, TRUE);
     return;
   }
@@ -349,6 +643,12 @@ LRESULT CALLBACK PhiSettingsWindow::WndProc(HWND hwnd,
     }
     case WM_LBUTTONDOWN:
       if (self) {
+        self->OnClick(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
+      }
+      return 0;
+    case WM_MOUSEMOVE:
+      // Dragging the saturation slider.
+      if (self && (wparam & MK_LBUTTON)) {
         self->OnClick(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
       }
       return 0;

@@ -68,8 +68,19 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // PhiSettingsHost:
   std::string ThemeId() const override;
   PhiAppearance Appearance() const override;
+  int Saturation() const override;
   void SetThemeId(const std::string& id) override;
   void SetAppearance(PhiAppearance appearance) override;
+  void SetSaturation(int value) override;
+  PhiNewTabBehavior NewTabBehavior() const override;
+  void SetNewTabBehavior(PhiNewTabBehavior behavior) override;
+  bool AlwaysShowFullUrl() const override;
+  void SetAlwaysShowFullUrl(bool enabled) override;
+  PhiPinScope PinScope() const override;
+  void SetPinScope(PhiPinScope scope) override;
+  std::vector<std::string> SpaceSummaries() const override;
+  std::vector<std::string> ProfileSummaries() const override;
+  void CreateProfileNamed(const std::string& name) override;
 
  private:
   // Runs a control command on the UI thread; returns the JSON response. Called
@@ -125,6 +136,13 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   std::wstring theme_path_;
   void LoadTheme();
   void SaveTheme() const;
+  // The rest of the settings surface (the Mac's General pane).
+  int saturation_ = 50;
+  PhiNewTabBehavior new_tab_behavior_ = PhiNewTabBehavior::kNewTabPage;
+  bool always_show_full_url_ = false;
+  std::wstring prefs_path_;
+  void LoadPrefs();
+  void SavePrefs() const;
   // Pinned tabs and bookmarks, the Mac's LocalStore equivalent.
   PhiTabStore tab_store_;
   // The (profile, space) a slot's pinned/bookmark rows belong to.
