@@ -305,6 +305,37 @@ RECT PhiWindowController::content_rect() {
   return ComputeLayout().content;
 }
 
+RECT PhiWindowController::url_field_rect() {
+  return ComputeLayout().url_field;
+}
+
+int PhiWindowController::tabs_top() {
+  return ComputeLayout().tabs_top;
+}
+
+int PhiWindowController::tab_row_height() const {
+  return Scaled(kTabRowHeight);
+}
+
+int PhiWindowController::sidebar_width() const {
+  return Scaled(kSidebarWidth);
+}
+
+int PhiWindowController::content_margin() const {
+  return Scaled(kContentMargin);
+}
+
+POINT PhiWindowController::frame_offset() const {
+  POINT origin = {0, 0};
+  if (!shell_hwnd_ || !::IsWindow(shell_hwnd_)) {
+    return origin;
+  }
+  RECT window = {};
+  ::GetWindowRect(shell_hwnd_, &window);
+  ::ClientToScreen(shell_hwnd_, &origin);
+  return {origin.x - window.left, origin.y - window.top};
+}
+
 void PhiWindowController::ApplyLayoutMode(PhiLayoutMode mode) {
   if (layout_mode_ == mode) {
     return;

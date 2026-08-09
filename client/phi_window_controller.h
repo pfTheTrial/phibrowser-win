@@ -122,6 +122,18 @@ class PhiWindowController {
   RECT content_rect();
   // The DPI the chrome is currently laid out for (96 = 100%).
   UINT dpi() const { return dpi_; }
+  // Chrome geometry, published so tools and tests can locate what they are
+  // asserting about instead of mirroring constants that then drift.
+  RECT url_field_rect();
+  int tabs_top();
+  int tab_row_height() const;
+  int sidebar_width() const;
+  // The tinted margin around the content card.
+  int content_margin() const;
+  // Client origin minus window origin. PrintWindow(PW_CLIENTONLY) renders from
+  // the WINDOW origin, so a capture is offset by exactly this — a caller
+  // comparing against client coordinates has to add it.
+  POINT frame_offset() const;
 
   // Shell window geometry (client-owned; no framework round-trip).
   bool GetBounds(int* x, int* y, int* w, int* h) const;
