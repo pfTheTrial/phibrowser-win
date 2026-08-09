@@ -24,10 +24,10 @@ std::string NewGuid() {
   return base::Uuid::GenerateRandomV4().AsLowercaseString();
 }
 
-// What makes two pinned rows "the same pin" after a scope change. The Mac
-// signs title + url + favicon; we have no favicon yet, so title + url.
+// What makes two pinned rows "the same pin" after a scope change — the Mac's
+// PinnedTabContentSignature: title, url and favicon.
 std::string ContentSignature(const PhiRow& row) {
-  return row.title + "\n" + row.url;
+  return row.title + "\n" + row.url + "\n" + row.favicon_base64;
 }
 
 }  // namespace
@@ -122,6 +122,11 @@ void PhiTabStore::Load(const std::wstring& path) {
     if (const std::string* lineage = dict.FindString("lineageId")) {
       row.lineage_id = *lineage;
     }
+    if (const std::string* favicon = dict.FindString("favicon")) {
+      row.favicon_base64 = *favicon;
+    }
+    row.favicon_width = dict.FindInt("faviconWidth").value_or(0);
+    row.favicon_height = dict.FindInt("faviconHeight").value_or(0);
     rows_.push_back(std::move(row));
   }
   LOG(INFO) << "[PhiClient] tab store: " << rows_.size() << " rows, pin scope "
@@ -144,6 +149,9 @@ void PhiTabStore::Save() const {
     dict.Set("spaceId", row.space_id);
     dict.Set("parentGuid", row.parent_guid);
     dict.Set("lineageId", row.lineage_id);
+    dict.Set("favicon", row.favicon_base64);
+    dict.Set("faviconWidth", row.favicon_width);
+    dict.Set("faviconHeight", row.favicon_height);
     rows.Append(std::move(dict));
   }
   base::DictValue root;
@@ -217,7 +225,10 @@ std::vector<PhiRow> PhiTabStore::PinnedFor(const std::string& profile_id,
 std::string PhiTabStore::AddPinned(const std::string& profile_id,
                                    const std::string& space_id,
                                    const std::string& title,
-                                   const std::string& url) {
+                                   const std::string& url,
+                                   const std::string& favicon_base64,
+                                   int favicon_width,
+                                   int favicon_height) {
   if (url.empty()) {
     return std::string();
   }
@@ -227,6 +238,9 @@ std::string PhiTabStore::AddPinned(const std::string& profile_id,
   row.type = PhiRowType::kPinnedTab;
   row.title = title;
   row.url = url;
+  row.favicon_base64 = favicon_base64;
+  row.favicon_width = favicon_width;
+  row.favicon_height = favicon_height;
   OwnerForScope(profile_id, space_id, &row.profile_id, &row.space_id);
   row.index = NextIndexFor(row.type, row.profile_id, row.space_id, "");
   const std::string guid = row.guid;
@@ -259,7 +273,10 @@ std::string PhiTabStore::AddBookmark(const std::string& profile_id,
                                      const std::string& parent_guid,
                                      const std::string& title,
                                      const std::string& url,
-                                     bool folder) {
+                                     bool folder,
+                                     const std::string& favicon_base64,
+                                     int favicon_width,
+                                     int favicon_height) {
   if (!folder && url.empty()) {
     return std::string();
   }
@@ -268,6 +285,9 @@ std::string PhiTabStore::AddBookmark(const std::string& profile_id,
   row.type = folder ? PhiRowType::kBookmarkFolder : PhiRowType::kBookmark;
   row.title = title;
   row.url = folder ? std::string() : url;
+  row.favicon_base64 = favicon_base64;
+  row.favicon_width = favicon_width;
+  row.favicon_height = favicon_height;
   // Bookmarks are rooted per profile AND per Space, as on Mac.
   row.profile_id = profile_id;
   row.space_id = space_id;

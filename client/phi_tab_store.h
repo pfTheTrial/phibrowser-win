@@ -41,6 +41,12 @@ struct PhiRow {
   std::string profile_id;
   std::string space_id;
   std::string parent_guid;  // Bookmarks only: the tree.
+  // The site's favicon, captured when the row was created — the Mac keeps a
+  // Data blob on the row for the same reason: a pinned tab has no live
+  // WebContents to ask, so the icon has to be stored with it.
+  std::string favicon_base64;  // Raw BGRA, as PhiFramework hands it over.
+  int favicon_width = 0;
+  int favicon_height = 0;
   // Survives a scope change so rows that came from one original pin can be
   // merged back together, as the Mac's pinLineageId does.
   std::string lineage_id;
@@ -71,7 +77,10 @@ class PhiTabStore {
   std::string AddPinned(const std::string& profile_id,
                         const std::string& space_id,
                         const std::string& title,
-                        const std::string& url);
+                        const std::string& url,
+                        const std::string& favicon_base64,
+                        int favicon_width,
+                        int favicon_height);
 
   // Bookmarks directly under `parent_guid` (empty = the root for this owner).
   std::vector<PhiRow> BookmarksFor(const std::string& profile_id,
@@ -82,7 +91,10 @@ class PhiTabStore {
                           const std::string& parent_guid,
                           const std::string& title,
                           const std::string& url,
-                          bool folder);
+                          bool folder,
+                          const std::string& favicon_base64,
+                          int favicon_width,
+                          int favicon_height);
 
   // Removes a row and, for a folder, everything beneath it.
   bool Remove(const std::string& guid);

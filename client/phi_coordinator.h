@@ -130,6 +130,11 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // The (profile, space) a slot's pinned/bookmark rows belong to.
   bool OwnerForSlot(int64_t slot, std::string* profile_id,
                     std::string* space_id) const;
+  // The active tab's favicon as base64 BGRA, for storing on a pinned/bookmark
+  // row. A pinned tab has no live tab to ask later.
+  std::string CaptureFavicon(int64_t slot, int* width, int* height);
+  // The url the slot is showing right now.
+  std::string LiveUrl(int64_t slot);
   // Recomputes `palette_` and repaints every slot.
   void ApplyTheme();
   // Set while a Space browser is being created, so the next

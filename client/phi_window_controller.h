@@ -223,6 +223,16 @@ class PhiWindowController {
   void SyncUrlField(bool force);
   // Navigates to whatever is typed, then hands focus back to the page.
   void CommitUrlField();
+  // Draws a favicon's BGRA pixels into `dest`, composited over `background`.
+  // GDI has no alpha blit without msimg32 (AlphaBlend), and we always know what
+  // is behind the icon, so the blend is done in software and the result blitted
+  // opaque.
+  void DrawFavicon(HDC dc,
+                   const RECT& dest,
+                   const unsigned char* bgra,
+                   int width,
+                   int height,
+                   COLORREF background);
   // Subclass proc: Enter commits, Escape reverts, focus selects all.
   static LRESULT CALLBACK UrlFieldProc(HWND hwnd,
                                        UINT msg,
@@ -248,6 +258,11 @@ class PhiWindowController {
   // One rendered tab row: what to draw and what a click at that row does.
   struct TabRow {
     int index = 0;
+    // The tab's favicon, copied out of the framework's scratch buffer (which
+    // only survives until its next call).
+    std::vector<unsigned char> favicon;
+    int favicon_width = 0;
+    int favicon_height = 0;
     bool active = false;
     std::wstring title;
     RECT bounds{};       // Row rect in client coords.
@@ -261,6 +276,10 @@ class PhiWindowController {
     std::wstring title;
     bool folder = false;
     RECT bounds{};
+    // The favicon stored with the row (a pinned tab has no live tab to ask).
+    std::vector<unsigned char> favicon;
+    int favicon_width = 0;
+    int favicon_height = 0;
   };
   std::vector<ShortcutRow> pinned_;
   std::vector<ShortcutRow> bookmarks_;

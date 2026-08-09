@@ -12,6 +12,9 @@
 #include <string>
 #include <vector>
 
+#include "base/base64.h"
+#include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/json/json_reader.h"
 #include "base/logging.h"
 #include "base/strings/utf_string_conversions.h"
@@ -858,6 +861,51 @@ void PhiWindowController::RebuildChips() {
   }
 }
 
+void PhiWindowController::DrawFavicon(HDC dc,
+                                     const RECT& dest,
+                                     const unsigned char* bgra,
+                                     int width,
+                                     int height,
+                                     COLORREF background) {
+  if (!bgra || width <= 0 || height <= 0) {
+    return;
+  }
+  BITMAPINFO info = {};
+  info.bmiHeader.biSize = sizeof(info.bmiHeader);
+  info.bmiHeader.biWidth = width;
+  info.bmiHeader.biHeight = -height;  // Top-down, the order Skia gave us.
+  info.bmiHeader.biPlanes = 1;
+  info.bmiHeader.biBitCount = 32;
+  info.bmiHeader.biCompression = BI_RGB;
+
+  // Composite over the known background. The pixels are PREMULTIPLIED, so the
+  // source contribution is already scaled: dst = src + bg * (1 - a).
+  std::vector<unsigned char> composited(static_cast<size_t>(width) *
+                                        static_cast<size_t>(height) * 4);
+  const int br = GetRValue(background);
+  const int bg_g = GetGValue(background);
+  const int bb = GetBValue(background);
+  // SAFETY: the framework's contract is that `bgra` holds width*height*4 bytes
+  // (phi_framework_api.h). A raw pointer and a size is all a C++ ABI across the
+  // module boundary can carry, so bounding it here is the first safe moment.
+  const auto source = UNSAFE_BUFFERS(base::span<const unsigned char>(
+      bgra, static_cast<size_t>(width) * static_cast<size_t>(height) * 4));
+  for (size_t i = 0; i + 3 < composited.size(); i += 4) {
+    const int sb = source[i], sg = source[i + 1], sr = source[i + 2],
+              sa = source[i + 3];
+    const int inv = 255 - sa;
+    composited[i] = static_cast<unsigned char>(sb + bb * inv / 255);
+    composited[i + 1] = static_cast<unsigned char>(sg + bg_g * inv / 255);
+    composited[i + 2] = static_cast<unsigned char>(sr + br * inv / 255);
+    composited[i + 3] = 255;
+  }
+  const int prev_mode = ::SetStretchBltMode(dc, HALFTONE);
+  ::StretchDIBits(dc, dest.left, dest.top, dest.right - dest.left,
+                  dest.bottom - dest.top, 0, 0, width, height,
+                  composited.data(), &info, DIB_RGB_COLORS, SRCCOPY);
+  ::SetStretchBltMode(dc, prev_mode);
+}
+
 void PhiWindowController::RebuildShortcuts() {
   pinned_.clear();
   bookmarks_.clear();
@@ -882,6 +930,14 @@ void PhiWindowController::RebuildShortcuts() {
       const std::string* title = d.FindString("title");
       row.title = base::UTF8ToWide(title && !title->empty() ? *title : row.url);
       row.folder = d.FindBool("folder").value_or(false);
+      if (const std::string* favicon = d.FindString("favicon")) {
+        std::string decoded;
+        if (!favicon->empty() && base::Base64Decode(*favicon, &decoded)) {
+          row.favicon.assign(decoded.begin(), decoded.end());
+          row.favicon_width = d.FindInt("faviconWidth").value_or(0);
+          row.favicon_height = d.FindInt("faviconHeight").value_or(0);
+        }
+      }
       out->push_back(std::move(row));
     }
   };
@@ -943,6 +999,21 @@ void PhiWindowController::RebuildTabs() {
                                 ? *title
                                 : (url ? *url : std::string("(untitled)"));
         row.title = base::UTF8ToWide(label);
+        int fw = 0, fh = 0;
+        const unsigned char* pixels = framework_->TabFaviconBgra(
+            active_browser_ ? active_browser_ : window_id_, row.index, &fw, &fh);
+        if (pixels && fw > 0 && fh > 0) {
+          // The framework's buffer is scratch — valid only until its next call.
+          const size_t bytes =
+              static_cast<size_t>(fw) * static_cast<size_t>(fh) * 4;
+          // SAFETY: same contract — TabFaviconBgra reports the dimensions of
+          // the buffer it just returned.
+          const auto copy =
+              UNSAFE_BUFFERS(base::span<const unsigned char>(pixels, bytes));
+          row.favicon.assign(copy.begin(), copy.end());
+          row.favicon_width = fw;
+          row.favicon_height = fh;
+        }
         const int close_box = Scaled(kCloseBoxSize);
         if (layout.horizontal_tabs) {
           if (x + Scaled(kHTabWidth) > layout.tabs_limit) {
@@ -1207,14 +1278,18 @@ void PhiWindowController::PaintChrome(HDC dc,
     if (row.active) {
       FillRounded(dc, row.bounds, kRowSelectedBg, Scaled(kCornerRadius));
     }
-    // Favicon slot. A neutral square until favicons are plumbed through —
-    // the row reads like the Mac one either way.
     RECT favicon = {row.bounds.left + Scaled(10), 0,
                     row.bounds.left + Scaled(10) + Scaled(kFaviconSize), 0};
     const int mid = (row.bounds.top + row.bounds.bottom) / 2;
     favicon.top = mid - Scaled(kFaviconSize) / 2;
     favicon.bottom = favicon.top + Scaled(kFaviconSize);
-    FillRounded(dc, favicon, kBorder, Scaled(4));
+    if (!row.favicon.empty()) {
+      DrawFavicon(dc, favicon, row.favicon.data(), row.favicon_width,
+                  row.favicon_height,
+                  row.active ? kRowSelectedBg : kTintTop);
+    } else {
+      FillRounded(dc, favicon, kBorder, Scaled(4));  // Page has none (yet).
+    }
 
     ::SetTextColor(dc, row.active ? kLabel : kLabelDim);
     RECT title_rc = row.bounds;
@@ -1229,21 +1304,42 @@ void PhiWindowController::PaintChrome(HDC dc,
   // favicon until favicons are plumbed through.
   for (const ShortcutRow& pin : pinned_) {
     FillRounded(dc, pin.bounds, kRowSelectedBg, Scaled(kCornerRadius));
-    ::SetTextColor(dc, kLabel);
-    const std::wstring initial =
-        pin.title.empty() ? std::wstring(L"?") : pin.title.substr(0, 1);
-    ::DrawTextW(dc, initial.c_str(), -1, const_cast<RECT*>(&pin.bounds),
-                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    if (!pin.favicon.empty()) {
+      const int size = Scaled(20);
+      const int cx = (pin.bounds.left + pin.bounds.right) / 2;
+      const int cy = (pin.bounds.top + pin.bounds.bottom) / 2;
+      const RECT icon = {cx - size / 2, cy - size / 2, cx + size / 2,
+                         cy + size / 2};
+      DrawFavicon(dc, icon, pin.favicon.data(), pin.favicon_width,
+                  pin.favicon_height, kRowSelectedBg);
+    } else {
+      ::SetTextColor(dc, kLabel);
+      const std::wstring initial =
+          pin.title.empty() ? std::wstring(L"?") : pin.title.substr(0, 1);
+      ::DrawTextW(dc, initial.c_str(), -1, const_cast<RECT*>(&pin.bounds),
+                  DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    }
   }
 
   // Bookmarks: rows above the open tabs, folders marked.
   for (const ShortcutRow& bookmark : bookmarks_) {
-    ::SetTextColor(dc, kLabelDim);
     RECT row = bookmark.bounds;
-    row.left += Scaled(10);
+    if (!bookmark.favicon.empty()) {
+      RECT icon = {row.left + Scaled(10), 0,
+                   row.left + Scaled(10) + Scaled(kFaviconSize), 0};
+      const int mid = (row.top + row.bottom) / 2;
+      icon.top = mid - Scaled(kFaviconSize) / 2;
+      icon.bottom = icon.top + Scaled(kFaviconSize);
+      DrawFavicon(dc, icon, bookmark.favicon.data(), bookmark.favicon_width,
+                  bookmark.favicon_height, kTintTop);
+      row.left = icon.right + Scaled(8);
+    } else {
+      row.left += Scaled(10);
+    }
+    ::SetTextColor(dc, kLabelDim);
     const std::wstring label =
-        (bookmark.folder ? std::wstring(L"\u25B8  ") : std::wstring(L"\u2606  ")) +
-        bookmark.title;
+        bookmark.folder ? (std::wstring(L"\u25B8  ") + bookmark.title)
+                        : bookmark.title;
     ::DrawTextW(dc, label.c_str(), -1, &row,
                 DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
   }

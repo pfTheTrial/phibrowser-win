@@ -10,6 +10,9 @@
 #include <optional>
 #include <utility>
 
+#include "base/base64.h"
+#include "base/containers/span.h"
+#include "base/compiler_specific.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
 #include "base/logging.h"
@@ -248,6 +251,53 @@ bool PhiCoordinator::OwnerForSlot(int64_t slot, std::string* profile_id,
   return true;
 }
 
+std::string PhiCoordinator::LiveUrl(int64_t slot) {
+  if (!framework_) {
+    return std::string();
+  }
+  std::optional<base::DictValue> state = base::JSONReader::ReadDict(
+      framework_->NavStateJson(ResolveBrowser(slot)), base::JSON_PARSE_RFC);
+  if (!state) {
+    return std::string();
+  }
+  const std::string* url = state->FindString("url");
+  return url ? *url : std::string();
+}
+
+std::string PhiCoordinator::CaptureFavicon(int64_t slot, int* width,
+                                           int* height) {
+  *width = 0;
+  *height = 0;
+  if (!framework_) {
+    return std::string();
+  }
+  const int64_t browser = ResolveBrowser(slot);
+  std::optional<base::Value> tabs = base::JSONReader::Read(
+      framework_->ListTabsJson(browser), base::JSON_PARSE_RFC);
+  int active_index = -1;
+  if (tabs && tabs->is_list()) {
+    for (const base::Value& v : tabs->GetList()) {
+      if (v.is_dict() && v.GetDict().FindBool("active").value_or(false)) {
+        active_index = v.GetDict().FindInt("index").value_or(-1);
+        break;
+      }
+    }
+  }
+  if (active_index < 0) {
+    return std::string();
+  }
+  const unsigned char* pixels =
+      framework_->TabFaviconBgra(browser, active_index, width, height);
+  if (!pixels || *width <= 0 || *height <= 0) {
+    return std::string();
+  }
+  const size_t bytes =
+      static_cast<size_t>(*width) * static_cast<size_t>(*height) * 4;
+  // SAFETY: the framework reports the dimensions of the buffer it returned.
+  const auto view = UNSAFE_BUFFERS(base::span<const uint8_t>(pixels, bytes));
+  return base::Base64Encode(view);
+}
+
 std::string PhiCoordinator::PinnedJson(int64_t slot) const {
   std::string profile_id, space_id;
   base::ListValue list;
@@ -257,6 +307,9 @@ std::string PhiCoordinator::PinnedJson(int64_t slot) const {
       entry.Set("guid", row.guid);
       entry.Set("title", row.title);
       entry.Set("url", row.url);
+      entry.Set("favicon", row.favicon_base64);
+      entry.Set("faviconWidth", row.favicon_width);
+      entry.Set("faviconHeight", row.favicon_height);
       list.Append(std::move(entry));
     }
   }
@@ -276,6 +329,9 @@ std::string PhiCoordinator::BookmarksJson(int64_t slot) const {
       entry.Set("title", row.title);
       entry.Set("url", row.url);
       entry.Set("folder", row.type == PhiRowType::kBookmarkFolder);
+      entry.Set("favicon", row.favicon_base64);
+      entry.Set("faviconWidth", row.favicon_width);
+      entry.Set("faviconHeight", row.favicon_height);
       list.Append(std::move(entry));
     }
   }
@@ -758,6 +814,9 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
         entry.Set("title", row.title);
         entry.Set("url", row.url);
         entry.Set("index", row.index);
+        entry.Set("favicon", row.favicon_base64);
+        entry.Set("faviconWidth", row.favicon_width);
+        entry.Set("faviconHeight", row.favicon_height);
         list.Append(std::move(entry));
       }
     }
@@ -795,7 +854,18 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
           }
         }
       }
-      guid = tab_store_.AddPinned(profile_id, space_id, title, url);
+      int fw = 0, fh = 0;
+      // Only when we are pinning what the slot is SHOWING: the live favicon
+      // belongs to the active tab, not to some other url the caller named.
+      const std::string favicon =
+          url == LiveUrl(slot) ? CaptureFavicon(slot, &fw, &fh) : std::string();
+      guid = tab_store_.AddPinned(profile_id, space_id, title, url, favicon, fw,
+                                  fh);
+      // Report what was captured: a caller (or a test) can then tell "no icon
+      // yet" apart from "the pin failed".
+      out.Set("faviconWidth", fw);
+      out.Set("faviconHeight", fh);
+      out.Set("liveUrl", LiveUrl(slot));
     }
     if (!guid.empty()) {
       for (const auto& [s, controller] : windows_) {
@@ -826,6 +896,9 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
         entry.Set("url", row.url);
         entry.Set("index", row.index);
         entry.Set("folder", row.type == PhiRowType::kBookmarkFolder);
+        entry.Set("favicon", row.favicon_base64);
+        entry.Set("faviconWidth", row.favicon_width);
+        entry.Set("faviconHeight", row.favicon_height);
         list.Append(std::move(entry));
       }
     }
@@ -866,8 +939,12 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
           }
         }
       }
+      int fw = 0, fh = 0;
+      const std::string favicon =
+          (!folder && url == LiveUrl(slot)) ? CaptureFavicon(slot, &fw, &fh)
+                                            : std::string();
       guid = tab_store_.AddBookmark(profile_id, space_id, parent, title, url,
-                                    folder);
+                                    folder, favicon, fw, fh);
     }
     if (!guid.empty()) {
       for (const auto& [s, controller] : windows_) {
