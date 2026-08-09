@@ -218,4 +218,48 @@ Start-ScheduledTask -TaskName PhiFxLaunch
   } finally { ctl.close() }
 })
 
+test('pinned: a pin keeps the favicon of the page it was made from', async () => {
+  const ctl = await openControl()
+  try {
+    const windowId = await firstWindow(ctl)
+    await ctl.send('agentSpace.pinned.scope.set', { scope: 'profile' })
+    await clearAll(ctl, windowId)
+    // A real site, so there is a real favicon to capture. A pinned tab has no
+    // live tab to ask later, so the bytes have to be stored with the row.
+    await ctl.send('agentSpace.navigate', { windowId, url: 'https://github.com' })
+    let landed = null
+    for (let i = 0; i < 40; i++) {
+      await sleep(500)
+      const st = await ctl.send('agentSpace.nav.state', { windowId })
+      if (!st.loading && (st.url || '').includes('github')) { landed = st; break }
+    }
+    // Say so plainly rather than blaming the favicon for a network failure.
+    assert(landed, 'the page actually loaded (needs network on the test box)')
+
+    // A favicon arrives on its own schedule — after the navigation, and slower
+    // on a cold start — so pin until one comes through rather than guessing a
+    // sleep. `add` reports what it captured.
+    let captured = null
+    for (let i = 0; i < 20 && !captured; i++) {
+      await clearAll(ctl, windowId)
+      const r = await ctl.send('agentSpace.pinned.add', { windowId })
+      assertEq(r.ok, true, 'pinned')
+      if (r.faviconWidth > 0) {
+        captured = r
+      } else {
+        await sleep(1000)
+      }
+    }
+    assert(captured, 'a favicon was captured for the pinned page')
+    assert(captured.faviconWidth > 0 && captured.faviconHeight > 0,
+           `with a size (${captured.faviconWidth}x${captured.faviconHeight})`)
+
+    const { pinned } = await ctl.send('agentSpace.pinned.list', { windowId })
+    assertEq(pinned.length, 1, 'one pin')
+    assert(pinned[0].favicon && pinned[0].favicon.length > 0,
+           'and the bytes are stored on the row')
+    await clearAll(ctl, windowId)
+  } finally { ctl.close() }
+})
+
 run()
