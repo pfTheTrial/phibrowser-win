@@ -61,6 +61,15 @@ constexpr COLORREF kTabActiveBg = RGB(0xFF, 0xFF, 0xFF);
 constexpr COLORREF kTabActiveInk = RGB(0x2B, 0x2D, 0x31);
 constexpr COLORREF kTabInk = RGB(0xE6, 0xEA, 0xFF);
 
+// Bands used by the two layouts that put navigation above the web content.
+constexpr int kTopBarHeight = 44;      // Balanced / Comfortable toolbar row.
+constexpr int kHTabStripHeight = 34;   // Comfortable horizontal tab strip.
+constexpr int kSpacesRowHeight = 34;   // Comfortable Spaces row.
+constexpr int kHTabWidth = 168;
+constexpr int kHTabGap = 4;
+constexpr int kNavButtonSize = 36;
+constexpr int kLayoutButtonHeight = 34;
+
 // The stock EDIT window proc, saved when the first address field is
 // subclassed. One per process — every EDIT shares the class proc.
 WNDPROC g_edit_base_proc = nullptr;
@@ -82,6 +91,156 @@ ATOM EnsureShellClass() {
 
 }  // namespace
 
+const char* PhiLayoutModeName(PhiLayoutMode mode) {
+  switch (mode) {
+    case PhiLayoutMode::kBalanced:
+      return "balanced";
+    case PhiLayoutMode::kComfortable:
+      return "comfortable";
+    case PhiLayoutMode::kPerformance:
+      break;
+  }
+  return "performance";
+}
+
+bool PhiLayoutModeFromName(const std::string& name, PhiLayoutMode* out) {
+  if (name == "performance") {
+    *out = PhiLayoutMode::kPerformance;
+  } else if (name == "balanced") {
+    *out = PhiLayoutMode::kBalanced;
+  } else if (name == "comfortable") {
+    *out = PhiLayoutMode::kComfortable;
+  } else {
+    return false;
+  }
+  return true;
+}
+
+PhiWindowController::Layout PhiWindowController::ComputeLayout() const {
+  Layout out;
+  out.mode = layout_mode_;
+  if (shell_hwnd_) {
+    ::GetClientRect(shell_hwnd_, &out.client);
+  }
+  const int w = out.client.right;
+  const int h = out.client.bottom;
+
+  if (layout_mode_ == PhiLayoutMode::kPerformance) {
+    // Everything in the sidebar. These are the ORIGINAL constants and must stay
+    // put: the pixel suites mirror them.
+    out.sidebar = {0, 0, kSidebarWidth, h};
+    out.content = {kSidebarWidth, 0, w, h};
+    out.url_field = kUrlField;
+    out.back = kBackButton;
+    out.forward = kForwardButton;
+    out.reload = kReloadButton;
+    out.new_window = kNewWindowButton;
+    // Tucked into the empty header band above the URL field, clear of every
+    // region the pixel suites scan.
+    out.layout_button = {kTabsInset + 4, 100, kSidebarWidth - kTabsInset - 4,
+                         100 + kLayoutButtonHeight};
+    out.chips_left = kTabsInset;
+    out.chips_top = kSpacesTop;
+    out.chips_limit = kSidebarWidth - kTabsInset;
+    out.add_space = {kTabsInset, kSpacesTop + kSpaceChipH + 6, kTabsInset + 100,
+                     kSpacesTop + kSpaceChipH + 34};
+    out.add_profile_space = {kTabsInset + 106, kSpacesTop + kSpaceChipH + 6,
+                             kSidebarWidth - kTabsInset,
+                             kSpacesTop + kSpaceChipH + 34};
+    out.tabs_left = kTabsInset;
+    out.tabs_top = kTabsTop;
+    out.tabs_limit = h;
+    return out;
+  }
+
+  if (layout_mode_ == PhiLayoutMode::kBalanced) {
+    // Vertical tabs stay in the sidebar; navigation moves to a band across the
+    // top of the web content, so the sidebar's own rows shift up to fill the
+    // space the toolbar used to occupy.
+    out.sidebar = {0, 0, kSidebarWidth, h};
+    out.top_bar = {kSidebarWidth, 0, w, kTopBarHeight};
+    out.content = {kSidebarWidth, kTopBarHeight, w, h};
+
+    const int bar_y = (kTopBarHeight - kNavButtonSize) / 2;
+    int x = kSidebarWidth + 8;
+    out.back = {x, bar_y, x + kNavButtonSize, bar_y + kNavButtonSize};
+    x += kNavButtonSize + 4;
+    out.forward = {x, bar_y, x + kNavButtonSize, bar_y + kNavButtonSize};
+    x += kNavButtonSize + 4;
+    out.reload = {x, bar_y, x + kNavButtonSize, bar_y + kNavButtonSize};
+    x += kNavButtonSize + 8;
+    out.url_field = {x, bar_y, (w - 8 > x) ? (w - 8) : (x + 1),
+                     bar_y + kNavButtonSize};
+
+    out.layout_button = {kTabsInset + 4, 20, kSidebarWidth - kTabsInset - 4,
+                         20 + kLayoutButtonHeight};
+    out.new_window = {kTabsInset + 4, 64, kSidebarWidth - kTabsInset - 4, 108};
+    out.chips_left = kTabsInset;
+    out.chips_top = 120;
+    out.chips_limit = kSidebarWidth - kTabsInset;
+    out.add_space = {kTabsInset, 158, kTabsInset + 100, 186};
+    out.add_profile_space = {kTabsInset + 106, 158, kSidebarWidth - kTabsInset,
+                             186};
+    out.tabs_left = kTabsInset;
+    out.tabs_top = 198;
+    out.tabs_limit = h;
+    return out;
+  }
+
+  // Comfortable: the traditional stack — horizontal tabs, then the toolbar,
+  // then the Spaces row — with no sidebar at all and the content full width.
+  const int spaces_top = kHTabStripHeight + kTopBarHeight;
+  out.top_bar = {0, 0, w, spaces_top + kSpacesRowHeight};
+  out.content = {0, spaces_top + kSpacesRowHeight, w, h};
+
+  out.tabs_left = kTabsInset;
+  out.tabs_top = 2;
+  out.tabs_limit = w - kTabsInset;
+  out.horizontal_tabs = true;
+
+  const int bar_y = kHTabStripHeight + (kTopBarHeight - kNavButtonSize) / 2;
+  int x = kTabsInset;
+  out.back = {x, bar_y, x + kNavButtonSize, bar_y + kNavButtonSize};
+  x += kNavButtonSize + 4;
+  out.forward = {x, bar_y, x + kNavButtonSize, bar_y + kNavButtonSize};
+  x += kNavButtonSize + 4;
+  out.reload = {x, bar_y, x + kNavButtonSize, bar_y + kNavButtonSize};
+  x += kNavButtonSize + 8;
+  const int right_group = 150 + 8 + 130;  // Layout button + New Window.
+  const int url_right = (w - kTabsInset - right_group > x + 80)
+                            ? (w - kTabsInset - right_group)
+                            : (x + 80);
+  out.url_field = {x, bar_y, url_right, bar_y + kNavButtonSize};
+  out.layout_button = {url_right + 8, bar_y, url_right + 158,
+                       bar_y + kLayoutButtonHeight};
+  out.new_window = {url_right + 166, bar_y, url_right + 296,
+                    bar_y + kLayoutButtonHeight};
+
+  out.chips_left = kTabsInset;
+  out.chips_top = spaces_top + 1;
+  out.chips_limit = (w - kTabsInset - 212 > kTabsInset)
+                        ? (w - kTabsInset - 212)
+                        : kTabsInset;
+  out.add_space = {out.chips_limit + 6, spaces_top + 3, out.chips_limit + 106,
+                   spaces_top + 31};
+  out.add_profile_space = {out.chips_limit + 112, spaces_top + 3,
+                           out.chips_limit + 212, spaces_top + 31};
+  return out;
+}
+
+RECT PhiWindowController::content_rect() const {
+  return ComputeLayout().content;
+}
+
+void PhiWindowController::ApplyLayoutMode(PhiLayoutMode mode) {
+  if (layout_mode_ == mode) {
+    return;
+  }
+  layout_mode_ = mode;
+  LayoutContents();  // Also repositions the address field for the new mode.
+  RefreshTabs();
+}
+
 PhiWindowController::PhiWindowController(int64_t window_id,
                                         HWND browser_hwnd,
                                         phi_framework::PhiFramework* framework,
@@ -96,6 +255,9 @@ PhiWindowController::PhiWindowController(int64_t window_id,
     return;
   }
   EnsureShellClass();
+  if (host_) {
+    layout_mode_ = host_->LayoutMode();  // One layout for the whole client.
+  }
 
   // Create the client shell so its CONTENT REGION lands exactly where the
   // browser window already is — the shell is one sidebar wider, plus its frame.
@@ -175,17 +337,9 @@ void PhiWindowController::EnsureUrlField() {
                               &metrics, 0)) {
     url_font_ = ::CreateFontIndirectW(&metrics.lfMessageFont);
   }
-  // Sits INSIDE the painted field box, vertically centred: a single-line EDIT
-  // draws its text at the top of its own rect, so filling the whole box would
-  // leave the text hugging the upper edge.
-  const int text_height = 20;
-  const int top = kUrlField.top + (kUrlField.bottom - kUrlField.top -
-                                   text_height) / 2;
   url_field_ = ::CreateWindowExW(
-      0, L"EDIT", L"",
-      WS_CHILD | WS_VISIBLE | ES_LEFT | ES_AUTOHSCROLL, kUrlField.left + 6,
-      top, kUrlField.right - kUrlField.left - 12, text_height, shell_hwnd_,
-      nullptr, ::GetModuleHandleW(nullptr), nullptr);
+      0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_LEFT | ES_AUTOHSCROLL, 0, 0,
+      10, 10, shell_hwnd_, nullptr, ::GetModuleHandleW(nullptr), nullptr);
   if (!url_field_) {
     LOG(ERROR) << "[PhiClient] address field CreateWindowEx failed err="
                << ::GetLastError();
@@ -202,6 +356,22 @@ void PhiWindowController::EnsureUrlField() {
   if (!g_edit_base_proc) {
     g_edit_base_proc = previous;
   }
+  PositionUrlField(ComputeLayout());
+}
+
+void PhiWindowController::PositionUrlField(const Layout& layout) {
+  if (!url_field_) {
+    return;
+  }
+  // Sits INSIDE the painted field box, vertically centred: a single-line EDIT
+  // draws its text at the top of its own rect, so filling the whole box would
+  // leave the text hugging the upper edge.
+  const int text_height = 20;
+  const RECT& box = layout.url_field;
+  const int width = box.right - box.left - 12;
+  ::MoveWindow(url_field_, box.left + 6,
+               box.top + (box.bottom - box.top - text_height) / 2,
+               width > 0 ? width : 1, text_height, TRUE);
 }
 
 void PhiWindowController::SyncUrlField(bool force) {
@@ -316,14 +486,13 @@ void PhiWindowController::LayoutContents() {
   if (!shell_hwnd_) {
     return;
   }
-  RECT rc = {};
-  ::GetClientRect(shell_hwnd_, &rc);
-  const int w = rc.right - rc.left;
-  const int h = rc.bottom - rc.top;
+  const Layout layout = ComputeLayout();
+  PositionUrlField(layout);
   if (browser_hwnd_ && ::IsWindow(browser_hwnd_)) {
-    // Content fills everything right of the sidebar.
-    ::SetWindowPos(browser_hwnd_, nullptr, kSidebarWidth, 0,
-                   (w > kSidebarWidth) ? (w - kSidebarWidth) : 0, h,
+    const int w = layout.content.right - layout.content.left;
+    const int h = layout.content.bottom - layout.content.top;
+    ::SetWindowPos(browser_hwnd_, nullptr, layout.content.left,
+                   layout.content.top, w > 0 ? w : 0, h > 0 ? h : 0,
                    SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW);
   }
 }
@@ -502,6 +671,10 @@ void PhiWindowController::RebuildNavState() {
 
 void PhiWindowController::RebuildChips() {
   chips_.clear();
+  const Layout layout = ComputeLayout();
+  layout_button_ = layout.layout_button;
+  add_space_button_ = layout.add_space;
+  add_profile_space_button_ = layout.add_profile_space;
   if (!host_) {
     return;
   }
@@ -510,7 +683,7 @@ void PhiWindowController::RebuildChips() {
   if (!parsed || !parsed->is_list()) {
     return;
   }
-  int x = kTabsInset;
+  int x = layout.chips_left;
   for (const base::Value& v : parsed->GetList()) {
     if (!v.is_dict()) {
       continue;
@@ -520,23 +693,18 @@ void PhiWindowController::RebuildChips() {
     if (!id) {
       continue;
     }
-    if (x + kSpaceChipW > kSidebarWidth - kTabsInset) {
+    if (x + kSpaceChipW > layout.chips_limit) {
       break;  // Row is full; a scroller is future work.
     }
     SpaceChip chip;
     chip.id = *id;
     chip.label = L"S" + base::UTF8ToWide(*id);
     chip.open = HasSpace(*id);
-    chip.bounds = {x, kSpacesTop, x + kSpaceChipW, kSpacesTop + kSpaceChipH};
+    chip.bounds = {x, layout.chips_top, x + kSpaceChipW,
+                   layout.chips_top + kSpaceChipH};
     chips_.push_back(std::move(chip));
     x += kSpaceChipW + kSpaceChipGap;
   }
-  // Two create buttons on the row below: same profile, and new profile.
-  add_space_button_ = {kTabsInset, kSpacesTop + kSpaceChipH + 6,
-                       kTabsInset + 100, kSpacesTop + kSpaceChipH + 34};
-  add_profile_space_button_ = {kTabsInset + 106, kSpacesTop + kSpaceChipH + 6,
-                               kSidebarWidth - kTabsInset,
-                               kSpacesTop + kSpaceChipH + 34};
 }
 
 void PhiWindowController::RebuildTabs() {
@@ -547,7 +715,9 @@ void PhiWindowController::RebuildTabs() {
     std::optional<base::Value> parsed = base::JSONReader::Read(
         framework_->ListTabsJson(active_browser_ ? active_browser_ : window_id_), base::JSON_PARSE_RFC);
     if (parsed && parsed->is_list()) {
-      int y = kTabsTop;
+      const Layout layout = ComputeLayout();
+      int x = layout.tabs_left;
+      int y = layout.tabs_top;
       for (const base::Value& v : parsed->GetList()) {
         if (!v.is_dict()) {
           continue;
@@ -562,48 +732,73 @@ void PhiWindowController::RebuildTabs() {
                                 ? *title
                                 : (url ? *url : std::string("(untitled)"));
         row.title = base::UTF8ToWide(label);
-        row.bounds = {kTabsInset, y, kSidebarWidth - kTabsInset,
-                      y + kTabRowHeight};
+        if (layout.horizontal_tabs) {
+          if (x + kHTabWidth > layout.tabs_limit) {
+            break;  // Strip is full; overflow handling is future work.
+          }
+          row.bounds = {x, y, x + kHTabWidth, y + kHTabStripHeight - 4};
+          x += kHTabWidth + kHTabGap;
+        } else {
+          if (y + kTabRowHeight > layout.tabs_limit) {
+            break;
+          }
+          row.bounds = {layout.tabs_left, y, kSidebarWidth - kTabsInset,
+                        y + kTabRowHeight};
+          y += kTabRowHeight + kTabRowGap;
+        }
+        const int box_mid = (row.bounds.top + row.bounds.bottom) / 2;
         row.close_box = {row.bounds.right - kCloseBoxSize - 4,
-                         y + (kTabRowHeight - kCloseBoxSize) / 2,
-                         row.bounds.right - 4,
-                         y + (kTabRowHeight + kCloseBoxSize) / 2};
+                         box_mid - kCloseBoxSize / 2, row.bounds.right - 4,
+                         box_mid + kCloseBoxSize / 2};
         tabs_.push_back(std::move(row));
-        y += kTabRowHeight + kTabRowGap;
       }
     }
   }
 }
 
-void PhiWindowController::OnSidebarClick(int x, int y) {
-  // Clicking anywhere else in the sidebar means the user is done editing the
+void PhiWindowController::OnChromeClick(int x, int y) {
+  // Clicking anywhere else in the chrome means the user is done editing the
   // address; hand the keyboard back to the page (the field is a child window,
   // so clicks on it never reach here).
   if (url_field_ && ::GetFocus() == url_field_) {
     FocusActiveBrowser();
   }
+  const Layout layout = ComputeLayout();
   POINT pt = {x, y};
-  if (framework_ && ::PtInRect(&kBackButton, pt)) {
+  if (host_ && ::PtInRect(&layout.layout_button, pt)) {
+    // Cycles Performance -> Balanced -> Comfortable. The host applies it to
+    // every slot, so two windows never disagree about the layout.
+    PhiLayoutMode next = PhiLayoutMode::kPerformance;
+    if (layout_mode_ == PhiLayoutMode::kPerformance) {
+      next = PhiLayoutMode::kBalanced;
+    } else if (layout_mode_ == PhiLayoutMode::kBalanced) {
+      next = PhiLayoutMode::kComfortable;
+    }
+    host_->RequestLayoutMode(next);
+    return;
+  }
+  if (framework_ && ::PtInRect(&layout.back, pt)) {
     framework_->GoBack(active_browser_ ? active_browser_ : window_id_);
     RefreshTabs();
     return;
   }
-  if (framework_ && ::PtInRect(&kForwardButton, pt)) {
+  if (framework_ && ::PtInRect(&layout.forward, pt)) {
     framework_->GoForward(active_browser_ ? active_browser_ : window_id_);
     RefreshTabs();
     return;
   }
-  if (framework_ && ::PtInRect(&kReloadButton, pt)) {
+  if (framework_ && ::PtInRect(&layout.reload, pt)) {
     framework_->Reload(active_browser_ ? active_browser_ : window_id_, /*bypass_cache=*/false);
     RefreshTabs();
     return;
   }
-  if (::PtInRect(&kNewWindowButton, pt)) {
+  if (::PtInRect(&layout.new_window, pt)) {
     if (framework_) {
       framework_->NewWindow(window_id_);
     }
     return;
   }
+  RebuildTabs();  // Chips and rows may be stale if no paint has run yet.
   for (const SpaceChip& chip : chips_) {
     if (!::PtInRect(&chip.bounds, pt)) {
       continue;
@@ -618,12 +813,12 @@ void PhiWindowController::OnSidebarClick(int x, int y) {
     RefreshTabs();
     return;
   }
-  if (host_ && ::PtInRect(&add_space_button_, pt)) {
+  if (host_ && ::PtInRect(&layout.add_space, pt)) {
     host_->RequestCreateSpace(window_id_, /*new_profile=*/false);
     RefreshTabs();
     return;
   }
-  if (host_ && ::PtInRect(&add_profile_space_button_, pt)) {
+  if (host_ && ::PtInRect(&layout.add_profile_space, pt)) {
     host_->RequestCreateSpace(window_id_, /*new_profile=*/true);
     RefreshTabs();
     return;
@@ -644,31 +839,52 @@ void PhiWindowController::OnSidebarClick(int x, int y) {
   }
 }
 
-void PhiWindowController::PaintSidebar(HDC dc,
-                                       const RECT& client,
-                                       bool include_child_controls) {
-  RECT bar = {0, 0, kSidebarWidth, client.bottom};
+void PhiWindowController::PaintChrome(HDC dc,
+                                     const Layout& layout,
+                                     bool include_child_controls) {
+  // Paint only the bands we own. Whatever is left is the content region, and
+  // the reparented browser child covers it.
   HBRUSH band = ::CreateSolidBrush(kBandColor);
-  ::FillRect(dc, &bar, band);
+  if (layout.sidebar.right > layout.sidebar.left) {
+    ::FillRect(dc, &layout.sidebar, band);
+  }
+  if (layout.top_bar.right > layout.top_bar.left) {
+    ::FillRect(dc, &layout.top_bar, band);
+  }
   ::DeleteObject(band);
 
-  RECT stripe = {kSidebarWidth - 3, 0, kSidebarWidth, client.bottom};
   HBRUSH accent = ::CreateSolidBrush(kAccentColor);
-  ::FillRect(dc, &stripe, accent);
+  if (layout.sidebar.right > layout.sidebar.left) {
+    RECT stripe = {layout.sidebar.right - 3, layout.sidebar.top,
+                   layout.sidebar.right, layout.sidebar.bottom};
+    ::FillRect(dc, &stripe, accent);
+  }
+  if (layout.top_bar.bottom > layout.top_bar.top) {
+    RECT edge = {layout.top_bar.left, layout.top_bar.bottom - 3,
+                 layout.top_bar.right, layout.top_bar.bottom};
+    ::FillRect(dc, &edge, accent);
+  }
   ::DeleteObject(accent);
 
-  std::wstring text =
-      L"Phi  ·  window " + base::UTF8ToWide(std::to_string(window_id_));
   ::SetBkMode(dc, TRANSPARENT);
-  ::SetTextColor(dc, kInkColor);
-  RECT text_rc = {16, 20, kSidebarWidth - 12, kUrlField.top - 8};
-  ::DrawTextW(dc, text.c_str(), -1, &text_rc, DT_LEFT | DT_TOP | DT_WORDBREAK);
+  if (layout.mode != PhiLayoutMode::kComfortable) {
+    // The sidebar header. Comfortable has no sidebar to put it in.
+    std::wstring text =
+        L"Phi  ·  window " + base::UTF8ToWide(std::to_string(window_id_));
+    ::SetTextColor(dc, kInkColor);
+    RECT text_rc = {16, 20, kSidebarWidth - 12,
+                    (layout.mode == PhiLayoutMode::kPerformance) ? 96 : 18};
+    if (text_rc.bottom > text_rc.top) {
+      ::DrawTextW(dc, text.c_str(), -1, &text_rc,
+                  DT_LEFT | DT_TOP | DT_WORDBREAK);
+    }
+  }
 
   // URL field: the box behind the editable EDIT child. The child draws the
   // text on screen; on the capture path (no children rendered) we draw it here
   // so a screenshot still shows the address.
   HBRUSH url_bg = ::CreateSolidBrush(kUrlFieldBg);
-  ::FillRect(dc, &kUrlField, url_bg);
+  ::FillRect(dc, &layout.url_field, url_bg);
   ::DeleteObject(url_bg);
   if (include_child_controls) {
     std::wstring shown = nav_url_;
@@ -681,7 +897,7 @@ void PhiWindowController::PaintSidebar(HDC dc,
       shown.assign(buffer.data());  // What the user actually sees, mid-edit.
     }
     ::SetTextColor(dc, kUrlInk);
-    RECT url_rc = kUrlField;
+    RECT url_rc = layout.url_field;
     url_rc.left += 8;
     url_rc.right -= 8;
     ::DrawTextW(dc, shown.empty() ? L"(no page)" : shown.c_str(), -1, &url_rc,
@@ -693,19 +909,31 @@ void PhiWindowController::PaintSidebar(HDC dc,
     ::SetTextColor(dc, enabled ? kBtnEnabled : kBtnDisabled);
     ::DrawTextW(dc, glyph, -1, &rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
   };
-  draw_button(kBackButton, L"<", can_go_back_);
-  draw_button(kForwardButton, L">", can_go_forward_);
-  draw_button(kReloadButton, nav_loading_ ? L"x" : L"R", true);
+  draw_button(layout.back, L"<", can_go_back_);
+  draw_button(layout.forward, L">", can_go_forward_);
+  draw_button(layout.reload, nav_loading_ ? L"x" : L"R", true);
 
-  // "+ New Window" button — proves the slot model (a click spawns a second
-  // shell window via the framework).
-  RECT btn = kNewWindowButton;
-  HBRUSH btn_brush = ::CreateSolidBrush(kButtonColor);
-  ::FillRect(dc, &btn, btn_brush);
-  ::DeleteObject(btn_brush);
-  ::SetTextColor(dc, kButtonInk);
-  ::DrawTextW(dc, L"+  New Window", -1, &btn,
-              DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+  auto draw_pill = [&](RECT r, const wchar_t* text) {
+    if (r.right <= r.left) {
+      return;
+    }
+    HBRUSH b = ::CreateSolidBrush(kButtonColor);
+    ::FillRect(dc, &r, b);
+    ::DeleteObject(b);
+    ::SetTextColor(dc, kButtonInk);
+    ::DrawTextW(dc, text, -1, &r, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+  };
+
+  // "+ New Window" — a click spawns a second shell window via the framework.
+  draw_pill(layout.new_window, L"+  New Window");
+  // The layout switch, showing what a click would give you next.
+  const wchar_t* layout_label = L"Layout: Performance";
+  if (layout.mode == PhiLayoutMode::kBalanced) {
+    layout_label = L"Layout: Balanced";
+  } else if (layout.mode == PhiLayoutMode::kComfortable) {
+    layout_label = L"Layout: Comfortable";
+  }
+  draw_pill(layout.layout_button, layout_label);
 
   // Space chips: EVERY Space (not only those open here) so any can be entered.
   for (const SpaceChip& chip : chips_) {
@@ -720,22 +948,13 @@ void PhiWindowController::PaintSidebar(HDC dc,
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE);
   }
   // Create-Space buttons: same profile as the current Space, or a new profile.
-  auto draw_pill = [&](RECT r, const wchar_t* text) {
-    HBRUSH b = ::CreateSolidBrush(kButtonColor);
-    ::FillRect(dc, &r, b);
-    ::DeleteObject(b);
-    ::SetTextColor(dc, kButtonInk);
-    ::DrawTextW(dc, text, -1, &r, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-  };
-  draw_pill(add_space_button_, L"+ Space");
-  draw_pill(add_profile_space_button_, L"+ Space & profile");
+  draw_pill(layout.add_space, L"+ Space");
+  draw_pill(layout.add_profile_space, L"+ Space & profile");
 
-  // Tab rows, driven by live framework state: the active tab gets a white
-  // chip, each row a close box.
+  // Tab rows (a vertical list, or cells along the strip in Comfortable),
+  // driven by live framework state: the active tab gets a white chip, each row
+  // a close box.
   for (const TabRow& row : tabs_) {
-    if (row.bounds.bottom > client.bottom) {
-      break;  // Out of sidebar space.
-    }
     if (row.active) {
       HBRUSH chip = ::CreateSolidBrush(kTabActiveBg);
       ::FillRect(dc, &row.bounds, chip);
@@ -776,8 +995,12 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
       POINT cursor = {};
       ::GetCursorPos(&cursor);
       ::ScreenToClient(hwnd, &cursor);
-      const bool in_sidebar = cursor.x < kSidebarWidth;
-      if (!in_sidebar && self && self->browser_hwnd_ &&
+      RECT content = {};
+      if (self) {
+        content = self->ComputeLayout().content;
+      }
+      const bool in_chrome = self && !::PtInRect(&content, cursor);
+      if (!in_chrome && self && self->browser_hwnd_ &&
           ::IsWindow(self->browser_hwnd_)) {
         ::SetFocus(self->browser_hwnd_);
         if (self->framework_) {
@@ -802,7 +1025,7 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
       return 0;
     case WM_LBUTTONDOWN:
       if (self) {
-        self->OnSidebarClick(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
+        self->OnChromeClick(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
         return 0;
       }
       return ::DefWindowProcW(hwnd, msg, wparam, lparam);
@@ -818,9 +1041,8 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
       if (self) {
         HDC dc = reinterpret_cast<HDC>(wparam);
         self->RebuildTabs();
-        RECT rc = {};
-        ::GetClientRect(hwnd, &rc);
-        self->PaintSidebar(dc, rc, /*include_child_controls=*/true);
+        self->PaintChrome(dc, self->ComputeLayout(),
+                          /*include_child_controls=*/true);
       }
       return 0;
     }
@@ -831,9 +1053,8 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
         // Re-read framework state at paint time: the sidebar then reflects
         // reality even if a change notification was missed or coalesced.
         self->RebuildTabs();
-        RECT rc = {};
-        ::GetClientRect(hwnd, &rc);
-        self->PaintSidebar(dc, rc, /*include_child_controls=*/false);
+        self->PaintChrome(dc, self->ComputeLayout(),
+                          /*include_child_controls=*/false);
       }
       ::EndPaint(hwnd, &ps);
       return 0;

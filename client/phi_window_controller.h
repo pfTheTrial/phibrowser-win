@@ -17,6 +17,20 @@
 
 namespace phi_client {
 
+// Where the browser's chrome lives. The Mac client's LayoutMode, same names
+// and same meanings (PhiPreferences.swift), so a user moving between platforms
+// gets the same three choices:
+//
+//   kPerformance  vertical tabs, address bar IN the sidebar (the default)
+//   kBalanced     vertical tabs, address bar across the TOP of the web content
+//   kComfortable  horizontal tabs — the traditional stacked layout, no sidebar
+enum class PhiLayoutMode { kPerformance, kBalanced, kComfortable };
+
+// Wire names, matching the Mac enum's raw values so the two clients can share
+// a stored setting: "performance", "balanced", "comfortable".
+const char* PhiLayoutModeName(PhiLayoutMode mode);
+bool PhiLayoutModeFromName(const std::string& name, PhiLayoutMode* out);
+
 // What a slot needs from its owner (the coordinator): the full Space list to
 // draw, and requests that only the owner can service (switching to a Space
 // that has no browser yet must create one in that Space's profile).
@@ -29,6 +43,10 @@ class PhiSlotHost {
   // Creates a Space in this slot's current profile (`new_profile` = false) or
   // in a freshly created profile (true), then switches to it.
   virtual void RequestCreateSpace(int64_t slot, bool new_profile) = 0;
+  // The layout every slot renders in — one setting for the whole client, as on
+  // Mac, so a new window never disagrees with the one beside it.
+  virtual PhiLayoutMode LayoutMode() const = 0;
+  virtual void RequestLayoutMode(PhiLayoutMode mode) = 0;
 };
 
 // Owns the client-drawn shell window for one browser (the Windows twin of the
@@ -96,6 +114,12 @@ class PhiWindowController {
   // Gives the currently shown browser Win32 focus and Chromium activation.
   void FocusActiveBrowser();
 
+  // Re-lays the chrome for `mode` and repaints. Cheap: all geometry is derived
+  // from the client rect on demand, so nothing is cached across the switch.
+  void ApplyLayoutMode(PhiLayoutMode mode);
+  // The content region (client coords) the browser child occupies.
+  RECT content_rect() const;
+
   // Shell window geometry (client-owned; no framework round-trip).
   bool GetBounds(int* x, int* y, int* w, int* h) const;
   bool SetBounds(int x, int y, int w, int h);
@@ -108,14 +132,38 @@ class PhiWindowController {
                                        LPARAM lparam);
 
  private:
+  // Every rect the chrome needs, for one layout mode. Derived from the client
+  // rect on demand rather than stored, so a resize or a mode switch needs no
+  // invalidation of its own.
+  struct Layout {
+    PhiLayoutMode mode = PhiLayoutMode::kPerformance;
+    RECT client{};
+    RECT sidebar{};  // Empty in Comfortable.
+    RECT top_bar{};  // The band above the content; empty in Performance.
+    RECT content{};  // Where the reparented browser child goes.
+    RECT url_field{};
+    RECT back{}, forward{}, reload{};
+    RECT new_window{};
+    RECT layout_button{};  // Cycles the mode.
+    RECT add_space{}, add_profile_space{};
+    int chips_left = 0, chips_top = 0;
+    int chips_limit = 0;  // Right edge chips may not cross.
+    int tabs_left = 0, tabs_top = 0;
+    int tabs_limit = 0;   // Bottom (vertical) or right (horizontal) edge.
+    bool horizontal_tabs = false;
+  };
+  Layout ComputeLayout() const;
+
   void AdoptBrowserAsChild();
   void LayoutContents();
+  // Moves the address field's EDIT child into `layout`'s slot for it.
+  void PositionUrlField(const Layout& layout);
   // `include_child_controls` draws what child windows would draw themselves —
   // set only on the WM_PRINTCLIENT (PrintWindow) path, which renders the
   // parent alone. In WM_PAINT the URL field's EDIT child paints that region.
-  void PaintSidebar(HDC dc, const RECT& client, bool include_child_controls);
-  // Handles a click in the sidebar (tab rows, close boxes, buttons, toolbar).
-  void OnSidebarClick(int x, int y);
+  void PaintChrome(HDC dc, const Layout& layout, bool include_child_controls);
+  // Handles a click in the chrome (tab rows, close boxes, buttons, toolbar).
+  void OnChromeClick(int x, int y);
   // Re-reads navigation state (url/title/canGoBack/…) for the toolbar.
   void RebuildNavState();
 
@@ -176,6 +224,8 @@ class PhiWindowController {
   std::vector<SpaceChip> chips_;
   RECT add_space_button_{};
   RECT add_profile_space_button_{};
+  RECT layout_button_{};
+  PhiLayoutMode layout_mode_ = PhiLayoutMode::kPerformance;
 };
 
 }  // namespace phi_client

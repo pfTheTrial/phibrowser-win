@@ -57,7 +57,9 @@ void PhiCoordinator::OnFrameworkReady(phi_framework::PhiFramework* framework,
   const std::wstring user_data_dir =
       base::UTF8ToWide(user_data_dir_utf8 ? user_data_dir_utf8 : "");
   spaces_path_ = user_data_dir + L"\\PhiSpaces.json";
+  layout_path_ = user_data_dir + L"\\PhiLayout.json";
   LoadSpaces();
+  LoadLayoutMode();
 
   control_server_.Start(user_data_dir, this);
 }
@@ -177,6 +179,66 @@ void PhiCoordinator::SaveSpaces() const {
   DWORD wrote = 0;
   ::WriteFile(f, json.data(), static_cast<DWORD>(json.size()), &wrote, nullptr);
   ::CloseHandle(f);
+}
+
+void PhiCoordinator::LoadLayoutMode() {
+  HANDLE f = ::CreateFileW(layout_path_.c_str(), GENERIC_READ, FILE_SHARE_READ,
+                           nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
+                           nullptr);
+  if (f == INVALID_HANDLE_VALUE) {
+    return;  // First run: the Mac default, Performance.
+  }
+  std::string json;
+  char buf[512];
+  DWORD read = 0;
+  while (::ReadFile(f, buf, sizeof(buf), &read, nullptr) && read > 0) {
+    json.append(buf, read);
+  }
+  ::CloseHandle(f);
+  std::optional<base::DictValue> root =
+      base::JSONReader::ReadDict(json, base::JSON_PARSE_RFC);
+  if (!root) {
+    return;
+  }
+  if (const std::string* name = root->FindString("layoutMode")) {
+    PhiLayoutMode parsed = PhiLayoutMode::kPerformance;
+    if (PhiLayoutModeFromName(*name, &parsed)) {
+      layout_mode_ = parsed;
+      LOG(INFO) << "[PhiClient] layout mode: " << *name;
+    }
+  }
+}
+
+void PhiCoordinator::SaveLayoutMode() const {
+  base::DictValue root;
+  root.Set("layoutMode", PhiLayoutModeName(layout_mode_));
+  std::string json;
+  base::JSONWriter::Write(root, &json);
+  HANDLE f = ::CreateFileW(layout_path_.c_str(), GENERIC_WRITE, 0, nullptr,
+                           CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (f == INVALID_HANDLE_VALUE) {
+    return;
+  }
+  DWORD wrote = 0;
+  ::WriteFile(f, json.data(), static_cast<DWORD>(json.size()), &wrote, nullptr);
+  ::CloseHandle(f);
+}
+
+PhiLayoutMode PhiCoordinator::LayoutMode() const {
+  return layout_mode_;
+}
+
+void PhiCoordinator::RequestLayoutMode(PhiLayoutMode mode) {
+  if (layout_mode_ == mode) {
+    return;
+  }
+  layout_mode_ = mode;
+  SaveLayoutMode();
+  // Every slot re-lays out: the layout is a client-wide setting, so two
+  // windows side by side must never disagree.
+  for (const auto& [slot, controller] : windows_) {
+    controller->ApplyLayoutMode(mode);
+  }
 }
 
 bool PhiCoordinator::TryFinishProfileSpace() {
@@ -480,6 +542,45 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
       }
     }
     out.Set("ok", out.contains("id"));
+  } else if (type == "agentSpace.layout.get") {
+    out.Set("mode", PhiLayoutModeName(layout_mode_));
+    out.Set("ok", true);
+  } else if (type == "agentSpace.layout.set") {
+    std::optional<base::DictValue> p =
+        base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
+    PhiLayoutMode mode = layout_mode_;
+    bool ok = false;
+    if (p) {
+      if (const std::string* name = p->FindString("mode")) {
+        ok = PhiLayoutModeFromName(*name, &mode);
+      }
+    }
+    if (ok) {
+      RequestLayoutMode(mode);
+    }
+    out.Set("mode", PhiLayoutModeName(layout_mode_));
+    out.Set("ok", ok);
+  } else if (type == "agentSpace.window.layout") {
+    // The chrome geometry a slot is rendering, so layout can be asserted
+    // without going through pixels.
+    std::optional<base::DictValue> p =
+        base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
+    int64_t slot =
+        p ? static_cast<int64_t>(p->FindDouble("windowId").value_or(0)) : 0;
+    auto it = windows_.find(slot);
+    if (it != windows_.end()) {
+      const RECT content = it->second->content_rect();
+      base::DictValue rect;
+      rect.Set("x", static_cast<int>(content.left));
+      rect.Set("y", static_cast<int>(content.top));
+      rect.Set("width", static_cast<int>(content.right - content.left));
+      rect.Set("height", static_cast<int>(content.bottom - content.top));
+      out.Set("content", std::move(rect));
+      out.Set("mode", PhiLayoutModeName(layout_mode_));
+      out.Set("ok", true);
+    } else {
+      out.Set("ok", false);
+    }
   } else if (type == "agentSpace.window.handle") {
     // The slot's shell HWND, so a test/screenshot tool can capture exactly the
     // window it is driving (several slots may exist).

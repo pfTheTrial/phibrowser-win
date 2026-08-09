@@ -1,4 +1,5 @@
-// Persistence suite: the Space list (id, name, profile) survives a restart.
+// Persistence suite: the Space list (id, name, profile) and the chosen
+// layout survive a restart.
 // This suite RESTARTS the app itself, so it must run last (alphabetically it
 // sorts before suite-profiles/spaces — the runner tolerates any order because
 // each suite is self-contained).
@@ -77,6 +78,32 @@ test('persist: space ids keep increasing after a restart', async () => {
                                    { windowId: windows[0] })).spaces
     const ids = spaces.map((s) => s.id)
     assertEq(new Set(ids).size, ids.length, 'no duplicate space ids')
+  } finally { ctl.close() }
+})
+
+test('persist: the chosen layout survives a restart', async () => {
+  let ctl = await openControl()
+  try {
+    // Comfortable is the most distinctive: no sidebar at all.
+    assertEq((await ctl.send('agentSpace.layout.set',
+                             { mode: 'comfortable' })).ok, true, 'set ok')
+  } finally { ctl.close() }
+
+  await restartApp()
+
+  ctl = await openControl()
+  try {
+    assertEq((await ctl.send('agentSpace.layout.get')).mode, 'comfortable',
+             'layout restored')
+    const { windows } = await ctl.send('agentSpace.list')
+    const l = await ctl.send('agentSpace.window.layout', { windowId: windows[0] })
+    assertEq(l.content.x, 0, 'the restored window really has no sidebar')
+  } finally { ctl.close() }
+
+  // Leave the default behind for the suites that assume it.
+  ctl = await openControl()
+  try {
+    await ctl.send('agentSpace.layout.set', { mode: 'performance' })
   } finally { ctl.close() }
 })
 

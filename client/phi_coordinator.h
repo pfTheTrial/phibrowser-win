@@ -52,6 +52,8 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   std::string AllSpacesJson() const override;
   void RequestSwitchSpace(int64_t slot, const std::string& space_id) override;
   void RequestCreateSpace(int64_t slot, bool new_profile) override;
+  PhiLayoutMode LayoutMode() const override;
+  void RequestLayoutMode(PhiLayoutMode mode) override;
 
  private:
   // Runs a control command on the UI thread; returns the JSON response. Called
@@ -91,6 +93,12 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   std::wstring spaces_path_;
   void LoadSpaces();
   void SaveSpaces() const;
+  // Where the chrome lives — one setting for every slot, as on Mac. Persisted
+  // beside the Space list so a restart comes back in the same layout.
+  PhiLayoutMode layout_mode_ = PhiLayoutMode::kPerformance;
+  std::wstring layout_path_;
+  void LoadLayoutMode();
+  void SaveLayoutMode() const;
   // Set while a Space browser is being created, so the next
   // OnBrowserWindowCreated attaches to that slot instead of opening a shell.
   int64_t pending_slot_ = 0;
