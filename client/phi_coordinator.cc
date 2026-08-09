@@ -62,6 +62,7 @@ void PhiCoordinator::OnFrameworkReady(phi_framework::PhiFramework* framework,
   LoadSpaces();
   LoadLayoutMode();
   LoadTheme();
+  tab_store_.Load(user_data_dir + L"\\PhiTabData.json");
 
   control_server_.Start(user_data_dir, this);
 }
@@ -228,6 +229,65 @@ void PhiCoordinator::SaveLayoutMode() const {
   DWORD wrote = 0;
   ::WriteFile(f, json.data(), static_cast<DWORD>(json.size()), &wrote, nullptr);
   ::CloseHandle(f);
+}
+
+bool PhiCoordinator::OwnerForSlot(int64_t slot, std::string* profile_id,
+                                  std::string* space_id) const {
+  auto it = windows_.find(slot);
+  if (it == windows_.end()) {
+    return false;
+  }
+  *space_id = it->second->active_space();
+  *profile_id = "Default";
+  for (const Space& space : spaces_) {
+    if (space.id == *space_id) {
+      *profile_id = space.profile_id;
+      break;
+    }
+  }
+  return true;
+}
+
+std::string PhiCoordinator::PinnedJson(int64_t slot) const {
+  std::string profile_id, space_id;
+  base::ListValue list;
+  if (OwnerForSlot(slot, &profile_id, &space_id)) {
+    for (const PhiRow& row : tab_store_.PinnedFor(profile_id, space_id)) {
+      base::DictValue entry;
+      entry.Set("guid", row.guid);
+      entry.Set("title", row.title);
+      entry.Set("url", row.url);
+      list.Append(std::move(entry));
+    }
+  }
+  std::string json;
+  base::JSONWriter::Write(list, &json);
+  return json;
+}
+
+std::string PhiCoordinator::BookmarksJson(int64_t slot) const {
+  std::string profile_id, space_id;
+  base::ListValue list;
+  if (OwnerForSlot(slot, &profile_id, &space_id)) {
+    for (const PhiRow& row :
+         tab_store_.BookmarksFor(profile_id, space_id, std::string())) {
+      base::DictValue entry;
+      entry.Set("guid", row.guid);
+      entry.Set("title", row.title);
+      entry.Set("url", row.url);
+      entry.Set("folder", row.type == PhiRowType::kBookmarkFolder);
+      list.Append(std::move(entry));
+    }
+  }
+  std::string json;
+  base::JSONWriter::Write(list, &json);
+  return json;
+}
+
+void PhiCoordinator::RequestOpen(int64_t slot, const std::string& url) {
+  if (framework_ && !url.empty()) {
+    framework_->NewTab(ResolveBrowser(slot), url.c_str());
+  }
 }
 
 void PhiCoordinator::LoadTheme() {
@@ -662,6 +722,176 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
       RequestLayoutMode(mode);
     }
     out.Set("mode", PhiLayoutModeName(layout_mode_));
+    out.Set("ok", ok);
+  } else if (type == "agentSpace.pinned.scope.get") {
+    out.Set("scope", PhiPinScopeName(tab_store_.pin_scope()));
+    out.Set("ok", true);
+  } else if (type == "agentSpace.pinned.scope.set") {
+    std::optional<base::DictValue> p =
+        base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
+    PhiPinScope scope = tab_store_.pin_scope();
+    bool ok = false;
+    if (p) {
+      if (const std::string* name = p->FindString("scope")) {
+        ok = PhiPinScopeFromName(*name, &scope);
+      }
+    }
+    if (ok) {
+      tab_store_.SetPinScope(scope);
+      for (const auto& [slot, controller] : windows_) {
+        controller->RefreshTabs();
+      }
+    }
+    out.Set("scope", PhiPinScopeName(tab_store_.pin_scope()));
+    out.Set("ok", ok);
+  } else if (type == "agentSpace.pinned.list") {
+    std::optional<base::DictValue> p =
+        base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
+    int64_t slot =
+        p ? static_cast<int64_t>(p->FindDouble("windowId").value_or(0)) : 0;
+    std::string profile_id, space_id;
+    base::ListValue list;
+    if (OwnerForSlot(slot, &profile_id, &space_id)) {
+      for (const PhiRow& row : tab_store_.PinnedFor(profile_id, space_id)) {
+        base::DictValue entry;
+        entry.Set("guid", row.guid);
+        entry.Set("title", row.title);
+        entry.Set("url", row.url);
+        entry.Set("index", row.index);
+        list.Append(std::move(entry));
+      }
+    }
+    out.Set("pinned", std::move(list));
+    out.Set("scope", PhiPinScopeName(tab_store_.pin_scope()));
+    out.Set("ok", true);
+  } else if (type == "agentSpace.pinned.add") {
+    std::optional<base::DictValue> p =
+        base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
+    int64_t slot = 0;
+    std::string title, url;
+    if (p) {
+      slot = static_cast<int64_t>(p->FindDouble("windowId").value_or(0));
+      if (const std::string* t = p->FindString("title")) {
+        title = *t;
+      }
+      if (const std::string* u = p->FindString("url")) {
+        url = *u;
+      }
+    }
+    std::string profile_id, space_id, guid;
+    if (OwnerForSlot(slot, &profile_id, &space_id)) {
+      // No url given: pin what the slot is showing.
+      if (url.empty() && framework_) {
+        std::optional<base::DictValue> st = base::JSONReader::ReadDict(
+            framework_->NavStateJson(ResolveBrowser(slot)), base::JSON_PARSE_RFC);
+        if (st) {
+          if (const std::string* u = st->FindString("url")) {
+            url = *u;
+          }
+          if (title.empty()) {
+            if (const std::string* t = st->FindString("title")) {
+              title = *t;
+            }
+          }
+        }
+      }
+      guid = tab_store_.AddPinned(profile_id, space_id, title, url);
+    }
+    if (!guid.empty()) {
+      for (const auto& [s, controller] : windows_) {
+        controller->RefreshTabs();
+      }
+    }
+    out.Set("guid", guid);
+    out.Set("ok", !guid.empty());
+  } else if (type == "agentSpace.bookmarks.list") {
+    std::optional<base::DictValue> p =
+        base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
+    int64_t slot = 0;
+    std::string parent;
+    if (p) {
+      slot = static_cast<int64_t>(p->FindDouble("windowId").value_or(0));
+      if (const std::string* g = p->FindString("parentGuid")) {
+        parent = *g;
+      }
+    }
+    std::string profile_id, space_id;
+    base::ListValue list;
+    if (OwnerForSlot(slot, &profile_id, &space_id)) {
+      for (const PhiRow& row :
+           tab_store_.BookmarksFor(profile_id, space_id, parent)) {
+        base::DictValue entry;
+        entry.Set("guid", row.guid);
+        entry.Set("title", row.title);
+        entry.Set("url", row.url);
+        entry.Set("index", row.index);
+        entry.Set("folder", row.type == PhiRowType::kBookmarkFolder);
+        list.Append(std::move(entry));
+      }
+    }
+    out.Set("bookmarks", std::move(list));
+    out.Set("ok", true);
+  } else if (type == "agentSpace.bookmarks.add") {
+    std::optional<base::DictValue> p =
+        base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
+    int64_t slot = 0;
+    std::string title, url, parent;
+    bool folder = false;
+    if (p) {
+      slot = static_cast<int64_t>(p->FindDouble("windowId").value_or(0));
+      if (const std::string* t = p->FindString("title")) {
+        title = *t;
+      }
+      if (const std::string* u = p->FindString("url")) {
+        url = *u;
+      }
+      if (const std::string* g = p->FindString("parentGuid")) {
+        parent = *g;
+      }
+      folder = p->FindBool("folder").value_or(false);
+    }
+    std::string profile_id, space_id, guid;
+    if (OwnerForSlot(slot, &profile_id, &space_id)) {
+      if (!folder && url.empty() && framework_) {
+        std::optional<base::DictValue> st = base::JSONReader::ReadDict(
+            framework_->NavStateJson(ResolveBrowser(slot)), base::JSON_PARSE_RFC);
+        if (st) {
+          if (const std::string* u = st->FindString("url")) {
+            url = *u;
+          }
+          if (title.empty()) {
+            if (const std::string* t = st->FindString("title")) {
+              title = *t;
+            }
+          }
+        }
+      }
+      guid = tab_store_.AddBookmark(profile_id, space_id, parent, title, url,
+                                    folder);
+    }
+    if (!guid.empty()) {
+      for (const auto& [s, controller] : windows_) {
+        controller->RefreshTabs();
+      }
+    }
+    out.Set("guid", guid);
+    out.Set("ok", !guid.empty());
+  } else if (type == "agentSpace.bookmarks.remove" ||
+             type == "agentSpace.pinned.remove") {
+    std::optional<base::DictValue> p =
+        base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
+    std::string guid;
+    if (p) {
+      if (const std::string* g = p->FindString("guid")) {
+        guid = *g;
+      }
+    }
+    const bool ok = tab_store_.Remove(guid);
+    if (ok) {
+      for (const auto& [s, controller] : windows_) {
+        controller->RefreshTabs();
+      }
+    }
     out.Set("ok", ok);
   } else if (type == "agentSpace.emoji.groups") {
     // The catalog the Mac bundles, offered verbatim.

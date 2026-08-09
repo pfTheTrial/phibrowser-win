@@ -48,6 +48,12 @@ class PhiSlotHost {
   // Mac, so a new window never disagrees with the one beside it.
   virtual PhiLayoutMode LayoutMode() const = 0;
   virtual void RequestLayoutMode(PhiLayoutMode mode) = 0;
+  // Pinned tabs and bookmarks for the slot, as JSON arrays:
+  //   [{"guid","title","url","folder"?},…]
+  virtual std::string PinnedJson(int64_t slot) const = 0;
+  virtual std::string BookmarksJson(int64_t slot) const = 0;
+  // Opens `url` in the slot (a pinned tab or bookmark was clicked).
+  virtual void RequestOpen(int64_t slot, const std::string& url) = 0;
   // The resolved theme every slot paints with — one setting for the whole
   // client, like the layout.
   virtual const PhiPalette& Palette() const = 0;
@@ -248,6 +254,21 @@ class PhiWindowController {
     RECT close_box{};    // The row's close affordance.
   };
   std::vector<TabRow> tabs_;
+  // Pinned tabs (the band under the header) and bookmarks (the section above
+  // the open tabs) — both come from the client's own store, as on Mac.
+  struct ShortcutRow {
+    std::string url;
+    std::wstring title;
+    bool folder = false;
+    RECT bounds{};
+  };
+  std::vector<ShortcutRow> pinned_;
+  std::vector<ShortcutRow> bookmarks_;
+  // Counted before the layout is derived, because the bands they occupy push
+  // everything below them down.
+  int pinned_row_count_ = 0;
+  int bookmark_row_count_ = 0;
+  void RebuildShortcuts();
 
   // Navigation state for the client toolbar, refreshed with the tab list.
   std::wstring nav_url_;

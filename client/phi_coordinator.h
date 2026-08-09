@@ -20,6 +20,7 @@
 #include "phibrowser-win/client/phi_control_server.h"
 #include "phibrowser-win/client/phi_emoji.h"
 #include "phibrowser-win/client/phi_settings_window.h"
+#include "phibrowser-win/client/phi_tab_store.h"
 #include "phibrowser-win/client/phi_theme.h"
 #include "phibrowser-win/client/phi_window_controller.h"
 
@@ -60,6 +61,9 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   void RequestLayoutMode(PhiLayoutMode mode) override;
   const PhiPalette& Palette() const override;
   void RequestSettings() override;
+  std::string PinnedJson(int64_t slot) const override;
+  std::string BookmarksJson(int64_t slot) const override;
+  void RequestOpen(int64_t slot, const std::string& url) override;
 
   // PhiSettingsHost:
   std::string ThemeId() const override;
@@ -121,6 +125,11 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   std::wstring theme_path_;
   void LoadTheme();
   void SaveTheme() const;
+  // Pinned tabs and bookmarks, the Mac's LocalStore equivalent.
+  PhiTabStore tab_store_;
+  // The (profile, space) a slot's pinned/bookmark rows belong to.
+  bool OwnerForSlot(int64_t slot, std::string* profile_id,
+                    std::string* space_id) const;
   // Recomputes `palette_` and repaints every slot.
   void ApplyTheme();
   // Set while a Space browser is being created, so the next

@@ -50,6 +50,10 @@ constexpr int kContentMargin = 8;
 constexpr int kContentRadius = 10;
 constexpr int kFaviconSize = 16;
 constexpr int kNewTabRowHeight = 32;
+// Pinned tabs: a grid of squares in the band the header reserves, the Mac's
+// PinnedTabLayout shape.
+constexpr int kPinnedCell = 44;
+constexpr int kPinnedGap = 6;
 
 // Bands used by the two layouts that put navigation above the web content.
 constexpr int kTopBarHeight = 44;
@@ -306,9 +310,21 @@ PhiWindowController::Layout PhiWindowController::ComputeLayout() {
 
   // The pinned-tab band sits between the header and the tab list. Empty until
   // favourites exist, exactly as on Mac (which mounts a zero-height container).
-  out.favorites = {inset, out.tabs_top, sidebar - inset, out.tabs_top};
-  out.new_tab_row = {inset, out.tabs_top, sidebar - inset,
-                     out.tabs_top + Scaled(kNewTabRowHeight)};
+  // The pinned band, then the bookmark rows, then "+ New Tab" and the open
+  // tabs — the Mac sidebar's order.
+  const int pinned_rows = pinned_row_count_;
+  const int pinned_height =
+      pinned_rows > 0 ? pinned_rows * Scaled(kPinnedCell) +
+                            (pinned_rows - 1) * Scaled(kPinnedGap)
+                      : 0;
+  out.favorites = {inset, out.tabs_top, sidebar - inset,
+                   out.tabs_top + pinned_height};
+  const int bookmarks_top = out.favorites.bottom +
+                            (pinned_height > 0 ? Scaled(kFavoritesSpacer) : 0);
+  const int bookmarks_height = bookmark_row_count_ * Scaled(kTabRowHeight);
+  out.new_tab_row = {inset, bookmarks_top + bookmarks_height, sidebar - inset,
+                     bookmarks_top + bookmarks_height +
+                         Scaled(kNewTabRowHeight)};
   out.tabs_top = out.new_tab_row.bottom + Scaled(2);
   place_bottom_bar(0, sidebar);
   out.tabs_left = inset;
@@ -842,9 +858,69 @@ void PhiWindowController::RebuildChips() {
   }
 }
 
+void PhiWindowController::RebuildShortcuts() {
+  pinned_.clear();
+  bookmarks_.clear();
+  if (!host_) {
+    return;
+  }
+  auto parse = [&](const std::string& json, std::vector<ShortcutRow>* out) {
+    std::optional<base::Value> parsed =
+        base::JSONReader::Read(json, base::JSON_PARSE_RFC);
+    if (!parsed || !parsed->is_list()) {
+      return;
+    }
+    for (const base::Value& value : parsed->GetList()) {
+      if (!value.is_dict()) {
+        continue;
+      }
+      const base::DictValue& d = value.GetDict();
+      ShortcutRow row;
+      if (const std::string* url = d.FindString("url")) {
+        row.url = *url;
+      }
+      const std::string* title = d.FindString("title");
+      row.title = base::UTF8ToWide(title && !title->empty() ? *title : row.url);
+      row.folder = d.FindBool("folder").value_or(false);
+      out->push_back(std::move(row));
+    }
+  };
+  parse(host_->PinnedJson(window_id_), &pinned_);
+  parse(host_->BookmarksJson(window_id_), &bookmarks_);
+  bookmark_row_count_ = static_cast<int>(bookmarks_.size());
+
+  // Pinned tabs sit in the band the header reserves for them — a grid of
+  // squares, as the Mac's PinnedTabLayout draws them.
+  const int cell = Scaled(kPinnedCell);
+  const int columns = std::max(
+      1, (Scaled(kSidebarWidth - 2 * kEdgeInset) + Scaled(kPinnedGap)) /
+             (cell + Scaled(kPinnedGap)));
+  pinned_row_count_ =
+      (static_cast<int>(pinned_.size()) + columns - 1) / columns;
+  // Derived only now: the two bands' sizes feed back into where everything
+  // below them sits.
+  const Layout layout = ComputeLayout();
+  for (size_t i = 0; i < pinned_.size(); ++i) {
+    const int col = static_cast<int>(i) % columns;
+    const int row_index = static_cast<int>(i) / columns;
+    const int x = layout.favorites.left + col * (cell + Scaled(kPinnedGap));
+    const int y = layout.favorites.top + row_index * (cell + Scaled(kPinnedGap));
+    pinned_[i].bounds = {x, y, x + cell, y + cell};
+  }
+
+  // Bookmarks are ordinary rows above the open tabs.
+  int y = layout.favorites.bottom + Scaled(kFavoritesSpacer);
+  for (ShortcutRow& row : bookmarks_) {
+    row.bounds = {layout.tabs_left, y, Scaled(kSidebarWidth - kEdgeInset),
+                  y + Scaled(kTabRowHeight)};
+    y += Scaled(kTabRowHeight);
+  }
+}
+
 void PhiWindowController::RebuildTabs() {
   RebuildNavState();
   RebuildChips();
+  RebuildShortcuts();
   tabs_.clear();
   if (framework_) {
     std::optional<base::Value> parsed = base::JSONReader::Read(
@@ -922,6 +998,22 @@ void PhiWindowController::OnChromeClick(int x, int y) {
     framework_->Reload(active_browser_ ? active_browser_ : window_id_, /*bypass_cache=*/false);
     RefreshTabs();
     return;
+  }
+  for (const ShortcutRow& pin : pinned_) {
+    if (::PtInRect(&pin.bounds, pt)) {
+      if (host_ && !pin.url.empty()) {
+        host_->RequestOpen(window_id_, pin.url);
+      }
+      return;
+    }
+  }
+  for (const ShortcutRow& bookmark : bookmarks_) {
+    if (::PtInRect(&bookmark.bounds, pt)) {
+      if (host_ && !bookmark.folder && !bookmark.url.empty()) {
+        host_->RequestOpen(window_id_, bookmark.url);
+      }
+      return;
+    }
   }
   if (framework_ && ::PtInRect(&layout.new_tab_row, pt)) {
     framework_->NewTab(active_browser_ ? active_browser_ : window_id_, "");
@@ -1131,6 +1223,29 @@ void PhiWindowController::PaintChrome(HDC dc,
     ::DrawTextW(dc, row.title.c_str(), -1, &title_rc,
                 DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     DrawGlyph(dc, row.close_box, L"\u00D7", kLabelDim);
+  }
+
+  // Pinned tabs: square cells with the site's initial, standing in for the
+  // favicon until favicons are plumbed through.
+  for (const ShortcutRow& pin : pinned_) {
+    FillRounded(dc, pin.bounds, kRowSelectedBg, Scaled(kCornerRadius));
+    ::SetTextColor(dc, kLabel);
+    const std::wstring initial =
+        pin.title.empty() ? std::wstring(L"?") : pin.title.substr(0, 1);
+    ::DrawTextW(dc, initial.c_str(), -1, const_cast<RECT*>(&pin.bounds),
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+  }
+
+  // Bookmarks: rows above the open tabs, folders marked.
+  for (const ShortcutRow& bookmark : bookmarks_) {
+    ::SetTextColor(dc, kLabelDim);
+    RECT row = bookmark.bounds;
+    row.left += Scaled(10);
+    const std::wstring label =
+        (bookmark.folder ? std::wstring(L"\u25B8  ") : std::wstring(L"\u2606  ")) +
+        bookmark.title;
+    ::DrawTextW(dc, label.c_str(), -1, &row,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
   }
 
   // "+ New Tab", the row that heads the Mac sidebar's tab list.
