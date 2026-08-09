@@ -8,6 +8,7 @@
 
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "base/json/json_reader.h"
 #include "base/logging.h"
@@ -59,6 +60,10 @@ constexpr int kCloseBoxSize = 16;
 constexpr COLORREF kTabActiveBg = RGB(0xFF, 0xFF, 0xFF);
 constexpr COLORREF kTabActiveInk = RGB(0x2B, 0x2D, 0x31);
 constexpr COLORREF kTabInk = RGB(0xE6, 0xEA, 0xFF);
+
+// The stock EDIT window proc, saved when the first address field is
+// subclassed. One per process — every EDIT shares the class proc.
+WNDPROC g_edit_base_proc = nullptr;
 
 ATOM EnsureShellClass() {
   static const ATOM atom = [] {
@@ -115,6 +120,7 @@ PhiWindowController::PhiWindowController(int64_t window_id,
   }
 
   AdoptBrowserAsChild();
+  EnsureUrlField();
   // The window the slot was created with backs the default Space.
   space_browsers_["1"] = window_id_;
   browser_hwnds_[window_id_] = browser_hwnd_;
@@ -137,8 +143,137 @@ PhiWindowController::~PhiWindowController() {
     ::SetParent(browser_hwnd_, nullptr);
   }
   if (shell_hwnd_ && ::IsWindow(shell_hwnd_)) {
-    ::DestroyWindow(shell_hwnd_);
+    ::DestroyWindow(shell_hwnd_);  // Takes the address field child with it.
   }
+  if (url_font_) {
+    ::DeleteObject(url_font_);
+  }
+}
+
+void PhiWindowController::EnsureUrlField() {
+  if (url_field_ || !shell_hwnd_) {
+    return;
+  }
+  // The shell's message font, so the field looks like the rest of the system
+  // rather than the EDIT default (the ancient bitmap "System" font).
+  NONCLIENTMETRICSW metrics = {};
+  metrics.cbSize = sizeof(metrics);
+  if (::SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(metrics),
+                              &metrics, 0)) {
+    url_font_ = ::CreateFontIndirectW(&metrics.lfMessageFont);
+  }
+  // Sits INSIDE the painted field box, vertically centred: a single-line EDIT
+  // draws its text at the top of its own rect, so filling the whole box would
+  // leave the text hugging the upper edge.
+  const int text_height = 20;
+  const int top = kUrlField.top + (kUrlField.bottom - kUrlField.top -
+                                   text_height) / 2;
+  url_field_ = ::CreateWindowExW(
+      0, L"EDIT", L"",
+      WS_CHILD | WS_VISIBLE | ES_LEFT | ES_AUTOHSCROLL, kUrlField.left + 6,
+      top, kUrlField.right - kUrlField.left - 12, text_height, shell_hwnd_,
+      nullptr, ::GetModuleHandleW(nullptr), nullptr);
+  if (!url_field_) {
+    LOG(ERROR) << "[PhiClient] address field CreateWindowEx failed err="
+               << ::GetLastError();
+    return;
+  }
+  if (url_font_) {
+    ::SendMessageW(url_field_, WM_SETFONT,
+                   reinterpret_cast<WPARAM>(url_font_), TRUE);
+  }
+  ::SetWindowLongPtrW(url_field_, GWLP_USERDATA,
+                      reinterpret_cast<LONG_PTR>(this));
+  WNDPROC previous = reinterpret_cast<WNDPROC>(::SetWindowLongPtrW(
+      url_field_, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&UrlFieldProc)));
+  if (!g_edit_base_proc) {
+    g_edit_base_proc = previous;
+  }
+}
+
+void PhiWindowController::SyncUrlField(bool force) {
+  if (!url_field_) {
+    return;
+  }
+  // Never overwrite a half-typed URL: nav state refreshes on every paint and
+  // on every framework notification.
+  if (!force && ::GetFocus() == url_field_) {
+    return;
+  }
+  const int len = ::GetWindowTextLengthW(url_field_);
+  std::vector<wchar_t> current(static_cast<size_t>(len) + 1, L'\0');
+  if (len > 0) {
+    ::GetWindowTextW(url_field_, current.data(), len + 1);
+  }
+  if (nav_url_ == current.data()) {
+    return;  // Unchanged; setting it again would fight the caret.
+  }
+  ::SetWindowTextW(url_field_, nav_url_.c_str());
+}
+
+void PhiWindowController::CommitUrlField() {
+  if (!url_field_ || !framework_) {
+    return;
+  }
+  const int len = ::GetWindowTextLengthW(url_field_);
+  std::vector<wchar_t> buffer(static_cast<size_t>(len) + 1, L'\0');
+  if (len > 0) {
+    ::GetWindowTextW(url_field_, buffer.data(), len + 1);
+  }
+  std::wstring typed(buffer.data());
+  const size_t first = typed.find_first_not_of(L" \t");
+  const size_t last = typed.find_last_not_of(L" \t");
+  typed = (first == std::wstring::npos) ? std::wstring()
+                                        : typed.substr(first, last - first + 1);
+  if (typed.empty()) {
+    return;
+  }
+  // The framework resolves what was typed the way the omnibox would — a bare
+  // host becomes a URL, free text becomes a search.
+  framework_->Navigate(active_browser_ ? active_browser_ : window_id_,
+                       base::WideToUTF8(typed).c_str());
+  FocusActiveBrowser();  // Keys belong to the page again once we've navigated.
+  RefreshTabs();
+}
+
+// static
+LRESULT CALLBACK PhiWindowController::UrlFieldProc(HWND hwnd,
+                                                   UINT msg,
+                                                   WPARAM wparam,
+                                                   LPARAM lparam) {
+  auto* self = reinterpret_cast<PhiWindowController*>(
+      ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+  switch (msg) {
+    case WM_KEYDOWN:
+      if (wparam == VK_RETURN) {
+        if (self) {
+          self->CommitUrlField();
+        }
+        return 0;
+      }
+      if (wparam == VK_ESCAPE) {
+        if (self) {
+          self->SyncUrlField(/*force=*/true);
+          self->FocusActiveBrowser();
+        }
+        return 0;
+      }
+      break;
+    case WM_CHAR:
+      // Both keys are handled above; letting them reach the EDIT would only
+      // produce the "unhandled character" beep.
+      if (wparam == VK_RETURN || wparam == VK_ESCAPE) {
+        return 0;
+      }
+      break;
+    case WM_SETFOCUS: {
+      const LRESULT result =
+          ::CallWindowProcW(g_edit_base_proc, hwnd, msg, wparam, lparam);
+      ::SendMessageW(hwnd, EM_SETSEL, 0, -1);  // Typing replaces the whole URL.
+      return result;
+    }
+  }
+  return ::CallWindowProcW(g_edit_base_proc, hwnd, msg, wparam, lparam);
 }
 
 void PhiWindowController::AdoptBrowserAsChild() {
@@ -317,6 +452,7 @@ void PhiWindowController::RebuildNavState() {
   can_go_back_ = st->FindBool("canGoBack").value_or(false);
   can_go_forward_ = st->FindBool("canGoForward").value_or(false);
   nav_loading_ = st->FindBool("loading").value_or(false);
+  SyncUrlField(/*force=*/false);
 }
 
 void PhiWindowController::RebuildChips() {
@@ -395,6 +531,12 @@ void PhiWindowController::RebuildTabs() {
 }
 
 void PhiWindowController::OnSidebarClick(int x, int y) {
+  // Clicking anywhere else in the sidebar means the user is done editing the
+  // address; hand the keyboard back to the page (the field is a child window,
+  // so clicks on it never reach here).
+  if (url_field_ && ::GetFocus() == url_field_) {
+    FocusActiveBrowser();
+  }
   POINT pt = {x, y};
   if (framework_ && ::PtInRect(&kBackButton, pt)) {
     framework_->GoBack(active_browser_ ? active_browser_ : window_id_);
@@ -457,7 +599,9 @@ void PhiWindowController::OnSidebarClick(int x, int y) {
   }
 }
 
-void PhiWindowController::PaintSidebar(HDC dc, const RECT& client) {
+void PhiWindowController::PaintSidebar(HDC dc,
+                                       const RECT& client,
+                                       bool include_child_controls) {
   RECT bar = {0, 0, kSidebarWidth, client.bottom};
   HBRUSH band = ::CreateSolidBrush(kBandColor);
   ::FillRect(dc, &bar, band);
@@ -475,17 +619,29 @@ void PhiWindowController::PaintSidebar(HDC dc, const RECT& client) {
   RECT text_rc = {16, 20, kSidebarWidth - 12, kUrlField.top - 8};
   ::DrawTextW(dc, text.c_str(), -1, &text_rc, DT_LEFT | DT_TOP | DT_WORDBREAK);
 
-  // URL field: the client's own address display (Chromium's omnibox is
-  // hollowed away).
+  // URL field: the box behind the editable EDIT child. The child draws the
+  // text on screen; on the capture path (no children rendered) we draw it here
+  // so a screenshot still shows the address.
   HBRUSH url_bg = ::CreateSolidBrush(kUrlFieldBg);
   ::FillRect(dc, &kUrlField, url_bg);
   ::DeleteObject(url_bg);
-  ::SetTextColor(dc, kUrlInk);
-  RECT url_rc = kUrlField;
-  url_rc.left += 8;
-  url_rc.right -= 8;
-  ::DrawTextW(dc, nav_url_.empty() ? L"(no page)" : nav_url_.c_str(), -1,
-              &url_rc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_PATH_ELLIPSIS);
+  if (include_child_controls) {
+    std::wstring shown = nav_url_;
+    if (url_field_) {
+      const int len = ::GetWindowTextLengthW(url_field_);
+      std::vector<wchar_t> buffer(static_cast<size_t>(len) + 1, L'\0');
+      if (len > 0) {
+        ::GetWindowTextW(url_field_, buffer.data(), len + 1);
+      }
+      shown.assign(buffer.data());  // What the user actually sees, mid-edit.
+    }
+    ::SetTextColor(dc, kUrlInk);
+    RECT url_rc = kUrlField;
+    url_rc.left += 8;
+    url_rc.right -= 8;
+    ::DrawTextW(dc, shown.empty() ? L"(no page)" : shown.c_str(), -1, &url_rc,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_PATH_ELLIPSIS);
+  }
 
   // Back / forward / reload, greyed when unavailable.
   auto draw_button = [&](RECT rect, const wchar_t* glyph, bool enabled) {
@@ -566,22 +722,32 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
   auto* self = reinterpret_cast<PhiWindowController*>(
       ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
   switch (msg) {
-    case WM_MOUSEACTIVATE:
+    case WM_MOUSEACTIVATE: {
       // Let clicks activate without being eaten, and drive Chromium's own
       // activation across the boundary so input/focus/IME reach the page.
-      if (self && self->browser_hwnd_ && ::IsWindow(self->browser_hwnd_)) {
+      // EXCEPT for clicks landing in our sidebar: the address field is a real
+      // focusable control there, and handing focus to the page would fight the
+      // click that is about to focus it.
+      POINT cursor = {};
+      ::GetCursorPos(&cursor);
+      ::ScreenToClient(hwnd, &cursor);
+      const bool in_sidebar = cursor.x < kSidebarWidth;
+      if (!in_sidebar && self && self->browser_hwnd_ &&
+          ::IsWindow(self->browser_hwnd_)) {
         ::SetFocus(self->browser_hwnd_);
         if (self->framework_) {
           self->framework_->FocusBrowserWindow(self->window_id_);
         }
       }
       return MA_ACTIVATE;
+    }
     case WM_ACTIVATE:
     case WM_SETFOCUS:
       // Activation/focus arriving at the shell top-level must be forwarded to
       // the child: as a WS_CHILD, Chromium's window reports IsTopLevelWindow()
       // == false and skips its own activation path.
       if (self && self->browser_hwnd_ && ::IsWindow(self->browser_hwnd_) &&
+          ::GetFocus() != self->url_field_ &&
           !(msg == WM_ACTIVATE && LOWORD(wparam) == WA_INACTIVE)) {
         ::SetFocus(self->browser_hwnd_);
         if (self->framework_) {
@@ -609,7 +775,7 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
         self->RebuildTabs();
         RECT rc = {};
         ::GetClientRect(hwnd, &rc);
-        self->PaintSidebar(dc, rc);
+        self->PaintSidebar(dc, rc, /*include_child_controls=*/true);
       }
       return 0;
     }
@@ -622,7 +788,7 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
         self->RebuildTabs();
         RECT rc = {};
         ::GetClientRect(hwnd, &rc);
-        self->PaintSidebar(dc, rc);
+        self->PaintSidebar(dc, rc, /*include_child_controls=*/false);
       }
       ::EndPaint(hwnd, &ps);
       return 0;

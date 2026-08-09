@@ -20,6 +20,47 @@ async function navigateAndSettle(ctl, windowId, marker) {
   throw new Error(`page did not settle: ${marker}`)
 }
 
+/** Navigates to raw typed text and waits for whatever it resolves to. */
+async function typeAndSettle(ctl, windowId, typed) {
+  // Park on a known page first: the window may already be showing whatever the
+  // typed text resolves to (the launcher opens example.com), and then "the url
+  // changed" would never be true.
+  const was = (await navigateAndSettle(ctl, windowId, `blank-${Date.now()}`)).url
+  await ctl.send('agentSpace.navigate', { windowId, url: typed })
+  for (let i = 0; i < 40; i++) {
+    await sleep(250)
+    const st = await ctl.send('agentSpace.nav.state', { windowId })
+    // An unreachable host still COMMITS (an error page at the requested url),
+    // so this settles with or without a network.
+    if (!st.loading && st.url && st.url !== was) return st
+  }
+  throw new Error(`typed text did not resolve: ${typed}`)
+}
+
+// The client's address field hands raw text to the framework, which resolves
+// it the way the omnibox would.
+test('nav: a bare host typed in the address field becomes a url', async () => {
+  const ctl = await openControl()
+  try {
+    const windowId = await firstWindow(ctl)
+    const st = await typeAndSettle(ctl, windowId, 'example.com')
+    assert(/^https?:\/\/example\.com\//.test(st.url),
+           `example.com resolved to a url (${st.url})`)
+  } finally { ctl.close() }
+})
+
+test('nav: free text typed in the address field becomes a search', async () => {
+  const ctl = await openControl()
+  try {
+    const windowId = await firstWindow(ctl)
+    const typed = 'phinomenon address field query'
+    const st = await typeAndSettle(ctl, windowId, typed)
+    assert(/^https?:\/\//.test(st.url), `went somewhere real (${st.url})`)
+    assert(st.url !== typed, 'not treated as a literal url')
+    assert(/phinomenon/i.test(st.url), `carries the query terms (${st.url})`)
+  } finally { ctl.close() }
+})
+
 test('nav: state shape', async () => {
   const ctl = await openControl()
   try {

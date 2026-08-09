@@ -52,8 +52,9 @@ class PhiWindowController {
 
   int64_t window_id() const { return window_id_; }
 
-  // Re-reads tab/nav state from the framework and repaints the sidebar. Called
-  // on the UI thread when the framework reports a change.
+  // Re-reads tab/nav state from the framework and repaints the sidebar NOW.
+  // For changes the client itself just made, where the browser state has
+  // already settled.
   void RefreshTabs();
 
   // Rebuilds `tabs_` from framework state WITHOUT invalidating (paint-time
@@ -99,11 +100,32 @@ class PhiWindowController {
  private:
   void AdoptBrowserAsChild();
   void LayoutContents();
-  void PaintSidebar(HDC dc, const RECT& client);
+  // `include_child_controls` draws what child windows would draw themselves —
+  // set only on the WM_PRINTCLIENT (PrintWindow) path, which renders the
+  // parent alone. In WM_PAINT the URL field's EDIT child paints that region.
+  void PaintSidebar(HDC dc, const RECT& client, bool include_child_controls);
   // Handles a click in the sidebar (tab rows, close boxes, buttons, toolbar).
   void OnSidebarClick(int x, int y);
   // Re-reads navigation state (url/title/canGoBack/…) for the toolbar.
   void RebuildNavState();
+
+  // --- Address field --------------------------------------------------------
+  // A real Win32 EDIT child, so typing, selection, clipboard, IME and the
+  // caret all behave natively (Chromium's own omnibox is hollowed away under
+  // IS_WIN_PHI_CLIENT, and hand-rolling text editing would reproduce it badly).
+  void EnsureUrlField();
+  // Pushes the current page's URL into the field. Skipped while the user is
+  // typing unless `force` (the Escape-reverts path).
+  void SyncUrlField(bool force);
+  // Navigates to whatever is typed, then hands focus back to the page.
+  void CommitUrlField();
+  // Subclass proc: Enter commits, Escape reverts, focus selects all.
+  static LRESULT CALLBACK UrlFieldProc(HWND hwnd,
+                                       UINT msg,
+                                       WPARAM wparam,
+                                       LPARAM lparam);
+  HWND url_field_ = nullptr;
+  HFONT url_font_ = nullptr;
 
   // One rendered tab row: what to draw and what a click at that row does.
   struct TabRow {
