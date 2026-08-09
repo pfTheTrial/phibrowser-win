@@ -97,17 +97,30 @@ PhiWindowController::PhiWindowController(int64_t window_id,
   }
   EnsureShellClass();
 
-  // Create the client shell top-level at the browser window's current bounds,
-  // so the transition from Chromium's own frame to ours is in-place.
+  // Create the client shell so its CONTENT REGION lands exactly where the
+  // browser window already is — the shell is one sidebar wider, plus its frame.
+  //
+  // Sizing the shell to the browser's own bounds instead would hand Chromium a
+  // content area one sidebar NARROWER than the bounds it restored. Chromium
+  // saves that shrunken rect as its restored bounds on close, so every restart
+  // would lose another 240px until the window hit Chromium's minimum size.
+  // Anchoring the content instead makes the round trip a fixed point.
   RECT wr = {};
   ::GetWindowRect(browser_hwnd_, &wr);
-  int x = wr.left, y = wr.top;
-  int w = wr.right - wr.left, h = wr.bottom - wr.top;
-  if (w <= 0 || h <= 0) {
-    w = 1200;
-    h = 800;
-    x = CW_USEDEFAULT;
-    y = CW_USEDEFAULT;
+  int x = CW_USEDEFAULT, y = CW_USEDEFAULT;
+  int w = 1200 + kSidebarWidth, h = 800;
+  if (wr.right > wr.left && wr.bottom > wr.top) {
+    RECT frame = {wr.left - kSidebarWidth, wr.top, wr.right, wr.bottom};
+    const UINT dpi = ::GetDpiForWindow(browser_hwnd_);
+    if (dpi) {
+      ::AdjustWindowRectExForDpi(&frame, WS_OVERLAPPEDWINDOW, FALSE, 0, dpi);
+    } else {
+      ::AdjustWindowRectEx(&frame, WS_OVERLAPPEDWINDOW, FALSE, 0);
+    }
+    x = frame.left;
+    y = frame.top;
+    w = frame.right - frame.left;
+    h = frame.bottom - frame.top;
   }
 
   shell_hwnd_ = ::CreateWindowExW(
