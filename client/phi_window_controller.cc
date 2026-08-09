@@ -216,6 +216,20 @@ void PhiWindowController::AttachSpaceBrowser(const std::string& space_id,
   RefreshTabs();
 }
 
+void PhiWindowController::FocusActiveBrowser() {
+  // Showing a different browser child is not enough: as a WS_CHILD it never
+  // gets WM_ACTIVATE, so without this the keyboard still goes to the browser
+  // that was visible before the Space switch (input appears dead until the
+  // user clicks). Give the child Win32 focus AND drive Chromium's own
+  // activation across the boundary.
+  if (browser_hwnd_ && ::IsWindow(browser_hwnd_)) {
+    ::SetFocus(browser_hwnd_);
+  }
+  if (framework_ && active_browser_) {
+    framework_->FocusBrowserWindow(active_browser_);
+  }
+}
+
 bool PhiWindowController::HasSpace(const std::string& space_id) const {
   return space_browsers_.find(space_id) != space_browsers_.end();
 }
@@ -237,6 +251,7 @@ bool PhiWindowController::ShowSpace(const std::string& space_id) {
   active_space_ = space_id;
   active_browser_ = it->second;
   LayoutContents();  // Also re-shows the newly visible child.
+  FocusActiveBrowser();
   RefreshTabs();
   return true;
 }
