@@ -117,8 +117,11 @@ class PhiWindowController {
   // Re-lays the chrome for `mode` and repaints. Cheap: all geometry is derived
   // from the client rect on demand, so nothing is cached across the switch.
   void ApplyLayoutMode(PhiLayoutMode mode);
-  // The content region (client coords) the browser child occupies.
-  RECT content_rect() const;
+  // The content region (client coords, physical pixels) the browser child
+  // occupies.
+  RECT content_rect();
+  // The DPI the chrome is currently laid out for (96 = 100%).
+  UINT dpi() const { return dpi_; }
 
   // Shell window geometry (client-owned; no framework round-trip).
   bool GetBounds(int* x, int* y, int* w, int* h) const;
@@ -132,6 +135,17 @@ class PhiWindowController {
                                        LPARAM lparam);
 
  private:
+  // Every constant in this class is a DESIGN UNIT — a pixel at 100% scaling.
+  // Win32 places windows and paints in PHYSICAL pixels, and the client is
+  // per-monitor DPI aware (it inherits Chrome's manifest), so nothing reaches
+  // the screen without going through here first. Without it the whole chrome
+  // renders 20% small at 125% and half-size at 200%, while the system font —
+  // which IS scaled — outgrows the boxes drawn for it.
+  int Scaled(int design_units) const;
+  RECT Scaled(const RECT& design_units) const;
+  // Rebuilds `ui_font_` for `dpi_`. Idempotent for an unchanged DPI.
+  void EnsureFont();
+
   // Every rect the chrome needs, for one layout mode. Derived from the client
   // rect on demand rather than stored, so a resize or a mode switch needs no
   // invalidation of its own.
@@ -152,7 +166,7 @@ class PhiWindowController {
     int tabs_limit = 0;   // Bottom (vertical) or right (horizontal) edge.
     bool horizontal_tabs = false;
   };
-  Layout ComputeLayout() const;
+  Layout ComputeLayout();
 
   void AdoptBrowserAsChild();
   void LayoutContents();
@@ -183,7 +197,11 @@ class PhiWindowController {
                                        WPARAM wparam,
                                        LPARAM lparam);
   HWND url_field_ = nullptr;
-  HFONT url_font_ = nullptr;
+  // The shell's UI font at `ui_font_dpi_`, used both for the address field and
+  // for every label PaintChrome draws, so text and boxes scale together.
+  HFONT ui_font_ = nullptr;
+  UINT ui_font_dpi_ = 0;
+  UINT dpi_ = 96;
 
   // One rendered tab row: what to draw and what a click at that row does.
   struct TabRow {

@@ -6,7 +6,11 @@
 import { execFileSync } from 'node:child_process'
 import { test, run, assert, assertEq, sleep, openControl } from './phi-test.mjs'
 
-const SIDEBAR = 240  // Mirrors kSidebarWidth in phi_window_controller.cc.
+// kSidebarWidth in phi_window_controller.cc, in DESIGN UNITS. The client lays
+// out in physical pixels, so every expectation here scales by the window's DPI
+// — the whole point of the scaling work.
+const SIDEBAR_DESIGN = 240
+const scaled = (design, dpi) => Math.round((design * dpi) / 96)
 
 async function firstWindow(ctl) {
   const { windows } = await ctl.send('agentSpace.list')
@@ -22,7 +26,8 @@ async function useLayout(ctl, windowId, mode) {
   const l = await ctl.send('agentSpace.window.layout', { windowId })
   assertEq(l.ok, true, 'window.layout ok')
   assertEq(l.mode, mode, `window reports ${mode}`)
-  return l.content
+  assert(l.dpi >= 96, `window reports its dpi (${l.dpi})`)
+  return { ...l.content, sidebar: scaled(SIDEBAR_DESIGN, l.dpi), dpi: l.dpi }
 }
 
 test('layout: defaults to performance, the Mac default', async () => {
@@ -50,7 +55,8 @@ test('layout: performance keeps the sidebar and gives it the full height', async
   try {
     const windowId = await firstWindow(ctl)
     const content = await useLayout(ctl, windowId, 'performance')
-    assertEq(content.x, SIDEBAR, 'content starts right of the sidebar')
+    assertEq(content.x, content.sidebar,
+             'content starts right of the sidebar')
     assertEq(content.y, 0, 'no band above the content')
     assert(content.width > 0 && content.height > 0, 'content is non-empty')
   } finally { ctl.close() }
@@ -62,7 +68,7 @@ test('layout: balanced keeps the sidebar and adds a bar above the content', asyn
     const windowId = await firstWindow(ctl)
     const perf = await useLayout(ctl, windowId, 'performance')
     const balanced = await useLayout(ctl, windowId, 'balanced')
-    assertEq(balanced.x, SIDEBAR, 'sidebar still there')
+    assertEq(balanced.x, balanced.sidebar, 'sidebar still there')
     assert(balanced.y > 0, `address bar sits above the content (y=${balanced.y})`)
     assertEq(balanced.width, perf.width, 'same content width as performance')
     assert(balanced.height < perf.height,
@@ -78,7 +84,8 @@ test('layout: comfortable drops the sidebar and stacks the chrome on top', async
     const comfy = await useLayout(ctl, windowId, 'comfortable')
     assertEq(comfy.x, 0, 'content reaches the left edge — no sidebar')
     assert(comfy.y > 0, `chrome is stacked above (y=${comfy.y})`)
-    assertEq(comfy.width, perf.width + SIDEBAR, 'content gains the sidebar width')
+    assertEq(comfy.width, perf.width + perf.sidebar,
+             'content gains the sidebar width')
     assert(comfy.height < perf.height, 'content is shorter by the stacked rows')
   } finally { ctl.close() }
 })

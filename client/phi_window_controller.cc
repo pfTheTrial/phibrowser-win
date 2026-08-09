@@ -116,39 +116,89 @@ bool PhiLayoutModeFromName(const std::string& name, PhiLayoutMode* out) {
   return true;
 }
 
-PhiWindowController::Layout PhiWindowController::ComputeLayout() const {
+int PhiWindowController::Scaled(int design_units) const {
+  return ::MulDiv(design_units, static_cast<int>(dpi_), 96);
+}
+
+RECT PhiWindowController::Scaled(const RECT& design_units) const {
+  return {Scaled(design_units.left), Scaled(design_units.top),
+          Scaled(design_units.right), Scaled(design_units.bottom)};
+}
+
+void PhiWindowController::EnsureFont() {
+  if (ui_font_ && ui_font_dpi_ == dpi_) {
+    return;
+  }
+  // SystemParametersInfoForDpi gives the message font already sized for this
+  // monitor; the plain SPI_GETNONCLIENTMETRICS returns the PRIMARY monitor's,
+  // which is wrong the moment a window moves to a display at another scale.
+  NONCLIENTMETRICSW metrics = {};
+  metrics.cbSize = sizeof(metrics);
+  HFONT built = nullptr;
+  if (::SystemParametersInfoForDpi(SPI_GETNONCLIENTMETRICS, sizeof(metrics),
+                                   &metrics, 0, dpi_)) {
+    built = ::CreateFontIndirectW(&metrics.lfMessageFont);
+  }
+  if (!built) {
+    return;  // Keep whatever we had rather than falling back to no font.
+  }
+  HFONT previous = ui_font_;
+  ui_font_ = built;
+  ui_font_dpi_ = dpi_;
+  if (url_field_) {
+    ::SendMessageW(url_field_, WM_SETFONT, reinterpret_cast<WPARAM>(ui_font_),
+                   TRUE);
+  }
+  if (previous) {
+    ::DeleteObject(previous);  // Replaced only after nothing else refers to it.
+  }
+}
+
+PhiWindowController::Layout PhiWindowController::ComputeLayout() {
   Layout out;
   out.mode = layout_mode_;
   if (shell_hwnd_) {
     ::GetClientRect(shell_hwnd_, &out.client);
+    if (const UINT dpi = ::GetDpiForWindow(shell_hwnd_)) {
+      dpi_ = dpi;
+    }
   }
+  EnsureFont();
   const int w = out.client.right;
   const int h = out.client.bottom;
+  const int sidebar = Scaled(kSidebarWidth);
+  const int inset = Scaled(kTabsInset);
+  const int chip_h = Scaled(kSpaceChipH);
+  const int nav = Scaled(kNavButtonSize);
+  const int top_bar = Scaled(kTopBarHeight);
+  const int strip = Scaled(kHTabStripHeight);
+  const int spaces_row = Scaled(kSpacesRowHeight);
+  const int pill_h = Scaled(kLayoutButtonHeight);
 
   if (layout_mode_ == PhiLayoutMode::kPerformance) {
     // Everything in the sidebar. These are the ORIGINAL constants and must stay
     // put: the pixel suites mirror them.
-    out.sidebar = {0, 0, kSidebarWidth, h};
-    out.content = {kSidebarWidth, 0, w, h};
-    out.url_field = kUrlField;
-    out.back = kBackButton;
-    out.forward = kForwardButton;
-    out.reload = kReloadButton;
-    out.new_window = kNewWindowButton;
+    out.sidebar = {0, 0, sidebar, h};
+    out.content = {sidebar, 0, w, h};
+    out.url_field = Scaled(kUrlField);
+    out.back = Scaled(kBackButton);
+    out.forward = Scaled(kForwardButton);
+    out.reload = Scaled(kReloadButton);
+    out.new_window = Scaled(kNewWindowButton);
     // Tucked into the empty header band above the URL field, clear of every
     // region the pixel suites scan.
-    out.layout_button = {kTabsInset + 4, 100, kSidebarWidth - kTabsInset - 4,
-                         100 + kLayoutButtonHeight};
-    out.chips_left = kTabsInset;
-    out.chips_top = kSpacesTop;
-    out.chips_limit = kSidebarWidth - kTabsInset;
-    out.add_space = {kTabsInset, kSpacesTop + kSpaceChipH + 6, kTabsInset + 100,
-                     kSpacesTop + kSpaceChipH + 34};
-    out.add_profile_space = {kTabsInset + 106, kSpacesTop + kSpaceChipH + 6,
-                             kSidebarWidth - kTabsInset,
-                             kSpacesTop + kSpaceChipH + 34};
-    out.tabs_left = kTabsInset;
-    out.tabs_top = kTabsTop;
+    out.layout_button = {inset + Scaled(4), Scaled(100), sidebar - inset - Scaled(4),
+                         Scaled(100) + pill_h};
+    out.chips_left = inset;
+    out.chips_top = Scaled(kSpacesTop);
+    out.chips_limit = sidebar - inset;
+    out.add_space = {inset, out.chips_top + chip_h + Scaled(6),
+                     inset + Scaled(100), out.chips_top + chip_h + Scaled(34)};
+    out.add_profile_space = {inset + Scaled(106), out.chips_top + chip_h + Scaled(6),
+                             sidebar - inset,
+                             out.chips_top + chip_h + Scaled(34)};
+    out.tabs_left = inset;
+    out.tabs_top = Scaled(kTabsTop);
     out.tabs_limit = h;
     return out;
   }
@@ -157,78 +207,79 @@ PhiWindowController::Layout PhiWindowController::ComputeLayout() const {
     // Vertical tabs stay in the sidebar; navigation moves to a band across the
     // top of the web content, so the sidebar's own rows shift up to fill the
     // space the toolbar used to occupy.
-    out.sidebar = {0, 0, kSidebarWidth, h};
-    out.top_bar = {kSidebarWidth, 0, w, kTopBarHeight};
-    out.content = {kSidebarWidth, kTopBarHeight, w, h};
+    out.sidebar = {0, 0, sidebar, h};
+    out.top_bar = {sidebar, 0, w, top_bar};
+    out.content = {sidebar, top_bar, w, h};
 
-    const int bar_y = (kTopBarHeight - kNavButtonSize) / 2;
-    int x = kSidebarWidth + 8;
-    out.back = {x, bar_y, x + kNavButtonSize, bar_y + kNavButtonSize};
-    x += kNavButtonSize + 4;
-    out.forward = {x, bar_y, x + kNavButtonSize, bar_y + kNavButtonSize};
-    x += kNavButtonSize + 4;
-    out.reload = {x, bar_y, x + kNavButtonSize, bar_y + kNavButtonSize};
-    x += kNavButtonSize + 8;
-    out.url_field = {x, bar_y, (w - 8 > x) ? (w - 8) : (x + 1),
-                     bar_y + kNavButtonSize};
+    const int bar_y = (top_bar - nav) / 2;
+    int x = sidebar + Scaled(8);
+    out.back = {x, bar_y, x + nav, bar_y + nav};
+    x += nav + Scaled(4);
+    out.forward = {x, bar_y, x + nav, bar_y + nav};
+    x += nav + Scaled(4);
+    out.reload = {x, bar_y, x + nav, bar_y + nav};
+    x += nav + Scaled(8);
+    out.url_field = {x, bar_y, (w - Scaled(8) > x) ? (w - Scaled(8)) : (x + 1),
+                     bar_y + nav};
 
-    out.layout_button = {kTabsInset + 4, 20, kSidebarWidth - kTabsInset - 4,
-                         20 + kLayoutButtonHeight};
-    out.new_window = {kTabsInset + 4, 64, kSidebarWidth - kTabsInset - 4, 108};
-    out.chips_left = kTabsInset;
-    out.chips_top = 120;
-    out.chips_limit = kSidebarWidth - kTabsInset;
-    out.add_space = {kTabsInset, 158, kTabsInset + 100, 186};
-    out.add_profile_space = {kTabsInset + 106, 158, kSidebarWidth - kTabsInset,
-                             186};
-    out.tabs_left = kTabsInset;
-    out.tabs_top = 198;
+    out.layout_button = {inset + Scaled(4), Scaled(20), sidebar - inset - Scaled(4),
+                         Scaled(20) + pill_h};
+    out.new_window = {inset + Scaled(4), Scaled(64), sidebar - inset - Scaled(4),
+                      Scaled(108)};
+    out.chips_left = inset;
+    out.chips_top = Scaled(120);
+    out.chips_limit = sidebar - inset;
+    out.add_space = {inset, Scaled(158), inset + Scaled(100), Scaled(186)};
+    out.add_profile_space = {inset + Scaled(106), Scaled(158), sidebar - inset,
+                             Scaled(186)};
+    out.tabs_left = inset;
+    out.tabs_top = Scaled(198);
     out.tabs_limit = h;
     return out;
   }
 
   // Comfortable: the traditional stack — horizontal tabs, then the toolbar,
   // then the Spaces row — with no sidebar at all and the content full width.
-  const int spaces_top = kHTabStripHeight + kTopBarHeight;
-  out.top_bar = {0, 0, w, spaces_top + kSpacesRowHeight};
-  out.content = {0, spaces_top + kSpacesRowHeight, w, h};
+  const int spaces_top = strip + top_bar;
+  out.top_bar = {0, 0, w, spaces_top + spaces_row};
+  out.content = {0, spaces_top + spaces_row, w, h};
 
-  out.tabs_left = kTabsInset;
-  out.tabs_top = 2;
-  out.tabs_limit = w - kTabsInset;
+  out.tabs_left = inset;
+  out.tabs_top = Scaled(2);
+  out.tabs_limit = w - inset;
   out.horizontal_tabs = true;
 
-  const int bar_y = kHTabStripHeight + (kTopBarHeight - kNavButtonSize) / 2;
-  int x = kTabsInset;
-  out.back = {x, bar_y, x + kNavButtonSize, bar_y + kNavButtonSize};
-  x += kNavButtonSize + 4;
-  out.forward = {x, bar_y, x + kNavButtonSize, bar_y + kNavButtonSize};
-  x += kNavButtonSize + 4;
-  out.reload = {x, bar_y, x + kNavButtonSize, bar_y + kNavButtonSize};
-  x += kNavButtonSize + 8;
-  const int right_group = 150 + 8 + 130;  // Layout button + New Window.
-  const int url_right = (w - kTabsInset - right_group > x + 80)
-                            ? (w - kTabsInset - right_group)
-                            : (x + 80);
-  out.url_field = {x, bar_y, url_right, bar_y + kNavButtonSize};
-  out.layout_button = {url_right + 8, bar_y, url_right + 158,
-                       bar_y + kLayoutButtonHeight};
-  out.new_window = {url_right + 166, bar_y, url_right + 296,
-                    bar_y + kLayoutButtonHeight};
+  const int bar_y = strip + (top_bar - nav) / 2;
+  int x = inset;
+  out.back = {x, bar_y, x + nav, bar_y + nav};
+  x += nav + Scaled(4);
+  out.forward = {x, bar_y, x + nav, bar_y + nav};
+  x += nav + Scaled(4);
+  out.reload = {x, bar_y, x + nav, bar_y + nav};
+  x += nav + Scaled(8);
+  const int right_group = Scaled(150 + 8 + 130);  // Layout button + New Window.
+  const int url_right = (w - inset - right_group > x + Scaled(80))
+                            ? (w - inset - right_group)
+                            : (x + Scaled(80));
+  out.url_field = {x, bar_y, url_right, bar_y + nav};
+  out.layout_button = {url_right + Scaled(8), bar_y, url_right + Scaled(158),
+                       bar_y + pill_h};
+  out.new_window = {url_right + Scaled(166), bar_y, url_right + Scaled(296),
+                    bar_y + pill_h};
 
-  out.chips_left = kTabsInset;
-  out.chips_top = spaces_top + 1;
-  out.chips_limit = (w - kTabsInset - 212 > kTabsInset)
-                        ? (w - kTabsInset - 212)
-                        : kTabsInset;
-  out.add_space = {out.chips_limit + 6, spaces_top + 3, out.chips_limit + 106,
-                   spaces_top + 31};
-  out.add_profile_space = {out.chips_limit + 112, spaces_top + 3,
-                           out.chips_limit + 212, spaces_top + 31};
+  out.chips_left = inset;
+  out.chips_top = spaces_top + Scaled(1);
+  out.chips_limit = (w - inset - Scaled(212) > inset)
+                        ? (w - inset - Scaled(212))
+                        : inset;
+  out.add_space = {out.chips_limit + Scaled(6), spaces_top + Scaled(3),
+                   out.chips_limit + Scaled(106), spaces_top + Scaled(31)};
+  out.add_profile_space = {out.chips_limit + Scaled(112), spaces_top + Scaled(3),
+                           out.chips_limit + Scaled(212), spaces_top + Scaled(31)};
   return out;
 }
 
-RECT PhiWindowController::content_rect() const {
+RECT PhiWindowController::content_rect() {
   return ComputeLayout().content;
 }
 
@@ -270,10 +321,13 @@ PhiWindowController::PhiWindowController(int64_t window_id,
   RECT wr = {};
   ::GetWindowRect(browser_hwnd_, &wr);
   int x = CW_USEDEFAULT, y = CW_USEDEFAULT;
-  int w = 1200 + kSidebarWidth, h = 800;
+  int w = Scaled(1200 + kSidebarWidth), h = Scaled(800);
   if (wr.right > wr.left && wr.bottom > wr.top) {
-    RECT frame = {wr.left - kSidebarWidth, wr.top, wr.right, wr.bottom};
     const UINT dpi = ::GetDpiForWindow(browser_hwnd_);
+    if (dpi) {
+      dpi_ = dpi;  // Lay the first frame out for the monitor we open on.
+    }
+    RECT frame = {wr.left - Scaled(kSidebarWidth), wr.top, wr.right, wr.bottom};
     if (dpi) {
       ::AdjustWindowRectExForDpi(&frame, WS_OVERLAPPEDWINDOW, FALSE, 0, dpi);
     } else {
@@ -320,22 +374,14 @@ PhiWindowController::~PhiWindowController() {
   if (shell_hwnd_ && ::IsWindow(shell_hwnd_)) {
     ::DestroyWindow(shell_hwnd_);  // Takes the address field child with it.
   }
-  if (url_font_) {
-    ::DeleteObject(url_font_);
+  if (ui_font_) {
+    ::DeleteObject(ui_font_);
   }
 }
 
 void PhiWindowController::EnsureUrlField() {
   if (url_field_ || !shell_hwnd_) {
     return;
-  }
-  // The shell's message font, so the field looks like the rest of the system
-  // rather than the EDIT default (the ancient bitmap "System" font).
-  NONCLIENTMETRICSW metrics = {};
-  metrics.cbSize = sizeof(metrics);
-  if (::SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(metrics),
-                              &metrics, 0)) {
-    url_font_ = ::CreateFontIndirectW(&metrics.lfMessageFont);
   }
   url_field_ = ::CreateWindowExW(
       0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_LEFT | ES_AUTOHSCROLL, 0, 0,
@@ -345,9 +391,10 @@ void PhiWindowController::EnsureUrlField() {
                << ::GetLastError();
     return;
   }
-  if (url_font_) {
-    ::SendMessageW(url_field_, WM_SETFONT,
-                   reinterpret_cast<WPARAM>(url_font_), TRUE);
+  EnsureFont();  // The shell's message font for THIS monitor's scaling.
+  if (ui_font_) {
+    ::SendMessageW(url_field_, WM_SETFONT, reinterpret_cast<WPARAM>(ui_font_),
+                   TRUE);
   }
   ::SetWindowLongPtrW(url_field_, GWLP_USERDATA,
                       reinterpret_cast<LONG_PTR>(this));
@@ -366,10 +413,10 @@ void PhiWindowController::PositionUrlField(const Layout& layout) {
   // Sits INSIDE the painted field box, vertically centred: a single-line EDIT
   // draws its text at the top of its own rect, so filling the whole box would
   // leave the text hugging the upper edge.
-  const int text_height = 20;
+  const int text_height = Scaled(20);
   const RECT& box = layout.url_field;
-  const int width = box.right - box.left - 12;
-  ::MoveWindow(url_field_, box.left + 6,
+  const int width = box.right - box.left - Scaled(12);
+  ::MoveWindow(url_field_, box.left + Scaled(6),
                box.top + (box.bottom - box.top - text_height) / 2,
                width > 0 ? width : 1, text_height, TRUE);
 }
@@ -693,17 +740,17 @@ void PhiWindowController::RebuildChips() {
     if (!id) {
       continue;
     }
-    if (x + kSpaceChipW > layout.chips_limit) {
+    if (x + Scaled(kSpaceChipW) > layout.chips_limit) {
       break;  // Row is full; a scroller is future work.
     }
     SpaceChip chip;
     chip.id = *id;
     chip.label = L"S" + base::UTF8ToWide(*id);
     chip.open = HasSpace(*id);
-    chip.bounds = {x, layout.chips_top, x + kSpaceChipW,
-                   layout.chips_top + kSpaceChipH};
+    chip.bounds = {x, layout.chips_top, x + Scaled(kSpaceChipW),
+                   layout.chips_top + Scaled(kSpaceChipH)};
     chips_.push_back(std::move(chip));
-    x += kSpaceChipW + kSpaceChipGap;
+    x += Scaled(kSpaceChipW + kSpaceChipGap);
   }
 }
 
@@ -732,24 +779,28 @@ void PhiWindowController::RebuildTabs() {
                                 ? *title
                                 : (url ? *url : std::string("(untitled)"));
         row.title = base::UTF8ToWide(label);
+        const int close_box = Scaled(kCloseBoxSize);
         if (layout.horizontal_tabs) {
-          if (x + kHTabWidth > layout.tabs_limit) {
+          if (x + Scaled(kHTabWidth) > layout.tabs_limit) {
             break;  // Strip is full; overflow handling is future work.
           }
-          row.bounds = {x, y, x + kHTabWidth, y + kHTabStripHeight - 4};
-          x += kHTabWidth + kHTabGap;
+          row.bounds = {x, y, x + Scaled(kHTabWidth),
+                        y + Scaled(kHTabStripHeight - 4)};
+          x += Scaled(kHTabWidth + kHTabGap);
         } else {
-          if (y + kTabRowHeight > layout.tabs_limit) {
+          if (y + Scaled(kTabRowHeight) > layout.tabs_limit) {
             break;
           }
-          row.bounds = {layout.tabs_left, y, kSidebarWidth - kTabsInset,
-                        y + kTabRowHeight};
-          y += kTabRowHeight + kTabRowGap;
+          row.bounds = {layout.tabs_left, y,
+                        Scaled(kSidebarWidth - kTabsInset),
+                        y + Scaled(kTabRowHeight)};
+          y += Scaled(kTabRowHeight + kTabRowGap);
         }
         const int box_mid = (row.bounds.top + row.bounds.bottom) / 2;
-        row.close_box = {row.bounds.right - kCloseBoxSize - 4,
-                         box_mid - kCloseBoxSize / 2, row.bounds.right - 4,
-                         box_mid + kCloseBoxSize / 2};
+        row.close_box = {row.bounds.right - close_box - Scaled(4),
+                         box_mid - close_box / 2,
+                         row.bounds.right - Scaled(4),
+                         box_mid + close_box / 2};
         tabs_.push_back(std::move(row));
       }
     }
@@ -867,13 +918,17 @@ void PhiWindowController::PaintChrome(HDC dc,
   ::DeleteObject(accent);
 
   ::SetBkMode(dc, TRANSPARENT);
+  // Labels must scale with the boxes drawn for them; the DC's stock font is a
+  // fixed-size bitmap font that would look tiny at 200%.
+  HGDIOBJ previous_font = ui_font_ ? ::SelectObject(dc, ui_font_) : nullptr;
   if (layout.mode != PhiLayoutMode::kComfortable) {
     // The sidebar header. Comfortable has no sidebar to put it in.
     std::wstring text =
         L"Phi  ·  window " + base::UTF8ToWide(std::to_string(window_id_));
     ::SetTextColor(dc, kInkColor);
-    RECT text_rc = {16, 20, kSidebarWidth - 12,
-                    (layout.mode == PhiLayoutMode::kPerformance) ? 96 : 18};
+    RECT text_rc = {Scaled(16), Scaled(20), Scaled(kSidebarWidth - 12),
+                    Scaled((layout.mode == PhiLayoutMode::kPerformance) ? 96
+                                                                        : 18)};
     if (text_rc.bottom > text_rc.top) {
       ::DrawTextW(dc, text.c_str(), -1, &text_rc,
                   DT_LEFT | DT_TOP | DT_WORDBREAK);
@@ -898,8 +953,8 @@ void PhiWindowController::PaintChrome(HDC dc,
     }
     ::SetTextColor(dc, kUrlInk);
     RECT url_rc = layout.url_field;
-    url_rc.left += 8;
-    url_rc.right -= 8;
+    url_rc.left += Scaled(8);
+    url_rc.right -= Scaled(8);
     ::DrawTextW(dc, shown.empty() ? L"(no page)" : shown.c_str(), -1, &url_rc,
                 DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_PATH_ELLIPSIS);
   }
@@ -962,13 +1017,16 @@ void PhiWindowController::PaintChrome(HDC dc,
     }
     ::SetTextColor(dc, row.active ? kTabActiveInk : kTabInk);
     RECT title_rc = row.bounds;
-    title_rc.left += 8;
-    title_rc.right = row.close_box.left - 4;
+    title_rc.left += Scaled(8);
+    title_rc.right = row.close_box.left - Scaled(4);
     ::DrawTextW(dc, row.title.c_str(), -1, &title_rc,
                 DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     // Close affordance: a small x.
     ::DrawTextW(dc, L"x", -1, const_cast<RECT*>(&row.close_box),
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+  }
+  if (previous_font) {
+    ::SelectObject(dc, previous_font);
   }
 }
 
@@ -1032,6 +1090,22 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
     case WM_SIZE:
       if (self) {
         self->LayoutContents();
+      }
+      return 0;
+    case WM_DPICHANGED:
+      // The window moved to a display at another scale. Windows hands us the
+      // rect it wants in lparam; take it, then re-derive everything for the new
+      // DPI (ComputeLayout picks it up, EnsureFont rebuilds the labels).
+      if (self) {
+        const RECT* suggested = reinterpret_cast<const RECT*>(lparam);
+        if (suggested) {
+          ::SetWindowPos(hwnd, nullptr, suggested->left, suggested->top,
+                         suggested->right - suggested->left,
+                         suggested->bottom - suggested->top,
+                         SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+        self->LayoutContents();
+        self->RefreshTabs();
       }
       return 0;
     case WM_PRINTCLIENT: {

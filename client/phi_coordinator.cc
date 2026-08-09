@@ -576,6 +576,9 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
       rect.Set("width", static_cast<int>(content.right - content.left));
       rect.Set("height", static_cast<int>(content.bottom - content.top));
       out.Set("content", std::move(rect));
+      // Geometry is in PHYSICAL pixels; a caller comparing against design
+      // constants has to scale them by this.
+      out.Set("dpi", static_cast<int>(it->second->dpi()));
       out.Set("mode", PhiLayoutModeName(layout_mode_));
       out.Set("ok", true);
     } else {
