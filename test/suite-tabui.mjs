@@ -3,8 +3,25 @@
 import { execFileSync } from 'node:child_process'
 import { test, run, assert, assertEq, sleep, openControl } from './phi-test.mjs'
 
-// Mirrors phi_window_controller.cc.
-const BTN_TOP = 240, TABS_TOP = 374, ROW_H = 30, ROW_GAP = 4  // tabs sit below the Spaces chip row
+// Mirrors phi_window_controller.cc, in DESIGN UNITS (pixels at 100%). The
+// client lays out in PHYSICAL pixels and uicap captures in the same space, so
+// every constant here goes through scale() first.
+const BTN_TOP_D = 240, TABS_TOP_D = 374, ROW_H_D = 30, ROW_GAP_D = 4
+const SCAN_XS_D = [40, 90, 140, 190]
+let DPI = 96
+const scale = (design) => Math.round((design * DPI) / 96)
+let BTN_TOP = BTN_TOP_D, TABS_TOP = TABS_TOP_D, ROW_H = ROW_H_D, ROW_GAP = ROW_GAP_D
+let SCAN_XS = SCAN_XS_D
+let SCAN_STEP = 3
+function useDpi(dpi) {
+  DPI = dpi
+  BTN_TOP = scale(BTN_TOP_D)
+  TABS_TOP = scale(TABS_TOP_D)
+  ROW_H = scale(ROW_H_D)
+  ROW_GAP = scale(ROW_GAP_D)
+  SCAN_XS = SCAN_XS_D.map(scale)
+  SCAN_STEP = Math.max(3, scale(3))
+}
 
 /** Samples pixels on the box via a scheduled task (only the interactive
  *  session can enumerate/capture desktop windows). [[x,y],…] -> ["r,g,b",…] */
@@ -47,9 +64,6 @@ const isLight = (s) => { const [r, g, b] = s.split(',').map(Number); return r > 
 // New Window button (the tallest light block), then decide each row slot by a
 // majority of its own lines. Text can darken individual samples but never a
 // majority of a whole row.
-const SCAN_XS = [40, 90, 140, 190]
-const SCAN_STEP = 3
-
 function gridScan() {
   const ys = []
   for (let y = BTN_TOP - 8; y < TABS_TOP + 8 * (ROW_H + ROW_GAP); y += SCAN_STEP) {
@@ -110,6 +124,8 @@ async function firstWindow(ctl) {
   // opens one when a profile is created).
   const h = await ctl.send('agentSpace.window.handle', { windowId: slot })
   setCaptureWindow(h.ok ? h.hwnd : 0)
+  const l = await ctl.send('agentSpace.window.layout', { windowId: slot })
+  useDpi(l.ok ? l.dpi : 96)
   return slot
 }
 

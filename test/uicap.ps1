@@ -13,6 +13,7 @@ try {
   $sig = @"
 using System;using System.Runtime.InteropServices;
 public class C {
+  [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr c);
   [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr dc, uint f);
   [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h, out R r);
   [DllImport("user32.dll")] public static extern IntPtr FindWindowEx(IntPtr a, IntPtr b, string c, string d);
@@ -21,6 +22,12 @@ public class C {
 }
 "@
   Add-Type -TypeDefinition $sig
+  # Capture in PHYSICAL pixels, the same space the client lays out in. Without
+  # this PowerShell is DPI-unaware, GetClientRect reports virtualised size and
+  # PrintWindow renders a RESAMPLED image — blurred edges that break the
+  # light/dark classification the assertions rely on.
+  # -4 = DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+  [C]::SetProcessDpiAwarenessContext([IntPtr](-4)) | Out-Null
   # Prefer an explicitly requested HWND (the slot under test): several shell
   # windows can exist, and "the process's main window" may not be the right one.
   $h = [IntPtr]::Zero

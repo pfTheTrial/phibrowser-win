@@ -3,10 +3,19 @@
 import { execFileSync } from 'node:child_process'
 import { test, run, assert, assertEq, sleep, openControl } from './phi-test.mjs'
 
-// Mirrors phi_window_controller.cc.
-const BTN_TOP = 240, URL_TOP = 146, URL_BOTTOM = 182
-const BACK = { l: 16, r: 52, t: 190, b: 226 }
-const FWD  = { l: 56, r: 92, t: 190, b: 226 }
+// Mirrors phi_window_controller.cc, in DESIGN UNITS (pixels at 100%). The
+// client lays out in PHYSICAL pixels and uicap captures in the same space, so
+// every constant here goes through scale() first.
+const BTN_TOP_D = 240, URL_TOP_D = 146, URL_BOTTOM_D = 182
+let DPI = 96
+const scale = (design) => Math.round((design * DPI) / 96)
+let BTN_TOP = BTN_TOP_D, URL_TOP = URL_TOP_D, URL_BOTTOM = URL_BOTTOM_D
+function useDpi(dpi) {
+  DPI = dpi
+  BTN_TOP = scale(BTN_TOP_D)
+  URL_TOP = scale(URL_TOP_D)
+  URL_BOTTOM = scale(URL_BOTTOM_D)
+}
 
 function samplePixels(points) {
   const arg = points.map(([x, y]) => `${x},${y}`).join(';')
@@ -45,8 +54,8 @@ const isDim   = (s) => { const [r, g, b] = s.split(',').map(Number); return b > 
 /** Calibrates the frame offset from the New Window button's white block. */
 function frameOffset() {
   const ys = []
-  for (let y = BTN_TOP - 60; y < BTN_TOP + 120; y += 2) ys.push(y)
-  const px = samplePixels(ys.map((y) => [200, y]))
+  for (let y = BTN_TOP - scale(60); y < BTN_TOP + scale(120); y += 2) ys.push(y)
+  const px = samplePixels(ys.map((y) => [scale(200), y]))
   // The New Window button is the widest light run in this range.
   let start = -1, best = null
   for (let i = 0; i < ys.length; i++) {
@@ -61,16 +70,20 @@ function frameOffset() {
   return best.top - BTN_TOP
 }
 
-/** Counts ink (dark) pixels across the URL field's text line. */
-function urlInkCount(offset) {
+/** Light/dark pattern across the URL field's text line, one char per sample. */
+function urlSignature(offset) {
   const y = Math.round((URL_TOP + URL_BOTTOM) / 2) + offset
   const pts = []
-  for (let x = 24; x < 216; x += 3) pts.push([x, y])
-  const px = samplePixels(pts)
-  return px.filter((p) => {
+  for (let x = scale(24); x < scale(216); x += 3) pts.push([x, y])
+  return samplePixels(pts).map((p) => {
     const [r, g, b] = p.split(',').map(Number)
-    return r < 150 && g < 150 && b < 150   // dark glyph on the white field
-  }).length
+    return r < 150 && g < 150 && b < 150 ? '#' : '.'  // dark glyph on white
+  }).join('')
+}
+
+/** Counts ink (dark) pixels across the URL field's text line. */
+function urlInkCount(offset) {
+  return (urlSignature(offset).match(/#/g) || []).length
 }
 
 async function firstWindow(ctl) {
@@ -80,6 +93,8 @@ async function firstWindow(ctl) {
   // opens one when a profile is created).
   const h = await ctl.send('agentSpace.window.handle', { windowId: slot })
   setCaptureWindow(h.ok ? h.hwnd : 0)
+  const l = await ctl.send('agentSpace.window.layout', { windowId: slot })
+  useDpi(l.ok ? l.dpi : 96)
   return slot
 }
 
@@ -110,13 +125,16 @@ test('toolbar: url text changes when the page changes', async () => {
   try {
     const windowId = await firstWindow(ctl)
     const offset = frameOffset()
-    // A short data: url vs a much longer one => different ink coverage.
+    // Two different pages must PAINT differently. Compare the whole glyph
+    // pattern, not just how much ink it adds up to: with crisp (unresampled)
+    // capture, two unrelated strings can easily land on the same ink count
+    // while looking nothing alike.
     await navigateAndSettle(ctl, windowId, 'S')
-    const shortInk = urlInkCount(offset)
+    const shortSig = urlSignature(offset)
     await navigateAndSettle(ctl, windowId, 'L'.repeat(120))
-    const longInk = urlInkCount(offset)
-    assert(longInk !== shortInk,
-           `url rendering tracks the page (short ${shortInk} vs long ${longInk})`)
+    const longSig = urlSignature(offset)
+    assert(shortSig !== longSig,
+           `url rendering tracks the page\n      short ${shortSig}\n      long  ${longSig}`)
   } finally { ctl.close() }
 })
 
