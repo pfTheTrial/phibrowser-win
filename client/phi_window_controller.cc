@@ -182,6 +182,7 @@ void PhiWindowController::RefreshTabs() {
   RebuildTabs();
   if (shell_hwnd_) {
     ::InvalidateRect(shell_hwnd_, nullptr, FALSE);
+    ::UpdateWindow(shell_hwnd_);  // Paint now, not at the next idle.
   }
 }
 
@@ -527,6 +528,19 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
         self->LayoutContents();
       }
       return 0;
+    case WM_PRINTCLIENT: {
+      // PrintWindow (used by screenshots/thumbnails) sends this instead of
+      // WM_PAINT. Without handling it, a capture returns the LAST PAINTED
+      // frame, not current state — so render fresh into the supplied DC.
+      if (self) {
+        HDC dc = reinterpret_cast<HDC>(wparam);
+        self->RebuildTabs();
+        RECT rc = {};
+        ::GetClientRect(hwnd, &rc);
+        self->PaintSidebar(dc, rc);
+      }
+      return 0;
+    }
     case WM_PAINT: {
       PAINTSTRUCT ps = {};
       HDC dc = ::BeginPaint(hwnd, &ps);

@@ -12,6 +12,7 @@ function samplePixels(points) {
   const arg = points.map(([x, y]) => `${x},${y}`).join(';')
   const ps = [
     `[Environment]::SetEnvironmentVariable('PHI_UICAP_POINTS','${arg}','User')`,
+    `[Environment]::SetEnvironmentVariable('PHI_UICAP_HWND','${captureHwnd || 0}','User')`,
     `Remove-Item C:\\Users\\jdxin\\uicap.txt -ErrorAction SilentlyContinue`,
     `Start-ScheduledTask -TaskName PhiUiCap`,
     `$deadline = (Get-Date).AddSeconds(20)`,
@@ -32,6 +33,11 @@ function samplePixels(points) {
   }
   return px
 }
+
+// The HWND of the slot under test; pixel captures target exactly this window
+// (creating a profile can open extra shell windows).
+let captureHwnd = 0
+export function setCaptureWindow(h) { captureHwnd = h }
 
 const isLight = (s) => { const [r, g, b] = s.split(',').map(Number); return r > 200 && g > 200 && b > 200 }
 const isDim   = (s) => { const [r, g, b] = s.split(',').map(Number); return b > 200 && r < 200 }
@@ -69,7 +75,12 @@ function urlInkCount(offset) {
 
 async function firstWindow(ctl) {
   const { windows } = await ctl.send('agentSpace.list')
-  return windows[0]
+  const slot = windows[0]
+  // Capture the window we drive: extra shell windows can exist (e.g. Chromium
+  // opens one when a profile is created).
+  const h = await ctl.send('agentSpace.window.handle', { windowId: slot })
+  setCaptureWindow(h.ok ? h.hwnd : 0)
+  return slot
 }
 
 async function navigateAndSettle(ctl, windowId, marker) {

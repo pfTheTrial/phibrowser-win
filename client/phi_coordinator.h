@@ -70,8 +70,15 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   std::map<int64_t, std::unique_ptr<PhiWindowController>> windows_;
   // Every browser window -> the slot hosting it (a slot has one per Space).
   std::map<int64_t, int64_t> browser_to_slot_;
-  // Spaces are a client concept: ordered ids with display names.
-  std::vector<std::pair<std::string, std::string>> spaces_{{"1", "Space 1"}};
+  // Spaces are a client concept. Each binds EXACTLY ONE profile; several
+  // Spaces may share a profile (the fork's model — the binding is immutable
+  // once created).
+  struct Space {
+    std::string id;
+    std::string name;
+    std::string profile_id;  // On-disk basename, e.g. "Default".
+  };
+  std::vector<Space> spaces_{{"1", "Space 1", "Default"}};
   int next_space_id_ = 2;
   // Set while a Space browser is being created, so the next
   // OnBrowserWindowCreated attaches to that slot instead of opening a shell.

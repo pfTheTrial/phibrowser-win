@@ -16,19 +16,31 @@ public class C {
   [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr dc, uint f);
   [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h, out R r);
   [DllImport("user32.dll")] public static extern IntPtr FindWindowEx(IntPtr a, IntPtr b, string c, string d);
+  [DllImport("user32.dll")] public static extern bool RedrawWindow(IntPtr h, IntPtr r, IntPtr u, uint flags);
   public struct R { public int L,T,Rr,B; }
 }
 "@
   Add-Type -TypeDefinition $sig
+  # Prefer an explicitly requested HWND (the slot under test): several shell
+  # windows can exist, and "the process's main window" may not be the right one.
   $h = [IntPtr]::Zero
-  $p = Get-Process phi_client -ErrorAction SilentlyContinue | Where-Object MainWindowHandle -ne 0 | Select-Object -First 1
-  if ($p) { $h = $p.MainWindowHandle }
+  $want = [Environment]::GetEnvironmentVariable("PHI_UICAP_HWND", "User")
+  if ($want -and $want -ne "0") { $h = [IntPtr][int64]$want }
+  if ($h -eq [IntPtr]::Zero) {
+    $p = Get-Process phi_client -ErrorAction SilentlyContinue | Where-Object MainWindowHandle -ne 0 | Select-Object -First 1
+    if ($p) { $h = $p.MainWindowHandle }
+  }
   if ($h -eq [IntPtr]::Zero) {
     $h = [C]::FindWindowEx([IntPtr]::Zero, [IntPtr]::Zero, "PhiClientShell", $null)
   }
   if ($h -eq [IntPtr]::Zero) {
     $lines.Add("ERR no shell window")
   } else {
+    # Force a real repaint before capturing: PrintWindow can otherwise return
+    # the last composited frame rather than current state.
+    # RDW_INVALIDATE(0x1) | RDW_UPDATENOW(0x100) | RDW_ALLCHILDREN(0x80)
+    [C]::RedrawWindow($h, [IntPtr]::Zero, [IntPtr]::Zero, 0x181) | Out-Null
+    Start-Sleep -Milliseconds 250
     $r = New-Object C+R
     [C]::GetClientRect($h, [ref]$r) | Out-Null
     $bmp = New-Object System.Drawing.Bitmap ($r.Rr - $r.L), ($r.B - $r.T)

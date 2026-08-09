@@ -155,12 +155,14 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
         p ? static_cast<int64_t>(p->FindDouble("windowId").value_or(0)) : 0;
     auto it = windows_.find(slot);
     base::ListValue list;
-    for (const auto& [id, name] : spaces_) {
+    for (const Space& space : spaces_) {
       base::DictValue s;
-      s.Set("id", id);
-      s.Set("name", name);
-      s.Set("active", it != windows_.end() && it->second->active_space() == id);
-      s.Set("open", it != windows_.end() && it->second->HasSpace(id));
+      s.Set("id", space.id);
+      s.Set("name", space.name);
+      s.Set("profileId", space.profile_id);
+      s.Set("active",
+            it != windows_.end() && it->second->active_space() == space.id);
+      s.Set("open", it != windows_.end() && it->second->HasSpace(space.id));
       list.Append(std::move(s));
     }
     out.Set("spaces", std::move(list));
@@ -168,19 +170,26 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
   } else if (type == "agentSpace.spaces.create") {
     std::optional<base::DictValue> p =
         base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
-    std::string name;
+    std::string name, profile_id;
     if (p) {
       if (const std::string* n = p->FindString("name")) {
         name = *n;
+      }
+      if (const std::string* pid = p->FindString("profileId")) {
+        profile_id = *pid;
       }
     }
     const std::string id = std::to_string(next_space_id_++);
     if (name.empty()) {
       name = "Space " + id;
     }
-    spaces_.emplace_back(id, name);
+    if (profile_id.empty()) {
+      profile_id = "Default";  // A Space always binds exactly one profile.
+    }
+    spaces_.push_back({id, name, profile_id});
     out.Set("id", id);
     out.Set("name", name);
+    out.Set("profileId", profile_id);
     out.Set("ok", true);
   } else if (type == "agentSpace.spaces.switch") {
     std::optional<base::DictValue> p =
@@ -194,24 +203,82 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
       }
     }
     auto it = windows_.find(slot);
-    const bool known = std::any_of(
-        spaces_.begin(), spaces_.end(),
-        [&](const auto& e) { return e.first == space_id; });
+    auto space_it = std::find_if(spaces_.begin(), spaces_.end(),
+                                 [&](const Space& s) { return s.id == space_id; });
     bool ok = false;
-    if (it != windows_.end() && known) {
+    if (it != windows_.end() && space_it != spaces_.end()) {
       if (it->second->HasSpace(space_id)) {
         ok = it->second->ShowSpace(space_id);
       } else if (framework_) {
-        // First visit: create this Space's browser and attach it to the slot.
+        // First visit: create this Space's browser IN ITS PROFILE and attach
+        // it to the slot. A cold profile loads asynchronously, so the pending
+        // attach stays armed until OnBrowserWindowCreated consumes it.
         pending_slot_ = slot;
         pending_space_ = space_id;
-        framework_->CreateSpaceBrowser(it->second->active_browser());
-        ok = it->second->HasSpace(space_id);
-        pending_slot_ = 0;
-        pending_space_.clear();
+        ok = framework_->CreateSpaceBrowserInProfile(
+            space_it->profile_id.c_str());
+        if (it->second->HasSpace(space_id)) {
+          out.Set("pending", false);
+        } else {
+          out.Set("pending", true);  // Attaching when the browser arrives.
+        }
       }
     }
     out.Set("ok", ok);
+  } else if (type == "agentSpace.profiles.list") {
+    if (framework_) {
+      std::optional<base::Value> v = base::JSONReader::Read(
+          framework_->ListProfilesJson(), base::JSON_PARSE_RFC);
+      if (v && v->is_list()) {
+        out.Set("profiles", std::move(*v));
+      }
+    }
+    if (!out.contains("profiles")) {
+      out.Set("profiles", base::ListValue());
+    }
+    out.Set("ok", true);
+  } else if (type == "agentSpace.profiles.create") {
+    std::optional<base::DictValue> p =
+        base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
+    std::string name;
+    if (p) {
+      if (const std::string* n = p->FindString("name")) {
+        name = *n;
+      }
+    }
+    if (framework_ && !name.empty()) {
+      framework_->CreateProfile(name.c_str());
+    }
+    out.Set("ok", framework_ && !name.empty());
+  } else if (type == "agentSpace.window.profile") {
+    std::optional<base::DictValue> p =
+        base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
+    int64_t slot =
+        p ? static_cast<int64_t>(p->FindDouble("windowId").value_or(0)) : 0;
+    if (framework_) {
+      std::optional<base::DictValue> v = base::JSONReader::ReadDict(
+          framework_->WindowProfileJson(ResolveBrowser(slot)),
+          base::JSON_PARSE_RFC);
+      if (v) {
+        out = std::move(*v);
+      }
+    }
+    out.Set("ok", out.contains("id"));
+  } else if (type == "agentSpace.window.handle") {
+    // The slot's shell HWND, so a test/screenshot tool can capture exactly the
+    // window it is driving (several slots may exist).
+    std::optional<base::DictValue> p =
+        base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
+    int64_t slot =
+        p ? static_cast<int64_t>(p->FindDouble("windowId").value_or(0)) : 0;
+    auto it = windows_.find(slot);
+    if (it != windows_.end() && it->second->shell_hwnd()) {
+      out.Set("hwnd", static_cast<double>(
+                          reinterpret_cast<intptr_t>(it->second->shell_hwnd())));
+      out.Set("ok", true);
+    } else {
+      out.Set("ok", false);
+    }
   } else if (type == "agentSpace.window.bounds") {
     std::optional<base::DictValue> p =
         base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
