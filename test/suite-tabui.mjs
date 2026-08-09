@@ -131,7 +131,15 @@ async function firstWindow(ctl) {
   // These assertions are about the SIDEBAR, so pin the layout: another suite
   // (or a manual poke) may have left the client in Balanced or Comfortable,
   // where the address bar and tab list live somewhere else entirely.
+  // Pin the window SIZE as well: an earlier suite (or a restart) can leave it
+  // too small for the sample points, which reads as "capture failed".
+  await ctl.send('agentSpace.window.setBounds',
+                 { windowId: slot, x: 60, y: 60, width: 1200, height: 900 })
   await ctl.send('agentSpace.layout.set', { mode: 'performance' })
+  // Pin the THEME too: under Pure the ground is white, the same as the
+  // selected row's chip, so "which row is selected" cannot be read in pixels.
+  // Mint gives a coloured ground the chip stands out against.
+  await ctl.send('agentSpace.theme.set', { themeId: 'mint', appearance: 'light' })
   await sleep(400)
   const l = await ctl.send('agentSpace.window.layout', { windowId: slot })
   assert(l.ok, 'window.layout ok')

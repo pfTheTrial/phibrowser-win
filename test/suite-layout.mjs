@@ -122,6 +122,12 @@ test('layout: the sidebar really disappears in comfortable (pixels)', async () =
   try {
     const windowId = await firstWindow(ctl)
     const h = await ctl.send('agentSpace.window.handle', { windowId })
+    await ctl.send('agentSpace.window.setBounds',
+                   { windowId, x: 60, y: 60, width: 1200, height: 900 })
+    // A coloured theme: under Pure the ground is white and indistinguishable
+    // from the unpainted content region.
+    await ctl.send('agentSpace.theme.set', { themeId: 'mint', appearance: 'light' })
+    await sleep(400)
     const geo = await ctl.send('agentSpace.window.layout', { windowId })
     // Captures render from the WINDOW origin; client coords need the insets.
     const frame = { x: geo.frameLeft || 0, y: geo.frameTop || 0 }
@@ -142,12 +148,13 @@ test('layout: the sidebar really disappears in comfortable (pixels)', async () =
   } finally { ctl.close() }
 })
 
-// The ground is the Space tint (a mint gradient), so match its HUE rather than
-// one exact value. The content card is not painted by the shell at all and
-// captures neutral, so the two never collide.
+// The ground carries the theme's TINT; the content card is not painted by the
+// shell at all and captures neutral. So test for "is coloured", not for a
+// particular hue — Mint is yellow-green (b below r), Mist and Aqua are blue,
+// and a hue-specific check only works for whichever theme it was written for.
 const isSidebarGround = (s) => {
-  const [r, g, b] = s.split(',').map(Number)
-  return g > r + 8 && b > r + 8
+  const c = s.split(',').map(Number)
+  return Math.max(...c) - Math.min(...c) > 15
 }
 
 function samplePixel(hwnd, x, y) {
