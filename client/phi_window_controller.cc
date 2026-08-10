@@ -168,7 +168,9 @@ ATOM EnsureShellClass() {
     // Phi's own icon in the taskbar and alt-tab — not Chromium's.
     wc.hIcon = PhiAppIcon(32);
     wc.hIconSm = PhiAppIcon(16);
-    wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+    // No background brush: an erase flashes system-white under the chrome
+    // before PaintChrome covers it. WM_ERASEBKGND answers "done" instead.
+    wc.hbrBackground = nullptr;
     wc.lpszClassName = kShellClassName;
     return ::RegisterClassExW(&wc);
   }();
@@ -1030,9 +1032,6 @@ void PhiWindowController::AttachSpaceBrowser(const std::string& space_id,
   HWND previous = browser_hwnd_;
   browser_hwnd_ = browser_hwnd;
   AdoptBrowserAsChild();
-  if (previous && previous != browser_hwnd && ::IsWindow(previous)) {
-    ::ShowWindow(previous, SW_HIDE);
-  }
   if (space_browsers_.find(space_id) == space_browsers_.end()) {
     space_order_.push_back(space_id);
   }
@@ -1044,6 +1043,11 @@ void PhiWindowController::AttachSpaceBrowser(const std::string& space_id,
     framework_->SetWindowSpace(browser_window_id, space_id.c_str());
   }
   LayoutContents();
+  // Same order as ShowSpace: the outgoing browser goes away only after the
+  // incoming one is shown in place, so the content rect is never uncovered.
+  if (previous && previous != browser_hwnd && ::IsWindow(previous)) {
+    ::ShowWindow(previous, SW_HIDE);
+  }
   RefreshTabs();
 }
 
@@ -1074,14 +1078,20 @@ bool PhiWindowController::ShowSpace(const std::string& space_id) {
   if (hwnd_it == browser_hwnds_.end() || !::IsWindow(hwnd_it->second)) {
     return false;
   }
-  if (browser_hwnd_ && browser_hwnd_ != hwnd_it->second &&
-      ::IsWindow(browser_hwnd_)) {
-    ::ShowWindow(browser_hwnd_, SW_HIDE);
-  }
+  HWND previous = (browser_hwnd_ && browser_hwnd_ != hwnd_it->second &&
+                   ::IsWindow(browser_hwnd_))
+                      ? browser_hwnd_
+                      : nullptr;
   browser_hwnd_ = hwnd_it->second;
   active_space_ = space_id;
   active_browser_ = it->second;
-  LayoutContents();  // Also re-shows the newly visible child.
+  LayoutContents();  // Shows + positions the incoming child...
+  // ...and only then drop the outgoing one. Hiding first uncovers the shell
+  // background across the whole content rect for a frame — the window-wide
+  // blink on every Space switch.
+  if (previous) {
+    ::ShowWindow(previous, SW_HIDE);
+  }
   FocusActiveBrowser();
   RefreshTabs();
   return true;
@@ -2633,12 +2643,46 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
         // Re-read framework state at paint time: the sidebar then reflects
         // reality even if a change notification was missed or coalesced.
         self->RebuildTabs();
-        self->PaintChrome(dc, self->ComputeLayout(),
-                          /*include_child_controls=*/false);
+        // Compose off-screen and blit once. Painting straight to the window
+        // shows the chrome rebuilding element by element — the visible blink
+        // on every tab/Space change, which invalidates the whole window.
+        RECT rc = {};
+        ::GetClientRect(hwnd, &rc);
+        HDC mem = ::CreateCompatibleDC(dc);
+        HBITMAP bmp = mem ? ::CreateCompatibleBitmap(
+                                dc, rc.right > 0 ? rc.right : 1,
+                                rc.bottom > 0 ? rc.bottom : 1)
+                          : nullptr;
+        if (bmp) {
+          HGDIOBJ old_bmp = ::SelectObject(mem, bmp);
+          // PaintChrome excludes the content rect (the browser child owns
+          // it), so give those buffer pixels a defined color for the rare
+          // blit with no child covering them (startup, degenerate states).
+          ::FillRect(mem, &rc, reinterpret_cast<HBRUSH>(
+                                   ::GetStockObject(WHITE_BRUSH)));
+          self->PaintChrome(mem, self->ComputeLayout(),
+                            /*include_child_controls=*/false);
+          ::BitBlt(dc, ps.rcPaint.left, ps.rcPaint.top,
+                   ps.rcPaint.right - ps.rcPaint.left,
+                   ps.rcPaint.bottom - ps.rcPaint.top, mem, ps.rcPaint.left,
+                   ps.rcPaint.top, SRCCOPY);
+          ::SelectObject(mem, old_bmp);
+          ::DeleteObject(bmp);
+        } else {
+          self->PaintChrome(dc, self->ComputeLayout(),
+                            /*include_child_controls=*/false);
+        }
+        if (mem) {
+          ::DeleteDC(mem);
+        }
       }
       ::EndPaint(hwnd, &ps);
       return 0;
     }
+    case WM_ERASEBKGND:
+      // Everything the shell owns is painted in WM_PAINT; a DefWindowProc
+      // erase only flashes white under it.
+      return 1;
     case WM_CLOSE:
       // Route through Chromium's normal close path (unload handlers, session
       // bookkeeping) for EVERY Space browser this slot hosts. When the last
