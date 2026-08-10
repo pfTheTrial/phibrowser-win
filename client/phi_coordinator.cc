@@ -1909,7 +1909,9 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
     }
     out.Set("ok", ok);
   } else if (type == "agentSpace.tabs.activate" ||
-             type == "agentSpace.tabs.close") {
+             type == "agentSpace.tabs.close" ||
+             type == "agentSpace.tabs.split" ||
+             type == "agentSpace.tabs.unsplit") {
     std::optional<base::DictValue> p =
         base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
     int64_t window_id = 0;
@@ -1920,9 +1922,18 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
     }
     bool ok = false;
     if (framework_ && window_id && index >= 0) {
-      ok = (type == "agentSpace.tabs.activate")
-               ? framework_->ActivateTab(ResolveBrowser(window_id), index)
-               : framework_->CloseTab(ResolveBrowser(window_id), index);
+      const int64_t browser = ResolveBrowser(window_id);
+      if (type == "agentSpace.tabs.activate") {
+        ok = framework_->ActivateTab(browser, index);
+      } else if (type == "agentSpace.tabs.close") {
+        ok = framework_->CloseTab(browser, index);
+      } else if (type == "agentSpace.tabs.split") {
+        // Splits the ACTIVE tab with the tab at `index` (native
+        // side-by-side; the sidebar shows one merged row).
+        ok = framework_->SplitActiveWith(browser, index);
+      } else {
+        ok = framework_->Unsplit(browser, index);
+      }
     }
     out.Set("ok", ok);
   } else {

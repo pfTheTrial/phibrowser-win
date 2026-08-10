@@ -1467,6 +1467,9 @@ void PhiWindowController::RebuildTabs() {
       row.index = d.FindInt("index").value_or(0);
       row.id = d.FindInt("id").value_or(0);
       row.active = d.FindBool("active").value_or(false);
+      if (const std::string* split = d.FindString("splitId")) {
+        row.split_id = *split;
+      }
       const std::string* title = d.FindString("title");
       const std::string* url = d.FindString("url");
       std::string label = title && !title->empty()
@@ -1542,6 +1545,24 @@ void PhiWindowController::RebuildTabs() {
     flag_bound(bookmark);
   }
 
+  // Merge split partners (Chromium keeps them adjacent): the leading member
+  // carries both panes; the partner is consumed and never placed.
+  for (size_t i = 0; i + 1 < rows.size(); ++i) {
+    TabRow& a = rows[i];
+    TabRow& b = rows[i + 1];
+    if (a.split_id.empty() || a.split_id != b.split_id || a.b_index >= 0) {
+      continue;
+    }
+    a.b_index = b.index;
+    a.b_active = b.active;
+    a.b_title = std::move(b.title);
+    a.b_favicon = std::move(b.favicon);
+    a.b_favicon_width = b.favicon_width;
+    a.b_favicon_height = b.favicon_height;
+    a.active = a.active || b.active;
+    rows.erase(rows.begin() + i + 1);
+  }
+
   // Geometry for the unbound rows only.
   const Layout layout = ComputeLayout();
   int x = layout.tabs_left;
@@ -1587,6 +1608,12 @@ void PhiWindowController::RebuildTabs() {
                      box_mid - close_box / 2,
                      row.bounds.right - Scaled(4),
                      box_mid + close_box / 2};
+    if (row.b_index >= 0) {
+      // Right half of the merged row activates pane B (clicks in the close
+      // box still win — it is tested first).
+      row.pane_b = {(row.bounds.left + row.bounds.right) / 2, row.bounds.top,
+                    row.bounds.right, row.bounds.bottom};
+    }
     tabs_.push_back(std::move(row));
   }
 }
@@ -1844,10 +1871,26 @@ void PhiWindowController::OnChromeClick(int x, int y) {
       continue;
     }
     if (framework_) {
+      const int64_t browser = active_browser_ ? active_browser_ : window_id_;
       if (::PtInRect(&row.close_box, pt)) {
-        framework_->CloseTab(active_browser_ ? active_browser_ : window_id_, row.index);
+        if (row.b_index >= 0) {
+          // Closing a merged row takes both panes; the higher index first so
+          // the lower one keeps its meaning.
+          framework_->CloseTab(browser, row.index > row.b_index ? row.index
+                                                                : row.b_index);
+          framework_->CloseTab(browser, row.index > row.b_index ? row.b_index
+                                                                : row.index);
+        } else {
+          framework_->CloseTab(browser, row.index);
+        }
+      } else if (row.split_id.empty() && (::GetKeyState(VK_MENU) & 0x8000)) {
+        // Alt-click, the Mac's option-click: split this tab with the active
+        // one (performSplitAction).
+        framework_->SplitActiveWith(browser, row.index);
+      } else if (row.b_index >= 0 && ::PtInRect(&row.pane_b, pt)) {
+        framework_->ActivateTab(browser, row.b_index);
       } else {
-        framework_->ActivateTab(active_browser_ ? active_browser_ : window_id_, row.index);
+        framework_->ActivateTab(browser, row.index);
       }
     }
     RefreshTabs();
@@ -1927,15 +1970,25 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
       if (!::PtInRect(&row.bounds, pt)) {
         continue;
       }
-      enum : UINT { kPin = 1, kBookmark, kClose };
+      enum : UINT { kPin = 1, kBookmark, kClose, kSplit, kUnsplit };
       HMENU menu = ::CreatePopupMenu();
       if (!menu) {
         return;
       }
-      ::AppendMenuW(menu, MF_STRING, kPin, L"Pin Tab");
-      ::AppendMenuW(menu, MF_STRING, kBookmark, L"Bookmark Tab...");
-      ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-      ::AppendMenuW(menu, MF_STRING, kClose, L"Close Tab");
+      const bool merged = row.b_index >= 0;
+      if (!merged) {
+        ::AppendMenuW(menu, MF_STRING, kPin, L"Pin Tab");
+        ::AppendMenuW(menu, MF_STRING, kBookmark, L"Bookmark Tab...");
+        ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        // Splitting needs a partner: the active tab, itself unsplit.
+        if (!row.active && row.split_id.empty()) {
+          ::AppendMenuW(menu, MF_STRING, kSplit, L"Split With Active Tab");
+        }
+      } else {
+        ::AppendMenuW(menu, MF_STRING, kUnsplit, L"Unsplit");
+      }
+      ::AppendMenuW(menu, MF_STRING, kClose,
+                    merged ? L"Close Split" : L"Close Tab");
       POINT screen = pt;
       ::ClientToScreen(shell_hwnd_, &screen);
       const UINT chosen = static_cast<UINT>(::TrackPopupMenu(
@@ -1943,13 +1996,28 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
                     TPM_RIGHTBUTTON,
           screen.x, screen.y, 0, shell_hwnd_, nullptr));
       ::DestroyMenu(menu);
+      const int64_t browser = active_browser_ ? active_browser_ : window_id_;
       if (chosen == kPin) {
         host_->RequestStoreTab(window_id_, row.index, /*as_bookmark=*/false);
       } else if (chosen == kBookmark) {
         host_->RequestStoreTab(window_id_, row.index, /*as_bookmark=*/true);
+      } else if (chosen == kSplit && framework_) {
+        framework_->SplitActiveWith(browser, row.index);
+        RefreshTabs();
+      } else if (chosen == kUnsplit && framework_) {
+        framework_->Unsplit(browser, row.index);
+        RefreshTabs();
       } else if (chosen == kClose && framework_) {
-        framework_->CloseTab(active_browser_ ? active_browser_ : window_id_,
-                             row.index);
+        if (merged) {
+          framework_->CloseTab(browser, row.index > row.b_index
+                                            ? row.index
+                                            : row.b_index);
+          framework_->CloseTab(browser, row.index > row.b_index
+                                            ? row.b_index
+                                            : row.index);
+        } else {
+          framework_->CloseTab(browser, row.index);
+        }
         RefreshTabs();
       }
       return;
@@ -2418,36 +2486,55 @@ void PhiWindowController::PaintChrome(HDC dc,
                       Scaled(kCornerRadius));
       }
     }
-    // A 14pt icon centred in the 16pt slot, 6pt from the pill's edge.
+    // A 14pt icon centred in the 16pt slot, 6pt from the pill's edge. A
+    // merged split row draws the same shape once per pane around a hairline
+    // divider (the Mac's single merged row with two panes).
     const int mid = (pill.top + pill.bottom) / 2;
-    RECT slot = {pill.left + Scaled(6), mid - Scaled(kFaviconSlot) / 2,
-                 pill.left + Scaled(6) + Scaled(kFaviconSlot),
-                 mid + Scaled(kFaviconSlot) / 2};
-    RECT icon = {slot.left + (Scaled(kFaviconSlot) - Scaled(kFaviconSize)) / 2,
-                 mid - Scaled(kFaviconSize) / 2, 0, 0};
-    icon.right = icon.left + Scaled(kFaviconSize);
-    icon.bottom = icon.top + Scaled(kFaviconSize);
-    if (!row.favicon.empty()) {
-      DrawFavicon(dc, icon, row.favicon.data(), row.favicon_width,
-                  row.favicon_height,
-                  row.active ? kRowSelectedBg : kTintTop);
-    } else {
-      // The Mac's no-favicon placeholder: the globe (FaviconProvider).
-      HGDIOBJ previous_glyph_font =
-          caption_font_ ? ::SelectObject(dc, caption_font_) : nullptr;
-      DrawGlyph(dc, icon, L"\uE774", kLabelDim);
-      if (previous_glyph_font) {
-        ::SelectObject(dc, previous_glyph_font);
+    const COLORREF row_bg = row.active ? kRowSelectedBg : kTintTop;
+    const auto draw_pane = [&](int left, int right, const TabRow& r,
+                               bool pane_b) {
+      RECT slot = {left + Scaled(6), mid - Scaled(kFaviconSlot) / 2,
+                   left + Scaled(6) + Scaled(kFaviconSlot),
+                   mid + Scaled(kFaviconSlot) / 2};
+      RECT icon = {
+          slot.left + (Scaled(kFaviconSlot) - Scaled(kFaviconSize)) / 2,
+          mid - Scaled(kFaviconSize) / 2, 0, 0};
+      icon.right = icon.left + Scaled(kFaviconSize);
+      icon.bottom = icon.top + Scaled(kFaviconSize);
+      const auto& favicon = pane_b ? r.b_favicon : r.favicon;
+      if (!favicon.empty()) {
+        DrawFavicon(dc, icon, favicon.data(),
+                    pane_b ? r.b_favicon_width : r.favicon_width,
+                    pane_b ? r.b_favicon_height : r.favicon_height, row_bg);
+      } else {
+        // The Mac's no-favicon placeholder: the globe (FaviconProvider).
+        HGDIOBJ previous_glyph_font =
+            caption_font_ ? ::SelectObject(dc, caption_font_) : nullptr;
+        DrawGlyph(dc, icon, L"\uE774", kLabelDim);
+        if (previous_glyph_font) {
+          ::SelectObject(dc, previous_glyph_font);
+        }
       }
+      ::SetTextColor(dc, kLabel);
+      RECT title_rc = {slot.right + Scaled(8), pill.top, right - Scaled(4),
+                       pill.bottom};
+      ::DrawTextW(dc, (pane_b ? r.b_title : r.title).c_str(), -1, &title_rc,
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    };
+    if (row.b_index >= 0) {
+      const int div_x = (pill.left + pill.right) / 2;
+      draw_pane(pill.left, div_x, row, /*pane_b=*/false);
+      draw_pane(div_x, row.active ? row.close_box.left : pill.right, row,
+                /*pane_b=*/true);
+      RECT divider = {div_x, pill.top + Scaled(6), div_x + 1,
+                      pill.bottom - Scaled(6)};
+      HBRUSH sep = ::CreateSolidBrush(palette.separator);
+      ::FillRect(dc, &divider, sep);
+      ::DeleteObject(sep);
+    } else {
+      draw_pane(pill.left, row.active ? row.close_box.left : pill.right, row,
+                /*pane_b=*/false);
     }
-
-    ::SetTextColor(dc, kLabel);
-    RECT title_rc = pill;
-    title_rc.left = slot.right + Scaled(8);
-    title_rc.right =
-        (row.active ? row.close_box.left : pill.right) - Scaled(4);
-    ::DrawTextW(dc, row.title.c_str(), -1, &title_rc,
-                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     if (row.active) {
       DrawGlyph(dc, row.close_box, L"\u00D7", kLabelDim);
     }

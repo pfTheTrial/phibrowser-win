@@ -363,7 +363,18 @@ class PhiWindowController {
     int favicon_height = 0;
     bool active = false;
     std::wstring title;
+    // Chromium native side-by-side: members share a splitId. The leading
+    // member renders the MERGED row and absorbs its partner as pane B; the
+    // partner never becomes its own row.
+    std::string split_id;
+    int b_index = -1;  // -1: not a merged row.
+    bool b_active = false;
+    std::wstring b_title;
+    std::vector<unsigned char> b_favicon;
+    int b_favicon_width = 0;
+    int b_favicon_height = 0;
     RECT bounds{};       // Row rect in client coords.
+    RECT pane_b{};       // Right half of a merged row (activates pane B).
     RECT close_box{};    // The row's close affordance.
   };
   std::vector<TabRow> tabs_;
