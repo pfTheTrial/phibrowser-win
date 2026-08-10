@@ -273,6 +273,19 @@ int main() {
   const std::string process_type =
       command_line->GetSwitchValueASCII(switches::kProcessType);
 
+  // The BROWSER process must start in the Default profile: the startup
+  // browser becomes the default Space's window, and that Space is bound to
+  // Default — bindings are immutable in the fork's model. Chromium's own
+  // default is the LAST-USED profile, which is whatever Space was foreground
+  // at the previous exit; without this pin, a session that ended in another
+  // Space's profile hands the default Space a wrong-profile browser at the
+  // next launch.
+  if (process_type.empty() &&
+      !command_line->HasSwitch("profile-directory")) {
+    base::CommandLine::ForCurrentProcess()->AppendSwitchASCII(
+        "profile-directory", "Default");
+  }
+
 #if !defined(COMPONENT_BUILD) && DCHECK_IS_ON()
   // In non-component mode, chrome.exe contains its own base::FeatureList
   // instance pointer, which remains nullptr. Attempts to access feature state

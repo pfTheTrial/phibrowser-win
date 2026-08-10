@@ -12,6 +12,8 @@
 #include "base/json/json_writer.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
+#include "phibrowser-win/client/phi_icons.h"
+#include "phibrowser-win/client/phi_prompt.h"
 #include "phibrowser-win/client/phi_theme.h"
 #include "phibrowser-win/client/phi_window_controller.h"
 
@@ -469,7 +471,11 @@ std::vector<std::pair<std::string, std::wstring>> PhiMenuBar::SpaceList()
     std::wstring title = base::UTF8ToWide(
         name && !name->empty() ? *name : "Space " + *d.FindString("id"));
     if (icon && !icon->empty()) {
-      title = base::UTF8ToWide(*icon) + L"  " + title;
+      const std::wstring glyph = base::UTF8ToWide(*icon);
+      // MDL2 stand-ins only render in the MDL2 face; menus use the UI font.
+      if (!PhiIsPrivateGlyph(glyph)) {
+        title = glyph + L"  " + title;
+      }
     }
     spaces.emplace_back(*d.FindString("id"), std::move(title));
   }
@@ -479,10 +485,14 @@ std::vector<std::pair<std::string, std::wstring>> PhiMenuBar::SpaceList()
 void PhiMenuBar::RefreshSpaces() {
   ClearMenu(spaces_);
   space_ids_.clear();
+  profile_ids_.clear();
 
   Append(spaces_, kCmdNewSpace, L"New Space...",
          controller_->host_ != nullptr);
-  Append(spaces_, kCmdRenameSpace, L"Rename Space...", false);
+  Append(spaces_, kCmdRenameSpace, L"Rename Space...",
+         controller_->host_ != nullptr);
+  // The icon picker lives in Settings > Spaces; this item waits for an
+  // inline surface.
   Append(spaces_, kCmdChangeIcon, L"Change Icon...", false);
 
   // Edit Theme — the same choices the Space chip's context menu offers,
@@ -506,19 +516,25 @@ void PhiMenuBar::RefreshSpaces() {
                 reinterpret_cast<UINT_PTR>(themes), L"Edit Theme");
 
   // Change Profile — the Mac's radio list; switching is not implemented, so
-  // every row is disabled but the binding still reads truthfully.
+  // every row is disabled but the binding still reads truthfully. Delete
+  // Profile rows ARE live, guarded the Mac's way: Default and any profile
+  // still bound to a Space refuse.
   std::string active_profile;
+  std::vector<std::string> bound_profiles;
   if (controller_->host_) {
     std::optional<base::Value> all = base::JSONReader::Read(
         controller_->host_->AllSpacesJson(), base::JSON_PARSE_RFC);
     if (all && all->is_list()) {
       for (const base::Value& v : all->GetList()) {
-        if (v.is_dict() && v.GetDict().FindString("id") &&
-            *v.GetDict().FindString("id") == active) {
-          if (const std::string* p = v.GetDict().FindString("profileId")) {
+        if (!v.is_dict()) {
+          continue;
+        }
+        if (const std::string* p = v.GetDict().FindString("profileId")) {
+          bound_profiles.push_back(*p);
+          if (v.GetDict().FindString("id") &&
+              *v.GetDict().FindString("id") == active) {
             active_profile = *p;
           }
-          break;
         }
       }
     }
@@ -547,9 +563,19 @@ void PhiMenuBar::RefreshSpaces() {
                           (*id == active_profile ? MF_CHECKED : 0),
                       kProfileFirst + static_cast<UINT>(profile_count),
                       title.c_str());
-        ::AppendMenuW(delete_profiles, MF_STRING | MF_DISABLED | MF_GRAYED,
+        const bool in_use =
+            std::find(bound_profiles.begin(), bound_profiles.end(), *id) !=
+            bound_profiles.end();
+        const bool deletable = *id != "Default" && !in_use;
+        // The Mac marks in-use rows "<name> — in use by a Space".
+        const std::wstring delete_title =
+            in_use ? title + L" — in use by a Space" : title;
+        ::AppendMenuW(delete_profiles,
+                      MF_STRING |
+                          (deletable ? 0u : MF_DISABLED | MF_GRAYED),
                       kDeleteProfileFirst + static_cast<UINT>(profile_count),
-                      title.c_str());
+                      delete_title.c_str());
+        profile_ids_.push_back(*id);
         ++profile_count;
       }
     }
@@ -562,7 +588,8 @@ void PhiMenuBar::RefreshSpaces() {
   }
   ::AppendMenuW(spaces_, MF_POPUP | MF_STRING,
                 reinterpret_cast<UINT_PTR>(profiles), L"Change Profile");
-  Append(spaces_, kCmdDeleteSpace, L"Delete Space...", false);
+  Append(spaces_, kCmdDeleteSpace, L"Delete Space...",
+         controller_->host_ && active != "1");
   Separator(spaces_);
   const std::vector<std::pair<std::string, std::wstring>> spaces =
       SpaceList();
@@ -585,7 +612,8 @@ void PhiMenuBar::RefreshSpaces() {
   Separator(spaces_);
   Append(spaces_, kCmdUrlRules, L"URL Rules...", false);
   Separator(spaces_);
-  Append(spaces_, kCmdNewProfile, L"New Profile...", false);
+  Append(spaces_, kCmdNewProfile, L"New Profile...",
+         controller_->framework_ != nullptr);
   ::AppendMenuW(spaces_, MF_POPUP | MF_STRING,
                 reinterpret_cast<UINT_PTR>(delete_profiles),
                 L"Delete Profile");
@@ -733,9 +761,19 @@ bool PhiMenuBar::OnCommand(UINT id) {
     }
     return true;
   }
-  if ((id >= kProfileFirst && id <= kProfileLast) ||
-      (id >= kDeleteProfileFirst && id <= kDeleteProfileLast)) {
-    return true;  // Drawn disabled; nothing to do.
+  if (id >= kProfileFirst && id <= kProfileLast) {
+    return true;  // Change Profile rows are drawn disabled; nothing to do.
+  }
+  if (id >= kDeleteProfileFirst && id <= kDeleteProfileLast) {
+    const size_t i = id - kDeleteProfileFirst;
+    if (c->host_ && i < profile_ids_.size() &&
+        PhiConfirm(c->shell_hwnd_, L"Delete Profile",
+                   L"All cookies, history, extensions, and saved data on "
+                   L"this profile will be permanently removed. This cannot "
+                   L"be undone.")) {
+      c->host_->DeleteProfileById(profile_ids_[i]);
+    }
+    return true;
   }
 
   switch (id) {
@@ -864,6 +902,52 @@ bool PhiMenuBar::OnCommand(UINT id) {
         c->RefreshTabs();
       }
       return true;
+    case kCmdRenameSpace: {
+      if (!c->host_) {
+        return true;
+      }
+      // Prefill with the Space's current name (from the owner's list; the
+      // chip label is the same string).
+      std::wstring name;
+      std::optional<base::Value> all = base::JSONReader::Read(
+          c->host_->AllSpacesJson(), base::JSON_PARSE_RFC);
+      if (all && all->is_list()) {
+        for (const base::Value& v : all->GetList()) {
+          if (v.is_dict() && v.GetDict().FindString("id") &&
+              *v.GetDict().FindString("id") == c->active_space_) {
+            if (const std::string* n = v.GetDict().FindString("name")) {
+              name = base::UTF8ToWide(*n);
+            }
+            break;
+          }
+        }
+      }
+      if (PhiPromptText(c->shell_hwnd_, L"Rename Space",
+                        L"Enter a new name for this Space.", &name)) {
+        c->host_->RenameSpace(c->active_space_, base::WideToUTF8(name));
+      }
+      return true;
+    }
+    case kCmdDeleteSpace:
+      if (c->host_ &&
+          PhiConfirm(c->shell_hwnd_, L"Delete Space",
+                     L"Bookmarks and pinned tabs belonging to this Space "
+                     L"will also be removed. This action cannot be "
+                     L"undone.")) {
+        c->host_->DeleteSpace(c->active_space_);
+      }
+      return true;
+    case kCmdNewProfile: {
+      std::wstring name;
+      if (c->framework_ &&
+          PhiPromptText(c->shell_hwnd_, L"New Profile",
+                        L"Enter a name for the new profile. Each profile "
+                        L"has its own cookies, history, and extensions.",
+                        &name)) {
+        c->framework_->CreateProfile(base::WideToUTF8(name).c_str());
+      }
+      return true;
+    }
     case kCmdNextSpace:
     case kCmdPreviousSpace: {
       const std::vector<std::pair<std::string, std::wstring>> spaces =

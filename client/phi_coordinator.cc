@@ -16,8 +16,11 @@
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
 #include "base/logging.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
+#include "base/rand_util.h"
+#include "phibrowser-win/client/phi_icons.h"
 #include "phibrowser-win/client/phi_menu_bar.h"
 
 namespace phi_client {
@@ -405,6 +408,8 @@ void PhiCoordinator::LoadPrefs() {
       saturation_ = root->FindInt("saturation").value_or(saturation_);
       always_show_full_url_ =
           root->FindBool("alwaysShowFullUrl").value_or(always_show_full_url_);
+      developer_mode_ =
+          root->FindBool("developerMode").value_or(developer_mode_);
       if (const std::string* behavior = root->FindString("newTabBehavior")) {
         new_tab_behavior_ = *behavior == "omnibox"
                                 ? PhiNewTabBehavior::kOmnibox
@@ -421,6 +426,7 @@ void PhiCoordinator::SavePrefs() const {
   base::DictValue root;
   root.Set("saturation", saturation_);
   root.Set("alwaysShowFullUrl", always_show_full_url_);
+  root.Set("developerMode", developer_mode_);
   root.Set("newTabBehavior", new_tab_behavior_ == PhiNewTabBehavior::kOmnibox
                                  ? "omnibox"
                                  : "newTabPage");
@@ -497,9 +503,140 @@ std::vector<std::string> PhiCoordinator::SpaceSummaries() const {
   std::vector<std::string> out;
   for (const Space& space : spaces_) {
     out.push_back(space.name + "\t" + PhiIconDisplayText(space.icon) + "\t" +
-                  space.profile_id + "\t" + space.id + "\t" + space.theme_id);
+                  space.profile_id + "\t" + space.id + "\t" + space.theme_id +
+                  "\t" + base::NumberToString(space.saturation));
   }
   return out;
+}
+
+void PhiCoordinator::SetSpaceIcon(const std::string& space_id,
+                                  const std::string& icon) {
+  if (!PhiIconIsValid(icon)) {
+    return;
+  }
+  for (Space& space : spaces_) {
+    if (space.id != space_id) {
+      continue;
+    }
+    space.icon = icon;
+    SaveSpaces();
+    for (const auto& [slot, controller] : windows_) {
+      controller->RefreshTabs();
+    }
+    PhiSettingsWindow::Refresh();
+    return;
+  }
+}
+
+void PhiCoordinator::SetSpaceSaturation(const std::string& space_id,
+                                        int value) {
+  for (Space& space : spaces_) {
+    if (space.id != space_id) {
+      continue;
+    }
+    // -1 follows the app-wide slider; anything else clamps to its range.
+    space.saturation = value < 0 ? -1 : (value > 100 ? 100 : value);
+    SaveSpaces();
+    RebuildSpacePalettes();
+    for (const auto& [slot, controller] : windows_) {
+      controller->ApplyPalette();
+    }
+    PhiSettingsWindow::Refresh();
+    return;
+  }
+}
+
+bool PhiCoordinator::RenameSpace(const std::string& space_id,
+                                 const std::string& name) {
+  if (name.empty()) {
+    return false;
+  }
+  for (Space& space : spaces_) {
+    if (space.id != space_id) {
+      continue;
+    }
+    space.name = name;
+    SaveSpaces();
+    for (const auto& [slot, controller] : windows_) {
+      controller->RefreshTabs();
+    }
+    PhiSettingsWindow::Refresh();
+    return true;
+  }
+  return false;
+}
+
+bool PhiCoordinator::DeleteSpace(const std::string& space_id) {
+  // The default Space cannot be deleted, as on Mac.
+  if (space_id == "1") {
+    return false;
+  }
+  auto it = std::find_if(spaces_.begin(), spaces_.end(),
+                         [&](const Space& s) { return s.id == space_id; });
+  if (it == spaces_.end()) {
+    return false;
+  }
+  // Close the Space's browser wherever it is open; each controller switches
+  // away first so a live window never keeps showing a deleted Space.
+  for (const auto& [slot, controller] : windows_) {
+    controller->CloseSpaceBrowser(space_id);
+  }
+  // The Space's bookmarks and space-scoped pins go with it (the Mac's
+  // delete-confirmation promise).
+  tab_store_.RemoveForSpace(space_id);
+  spaces_.erase(it);
+  SaveSpaces();
+  RebuildSpacePalettes();
+  for (const auto& [slot, controller] : windows_) {
+    controller->RefreshTabs();
+  }
+  PhiSettingsWindow::Refresh();
+  return true;
+}
+
+bool PhiCoordinator::DeleteProfileById(const std::string& profile_id) {
+  // Default is permanent, and a profile still bound to a Space stays —
+  // bindings are immutable, so the Spaces must go first.
+  if (profile_id.empty() || profile_id == "Default" || !framework_) {
+    return false;
+  }
+  for (const Space& space : spaces_) {
+    if (space.profile_id == profile_id) {
+      return false;
+    }
+  }
+  framework_->DeleteProfile(profile_id.c_str());
+  PhiSettingsWindow::Refresh();
+  return true;
+}
+
+bool PhiCoordinator::RenameProfileById(const std::string& profile_id,
+                                       const std::string& name) {
+  if (profile_id.empty() || name.empty() || !framework_) {
+    return false;
+  }
+  framework_->RenameProfile(profile_id.c_str(), name.c_str());
+  PhiSettingsWindow::Refresh();
+  return true;
+}
+
+bool PhiCoordinator::DeveloperMode() const {
+  return developer_mode_;
+}
+
+void PhiCoordinator::SetDeveloperMode(bool enabled) {
+  if (developer_mode_ == enabled) {
+    return;
+  }
+  developer_mode_ = enabled;
+  SavePrefs();
+  PhiSettingsWindow::Refresh();
+}
+
+void PhiCoordinator::OpenBrowserSettings() {
+  if (!windows_.empty()) {
+    RequestOpen(windows_.begin()->first, "chrome://settings");
+  }
 }
 
 std::vector<std::string> PhiCoordinator::ProfileSummaries() const {
@@ -529,6 +666,18 @@ void PhiCoordinator::CreateProfileNamed(const std::string& name) {
   if (framework_ && !name.empty()) {
     framework_->CreateProfile(name.c_str());
   }
+}
+
+void PhiCoordinator::CreateSpaceNamed(const std::string& name) {
+  if (name.empty()) {
+    return;
+  }
+  base::DictValue payload;
+  payload.Set("name", name);
+  std::string json;
+  base::JSONWriter::Write(payload, &json);
+  // The same path the control verb takes — one creation flow.
+  ExecuteControlOnUi("agentSpace.spaces.create", json);
 }
 
 void PhiCoordinator::LoadTheme() {
@@ -922,7 +1071,12 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
     if (profile_id.empty()) {
       profile_id = "Default";  // A Space always binds exactly one profile.
     }
-    spaces_.push_back({id, name, profile_id, kPhiDefaultSpaceIcon});
+    // A new Space draws a random catalog icon, as the Mac's create panel does.
+    const auto& catalog = PhiIconCatalogAll();
+    const std::string icon =
+        "phi:" +
+        std::string(catalog[base::RandGenerator(catalog.size())].id);
+    spaces_.push_back({id, name, profile_id, icon});
     SaveSpaces();
     out.Set("id", id);
     out.Set("name", name);
@@ -961,6 +1115,40 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
         }
       }
     }
+    out.Set("ok", ok);
+  } else if (type == "agentSpace.spaces.rename" ||
+             type == "agentSpace.spaces.delete") {
+    std::optional<base::DictValue> p =
+        base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
+    std::string space_id, name;
+    if (p) {
+      if (const std::string* s = p->FindString("spaceId")) {
+        space_id = *s;
+      }
+      if (const std::string* n = p->FindString("name")) {
+        name = *n;
+      }
+    }
+    const bool ok = type == "agentSpace.spaces.rename"
+                        ? RenameSpace(space_id, name)
+                        : DeleteSpace(space_id);
+    out.Set("ok", ok);
+  } else if (type == "agentSpace.profiles.rename" ||
+             type == "agentSpace.profiles.delete") {
+    std::optional<base::DictValue> p =
+        base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
+    std::string id, name;
+    if (p) {
+      if (const std::string* i = p->FindString("id")) {
+        id = *i;
+      }
+      if (const std::string* n = p->FindString("name")) {
+        name = *n;
+      }
+    }
+    const bool ok = type == "agentSpace.profiles.rename"
+                        ? RenameProfileById(id, name)
+                        : DeleteProfileById(id);
     out.Set("ok", ok);
   } else if (type == "agentSpace.profiles.list") {
     if (framework_) {
@@ -1347,12 +1535,16 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
     // Everything the settings window shows, in one read.
     out.Set("section", PhiSettingsWindow::CurrentSection());
     base::ListValue sections;
-    // The Mac's panes(), in its order.
+    // The Mac's panes(), in its order; Developer only in developer mode.
     for (const char* name : {"account", "general", "profiles", "spaces", "ai",
-                             "phiLink", "shortcuts", "developer"}) {
+                             "phiLink", "shortcuts"}) {
       sections.Append(name);
     }
+    if (developer_mode_) {
+      sections.Append("developer");
+    }
     out.Set("sections", std::move(sections));
+    out.Set("developerMode", developer_mode_);
     out.Set("themeId", theme_id_);
     out.Set("appearance", PhiAppearanceName(appearance_));
     out.Set("saturation", saturation_);
@@ -1385,10 +1577,21 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
           ok = true;
         }
       }
+      if (std::optional<bool> dev = p->FindBool("developerMode")) {
+        SetDeveloperMode(*dev);
+        ok = true;
+      }
       if (const std::string* section = p->FindString("section")) {
-        ok = PhiSettingsWindow::ShowSection(*section) || ok;
+        // Developer exists only in developer mode — refuse it here too: the
+        // window-side check cannot run before the window ever opens. The
+        // refusal leaves `ok` untouched so a combined payload's other keys
+        // still report their own success.
+        if (*section != "developer" || developer_mode_) {
+          ok = PhiSettingsWindow::ShowSection(*section) || ok;
+        }
       }
     }
+    out.Set("developerMode", developer_mode_);
     out.Set("saturation", saturation_);
     out.Set("alwaysShowFullUrl", always_show_full_url_);
     out.Set("newTabBehavior", new_tab_behavior_ == PhiNewTabBehavior::kOmnibox

@@ -20,7 +20,10 @@
 #include "base/logging.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
+#include "phibrowser-win/client/phi_dwrite.h"
+#include "phibrowser-win/client/phi_icons.h"
 #include "phibrowser-win/client/phi_menu_bar.h"
+#include "phibrowser-win/client/phi_prompt.h"
 
 namespace phi_client {
 
@@ -881,6 +884,28 @@ bool PhiWindowController::ShowSpace(const std::string& space_id) {
   return true;
 }
 
+void PhiWindowController::CloseSpaceBrowser(const std::string& space_id) {
+  auto it = space_browsers_.find(space_id);
+  if (it == space_browsers_.end()) {
+    return;
+  }
+  if (active_space_ == space_id) {
+    for (const std::string& other : space_order_) {
+      if (other != space_id && HasSpace(other)) {
+        ShowSpace(other);
+        break;
+      }
+    }
+  }
+  if (framework_) {
+    // Chromium's close path; OnBrowserWindowClosing then reaches
+    // ForgetBrowser for the bookkeeping. Closing the slot's last browser
+    // tears the whole slot down — intended for a window that only ever
+    // showed the deleted Space.
+    framework_->CloseBrowserWindow(it->second);
+  }
+}
+
 bool PhiWindowController::ForgetBrowser(int64_t browser_window_id) {
   browser_hwnds_.erase(browser_window_id);
   for (auto it = space_browsers_.begin(); it != space_browsers_.end();) {
@@ -1345,7 +1370,10 @@ void PhiWindowController::OnChromeClick(int x, int y) {
                                      ? *name
                                      : "Space " + *d.FindString("id"));
             if (icon && !icon->empty()) {
-              title = base::UTF8ToWide(*icon) + L"  " + title;
+              const std::wstring glyph = base::UTF8ToWide(*icon);
+              if (!PhiIsPrivateGlyph(glyph)) {
+                title = glyph + L"  " + title;
+              }
             }
             spaces.emplace_back(*d.FindString("id"), std::move(title));
           }
@@ -1482,11 +1510,10 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
     return;
   }
 
-  // The Mac's Space row menu: activate, rename, change icon, set theme, delete.
-  // Rename / change icon / delete are drawn but DISABLED — the surfaces they
-  // need (a text field, the icon picker, a confirmation) do not exist yet, and
-  // a menu item that silently does nothing is worse than one that says it
-  // cannot.
+  // The Mac's Space row menu: activate, rename, change icon, set theme,
+  // delete. Rename prompts, delete confirms (refused for the default Space);
+  // Change Icon still waits for an inline picker — Settings > Spaces has the
+  // real one.
   enum : UINT {
     kActivate = 1,
     kRename,
@@ -1522,14 +1549,16 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
   ::AppendMenuW(menu, MF_STRING | (active ? MF_DISABLED | MF_GRAYED : 0),
                 kActivate, L"Switch to this Space");
   ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-  ::AppendMenuW(menu, MF_STRING | MF_DISABLED | MF_GRAYED, kRename, L"Rename…");
+  ::AppendMenuW(menu, MF_STRING, kRename, L"Rename…");
   ::AppendMenuW(menu, MF_STRING | MF_DISABLED | MF_GRAYED, kChangeIcon,
                 L"Change Icon…");
   ::AppendMenuW(menu, MF_POPUP | MF_STRING,
                 reinterpret_cast<UINT_PTR>(themes), L"Set Theme");
   ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-  ::AppendMenuW(menu, MF_STRING | MF_DISABLED | MF_GRAYED, kDelete,
-                L"Delete Space");
+  ::AppendMenuW(menu,
+                MF_STRING |
+                    (target->id == "1" ? MF_DISABLED | MF_GRAYED : 0u),
+                kDelete, L"Delete Space");
 
   POINT screen = pt;
   ::ClientToScreen(shell_hwnd_, &screen);
@@ -1538,7 +1567,9 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
   const UINT chosen = static_cast<UINT>(::TrackPopupMenu(
       menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RIGHTBUTTON,
       screen.x, screen.y, 0, shell_hwnd_, nullptr));
-  const std::string space_id = target->id;  // `chips_` is rebuilt below.
+  // `chips_` is rebuilt below; keep what the handlers need.
+  const std::string space_id = target->id;
+  std::wstring space_name = target->label;
   ::DestroyMenu(menu);  // Takes the submenu with it.
 
   if (chosen == kActivate) {
@@ -1546,6 +1577,17 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
       ShowSpace(space_id);
     } else {
       host_->RequestSwitchSpace(window_id_, space_id);
+    }
+  } else if (chosen == kRename) {
+    if (PhiPromptText(shell_hwnd_, L"Rename Space",
+                      L"Enter a new name for this Space.", &space_name)) {
+      host_->RenameSpace(space_id, base::WideToUTF8(space_name));
+    }
+  } else if (chosen == kDelete) {
+    if (PhiConfirm(shell_hwnd_, L"Delete Space",
+                   L"Bookmarks and pinned tabs belonging to this Space "
+                   L"will also be removed. This action cannot be undone.")) {
+      host_->DeleteSpace(space_id);
     }
   } else if (chosen == kThemeFollow) {
     host_->SetSpaceTheme(space_id, std::string());
@@ -1731,11 +1773,22 @@ void PhiWindowController::PaintChrome(HDC dc,
       }
     }
     ::SetTextColor(dc, active ? kLabel : kLabelDim);
-    if (!chip.icon.empty() && emoji_font_) {
-      HGDIOBJ previous_emoji = ::SelectObject(dc, emoji_font_);
+    if (!chip.icon.empty() && !PhiIsPrivateGlyph(chip.icon) &&
+        PhiDrawColorText(dc, chip.bounds, chip.icon, Scaled(13),
+                         active ? kLabel : kLabelDim)) {
+      // Emoji rendered in COLOUR via DirectWrite; GDI below is the fallback.
+    } else if (!chip.icon.empty() && (emoji_font_ || caption_font_)) {
+      // A private-use glyph is one of the Phi icon catalog's MDL2 stand-ins;
+      // everything else is an emoji.
+      HFONT icon_font =
+          PhiIsPrivateGlyph(chip.icon) ? caption_font_ : emoji_font_;
+      HGDIOBJ previous_icon_font =
+          icon_font ? ::SelectObject(dc, icon_font) : nullptr;
       ::DrawTextW(dc, chip.icon.c_str(), -1, const_cast<RECT*>(&chip.bounds),
                   DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-      ::SelectObject(dc, previous_emoji);
+      if (previous_icon_font) {
+        ::SelectObject(dc, previous_icon_font);
+      }
     } else {
       // No icon: the name's first character stands in (the pip has no room
       // for the name itself).
@@ -1778,7 +1831,13 @@ void PhiWindowController::PaintChrome(HDC dc,
                   row.favicon_height,
                   row.active ? kRowSelectedBg : kTintTop);
     } else {
-      FillRounded(dc, icon, kBorder, Scaled(3));  // Page has none (yet).
+      // The Mac's no-favicon placeholder: the globe (FaviconProvider).
+      HGDIOBJ previous_glyph_font =
+          caption_font_ ? ::SelectObject(dc, caption_font_) : nullptr;
+      DrawGlyph(dc, icon, L"\uE774", kLabelDim);
+      if (previous_glyph_font) {
+        ::SelectObject(dc, previous_glyph_font);
+      }
     }
 
     ::SetTextColor(dc, kLabel);
@@ -1823,18 +1882,23 @@ void PhiWindowController::PaintChrome(HDC dc,
     pill.bottom -= Scaled(kRowPad);
     RECT text = pill;
     const int mid = (pill.top + pill.bottom) / 2;
+    RECT icon = {pill.left + Scaled(6) +
+                     (Scaled(kFaviconSlot) - Scaled(kFaviconSize)) / 2,
+                 mid - Scaled(kFaviconSize) / 2, 0, 0};
+    icon.right = icon.left + Scaled(kFaviconSize);
+    icon.bottom = icon.top + Scaled(kFaviconSize);
     if (!bookmark.favicon.empty()) {
-      RECT icon = {pill.left + Scaled(6) +
-                       (Scaled(kFaviconSlot) - Scaled(kFaviconSize)) / 2,
-                   mid - Scaled(kFaviconSize) / 2, 0, 0};
-      icon.right = icon.left + Scaled(kFaviconSize);
-      icon.bottom = icon.top + Scaled(kFaviconSize);
       DrawFavicon(dc, icon, bookmark.favicon.data(), bookmark.favicon_width,
                   bookmark.favicon_height, kTintTop);
-      text.left = pill.left + Scaled(6) + Scaled(kFaviconSlot) + Scaled(8);
-    } else {
-      text.left = pill.left + Scaled(6);
+    } else if (!bookmark.folder) {
+      HGDIOBJ previous_glyph_font =
+          caption_font_ ? ::SelectObject(dc, caption_font_) : nullptr;
+      DrawGlyph(dc, icon, L"\uE774", kLabelDim);
+      if (previous_glyph_font) {
+        ::SelectObject(dc, previous_glyph_font);
+      }
     }
+    text.left = pill.left + Scaled(6) + Scaled(kFaviconSlot) + Scaled(8);
     ::SetTextColor(dc, kLabel);
     const std::wstring label =
         bookmark.folder ? (std::wstring(L"\u25B8  ") + bookmark.title)

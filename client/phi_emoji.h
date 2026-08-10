@@ -37,8 +37,8 @@ std::string PhiEmojiTextForId(const std::string& id);
 // so a Space configured on either client means the same thing on the other.
 inline constexpr char kPhiEmojiPrefix[] = "emoji:";
 inline constexpr char kPhiIconPrefix[] = "phi:";
-// The globe, the Mac's stand-in when no Phi icon is available.
-inline constexpr char kPhiDefaultSpaceIcon[] = "emoji:1F310";
+// The Mac default Space's icon (LocalStore.defaultSpaceIconName).
+inline constexpr char kPhiDefaultSpaceIcon[] = "phi:phi-icon-view-grid-add";
 
 // Resolves a stored icon to display text. Returns empty for a "phi:" icon (no
 // glyph for it yet) and for anything unrecognised.

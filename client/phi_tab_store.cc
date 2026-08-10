@@ -320,6 +320,20 @@ bool PhiTabStore::Remove(const std::string& guid) {
   return true;
 }
 
+int PhiTabStore::RemoveForSpace(const std::string& space_id) {
+  if (space_id.empty()) {
+    return 0;
+  }
+  const size_t before = rows_.size();
+  std::erase_if(rows_,
+                [&](const PhiRow& row) { return row.space_id == space_id; });
+  const int removed = static_cast<int>(before - rows_.size());
+  if (removed > 0) {
+    Save();
+  }
+  return removed;
+}
+
 bool PhiTabStore::Reorder(const std::string& guid, int new_index) {
   for (PhiRow& row : rows_) {
     if (row.guid == guid) {

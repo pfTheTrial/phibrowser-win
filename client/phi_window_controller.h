@@ -71,6 +71,15 @@ class PhiSlotHost {
   virtual std::string SpaceThemeId(const std::string& space_id) const = 0;
   virtual void SetSpaceTheme(const std::string& space_id,
                              const std::string& theme_id) = 0;
+  // Space management (the menu bar and the chip context menu). Deleting the
+  // default Space is refused; deletion takes the Space's bookmarks and
+  // space-scoped pins with it, as on Mac.
+  virtual bool RenameSpace(const std::string& space_id,
+                           const std::string& name) = 0;
+  virtual bool DeleteSpace(const std::string& space_id) = 0;
+  // Profile management. Deleting Default, or a profile still bound to a
+  // Space, is refused (bindings are immutable).
+  virtual bool DeleteProfileById(const std::string& profile_id) = 0;
   // Opens the settings window (theme, appearance, layout).
   virtual void RequestSettings() = 0;
 };
@@ -135,6 +144,11 @@ class PhiWindowController {
   const std::vector<std::string>& space_order() const { return space_order_; }
   // Drops a browser that went away; returns true if the slot still has one.
   bool ForgetBrowser(int64_t browser_window_id);
+  // Closes the browser this slot holds for `space_id` (a Space being
+  // deleted), switching to another open Space first so the window never
+  // shows a dead one. No-op when the Space is not open here. If it was the
+  // slot's ONLY browser, the slot closes with it.
+  void CloseSpaceBrowser(const std::string& space_id);
   // Starts closing the whole slot (its Space browsers, one per Space). MAY
   // DESTROY `this` before returning — the last browser going away tears the
   // slot down — so touch nothing on this object afterwards.

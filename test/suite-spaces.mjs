@@ -144,4 +144,71 @@ test('spaces: switching to an unknown space is rejected', async () => {
   } finally { ctl.close() }
 })
 
+test('spaces: rename changes the name everywhere', async () => {
+  const ctl = await openControl()
+  try {
+    const windowId = (await ctl.send('agentSpace.list')).windows[0]
+    const created = await ctl.send('agentSpace.spaces.create',
+                                   { name: 'Renamable' })
+    assertEq(created.ok, true, 'space created')
+    try {
+      const renamed = await ctl.send('agentSpace.spaces.rename',
+                                     { spaceId: created.id, name: 'Renamed' })
+      assertEq(renamed.ok, true, 'rename accepted')
+      const { spaces } = await ctl.send('agentSpace.spaces.list', { windowId })
+      assertEq(spaces.find((s) => s.id === created.id).name, 'Renamed',
+               'the list shows the new name')
+      assertEq((await ctl.send('agentSpace.spaces.rename',
+                               { spaceId: created.id, name: '' })).ok, false,
+               'an empty name is refused')
+    } finally {
+      await ctl.send('agentSpace.spaces.delete', { spaceId: created.id })
+    }
+  } finally { ctl.close() }
+})
+
+test('spaces: delete removes the space, its data, and its browser', async () => {
+  const ctl = await openControl()
+  try {
+    const windowId = (await ctl.send('agentSpace.list')).windows[0]
+    const created = await ctl.send('agentSpace.spaces.create',
+                                   { name: 'Doomed' })
+    assertEq(created.ok, true, 'space created')
+    // Open it in the slot so the delete also has a live browser to close.
+    await ctl.send('agentSpace.spaces.switch',
+                   { windowId, spaceId: created.id })
+    for (let i = 0; i < 40; i++) {
+      const { spaces } = await ctl.send('agentSpace.spaces.list', { windowId })
+      const s = spaces.find((x) => x.id === created.id)
+      if (s && s.active && s.open) break
+      await sleep(250)
+    }
+    const gone = await ctl.send('agentSpace.spaces.delete',
+                                { spaceId: created.id })
+    assertEq(gone.ok, true, 'delete accepted')
+    let spaces = (await ctl.send('agentSpace.spaces.list', { windowId })).spaces
+    assertEq(spaces.some((s) => s.id === created.id), false,
+             'the space is gone from the list')
+    // The window fell back to another open space rather than a dead one.
+    for (let i = 0; i < 20; i++) {
+      spaces = (await ctl.send('agentSpace.spaces.list', { windowId })).spaces
+      const active = spaces.find((s) => s.active)
+      if (active && active.id !== created.id) break
+      await sleep(250)
+    }
+    const active = spaces.find((s) => s.active)
+    assert(active && active.id !== created.id,
+           `another space is active (${active && active.id})`)
+  } finally { ctl.close() }
+})
+
+test('spaces: the default space refuses deletion', async () => {
+  const ctl = await openControl()
+  try {
+    assertEq((await ctl.send('agentSpace.spaces.delete',
+                             { spaceId: '1' })).ok, false,
+             'the default space is permanent')
+  } finally { ctl.close() }
+})
+
 run()

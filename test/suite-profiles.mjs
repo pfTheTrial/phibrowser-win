@@ -103,6 +103,77 @@ test('spaces: a space bound to another profile runs in that profile', async () =
     await switchSpace(ctl, windowId, '1')
     const home = await ctl.send('agentSpace.window.profile', { windowId })
     assertEq(home.id, 'Default', 'default space is back on Default')
+    // Housekeeping: take the created Work Space with us, or the box grows a
+    // new one every run.
+    await ctl.send('agentSpace.spaces.delete', { spaceId: space.id })
+  } finally { ctl.close() }
+})
+
+test('profiles: rename updates the display name', async () => {
+  const ctl = await openControl()
+  try {
+    const { profiles } = await ctl.send('agentSpace.profiles.list')
+    const other = profiles.find((p) => p.id !== 'Default')
+    assert(other, 'a second profile exists')
+    const fresh = `W-${Date.now()}`
+    assertEq((await ctl.send('agentSpace.profiles.rename',
+                             { id: other.id, name: fresh })).ok, true,
+             'rename accepted')
+    let renamed = null
+    for (let i = 0; i < 20 && !renamed; i++) {
+      await sleep(250)
+      const list = (await ctl.send('agentSpace.profiles.list')).profiles
+      renamed = list.find((p) => p.id === other.id && p.name === fresh)
+    }
+    assert(renamed, 'the list shows the new name')
+    await ctl.send('agentSpace.profiles.rename',
+                   { id: other.id, name: 'Work' })
+  } finally { ctl.close() }
+})
+
+test('profiles: Default and in-use profiles refuse deletion', async () => {
+  const ctl = await openControl()
+  try {
+    assertEq((await ctl.send('agentSpace.profiles.delete',
+                             { id: 'Default' })).ok, false,
+             'Default is permanent')
+    // Bind a space to the second profile, then try to delete the profile.
+    const { profiles } = await ctl.send('agentSpace.profiles.list')
+    const other = profiles.find((p) => p.id !== 'Default')
+    assert(other, 'a second profile exists')
+    const space = await ctl.send('agentSpace.spaces.create',
+                                 { name: 'Binder', profileId: other.id })
+    try {
+      assertEq((await ctl.send('agentSpace.profiles.delete',
+                               { id: other.id })).ok, false,
+               'an in-use profile refuses (bindings are immutable)')
+    } finally {
+      await ctl.send('agentSpace.spaces.delete', { spaceId: space.id })
+    }
+  } finally { ctl.close() }
+})
+
+test('profiles: an unused profile can be deleted', async () => {
+  const ctl = await openControl()
+  try {
+    const doomed = `Doomed-${Date.now()}`
+    await ctl.send('agentSpace.profiles.create', { name: doomed })
+    let created = null
+    for (let i = 0; i < 40 && !created; i++) {
+      await sleep(500)
+      const list = (await ctl.send('agentSpace.profiles.list')).profiles
+      created = list.find((p) => p.name === doomed)
+    }
+    assert(created, 'the profile appeared')
+    assertEq((await ctl.send('agentSpace.profiles.delete',
+                             { id: created.id })).ok, true, 'delete accepted')
+    let present = true
+    for (let i = 0; i < 40 && present; i++) {
+      await sleep(500)
+      const list = (await ctl.send('agentSpace.profiles.list')).profiles
+      present = list.some((p) => p.id === created.id)
+    }
+    assertEq(present, false, 'the profile is gone')
   } finally { ctl.close() }
 })
 

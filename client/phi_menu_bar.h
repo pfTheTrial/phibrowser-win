@@ -96,6 +96,7 @@ class PhiMenuBar {
 
   // What the dynamic ids currently mean, rebuilt with their menus.
   std::vector<std::string> space_ids_;     // kSpaceFirst + i
+  std::vector<std::string> profile_ids_;   // kDeleteProfileFirst + i
   std::vector<std::string> bookmark_urls_; // kBookmarkFirst + i
   std::vector<int> tab_indices_;           // kTabFirst + i
 };

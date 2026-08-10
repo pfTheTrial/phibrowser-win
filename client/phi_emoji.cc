@@ -13,6 +13,7 @@
 #include "base/no_destructor.h"
 #include "base/path_service.h"
 #include "base/values.h"
+#include "phibrowser-win/client/phi_icons.h"
 
 namespace phi_client {
 
@@ -128,12 +129,18 @@ std::string PhiIconDisplayText(const std::string& storage_value) {
     return PhiEmojiTextForId(
         storage_value.substr(std::string(kPhiEmojiPrefix).size()));
   }
-  return std::string();  // "phi:" icons have no glyph on this client yet.
+  if (StartsWith(storage_value, kPhiIconPrefix)) {
+    // The Mac's Phi icon catalog, stood in by MDL2 glyphs / characters.
+    return PhiIconCatalogGlyph(
+        storage_value.substr(std::string(kPhiIconPrefix).size()));
+  }
+  return std::string();
 }
 
 bool PhiIconIsValid(const std::string& storage_value) {
   if (StartsWith(storage_value, kPhiIconPrefix)) {
-    // Kept as-is so a Space configured on the Mac round-trips unharmed.
+    // In the catalog, or unknown-but-Mac-shaped (an id a NEWER Mac catalog
+    // may know); either way it round-trips unharmed.
     return storage_value.size() > std::string(kPhiIconPrefix).size();
   }
   return !PhiIconDisplayText(storage_value).empty();

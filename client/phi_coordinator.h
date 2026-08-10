@@ -83,10 +83,23 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   void SetPinScope(PhiPinScope scope) override;
   std::vector<std::string> SpaceSummaries() const override;
   std::string SpaceThemeId(const std::string& space_id) const override;
+  void SetSpaceIcon(const std::string& space_id,
+                    const std::string& icon) override;
+  void SetSpaceSaturation(const std::string& space_id, int value) override;
+  bool RenameSpace(const std::string& space_id,
+                   const std::string& name) override;
+  bool DeleteSpace(const std::string& space_id) override;
+  bool DeleteProfileById(const std::string& profile_id) override;
+  bool RenameProfileById(const std::string& profile_id,
+                         const std::string& name) override;
+  bool DeveloperMode() const override;
+  void SetDeveloperMode(bool enabled) override;
+  void OpenBrowserSettings() override;
   void SetSpaceTheme(const std::string& space_id,
                      const std::string& theme_id) override;
   std::vector<std::string> ProfileSummaries() const override;
   void CreateProfileNamed(const std::string& name) override;
+  void CreateSpaceNamed(const std::string& name) override;
 
  private:
   // Runs a control command on the UI thread; returns the JSON response. Called
@@ -154,6 +167,8 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   int saturation_ = 50;
   PhiNewTabBehavior new_tab_behavior_ = PhiNewTabBehavior::kNewTabPage;
   bool always_show_full_url_ = false;
+  // Gates the Developer settings pane, as on Mac (default off).
+  bool developer_mode_ = false;
   std::wstring prefs_path_;
   void LoadPrefs();
   void SavePrefs() const;

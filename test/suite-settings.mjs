@@ -11,10 +11,34 @@ const MAC_PANES = ['account', 'general', 'profiles', 'spaces', 'ai',
 test('settings: every Mac pane is offered, in order', async () => {
   const ctl = await openControl()
   try {
+    // Developer is gated behind developer mode, exactly as on Mac — switch
+    // it on to see the full list.
+    await ctl.send('agentSpace.settings.set', { developerMode: true })
     const r = await ctl.send('agentSpace.settings.get')
     assertEq(r.ok, true, 'settings.get ok')
     assertEq(r.sections.join(','), MAC_PANES.join(','),
              'same panes, same order as the Mac')
+    await ctl.send('agentSpace.settings.set', { developerMode: false })
+  } finally { ctl.close() }
+})
+
+test('settings: developer mode gates the Developer pane', async () => {
+  const ctl = await openControl()
+  try {
+    let r = await ctl.send('agentSpace.settings.set', { developerMode: false })
+    assertEq(r.developerMode, false, 'developer mode off')
+    r = await ctl.send('agentSpace.settings.get')
+    assertEq(r.sections.includes('developer'), false,
+             'the pane is gone while off')
+    const refused = await ctl.send('agentSpace.settings.set',
+                                   { section: 'developer' })
+    assertEq(refused.ok, false, 'and cannot be selected')
+
+    r = await ctl.send('agentSpace.settings.set', { developerMode: true })
+    assertEq(r.developerMode, true, 'developer mode on')
+    r = await ctl.send('agentSpace.settings.get')
+    assertEq(r.sections.includes('developer'), true, 'the pane is back')
+    await ctl.send('agentSpace.settings.set', { developerMode: false })
   } finally { ctl.close() }
 })
 

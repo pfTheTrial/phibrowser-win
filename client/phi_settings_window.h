@@ -48,14 +48,34 @@ class PhiSettingsHost {
   // Spaces / Profiles
   virtual PhiPinScope PinScope() const = 0;
   virtual void SetPinScope(PhiPinScope scope) = 0;
-  // "name\ticonText\tprofileId" per Space; "id\tname" per profile.
+  // "name\ticonText\tprofileId\tspaceId\tthemeId\tsaturation" per Space.
   virtual std::vector<std::string> SpaceSummaries() const = 0;
   // A Space's pinned theme id, or empty when it follows the app-wide one.
   virtual std::string SpaceThemeId(const std::string& space_id) const = 0;
   virtual void SetSpaceTheme(const std::string& space_id,
                              const std::string& theme_id) = 0;
+  // A Space's own icon and saturation override (the Mac's per-Space settings;
+  // saturation -1 follows the app-wide slider).
+  virtual void SetSpaceIcon(const std::string& space_id,
+                            const std::string& icon) = 0;
+  virtual void SetSpaceSaturation(const std::string& space_id, int value) = 0;
+  // Space / profile management, with the Mac's guards (see PhiSlotHost).
+  virtual bool RenameSpace(const std::string& space_id,
+                           const std::string& name) = 0;
+  virtual bool DeleteSpace(const std::string& space_id) = 0;
+  virtual bool DeleteProfileById(const std::string& profile_id) = 0;
+  virtual bool RenameProfileById(const std::string& profile_id,
+                                 const std::string& name) = 0;
   virtual std::vector<std::string> ProfileSummaries() const = 0;
   virtual void CreateProfileNamed(const std::string& name) = 0;
+  // Creates a Space (Default profile) — the list's "+" button.
+  virtual void CreateSpaceNamed(const std::string& name) = 0;
+
+  // Developer mode gates the Developer pane, as on Mac (default off).
+  virtual bool DeveloperMode() const = 0;
+  virtual void SetDeveloperMode(bool enabled) = 0;
+  // "Additional browser settings" — opens chrome://settings in a tab.
+  virtual void OpenBrowserSettings() = 0;
 };
 
 // The settings window, shaped like the Mac's Preferences: a TOOLBAR of panes
@@ -92,32 +112,46 @@ class PhiSettingsWindow {
     kToolbarItem,    // A pane, in the toolbar across the top.
     kCard,           // The well a section's rows sit in.
     kSectionTitle,   // Small secondary label ABOVE a card.
+    kSubtitle,       // 11pt tertiary line under a section title.
     kRowLabel,
     kHint,
-    kChip,
-    kSwatch,
+    kLink,           // 12pt accent text ("Edit in … settings…").
+    kDivider,        // The 1px separator between card rows.
+    kSwatch,         // A theme dot: 22pt circle, 2pt ring when selected.
+    kImageCard,      // 122x72 picture card (layout/appearance/new-tab).
     kToggle,
     kSliderTrack,
-    kListRow,
+    kPopup,          // Trailing pill that opens a popup menu on click.
+    kListRow,        // Master-list row (Spaces / Profiles).
+    kToolButton,     // 34x34 glyph button in a list's bottom strip.
+    kEmojiCell,      // One 26pt cell of the icon picker grid.
+    kBadge,          // Small capsule ("Default", "Not linked", …).
     kButton,
+    kDisclosure,     // Phi Link's 36pt-icon header row.
   };
   struct Item {
     ItemKind kind = ItemKind::kRowLabel;
     RECT bounds{};
     std::wstring text;
+    std::wstring detail;  // Second line / trailing text, kind-dependent.
     bool selected = false;
     bool on = false;
+    bool enabled = true;  // Drawn dim and inert when false.
     COLORREF swatch = 0;
-    int value = 0;       // Slider position, or a chip's option index.
+    int value = 0;       // Slider position, or an option index.
     std::string action;  // What a click does; empty = not clickable.
     std::string payload;
   };
 
   void Rebuild();
+  void BuildAccount(int* y);
   void BuildGeneral(int* y);
   void BuildSpaces(int* y);
   void BuildProfiles(int* y);
-  void BuildPlaceholder(int* y, const wchar_t* text);
+  void BuildAi(int* y);
+  void BuildPhiLink(int* y);
+  void BuildShortcuts(int* y);
+  void BuildDeveloper(int* y);
   // A section = a small title, then a card holding its rows. BeginSection
   // remembers where the card starts; EndSection sizes it around the rows that
   // were added, the way the Mac's GeneralSectionView wraps a
@@ -125,6 +159,13 @@ class PhiSettingsWindow {
   void BeginSection(int* y, const wchar_t* title);
   void EndSection(int* y);
   void AddHint(int* y, const wchar_t* text);
+  // The 1px separator between two rows of the open card.
+  void AddDividerRow(int* y);
+  // An 11pt tertiary line tucked under the row just added.
+  void AddSubHint(int* y, const wchar_t* text);
+  // Label + trailing switch, one call — most Mac rows are exactly this.
+  void AddToggleRow(int* y, const wchar_t* title, bool on, bool enabled,
+                    const std::string& action);
   // A row inside the open card; returns the rect its control occupies,
   // RIGHT-ALIGNED as on Mac (label left, Spacer, accessory trailing).
   RECT AddRow(int* y, const wchar_t* title, int control_height,
@@ -139,18 +180,34 @@ class PhiSettingsWindow {
   void Apply(const Item& item, int x);
   int Scaled(int design_units) const;
   void EnsureFont();
+  // The window title follows the selected pane, as the Mac library does.
+  void SyncTitle();
 
   RAW_PTR_EXCLUSION PhiSettingsHost* host_;
   HWND hwnd_ = nullptr;
   HFONT font_ = nullptr;
   HFONT title_font_ = nullptr;
   HFONT small_font_ = nullptr;  // Section titles and toolbar labels.
+  HFONT hint_font_ = nullptr;   // 11pt hints and captions.
+  HFONT emoji_font_ = nullptr;  // The icon-picker grid's emoji.
+  HFONT mdl2_font_ = nullptr;   // The grid's Phi-icon MDL2 stand-ins.
+  // The icon picker's segment ("icon" | "emoji", Icon default as on Mac) and
+  // page (the Mac scrolls; this pages through the same content).
+  std::string picker_tab_ = "icon";
+  int picker_page_ = 0;
   UINT font_dpi_ = 0;
   UINT dpi_ = 96;
   std::string section_ = "general";
   std::vector<Item> items_;
   // Index of the card being filled, so EndSection can size it.
   size_t open_card_ = 0;
+  // Pane content can outgrow the fixed window; the wheel scrolls it. Reset on
+  // pane switch, clamped to the built content's height.
+  int scroll_ = 0;
+  int content_height_ = 0;
+  // Master-list selections (the Mac remembers per pane).
+  std::string selected_space_;
+  std::string selected_profile_;
 };
 
 }  // namespace phi_client

@@ -74,8 +74,8 @@ test('emoji: an unknown icon is rejected, a Mac phi: icon is kept', async () => 
     const bad = await ctl.send('agentSpace.spaces.setIcon',
                                { spaceId: '1', icon: 'emoji:NOTANEMOJI' })
     assertEq(bad.ok, false, 'unknown emoji id rejected')
-    // A Space configured on the Mac may carry a phi: icon. We have no glyph
-    // for it, but it must round-trip rather than be dropped.
+    // A Space configured on the Mac may carry a phi: icon. It round-trips
+    // verbatim AND resolves through the ported catalog now.
     const phi = await ctl.send('agentSpace.spaces.setIcon',
                                { spaceId: '1', icon: 'phi:phi-icon-rss' })
     assertEq(phi.ok, true, 'a Mac phi: icon is accepted')
@@ -83,7 +83,8 @@ test('emoji: an unknown icon is rejected, a Mac phi: icon is kept', async () => 
     const { spaces } = await ctl.send('agentSpace.spaces.list', { windowId })
     const one = spaces.find((s) => s.id === '1')
     assertEq(one.icon, 'phi:phi-icon-rss', 'kept verbatim')
-    assertEq(one.iconText, '', 'with no glyph on this client yet')
+    assert(one.iconText.length > 0,
+           `resolved to a glyph through the phi catalog (${one.iconText})`)
     await ctl.send('agentSpace.spaces.setIcon',
                    { spaceId: '1', icon: 'emoji:1F310' })
   } finally { ctl.close() }
