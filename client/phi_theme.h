@@ -45,13 +45,23 @@ const PhiTheme& PhiThemeById(const std::string& id);
 // What the chrome actually paints with, once a theme and an appearance have
 // been resolved. Everything the client draws reads from here, so switching
 // theme or appearance is a single recompute.
+//
+// GDI paints opaque, so the Mac's alpha overlays (black/white at 4%, 8%, …)
+// are pre-blended over the ground here. The percentages are the Mac's asset
+// values (Assets.xcassets ColorSet / DefaultColors.swift).
 struct PhiPalette {
   COLORREF ground_top;
   COLORREF ground_bottom;
-  COLORREF card;        // Selected rows, chips, the address field.
-  COLORREF label;
-  COLORREF label_dim;
-  COLORREF border;
+  COLORREF card;            // The settings window's section cards.
+  COLORREF selected;        // sidebar-tab-selectedColor: white / white 30%.
+  COLORREF hover;           // sidebar-tab-hoveredColor: ink 4%.
+  COLORREF hover_strong;    // …-emphasized: ink 8%. Also resting field fill.
+  COLORREF label;           // textPrimary: black 85% / white 80%.
+  COLORREF label_dim;       // textSecondary.
+  COLORREF label_tertiary;  // textTertiary: ink 30% — "New Tab", placeholders.
+  COLORREF border;          // ink 8%.
+  COLORREF separator;       // ink 6%.
+  COLORREF window_bg;       // windowBackground — the top bar's own ground.
   COLORREF accent;
   bool dark = false;
 };

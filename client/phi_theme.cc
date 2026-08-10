@@ -135,18 +135,27 @@ PhiPalette PhiResolvePalette(const PhiTheme& theme,
   palette.ground_bottom =
       Blend(colors.overlay, colors.background, bottom_alpha);
   palette.accent = colors.accent;
+  palette.window_bg = colors.background;
+  // The ink the Mac's percentage overlays are made of.
+  const COLORREF ink = dark ? RGB(0xFF, 0xFF, 0xFF) : RGB(0x00, 0x00, 0x00);
+  // Alphas as /255: 4% ≈ 10, 6% ≈ 15, 8% ≈ 20, 30% ≈ 77, 80% ≈ 204, 85% ≈ 217.
+  palette.hover = Blend(ink, palette.ground_top, 10);
+  palette.hover_strong = Blend(ink, palette.ground_top, 20);
+  palette.label_tertiary = Blend(ink, palette.ground_top, 77);
+  palette.border = Blend(ink, palette.ground_bottom, 20);
+  palette.separator = Blend(ink, palette.ground_top, 15);
   if (dark) {
-    // primary-label 85% white, common-border 8% white, selected row lifted off
-    // the ground rather than pure white (Assets.xcassets ColorSet, dark).
+    // sidebar-tab-selectedColor dark = WHITE at 30%, not black — the pill
+    // lifts off the ground (Assets.xcassets ColorSet).
+    palette.selected = Blend(RGB(0xFF, 0xFF, 0xFF), palette.ground_top, 77);
     palette.card = Blend(RGB(0xFF, 0xFF, 0xFF), palette.ground_top, 26);
-    palette.label = RGB(0xF2, 0xF2, 0xF2);
+    palette.label = Blend(RGB(0xFF, 0xFF, 0xFF), palette.ground_top, 204);
     palette.label_dim = RGB(0x9A, 0x9A, 0x9A);
-    palette.border = Blend(RGB(0xFF, 0xFF, 0xFF), palette.ground_bottom, 20);
   } else {
+    palette.selected = RGB(0xFF, 0xFF, 0xFF);
     palette.card = RGB(0xFF, 0xFF, 0xFF);
     palette.label = RGB(0x26, 0x26, 0x26);   // primary-label, 85% black
     palette.label_dim = RGB(0x6E, 0x6E, 0x72);
-    palette.border = Blend(RGB(0x00, 0x00, 0x00), palette.ground_bottom, 20);
   }
   return palette;
 }
