@@ -90,6 +90,36 @@ constexpr int kStripPinSize = 28;
 constexpr int kStripPinGap = 2;
 constexpr int kStripPinToTabs = 6;
 constexpr int kStripPinFavicon = 16;
+// Tab groups: the Mac's 32pt TabGroupHeaderView; the group cell sits on an
+// 18% tint of the group color (~46/255).
+constexpr int kGroupHeaderHeight = 32;
+constexpr int kGroupTintAlpha = 46;
+struct PhiGroupColor {
+  const char* name;
+  const wchar_t* label;
+  COLORREF color;
+};
+// Chromium's TabGroupColorId palette (the Mac's GroupColor set is the same
+// nine); the label doubles as the auto-title for unnamed groups.
+constexpr std::array<PhiGroupColor, 9> kGroupColors = {{
+    {"grey", L"Grey", RGB(0x80, 0x86, 0x8B)},
+    {"blue", L"Blue", RGB(0x1A, 0x73, 0xE8)},
+    {"red", L"Red", RGB(0xD9, 0x30, 0x25)},
+    {"yellow", L"Yellow", RGB(0xF9, 0xAB, 0x00)},
+    {"green", L"Green", RGB(0x18, 0x80, 0x38)},
+    {"pink", L"Pink", RGB(0xD0, 0x18, 0x84)},
+    {"purple", L"Purple", RGB(0xA1, 0x42, 0xF4)},
+    {"cyan", L"Cyan", RGB(0x00, 0x7B, 0x83)},
+    {"orange", L"Orange", RGB(0xFA, 0x90, 0x3E)},
+}};
+const PhiGroupColor& GroupColorByName(const std::string& name) {
+  for (const PhiGroupColor& c : kGroupColors) {
+    if (name == c.name) {
+      return c;
+    }
+  }
+  return kGroupColors[0];
+}
 
 // Bands used by the two layouts that put navigation above the web content.
 constexpr int kTopBarHeight = 40;      // WebContentConstant.headerHeight
@@ -1447,6 +1477,7 @@ void PhiWindowController::RebuildTabs() {
   RebuildChips();
   RebuildShortcuts();
   tabs_.clear();
+  group_headers_.clear();
   if (!framework_) {
     return;
   }
@@ -1469,6 +1500,9 @@ void PhiWindowController::RebuildTabs() {
       row.active = d.FindBool("active").value_or(false);
       if (const std::string* split = d.FindString("splitId")) {
         row.split_id = *split;
+      }
+      if (const std::string* group = d.FindString("groupId")) {
+        row.group_id = *group;
       }
       const std::string* title = d.FindString("title");
       const std::string* url = d.FindString("url");
@@ -1563,7 +1597,35 @@ void PhiWindowController::RebuildTabs() {
     rows.erase(rows.begin() + i + 1);
   }
 
-  // Geometry for the unbound rows only.
+  // Group visuals for the header rows (title/color/collapsed by id).
+  std::map<std::string, GroupHeader> group_info;
+  if (std::optional<base::Value> gparsed = base::JSONReader::Read(
+          framework_->TabGroupsJson(browser), base::JSON_PARSE_RFC);
+      gparsed && gparsed->is_list()) {
+    for (const base::Value& v : gparsed->GetList()) {
+      const base::DictValue* d = v.GetIfDict();
+      if (!d) {
+        continue;
+      }
+      GroupHeader info;
+      if (const std::string* id = d->FindString("id")) {
+        info.id = *id;
+      }
+      const std::string* color = d->FindString("color");
+      const PhiGroupColor& palette_entry =
+          GroupColorByName(color ? *color : "grey");
+      info.color = palette_entry.color;
+      const std::string* title = d->FindString("title");
+      info.title = title && !title->empty() ? base::UTF8ToWide(*title)
+                                            : palette_entry.label;
+      info.collapsed = d->FindBool("collapsed").value_or(false);
+      group_info[info.id] = std::move(info);
+    }
+  }
+
+  // Geometry for the unbound rows only. In the vertical layouts a group's
+  // members sit under its header row and vanish while it is collapsed; the
+  // horizontal strip has no headers yet, so members stay plain chips there.
   const Layout layout = ComputeLayout();
   int x = layout.tabs_left;
   int y = layout.tabs_top;
@@ -1571,6 +1633,8 @@ void PhiWindowController::RebuildTabs() {
     // The strip's pinned section leads; normal chips start after it.
     x = pinned_.back().bounds.right + Scaled(kStripPinToTabs);
   }
+  std::string current_group;
+  bool current_collapsed = false;
   for (TabRow& row : rows) {
     bool hidden_by_binding = false;
     for (const auto& binding : bindings) {
@@ -1585,6 +1649,29 @@ void PhiWindowController::RebuildTabs() {
     }
     if (hidden_by_binding) {
       continue;
+    }
+    if (!layout.horizontal_tabs && row.group_id != current_group) {
+      current_group = row.group_id;
+      current_collapsed = false;
+      if (!current_group.empty()) {
+        auto info = group_info.find(current_group);
+        if (info != group_info.end()) {
+          if (y + Scaled(kGroupHeaderHeight) > layout.tabs_limit) {
+            break;
+          }
+          GroupHeader header = info->second;
+          header.bounds = {layout.tabs_left, y,
+                           Scaled(kSidebarWidth - kEdgeInset),
+                           y + Scaled(kGroupHeaderHeight)};
+          header.container = header.bounds;
+          y += Scaled(kGroupHeaderHeight + kTabRowGap);
+          current_collapsed = header.collapsed;
+          group_headers_.push_back(std::move(header));
+        }
+      }
+    }
+    if (!layout.horizontal_tabs && current_collapsed) {
+      continue;  // Hidden under a collapsed header.
     }
     const int close_box = Scaled(kCloseBoxSize);
     if (layout.horizontal_tabs) {
@@ -1613,6 +1700,10 @@ void PhiWindowController::RebuildTabs() {
       // box still win — it is tested first).
       row.pane_b = {(row.bounds.left + row.bounds.right) / 2, row.bounds.top,
                     row.bounds.right, row.bounds.bottom};
+    }
+    if (!layout.horizontal_tabs && !row.group_id.empty() &&
+        !group_headers_.empty() && group_headers_.back().id == row.group_id) {
+      group_headers_.back().container.bottom = row.bounds.bottom;
     }
     tabs_.push_back(std::move(row));
   }
@@ -1866,6 +1957,17 @@ void PhiWindowController::OnChromeClick(int x, int y) {
     RefreshTabs();
     return;
   }
+  for (const GroupHeader& gh : group_headers_) {
+    if (::PtInRect(&gh.bounds, pt)) {
+      if (framework_) {
+        framework_->SetTabGroupCollapsed(
+            active_browser_ ? active_browser_ : window_id_, gh.id.c_str(),
+            !gh.collapsed);
+      }
+      RefreshTabs();
+      return;
+    }
+  }
   for (const TabRow& row : tabs_) {
     if (!::PtInRect(&row.bounds, pt)) {
       continue;
@@ -1966,11 +2068,73 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
   if (!target) {
     // Not a chip: the row context menus. Tab rows work in both orientations
     // (the strip's horizontal tabs share tabs_).
+    for (const GroupHeader& gh : group_headers_) {
+      if (!::PtInRect(&gh.bounds, pt)) {
+        continue;
+      }
+      enum : UINT { kRename = 1, kUngroup, kCloseGroup, kColorFirst = 100 };
+      HMENU colors = ::CreatePopupMenu();
+      HMENU menu = ::CreatePopupMenu();
+      if (!menu || !colors) {
+        if (menu) {
+          ::DestroyMenu(menu);
+        }
+        if (colors) {
+          ::DestroyMenu(colors);
+        }
+        return;
+      }
+      for (size_t i = 0; i < kGroupColors.size(); ++i) {
+        ::AppendMenuW(colors, MF_STRING | (kGroupColors[i].color == gh.color
+                                               ? MF_CHECKED
+                                               : 0),
+                      kColorFirst + i, kGroupColors[i].label);
+      }
+      ::AppendMenuW(menu, MF_STRING, kRename, L"Rename Group...");
+      ::AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(colors),
+                    L"Change Color");
+      ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+      ::AppendMenuW(menu, MF_STRING, kUngroup, L"Ungroup");
+      ::AppendMenuW(menu, MF_STRING, kCloseGroup, L"Close Group");
+      POINT screen = pt;
+      ::ClientToScreen(shell_hwnd_, &screen);
+      const UINT chosen = static_cast<UINT>(::TrackPopupMenu(
+          menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN |
+                    TPM_RIGHTBUTTON,
+          screen.x, screen.y, 0, shell_hwnd_, nullptr));
+      const std::string group_id = gh.id;
+      const std::wstring title = gh.title;
+      ::DestroyMenu(menu);  // Owns the submenu.
+      const int64_t browser = active_browser_ ? active_browser_ : window_id_;
+      if (!framework_) {
+        return;
+      }
+      if (chosen == kRename) {
+        std::wstring value = title;
+        if (PhiPromptText(shell_hwnd_, L"Rename Group", L"Group name:",
+                          &value)) {
+          framework_->RenameTabGroup(browser, group_id.c_str(),
+                                     base::WideToUTF8(value).c_str());
+        }
+      } else if (chosen == kUngroup) {
+        framework_->UngroupTabGroup(browser, group_id.c_str());
+      } else if (chosen == kCloseGroup) {
+        framework_->CloseTabGroup(browser, group_id.c_str());
+      } else if (chosen >= kColorFirst &&
+                 chosen < kColorFirst + kGroupColors.size()) {
+        framework_->SetTabGroupColor(
+            browser, group_id.c_str(),
+            kGroupColors[chosen - kColorFirst].name);
+      }
+      RefreshTabs();
+      return;
+    }
     for (const TabRow& row : tabs_) {
       if (!::PtInRect(&row.bounds, pt)) {
         continue;
       }
-      enum : UINT { kPin = 1, kBookmark, kClose, kSplit, kUnsplit };
+      enum : UINT { kPin = 1, kBookmark, kClose, kSplit, kUnsplit,
+                    kGroup, kUngroupTab };
       HMENU menu = ::CreatePopupMenu();
       if (!menu) {
         return;
@@ -1983,6 +2147,11 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
         // Splitting needs a partner: the active tab, itself unsplit.
         if (!row.active && row.split_id.empty()) {
           ::AppendMenuW(menu, MF_STRING, kSplit, L"Split With Active Tab");
+        }
+        if (row.group_id.empty()) {
+          ::AppendMenuW(menu, MF_STRING, kGroup, L"Add Tab to New Group");
+        } else {
+          ::AppendMenuW(menu, MF_STRING, kUngroupTab, L"Remove from Group");
         }
       } else {
         ::AppendMenuW(menu, MF_STRING, kUnsplit, L"Unsplit");
@@ -2006,6 +2175,12 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
         RefreshTabs();
       } else if (chosen == kUnsplit && framework_) {
         framework_->Unsplit(browser, row.index);
+        RefreshTabs();
+      } else if (chosen == kGroup && framework_) {
+        framework_->AddTabToNewGroup(browser, row.index);
+        RefreshTabs();
+      } else if (chosen == kUngroupTab && framework_) {
+        framework_->RemoveTabFromGroup(browser, row.index);
         RefreshTabs();
       } else if (chosen == kClose && framework_) {
         if (merged) {
@@ -2469,6 +2644,43 @@ void PhiWindowController::PaintChrome(HDC dc,
   }
   DrawGlyph(dc, layout.add_space, L"+", kLabelDim);
 
+  // Tab groups: TabGroupCellView — the whole group cell rests on an 18%
+  // tint of the group color; the 32pt header row carries the chevron, the
+  // color dot (white ring) and the title. Clicking the header collapses.
+  for (const GroupHeader& gh : group_headers_) {
+    FillRounded(dc, gh.container, BlendOver(gh.color, kTintTop, kGroupTintAlpha),
+                Scaled(kCornerRadius));
+    const int mid = (gh.bounds.top + gh.bounds.bottom) / 2;
+    RECT chevron = {gh.bounds.left + Scaled(8), mid - Scaled(8),
+                    gh.bounds.left + Scaled(8) + Scaled(16), mid + Scaled(8)};
+    HGDIOBJ previous_glyph_font =
+        caption_font_ ? ::SelectObject(dc, caption_font_) : nullptr;
+    DrawGlyph(dc, chevron, gh.collapsed ? L"\uE76C" : L"\uE70D", kLabelDim);
+    if (previous_glyph_font) {
+      ::SelectObject(dc, previous_glyph_font);
+    }
+    // The dot: colored centre in a white ring (TabGroupHeaderColorIndicator).
+    const int cx = chevron.right + Scaled(4) + Scaled(6);
+    HGDIOBJ old_pen = ::SelectObject(dc, ::GetStockObject(NULL_PEN));
+    HBRUSH ring = ::CreateSolidBrush(RGB(0xFF, 0xFF, 0xFF));
+    HGDIOBJ old_brush = ::SelectObject(dc, ring);
+    ::Ellipse(dc, cx - Scaled(6), mid - Scaled(6), cx + Scaled(6),
+              mid + Scaled(6));
+    HBRUSH centre = ::CreateSolidBrush(gh.color);
+    ::SelectObject(dc, centre);
+    ::Ellipse(dc, cx - Scaled(5), mid - Scaled(5), cx + Scaled(5),
+              mid + Scaled(5));
+    ::SelectObject(dc, old_brush);
+    ::SelectObject(dc, old_pen);
+    ::DeleteObject(ring);
+    ::DeleteObject(centre);
+    ::SetTextColor(dc, kLabel);
+    RECT title_rc = {cx + Scaled(6) + Scaled(6), gh.bounds.top,
+                     gh.bounds.right - Scaled(6), gh.bounds.bottom};
+    ::DrawTextW(dc, gh.title.c_str(), -1, &title_rc,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+  }
+
   // Tab rows: a 32pt pill inside the 36pt row (2pt vertical padding), radius
   // 8. The title is textPrimary whether active or not (SideTabView); only the
   // pill marks the active tab. The close box rides the ACTIVE row -- the Mac
@@ -2490,7 +2702,16 @@ void PhiWindowController::PaintChrome(HDC dc,
     // merged split row draws the same shape once per pane around a hairline
     // divider (the Mac's single merged row with two panes).
     const int mid = (pill.top + pill.bottom) / 2;
-    const COLORREF row_bg = row.active ? kRowSelectedBg : kTintTop;
+    COLORREF ground = kTintTop;
+    if (!row.group_id.empty()) {
+      for (const GroupHeader& gh : group_headers_) {
+        if (gh.id == row.group_id) {
+          ground = BlendOver(gh.color, kTintTop, kGroupTintAlpha);
+          break;
+        }
+      }
+    }
+    const COLORREF row_bg = row.active ? kRowSelectedBg : ground;
     const auto draw_pane = [&](int left, int right, const TabRow& r,
                                bool pane_b) {
       RECT slot = {left + Scaled(6), mid - Scaled(kFaviconSlot) / 2,

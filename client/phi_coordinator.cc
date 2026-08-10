@@ -1936,6 +1936,81 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
       }
     }
     out.Set("ok", ok);
+  } else if (type == "agentSpace.tabs.group" ||
+             type == "agentSpace.tabs.ungroup") {
+    std::optional<base::DictValue> p =
+        base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
+    int64_t window_id = 0;
+    int index = -1;
+    if (p) {
+      window_id = static_cast<int64_t>(p->FindDouble("windowId").value_or(0));
+      index = static_cast<int>(p->FindDouble("index").value_or(-1));
+    }
+    bool ok = false;
+    if (framework_ && window_id && index >= 0) {
+      const int64_t browser = ResolveBrowser(window_id);
+      ok = (type == "agentSpace.tabs.group")
+               ? framework_->AddTabToNewGroup(browser, index)
+               : framework_->RemoveTabFromGroup(browser, index);
+    }
+    out.Set("ok", ok);
+  } else if (type == "agentSpace.groups.list") {
+    std::optional<base::DictValue> p =
+        base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
+    const int64_t window_id =
+        p ? static_cast<int64_t>(p->FindDouble("windowId").value_or(0)) : 0;
+    if (framework_ && window_id) {
+      if (std::optional<base::Value> groups = base::JSONReader::Read(
+              framework_->TabGroupsJson(ResolveBrowser(window_id)),
+              base::JSON_PARSE_RFC)) {
+        out.Set("groups", std::move(*groups));
+      }
+      out.Set("ok", true);
+    } else {
+      out.Set("ok", false);
+    }
+  } else if (type == "agentSpace.groups.rename" ||
+             type == "agentSpace.groups.color" ||
+             type == "agentSpace.groups.collapse" ||
+             type == "agentSpace.groups.ungroup" ||
+             type == "agentSpace.groups.close") {
+    std::optional<base::DictValue> p =
+        base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
+    int64_t window_id = 0;
+    std::string group_id, text;
+    bool collapsed = false;
+    if (p) {
+      window_id = static_cast<int64_t>(p->FindDouble("windowId").value_or(0));
+      if (const std::string* g = p->FindString("groupId")) {
+        group_id = *g;
+      }
+      if (const std::string* t = p->FindString("title")) {
+        text = *t;
+      }
+      if (const std::string* c = p->FindString("color")) {
+        text = *c;
+      }
+      collapsed = p->FindBool("collapsed").value_or(false);
+    }
+    bool ok = false;
+    if (framework_ && window_id && !group_id.empty()) {
+      const int64_t browser = ResolveBrowser(window_id);
+      if (type == "agentSpace.groups.rename") {
+        ok = framework_->RenameTabGroup(browser, group_id.c_str(),
+                                        text.c_str());
+      } else if (type == "agentSpace.groups.color") {
+        ok = framework_->SetTabGroupColor(browser, group_id.c_str(),
+                                          text.c_str());
+      } else if (type == "agentSpace.groups.collapse") {
+        ok = framework_->SetTabGroupCollapsed(browser, group_id.c_str(),
+                                              collapsed);
+      } else if (type == "agentSpace.groups.ungroup") {
+        ok = framework_->UngroupTabGroup(browser, group_id.c_str());
+      } else {
+        ok = framework_->CloseTabGroup(browser, group_id.c_str());
+      }
+    }
+    out.Set("ok", ok);
   } else {
     out.Set("error", "unknown type: " + type);
   }

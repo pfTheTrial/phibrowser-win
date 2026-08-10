@@ -367,6 +367,9 @@ class PhiWindowController {
     // member renders the MERGED row and absorbs its partner as pane B; the
     // partner never becomes its own row.
     std::string split_id;
+    // Tab-group membership (Chromium native model); members sit under their
+    // group's header row and hide when it is collapsed.
+    std::string group_id;
     int b_index = -1;  // -1: not a merged row.
     bool b_active = false;
     std::wstring b_title;
@@ -378,6 +381,18 @@ class PhiWindowController {
     RECT close_box{};    // The row's close affordance.
   };
   std::vector<TabRow> tabs_;
+
+  // Sidebar tab-group headers (TabGroupHeaderView): chevron + color dot +
+  // title on the group's 18% color tint, clicking collapses/expands.
+  struct GroupHeader {
+    std::string id;
+    std::wstring title;
+    COLORREF color = 0;
+    bool collapsed = false;
+    RECT bounds{};     // The header row (the collapse toggle).
+    RECT container{};  // Header plus visible members — the tinted card.
+  };
+  std::vector<GroupHeader> group_headers_;
   // Pinned tabs (the band under the header) and bookmarks (the section above
   // the open tabs) — both come from the client's own store, as on Mac.
   struct ShortcutRow {
