@@ -1870,9 +1870,16 @@ void PhiSettingsWindow::Paint(HDC dc) {
         if (item.selected) {
           FillRounded(dc, bounds, Blend(ink, bg, 25), Scaled(10));
         }
-        if (!PhiIsPrivateGlyph(item.text) &&
-            PhiDrawColorText(dc, bounds, item.text, Scaled(14), row_ink)) {
-          break;  // Colour emoji via DirectWrite; GDI below is the fallback.
+        {
+          // Inset: the colour pass repaints its whole rect, and a selected
+          // cell's rounded fill must survive at the corners.
+          RECT glyph_rc = bounds;
+          ::InflateRect(&glyph_rc, -Scaled(4), -Scaled(4));
+          if (!PhiIsPrivateGlyph(item.text) &&
+              PhiDrawColorText(dc, glyph_rc, item.text, Scaled(14),
+                               row_ink)) {
+            break;  // Colour emoji via DirectWrite; GDI is the fallback.
+          }
         }
         {
           HFONT cell_font =

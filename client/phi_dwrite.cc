@@ -5,6 +5,7 @@
 #include "phibrowser-win/client/phi_dwrite.h"
 
 #include <d2d1.h>
+#include <d2d1_1.h>
 #include <dwrite.h>
 #include <wrl/client.h>
 
@@ -130,6 +131,55 @@ bool PhiDrawColorText(HDC dc,
   }
   if (FAILED(state.target->EndDraw())) {
     // A lost target rebuilds on the next call.
+    state.target.Reset();
+    return false;
+  }
+  return true;
+}
+
+bool PhiDrawBgra(HDC dc,
+                 const RECT& dest,
+                 const unsigned char* bgra,
+                 int width,
+                 int height) {
+  if (!bgra || width <= 0 || height <= 0 || dest.right <= dest.left ||
+      dest.bottom <= dest.top || !EnsureState()) {
+    return false;
+  }
+  DWriteState& state = State();
+  const COLORREF background = ::GetPixel(dc, dest.left + 1, dest.top + 1);
+  if (FAILED(state.target->BindDC(dc, &dest))) {
+    return false;
+  }
+  ComPtr<ID2D1Bitmap> bitmap;
+  const D2D1_BITMAP_PROPERTIES properties = D2D1::BitmapProperties(
+      D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,
+                        D2D1_ALPHA_MODE_PREMULTIPLIED));
+  if (FAILED(state.target->CreateBitmap(
+          D2D1::SizeU(static_cast<UINT32>(width),
+                      static_cast<UINT32>(height)),
+          bgra, static_cast<UINT32>(width) * 4, properties,
+          bitmap.GetAddressOf()))) {
+    return false;
+  }
+  state.target->BeginDraw();
+  state.target->Clear(
+      ToColor(background == CLR_INVALID ? RGB(0xFF, 0xFF, 0xFF)
+                                        : background));
+  const D2D1_RECT_F bounds =
+      D2D1::RectF(0.0f, 0.0f, static_cast<FLOAT>(dest.right - dest.left),
+                  static_cast<FLOAT>(dest.bottom - dest.top));
+  // A device context can interpolate with high-quality cubic; the plain DC
+  // target only offers linear — still far above StretchDIBits.
+  ComPtr<ID2D1DeviceContext> context;
+  if (SUCCEEDED(state.target.As(&context))) {
+    context->DrawBitmap(bitmap.Get(), &bounds, 1.0f,
+                        D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC, nullptr);
+  } else {
+    state.target->DrawBitmap(bitmap.Get(), bounds, 1.0f,
+                             D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+  }
+  if (FAILED(state.target->EndDraw())) {
     state.target.Reset();
     return false;
   }

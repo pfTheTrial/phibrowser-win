@@ -1,0 +1,12 @@
+// Copyright 2026 The Fyde Innovations Limited. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#include <windows.h>
+
+// The application icon: the lowest ID, placed first, so every shell surface
+// (Explorer, pinned taskbar shortcuts, the installer) picks it as THE icon.
+// 101 is chrome_exe_resource.h's IDR_MAINFRAME — same slot Chromium uses, so
+// anything addressing the exe's first icon keeps working. The artwork is the
+// Mac client's own (resources\phi.ico, multi-size).
+101 ICON "resources\\phi.ico"

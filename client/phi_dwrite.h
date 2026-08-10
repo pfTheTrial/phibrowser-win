@@ -22,6 +22,15 @@ bool PhiDrawColorText(HDC dc,
                       int pixel_size,
                       COLORREF ink);
 
+// Draws a PREMULTIPLIED BGRA buffer scaled into `dest` with high-quality
+// interpolation — crisp favicons and logos at any DPI, where GDI's
+// StretchDIBits stair-steps. Same fallback contract as PhiDrawColorText.
+bool PhiDrawBgra(HDC dc,
+                 const RECT& dest,
+                 const unsigned char* bgra,
+                 int width,
+                 int height);
+
 }  // namespace phi_client
 
 #endif  // PHIBROWSER_WIN_CLIENT_PHI_DWRITE_H_

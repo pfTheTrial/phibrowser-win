@@ -7,6 +7,7 @@
 
 #include <windows.h>
 
+#include <array>
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -61,6 +62,11 @@ class PhiSlotHost {
   virtual void RequestOpen(int64_t slot, const std::string& url) = 0;
   // Bookmarks the slot's active tab — the menu bar's Bookmark This Tab.
   virtual void RequestBookmarkActiveTab(int64_t slot) = 0;
+  // Stores tab `index` of the slot's active browser as a pinned tab
+  // (`as_bookmark` false) or a bookmark — the row context menus.
+  virtual void RequestStoreTab(int64_t slot, int index, bool as_bookmark) = 0;
+  // Removes a stored row (a pinned tab or bookmark) by its guid.
+  virtual void RemoveStoredRow(const std::string& guid) = 0;
   // The app-wide resolved theme.
   virtual const PhiPalette& Palette() const = 0;
   // The theme THIS SLOT paints with: a Space may pin its own (the Mac's
@@ -111,6 +117,9 @@ class PhiWindowController {
   // For changes the client itself just made, where the browser state has
   // already settled.
   void RefreshTabs();
+
+  // Paints one rounded-corner cap (called by its window proc).
+  void PaintCornerCap(HWND cap, HDC dc);
 
   // Marks the sidebar dirty and lets the paint happen at the next idle. Used
   // for framework-driven notifications, which arrive DURING the change they
@@ -324,6 +333,8 @@ class PhiWindowController {
   // close) — the same glyphs the OS buttons use.
   HFONT caption_font_ = nullptr;
   UINT caption_font_dpi_ = 0;
+  // MDL2 at the emoji size, for Space-pip catalog glyphs.
+  HFONT chip_icon_font_ = nullptr;
   UINT dpi_ = 96;
 
   // Caption-band state: which caption button is hot / pressed (an HT* code,
@@ -353,6 +364,7 @@ class PhiWindowController {
   // Pinned tabs (the band under the header) and bookmarks (the section above
   // the open tabs) — both come from the client's own store, as on Mac.
   struct ShortcutRow {
+    std::string guid;  // The store row, so the context menu can remove it.
     std::string url;
     std::wstring title;
     bool folder = false;
@@ -386,6 +398,9 @@ class PhiWindowController {
   int64_t active_browser_ = 0;
   HWND shell_hwnd_ = nullptr;  // Our client-owned top-level.
   std::unique_ptr<PhiMenuBar> menu_bar_;  // Attached to shell_hwnd_.
+  // The four content-corner caps (TL, TR, BL, BR), siblings above the
+  // browser child — the only rounding DComp content respects.
+  std::array<HWND, 4> corner_caps_ = {};
   // Owned by the framework (a singleton in chrome.dll); non-owning, and across
   // a module boundary, so not a raw_ptr.
   RAW_PTR_EXCLUSION phi_framework::PhiFramework* const framework_;

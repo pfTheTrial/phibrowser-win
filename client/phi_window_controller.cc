@@ -18,6 +18,7 @@
 #include "base/containers/span.h"
 #include "base/json/json_reader.h"
 #include "base/logging.h"
+#include "base/no_destructor.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
 #include "phibrowser-win/client/phi_dwrite.h"
@@ -71,7 +72,7 @@ constexpr int kCornerRadius = 8;      // The pill radius, everywhere.
 // the Mac's: LEFT FLUSH against the sidebar, 8 right/bottom, and a
 // titleAwareArea breath on top — 8 in performance, 12 under a top bar.
 constexpr int kContentMargin = 8;
-constexpr int kContentRadius = 6;   // webContentContainerCornerRadius (< macOS 26)
+constexpr int kContentRadius = 14;  // webContentContainerCornerRadius (macOS 26)
 constexpr int kContentTopGap = 8;
 constexpr int kContentTopGapTopNav = 12;
 constexpr int kFaviconSlot = 16;    // The 16pt slot in the row…
@@ -110,6 +111,52 @@ constexpr int kPillHeight = 22;
 // subclassed. One per process — every EDIT shares the class proc.
 WNDPROC g_edit_base_proc = nullptr;
 
+// Re-assert the corner caps after the BROWSER child reorders itself: sent by
+// the browser subclass below whenever its z-order changes (Chromium raises
+// its window on activation, which would bury the caps).
+constexpr UINT WM_PHI_RAISE_CAPS = WM_APP + 7;
+
+// Original window procs of adopted browser children, by hwnd (a slot hosts
+// one per Space). UI-thread only.
+std::map<HWND, WNDPROC>& BrowserBaseProcs() {
+  static base::NoDestructor<std::map<HWND, WNDPROC>> procs;
+  return *procs;
+}
+
+LRESULT CALLBACK BrowserSubclassProc(HWND hwnd, UINT msg, WPARAM wparam,
+                                     LPARAM lparam) {
+  WNDPROC base = nullptr;
+  auto it = BrowserBaseProcs().find(hwnd);
+  if (it != BrowserBaseProcs().end()) {
+    base = it->second;
+  }
+  if (msg == WM_WINDOWPOSCHANGED) {
+    const auto* pos = reinterpret_cast<const WINDOWPOS*>(lparam);
+    if (pos && !(pos->flags & SWP_NOZORDER)) {
+      // Async: never touch sibling z-order from inside its own reorder.
+      ::PostMessageW(::GetParent(hwnd), WM_PHI_RAISE_CAPS, 0, 0);
+    }
+  }
+  return base ? ::CallWindowProcW(base, hwnd, msg, wparam, lparam)
+              : ::DefWindowProcW(hwnd, msg, wparam, lparam);
+}
+
+// The Phi app icon, shipped beside the exe (resources\phi.ico — the Mac's
+// own artwork). Sized copies for the taskbar/alt-tab and the caption band.
+HICON PhiAppIcon(int size) {
+  wchar_t exe_path[MAX_PATH] = {};
+  ::GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
+  std::wstring path(exe_path);
+  const size_t slash = path.find_last_of(L'\\');
+  if (slash == std::wstring::npos) {
+    return nullptr;
+  }
+  path.resize(slash + 1);
+  path += L"resources\\phi.ico";
+  return reinterpret_cast<HICON>(::LoadImageW(
+      nullptr, path.c_str(), IMAGE_ICON, size, size, LR_LOADFROMFILE));
+}
+
 ATOM EnsureShellClass() {
   static const ATOM atom = [] {
     WNDCLASSEXW wc = {};
@@ -118,6 +165,9 @@ ATOM EnsureShellClass() {
     wc.lpfnWndProc = &PhiWindowController::ShellWndProc;
     wc.hInstance = ::GetModuleHandleW(nullptr);
     wc.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
+    // Phi's own icon in the taskbar and alt-tab — not Chromium's.
+    wc.hIcon = PhiAppIcon(32);
+    wc.hIconSm = PhiAppIcon(16);
     wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
     wc.lpszClassName = kShellClassName;
     return ::RegisterClassExW(&wc);
@@ -236,6 +286,15 @@ void PhiWindowController::EnsureFont() {
       ::DeleteObject(previous_caption);
     }
   }
+  // The same MDL2 face at the EMOJI size, for Space-pip catalog glyphs — one
+  // optical size whether a pip wears an emoji or a Phi icon.
+  caption.lfHeight = -Scaled(13);
+  if (HFONT chip_built = ::CreateFontIndirectW(&caption)) {
+    if (chip_icon_font_) {
+      ::DeleteObject(chip_icon_font_);
+    }
+    chip_icon_font_ = chip_built;
+  }
 }
 
 void PhiWindowController::EnsureMenuTitleRects() {
@@ -258,11 +317,18 @@ void PhiWindowController::EnsureMenuTitleRects() {
   menu_titles_.clear();
   int x = Scaled(kMenuTitlePad);
   const int band = Scaled(kTitleBarHeight);
+  bool first = true;
   for (const std::wstring& title : titles) {
     SIZE extent = {};
     ::GetTextExtentPoint32W(dc, title.c_str(),
                             static_cast<int>(title.size()), &extent);
-    const int width = extent.cx + 2 * Scaled(kMenuTitlePad);
+    int width = extent.cx + 2 * Scaled(kMenuTitlePad);
+    if (first) {
+      // The logo and "Phi" are ONE button: the first title's rect carries
+      // the icon (18) and its gap (6) ahead of the text.
+      width += Scaled(18) + Scaled(6);
+      first = false;
+    }
     menu_titles_.emplace_back(title, RECT{x, 0, x + width, band});
     x += width;
   }
@@ -618,6 +684,9 @@ PhiWindowController::~PhiWindowController() {
   if (caption_font_) {
     ::DeleteObject(caption_font_);
   }
+  if (chip_icon_font_) {
+    ::DeleteObject(chip_icon_font_);
+  }
   if (url_brush_) {
     ::DeleteObject(url_brush_);
   }
@@ -774,9 +843,111 @@ void PhiWindowController::AdoptBrowserAsChild() {
           WS_EX_STATICEDGE | WS_EX_APPWINDOW);
   ::SetWindowLongPtrW(browser_hwnd_, GWL_EXSTYLE, ex);
   ::SetParent(browser_hwnd_, shell_hwnd_);
+  // Watch its z-order: Chromium raises this window on activation, which
+  // would bury the corner caps riding above it.
+  if (BrowserBaseProcs().find(browser_hwnd_) == BrowserBaseProcs().end()) {
+    WNDPROC previous = reinterpret_cast<WNDPROC>(::SetWindowLongPtrW(
+        browser_hwnd_, GWLP_WNDPROC,
+        reinterpret_cast<LONG_PTR>(&BrowserSubclassProc)));
+    BrowserBaseProcs()[browser_hwnd_] = previous;
+  }
   ::SetWindowPos(browser_hwnd_, nullptr, 0, 0, 0, 0,
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE |
                      SWP_FRAMECHANGED);
+}
+
+namespace {
+
+// A corner cap: a tiny shell child ABOVE the browser child, shaped (window
+// region) to the part of a radius-square OUTSIDE the rounded corner's arc.
+// The browser renders via DirectComposition, which ignores the child's own
+// window region — but hwnd AIRSPACE is honoured: a sibling above occludes.
+// The cap paints the ground tint (plus the card's 1px arc), so the page
+// reads as a rounded card exactly like the Mac's.
+LRESULT CALLBACK CornerCapProc(HWND hwnd, UINT msg, WPARAM wparam,
+                               LPARAM lparam) {
+  if (msg == WM_NCCREATE) {
+    auto* cs = reinterpret_cast<CREATESTRUCTW*>(lparam);
+    ::SetWindowLongPtrW(hwnd, GWLP_USERDATA,
+                        reinterpret_cast<LONG_PTR>(cs->lpCreateParams));
+    return ::DefWindowProcW(hwnd, msg, wparam, lparam);
+  }
+  if (msg == WM_PAINT) {
+    auto* self = reinterpret_cast<PhiWindowController*>(
+        ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    PAINTSTRUCT ps = {};
+    HDC dc = ::BeginPaint(hwnd, &ps);
+    if (self) {
+      self->PaintCornerCap(hwnd, dc);
+    }
+    ::EndPaint(hwnd, &ps);
+    return 0;
+  }
+  if (msg == WM_NCHITTEST) {
+    return HTTRANSPARENT;  // The tint under it takes the click.
+  }
+  return ::DefWindowProcW(hwnd, msg, wparam, lparam);
+}
+
+ATOM EnsureCornerCapClass() {
+  static const ATOM atom = [] {
+    WNDCLASSEXW wc = {};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = &CornerCapProc;
+    wc.hInstance = ::GetModuleHandleW(nullptr);
+    wc.lpszClassName = L"PhiCornerCap";
+    return ::RegisterClassExW(&wc);
+  }();
+  return atom;
+}
+
+}  // namespace
+
+void PhiWindowController::PaintCornerCap(HWND cap, HDC dc) {
+  int corner = -1;
+  for (int i = 0; i < 4; ++i) {
+    if (corner_caps_[i] == cap) {
+      corner = i;
+    }
+  }
+  if (corner < 0) {
+    return;
+  }
+  RECT rc = {};
+  ::GetClientRect(cap, &rc);
+  const Layout layout = ComputeLayout();
+  static const PhiPalette kFallback =
+      PhiResolvePalette(PhiThemeById("pure"), PhiAppearance::kLight);
+  const PhiPalette& palette =
+      host_ ? host_->PaletteForSlot(window_id_) : kFallback;
+  // The ground tint at this cap's height, matching the band gradient.
+  const int height = layout.client.bottom > 0 ? layout.client.bottom : 1;
+  const int y = corner < 2 ? layout.content.top
+                           : layout.content.bottom - rc.bottom;
+  auto channel = [&](int top, int bottom) {
+    return top + (bottom - top) * y / height;
+  };
+  HBRUSH tint = ::CreateSolidBrush(
+      RGB(channel(GetRValue(palette.ground_top),
+                  GetRValue(palette.ground_bottom)),
+          channel(GetGValue(palette.ground_top),
+                  GetGValue(palette.ground_bottom)),
+          channel(GetBValue(palette.ground_top),
+                  GetBValue(palette.ground_bottom))));
+  ::FillRect(dc, &rc, tint);
+  ::DeleteObject(tint);
+  // The card's 1px border, continued around the arc.
+  const int r = rc.right;
+  HPEN pen = ::CreatePen(PS_SOLID, 1, palette.border);
+  HGDIOBJ old_pen = ::SelectObject(dc, pen);
+  HGDIOBJ old_brush = ::SelectObject(dc, ::GetStockObject(NULL_BRUSH));
+  // The full circle, clipped by the cap's region to this corner's arc.
+  const int cx = (corner == 0 || corner == 2) ? r : -r;
+  const int cy = corner < 2 ? r : -r;
+  ::Ellipse(dc, cx - r, cy - r, cx + r, cy + r);
+  ::SelectObject(dc, old_brush);
+  ::SelectObject(dc, old_pen);
+  ::DeleteObject(pen);
 }
 
 void PhiWindowController::LayoutContents() {
@@ -791,14 +962,46 @@ void PhiWindowController::LayoutContents() {
     ::SetWindowPos(browser_hwnd_, nullptr, layout.content.left,
                    layout.content.top, w > 0 ? w : 0, h > 0 ? h : 0,
                    SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW);
-    // Rounded corners on the content itself, so the page reads as a card
-    // floating on the Space tint. A window region clips the child for real —
-    // there is no other way to round a window we do not paint.
-    if (w > 0 && h > 0) {
-      const int radius = Scaled(kContentRadius) * 2;
-      HRGN rgn = ::CreateRoundRectRgn(0, 0, w + 1, h + 1, radius, radius);
-      ::SetWindowRgn(browser_hwnd_, rgn, TRUE);  // Window owns `rgn` now.
+  }
+
+  // The rounded card corners. DComp ignores a region ON the browser child
+  // (verified by pixel probe: corners stayed page-white), so the corners are
+  // capped by sibling windows above it instead.
+  EnsureCornerCapClass();
+  const int radius = Scaled(kContentRadius);
+  // Top caps only where the content's top edge meets the tint (performance);
+  // under a top bar the card's top corners belong to the bar band.
+  const bool top_caps = layout.mode == PhiLayoutMode::kPerformance;
+  const std::array<POINT, 4> positions = {{
+      {layout.content.left, layout.content.top},
+      {layout.content.right - radius, layout.content.top},
+      {layout.content.left, layout.content.bottom - radius},
+      {layout.content.right - radius, layout.content.bottom - radius},
+  }};
+  for (int i = 0; i < 4; ++i) {
+    if (!corner_caps_[i]) {
+      corner_caps_[i] = ::CreateWindowExW(
+          0, L"PhiCornerCap", L"", WS_CHILD, 0, 0, radius, radius,
+          shell_hwnd_, nullptr, ::GetModuleHandleW(nullptr), this);
     }
+    if (!corner_caps_[i]) {
+      continue;
+    }
+    const bool shown = i >= 2 || top_caps;
+    ::SetWindowPos(corner_caps_[i], HWND_TOP, positions[i].x, positions[i].y,
+                   radius, radius,
+                   SWP_NOACTIVATE | (shown ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
+    // Shape: the radius-square minus the quarter circle — only the bite
+    // outside the card's curve remains visible.
+    HRGN square = ::CreateRectRgn(0, 0, radius + 1, radius + 1);
+    const int cx = (i == 0 || i == 2) ? radius : 0;
+    const int cy = i < 2 ? radius : 0;
+    HRGN circle = ::CreateEllipticRgn(cx - radius, cy - radius, cx + radius + 1,
+                                      cy + radius + 1);
+    ::CombineRgn(square, square, circle, RGN_DIFF);
+    ::DeleteObject(circle);
+    ::SetWindowRgn(corner_caps_[i], square, TRUE);  // Window owns it now.
+    ::InvalidateRect(corner_caps_[i], nullptr, TRUE);
   }
 }
 
@@ -1051,6 +1254,25 @@ void PhiWindowController::DrawFavicon(HDC dc,
                                      int width,
                                      int height,
                                      COLORREF background) {
+  // NEVER upscale: a 16px favicon inflated to a larger slot only blurs —
+  // 1:1 native pixels centred in the slot are the sharpest a small source
+  // can look (the driver rarely holds more than 16px). Downscaling larger
+  // art is fine and goes through the high-quality path.
+  RECT draw_rc = dest;
+  const int dest_w = dest.right - dest.left;
+  const int dest_h = dest.bottom - dest.top;
+  if (width < dest_w && height < dest_h) {
+    draw_rc.left = dest.left + (dest_w - width) / 2;
+    draw_rc.top = dest.top + (dest_h - height) / 2;
+    draw_rc.right = draw_rc.left + width;
+    draw_rc.bottom = draw_rc.top + height;
+  }
+  // Premultiplied BGRA — exactly what the DirectWrite path draws with
+  // high-quality interpolation. GDI's stretch below is the fallback.
+  if (PhiDrawBgra(dc, draw_rc, bgra, width, height)) {
+    return;
+  }
+
   if (!bgra || width <= 0 || height <= 0) {
     return;
   }
@@ -1108,6 +1330,9 @@ void PhiWindowController::RebuildShortcuts() {
       }
       const base::DictValue& d = value.GetDict();
       ShortcutRow row;
+      if (const std::string* guid = d.FindString("guid")) {
+        row.guid = *guid;
+      }
       if (const std::string* url = d.FindString("url")) {
         row.url = *url;
       }
@@ -1507,6 +1732,99 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
     }
   }
   if (!target) {
+    // Not a chip: the row context menus. Tab rows work in both orientations
+    // (the strip's horizontal tabs share tabs_).
+    for (const TabRow& row : tabs_) {
+      if (!::PtInRect(&row.bounds, pt)) {
+        continue;
+      }
+      enum : UINT { kPin = 1, kBookmark, kClose };
+      HMENU menu = ::CreatePopupMenu();
+      if (!menu) {
+        return;
+      }
+      ::AppendMenuW(menu, MF_STRING, kPin, L"Pin Tab");
+      ::AppendMenuW(menu, MF_STRING, kBookmark, L"Bookmark Tab...");
+      ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+      ::AppendMenuW(menu, MF_STRING, kClose, L"Close Tab");
+      POINT screen = pt;
+      ::ClientToScreen(shell_hwnd_, &screen);
+      const UINT chosen = static_cast<UINT>(::TrackPopupMenu(
+          menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN |
+                    TPM_RIGHTBUTTON,
+          screen.x, screen.y, 0, shell_hwnd_, nullptr));
+      ::DestroyMenu(menu);
+      if (chosen == kPin) {
+        host_->RequestStoreTab(window_id_, row.index, /*as_bookmark=*/false);
+      } else if (chosen == kBookmark) {
+        host_->RequestStoreTab(window_id_, row.index, /*as_bookmark=*/true);
+      } else if (chosen == kClose && framework_) {
+        framework_->CloseTab(active_browser_ ? active_browser_ : window_id_,
+                             row.index);
+        RefreshTabs();
+      }
+      return;
+    }
+    for (const ShortcutRow& pin : pinned_) {
+      if (!::PtInRect(&pin.bounds, pt)) {
+        continue;
+      }
+      enum : UINT { kOpen = 1, kUnpin };
+      HMENU menu = ::CreatePopupMenu();
+      if (!menu) {
+        return;
+      }
+      ::AppendMenuW(menu, MF_STRING, kOpen, L"Open");
+      ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+      ::AppendMenuW(menu, MF_STRING, kUnpin, L"Unpin");
+      POINT screen = pt;
+      ::ClientToScreen(shell_hwnd_, &screen);
+      const UINT chosen = static_cast<UINT>(::TrackPopupMenu(
+          menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN |
+                    TPM_RIGHTBUTTON,
+          screen.x, screen.y, 0, shell_hwnd_, nullptr));
+      const std::string guid = pin.guid;
+      const std::string url = pin.url;
+      ::DestroyMenu(menu);
+      if (chosen == kOpen && !url.empty()) {
+        host_->RequestOpen(window_id_, url);
+      } else if (chosen == kUnpin && !guid.empty()) {
+        host_->RemoveStoredRow(guid);
+      }
+      return;
+    }
+    for (const ShortcutRow& bookmark : bookmarks_) {
+      if (!::PtInRect(&bookmark.bounds, pt)) {
+        continue;
+      }
+      enum : UINT { kOpen = 1, kRemove };
+      HMENU menu = ::CreatePopupMenu();
+      if (!menu) {
+        return;
+      }
+      if (!bookmark.folder) {
+        ::AppendMenuW(menu, MF_STRING, kOpen, L"Open");
+        ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+      }
+      ::AppendMenuW(menu, MF_STRING, kRemove,
+                    bookmark.folder ? L"Delete Folder" : L"Delete Bookmark");
+      POINT screen = pt;
+      ::ClientToScreen(shell_hwnd_, &screen);
+      const UINT chosen = static_cast<UINT>(::TrackPopupMenu(
+          menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN |
+                    TPM_RIGHTBUTTON,
+          screen.x, screen.y, 0, shell_hwnd_, nullptr));
+      const std::string guid = bookmark.guid;
+      const std::string url = bookmark.url;
+      const bool folder = bookmark.folder;
+      ::DestroyMenu(menu);
+      if (chosen == kOpen && !folder && !url.empty()) {
+        host_->RequestOpen(window_id_, url);
+      } else if (chosen == kRemove && !guid.empty()) {
+        host_->RemoveStoredRow(guid);  // A folder takes its subtree.
+      }
+      return;
+    }
     return;
   }
 
@@ -1645,17 +1963,25 @@ void PhiWindowController::PaintChrome(HDC dc,
   ::SelectClipRgn(dc, nullptr);
 
   // The card's hairline: 1px of `border` just outside the content region
-  // (the Mac's contentOuterBorder). Under a top bar the card begins at the
-  // bar's top edge, so the frame wraps both.
+  // (the Mac's contentOuterBorder), ROUNDED to follow the card's corners —
+  // a square frame would cut straight across the corner arcs. Under a top
+  // bar the card begins at the bar's top edge, so the outline wraps both.
   if (layout.content.right > layout.content.left) {
     RECT frame_rc = layout.content;
     if (layout.top_bar.right > layout.top_bar.left) {
       frame_rc.top = layout.top_bar.top;
     }
     ::InflateRect(&frame_rc, 1, 1);
-    HBRUSH border_brush = ::CreateSolidBrush(palette.border);
-    ::FrameRect(dc, &frame_rc, border_brush);
-    ::DeleteObject(border_brush);
+    HPEN border_pen = ::CreatePen(PS_SOLID, 1, palette.border);
+    HGDIOBJ old_frame_pen = ::SelectObject(dc, border_pen);
+    HGDIOBJ old_frame_brush =
+        ::SelectObject(dc, ::GetStockObject(NULL_BRUSH));
+    const int ellipse = 2 * Scaled(kContentRadius);
+    ::RoundRect(dc, frame_rc.left, frame_rc.top, frame_rc.right,
+                frame_rc.bottom, ellipse, ellipse);
+    ::SelectObject(dc, old_frame_brush);
+    ::SelectObject(dc, old_frame_pen);
+    ::DeleteObject(border_pen);
   }
 
   ::SetBkMode(dc, TRANSPARENT);
@@ -1665,6 +1991,58 @@ void PhiWindowController::PaintChrome(HDC dc,
   // trailing — the menu bar ON the title row. The ground already painted it;
   // only the titles, glyphs and hot states go on top.
   if (layout.title_bar.right > layout.title_bar.left) {
+    // The logo is loaded AT the size it draws (the multi-size ico has exact
+    // entries per DPI), so no GDI rescale blurs it.
+    const int logo_size = Scaled(18);
+    // The logo's pixels, extracted ONCE from the ICO's 256px entry; the
+    // D2D path scales them to any DPI without an exact-size ICO entry.
+    static base::NoDestructor<std::vector<unsigned char>> logo_store;
+    std::vector<unsigned char>& logo_bgra = *logo_store;
+    static int logo_native = 0;
+    static HICON logo = nullptr;
+    if (logo_bgra.empty() && !logo) {
+      if (HICON big = PhiAppIcon(256)) {
+        ICONINFO info = {};
+        if (::GetIconInfo(big, &info) && info.hbmColor) {
+          BITMAPINFO bmi = {};
+          bmi.bmiHeader.biSize = sizeof(bmi.bmiHeader);
+          bmi.bmiHeader.biWidth = 256;
+          bmi.bmiHeader.biHeight = -256;  // Top-down.
+          bmi.bmiHeader.biPlanes = 1;
+          bmi.bmiHeader.biBitCount = 32;
+          bmi.bmiHeader.biCompression = BI_RGB;
+          std::vector<unsigned char> straight(256 * 256 * 4);
+          HDC screen = ::GetDC(nullptr);
+          if (screen &&
+              ::GetDIBits(screen, info.hbmColor, 0, 256, straight.data(),
+                          &bmi, DIB_RGB_COLORS) == 256) {
+            // Straight alpha -> premultiplied, what the D2D path expects.
+            for (size_t px = 0; px + 3 < straight.size(); px += 4) {
+              const unsigned a = straight[px + 3];
+              straight[px] =
+                  static_cast<unsigned char>(straight[px] * a / 255);
+              straight[px + 1] =
+                  static_cast<unsigned char>(straight[px + 1] * a / 255);
+              straight[px + 2] =
+                  static_cast<unsigned char>(straight[px + 2] * a / 255);
+            }
+            logo_bgra = std::move(straight);
+            logo_native = 256;
+          }
+          if (screen) {
+            ::ReleaseDC(nullptr, screen);
+          }
+          ::DeleteObject(info.hbmColor);
+          if (info.hbmMask) {
+            ::DeleteObject(info.hbmMask);
+          }
+        }
+        ::DestroyIcon(big);
+      }
+      if (logo_bgra.empty()) {
+        logo = PhiAppIcon(logo_size);  // Fallback: the nearest ICO entry.
+      }
+    }
     EnsureMenuTitleRects();
     for (size_t i = 0; i < menu_titles_.size(); ++i) {
       const RECT& title_rc = menu_titles_[i].second;
@@ -1674,8 +2052,29 @@ void PhiWindowController::PaintChrome(HDC dc,
         FillRounded(dc, hot_rc, palette.hover, Scaled(4));
       }
       ::SetTextColor(dc, kLabel);
-      ::DrawTextW(dc, menu_titles_[i].first.c_str(), -1,
-                  const_cast<RECT*>(&title_rc),
+      RECT text_rc = title_rc;
+      if (i == 0) {
+        // The Phi button: icon leading, label after — one hit target.
+        {
+          const int logo_x = title_rc.left + Scaled(kMenuTitlePad);
+          const int logo_y = (title_rc.bottom + title_rc.top - logo_size) / 2;
+          RECT logo_rc = {logo_x, logo_y, logo_x + logo_size,
+                          logo_y + logo_size};
+          const bool drew =
+              !logo_bgra.empty() &&
+              PhiDrawBgra(dc, logo_rc, logo_bgra.data(), logo_native,
+                          logo_native);
+          if (!drew && logo) {
+            ::DrawIconEx(dc, logo_x, logo_y, logo, logo_size, logo_size, 0,
+                         nullptr, DI_NORMAL);
+          }
+        }
+        text_rc.left += Scaled(kMenuTitlePad) + logo_size + Scaled(6);
+        ::DrawTextW(dc, menu_titles_[i].first.c_str(), -1, &text_rc,
+                    DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        continue;
+      }
+      ::DrawTextW(dc, menu_titles_[i].first.c_str(), -1, &text_rc,
                   DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     }
     // Hot fills first (close turns the Win11 red), then the MDL2 glyphs.
@@ -1773,18 +2172,29 @@ void PhiWindowController::PaintChrome(HDC dc,
       }
     }
     ::SetTextColor(dc, active ? kLabel : kLabelDim);
+    // The glyph box is INSET from the pip: the colour pass repaints its
+    // whole rect from a sampled corner pixel, and on a selected pip the
+    // PIP's corner is ground tint — a full-rect clear would erase the pill.
+    RECT glyph_rc = chip.bounds;
+    ::InflateRect(&glyph_rc, -Scaled(4), -Scaled(4));
+    // Colour emoji ink rides LOW and LARGE in its line box; one size down
+    // and a 1px lift centre it against the MDL2 glyphs (the Mac applies its
+    // own emojiVerticalOffset for the same reason).
+    RECT emoji_rc = glyph_rc;
+    ::OffsetRect(&emoji_rc, 0, -Scaled(1));
     if (!chip.icon.empty() && !PhiIsPrivateGlyph(chip.icon) &&
-        PhiDrawColorText(dc, chip.bounds, chip.icon, Scaled(13),
+        PhiDrawColorText(dc, emoji_rc, chip.icon, Scaled(12),
                          active ? kLabel : kLabelDim)) {
       // Emoji rendered in COLOUR via DirectWrite; GDI below is the fallback.
-    } else if (!chip.icon.empty() && (emoji_font_ || caption_font_)) {
-      // A private-use glyph is one of the Phi icon catalog's MDL2 stand-ins;
-      // everything else is an emoji.
+    } else if (!chip.icon.empty() &&
+               (emoji_font_ || chip_icon_font_)) {
+      // A private-use glyph is one of the Phi icon catalog's MDL2 stand-ins
+      // (same 13pt as the emoji, so the two align); everything else emoji.
       HFONT icon_font =
-          PhiIsPrivateGlyph(chip.icon) ? caption_font_ : emoji_font_;
+          PhiIsPrivateGlyph(chip.icon) ? chip_icon_font_ : emoji_font_;
       HGDIOBJ previous_icon_font =
           icon_font ? ::SelectObject(dc, icon_font) : nullptr;
-      ::DrawTextW(dc, chip.icon.c_str(), -1, const_cast<RECT*>(&chip.bounds),
+      ::DrawTextW(dc, chip.icon.c_str(), -1, &glyph_rc,
                   DT_CENTER | DT_VCENTER | DT_SINGLELINE);
       if (previous_icon_font) {
         ::SelectObject(dc, previous_icon_font);
@@ -2145,6 +2555,16 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
         self->SetMenuHot(-1);
       }
       break;
+    case WM_PHI_RAISE_CAPS:
+      if (self) {
+        for (HWND cap : self->corner_caps_) {
+          if (cap && ::IsWindow(cap)) {
+            ::SetWindowPos(cap, HWND_TOP, 0, 0, 0, 0,
+                           SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+          }
+        }
+      }
+      return 0;
     case WM_INITMENUPOPUP:
       // A menu is about to drop down — refresh its dynamic rows and enable
       // states, the Win32 twin of the Mac's menuWillOpen rebuilds.

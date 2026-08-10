@@ -359,6 +359,66 @@ void PhiCoordinator::RequestOpen(int64_t slot, const std::string& url) {
   }
 }
 
+void PhiCoordinator::RequestStoreTab(int64_t slot, int index,
+                                     bool as_bookmark) {
+  std::string profile_id, space_id;
+  if (!framework_ || !OwnerForSlot(slot, &profile_id, &space_id)) {
+    return;
+  }
+  const int64_t browser = ResolveBrowser(slot);
+  std::string title, url;
+  std::optional<base::Value> tabs = base::JSONReader::Read(
+      framework_->ListTabsJson(browser), base::JSON_PARSE_RFC);
+  if (tabs && tabs->is_list()) {
+    for (const base::Value& v : tabs->GetList()) {
+      if (v.is_dict() && v.GetDict().FindInt("index").value_or(-1) == index) {
+        if (const std::string* t = v.GetDict().FindString("title")) {
+          title = *t;
+        }
+        if (const std::string* u = v.GetDict().FindString("url")) {
+          url = *u;
+        }
+        break;
+      }
+    }
+  }
+  if (url.empty()) {
+    return;
+  }
+  int favicon_width = 0, favicon_height = 0;
+  std::string favicon;
+  const unsigned char* pixels = framework_->TabFaviconBgra(
+      browser, index, &favicon_width, &favicon_height);
+  if (pixels && favicon_width > 0 && favicon_height > 0) {
+    const size_t bytes = static_cast<size_t>(favicon_width) *
+                         static_cast<size_t>(favicon_height) * 4;
+    // SAFETY: TabFaviconBgra reports the buffer's own dimensions.
+    const auto view = UNSAFE_BUFFERS(base::span<const uint8_t>(pixels, bytes));
+    favicon = base::Base64Encode(view);
+  }
+  const std::string guid =
+      as_bookmark
+          ? tab_store_.AddBookmark(profile_id, space_id, std::string(), title,
+                                   url, /*folder=*/false, favicon,
+                                   favicon_width, favicon_height)
+          : tab_store_.AddPinned(profile_id, space_id, title, url, favicon,
+                                 favicon_width, favicon_height);
+  if (!guid.empty()) {
+    for (const auto& [s2, controller] : windows_) {
+      controller->RefreshTabs();
+    }
+  }
+}
+
+void PhiCoordinator::RemoveStoredRow(const std::string& guid) {
+  if (tab_store_.Remove(guid)) {
+    for (const auto& [s2, controller] : windows_) {
+      controller->RefreshTabs();
+    }
+    PhiSettingsWindow::Refresh();
+  }
+}
+
 void PhiCoordinator::RequestBookmarkActiveTab(int64_t slot) {
   std::string profile_id, space_id;
   if (!framework_ || !OwnerForSlot(slot, &profile_id, &space_id)) {
