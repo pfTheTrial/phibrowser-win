@@ -1311,6 +1311,46 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
     out.Set("pinned", std::move(list));
     out.Set("scope", PhiPinScopeName(tab_store_.pin_scope()));
     out.Set("ok", true);
+  } else if (type == "agentSpace.pinned.open") {
+    // The Mac's openOrFocusPinnedTab, the same path a sidebar pin click
+    // takes: focus the pin's bound live tab, or open one bound to the pin.
+    std::optional<base::DictValue> p =
+        base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
+    int64_t slot = 0;
+    std::string guid;
+    if (p) {
+      slot = static_cast<int64_t>(p->FindDouble("windowId").value_or(0));
+      if (const std::string* g = p->FindString("guid")) {
+        guid = *g;
+      }
+    }
+    auto win_it = windows_.find(slot);
+    if (win_it == windows_.end() && slot == 0 && !windows_.empty()) {
+      win_it = windows_.begin();
+    }
+    PhiWindowController* controller =
+        win_it != windows_.end() ? win_it->second.get() : nullptr;
+    std::string profile_id, space_id, url;
+    bool known = false;
+    if (controller &&
+        OwnerForSlot(win_it->first, &profile_id, &space_id)) {
+      // Pins and sidebar bookmarks both bind (bookmarkGuidBacking) — resolve
+      // the guid against either kind of stored row.
+      for (const PhiRow& row : tab_store_.rows()) {
+        if (row.guid == guid && row.type != PhiRowType::kBookmarkFolder) {
+          url = row.url;
+          known = true;
+          break;
+        }
+      }
+    }
+    if (known) {
+      controller->OpenOrFocusPinned(guid, url);
+      out.Set("ok", true);
+    } else {
+      out.Set("ok", false);
+      out.Set("error", "unknown pin");
+    }
   } else if (type == "agentSpace.pinned.add") {
     std::optional<base::DictValue> p =
         base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);

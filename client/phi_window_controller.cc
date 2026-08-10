@@ -84,6 +84,12 @@ constexpr int kPinnedCellHeight = 45;
 constexpr int kPinnedGap = 8;
 constexpr int kPinnedMinWidth = 53;
 constexpr int kPinnedFavicon = 18;
+// The horizontal strip's pinned section (TabStripMetrics.PinnedTab): fixed
+// 28pt square cells, 2pt spacing, leading the normal tabs.
+constexpr int kStripPinSize = 28;
+constexpr int kStripPinGap = 2;
+constexpr int kStripPinToTabs = 6;
+constexpr int kStripPinFavicon = 16;
 
 // Bands used by the two layouts that put navigation above the web content.
 constexpr int kTopBarHeight = 40;      // WebContentConstant.headerHeight
@@ -1366,6 +1372,26 @@ void PhiWindowController::RebuildShortcuts() {
   parse(host_->BookmarksJson(window_id_, std::string()), &bookmarks_);
   bookmark_row_count_ = static_cast<int>(bookmarks_.size());
 
+  if (host_->LayoutMode() == PhiLayoutMode::kComfortable) {
+    // No sidebar: pins become the strip's leading pinned section — fixed
+    // 28pt cells, 2pt apart, centred on the strip row (the Mac's
+    // TabStripMetrics.PinnedTab). Normal chips start after them.
+    pinned_row_count_ = 0;
+    const Layout layout = ComputeLayout();
+    const int cell = Scaled(kStripPinSize);
+    const int mid_y = layout.tabs_top + Scaled(kHTabHeight) / 2;
+    int x = layout.tabs_left;
+    for (ShortcutRow& pin : pinned_) {
+      pin.bounds = {x, mid_y - cell / 2, x + cell, mid_y + cell / 2};
+      x += cell + Scaled(kStripPinGap);
+    }
+    int by = layout.favorites.bottom;
+    for (ShortcutRow& row : bookmarks_) {
+      row.bounds = {0, by, 0, by};  // Off-strip; bookmarks live in the menu.
+    }
+    return;
+  }
+
   // Pinned tabs form the Mac's grid (PinnedTabLayout): 45pt cells, 8pt gaps
   // and insets. The width breakpoint (decisionWidth = width − 8: under 236 →
   // 3, under 294 → 4, under 352 → 5, else 6) is only the column LIMIT — the
@@ -1421,68 +1447,208 @@ void PhiWindowController::RebuildTabs() {
   RebuildChips();
   RebuildShortcuts();
   tabs_.clear();
-  if (framework_) {
+  if (!framework_) {
+    return;
+  }
+  const int64_t browser = active_browser_ ? active_browser_ : window_id_;
+
+  // Parse every live tab first — geometry comes after the pinned bindings
+  // have pulled their tabs out of the list.
+  std::vector<TabRow> rows;
+  std::optional<base::Value> parsed = base::JSONReader::Read(
+      framework_->ListTabsJson(browser), base::JSON_PARSE_RFC);
+  if (parsed && parsed->is_list()) {
+    for (const base::Value& v : parsed->GetList()) {
+      if (!v.is_dict()) {
+        continue;
+      }
+      const base::DictValue& d = v.GetDict();
+      TabRow row;
+      row.index = d.FindInt("index").value_or(0);
+      row.id = d.FindInt("id").value_or(0);
+      row.active = d.FindBool("active").value_or(false);
+      const std::string* title = d.FindString("title");
+      const std::string* url = d.FindString("url");
+      std::string label = title && !title->empty()
+                              ? *title
+                              : (url ? *url : std::string("(untitled)"));
+      row.title = base::UTF8ToWide(label);
+      int fw = 0, fh = 0;
+      const unsigned char* pixels =
+          framework_->TabFaviconBgra(browser, row.index, &fw, &fh);
+      if (pixels && fw > 0 && fh > 0) {
+        // The framework's buffer is scratch — valid only until its next call.
+        const size_t bytes =
+            static_cast<size_t>(fw) * static_cast<size_t>(fh) * 4;
+        // SAFETY: same contract — TabFaviconBgra reports the dimensions of
+        // the buffer it just returned.
+        const auto copy =
+            UNSAFE_BUFFERS(base::span<const unsigned char>(pixels, bytes));
+        row.favicon.assign(copy.begin(), copy.end());
+        row.favicon_width = fw;
+        row.favicon_height = fh;
+      }
+      rows.push_back(std::move(row));
+    }
+  }
+
+  // Stored-row bindings, the Mac's openOrFocusPinnedTab / bookmarkGuidBacking
+  // model: a bound tab lives in its pin cell or sidebar bookmark row, not in
+  // the tab list. Prune entries whose row was removed or whose tab has
+  // closed, then flag the rows for the paint pass. Bookmark bindings act
+  // only in the vertical layouts — the Mac hosts them in a bookmark bar the
+  // horizontal port doesn't have yet, so there the tab shows as a normal
+  // chip and stays reachable.
+  auto& bindings = pin_bindings_[browser];
+  const auto is_pin = [this](const std::string& guid) {
+    return std::any_of(pinned_.begin(), pinned_.end(),
+                       [&](const ShortcutRow& p) { return p.guid == guid; });
+  };
+  const auto is_bookmark = [this](const std::string& guid) {
+    return std::any_of(bookmarks_.begin(), bookmarks_.end(),
+                       [&](const ShortcutRow& b) {
+                         return !b.folder && b.guid == guid;
+                       });
+  };
+  for (auto it = bindings.begin(); it != bindings.end();) {
+    const std::string& row_guid = it->first;
+    const int tab_id = it->second;
+    const bool tab_alive =
+        std::any_of(rows.begin(), rows.end(),
+                    [&](const TabRow& r) { return r.id == tab_id; });
+    if ((is_pin(row_guid) || is_bookmark(row_guid)) && tab_alive) {
+      ++it;
+    } else {
+      it = bindings.erase(it);
+    }
+  }
+  const auto flag_bound = [&](ShortcutRow& stored) {
+    auto bound = bindings.find(stored.guid);
+    if (bound == bindings.end()) {
+      return;
+    }
+    stored.open = true;
+    for (const TabRow& r : rows) {
+      if (r.id == bound->second) {
+        stored.active = r.active;
+        break;
+      }
+    }
+  };
+  for (ShortcutRow& pin : pinned_) {
+    flag_bound(pin);
+  }
+  for (ShortcutRow& bookmark : bookmarks_) {
+    flag_bound(bookmark);
+  }
+
+  // Geometry for the unbound rows only.
+  const Layout layout = ComputeLayout();
+  int x = layout.tabs_left;
+  int y = layout.tabs_top;
+  if (layout.horizontal_tabs && !pinned_.empty()) {
+    // The strip's pinned section leads; normal chips start after it.
+    x = pinned_.back().bounds.right + Scaled(kStripPinToTabs);
+  }
+  for (TabRow& row : rows) {
+    bool hidden_by_binding = false;
+    for (const auto& binding : bindings) {
+      if (binding.second != row.id) {
+        continue;
+      }
+      // After the prune a binding's guid is a pin or a bookmark; bookmark
+      // bindings release their tab to the strip in the horizontal layout.
+      hidden_by_binding =
+          is_pin(binding.first) || !layout.horizontal_tabs;
+      break;
+    }
+    if (hidden_by_binding) {
+      continue;
+    }
+    const int close_box = Scaled(kCloseBoxSize);
+    if (layout.horizontal_tabs) {
+      if (x + Scaled(kHTabWidth) > layout.tabs_limit) {
+        break;  // Strip is full; overflow handling is future work.
+      }
+      // TabStripMetrics: 32pt tabs at the strip's top, 4pt below.
+      row.bounds = {x, y, x + Scaled(kHTabWidth), y + Scaled(kHTabHeight)};
+      x += Scaled(kHTabWidth + kHTabGap);
+    } else {
+      if (y + Scaled(kTabRowHeight) > layout.tabs_limit) {
+        break;
+      }
+      row.bounds = {layout.tabs_left, y,
+                    Scaled(kSidebarWidth - kEdgeInset),
+                    y + Scaled(kTabRowHeight)};
+      y += Scaled(kTabRowHeight + kTabRowGap);
+    }
+    const int box_mid = (row.bounds.top + row.bounds.bottom) / 2;
+    row.close_box = {row.bounds.right - close_box - Scaled(4),
+                     box_mid - close_box / 2,
+                     row.bounds.right - Scaled(4),
+                     box_mid + close_box / 2};
+    tabs_.push_back(std::move(row));
+  }
+}
+
+void PhiWindowController::OpenOrFocusPinned(const std::string& guid,
+                                            const std::string& url) {
+  if (!framework_ || guid.empty()) {
+    return;
+  }
+  const int64_t browser = active_browser_ ? active_browser_ : window_id_;
+  auto& bindings = pin_bindings_[browser];
+  auto bound = bindings.find(guid);
+  if (bound != bindings.end()) {
+    const int index = IndexOfTabId(browser, bound->second);
+    if (index >= 0) {
+      framework_->ActivateTab(browser, index);
+      RefreshTabs();
+      return;
+    }
+    bindings.erase(bound);
+  }
+  if (url.empty()) {
+    return;
+  }
+  const int index = framework_->NewTab(browser, url.c_str());
+  if (index >= 0) {
+    // Bind the fresh tab by its stable id — the Mac's createTab(customGuid:)
+    // handing the new tab the pin's identity.
     std::optional<base::Value> parsed = base::JSONReader::Read(
-        framework_->ListTabsJson(active_browser_ ? active_browser_ : window_id_), base::JSON_PARSE_RFC);
+        framework_->ListTabsJson(browser), base::JSON_PARSE_RFC);
     if (parsed && parsed->is_list()) {
-      const Layout layout = ComputeLayout();
-      int x = layout.tabs_left;
-      int y = layout.tabs_top;
       for (const base::Value& v : parsed->GetList()) {
-        if (!v.is_dict()) {
-          continue;
-        }
-        const base::DictValue& d = v.GetDict();
-        TabRow row;
-        row.index = d.FindInt("index").value_or(0);
-        row.active = d.FindBool("active").value_or(false);
-        const std::string* title = d.FindString("title");
-        const std::string* url = d.FindString("url");
-        std::string label = title && !title->empty()
-                                ? *title
-                                : (url ? *url : std::string("(untitled)"));
-        row.title = base::UTF8ToWide(label);
-        int fw = 0, fh = 0;
-        const unsigned char* pixels = framework_->TabFaviconBgra(
-            active_browser_ ? active_browser_ : window_id_, row.index, &fw, &fh);
-        if (pixels && fw > 0 && fh > 0) {
-          // The framework's buffer is scratch — valid only until its next call.
-          const size_t bytes =
-              static_cast<size_t>(fw) * static_cast<size_t>(fh) * 4;
-          // SAFETY: same contract — TabFaviconBgra reports the dimensions of
-          // the buffer it just returned.
-          const auto copy =
-              UNSAFE_BUFFERS(base::span<const unsigned char>(pixels, bytes));
-          row.favicon.assign(copy.begin(), copy.end());
-          row.favicon_width = fw;
-          row.favicon_height = fh;
-        }
-        const int close_box = Scaled(kCloseBoxSize);
-        if (layout.horizontal_tabs) {
-          if (x + Scaled(kHTabWidth) > layout.tabs_limit) {
-            break;  // Strip is full; overflow handling is future work.
+        const base::DictValue* d = v.GetIfDict();
+        if (d && d->FindInt("index").value_or(-1) == index) {
+          const int id = d->FindInt("id").value_or(0);
+          if (id) {
+            bindings[guid] = id;
           }
-          // TabStripMetrics: 32pt tabs at the strip's top, 4pt below.
-          row.bounds = {x, y, x + Scaled(kHTabWidth), y + Scaled(kHTabHeight)};
-          x += Scaled(kHTabWidth + kHTabGap);
-        } else {
-          if (y + Scaled(kTabRowHeight) > layout.tabs_limit) {
-            break;
-          }
-          row.bounds = {layout.tabs_left, y,
-                        Scaled(kSidebarWidth - kEdgeInset),
-                        y + Scaled(kTabRowHeight)};
-          y += Scaled(kTabRowHeight + kTabRowGap);
+          break;
         }
-        const int box_mid = (row.bounds.top + row.bounds.bottom) / 2;
-        row.close_box = {row.bounds.right - close_box - Scaled(4),
-                         box_mid - close_box / 2,
-                         row.bounds.right - Scaled(4),
-                         box_mid + close_box / 2};
-        tabs_.push_back(std::move(row));
       }
     }
   }
+  RefreshTabs();
+}
+
+int PhiWindowController::IndexOfTabId(int64_t browser, int id) const {
+  if (!framework_ || !id) {
+    return -1;
+  }
+  std::optional<base::Value> parsed = base::JSONReader::Read(
+      framework_->ListTabsJson(browser), base::JSON_PARSE_RFC);
+  if (!parsed || !parsed->is_list()) {
+    return -1;
+  }
+  for (const base::Value& v : parsed->GetList()) {
+    const base::DictValue* d = v.GetIfDict();
+    if (d && d->FindInt("id").value_or(0) == id) {
+      return d->FindInt("index").value_or(-1);
+    }
+  }
+  return -1;
 }
 
 int PhiWindowController::CaptionHitTest(POINT client_pt) {
@@ -1569,16 +1735,16 @@ void PhiWindowController::OnChromeClick(int x, int y) {
   }
   for (const ShortcutRow& pin : pinned_) {
     if (::PtInRect(&pin.bounds, pt)) {
-      if (host_ && !pin.url.empty()) {
-        host_->RequestOpen(window_id_, pin.url);
-      }
+      OpenOrFocusPinned(pin.guid, pin.url);
       return;
     }
   }
   for (const ShortcutRow& bookmark : bookmarks_) {
     if (::PtInRect(&bookmark.bounds, pt)) {
-      if (host_ && !bookmark.folder && !bookmark.url.empty()) {
-        host_->RequestOpen(window_id_, bookmark.url);
+      if (!bookmark.folder && !bookmark.url.empty()) {
+        // Sidebar bookmark rows bind like pins (bookmarkGuidBacking); the
+        // Bookmarks menu keeps opening plain tabs.
+        OpenOrFocusPinned(bookmark.guid, bookmark.url);
       }
       return;
     }
@@ -1810,8 +1976,10 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
       const std::string url = pin.url;
       ::DestroyMenu(menu);
       if (chosen == kOpen && !url.empty()) {
-        host_->RequestOpen(window_id_, url);
+        OpenOrFocusPinned(guid, url);
       } else if (chosen == kUnpin && !guid.empty()) {
+        // Dropping the store row also drops the binding at the next rebuild,
+        // so a live bound tab returns to the tab list as a normal tab.
         host_->RemoveStoredRow(guid);
       }
       return;
@@ -1842,7 +2010,7 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
       const bool folder = bookmark.folder;
       ::DestroyMenu(menu);
       if (chosen == kOpen && !folder && !url.empty()) {
-        host_->RequestOpen(window_id_, url);
+        OpenOrFocusPinned(guid, url);
       } else if (chosen == kRemove && !guid.empty()) {
         host_->RemoveStoredRow(guid);  // A folder takes its subtree.
       }
@@ -2286,18 +2454,34 @@ void PhiWindowController::PaintChrome(HDC dc,
   }
 
   // Pinned tabs: PinnedTabItem cells -- resting on the 4% wash, an 18pt
-  // favicon centred, radius 8. (The 2pt accent ring marks the OPEN pin on
-  // Mac; pins here have no live-tab binding yet.)
+  // favicon centred, radius 8. The ACTIVE pin (its bound live tab is the
+  // active tab) gets the selected wash and the Mac's 2pt accent ring; in the
+  // horizontal strip the cells are the 28pt pinned section and the active one
+  // reads like the neighbouring strip tabs (selected wash, no ring).
   for (const ShortcutRow& pin : pinned_) {
-    FillRounded(dc, pin.bounds, palette.hover, Scaled(kCornerRadius));
+    const COLORREF pin_bg = pin.active ? palette.selected : palette.hover;
+    FillRounded(dc, pin.bounds, pin_bg, Scaled(kCornerRadius));
+    if (pin.active && !layout.horizontal_tabs) {
+      HPEN ring = ::CreatePen(PS_SOLID, Scaled(2), palette.accent);
+      HGDIOBJ old_pen = ::SelectObject(dc, ring);
+      HGDIOBJ old_brush = ::SelectObject(dc, ::GetStockObject(NULL_BRUSH));
+      RECT rr = pin.bounds;
+      ::InflateRect(&rr, -Scaled(1), -Scaled(1));
+      const int d = 2 * Scaled(kCornerRadius);
+      ::RoundRect(dc, rr.left, rr.top, rr.right, rr.bottom, d, d);
+      ::SelectObject(dc, old_brush);
+      ::SelectObject(dc, old_pen);
+      ::DeleteObject(ring);
+    }
     if (!pin.favicon.empty()) {
-      const int size = Scaled(kPinnedFavicon);
+      const int size = Scaled(layout.horizontal_tabs ? kStripPinFavicon
+                                                     : kPinnedFavicon);
       const int cx = (pin.bounds.left + pin.bounds.right) / 2;
       const int cy = (pin.bounds.top + pin.bounds.bottom) / 2;
       const RECT icon = {cx - size / 2, cy - size / 2, cx + size / 2,
                          cy + size / 2};
       DrawFavicon(dc, icon, pin.favicon.data(), pin.favicon_width,
-                  pin.favicon_height, palette.hover);
+                  pin.favicon_height, pin_bg);
     } else {
       ::SetTextColor(dc, kLabel);
       const std::wstring initial =
@@ -2313,6 +2497,15 @@ void PhiWindowController::PaintChrome(HDC dc,
     RECT pill = bookmark.bounds;
     pill.top += Scaled(kRowPad);
     pill.bottom -= Scaled(kRowPad);
+    if (bookmark.active) {
+      // Its bound live tab is the active tab: the row IS the tab, so it
+      // reads exactly like the active tab row.
+      FillRounded(dc, pill, kRowSelectedBg, Scaled(kCornerRadius));
+      if (palette.dark) {
+        StrokeRounded(dc, pill, kRowSelectedBg, kActivePillBorder,
+                      Scaled(kCornerRadius));
+      }
+    }
     RECT text = pill;
     const int mid = (pill.top + pill.bottom) / 2;
     RECT icon = {pill.left + Scaled(6) +
@@ -2322,7 +2515,8 @@ void PhiWindowController::PaintChrome(HDC dc,
     icon.bottom = icon.top + Scaled(kFaviconSize);
     if (!bookmark.favicon.empty()) {
       DrawFavicon(dc, icon, bookmark.favicon.data(), bookmark.favicon_width,
-                  bookmark.favicon_height, kTintTop);
+                  bookmark.favicon_height,
+                  bookmark.active ? kRowSelectedBg : kTintTop);
     } else if (!bookmark.folder) {
       HGDIOBJ previous_glyph_font =
           caption_font_ ? ::SelectObject(dc, caption_font_) : nullptr;

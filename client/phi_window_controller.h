@@ -117,6 +117,11 @@ class PhiWindowController {
   // For changes the client itself just made, where the browser state has
   // already settled.
   void RefreshTabs();
+  // Click on a pin or a sidebar bookmark row (cell click, context-menu
+  // Open, or the pinned.open verb): focus the bound live tab if it still
+  // exists, otherwise open the row's url as a new bound tab — the Mac's
+  // BrowserState.openOrFocusPinnedTab / bookmarkGuidBacking model.
+  void OpenOrFocusPinned(const std::string& guid, const std::string& url);
 
   // Paints one rounded-corner cap (called by its window proc).
   void PaintCornerCap(HWND cap, HDC dc);
@@ -350,6 +355,7 @@ class PhiWindowController {
   // One rendered tab row: what to draw and what a click at that row does.
   struct TabRow {
     int index = 0;
+    int id = 0;  // Session id — stable while indices shift; pins bind to it.
     // The tab's favicon, copied out of the framework's scratch buffer (which
     // only survives until its next call).
     std::vector<unsigned char> favicon;
@@ -368,6 +374,11 @@ class PhiWindowController {
     std::string url;
     std::wstring title;
     bool folder = false;
+    // A pinned tab bound to a LIVE tab (openOrFocusPinnedTab): the tab lives
+    // in the pin's cell — never in the tab list — and the active one gets the
+    // Mac's selected wash + 2pt accent ring.
+    bool open = false;
+    bool active = false;
     RECT bounds{};
     // The favicon stored with the row (a pinned tab has no live tab to ask).
     std::vector<unsigned char> favicon;
@@ -381,6 +392,16 @@ class PhiWindowController {
   int pinned_row_count_ = 0;
   int bookmark_row_count_ = 0;
   void RebuildShortcuts();
+
+  // Live stored-row bindings, per Space browser: pin OR bookmark guid → tab
+  // session id. The Mac binds by giving the created tab the row's guid as
+  // its identity; here the session id from ListTabsJson carries that role.
+  // Entries are pruned on every rebuild (row removed, tab closed) —
+  // runtime-only, so a restart returns rows to the unopened state. Bookmark
+  // bindings hide their tab from the list only in vertical layouts.
+  std::map<int64_t, std::map<std::string, int>> pin_bindings_;
+  // The tab's current index by session id, or -1 when it is gone.
+  int IndexOfTabId(int64_t browser, int id) const;
 
   // Navigation state for the client toolbar, refreshed with the tab list.
   std::wstring nav_url_;
