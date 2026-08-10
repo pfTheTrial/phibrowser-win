@@ -217,6 +217,10 @@ class PhiWindowController {
   void PaintChrome(HDC dc, const Layout& layout, bool include_child_controls);
   // Handles a click in the chrome (tab rows, close boxes, buttons, toolbar).
   void OnChromeClick(int x, int y);
+  // Right-click in the chrome. On a Space chip this raises the Mac's Space
+  // menu (activate / rename / change icon / set theme / delete); elsewhere it
+  // does nothing, as on Mac.
+  void OnChromeContextMenu(int x, int y);
   // Re-reads navigation state (url/title/canGoBack/…) for the toolbar.
   void RebuildNavState();
 

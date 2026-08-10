@@ -1180,6 +1180,96 @@ void DrawGlyph(HDC dc, const RECT& r, const wchar_t* glyph, COLORREF ink) {
 
 }  // namespace
 
+void PhiWindowController::OnChromeContextMenu(int x, int y) {
+  if (!host_ || !shell_hwnd_) {
+    return;
+  }
+  RebuildTabs();  // Chips may be stale if nothing has painted yet.
+  POINT pt = {x, y};
+  const SpaceChip* target = nullptr;
+  for (const SpaceChip& chip : chips_) {
+    if (::PtInRect(&chip.bounds, pt)) {
+      target = &chip;
+      break;
+    }
+  }
+  if (!target) {
+    return;
+  }
+
+  // The Mac's Space row menu: activate, rename, change icon, set theme, delete.
+  // Rename / change icon / delete are drawn but DISABLED — the surfaces they
+  // need (a text field, the icon picker, a confirmation) do not exist yet, and
+  // a menu item that silently does nothing is worse than one that says it
+  // cannot.
+  enum : UINT {
+    kActivate = 1,
+    kRename,
+    kChangeIcon,
+    kDelete,
+    kThemeFollow,
+    kThemeFirst,  // + index into the built-in themes.
+  };
+  HMENU menu = ::CreatePopupMenu();
+  HMENU themes = ::CreatePopupMenu();
+  if (!menu || !themes) {
+    if (menu) {
+      ::DestroyMenu(menu);
+    }
+    if (themes) {
+      ::DestroyMenu(themes);
+    }
+    return;
+  }
+  const std::string pinned = host_->SpaceThemeId(target->id);
+  ::AppendMenuW(themes, MF_STRING | (pinned.empty() ? MF_CHECKED : 0),
+                kThemeFollow, L"Follow app theme");
+  ::AppendMenuW(themes, MF_SEPARATOR, 0, nullptr);
+  const auto& built_in = PhiBuiltInThemes();
+  for (size_t i = 0; i < built_in.size(); ++i) {
+    const bool on = pinned == built_in[i].id;
+    ::AppendMenuW(themes, MF_STRING | (on ? MF_CHECKED : 0),
+                  kThemeFirst + static_cast<UINT>(i),
+                  base::UTF8ToWide(built_in[i].name).c_str());
+  }
+
+  const bool active = target->id == active_space_;
+  ::AppendMenuW(menu, MF_STRING | (active ? MF_DISABLED | MF_GRAYED : 0),
+                kActivate, L"Switch to this Space");
+  ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+  ::AppendMenuW(menu, MF_STRING | MF_DISABLED | MF_GRAYED, kRename, L"Rename…");
+  ::AppendMenuW(menu, MF_STRING | MF_DISABLED | MF_GRAYED, kChangeIcon,
+                L"Change Icon…");
+  ::AppendMenuW(menu, MF_POPUP | MF_STRING,
+                reinterpret_cast<UINT_PTR>(themes), L"Set Theme");
+  ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+  ::AppendMenuW(menu, MF_STRING | MF_DISABLED | MF_GRAYED, kDelete,
+                L"Delete Space");
+
+  POINT screen = pt;
+  ::ClientToScreen(shell_hwnd_, &screen);
+  // TPM_RETURNCMD keeps the choice here rather than routing a WM_COMMAND back
+  // through a window proc that has no other commands to handle.
+  const UINT chosen = static_cast<UINT>(::TrackPopupMenu(
+      menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RIGHTBUTTON,
+      screen.x, screen.y, 0, shell_hwnd_, nullptr));
+  const std::string space_id = target->id;  // `chips_` is rebuilt below.
+  ::DestroyMenu(menu);  // Takes the submenu with it.
+
+  if (chosen == kActivate) {
+    if (HasSpace(space_id)) {
+      ShowSpace(space_id);
+    } else {
+      host_->RequestSwitchSpace(window_id_, space_id);
+    }
+  } else if (chosen == kThemeFollow) {
+    host_->SetSpaceTheme(space_id, std::string());
+  } else if (chosen >= kThemeFirst &&
+             chosen < kThemeFirst + built_in.size()) {
+    host_->SetSpaceTheme(space_id, built_in[chosen - kThemeFirst].id);
+  }
+}
+
 void PhiWindowController::PaintChrome(HDC dc,
                                      const Layout& layout,
                                      bool include_child_controls) {
@@ -1434,6 +1524,12 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
           self->url_brush_color_ = palette.card;
         }
         return reinterpret_cast<LRESULT>(self->url_brush_);
+      }
+      break;
+    case WM_RBUTTONUP:
+      if (self) {
+        self->OnChromeContextMenu(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
+        return 0;
       }
       break;
     case WM_LBUTTONDOWN:
