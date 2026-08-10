@@ -54,9 +54,16 @@ class PhiSlotHost {
   virtual std::string BookmarksJson(int64_t slot) const = 0;
   // Opens `url` in the slot (a pinned tab or bookmark was clicked).
   virtual void RequestOpen(int64_t slot, const std::string& url) = 0;
-  // The resolved theme every slot paints with — one setting for the whole
-  // client, like the layout.
+  // The app-wide resolved theme.
   virtual const PhiPalette& Palette() const = 0;
+  // The theme THIS SLOT paints with: a Space may pin its own (the Mac's
+  // per-Space theme override), otherwise the app-wide one.
+  virtual const PhiPalette& PaletteForSlot(int64_t slot) const = 0;
+  // A Space's pinned theme id (empty = follows the app-wide one), and setting
+  // it — the sidebar's Space menu writes through here.
+  virtual std::string SpaceThemeId(const std::string& space_id) const = 0;
+  virtual void SetSpaceTheme(const std::string& space_id,
+                             const std::string& theme_id) = 0;
   // Opens the settings window (theme, appearance, layout).
   virtual void RequestSettings() = 0;
 };

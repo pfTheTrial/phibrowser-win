@@ -50,6 +50,10 @@ class PhiSettingsHost {
   virtual void SetPinScope(PhiPinScope scope) = 0;
   // "name\ticonText\tprofileId" per Space; "id\tname" per profile.
   virtual std::vector<std::string> SpaceSummaries() const = 0;
+  // A Space's pinned theme id, or empty when it follows the app-wide one.
+  virtual std::string SpaceThemeId(const std::string& space_id) const = 0;
+  virtual void SetSpaceTheme(const std::string& space_id,
+                             const std::string& theme_id) = 0;
   virtual std::vector<std::string> ProfileSummaries() const = 0;
   virtual void CreateProfileNamed(const std::string& name) = 0;
 };

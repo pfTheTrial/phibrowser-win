@@ -60,6 +60,7 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   PhiLayoutMode LayoutMode() const override;
   void RequestLayoutMode(PhiLayoutMode mode) override;
   const PhiPalette& Palette() const override;
+  const PhiPalette& PaletteForSlot(int64_t slot) const override;
   void RequestSettings() override;
   std::string PinnedJson(int64_t slot) const override;
   std::string BookmarksJson(int64_t slot) const override;
@@ -79,6 +80,9 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   PhiPinScope PinScope() const override;
   void SetPinScope(PhiPinScope scope) override;
   std::vector<std::string> SpaceSummaries() const override;
+  std::string SpaceThemeId(const std::string& space_id) const override;
+  void SetSpaceTheme(const std::string& space_id,
+                     const std::string& theme_id) override;
   std::vector<std::string> ProfileSummaries() const override;
   void CreateProfileNamed(const std::string& name) override;
 
@@ -116,6 +120,10 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
     // Icon in the Mac's storage form ("emoji:<id>" / "phi:<id>"), so a Space
     // means the same thing on both clients.
     std::string icon = kPhiDefaultSpaceIcon;
+    // Per-Space THEME OVERRIDE, the Mac's spaceThemeIds / spaceThemeSaturations
+    // maps. Empty id and -1 saturation mean "follow the app-wide choice".
+    std::string theme_id;
+    int saturation = -1;
   };
   std::vector<Space> spaces_{{"1", "Space 1", "Default", kPhiDefaultSpaceIcon}};
   int next_space_id_ = 2;
@@ -133,6 +141,10 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   std::string theme_id_ = "pure";
   PhiAppearance appearance_ = PhiAppearance::kSystem;
   PhiPalette palette_;
+  // One resolved palette per Space that overrides the app-wide theme; a Space
+  // with no override is not in here and uses `palette_`.
+  std::map<std::string, PhiPalette> palette_by_space_;
+  void RebuildSpacePalettes();
   std::wstring theme_path_;
   void LoadTheme();
   void SaveTheme() const;

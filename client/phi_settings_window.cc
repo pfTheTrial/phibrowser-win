@@ -331,6 +331,9 @@ void PhiSettingsWindow::AddChips(const RECT& area,
 }
 
 void PhiSettingsWindow::BuildGeneral(int* y) {
+  // With more than one Space, each Space owns its colour and the app-wide rows
+  // stop applying — the Mac shows exactly this and locks them.
+  const bool per_space = host_->SpaceSummaries().size() > 1;
   BeginSection(y, L"Theme");
   {
     // The eight built-ins, wrapped to what the card fits.
@@ -351,7 +354,7 @@ void PhiSettingsWindow::BuildGeneral(int* y) {
       swatch.selected = host_->ThemeId() == themes[i].id;
       swatch.swatch = PhiResolvePalette(themes[i], host_->Appearance(),
                                         host_->Saturation()).ground_bottom;
-      swatch.action = "theme";
+      swatch.action = per_space ? std::string() : std::string("theme");
       const int x = area.left + col * Scaled(kSwatch + kSwatchGap);
       const int top = area.top + line * Scaled(kSwatch + kSwatchGap);
       swatch.bounds = {x, top, x + Scaled(kSwatch), top + Scaled(kSwatch)};
@@ -363,11 +366,16 @@ void PhiSettingsWindow::BuildGeneral(int* y) {
     Item slider;
     slider.kind = ItemKind::kSliderTrack;
     slider.value = host_->Saturation();
-    slider.action = "saturation";
+    slider.action = per_space ? std::string() : std::string("saturation");
     slider.bounds = area;
     items_.push_back(std::move(slider));
   }
   EndSection(y);
+  if (per_space) {
+    AddHint(y, L"You have more than one Space, so each Space sets its own "
+               L"colour. Change it in Spaces.");
+    *y += Scaled(kRowPadding);
+  }
 
   BeginSection(y, L"Appearance");
   AddChips(AddRow(y, L"Layout mode", kChipHeight, 300),
@@ -405,25 +413,51 @@ void PhiSettingsWindow::BuildSpaces(int* y) {
   *y += Scaled(kSectionGap);
 
   BeginSection(y, L"Spaces");
+  // Each Space picks its own theme, as on Mac (spaceThemeIds). The leading
+  // swatch is "follow the app theme"; the rest pin one.
+  const auto& themes = PhiBuiltInThemes();
+  const int swatch = 22;
+  const int gap = 6;
+  const int strip = (static_cast<int>(themes.size()) + 1) * (swatch + gap);
   for (const std::string& summary : host_->SpaceSummaries()) {
     const std::vector<std::string> parts = SplitTabs(summary);
     const std::wstring icon =
         parts.size() > 1 ? base::UTF8ToWide(parts[1]) : std::wstring();
     const std::wstring profile =
         parts.size() > 2 ? base::UTF8ToWide(parts[2]) : std::wstring();
-    Item row;
-    row.kind = ItemKind::kListRow;
-    row.text = (icon.empty() ? L"" : icon + L"   ") +
-               base::UTF8ToWide(parts.empty() ? std::string() : parts[0]) +
-               (profile.empty() ? L"" : L"   ·   " + profile);
-    row.bounds = {Scaled(kMargin + kCardPadding), *y,
-                  Scaled(kWidth - kMargin - kCardPadding),
-                  *y + Scaled(kListRowHeight)};
-    items_.push_back(std::move(row));
-    *y += Scaled(kListRowHeight);
+    const std::string space_id = parts.size() > 3 ? parts[3] : std::string();
+    const std::string pinned = parts.size() > 4 ? parts[4] : std::string();
+    const std::wstring title =
+        (icon.empty() ? L"" : icon + L"   ") +
+        base::UTF8ToWide(parts.empty() ? std::string() : parts[0]) +
+        (profile.empty() ? L"" : L"   ·   " + profile);
+    const RECT area = AddRow(y, title.c_str(), swatch, strip);
+    int x = area.left;
+    Item follow;
+    follow.kind = ItemKind::kSwatch;
+    follow.selected = pinned.empty();
+    follow.swatch = host_->Palette().ground_bottom;
+    follow.action = "spacetheme";
+    follow.payload = space_id;  // Empty theme -> clears the override.
+    follow.bounds = {x, area.top, x + Scaled(swatch), area.top + Scaled(swatch)};
+    items_.push_back(std::move(follow));
+    x += Scaled(swatch + gap);
+    for (const PhiTheme& theme : themes) {
+      Item item;
+      item.kind = ItemKind::kSwatch;
+      item.selected = pinned == theme.id;
+      item.swatch = PhiResolvePalette(theme, host_->Appearance(),
+                                      host_->Saturation()).ground_bottom;
+      item.action = "spacetheme";
+      item.payload = space_id + "\t" + theme.id;
+      item.bounds = {x, area.top, x + Scaled(swatch), area.top + Scaled(swatch)};
+      items_.push_back(std::move(item));
+      x += Scaled(swatch + gap);
+    }
   }
-  *y += Scaled(kRowPadding);
   EndSection(y);
+  AddHint(y, L"The first swatch follows the app theme; the rest pin one to "
+             L"that Space.");
 }
 
 void PhiSettingsWindow::BuildProfiles(int* y) {
@@ -672,6 +706,11 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
     if (span > 0) {
       const int value = (x - item.bounds.left) * 100 / span;
       host_->SetSaturation(value < 0 ? 0 : (value > 100 ? 100 : value));
+    }
+  } else if (item.action == "spacetheme") {
+    const std::vector<std::string> parts = SplitTabs(item.payload);
+    if (!parts.empty()) {
+      host_->SetSpaceTheme(parts[0], parts.size() > 1 ? parts[1] : std::string());
     }
   } else if (item.action == "addprofile") {
     host_->CreateProfileNamed("Profile");

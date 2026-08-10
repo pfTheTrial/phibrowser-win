@@ -152,13 +152,16 @@ void PhiCoordinator::LoadSpaces() {
     const std::string* name = d.FindString("name");
     const std::string* profile = d.FindString("profileId");
     const std::string* icon = d.FindString("icon");
+    const std::string* theme = d.FindString("themeId");
     if (!id || id->empty()) {
       continue;
     }
     loaded.push_back({*id, name ? *name : ("Space " + *id),
                       profile && !profile->empty() ? *profile : "Default",
                       icon && PhiIconIsValid(*icon) ? *icon
-                                                    : kPhiDefaultSpaceIcon});
+                                                    : kPhiDefaultSpaceIcon,
+                      theme ? *theme : std::string(),
+                      d.FindInt("saturation").value_or(-1)});
     max_numeric_id = std::max(max_numeric_id, atoi(id->c_str()));
   }
   if (!loaded.empty()) {
@@ -176,6 +179,8 @@ void PhiCoordinator::SaveSpaces() const {
     d.Set("name", space.name);
     d.Set("profileId", space.profile_id);
     d.Set("icon", space.icon);
+    d.Set("themeId", space.theme_id);
+    d.Set("saturation", space.saturation);
     list.Append(std::move(d));
   }
   base::DictValue root;
@@ -375,6 +380,7 @@ void PhiCoordinator::LoadPrefs() {
   }
   // The palette depends on the saturation, so resolve it once both are known.
   palette_ = PhiResolvePalette(PhiThemeById(theme_id_), appearance_, saturation_);
+  RebuildSpacePalettes();
 }
 
 void PhiCoordinator::SavePrefs() const {
@@ -457,7 +463,7 @@ std::vector<std::string> PhiCoordinator::SpaceSummaries() const {
   std::vector<std::string> out;
   for (const Space& space : spaces_) {
     out.push_back(space.name + "\t" + PhiIconDisplayText(space.icon) + "\t" +
-                  space.profile_id);
+                  space.profile_id + "\t" + space.id + "\t" + space.theme_id);
   }
   return out;
 }
@@ -544,11 +550,65 @@ void PhiCoordinator::SaveTheme() const {
 
 void PhiCoordinator::ApplyTheme() {
   palette_ = PhiResolvePalette(PhiThemeById(theme_id_), appearance_, saturation_);
+  RebuildSpacePalettes();
   SaveTheme();
   for (const auto& [slot, controller] : windows_) {
     controller->ApplyPalette();
   }
   PhiSettingsWindow::Refresh();
+}
+
+void PhiCoordinator::RebuildSpacePalettes() {
+  palette_by_space_.clear();
+  for (const Space& space : spaces_) {
+    if (space.theme_id.empty() && space.saturation < 0) {
+      continue;  // Follows the app-wide theme.
+    }
+    const std::string& id = space.theme_id.empty() ? theme_id_ : space.theme_id;
+    const int saturation =
+        space.saturation < 0 ? saturation_ : space.saturation;
+    palette_by_space_[space.id] =
+        PhiResolvePalette(PhiThemeById(id), appearance_, saturation);
+  }
+}
+
+const PhiPalette& PhiCoordinator::PaletteForSlot(int64_t slot) const {
+  auto window = windows_.find(slot);
+  if (window != windows_.end()) {
+    auto found = palette_by_space_.find(window->second->active_space());
+    if (found != palette_by_space_.end()) {
+      return found->second;
+    }
+  }
+  return palette_;
+}
+
+std::string PhiCoordinator::SpaceThemeId(const std::string& space_id) const {
+  for (const Space& space : spaces_) {
+    if (space.id == space_id) {
+      return space.theme_id;
+    }
+  }
+  return std::string();
+}
+
+void PhiCoordinator::SetSpaceTheme(const std::string& space_id,
+                                   const std::string& theme_id) {
+  for (Space& space : spaces_) {
+    if (space.id != space_id) {
+      continue;
+    }
+    // An empty id clears the override, putting the Space back on the app-wide
+    // theme — the Mac's "no entry in spaceThemeIds" state.
+    space.theme_id = theme_id.empty() ? std::string() : PhiThemeById(theme_id).id;
+    SaveSpaces();
+    RebuildSpacePalettes();
+    for (const auto& [slot, controller] : windows_) {
+      controller->ApplyPalette();
+    }
+    PhiSettingsWindow::Refresh();
+    return;
+  }
 }
 
 const PhiPalette& PhiCoordinator::Palette() const {
@@ -800,6 +860,7 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
       s.Set("name", space.name);
       s.Set("profileId", space.profile_id);
       s.Set("icon", space.icon);
+      s.Set("themeId", space.theme_id);
       s.Set("iconText", PhiIconDisplayText(space.icon));
       s.Set("active",
             it != windows_.end() && it->second->active_space() == space.id);
@@ -1155,6 +1216,33 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
     }
     out.Set("emoji", std::move(items));
     out.Set("ok", true);
+  } else if (type == "agentSpace.spaces.setTheme") {
+    std::optional<base::DictValue> p =
+        base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
+    std::string space_id, theme_id;
+    if (p) {
+      if (const std::string* s2 = p->FindString("spaceId")) {
+        space_id = *s2;
+      }
+      if (const std::string* t = p->FindString("themeId")) {
+        theme_id = *t;
+      }
+    }
+    // An empty id is legal: it clears the override.
+    const bool known =
+        theme_id.empty() || theme_id == PhiThemeById(theme_id).id;
+    bool ok = false;
+    if (known) {
+      for (const Space& space : spaces_) {
+        if (space.id == space_id) {
+          SetSpaceTheme(space_id, theme_id);
+          ok = true;
+          break;
+        }
+      }
+    }
+    out.Set("themeId", SpaceThemeId(space_id));
+    out.Set("ok", ok);
   } else if (type == "agentSpace.spaces.setIcon") {
     std::optional<base::DictValue> p =
         base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);

@@ -1185,7 +1185,9 @@ void PhiWindowController::PaintChrome(HDC dc,
                                      bool include_child_controls) {
   static const PhiPalette kFallback =
       PhiResolvePalette(PhiThemeById("pure"), PhiAppearance::kLight);
-  const PhiPalette& palette = host_ ? host_->Palette() : kFallback;
+  // The SLOT's palette: a Space may pin its own theme.
+  const PhiPalette& palette =
+      host_ ? host_->PaletteForSlot(window_id_) : kFallback;
   const COLORREF kTintTop = palette.ground_top;
   const COLORREF kTintBottom = palette.ground_bottom;
   const COLORREF kRowSelectedBg = palette.card;
@@ -1419,7 +1421,8 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
     case WM_CTLCOLOREDIT:
       if (self && reinterpret_cast<HWND>(lparam) == self->url_field_ &&
           self->host_) {
-        const PhiPalette& palette = self->host_->Palette();
+        const PhiPalette& palette =
+            self->host_->PaletteForSlot(self->window_id_);
         HDC edit_dc = reinterpret_cast<HDC>(wparam);
         ::SetTextColor(edit_dc, palette.label);
         ::SetBkColor(edit_dc, palette.card);
