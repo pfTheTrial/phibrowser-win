@@ -4,6 +4,7 @@
 
 #include "phibrowser-win/client/phi_window_controller.h"
 
+#include <commctrl.h>
 #include <windowsx.h>
 
 #include <algorithm>
@@ -19,6 +20,7 @@
 #include "base/logging.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
+#include "phibrowser-win/client/phi_menu_bar.h"
 
 namespace phi_client {
 
@@ -28,45 +30,71 @@ constexpr wchar_t kShellClassName[] = L"PhiClientShell";
 
 // --- Metrics -----------------------------------------------------------------
 // Design units (points at 100%), taken from the Mac client so the two look the
-// same: SidebarViewController's stack, SidebarHeaderView's header and
-// SpacesStripView / SidebarBottomBar's row heights.
+// same: WebContentConstant, SidebarHeaderView, SpacesStripView,
+// PinnedTabLayout, TabStripMetrics and SidebarBottomBar.
 constexpr int kSidebarWidth = 240;
-constexpr int kEdgeInset = 10;        // Sidebar content inset.
-constexpr int kNavRowTop = 8;         // SidebarHeaderView.defaultSidebarButtonTopOffset
-constexpr int kNavButton = 24;        // Every header button is 24x24.
-constexpr int kNavRowRightInset = 9;  // stackView right inset.
-constexpr int kSpacesStripTop = 40;   // navRow.bottom + 8
-constexpr int kSpacesStripHeight = 32;  // SpacesStripView.sidebarHeight
-constexpr int kSpaceChipHeight = 24;  // 4pt above and below inside the strip.
+// The caption band: the OS title bar is removed (WM_NCCALCSIZE) and this row
+// holds the MENU TITLES and the minimize / maximize / close buttons together
+// — the menu bar lives on the caption row, not under it.
+constexpr int kTitleBarHeight = 32;
+constexpr int kCaptionButtonWidth = 46;  // The Win11 caption button metric.
+constexpr int kMenuTitlePad = 10;        // Each title's horizontal padding.
+// WebContentConstant.edgesSpacing — THE horizontal gutter. There is no other
+// sidebar padding on Mac; every row applies 8 on each side itself.
+constexpr int kEdgeInset = 8;
+constexpr int kNavRowTop = 8;   // defaultSidebarButtonTopOffset (performance)
+constexpr int kNavRowTopNav = 15;  // legacySidebarButtonTopOffset, 15.5 rounded
+constexpr int kNavButton = 24;     // Every header button is 24x24.
+constexpr int kNavGroupSpacing = 1;   // back/forward/reload stack spacing.
+constexpr int kNavRowRightInset = 9;  // stackView right inset (balanced).
+constexpr int kSpacesStripTop = 40;      // navRow.bottom + 8 (performance)
+constexpr int kSpacesStripTopNav = 47;   // 15.5 + 24 + 8 (balanced)
+constexpr int kSpacesStripHeight = 32;   // SpacesStripView.sidebarHeight
+constexpr int kSpacesStripPad = 10;      // horizontalPadding inside the strip.
+constexpr int kSpaceChip = 24;           // stripItemWidth/Height: a 24pt pip.
+constexpr int kSpaceChipGap = 4;         // stripSpacing.
 constexpr int kAddressBarTop = 84;    // spacesStrip.bottom + 12
 constexpr int kAddressBarHeight = 32;
 constexpr int kHeaderHeight = 120;    // 80 base + 32 strip + 8 gap
-constexpr int kHeaderSpacer = 5;
-constexpr int kFavoritesSpacer = 3;
-constexpr int kTabRowHeight = 36;     // TabGroupCellView.memberRowHeight
+constexpr int kHeaderSpacer = 5;      // header → pinned band spacer.
+constexpr int kFavoritesSpacer = 3;   // pinned band → tab list spacer.
+constexpr int kTabRowHeight = 36;     // Row pitch adds kTabRowGap below.
+constexpr int kTabRowGap = 2;         // AppKit's default intercell height.
+constexpr int kRowPad = 2;            // 36pt row → 32pt pill (vertical inset).
 constexpr int kBottomBarHeight = 24;  // SidebarBottomBarState.singleRowHeight
 constexpr int kBottomSpacer = 8;
-constexpr int kCornerRadius = 8;
-// The web content is an inset rounded card floating on the tint, not a flush
-// pane — the single most recognisable thing about Phi's window.
+constexpr int kCornerRadius = 8;      // The pill radius, everywhere.
+// The web content is an inset rounded card floating on the tint. Margins are
+// the Mac's: LEFT FLUSH against the sidebar, 8 right/bottom, and a
+// titleAwareArea breath on top — 8 in performance, 12 under a top bar.
 constexpr int kContentMargin = 8;
-constexpr int kContentRadius = 10;
-constexpr int kFaviconSize = 16;
-constexpr int kNewTabRowHeight = 32;
-// Pinned tabs: a grid of squares in the band the header reserves, the Mac's
-// PinnedTabLayout shape.
-constexpr int kPinnedCell = 44;
-constexpr int kPinnedGap = 6;
+constexpr int kContentRadius = 6;   // webContentContainerCornerRadius (< macOS 26)
+constexpr int kContentTopGap = 8;
+constexpr int kContentTopGapTopNav = 12;
+constexpr int kFaviconSlot = 16;    // The 16pt slot in the row…
+constexpr int kFaviconSize = 14;    // …holding a 14pt icon (radius 3).
+constexpr int kNewTabRowHeight = 36;
+// Pinned tabs: PinnedTabLayout — 45pt cells, 8pt gaps and insets, columns by
+// width breakpoint (3 at this sidebar width).
+constexpr int kPinnedCellHeight = 45;
+constexpr int kPinnedGap = 8;
+constexpr int kPinnedFavicon = 18;
 
 // Bands used by the two layouts that put navigation above the web content.
-constexpr int kTopBarHeight = 44;
-constexpr int kHTabStripHeight = 34;
-constexpr int kHTabWidth = 168;
-constexpr int kHTabGap = 4;
-constexpr int kSpaceChipW = 64;
-constexpr int kSpaceChipGap = 6;
-constexpr int kCloseBoxSize = 16;
-constexpr int kTabRowGap = 0;
+constexpr int kTopBarHeight = 40;      // WebContentConstant.headerHeight
+constexpr int kTopBarLeading = 16;     // header leading padding.
+constexpr int kTopBarSpacing = 8;      // header button spacing.
+constexpr int kTopBarField = 26;       // the top address capsule's height.
+constexpr int kHTabStripHeight = 36;   // TabStripMetrics.Strip.height
+constexpr int kHTabStripTop = 6;       // Strip top inset (8 − 2).
+constexpr int kHTabHeight = 32;        // Strip.tabHeight
+constexpr int kHTabWidth = 180;        // Tab.idealWidth
+constexpr int kHTabGap = 2;            // Tab.spacing
+constexpr int kCloseBoxSize = 24;      // UnifiedTabCloseButton frame.
+// The bottom bar's two capsules (Feedback bordered, Chat on the accent).
+constexpr int kFeedbackWidth = 90;
+constexpr int kChatWidth = 54;
+constexpr int kPillHeight = 22;
 
 // --- Palette (light) ---------------------------------------------------------
 // From Assets.xcassets/ColorSet: primary-label 85% black, common-border 8%
@@ -142,7 +170,11 @@ void PhiWindowController::EnsureFont() {
   HFONT built = nullptr;
   if (::SystemParametersInfoForDpi(SPI_GETNONCLIENTMETRICS, sizeof(metrics),
                                    &metrics, 0, dpi_)) {
-    built = ::CreateFontIndirectW(&metrics.lfMessageFont);
+    // The face tracks the system (Segoe UI), the SIZE is the Mac's: 13pt row
+    // titles everywhere (TabContentView.titleFontSize).
+    LOGFONTW ui = metrics.lfMessageFont;
+    ui.lfHeight = -Scaled(13);
+    built = ::CreateFontIndirectW(&ui);
   }
   if (!built) {
     return;  // Keep whatever we had rather than falling back to no font.
@@ -168,7 +200,7 @@ void PhiWindowController::EnsureFont() {
   std::copy_n(emoji_face.begin(),
               std::min(emoji_face.size(), std::size(emoji.lfFaceName) - 1),
               std::begin(emoji.lfFaceName));
-  emoji.lfHeight = -Scaled(14);
+  emoji.lfHeight = -Scaled(13);  // SpacesStripView.emojiFontSize
   HFONT emoji_built = ::CreateFontIndirectW(&emoji);
   if (emoji_built) {
     HFONT previous_emoji = emoji_font_;
@@ -178,6 +210,64 @@ void PhiWindowController::EnsureFont() {
       ::DeleteObject(previous_emoji);
     }
   }
+
+  if (caption_font_ && caption_font_dpi_ == dpi_) {
+    return;
+  }
+  // The caption glyph font — the OS buttons' own glyphs (E921/E922/E923/E8BB).
+  LOGFONTW caption = metrics.lfMessageFont;
+  const std::wstring caption_face = L"Segoe MDL2 Assets";
+  std::fill(std::begin(caption.lfFaceName), std::end(caption.lfFaceName),
+            L'\0');
+  std::copy_n(caption_face.begin(),
+              std::min(caption_face.size(),
+                       std::size(caption.lfFaceName) - 1),
+              std::begin(caption.lfFaceName));
+  caption.lfHeight = -Scaled(10);
+  HFONT caption_built = ::CreateFontIndirectW(&caption);
+  if (caption_built) {
+    HFONT previous_caption = caption_font_;
+    caption_font_ = caption_built;
+    caption_font_dpi_ = dpi_;
+    if (previous_caption) {
+      ::DeleteObject(previous_caption);
+    }
+  }
+}
+
+void PhiWindowController::EnsureMenuTitleRects() {
+  if (menu_titles_dpi_ == dpi_ && !menu_titles_.empty()) {
+    return;
+  }
+  if (!menu_bar_) {
+    return;
+  }
+  const std::vector<std::wstring> titles = menu_bar_->Titles();
+  if (titles.empty()) {
+    return;
+  }
+  EnsureFont();
+  HDC dc = ::GetDC(shell_hwnd_);
+  if (!dc) {
+    return;
+  }
+  HGDIOBJ previous = ui_font_ ? ::SelectObject(dc, ui_font_) : nullptr;
+  menu_titles_.clear();
+  int x = Scaled(kMenuTitlePad);
+  const int band = Scaled(kTitleBarHeight);
+  for (const std::wstring& title : titles) {
+    SIZE extent = {};
+    ::GetTextExtentPoint32W(dc, title.c_str(),
+                            static_cast<int>(title.size()), &extent);
+    const int width = extent.cx + 2 * Scaled(kMenuTitlePad);
+    menu_titles_.emplace_back(title, RECT{x, 0, x + width, band});
+    x += width;
+  }
+  menu_titles_dpi_ = dpi_;
+  if (previous) {
+    ::SelectObject(dc, previous);
+  }
+  ::ReleaseDC(shell_hwnd_, dc);
 }
 
 PhiWindowController::Layout PhiWindowController::ComputeLayout() {
@@ -195,141 +285,166 @@ PhiWindowController::Layout PhiWindowController::ComputeLayout() {
   const int sidebar = Scaled(kSidebarWidth);
   const int inset = Scaled(kEdgeInset);
   const int btn = Scaled(kNavButton);
+  const int m = Scaled(kContentMargin);
 
-  // The nav row, laid out inside `band` (the sidebar in the vertical layouts,
-  // the top bar in Comfortable): two leading buttons, then the back / forward /
-  // reload group trailing — SidebarHeaderView's arrangement.
-  auto place_nav_row = [&](int left, int right, int top) {
-    int x = left + inset;
-    out.sidebar_toggle = {x, top, x + btn, top + btn};
-    x += btn + Scaled(4);
-    out.search_tabs = {x, top, x + btn, top + btn};
-    int r = right - Scaled(kNavRowRightInset);
-    out.reload = {r - btn, top, r, top + btn};
-    r -= btn + Scaled(4);
-    out.forward = {r - btn, top, r, top + btn};
-    r -= btn + Scaled(4);
-    out.back = {r - btn, top, r, top + btn};
-  };
+  // The caption band tops every mode: menu titles leading, minimize /
+  // maximize / close trailing. The OS caption is gone (WM_NCCALCSIZE), so
+  // this row is both the title bar and the menu bar.
+  const int tb = Scaled(kTitleBarHeight);
+  out.title_bar = {0, 0, w, tb};
+  const int cap = Scaled(kCaptionButtonWidth);
+  out.caption_close = {w - cap, 0, w, tb};
+  out.caption_max = {w - 2 * cap, 0, w - cap, tb};
+  out.caption_min = {w - 3 * cap, 0, w - 2 * cap, tb};
 
-  // The Spaces strip and its two trailing "+" chips (same profile / new
-  // profile). The Mac opens a Create-Space panel from one "+"; until that panel
-  // exists both destinations stay directly reachable.
+  // The Spaces strip: 24pt pips from the left (10pt strip padding), one
+  // trailing "+" chip. The Mac's second destination (new profile) moved to the
+  // Spaces menu.
   auto place_spaces = [&](int left, int right, int top) {
     out.spaces_strip = {left, top, right, top + Scaled(kSpacesStripHeight)};
-    const int chip_top = top + Scaled((kSpacesStripHeight - kSpaceChipHeight) / 2);
-    out.chips_left = left + inset;
+    const int chip_top =
+        top + (Scaled(kSpacesStripHeight) - Scaled(kSpaceChip)) / 2;
+    out.chips_left = left + Scaled(kSpacesStripPad);
     out.chips_top = chip_top;
-    const int add_w = Scaled(kSpaceChipHeight);
-    out.add_profile_space = {right - inset - add_w, chip_top, right - inset,
-                             chip_top + Scaled(kSpaceChipHeight)};
-    out.add_space = {out.add_profile_space.left - Scaled(4) - add_w, chip_top,
-                     out.add_profile_space.left - Scaled(4),
-                     chip_top + Scaled(kSpaceChipHeight)};
-    out.chips_limit = out.add_space.left - Scaled(4);
+    out.add_space = {right - Scaled(kSpacesStripPad) - Scaled(kSpaceChip),
+                     chip_top, right - Scaled(kSpacesStripPad),
+                     chip_top + Scaled(kSpaceChip)};
+    out.chips_limit = out.add_space.left - Scaled(kSpaceChipGap);
   };
 
-  // The bottom bar: chat / downloads / memory leading (placeholders, as on Mac
-  // but not yet wired), settings trailing.
-  auto place_bottom_bar = [&](int left, int right) {
-    const int bar_h = Scaled(kBottomBarHeight);
-    const int top = h - Scaled(kBottomSpacer) - bar_h;
-    out.bottom_bar = {left, top, right, top + bar_h};
-    int x = left + inset;
-    out.chat = {x, top, x + btn, top + bar_h};
-    x += btn + Scaled(6);
-    out.downloads = {x, top, x + btn, top + bar_h};
-    x += btn + Scaled(6);
-    out.memory = {x, top, x + btn, top + bar_h};
-    out.settings = {right - inset - btn, top, right - inset, top + bar_h};
+  // The top bar of the two top-nav layouts: the first 40pt band INSIDE the
+  // content card (the Mac's WebContentHeader is the card's first stack item),
+  // back / forward / reload leading, the address capsule filling the middle.
+  auto place_top_bar = [&](int left, int right, int top) {
+    out.top_bar = {left, top, right, top + Scaled(kTopBarHeight)};
+    const int mid = top + Scaled(kTopBarHeight) / 2;
+    int x = left + Scaled(kTopBarLeading);
+    out.back = {x, mid - btn / 2, x + btn, mid + btn / 2};
+    x += btn + Scaled(kTopBarSpacing);
+    out.forward = {x, mid - btn / 2, x + btn, mid + btn / 2};
+    x += btn + Scaled(kTopBarSpacing);
+    out.reload = {x, mid - btn / 2, x + btn, mid + btn / 2};
+    return mid;
   };
 
   if (layout_mode_ == PhiLayoutMode::kComfortable) {
-    // Horizontal tabs on top, then the nav row; no sidebar, so the Spaces strip
-    // and the bottom bar's buttons ride along the toolbar row.
-    const int strip = Scaled(kHTabStripHeight);
-    const int bar = Scaled(kTopBarHeight);
-    out.top_bar = {0, 0, w, strip + bar};
-    const int m = Scaled(kContentMargin);
-    out.content = {m, strip + bar, w - m, h - m};
-    out.tabs_left = inset;
-    out.tabs_top = Scaled(2);
-    out.tabs_limit = w - inset;
+    // The traditional stack: horizontal tab strip on the tint, a 12pt breath,
+    // then the card, whose first band is the header row. No sidebar.
+    const int strip_top = tb + Scaled(kHTabStripTop);
+    const int strip_h = Scaled(kHTabStripHeight);
+    const int card_top = strip_top + strip_h + Scaled(kContentTopGapTopNav);
+    const int mid = place_top_bar(m, w - m, card_top);
+    out.content = {m, card_top + Scaled(kTopBarHeight), w - m, h - m};
+
+    // The strip: the active Space's compact pip leads (the Mac clears the
+    // traffic lights with 80pt; Windows has none, so the edge inset does),
+    // then the tabs; the search-tabs magnifier rides at the far right.
+    const int chip_top = strip_top + (strip_h - Scaled(4) - Scaled(kSpaceChip)) / 2;
+    out.chips_left = inset;
+    out.chips_top = chip_top;
+    out.chips_limit = inset + Scaled(kSpaceChip);  // One compact pip.
+    out.search_tabs = {w - inset - btn, chip_top, w - inset, chip_top + btn};
+    out.tabs_left = out.chips_limit + Scaled(6);
+    out.tabs_top = strip_top;
+    out.tabs_limit = out.search_tabs.left - Scaled(kTopBarSpacing);
     out.horizontal_tabs = true;
 
-    const int row_top = strip + (bar - btn) / 2;
-    place_nav_row(0, w, row_top);
-    // Address bar between the leading buttons and the trailing nav group.
-    const int url_left = out.search_tabs.right + Scaled(8);
-    const int url_right = out.back.left - Scaled(8);
-    out.url_field = {url_left, row_top, (url_right > url_left + Scaled(80))
-                                            ? url_right
-                                            : url_left + Scaled(80),
-                     row_top + btn};
-    // No room for a Spaces strip in one row: chips follow the tab strip.
-    place_spaces(0, w, 0);
-    out.spaces_strip = {};
-    out.chips_top = -Scaled(1000);  // Off-screen; Comfortable hides the strip.
-    out.chips_limit = 0;
-    out.add_space = {};
-    out.add_profile_space = {};
-    place_bottom_bar(0, w);
-    out.bottom_bar = {};
-    out.chat = out.downloads = out.memory = {};
-    out.settings = {w - inset - btn, Scaled(4), w - inset, Scaled(4) + btn};
+    // Header trailing: downloads, then the Feedback capsule (chat is hidden
+    // in comfortable, as on Mac).
+    int r = w - m - Scaled(kTopBarLeading);
+    out.downloads = {r - btn, mid - btn / 2, r, mid + btn / 2};
+    r = out.downloads.left - Scaled(kTopBarSpacing);
+    out.feedback = {r - Scaled(kFeedbackWidth), mid - Scaled(kPillHeight) / 2,
+                    r, mid + Scaled(kPillHeight) / 2};
+    const int field_h = Scaled(kTopBarField);
+    out.url_field = {out.reload.right + Scaled(6), mid - field_h / 2,
+                     out.feedback.left - Scaled(kTopBarSpacing),
+                     mid + field_h / 2};
     return out;
   }
 
   // Vertical layouts: the Mac sidebar stack, top to bottom.
   out.sidebar = {0, 0, sidebar, h};
-  place_nav_row(0, sidebar, Scaled(kNavRowTop));
-  place_spaces(0, sidebar, Scaled(kSpacesStripTop));
 
   if (layout_mode_ == PhiLayoutMode::kBalanced) {
-    // The address bar moves out of the sidebar and across the content's top.
-    const int bar = Scaled(kTopBarHeight);
-    out.top_bar = {sidebar, 0, w, bar};
-    const int m = Scaled(kContentMargin);
-    out.content = {sidebar + m, bar, w - m, h - m};
-    const int row_top = (bar - btn) / 2;
-    int r = w - Scaled(kNavRowRightInset);
-    out.reload = {r - btn, row_top, r, row_top + btn};
-    r -= btn + Scaled(4);
-    out.forward = {r - btn, row_top, r, row_top + btn};
-    r -= btn + Scaled(4);
-    out.back = {r - btn, row_top, r, row_top + btn};
-    out.url_field = {sidebar + Scaled(8), row_top, out.back.left - Scaled(8),
-                     row_top + btn};
-    // Header ends after the Spaces strip; the tab list starts higher.
-    out.tabs_top = out.spaces_strip.bottom + Scaled(kHeaderSpacer +
-                                                    kFavoritesSpacer);
+    // Balanced header: the toggle moves to the RIGHT (inset 9), the
+    // search-tabs button beside it (gap 2) — the only mode that shows it.
+    // Navigation and the address bar live in the top bar.
+    const int top = tb + Scaled(kNavRowTopNav);
+    int r = sidebar - Scaled(kNavRowRightInset);
+    out.sidebar_toggle = {r - btn, top, r, top + btn};
+    out.search_tabs = {out.sidebar_toggle.left - Scaled(2) - btn, top,
+                       out.sidebar_toggle.left - Scaled(2), top + btn};
+    place_spaces(0, sidebar, tb + Scaled(kSpacesStripTopNav));
+
+    const int gap = tb + Scaled(kContentTopGapTopNav);
+    const int mid = place_top_bar(sidebar, w - m, gap);
+    out.content = {sidebar, gap + Scaled(kTopBarHeight), w - m, h - m};
+    // Chat capsule trailing (balanced shows it in the header, as on Mac).
+    const int r2 = w - m - Scaled(kTopBarLeading);
+    out.chat = {r2 - Scaled(kChatWidth), mid - Scaled(kPillHeight) / 2, r2,
+                mid + Scaled(kPillHeight) / 2};
+    const int field_h = Scaled(kTopBarField);
+    out.url_field = {out.reload.right + Scaled(6), mid - field_h / 2,
+                     out.chat.left - Scaled(kTopBarSpacing),
+                     mid + field_h / 2};
+    out.tabs_top = out.spaces_strip.bottom + Scaled(kHeaderSpacer);
   } else {
-    const int m = Scaled(kContentMargin);
-    out.content = {sidebar + m, m, w - m, h - m};
-    out.url_field = {inset, Scaled(kAddressBarTop), sidebar - inset,
-                     Scaled(kAddressBarTop + kAddressBarHeight)};
-    out.tabs_top = Scaled(kHeaderHeight + kHeaderSpacer + kFavoritesSpacer);
+    // Performance header: the toggle leads; back / forward / reload trail
+    // (spacing 1, right inset 9); the address bar sits under the strip.
+    const int top = tb + Scaled(kNavRowTop);
+    out.sidebar_toggle = {inset, top, inset + btn, top + btn};
+    int r = sidebar - Scaled(kNavRowRightInset);
+    out.reload = {r - btn, top, r, top + btn};
+    r -= btn + Scaled(kNavGroupSpacing);
+    out.forward = {r - btn, top, r, top + btn};
+    r -= btn + Scaled(kNavGroupSpacing);
+    out.back = {r - btn, top, r, top + btn};
+    place_spaces(0, sidebar, tb + Scaled(kSpacesStripTop));
+    out.url_field = {inset, tb + Scaled(kAddressBarTop), sidebar - inset,
+                     tb + Scaled(kAddressBarTop + kAddressBarHeight)};
+    out.content = {sidebar, tb + Scaled(kContentTopGap), w - m, h - m};
+    out.tabs_top = tb + Scaled(kHeaderHeight + kHeaderSpacer);
   }
 
   // The pinned-tab band sits between the header and the tab list. Empty until
   // favourites exist, exactly as on Mac (which mounts a zero-height container).
   // The pinned band, then the bookmark rows, then "+ New Tab" and the open
-  // tabs — the Mac sidebar's order.
+  // tabs — the Mac sidebar's order. A non-empty band carries the grid's own
+  // 8pt top/bottom insets (PinnedTabLayout.insets).
   const int pinned_rows = pinned_row_count_;
   const int pinned_height =
-      pinned_rows > 0 ? pinned_rows * Scaled(kPinnedCell) +
+      pinned_rows > 0 ? 2 * Scaled(kPinnedGap) +
+                            pinned_rows * Scaled(kPinnedCellHeight) +
                             (pinned_rows - 1) * Scaled(kPinnedGap)
                       : 0;
-  out.favorites = {inset, out.tabs_top, sidebar - inset,
-                   out.tabs_top + pinned_height};
+  out.favorites = {0, out.tabs_top, sidebar, out.tabs_top + pinned_height};
   const int bookmarks_top = out.favorites.bottom +
                             (pinned_height > 0 ? Scaled(kFavoritesSpacer) : 0);
-  const int bookmarks_height = bookmark_row_count_ * Scaled(kTabRowHeight);
+  const int bookmarks_height =
+      bookmark_row_count_ * Scaled(kTabRowHeight + kTabRowGap);
   out.new_tab_row = {inset, bookmarks_top + bookmarks_height, sidebar - inset,
                      bookmarks_top + bookmarks_height +
                          Scaled(kNewTabRowHeight)};
-  out.tabs_top = out.new_tab_row.bottom + Scaled(2);
-  place_bottom_bar(0, sidebar);
+  out.tabs_top = out.new_tab_row.bottom + Scaled(kTabRowGap);
+
+  // The bottom bar: downloads and memory leading (spacing 4), the Feedback
+  // and Chat capsules trailing — SidebarBottomBar's row, settings not in it.
+  const int bar_h = Scaled(kBottomBarHeight);
+  const int bar_top = h - Scaled(kBottomSpacer) - bar_h;
+  out.bottom_bar = {0, bar_top, sidebar, bar_top + bar_h};
+  int bx = inset;
+  out.downloads = {bx, bar_top, bx + btn, bar_top + bar_h};
+  bx += btn + Scaled(4);
+  out.memory = {bx, bar_top, bx + btn, bar_top + bar_h};
+  int br = sidebar - inset;
+  const int pill_top = bar_top + (bar_h - Scaled(kPillHeight)) / 2;
+  out.chat = {br - Scaled(kChatWidth), pill_top, br,
+              pill_top + Scaled(kPillHeight)};
+  br = out.chat.left - Scaled(4);
+  out.feedback = {br - Scaled(kFeedbackWidth), pill_top, br,
+                  pill_top + Scaled(kPillHeight)};
+
   out.tabs_left = inset;
   out.tabs_limit = out.bottom_bar.top - Scaled(kFavoritesSpacer);
   return out;
@@ -349,6 +464,14 @@ int PhiWindowController::tabs_top() {
 
 int PhiWindowController::tab_row_height() const {
   return Scaled(kTabRowHeight);
+}
+
+int PhiWindowController::tab_row_gap() const {
+  return Scaled(kTabRowGap);
+}
+
+int PhiWindowController::title_bar_height() const {
+  return Scaled(kTitleBarHeight);
 }
 
 int PhiWindowController::sidebar_width() const {
@@ -418,16 +541,22 @@ PhiWindowController::PhiWindowController(int64_t window_id,
     if (dpi) {
       dpi_ = dpi;  // Lay the first frame out for the monitor we open on.
     }
-    RECT frame = {wr.left - Scaled(kSidebarWidth), wr.top, wr.right, wr.bottom};
-    if (dpi) {
-      ::AdjustWindowRectExForDpi(&frame, WS_OVERLAPPEDWINDOW, FALSE, 0, dpi);
-    } else {
-      ::AdjustWindowRectEx(&frame, WS_OVERLAPPEDWINDOW, FALSE, 0);
-    }
-    x = frame.left;
-    y = frame.top;
-    w = frame.right - frame.left;
-    h = frame.bottom - frame.top;
+    // The shell's frame is CUSTOM (WM_NCCALCSIZE): the client reaches the
+    // window's top edge and only the resize borders remain non-client, so
+    // AdjustWindowRectEx (which assumes an OS caption) would be wrong. The
+    // content region sits at (sidebar, titleBand + topGap) inside the client;
+    // place the window so that region lands exactly on the browser's bounds.
+    const UINT frame_dpi = dpi ? dpi : 96;
+    const int border_x =
+        ::GetSystemMetricsForDpi(SM_CXSIZEFRAME, frame_dpi) +
+        ::GetSystemMetricsForDpi(SM_CXPADDEDBORDER, frame_dpi);
+    const int border_y =
+        ::GetSystemMetricsForDpi(SM_CYSIZEFRAME, frame_dpi) +
+        ::GetSystemMetricsForDpi(SM_CXPADDEDBORDER, frame_dpi);
+    x = wr.left - Scaled(kSidebarWidth) - border_x;
+    y = wr.top - Scaled(kTitleBarHeight) - Scaled(kContentTopGap);
+    w = (wr.right + Scaled(kContentMargin) + border_x) - x;
+    h = (wr.bottom + Scaled(kContentMargin) + border_y) - y;
   }
 
   shell_hwnd_ = ::CreateWindowExW(
@@ -438,6 +567,18 @@ PhiWindowController::PhiWindowController(int64_t window_id,
                << ::GetLastError();
     return;
   }
+
+  // Force one frame recalculation now that the proc can see `this`: whatever
+  // non-client layout the creation pass produced, this pass runs through OUR
+  // WM_NCCALCSIZE and retires the OS caption for good.
+  ::SetWindowPos(shell_hwnd_, nullptr, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE |
+                     SWP_FRAMECHANGED);
+
+  // The menus (never attached with SetMenu — the caption band draws the
+  // titles itself).
+  menu_bar_ = std::make_unique<PhiMenuBar>(this);
+  menu_bar_->Install(shell_hwnd_);
 
   AdoptBrowserAsChild();
   EnsureUrlField();
@@ -471,6 +612,9 @@ PhiWindowController::~PhiWindowController() {
   if (emoji_font_) {
     ::DeleteObject(emoji_font_);
   }
+  if (caption_font_) {
+    ::DeleteObject(caption_font_);
+  }
   if (url_brush_) {
     ::DeleteObject(url_brush_);
   }
@@ -493,6 +637,10 @@ void PhiWindowController::EnsureUrlField() {
     ::SendMessageW(url_field_, WM_SETFONT, reinterpret_cast<WPARAM>(ui_font_),
                    TRUE);
   }
+  // The Mac's placeholder, shown by the EDIT itself while empty (and by the
+  // capture path, which renders without children).
+  ::SendMessageW(url_field_, EM_SETCUEBANNER, TRUE,
+                 reinterpret_cast<LPARAM>(L"Search or Enter URL"));
   ::SetWindowLongPtrW(url_field_, GWLP_USERDATA,
                       reinterpret_cast<LONG_PTR>(this));
   WNDPROC previous = reinterpret_cast<WNDPROC>(::SetWindowLongPtrW(
@@ -512,8 +660,10 @@ void PhiWindowController::PositionUrlField(const Layout& layout) {
   // leave the text hugging the upper edge.
   const int text_height = Scaled(20);
   const RECT& box = layout.url_field;
-  const int width = box.right - box.left - Scaled(12);
-  ::MoveWindow(url_field_, box.left + Scaled(6),
+  // SideAddressBar: text starts 12 in from the pill's leading edge, 8 clear
+  // at the trailing end.
+  const int width = box.right - box.left - Scaled(12) - Scaled(8);
+  ::MoveWindow(url_field_, box.left + Scaled(12),
                box.top + (box.bottom - box.top - text_height) / 2,
                width > 0 ? width : 1, text_height, TRUE);
 }
@@ -825,7 +975,6 @@ void PhiWindowController::RebuildChips() {
   chips_.clear();
   const Layout layout = ComputeLayout();
   add_space_button_ = layout.add_space;
-  add_profile_space_button_ = layout.add_profile_space;
   if (!host_) {
     return;
   }
@@ -844,20 +993,30 @@ void PhiWindowController::RebuildChips() {
     if (!id) {
       continue;
     }
-    if (x + Scaled(kSpaceChipW) > layout.chips_limit) {
-      break;  // Row is full; a scroller is future work.
+    // Comfortable shows a single compact pip — the ACTIVE Space; the rest
+    // live in the popup it opens.
+    if (layout.horizontal_tabs && *id != active_space_) {
+      continue;
+    }
+    if (x + Scaled(kSpaceChip) > layout.chips_limit) {
+      break;  // Row is full; the Mac scrolls here — future work.
     }
     SpaceChip chip;
     chip.id = *id;
-    chip.label = L"S" + base::UTF8ToWide(*id);
+    if (const std::string* name = d.FindString("name")) {
+      chip.label = base::UTF8ToWide(*name);
+    }
+    if (chip.label.empty()) {
+      chip.label = L"Space " + base::UTF8ToWide(*id);
+    }
     if (const std::string* icon_text = d.FindString("iconText")) {
       chip.icon = base::UTF8ToWide(*icon_text);
     }
     chip.open = HasSpace(*id);
-    chip.bounds = {x, layout.chips_top, x + Scaled(kSpaceChipW),
-                   layout.chips_top + Scaled(kSpaceChipHeight)};
+    chip.bounds = {x, layout.chips_top, x + Scaled(kSpaceChip),
+                   layout.chips_top + Scaled(kSpaceChip)};
     chips_.push_back(std::move(chip));
-    x += Scaled(kSpaceChipW + kSpaceChipGap);
+    x += Scaled(kSpaceChip + kSpaceChipGap);
   }
 }
 
@@ -942,34 +1101,45 @@ void PhiWindowController::RebuildShortcuts() {
     }
   };
   parse(host_->PinnedJson(window_id_), &pinned_);
-  parse(host_->BookmarksJson(window_id_), &bookmarks_);
+  // The sidebar shows the root level; folders open from the Bookmarks menu.
+  parse(host_->BookmarksJson(window_id_, std::string()), &bookmarks_);
   bookmark_row_count_ = static_cast<int>(bookmarks_.size());
 
-  // Pinned tabs sit in the band the header reserves for them — a grid of
-  // squares, as the Mac's PinnedTabLayout draws them.
-  const int cell = Scaled(kPinnedCell);
-  const int columns = std::max(
-      1, (Scaled(kSidebarWidth - 2 * kEdgeInset) + Scaled(kPinnedGap)) /
-             (cell + Scaled(kPinnedGap)));
+  // Pinned tabs form the Mac's grid (PinnedTabLayout): 45pt cells, 8pt gaps
+  // and insets, column count by width breakpoint (decisionWidth = width − 8:
+  // under 236 → 3 columns, under 294 → 4, under 352 → 5, else 6).
+  const int decision = kSidebarWidth - 8;
+  const int columns = decision < 236 ? 3
+                      : decision < 294 ? 4
+                      : decision < 352 ? 5
+                                       : 6;
   pinned_row_count_ =
       (static_cast<int>(pinned_.size()) + columns - 1) / columns;
   // Derived only now: the two bands' sizes feed back into where everything
   // below them sits.
   const Layout layout = ComputeLayout();
+  const int cell_h = Scaled(kPinnedCellHeight);
+  const int gap = Scaled(kPinnedGap);
+  const int cell_w =
+      (Scaled(kSidebarWidth) - 2 * Scaled(kEdgeInset) - (columns - 1) * gap) /
+      columns;
   for (size_t i = 0; i < pinned_.size(); ++i) {
     const int col = static_cast<int>(i) % columns;
     const int row_index = static_cast<int>(i) / columns;
-    const int x = layout.favorites.left + col * (cell + Scaled(kPinnedGap));
-    const int y = layout.favorites.top + row_index * (cell + Scaled(kPinnedGap));
-    pinned_[i].bounds = {x, y, x + cell, y + cell};
+    const int x = layout.favorites.left + Scaled(kEdgeInset) +
+                  col * (cell_w + gap);
+    const int y = layout.favorites.top + gap + row_index * (cell_h + gap);
+    pinned_[i].bounds = {x, y, x + cell_w, y + cell_h};
   }
 
-  // Bookmarks are ordinary rows above the open tabs.
-  int y = layout.favorites.bottom + Scaled(kFavoritesSpacer);
+  // Bookmarks are ordinary rows above the open tabs (36pt + the 2pt gap).
+  int y = layout.favorites.bottom +
+          (pinned_row_count_ > 0 ? Scaled(kFavoritesSpacer) : 0);
   for (ShortcutRow& row : bookmarks_) {
-    row.bounds = {layout.tabs_left, y, Scaled(kSidebarWidth - kEdgeInset),
+    row.bounds = {layout.tabs_left, y,
+                  Scaled(kSidebarWidth - kEdgeInset),
                   y + Scaled(kTabRowHeight)};
-    y += Scaled(kTabRowHeight);
+    y += Scaled(kTabRowHeight + kTabRowGap);
   }
 }
 
@@ -1019,8 +1189,8 @@ void PhiWindowController::RebuildTabs() {
           if (x + Scaled(kHTabWidth) > layout.tabs_limit) {
             break;  // Strip is full; overflow handling is future work.
           }
-          row.bounds = {x, y, x + Scaled(kHTabWidth),
-                        y + Scaled(kHTabStripHeight - 4)};
+          // TabStripMetrics: 32pt tabs at the strip's top, 4pt below.
+          row.bounds = {x, y, x + Scaled(kHTabWidth), y + Scaled(kHTabHeight)};
           x += Scaled(kHTabWidth + kHTabGap);
         } else {
           if (y + Scaled(kTabRowHeight) > layout.tabs_limit) {
@@ -1042,6 +1212,51 @@ void PhiWindowController::RebuildTabs() {
   }
 }
 
+int PhiWindowController::CaptionHitTest(POINT client_pt) {
+  const Layout layout = ComputeLayout();
+  if (!::PtInRect(&layout.title_bar, client_pt)) {
+    return 0;
+  }
+  if (::PtInRect(&layout.caption_close, client_pt)) {
+    return HTCLOSE;
+  }
+  if (::PtInRect(&layout.caption_max, client_pt)) {
+    return HTMAXBUTTON;
+  }
+  if (::PtInRect(&layout.caption_min, client_pt)) {
+    return HTMINBUTTON;
+  }
+  EnsureMenuTitleRects();
+  for (const auto& [title, rect] : menu_titles_) {
+    if (::PtInRect(&rect, client_pt)) {
+      return HTCLIENT;  // A menu title takes the click itself.
+    }
+  }
+  return HTCAPTION;  // Everything else in the band drags the window.
+}
+
+void PhiWindowController::SetCaptionHot(int code) {
+  if (hot_caption_ == code) {
+    return;
+  }
+  hot_caption_ = code;
+  if (shell_hwnd_) {
+    const RECT band = ComputeLayout().title_bar;
+    ::InvalidateRect(shell_hwnd_, &band, FALSE);
+  }
+}
+
+void PhiWindowController::SetMenuHot(int index) {
+  if (hot_menu_ == index) {
+    return;
+  }
+  hot_menu_ = index;
+  if (shell_hwnd_) {
+    const RECT band = ComputeLayout().title_bar;
+    ::InvalidateRect(shell_hwnd_, &band, FALSE);
+  }
+}
+
 void PhiWindowController::OnChromeClick(int x, int y) {
   // Clicking anywhere else in the chrome means the user is done editing the
   // address; hand the keyboard back to the page (the field is a child window,
@@ -1051,9 +1266,18 @@ void PhiWindowController::OnChromeClick(int x, int y) {
   }
   const Layout layout = ComputeLayout();
   POINT pt = {x, y};
-  if (host_ && ::PtInRect(&layout.settings, pt)) {
-    host_->RequestSettings();
-    return;
+  // A menu title in the caption band drops its menu, aligned under the title.
+  if (::PtInRect(&layout.title_bar, pt) && menu_bar_) {
+    EnsureMenuTitleRects();
+    for (size_t i = 0; i < menu_titles_.size(); ++i) {
+      if (::PtInRect(&menu_titles_[i].second, pt)) {
+        POINT anchor = {menu_titles_[i].second.left, layout.title_bar.bottom};
+        ::ClientToScreen(shell_hwnd_, &anchor);
+        menu_bar_->ShowAt(i, anchor.x, anchor.y);
+        return;
+      }
+    }
+    return;  // The rest of the band is drag space; no chrome lives here.
   }
   if (framework_ && ::PtInRect(&layout.back, pt)) {
     framework_->GoBack(active_browser_ ? active_browser_ : window_id_);
@@ -1100,6 +1324,64 @@ void PhiWindowController::OnChromeClick(int x, int y) {
     if (!::PtInRect(&chip.bounds, pt)) {
       continue;
     }
+    if (layout.horizontal_tabs) {
+      // Comfortable draws ONE compact pip — the active Space. Clicking it
+      // opens the switcher popup over the FULL Space list, the Mac's
+      // SpacesStripView compact-chip behaviour.
+      std::vector<std::pair<std::string, std::wstring>> spaces;
+      if (host_) {
+        std::optional<base::Value> all = base::JSONReader::Read(
+            host_->AllSpacesJson(), base::JSON_PARSE_RFC);
+        if (all && all->is_list()) {
+          for (const base::Value& v : all->GetList()) {
+            if (!v.is_dict() || !v.GetDict().FindString("id")) {
+              continue;
+            }
+            const base::DictValue& d = v.GetDict();
+            const std::string* name = d.FindString("name");
+            const std::string* icon = d.FindString("iconText");
+            std::wstring title =
+                base::UTF8ToWide(name && !name->empty()
+                                     ? *name
+                                     : "Space " + *d.FindString("id"));
+            if (icon && !icon->empty()) {
+              title = base::UTF8ToWide(*icon) + L"  " + title;
+            }
+            spaces.emplace_back(*d.FindString("id"), std::move(title));
+          }
+        }
+      }
+      HMENU menu = ::CreatePopupMenu();
+      if (!menu || spaces.empty()) {
+        if (menu) {
+          ::DestroyMenu(menu);
+        }
+        return;
+      }
+      for (size_t i = 0; i < spaces.size(); ++i) {
+        ::AppendMenuW(menu,
+                      MF_STRING | (spaces[i].first == active_space_
+                                       ? MF_CHECKED
+                                       : 0),
+                      static_cast<UINT>(i) + 1, spaces[i].second.c_str());
+      }
+      POINT screen = pt;
+      ::ClientToScreen(shell_hwnd_, &screen);
+      const UINT chosen = static_cast<UINT>(::TrackPopupMenu(
+          menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, screen.x,
+          screen.y, 0, shell_hwnd_, nullptr));
+      ::DestroyMenu(menu);
+      if (chosen >= 1 && chosen <= spaces.size()) {
+        const std::string space_id = spaces[chosen - 1].first;
+        if (HasSpace(space_id)) {
+          ShowSpace(space_id);
+        } else if (host_) {
+          host_->RequestSwitchSpace(window_id_, space_id);
+        }
+      }
+      RefreshTabs();
+      return;
+    }
     if (chip.open) {
       ShowSpace(chip.id);
     } else if (host_) {
@@ -1112,11 +1394,6 @@ void PhiWindowController::OnChromeClick(int x, int y) {
   }
   if (host_ && ::PtInRect(&layout.add_space, pt)) {
     host_->RequestCreateSpace(window_id_, /*new_profile=*/false);
-    RefreshTabs();
-    return;
-  }
-  if (host_ && ::PtInRect(&layout.add_profile_space, pt)) {
-    host_->RequestCreateSpace(window_id_, /*new_profile=*/true);
     RefreshTabs();
     return;
   }
@@ -1176,6 +1453,14 @@ void DrawGlyph(HDC dc, const RECT& r, const wchar_t* glyph, COLORREF ink) {
   ::SetTextColor(dc, ink);
   ::DrawTextW(dc, glyph, -1, const_cast<RECT*>(&r),
               DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+}
+
+// `over` at `alpha`/255 on `base` — the Mac's translucent overlays, opaque.
+COLORREF BlendOver(COLORREF over, COLORREF base, int alpha) {
+  auto mix = [&](int a, int b) { return (a * alpha + b * (255 - alpha)) / 255; };
+  return RGB(mix(GetRValue(over), GetRValue(base)),
+             mix(GetGValue(over), GetGValue(base)),
+             mix(GetBValue(over), GetBValue(base)));
 }
 
 }  // namespace
@@ -1280,11 +1565,17 @@ void PhiWindowController::PaintChrome(HDC dc,
       host_ ? host_->PaletteForSlot(window_id_) : kFallback;
   const COLORREF kTintTop = palette.ground_top;
   const COLORREF kTintBottom = palette.ground_bottom;
-  const COLORREF kRowSelectedBg = palette.card;
+  const COLORREF kRowSelectedBg = palette.selected;
   const COLORREF kLabel = palette.label;
   const COLORREF kLabelDim = palette.label_dim;
   const COLORREF kBorder = palette.border;
-  const COLORREF kFieldBg = palette.card;
+  // The sidebar address bar rests on the 4% wash (sidebarTabHovered), NOT a
+  // bordered white box — SideAddressBar's showBackgroundWhenInactive.
+  const COLORREF kFieldBg = palette.hover;
+  // The active pill's 1pt outline exists only in dark mode (white 20%).
+  const COLORREF kActivePillBorder =
+      palette.dark ? BlendOver(RGB(0xFF, 0xFF, 0xFF), kRowSelectedBg, 51)
+                   : kRowSelectedBg;
   // Paint only the bands we own. Whatever is left is the content region, and
   // the reparented browser child covers it. No seam along the content edge:
   // the chrome runs straight into the page.
@@ -1311,10 +1602,89 @@ void PhiWindowController::PaintChrome(HDC dc,
 
   ::SelectClipRgn(dc, nullptr);
 
+  // The card's hairline: 1px of `border` just outside the content region
+  // (the Mac's contentOuterBorder). Under a top bar the card begins at the
+  // bar's top edge, so the frame wraps both.
+  if (layout.content.right > layout.content.left) {
+    RECT frame_rc = layout.content;
+    if (layout.top_bar.right > layout.top_bar.left) {
+      frame_rc.top = layout.top_bar.top;
+    }
+    ::InflateRect(&frame_rc, 1, 1);
+    HBRUSH border_brush = ::CreateSolidBrush(palette.border);
+    ::FrameRect(dc, &frame_rc, border_brush);
+    ::DeleteObject(border_brush);
+  }
+
   ::SetBkMode(dc, TRANSPARENT);
   HGDIOBJ previous_font = ui_font_ ? ::SelectObject(dc, ui_font_) : nullptr;
 
-  // Nav row. Glyphs stand in for the Mac's SF Symbols.
+  // The caption band: menu titles leading, minimize / maximize / close
+  // trailing — the menu bar ON the title row. The ground already painted it;
+  // only the titles, glyphs and hot states go on top.
+  if (layout.title_bar.right > layout.title_bar.left) {
+    EnsureMenuTitleRects();
+    for (size_t i = 0; i < menu_titles_.size(); ++i) {
+      const RECT& title_rc = menu_titles_[i].second;
+      if (static_cast<int>(i) == hot_menu_) {
+        RECT hot_rc = title_rc;
+        ::InflateRect(&hot_rc, 0, -Scaled(4));
+        FillRounded(dc, hot_rc, palette.hover, Scaled(4));
+      }
+      ::SetTextColor(dc, kLabel);
+      ::DrawTextW(dc, menu_titles_[i].first.c_str(), -1,
+                  const_cast<RECT*>(&title_rc),
+                  DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    }
+    // Hot fills first (close turns the Win11 red), then the MDL2 glyphs.
+    if (hot_caption_ == HTMINBUTTON || hot_caption_ == HTMAXBUTTON) {
+      const RECT& hot_rc = hot_caption_ == HTMINBUTTON ? layout.caption_min
+                                                       : layout.caption_max;
+      HBRUSH hover_brush = ::CreateSolidBrush(palette.hover);
+      ::FillRect(dc, &hot_rc, hover_brush);
+      ::DeleteObject(hover_brush);
+    } else if (hot_caption_ == HTCLOSE) {
+      HBRUSH close_brush = ::CreateSolidBrush(RGB(0xC4, 0x2B, 0x1C));
+      ::FillRect(dc, &layout.caption_close, close_brush);
+      ::DeleteObject(close_brush);
+    }
+    HGDIOBJ previous_caption =
+        caption_font_ ? ::SelectObject(dc, caption_font_) : nullptr;
+    const bool zoomed = shell_hwnd_ && ::IsZoomed(shell_hwnd_);
+    DrawGlyph(dc, layout.caption_min, L"\uE921", kLabel);
+    DrawGlyph(dc, layout.caption_max, zoomed ? L"\uE923" : L"\uE922", kLabel);
+    DrawGlyph(dc, layout.caption_close, L"\uE8BB",
+              hot_caption_ == HTCLOSE ? RGB(0xFF, 0xFF, 0xFF) : kLabel);
+    if (previous_caption) {
+      ::SelectObject(dc, previous_caption);
+    }
+  }
+
+  // The top bar (balanced / comfortable): the content card's FIRST band -- the
+  // Mac's WebContentHeader is the card's first stack item -- so it paints on
+  // the card's own ground (windowBackground) with the card's rounded top
+  // corners, and a 1pt separator under it running into the page below.
+  if (layout.top_bar.right > layout.top_bar.left) {
+    const RECT& band = layout.top_bar;
+    const int radius = Scaled(kContentRadius);
+    HBRUSH bg = ::CreateSolidBrush(palette.window_bg);
+    HGDIOBJ old_brush = ::SelectObject(dc, bg);
+    HGDIOBJ old_pen = ::SelectObject(dc, ::GetStockObject(NULL_PEN));
+    ::RoundRect(dc, band.left, band.top, band.right + 1, band.bottom + 1,
+                radius, radius);
+    RECT lower = {band.left, band.top + radius, band.right, band.bottom};
+    ::FillRect(dc, &lower, bg);
+    ::SelectObject(dc, old_pen);
+    ::SelectObject(dc, old_brush);
+    ::DeleteObject(bg);
+    RECT sep = {band.left, band.bottom - 1, band.right, band.bottom};
+    HBRUSH sep_brush = ::CreateSolidBrush(palette.separator);
+    ::FillRect(dc, &sep, sep_brush);
+    ::DeleteObject(sep_brush);
+  }
+
+  // Nav row. Glyphs stand in for the Mac's SF Symbols. Each mode empties the
+  // rects it hides, so nothing draws where a control does not exist.
   DrawGlyph(dc, layout.sidebar_toggle, L"\u25A3", kLabel);   // sidebar toggle
   DrawGlyph(dc, layout.search_tabs, L"\u2315", kLabel);      // search tabs
   DrawGlyph(dc, layout.back, L"\u2039", can_go_back_ ? kLabel : kLabelDim);
@@ -1322,10 +1692,13 @@ void PhiWindowController::PaintChrome(HDC dc,
             can_go_forward_ ? kLabel : kLabelDim);
   DrawGlyph(dc, layout.reload, nav_loading_ ? L"\u00D7" : L"\u21BB", kLabel);
 
-  // Address field: a white rounded box with a hairline border. The EDIT child
-  // draws the text on screen; on the capture path (no children rendered) we
-  // draw it here so a screenshot still shows the address.
-  StrokeRounded(dc, layout.url_field, kFieldBg, kBorder, Scaled(kCornerRadius));
+  // Address field. In the sidebar it is a pill on the 4% wash with no border
+  // (SideAddressBar); in the top bar it is bare -- transparent until hovered on
+  // Mac -- so only the EDIT's text shows there. The capture path (no children
+  // rendered) draws the text itself so a screenshot still shows the address.
+  if (layout.mode == PhiLayoutMode::kPerformance) {
+    FillRounded(dc, layout.url_field, kFieldBg, Scaled(kCornerRadius));
+  }
   if (include_child_controls) {
     std::wstring shown = nav_url_;
     if (url_field_) {
@@ -1336,20 +1709,26 @@ void PhiWindowController::PaintChrome(HDC dc,
       }
       shown.assign(buffer.data());  // What the user actually sees, mid-edit.
     }
-    ::SetTextColor(dc, kLabel);
+    ::SetTextColor(dc, shown.empty() ? kLabelDim : kLabel);
     RECT url_rc = layout.url_field;
-    url_rc.left += Scaled(10);
-    url_rc.right -= Scaled(10);
-    ::DrawTextW(dc, shown.empty() ? L"Search or enter address" : shown.c_str(),
+    url_rc.left += Scaled(12);  // SideAddressBar.textFieldLeadingInset
+    url_rc.right -= Scaled(8);
+    ::DrawTextW(dc, shown.empty() ? L"Search or Enter URL" : shown.c_str(),
                 -1, &url_rc,
                 DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_PATH_ELLIPSIS);
   }
 
-  // Space chips, then the two "+" chips that create one.
+  // Space pips: 24pt, icon only. The selected one sits on a selected-pill
+  // card (SpacesStripView's matchedGeometry indicator); the trailing "+"
+  // creates a Space.
   for (const SpaceChip& chip : chips_) {
     const bool active = (chip.id == active_space_);
     if (active) {
       FillRounded(dc, chip.bounds, kRowSelectedBg, Scaled(kCornerRadius));
+      if (palette.dark) {
+        StrokeRounded(dc, chip.bounds, kRowSelectedBg, kActivePillBorder,
+                      Scaled(kCornerRadius));
+      }
     }
     ::SetTextColor(dc, active ? kLabel : kLabelDim);
     if (!chip.icon.empty() && emoji_font_) {
@@ -1358,52 +1737,75 @@ void PhiWindowController::PaintChrome(HDC dc,
                   DT_CENTER | DT_VCENTER | DT_SINGLELINE);
       ::SelectObject(dc, previous_emoji);
     } else {
-      ::DrawTextW(dc, chip.label.c_str(), -1, const_cast<RECT*>(&chip.bounds),
+      // No icon: the name's first character stands in (the pip has no room
+      // for the name itself).
+      const std::wstring initial =
+          chip.label.empty() ? std::wstring(L"?") : chip.label.substr(0, 1);
+      ::DrawTextW(dc, initial.c_str(), -1, const_cast<RECT*>(&chip.bounds),
                   DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     }
   }
   DrawGlyph(dc, layout.add_space, L"+", kLabelDim);
-  DrawGlyph(dc, layout.add_profile_space, L"\u29C9", kLabelDim);
 
-  // Tab rows: the active one gets the white rounded chip, each row a close box.
+  // Tab rows: a 32pt pill inside the 36pt row (2pt vertical padding), radius
+  // 8. The title is textPrimary whether active or not (SideTabView); only the
+  // pill marks the active tab. The close box rides the ACTIVE row -- the Mac
+  // shows it on hover, which GDI has no notion of yet.
   for (const TabRow& row : tabs_) {
-    if (row.active) {
-      FillRounded(dc, row.bounds, kRowSelectedBg, Scaled(kCornerRadius));
+    RECT pill = row.bounds;
+    if (!layout.horizontal_tabs) {
+      pill.top += Scaled(kRowPad);
+      pill.bottom -= Scaled(kRowPad);
     }
-    RECT favicon = {row.bounds.left + Scaled(10), 0,
-                    row.bounds.left + Scaled(10) + Scaled(kFaviconSize), 0};
-    const int mid = (row.bounds.top + row.bounds.bottom) / 2;
-    favicon.top = mid - Scaled(kFaviconSize) / 2;
-    favicon.bottom = favicon.top + Scaled(kFaviconSize);
+    if (row.active) {
+      FillRounded(dc, pill, kRowSelectedBg, Scaled(kCornerRadius));
+      if (palette.dark) {
+        StrokeRounded(dc, pill, kRowSelectedBg, kActivePillBorder,
+                      Scaled(kCornerRadius));
+      }
+    }
+    // A 14pt icon centred in the 16pt slot, 6pt from the pill's edge.
+    const int mid = (pill.top + pill.bottom) / 2;
+    RECT slot = {pill.left + Scaled(6), mid - Scaled(kFaviconSlot) / 2,
+                 pill.left + Scaled(6) + Scaled(kFaviconSlot),
+                 mid + Scaled(kFaviconSlot) / 2};
+    RECT icon = {slot.left + (Scaled(kFaviconSlot) - Scaled(kFaviconSize)) / 2,
+                 mid - Scaled(kFaviconSize) / 2, 0, 0};
+    icon.right = icon.left + Scaled(kFaviconSize);
+    icon.bottom = icon.top + Scaled(kFaviconSize);
     if (!row.favicon.empty()) {
-      DrawFavicon(dc, favicon, row.favicon.data(), row.favicon_width,
+      DrawFavicon(dc, icon, row.favicon.data(), row.favicon_width,
                   row.favicon_height,
                   row.active ? kRowSelectedBg : kTintTop);
     } else {
-      FillRounded(dc, favicon, kBorder, Scaled(4));  // Page has none (yet).
+      FillRounded(dc, icon, kBorder, Scaled(3));  // Page has none (yet).
     }
 
-    ::SetTextColor(dc, row.active ? kLabel : kLabelDim);
-    RECT title_rc = row.bounds;
-    title_rc.left = favicon.right + Scaled(8);
-    title_rc.right = row.close_box.left - Scaled(4);
+    ::SetTextColor(dc, kLabel);
+    RECT title_rc = pill;
+    title_rc.left = slot.right + Scaled(8);
+    title_rc.right =
+        (row.active ? row.close_box.left : pill.right) - Scaled(4);
     ::DrawTextW(dc, row.title.c_str(), -1, &title_rc,
                 DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-    DrawGlyph(dc, row.close_box, L"\u00D7", kLabelDim);
+    if (row.active) {
+      DrawGlyph(dc, row.close_box, L"\u00D7", kLabelDim);
+    }
   }
 
-  // Pinned tabs: square cells with the site's initial, standing in for the
-  // favicon until favicons are plumbed through.
+  // Pinned tabs: PinnedTabItem cells -- resting on the 4% wash, an 18pt
+  // favicon centred, radius 8. (The 2pt accent ring marks the OPEN pin on
+  // Mac; pins here have no live-tab binding yet.)
   for (const ShortcutRow& pin : pinned_) {
-    FillRounded(dc, pin.bounds, kRowSelectedBg, Scaled(kCornerRadius));
+    FillRounded(dc, pin.bounds, palette.hover, Scaled(kCornerRadius));
     if (!pin.favicon.empty()) {
-      const int size = Scaled(20);
+      const int size = Scaled(kPinnedFavicon);
       const int cx = (pin.bounds.left + pin.bounds.right) / 2;
       const int cy = (pin.bounds.top + pin.bounds.bottom) / 2;
       const RECT icon = {cx - size / 2, cy - size / 2, cx + size / 2,
                          cy + size / 2};
       DrawFavicon(dc, icon, pin.favicon.data(), pin.favicon_width,
-                  pin.favicon_height, kRowSelectedBg);
+                  pin.favicon_height, palette.hover);
     } else {
       ::SetTextColor(dc, kLabel);
       const std::wstring initial =
@@ -1413,44 +1815,72 @@ void PhiWindowController::PaintChrome(HDC dc,
     }
   }
 
-  // Bookmarks: rows above the open tabs, folders marked.
+  // Bookmarks: rows shaped like tab rows (BookmarkCellView) -- primary-label
+  // titles, folders marked with the disclosure glyph.
   for (const ShortcutRow& bookmark : bookmarks_) {
-    RECT row = bookmark.bounds;
+    RECT pill = bookmark.bounds;
+    pill.top += Scaled(kRowPad);
+    pill.bottom -= Scaled(kRowPad);
+    RECT text = pill;
+    const int mid = (pill.top + pill.bottom) / 2;
     if (!bookmark.favicon.empty()) {
-      RECT icon = {row.left + Scaled(10), 0,
-                   row.left + Scaled(10) + Scaled(kFaviconSize), 0};
-      const int mid = (row.top + row.bottom) / 2;
-      icon.top = mid - Scaled(kFaviconSize) / 2;
+      RECT icon = {pill.left + Scaled(6) +
+                       (Scaled(kFaviconSlot) - Scaled(kFaviconSize)) / 2,
+                   mid - Scaled(kFaviconSize) / 2, 0, 0};
+      icon.right = icon.left + Scaled(kFaviconSize);
       icon.bottom = icon.top + Scaled(kFaviconSize);
       DrawFavicon(dc, icon, bookmark.favicon.data(), bookmark.favicon_width,
                   bookmark.favicon_height, kTintTop);
-      row.left = icon.right + Scaled(8);
+      text.left = pill.left + Scaled(6) + Scaled(kFaviconSlot) + Scaled(8);
     } else {
-      row.left += Scaled(10);
+      text.left = pill.left + Scaled(6);
     }
-    ::SetTextColor(dc, kLabelDim);
+    ::SetTextColor(dc, kLabel);
     const std::wstring label =
         bookmark.folder ? (std::wstring(L"\u25B8  ") + bookmark.title)
                         : bookmark.title;
-    ::DrawTextW(dc, label.c_str(), -1, &row,
+    ::DrawTextW(dc, label.c_str(), -1, &text,
                 DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
   }
 
-  // "+ New Tab", the row that heads the Mac sidebar's tab list.
+  // "New Tab": the row heading the tab list -- a 16pt "+" 6pt in, an 8pt
+  // gap, the title in textTertiary (NewTabButtonCellView).
   if (layout.new_tab_row.right > layout.new_tab_row.left) {
-    RECT row = layout.new_tab_row;
-    row.left += Scaled(10);
-    ::SetTextColor(dc, kLabelDim);
-    ::DrawTextW(dc, L"+   New Tab", -1, &row,
+    const RECT& row = layout.new_tab_row;
+    const int mid = (row.top + row.bottom) / 2;
+    const RECT icon = {row.left + Scaled(6), mid - Scaled(8),
+                       row.left + Scaled(6) + Scaled(16), mid + Scaled(8)};
+    DrawGlyph(dc, icon, L"+", palette.label_tertiary);
+    RECT text = row;
+    text.left = icon.right + Scaled(8);
+    ::SetTextColor(dc, palette.label_tertiary);
+    ::DrawTextW(dc, L"New Tab", -1, &text,
                 DT_LEFT | DT_VCENTER | DT_SINGLELINE);
   }
 
-  // Bottom bar. Chat / downloads / memory are PLACEHOLDERS — drawn so the
-  // window reads like the Mac one, wired to nothing yet.
-  DrawGlyph(dc, layout.chat, L"\u25CB", kLabelDim);
-  DrawGlyph(dc, layout.downloads, L"\u2913", kLabelDim);
-  DrawGlyph(dc, layout.memory, L"\u25C7", kLabelDim);
-  DrawGlyph(dc, layout.settings, L"\u2699", kLabelDim);
+  // Bottom bar (SidebarBottomBar): downloads and memory leading, then the
+  // Feedback capsule (hairline border) and the Chat capsule (accent ground).
+  // All placeholders -- drawn so the window reads like the Mac one; their
+  // functions arrive later. There is NO settings gear here: settings opens
+  // from the menu bar, as on Mac.
+  DrawGlyph(dc, layout.downloads, L"\u2913", kLabel);
+  DrawGlyph(dc, layout.memory, L"\u25C7", kLabel);
+  if (layout.feedback.right > layout.feedback.left) {
+    const int pill_radius = layout.feedback.bottom - layout.feedback.top;
+    StrokeRounded(dc, layout.feedback, kTintBottom, kBorder, pill_radius);
+    ::SetTextColor(dc, kLabel);
+    RECT feedback_rc = layout.feedback;
+    ::DrawTextW(dc, L"\u2690  Feedback", -1, &feedback_rc,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+  }
+  if (layout.chat.right > layout.chat.left) {
+    const int pill_radius = layout.chat.bottom - layout.chat.top;
+    FillRounded(dc, layout.chat, palette.accent, pill_radius);
+    ::SetTextColor(dc, RGB(0xFF, 0xFF, 0xFF));
+    RECT chat_rc = layout.chat;
+    ::DrawTextW(dc, L"Chat", -1, &chat_rc,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+  }
 
   if (previous_font) {
     ::SelectObject(dc, previous_font);
@@ -1513,17 +1943,158 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
           self->host_) {
         const PhiPalette& palette =
             self->host_->PaletteForSlot(self->window_id_);
+        // In the sidebar the field rests on the 4% wash; in a top bar it sits
+        // bare on the bar's own ground.
+        const COLORREF bg =
+            self->layout_mode_ == PhiLayoutMode::kPerformance
+                ? palette.hover
+                : palette.window_bg;
         HDC edit_dc = reinterpret_cast<HDC>(wparam);
         ::SetTextColor(edit_dc, palette.label);
-        ::SetBkColor(edit_dc, palette.card);
-        if (!self->url_brush_ || self->url_brush_color_ != palette.card) {
+        ::SetBkColor(edit_dc, bg);
+        if (!self->url_brush_ || self->url_brush_color_ != bg) {
           if (self->url_brush_) {
             ::DeleteObject(self->url_brush_);
           }
-          self->url_brush_ = ::CreateSolidBrush(palette.card);
-          self->url_brush_color_ = palette.card;
+          self->url_brush_ = ::CreateSolidBrush(bg);
+          self->url_brush_color_ = bg;
         }
         return reinterpret_cast<LRESULT>(self->url_brush_);
+      }
+      break;
+    case WM_NCCALCSIZE:
+      // Claim the caption for the client area: only the resize borders stay
+      // non-client. The top edge keeps NO border — the caption band goes
+      // flush to it (WM_NCHITTEST serves HTTOP from the band's first pixels).
+      // BOTH wparam forms must be handled: the FIRST calc at creation comes
+      // with wparam FALSE (a bare RECT), and skipping it leaves the OS
+      // caption alive — its buttons then sit doubled above the band's.
+      if (self) {
+        RECT* rect =
+            wparam == TRUE
+                ? &reinterpret_cast<NCCALCSIZE_PARAMS*>(lparam)->rgrc[0]
+                : reinterpret_cast<RECT*>(lparam);
+        const UINT dpi = ::GetDpiForWindow(hwnd);
+        const int border_x =
+            ::GetSystemMetricsForDpi(SM_CXSIZEFRAME, dpi) +
+            ::GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
+        const int border_y =
+            ::GetSystemMetricsForDpi(SM_CYSIZEFRAME, dpi) +
+            ::GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
+        rect->left += border_x;
+        rect->right -= border_x;
+        rect->bottom -= border_y;
+        if (::IsZoomed(hwnd)) {
+          rect->top += border_y;  // Maximized frames overhang the monitor.
+        }
+        return 0;
+      }
+      break;
+    case WM_NCHITTEST: {
+      if (!self) {
+        break;
+      }
+      const LRESULT hit = ::DefWindowProcW(hwnd, msg, wparam, lparam);
+      if (hit != HTCLIENT) {
+        return hit;  // The real resize borders.
+      }
+      POINT pt = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+      ::ScreenToClient(hwnd, &pt);
+      const UINT dpi = ::GetDpiForWindow(hwnd);
+      const int border_y =
+          ::GetSystemMetricsForDpi(SM_CYSIZEFRAME, dpi) +
+          ::GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
+      if (!::IsZoomed(hwnd) && pt.y < border_y) {
+        return HTTOP;  // The band's first pixels still resize.
+      }
+      const int band_hit = self->CaptionHitTest(pt);
+      return band_hit ? band_hit : HTCLIENT;
+    }
+    case WM_NCLBUTTONDOWN:
+      // Swallow presses on our drawn caption buttons; the action fires on
+      // release over the same button, like the OS ones.
+      if (self && (wparam == HTMINBUTTON || wparam == HTMAXBUTTON ||
+                   wparam == HTCLOSE)) {
+        self->pressed_caption_ = static_cast<int>(wparam);
+        return 0;
+      }
+      break;
+    case WM_NCLBUTTONUP:
+      if (self && self->pressed_caption_ &&
+          static_cast<int>(wparam) == self->pressed_caption_) {
+        const int pressed = self->pressed_caption_;
+        self->pressed_caption_ = 0;
+        if (pressed == HTMINBUTTON) {
+          ::ShowWindow(hwnd, SW_MINIMIZE);
+        } else if (pressed == HTMAXBUTTON) {
+          ::ShowWindow(hwnd, ::IsZoomed(hwnd) ? SW_RESTORE : SW_MAXIMIZE);
+        } else {
+          ::PostMessageW(hwnd, WM_CLOSE, 0, 0);
+        }
+        return 0;
+      }
+      if (self) {
+        self->pressed_caption_ = 0;
+      }
+      break;
+    case WM_NCMOUSEMOVE:
+      if (self) {
+        self->SetCaptionHot(wparam == HTMINBUTTON || wparam == HTMAXBUTTON ||
+                                    wparam == HTCLOSE
+                                ? static_cast<int>(wparam)
+                                : 0);
+        // One leave notification when the mouse exits the frame entirely.
+        TRACKMOUSEEVENT track = {sizeof(track), TME_LEAVE | TME_NONCLIENT,
+                                 hwnd, 0};
+        ::TrackMouseEvent(&track);
+      }
+      break;
+    case WM_NCMOUSELEAVE:
+      if (self) {
+        self->SetCaptionHot(0);
+        self->SetMenuHot(-1);
+      }
+      break;
+    case WM_MOUSEMOVE:
+      if (self) {
+        self->SetCaptionHot(0);  // Client moves mean we left the buttons.
+        POINT pt = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+        int hot = -1;
+        const RECT band = self->ComputeLayout().title_bar;
+        if (::PtInRect(&band, pt)) {
+          self->EnsureMenuTitleRects();
+          for (size_t i = 0; i < self->menu_titles_.size(); ++i) {
+            if (::PtInRect(&self->menu_titles_[i].second, pt)) {
+              hot = static_cast<int>(i);
+              break;
+            }
+          }
+        }
+        self->SetMenuHot(hot);
+        TRACKMOUSEEVENT track = {sizeof(track), TME_LEAVE, hwnd, 0};
+        ::TrackMouseEvent(&track);
+      }
+      break;
+    case WM_MOUSELEAVE:
+      if (self) {
+        self->SetCaptionHot(0);
+        self->SetMenuHot(-1);
+      }
+      break;
+    case WM_INITMENUPOPUP:
+      // A menu is about to drop down — refresh its dynamic rows and enable
+      // states, the Win32 twin of the Mac's menuWillOpen rebuilds.
+      if (self && self->menu_bar_) {
+        self->menu_bar_->OnMenuOpening(reinterpret_cast<HMENU>(wparam));
+        return 0;
+      }
+      break;
+    case WM_COMMAND:
+      // lparam == 0 filters out child-control notifications (the address
+      // field's EN_* arrive here too, carrying its HWND).
+      if (self && lparam == 0 && HIWORD(wparam) == 0 && self->menu_bar_ &&
+          self->menu_bar_->OnCommand(LOWORD(wparam))) {
+        return 0;
       }
       break;
     case WM_RBUTTONUP:

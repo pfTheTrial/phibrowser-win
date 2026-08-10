@@ -19,7 +19,7 @@ function useLayout(l) {
   DPI = l.dpi
   TABS_TOP = l.tabsTop
   ROW_H = l.rowHeight
-  ROW_GAP = 0
+  ROW_GAP = l.rowGap || 0  // The Mac's 2pt intercell gap; published, not mirrored.
   SCAN_XS = SCAN_XS_D.map((x) => scale(x))
   SCAN_STEP = Math.max(3, scale(3))
 }

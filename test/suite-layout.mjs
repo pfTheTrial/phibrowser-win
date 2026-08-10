@@ -28,7 +28,7 @@ async function useLayout(ctl, windowId, mode) {
   assertEq(l.mode, mode, `window reports ${mode}`)
   assert(l.dpi >= 96, `window reports its dpi (${l.dpi})`)
   return { ...l.content, sidebar: scaled(SIDEBAR_DESIGN, l.dpi), dpi: l.dpi,
-           margin: l.contentMargin }
+           margin: l.contentMargin, titleBar: l.titleBar || 0 }
 }
 
 test('layout: defaults to performance, the Mac default', async () => {
@@ -56,10 +56,14 @@ test('layout: performance keeps the sidebar and gives it the full height', async
   try {
     const windowId = await firstWindow(ctl)
     const content = await useLayout(ctl, windowId, 'performance')
-    assert(content.x > content.sidebar,
-           `content card floats clear of the sidebar (${content.x} > ${content.sidebar})`)
-    assertEq(content.y, content.margin,
-             'nothing above the content but the card margin')
+    // The card sits FLUSH against the sidebar — the Mac's 0pt leading gutter
+    // while the sidebar is expanded (WebContentViewController).
+    assertEq(content.x, content.sidebar,
+             'content card flush against the sidebar')
+    // Above the card: the caption band (menu + window buttons share one row)
+    // and the titleAwareArea breath (8, = the margin).
+    assertEq(content.y, content.titleBar + content.margin,
+             'caption band + breath above the card')
     assert(content.width > 0 && content.height > 0, 'content is non-empty')
   } finally { ctl.close() }
 })
@@ -70,7 +74,7 @@ test('layout: balanced keeps the sidebar and adds a bar above the content', asyn
     const windowId = await firstWindow(ctl)
     const perf = await useLayout(ctl, windowId, 'performance')
     const balanced = await useLayout(ctl, windowId, 'balanced')
-    assert(balanced.x > balanced.sidebar, 'sidebar still there')
+    assertEq(balanced.x, balanced.sidebar, 'sidebar still there, card flush')
     assert(balanced.y > balanced.margin,
            `address bar sits above the content (y=${balanced.y})`)
     assertEq(balanced.width, perf.width, 'same content width as performance')

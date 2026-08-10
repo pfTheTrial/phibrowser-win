@@ -18,6 +18,7 @@
 #include "base/logging.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
+#include "phibrowser-win/client/phi_menu_bar.h"
 
 namespace phi_client {
 
@@ -325,12 +326,14 @@ std::string PhiCoordinator::PinnedJson(int64_t slot) const {
   return json;
 }
 
-std::string PhiCoordinator::BookmarksJson(int64_t slot) const {
+std::string PhiCoordinator::BookmarksJson(
+    int64_t slot,
+    const std::string& parent_guid) const {
   std::string profile_id, space_id;
   base::ListValue list;
   if (OwnerForSlot(slot, &profile_id, &space_id)) {
     for (const PhiRow& row :
-         tab_store_.BookmarksFor(profile_id, space_id, std::string())) {
+         tab_store_.BookmarksFor(profile_id, space_id, parent_guid)) {
       base::DictValue entry;
       entry.Set("guid", row.guid);
       entry.Set("title", row.title);
@@ -350,6 +353,37 @@ std::string PhiCoordinator::BookmarksJson(int64_t slot) const {
 void PhiCoordinator::RequestOpen(int64_t slot, const std::string& url) {
   if (framework_ && !url.empty()) {
     framework_->NewTab(ResolveBrowser(slot), url.c_str());
+  }
+}
+
+void PhiCoordinator::RequestBookmarkActiveTab(int64_t slot) {
+  std::string profile_id, space_id;
+  if (!framework_ || !OwnerForSlot(slot, &profile_id, &space_id)) {
+    return;
+  }
+  std::string title, url;
+  std::optional<base::DictValue> state = base::JSONReader::ReadDict(
+      framework_->NavStateJson(ResolveBrowser(slot)), base::JSON_PARSE_RFC);
+  if (state) {
+    if (const std::string* u = state->FindString("url")) {
+      url = *u;
+    }
+    if (const std::string* t = state->FindString("title")) {
+      title = *t;
+    }
+  }
+  if (url.empty()) {
+    return;  // Nothing to bookmark (the Mac disables the item then).
+  }
+  int fw = 0, fh = 0;
+  const std::string favicon = CaptureFavicon(slot, &fw, &fh);
+  const std::string guid =
+      tab_store_.AddBookmark(profile_id, space_id, std::string(), title, url,
+                             /*folder=*/false, favicon, fw, fh);
+  if (!guid.empty()) {
+    for (const auto& [s, controller] : windows_) {
+      controller->RefreshTabs();
+    }
   }
 }
 
@@ -1395,6 +1429,8 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
       out.Set("urlField", std::move(field));
       out.Set("tabsTop", it->second->tabs_top());
       out.Set("rowHeight", it->second->tab_row_height());
+      out.Set("rowGap", it->second->tab_row_gap());
+      out.Set("titleBar", it->second->title_bar_height());
       out.Set("sidebarWidth", it->second->sidebar_width());
       out.Set("contentMargin", it->second->content_margin());
       const POINT frame = it->second->frame_offset();
@@ -1405,6 +1441,57 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
     } else {
       out.Set("ok", false);
     }
+  } else if (type == "agentSpace.menu.list") {
+    // The shell window's menu bar as the user would see it, dynamic rows
+    // included — the automated stand-in for opening each menu by hand.
+    std::optional<base::DictValue> p =
+        base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
+    int64_t slot =
+        p ? static_cast<int64_t>(p->FindDouble("windowId").value_or(0)) : 0;
+    auto it = windows_.find(slot);
+    if (it == windows_.end() && slot == 0 && !windows_.empty()) {
+      it = windows_.begin();  // No windowId: the first window's bar.
+    }
+    PhiWindowController* controller =
+        it != windows_.end() ? it->second.get() : nullptr;
+    if (controller && controller->menu_bar()) {
+      std::optional<base::Value> menus = base::JSONReader::Read(
+          controller->menu_bar()->ListJson(), base::JSON_PARSE_RFC);
+      if (menus) {
+        out.Set("menus", std::move(*menus));
+        out.Set("ok", true);
+      } else {
+        out.Set("ok", false);
+      }
+    } else {
+      out.Set("ok", false);
+    }
+  } else if (type == "agentSpace.menu.click") {
+    // Activates a menu item by its title path, e.g. ["File","New Tab"] or
+    // ["Spaces","Edit Theme","Mint"]. Disabled items refuse, as a real click
+    // would.
+    std::optional<base::DictValue> p =
+        base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
+    int64_t slot =
+        p ? static_cast<int64_t>(p->FindDouble("windowId").value_or(0)) : 0;
+    std::vector<std::string> path;
+    if (p) {
+      if (const base::ListValue* list = p->FindList("path")) {
+        for (const base::Value& v : *list) {
+          if (v.is_string()) {
+            path.push_back(v.GetString());
+          }
+        }
+      }
+    }
+    auto it = windows_.find(slot);
+    if (it == windows_.end() && slot == 0 && !windows_.empty()) {
+      it = windows_.begin();
+    }
+    PhiWindowController* controller =
+        it != windows_.end() ? it->second.get() : nullptr;
+    out.Set("ok", controller && controller->menu_bar() && !path.empty() &&
+                      controller->menu_bar()->InvokePath(path));
   } else if (type == "agentSpace.window.handle") {
     // The slot's shell HWND, so a test/screenshot tool can capture exactly the
     // window it is driving (several slots may exist).

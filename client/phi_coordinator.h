@@ -63,8 +63,10 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   const PhiPalette& PaletteForSlot(int64_t slot) const override;
   void RequestSettings() override;
   std::string PinnedJson(int64_t slot) const override;
-  std::string BookmarksJson(int64_t slot) const override;
+  std::string BookmarksJson(int64_t slot,
+                            const std::string& parent_guid) const override;
   void RequestOpen(int64_t slot, const std::string& url) override;
+  void RequestBookmarkActiveTab(int64_t slot) override;
 
   // PhiSettingsHost:
   std::string ThemeId() const override;

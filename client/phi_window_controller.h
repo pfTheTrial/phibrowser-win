@@ -9,7 +9,9 @@
 
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "base/memory/raw_ptr_exclusion.h"
@@ -51,9 +53,14 @@ class PhiSlotHost {
   // Pinned tabs and bookmarks for the slot, as JSON arrays:
   //   [{"guid","title","url","folder"?},…]
   virtual std::string PinnedJson(int64_t slot) const = 0;
-  virtual std::string BookmarksJson(int64_t slot) const = 0;
+  // Bookmark rows under `parent_guid` (empty = the root), so the menu bar can
+  // descend into folders the way the Mac's Bookmarks menu does.
+  virtual std::string BookmarksJson(int64_t slot,
+                                    const std::string& parent_guid) const = 0;
   // Opens `url` in the slot (a pinned tab or bookmark was clicked).
   virtual void RequestOpen(int64_t slot, const std::string& url) = 0;
+  // Bookmarks the slot's active tab — the menu bar's Bookmark This Tab.
+  virtual void RequestBookmarkActiveTab(int64_t slot) = 0;
   // The app-wide resolved theme.
   virtual const PhiPalette& Palette() const = 0;
   // The theme THIS SLOT paints with: a Space may pin its own (the Mac's
@@ -67,6 +74,8 @@ class PhiSlotHost {
   // Opens the settings window (theme, appearance, layout).
   virtual void RequestSettings() = 0;
 };
+
+class PhiMenuBar;
 
 // Owns the client-drawn shell window for one browser (the Windows twin of the
 // Mac MainBrowserWindowController), using the Option-B model
@@ -133,6 +142,10 @@ class PhiWindowController {
   // Gives the currently shown browser Win32 focus and Chromium activation.
   void FocusActiveBrowser();
 
+  // The shell window's menu bar (null before the shell exists). The control
+  // socket reads and clicks it through here.
+  PhiMenuBar* menu_bar() { return menu_bar_.get(); }
+
   // Re-lays the chrome for `mode` and repaints. Cheap: all geometry is derived
   // from the client rect on demand, so nothing is cached across the switch.
   void ApplyLayoutMode(PhiLayoutMode mode);
@@ -148,7 +161,13 @@ class PhiWindowController {
   RECT url_field_rect();
   int tabs_top();
   int tab_row_height() const;
+  // The gap between rows (the Mac's 2pt intercell spacing); row pitch is
+  // tab_row_height() + tab_row_gap().
+  int tab_row_gap() const;
   int sidebar_width() const;
+  // The caption band's height — the row holding the menu titles and the
+  // caption buttons. Everything else starts below it.
+  int title_bar_height() const;
   // The tinted margin around the content card.
   int content_margin() const;
   // Client origin minus window origin. PrintWindow(PW_CLIENTONLY) renders from
@@ -168,6 +187,10 @@ class PhiWindowController {
                                        LPARAM lparam);
 
  private:
+  // The menu bar drives navigation, tabs and Spaces through the controller's
+  // own internals — it is this class's UI, split into its own file for size.
+  friend class PhiMenuBar;
+
   // Every constant in this class is a DESIGN UNIT — a pixel at 100% scaling.
   // Win32 places windows and paints in PHYSICAL pixels, and the client is
   // per-monitor DPI aware (it inherits Chrome's manifest), so nothing reaches
@@ -185,6 +208,11 @@ class PhiWindowController {
   struct Layout {
     PhiLayoutMode mode = PhiLayoutMode::kPerformance;
     RECT client{};
+    // The caption band: menu titles leading, then drag space, then the three
+    // caption buttons. The OS caption is gone (WM_NCCALCSIZE) — this row IS
+    // the title bar, so the menu shares it with minimize / maximize / close.
+    RECT title_bar{};
+    RECT caption_min{}, caption_max{}, caption_close{};
     RECT sidebar{};  // Empty in Comfortable.
     RECT top_bar{};  // The band above the content; empty in Performance.
     RECT content{};  // Where the reparented browser child goes.
@@ -197,8 +225,12 @@ class PhiWindowController {
     RECT favorites{};      // Pinned-tab band; empty until the feature lands.
     RECT new_tab_row{};    // The sidebar's "+ New Tab" row.
     RECT bottom_bar{};
-    RECT chat{}, downloads{}, memory{}, settings{};
-    RECT add_space{}, add_profile_space{};  // "+" chips at the strip's end.
+    // Bottom-bar buttons, the Mac's order: downloads and memory leading, the
+    // Feedback and Chat capsules trailing. Settings has NO bottom-bar button —
+    // it opens from the menu bar, as on Mac. All placeholders except through
+    // the menu.
+    RECT downloads{}, memory{}, feedback{}, chat{};
+    RECT add_space{};      // The strip's trailing "+" chip.
     int chips_left = 0, chips_top = 0;
     int chips_limit = 0;  // Right edge chips may not cross.
     int tabs_left = 0, tabs_top = 0;
@@ -215,6 +247,16 @@ class PhiWindowController {
   // set only on the WM_PRINTCLIENT (PrintWindow) path, which renders the
   // parent alone. In WM_PAINT the URL field's EDIT child paints that region.
   void PaintChrome(HDC dc, const Layout& layout, bool include_child_controls);
+  // The caption band's menu titles, measured for the current DPI: one rect
+  // per top-level menu, in bar order. Rebuilt when the DPI changes.
+  void EnsureMenuTitleRects();
+  // What a point in the caption band hits: HTCLOSE / HTMAXBUTTON /
+  // HTMINBUTTON, HTCLIENT over a menu title, HTCAPTION anywhere else in the
+  // band, 0 below it.
+  int CaptionHitTest(POINT client_pt);
+  // Hot-state setters; each repaints the band when the state changes.
+  void SetCaptionHot(int code);
+  void SetMenuHot(int index);
   // Handles a click in the chrome (tab rows, close boxes, buttons, toolbar).
   void OnChromeClick(int x, int y);
   // Right-click in the chrome. On a Space chip this raises the Mac's Space
@@ -264,7 +306,21 @@ class PhiWindowController {
   // a much larger change than the icons are worth right now.
   HFONT emoji_font_ = nullptr;
   UINT emoji_font_dpi_ = 0;
+  // Segoe MDL2 Assets for the caption glyphs (minimize / maximize / restore /
+  // close) — the same glyphs the OS buttons use.
+  HFONT caption_font_ = nullptr;
+  UINT caption_font_dpi_ = 0;
   UINT dpi_ = 96;
+
+  // Caption-band state: which caption button is hot / pressed (an HT* code,
+  // 0 = none) and which menu title is hot (-1 = none). Purely visual except
+  // pressed_caption_, which arms the button-up action.
+  int hot_caption_ = 0;
+  int pressed_caption_ = 0;
+  int hot_menu_ = -1;
+  // Menu titles with their band rects, measured for menu_titles_dpi_.
+  std::vector<std::pair<std::wstring, RECT>> menu_titles_;
+  UINT menu_titles_dpi_ = 0;
 
   // One rendered tab row: what to draw and what a click at that row does.
   struct TabRow {
@@ -315,6 +371,7 @@ class PhiWindowController {
   std::string active_space_;
   int64_t active_browser_ = 0;
   HWND shell_hwnd_ = nullptr;  // Our client-owned top-level.
+  std::unique_ptr<PhiMenuBar> menu_bar_;  // Attached to shell_hwnd_.
   // Owned by the framework (a singleton in chrome.dll); non-owning, and across
   // a module boundary, so not a raw_ptr.
   RAW_PTR_EXCLUSION phi_framework::PhiFramework* const framework_;
@@ -329,11 +386,7 @@ class PhiWindowController {
   };
   std::vector<SpaceChip> chips_;
   RECT add_space_button_{};
-  RECT add_profile_space_button_{};
   PhiLayoutMode layout_mode_ = PhiLayoutMode::kPerformance;
-  // Placeholder affordances: drawn so the window reads like the Mac one, wired
-  // to nothing yet (chat, downloads, memory, pinned favourites).
-  static constexpr bool kPlaceholderAffordances = true;
 };
 
 }  // namespace phi_client
