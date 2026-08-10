@@ -78,10 +78,11 @@ constexpr int kContentTopGapTopNav = 12;
 constexpr int kFaviconSlot = 16;    // The 16pt slot in the row…
 constexpr int kFaviconSize = 14;    // …holding a 14pt icon (radius 3).
 constexpr int kNewTabRowHeight = 36;
-// Pinned tabs: PinnedTabLayout — 45pt cells, 8pt gaps and insets, columns by
-// width breakpoint (3 at this sidebar width).
+// Pinned tabs: PinnedTabLayout — 45pt cells, 8pt gaps and insets, column
+// limit by width breakpoint (3 at this sidebar width), 53pt minimum width.
 constexpr int kPinnedCellHeight = 45;
 constexpr int kPinnedGap = 8;
+constexpr int kPinnedMinWidth = 53;
 constexpr int kPinnedFavicon = 18;
 
 // Bands used by the two layouts that put navigation above the web content.
@@ -1366,13 +1367,23 @@ void PhiWindowController::RebuildShortcuts() {
   bookmark_row_count_ = static_cast<int>(bookmarks_.size());
 
   // Pinned tabs form the Mac's grid (PinnedTabLayout): 45pt cells, 8pt gaps
-  // and insets, column count by width breakpoint (decisionWidth = width − 8:
-  // under 236 → 3 columns, under 294 → 4, under 352 → 5, else 6).
+  // and insets. The width breakpoint (decisionWidth = width − 8: under 236 →
+  // 3, under 294 → 4, under 352 → 5, else 6) is only the column LIMIT — the
+  // column count is min(limit, pins), shrunk while a cell would dip under the
+  // 53pt minimum, and cells STRETCH to fill the row: a lone pin spans the
+  // sidebar, two pins split it in half.
   const int decision = kSidebarWidth - 8;
-  const int columns = decision < 236 ? 3
-                      : decision < 294 ? 4
-                      : decision < 352 ? 5
-                                       : 6;
+  const int column_limit = decision < 236 ? 3
+                           : decision < 294 ? 4
+                           : decision < 352 ? 5
+                                            : 6;
+  const int avail = kSidebarWidth - 2 * kEdgeInset;
+  int columns =
+      std::max(1, std::min(column_limit, static_cast<int>(pinned_.size())));
+  while (columns > 1 &&
+         (avail - (columns - 1) * kPinnedGap) / columns < kPinnedMinWidth) {
+    --columns;
+  }
   pinned_row_count_ =
       (static_cast<int>(pinned_.size()) + columns - 1) / columns;
   // Derived only now: the two bands' sizes feed back into where everything
@@ -1380,16 +1391,18 @@ void PhiWindowController::RebuildShortcuts() {
   const Layout layout = ComputeLayout();
   const int cell_h = Scaled(kPinnedCellHeight);
   const int gap = Scaled(kPinnedGap);
-  const int cell_w =
-      (Scaled(kSidebarWidth) - 2 * Scaled(kEdgeInset) - (columns - 1) * gap) /
-      columns;
+  // Both cell edges come from dividing the row span per column, not from one
+  // truncated cell width: the rounding remainder spreads across the row and
+  // the last edge lands exactly on the inset, like the Mac's float division.
+  const int row_span =
+      Scaled(kSidebarWidth) - 2 * Scaled(kEdgeInset) - (columns - 1) * gap;
   for (size_t i = 0; i < pinned_.size(); ++i) {
     const int col = static_cast<int>(i) % columns;
     const int row_index = static_cast<int>(i) / columns;
-    const int x = layout.favorites.left + Scaled(kEdgeInset) +
-                  col * (cell_w + gap);
+    const int band = layout.favorites.left + Scaled(kEdgeInset) + col * gap;
     const int y = layout.favorites.top + gap + row_index * (cell_h + gap);
-    pinned_[i].bounds = {x, y, x + cell_w, y + cell_h};
+    pinned_[i].bounds = {band + col * row_span / columns, y,
+                         band + (col + 1) * row_span / columns, y + cell_h};
   }
 
   // Bookmarks are ordinary rows above the open tabs (36pt + the 2pt gap).
