@@ -3,9 +3,10 @@
 // this client has state to back them.
 import { test, run, assert, assertEq, sleep, openControl } from './phi-test.mjs'
 
-// The Mac's PaneIdentifiers, in its order.
-const MAC_PANES = ['general', 'spaces', 'profiles', 'shortcuts', 'ai',
-                   'account', 'developer']
+// The Mac's panes() list, in its order (AppController+Settings.swift):
+// Account, General, Profiles, Spaces, AI, Phi Link, Shortcuts, Developer.
+const MAC_PANES = ['account', 'general', 'profiles', 'spaces', 'ai',
+                   'phiLink', 'shortcuts', 'developer']
 
 test('settings: every Mac pane is offered, in order', async () => {
   const ctl = await openControl()

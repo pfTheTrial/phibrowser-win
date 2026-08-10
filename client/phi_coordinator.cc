@@ -1225,8 +1225,9 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
     // Everything the settings window shows, in one read.
     out.Set("section", PhiSettingsWindow::CurrentSection());
     base::ListValue sections;
-    for (const char* name : {"general", "spaces", "profiles", "shortcuts", "ai",
-                             "account", "developer"}) {
+    // The Mac's panes(), in its order.
+    for (const char* name : {"account", "general", "profiles", "spaces", "ai",
+                             "phiLink", "shortcuts", "developer"}) {
       sections.Append(name);
     }
     out.Set("sections", std::move(sections));

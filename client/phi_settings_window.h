@@ -54,8 +54,11 @@ class PhiSettingsHost {
   virtual void CreateProfileNamed(const std::string& name) = 0;
 };
 
-// The settings window: a section list on the left, that section's rows on the
-// right — the shape of the Mac's Preferences (Settings.swift's panes). A real
+// The settings window, shaped like the Mac's Preferences: a TOOLBAR of panes
+// across the top (SettingsWindowController is created with style:
+// .toolbarItems — not a sidebar), and below it sections, each a small title
+// over a rounded CARD holding its rows (GeneralSectionView wrapping a
+// GeneralContainerView; label left, control trailing). A real
 // top-level window, NOT an overlay inside a shell: the content region belongs
 // to Chromium's DirectComposition surface, which composites above anything GDI
 // draws there (windows-framework-design.md — the falsified overlay approach).
@@ -82,10 +85,11 @@ class PhiSettingsWindow {
   // One drawn thing. Rows are built per section and hit-tested from the same
   // list, so what is drawn and what is clickable cannot drift apart.
   enum class ItemKind {
-    kSectionHeader,
+    kToolbarItem,    // A pane, in the toolbar across the top.
+    kCard,           // The well a section's rows sit in.
+    kSectionTitle,   // Small secondary label ABOVE a card.
     kRowLabel,
     kHint,
-    kNavEntry,
     kChip,
     kSwatch,
     kToggle,
@@ -110,10 +114,17 @@ class PhiSettingsWindow {
   void BuildSpaces(int* y);
   void BuildProfiles(int* y);
   void BuildPlaceholder(int* y, const wchar_t* text);
-  void AddHeader(int* y, const wchar_t* text);
+  // A section = a small title, then a card holding its rows. BeginSection
+  // remembers where the card starts; EndSection sizes it around the rows that
+  // were added, the way the Mac's GeneralSectionView wraps a
+  // GeneralContainerView.
+  void BeginSection(int* y, const wchar_t* title);
+  void EndSection(int* y);
   void AddHint(int* y, const wchar_t* text);
-  // A titled row; returns the rect its control occupies (the right column).
-  RECT AddRow(int* y, const wchar_t* title, int height);
+  // A row inside the open card; returns the rect its control occupies,
+  // RIGHT-ALIGNED as on Mac (label left, Spacer, accessory trailing).
+  RECT AddRow(int* y, const wchar_t* title, int control_height,
+              int control_width);
   void AddChips(const RECT& area,
                 const std::vector<std::wstring>& labels,
                 int selected_index,
@@ -129,10 +140,13 @@ class PhiSettingsWindow {
   HWND hwnd_ = nullptr;
   HFONT font_ = nullptr;
   HFONT title_font_ = nullptr;
+  HFONT small_font_ = nullptr;  // Section titles and toolbar labels.
   UINT font_dpi_ = 0;
   UINT dpi_ = 96;
   std::string section_ = "general";
   std::vector<Item> items_;
+  // Index of the card being filled, so EndSection can size it.
+  size_t open_card_ = 0;
 };
 
 }  // namespace phi_client
