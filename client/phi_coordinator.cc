@@ -25,8 +25,22 @@
 
 namespace phi_client {
 
-PhiCoordinator::PhiCoordinator() = default;
-PhiCoordinator::~PhiCoordinator() = default;
+namespace {
+// The one coordinator, reachable from the static keyboard hook. The client
+// creates exactly one for the process lifetime.
+PhiCoordinator* g_coordinator = nullptr;
+}  // namespace
+
+PhiCoordinator::PhiCoordinator() {
+  g_coordinator = this;
+}
+
+PhiCoordinator::~PhiCoordinator() {
+  if (keyboard_hook_) {
+    ::UnhookWindowsHookEx(keyboard_hook_);
+  }
+  g_coordinator = nullptr;
+}
 
 namespace {
 constexpr wchar_t kMsgClassName[] = L"PhiClientControlMsg";
@@ -60,6 +74,12 @@ void PhiCoordinator::OnFrameworkReady(phi_framework::PhiFramework* framework,
   msg_hwnd_ = ::CreateWindowExW(0, kMsgClassName, L"", 0, 0, 0, 0, 0,
                                 HWND_MESSAGE, nullptr,
                                 ::GetModuleHandleW(nullptr), this);
+
+  // Menu-bar accelerators. Keys land in the focused window — the browser
+  // child while browsing — so a plain WM_KEYDOWN handler on the shell never
+  // sees them; a thread-scoped hook on the UI thread does, before dispatch.
+  keyboard_hook_ = ::SetWindowsHookExW(WH_KEYBOARD, &KeyboardHookProc,
+                                       nullptr, ::GetCurrentThreadId());
 
   const std::wstring user_data_dir =
       base::UTF8ToWide(user_data_dir_utf8 ? user_data_dir_utf8 : "");
@@ -412,6 +432,26 @@ void PhiCoordinator::RequestStoreTab(int64_t slot, int index,
 
 void PhiCoordinator::RemoveStoredRow(const std::string& guid) {
   if (tab_store_.Remove(guid)) {
+    // Clear the identity tag from any tab bound to the removed row — it
+    // returns to the tab list as a normal tab, and a stale tag would keep
+    // it excluded from tab groups (the Phi-managed rule).
+    if (framework_) {
+      for (const auto& [browser_id, slot] : browser_to_slot_) {
+        std::optional<base::Value> parsed = base::JSONReader::Read(
+            framework_->ListTabsJson(browser_id), base::JSON_PARSE_RFC);
+        if (!parsed || !parsed->is_list()) {
+          continue;
+        }
+        for (const base::Value& v : parsed->GetList()) {
+          const base::DictValue* d = v.GetIfDict();
+          const std::string* tag = d ? d->FindString("tag") : nullptr;
+          if (tag && *tag == guid) {
+            framework_->SetTabTag(browser_id,
+                                  d->FindInt("index").value_or(-1), "");
+          }
+        }
+      }
+    }
     for (const auto& [s2, controller] : windows_) {
       controller->RefreshTabs();
     }
@@ -1491,11 +1531,11 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
         guid = *g;
       }
     }
-    const bool ok = tab_store_.Remove(guid);
+    // Route through RemoveStoredRow: it also clears the identity tag from
+    // any tab bound to the row (verb and UI paths must behave alike).
+    const bool ok = !guid.empty() && tab_store_.Contains(guid);
     if (ok) {
-      for (const auto& [s, controller] : windows_) {
-        controller->RefreshTabs();
-      }
+      RemoveStoredRow(guid);
     }
     out.Set("ok", ok);
   } else if (type == "agentSpace.emoji.groups") {
@@ -2043,6 +2083,73 @@ void PhiCoordinator::OnBrowserWindowCreated(int64_t window_id, void* hwnd) {
   controller->RefreshTabs();
   windows_[window_id] = std::move(controller);
   browser_to_slot_[window_id] = window_id;
+}
+
+HWND PhiCoordinator::ShellForFocus() const {
+  HWND focus = ::GetFocus();
+  if (!focus) {
+    return nullptr;
+  }
+  HWND root = ::GetAncestor(focus, GA_ROOT);
+  for (const auto& [slot, controller] : windows_) {
+    if (controller->shell_hwnd() == root) {
+      return root;
+    }
+  }
+  return nullptr;
+}
+
+// static
+LRESULT CALLBACK PhiCoordinator::KeyboardHookProc(int code,
+                                                  WPARAM wparam,
+                                                  LPARAM lparam) {
+  if (code != HC_ACTION || (lparam & 0x80000000) ||  // Key-up.
+      (lparam & 0x20000000)) {                       // Alt held.
+    return ::CallNextHookEx(nullptr, code, wparam, lparam);
+  }
+  PhiCoordinator* self = g_coordinator;
+  if (!self) {
+    return ::CallNextHookEx(nullptr, code, wparam, lparam);
+  }
+  const bool ctrl = (::GetKeyState(VK_CONTROL) & 0x8000) != 0;
+  const bool shift = (::GetKeyState(VK_SHIFT) & 0x8000) != 0;
+  // The menu bar's displayed shortcuts, reserved the way Chrome reserves
+  // its browser shortcuts (they fire even while a page has focus). Edit
+  // keys (Ctrl+C/V/X/Z/A/F...) stay with the web content.
+  struct Accelerator {
+    UINT vk;
+    bool ctrl;
+    bool shift;
+    UINT command;
+  };
+  static constexpr Accelerator kAccelerators[] = {
+      {'T', true, false, kCmdNewTab},
+      {'N', true, false, kCmdNewWindow},
+      {'N', true, true, kCmdNewIncognitoWindow},
+      {'T', true, true, kCmdReopenClosedTab},
+      {'W', true, false, kCmdCloseTab},
+      {'W', true, true, kCmdCloseWindow},
+      {'L', true, false, kCmdOpenLocation},
+      {'R', true, false, kCmdReload},
+      {'R', true, true, kCmdForceReload},
+      {VK_F5, false, false, kCmdReload},
+      {'D', true, false, kCmdBookmarkThisTab},
+      {VK_OEM_COMMA, true, false, kCmdPreferences},
+      {VK_TAB, true, false, kCmdNextTab},
+      {VK_TAB, true, true, kCmdPreviousTab},
+  };
+  for (const Accelerator& accel : kAccelerators) {
+    if (accel.vk != static_cast<UINT>(wparam) || accel.ctrl != ctrl ||
+        accel.shift != shift) {
+      continue;
+    }
+    if (HWND shell = self->ShellForFocus()) {
+      ::PostMessageW(shell, WM_COMMAND, MAKEWPARAM(accel.command, 0), 0);
+      return 1;  // Swallow: Chromium must not double-handle it.
+    }
+    break;
+  }
+  return ::CallNextHookEx(nullptr, code, wparam, lparam);
 }
 
 void PhiCoordinator::OnTabsChanged(int64_t window_id) {

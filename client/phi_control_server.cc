@@ -10,6 +10,8 @@
 #include <winsock2.h>  // Must precede windows.h (via the header) for Winsock 2.
 #include <ws2tcpip.h>
 
+#include <sddl.h>
+
 #include "phibrowser-win/client/phi_control_server.h"
 
 #include <algorithm>
@@ -275,10 +277,21 @@ void PhiControlServer::Start(const std::wstring& user_data_dir,
 
 void PhiControlServer::ListenLoop() {
   for (;;) {
+    // Owner + SYSTEM + admins only, and never remote: the default pipe DACL
+    // lets other local users connect to an unauthenticated control surface.
+    PSECURITY_DESCRIPTOR sd = nullptr;
+    ::ConvertStringSecurityDescriptorToSecurityDescriptorW(
+        L"D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;OW)", SDDL_REVISION_1, &sd,
+        nullptr);
+    SECURITY_ATTRIBUTES sa = {sizeof(sa), sd, FALSE};
     HANDLE pipe = ::CreateNamedPipeW(
         pipe_name_.c_str(), PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
-        PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
-        PIPE_UNLIMITED_INSTANCES, kBufSize, kBufSize, 0, nullptr);
+        PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT |
+            PIPE_REJECT_REMOTE_CLIENTS,
+        PIPE_UNLIMITED_INSTANCES, kBufSize, kBufSize, 0, sd ? &sa : nullptr);
+    if (sd) {
+      ::LocalFree(sd);
+    }
     if (pipe == INVALID_HANDLE_VALUE) {
       LOG(ERROR) << "[PhiControl] CreateNamedPipe failed err="
                  << ::GetLastError();

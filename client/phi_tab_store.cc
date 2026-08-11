@@ -160,15 +160,29 @@ void PhiTabStore::Save() const {
   std::string json;
   base::JSONWriter::Write(root, &json);
 
-  HANDLE file = ::CreateFileW(path_.c_str(), GENERIC_WRITE, 0, nullptr,
+  // Write-temp-then-replace: overwriting the live file in place would
+  // truncate EVERY pin and bookmark on a crash or power cut mid-write.
+  const std::wstring temp_path = path_ + L".tmp";
+  HANDLE file = ::CreateFileW(temp_path.c_str(), GENERIC_WRITE, 0, nullptr,
                               CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
   if (file == INVALID_HANDLE_VALUE) {
     return;
   }
   DWORD wrote = 0;
-  ::WriteFile(file, json.data(), static_cast<DWORD>(json.size()), &wrote,
-              nullptr);
+  const BOOL written = ::WriteFile(
+      file, json.data(), static_cast<DWORD>(json.size()), &wrote, nullptr);
+  ::FlushFileBuffers(file);
   ::CloseHandle(file);
+  if (!written || wrote != json.size()) {
+    ::DeleteFileW(temp_path.c_str());
+    return;
+  }
+  if (!::ReplaceFileW(path_.c_str(), temp_path.c_str(), nullptr, 0, nullptr,
+                      nullptr)) {
+    // First save: there is nothing to replace yet.
+    ::MoveFileExW(temp_path.c_str(), path_.c_str(),
+                  MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+  }
 }
 
 void PhiTabStore::OwnerForScope(const std::string& profile_id,
@@ -297,6 +311,15 @@ std::string PhiTabStore::AddBookmark(const std::string& profile_id,
   rows_.push_back(std::move(row));
   Save();
   return guid;
+}
+
+bool PhiTabStore::Contains(const std::string& guid) const {
+  for (const PhiRow& row : rows_) {
+    if (row.guid == guid) {
+      return true;
+    }
+  }
+  return false;
 }
 
 bool PhiTabStore::Remove(const std::string& guid) {

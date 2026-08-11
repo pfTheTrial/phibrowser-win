@@ -15,6 +15,104 @@
 
 namespace phi_client {
 
+// Menu command ids (WM_COMMAND). In the header so the keyboard-accelerator
+// hook can post the same commands the menus fire.
+enum : UINT {
+  // Phi
+  kCmdAbout = 1001,
+  kCmdPreferences,
+  kCmdCheckUpdate,
+  kCmdDeleteBrowsingData,
+  kCmdImportBrowser,
+  kCmdQuit,
+  // File
+  kCmdNewTab,
+  kCmdNewWindow,
+  kCmdNewIncognitoWindow,
+  kCmdNewIncognitoSpace,
+  kCmdReopenClosedTab,
+  kCmdOpenFile,
+  kCmdOpenLocation,
+  kCmdCloseWindow,
+  kCmdCloseTab,
+  kCmdSavePageAs,
+  kCmdPrint,
+  // Edit
+  kCmdUndo,
+  kCmdRedo,
+  kCmdCut,
+  kCmdCopy,
+  kCmdCopyUrl,
+  kCmdPaste,
+  kCmdPasteMatchStyle,
+  kCmdDelete,
+  kCmdSelectAll,
+  kCmdSearchWeb,
+  kCmdFind,
+  kCmdFindNext,
+  kCmdFindPrevious,
+  // View
+  kCmdStop,
+  kCmdReload,
+  kCmdForceReload,
+  kCmdFullScreen,
+  kCmdActualSize,
+  kCmdZoomIn,
+  kCmdZoomOut,
+  kCmdViewSource,
+  kCmdDevTools,
+  kCmdInspect,
+  kCmdJsConsole,
+  kCmdLayoutHeader,
+  kCmdLayoutBalanced,
+  kCmdLayoutPerformance,
+  kCmdLayoutComfortable,
+  kCmdAlwaysShowBookmarkBar,
+  kCmdBookmarkBarOnNewTab,
+  kCmdToggleSidebar,
+  kCmdToggleChatbar,
+  kCmdNewConversation,
+  // Spaces
+  kCmdNewSpace,
+  kCmdRenameSpace,
+  kCmdChangeIcon,
+  kCmdDeleteSpace,
+  kCmdNextSpace,
+  kCmdPreviousSpace,
+  kCmdUrlRules,
+  kCmdNewProfile,
+  // History
+  kCmdHome,
+  kCmdBack,
+  kCmdForward,
+  kCmdRecentlyClosedHeader,
+  kCmdShowFullHistory,
+  // Bookmarks
+  kCmdBookmarkThisTab,
+  kCmdBookmarkAllTabs,
+  kCmdExportBookmarks,
+  // Tab
+  kCmdNewTabToRight,
+  kCmdNextTab,
+  kCmdPreviousTab,
+  kCmdDuplicateTab,
+  kCmdMuteSite,
+  kCmdSearchTabs,
+  // Window
+  kCmdMinimize,
+  kCmdZoomWindow,
+  kCmdNameWindow,
+  kCmdDownloads,
+  kCmdExtensions,
+  kCmdTaskManager,
+  // Help
+  kCmdReportIssue,
+  kCmdWhatsNew,
+  kCmdDocumentation,
+  kCmdExportUserData,
+  kCmdImportUserData,
+};
+
 class PhiWindowController;
 
 // The Mac menu bar (AppController+Menu.swift over Chromium's

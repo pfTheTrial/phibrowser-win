@@ -124,6 +124,16 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   PhiControlServer control_server_;
   // Message-only window on the UI thread; control commands marshal here.
   HWND msg_hwnd_ = nullptr;
+  // Keyboard accelerators: a UI-thread WH_KEYBOARD hook translates the menu
+  // bar's shortcuts (Ctrl+T, Ctrl+W, ...) into WM_COMMAND on the focused
+  // shell — keys normally land in the browser child, never in our chrome.
+  HHOOK keyboard_hook_ = nullptr;
+  static LRESULT CALLBACK KeyboardHookProc(int code,
+                                           WPARAM wparam,
+                                           LPARAM lparam);
+  // The shell window owning the focus HWND, or null (focus is elsewhere).
+  HWND ShellForFocus() const;
+
   // One controller per SLOT, keyed by the slot's primary windowId.
   std::map<int64_t, std::unique_ptr<PhiWindowController>> windows_;
   // Every browser window -> the slot hosting it (a slot has one per Space).

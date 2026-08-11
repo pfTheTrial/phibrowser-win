@@ -174,6 +174,15 @@ LRESULT CALLBACK BrowserSubclassProc(HWND hwnd, UINT msg, WPARAM wparam,
       ::PostMessageW(::GetParent(hwnd), WM_PHI_RAISE_CAPS, 0, 0);
     }
   }
+  if (msg == WM_NCDESTROY) {
+    // Windows recycles HWND values: a stale map entry would hand a future
+    // window this browser's old WNDPROC. Unhook on final destruction.
+    const LRESULT result =
+        base ? ::CallWindowProcW(base, hwnd, msg, wparam, lparam)
+             : ::DefWindowProcW(hwnd, msg, wparam, lparam);
+    BrowserBaseProcs().erase(hwnd);
+    return result;
+  }
   return base ? ::CallWindowProcW(base, hwnd, msg, wparam, lparam)
               : ::DefWindowProcW(hwnd, msg, wparam, lparam);
 }
@@ -726,6 +735,12 @@ PhiWindowController::~PhiWindowController() {
   if (chip_icon_font_) {
     ::DeleteObject(chip_icon_font_);
   }
+  if (back_buffer_) {
+    ::DeleteObject(back_buffer_);
+  }
+  for (HBRUSH brush : band_brushes_) {
+    ::DeleteObject(brush);
+  }
   if (url_brush_) {
     ::DeleteObject(url_brush_);
   }
@@ -993,6 +1008,7 @@ void PhiWindowController::LayoutContents() {
   if (!shell_hwnd_) {
     return;
   }
+  rows_dirty_ = true;  // Row bounds derive from the client size.
   const Layout layout = ComputeLayout();
   PositionUrlField(layout);
   if (browser_hwnd_ && ::IsWindow(browser_hwnd_)) {
@@ -1044,6 +1060,77 @@ void PhiWindowController::LayoutContents() {
   }
 }
 
+void PhiWindowController::OnChromeMouseMove(POINT client_pt) {
+  HoverKind kind = HoverKind::kNone;
+  int index = -1;
+  for (size_t i = 0; i < pinned_.size() && kind == HoverKind::kNone; ++i) {
+    if (::PtInRect(&pinned_[i].bounds, client_pt)) {
+      kind = HoverKind::kPin;
+      index = static_cast<int>(i);
+    }
+  }
+  for (size_t i = 0; i < bookmarks_.size() && kind == HoverKind::kNone; ++i) {
+    if (::PtInRect(&bookmarks_[i].bounds, client_pt)) {
+      kind = HoverKind::kBookmark;
+      index = static_cast<int>(i);
+    }
+  }
+  for (size_t i = 0; i < group_headers_.size() && kind == HoverKind::kNone;
+       ++i) {
+    if (::PtInRect(&group_headers_[i].bounds, client_pt)) {
+      kind = HoverKind::kGroupHeader;
+      index = static_cast<int>(i);
+    }
+  }
+  for (size_t i = 0; i < tabs_.size() && kind == HoverKind::kNone; ++i) {
+    if (::PtInRect(&tabs_[i].bounds, client_pt)) {
+      kind = HoverKind::kTab;
+      index = static_cast<int>(i);
+    }
+  }
+  if (kind != hover_kind_ || index != hover_index_) {
+    hover_kind_ = kind;
+    hover_index_ = index;
+    // The model is unchanged — only recompose (no dirty flag).
+    if (shell_hwnd_) {
+      ::InvalidateRect(shell_hwnd_, nullptr, FALSE);
+    }
+  }
+}
+
+void PhiWindowController::ClearHover() {
+  if (hover_kind_ != HoverKind::kNone) {
+    hover_kind_ = HoverKind::kNone;
+    hover_index_ = -1;
+    if (shell_hwnd_) {
+      ::InvalidateRect(shell_hwnd_, nullptr, FALSE);
+    }
+  }
+}
+
+bool PhiWindowController::OnSidebarWheel(POINT client_pt, int wheel_delta) {
+  if (!host_ || host_->LayoutMode() == PhiLayoutMode::kComfortable) {
+    return false;
+  }
+  const Layout layout = ComputeLayout();
+  if (!::PtInRect(&layout.sidebar, client_pt) || tabs_scroll_max_ <= 0) {
+    return false;
+  }
+  const int step = Scaled(kTabRowHeight + kTabRowGap);
+  int next = scroll_offset_ - wheel_delta * step / WHEEL_DELTA;
+  next = std::max(0, std::min(next, tabs_scroll_max_));
+  if (next != scroll_offset_) {
+    scroll_offset_ = next;
+    ScheduleRefresh();
+  }
+  return true;
+}
+
+COLORREF PhiWindowController::BackgroundFill() const {
+  return host_ ? host_->PaletteForSlot(window_id_).window_bg
+               : RGB(0xFF, 0xFF, 0xFF);
+}
+
 void PhiWindowController::RefreshTabs() {
   RebuildTabs();
   if (shell_hwnd_) {
@@ -1053,6 +1140,7 @@ void PhiWindowController::RefreshTabs() {
 }
 
 void PhiWindowController::ScheduleRefresh() {
+  rows_dirty_ = true;
   if (shell_hwnd_) {
     ::InvalidateRect(shell_hwnd_, nullptr, FALSE);
   }
@@ -1478,6 +1566,7 @@ void PhiWindowController::RebuildTabs() {
   RebuildShortcuts();
   tabs_.clear();
   group_headers_.clear();
+  rows_dirty_ = false;
   if (!framework_) {
     return;
   }
@@ -1504,6 +1593,9 @@ void PhiWindowController::RebuildTabs() {
       if (const std::string* group = d.FindString("groupId")) {
         row.group_id = *group;
       }
+      if (const std::string* tag = d.FindString("tag")) {
+        row.tag = *tag;
+      }
       const std::string* title = d.FindString("title");
       const std::string* url = d.FindString("url");
       std::string label = title && !title->empty()
@@ -1529,14 +1621,13 @@ void PhiWindowController::RebuildTabs() {
     }
   }
 
-  // Stored-row bindings, the Mac's openOrFocusPinnedTab / bookmarkGuidBacking
-  // model: a bound tab lives in its pin cell or sidebar bookmark row, not in
-  // the tab list. Prune entries whose row was removed or whose tab has
-  // closed, then flag the rows for the paint pass. Bookmark bindings act
-  // only in the vertical layouts — the Mac hosts them in a bookmark bar the
+  // Stored-row bindings, the Mac's customGuid model: a bound tab CARRIES its
+  // pin/bookmark guid as its identity tag (PhiTabData, round-tripped by
+  // session restore, so bindings survive a restart). A tag matching a live
+  // stored row binds the tab to that row's cell. Bookmark bindings act only
+  // in the vertical layouts — the Mac hosts them in a bookmark bar the
   // horizontal port doesn't have yet, so there the tab shows as a normal
   // chip and stays reachable.
-  auto& bindings = pin_bindings_[browser];
   const auto is_pin = [this](const std::string& guid) {
     return std::any_of(pinned_.begin(), pinned_.end(),
                        [&](const ShortcutRow& p) { return p.guid == guid; });
@@ -1547,26 +1638,10 @@ void PhiWindowController::RebuildTabs() {
                          return !b.folder && b.guid == guid;
                        });
   };
-  for (auto it = bindings.begin(); it != bindings.end();) {
-    const std::string& row_guid = it->first;
-    const int tab_id = it->second;
-    const bool tab_alive =
-        std::any_of(rows.begin(), rows.end(),
-                    [&](const TabRow& r) { return r.id == tab_id; });
-    if ((is_pin(row_guid) || is_bookmark(row_guid)) && tab_alive) {
-      ++it;
-    } else {
-      it = bindings.erase(it);
-    }
-  }
-  const auto flag_bound = [&](ShortcutRow& stored) {
-    auto bound = bindings.find(stored.guid);
-    if (bound == bindings.end()) {
-      return;
-    }
-    stored.open = true;
+  const auto flag_bound = [&rows](ShortcutRow& stored) {
     for (const TabRow& r : rows) {
-      if (r.id == bound->second) {
+      if (r.tag == stored.guid) {
+        stored.open = true;
         stored.active = r.active;
         break;
       }
@@ -1635,19 +1710,21 @@ void PhiWindowController::RebuildTabs() {
   }
   std::string current_group;
   bool current_collapsed = false;
-  for (TabRow& row : rows) {
-    bool hidden_by_binding = false;
-    for (const auto& binding : bindings) {
-      if (binding.second != row.id) {
-        continue;
-      }
-      // After the prune a binding's guid is a pin or a bookmark; bookmark
-      // bindings release their tab to the strip in the horizontal layout.
-      hidden_by_binding =
-          is_pin(binding.first) || !layout.horizontal_tabs;
-      break;
+  if (!layout.horizontal_tabs) {
+    y -= scroll_offset_;
+  }
+  const auto clip_to_viewport = [&layout](RECT* bounds) {
+    if (bounds->bottom <= layout.tabs_top ||
+        bounds->top >= layout.tabs_limit) {
+      *bounds = RECT{};  // Scrolled out of the tab-list viewport.
     }
-    if (hidden_by_binding) {
+  };
+  for (TabRow& row : rows) {
+    // Bound rows live in their pin/bookmark cell; bookmark bindings release
+    // their tab to the strip in the horizontal layout.
+    if (!row.tag.empty() &&
+        (is_pin(row.tag) ||
+         (is_bookmark(row.tag) && !layout.horizontal_tabs))) {
       continue;
     }
     if (!layout.horizontal_tabs && row.group_id != current_group) {
@@ -1656,9 +1733,6 @@ void PhiWindowController::RebuildTabs() {
       if (!current_group.empty()) {
         auto info = group_info.find(current_group);
         if (info != group_info.end()) {
-          if (y + Scaled(kGroupHeaderHeight) > layout.tabs_limit) {
-            break;
-          }
           GroupHeader header = info->second;
           header.bounds = {layout.tabs_left, y,
                            Scaled(kSidebarWidth - kEdgeInset),
@@ -1666,6 +1740,7 @@ void PhiWindowController::RebuildTabs() {
           header.container = header.bounds;
           y += Scaled(kGroupHeaderHeight + kTabRowGap);
           current_collapsed = header.collapsed;
+          clip_to_viewport(&header.bounds);
           group_headers_.push_back(std::move(header));
         }
       }
@@ -1682,13 +1757,11 @@ void PhiWindowController::RebuildTabs() {
       row.bounds = {x, y, x + Scaled(kHTabWidth), y + Scaled(kHTabHeight)};
       x += Scaled(kHTabWidth + kHTabGap);
     } else {
-      if (y + Scaled(kTabRowHeight) > layout.tabs_limit) {
-        break;
-      }
       row.bounds = {layout.tabs_left, y,
                     Scaled(kSidebarWidth - kEdgeInset),
                     y + Scaled(kTabRowHeight)};
       y += Scaled(kTabRowHeight + kTabRowGap);
+      clip_to_viewport(&row.bounds);
     }
     const int box_mid = (row.bounds.top + row.bounds.bottom) / 2;
     row.close_box = {row.bounds.right - close_box - Scaled(4),
@@ -1702,11 +1775,32 @@ void PhiWindowController::RebuildTabs() {
                     row.bounds.right, row.bounds.bottom};
     }
     if (!layout.horizontal_tabs && !row.group_id.empty() &&
-        !group_headers_.empty() && group_headers_.back().id == row.group_id) {
+        !group_headers_.empty() && group_headers_.back().id == row.group_id &&
+        row.bounds.right > row.bounds.left) {
       group_headers_.back().container.bottom = row.bounds.bottom;
     }
     tabs_.push_back(std::move(row));
   }
+  if (!layout.horizontal_tabs) {
+    // Overflow bookkeeping for the wheel handler; the tinted group cards are
+    // clamped to the viewport so they never bleed into the fixed bands.
+    const int viewport = layout.tabs_limit - layout.tabs_top;
+    const int content = y - layout.tabs_top + scroll_offset_;
+    tabs_scroll_max_ = content > viewport ? content - viewport : 0;
+    if (scroll_offset_ > tabs_scroll_max_) {
+      scroll_offset_ = tabs_scroll_max_;
+    }
+    for (GroupHeader& gh : group_headers_) {
+      gh.container.top =
+          std::max(gh.container.top, static_cast<LONG>(layout.tabs_top));
+      gh.container.bottom =
+          std::min(gh.container.bottom, static_cast<LONG>(layout.tabs_limit));
+      if (gh.container.bottom <= gh.container.top) {
+        gh.container = RECT{};
+      }
+    }
+  }
+  rows_dirty_ = false;
 }
 
 void PhiWindowController::OpenOrFocusPinned(const std::string& guid,
@@ -1715,44 +1809,27 @@ void PhiWindowController::OpenOrFocusPinned(const std::string& guid,
     return;
   }
   const int64_t browser = active_browser_ ? active_browser_ : window_id_;
-  auto& bindings = pin_bindings_[browser];
-  auto bound = bindings.find(guid);
-  if (bound != bindings.end()) {
-    const int index = IndexOfTabId(browser, bound->second);
-    if (index >= 0) {
-      framework_->ActivateTab(browser, index);
-      RefreshTabs();
-      return;
-    }
-    bindings.erase(bound);
+  const int index = IndexOfTagged(browser, guid);
+  if (index >= 0) {
+    framework_->ActivateTab(browser, index);
+    RefreshTabs();
+    return;
   }
   if (url.empty()) {
     return;
   }
-  const int index = framework_->NewTab(browser, url.c_str());
-  if (index >= 0) {
-    // Bind the fresh tab by its stable id — the Mac's createTab(customGuid:)
-    // handing the new tab the pin's identity.
-    std::optional<base::Value> parsed = base::JSONReader::Read(
-        framework_->ListTabsJson(browser), base::JSON_PARSE_RFC);
-    if (parsed && parsed->is_list()) {
-      for (const base::Value& v : parsed->GetList()) {
-        const base::DictValue* d = v.GetIfDict();
-        if (d && d->FindInt("index").value_or(-1) == index) {
-          const int id = d->FindInt("id").value_or(0);
-          if (id) {
-            bindings[guid] = id;
-          }
-          break;
-        }
-      }
-    }
+  const int created = framework_->NewTab(browser, url.c_str());
+  if (created >= 0) {
+    // The Mac's createTab(customGuid:): the new tab carries the row's guid
+    // as its identity, and session restore carries it across restarts.
+    framework_->SetTabTag(browser, created, guid.c_str());
   }
   RefreshTabs();
 }
 
-int PhiWindowController::IndexOfTabId(int64_t browser, int id) const {
-  if (!framework_ || !id) {
+int PhiWindowController::IndexOfTagged(int64_t browser,
+                                       const std::string& tag) const {
+  if (!framework_ || tag.empty()) {
     return -1;
   }
   std::optional<base::Value> parsed = base::JSONReader::Read(
@@ -1762,7 +1839,8 @@ int PhiWindowController::IndexOfTabId(int64_t browser, int id) const {
   }
   for (const base::Value& v : parsed->GetList()) {
     const base::DictValue* d = v.GetIfDict();
-    if (d && d->FindInt("id").value_or(0) == id) {
+    const std::string* row_tag = d ? d->FindString("tag") : nullptr;
+    if (row_tag && *row_tag == tag) {
       return d->FindInt("index").value_or(-1);
     }
   }
@@ -2380,18 +2458,31 @@ void PhiWindowController::PaintChrome(HDC dc,
                     layout.content.right, layout.content.bottom);
   const int height = layout.client.bottom > 0 ? layout.client.bottom : 1;
   const int bands = 48;
+  // The band brushes only depend on the palette, not the height — cache them
+  // instead of creating and destroying 48 GDI brushes every paint.
+  if (band_brushes_.empty() || band_top_ != kTintTop ||
+      band_bottom_ != kTintBottom) {
+    for (HBRUSH brush : band_brushes_) {
+      ::DeleteObject(brush);
+    }
+    band_brushes_.clear();
+    band_brushes_.reserve(bands);
+    for (int i = 0; i < bands; ++i) {
+      const int r = GetRValue(kTintTop) +
+                    (GetRValue(kTintBottom) - GetRValue(kTintTop)) * i / bands;
+      const int g = GetGValue(kTintTop) +
+                    (GetGValue(kTintBottom) - GetGValue(kTintTop)) * i / bands;
+      const int b = GetBValue(kTintTop) +
+                    (GetBValue(kTintBottom) - GetBValue(kTintTop)) * i / bands;
+      band_brushes_.push_back(::CreateSolidBrush(RGB(r, g, b)));
+    }
+    band_top_ = kTintTop;
+    band_bottom_ = kTintBottom;
+  }
   for (int i = 0; i < bands; ++i) {
     RECT band = {0, height * i / bands, layout.client.right,
                  height * (i + 1) / bands};
-    const int r = GetRValue(kTintTop) +
-                  (GetRValue(kTintBottom) - GetRValue(kTintTop)) * i / bands;
-    const int g = GetGValue(kTintTop) +
-                  (GetGValue(kTintBottom) - GetGValue(kTintTop)) * i / bands;
-    const int b = GetBValue(kTintTop) +
-                  (GetBValue(kTintBottom) - GetBValue(kTintTop)) * i / bands;
-    HBRUSH brush = ::CreateSolidBrush(RGB(r, g, b));
-    ::FillRect(dc, &band, brush);
-    ::DeleteObject(brush);
+    ::FillRect(dc, &band, band_brushes_[i]);
   }
 
   ::SelectClipRgn(dc, nullptr);
@@ -2644,12 +2735,33 @@ void PhiWindowController::PaintChrome(HDC dc,
   }
   DrawGlyph(dc, layout.add_space, L"+", kLabelDim);
 
+  // The scrolling tab-list band (groups + tab rows) clips to its viewport:
+  // a row straddling the bottom edge must not bleed into the bottom bar.
+  const bool clip_rows = !layout.horizontal_tabs;
+  int rows_clip_save = 0;
+  if (clip_rows) {
+    rows_clip_save = ::SaveDC(dc);
+    ::IntersectClipRect(dc, 0, layout.tabs_top, layout.sidebar.right,
+                        layout.tabs_limit);
+  }
+
   // Tab groups: TabGroupCellView — the whole group cell rests on an 18%
   // tint of the group color; the 32pt header row carries the chevron, the
   // color dot (white ring) and the title. Clicking the header collapses.
   for (const GroupHeader& gh : group_headers_) {
-    FillRounded(dc, gh.container, BlendOver(gh.color, kTintTop, kGroupTintAlpha),
-                Scaled(kCornerRadius));
+    if (gh.container.right > gh.container.left) {
+      FillRounded(dc, gh.container,
+                  BlendOver(gh.color, kTintTop, kGroupTintAlpha),
+                  Scaled(kCornerRadius));
+    }
+    if (gh.bounds.right <= gh.bounds.left) {
+      continue;  // Header scrolled out of the viewport.
+    }
+    if (hover_kind_ == HoverKind::kGroupHeader &&
+        hover_index_ == static_cast<int>(&gh - group_headers_.data())) {
+      FillRounded(dc, gh.bounds, BlendOver(gh.color, kTintTop, 71),
+                  Scaled(kCornerRadius));
+    }
     const int mid = (gh.bounds.top + gh.bounds.bottom) / 2;
     RECT chevron = {gh.bounds.left + Scaled(8), mid - Scaled(8),
                     gh.bounds.left + Scaled(8) + Scaled(16), mid + Scaled(8)};
@@ -2686,17 +2798,25 @@ void PhiWindowController::PaintChrome(HDC dc,
   // pill marks the active tab. The close box rides the ACTIVE row -- the Mac
   // shows it on hover, which GDI has no notion of yet.
   for (const TabRow& row : tabs_) {
+    if (row.bounds.right <= row.bounds.left) {
+      continue;  // Scrolled out of the viewport.
+    }
     RECT pill = row.bounds;
     if (!layout.horizontal_tabs) {
       pill.top += Scaled(kRowPad);
       pill.bottom -= Scaled(kRowPad);
     }
+    const bool row_hovered =
+        hover_kind_ == HoverKind::kTab &&
+        hover_index_ == static_cast<int>(&row - tabs_.data());
     if (row.active) {
       FillRounded(dc, pill, kRowSelectedBg, Scaled(kCornerRadius));
       if (palette.dark) {
         StrokeRounded(dc, pill, kRowSelectedBg, kActivePillBorder,
                       Scaled(kCornerRadius));
       }
+    } else if (row_hovered) {
+      FillRounded(dc, pill, palette.hover, Scaled(kCornerRadius));
     }
     // A 14pt icon centred in the 16pt slot, 6pt from the pill's edge. A
     // merged split row draws the same shape once per pane around a hairline
@@ -2756,9 +2876,13 @@ void PhiWindowController::PaintChrome(HDC dc,
       draw_pane(pill.left, row.active ? row.close_box.left : pill.right, row,
                 /*pane_b=*/false);
     }
-    if (row.active) {
+    if (row.active || row_hovered) {
       DrawGlyph(dc, row.close_box, L"\u00D7", kLabelDim);
     }
+  }
+
+  if (clip_rows) {
+    ::RestoreDC(dc, rows_clip_save);
   }
 
   // Pinned tabs: PinnedTabItem cells -- resting on the 4% wash, an 18pt
@@ -2767,7 +2891,13 @@ void PhiWindowController::PaintChrome(HDC dc,
   // horizontal strip the cells are the 28pt pinned section and the active one
   // reads like the neighbouring strip tabs (selected wash, no ring).
   for (const ShortcutRow& pin : pinned_) {
-    const COLORREF pin_bg = pin.active ? palette.selected : palette.hover;
+    const bool pin_hovered =
+        hover_kind_ == HoverKind::kPin &&
+        hover_index_ == static_cast<int>(&pin - pinned_.data());
+    const COLORREF pin_bg = pin.active
+                                ? palette.selected
+                                : (pin_hovered ? palette.hover_strong
+                                               : palette.hover);
     FillRounded(dc, pin.bounds, pin_bg, Scaled(kCornerRadius));
     if (pin.active && !layout.horizontal_tabs) {
       HPEN ring = ::CreatePen(PS_SOLID, Scaled(2), palette.accent);
@@ -2805,6 +2935,9 @@ void PhiWindowController::PaintChrome(HDC dc,
     RECT pill = bookmark.bounds;
     pill.top += Scaled(kRowPad);
     pill.bottom -= Scaled(kRowPad);
+    const bool bookmark_hovered =
+        hover_kind_ == HoverKind::kBookmark &&
+        hover_index_ == static_cast<int>(&bookmark - bookmarks_.data());
     if (bookmark.active) {
       // Its bound live tab is the active tab: the row IS the tab, so it
       // reads exactly like the active tab row.
@@ -2813,6 +2946,8 @@ void PhiWindowController::PaintChrome(HDC dc,
         StrokeRounded(dc, pill, kRowSelectedBg, kActivePillBorder,
                       Scaled(kCornerRadius));
       }
+    } else if (bookmark_hovered) {
+      FillRounded(dc, pill, palette.hover, Scaled(kCornerRadius));
     }
     RECT text = pill;
     const int mid = (pill.top + pill.bottom) / 2;
@@ -3070,6 +3205,7 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
           }
         }
         self->SetMenuHot(hot);
+        self->OnChromeMouseMove(pt);
         TRACKMOUSEEVENT track = {sizeof(track), TME_LEAVE, hwnd, 0};
         ::TrackMouseEvent(&track);
       }
@@ -3078,6 +3214,7 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
       if (self) {
         self->SetCaptionHot(0);
         self->SetMenuHot(-1);
+        self->ClearHover();
       }
       break;
     case WM_PHI_RAISE_CAPS:
@@ -3118,6 +3255,15 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
         return 0;
       }
       return ::DefWindowProcW(hwnd, msg, wparam, lparam);
+    case WM_MOUSEWHEEL:
+      if (self) {
+        POINT pt = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+        ::ScreenToClient(hwnd, &pt);
+        if (self->OnSidebarWheel(pt, GET_WHEEL_DELTA_WPARAM(wparam))) {
+          return 0;
+        }
+      }
+      return ::DefWindowProcW(hwnd, msg, wparam, lparam);
     case WM_SIZE:
       if (self) {
         self->LayoutContents();
@@ -3155,26 +3301,39 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
       PAINTSTRUCT ps = {};
       HDC dc = ::BeginPaint(hwnd, &ps);
       if (self) {
-        // Re-read framework state at paint time: the sidebar then reflects
-        // reality even if a change notification was missed or coalesced.
-        self->RebuildTabs();
+        // The model rebuilds on notifications and intents (rows_dirty_), not
+        // per paint — a paint with a clean model just recomposes.
+        if (self->rows_dirty_) {
+          self->RebuildTabs();
+        }
         // Compose off-screen and blit once. Painting straight to the window
         // shows the chrome rebuilding element by element — the visible blink
-        // on every tab/Space change, which invalidates the whole window.
+        // on every tab/Space change, which invalidates the whole window. The
+        // backbuffer bitmap is cached; a full-window alloc per paint is real
+        // work at 4K.
         RECT rc = {};
         ::GetClientRect(hwnd, &rc);
+        const LONG bw = rc.right > 0 ? rc.right : 1;
+        const LONG bh = rc.bottom > 0 ? rc.bottom : 1;
+        if (self->back_buffer_ && (self->back_buffer_size_.cx != bw ||
+                                   self->back_buffer_size_.cy != bh)) {
+          ::DeleteObject(self->back_buffer_);
+          self->back_buffer_ = nullptr;
+        }
+        if (!self->back_buffer_) {
+          self->back_buffer_ = ::CreateCompatibleBitmap(dc, bw, bh);
+          self->back_buffer_size_ = {bw, bh};
+        }
         HDC mem = ::CreateCompatibleDC(dc);
-        HBITMAP bmp = mem ? ::CreateCompatibleBitmap(
-                                dc, rc.right > 0 ? rc.right : 1,
-                                rc.bottom > 0 ? rc.bottom : 1)
-                          : nullptr;
-        if (bmp) {
-          HGDIOBJ old_bmp = ::SelectObject(mem, bmp);
+        if (mem && self->back_buffer_) {
+          HGDIOBJ old_bmp = ::SelectObject(mem, self->back_buffer_);
           // PaintChrome excludes the content rect (the browser child owns
           // it), so give those buffer pixels a defined color for the rare
-          // blit with no child covering them (startup, degenerate states).
-          ::FillRect(mem, &rc, reinterpret_cast<HBRUSH>(
-                                   ::GetStockObject(WHITE_BRUSH)));
+          // blit with no child covering them (startup, degenerate states) —
+          // the window ground, not white, or dark themes flash.
+          HBRUSH fill = ::CreateSolidBrush(self->BackgroundFill());
+          ::FillRect(mem, &rc, fill);
+          ::DeleteObject(fill);
           self->PaintChrome(mem, self->ComputeLayout(),
                             /*include_child_controls=*/false);
           ::BitBlt(dc, ps.rcPaint.left, ps.rcPaint.top,
@@ -3182,7 +3341,6 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
                    ps.rcPaint.bottom - ps.rcPaint.top, mem, ps.rcPaint.left,
                    ps.rcPaint.top, SRCCOPY);
           ::SelectObject(mem, old_bmp);
-          ::DeleteObject(bmp);
         } else {
           self->PaintChrome(dc, self->ComputeLayout(),
                             /*include_child_controls=*/false);

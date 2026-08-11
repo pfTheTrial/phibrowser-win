@@ -98,6 +98,8 @@ class PhiTabStore {
 
   // Removes a row and, for a folder, everything beneath it.
   bool Remove(const std::string& guid);
+  // Whether a row with `guid` exists (any type).
+  bool Contains(const std::string& guid) const;
   // Removes every row OWNED by `space_id` (space-scoped pins, the Space's
   // bookmarks) — what deleting a Space takes with it on Mac. Rows owned at
   // profile or app scope carry no space id and stay. Returns removed count.

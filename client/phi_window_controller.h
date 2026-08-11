@@ -370,6 +370,9 @@ class PhiWindowController {
     // Tab-group membership (Chromium native model); members sit under their
     // group's header row and hide when it is collapsed.
     std::string group_id;
+    // The client identity tag (PhiTabData, session-persisted): a tab tagged
+    // with a live pin/bookmark guid IS that row's bound tab.
+    std::string tag;
     int b_index = -1;  // -1: not a merged row.
     bool b_active = false;
     std::wstring b_title;
@@ -393,6 +396,37 @@ class PhiWindowController {
     RECT container{};  // Header plus visible members — the tinted card.
   };
   std::vector<GroupHeader> group_headers_;
+
+  // Model freshness: rebuilds happen on notifications and intents
+  // (ScheduleRefresh/RefreshTabs/LayoutContents mark this), not per paint.
+  // WM_PRINTCLIENT still forces a rebuild — captures must be current.
+  bool rows_dirty_ = true;
+  // Cached paint resources, recreated on resize / palette change instead of
+  // per WM_PAINT: the full-window backbuffer bitmap and the ground-gradient
+  // band brushes.
+  HBITMAP back_buffer_ = nullptr;
+  SIZE back_buffer_size_{};
+  std::vector<HBRUSH> band_brushes_;
+  COLORREF band_top_ = 0;
+  COLORREF band_bottom_ = 0;
+  // The slot palette's window ground — what uncovered backbuffer pixels show.
+  COLORREF BackgroundFill() const;
+
+  // Sidebar tab-list scrolling (bookmark rows and the pinned band stay put;
+  // the group/tab rows scroll). Offset in pixels, clamped to the overflow.
+  int scroll_offset_ = 0;
+  int tabs_scroll_max_ = 0;
+  // Wheel over the sidebar: true when consumed (vertical layouts only).
+  bool OnSidebarWheel(POINT client_pt, int wheel_delta);
+
+  // Hover feedback (the Mac leans on hover: row washes, close affordances).
+  // Which chrome element the cursor rests on, as element-kind + position in
+  // its vector; repaints fire only when it changes.
+  enum class HoverKind { kNone, kTab, kPin, kBookmark, kGroupHeader };
+  HoverKind hover_kind_ = HoverKind::kNone;
+  int hover_index_ = -1;
+  void OnChromeMouseMove(POINT client_pt);
+  void ClearHover();
   // Pinned tabs (the band under the header) and bookmarks (the section above
   // the open tabs) — both come from the client's own store, as on Mac.
   struct ShortcutRow {
@@ -419,15 +453,13 @@ class PhiWindowController {
   int bookmark_row_count_ = 0;
   void RebuildShortcuts();
 
-  // Live stored-row bindings, per Space browser: pin OR bookmark guid → tab
-  // session id. The Mac binds by giving the created tab the row's guid as
-  // its identity; here the session id from ListTabsJson carries that role.
-  // Entries are pruned on every rebuild (row removed, tab closed) —
-  // runtime-only, so a restart returns rows to the unopened state. Bookmark
-  // bindings hide their tab from the list only in vertical layouts.
-  std::map<int64_t, std::map<std::string, int>> pin_bindings_;
-  // The tab's current index by session id, or -1 when it is gone.
-  int IndexOfTabId(int64_t browser, int id) const;
+  // Stored-row bindings are DERIVED, not stored: a tab whose identity tag
+  // equals a live pin/bookmark guid is that row's bound tab (the Mac's
+  // customGuid model). Tags ride PhiTabData through session restore, so
+  // bindings survive a restart. Bookmark bindings hide their tab from the
+  // list only in vertical layouts.
+  // The current index of the tab tagged `tag`, or -1 when none is.
+  int IndexOfTagged(int64_t browser, const std::string& tag) const;
 
   // Navigation state for the client toolbar, refreshed with the tab list.
   std::wstring nav_url_;
