@@ -211,4 +211,21 @@ test('spaces: the default space refuses deletion', async () => {
   } finally { ctl.close() }
 })
 
+test('spaces: reorder moves a Space in the list', async () => {
+  const ctl = await openControl()
+  try {
+    const windowId = await firstWindow(ctl)
+    const created = await ctl.send('agentSpace.spaces.create', { name: 'ReorderSuite' })
+    assertEq(created.ok, true, 'created')
+    await sleep(400)
+    assertEq((await ctl.send('agentSpace.spaces.reorder',
+                             { spaceId: created.id, index: 0 })).ok,
+             true, 'reorder ok')
+    await sleep(300)
+    const spaces = (await ctl.send('agentSpace.spaces.list', { windowId })).spaces
+    assertEq(spaces[0].name, 'ReorderSuite', 'moved to the front')
+    await ctl.send('agentSpace.spaces.delete', { spaceId: created.id })
+  } finally { ctl.close() }
+})
+
 run()

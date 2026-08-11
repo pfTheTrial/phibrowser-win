@@ -163,4 +163,46 @@ test('tabs: CDP sees the same tab count', async () => {
   } finally { ctl.close() }
 })
 
+test('tabs: move reorders the strip; split members are refused', async () => {
+  const ctl = await openControl()
+  try {
+    const { windows } = await ctl.send('agentSpace.list')
+    const windowId = windows[0]
+    const tabs = async () => (await ctl.send('agentSpace.tabs.list', { windowId })).tabs
+    let t = await tabs()
+    while (t.length < 3) {
+      await ctl.send('agentSpace.tabs.new',
+                     { windowId, url: `data:text/html,<title>Mv${t.length}</title>` })
+      await sleep(500)
+      t = await tabs()
+    }
+    const ids = t.map((x) => x.id)
+    assertEq((await ctl.send('agentSpace.tabs.move', { windowId, from: 0, to: 2 })).ok,
+             true, 'move ok')
+    await sleep(400)
+    const after = (await tabs()).map((x) => x.id)
+    assertEq(after[2], ids[0], 'moved tab landed at position 2')
+    assertEq(after[0], ids[1], 'the rest shifted up')
+    await ctl.send('agentSpace.tabs.move', { windowId, from: 2, to: 0 })
+    await sleep(300)
+    const other = (await tabs()).find((x) => !x.active)
+    await ctl.send('agentSpace.tabs.split', { windowId, index: other.index })
+    await sleep(500)
+    const member = (await tabs()).find((x) => x.splitId)
+    assertEq((await ctl.send('agentSpace.tabs.move',
+                             { windowId, from: member.index, to: 0 })).ok,
+             false, 'split member refused')
+    await ctl.send('agentSpace.tabs.unsplit', { windowId, index: member.index })
+    await sleep(300)
+    t = await tabs()
+    for (let i = t.length - 1; i >= 0 && t.length > 1; --i) {
+      if ((t[i].url || '').includes('data:text/html')) {
+        await ctl.send('agentSpace.tabs.close', { windowId, index: t[i].index })
+        await sleep(200)
+        t = await tabs()
+      }
+    }
+  } finally { ctl.close() }
+})
+
 run()

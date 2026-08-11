@@ -67,6 +67,11 @@ class PhiSlotHost {
   virtual void RequestStoreTab(int64_t slot, int index, bool as_bookmark) = 0;
   // Removes a stored row (a pinned tab or bookmark) by its guid.
   virtual void RemoveStoredRow(const std::string& guid) = 0;
+  // Moves a stored row to `new_index` among its siblings (drag-to-reorder in
+  // the pinned grid and bookmark list).
+  virtual void ReorderStoredRow(const std::string& guid, int new_index) = 0;
+  // Moves a Space to `new_index` in the Space list (chip drag).
+  virtual void ReorderSpace(const std::string& space_id, int new_index) = 0;
   // The app-wide resolved theme.
   virtual const PhiPalette& Palette() const = 0;
   // The theme THIS SLOT paints with: a Space may pin its own (the Mac's
@@ -418,6 +423,23 @@ class PhiWindowController {
   int tabs_scroll_max_ = 0;
   // Wheel over the sidebar: true when consumed (vertical layouts only).
   bool OnSidebarWheel(POINT client_pt, int wheel_delta);
+
+  // Drag-to-reorder: armed on button-down over a draggable element, live
+  // once the cursor passes the system drag threshold, committed on button-up
+  // through MoveTab / ReorderStoredRow / ReorderSpace. The insertion slot is
+  // painted as a 2px accent line while dragging.
+  enum class DragKind { kNone, kTab, kPin, kBookmark, kChip };
+  DragKind drag_kind_ = DragKind::kNone;
+  int drag_index_ = -1;   // Position in the element's own vector.
+  POINT drag_origin_{};
+  bool drag_active_ = false;
+  int drag_insert_ = -1;  // Insertion slot 0..n, -1 = none.
+  void ArmDrag(DragKind kind, int index, POINT pt);
+  void UpdateDrag(POINT pt);
+  void CommitDrag();
+  void CancelDrag();
+  int DragInsertSlot(POINT pt);
+  void DrawDragIndicator(HDC dc);
 
   // Hover feedback (the Mac leans on hover: row washes, close affordances).
   // Which chrome element the cursor rests on, as element-kind + position in

@@ -1060,6 +1060,220 @@ void PhiWindowController::LayoutContents() {
   }
 }
 
+void PhiWindowController::ArmDrag(DragKind kind, int index, POINT pt) {
+  drag_kind_ = kind;
+  drag_index_ = index;
+  drag_origin_ = pt;
+  drag_active_ = false;
+  drag_insert_ = -1;
+}
+
+void PhiWindowController::UpdateDrag(POINT pt) {
+  if (drag_kind_ == DragKind::kNone) {
+    return;
+  }
+  if (!drag_active_) {
+    if (std::abs(pt.x - drag_origin_.x) < ::GetSystemMetrics(SM_CXDRAG) &&
+        std::abs(pt.y - drag_origin_.y) < ::GetSystemMetrics(SM_CYDRAG)) {
+      return;
+    }
+    drag_active_ = true;
+    ::SetCapture(shell_hwnd_);
+  }
+  const int slot = DragInsertSlot(pt);
+  if (slot != drag_insert_) {
+    drag_insert_ = slot;
+    if (shell_hwnd_) {
+      ::InvalidateRect(shell_hwnd_, nullptr, FALSE);
+    }
+  }
+}
+
+void PhiWindowController::CommitDrag() {
+  const DragKind kind = drag_kind_;
+  const int from_pos = drag_index_;
+  const int slot = drag_insert_;
+  const bool active = drag_active_;
+  CancelDrag();
+  if (!active || slot < 0) {
+    return;
+  }
+  // Insert-before `slot` becomes the final sibling position by removing the
+  // dragged element first.
+  const int to_pos = slot > from_pos ? slot - 1 : slot;
+  if (to_pos == from_pos) {
+    return;
+  }
+  switch (kind) {
+    case DragKind::kTab: {
+      if (!framework_ || from_pos < 0 ||
+          from_pos >= static_cast<int>(tabs_.size())) {
+        return;
+      }
+      // Map the visual slot to a framework strip index (bound rows are
+      // hidden, so visual neighbours carry the real indices).
+      const int from = tabs_[static_cast<size_t>(from_pos)].index;
+      int to;
+      if (slot >= static_cast<int>(tabs_.size())) {
+        to = tabs_.back().index;
+      } else {
+        to = tabs_[static_cast<size_t>(slot)].index;
+        if (to > from) {
+          --to;
+        }
+      }
+      framework_->MoveTab(active_browser_ ? active_browser_ : window_id_,
+                          from, to);
+      RefreshTabs();
+      break;
+    }
+    case DragKind::kPin:
+      if (host_ && from_pos >= 0 &&
+          from_pos < static_cast<int>(pinned_.size())) {
+        host_->ReorderStoredRow(pinned_[static_cast<size_t>(from_pos)].guid,
+                                to_pos);
+      }
+      break;
+    case DragKind::kBookmark:
+      if (host_ && from_pos >= 0 &&
+          from_pos < static_cast<int>(bookmarks_.size())) {
+        host_->ReorderStoredRow(
+            bookmarks_[static_cast<size_t>(from_pos)].guid, to_pos);
+      }
+      break;
+    case DragKind::kChip:
+      if (host_ && from_pos >= 0 &&
+          from_pos < static_cast<int>(chips_.size())) {
+        host_->ReorderSpace(chips_[static_cast<size_t>(from_pos)].id, to_pos);
+      }
+      break;
+    case DragKind::kNone:
+      break;
+  }
+}
+
+void PhiWindowController::CancelDrag() {
+  const bool was_active = drag_active_;
+  drag_kind_ = DragKind::kNone;
+  drag_index_ = -1;
+  drag_active_ = false;
+  drag_insert_ = -1;
+  if (was_active) {
+    if (::GetCapture() == shell_hwnd_) {
+      ::ReleaseCapture();
+    }
+    if (shell_hwnd_) {
+      ::InvalidateRect(shell_hwnd_, nullptr, FALSE);
+    }
+  }
+}
+
+int PhiWindowController::DragInsertSlot(POINT pt) {
+  int slot = 0;
+  switch (drag_kind_) {
+    case DragKind::kTab: {
+      const Layout layout = ComputeLayout();
+      for (const TabRow& row : tabs_) {
+        if (row.bounds.right <= row.bounds.left) {
+          continue;  // Hidden (scrolled out); not a drop neighbour.
+        }
+        if (layout.horizontal_tabs
+                ? pt.x > (row.bounds.left + row.bounds.right) / 2
+                : pt.y > (row.bounds.top + row.bounds.bottom) / 2) {
+          ++slot;
+        }
+      }
+      return slot;
+    }
+    case DragKind::kPin:
+      for (const ShortcutRow& pin : pinned_) {
+        if (pt.y > pin.bounds.bottom ||
+            (pt.y >= pin.bounds.top &&
+             pt.x > (pin.bounds.left + pin.bounds.right) / 2)) {
+          ++slot;
+        }
+      }
+      return slot;
+    case DragKind::kBookmark:
+      for (const ShortcutRow& bookmark : bookmarks_) {
+        if (pt.y > (bookmark.bounds.top + bookmark.bounds.bottom) / 2) {
+          ++slot;
+        }
+      }
+      return slot;
+    case DragKind::kChip:
+      for (const SpaceChip& chip : chips_) {
+        if (pt.x > (chip.bounds.left + chip.bounds.right) / 2) {
+          ++slot;
+        }
+      }
+      return slot;
+    case DragKind::kNone:
+      break;
+  }
+  return -1;
+}
+
+void PhiWindowController::DrawDragIndicator(HDC dc) {
+  if (!drag_active_ || drag_insert_ < 0 || !host_) {
+    return;
+  }
+  const PhiPalette& palette = host_->PaletteForSlot(window_id_);
+  // The 2px accent insertion line, horizontal for vertical lists and
+  // vertical for horizontal ones.
+  RECT line{};
+  const auto before_edge = [&](const RECT& r, bool horizontal_list) {
+    if (horizontal_list) {
+      line = {r.left - Scaled(2), r.top, r.left, r.bottom};
+    } else {
+      line = {r.left, r.top - Scaled(2), r.right, r.top};
+    }
+  };
+  const auto after_edge = [&](const RECT& r, bool horizontal_list) {
+    if (horizontal_list) {
+      line = {r.right, r.top, r.right + Scaled(2), r.bottom};
+    } else {
+      line = {r.left, r.bottom, r.right, r.bottom + Scaled(2)};
+    }
+  };
+  const auto pick = [&](const auto& rows, bool horizontal_list) {
+    if (rows.empty()) {
+      return false;
+    }
+    if (drag_insert_ < static_cast<int>(rows.size())) {
+      before_edge(rows[static_cast<size_t>(drag_insert_)].bounds,
+                  horizontal_list);
+    } else {
+      after_edge(rows.back().bounds, horizontal_list);
+    }
+    return true;
+  };
+  bool have = false;
+  const Layout layout = ComputeLayout();
+  switch (drag_kind_) {
+    case DragKind::kTab:
+      have = pick(tabs_, layout.horizontal_tabs);
+      break;
+    case DragKind::kPin:
+      have = pick(pinned_, /*horizontal_list=*/true);
+      break;
+    case DragKind::kBookmark:
+      have = pick(bookmarks_, /*horizontal_list=*/false);
+      break;
+    case DragKind::kChip:
+      have = pick(chips_, /*horizontal_list=*/true);
+      break;
+    case DragKind::kNone:
+      break;
+  }
+  if (!have) {
+    return;
+  }
+  HBRUSH accent = ::CreateSolidBrush(palette.accent);
+  ::FillRect(dc, &line, accent);
+  ::DeleteObject(accent);
+}
+
 void PhiWindowController::OnChromeMouseMove(POINT client_pt) {
   HoverKind kind = HoverKind::kNone;
   int index = -1;
@@ -1931,12 +2145,15 @@ void PhiWindowController::OnChromeClick(int x, int y) {
   }
   for (const ShortcutRow& pin : pinned_) {
     if (::PtInRect(&pin.bounds, pt)) {
+      ArmDrag(DragKind::kPin, static_cast<int>(&pin - pinned_.data()), pt);
       OpenOrFocusPinned(pin.guid, pin.url);
       return;
     }
   }
   for (const ShortcutRow& bookmark : bookmarks_) {
     if (::PtInRect(&bookmark.bounds, pt)) {
+      ArmDrag(DragKind::kBookmark,
+              static_cast<int>(&bookmark - bookmarks_.data()), pt);
       if (!bookmark.folder && !bookmark.url.empty()) {
         // Sidebar bookmark rows bind like pins (bookmarkGuidBacking); the
         // Bookmarks menu keeps opening plain tabs.
@@ -1958,6 +2175,10 @@ void PhiWindowController::OnChromeClick(int x, int y) {
   for (const SpaceChip& chip : chips_) {
     if (!::PtInRect(&chip.bounds, pt)) {
       continue;
+    }
+    if (!layout.horizontal_tabs) {
+      // Vertical strips show every pip: reorderable by drag.
+      ArmDrag(DragKind::kChip, static_cast<int>(&chip - chips_.data()), pt);
     }
     if (layout.horizontal_tabs) {
       // Comfortable draws ONE compact pip — the active Space. Clicking it
@@ -2070,6 +2291,7 @@ void PhiWindowController::OnChromeClick(int x, int y) {
       } else if (row.b_index >= 0 && ::PtInRect(&row.pane_b, pt)) {
         framework_->ActivateTab(browser, row.b_index);
       } else {
+        ArmDrag(DragKind::kTab, static_cast<int>(&row - tabs_.data()), pt);
         framework_->ActivateTab(browser, row.index);
       }
     }
@@ -3205,7 +3427,11 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
           }
         }
         self->SetMenuHot(hot);
-        self->OnChromeMouseMove(pt);
+        if ((wparam & MK_LBUTTON) && self->drag_kind_ != DragKind::kNone) {
+          self->UpdateDrag(pt);
+        } else {
+          self->OnChromeMouseMove(pt);
+        }
         TRACKMOUSEEVENT track = {sizeof(track), TME_LEAVE, hwnd, 0};
         ::TrackMouseEvent(&track);
       }
@@ -3253,6 +3479,16 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
       if (self) {
         self->OnChromeClick(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
         return 0;
+      }
+      return ::DefWindowProcW(hwnd, msg, wparam, lparam);
+    case WM_LBUTTONUP:
+      if (self) {
+        self->CommitDrag();
+      }
+      return ::DefWindowProcW(hwnd, msg, wparam, lparam);
+    case WM_CAPTURECHANGED:
+      if (self) {
+        self->CancelDrag();
       }
       return ::DefWindowProcW(hwnd, msg, wparam, lparam);
     case WM_MOUSEWHEEL:
@@ -3336,6 +3572,7 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
           ::DeleteObject(fill);
           self->PaintChrome(mem, self->ComputeLayout(),
                             /*include_child_controls=*/false);
+          self->DrawDragIndicator(mem);
           ::BitBlt(dc, ps.rcPaint.left, ps.rcPaint.top,
                    ps.rcPaint.right - ps.rcPaint.left,
                    ps.rcPaint.bottom - ps.rcPaint.top, mem, ps.rcPaint.left,

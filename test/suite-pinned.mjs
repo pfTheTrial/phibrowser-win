@@ -262,4 +262,29 @@ test('pinned: a pin keeps the favicon of the page it was made from', async () =>
   } finally { ctl.close() }
 })
 
+test('pinned: rows.reorder moves a pin among its siblings', async () => {
+  const ctl = await openControl()
+  try {
+    const windowId = await firstWindow(ctl)
+    const guids = []
+    for (const name of ['RoA', 'RoB', 'RoC']) {
+      const r = await ctl.send('agentSpace.pinned.add',
+          { windowId, title: name, url: `https://example.com/${name}` })
+      assertEq(r.ok, true, `${name} pinned`)
+      guids.push(r.guid)
+    }
+    assertEq((await ctl.send('agentSpace.rows.reorder',
+                             { guid: guids[2], index: 0 })).ok,
+             true, 'reorder ok')
+    await sleep(300)
+    const pins = (await ctl.send('agentSpace.pinned.list', { windowId })).pinned
+    const order = pins.filter((p) => p.title.startsWith('Ro')).map((p) => p.title)
+    assertEq(JSON.stringify(order), JSON.stringify(['RoC', 'RoA', 'RoB']),
+             'RoC moved to the front, others kept order')
+    for (const g of guids) {
+      await ctl.send('agentSpace.pinned.remove', { guid: g })
+    }
+  } finally { ctl.close() }
+})
+
 run()

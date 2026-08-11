@@ -70,6 +70,8 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   void RequestStoreTab(int64_t slot, int index,
                        bool as_bookmark) override;
   void RemoveStoredRow(const std::string& guid) override;
+  void ReorderStoredRow(const std::string& guid, int new_index) override;
+  void ReorderSpace(const std::string& space_id, int new_index) override;
 
   // PhiSettingsHost:
   std::string ThemeId() const override;

@@ -358,14 +358,43 @@ int PhiTabStore::RemoveForSpace(const std::string& space_id) {
 }
 
 bool PhiTabStore::Reorder(const std::string& guid, int new_index) {
+  // A real sibling move: pull the row out of its ordered sibling list,
+  // reinsert at `new_index`, and renumber densely — writing a bare index
+  // would leave duplicates and an undefined sort.
+  PhiRow* target = nullptr;
   for (PhiRow& row : rows_) {
     if (row.guid == guid) {
-      row.index = new_index;
-      Save();
-      return true;
+      target = &row;
+      break;
     }
   }
-  return false;
+  if (!target) {
+    return false;
+  }
+  const bool pinned_kind = target->type == PhiRowType::kPinnedTab;
+  std::vector<PhiRow*> siblings;
+  for (PhiRow& row : rows_) {
+    const bool same_kind = pinned_kind
+                               ? row.type == PhiRowType::kPinnedTab
+                               : (row.type == PhiRowType::kBookmark ||
+                                  row.type == PhiRowType::kBookmarkFolder);
+    if (same_kind && row.profile_id == target->profile_id &&
+        row.space_id == target->space_id &&
+        row.parent_guid == target->parent_guid) {
+      siblings.push_back(&row);
+    }
+  }
+  std::sort(siblings.begin(), siblings.end(),
+            [](const PhiRow* a, const PhiRow* b) { return a->index < b->index; });
+  siblings.erase(std::find(siblings.begin(), siblings.end(), target));
+  const int clamped = std::max(
+      0, std::min(new_index, static_cast<int>(siblings.size())));
+  siblings.insert(siblings.begin() + clamped, target);
+  for (size_t i = 0; i < siblings.size(); ++i) {
+    siblings[i]->index = static_cast<int>(i);
+  }
+  Save();
+  return true;
 }
 
 bool PhiTabStore::SetPinScope(PhiPinScope scope) {

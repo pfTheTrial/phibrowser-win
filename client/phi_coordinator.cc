@@ -459,6 +459,33 @@ void PhiCoordinator::RemoveStoredRow(const std::string& guid) {
   }
 }
 
+void PhiCoordinator::ReorderStoredRow(const std::string& guid,
+                                      int new_index) {
+  if (tab_store_.Reorder(guid, new_index)) {
+    for (const auto& [slot, controller] : windows_) {
+      controller->RefreshTabs();
+    }
+    PhiSettingsWindow::Refresh();
+  }
+}
+
+void PhiCoordinator::ReorderSpace(const std::string& space_id, int new_index) {
+  auto it = std::find_if(spaces_.begin(), spaces_.end(),
+                         [&](const Space& s) { return s.id == space_id; });
+  if (it == spaces_.end()) {
+    return;
+  }
+  Space moved = *it;
+  spaces_.erase(it);
+  const int clamped =
+      std::max(0, std::min(new_index, static_cast<int>(spaces_.size())));
+  spaces_.insert(spaces_.begin() + clamped, std::move(moved));
+  SaveSpaces();
+  for (const auto& [slot, controller] : windows_) {
+    controller->RefreshTabs();
+  }
+}
+
 void PhiCoordinator::RequestBookmarkActiveTab(int64_t slot) {
   std::string profile_id, space_id;
   if (!framework_ || !OwnerForSlot(slot, &profile_id, &space_id)) {
@@ -1976,6 +2003,54 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
       }
     }
     out.Set("ok", ok);
+  } else if (type == "agentSpace.tabs.move") {
+    std::optional<base::DictValue> p =
+        base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
+    int64_t window_id = 0;
+    int from = -1, to = -1;
+    if (p) {
+      window_id = static_cast<int64_t>(p->FindDouble("windowId").value_or(0));
+      from = static_cast<int>(p->FindDouble("from").value_or(-1));
+      to = static_cast<int>(p->FindDouble("to").value_or(-1));
+    }
+    out.Set("ok", framework_ && window_id && from >= 0 && to >= 0 &&
+                      framework_->MoveTab(ResolveBrowser(window_id), from, to));
+  } else if (type == "agentSpace.rows.reorder") {
+    std::optional<base::DictValue> p =
+        base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
+    std::string guid;
+    int index = -1;
+    if (p) {
+      if (const std::string* g = p->FindString("guid")) {
+        guid = *g;
+      }
+      index = static_cast<int>(p->FindDouble("index").value_or(-1));
+    }
+    const bool ok = !guid.empty() && index >= 0 && tab_store_.Contains(guid);
+    if (ok) {
+      ReorderStoredRow(guid, index);
+    }
+    out.Set("ok", ok);
+  } else if (type == "agentSpace.spaces.reorder") {
+    std::optional<base::DictValue> p =
+        base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
+    std::string space_id;
+    int index = -1;
+    if (p) {
+      if (const std::string* g = p->FindString("spaceId")) {
+        space_id = *g;
+      }
+      index = static_cast<int>(p->FindDouble("index").value_or(-1));
+    }
+    const bool known =
+        index >= 0 && std::any_of(spaces_.begin(), spaces_.end(),
+                                  [&](const Space& sp) {
+                                    return sp.id == space_id;
+                                  });
+    if (known) {
+      ReorderSpace(space_id, index);
+    }
+    out.Set("ok", known);
   } else if (type == "agentSpace.tabs.group" ||
              type == "agentSpace.tabs.ungroup") {
     std::optional<base::DictValue> p =
