@@ -399,6 +399,8 @@ class PhiWindowController {
     // The client identity tag (PhiTabData, session-persisted): a tab tagged
     // with a live pin/bookmark guid IS that row's bound tab.
     std::string tag;
+    // chrome:// pages show the Phi mark when no favicon exists.
+    bool internal_page = false;
     int b_index = -1;  // -1: not a merged row.
     bool b_active = false;
     std::wstring b_title;

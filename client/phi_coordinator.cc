@@ -358,6 +358,7 @@ std::vector<PhiStoredRowView> PhiCoordinator::PinnedRows(int64_t slot) const {
   if (OwnerForSlot(slot, &profile_id, &space_id)) {
     for (const PhiRow& row : tab_store_.PinnedFor(profile_id, space_id)) {
       out.push_back(StoredRowView(row));
+      UpgradeFavicon(slot, row.url, &out.back());
     }
   }
   return out;
@@ -372,9 +373,35 @@ std::vector<PhiStoredRowView> PhiCoordinator::BookmarkRows(
     for (const PhiRow& row :
          tab_store_.BookmarksFor(profile_id, space_id, parent_guid)) {
       out.push_back(StoredRowView(row));
+      UpgradeFavicon(slot, row.url, &out.back());
     }
   }
   return out;
+}
+
+void PhiCoordinator::UpgradeFavicon(int64_t slot,
+                                    const std::string& url,
+                                    PhiStoredRowView* view) const {
+  if (!framework_ || url.empty()) {
+    return;
+  }
+  // The history-backed icon (async; misses schedule a fetch and repaint on
+  // arrival) beats the 16px live-tab capture stored with the row.
+  int width = 0;
+  int height = 0;
+  const unsigned char* pixels = framework_->FaviconForUrlBgra(
+      ResolveBrowser(slot), url.c_str(), &width, &height);
+  if (!pixels || width <= view->favicon_width) {
+    return;
+  }
+  const size_t bytes = static_cast<size_t>(width) * height * 4;
+  // SAFETY: FaviconForUrlBgra reports the dimensions of the buffer it just
+  // returned.
+  const auto span =
+      UNSAFE_BUFFERS(base::span<const unsigned char>(pixels, bytes));
+  view->favicon_bgra.assign(span.begin(), span.end());
+  view->favicon_width = width;
+  view->favicon_height = height;
 }
 
 void PhiCoordinator::RequestOpen(int64_t slot, const std::string& url) {

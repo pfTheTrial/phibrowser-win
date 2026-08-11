@@ -203,6 +203,57 @@ HICON PhiAppIcon(int size) {
       nullptr, path.c_str(), IMAGE_ICON, size, size, LR_LOADFROMFILE));
 }
 
+// The Phi logo as premultiplied BGRA, extracted ONCE from the ICO's 256px
+// entry — shared by the caption band button and the internal-page favicon
+// fallback (the D2D path downscales it crisply to any slot).
+const std::vector<unsigned char>& PhiLogoBgra256() {
+  static base::NoDestructor<std::vector<unsigned char>> store;
+  static bool tried = false;
+  std::vector<unsigned char>& bgra = *store;
+  if (tried) {
+    return bgra;
+  }
+  tried = true;
+  HICON big = PhiAppIcon(256);
+  if (!big) {
+    return bgra;
+  }
+  ICONINFO info = {};
+  if (::GetIconInfo(big, &info) && info.hbmColor) {
+    BITMAPINFO bmi = {};
+    bmi.bmiHeader.biSize = sizeof(bmi.bmiHeader);
+    bmi.bmiHeader.biWidth = 256;
+    bmi.bmiHeader.biHeight = -256;  // Top-down.
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+    std::vector<unsigned char> straight(256 * 256 * 4);
+    HDC screen = ::GetDC(nullptr);
+    if (screen && ::GetDIBits(screen, info.hbmColor, 0, 256, straight.data(),
+                              &bmi, DIB_RGB_COLORS) == 256) {
+      // Straight alpha -> premultiplied, what the D2D path expects.
+      for (size_t px = 0; px + 3 < straight.size(); px += 4) {
+        const unsigned a = straight[px + 3];
+        straight[px] = static_cast<unsigned char>(straight[px] * a / 255);
+        straight[px + 1] =
+            static_cast<unsigned char>(straight[px + 1] * a / 255);
+        straight[px + 2] =
+            static_cast<unsigned char>(straight[px + 2] * a / 255);
+      }
+      bgra = std::move(straight);
+    }
+    if (screen) {
+      ::ReleaseDC(nullptr, screen);
+    }
+    ::DeleteObject(info.hbmColor);
+    if (info.hbmMask) {
+      ::DeleteObject(info.hbmMask);
+    }
+  }
+  ::DestroyIcon(big);
+  return bgra;
+}
+
 ATOM EnsureShellClass() {
   static const ATOM atom = [] {
     WNDCLASSEXW wc = {};
@@ -1781,6 +1832,7 @@ void PhiWindowController::RebuildTabs() {
                               ? *title
                               : (url ? *url : std::string("(untitled)"));
       row.title = base::UTF8ToWide(label);
+      row.internal_page = url && url->rfind("chrome://", 0) == 0;
       int fw = 0, fh = 0;
       const unsigned char* pixels =
           framework_->TabFaviconBgra(browser, row.index, &fw, &fh);
@@ -2694,54 +2746,11 @@ void PhiWindowController::PaintChrome(HDC dc,
     // The logo is loaded AT the size it draws (the multi-size ico has exact
     // entries per DPI), so no GDI rescale blurs it.
     const int logo_size = Scaled(18);
-    // The logo's pixels, extracted ONCE from the ICO's 256px entry; the
-    // D2D path scales them to any DPI without an exact-size ICO entry.
-    static base::NoDestructor<std::vector<unsigned char>> logo_store;
-    std::vector<unsigned char>& logo_bgra = *logo_store;
-    static int logo_native = 0;
+    const std::vector<unsigned char>& logo_bgra = PhiLogoBgra256();
+    const int logo_native = 256;
     static HICON logo = nullptr;
     if (logo_bgra.empty() && !logo) {
-      if (HICON big = PhiAppIcon(256)) {
-        ICONINFO info = {};
-        if (::GetIconInfo(big, &info) && info.hbmColor) {
-          BITMAPINFO bmi = {};
-          bmi.bmiHeader.biSize = sizeof(bmi.bmiHeader);
-          bmi.bmiHeader.biWidth = 256;
-          bmi.bmiHeader.biHeight = -256;  // Top-down.
-          bmi.bmiHeader.biPlanes = 1;
-          bmi.bmiHeader.biBitCount = 32;
-          bmi.bmiHeader.biCompression = BI_RGB;
-          std::vector<unsigned char> straight(256 * 256 * 4);
-          HDC screen = ::GetDC(nullptr);
-          if (screen &&
-              ::GetDIBits(screen, info.hbmColor, 0, 256, straight.data(),
-                          &bmi, DIB_RGB_COLORS) == 256) {
-            // Straight alpha -> premultiplied, what the D2D path expects.
-            for (size_t px = 0; px + 3 < straight.size(); px += 4) {
-              const unsigned a = straight[px + 3];
-              straight[px] =
-                  static_cast<unsigned char>(straight[px] * a / 255);
-              straight[px + 1] =
-                  static_cast<unsigned char>(straight[px + 1] * a / 255);
-              straight[px + 2] =
-                  static_cast<unsigned char>(straight[px + 2] * a / 255);
-            }
-            logo_bgra = std::move(straight);
-            logo_native = 256;
-          }
-          if (screen) {
-            ::ReleaseDC(nullptr, screen);
-          }
-          ::DeleteObject(info.hbmColor);
-          if (info.hbmMask) {
-            ::DeleteObject(info.hbmMask);
-          }
-        }
-        ::DestroyIcon(big);
-      }
-      if (logo_bgra.empty()) {
-        logo = PhiAppIcon(logo_size);  // Fallback: the nearest ICO entry.
-      }
+      logo = PhiAppIcon(logo_size);  // Fallback: the nearest ICO entry.
     }
     EnsureMenuTitleRects();
     for (size_t i = 0; i < menu_titles_.size(); ++i) {
@@ -3018,10 +3027,15 @@ void PhiWindowController::PaintChrome(HDC dc,
       icon.right = icon.left + Scaled(kFaviconSize);
       icon.bottom = icon.top + Scaled(kFaviconSize);
       const auto& favicon = pane_b ? r.b_favicon : r.favicon;
+      const std::vector<unsigned char>& logo = PhiLogoBgra256();
       if (!favicon.empty()) {
         DrawFavicon(dc, icon, favicon.data(),
                     pane_b ? r.b_favicon_width : r.favicon_width,
                     pane_b ? r.b_favicon_height : r.favicon_height, row_bg);
+      } else if (r.internal_page && !logo.empty() &&
+                 PhiDrawBgra(dc, icon, logo.data(), 256, 256)) {
+        // Internal pages (chrome://newtab and friends) carry the Phi mark,
+        // as the Mac shows its own logo there — not the generic globe.
       } else {
         // The Mac's no-favicon placeholder: the globe (FaviconProvider).
         HGDIOBJ previous_glyph_font =

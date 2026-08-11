@@ -115,6 +115,11 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // Maps a slot id (what callers pass as windowId) to the browser currently
   // shown in it — the Space's browser, not necessarily the slot's original.
   int64_t ResolveBrowser(int64_t slot_or_browser) const;
+  // Swaps in the url-favicon service's larger icon when it beats the row's
+  // stored 16px capture.
+  void UpgradeFavicon(int64_t slot,
+                      const std::string& url,
+                      PhiStoredRowView* view) const;
   // The slot's controller; slot 0 falls back to the first window (the verb
   // convention for "the window"). Null when none exists.
   PhiWindowController* ControllerForSlot(int64_t slot);
