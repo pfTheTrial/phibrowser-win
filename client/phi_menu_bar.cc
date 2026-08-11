@@ -361,28 +361,15 @@ std::vector<std::pair<std::string, std::wstring>> PhiMenuBar::SpaceList()
   if (!controller_->host_) {
     return spaces;
   }
-  std::optional<base::Value> all = base::JSONReader::Read(
-      controller_->host_->AllSpacesJson(), base::JSON_PARSE_RFC);
-  if (!all || !all->is_list()) {
-    return spaces;
-  }
-  for (const base::Value& v : all->GetList()) {
-    if (!v.is_dict() || !v.GetDict().FindString("id")) {
-      continue;
-    }
-    const base::DictValue& d = v.GetDict();
-    const std::string* name = d.FindString("name");
-    const std::string* icon = d.FindString("iconText");
+  for (const PhiSpaceView& space : controller_->host_->Spaces()) {
     std::wstring title = base::UTF8ToWide(
-        name && !name->empty() ? *name : "Space " + *d.FindString("id"));
-    if (icon && !icon->empty()) {
-      const std::wstring glyph = base::UTF8ToWide(*icon);
-      // MDL2 stand-ins only render in the MDL2 face; menus use the UI font.
-      if (!PhiIsPrivateGlyph(glyph)) {
-        title = glyph + L"  " + title;
-      }
+        !space.name.empty() ? space.name : "Space " + space.id);
+    const std::wstring glyph = base::UTF8ToWide(space.icon_text);
+    // MDL2 stand-ins only render in the MDL2 face; menus use the UI font.
+    if (!glyph.empty() && !PhiIsPrivateGlyph(glyph)) {
+      title = glyph + L"  " + title;
     }
-    spaces.emplace_back(*d.FindString("id"), std::move(title));
+    spaces.emplace_back(space.id, std::move(title));
   }
   return spaces;
 }
@@ -427,20 +414,10 @@ void PhiMenuBar::RefreshSpaces() {
   std::string active_profile;
   std::vector<std::string> bound_profiles;
   if (controller_->host_) {
-    std::optional<base::Value> all = base::JSONReader::Read(
-        controller_->host_->AllSpacesJson(), base::JSON_PARSE_RFC);
-    if (all && all->is_list()) {
-      for (const base::Value& v : all->GetList()) {
-        if (!v.is_dict()) {
-          continue;
-        }
-        if (const std::string* p = v.GetDict().FindString("profileId")) {
-          bound_profiles.push_back(*p);
-          if (v.GetDict().FindString("id") &&
-              *v.GetDict().FindString("id") == active) {
-            active_profile = *p;
-          }
-        }
+    for (const PhiSpaceView& space : controller_->host_->Spaces()) {
+      bound_profiles.push_back(space.profile_id);
+      if (space.id == active) {
+        active_profile = space.profile_id;
       }
     }
   }
@@ -535,38 +512,26 @@ void PhiMenuBar::AppendBookmarkRows(HMENU menu, const std::string& parent_guid,
   if (!controller_->host_ || depth > 5) {
     return;
   }
-  std::optional<base::Value> rows = base::JSONReader::Read(
-      controller_->host_->BookmarksJson(controller_->window_id_, parent_guid),
-      base::JSON_PARSE_RFC);
-  if (!rows || !rows->is_list()) {
-    return;
-  }
-  for (const base::Value& v : rows->GetList()) {
-    if (!v.is_dict()) {
-      continue;
-    }
-    const std::string* guid = v.GetDict().FindString("guid");
-    const std::string* title = v.GetDict().FindString("title");
-    const std::string* url = v.GetDict().FindString("url");
-    const bool folder = v.GetDict().FindBool("folder").value_or(false);
+  for (const PhiStoredRowView& row :
+       controller_->host_->BookmarkRows(controller_->window_id_,
+                                        parent_guid)) {
     const std::wstring shown =
-        base::UTF8ToWide(title && !title->empty() ? *title
-                                                  : (url ? *url : ""));
-    if (folder && guid) {
+        base::UTF8ToWide(!row.title.empty() ? row.title : row.url);
+    if (row.folder) {
       HMENU sub = ::CreatePopupMenu();
-      AppendBookmarkRows(sub, *guid, depth + 1);
+      AppendBookmarkRows(sub, row.guid, depth + 1);
       if (::GetMenuItemCount(sub) == 0) {
         ::AppendMenuW(sub, MF_STRING | MF_DISABLED | MF_GRAYED, 0, L"Empty");
       }
       ::AppendMenuW(menu, MF_POPUP | MF_STRING,
                     reinterpret_cast<UINT_PTR>(sub), shown.c_str());
-    } else if (url && !url->empty() &&
+    } else if (!row.url.empty() &&
                bookmark_urls_.size() <= kBookmarkLast - kBookmarkFirst) {
       ::AppendMenuW(menu, MF_STRING,
                     kBookmarkFirst +
                         static_cast<UINT>(bookmark_urls_.size()),
                     shown.c_str());
-      bookmark_urls_.push_back(*url);
+      bookmark_urls_.push_back(row.url);
     }
   }
 }
@@ -814,17 +779,10 @@ bool PhiMenuBar::OnCommand(UINT id) {
       // Prefill with the Space's current name (from the owner's list; the
       // chip label is the same string).
       std::wstring name;
-      std::optional<base::Value> all = base::JSONReader::Read(
-          c->host_->AllSpacesJson(), base::JSON_PARSE_RFC);
-      if (all && all->is_list()) {
-        for (const base::Value& v : all->GetList()) {
-          if (v.is_dict() && v.GetDict().FindString("id") &&
-              *v.GetDict().FindString("id") == c->active_space_) {
-            if (const std::string* n = v.GetDict().FindString("name")) {
-              name = base::UTF8ToWide(*n);
-            }
-            break;
-          }
+      for (const PhiSpaceView& space : c->host_->Spaces()) {
+        if (space.id == c->active_space_) {
+          name = base::UTF8ToWide(space.name);
+          break;
         }
       }
       if (PhiPromptText(c->shell_hwnd_, L"Rename Space",

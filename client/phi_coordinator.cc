@@ -329,48 +329,52 @@ std::string PhiCoordinator::CaptureFavicon(int64_t slot, int* width,
   return base::Base64Encode(view);
 }
 
-std::string PhiCoordinator::PinnedJson(int64_t slot) const {
-  std::string profile_id, space_id;
-  base::ListValue list;
-  if (OwnerForSlot(slot, &profile_id, &space_id)) {
-    for (const PhiRow& row : tab_store_.PinnedFor(profile_id, space_id)) {
-      base::DictValue entry;
-      entry.Set("guid", row.guid);
-      entry.Set("title", row.title);
-      entry.Set("url", row.url);
-      entry.Set("favicon", row.favicon_base64);
-      entry.Set("faviconWidth", row.favicon_width);
-      entry.Set("faviconHeight", row.favicon_height);
-      list.Append(std::move(entry));
+namespace {
+
+// Store row → chrome view, decoding the favicon ONCE here instead of at
+// every consumer (the old JSON interface base64-round-tripped per rebuild).
+PhiStoredRowView StoredRowView(const PhiRow& row) {
+  PhiStoredRowView view;
+  view.guid = row.guid;
+  view.title = row.title;
+  view.url = row.url;
+  view.folder = row.type == PhiRowType::kBookmarkFolder;
+  if (!row.favicon_base64.empty()) {
+    std::string decoded;
+    if (base::Base64Decode(row.favicon_base64, &decoded)) {
+      view.favicon_bgra.assign(decoded.begin(), decoded.end());
+      view.favicon_width = row.favicon_width;
+      view.favicon_height = row.favicon_height;
     }
   }
-  std::string json;
-  base::JSONWriter::Write(list, &json);
-  return json;
+  return view;
 }
 
-std::string PhiCoordinator::BookmarksJson(
+}  // namespace
+
+std::vector<PhiStoredRowView> PhiCoordinator::PinnedRows(int64_t slot) const {
+  std::vector<PhiStoredRowView> out;
+  std::string profile_id, space_id;
+  if (OwnerForSlot(slot, &profile_id, &space_id)) {
+    for (const PhiRow& row : tab_store_.PinnedFor(profile_id, space_id)) {
+      out.push_back(StoredRowView(row));
+    }
+  }
+  return out;
+}
+
+std::vector<PhiStoredRowView> PhiCoordinator::BookmarkRows(
     int64_t slot,
     const std::string& parent_guid) const {
+  std::vector<PhiStoredRowView> out;
   std::string profile_id, space_id;
-  base::ListValue list;
   if (OwnerForSlot(slot, &profile_id, &space_id)) {
     for (const PhiRow& row :
          tab_store_.BookmarksFor(profile_id, space_id, parent_guid)) {
-      base::DictValue entry;
-      entry.Set("guid", row.guid);
-      entry.Set("title", row.title);
-      entry.Set("url", row.url);
-      entry.Set("folder", row.type == PhiRowType::kBookmarkFolder);
-      entry.Set("favicon", row.favicon_base64);
-      entry.Set("faviconWidth", row.favicon_width);
-      entry.Set("faviconHeight", row.favicon_height);
-      list.Append(std::move(entry));
+      out.push_back(StoredRowView(row));
     }
   }
-  std::string json;
-  base::JSONWriter::Write(list, &json);
-  return json;
+  return out;
 }
 
 void PhiCoordinator::RequestOpen(int64_t slot, const std::string& url) {
@@ -1015,20 +1019,19 @@ bool PhiCoordinator::TryFinishProfileSpace() {
   return false;
 }
 
-std::string PhiCoordinator::AllSpacesJson() const {
-  base::ListValue list;
+std::vector<PhiSpaceView> PhiCoordinator::Spaces() const {
+  std::vector<PhiSpaceView> out;
+  out.reserve(spaces_.size());
   for (const Space& space : spaces_) {
-    base::DictValue d;
-    d.Set("id", space.id);
-    d.Set("name", space.name);
-    d.Set("profileId", space.profile_id);
-    d.Set("icon", space.icon);
-    d.Set("iconText", PhiIconDisplayText(space.icon));
-    list.Append(std::move(d));
+    PhiSpaceView view;
+    view.id = space.id;
+    view.name = space.name;
+    view.profile_id = space.profile_id;
+    view.icon = space.icon;
+    view.icon_text = PhiIconDisplayText(space.icon);
+    out.push_back(std::move(view));
   }
-  std::string json;
-  base::JSONWriter::Write(list, &json);
-  return json;
+  return out;
 }
 
 void PhiCoordinator::RequestSwitchSpace(int64_t slot,
@@ -1093,6 +1096,14 @@ void PhiCoordinator::RequestCreateSpace(int64_t slot, bool new_profile) {
       RequestSwitchSpace(slot, *id);
     }
   }
+}
+
+PhiWindowController* PhiCoordinator::ControllerForSlot(int64_t slot) {
+  auto it = windows_.find(slot);
+  if (it == windows_.end() && slot == 0 && !windows_.empty()) {
+    it = windows_.begin();  // No windowId: the first window.
+  }
+  return it != windows_.end() ? it->second.get() : nullptr;
 }
 
 int64_t PhiCoordinator::ResolveBrowser(int64_t slot_or_browser) const {
@@ -1391,16 +1402,11 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
         guid = *g;
       }
     }
-    auto win_it = windows_.find(slot);
-    if (win_it == windows_.end() && slot == 0 && !windows_.empty()) {
-      win_it = windows_.begin();
-    }
-    PhiWindowController* controller =
-        win_it != windows_.end() ? win_it->second.get() : nullptr;
+    PhiWindowController* controller = ControllerForSlot(slot);
     std::string profile_id, space_id, url;
     bool known = false;
     if (controller &&
-        OwnerForSlot(win_it->first, &profile_id, &space_id)) {
+        OwnerForSlot(controller->window_id(), &profile_id, &space_id)) {
       // Pins and sidebar bookmarks both bind (bookmarkGuidBacking) — resolve
       // the guid against either kind of stored row.
       for (const PhiRow& row : tab_store_.rows()) {
@@ -1818,12 +1824,7 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
         base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
     int64_t slot =
         p ? static_cast<int64_t>(p->FindDouble("windowId").value_or(0)) : 0;
-    auto it = windows_.find(slot);
-    if (it == windows_.end() && slot == 0 && !windows_.empty()) {
-      it = windows_.begin();  // No windowId: the first window's bar.
-    }
-    PhiWindowController* controller =
-        it != windows_.end() ? it->second.get() : nullptr;
+    PhiWindowController* controller = ControllerForSlot(slot);
     if (controller && controller->menu_bar()) {
       std::optional<base::Value> menus = base::JSONReader::Read(
           controller->menu_bar()->ListJson(), base::JSON_PARSE_RFC);

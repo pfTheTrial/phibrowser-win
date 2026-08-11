@@ -54,7 +54,7 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
                                    const std::string& payload_json) override;
 
   // PhiSlotHost (called on the UI thread by a slot's sidebar):
-  std::string AllSpacesJson() const override;
+  std::vector<PhiSpaceView> Spaces() const override;
   void RequestSwitchSpace(int64_t slot, const std::string& space_id) override;
   void RequestCreateSpace(int64_t slot, bool new_profile) override;
   PhiLayoutMode LayoutMode() const override;
@@ -62,9 +62,10 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   const PhiPalette& Palette() const override;
   const PhiPalette& PaletteForSlot(int64_t slot) const override;
   void RequestSettings() override;
-  std::string PinnedJson(int64_t slot) const override;
-  std::string BookmarksJson(int64_t slot,
-                            const std::string& parent_guid) const override;
+  std::vector<PhiStoredRowView> PinnedRows(int64_t slot) const override;
+  std::vector<PhiStoredRowView> BookmarkRows(
+      int64_t slot,
+      const std::string& parent_guid) const override;
   void RequestOpen(int64_t slot, const std::string& url) override;
   void RequestBookmarkActiveTab(int64_t slot) override;
   void RequestStoreTab(int64_t slot, int index,
@@ -114,6 +115,9 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // Maps a slot id (what callers pass as windowId) to the browser currently
   // shown in it — the Space's browser, not necessarily the slot's original.
   int64_t ResolveBrowser(int64_t slot_or_browser) const;
+  // The slot's controller; slot 0 falls back to the first window (the verb
+  // convention for "the window"). Null when none exists.
+  PhiWindowController* ControllerForSlot(int64_t slot);
   static LRESULT CALLBACK MsgWndProc(HWND hwnd,
                                      UINT msg,
                                      WPARAM wparam,

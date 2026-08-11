@@ -1555,41 +1555,23 @@ void PhiWindowController::RebuildChips() {
   if (!host_) {
     return;
   }
-  std::optional<base::Value> parsed =
-      base::JSONReader::Read(host_->AllSpacesJson(), base::JSON_PARSE_RFC);
-  if (!parsed || !parsed->is_list()) {
-    return;
-  }
   int x = layout.chips_left;
-  for (const base::Value& v : parsed->GetList()) {
-    if (!v.is_dict()) {
-      continue;
-    }
-    const base::DictValue& d = v.GetDict();
-    const std::string* id = d.FindString("id");
-    if (!id) {
-      continue;
-    }
+  for (const PhiSpaceView& space : host_->Spaces()) {
     // Comfortable shows a single compact pip — the ACTIVE Space; the rest
     // live in the popup it opens.
-    if (layout.horizontal_tabs && *id != active_space_) {
+    if (layout.horizontal_tabs && space.id != active_space_) {
       continue;
     }
     if (x + Scaled(kSpaceChip) > layout.chips_limit) {
       break;  // Row is full; the Mac scrolls here — future work.
     }
     SpaceChip chip;
-    chip.id = *id;
-    if (const std::string* name = d.FindString("name")) {
-      chip.label = base::UTF8ToWide(*name);
-    }
-    if (chip.label.empty()) {
-      chip.label = L"Space " + base::UTF8ToWide(*id);
-    }
-    if (const std::string* icon_text = d.FindString("iconText")) {
-      chip.icon = base::UTF8ToWide(*icon_text);
-    }
-    chip.open = HasSpace(*id);
+    chip.id = space.id;
+    chip.label = !space.name.empty()
+                     ? base::UTF8ToWide(space.name)
+                     : L"Space " + base::UTF8ToWide(space.id);
+    chip.icon = base::UTF8ToWide(space.icon_text);
+    chip.open = HasSpace(space.id);
     chip.bounds = {x, layout.chips_top, x + Scaled(kSpaceChip),
                    layout.chips_top + Scaled(kSpaceChip)};
     chips_.push_back(std::move(chip));
@@ -1667,41 +1649,24 @@ void PhiWindowController::RebuildShortcuts() {
   if (!host_) {
     return;
   }
-  auto parse = [&](const std::string& json, std::vector<ShortcutRow>* out) {
-    std::optional<base::Value> parsed =
-        base::JSONReader::Read(json, base::JSON_PARSE_RFC);
-    if (!parsed || !parsed->is_list()) {
-      return;
-    }
-    for (const base::Value& value : parsed->GetList()) {
-      if (!value.is_dict()) {
-        continue;
-      }
-      const base::DictValue& d = value.GetDict();
+  const auto consume = [](std::vector<PhiStoredRowView> in,
+                          std::vector<ShortcutRow>* out) {
+    for (PhiStoredRowView& view : in) {
       ShortcutRow row;
-      if (const std::string* guid = d.FindString("guid")) {
-        row.guid = *guid;
-      }
-      if (const std::string* url = d.FindString("url")) {
-        row.url = *url;
-      }
-      const std::string* title = d.FindString("title");
-      row.title = base::UTF8ToWide(title && !title->empty() ? *title : row.url);
-      row.folder = d.FindBool("folder").value_or(false);
-      if (const std::string* favicon = d.FindString("favicon")) {
-        std::string decoded;
-        if (!favicon->empty() && base::Base64Decode(*favicon, &decoded)) {
-          row.favicon.assign(decoded.begin(), decoded.end());
-          row.favicon_width = d.FindInt("faviconWidth").value_or(0);
-          row.favicon_height = d.FindInt("faviconHeight").value_or(0);
-        }
-      }
+      row.title =
+          base::UTF8ToWide(!view.title.empty() ? view.title : view.url);
+      row.guid = std::move(view.guid);
+      row.url = std::move(view.url);
+      row.folder = view.folder;
+      row.favicon = std::move(view.favicon_bgra);
+      row.favicon_width = view.favicon_width;
+      row.favicon_height = view.favicon_height;
       out->push_back(std::move(row));
     }
   };
-  parse(host_->PinnedJson(window_id_), &pinned_);
+  consume(host_->PinnedRows(window_id_), &pinned_);
   // The sidebar shows the root level; folders open from the Bookmarks menu.
-  parse(host_->BookmarksJson(window_id_, std::string()), &bookmarks_);
+  consume(host_->BookmarkRows(window_id_, std::string()), &bookmarks_);
   bookmark_row_count_ = static_cast<int>(bookmarks_.size());
 
   if (host_->LayoutMode() == PhiLayoutMode::kComfortable) {
@@ -2186,28 +2151,16 @@ void PhiWindowController::OnChromeClick(int x, int y) {
       // SpacesStripView compact-chip behaviour.
       std::vector<std::pair<std::string, std::wstring>> spaces;
       if (host_) {
-        std::optional<base::Value> all = base::JSONReader::Read(
-            host_->AllSpacesJson(), base::JSON_PARSE_RFC);
-        if (all && all->is_list()) {
-          for (const base::Value& v : all->GetList()) {
-            if (!v.is_dict() || !v.GetDict().FindString("id")) {
-              continue;
-            }
-            const base::DictValue& d = v.GetDict();
-            const std::string* name = d.FindString("name");
-            const std::string* icon = d.FindString("iconText");
-            std::wstring title =
-                base::UTF8ToWide(name && !name->empty()
-                                     ? *name
-                                     : "Space " + *d.FindString("id"));
-            if (icon && !icon->empty()) {
-              const std::wstring glyph = base::UTF8ToWide(*icon);
-              if (!PhiIsPrivateGlyph(glyph)) {
-                title = glyph + L"  " + title;
-              }
-            }
-            spaces.emplace_back(*d.FindString("id"), std::move(title));
+        for (const PhiSpaceView& space : host_->Spaces()) {
+          std::wstring title =
+              base::UTF8ToWide(!space.name.empty()
+                                   ? space.name
+                                   : "Space " + space.id);
+          const std::wstring glyph = base::UTF8ToWide(space.icon_text);
+          if (!glyph.empty() && !PhiIsPrivateGlyph(glyph)) {
+            title = glyph + L"  " + title;
           }
+          spaces.emplace_back(space.id, std::move(title));
         }
       }
       HMENU menu = ::CreatePopupMenu();

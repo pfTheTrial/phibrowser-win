@@ -35,14 +35,35 @@ enum class PhiLayoutMode { kPerformance, kBalanced, kComfortable };
 const char* PhiLayoutModeName(PhiLayoutMode mode);
 bool PhiLayoutModeFromName(const std::string& name, PhiLayoutMode* out);
 
+// A stored row (pinned tab or bookmark) as the chrome consumes it — the
+// favicon already decoded to raw premultiplied BGRA.
+struct PhiStoredRowView {
+  std::string guid;
+  std::string title;  // UTF-8.
+  std::string url;
+  bool folder = false;
+  std::vector<unsigned char> favicon_bgra;
+  int favicon_width = 0;
+  int favicon_height = 0;
+};
+
+// A Space as the chips row and menus consume it.
+struct PhiSpaceView {
+  std::string id;
+  std::string name;       // UTF-8.
+  std::string profile_id;
+  std::string icon;       // Storage form ("emoji:<id>" / "phi:<id>").
+  std::string icon_text;  // Resolved display glyph, UTF-8 (may be PUA).
+};
+
 // What a slot needs from its owner (the coordinator): the full Space list to
 // draw, and requests that only the owner can service (switching to a Space
 // that has no browser yet must create one in that Space's profile).
 class PhiSlotHost {
  public:
   virtual ~PhiSlotHost() = default;
-  // All Spaces as a JSON array string: [{"id","name","profileId"},…]
-  virtual std::string AllSpacesJson() const = 0;
+  // Every Space, in display order.
+  virtual std::vector<PhiSpaceView> Spaces() const = 0;
   virtual void RequestSwitchSpace(int64_t slot, const std::string& space_id) = 0;
   // Creates a Space in this slot's current profile (`new_profile` = false) or
   // in a freshly created profile (true), then switches to it.
@@ -51,13 +72,13 @@ class PhiSlotHost {
   // Mac, so a new window never disagrees with the one beside it.
   virtual PhiLayoutMode LayoutMode() const = 0;
   virtual void RequestLayoutMode(PhiLayoutMode mode) = 0;
-  // Pinned tabs and bookmarks for the slot, as JSON arrays:
-  //   [{"guid","title","url","folder"?},…]
-  virtual std::string PinnedJson(int64_t slot) const = 0;
+  // The slot's pinned tabs, in sibling order.
+  virtual std::vector<PhiStoredRowView> PinnedRows(int64_t slot) const = 0;
   // Bookmark rows under `parent_guid` (empty = the root), so the menu bar can
   // descend into folders the way the Mac's Bookmarks menu does.
-  virtual std::string BookmarksJson(int64_t slot,
-                                    const std::string& parent_guid) const = 0;
+  virtual std::vector<PhiStoredRowView> BookmarkRows(
+      int64_t slot,
+      const std::string& parent_guid) const = 0;
   // Opens `url` in the slot (a pinned tab or bookmark was clicked).
   virtual void RequestOpen(int64_t slot, const std::string& url) = 0;
   // Bookmarks the slot's active tab — the menu bar's Bookmark This Tab.
