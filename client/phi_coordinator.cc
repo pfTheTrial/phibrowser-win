@@ -2268,6 +2268,17 @@ LRESULT CALLBACK PhiCoordinator::KeyboardHookProc(int code,
       {VK_OEM_COMMA, true, false, kCmdPreferences},
       {VK_TAB, true, false, kCmdNextTab},
       {VK_TAB, true, true, kCmdPreviousTab},
+      // Ctrl+1..9 switches Spaces (the Mac's ⌃1..⌃9; the Spaces menu and
+      // the pips' hover cards advertise these).
+      {'1', true, false, kCmdSpace1},
+      {'2', true, false, kCmdSpace2},
+      {'3', true, false, kCmdSpace3},
+      {'4', true, false, kCmdSpace4},
+      {'5', true, false, kCmdSpace5},
+      {'6', true, false, kCmdSpace6},
+      {'7', true, false, kCmdSpace7},
+      {'8', true, false, kCmdSpace8},
+      {'9', true, false, kCmdSpace9},
   };
   for (const Accelerator& accel : kAccelerators) {
     if (accel.vk != static_cast<UINT>(wparam) || accel.ctrl != ctrl ||

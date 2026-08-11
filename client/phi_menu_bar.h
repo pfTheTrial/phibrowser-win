@@ -79,6 +79,17 @@ enum : UINT {
   kCmdDeleteSpace,
   kCmdNextSpace,
   kCmdPreviousSpace,
+  // Switch to the Nth Space — the Ctrl+1..9 the Spaces menu advertises,
+  // delivered by the coordinator's keyboard hook (the Mac's ⌃1..⌃9).
+  kCmdSpace1,
+  kCmdSpace2,
+  kCmdSpace3,
+  kCmdSpace4,
+  kCmdSpace5,
+  kCmdSpace6,
+  kCmdSpace7,
+  kCmdSpace8,
+  kCmdSpace9,
   kCmdUrlRules,
   kCmdNewProfile,
   // History

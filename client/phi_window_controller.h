@@ -486,11 +486,31 @@ class PhiWindowController {
   // Hover feedback (the Mac leans on hover: row washes, close affordances).
   // Which chrome element the cursor rests on, as element-kind + position in
   // its vector; repaints fire only when it changes.
-  enum class HoverKind { kNone, kTab, kPin, kBookmark, kGroupHeader };
+  enum class HoverKind { kNone, kTab, kPin, kBookmark, kGroupHeader, kChip };
   HoverKind hover_kind_ = HoverKind::kNone;
   int hover_index_ = -1;
   void OnChromeMouseMove(POINT client_pt);
   void ClearHover();
+
+  // The Space pips' hover card (the Mac SpacesStripView's delayed tooltip):
+  // the dim wash is immediate (the hover state above); the info card — the
+  // Space as a tinted pill, its bound profile, its Ctrl+N switch shortcut —
+  // appears only after the cursor SETTLES on a pip, retargets instantly
+  // while already up, and a click keeps it down until the pointer leaves
+  // the clicked pip (so the card never blinks back right after a switch).
+  std::string hover_card_space_;       // Card owner (empty = no card).
+  std::string pending_card_space_;     // Scheduled, awaiting the delay.
+  std::string card_suppressed_space_;  // Clicked; no card until hover-off.
+  // Card content, resolved when the card arms — the profile name needs a
+  // framework JSON round-trip, not per-paint work.
+  std::wstring card_profile_;
+  COLORREF card_accent_ = 0;  // The owner Space's theme accent.
+  int card_shortcut_ = 0;     // 1-based Ctrl+N digit; 0 = past the ninth.
+  void UpdateHoverCard();  // Re-aims card state at the hovered pip.
+  void PromoteHoverCard();  // Delay elapsed: pending becomes shown.
+  void DismissHoverCard(const std::string& suppress_space_id);
+  void ResolveHoverCard(const std::string& space_id);  // Fills card_*.
+  void DrawHoverCard(HDC dc, const Layout& layout, const PhiPalette& palette);
   // Pinned tabs (the band under the header) and bookmarks (the section above
   // the open tabs) — both come from the client's own store, as on Mac.
   struct ShortcutRow {
@@ -536,6 +556,10 @@ class PhiWindowController {
   HWND swap_conceal_ = nullptr;  // Hidden when the slide lands.
   void RevealSwappedContent();
   bool swap_forward_ = true;
+  // The strip's selected pill slides from the leaving pip to the entering
+  // one during a switch (the Mac's matchedGeometryEffect glass chip),
+  // riding the band slide's clock. Empty when idle.
+  RECT swap_chip_from_{};
   ULONGLONG swap_start_ = 0;  // Band slide clock; 0 = idle.
   PhiPalette swap_source_palette_{};
   ULONGLONG ramp_start_ = 0;  // Theme ramp clock; 0 = idle.

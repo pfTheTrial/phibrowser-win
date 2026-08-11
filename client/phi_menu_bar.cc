@@ -602,6 +602,23 @@ bool PhiMenuBar::OnCommand(UINT id) {
     }
     return true;
   }
+  if (id >= kCmdSpace1 && id <= kCmdSpace9) {
+    // Ctrl+N from the keyboard hook: resolved against the LIVE Space list
+    // (space_ids_ only refreshes when the Spaces menu opens).
+    const std::vector<std::pair<std::string, std::wstring>> spaces =
+        SpaceList();
+    const size_t i = id - kCmdSpace1;
+    if (i < spaces.size() && spaces[i].first != c->active_space_) {
+      const std::string space_id = spaces[i].first;
+      if (c->HasSpace(space_id)) {
+        c->ShowSpace(space_id);
+      } else if (c->host_) {
+        c->host_->RequestSwitchSpace(c->window_id_, space_id);
+      }
+      c->RefreshTabs();
+    }
+    return true;
+  }
   if (id == kThemeFollow) {
     if (c->host_) {
       c->host_->SetSpaceTheme(c->active_space_, std::string());
