@@ -820,6 +820,12 @@ void PhiCoordinator::OpenBrowserSettings() {
   }
 }
 
+void PhiCoordinator::OpenBrowserPage(const std::string& url) {
+  if (!windows_.empty()) {
+    RequestOpen(windows_.begin()->first, url);
+  }
+}
+
 std::vector<std::string> PhiCoordinator::ProfileSummaries() const {
   std::vector<std::string> out;
   if (!framework_) {
@@ -1764,8 +1770,10 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
     out.Set("section", PhiSettingsWindow::CurrentSection());
     base::ListValue sections;
     // The Mac's panes(), in its order; Developer only in developer mode.
+    // (There is no Phi Link pane on Mac — IMChannels exists in its source
+    // but is never mounted.)
     for (const char* name : {"account", "general", "profiles", "spaces", "ai",
-                             "phiLink", "shortcuts"}) {
+                             "shortcuts"}) {
       sections.Append(name);
     }
     if (developer_mode_) {

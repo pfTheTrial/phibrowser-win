@@ -103,6 +103,7 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   bool DeveloperMode() const override;
   void SetDeveloperMode(bool enabled) override;
   void OpenBrowserSettings() override;
+  void OpenBrowserPage(const std::string& url) override;
   void SetSpaceTheme(const std::string& space_id,
                      const std::string& theme_id) override;
   std::vector<std::string> ProfileSummaries() const override;

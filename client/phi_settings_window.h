@@ -76,6 +76,9 @@ class PhiSettingsHost {
   virtual void SetDeveloperMode(bool enabled) = 0;
   // "Additional browser settings" — opens chrome://settings in a tab.
   virtual void OpenBrowserSettings() = 0;
+  // Opens any browser page in a tab — the Mac profile pane's data links
+  // (chrome://settings/privacy and friends).
+  virtual void OpenBrowserPage(const std::string& url) = 0;
 };
 
 // The settings window, shaped like the Mac's Preferences: a TOOLBAR of panes
@@ -127,7 +130,9 @@ class PhiSettingsWindow {
     kEmojiCell,      // One 26pt cell of the icon picker grid.
     kBadge,          // Small capsule ("Default", "Not linked", …).
     kButton,
-    kDisclosure,     // Phi Link's 36pt-icon header row.
+    kIcon,           // A lone MDL2 glyph (row gutters, drag handles).
+    kKeycap,         // Shortcuts' bordered key pill (min width 80, r6).
+    kSearchField,    // Shortcuts' in-card filter field.
   };
   struct Item {
     ItemKind kind = ItemKind::kRowLabel;
@@ -138,6 +143,7 @@ class PhiSettingsWindow {
     bool on = false;
     bool enabled = true;  // Drawn dim and inert when false.
     COLORREF swatch = 0;
+    COLORREF ring = 0;   // A swatch's selection-ring color (its own accent).
     int value = 0;       // Slider position, or an option index.
     std::string action;  // What a click does; empty = not clickable.
     std::string payload;
@@ -149,9 +155,13 @@ class PhiSettingsWindow {
   void BuildSpaces(int* y);
   void BuildProfiles(int* y);
   void BuildAi(int* y);
-  void BuildPhiLink(int* y);
   void BuildShortcuts(int* y);
   void BuildDeveloper(int* y);
+  // The Mac's ProfileDetailSettingsView: the Search Engine / Download
+  // Location card, then "Your Data and Settings" links. Shared by the
+  // Profiles detail column and the General pane's single-profile case.
+  void BuildProfileDetail(int* y, int left, int right,
+                          const std::string& profile_id);
   // A section = a small title, then a card holding its rows. BeginSection
   // remembers where the card starts; EndSection sizes it around the rows that
   // were added, the way the Mac's GeneralSectionView wraps a
@@ -208,6 +218,9 @@ class PhiSettingsWindow {
   // Master-list selections (the Mac remembers per pane).
   std::string selected_space_;
   std::string selected_profile_;
+  // The Shortcuts pane's filter text ("Find shortcut keys"), fed by WM_CHAR
+  // while that pane is up.
+  std::wstring shortcut_search_;
 };
 
 }  // namespace phi_client
