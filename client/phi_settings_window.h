@@ -212,6 +212,12 @@ class PhiSettingsWindow {
   HFONT hint_font_ = nullptr;   // 11pt hints and captions.
   HFONT emoji_font_ = nullptr;  // The icon-picker grid's emoji.
   HFONT mdl2_font_ = nullptr;   // The grid's Phi-icon MDL2 stand-ins.
+  HFONT caption_font_ = nullptr;  // MDL2 at 10pt — the close glyph.
+  // The custom caption strip (the OS caption is retired via WM_NCCALCSIZE
+  // so the title can sit CENTERED, with the Phi mark leading): hover and
+  // press state for its close button.
+  bool close_hot_ = false;
+  int pressed_caption_ = 0;
   // The icon picker's segment ("icon" | "emoji", Icon default as on Mac) and
   // page (the Mac scrolls; this pages through the same content).
   std::string picker_tab_ = "icon";

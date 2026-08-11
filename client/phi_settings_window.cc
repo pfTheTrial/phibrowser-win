@@ -34,7 +34,14 @@ constexpr wchar_t kClassName[] = L"PhiSettingsWindow";
 // (each pane pins view.snp to that size); the toolbar rides above it.
 constexpr int kWidth = 680;
 constexpr int kHeight = 561;
+// The custom caption strip: the OS caption is retired (WM_NCCALCSIZE) so
+// the pane title can sit CENTERED with the Phi mark leading — the Mac
+// window's look. The close button uses the Win11 caption metric.
+constexpr int kCaptionHeight = 32;
+constexpr int kCaptionButtonWidth = 46;
 constexpr int kToolbarHeight = 68;
+// Everything below the caption strip and the pane toolbar.
+constexpr int kChromeTop = kCaptionHeight + kToolbarHeight;
 constexpr int kToolbarItemWidth = 78;
 constexpr int kToolbarIcon = 22;
 // Page insets 36 on every side; 24 between sections; 16 title -> card.
@@ -298,6 +305,9 @@ PhiSettingsWindow::~PhiSettingsWindow() {
   if (mdl2_font_) {
     ::DeleteObject(mdl2_font_);
   }
+  if (caption_font_) {
+    ::DeleteObject(caption_font_);
+  }
 }
 
 PhiSettingsWindow::PhiSettingsWindow(PhiSettingsHost* host) : host_(host) {
@@ -326,12 +336,25 @@ PhiSettingsWindow::PhiSettingsWindow(PhiSettingsHost* host) : host_(host) {
   if (const UINT dpi = ::GetDpiForWindow(hwnd_)) {
     dpi_ = dpi;
   }
-  // Content 680x561, the toolbar band above it — fixed, non-resizable.
-  RECT frame = {0, 0, Scaled(kWidth), Scaled(kToolbarHeight + kHeight)};
-  ::AdjustWindowRectExForDpi(&frame, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
-                             FALSE, 0, dpi_);
-  ::SetWindowPos(hwnd_, nullptr, 0, 0, frame.right - frame.left,
-                 frame.bottom - frame.top, SWP_NOMOVE | SWP_NOZORDER);
+  // Content 680x561 under the caption strip and toolbar band — fixed,
+  // non-resizable. WM_NCCALCSIZE keeps only the thin side/bottom borders,
+  // so the window size is the content plus exactly those.
+  const int border_x = ::GetSystemMetricsForDpi(SM_CXSIZEFRAME, dpi_) +
+                       ::GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi_);
+  const int border_y = ::GetSystemMetricsForDpi(SM_CYSIZEFRAME, dpi_) +
+                       ::GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi_);
+  ::SetWindowPos(hwnd_, nullptr, 0, 0, Scaled(kWidth) + 2 * border_x,
+                 Scaled(kChromeTop + kHeight) + border_y,
+                 SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
+  // Phi's own icon in the taskbar and alt-tab — not the stock one.
+  if (HICON big = PhiAppIcon(32)) {
+    ::SendMessageW(hwnd_, WM_SETICON, ICON_BIG,
+                   reinterpret_cast<LPARAM>(big));
+  }
+  if (HICON small_icon = PhiAppIcon(16)) {
+    ::SendMessageW(hwnd_, WM_SETICON, ICON_SMALL,
+                   reinterpret_cast<LPARAM>(small_icon));
+  }
   EnsureFont();
   SyncTitle();
 }
@@ -386,6 +409,9 @@ void PhiSettingsWindow::EnsureFont() {
               std::begin(mdl2.lfFaceName));
   mdl2.lfHeight = -Scaled(14);
   swap(&mdl2_font_, ::CreateFontIndirectW(&mdl2));
+  LOGFONTW caption = mdl2;
+  caption.lfHeight = -Scaled(10);  // The OS caption glyph size.
+  swap(&caption_font_, ::CreateFontIndirectW(&caption));
   font_dpi_ = dpi_;
 }
 
@@ -1838,8 +1864,9 @@ void PhiSettingsWindow::Rebuild() {
     entry.payload = section.id;
     entry.selected = section_ == section.id;
     entry.action = "section";
-    entry.bounds = {x, Scaled(8), x + Scaled(kToolbarItemWidth),
-                    Scaled(kToolbarHeight - 8)};
+    entry.bounds = {x, Scaled(kCaptionHeight + 8),
+                    x + Scaled(kToolbarItemWidth),
+                    Scaled(kChromeTop - 8)};
     items_.push_back(std::move(entry));
     x += Scaled(kToolbarItemWidth);
   }
@@ -1848,7 +1875,7 @@ void PhiSettingsWindow::Rebuild() {
     SyncTitle();
   }
 
-  int y = Scaled(kToolbarHeight + kMargin) - scroll_;
+  int y = Scaled(kChromeTop + kMargin) - scroll_;
   const int top = y;
   if (section_ == "general") {
     BuildGeneral(&y);
@@ -1895,20 +1922,58 @@ void PhiSettingsWindow::Paint(HDC dc) {
   ::FillRect(dc, &client, page);
   ::DeleteObject(page);
   // The toolbar band shares the ground; a separator closes it.
-  RECT bar_sep = {0, Scaled(kToolbarHeight), client.right,
-                  Scaled(kToolbarHeight) + 1};
+  RECT bar_sep = {0, Scaled(kChromeTop), client.right,
+                  Scaled(kChromeTop) + 1};
   HBRUSH sep_brush = ::CreateSolidBrush(separator);
   ::FillRect(dc, &bar_sep, sep_brush);
   ::DeleteObject(sep_brush);
 
   ::SetBkMode(dc, TRANSPARENT);
   HGDIOBJ previous_font = font_ ? ::SelectObject(dc, font_) : nullptr;
+
+  // The caption strip: Phi mark leading, the pane title CENTERED, the
+  // close button trailing (Win11's metric, red when hot).
+  {
+    const std::vector<unsigned char>& logo = PhiLogoBgra256();
+    if (!logo.empty()) {
+      const int mark = Scaled(16);
+      RECT mark_rc = {Scaled(12), (Scaled(kCaptionHeight) - mark) / 2,
+                      Scaled(12) + mark,
+                      (Scaled(kCaptionHeight) + mark) / 2};
+      PhiDrawBgra(dc, mark_rc, logo.data(), 256, 256);
+    }
+    wchar_t title[128] = {};
+    ::GetWindowTextW(hwnd_, title, 127);
+    if (title_font_) {
+      ::SelectObject(dc, title_font_);
+    }
+    ::SetTextColor(dc, label);
+    RECT title_rc = {0, 0, client.right, Scaled(kCaptionHeight)};
+    ::DrawTextW(dc, title, -1, &title_rc,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    RECT close_rc = {client.right - Scaled(kCaptionButtonWidth), 0,
+                     client.right, Scaled(kCaptionHeight)};
+    if (close_hot_) {
+      HBRUSH hot = ::CreateSolidBrush(RGB(0xC4, 0x2B, 0x1C));
+      ::FillRect(dc, &close_rc, hot);
+      ::DeleteObject(hot);
+    }
+    if (caption_font_) {
+      ::SelectObject(dc, caption_font_);
+    }
+    ::SetTextColor(dc, close_hot_ ? RGB(0xFF, 0xFF, 0xFF) : label);
+    ::DrawTextW(dc, L"", -1, &close_rc,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    if (font_) {
+      ::SelectObject(dc, font_);
+    }
+  }
   bool clipped = false;
 
   for (const Item& item : items_) {
     if (item.kind != ItemKind::kToolbarItem && !clipped) {
       // Pane content scrolls; nothing of it may paint over the toolbar.
-      ::IntersectClipRect(dc, 0, Scaled(kToolbarHeight) + 1, client.right,
+      ::IntersectClipRect(dc, 0, Scaled(kChromeTop) + 1, client.right,
                           client.bottom);
       clipped = true;
     }
@@ -2690,6 +2755,82 @@ LRESULT CALLBACK PhiSettingsWindow::WndProc(HWND hwnd,
   auto* self = reinterpret_cast<PhiSettingsWindow*>(
       ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
   switch (msg) {
+    case WM_NCCALCSIZE:
+      // Claim the OS caption for the client (the strip is drawn there);
+      // only the thin side/bottom borders stay non-client. Both wparam
+      // forms matter — the first calc at creation is the FALSE one.
+      if (self) {
+        RECT* rect =
+            wparam == TRUE
+                ? &reinterpret_cast<NCCALCSIZE_PARAMS*>(lparam)->rgrc[0]
+                : reinterpret_cast<RECT*>(lparam);
+        const UINT dpi = ::GetDpiForWindow(hwnd);
+        const int border_x =
+            ::GetSystemMetricsForDpi(SM_CXSIZEFRAME, dpi) +
+            ::GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
+        const int border_y =
+            ::GetSystemMetricsForDpi(SM_CYSIZEFRAME, dpi) +
+            ::GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
+        rect->left += border_x;
+        rect->right -= border_x;
+        rect->bottom -= border_y;
+        return 0;
+      }
+      break;
+    case WM_NCHITTEST: {
+      if (!self) {
+        break;
+      }
+      const LRESULT hit = ::DefWindowProcW(hwnd, msg, wparam, lparam);
+      if (hit != HTCLIENT) {
+        return hit;  // The real (non-resizable) frame.
+      }
+      POINT pt = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+      ::ScreenToClient(hwnd, &pt);
+      if (pt.y >= self->Scaled(kCaptionHeight)) {
+        return HTCLIENT;
+      }
+      RECT client = {};
+      ::GetClientRect(hwnd, &client);
+      return pt.x >= client.right - self->Scaled(kCaptionButtonWidth)
+                 ? HTCLOSE
+                 : HTCAPTION;
+    }
+    case WM_NCMOUSEMOVE:
+      if (self) {
+        const bool hot = wparam == HTCLOSE;
+        if (hot != self->close_hot_) {
+          self->close_hot_ = hot;
+          ::InvalidateRect(hwnd, nullptr, FALSE);
+        }
+        TRACKMOUSEEVENT track = {sizeof(track), TME_LEAVE | TME_NONCLIENT,
+                                 hwnd, 0};
+        ::TrackMouseEvent(&track);
+      }
+      break;
+    case WM_NCMOUSELEAVE:
+      if (self && self->close_hot_) {
+        self->close_hot_ = false;
+        ::InvalidateRect(hwnd, nullptr, FALSE);
+      }
+      break;
+    case WM_NCLBUTTONDOWN:
+      // Swallow presses on the drawn close button; the action fires on
+      // release over it, like the OS one.
+      if (self && wparam == HTCLOSE) {
+        self->pressed_caption_ = HTCLOSE;
+        return 0;
+      }
+      break;
+    case WM_NCLBUTTONUP:
+      if (self && self->pressed_caption_ == HTCLOSE) {
+        self->pressed_caption_ = 0;
+        if (wparam == HTCLOSE) {
+          ::PostMessageW(hwnd, WM_CLOSE, 0, 0);
+        }
+        return 0;
+      }
+      break;
     case WM_PAINT: {
       PAINTSTRUCT ps = {};
       HDC dc = ::BeginPaint(hwnd, &ps);
@@ -2706,9 +2847,15 @@ LRESULT CALLBACK PhiSettingsWindow::WndProc(HWND hwnd,
       }
       return 0;
     case WM_MOUSEMOVE:
-      // Dragging a saturation slider.
-      if (self && (wparam & MK_LBUTTON)) {
-        self->OnClick(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
+      if (self) {
+        if (self->close_hot_) {
+          self->close_hot_ = false;  // The cursor moved into the client.
+          ::InvalidateRect(hwnd, nullptr, FALSE);
+        }
+        // Dragging a saturation slider.
+        if (wparam & MK_LBUTTON) {
+          self->OnClick(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
+        }
       }
       return 0;
     case WM_TIMER:
@@ -2746,7 +2893,7 @@ LRESULT CALLBACK PhiSettingsWindow::WndProc(HWND hwnd,
         const int delta = GET_WHEEL_DELTA_WPARAM(wparam);
         RECT client = {};
         ::GetClientRect(hwnd, &client);
-        const int visible = client.bottom - self->Scaled(kToolbarHeight);
+        const int visible = client.bottom - self->Scaled(kChromeTop);
         const int max_scroll =
             std::max(0, self->content_height_ - visible);
         self->scroll_ = std::max(

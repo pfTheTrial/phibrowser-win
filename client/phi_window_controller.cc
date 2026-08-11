@@ -199,6 +199,28 @@ LRESULT CALLBACK BrowserSubclassProc(HWND hwnd, UINT msg, WPARAM wparam,
               : ::DefWindowProcW(hwnd, msg, wparam, lparam);
 }
 
+ATOM EnsureShellClass() {
+  static const ATOM atom = [] {
+    WNDCLASSEXW wc = {};
+    wc.cbSize = sizeof(wc);
+    wc.style = CS_HREDRAW | CS_VREDRAW;
+    wc.lpfnWndProc = &PhiWindowController::ShellWndProc;
+    wc.hInstance = ::GetModuleHandleW(nullptr);
+    wc.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
+    // Phi's own icon in the taskbar and alt-tab — not Chromium's.
+    wc.hIcon = PhiAppIcon(32);
+    wc.hIconSm = PhiAppIcon(16);
+    // No background brush: an erase flashes system-white under the chrome
+    // before PaintChrome covers it. WM_ERASEBKGND answers "done" instead.
+    wc.hbrBackground = nullptr;
+    wc.lpszClassName = kShellClassName;
+    return ::RegisterClassExW(&wc);
+  }();
+  return atom;
+}
+
+}  // namespace
+
 // The Phi app icon, shipped beside the exe (resources\phi.ico — the Mac's
 // own artwork). Sized copies for the taskbar/alt-tab and the caption band.
 HICON PhiAppIcon(int size) {
@@ -265,28 +287,6 @@ const std::vector<unsigned char>& PhiLogoBgra256() {
   ::DestroyIcon(big);
   return bgra;
 }
-
-ATOM EnsureShellClass() {
-  static const ATOM atom = [] {
-    WNDCLASSEXW wc = {};
-    wc.cbSize = sizeof(wc);
-    wc.style = CS_HREDRAW | CS_VREDRAW;
-    wc.lpfnWndProc = &PhiWindowController::ShellWndProc;
-    wc.hInstance = ::GetModuleHandleW(nullptr);
-    wc.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
-    // Phi's own icon in the taskbar and alt-tab — not Chromium's.
-    wc.hIcon = PhiAppIcon(32);
-    wc.hIconSm = PhiAppIcon(16);
-    // No background brush: an erase flashes system-white under the chrome
-    // before PaintChrome covers it. WM_ERASEBKGND answers "done" instead.
-    wc.hbrBackground = nullptr;
-    wc.lpszClassName = kShellClassName;
-    return ::RegisterClassExW(&wc);
-  }();
-  return atom;
-}
-
-}  // namespace
 
 const char* PhiLayoutModeName(PhiLayoutMode mode) {
   switch (mode) {

@@ -5,6 +5,8 @@
 #ifndef PHIBROWSER_WIN_CLIENT_PHI_ICONS_H_
 #define PHIBROWSER_WIN_CLIENT_PHI_ICONS_H_
 
+#include <windows.h>
+
 #include <string>
 #include <vector>
 
@@ -32,6 +34,14 @@ std::string PhiIconCatalogGlyph(const std::string& id);
 // True when `text`'s first character sits in the private-use area — an MDL2
 // glyph, which only renders with the Segoe MDL2 Assets font.
 bool PhiIsPrivateGlyph(const std::wstring& text);
+
+// The Phi app icon (resources\phi.ico beside the exe) at `size`, or null
+// when the artwork is missing. Defined in phi_window_controller.cc.
+HICON PhiAppIcon(int size);
+
+// The Phi logo as premultiplied BGRA, extracted once from the ICO's 256px
+// entry — crisp at any size through the D2D downscale path.
+const std::vector<unsigned char>& PhiLogoBgra256();
 
 }  // namespace phi_client
 
