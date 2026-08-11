@@ -469,6 +469,7 @@ class PhiWindowController {
   POINT drag_origin_{};
   bool drag_active_ = false;
   int drag_insert_ = -1;  // Insertion slot 0..n, -1 = none.
+
   // Sidebar edge resize (the Mac's split drag): a 4-DIP grab band in the
   // sidebar's trailing gutter; live while dragging, persisted on release.
   int sidebar_dip_ = kSidebarWidthDefault;
@@ -515,6 +516,42 @@ class PhiWindowController {
   int pinned_row_count_ = 0;
   int bookmark_row_count_ = 0;
   void RebuildShortcuts();
+
+  // Space switch: the PAGE swaps instantly; the SIDEBAR BAND slides — and
+  // natively, no macOS snapshot compositing: the leaving Space's laid-out
+  // rows are RETAINED and painted live, shifted out at their frozen source
+  // palette, while the entering rows paint shifted in at the ramping
+  // palette. The chrome's colors ramp source→target on their own clock.
+  struct BandModel {
+    std::vector<TabRow> tabs;
+    std::vector<ShortcutRow> pinned;
+    std::vector<ShortcutRow> bookmarks;
+    std::vector<GroupHeader> headers;
+  };
+  BandModel leaving_band_;
+  // The page changes AFTER the band slide completes (the Mac reveals the
+  // target on completion): the entering child stays hidden and the leaving
+  // one visible until then.
+  HWND swap_reveal_ = nullptr;   // Shown when the slide lands.
+  HWND swap_conceal_ = nullptr;  // Hidden when the slide lands.
+  void RevealSwappedContent();
+  bool swap_forward_ = true;
+  ULONGLONG swap_start_ = 0;  // Band slide clock; 0 = idle.
+  PhiPalette swap_source_palette_{};
+  ULONGLONG ramp_start_ = 0;  // Theme ramp clock; 0 = idle.
+  double SwapEasedProgress() const;  // Slide progress; 1.0 when idle.
+  double RampEasedProgress() const;  // Theme progress; 1.0 when idle.
+  PhiPalette CurrentPalette() const; // Ramped while a switch is in flight.
+  void ComposeFrame(HDC mem);        // Chrome + drag indicator.
+  void BeginSpaceSwap(const std::string& entering_space_id);
+  void CancelSpaceSwap();
+  // The sidebar band (pinned grid through tab list): once normally, or the
+  // two-pass slide while a switch animates.
+  void PaintSidebarBand(HDC dc, const Layout& layout,
+                        const PhiPalette& palette);
+  void PaintBandOrSwipe(HDC dc, const Layout& layout,
+                        const PhiPalette& palette);
+  void SwapBandModel();  // leaving_band_ ↔ the live row vectors.
 
   // Stored-row bindings are DERIVED, not stored: a tab whose identity tag
   // equals a live pin/bookmark guid is that row's bound tab (the Mac's

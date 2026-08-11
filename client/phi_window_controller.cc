@@ -89,6 +89,13 @@ constexpr int kStripPinSize = 28;
 constexpr int kStripPinGap = 2;
 constexpr int kStripPinToTabs = 6;
 constexpr int kStripPinFavicon = 16;
+// The Mac's vertical-layout Space swap (SpaceManager.swapAnimationDuration).
+constexpr int kSpaceSwapMs = 150;
+// The theme ramp outlives the slide: a deliberate slow fade of the whole
+// chrome to the target Space's colors.
+constexpr int kThemeRampMs = 600;
+constexpr UINT_PTR kSpaceSwapTimer = 0x515;
+
 // Tab groups: the Mac's 32pt TabGroupHeaderView; the group cell sits on an
 // 18% tint of the group color (~46/255).
 constexpr int kGroupHeaderHeight = 32;
@@ -1025,10 +1032,7 @@ void PhiWindowController::PaintCornerCap(HWND cap, HDC dc) {
   RECT rc = {};
   ::GetClientRect(cap, &rc);
   const Layout layout = ComputeLayout();
-  static const PhiPalette kFallback =
-      PhiResolvePalette(PhiThemeById("pure"), PhiAppearance::kLight);
-  const PhiPalette& palette =
-      host_ ? host_->PaletteForSlot(window_id_) : kFallback;
+  const PhiPalette palette = CurrentPalette();
   // The ground tint at this cap's height, matching the band gradient.
   const int height = layout.client.bottom > 0 ? layout.client.bottom : 1;
   const int y = corner < 2 ? layout.content.top
@@ -1069,8 +1073,14 @@ void PhiWindowController::LayoutContents() {
   if (browser_hwnd_ && ::IsWindow(browser_hwnd_)) {
     const int w = layout.content.right - layout.content.left;
     const int h = layout.content.bottom - layout.content.top;
-    ::SetWindowPos(browser_hwnd_, nullptr, layout.content.left,
-                   layout.content.top, w > 0 ? w : 0, h > 0 ? h : 0,
+    // A child awaiting the slide-end reveal is PARKED outside the client
+    // area — the parent clips children, so it stays invisible even if
+    // Chromium shows it on its own (fresh browsers do, post-creation).
+    const int x = (swap_start_ && swap_reveal_ == browser_hwnd_)
+                      ? layout.client.right
+                      : layout.content.left;
+    ::SetWindowPos(browser_hwnd_, nullptr, x, layout.content.top,
+                   w > 0 ? w : 0, h > 0 ? h : 0,
                    SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW);
   }
 
@@ -1434,8 +1444,20 @@ void PhiWindowController::AttachSpaceBrowser(const std::string& space_id,
   // Reparent it into this shell exactly like the primary browser, then show it
   // in place of the current Space's.
   HWND previous = browser_hwnd_;
+  BeginSpaceSwap(space_id);
   browser_hwnd_ = browser_hwnd;
   AdoptBrowserAsChild();
+  if (swap_start_) {
+    swap_reveal_ = browser_hwnd_;
+    swap_conceal_ =
+        previous && previous != browser_hwnd ? previous : nullptr;
+    // Parked off the client rect until the band lands (LayoutContents keeps
+    // it there; hiding would lose to Chromium's own post-creation Show).
+    RECT rc = {};
+    ::GetClientRect(shell_hwnd_, &rc);
+    ::SetWindowPos(browser_hwnd_, nullptr, rc.right, 0, 0, 0,
+                   SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+  }
   if (space_browsers_.find(space_id) == space_browsers_.end()) {
     space_order_.push_back(space_id);
   }
@@ -1447,9 +1469,10 @@ void PhiWindowController::AttachSpaceBrowser(const std::string& space_id,
     framework_->SetWindowSpace(browser_window_id, space_id.c_str());
   }
   LayoutContents();
-  // Same order as ShowSpace: the outgoing browser goes away only after the
-  // incoming one is shown in place, so the content rect is never uncovered.
-  if (previous && previous != browser_hwnd && ::IsWindow(previous)) {
+  if (!swap_start_ && previous && previous != browser_hwnd &&
+      ::IsWindow(previous)) {
+    // Outgoing goes away only after the incoming one is shown in place, so
+    // the content rect is never uncovered.
     ::ShowWindow(previous, SW_HIDE);
   }
   RefreshTabs();
@@ -1473,6 +1496,132 @@ bool PhiWindowController::HasSpace(const std::string& space_id) const {
   return space_browsers_.find(space_id) != space_browsers_.end();
 }
 
+namespace {
+
+COLORREF LerpColor(COLORREF a, COLORREF b, double t) {
+  const auto mix = [t](int from, int to) {
+    return static_cast<int>(from + (to - from) * t + 0.5);
+  };
+  return RGB(mix(GetRValue(a), GetRValue(b)), mix(GetGValue(a), GetGValue(b)),
+             mix(GetBValue(a), GetBValue(b)));
+}
+
+PhiPalette LerpPalette(const PhiPalette& a, const PhiPalette& b, double t) {
+  PhiPalette out = b;
+  out.ground_top = LerpColor(a.ground_top, b.ground_top, t);
+  out.ground_bottom = LerpColor(a.ground_bottom, b.ground_bottom, t);
+  out.card = LerpColor(a.card, b.card, t);
+  out.selected = LerpColor(a.selected, b.selected, t);
+  out.hover = LerpColor(a.hover, b.hover, t);
+  out.hover_strong = LerpColor(a.hover_strong, b.hover_strong, t);
+  out.label = LerpColor(a.label, b.label, t);
+  out.label_dim = LerpColor(a.label_dim, b.label_dim, t);
+  out.label_tertiary = LerpColor(a.label_tertiary, b.label_tertiary, t);
+  out.border = LerpColor(a.border, b.border, t);
+  out.separator = LerpColor(a.separator, b.separator, t);
+  out.window_bg = LerpColor(a.window_bg, b.window_bg, t);
+  out.accent = LerpColor(a.accent, b.accent, t);
+  out.dark = t < 0.5 ? a.dark : b.dark;
+  return out;
+}
+
+}  // namespace
+
+double PhiWindowController::SwapEasedProgress() const {
+  if (!swap_start_) {
+    return 1.0;
+  }
+  const double linear = std::min(
+      1.0, static_cast<double>(::GetTickCount64() - swap_start_) /
+               kSpaceSwapMs);
+  return linear * linear * (3.0 - 2.0 * linear);
+}
+
+double PhiWindowController::RampEasedProgress() const {
+  if (!ramp_start_) {
+    return 1.0;
+  }
+  const double linear = std::min(
+      1.0, static_cast<double>(::GetTickCount64() - ramp_start_) /
+               kThemeRampMs);
+  return linear * linear * (3.0 - 2.0 * linear);
+}
+
+PhiPalette PhiWindowController::CurrentPalette() const {
+  static const PhiPalette kFallback =
+      PhiResolvePalette(PhiThemeById("pure"), PhiAppearance::kLight);
+  PhiPalette target = host_ ? host_->PaletteForSlot(window_id_) : kFallback;
+  const double t = RampEasedProgress();
+  if (t < 1.0) {
+    target = LerpPalette(swap_source_palette_, target, t);
+  }
+  return target;
+}
+
+void PhiWindowController::ComposeFrame(HDC mem) {
+  PaintChrome(mem, ComputeLayout(), /*include_child_controls=*/false);
+  DrawDragIndicator(mem);
+}
+
+void PhiWindowController::BeginSpaceSwap(
+    const std::string& entering_space_id) {
+  if (!host_ || host_->LayoutMode() == PhiLayoutMode::kComfortable ||
+      entering_space_id == active_space_) {
+    return;
+  }
+  CancelSpaceSwap();  // Settle any in-flight switch first.
+  // Direction from strip order, the Mac's forward/backward semantics.
+  int from = -1, to = -1, at = 0;
+  for (const PhiSpaceView& space : host_->Spaces()) {
+    if (space.id == active_space_) {
+      from = at;
+    }
+    if (space.id == entering_space_id) {
+      to = at;
+    }
+    ++at;
+  }
+  swap_forward_ = to >= from;
+  swap_source_palette_ = CurrentPalette();
+  // Retain the leaving Space's laid-out rows: the slide paints them LIVE
+  // (RebuildTabs refills the working vectors with the entering Space's).
+  leaving_band_ = BandModel();
+  SwapBandModel();
+  swap_start_ = ramp_start_ = ::GetTickCount64();
+  ::SetTimer(shell_hwnd_, kSpaceSwapTimer, 16, nullptr);
+}
+
+void PhiWindowController::RevealSwappedContent() {
+  if (swap_reveal_ && ::IsWindow(swap_reveal_)) {
+    const Layout layout = ComputeLayout();
+    ::SetWindowPos(swap_reveal_, nullptr, layout.content.left,
+                   layout.content.top,
+                   layout.content.right - layout.content.left,
+                   layout.content.bottom - layout.content.top,
+                   SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+  }
+  if (swap_conceal_ && ::IsWindow(swap_conceal_) &&
+      swap_conceal_ != browser_hwnd_) {
+    ::ShowWindow(swap_conceal_, SW_HIDE);
+  }
+  const bool had_reveal = swap_reveal_ != nullptr;
+  swap_reveal_ = nullptr;
+  swap_conceal_ = nullptr;
+  if (had_reveal) {
+    FocusActiveBrowser();
+  }
+}
+
+void PhiWindowController::CancelSpaceSwap() {
+  RevealSwappedContent();  // A superseded/aborted switch settles instantly.
+  leaving_band_ = BandModel();
+  if ((swap_start_ || ramp_start_) && shell_hwnd_) {
+    ::KillTimer(shell_hwnd_, kSpaceSwapTimer);
+  }
+  swap_start_ = 0;
+  ramp_start_ = 0;
+}
+
 bool PhiWindowController::ShowSpace(const std::string& space_id) {
   auto it = space_browsers_.find(space_id);
   if (it == space_browsers_.end()) {
@@ -1486,17 +1635,24 @@ bool PhiWindowController::ShowSpace(const std::string& space_id) {
                    ::IsWindow(browser_hwnd_))
                       ? browser_hwnd_
                       : nullptr;
+  BeginSpaceSwap(space_id);
   browser_hwnd_ = hwnd_it->second;
   active_space_ = space_id;
   active_browser_ = it->second;
-  LayoutContents();  // Shows + positions the incoming child...
-  // ...and only then drop the outgoing one. Hiding first uncovers the shell
-  // background across the whole content rect for a frame — the window-wide
-  // blink on every Space switch.
-  if (previous) {
-    ::ShowWindow(previous, SW_HIDE);
+  if (swap_start_) {
+    // Deferred: the entering page is positioned hidden and revealed when
+    // the band slide completes; the leaving page stays up until then.
+    swap_reveal_ = browser_hwnd_;
+    swap_conceal_ = previous;
+    LayoutContents();
+  } else {
+    LayoutContents();  // Shows + positions the incoming child...
+    // ...and only then drop the outgoing one (never uncover the rect).
+    if (previous) {
+      ::ShowWindow(previous, SW_HIDE);
+    }
+    FocusActiveBrowser();
   }
-  FocusActiveBrowser();
   RefreshTabs();
   return true;
 }
@@ -1643,6 +1799,7 @@ void PhiWindowController::RebuildChips() {
     x += Scaled(kSpaceChip + kSpaceChipGap);
   }
 }
+
 
 void PhiWindowController::DrawFavicon(HDC dc,
                                      const RECT& dest,
@@ -2671,11 +2828,9 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
 void PhiWindowController::PaintChrome(HDC dc,
                                      const Layout& layout,
                                      bool include_child_controls) {
-  static const PhiPalette kFallback =
-      PhiResolvePalette(PhiThemeById("pure"), PhiAppearance::kLight);
-  // The SLOT's palette: a Space may pin its own theme.
-  const PhiPalette& palette =
-      host_ ? host_->PaletteForSlot(window_id_) : kFallback;
+  // The SLOT's palette (a Space may pin its own theme), ramped source →
+  // target while a Space swap slide is in flight.
+  const PhiPalette palette = CurrentPalette();
   const COLORREF kTintTop = palette.ground_top;
   const COLORREF kTintBottom = palette.ground_bottom;
   const COLORREF kRowSelectedBg = palette.selected;
@@ -2932,6 +3087,51 @@ void PhiWindowController::PaintChrome(HDC dc,
     }
   }
   DrawGlyph(dc, layout.add_space, L"+", kLabelDim);
+
+  PaintBandOrSwipe(dc, layout, palette);
+
+  // Bottom bar (SidebarBottomBar): downloads and memory leading, then the
+  // Feedback capsule (hairline border) and the Chat capsule (accent ground).
+  // All placeholders -- drawn so the window reads like the Mac one; their
+  // functions arrive later. There is NO settings gear here: settings opens
+  // from the menu bar, as on Mac.
+  DrawGlyph(dc, layout.downloads, L"\u2913", kLabel);
+  DrawGlyph(dc, layout.memory, L"\u25C7", kLabel);
+  if (layout.feedback.right > layout.feedback.left) {
+    const int pill_radius = layout.feedback.bottom - layout.feedback.top;
+    StrokeRounded(dc, layout.feedback, kTintBottom, kBorder, pill_radius);
+    ::SetTextColor(dc, kLabel);
+    RECT feedback_rc = layout.feedback;
+    ::DrawTextW(dc, L"\u2690  Feedback", -1, &feedback_rc,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+  }
+  if (layout.chat.right > layout.chat.left) {
+    const int pill_radius = layout.chat.bottom - layout.chat.top;
+    FillRounded(dc, layout.chat, palette.accent, pill_radius);
+    ::SetTextColor(dc, RGB(0xFF, 0xFF, 0xFF));
+    RECT chat_rc = layout.chat;
+    ::DrawTextW(dc, L"Chat", -1, &chat_rc,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+  }
+
+  if (previous_font) {
+    ::SelectObject(dc, previous_font);
+  }
+}
+
+// static
+void PhiWindowController::PaintSidebarBand(HDC dc,
+                                           const Layout& layout,
+                                           const PhiPalette& palette) {
+  // Palette-derived locals the band rows use (same derivations as
+  // PaintChrome's own).
+  const COLORREF kTintTop = palette.ground_top;
+  const COLORREF kRowSelectedBg = palette.selected;
+  const COLORREF kLabel = palette.label;
+  const COLORREF kLabelDim = palette.label_dim;
+  const COLORREF kActivePillBorder =
+      palette.dark ? BlendOver(RGB(0xFF, 0xFF, 0xFF), kRowSelectedBg, 51)
+                   : kRowSelectedBg;
 
   // The scrolling tab-list band (groups + tab rows) clips to its viewport:
   // a row straddling the bottom edge must not bleed into the bottom bar.
@@ -3195,36 +3395,52 @@ void PhiWindowController::PaintChrome(HDC dc,
                 DT_LEFT | DT_VCENTER | DT_SINGLELINE);
   }
 
-  // Bottom bar (SidebarBottomBar): downloads and memory leading, then the
-  // Feedback capsule (hairline border) and the Chat capsule (accent ground).
-  // All placeholders -- drawn so the window reads like the Mac one; their
-  // functions arrive later. There is NO settings gear here: settings opens
-  // from the menu bar, as on Mac.
-  DrawGlyph(dc, layout.downloads, L"\u2913", kLabel);
-  DrawGlyph(dc, layout.memory, L"\u25C7", kLabel);
-  if (layout.feedback.right > layout.feedback.left) {
-    const int pill_radius = layout.feedback.bottom - layout.feedback.top;
-    StrokeRounded(dc, layout.feedback, kTintBottom, kBorder, pill_radius);
-    ::SetTextColor(dc, kLabel);
-    RECT feedback_rc = layout.feedback;
-    ::DrawTextW(dc, L"\u2690  Feedback", -1, &feedback_rc,
-                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-  }
-  if (layout.chat.right > layout.chat.left) {
-    const int pill_radius = layout.chat.bottom - layout.chat.top;
-    FillRounded(dc, layout.chat, palette.accent, pill_radius);
-    ::SetTextColor(dc, RGB(0xFF, 0xFF, 0xFF));
-    RECT chat_rc = layout.chat;
-    ::DrawTextW(dc, L"Chat", -1, &chat_rc,
-                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-  }
+}
 
-  if (previous_font) {
-    ::SelectObject(dc, previous_font);
+void PhiWindowController::PaintBandOrSwipe(HDC dc,
+                                           const Layout& layout,
+                                           const PhiPalette& palette) {
+  if (!swap_start_ || layout.horizontal_tabs) {
+    PaintSidebarBand(dc, layout, palette);
+    return;
+  }
+  // The Space switch slides the REAL rows (no snapshots): the leaving
+  // Space's retained model paints shifted out at its frozen source palette,
+  // the live (entering) model paints shifted in at the ramped palette, both
+  // clipped to the band over the ramping ground.
+  const double t = SwapEasedProgress();
+  const int band_w = Scaled(sidebar_dip_);
+  const int leave_dx = swap_forward_ ? -static_cast<int>(t * band_w + 0.5)
+                                     : static_cast<int>(t * band_w + 0.5);
+  const int enter_dx =
+      swap_forward_ ? band_w + leave_dx : leave_dx - band_w;
+  const int save = ::SaveDC(dc);
+  ::IntersectClipRect(dc, 0, layout.favorites.top, band_w,
+                      layout.tabs_limit);
+  POINT origin = {};
+  ::GetViewportOrgEx(dc, &origin);
+  ::SetViewportOrgEx(dc, origin.x + leave_dx, origin.y, nullptr);
+  SwapBandModel();
+  PaintSidebarBand(dc, layout, swap_source_palette_);
+  SwapBandModel();
+  ::SetViewportOrgEx(dc, origin.x + enter_dx, origin.y, nullptr);
+  PaintSidebarBand(dc, layout, palette);
+  ::SetViewportOrgEx(dc, origin.x, origin.y, nullptr);
+  ::RestoreDC(dc, save);
+  if (t >= 1.0) {
+    leaving_band_ = BandModel();
+    swap_start_ = 0;
+    RevealSwappedContent();  // The page flips only now, the Mac's order.
   }
 }
 
-// static
+void PhiWindowController::SwapBandModel() {
+  tabs_.swap(leaving_band_.tabs);
+  pinned_.swap(leaving_band_.pinned);
+  bookmarks_.swap(leaving_band_.bookmarks);
+  group_headers_.swap(leaving_band_.headers);
+}
+
 LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
                                                    UINT msg,
                                                    WPARAM wparam,
@@ -3527,8 +3743,26 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
         }
       }
       return ::DefWindowProcW(hwnd, msg, wparam, lparam);
+    case WM_TIMER:
+      if (self && wparam == kSpaceSwapTimer) {
+        // The whole chrome repaints per tick: the band slide advances and
+        // the theme ramp covers the statics. The caps ride the same ramp.
+        ::InvalidateRect(hwnd, nullptr, FALSE);
+        for (HWND cap : self->corner_caps_) {
+          if (cap) {
+            ::InvalidateRect(cap, nullptr, TRUE);
+          }
+        }
+        if (self->RampEasedProgress() >= 1.0 && !self->swap_start_) {
+          ::KillTimer(hwnd, kSpaceSwapTimer);
+          self->ramp_start_ = 0;
+        }
+        return 0;
+      }
+      return ::DefWindowProcW(hwnd, msg, wparam, lparam);
     case WM_SIZE:
       if (self) {
+        self->CancelSpaceSwap();  // Band geometry changed under the slide.
         self->LayoutContents();
       }
       return 0;
@@ -3597,9 +3831,7 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
           HBRUSH fill = ::CreateSolidBrush(self->BackgroundFill());
           ::FillRect(mem, &rc, fill);
           ::DeleteObject(fill);
-          self->PaintChrome(mem, self->ComputeLayout(),
-                            /*include_child_controls=*/false);
-          self->DrawDragIndicator(mem);
+          self->ComposeFrame(mem);
           ::BitBlt(dc, ps.rcPaint.left, ps.rcPaint.top,
                    ps.rcPaint.right - ps.rcPaint.left,
                    ps.rcPaint.bottom - ps.rcPaint.top, mem, ps.rcPaint.left,
