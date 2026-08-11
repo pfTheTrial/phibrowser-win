@@ -36,7 +36,6 @@ constexpr wchar_t kShellClassName[] = L"PhiClientShell";
 // Design units (points at 100%), taken from the Mac client so the two look the
 // same: WebContentConstant, SidebarHeaderView, SpacesStripView,
 // PinnedTabLayout, TabStripMetrics and SidebarBottomBar.
-constexpr int kSidebarWidth = 240;
 // The caption band: the OS title bar is removed (WM_NCCALCSIZE) and this row
 // holds the MENU TITLES and the minimize / maximize / close buttons together
 // — the menu bar lives on the caption row, not under it.
@@ -450,7 +449,12 @@ PhiWindowController::Layout PhiWindowController::ComputeLayout() {
   EnsureFont();
   const int w = out.client.right;
   const int h = out.client.bottom;
-  const int sidebar = Scaled(kSidebarWidth);
+  if (!sidebar_resizing_ && host_) {
+    sidebar_dip_ = std::max(kSidebarWidthMin,
+                            std::min(host_->SidebarWidth(),
+                                     kSidebarWidthMax));
+  }
+  const int sidebar = Scaled(sidebar_dip_);
   const int inset = Scaled(kEdgeInset);
   const int btn = Scaled(kNavButton);
   const int m = Scaled(kContentMargin);
@@ -643,7 +647,7 @@ int PhiWindowController::title_bar_height() const {
 }
 
 int PhiWindowController::sidebar_width() const {
-  return Scaled(kSidebarWidth);
+  return Scaled(sidebar_dip_);
 }
 
 int PhiWindowController::content_margin() const {
@@ -703,7 +707,7 @@ PhiWindowController::PhiWindowController(int64_t window_id,
   RECT wr = {};
   ::GetWindowRect(browser_hwnd_, &wr);
   int x = CW_USEDEFAULT, y = CW_USEDEFAULT;
-  int w = Scaled(1200 + kSidebarWidth), h = Scaled(800);
+  int w = Scaled(1200 + sidebar_dip_), h = Scaled(800);
   if (wr.right > wr.left && wr.bottom > wr.top) {
     const UINT dpi = ::GetDpiForWindow(browser_hwnd_);
     if (dpi) {
@@ -721,7 +725,7 @@ PhiWindowController::PhiWindowController(int64_t window_id,
     const int border_y =
         ::GetSystemMetricsForDpi(SM_CYSIZEFRAME, frame_dpi) +
         ::GetSystemMetricsForDpi(SM_CXPADDEDBORDER, frame_dpi);
-    x = wr.left - Scaled(kSidebarWidth) - border_x;
+    x = wr.left - Scaled(sidebar_dip_) - border_x;
     y = wr.top - Scaled(kTitleBarHeight) - Scaled(kContentTopGap);
     w = (wr.right + Scaled(kContentMargin) + border_x) - x;
     h = (wr.bottom + Scaled(kContentMargin) + border_y) - y;
@@ -1109,6 +1113,16 @@ void PhiWindowController::LayoutContents() {
     ::SetWindowRgn(corner_caps_[i], square, TRUE);  // Window owns it now.
     ::InvalidateRect(corner_caps_[i], nullptr, TRUE);
   }
+}
+
+bool PhiWindowController::InSidebarResizeBand(POINT client_pt) {
+  if (!host_ || host_->LayoutMode() == PhiLayoutMode::kComfortable) {
+    return false;
+  }
+  const Layout layout = ComputeLayout();
+  return client_pt.y >= layout.title_bar.bottom &&
+         client_pt.x >= Scaled(sidebar_dip_) - Scaled(4) &&
+         client_pt.x <= Scaled(sidebar_dip_);
 }
 
 void PhiWindowController::ArmDrag(DragKind kind, int index, POINT pt) {
@@ -1746,12 +1760,12 @@ void PhiWindowController::RebuildShortcuts() {
   // column count is min(limit, pins), shrunk while a cell would dip under the
   // 53pt minimum, and cells STRETCH to fill the row: a lone pin spans the
   // sidebar, two pins split it in half.
-  const int decision = kSidebarWidth - 8;
+  const int decision = sidebar_dip_ - 8;
   const int column_limit = decision < 236 ? 3
                            : decision < 294 ? 4
                            : decision < 352 ? 5
                                             : 6;
-  const int avail = kSidebarWidth - 2 * kEdgeInset;
+  const int avail = sidebar_dip_ - 2 * kEdgeInset;
   int columns =
       std::max(1, std::min(column_limit, static_cast<int>(pinned_.size())));
   while (columns > 1 &&
@@ -1769,7 +1783,7 @@ void PhiWindowController::RebuildShortcuts() {
   // truncated cell width: the rounding remainder spreads across the row and
   // the last edge lands exactly on the inset, like the Mac's float division.
   const int row_span =
-      Scaled(kSidebarWidth) - 2 * Scaled(kEdgeInset) - (columns - 1) * gap;
+      Scaled(sidebar_dip_) - 2 * Scaled(kEdgeInset) - (columns - 1) * gap;
   for (size_t i = 0; i < pinned_.size(); ++i) {
     const int col = static_cast<int>(i) % columns;
     const int row_index = static_cast<int>(i) / columns;
@@ -1784,7 +1798,7 @@ void PhiWindowController::RebuildShortcuts() {
           (pinned_row_count_ > 0 ? Scaled(kFavoritesSpacer) : 0);
   for (ShortcutRow& row : bookmarks_) {
     row.bounds = {layout.tabs_left, y,
-                  Scaled(kSidebarWidth - kEdgeInset),
+                  Scaled(sidebar_dip_ - kEdgeInset),
                   y + Scaled(kTabRowHeight)};
     y += Scaled(kTabRowHeight + kTabRowGap);
   }
@@ -1966,7 +1980,7 @@ void PhiWindowController::RebuildTabs() {
         if (info != group_info.end()) {
           GroupHeader header = info->second;
           header.bounds = {layout.tabs_left, y,
-                           Scaled(kSidebarWidth - kEdgeInset),
+                           Scaled(sidebar_dip_ - kEdgeInset),
                            y + Scaled(kGroupHeaderHeight)};
           header.container = header.bounds;
           y += Scaled(kGroupHeaderHeight + kTabRowGap);
@@ -1989,7 +2003,7 @@ void PhiWindowController::RebuildTabs() {
       x += Scaled(kHTabWidth + kHTabGap);
     } else {
       row.bounds = {layout.tabs_left, y,
-                    Scaled(kSidebarWidth - kEdgeInset),
+                    Scaled(sidebar_dip_ - kEdgeInset),
                     y + Scaled(kTabRowHeight)};
       y += Scaled(kTabRowHeight + kTabRowGap);
       clip_to_viewport(&row.bounds);
@@ -3394,6 +3408,19 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
           }
         }
         self->SetMenuHot(hot);
+        if (self->sidebar_resizing_) {
+          const int dip = std::max(
+              kSidebarWidthMin,
+              std::min(static_cast<int>(pt.x) * 96 /
+                           static_cast<int>(self->dpi_),
+                       kSidebarWidthMax));
+          if (dip != self->sidebar_dip_) {
+            self->sidebar_dip_ = dip;
+            self->LayoutContents();
+            self->ScheduleRefresh();
+          }
+          return 0;
+        }
         if ((wparam & MK_LBUTTON) && self->drag_kind_ != DragKind::kNone) {
           self->UpdateDrag(pt);
         } else {
@@ -3444,18 +3471,51 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
       break;
     case WM_LBUTTONDOWN:
       if (self) {
-        self->OnChromeClick(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
+        POINT pt = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+        if (self->InSidebarResizeBand(pt)) {
+          self->sidebar_resizing_ = true;
+          ::SetCapture(hwnd);
+          return 0;
+        }
+        self->OnChromeClick(pt.x, pt.y);
         return 0;
       }
       return ::DefWindowProcW(hwnd, msg, wparam, lparam);
     case WM_LBUTTONUP:
       if (self) {
+        if (self->sidebar_resizing_) {
+          self->sidebar_resizing_ = false;
+          if (::GetCapture() == hwnd) {
+            ::ReleaseCapture();
+          }
+          if (self->host_) {
+            self->host_->RequestSidebarWidth(self->sidebar_dip_);
+          }
+          return 0;
+        }
         self->CommitDrag();
       }
       return ::DefWindowProcW(hwnd, msg, wparam, lparam);
     case WM_CAPTURECHANGED:
       if (self) {
+        if (self->sidebar_resizing_) {
+          self->sidebar_resizing_ = false;
+          if (self->host_) {
+            self->host_->RequestSidebarWidth(self->sidebar_dip_);
+          }
+        }
         self->CancelDrag();
+      }
+      return ::DefWindowProcW(hwnd, msg, wparam, lparam);
+    case WM_SETCURSOR:
+      if (self && LOWORD(lparam) == HTCLIENT) {
+        POINT pt = {};
+        ::GetCursorPos(&pt);
+        ::ScreenToClient(hwnd, &pt);
+        if (self->sidebar_resizing_ || self->InSidebarResizeBand(pt)) {
+          ::SetCursor(::LoadCursorW(nullptr, IDC_SIZEWE));
+          return TRUE;
+        }
       }
       return ::DefWindowProcW(hwnd, msg, wparam, lparam);
     case WM_MOUSEWHEEL:

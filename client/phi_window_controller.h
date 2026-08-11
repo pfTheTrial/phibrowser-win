@@ -93,6 +93,10 @@ class PhiSlotHost {
   virtual void ReorderStoredRow(const std::string& guid, int new_index) = 0;
   // Moves a Space to `new_index` in the Space list (chip drag).
   virtual void ReorderSpace(const std::string& space_id, int new_index) = 0;
+  // The sidebar width in DIP — one app-wide value like the layout mode,
+  // clamped to the Mac split range (193–500).
+  virtual int SidebarWidth() const = 0;
+  virtual void RequestSidebarWidth(int dip) = 0;
   // The app-wide resolved theme.
   virtual const PhiPalette& Palette() const = 0;
   // The theme THIS SLOT paints with: a Space may pin its own (the Mac's
@@ -115,6 +119,11 @@ class PhiSlotHost {
   // Opens the settings window (theme, appearance, layout).
   virtual void RequestSettings() = 0;
 };
+
+// The Mac sidebar's default and drag range (MainSplitViewController).
+inline constexpr int kSidebarWidthDefault = 240;
+inline constexpr int kSidebarWidthMin = 193;
+inline constexpr int kSidebarWidthMax = 500;
 
 class PhiMenuBar;
 
@@ -163,6 +172,10 @@ class PhiWindowController {
   void RebuildTabs();
   // Rebuilds the Space chips row from the owner's full Space list.
   void RebuildChips();
+  // Re-derives the geometry and repositions the browser child + corner caps
+  // (public so the owner can push app-wide layout changes, e.g. the sidebar
+  // width, into every window).
+  void LayoutContents();
 
   // --- Spaces (client-owned, as on Mac) ------------------------------------
   // A slot shows ONE Space at a time. Each Space has its own Browser; the
@@ -294,7 +307,6 @@ class PhiWindowController {
   Layout ComputeLayout();
 
   void AdoptBrowserAsChild();
-  void LayoutContents();
   // Moves the address field's EDIT child into `layout`'s slot for it.
   void PositionUrlField(const Layout& layout);
   // `include_child_controls` draws what child windows would draw themselves —
@@ -457,6 +469,12 @@ class PhiWindowController {
   POINT drag_origin_{};
   bool drag_active_ = false;
   int drag_insert_ = -1;  // Insertion slot 0..n, -1 = none.
+  // Sidebar edge resize (the Mac's split drag): a 4-DIP grab band in the
+  // sidebar's trailing gutter; live while dragging, persisted on release.
+  int sidebar_dip_ = kSidebarWidthDefault;
+  bool sidebar_resizing_ = false;
+  bool InSidebarResizeBand(POINT client_pt);
+
   void ArmDrag(DragKind kind, int index, POINT pt);
   void UpdateDrag(POINT pt);
   void CommitDrag();

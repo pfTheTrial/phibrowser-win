@@ -73,6 +73,8 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   void RemoveStoredRow(const std::string& guid) override;
   void ReorderStoredRow(const std::string& guid, int new_index) override;
   void ReorderSpace(const std::string& space_id, int new_index) override;
+  int SidebarWidth() const override;
+  void RequestSidebarWidth(int dip) override;
 
   // PhiSettingsHost:
   std::string ThemeId() const override;
@@ -147,6 +149,7 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
 
   // One controller per SLOT, keyed by the slot's primary windowId.
   std::map<int64_t, std::unique_ptr<PhiWindowController>> windows_;
+  int sidebar_width_ = kSidebarWidthDefault;
   // Every browser window -> the slot hosting it (a slot has one per Space).
   std::map<int64_t, int64_t> browser_to_slot_;
   // Spaces are a client concept. Each binds EXACTLY ONE profile; several

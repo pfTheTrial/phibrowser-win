@@ -248,11 +248,16 @@ void PhiCoordinator::LoadLayoutMode() {
       LOG(INFO) << "[PhiClient] layout mode: " << *name;
     }
   }
+  if (std::optional<int> width = root->FindInt("sidebarWidth")) {
+    sidebar_width_ =
+        std::max(kSidebarWidthMin, std::min(*width, kSidebarWidthMax));
+  }
 }
 
 void PhiCoordinator::SaveLayoutMode() const {
   base::DictValue root;
   root.Set("layoutMode", PhiLayoutModeName(layout_mode_));
+  root.Set("sidebarWidth", sidebar_width_);
   std::string json;
   base::JSONWriter::Write(root, &json);
   HANDLE f = ::CreateFileW(layout_path_.c_str(), GENERIC_WRITE, 0, nullptr,
@@ -497,6 +502,24 @@ void PhiCoordinator::ReorderStoredRow(const std::string& guid,
       controller->RefreshTabs();
     }
     PhiSettingsWindow::Refresh();
+  }
+}
+
+int PhiCoordinator::SidebarWidth() const {
+  return sidebar_width_;
+}
+
+void PhiCoordinator::RequestSidebarWidth(int dip) {
+  const int clamped =
+      std::max(kSidebarWidthMin, std::min(dip, kSidebarWidthMax));
+  if (clamped == sidebar_width_) {
+    return;
+  }
+  sidebar_width_ = clamped;
+  SaveLayoutMode();  // The layout file carries the width too.
+  for (const auto& [slot, controller] : windows_) {
+    controller->LayoutContents();
+    controller->RefreshTabs();
   }
 }
 
@@ -1366,11 +1389,16 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
       if (const std::string* name = p->FindString("mode")) {
         ok = PhiLayoutModeFromName(*name, &mode);
       }
+      if (std::optional<int> width = p->FindInt("sidebarWidth")) {
+        RequestSidebarWidth(*width);
+        ok = true;
+      }
     }
-    if (ok) {
+    if (ok && p && p->FindString("mode")) {
       RequestLayoutMode(mode);
     }
     out.Set("mode", PhiLayoutModeName(layout_mode_));
+    out.Set("sidebarWidth", sidebar_width_);
     out.Set("ok", ok);
   } else if (type == "agentSpace.pinned.scope.get") {
     out.Set("scope", PhiPinScopeName(tab_store_.pin_scope()));
