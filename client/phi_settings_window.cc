@@ -5,7 +5,9 @@
 #include "phibrowser-win/client/phi_settings_window.h"
 
 #include <shellapi.h>
+#include <shobjidl.h>
 #include <windowsx.h>
+#include <wrl/client.h>
 
 #include <algorithm>
 #include <array>
@@ -224,6 +226,40 @@ COLORREF HsvToRgb(double h, double s, double v) {
   return RGB(static_cast<int>((r + m) * 255 + 0.5),
              static_cast<int>((g + m) * 255 + 0.5),
              static_cast<int>((b + m) * 255 + 0.5));
+}
+
+// Re-reads a selected profile whose data is still loading (see
+// BuildProfileDetail); one-shot, re-armed per rebuild while pending.
+constexpr UINT_PTR kProfilePollTimer = 0x517;
+
+// The Mac's NSOpenPanel (directories only): the modern IFileOpenDialog in
+// folder-picking mode. Empty when cancelled. The browser UI thread is
+// already a COM STA, so no CoInitialize here.
+std::wstring PickFolder(HWND owner, const wchar_t* title) {
+  Microsoft::WRL::ComPtr<IFileOpenDialog> dialog;
+  if (FAILED(::CoCreateInstance(CLSID_FileOpenDialog, nullptr,
+                                CLSCTX_INPROC_SERVER,
+                                IID_PPV_ARGS(&dialog)))) {
+    return std::wstring();
+  }
+  DWORD options = 0;
+  dialog->GetOptions(&options);
+  dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
+  dialog->SetTitle(title);
+  if (FAILED(dialog->Show(owner))) {
+    return std::wstring();  // Cancelled.
+  }
+  Microsoft::WRL::ComPtr<IShellItem> item;
+  if (FAILED(dialog->GetResult(&item))) {
+    return std::wstring();
+  }
+  wchar_t* path = nullptr;
+  if (FAILED(item->GetDisplayName(SIGDN_FILESYSPATH, &path)) || !path) {
+    return std::wstring();
+  }
+  std::wstring result = path;
+  ::CoTaskMemFree(path);
+  return result;
 }
 
 // "a\tb\tc" -> {"a","b","c"}
@@ -1332,11 +1368,16 @@ void PhiSettingsWindow::BuildProfileDetail(int* y, int left, int right,
                     top, right - Scaled(kCardPadding + 150), top + row_h};
     items_.push_back(std::move(label));
   };
-  const auto trailing_pill = [&](int top, const wchar_t* text) {
+  const auto trailing_pill = [&](int top, const std::wstring& text,
+                                 bool enabled, const char* action) {
     Item pill;
     pill.kind = ItemKind::kPopup;
     pill.text = text;
-    pill.enabled = false;  // Search engines / folders are not plumbed yet.
+    pill.enabled = enabled;
+    if (action) {
+      pill.action = action;
+      pill.payload = profile_id;
+    }
     pill.bounds = {right - Scaled(kCardPadding) - Scaled(kPillWidth),
                    top + (row_h - Scaled(kPillHeight)) / 2,
                    right - Scaled(kCardPadding),
@@ -1344,21 +1385,50 @@ void PhiSettingsWindow::BuildProfileDetail(int* y, int left, int right,
     items_.push_back(std::move(pill));
   };
 
-  // Card 1: Search Engine / Download Location.
+  // Card 1: Search Engine / Download Location — live, per profile. Both
+  // read empty while the profile is not loaded, and the rows gray out.
   {
+    const std::vector<std::string> engines = host_->SearchEngines(profile_id);
+    std::wstring engine_name = L"Unavailable";
+    for (const std::string& engine : engines) {
+      const std::vector<std::string> parts = SplitTabs(engine);
+      if (parts.size() > 2 && parts[2] == "1") {
+        engine_name = base::UTF8ToWide(parts[1]);
+        break;
+      }
+    }
+    const std::string download_dir = host_->DownloadDirectory(profile_id);
+    // A selected profile loads on demand (the framework kicks the profile
+    // and its keyword service). While either read is still pending, poll:
+    // one short timer per rebuild, re-armed only while data is missing, so
+    // the pane fills in by itself once the loads land.
+    if ((engines.empty() || download_dir.empty()) && hwnd_) {
+      ::SetTimer(hwnd_, kProfilePollTimer, 700, nullptr);
+    }
+    // The Mac pill shows only the folder's last path component.
+    std::wstring download_leaf = L"Choose…";
+    if (!download_dir.empty()) {
+      const size_t cut = download_dir.find_last_of("\\\\/");
+      download_leaf = base::UTF8ToWide(
+          cut == std::string::npos ? download_dir
+                                   : download_dir.substr(cut + 1));
+    }
+
     Item card;
     card.kind = ItemKind::kCard;
     card.bounds = {left, *y, right, *y + 2 * row_h};
     items_.push_back(std::move(card));
-    detail_row(*y, 0xE721, L"Search Engine", true);       // Search glass
-    trailing_pill(*y, L"Unavailable");
+    detail_row(*y, 0xE721, L"Search Engine", !engines.empty());
+    trailing_pill(*y, engine_name, !engines.empty(), "searchengine");
     Item divider;
     divider.kind = ItemKind::kDivider;
     divider.bounds = {left + Scaled(kCardPadding), *y + row_h,
                       right - Scaled(kCardPadding), *y + row_h + 1};
     items_.push_back(std::move(divider));
-    detail_row(*y + row_h, 0xE896, L"Download Location", true);  // Download
-    trailing_pill(*y + row_h, L"Choose…");
+    detail_row(*y + row_h, 0xE896, L"Download Location",
+               !download_dir.empty());
+    trailing_pill(*y + row_h, download_leaf, !download_dir.empty(),
+                  "downloadfolder");
     *y += 2 * row_h + Scaled(kMasterDetailGap);
   }
 
@@ -2427,6 +2497,42 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
     host_->OpenBrowserSettings();
   } else if (item.action == "openpage") {
     host_->OpenBrowserPage(item.payload);
+  } else if (item.action == "searchengine") {
+    // The Mac's inline picker as a popup: every engine, the default checked.
+    const std::vector<std::string> engines =
+        host_->SearchEngines(item.payload);
+    HMENU menu = ::CreatePopupMenu();
+    if (!menu || engines.empty()) {
+      if (menu) {
+        ::DestroyMenu(menu);
+      }
+      return;
+    }
+    std::vector<std::string> keywords;
+    for (size_t i = 0; i < engines.size(); ++i) {
+      const std::vector<std::string> parts = SplitTabs(engines[i]);
+      keywords.push_back(parts[0]);
+      const bool is_default = parts.size() > 2 && parts[2] == "1";
+      ::AppendMenuW(menu, MF_STRING | (is_default ? MF_CHECKED : 0),
+                    static_cast<UINT>(i) + 1,
+                    base::UTF8ToWide(parts.size() > 1 ? parts[1] : parts[0])
+                        .c_str());
+    }
+    POINT anchor = {item.bounds.left, item.bounds.bottom};
+    ::ClientToScreen(hwnd_, &anchor);
+    const UINT chosen = static_cast<UINT>(::TrackPopupMenu(
+        menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, anchor.x,
+        anchor.y, 0, hwnd_, nullptr));
+    ::DestroyMenu(menu);
+    if (chosen >= 1 && chosen <= keywords.size()) {
+      host_->SetSearchEngine(item.payload, keywords[chosen - 1]);
+    }
+  } else if (item.action == "downloadfolder") {
+    const std::wstring folder = PickFolder(
+        hwnd_, L"Choose a download location for this profile.");
+    if (!folder.empty()) {
+      host_->SetDownloadDirectory(item.payload, base::WideToUTF8(folder));
+    }
   } else if (item.action == "defaultbrowser") {
     // Windows hands default-browser choice to its own Settings page.
     ::ShellExecuteW(nullptr, L"open", L"ms-settings:defaultapps", nullptr,
@@ -2603,6 +2709,14 @@ LRESULT CALLBACK PhiSettingsWindow::WndProc(HWND hwnd,
       // Dragging a saturation slider.
       if (self && (wparam & MK_LBUTTON)) {
         self->OnClick(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
+      }
+      return 0;
+    case WM_TIMER:
+      if (self && wparam == kProfilePollTimer) {
+        // Re-read the pending profile; the rebuild re-arms while pending.
+        ::KillTimer(hwnd, kProfilePollTimer);
+        ::InvalidateRect(hwnd, nullptr, TRUE);
+        return 0;
       }
       return 0;
     case WM_CHAR:

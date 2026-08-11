@@ -108,6 +108,13 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
                      const std::string& theme_id) override;
   std::vector<std::string> ProfileSummaries() const override;
   void CreateProfileNamed(const std::string& name) override;
+  std::vector<std::string> SearchEngines(
+      const std::string& profile_id) const override;
+  bool SetSearchEngine(const std::string& profile_id,
+                       const std::string& keyword) override;
+  std::string DownloadDirectory(const std::string& profile_id) const override;
+  bool SetDownloadDirectory(const std::string& profile_id,
+                            const std::string& dir) override;
   void CreateSpaceNamed(const std::string& name) override;
 
  private:

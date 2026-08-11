@@ -855,6 +855,56 @@ void PhiCoordinator::CreateProfileNamed(const std::string& name) {
   }
 }
 
+std::vector<std::string> PhiCoordinator::SearchEngines(
+    const std::string& profile_id) const {
+  std::vector<std::string> out;
+  if (!framework_) {
+    return out;
+  }
+  std::optional<base::Value> parsed = base::JSONReader::Read(
+      framework_->ListSearchEnginesJson(profile_id.c_str()),
+      base::JSON_PARSE_RFC);
+  if (!parsed || !parsed->is_list()) {
+    return out;
+  }
+  for (const base::Value& value : parsed->GetList()) {
+    if (!value.is_dict()) {
+      continue;
+    }
+    const std::string* keyword = value.GetDict().FindString("keyword");
+    const std::string* name = value.GetDict().FindString("name");
+    if (!keyword) {
+      continue;
+    }
+    out.push_back(*keyword + "\t" + (name && !name->empty() ? *name
+                                                            : *keyword) +
+                  "\t" +
+                  (value.GetDict().FindBool("default").value_or(false)
+                       ? "1"
+                       : "0"));
+  }
+  return out;
+}
+
+bool PhiCoordinator::SetSearchEngine(const std::string& profile_id,
+                                     const std::string& keyword) {
+  return framework_ &&
+         framework_->SetDefaultSearchEngine(profile_id.c_str(),
+                                            keyword.c_str());
+}
+
+std::string PhiCoordinator::DownloadDirectory(
+    const std::string& profile_id) const {
+  return framework_ ? framework_->DownloadDirectoryUtf8(profile_id.c_str())
+                    : std::string();
+}
+
+bool PhiCoordinator::SetDownloadDirectory(const std::string& profile_id,
+                                          const std::string& dir) {
+  return framework_ &&
+         framework_->SetDownloadDirectory(profile_id.c_str(), dir.c_str());
+}
+
 void PhiCoordinator::CreateSpaceNamed(const std::string& name) {
   if (name.empty()) {
     return;
@@ -1790,6 +1840,19 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
                                   : "newTabPage");
     out.Set("alwaysShowFullUrl", always_show_full_url_);
     out.Set("pinScope", PhiPinScopeName(tab_store_.pin_scope()));
+    // With a profileId, the per-profile browsing settings too.
+    std::optional<base::DictValue> p =
+        base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
+    if (p) {
+      if (const std::string* profile_id = p->FindString("profileId")) {
+        base::ListValue engines;
+        for (const std::string& row : SearchEngines(*profile_id)) {
+          engines.Append(row);
+        }
+        out.Set("searchEngines", std::move(engines));
+        out.Set("downloadDirectory", DownloadDirectory(*profile_id));
+      }
+    }
     out.Set("ok", true);
   } else if (type == "agentSpace.settings.set") {
     std::optional<base::DictValue> p =
@@ -1824,6 +1887,17 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
         // still report their own success.
         if (*section != "developer" || developer_mode_) {
           ok = PhiSettingsWindow::ShowSection(*section) || ok;
+        }
+      }
+      // Per-profile browsing settings, keyed by profileId.
+      if (const std::string* profile_id = p->FindString("profileId")) {
+        if (const std::string* keyword = p->FindString("searchEngine")) {
+          ok = SetSearchEngine(*profile_id, *keyword) || ok;
+          PhiSettingsWindow::Refresh();
+        }
+        if (const std::string* dir = p->FindString("downloadDirectory")) {
+          ok = SetDownloadDirectory(*profile_id, *dir) || ok;
+          PhiSettingsWindow::Refresh();
         }
       }
     }

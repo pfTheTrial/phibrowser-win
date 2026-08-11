@@ -68,6 +68,17 @@ class PhiSettingsHost {
                                  const std::string& name) = 0;
   virtual std::vector<std::string> ProfileSummaries() const = 0;
   virtual void CreateProfileNamed(const std::string& name) = 0;
+  // Per-profile browsing settings (the Mac profile pane's two controls).
+  // Engines come back as "keyword\tname\tdefault(0|1)" rows; the list is
+  // empty — and the row disabled — while the profile is not loaded.
+  virtual std::vector<std::string> SearchEngines(
+      const std::string& profile_id) const = 0;
+  virtual bool SetSearchEngine(const std::string& profile_id,
+                               const std::string& keyword) = 0;
+  virtual std::string DownloadDirectory(
+      const std::string& profile_id) const = 0;
+  virtual bool SetDownloadDirectory(const std::string& profile_id,
+                                    const std::string& dir) = 0;
   // Creates a Space (Default profile) — the list's "+" button.
   virtual void CreateSpaceNamed(const std::string& name) = 0;
 
