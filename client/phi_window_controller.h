@@ -206,6 +206,12 @@ class PhiWindowController {
   const std::string& active_space() const { return active_space_; }
   // The browser window id currently displayed (for tab/nav commands).
   int64_t active_browser() const { return active_browser_; }
+  // The browser this slot holds for `space_id`, or 0 — feeds the page
+  // context menu's Space list (its current-Space exclusion).
+  int64_t BrowserIdForSpace(const std::string& space_id) const {
+    auto it = space_browsers_.find(space_id);
+    return it != space_browsers_.end() ? it->second : 0;
+  }
   // Spaces this slot has a browser for, in creation order.
   const std::vector<std::string>& space_order() const { return space_order_; }
   // Drops a browser that went away; returns true if the slot still has one.

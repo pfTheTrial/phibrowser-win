@@ -92,6 +92,7 @@ void PhiCoordinator::OnFrameworkReady(phi_framework::PhiFramework* framework,
   LoadTheme();
   LoadPrefs();
   tab_store_.Load(user_data_dir + L"\\PhiTabData.json");
+  PushSpaceMenu();  // The page context menu's "Open Link in Space" list.
 
   control_server_.Start(user_data_dir, this);
 }
@@ -214,12 +215,85 @@ void PhiCoordinator::SaveSpaces() const {
 
   HANDLE f = ::CreateFileW(spaces_path_.c_str(), GENERIC_WRITE, 0, nullptr,
                            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-  if (f == INVALID_HANDLE_VALUE) {
+  if (f != INVALID_HANDLE_VALUE) {
+    DWORD wrote = 0;
+    ::WriteFile(f, json.data(), static_cast<DWORD>(json.size()), &wrote,
+                nullptr);
+    ::CloseHandle(f);
+  }
+  // Every Space-list change reaches here; keep the page context menu's
+  // "Open Link in Space" list in step.
+  PushSpaceMenu();
+}
+
+void PhiCoordinator::PushSpaceMenu() const {
+  if (!framework_) {
     return;
   }
-  DWORD wrote = 0;
-  ::WriteFile(f, json.data(), static_cast<DWORD>(json.size()), &wrote, nullptr);
-  ::CloseHandle(f);
+  base::ListValue list;
+  for (const Space& space : spaces_) {
+    base::DictValue d;
+    d.Set("id", space.id);
+    d.Set("name", space.name);
+    // The session id of the Space's open browser (any slot), so the menu
+    // can exclude the Space the user is already looking at.
+    int64_t browser_id = 0;
+    for (const auto& [slot, controller] : windows_) {
+      browser_id = controller->BrowserIdForSpace(space.id);
+      if (browser_id) {
+        break;
+      }
+    }
+    d.Set("windowId", static_cast<double>(browser_id));
+    list.Append(std::move(d));
+  }
+  std::string json;
+  base::JSONWriter::Write(list, &json);
+  framework_->SetSpaceMenu(json.c_str());
+}
+
+void PhiCoordinator::OnOpenLinkInSpace(int64_t source_window_id,
+                                       const char* space_id_c,
+                                       const char* url_c) {
+  const std::string space_id = space_id_c ? space_id_c : "";
+  const std::string url = url_c ? url_c : "";
+  if (space_id.empty() || url.empty() || !framework_) {
+    return;
+  }
+  // A slot that already holds the Space: switch to it there and open the
+  // link (the Mac activates the Space's window and opens the tab).
+  for (const auto& [slot, controller] : windows_) {
+    if (!controller->HasSpace(space_id)) {
+      continue;
+    }
+    controller->ShowSpace(space_id);
+    framework_->NewTab(controller->active_browser(), url.c_str());
+    if (controller->shell_hwnd()) {
+      ::SetForegroundWindow(controller->shell_hwnd());
+    }
+    controller->RefreshTabs();
+    return;
+  }
+  // Cold Space: create its browser in its profile; the pending attach opens
+  // the link once the browser arrives (the spaces.switch machinery).
+  auto space_it =
+      std::find_if(spaces_.begin(), spaces_.end(),
+                   [&](const Space& s) { return s.id == space_id; });
+  if (space_it == spaces_.end()) {
+    return;
+  }
+  auto slot_it = browser_to_slot_.find(source_window_id);
+  int64_t slot = slot_it != browser_to_slot_.end() ? slot_it->second : 0;
+  if (!slot && !windows_.empty()) {
+    slot = windows_.begin()->first;
+  }
+  if (!slot) {
+    return;
+  }
+  pending_slot_ = slot;
+  pending_space_ = space_id;
+  pending_open_url_ = url;
+  framework_->CreateSpaceBrowserInProfile(space_it->profile_id.c_str());
 }
 
 void PhiCoordinator::LoadLayoutMode() {
@@ -2406,18 +2480,29 @@ void PhiCoordinator::OnBrowserWindowCreated(int64_t window_id, void* hwnd) {
       it->second->AttachSpaceBrowser(pending_space_, window_id,
                                      static_cast<HWND>(hwnd));
       browser_to_slot_[window_id] = pending_slot_;
+      // "Open Link in Space" into a cold Space: the link opens once the
+      // Space's browser exists.
+      if (!pending_open_url_.empty()) {
+        if (framework_) {
+          framework_->NewTab(window_id, pending_open_url_.c_str());
+        }
+        pending_open_url_.clear();
+      }
       pending_slot_ = 0;
       pending_space_.clear();
+      PushSpaceMenu();  // The Space gained a window id.
       return;
     }
     pending_slot_ = 0;
     pending_space_.clear();
+    pending_open_url_.clear();
   }
   auto controller = std::make_unique<PhiWindowController>(
       window_id, static_cast<HWND>(hwnd), framework_, this);
   controller->RefreshTabs();
   windows_[window_id] = std::move(controller);
   browser_to_slot_[window_id] = window_id;
+  PushSpaceMenu();  // The slot's Space gained a window id.
 }
 
 HWND PhiCoordinator::ShellForFocus() const {
@@ -2528,6 +2613,7 @@ void PhiCoordinator::OnBrowserWindowClosing(int64_t window_id) {
   if (!it->second->ForgetBrowser(window_id)) {
     windows_.erase(it);
   }
+  PushSpaceMenu();  // A Space lost its window id.
 }
 
 }  // namespace phi_client

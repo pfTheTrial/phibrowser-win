@@ -48,6 +48,9 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   void OnBrowserWindowCreated(int64_t window_id, void* hwnd) override;
   void OnBrowserWindowClosing(int64_t window_id) override;
   void OnTabsChanged(int64_t window_id) override;
+  void OnOpenLinkInSpace(int64_t source_window_id,
+                         const char* space_id,
+                         const char* url) override;
 
   // PhiControlDelegate (called on the control server's I/O thread):
   std::string HandleControlCommand(const std::string& type,
@@ -185,6 +188,9 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   std::wstring spaces_path_;
   void LoadSpaces();
   void SaveSpaces() const;
+  // Publishes the Space list (with each Space's open browser id) into the
+  // framework for the page context menu's "Open Link in Space" submenu.
+  void PushSpaceMenu() const;
   // Where the chrome lives — one setting for every slot, as on Mac. Persisted
   // beside the Space list so a restart comes back in the same layout.
   PhiLayoutMode layout_mode_ = PhiLayoutMode::kPerformance;
@@ -227,6 +233,8 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // OnBrowserWindowCreated attaches to that slot instead of opening a shell.
   int64_t pending_slot_ = 0;
   std::string pending_space_;
+  // "Open Link in Space" into a cold Space: opened when its browser attaches.
+  std::string pending_open_url_;
   // A "+ Space & profile" request waiting for its profile to appear (profile
   // creation is asynchronous). Polled from a WM_TIMER on msg_hwnd_.
   int64_t pending_profile_slot_ = 0;
