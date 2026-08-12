@@ -2040,6 +2040,9 @@ void PhiWindowController::RebuildShortcuts() {
       row.favicon = std::move(view.favicon_bgra);
       row.favicon_width = view.favicon_width;
       row.favicon_height = view.favicon_height;
+      row.url_b = std::move(view.url_b);
+      row.title_b = base::UTF8ToWide(view.title_b);
+      row.partner_guid = std::move(view.partner_guid);
       out->push_back(std::move(row));
     }
   };
@@ -2047,6 +2050,54 @@ void PhiWindowController::RebuildShortcuts() {
   // The sidebar shows the root level; folders open from the Bookmarks menu.
   consume(host_->BookmarkRows(window_id_, std::string()), &bookmarks_);
   bookmark_row_count_ = static_cast<int>(bookmarks_.size());
+
+  // Collapse pinned SPLIT pairs into one merged cell (the Mac's
+  // PinnedSplitItem): the first member keeps its row and absorbs the
+  // partner as pane B; the partner row is consumed. `url_b` non-empty is
+  // what marks a pinned cell as merged from here on.
+  for (size_t i = 0; i < pinned_.size(); ++i) {
+    if (pinned_[i].partner_guid.empty()) {
+      continue;
+    }
+    for (size_t j = i + 1; j < pinned_.size(); ++j) {
+      if (pinned_[j].guid != pinned_[i].partner_guid) {
+        continue;
+      }
+      pinned_[i].url_b = pinned_[j].url;
+      pinned_[i].title_b = pinned_[j].title;
+      pinned_[i].favicon_b = std::move(pinned_[j].favicon);
+      pinned_[i].favicon_b_width = pinned_[j].favicon_width;
+      pinned_[i].favicon_b_height = pinned_[j].favicon_height;
+      pinned_.erase(pinned_.begin() + j);
+      break;
+    }
+  }
+
+  // A split bookmark's second favicon is never stored — it re-fetches from
+  // the history cache, like the Mac's render-time fetch (misses schedule an
+  // async load that repaints on arrival).
+  if (framework_) {
+    const int64_t icon_browser = active_browser_ ? active_browser_
+                                                 : window_id_;
+    for (ShortcutRow& bookmark : bookmarks_) {
+      if (bookmark.url_b.empty()) {
+        continue;
+      }
+      int width = 0, height = 0;
+      const unsigned char* pixels = framework_->FaviconForUrlBgra(
+          icon_browser, bookmark.url_b.c_str(), &width, &height);
+      if (pixels && width > 0 && height > 0) {
+        const size_t bytes =
+            static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
+        // SAFETY: FaviconForUrlBgra reports its own buffer's dimensions.
+        const auto view =
+            UNSAFE_BUFFERS(base::span<const unsigned char>(pixels, bytes));
+        bookmark.favicon_b.assign(view.begin(), view.end());
+        bookmark.favicon_b_width = width;
+        bookmark.favicon_b_height = height;
+      }
+    }
+  }
 
   if (host_->LayoutMode() == PhiLayoutMode::kComfortable) {
     // No sidebar: pins become the strip's leading pinned section — fixed
@@ -2058,8 +2109,10 @@ void PhiWindowController::RebuildShortcuts() {
     const int mid_y = layout.tabs_top + Scaled(kHTabHeight) / 2;
     int x = layout.tabs_left;
     for (ShortcutRow& pin : pinned_) {
-      pin.bounds = {x, mid_y - cell / 2, x + cell, mid_y + cell / 2};
-      x += cell + Scaled(kStripPinGap);
+      // A merged split cell takes two strip slots.
+      const int w = pin.url_b.empty() ? cell : 2 * cell + Scaled(kStripPinGap);
+      pin.bounds = {x, mid_y - cell / 2, x + w, mid_y + cell / 2};
+      x += w + Scaled(kStripPinGap);
     }
     int by = layout.favorites.bottom;
     for (ShortcutRow& row : bookmarks_) {
@@ -2080,14 +2133,35 @@ void PhiWindowController::RebuildShortcuts() {
                            : decision < 352 ? 5
                                             : 6;
   const int avail = sidebar_dip_ - 2 * kEdgeInset;
-  int columns =
-      std::max(1, std::min(column_limit, static_cast<int>(pinned_.size())));
+  // Grid units: a merged split cell spans TWO slots (the Mac's grid
+  // width-of-item), clamped to the column count when the sidebar is narrow.
+  const auto cell_units = [](const ShortcutRow& pin) {
+    return pin.url_b.empty() ? 1 : 2;
+  };
+  int total_units = 0;
+  for (const ShortcutRow& pin : pinned_) {
+    total_units += cell_units(pin);
+  }
+  int columns = std::max(1, std::min(column_limit, total_units));
   while (columns > 1 &&
          (avail - (columns - 1) * kPinnedGap) / columns < kPinnedMinWidth) {
     --columns;
   }
-  pinned_row_count_ =
-      (static_cast<int>(pinned_.size()) + columns - 1) / columns;
+  // Cells walk into rows; one that would overflow its row wraps whole.
+  pinned_row_count_ = 0;
+  {
+    int col = 0;
+    int row_index = -1;
+    for (const ShortcutRow& pin : pinned_) {
+      const int units = std::min(cell_units(pin), columns);
+      if (row_index < 0 || col + units > columns) {
+        ++row_index;
+        col = 0;
+      }
+      col += units;
+    }
+    pinned_row_count_ = row_index + 1;
+  }
   // Derived only now: the two bands' sizes feed back into where everything
   // below them sits.
   const Layout layout = ComputeLayout();
@@ -2098,13 +2172,24 @@ void PhiWindowController::RebuildShortcuts() {
   // the last edge lands exactly on the inset, like the Mac's float division.
   const int row_span =
       Scaled(sidebar_dip_) - 2 * Scaled(kEdgeInset) - (columns - 1) * gap;
-  for (size_t i = 0; i < pinned_.size(); ++i) {
-    const int col = static_cast<int>(i) % columns;
-    const int row_index = static_cast<int>(i) / columns;
-    const int band = layout.favorites.left + Scaled(kEdgeInset) + col * gap;
-    const int y = layout.favorites.top + gap + row_index * (cell_h + gap);
-    pinned_[i].bounds = {band + col * row_span / columns, y,
-                         band + (col + 1) * row_span / columns, y + cell_h};
+  {
+    int col = 0;
+    int row_index = -1;
+    for (ShortcutRow& pin : pinned_) {
+      const int units = std::min(cell_units(pin), columns);
+      if (row_index < 0 || col + units > columns) {
+        ++row_index;
+        col = 0;
+      }
+      const int y = layout.favorites.top + gap + row_index * (cell_h + gap);
+      const int inset = layout.favorites.left + Scaled(kEdgeInset);
+      // A merged cell absorbs the inter-slot gap it spans.
+      pin.bounds = {inset + col * gap + col * row_span / columns, y,
+                    inset + (col + units - 1) * gap +
+                        (col + units) * row_span / columns,
+                    y + cell_h};
+      col += units;
+    }
   }
 
   // Bookmarks are ordinary rows above the open tabs (36pt + the 2pt gap).
@@ -2188,8 +2273,14 @@ void PhiWindowController::RebuildTabs() {
   // horizontal port doesn't have yet, so there the tab shows as a normal
   // chip and stays reachable.
   const auto is_pin = [this](const std::string& guid) {
+    // A merged split cell owns BOTH pane guids (the partner row was
+    // consumed into it), so pane B's tag binds here too.
     return std::any_of(pinned_.begin(), pinned_.end(),
-                       [&](const ShortcutRow& p) { return p.guid == guid; });
+                       [&](const ShortcutRow& p) {
+                         return p.guid == guid ||
+                                (!p.partner_guid.empty() &&
+                                 p.partner_guid == guid);
+                       });
   };
   const auto is_bookmark = [this](const std::string& guid) {
     return std::any_of(bookmarks_.begin(), bookmarks_.end(),
@@ -2199,10 +2290,10 @@ void PhiWindowController::RebuildTabs() {
   };
   const auto flag_bound = [&rows](ShortcutRow& stored) {
     for (const TabRow& r : rows) {
-      if (r.tag == stored.guid) {
+      if (r.tag == stored.guid ||
+          (!stored.partner_guid.empty() && r.tag == stored.partner_guid)) {
         stored.open = true;
-        stored.active = r.active;
-        break;
+        stored.active = stored.active || r.active || r.b_active;
       }
     }
   };
@@ -2367,6 +2458,21 @@ void PhiWindowController::OpenOrFocusPinned(const std::string& guid,
   if (!framework_ || guid.empty()) {
     return;
   }
+  // Split rows route through their own open path (the Mac's
+  // openOrFocusPinnedTab pair branch / openBookmark secondary branch).
+  for (const ShortcutRow& pin : pinned_) {
+    if (!pin.url_b.empty() &&
+        (pin.guid == guid || pin.partner_guid == guid)) {
+      OpenStoredSplit(pin, /*bookmark=*/false);
+      return;
+    }
+  }
+  for (const ShortcutRow& bookmark : bookmarks_) {
+    if (!bookmark.url_b.empty() && bookmark.guid == guid) {
+      OpenStoredSplit(bookmark, /*bookmark=*/true);
+      return;
+    }
+  }
   const int64_t browser = active_browser_ ? active_browser_ : window_id_;
   const int index = IndexOfTagged(browser, guid);
   if (index >= 0) {
@@ -2382,6 +2488,101 @@ void PhiWindowController::OpenOrFocusPinned(const std::string& guid,
     // The Mac's createTab(customGuid:): the new tab carries the row's guid
     // as its identity, and session restore carries it across restarts.
     framework_->SetTabTag(browser, created, guid.c_str());
+  }
+  RefreshTabs();
+}
+
+void PhiWindowController::OpenStoredSplit(const ShortcutRow& row,
+                                          bool bookmark) {
+  if (!framework_) {
+    return;
+  }
+  const int64_t browser = active_browser_ ? active_browser_ : window_id_;
+  // A pane binds by tag: the row's guid for pane A; for a pinned pair,
+  // the partner row's guid for pane B. A bookmark split's second pane
+  // carries NO tag — the Mac's model (its binding dies with the split).
+  const auto lookup = [&](const std::string& tag, int* index,
+                          std::string* split) {
+    *index = -1;
+    split->clear();
+    if (tag.empty()) {
+      return;
+    }
+    std::optional<base::Value> parsed = base::JSONReader::Read(
+        framework_->ListTabsJson(browser), base::JSON_PARSE_RFC);
+    if (!parsed || !parsed->is_list()) {
+      return;
+    }
+    for (const base::Value& v : parsed->GetList()) {
+      const base::DictValue* d = v.GetIfDict();
+      const std::string* row_tag = d ? d->FindString("tag") : nullptr;
+      if (row_tag && *row_tag == tag) {
+        *index = d->FindInt("index").value_or(-1);
+        if (const std::string* s = d->FindString("splitId")) {
+          *split = *s;
+        }
+        return;
+      }
+    }
+  };
+  int index_a = -1;
+  std::string split_a;
+  lookup(row.guid, &index_a, &split_a);
+
+  if (bookmark) {
+    if (index_a >= 0) {
+      // Already open (split or not): focus the primary, as on Mac.
+      framework_->ActivateTab(browser, index_a);
+      RefreshTabs();
+      return;
+    }
+    if (row.url.empty() || row.url_b.empty()) {
+      return;
+    }
+    // The Mac's openTwoURLsAsSplit: primary (bound by the bookmark guid),
+    // secondary, married.
+    index_a = framework_->NewTab(browser, row.url.c_str());
+    if (index_a < 0) {
+      return;
+    }
+    framework_->SetTabTag(browser, index_a, row.guid.c_str());
+    const int index_b = framework_->NewTab(browser, row.url_b.c_str());
+    framework_->ActivateTab(browser, index_a);
+    if (index_b >= 0) {
+      framework_->SplitActiveWith(browser, index_b);
+    }
+    RefreshTabs();
+    return;
+  }
+
+  // Pinned pair: ensure BOTH panes live (created panes bind by their own
+  // row guid, the Mac's per-pane customGuid), then marry them if Chromium
+  // lost the split — openPinnedSplit's silent re-creation.
+  int index_b = -1;
+  std::string split_b;
+  lookup(row.partner_guid, &index_b, &split_b);
+  if (index_a < 0 && !row.url.empty()) {
+    index_a = framework_->NewTab(browser, row.url.c_str());
+    if (index_a >= 0) {
+      framework_->SetTabTag(browser, index_a, row.guid.c_str());
+    }
+  }
+  if (index_b < 0 && !row.url_b.empty() && !row.partner_guid.empty()) {
+    index_b = framework_->NewTab(browser, row.url_b.c_str());
+    if (index_b >= 0) {
+      framework_->SetTabTag(browser, index_b, row.partner_guid.c_str());
+    }
+  }
+  if (index_a < 0 || index_b < 0) {
+    if (index_a >= 0 || index_b >= 0) {
+      framework_->ActivateTab(browser, index_a >= 0 ? index_a : index_b);
+    }
+    RefreshTabs();
+    return;
+  }
+  framework_->ActivateTab(browser, index_a);
+  if (split_a.empty() || split_a != split_b) {
+    framework_->SplitActiveWith(browser, index_b);
   }
   RefreshTabs();
 }
@@ -2688,6 +2889,54 @@ COLORREF BlendOver(COLORREF over, COLORREF base, int alpha) {
              mix(GetBValue(over), GetBValue(base)));
 }
 
+// Puts `text` on the clipboard — the context menus' Copy Link.
+void CopyTextToClipboard(HWND owner, const std::wstring& text) {
+  if (!::OpenClipboard(owner)) {
+    return;
+  }
+  ::EmptyClipboard();
+  const size_t count = text.size() + 1;
+  if (HGLOBAL mem = ::GlobalAlloc(GMEM_MOVEABLE, count * sizeof(wchar_t))) {
+    if (void* dest = ::GlobalLock(mem)) {
+      // SAFETY: the allocation above is exactly `count` wchar_t.
+      auto span = UNSAFE_BUFFERS(
+          base::span<wchar_t>(static_cast<wchar_t*>(dest), count));
+      std::copy(text.begin(), text.end(), span.begin());
+      span[text.size()] = L'\0';
+      ::GlobalUnlock(mem);
+      if (::SetClipboardData(CF_UNICODETEXT, mem)) {
+        mem = nullptr;  // The system owns it now.
+      }
+    }
+    if (mem) {
+      ::GlobalFree(mem);
+    }
+  }
+  ::CloseClipboard();
+}
+
+// The url of the tab at `index` (TabRow keeps no url of its own).
+std::string TabUrlAtIndex(phi_framework::PhiFramework* framework,
+                          int64_t browser,
+                          int index) {
+  if (!framework) {
+    return std::string();
+  }
+  std::optional<base::Value> parsed = base::JSONReader::Read(
+      framework->ListTabsJson(browser), base::JSON_PARSE_RFC);
+  if (!parsed || !parsed->is_list()) {
+    return std::string();
+  }
+  for (const base::Value& v : parsed->GetList()) {
+    const base::DictValue* d = v.GetIfDict();
+    if (d && d->FindInt("index").value_or(-1) == index) {
+      const std::string* url = d->FindString("url");
+      return url ? *url : std::string();
+    }
+  }
+  return std::string();
+}
+
 }  // namespace
 
 void PhiWindowController::OnChromeContextMenu(int x, int y) {
@@ -2771,31 +3020,69 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
       if (!::PtInRect(&row.bounds, pt)) {
         continue;
       }
-      enum : UINT { kPin = 1, kBookmark, kClose, kSplit, kUnsplit,
-                    kGroup, kUngroupTab };
+      // The Mac tab menu (TabModel+Sidebar), in its order: pin, duplicate,
+      // copy, the split block, bookmarks, groups, then close.
+      enum : UINT { kPin = 1, kBookmark, kClose, kCloseOther, kSplitCurrent,
+                    kOpenAsSplit, kRemoveSplit, kGroup, kUngroupTab,
+                    kPinSplit, kBookmarkSplit, kDuplicate, kCopyUrl,
+                    kCopyLeft, kCopyRight };
       HMENU menu = ::CreatePopupMenu();
       if (!menu) {
         return;
       }
+      const int64_t browser = active_browser_ ? active_browser_ : window_id_;
       const bool merged = row.b_index >= 0;
+      const std::string url_a = TabUrlAtIndex(framework_, browser, row.index);
+      const std::string url_b =
+          merged ? TabUrlAtIndex(framework_, browser, row.b_index)
+                 : std::string();
       if (!merged) {
-        ::AppendMenuW(menu, MF_STRING, kPin, L"Pin Tab");
-        ::AppendMenuW(menu, MF_STRING, kBookmark, L"Bookmark Tab...");
+        ::AppendMenuW(menu, MF_STRING, kPin, L"Pin");
+        ::AppendMenuW(menu, MF_STRING, kDuplicate, L"Duplicate");
+        ::AppendMenuW(menu, MF_STRING, kCopyUrl, L"Copy Link");
         ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-        // Splitting needs a partner: the active tab, itself unsplit.
-        if (!row.active && row.split_id.empty()) {
-          ::AppendMenuW(menu, MF_STRING, kSplit, L"Split With Active Tab");
+        if (row.split_id.empty()) {
+          // "Split with Current" pairs this row with the FOCUSED tab; on
+          // the focused row itself — or when the focused tab is already
+          // split — it becomes "Open as Split", a fresh pane (the Mac's
+          // two labels).
+          bool current_can_pair = false;
+          for (const TabRow& other : tabs_) {
+            if (&other != &row && other.active && other.b_index < 0 &&
+                other.split_id.empty()) {
+              current_can_pair = true;
+              break;
+            }
+          }
+          ::AppendMenuW(menu, MF_STRING,
+                        current_can_pair ? kSplitCurrent : kOpenAsSplit,
+                        current_can_pair ? L"Split with Current"
+                                         : L"Open as Split");
+          ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         }
+        ::AppendMenuW(menu, MF_STRING, kBookmark, L"Add to Bookmark");
+        ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         if (row.group_id.empty()) {
-          ::AppendMenuW(menu, MF_STRING, kGroup, L"Add Tab to New Group");
+          ::AppendMenuW(menu, MF_STRING, kGroup, L"New Tab Group");
         } else {
           ::AppendMenuW(menu, MF_STRING, kUngroupTab, L"Remove from Group");
         }
+        ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
       } else {
-        ::AppendMenuW(menu, MF_STRING, kUnsplit, L"Unsplit");
+        // The merged split row: every action operates on the pair.
+        ::AppendMenuW(menu, MF_STRING, kPinSplit, L"Pin Split");
+        ::AppendMenuW(menu, MF_STRING, kDuplicate, L"Duplicate Split");
+        ::AppendMenuW(menu, MF_STRING, kCopyLeft, L"Copy Left URL");
+        ::AppendMenuW(menu, MF_STRING, kCopyRight, L"Copy Right URL");
+        ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        ::AppendMenuW(menu, MF_STRING, kRemoveSplit, L"Remove from Split");
+        ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        ::AppendMenuW(menu, MF_STRING, kBookmarkSplit,
+                      L"Add Split to Bookmark");
+        ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
       }
-      ::AppendMenuW(menu, MF_STRING, kClose,
-                    merged ? L"Close Split" : L"Close Tab");
+      ::AppendMenuW(menu, MF_STRING, kClose, L"Close");
+      ::AppendMenuW(menu, MF_STRING, kCloseOther, L"Close Other Tabs");
       POINT screen = pt;
       ::ClientToScreen(shell_hwnd_, &screen);
       const UINT chosen = static_cast<UINT>(::TrackPopupMenu(
@@ -2803,15 +3090,46 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
                     TPM_RIGHTBUTTON,
           screen.x, screen.y, 0, shell_hwnd_, nullptr));
       ::DestroyMenu(menu);
-      const int64_t browser = active_browser_ ? active_browser_ : window_id_;
       if (chosen == kPin) {
         host_->RequestStoreTab(window_id_, row.index, /*as_bookmark=*/false);
       } else if (chosen == kBookmark) {
         host_->RequestStoreTab(window_id_, row.index, /*as_bookmark=*/true);
-      } else if (chosen == kSplit && framework_) {
+      } else if (chosen == kPinSplit) {
+        host_->RequestStoreSplit(window_id_, row.index, row.b_index,
+                                 /*as_bookmark=*/false);
+      } else if (chosen == kBookmarkSplit) {
+        host_->RequestStoreSplit(window_id_, row.index, row.b_index,
+                                 /*as_bookmark=*/true);
+      } else if (chosen == kDuplicate && framework_) {
+        // A split duplicates as a fresh split (both panes), as on Mac.
+        const int fresh_a =
+            url_a.empty() ? -1 : framework_->NewTab(browser, url_a.c_str());
+        if (merged && fresh_a >= 0 && !url_b.empty()) {
+          const int fresh_b = framework_->NewTab(browser, url_b.c_str());
+          framework_->ActivateTab(browser, fresh_a);
+          if (fresh_b >= 0) {
+            framework_->SplitActiveWith(browser, fresh_b);
+          }
+        }
+        RefreshTabs();
+      } else if (chosen == kCopyUrl) {
+        CopyTextToClipboard(shell_hwnd_, base::UTF8ToWide(url_a));
+      } else if (chosen == kCopyLeft) {
+        CopyTextToClipboard(shell_hwnd_, base::UTF8ToWide(url_a));
+      } else if (chosen == kCopyRight) {
+        CopyTextToClipboard(shell_hwnd_, base::UTF8ToWide(url_b));
+      } else if (chosen == kSplitCurrent && framework_) {
         framework_->SplitActiveWith(browser, row.index);
         RefreshTabs();
-      } else if (chosen == kUnsplit && framework_) {
+      } else if (chosen == kOpenAsSplit && framework_) {
+        // A fresh blank pane beside this tab, the Mac's openAsSplit.
+        const int fresh = framework_->NewTab(browser, "");
+        framework_->ActivateTab(browser, row.index);
+        if (fresh >= 0) {
+          framework_->SplitActiveWith(browser, fresh);
+        }
+        RefreshTabs();
+      } else if (chosen == kRemoveSplit && framework_) {
         framework_->Unsplit(browser, row.index);
         RefreshTabs();
       } else if (chosen == kGroup && framework_) {
@@ -2832,6 +3150,33 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
           framework_->CloseTab(browser, row.index);
         }
         RefreshTabs();
+      } else if (chosen == kCloseOther && framework_) {
+        // Every UNBOUND tab except this row (both panes of a merged one);
+        // pin/bookmark-bound tabs live in their cells and stay.
+        std::vector<int> doomed;
+        std::optional<base::Value> parsed = base::JSONReader::Read(
+            framework_->ListTabsJson(browser), base::JSON_PARSE_RFC);
+        if (parsed && parsed->is_list()) {
+          for (const base::Value& v : parsed->GetList()) {
+            const base::DictValue* d = v.GetIfDict();
+            if (!d) {
+              continue;
+            }
+            const int index = d->FindInt("index").value_or(-1);
+            const std::string* tag = d->FindString("tag");
+            if (index < 0 || index == row.index ||
+                (merged && index == row.b_index) ||
+                (tag && !tag->empty())) {
+              continue;
+            }
+            doomed.push_back(index);
+          }
+        }
+        std::sort(doomed.rbegin(), doomed.rend());
+        for (int index : doomed) {
+          framework_->CloseTab(browser, index);
+        }
+        RefreshTabs();
       }
       return;
     }
@@ -2839,14 +3184,32 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
       if (!::PtInRect(&pin.bounds, pt)) {
         continue;
       }
-      enum : UINT { kOpen = 1, kUnpin };
+      // The Mac pinned-cell menu: open, duplicate, copy, rename, unpin,
+      // and close (the bound live tab or pair) when open.
+      enum : UINT { kOpen = 1, kUnpin, kDuplicate, kCopyUrl, kCopyLeft,
+                    kCopyRight, kRename, kClose };
       HMENU menu = ::CreatePopupMenu();
       if (!menu) {
         return;
       }
+      const bool split_cell = !pin.url_b.empty();
       ::AppendMenuW(menu, MF_STRING, kOpen, L"Open");
+      ::AppendMenuW(menu, MF_STRING, kDuplicate,
+                    split_cell ? L"Duplicate Split" : L"Duplicate");
+      if (split_cell) {
+        ::AppendMenuW(menu, MF_STRING, kCopyLeft, L"Copy Left URL");
+        ::AppendMenuW(menu, MF_STRING, kCopyRight, L"Copy Right URL");
+      } else {
+        ::AppendMenuW(menu, MF_STRING, kCopyUrl, L"Copy Link");
+      }
+      ::AppendMenuW(menu, MF_STRING, kRename, L"Rename...");
       ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-      ::AppendMenuW(menu, MF_STRING, kUnpin, L"Unpin");
+      ::AppendMenuW(menu, MF_STRING, kUnpin,
+                    split_cell ? L"Unpin Split" : L"Unpin");
+      ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+      ::AppendMenuW(menu, MF_STRING | (pin.open ? 0u : MF_DISABLED |
+                                                           MF_GRAYED),
+                    kClose, L"Close");
       POINT screen = pt;
       ::ClientToScreen(shell_hwnd_, &screen);
       const UINT chosen = static_cast<UINT>(::TrackPopupMenu(
@@ -2854,14 +3217,54 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
                     TPM_RIGHTBUTTON,
           screen.x, screen.y, 0, shell_hwnd_, nullptr));
       const std::string guid = pin.guid;
+      const std::string partner = pin.partner_guid;
       const std::string url = pin.url;
+      const std::string url_b = pin.url_b;
+      const std::wstring pin_title = pin.title;
       ::DestroyMenu(menu);
+      const int64_t browser = active_browser_ ? active_browser_ : window_id_;
       if (chosen == kOpen && !url.empty()) {
         OpenOrFocusPinned(guid, url);
+      } else if (chosen == kDuplicate && framework_ && !url.empty()) {
+        // A fresh unbound copy — for a split cell, a fresh split.
+        const int fresh_a = framework_->NewTab(browser, url.c_str());
+        if (split_cell && fresh_a >= 0 && !url_b.empty()) {
+          const int fresh_b = framework_->NewTab(browser, url_b.c_str());
+          framework_->ActivateTab(browser, fresh_a);
+          if (fresh_b >= 0) {
+            framework_->SplitActiveWith(browser, fresh_b);
+          }
+        }
+        RefreshTabs();
+      } else if (chosen == kCopyUrl || chosen == kCopyLeft) {
+        CopyTextToClipboard(shell_hwnd_, base::UTF8ToWide(url));
+      } else if (chosen == kCopyRight) {
+        CopyTextToClipboard(shell_hwnd_, base::UTF8ToWide(url_b));
+      } else if (chosen == kRename) {
+        std::wstring name = pin_title;
+        if (PhiPromptText(shell_hwnd_, L"Rename Pinned Tab",
+                          L"Enter a new name for this pinned tab.", &name)) {
+          host_->RenameStoredRow(guid, base::WideToUTF8(name));
+        }
       } else if (chosen == kUnpin && !guid.empty()) {
         // Dropping the store row also drops the binding at the next rebuild,
-        // so a live bound tab returns to the tab list as a normal tab.
+        // so a live bound tab returns to the tab list as a normal tab. A
+        // split pair goes as one unit.
         host_->RemoveStoredRow(guid);
+      } else if (chosen == kClose && framework_) {
+        // Close the bound live tab(s); the pinned record stays, as on Mac.
+        const int index_a = IndexOfTagged(browser, guid);
+        const int index_b =
+            partner.empty() ? -1 : IndexOfTagged(browser, partner);
+        if (index_a >= 0 && index_b >= 0) {
+          framework_->CloseTab(browser,
+                               index_a > index_b ? index_a : index_b);
+          framework_->CloseTab(browser,
+                               index_a > index_b ? index_b : index_a);
+        } else if (index_a >= 0 || index_b >= 0) {
+          framework_->CloseTab(browser, index_a >= 0 ? index_a : index_b);
+        }
+        RefreshTabs();
       }
       return;
     }
@@ -2869,17 +3272,29 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
       if (!::PtInRect(&bookmark.bounds, pt)) {
         continue;
       }
-      enum : UINT { kOpen = 1, kRemove };
+      // The Mac bookmark-row menu: open, open as split, copy, rename,
+      // delete (folders keep rename/delete only).
+      enum : UINT { kOpen = 1, kOpenSplit, kCopyUrl, kCopyLeft, kCopyRight,
+                    kRename, kRemove };
       HMENU menu = ::CreatePopupMenu();
       if (!menu) {
         return;
       }
+      const bool split_row = !bookmark.url_b.empty();
       if (!bookmark.folder) {
-        ::AppendMenuW(menu, MF_STRING, kOpen, L"Open");
-        ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        ::AppendMenuW(menu, MF_STRING, kOpen, L"Open in New Tab");
+        ::AppendMenuW(menu, MF_STRING, kOpenSplit, L"Open as Split");
+        if (split_row) {
+          ::AppendMenuW(menu, MF_STRING, kCopyLeft, L"Copy Left URL");
+          ::AppendMenuW(menu, MF_STRING, kCopyRight, L"Copy Right URL");
+        } else {
+          ::AppendMenuW(menu, MF_STRING, kCopyUrl, L"Copy Link");
+        }
       }
+      ::AppendMenuW(menu, MF_STRING, kRename, L"Rename...");
+      ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
       ::AppendMenuW(menu, MF_STRING, kRemove,
-                    bookmark.folder ? L"Delete Folder" : L"Delete Bookmark");
+                    bookmark.folder ? L"Delete Folder" : L"Delete");
       POINT screen = pt;
       ::ClientToScreen(shell_hwnd_, &screen);
       const UINT chosen = static_cast<UINT>(::TrackPopupMenu(
@@ -2888,10 +3303,45 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
           screen.x, screen.y, 0, shell_hwnd_, nullptr));
       const std::string guid = bookmark.guid;
       const std::string url = bookmark.url;
+      const std::string url_b = bookmark.url_b;
+      const std::wstring bookmark_title = bookmark.title;
       const bool folder = bookmark.folder;
       ::DestroyMenu(menu);
+      const int64_t browser = active_browser_ ? active_browser_ : window_id_;
       if (chosen == kOpen && !folder && !url.empty()) {
         OpenOrFocusPinned(guid, url);
+      } else if (chosen == kOpenSplit && !folder && framework_ &&
+                 !url.empty()) {
+        if (split_row) {
+          // A split bookmark opens as its own pair either way.
+          OpenOrFocusPinned(guid, url);
+        } else {
+          // Pair the bookmark with the currently focused tab (the Mac's
+          // openAsSplit on a bookmark row).
+          int current = -1;
+          for (const TabRow& r : tabs_) {
+            if (r.active && r.b_index < 0 && r.split_id.empty()) {
+              current = r.index;
+              break;
+            }
+          }
+          const int fresh = framework_->NewTab(browser, url.c_str());
+          if (current >= 0 && fresh >= 0) {
+            framework_->ActivateTab(browser, current);
+            framework_->SplitActiveWith(browser, fresh);
+          }
+          RefreshTabs();
+        }
+      } else if (chosen == kCopyUrl || chosen == kCopyLeft) {
+        CopyTextToClipboard(shell_hwnd_, base::UTF8ToWide(url));
+      } else if (chosen == kCopyRight) {
+        CopyTextToClipboard(shell_hwnd_, base::UTF8ToWide(url_b));
+      } else if (chosen == kRename) {
+        std::wstring name = bookmark_title;
+        if (PhiPromptText(shell_hwnd_, L"Rename Bookmark",
+                          L"Enter a new name for this bookmark.", &name)) {
+          host_->RenameStoredRow(guid, base::WideToUTF8(name));
+        }
       } else if (chosen == kRemove && !guid.empty()) {
         host_->RemoveStoredRow(guid);  // A folder takes its subtree.
       }
@@ -3660,7 +4110,34 @@ void PhiWindowController::PaintSidebarBand(HDC dc,
       ::SelectObject(dc, old_pen);
       ::DeleteObject(ring);
     }
-    if (!pin.favicon.empty()) {
+    if (!pin.url_b.empty()) {
+      // A merged split cell: two 16pt favicons side by side, the Mac's
+      // PinnedSplitItem (16 + 4 + 16 centred in the double-width cell).
+      const int size = Scaled(16);
+      const int cx = (pin.bounds.left + pin.bounds.right) / 2;
+      const int cy = (pin.bounds.top + pin.bounds.bottom) / 2;
+      const RECT icon_a = {cx - Scaled(2) - size, cy - size / 2,
+                           cx - Scaled(2), cy + size / 2};
+      const RECT icon_b = {cx + Scaled(2), cy - size / 2,
+                           cx + Scaled(2) + size, cy + size / 2};
+      const auto pane_icon = [&](const RECT& slot,
+                                 const std::vector<unsigned char>& bgra,
+                                 int width, int height) {
+        if (!bgra.empty()) {
+          DrawFavicon(dc, slot, bgra.data(), width, height, pin_bg);
+        } else {
+          HGDIOBJ previous_glyph_font =
+              caption_font_ ? ::SelectObject(dc, caption_font_) : nullptr;
+          DrawGlyph(dc, slot, L"", kLabelDim);
+          if (previous_glyph_font) {
+            ::SelectObject(dc, previous_glyph_font);
+          }
+        }
+      };
+      pane_icon(icon_a, pin.favicon, pin.favicon_width, pin.favicon_height);
+      pane_icon(icon_b, pin.favicon_b, pin.favicon_b_width,
+                pin.favicon_b_height);
+    } else if (!pin.favicon.empty()) {
       const int size = Scaled(layout.horizontal_tabs ? kStripPinFavicon
                                                      : kPinnedFavicon);
       const int cx = (pin.bounds.left + pin.bounds.right) / 2;
@@ -3718,10 +4195,53 @@ void PhiWindowController::PaintSidebarBand(HDC dc,
       }
     }
     text.left = pill.left + Scaled(6) + Scaled(kFaviconSlot) + Scaled(8);
+    const bool split_row = !bookmark.url_b.empty();
+    if (split_row) {
+      // A split bookmark shows BOTH panes' favicons (the Mac's
+      // BookmarkCellView secondary favicon, 24pt after the primary).
+      RECT icon_b = icon;
+      ::OffsetRect(&icon_b, Scaled(24), 0);
+      if (!bookmark.favicon_b.empty()) {
+        DrawFavicon(dc, icon_b, bookmark.favicon_b.data(),
+                    bookmark.favicon_b_width, bookmark.favicon_b_height,
+                    bookmark.active ? kRowSelectedBg : kTintTop);
+      } else {
+        HGDIOBJ previous_glyph_font =
+            caption_font_ ? ::SelectObject(dc, caption_font_) : nullptr;
+        DrawGlyph(dc, icon_b, L"\uE774", kLabelDim);
+        if (previous_glyph_font) {
+          ::SelectObject(dc, previous_glyph_font);
+        }
+      }
+      text.left += Scaled(24);
+    }
     ::SetTextColor(dc, kLabel);
-    const std::wstring label =
+    std::wstring label =
         bookmark.folder ? (std::wstring(L"\u25B8  ") + bookmark.title)
                         : bookmark.title;
+    if (split_row) {
+      // "primary \u2022 secondary" \u2014 the secondary title, or its www.-stripped
+      // host when the title duplicates the primary's (the Mac's fallback).
+      std::wstring second = bookmark.title_b;
+      if (second.empty()) {
+        std::string host = bookmark.url_b;
+        const size_t scheme = host.find("://");
+        if (scheme != std::string::npos) {
+          host = host.substr(scheme + 3);
+        }
+        const size_t slash = host.find('/');
+        if (slash != std::string::npos) {
+          host = host.substr(0, slash);
+        }
+        if (host.rfind("www.", 0) == 0) {
+          host = host.substr(4);
+        }
+        second = base::UTF8ToWide(host);
+      }
+      if (!second.empty()) {
+        label += L" \u2022 " + second;
+      }
+    }
     ::DrawTextW(dc, label.c_str(), -1, &text,
                 DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
   }

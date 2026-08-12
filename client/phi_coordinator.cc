@@ -344,6 +344,9 @@ PhiStoredRowView StoredRowView(const PhiRow& row) {
   view.title = row.title;
   view.url = row.url;
   view.folder = row.type == PhiRowType::kBookmarkFolder;
+  view.url_b = row.url_b;
+  view.title_b = row.title_b;
+  view.partner_guid = row.split_partner_guid;
   if (!row.favicon_base64.empty()) {
     std::string decoded;
     if (base::Base64Decode(row.favicon_base64, &decoded)) {
@@ -466,9 +469,92 @@ void PhiCoordinator::RequestStoreTab(int64_t slot, int index,
   }
 }
 
+void PhiCoordinator::RequestStoreSplit(int64_t slot, int index_a, int index_b,
+                                       bool as_bookmark) {
+  std::string profile_id, space_id;
+  if (!framework_ || !OwnerForSlot(slot, &profile_id, &space_id)) {
+    return;
+  }
+  const int64_t browser = ResolveBrowser(slot);
+  struct Pane {
+    std::string title, url, favicon;
+    int favicon_width = 0, favicon_height = 0;
+  };
+  const auto capture = [&](int index, Pane* pane) {
+    std::optional<base::Value> tabs = base::JSONReader::Read(
+        framework_->ListTabsJson(browser), base::JSON_PARSE_RFC);
+    if (tabs && tabs->is_list()) {
+      for (const base::Value& v : tabs->GetList()) {
+        if (v.is_dict() &&
+            v.GetDict().FindInt("index").value_or(-1) == index) {
+          if (const std::string* t = v.GetDict().FindString("title")) {
+            pane->title = *t;
+          }
+          if (const std::string* u = v.GetDict().FindString("url")) {
+            pane->url = *u;
+          }
+          break;
+        }
+      }
+    }
+    int width = 0, height = 0;
+    const unsigned char* pixels =
+        framework_->TabFaviconBgra(browser, index, &width, &height);
+    if (pixels && width > 0 && height > 0) {
+      const size_t bytes =
+          static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
+      // SAFETY: TabFaviconBgra reports the buffer's own dimensions.
+      const auto view =
+          UNSAFE_BUFFERS(base::span<const uint8_t>(pixels, bytes));
+      pane->favicon = base::Base64Encode(view);
+      pane->favicon_width = width;
+      pane->favicon_height = height;
+    }
+  };
+  Pane a, b;
+  capture(index_a, &a);
+  capture(index_b, &b);
+  if (a.url.empty() || b.url.empty()) {
+    return;
+  }
+  if (as_bookmark) {
+    // The Mac's addSplitBookmarkFromTab (menu path): ONE row keyed on the
+    // primary pane, the second pane riding secondaryUrl/-Title (suppressed
+    // when it duplicates the primary's). No live binding — a copy.
+    const std::string guid = tab_store_.AddBookmark(
+        profile_id, space_id, std::string(), a.title, a.url,
+        /*folder=*/false, a.favicon, a.favicon_width, a.favicon_height);
+    if (!guid.empty()) {
+      tab_store_.SetRowSecondary(guid, b.url,
+                                 b.title == a.title ? std::string()
+                                                    : b.title);
+    }
+  } else {
+    // The Mac's pinSplit: TWO pinned rows (primary first, so it renders as
+    // the left pane), cross-linked, with BOTH live panes bound by tag.
+    const std::string guid_a =
+        tab_store_.AddPinned(profile_id, space_id, a.title, a.url, a.favicon,
+                             a.favicon_width, a.favicon_height);
+    const std::string guid_b =
+        tab_store_.AddPinned(profile_id, space_id, b.title, b.url, b.favicon,
+                             b.favicon_width, b.favicon_height);
+    if (!guid_a.empty() && !guid_b.empty()) {
+      tab_store_.LinkSplitPair(guid_a, guid_b);
+      framework_->SetTabTag(browser, index_a, guid_a.c_str());
+      framework_->SetTabTag(browser, index_b, guid_b.c_str());
+    }
+  }
+  for (const auto& [s2, controller] : windows_) {
+    controller->RefreshTabs();
+  }
+}
+
 void PhiCoordinator::RemoveStoredRow(const std::string& guid) {
+  // A pinned-split member takes its partner row (the store removes both);
+  // capture the partner guid FIRST so its tag can be cleared too.
+  const std::string partner = tab_store_.SplitPartner(guid);
   if (tab_store_.Remove(guid)) {
-    // Clear the identity tag from any tab bound to the removed row — it
+    // Clear the identity tag from any tab bound to the removed row(s) — it
     // returns to the tab list as a normal tab, and a stale tag would keep
     // it excluded from tab groups (the Phi-managed rule).
     if (framework_) {
@@ -481,7 +567,8 @@ void PhiCoordinator::RemoveStoredRow(const std::string& guid) {
         for (const base::Value& v : parsed->GetList()) {
           const base::DictValue* d = v.GetIfDict();
           const std::string* tag = d ? d->FindString("tag") : nullptr;
-          if (tag && *tag == guid) {
+          if (tag && (*tag == guid ||
+                      (!partner.empty() && *tag == partner))) {
             framework_->SetTabTag(browser_id,
                                   d->FindInt("index").value_or(-1), "");
           }
@@ -493,6 +580,18 @@ void PhiCoordinator::RemoveStoredRow(const std::string& guid) {
     }
     PhiSettingsWindow::Refresh();
   }
+}
+
+bool PhiCoordinator::RenameStoredRow(const std::string& guid,
+                                     const std::string& name) {
+  if (!tab_store_.RenameRow(guid, name)) {
+    return false;
+  }
+  for (const auto& [slot, controller] : windows_) {
+    controller->RefreshTabs();
+  }
+  PhiSettingsWindow::Refresh();
+  return true;
 }
 
 void PhiCoordinator::ReorderStoredRow(const std::string& guid,
@@ -1494,6 +1593,7 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
         entry.Set("favicon", row.favicon_base64);
         entry.Set("faviconWidth", row.favicon_width);
         entry.Set("faviconHeight", row.favicon_height);
+        entry.Set("splitPartnerGuid", row.split_partner_guid);
         list.Append(std::move(entry));
       }
     }
@@ -1611,6 +1711,8 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
         entry.Set("favicon", row.favicon_base64);
         entry.Set("faviconWidth", row.favicon_width);
         entry.Set("faviconHeight", row.favicon_height);
+        entry.Set("secondaryUrl", row.url_b);
+        entry.Set("secondaryTitle", row.title_b);
         list.Append(std::move(entry));
       }
     }
@@ -2110,6 +2212,26 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
         ok = framework_->Reload(ResolveBrowser(window_id), bypass_cache);
       } else {
         ok = framework_->StopLoading(ResolveBrowser(window_id));
+      }
+    }
+    out.Set("ok", ok);
+  } else if (type == "agentSpace.tabs.storeSplit") {
+    // Stores a live split the row menu's two ways: a pinned pair
+    // (`asBookmark` false) or a split bookmark.
+    std::optional<base::DictValue> p =
+        base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
+    bool ok = false;
+    if (p) {
+      const int64_t window_id =
+          static_cast<int64_t>(p->FindDouble("windowId").value_or(0));
+      const int index_a = static_cast<int>(
+          p->FindDouble("indexA").value_or(-1));
+      const int index_b = static_cast<int>(
+          p->FindDouble("indexB").value_or(-1));
+      if (window_id && index_a >= 0 && index_b >= 0) {
+        RequestStoreSplit(window_id, index_a, index_b,
+                          p->FindBool("asBookmark").value_or(false));
+        ok = true;
       }
     }
     out.Set("ok", ok);

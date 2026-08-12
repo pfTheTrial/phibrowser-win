@@ -45,6 +45,11 @@ struct PhiStoredRowView {
   std::vector<unsigned char> favicon_bgra;
   int favicon_width = 0;
   int favicon_height = 0;
+  // Split view (the Mac's model): a bookmark split is ONE row carrying the
+  // second pane here; a pinned split is TWO rows cross-linked by partner.
+  std::string url_b;
+  std::string title_b;  // Empty when it duplicates the primary's.
+  std::string partner_guid;
 };
 
 // A Space as the chips row and menus consume it.
@@ -86,8 +91,16 @@ class PhiSlotHost {
   // Stores tab `index` of the slot's active browser as a pinned tab
   // (`as_bookmark` false) or a bookmark — the row context menus.
   virtual void RequestStoreTab(int64_t slot, int index, bool as_bookmark) = 0;
+  // Stores a live SPLIT (panes at `index_a` — the leading member — and
+  // `index_b`) the Mac's two ways: as a bookmark, ONE row with a second
+  // url; as a pinned tab, TWO cross-linked rows with both live panes bound.
+  virtual void RequestStoreSplit(int64_t slot, int index_a, int index_b,
+                                 bool as_bookmark) = 0;
   // Removes a stored row (a pinned tab or bookmark) by its guid.
   virtual void RemoveStoredRow(const std::string& guid) = 0;
+  // Retitles a stored row — the context menus' Rename….
+  virtual bool RenameStoredRow(const std::string& guid,
+                               const std::string& name) = 0;
   // Moves a stored row to `new_index` among its siblings (drag-to-reorder in
   // the pinned grid and bookmark list).
   virtual void ReorderStoredRow(const std::string& guid, int new_index) = 0;
@@ -528,6 +541,17 @@ class PhiWindowController {
     std::vector<unsigned char> favicon;
     int favicon_width = 0;
     int favicon_height = 0;
+    // Split rows (the Mac's model). A pinned pair collapses into ONE cell
+    // spanning two grid slots (this row is the leading member; the partner
+    // row is consumed into the b_* fields). A bookmark split is one row
+    // whose second pane rides url_b/title_b, drawn with both favicons and
+    // a "primary • secondary" title.
+    std::string url_b;
+    std::wstring title_b;
+    std::string partner_guid;  // Pinned pair only.
+    std::vector<unsigned char> favicon_b;
+    int favicon_b_width = 0;
+    int favicon_b_height = 0;
   };
   std::vector<ShortcutRow> pinned_;
   std::vector<ShortcutRow> bookmarks_;
@@ -584,6 +608,10 @@ class PhiWindowController {
   // list only in vertical layouts.
   // The current index of the tab tagged `tag`, or -1 when none is.
   int IndexOfTagged(int64_t browser, const std::string& tag) const;
+  // Reopens or refocuses a STORED split (a pinned pair or a split
+  // bookmark): missing panes are created, tags applied, and the pair
+  // married — the Mac's openPinnedSplit / openTwoURLsAsSplit.
+  void OpenStoredSplit(const ShortcutRow& row, bool bookmark);
 
   // Navigation state for the client toolbar, refreshed with the tab list.
   std::wstring nav_url_;

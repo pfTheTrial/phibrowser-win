@@ -50,6 +50,14 @@ struct PhiRow {
   // Survives a scope change so rows that came from one original pin can be
   // merged back together, as the Mac's pinLineageId does.
   std::string lineage_id;
+  // Split view, stored the Mac's two ways (TabDataModel V4/V5):
+  //   BOOKMARK split — ONE row; the second pane rides here (secondaryUrl /
+  //   secondaryTitle; the title is empty when it duplicates the primary's).
+  std::string url_b;
+  std::string title_b;
+  //   PINNED split — TWO pinned rows cross-linked by partner guid
+  //   (splitPartnerGuid on both), rendered as one merged cell.
+  std::string split_partner_guid;
 };
 
 // Rows plus the one scope setting, persisted as a single JSON file. Kept
@@ -96,10 +104,23 @@ class PhiTabStore {
                           int favicon_width,
                           int favicon_height);
 
-  // Removes a row and, for a folder, everything beneath it.
+  // Removes a row and, for a folder, everything beneath it. A pinned-split
+  // member takes its partner row with it — the pair is one unit, as on Mac.
   bool Remove(const std::string& guid);
   // Whether a row with `guid` exists (any type).
   bool Contains(const std::string& guid) const;
+  // Marks `guid` as a split bookmark: the second pane's url/title
+  // (title empty when it duplicates the primary's). False when unknown.
+  bool SetRowSecondary(const std::string& guid,
+                       const std::string& url_b,
+                       const std::string& title_b);
+  // Cross-links two pinned rows as a split pair (the Mac's
+  // updateTabSplitPartner, both directions).
+  bool LinkSplitPair(const std::string& guid_a, const std::string& guid_b);
+  // The split partner of `guid`, or empty.
+  std::string SplitPartner(const std::string& guid) const;
+  // Retitles a row (the context menus' Rename). False when unknown.
+  bool RenameRow(const std::string& guid, const std::string& title);
   // Removes every row OWNED by `space_id` (space-scoped pins, the Space's
   // bookmarks) — what deleting a Space takes with it on Mac. Rows owned at
   // profile or app scope carry no space id and stay. Returns removed count.

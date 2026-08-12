@@ -127,7 +127,24 @@ void PhiTabStore::Load(const std::wstring& path) {
     }
     row.favicon_width = dict.FindInt("faviconWidth").value_or(0);
     row.favicon_height = dict.FindInt("faviconHeight").value_or(0);
+    if (const std::string* url_b = dict.FindString("secondaryUrl")) {
+      row.url_b = *url_b;
+    }
+    if (const std::string* title_b = dict.FindString("secondaryTitle")) {
+      row.title_b = *title_b;
+    }
+    if (const std::string* partner = dict.FindString("splitPartnerGuid")) {
+      row.split_partner_guid = *partner;
+    }
     rows_.push_back(std::move(row));
+  }
+  // A partner link whose target row is gone (a crash between the pair's two
+  // writes, an old-build edit) must not survive as a dangling guid.
+  for (PhiRow& row : rows_) {
+    if (!row.split_partner_guid.empty() &&
+        !Contains(row.split_partner_guid)) {
+      row.split_partner_guid.clear();
+    }
   }
   LOG(INFO) << "[PhiClient] tab store: " << rows_.size() << " rows, pin scope "
             << PhiPinScopeName(pin_scope_);
@@ -152,6 +169,9 @@ void PhiTabStore::Save() const {
     dict.Set("favicon", row.favicon_base64);
     dict.Set("faviconWidth", row.favicon_width);
     dict.Set("faviconHeight", row.favicon_height);
+    dict.Set("secondaryUrl", row.url_b);
+    dict.Set("secondaryTitle", row.title_b);
+    dict.Set("splitPartnerGuid", row.split_partner_guid);
     rows.Append(std::move(dict));
   }
   base::DictValue root;
@@ -324,8 +344,13 @@ bool PhiTabStore::Contains(const std::string& guid) const {
 
 bool PhiTabStore::Remove(const std::string& guid) {
   const size_t before = rows_.size();
-  // A folder takes its subtree with it.
+  // A folder takes its subtree; a pinned-split member takes its partner —
+  // the pair is one unit (the Mac's unpinClosedPinnedSplit removes both).
   std::vector<std::string> doomed{guid};
+  const std::string partner = SplitPartner(guid);
+  if (!partner.empty()) {
+    doomed.push_back(partner);
+  }
   for (size_t i = 0; i < doomed.size(); ++i) {
     for (const PhiRow& row : rows_) {
       if (row.parent_guid == doomed[i]) {
@@ -339,8 +364,77 @@ bool PhiTabStore::Remove(const std::string& guid) {
   if (rows_.size() == before) {
     return false;
   }
+  // No dangling reverse pointer may survive a removal.
+  for (PhiRow& row : rows_) {
+    if (!row.split_partner_guid.empty() &&
+        !Contains(row.split_partner_guid)) {
+      row.split_partner_guid.clear();
+    }
+  }
   Save();
   return true;
+}
+
+bool PhiTabStore::SetRowSecondary(const std::string& guid,
+                                  const std::string& url_b,
+                                  const std::string& title_b) {
+  for (PhiRow& row : rows_) {
+    if (row.guid == guid) {
+      row.url_b = url_b;
+      // Clearing the second pane also drops its title, as on Mac.
+      row.title_b = url_b.empty() ? std::string() : title_b;
+      Save();
+      return true;
+    }
+  }
+  return false;
+}
+
+bool PhiTabStore::LinkSplitPair(const std::string& guid_a,
+                                const std::string& guid_b) {
+  PhiRow* a = nullptr;
+  PhiRow* b = nullptr;
+  for (PhiRow& row : rows_) {
+    if (row.guid == guid_a) {
+      a = &row;
+    } else if (row.guid == guid_b) {
+      b = &row;
+    }
+  }
+  if (!a || !b) {
+    return false;
+  }
+  a->split_partner_guid = guid_b;
+  b->split_partner_guid = guid_a;
+  Save();
+  return true;
+}
+
+bool PhiTabStore::RenameRow(const std::string& guid,
+                            const std::string& title) {
+  for (PhiRow& row : rows_) {
+    if (row.guid == guid) {
+      row.title = title;
+      Save();
+      return true;
+    }
+  }
+  return false;
+}
+
+std::string PhiTabStore::SplitPartner(const std::string& guid) const {
+  for (const PhiRow& row : rows_) {
+    if (row.guid == guid) {
+      return row.split_partner_guid;
+    }
+  }
+  // The Mac's reverse scan: tolerate a half-persisted link.
+  for (const PhiRow& row : rows_) {
+    if (row.split_partner_guid == guid) {
+      return row.guid;
+    }
+  }
+  return std::string();
 }
 
 int PhiTabStore::RemoveForSpace(const std::string& space_id) {

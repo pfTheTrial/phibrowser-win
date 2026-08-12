@@ -68,9 +68,13 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
       const std::string& parent_guid) const override;
   void RequestOpen(int64_t slot, const std::string& url) override;
   void RequestBookmarkActiveTab(int64_t slot) override;
+  void RequestStoreSplit(int64_t slot, int index_a, int index_b,
+                         bool as_bookmark) override;
   void RequestStoreTab(int64_t slot, int index,
                        bool as_bookmark) override;
   void RemoveStoredRow(const std::string& guid) override;
+  bool RenameStoredRow(const std::string& guid,
+                       const std::string& name) override;
   void ReorderStoredRow(const std::string& guid, int new_index) override;
   void ReorderSpace(const std::string& space_id, int new_index) override;
   int SidebarWidth() const override;
