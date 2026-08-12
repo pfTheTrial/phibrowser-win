@@ -17,11 +17,13 @@
 #include "base/base64.h"
 #include "base/compiler_specific.h"
 #include "base/containers/span.h"
+#include "base/files/file_path.h"
 #include "base/json/json_reader.h"
 #include "base/logging.h"
 #include "base/no_destructor.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
+#include "phibrowser-win/client/phi_downloads_popover.h"
 #include "phibrowser-win/client/phi_dwrite.h"
 #include "phibrowser-win/client/phi_icons.h"
 #include "phibrowser-win/client/phi_mac_icons.h"
@@ -3142,6 +3144,20 @@ void PhiWindowController::OnChromeClick(int x, int y) {
   if (framework_ && ::PtInRect(&layout.reload, pt)) {
     framework_->Reload(active_browser_ ? active_browser_ : window_id_, /*bypass_cache=*/false);
     RefreshTabs();
+    return;
+  }
+  if (::PtInRect(&layout.downloads, pt)) {
+    // The Mac DownloadButtonView's popover toggle.
+    if (host_ && framework_) {
+      RECT anchor = layout.downloads;
+      ::MapWindowPoints(shell_hwnd_, nullptr,
+                        reinterpret_cast<POINT*>(&anchor), 2);
+      PhiDownloadsPopover::Toggle(shell_hwnd_, anchor,
+                                  host_->PaletteForSlot(window_id_),
+                                  framework_,
+                                  active_browser_ ? active_browser_
+                                                  : window_id_);
+    }
     return;
   }
   for (const ShortcutRow& pin : pinned_) {
