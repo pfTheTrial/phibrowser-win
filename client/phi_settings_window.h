@@ -82,6 +82,23 @@ class PhiSettingsHost {
   // Creates a Space (Default profile) — the list's "+" button.
   virtual void CreateSpaceNamed(const std::string& name) = 0;
 
+  // Space URL routing rules (the Mac's universal URL Rules editor).
+  // Rows come back as "spaceId\thost\tpathPrefix\task(0|1)"; `host` is the
+  // wire form ("github.com" exact, "*.foo.com" suffix, "*needle*"
+  // contains). Mutations persist and re-push the routing table at once.
+  virtual std::vector<std::string> URLRuleRows() const = 0;
+  virtual void AddURLRule(const std::string& space_id,
+                          const std::string& host,
+                          const std::string& path_prefix,
+                          bool ask) = 0;
+  virtual void SetURLRulePattern(int index,
+                                 const std::string& host,
+                                 const std::string& path_prefix) = 0;
+  virtual void SetURLRuleTarget(int index,
+                                const std::string& space_id,
+                                bool ask) = 0;
+  virtual void RemoveURLRule(int index) = 0;
+
   // Developer mode gates the Developer pane, as on Mac (default off).
   virtual bool DeveloperMode() const = 0;
   virtual void SetDeveloperMode(bool enabled) = 0;
@@ -164,6 +181,9 @@ class PhiSettingsWindow {
   void BuildAccount(int* y);
   void BuildGeneral(int* y);
   void BuildSpaces(int* y);
+  // The URL Rules editor, a drill-in of the Spaces pane (the Mac's
+  // universal editor window).
+  void BuildUrlRules(int* y);
   void BuildProfiles(int* y);
   void BuildAi(int* y);
   void BuildShortcuts(int* y);

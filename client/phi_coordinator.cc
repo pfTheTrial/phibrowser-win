@@ -22,6 +22,7 @@
 #include "base/rand_util.h"
 #include "phibrowser-win/client/phi_icons.h"
 #include "phibrowser-win/client/phi_menu_bar.h"
+#include "phibrowser-win/client/phi_prompt.h"
 
 namespace phi_client {
 
@@ -87,7 +88,9 @@ void PhiCoordinator::OnFrameworkReady(phi_framework::PhiFramework* framework,
   layout_path_ = user_data_dir + L"\\PhiLayout.json";
   theme_path_ = user_data_dir + L"\\PhiTheme.json";
   prefs_path_ = user_data_dir + L"\\PhiPrefs.json";
+  url_rules_path_ = user_data_dir + L"\\PhiUrlRules.json";
   LoadSpaces();
+  LoadUrlRules();
   LoadLayoutMode();
   LoadTheme();
   LoadPrefs();
@@ -250,6 +253,112 @@ void PhiCoordinator::PushSpaceMenu() const {
   std::string json;
   base::JSONWriter::Write(list, &json);
   framework_->SetSpaceMenu(json.c_str());
+  // The routing table shares this trigger set (rules edits add one more),
+  // the Mac's pushSpaceStateToChromium coupling.
+  PushRoutingTable();
+}
+
+void PhiCoordinator::PushRoutingTable() const {
+  if (!framework_) {
+    return;
+  }
+  base::DictValue root;
+  base::ListValue rules;
+  int sort_order = 0;
+  for (const UrlRule& rule : url_rules_) {
+    base::DictValue d;
+    d.Set("spaceId", rule.space_id);
+    d.Set("host", rule.host);
+    if (!rule.path_prefix.empty()) {
+      d.Set("pathPrefix", rule.path_prefix);
+    }
+    d.Set("ask", rule.ask);
+    d.Set("sortOrder", sort_order++);
+    rules.Append(std::move(d));
+  }
+  root.Set("rules", std::move(rules));
+  // Each Space's VISIBLE browser only — a Space hidden behind a slot's
+  // active sibling is deliberately absent, so a match on it resolves to
+  // OnRouteURLToSpace (which re-enters ShowSpace) instead of a direct open
+  // into an off-screen browser.
+  base::DictValue map;
+  for (const auto& [slot, controller] : windows_) {
+    const std::string& space_id = controller->active_space();
+    const int64_t browser_id = controller->active_browser();
+    if (space_id.empty() || !browser_id || map.Find(space_id)) {
+      continue;
+    }
+    map.Set(space_id, static_cast<double>(browser_id));
+  }
+  root.Set("spaceWindows", std::move(map));
+  std::string json;
+  base::JSONWriter::Write(root, &json);
+  framework_->SetSpaceRoutingTable(json.c_str());
+}
+
+void PhiCoordinator::LoadUrlRules() {
+  HANDLE f = ::CreateFileW(url_rules_path_.c_str(), GENERIC_READ,
+                           FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                           FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (f == INVALID_HANDLE_VALUE) {
+    return;  // First run: no rules.
+  }
+  std::string json;
+  char buf[4096];
+  DWORD read = 0;
+  while (::ReadFile(f, buf, sizeof(buf), &read, nullptr) && read > 0) {
+    json.append(buf, read);
+  }
+  ::CloseHandle(f);
+  std::optional<base::Value> root =
+      base::JSONReader::Read(json, base::JSON_PARSE_RFC);
+  if (!root || !root->is_list()) {
+    return;
+  }
+  url_rules_.clear();
+  for (const base::Value& v : root->GetList()) {
+    const base::DictValue* d = v.GetIfDict();
+    if (!d) {
+      continue;
+    }
+    const std::string* space_id = d->FindString("spaceId");
+    const std::string* host = d->FindString("host");
+    if (!space_id || space_id->empty() || !host || host->empty()) {
+      continue;
+    }
+    UrlRule rule;
+    rule.space_id = *space_id;
+    rule.host = *host;
+    if (const std::string* prefix = d->FindString("pathPrefix")) {
+      rule.path_prefix = *prefix;
+    }
+    rule.ask = d->FindBool("ask").value_or(false);
+    url_rules_.push_back(std::move(rule));
+  }
+}
+
+void PhiCoordinator::SaveUrlRules() const {
+  base::ListValue list;
+  for (const UrlRule& rule : url_rules_) {
+    base::DictValue d;
+    d.Set("spaceId", rule.space_id);
+    d.Set("host", rule.host);
+    if (!rule.path_prefix.empty()) {
+      d.Set("pathPrefix", rule.path_prefix);
+    }
+    d.Set("ask", rule.ask);
+    list.Append(std::move(d));
+  }
+  std::string json;
+  base::JSONWriter::Write(list, &json);
+  HANDLE f = ::CreateFileW(url_rules_path_.c_str(), GENERIC_WRITE, 0, nullptr,
+                           CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (f != INVALID_HANDLE_VALUE) {
+    DWORD wrote = 0;
+    ::WriteFile(f, json.data(), static_cast<DWORD>(json.size()), &wrote,
+                nullptr);
+    ::CloseHandle(f);
+  }
 }
 
 void PhiCoordinator::OnOpenLinkInSpace(int64_t source_window_id,
@@ -260,18 +369,100 @@ void PhiCoordinator::OnOpenLinkInSpace(int64_t source_window_id,
   if (space_id.empty() || url.empty() || !framework_) {
     return;
   }
+  RouteUrlToSpace(space_id, url, source_window_id);
+}
+
+void PhiCoordinator::OnRouteURLToSpace(const char* space_id_c,
+                                       const char* url_c,
+                                       int64_t source_window_id) {
+  // A silent URL rule matched but the target Space had no visible browser;
+  // the navigation is already cancelled, so surface the Space and re-open
+  // the URL there (never silently dropped).
+  const std::string space_id = space_id_c ? space_id_c : "";
+  const std::string url = url_c ? url_c : "";
+  if (space_id.empty() || url.empty() || !framework_) {
+    return;
+  }
+  RouteUrlToSpace(space_id, url, source_window_id);
+}
+
+void PhiCoordinator::OnAskSpaceForURL(const char* url_c,
+                                      const char* default_space_id_c,
+                                      int64_t source_window_id,
+                                      bool source_is_new_tab) {
+  const std::string url = url_c ? url_c : "";
+  const std::string default_space_id =
+      default_space_id_c ? default_space_id_c : "";
+  if (url.empty() || !framework_ || spaces_.empty()) {
+    return;
+  }
+  // The source slot's shell owns the (modal) chooser; its active Space is
+  // the "keep here" target.
+  auto slot_it = browser_to_slot_.find(source_window_id);
+  const int64_t slot = slot_it != browser_to_slot_.end() ? slot_it->second : 0;
+  auto window_it = windows_.find(slot);
+  PhiWindowController* controller =
+      window_it != windows_.end() ? window_it->second.get() : nullptr;
+  const std::string current_space_id =
+      controller ? controller->active_space() : std::string();
+
+  std::vector<std::wstring> options;
+  int default_index = 0;
+  for (size_t i = 0; i < spaces_.size(); ++i) {
+    std::wstring label = base::UTF8ToWide(spaces_[i].name);
+    if (spaces_[i].id == current_space_id) {
+      label += L"  (current)";
+    }
+    options.push_back(std::move(label));
+    if (spaces_[i].id == default_space_id) {
+      default_index = static_cast<int>(i);
+    }
+  }
+  const int chosen = PhiPromptChoose(
+      controller ? controller->shell_hwnd() : nullptr, L"Open in Space",
+      base::UTF8ToWide(url).c_str(), options, default_index);
+  const std::string chosen_space =
+      chosen >= 0 && chosen < static_cast<int>(spaces_.size())
+          ? spaces_[chosen].id
+          : std::string();
+  if (chosen_space.empty() || chosen_space == current_space_id) {
+    // Keep it here. The cancelled navigation was replacing the active tab
+    // when it started from a fresh new tab — re-issue it in place there;
+    // otherwise open a fresh foreground tab (the Mac split). Both bypass
+    // routing so the same rule cannot re-prompt.
+    if (source_is_new_tab) {
+      framework_->NavigateActiveTabBypassingSpaceRouting(source_window_id,
+                                                         url.c_str());
+    } else {
+      framework_->OpenTabBypassingSpaceRouting(source_window_id, url.c_str());
+    }
+    if (controller) {
+      controller->RefreshTabs();
+    }
+    return;
+  }
+  RouteUrlToSpace(chosen_space, url, source_window_id);
+}
+
+void PhiCoordinator::RouteUrlToSpace(const std::string& space_id,
+                                     const std::string& url,
+                                     int64_t source_window_id) {
   // A slot that already holds the Space: switch to it there and open the
-  // link (the Mac activates the Space's window and opens the tab).
+  // link (the Mac activates the Space's window and opens the tab). The open
+  // bypasses URL routing — the URL may be the very navigation a rule just
+  // re-homed, and re-matching it would loop.
   for (const auto& [slot, controller] : windows_) {
     if (!controller->HasSpace(space_id)) {
       continue;
     }
     controller->ShowSpace(space_id);
-    framework_->NewTab(controller->active_browser(), url.c_str());
+    framework_->OpenTabBypassingSpaceRouting(controller->active_browser(),
+                                             url.c_str());
     if (controller->shell_hwnd()) {
       ::SetForegroundWindow(controller->shell_hwnd());
     }
     controller->RefreshTabs();
+    PushSpaceMenu();  // The visible-Space routing map changed.
     return;
   }
   // Cold Space: create its browser in its profile; the pending attach opens
@@ -988,8 +1179,12 @@ bool PhiCoordinator::DeleteSpace(const std::string& space_id) {
     controller->CloseSpaceBrowser(space_id);
   }
   // The Space's bookmarks and space-scoped pins go with it (the Mac's
-  // delete-confirmation promise).
+  // delete-confirmation promise) — and its URL rules, which would otherwise
+  // route into a Space that no longer exists.
   tab_store_.RemoveForSpace(space_id);
+  std::erase_if(url_rules_,
+                [&](const UrlRule& r) { return r.space_id == space_id; });
+  SaveUrlRules();
   spaces_.erase(it);
   SaveSpaces();
   RebuildSpacePalettes();
@@ -1140,6 +1335,63 @@ void PhiCoordinator::CreateSpaceNamed(const std::string& name) {
   base::JSONWriter::Write(payload, &json);
   // The same path the control verb takes — one creation flow.
   ExecuteControlOnUi("agentSpace.spaces.create", json);
+}
+
+std::vector<std::string> PhiCoordinator::URLRuleRows() const {
+  std::vector<std::string> rows;
+  rows.reserve(url_rules_.size());
+  for (const UrlRule& rule : url_rules_) {
+    rows.push_back(rule.space_id + "\t" + rule.host + "\t" +
+                   rule.path_prefix + "\t" + (rule.ask ? "1" : "0"));
+  }
+  return rows;
+}
+
+void PhiCoordinator::AddURLRule(const std::string& space_id,
+                                const std::string& host,
+                                const std::string& path_prefix,
+                                bool ask) {
+  if (space_id.empty() || host.empty()) {
+    return;
+  }
+  url_rules_.push_back({space_id, host, path_prefix, ask});
+  SaveUrlRules();
+  PushRoutingTable();
+}
+
+void PhiCoordinator::SetURLRulePattern(int index,
+                                       const std::string& host,
+                                       const std::string& path_prefix) {
+  if (index < 0 || index >= static_cast<int>(url_rules_.size()) ||
+      host.empty()) {
+    return;
+  }
+  url_rules_[static_cast<size_t>(index)].host = host;
+  url_rules_[static_cast<size_t>(index)].path_prefix = path_prefix;
+  SaveUrlRules();
+  PushRoutingTable();
+}
+
+void PhiCoordinator::SetURLRuleTarget(int index,
+                                      const std::string& space_id,
+                                      bool ask) {
+  if (index < 0 || index >= static_cast<int>(url_rules_.size()) ||
+      space_id.empty()) {
+    return;
+  }
+  url_rules_[static_cast<size_t>(index)].space_id = space_id;
+  url_rules_[static_cast<size_t>(index)].ask = ask;
+  SaveUrlRules();
+  PushRoutingTable();
+}
+
+void PhiCoordinator::RemoveURLRule(int index) {
+  if (index < 0 || index >= static_cast<int>(url_rules_.size())) {
+    return;
+  }
+  url_rules_.erase(url_rules_.begin() + index);
+  SaveUrlRules();
+  PushRoutingTable();
 }
 
 void PhiCoordinator::LoadTheme() {
@@ -1569,6 +1821,9 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
     if (it != windows_.end() && space_it != spaces_.end()) {
       if (it->second->HasSpace(space_id)) {
         ok = it->second->ShowSpace(space_id);
+        if (ok) {
+          PushSpaceMenu();  // The visible-Space routing map changed.
+        }
       } else if (framework_) {
         // First visit: create this Space's browser IN ITS PROFILE and attach
         // it to the slot. A cold profile loads asynchronously, so the pending
@@ -2532,11 +2787,14 @@ void PhiCoordinator::OnBrowserWindowCreated(int64_t window_id, void* hwnd) {
       it->second->AttachSpaceBrowser(pending_space_, window_id,
                                      static_cast<HWND>(hwnd));
       browser_to_slot_[window_id] = pending_slot_;
-      // "Open Link in Space" into a cold Space: the link opens once the
-      // Space's browser exists.
+      // "Open Link in Space" / a routed URL into a cold Space: the link
+      // opens once the Space's browser exists. Bypassing URL routing — the
+      // URL may be the navigation a rule just re-homed HERE, and the table
+      // rebuilt below races the open, so exempt it outright.
       if (!pending_open_url_.empty()) {
         if (framework_) {
-          framework_->NewTab(window_id, pending_open_url_.c_str());
+          framework_->OpenTabBypassingSpaceRouting(window_id,
+                                                   pending_open_url_.c_str());
         }
         pending_open_url_.clear();
       }

@@ -8,6 +8,7 @@
 #include <windows.h>
 
 #include <string>
+#include <vector>
 
 namespace phi_client {
 
@@ -22,6 +23,16 @@ bool PhiPromptText(HWND owner,
 // A modal confirmation with a destructive primary button ("Delete …?").
 // True when the user confirms.
 bool PhiConfirm(HWND owner, const wchar_t* title, const wchar_t* message);
+
+// A modal list chooser — the Win32 stand-in for the Mac's Space chooser
+// shown when a navigation matches an "ask first" URL rule. `options` fills
+// a list box with `default_index` preselected; Open (or a double-click)
+// returns the selected index, "Keep Here" / close returns -1.
+int PhiPromptChoose(HWND owner,
+                    const wchar_t* title,
+                    const wchar_t* message,
+                    const std::vector<std::wstring>& options,
+                    int default_index);
 
 }  // namespace phi_client
 

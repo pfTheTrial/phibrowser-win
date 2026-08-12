@@ -416,6 +416,10 @@ void PhiSettingsWindow::EnsureFont() {
 }
 
 void PhiSettingsWindow::SyncTitle() {
+  if (section_ == "urlrules") {
+    ::SetWindowTextW(hwnd_, L"URL Rules");
+    return;
+  }
   // The Mac library titles the window with the selected pane's title.
   for (const SectionDef& section : kSections) {
     if (section_ == section.id) {
@@ -1220,18 +1224,317 @@ void PhiSettingsWindow::BuildSpaces(int* y) {
   }
   EndSection(y);
 
-  // Pane-wide card: URL rules (its editor does not exist yet).
+  // Pane-wide card: the URL Rules editor drill-in.
   BeginSection(y, nullptr);
   {
     const RECT area = AddRow(y, L"URL Rules…", kRowLabelHeight, 20);
     Item chevron;
     chevron.kind = ItemKind::kLink;
     chevron.text = L"›";
-    chevron.enabled = false;
+    chevron.action = "urlrules";
     chevron.bounds = area;
     items_.push_back(std::move(chevron));
+    // The whole row opens the editor, not just the trailing chevron.
+    Item& label = items_[items_.size() - 2];
+    if (label.kind == ItemKind::kRowLabel) {
+      label.action = "urlrules";
+    }
   }
   EndSection(y);
+}
+
+namespace {
+
+// The Mac editor's match modes, derived from / encoded into the stored
+// (host, pathPrefix) wire pair.
+enum class RuleMatchType { kDomainSuffix, kDomain, kDomainContains, kUrl };
+
+RuleMatchType RuleTypeOf(const std::string& host,
+                         const std::string& path_prefix) {
+  if (!path_prefix.empty()) {
+    return RuleMatchType::kUrl;
+  }
+  if (host.size() > 2 && host.front() == '*' && host.back() == '*') {
+    return RuleMatchType::kDomainContains;
+  }
+  if (host.rfind("*.", 0) == 0) {
+    return RuleMatchType::kDomainSuffix;
+  }
+  return RuleMatchType::kDomain;
+}
+
+const wchar_t* RuleTypeLabel(RuleMatchType type) {
+  switch (type) {
+    case RuleMatchType::kDomainSuffix:
+      return L"Domain suffix";
+    case RuleMatchType::kDomain:
+      return L"Domain";
+    case RuleMatchType::kDomainContains:
+      return L"Domain contains";
+    case RuleMatchType::kUrl:
+      return L"URL";
+  }
+  return L"";
+}
+
+// The user-facing value: the stored pair minus the wire sigils.
+std::string RuleDisplayValue(const std::string& host,
+                             const std::string& path_prefix) {
+  switch (RuleTypeOf(host, path_prefix)) {
+    case RuleMatchType::kDomainSuffix:
+      return host.substr(2);
+    case RuleMatchType::kDomainContains:
+      return host.substr(1, host.size() - 2);
+    case RuleMatchType::kUrl:
+      return host + path_prefix;
+    case RuleMatchType::kDomain:
+      break;
+  }
+  return host;
+}
+
+// Simplified Mac normalizedPathPrefix: trim, collapse trailing slashes,
+// treat a bare "/" as "any path", ensure the leading "/". (The Mac also
+// re-percent-encodes; typed ASCII prefixes — the practical case — match
+// GURL::path() without it.)
+std::string NormalizePathPrefix(std::string prefix) {
+  while (!prefix.empty() &&
+         (prefix.back() == ' ' || prefix.back() == '\t')) {
+    prefix.pop_back();
+  }
+  while (!prefix.empty() && prefix.front() == ' ') {
+    prefix.erase(prefix.begin());
+  }
+  while (prefix.size() > 1 && prefix.back() == '/') {
+    prefix.pop_back();
+  }
+  if (prefix == "/" || prefix.empty()) {
+    return std::string();
+  }
+  if (prefix.front() != '/') {
+    prefix.insert(prefix.begin(), '/');
+  }
+  return prefix;
+}
+
+// Drops a pasted ":8080" — GURL hosts never carry one. Only cuts when
+// everything after the last ':' is digits, leaving IPv6 "[::1]" alone.
+std::string StripPort(const std::string& host) {
+  const size_t colon = host.rfind(':');
+  if (colon == std::string::npos || colon + 1 >= host.size()) {
+    return host;
+  }
+  for (size_t i = colon + 1; i < host.size(); ++i) {
+    if (host[i] < '0' || host[i] > '9') {
+      return host;
+    }
+  }
+  return host.substr(0, colon);
+}
+
+// The Mac editor's encode(): translate (type, typed value) into the stored
+// (host, pathPrefix) pair. The type is the single source of truth — typed
+// sigils are stripped and the type's own form re-added. An input that
+// reduces to nothing yields an empty host, which the caller drops.
+void RuleEncode(RuleMatchType type,
+                std::string value,
+                std::string* host,
+                std::string* path_prefix) {
+  host->clear();
+  path_prefix->clear();
+  const size_t scheme = value.find("://");
+  if (scheme != std::string::npos) {
+    value = value.substr(scheme + 3);
+  }
+  if (type == RuleMatchType::kUrl) {
+    std::string host_part = value;
+    std::string path_part;
+    const size_t slash = value.find('/');
+    if (slash != std::string::npos) {
+      host_part = value.substr(0, slash);
+      path_part = value.substr(slash);
+    }
+    if (host_part.rfind("*.", 0) == 0) {
+      host_part = host_part.substr(2);
+    }
+    *host = StripPort(host_part);
+    *path_prefix = NormalizePathPrefix(path_part);
+    return;
+  }
+  const size_t slash = value.find('/');
+  if (slash != std::string::npos) {
+    value = value.substr(0, slash);
+  }
+  value = StripPort(value);
+  switch (type) {
+    case RuleMatchType::kDomainSuffix: {
+      const std::string bare =
+          value.rfind("*.", 0) == 0 ? value.substr(2) : value;
+      *host = bare.empty() ? std::string() : "*." + bare;
+      break;
+    }
+    case RuleMatchType::kDomain:
+      *host = value.rfind("*.", 0) == 0 ? value.substr(2) : value;
+      break;
+    case RuleMatchType::kDomainContains: {
+      std::string needle = value;
+      while (!needle.empty() && needle.front() == '*') {
+        needle.erase(needle.begin());
+      }
+      while (!needle.empty() && needle.back() == '*') {
+        needle.pop_back();
+      }
+      *host = needle.empty() ? std::string() : "*" + needle + "*";
+      break;
+    }
+    case RuleMatchType::kUrl:
+      break;  // Handled above.
+  }
+}
+
+// Derives the match type a typed pattern implies: an explicit path means
+// URL, explicit sigils keep their form, and a bare host defaults to the
+// Mac's domain-suffix (host + subdomains).
+RuleMatchType RuleTypeForInput(const std::string& value) {
+  std::string work = value;
+  const size_t scheme = work.find("://");
+  if (scheme != std::string::npos) {
+    work = work.substr(scheme + 3);
+  }
+  const size_t slash = work.find('/');
+  if (slash != std::string::npos && slash + 1 < work.size()) {
+    return RuleMatchType::kUrl;
+  }
+  if (slash != std::string::npos) {
+    work = work.substr(0, slash);
+  }
+  if (work.size() > 2 && work.front() == '*' && work.back() == '*') {
+    return RuleMatchType::kDomainContains;
+  }
+  if (work.rfind("*.", 0) == 0) {
+    return RuleMatchType::kDomainSuffix;
+  }
+  return RuleMatchType::kDomainSuffix;  // The Mac's default for a bare host.
+}
+
+}  // namespace
+
+void PhiSettingsWindow::BuildUrlRules(int* y) {
+  // Back link to the Spaces pane the editor drills out of.
+  {
+    Item back;
+    back.kind = ItemKind::kLink;
+    back.text = L"\u2039 Spaces";
+    back.action = "gospaces";
+    back.bounds = {Scaled(kMargin), *y, Scaled(kMargin) + Scaled(90),
+                   *y + Scaled(kRowLabelHeight)};
+    items_.push_back(std::move(back));
+    *y += Scaled(kRowLabelHeight) + Scaled(8);
+  }
+  AddHint(y, L"URLs matching a rule always open in its Space, no matter "
+             L"where you click or type them.");
+  *y += Scaled(4);
+
+  const std::vector<std::string> rules = host_->URLRuleRows();
+  // Space names for the target pills.
+  std::vector<std::pair<std::string, std::wstring>> space_names;
+  for (const std::string& summary : host_->SpaceSummaries()) {
+    const std::vector<std::string> parts = SplitTabs(summary);
+    if (parts.size() > 3) {
+      space_names.emplace_back(parts[3], base::UTF8ToWide(parts[0]));
+    }
+  }
+
+  BeginSection(y, nullptr);
+  if (rules.empty()) {
+    Item hint;
+    hint.kind = ItemKind::kHint;
+    hint.text = L"No rules yet.";
+    hint.bounds = {Scaled(kMargin + kCardPadding), *y,
+                   Scaled(kWidth - kMargin - kCardPadding),
+                   *y + Scaled(kHintHeight)};
+    items_.push_back(std::move(hint));
+    *y += Scaled(kHintHeight) + Scaled(kRowPadding);
+  }
+  for (size_t i = 0; i < rules.size(); ++i) {
+    if (i > 0) {
+      AddDividerRow(y);
+    }
+    const std::vector<std::string> parts = SplitTabs(rules[i]);
+    const std::string space_id = parts.size() > 0 ? parts[0] : std::string();
+    const std::string host = parts.size() > 1 ? parts[1] : std::string();
+    const std::string prefix = parts.size() > 2 ? parts[2] : std::string();
+    const bool ask = parts.size() > 3 && parts[3] == "1";
+    const RuleMatchType type = RuleTypeOf(host, prefix);
+    const std::string index_payload = base::NumberToString(i);
+
+    const int row_height = Scaled(kPillHeight);
+    const int right = Scaled(kWidth - kMargin - kCardPadding);
+    // Trailing to leading: delete glyph, target pill, type pill; the
+    // pattern text takes the rest.
+    RECT del = {right - Scaled(24), *y, right, *y + row_height};
+    RECT target = {del.left - Scaled(8) - Scaled(120), *y, del.left -
+                   Scaled(8), *y + row_height};
+    RECT type_rect = {target.left - Scaled(8) - Scaled(110), *y,
+                      target.left - Scaled(8), *y + row_height};
+
+    Item pattern;
+    pattern.kind = ItemKind::kRowLabel;
+    pattern.text = base::UTF8ToWide(RuleDisplayValue(host, prefix));
+    pattern.action = "editrule";
+    pattern.payload = index_payload;
+    pattern.bounds = {Scaled(kMargin + kCardPadding), *y,
+                      type_rect.left - Scaled(12), *y + row_height};
+    items_.push_back(std::move(pattern));
+
+    Item type_pill;
+    type_pill.kind = ItemKind::kPopup;
+    type_pill.text = RuleTypeLabel(type);
+    type_pill.action = "ruletype";
+    type_pill.payload = index_payload;
+    type_pill.bounds = type_rect;
+    items_.push_back(std::move(type_pill));
+
+    Item target_pill;
+    target_pill.kind = ItemKind::kPopup;
+    if (ask) {
+      target_pill.text = L"Ask every time";
+    } else {
+      target_pill.text = L"?";
+      for (const auto& [id, name] : space_names) {
+        if (id == space_id) {
+          target_pill.text = name;
+          break;
+        }
+      }
+    }
+    target_pill.action = "ruletarget";
+    target_pill.payload = index_payload;
+    target_pill.bounds = target;
+    items_.push_back(std::move(target_pill));
+
+    Item remove;
+    remove.kind = ItemKind::kToolButton;
+    remove.text = L"\uE74D";  // MDL2 Delete.
+    remove.action = "delrule";
+    remove.payload = index_payload;
+    remove.bounds = del;
+    items_.push_back(std::move(remove));
+
+    *y += row_height + Scaled(kRowPadding);
+  }
+  EndSection(y);
+
+  {
+    Item add;
+    add.kind = ItemKind::kButton;
+    add.text = L"Add Rule";
+    add.action = "addrule";
+    add.bounds = {Scaled(kMargin), *y, Scaled(kMargin) + Scaled(96),
+                  *y + Scaled(26)};
+    items_.push_back(std::move(add));
+    *y += Scaled(26);
+  }
 }
 
 void PhiSettingsWindow::BuildProfiles(int* y) {
@@ -1862,7 +2165,11 @@ void PhiSettingsWindow::Rebuild() {
     entry.kind = ItemKind::kToolbarItem;
     entry.text = section.label;
     entry.payload = section.id;
-    entry.selected = section_ == section.id;
+    // The URL Rules editor is a drill-in of the Spaces pane; its toolbar
+    // item stays lit.
+    entry.selected = section_ == section.id ||
+                     (section_ == "urlrules" &&
+                      std::string(section.id) == "spaces");
     entry.action = "section";
     entry.bounds = {x, Scaled(kCaptionHeight + 8),
                     x + Scaled(kToolbarItemWidth),
@@ -1881,6 +2188,8 @@ void PhiSettingsWindow::Rebuild() {
     BuildGeneral(&y);
   } else if (section_ == "spaces") {
     BuildSpaces(&y);
+  } else if (section_ == "urlrules") {
+    BuildUrlRules(&y);
   } else if (section_ == "profiles") {
     BuildProfiles(&y);
   } else if (section_ == "shortcuts") {
@@ -2554,6 +2863,152 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
     section_ = "spaces";
     scroll_ = 0;
     SyncTitle();
+  } else if (item.action == "urlrules") {
+    section_ = "urlrules";
+    scroll_ = 0;
+    SyncTitle();
+  } else if (item.action == "addrule") {
+    std::wstring value;
+    if (PhiPromptText(hwnd_, L"Add URL Rule",
+                      L"Enter a domain or URL (e.g. example.com or "
+                      L"example.com/path).",
+                      &value)) {
+      const std::string typed = base::WideToUTF8(value);
+      std::string host;
+      std::string prefix;
+      RuleEncode(RuleTypeForInput(typed), typed, &host, &prefix);
+      std::string first_space;
+      for (const std::string& summary : host_->SpaceSummaries()) {
+        const std::vector<std::string> parts = SplitTabs(summary);
+        if (parts.size() > 3) {
+          first_space = parts[3];
+          break;
+        }
+      }
+      if (!host.empty() && !first_space.empty()) {
+        host_->AddURLRule(first_space, host, prefix, false);
+      }
+    }
+  } else if (item.action == "editrule") {
+    int index = -1;
+    base::StringToInt(item.payload, &index);
+    const std::vector<std::string> rules = host_->URLRuleRows();
+    if (index >= 0 && index < static_cast<int>(rules.size())) {
+      const std::vector<std::string> parts = SplitTabs(rules[index]);
+      const std::string old_host =
+          parts.size() > 1 ? parts[1] : std::string();
+      const std::string old_prefix =
+          parts.size() > 2 ? parts[2] : std::string();
+      std::wstring value =
+          base::UTF8ToWide(RuleDisplayValue(old_host, old_prefix));
+      if (PhiPromptText(hwnd_, L"Edit URL Rule",
+                        L"Enter a domain or URL for this rule.", &value)) {
+        const std::string typed = base::WideToUTF8(value);
+        // A typed path or explicit sigils re-derive the match type; a bare
+        // host keeps the rule's current one.
+        RuleMatchType type = RuleTypeOf(old_host, old_prefix);
+        const RuleMatchType derived = RuleTypeForInput(typed);
+        if (derived != RuleMatchType::kDomainSuffix ||
+            typed.rfind("*.", 0) == 0) {
+          type = derived;
+        }
+        std::string host;
+        std::string prefix;
+        RuleEncode(type, typed, &host, &prefix);
+        if (!host.empty()) {
+          host_->SetURLRulePattern(index, host, prefix);
+        }
+      }
+    }
+  } else if (item.action == "ruletype") {
+    int index = -1;
+    base::StringToInt(item.payload, &index);
+    const std::vector<std::string> rules = host_->URLRuleRows();
+    if (index >= 0 && index < static_cast<int>(rules.size())) {
+      const std::vector<std::string> parts = SplitTabs(rules[index]);
+      const std::string old_host =
+          parts.size() > 1 ? parts[1] : std::string();
+      const std::string old_prefix =
+          parts.size() > 2 ? parts[2] : std::string();
+      const RuleMatchType current = RuleTypeOf(old_host, old_prefix);
+      HMENU menu = ::CreatePopupMenu();
+      if (!menu) {
+        return;
+      }
+      const std::array<RuleMatchType, 4> kTypes = {
+          RuleMatchType::kDomainSuffix, RuleMatchType::kDomain,
+          RuleMatchType::kDomainContains, RuleMatchType::kUrl};
+      for (size_t i = 0; i < kTypes.size(); ++i) {
+        ::AppendMenuW(menu,
+                      MF_STRING | (kTypes[i] == current ? MF_CHECKED : 0),
+                      static_cast<UINT>(i) + 1, RuleTypeLabel(kTypes[i]));
+      }
+      POINT anchor = {item.bounds.left, item.bounds.bottom};
+      ::ClientToScreen(hwnd_, &anchor);
+      const UINT chosen = static_cast<UINT>(::TrackPopupMenu(
+          menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, anchor.x,
+          anchor.y, 0, hwnd_, nullptr));
+      ::DestroyMenu(menu);
+      if (chosen >= 1 && chosen <= kTypes.size()) {
+        // Re-encode the current display value into the new type's form.
+        std::string host;
+        std::string prefix;
+        RuleEncode(kTypes[chosen - 1],
+                   RuleDisplayValue(old_host, old_prefix), &host, &prefix);
+        if (!host.empty()) {
+          host_->SetURLRulePattern(index, host, prefix);
+        }
+      }
+    }
+  } else if (item.action == "ruletarget") {
+    int index = -1;
+    base::StringToInt(item.payload, &index);
+    const std::vector<std::string> rules = host_->URLRuleRows();
+    if (index >= 0 && index < static_cast<int>(rules.size())) {
+      const std::vector<std::string> parts = SplitTabs(rules[index]);
+      const std::string current_space =
+          parts.size() > 0 ? parts[0] : std::string();
+      const bool ask = parts.size() > 3 && parts[3] == "1";
+      std::vector<std::string> space_ids;
+      HMENU menu = ::CreatePopupMenu();
+      if (!menu) {
+        return;
+      }
+      for (const std::string& summary : host_->SpaceSummaries()) {
+        const std::vector<std::string> space_parts = SplitTabs(summary);
+        if (space_parts.size() <= 3) {
+          continue;
+        }
+        const bool checked = !ask && space_parts[3] == current_space;
+        ::AppendMenuW(menu, MF_STRING | (checked ? MF_CHECKED : 0),
+                      static_cast<UINT>(space_ids.size()) + 1,
+                      base::UTF8ToWide(space_parts[0]).c_str());
+        space_ids.push_back(space_parts[3]);
+      }
+      ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+      // "Ask every time" rides the rule's target Space as the prompt's
+      // suggested default, the Mac's askSpaceTag.
+      ::AppendMenuW(menu, MF_STRING | (ask ? MF_CHECKED : 0),
+                    static_cast<UINT>(space_ids.size()) + 1,
+                    L"Ask every time");
+      POINT anchor = {item.bounds.left, item.bounds.bottom};
+      ::ClientToScreen(hwnd_, &anchor);
+      const UINT chosen = static_cast<UINT>(::TrackPopupMenu(
+          menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, anchor.x,
+          anchor.y, 0, hwnd_, nullptr));
+      ::DestroyMenu(menu);
+      if (chosen >= 1 && chosen <= space_ids.size()) {
+        host_->SetURLRuleTarget(index, space_ids[chosen - 1], false);
+      } else if (chosen == space_ids.size() + 1) {
+        host_->SetURLRuleTarget(index, current_space, true);
+      }
+    }
+  } else if (item.action == "delrule") {
+    int index = -1;
+    base::StringToInt(item.payload, &index);
+    if (index >= 0) {
+      host_->RemoveURLRule(index);
+    }
   } else if (item.action == "goprofiles") {
     section_ = "profiles";
     scroll_ = 0;

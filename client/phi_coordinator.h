@@ -51,6 +51,13 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   void OnOpenLinkInSpace(int64_t source_window_id,
                          const char* space_id,
                          const char* url) override;
+  void OnAskSpaceForURL(const char* url,
+                        const char* default_space_id,
+                        int64_t source_window_id,
+                        bool source_is_new_tab) override;
+  void OnRouteURLToSpace(const char* space_id,
+                         const char* url,
+                         int64_t source_window_id) override;
 
   // PhiControlDelegate (called on the control server's I/O thread):
   std::string HandleControlCommand(const std::string& type,
@@ -127,6 +134,18 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   bool SetDownloadDirectory(const std::string& profile_id,
                             const std::string& dir) override;
   void CreateSpaceNamed(const std::string& name) override;
+  std::vector<std::string> URLRuleRows() const override;
+  void AddURLRule(const std::string& space_id,
+                  const std::string& host,
+                  const std::string& path_prefix,
+                  bool ask) override;
+  void SetURLRulePattern(int index,
+                         const std::string& host,
+                         const std::string& path_prefix) override;
+  void SetURLRuleTarget(int index,
+                        const std::string& space_id,
+                        bool ask) override;
+  void RemoveURLRule(int index) override;
 
  private:
   // Runs a control command on the UI thread; returns the JSON response. Called
@@ -190,6 +209,31 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   int next_space_id_ = 2;
   // Where the Space list is persisted (user data dir).
   std::wstring spaces_path_;
+  // A Space URL routing rule, the Mac's SpaceURLRule. `host` is stored in
+  // the wire form ("github.com" exact, "*.foo.com" suffix, "*needle*"
+  // contains); `path_prefix` empty means any path; `ask` prompts instead of
+  // routing silently. Order in the vector is the sortOrder tiebreak.
+  struct UrlRule {
+    std::string space_id;
+    std::string host;
+    std::string path_prefix;
+    bool ask = false;
+  };
+  std::vector<UrlRule> url_rules_;
+  std::wstring url_rules_path_;
+  void LoadUrlRules();
+  void SaveUrlRules() const;
+  // Compiles url_rules_ plus the Space -> VISIBLE browser map into the
+  // framework's PhiURLRouter table. Called (via PushSpaceMenu) on every
+  // rules edit, browser attach/close and Space switch.
+  void PushRoutingTable() const;
+  // Surfaces `space_id` (cold-spawning its browser if needed) and opens
+  // `url` there with a one-shot routing bypass — the shared tail of the
+  // context menu's "Open Link in Space", the silent auto-route into a
+  // hidden/cold Space, and the "ask first" prompt's pick.
+  void RouteUrlToSpace(const std::string& space_id,
+                       const std::string& url,
+                       int64_t source_window_id);
   // The shared store-tab/split bodies behind the menu (append, bookmark
   // unbound) and drag (placed + bound) entry points.
   void StoreTabInternal(int64_t slot, int index, bool as_bookmark,
