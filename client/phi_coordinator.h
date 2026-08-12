@@ -17,7 +17,9 @@
 
 #include "base/memory/raw_ptr_exclusion.h"
 #include "chrome/browser/phinomenon/phi_framework/phi_framework_api.h"
+#include "phibrowser-win/client/phi_agent_spaces.h"
 #include "phibrowser-win/client/phi_control_server.h"
+#include "phibrowser-win/client/phi_credentials.h"
 #include "phibrowser-win/client/phi_emoji.h"
 #include "phibrowser-win/client/phi_settings_window.h"
 #include "phibrowser-win/client/phi_tab_store.h"
@@ -66,6 +68,8 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // PhiSlotHost (called on the UI thread by a slot's sidebar):
   std::vector<PhiSpaceView> Spaces() const override;
   void RequestSwitchSpace(int64_t slot, const std::string& space_id) override;
+  std::vector<PhiAgentPipView> AgentSpaces() const override;
+  void RequestWatchAgentSpace(const std::string& task_id) override;
   void RequestCreateSpace(int64_t slot, bool new_profile) override;
   PhiLayoutMode LayoutMode() const override;
   void RequestLayoutMode(PhiLayoutMode mode) override;
@@ -298,6 +302,43 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   int pending_profile_ticks_ = 0;
   // Returns true when finished (created the Space, or gave up).
   bool TryFinishProfileSpace();
+
+  // --- Agent Spaces (the phi-browser skill's hidden windows) ---------------
+  PhiAgentSpaces agent_spaces_;
+  // The agent Space whose window is currently surfaced for the user to watch
+  // (empty = none). At most one is watched at a time.
+  std::string watched_agent_task_;
+  // Repaints every USER window's sidebar so agent pips appear/disappear and
+  // reflect the watched state.
+  void RefreshUserWindows();
+  // Set for the duration of an agentSpace.create so the re-entrant
+  // OnBrowserWindowCreated adopts the new browser as a hidden agent window
+  // (rather than a normal visible slot) and records its id here.
+  std::string pending_agent_task_;
+  int64_t last_agent_window_id_ = 0;
+  // Handles one agentSpace.* control verb; returns true when `type` was an
+  // agent-space verb (its result is in `out`), false to fall through to the
+  // client-UI verbs. `now_ms` is GetTickCount64().
+  bool HandleAgentSpaceVerb(const std::string& type,
+                            const base::DictValue* payload,
+                            uint64_t now_ms,
+                            base::DictValue* out);
+  // Tears down an agent Space: closes its hidden window and drops the record.
+  void CloseAgentSpace(const std::string& task_id);
+  // Keep-alive sweep (WM_TIMER id 2): completes and closes expired spaces.
+  void SweepAgentSpaces();
+
+  // --- Credentials (the skill's agent password surface) --------------------
+  PhiCredentialVault credentials_;
+  std::wstring credentials_dir_;
+  // Handles one credentials.* verb; true when `type` was one (result in
+  // `out`). The per-request approve/deny prompt and origin binding live here.
+  bool HandleCredentialsVerb(const std::string& type,
+                             const base::DictValue* payload,
+                             base::DictValue* out);
+  // The native approve/deny prompt for a credential request. `detail` names
+  // the item and purpose. Returns true when the user approves.
+  bool PromptCredentialApproval(const std::wstring& detail);
 };
 
 }  // namespace phi_client

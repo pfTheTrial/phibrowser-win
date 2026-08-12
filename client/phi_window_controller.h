@@ -61,6 +61,14 @@ struct PhiSpaceView {
   std::string icon_text;  // Resolved display glyph, UTF-8 (may be PUA).
 };
 
+// A live agent Space as a pip in the switcher — the Mac's robot Space pip.
+// The user clicks it to watch the (normally hidden) agent Space live.
+struct PhiAgentPipView {
+  std::string task_id;   // The skill's taskId; also the pip's identity.
+  std::string caption;   // The agent's current status line (may be empty).
+  bool watched = false;  // Its window is currently surfaced on-screen.
+};
+
 // What a slot needs from its owner (the coordinator): the full Space list to
 // draw, and requests that only the owner can service (switching to a Space
 // that has no browser yet must create one in that Space's profile).
@@ -70,6 +78,10 @@ class PhiSlotHost {
   // Every Space, in display order.
   virtual std::vector<PhiSpaceView> Spaces() const = 0;
   virtual void RequestSwitchSpace(int64_t slot, const std::string& space_id) = 0;
+  // Live agent Spaces to show as pips (empty when none). The user watches one
+  // by clicking its pip, which toggles its hidden window on/off screen.
+  virtual std::vector<PhiAgentPipView> AgentSpaces() const = 0;
+  virtual void RequestWatchAgentSpace(const std::string& task_id) = 0;
   // Creates a Space in this slot's current profile (`new_profile` = false) or
   // in a freshly created profile (true), then switches to it.
   virtual void RequestCreateSpace(int64_t slot, bool new_profile) = 0;
@@ -160,16 +172,26 @@ class PhiMenuBar;
 // child's own HWND — two non-overlapping regions, both visible.
 class PhiWindowController {
  public:
+  // `agent` hosts the window as a HIDDEN agent Space: the shell is created
+  // off-screen and off the taskbar (WS_EX_TOOLWINDOW), shown without
+  // activation so its content still composites and renders for CDP screen
+  // capture, but the user never sees it. Everything else is identical, so a
+  // future "watch" gesture can move it on-screen.
   PhiWindowController(int64_t window_id,
                       HWND browser_hwnd,
                       phi_framework::PhiFramework* framework,
-                      PhiSlotHost* host);
+                      PhiSlotHost* host,
+                      bool agent = false);
   ~PhiWindowController();
 
   PhiWindowController(const PhiWindowController&) = delete;
   PhiWindowController& operator=(const PhiWindowController&) = delete;
 
   int64_t window_id() const { return window_id_; }
+  bool is_agent() const { return agent_; }
+  // Surfaces (visible=true) or parks off-screen (visible=false) an agent
+  // window so the user can watch it live. No-op on a non-agent window.
+  void SetAgentVisible(bool visible);
 
   // Re-reads tab/nav state from the framework and repaints the sidebar NOW.
   // For changes the client itself just made, where the browser state has
@@ -701,6 +723,7 @@ class PhiWindowController {
     std::wstring label;
     std::wstring icon;  // The Space's emoji, empty when it has none.
     bool open = false;
+    bool is_agent = false;  // A live agent Space pip; `id` is its taskId.
     RECT bounds{};
   };
   std::vector<SpaceChip> chips_;
@@ -713,6 +736,10 @@ class PhiWindowController {
   // against the expanded layout (floating_layout_ override) and the panel
   // forwards its mouse events through the normal handlers with a y offset.
   bool sidebar_collapsed_ = false;
+  // Hosted as a hidden agent Space (off-screen, off-taskbar). See the ctor.
+  bool agent_ = false;
+  // For an agent window: whether it is currently surfaced (being watched).
+  bool agent_visible_ = false;
   bool floating_layout_ = false;
   HWND floating_sidebar_ = nullptr;
   int floating_offset_y_ = 0;

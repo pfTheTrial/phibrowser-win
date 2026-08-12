@@ -1,0 +1,129 @@
+// Copyright 2026 The Fyde Innovations Limited. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#ifndef PHIBROWSER_WIN_CLIENT_PHI_AGENT_SPACES_H_
+#define PHIBROWSER_WIN_CLIENT_PHI_AGENT_SPACES_H_
+
+#include <cstdint>
+#include <deque>
+#include <map>
+#include <string>
+#include <vector>
+
+#include "base/values.h"
+
+namespace phi_client {
+
+// The client-side model of the phi-browser skill's AGENT SPACES — the Windows
+// twin of the Mac AgentSpaceManager's bookkeeping. An agent Space is a hidden
+// browser window (hosted off-screen by a PhiWindowController) keyed by the
+// skill's `taskId`, with an ownership state (agent vs the user who took
+// control), a keep-alive deadline, a transcript log, and a queue of user
+// console messages.
+//
+// This class is PURE STATE + TIME MATH — it owns no windows and calls no
+// framework. The coordinator creates/tears down the backing window and passes
+// the current monotonic tick (GetTickCount64) into every method that touches
+// the keep-alive clock, so the whole thing is deterministic and testable.
+// Everything runs on the browser UI thread; no locking.
+class PhiAgentSpaces {
+ public:
+  // Keep-alive TTLs, mirroring AgentSpaceManager (seconds).
+  static constexpr int kDefaultTtlSeconds = 120;    // a live driving round
+  static constexpr int kInterRoundTtlSeconds = 1800;  // between rounds
+  static constexpr int kMaxTtlSeconds = 3600;       // ping ceiling
+
+  enum class Ownership { kAgent, kUser };
+
+  struct UserMessage {
+    std::string id;    // uppercase UUID, the Mac wire shape
+    std::string text;
+    int64_t ts_ms = 0;  // epoch milliseconds
+  };
+
+  struct Space {
+    std::string task_id;
+    std::string space_id;
+    int64_t window_id = 0;  // == Browser::session_id().id() == CDP windowId
+    std::string profile_id;
+    std::string agent_name;
+    Ownership ownership = Ownership::kAgent;
+    // starting | running | idle | completed | failed
+    std::string status = "running";
+    std::string caption;
+    bool persistent = false;
+    // Absolute keep-alive deadline in GetTickCount64 ms; 0 = no deadline
+    // (persistent, or while the user holds control).
+    uint64_t keepalive_deadline_ms = 0;
+    std::deque<UserMessage> pending_messages;  // capped kMaxQueued
+    std::deque<std::string> log;               // rendered lines, capped kMaxLog
+  };
+
+  PhiAgentSpaces();
+  ~PhiAgentSpaces();
+
+  PhiAgentSpaces(const PhiAgentSpaces&) = delete;
+  PhiAgentSpaces& operator=(const PhiAgentSpaces&) = delete;
+
+  Space* Find(const std::string& task_id);
+  Space* FindByWindow(int64_t window_id);
+  bool empty() const { return spaces_.empty(); }
+  // Read-only view of every record (for the switcher's agent pips).
+  const std::map<std::string, Space>& entries() const { return spaces_; }
+
+  // Creates the record (or returns the existing one for a re-bind). The
+  // caller supplies the already-created window's id.
+  Space& Create(const std::string& task_id,
+                int64_t window_id,
+                const std::string& profile_id,
+                bool persistent,
+                uint64_t now_ms);
+
+  void Remove(const std::string& task_id);
+
+  // Extends the keep-alive to max(existing, now + ttl). `ttl_seconds <= 0`
+  // uses kDefaultTtlSeconds; the value is clamped to [1, kMaxTtlSeconds].
+  // Persistent and user-owned spaces have no deadline and are untouched.
+  void Ping(const std::string& task_id, int ttl_seconds, uint64_t now_ms);
+
+  // setState: `caption` and `state` are independent and optional. `state`
+  // "running" resets the keep-alive to kDefaultTtlSeconds; "idle" leaves it.
+  void SetState(const std::string& task_id,
+                const std::string* caption,
+                const std::string* state,
+                uint64_t now_ms);
+
+  // Flips ownership. Handing to the user clears the deadline (their control
+  // pauses the clock); handing back to the agent re-arms it to the default.
+  void SetOwnership(const std::string& task_id,
+                    Ownership owner,
+                    uint64_t now_ms);
+
+  void AppendLog(const std::string& task_id, const std::string& line);
+
+  // Drains the message queue into a JSON list `[{"id","text","ts"}]`.
+  base::ListValue DrainMessages(const std::string& task_id);
+  // Queues a console message from the user; returns its id (empty if unknown).
+  std::string PushMessage(const std::string& task_id,
+                          const std::string& text,
+                          int64_t ts_ms);
+
+  // The `tasks` array for agentSpace.list.
+  base::ListValue TasksJson(uint64_t now_ms) const;
+
+  // Task ids whose keep-alive has lapsed (agent-owned, non-persistent, with a
+  // deadline in the past) — the coordinator completes and closes these.
+  std::vector<std::string> Expired(uint64_t now_ms) const;
+
+ private:
+  static constexpr size_t kMaxLog = 500;
+  static constexpr size_t kMaxQueued = 50;
+
+  std::map<std::string, Space> spaces_;
+  int next_ordinal_ = 1;
+};
+
+}  // namespace phi_client
+
+#endif  // PHIBROWSER_WIN_CLIENT_PHI_AGENT_SPACES_H_

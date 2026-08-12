@@ -17,7 +17,9 @@
 #include "base/json/json_writer.h"
 #include "base/logging.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/time/time.h"
 #include "base/values.h"
 #include "base/rand_util.h"
 #include "phibrowser-win/client/phi_icons.h"
@@ -30,6 +32,23 @@ namespace {
 // The one coordinator, reachable from the static keyboard hook. The client
 // creates exactly one for the process lifetime.
 PhiCoordinator* g_coordinator = nullptr;
+
+// Splits a tab-separated row (the URLRuleRows() encoding). Keeps empty fields
+// so positional indices stay stable.
+std::vector<std::string> SplitTabRow(const std::string& value) {
+  std::vector<std::string> parts;
+  size_t start = 0;
+  for (;;) {
+    size_t tab = value.find('\t', start);
+    if (tab == std::string::npos) {
+      parts.push_back(value.substr(start));
+      break;
+    }
+    parts.push_back(value.substr(start, tab - start));
+    start = tab + 1;
+  }
+  return parts;
+}
 }  // namespace
 
 PhiCoordinator::PhiCoordinator() {
@@ -89,6 +108,8 @@ void PhiCoordinator::OnFrameworkReady(phi_framework::PhiFramework* framework,
   theme_path_ = user_data_dir + L"\\PhiTheme.json";
   prefs_path_ = user_data_dir + L"\\PhiPrefs.json";
   url_rules_path_ = user_data_dir + L"\\PhiUrlRules.json";
+  credentials_dir_ = user_data_dir;
+  credentials_.Load(user_data_dir);
   LoadSpaces();
   LoadUrlRules();
   LoadLayoutMode();
@@ -114,6 +135,10 @@ LRESULT CALLBACK PhiCoordinator::MsgWndProc(HWND hwnd,
   if (msg == WM_TIMER) {
     auto* self = reinterpret_cast<PhiCoordinator*>(
         ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    if (self && wparam == 2) {
+      self->SweepAgentSpaces();  // Agent-space keep-alive sweep (10s).
+      return 0;
+    }
     if (self && self->TryFinishProfileSpace()) {
       ::KillTimer(hwnd, 1);
     }
@@ -1617,6 +1642,59 @@ std::vector<PhiSpaceView> PhiCoordinator::Spaces() const {
   return out;
 }
 
+std::vector<PhiAgentPipView> PhiCoordinator::AgentSpaces() const {
+  std::vector<PhiAgentPipView> out;
+  for (const auto& [task_id, space] : agent_spaces_.entries()) {
+    PhiAgentPipView pip;
+    pip.task_id = task_id;
+    pip.caption = space.caption;
+    pip.watched = task_id == watched_agent_task_;
+    out.push_back(std::move(pip));
+  }
+  return out;
+}
+
+void PhiCoordinator::RequestWatchAgentSpace(const std::string& task_id) {
+  PhiAgentSpaces::Space* space = agent_spaces_.Find(task_id);
+  if (!space) {
+    return;
+  }
+  auto controller_for = [&](const std::string& id) -> PhiWindowController* {
+    PhiAgentSpaces::Space* s = agent_spaces_.Find(id);
+    if (!s) {
+      return nullptr;
+    }
+    auto it = windows_.find(s->window_id);
+    return it != windows_.end() ? it->second.get() : nullptr;
+  };
+  // Clicking the watched pip again parks it; clicking a different one swaps.
+  if (watched_agent_task_ == task_id) {
+    if (PhiWindowController* c = controller_for(task_id)) {
+      c->SetAgentVisible(false);
+    }
+    watched_agent_task_.clear();
+  } else {
+    if (!watched_agent_task_.empty()) {
+      if (PhiWindowController* prev = controller_for(watched_agent_task_)) {
+        prev->SetAgentVisible(false);
+      }
+    }
+    if (PhiWindowController* c = controller_for(task_id)) {
+      c->SetAgentVisible(true);
+    }
+    watched_agent_task_ = task_id;
+  }
+  RefreshUserWindows();
+}
+
+void PhiCoordinator::RefreshUserWindows() {
+  for (const auto& [slot, controller] : windows_) {
+    if (!controller->is_agent()) {
+      controller->RefreshTabs();
+    }
+  }
+}
+
 void PhiCoordinator::RequestSwitchSpace(int64_t slot,
                                         const std::string& space_id) {
   base::DictValue payload;
@@ -1701,6 +1779,26 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
                                                const std::string& payload_json) {
   // Runs on the UI thread — safe to touch windows_ and call framework_.
   base::DictValue out;
+  // The phi-browser skill's agent-space lifecycle (create/ping/complete/
+  // ownership/log/messages/…) is served first; it owns the taskId-keyed
+  // model. `agentSpace.list` deliberately falls THROUGH so both the skill's
+  // `tasks` view and the box probes' `windows` view are merged below.
+  {
+    std::optional<base::DictValue> payload =
+        base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
+    if (HandleAgentSpaceVerb(type, payload ? &*payload : nullptr,
+                             ::GetTickCount64(), &out)) {
+      std::string s;
+      base::JSONWriter::Write(out, &s);
+      return s;
+    }
+    if (type.rfind("credentials.", 0) == 0 &&
+        HandleCredentialsVerb(type, payload ? &*payload : nullptr, &out)) {
+      std::string s;
+      base::JSONWriter::Write(out, &s);
+      return s;
+    }
+  }
   if (type == "agentSpace.ping") {
     out.Set("ok", true);
   } else if (type == "agentSpace.list") {
@@ -1709,6 +1807,8 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
       list.Append(static_cast<double>(window_id));
     }
     out.Set("windows", std::move(list));
+    // The skill reads `tasks`; the box probes read `windows`. Ship both.
+    out.Set("tasks", agent_spaces_.TasksJson(::GetTickCount64()));
   } else if (type == "agentSpace.newWindow") {
     int64_t source = windows_.empty() ? 0 : windows_.begin()->first;
     if (framework_) {
@@ -1758,16 +1858,27 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
         p ? static_cast<int64_t>(p->FindDouble("windowId").value_or(0)) : 0;
     auto it = windows_.find(slot);
     base::ListValue list;
+    int sort_order = 0;
     for (const Space& space : spaces_) {
       base::DictValue s;
+      // The client-UI shape (id/icon/themeId) AND the skill's management shape
+      // (spaceId/colorHex/iconName/sortOrder/isDefault/isActive) — one list
+      // serves the box probes and the phi-browser skill both.
       s.Set("id", space.id);
+      s.Set("spaceId", space.id);
       s.Set("name", space.name);
       s.Set("profileId", space.profile_id);
       s.Set("icon", space.icon);
+      s.Set("iconName", space.icon);
+      s.Set("colorHex", "");
       s.Set("themeId", space.theme_id);
       s.Set("iconText", PhiIconDisplayText(space.icon));
-      s.Set("active",
-            it != windows_.end() && it->second->active_space() == space.id);
+      s.Set("sortOrder", sort_order++);
+      s.Set("isDefault", space.id == "1");
+      const bool active =
+          it != windows_.end() && it->second->active_space() == space.id;
+      s.Set("active", active);
+      s.Set("isActive", active);
       s.Set("open", it != windows_.end() && it->second->HasSpace(space.id));
       list.Append(std::move(s));
     }
@@ -2775,11 +2886,813 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
   return s;
 }
 
+bool PhiCoordinator::HandleAgentSpaceVerb(const std::string& type,
+                                          const base::DictValue* payload,
+                                          uint64_t now_ms,
+                                          base::DictValue* out) {
+  auto task_id_of = [&]() -> std::string {
+    if (const std::string* t = payload ? payload->FindString("taskId")
+                                       : nullptr) {
+      return *t;
+    }
+    return std::string();
+  };
+
+  if (type == "agentSpace.create") {
+    const std::string task_id = task_id_of();
+    if (task_id.empty()) {
+      out->Set("ok", false);
+      out->Set("error", "invalid_payload");
+      return true;
+    }
+    // Re-bind to an existing agent Space if its window is still alive.
+    if (PhiAgentSpaces::Space* existing = agent_spaces_.Find(task_id)) {
+      if (windows_.count(existing->window_id)) {
+        agent_spaces_.Create(task_id, existing->window_id,
+                             existing->profile_id, existing->persistent,
+                             now_ms);
+        out->Set("ok", true);
+        out->Set("spaceId", existing->space_id);
+        out->Set("windowId", static_cast<double>(existing->window_id));
+        out->Set("ownership",
+                 existing->ownership == PhiAgentSpaces::Ownership::kUser
+                     ? "user"
+                     : "agent");
+        return true;
+      }
+      agent_spaces_.Remove(task_id);  // Stale record; recreate below.
+    }
+    std::string profile_id;
+    if (const std::string* p = payload ? payload->FindString("profileId")
+                                       : nullptr) {
+      profile_id = *p;
+    } else if (const std::string* pn =
+                   payload ? payload->FindString("profileName") : nullptr) {
+      profile_id = *pn;
+    }
+    const bool persistent =
+        payload ? payload->FindBool("persistent").value_or(false) : false;
+    if (!framework_) {
+      out->Set("ok", false);
+      out->Set("error", "create_failed");
+      return true;
+    }
+    // Create the hidden agent browser; OnBrowserWindowCreated fires
+    // re-entrantly and stamps last_agent_window_id_.
+    last_agent_window_id_ = 0;
+    pending_agent_task_ = task_id;
+    const int64_t window_id =
+        framework_->CreateAgentBrowser(profile_id.c_str());
+    pending_agent_task_.clear();
+    const int64_t adopted = window_id ? window_id : last_agent_window_id_;
+    if (!adopted) {
+      out->Set("ok", false);
+      out->Set("error", "create_failed");
+      return true;
+    }
+    PhiAgentSpaces::Space& space = agent_spaces_.Create(
+        task_id, adopted, profile_id, persistent, now_ms);
+    // Start the keep-alive sweep once (id 2, every 10s — the Mac sweep tick).
+    if (msg_hwnd_) {
+      ::SetTimer(msg_hwnd_, 2, 10000, nullptr);
+    }
+    RefreshUserWindows();  // A new agent pip appears in the switcher.
+    out->Set("ok", true);
+    out->Set("spaceId", space.space_id);
+    out->Set("windowId", static_cast<double>(space.window_id));
+    out->Set("ownership", "agent");
+    return true;
+  }
+
+  if (type == "agentSpace.ping") {
+    const std::string task_id = task_id_of();
+    if (task_id.empty()) {
+      return false;  // The generic (task-less) ping handles the box probes.
+    }
+    if (!agent_spaces_.Find(task_id)) {
+      out->Set("ok", false);
+      out->Set("error", "unknown_task");
+      return true;
+    }
+    const int ttl = payload ? static_cast<int>(
+                                  payload->FindDouble("ttlSeconds").value_or(0))
+                            : 0;
+    agent_spaces_.Ping(task_id, ttl, now_ms);
+    out->Set("ok", true);
+    return true;
+  }
+
+  if (type == "agentSpace.complete") {
+    const std::string task_id = task_id_of();
+    if (task_id.empty()) {
+      out->Set("ok", false);
+      out->Set("error", "invalid_payload");
+      return true;
+    }
+    PhiAgentSpaces::Space* space = agent_spaces_.Find(task_id);
+    if (!space) {
+      out->Set("ok", false);
+      out->Set("error", "unknown_task");
+      return true;
+    }
+    // `keep` defaults true; a persistent Space keeps its window, an ephemeral
+    // one is torn down. (Persistent Spaces are not yet surfaced in a switcher
+    // on Windows, so `keep` on a persistent Space just leaves the hidden
+    // window alive for the next re-bind.)
+    const bool keep = payload ? payload->FindBool("keep").value_or(true)
+                              : true;
+    if (space->persistent && keep) {
+      space->status = "completed";
+      space->caption.clear();
+    } else {
+      CloseAgentSpace(task_id);
+    }
+    out->Set("ok", true);
+    return true;
+  }
+
+  if (type == "agentSpace.getOwnership") {
+    const std::string task_id = task_id_of();
+    PhiAgentSpaces::Space* space =
+        task_id.empty() ? nullptr : agent_spaces_.Find(task_id);
+    // Unknown/absent task answers "none" (never unknown_task), matching Mac.
+    out->Set("owner", !space ? "none"
+             : space->ownership == PhiAgentSpaces::Ownership::kUser ? "user"
+                                                                    : "agent");
+    return true;
+  }
+
+  if (type == "agentSpace.handoff") {
+    const std::string task_id = task_id_of();
+    if (!agent_spaces_.Find(task_id)) {
+      out->Set("ok", false);
+      out->Set("error", "unknown_task");
+      return true;
+    }
+    agent_spaces_.SetOwnership(task_id, PhiAgentSpaces::Ownership::kUser,
+                              now_ms);
+    out->Set("ok", true);
+    return true;
+  }
+
+  if (type == "agentSpace.takeover") {
+    const std::string task_id = task_id_of();
+    if (!agent_spaces_.Find(task_id)) {
+      out->Set("ok", false);
+      out->Set("error", "unknown_task");
+      return true;
+    }
+    agent_spaces_.SetOwnership(task_id, PhiAgentSpaces::Ownership::kAgent,
+                              now_ms);
+    out->Set("ok", true);
+    return true;
+  }
+
+  if (type == "agentSpace.setState") {
+    const std::string task_id = task_id_of();
+    if (task_id.empty()) {
+      out->Set("ok", false);
+      out->Set("error", "invalid_payload");
+      return true;
+    }
+    if (!agent_spaces_.Find(task_id)) {
+      out->Set("ok", false);
+      out->Set("error", "unknown_task");
+      return true;
+    }
+    const std::string* caption =
+        payload ? payload->FindString("caption") : nullptr;
+    const std::string* state =
+        payload ? payload->FindString("state") : nullptr;
+    agent_spaces_.SetState(task_id, caption, state, now_ms);
+    out->Set("ok", true);
+    return true;
+  }
+
+  if (type == "agentSpace.log") {
+    const std::string task_id = task_id_of();
+    if (task_id.empty() || !payload) {
+      out->Set("ok", false);
+      out->Set("error", "invalid_payload");
+      return true;
+    }
+    if (!agent_spaces_.Find(task_id)) {
+      out->Set("ok", false);
+      out->Set("error", "unknown_task");
+      return true;
+    }
+    // Accept either a single-entry object (top-level `text`) or an `entries`
+    // array; we store rendered lines for a future transcript panel.
+    bool any = false;
+    if (const base::ListValue* entries = payload->FindList("entries")) {
+      for (const base::Value& v : *entries) {
+        const base::DictValue* d = v.GetIfDict();
+        const std::string* text = d ? d->FindString("text") : nullptr;
+        if (text) {
+          agent_spaces_.AppendLog(task_id, *text);
+          any = true;
+        }
+      }
+    } else if (const std::string* text = payload->FindString("text")) {
+      agent_spaces_.AppendLog(task_id, *text);
+      any = true;
+    }
+    if (!any) {
+      out->Set("ok", false);
+      out->Set("error", "invalid_payload");
+      return true;
+    }
+    // Refresh keep-alive unless touch:false.
+    if (payload->FindBool("touch").value_or(true)) {
+      agent_spaces_.Ping(task_id, 0, now_ms);
+    }
+    out->Set("ok", true);
+    return true;
+  }
+
+  if (type == "agentSpace.markError") {
+    const std::string task_id = task_id_of();
+    if (task_id.empty()) {
+      out->Set("ok", false);
+      out->Set("error", "invalid_payload");
+      return true;
+    }
+    PhiAgentSpaces::Space* space = agent_spaces_.Find(task_id);
+    if (!space) {
+      out->Set("ok", false);
+      out->Set("error", "unknown_task");
+      return true;
+    }
+    const std::string* message =
+        payload ? payload->FindString("message") : nullptr;
+    space->status = "failed";
+    agent_spaces_.AppendLog(task_id, message ? *message : "error");
+    out->Set("ok", true);
+    return true;
+  }
+
+  if (type == "agentSpace.readUserMessages") {
+    const std::string task_id = task_id_of();
+    if (task_id.empty()) {
+      out->Set("ok", false);
+      out->Set("error", "invalid_payload");
+      return true;
+    }
+    if (!agent_spaces_.Find(task_id)) {
+      out->Set("ok", false);
+      out->Set("error", "unknown_task");
+      return true;
+    }
+    out->Set("messages", agent_spaces_.DrainMessages(task_id));
+    return true;
+  }
+
+  if (type == "agentSpace.userMessage") {
+    // Inbound console message injection (used by the mirror / tests); the Mac
+    // wire has this as an event, but accepting it as a request lets the
+    // console flow work without a push channel.
+    const std::string task_id = task_id_of();
+    const std::string* text = payload ? payload->FindString("text") : nullptr;
+    if (task_id.empty() || !text) {
+      out->Set("ok", false);
+      out->Set("error", "invalid_payload");
+      return true;
+    }
+    const std::string id = agent_spaces_.PushMessage(
+        task_id, *text, base::Time::Now().InMillisecondsSinceUnixEpoch());
+    out->Set("ok", !id.empty());
+    if (!id.empty()) {
+      out->Set("id", id);
+    } else {
+      out->Set("error", "unknown_task");
+    }
+    return true;
+  }
+
+  if (type == "agentSpace.openTab") {
+    const std::string task_id = task_id_of();
+    const std::string* url = payload ? payload->FindString("url") : nullptr;
+    PhiAgentSpaces::Space* space =
+        task_id.empty() ? nullptr : agent_spaces_.Find(task_id);
+    if (task_id.empty() || !url || url->empty()) {
+      out->Set("ok", false);
+      out->Set("error", "invalid_payload");
+      return true;
+    }
+    if (!space || !framework_) {
+      out->Set("ok", false);
+      out->Set("error", "unknown_task");
+      return true;
+    }
+    framework_->NewTab(space->window_id, url->c_str());
+    out->Set("ok", true);
+    return true;
+  }
+
+  if (type == "agentSpace.listProfiles") {
+    base::ListValue profiles;
+    if (framework_) {
+      std::optional<base::Value> parsed = base::JSONReader::Read(
+          framework_->ListProfilesJson(), base::JSON_PARSE_RFC);
+      if (parsed && parsed->is_list()) {
+        for (const base::Value& v : parsed->GetList()) {
+          const base::DictValue* d = v.GetIfDict();
+          if (!d) {
+            continue;
+          }
+          base::DictValue e;
+          const std::string* id = d->FindString("id");
+          const std::string* name = d->FindString("name");
+          e.Set("profileId", id ? *id : "");
+          e.Set("displayName", name ? *name : (id ? *id : ""));
+          e.Set("agentSpacesAllowed", true);
+          profiles.Append(std::move(e));
+        }
+      }
+    }
+    out->Set("profiles", std::move(profiles));
+    return true;
+  }
+
+  if (type == "agentSpace.panelSize") {
+    // No watcher panel on Windows yet; report the agent surface's content
+    // size so callers that scale to it get a sane value.
+    out->Set("width", 1400);
+    out->Set("height", 900);
+    return true;
+  }
+
+  if (type == "agentSpace.cursor" || type == "agentSpace.effect") {
+    // The user-facing cursor glide / click ripple overlays live on the
+    // watcher; the hidden window has none. Accept and no-op so the skill's
+    // input mirroring never errors.
+    const std::string task_id = task_id_of();
+    if (task_id.empty() || !agent_spaces_.Find(task_id)) {
+      out->Set("ok", false);
+      out->Set("error", "unknown_task");
+      return true;
+    }
+    out->Set("ok", true);
+    return true;
+  }
+
+  if (type == "agentSpace.captureWindow") {
+    // Whole-window capture (screenshotBrowser) is not wired on Windows yet;
+    // the skill's screenshot()/annotatedScreenshot() use CDP and are
+    // unaffected. Report a clean, detectable failure.
+    out->Set("ok", false);
+    out->Set("error", "capture_failed");
+    return true;
+  }
+
+  // --- URL routing rules (the skill's listUrlRules/addUrlRule/...) ---------
+  // Rule "id" is the index as a string — stable only until the next rule
+  // write, matching the Mac contract.
+  auto space_exists = [&](const std::string& id) {
+    return std::any_of(spaces_.begin(), spaces_.end(),
+                       [&](const Space& s) { return s.id == id; });
+  };
+  if (type == "agentSpace.urlRules.list") {
+    base::ListValue rules;
+    const std::vector<std::string> rows = URLRuleRows();
+    for (size_t i = 0; i < rows.size(); ++i) {
+      const std::vector<std::string> parts = SplitTabRow(rows[i]);
+      base::DictValue d;
+      d.Set("id", base::NumberToString(i));
+      d.Set("spaceId", parts.size() > 0 ? parts[0] : "");
+      d.Set("host", parts.size() > 1 ? parts[1] : "");
+      if (parts.size() > 2 && !parts[2].empty()) {
+        d.Set("pathPrefix", parts[2]);
+      } else {
+        d.Set("pathPrefix", base::Value());
+      }
+      d.Set("ask", parts.size() > 3 && parts[3] == "1");
+      d.Set("sortOrder", static_cast<int>(i));
+      rules.Append(std::move(d));
+    }
+    out->Set("ok", true);
+    out->Set("rules", std::move(rules));
+    return true;
+  }
+  if (type == "agentSpace.urlRules.add") {
+    const std::string* space_id =
+        payload ? payload->FindString("spaceId") : nullptr;
+    const std::string* host = payload ? payload->FindString("host") : nullptr;
+    if (!space_id || space_id->empty() || !host || host->empty()) {
+      out->Set("ok", false);
+      out->Set("error", "invalid_payload");
+      return true;
+    }
+    if (!space_exists(*space_id)) {
+      out->Set("ok", false);
+      out->Set("error", "unknown_space");
+      return true;
+    }
+    const std::string* prefix =
+        payload ? payload->FindString("pathPrefix") : nullptr;
+    const bool ask = payload ? payload->FindBool("ask").value_or(false) : false;
+    AddURLRule(*space_id, base::ToLowerASCII(*host),
+               prefix ? *prefix : std::string(), ask);
+    out->Set("ok", true);
+    return true;
+  }
+  if (type == "agentSpace.urlRules.update" ||
+      type == "agentSpace.urlRules.delete") {
+    int index = -1;
+    if (const std::string* id = payload ? payload->FindString("id") : nullptr) {
+      base::StringToInt(*id, &index);
+    }
+    const std::vector<std::string> rows = URLRuleRows();
+    if (index < 0 || index >= static_cast<int>(rows.size())) {
+      out->Set("ok", false);
+      out->Set("error",
+               index < 0 ? "invalid_payload" : "unknown_rule");
+      return true;
+    }
+    if (type == "agentSpace.urlRules.delete") {
+      RemoveURLRule(index);
+      out->Set("ok", true);
+      return true;
+    }
+    // Update: host/pathPrefix change the pattern; spaceId/ask change the
+    // target. Absent fields keep their current value.
+    const std::vector<std::string> parts = SplitTabRow(rows[index]);
+    std::string space_id = parts.size() > 0 ? parts[0] : "";
+    std::string host = parts.size() > 1 ? parts[1] : "";
+    std::string prefix = parts.size() > 2 ? parts[2] : "";
+    bool ask = parts.size() > 3 && parts[3] == "1";
+    if (const std::string* h = payload ? payload->FindString("host") : nullptr) {
+      host = base::ToLowerASCII(*h);
+    }
+    // pathPrefix: key presence is meaningful (present clears/sets, absent
+    // keeps) — but our storage can't distinguish; treat present as set.
+    if (payload && payload->Find("pathPrefix")) {
+      const std::string* p = payload->FindString("pathPrefix");
+      prefix = p ? *p : "";
+    }
+    if (const std::string* s =
+            payload ? payload->FindString("spaceId") : nullptr) {
+      if (!space_exists(*s)) {
+        out->Set("ok", false);
+        out->Set("error", "unknown_space");
+        return true;
+      }
+      space_id = *s;
+    }
+    if (payload && payload->Find("ask")) {
+      ask = payload->FindBool("ask").value_or(ask);
+    }
+    SetURLRulePattern(index, host, prefix);
+    SetURLRuleTarget(index, space_id, ask);
+    out->Set("ok", true);
+    return true;
+  }
+
+  return false;  // Not an agent-space lifecycle verb.
+}
+
+void PhiCoordinator::CloseAgentSpace(const std::string& task_id) {
+  PhiAgentSpaces::Space* space = agent_spaces_.Find(task_id);
+  if (!space) {
+    return;
+  }
+  const int64_t window_id = space->window_id;
+  agent_spaces_.Remove(task_id);
+  if (watched_agent_task_ == task_id) {
+    watched_agent_task_.clear();
+  }
+  auto it = windows_.find(window_id);
+  if (it != windows_.end()) {
+    it->second->RequestClose();  // Fires OnBrowserWindowClosing → cleanup.
+  } else if (framework_ && window_id) {
+    framework_->CloseBrowserWindow(window_id);
+  }
+  if (agent_spaces_.empty() && msg_hwnd_) {
+    ::KillTimer(msg_hwnd_, 2);
+  }
+  RefreshUserWindows();  // The agent pip disappears.
+}
+
+void PhiCoordinator::SweepAgentSpaces() {
+  for (const std::string& task_id : agent_spaces_.Expired(::GetTickCount64())) {
+    LOG(INFO) << "[PhiClient] agent space expired: " << task_id;
+    CloseAgentSpace(task_id);
+  }
+  if (agent_spaces_.empty() && msg_hwnd_) {
+    ::KillTimer(msg_hwnd_, 2);
+  }
+}
+
+namespace {
+
+// Pulls a credential query out of a payload: either a nested `query`
+// {domain|id|search|username} or a top-level `domain`. Precedence
+// domain -> id -> search matches the Mac parser.
+struct CredentialQuery {
+  std::string domain;
+  std::string id;
+  std::string search;
+  std::string username;
+  bool valid = false;
+};
+
+CredentialQuery ParseCredentialQuery(const base::DictValue* payload) {
+  CredentialQuery q;
+  if (!payload) {
+    return q;
+  }
+  const base::DictValue* query = payload->FindDict("query");
+  auto pick = [&](const char* key) -> std::string {
+    if (query) {
+      if (const std::string* s = query->FindString(key)) {
+        return *s;
+      }
+    }
+    return std::string();
+  };
+  q.domain = pick("domain");
+  q.id = pick("id");
+  q.search = pick("search");
+  q.username = pick("username");
+  if (q.domain.empty() && !query) {
+    if (const std::string* d = payload->FindString("domain")) {
+      q.domain = *d;
+    }
+  }
+  q.valid = !q.domain.empty() || !q.id.empty() || !q.search.empty();
+  return q;
+}
+
+// The non-secret candidate list for an ambiguous match.
+base::ListValue CandidateList(
+    const std::vector<const PhiCredentialItem*>& items) {
+  base::ListValue out;
+  for (const PhiCredentialItem* item : items) {
+    base::DictValue d;
+    if (!item->credential_id.empty()) {
+      d.Set("credentialId", item->credential_id);
+    }
+    d.Set("type", item->type);
+    if (!item->name.empty()) {
+      d.Set("name", item->name);
+    }
+    if (!item->username.empty()) {
+      d.Set("username", item->username);
+    }
+    if (!item->uri.empty()) {
+      d.Set("uri", item->uri);
+    }
+    if (!item->domain.empty()) {
+      d.Set("domain", item->domain);
+    }
+    out.Append(std::move(d));
+  }
+  return out;
+}
+
+}  // namespace
+
+bool PhiCoordinator::PromptCredentialApproval(const std::wstring& detail) {
+  const std::wstring text =
+      L"An agent is requesting a credential from your Phi vault:\n\n" + detail +
+      L"\n\nAllow this once?";
+  const int r = ::MessageBoxW(
+      nullptr, text.c_str(), L"Phi — Credential request",
+      MB_YESNO | MB_ICONQUESTION | MB_SETFOREGROUND | MB_TOPMOST |
+          MB_DEFBUTTON2);
+  return r == IDYES;
+}
+
+bool PhiCoordinator::HandleCredentialsVerb(const std::string& type,
+                                           const base::DictValue* payload,
+                                           base::DictValue* out) {
+  if (type == "credentials.status") {
+    out->Set("ok", true);
+    out->Set("status", credentials_.present() ? "ready" : "logged_out");
+    out->Set("ready", credentials_.ready());
+    return true;
+  }
+
+  if (type == "credentials.getTotp") {
+    out->Set("ok", false);
+    out->Set("error", "totp_not_supported");
+    return true;
+  }
+
+  if (type == "credentials.get") {
+    // A fill request is never satisfied by a reveal.
+    const std::string* mode = payload ? payload->FindString("mode") : nullptr;
+    if (mode && *mode == "fill") {
+      out->Set("ok", false);
+      out->Set("error", "fill_requires_autofill");
+      return true;
+    }
+    if (!credentials_.present()) {
+      out->Set("ok", false);
+      out->Set("error", "not_ready");
+      out->Set("status", "logged_out");
+      return true;
+    }
+    CredentialQuery q = ParseCredentialQuery(payload);
+    if (!q.valid) {
+      out->Set("ok", false);
+      out->Set("error", "invalid_payload");
+      return true;
+    }
+    std::vector<const PhiCredentialItem*> matches =
+        credentials_.Match(q.domain, q.id, q.search, q.username);
+    if (matches.empty()) {
+      out->Set("ok", false);
+      out->Set("error", "not_found");
+      return true;
+    }
+    if (matches.size() > 1) {
+      out->Set("ok", false);
+      out->Set("error", "ambiguous");
+      out->Set("matches", static_cast<int>(matches.size()));
+      out->Set("candidates", CandidateList(matches));
+      return true;
+    }
+    const PhiCredentialItem* item = matches.front();
+    std::wstring detail = base::UTF8ToWide(
+        (item->name.empty() ? item->domain : item->name) +
+        (item->username.empty() ? "" : "  (" + item->username + ")"));
+    if (const std::string* purpose =
+            payload ? payload->FindString("purpose") : nullptr) {
+      if (!purpose->empty()) {
+        detail += L"\n" + base::UTF8ToWide(*purpose);
+      }
+    }
+    if (!PromptCredentialApproval(detail)) {
+      out->Set("ok", false);
+      out->Set("error", "user_denied");
+      return true;
+    }
+    // Build the credential by the requested (or type-default) field set.
+    std::vector<std::string> fields;
+    if (const base::ListValue* f =
+            payload ? payload->FindList("fields") : nullptr) {
+      for (const base::Value& v : *f) {
+        if (v.is_string()) {
+          fields.push_back(v.GetString());
+        }
+      }
+    }
+    if (fields.empty()) {
+      if (item->type == "note") {
+        fields = {"notes"};
+      } else {
+        fields = {"username", "password", "uri", "domain"};
+      }
+    }
+    base::DictValue cred;
+    cred.Set("type", item->type);
+    cred.Set("name", item->name);
+    for (const std::string& field : fields) {
+      if (field == "username" && !item->username.empty()) {
+        cred.Set("username", item->username);
+      } else if (field == "password" && !item->password.empty()) {
+        cred.Set("password", item->password);
+      } else if (field == "uri" && !item->uri.empty()) {
+        cred.Set("uri", item->uri);
+      } else if (field == "domain" && !item->domain.empty()) {
+        cred.Set("domain", item->domain);
+      } else if (field == "notes" && !item->notes.empty()) {
+        cred.Set("notes", item->notes);
+      }
+    }
+    out->Set("ok", true);
+    out->Set("credential", std::move(cred));
+    out->Set("matches", 1);
+    return true;
+  }
+
+  if (type == "credentials.autofill") {
+    if (!credentials_.present()) {
+      out->Set("ok", false);
+      out->Set("error", "not_ready");
+      out->Set("status", "logged_out");
+      return true;
+    }
+    const std::string* token = payload ? payload->FindString("token") : nullptr;
+    const std::string* target_id =
+        payload ? payload->FindString("targetId") : nullptr;
+    const std::string* field_p =
+        payload ? payload->FindString("field") : nullptr;
+    const std::string field = field_p ? *field_p : "password";
+    const bool allow_cross_origin =
+        payload ? payload->FindBool("allowCrossOrigin").value_or(false)
+                : false;
+    if (!token || token->empty() || !target_id || target_id->empty() ||
+        (field != "password" && field != "username")) {
+      out->Set("ok", false);
+      out->Set("error", "invalid_payload");
+      return true;
+    }
+    CredentialQuery q = ParseCredentialQuery(payload);
+    if (!q.valid) {
+      out->Set("ok", false);
+      out->Set("error", "invalid_payload");
+      return true;
+    }
+    if (!framework_) {
+      out->Set("ok", false);
+      out->Set("error", "autofill_not_available");
+      return true;
+    }
+    // Resolve the page host up front for the origin binding.
+    const std::string page_url = framework_->TargetUrlForCdpTarget(
+        target_id->c_str());
+    const std::string page_host = PhiCredentialVault::HostOfUri(page_url);
+    if (page_host.empty()) {
+      out->Set("ok", false);
+      out->Set("error", "page_not_found");
+      return true;
+    }
+    std::vector<const PhiCredentialItem*> matches =
+        credentials_.Match(q.domain, q.id, q.search, q.username);
+    if (matches.empty()) {
+      out->Set("ok", false);
+      out->Set("error", "not_found");
+      return true;
+    }
+    if (matches.size() > 1) {
+      out->Set("ok", false);
+      out->Set("error", "ambiguous");
+      out->Set("matches", static_cast<int>(matches.size()));
+      out->Set("candidates", CandidateList(matches));
+      return true;
+    }
+    const PhiCredentialItem* item = matches.front();
+    if (item->type != "login") {
+      out->Set("ok", false);
+      out->Set("error", "not_a_login");
+      out->Set("type", item->type);
+      return true;
+    }
+    const std::string value =
+        field == "username" ? item->username : item->password;
+    if (value.empty()) {
+      out->Set("ok", false);
+      out->Set("error", "field_unavailable");
+      out->Set("field", field);
+      return true;
+    }
+    // Origin binding: the page must belong to the credential's site unless the
+    // caller explicitly allowed a cross-origin fill.
+    const std::string cred_host =
+        item->domain.empty() ? PhiCredentialVault::HostOfUri(item->uri)
+                             : item->domain;
+    if (!allow_cross_origin &&
+        !PhiCredentialVault::HostMatches(page_host, cred_host)) {
+      out->Set("ok", false);
+      out->Set("error", "origin_mismatch");
+      out->Set("pageHost", page_host);
+      return true;
+    }
+    std::wstring detail =
+        base::UTF8ToWide((item->name.empty() ? cred_host : item->name) +
+                         "  → fill " + field + " on " + page_host);
+    if (!PromptCredentialApproval(detail)) {
+      out->Set("ok", false);
+      out->Set("error", "user_denied");
+      return true;
+    }
+    // The secret goes client vault -> framework -> page DOM, never to the
+    // agent. FillTaggedField returns false only when the tab is gone.
+    if (!framework_->FillTaggedField(target_id->c_str(), token->c_str(),
+                                     field.c_str(), value.c_str())) {
+      out->Set("ok", false);
+      out->Set("error", "target_not_found");
+      return true;
+    }
+    out->Set("ok", true);
+    out->Set("filled", true);
+    out->Set("field", field);
+    out->Set("matches", 1);
+    return true;
+  }
+
+  return false;
+}
+
 void PhiCoordinator::OnBrowserWindowCreated(int64_t window_id, void* hwnd) {
   LOG(INFO) << "[PhiClient] OnBrowserWindowCreated windowId=" << window_id
             << " hwnd=" << hwnd;
   // Option B: the client owns a shell window and reparents Chromium's content
   // in. The shell routes activation back through the framework.
+  if (!pending_agent_task_.empty()) {
+    // An agent Space: host the browser OFF-SCREEN as a hidden agent surface.
+    // This runs re-entrantly inside framework_->CreateAgentBrowser, so the
+    // control handler sees `last_agent_window_id_` set on return.
+    auto controller = std::make_unique<PhiWindowController>(
+        window_id, static_cast<HWND>(hwnd), framework_, this, /*agent=*/true);
+    controller->RefreshTabs();
+    windows_[window_id] = std::move(controller);
+    browser_to_slot_[window_id] = window_id;
+    last_agent_window_id_ = window_id;
+    return;
+  }
   if (pending_slot_ != 0) {
     // A Space browser for an existing slot: attach, don't open a new shell.
     auto it = windows_.find(pending_slot_);
@@ -2909,6 +3822,23 @@ void PhiCoordinator::OnTabsChanged(int64_t window_id) {
 
 void PhiCoordinator::OnBrowserWindowClosing(int64_t window_id) {
   LOG(INFO) << "[PhiClient] OnBrowserWindowClosing windowId=" << window_id;
+  // An agent Space's hidden window closing (via complete(), the user closing
+  // the surfaced window, or a crash) drops its record — the skill learns the
+  // task ended from its absence in the list.
+  if (PhiAgentSpaces::Space* space = agent_spaces_.FindByWindow(window_id)) {
+    const std::string task_id = space->task_id;
+    agent_spaces_.Remove(task_id);
+    if (watched_agent_task_ == task_id) {
+      watched_agent_task_.clear();
+    }
+    windows_.erase(window_id);
+    browser_to_slot_.erase(window_id);
+    if (agent_spaces_.empty() && msg_hwnd_) {
+      ::KillTimer(msg_hwnd_, 2);
+    }
+    RefreshUserWindows();
+    return;
+  }
   auto slot_it = browser_to_slot_.find(window_id);
   if (slot_it == browser_to_slot_.end()) {
     windows_.erase(window_id);

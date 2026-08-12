@@ -737,11 +737,13 @@ void PhiWindowController::ApplyLayoutMode(PhiLayoutMode mode) {
 PhiWindowController::PhiWindowController(int64_t window_id,
                                         HWND browser_hwnd,
                                         phi_framework::PhiFramework* framework,
-                                        PhiSlotHost* host)
+                                        PhiSlotHost* host,
+                                        bool agent)
     : window_id_(window_id),
       browser_hwnd_(browser_hwnd),
       framework_(framework),
-      host_(host) {
+      host_(host),
+      agent_(agent) {
   if (!browser_hwnd_ || !::IsWindow(browser_hwnd_)) {
     LOG(ERROR) << "[PhiClient] adopt: invalid browser HWND for window "
                << window_id_;
@@ -787,9 +789,19 @@ PhiWindowController::PhiWindowController(int64_t window_id,
     h = (wr.bottom + Scaled(kContentMargin) + border_y) - y;
   }
 
+  if (agent_) {
+    // A hidden agent surface: fixed size, parked far off-screen, kept off the
+    // taskbar. It is still shown (below) so its content composites and CDP
+    // screen capture works — the user simply never sees it.
+    x = -32000;
+    y = -32000;
+    w = Scaled(1400 + sidebar_dip_);
+    h = Scaled(900);
+  }
   shell_hwnd_ = ::CreateWindowExW(
-      0, kShellClassName, L"Phi", WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, x, y, w,
-      h, nullptr, nullptr, ::GetModuleHandleW(nullptr), this);
+      agent_ ? (WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE) : 0, kShellClassName,
+      L"Phi", WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, x, y, w, h, nullptr,
+      nullptr, ::GetModuleHandleW(nullptr), this);
   if (!shell_hwnd_) {
     LOG(ERROR) << "[PhiClient] shell CreateWindowEx failed err="
                << ::GetLastError();
@@ -820,9 +832,10 @@ PhiWindowController::PhiWindowController(int64_t window_id,
     framework_->SetWindowSpace(window_id_, "1");
   }
   LayoutContents();
-  ::ShowWindow(shell_hwnd_, SW_SHOW);
-  LOG(INFO) << "[PhiClient] shell window " << window_id_
-            << " shell_hwnd=" << shell_hwnd_ << " browser_hwnd=" << browser_hwnd_;
+  ::ShowWindow(shell_hwnd_, agent_ ? SW_SHOWNOACTIVATE : SW_SHOW);
+  LOG(INFO) << "[PhiClient] " << (agent_ ? "agent " : "") << "shell window "
+            << window_id_ << " shell_hwnd=" << shell_hwnd_
+            << " browser_hwnd=" << browser_hwnd_;
 }
 
 PhiWindowController::~PhiWindowController() {
@@ -1884,7 +1897,9 @@ void PhiWindowController::ClearHover() {
 void PhiWindowController::UpdateHoverCard() {
   std::string chip_id;
   if (hover_kind_ == HoverKind::kChip && hover_index_ >= 0 &&
-      hover_index_ < static_cast<int>(chips_.size())) {
+      hover_index_ < static_cast<int>(chips_.size()) &&
+      // Agent pips carry a taskId, not a Space id — they have no Space card.
+      !chips_[static_cast<size_t>(hover_index_)].is_agent) {
     chip_id = chips_[static_cast<size_t>(hover_index_)].id;
   }
   // Click suppression means "while the cursor stays on the clicked pip":
@@ -2010,6 +2025,34 @@ void PhiWindowController::ResolveHoverCard(const std::string& space_id) {
       card_profile_ = base::UTF8ToWide(*name);
     }
     break;
+  }
+}
+
+void PhiWindowController::SetAgentVisible(bool visible) {
+  if (!agent_ || !shell_hwnd_ || visible == agent_visible_) {
+    return;
+  }
+  agent_visible_ = visible;
+  if (visible) {
+    // Surface centred on the work area so the user can watch the agent live.
+    RECT work = {};
+    RECT wr = {};
+    ::GetWindowRect(shell_hwnd_, &wr);
+    const int w = wr.right - wr.left;
+    const int h = wr.bottom - wr.top;
+    int x = 120, y = 80;
+    if (::SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0)) {
+      x = work.left + std::max<LONG>(0, (work.right - work.left - w) / 2);
+      y = work.top + std::max<LONG>(0, (work.bottom - work.top - h) / 3);
+    }
+    ::SetWindowPos(shell_hwnd_, HWND_TOP, x, y, 0, 0,
+                   SWP_NOSIZE | SWP_SHOWWINDOW);
+    ::SetForegroundWindow(shell_hwnd_);
+  } else {
+    // Park off-screen again — still shown so its content keeps rendering for
+    // the agent's CDP capture, just invisible to the user.
+    ::SetWindowPos(shell_hwnd_, HWND_BOTTOM, -32000, -32000, 0, 0,
+                   SWP_NOSIZE | SWP_NOACTIVATE);
   }
 }
 
@@ -2424,6 +2467,28 @@ void PhiWindowController::RebuildChips() {
                    layout.chips_top + Scaled(kSpaceChip)};
     chips_.push_back(std::move(chip));
     x += Scaled(kSpaceChip + kSpaceChipGap);
+  }
+  // Live agent Spaces trail the user Spaces as robot pips (only in a real
+  // user window — the agent's own hidden window never lists them). Clicking
+  // one surfaces its window so the user can watch the agent work live.
+  if (!agent_ && !layout.horizontal_tabs) {
+    for (const PhiAgentPipView& pip : host_->AgentSpaces()) {
+      if (x + Scaled(kSpaceChip) > layout.chips_limit) {
+        break;
+      }
+      SpaceChip chip;
+      chip.id = pip.task_id;
+      chip.is_agent = true;
+      chip.open = pip.watched;
+      chip.label = pip.caption.empty()
+                       ? L"Agent"
+                       : base::UTF8ToWide(pip.caption);
+      chip.icon = L"\U0001F916";  // 🤖
+      chip.bounds = {x, layout.chips_top, x + Scaled(kSpaceChip),
+                     layout.chips_top + Scaled(kSpaceChip)};
+      chips_.push_back(std::move(chip));
+      x += Scaled(kSpaceChip + kSpaceChipGap);
+    }
   }
 }
 
@@ -3232,6 +3297,15 @@ void PhiWindowController::OnChromeClick(int x, int y) {
   for (const SpaceChip& chip : chips_) {
     if (!::PtInRect(&chip.bounds, pt)) {
       continue;
+    }
+    // An agent pip toggles watching that agent Space (surface / park its
+    // hidden window). It never reorders and has no Space card.
+    if (chip.is_agent) {
+      if (host_) {
+        host_->RequestWatchAgentSpace(chip.id);
+      }
+      RefreshTabs();
+      return;
     }
     // A click means "switch", not "hover": drop the pip's card and keep it
     // down until the pointer leaves this pip — without this the switched-to
@@ -4435,11 +4509,14 @@ void PhiWindowController::PaintChrome(HDC dc,
   // The hairline stands in for the Mac chip's drop shadow — without it the
   // white pill disappears on a white ground.
   for (const SpaceChip& chip : chips_) {
-    if (chip.id != active_space_) {
+    // A watched agent pip wears the selection pill too, so "which agent am I
+    // watching" reads at a glance.
+    if (chip.id != active_space_ && !(chip.is_agent && chip.open)) {
       continue;
     }
     RECT pill = chip.bounds;
-    if (swap_start_ && swap_chip_from_.right > swap_chip_from_.left) {
+    if (!chip.is_agent && swap_start_ &&
+        swap_chip_from_.right > swap_chip_from_.left) {
       const double t = SwapEasedProgress();
       const auto mix = [t](LONG from, LONG to) {
         return from + static_cast<LONG>(std::lround((to - from) * t));
@@ -4452,7 +4529,6 @@ void PhiWindowController::PaintChrome(HDC dc,
     StrokeRounded(dc, pill, kRowSelectedBg,
                   palette.dark ? kActivePillBorder : kBorder,
                   Scaled(kCornerRadius));
-    break;
   }
   for (const SpaceChip& chip : chips_) {
     const bool active = (chip.id == active_space_);
