@@ -9,8 +9,12 @@
 #include <dwrite.h>
 #include <wrl/client.h>
 
+#include <algorithm>
+#include <cmath>
 #include <map>
+#include <vector>
 
+#include "base/compiler_specific.h"
 #include "base/no_destructor.h"
 
 namespace phi_client {
@@ -184,6 +188,115 @@ bool PhiDrawBgra(HDC dc,
     return false;
   }
   return true;
+}
+
+bool PhiBlendBgra(HDC dc,
+                  const RECT& dest,
+                  const unsigned char* bgra,
+                  int width,
+                  int height) {
+  if (!bgra || width <= 0 || height <= 0 || dest.right <= dest.left ||
+      dest.bottom <= dest.top) {
+    return false;
+  }
+  BITMAPINFO info = {};
+  info.bmiHeader.biSize = sizeof(info.bmiHeader);
+  info.bmiHeader.biWidth = width;
+  info.bmiHeader.biHeight = -height;  // Top-down, matching the buffer.
+  info.bmiHeader.biPlanes = 1;
+  info.bmiHeader.biBitCount = 32;
+  info.bmiHeader.biCompression = BI_RGB;
+  void* bits = nullptr;
+  HBITMAP dib =
+      ::CreateDIBSection(nullptr, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
+  if (!dib || !bits) {
+    if (dib) {
+      ::DeleteObject(dib);
+    }
+    return false;
+  }
+  // SAFETY: the DIB section was sized width*height*4 above, and callers
+  // pass a buffer of exactly that size.
+  UNSAFE_BUFFERS(
+      ::memcpy(bits, bgra, static_cast<size_t>(width) * height * 4));
+  HDC src_dc = ::CreateCompatibleDC(dc);
+  HGDIOBJ previous = ::SelectObject(src_dc, dib);
+  const BLENDFUNCTION blend = {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
+  const BOOL ok = ::GdiAlphaBlend(dc, dest.left, dest.top,
+                                  dest.right - dest.left,
+                                  dest.bottom - dest.top, src_dc, 0, 0, width,
+                                  height, blend);
+  ::SelectObject(src_dc, previous);
+  ::DeleteDC(src_dc);
+  ::DeleteObject(dib);
+  return ok != FALSE;
+}
+
+namespace {
+
+// Signed distance from a pixel centre to a pill's boundary (negative
+// inside): distance to the horizontal core segment, minus the cap radius.
+double CapsuleDistance(double px, double py, double w, double h) {
+  const double radius = h / 2.0;
+  const double cx = std::min(std::max(px, radius), w - radius);
+  const double dx = px - cx;
+  const double dy = py - radius;
+  return std::sqrt(dx * dx + dy * dy) - radius;
+}
+
+}  // namespace
+
+bool PhiFillCapsuleAA(HDC dc, const RECT& rect, COLORREF fill) {
+  const int w = rect.right - rect.left;
+  const int h = rect.bottom - rect.top;
+  if (w <= 0 || h <= 0) {
+    return false;
+  }
+  std::vector<unsigned char> bgra(static_cast<size_t>(w) * h * 4);
+  const unsigned r = GetRValue(fill);
+  const unsigned g = GetGValue(fill);
+  const unsigned b = GetBValue(fill);
+  for (int y = 0; y < h; ++y) {
+    for (int x = 0; x < w; ++x) {
+      const double d = CapsuleDistance(x + 0.5, y + 0.5, w, h);
+      const double coverage = std::min(1.0, std::max(0.0, 0.5 - d));
+      const unsigned a = static_cast<unsigned>(coverage * 255.0 + 0.5);
+      const size_t at = (static_cast<size_t>(y) * w + x) * 4;
+      bgra[at] = static_cast<unsigned char>(b * a / 255);
+      bgra[at + 1] = static_cast<unsigned char>(g * a / 255);
+      bgra[at + 2] = static_cast<unsigned char>(r * a / 255);
+      bgra[at + 3] = static_cast<unsigned char>(a);
+    }
+  }
+  return PhiBlendBgra(dc, rect, bgra.data(), w, h);
+}
+
+bool PhiStrokeCapsuleAA(HDC dc, const RECT& rect, COLORREF ink, int width) {
+  const int w = rect.right - rect.left;
+  const int h = rect.bottom - rect.top;
+  if (w <= 0 || h <= 0 || width <= 0) {
+    return false;
+  }
+  std::vector<unsigned char> bgra(static_cast<size_t>(w) * h * 4);
+  const unsigned r = GetRValue(ink);
+  const unsigned g = GetGValue(ink);
+  const unsigned b = GetBValue(ink);
+  const double half = width / 2.0;
+  for (int y = 0; y < h; ++y) {
+    for (int x = 0; x < w; ++x) {
+      // Band of `width` just inside the boundary, feathered half a pixel.
+      const double d = CapsuleDistance(x + 0.5, y + 0.5, w, h) + half;
+      const double coverage =
+          std::min(1.0, std::max(0.0, half + 0.5 - std::abs(d)));
+      const unsigned a = static_cast<unsigned>(coverage * 255.0 + 0.5);
+      const size_t at = (static_cast<size_t>(y) * w + x) * 4;
+      bgra[at] = static_cast<unsigned char>(b * a / 255);
+      bgra[at + 1] = static_cast<unsigned char>(g * a / 255);
+      bgra[at + 2] = static_cast<unsigned char>(r * a / 255);
+      bgra[at + 3] = static_cast<unsigned char>(a);
+    }
+  }
+  return PhiBlendBgra(dc, rect, bgra.data(), w, h);
 }
 
 }  // namespace phi_client

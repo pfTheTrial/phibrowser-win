@@ -314,7 +314,7 @@ class PhiWindowController {
     RECT content{};  // Where the reparented browser child goes.
     // Nav row: the two leading buttons, then the trailing back/forward/reload
     // group — the Mac header's arrangement (SidebarHeaderView).
-    RECT sidebar_toggle{}, search_tabs{};
+    RECT search_tabs{};
     RECT back{}, forward{}, reload{};
     RECT spaces_strip{};   // The band the Space chips live in.
     RECT url_field{};
@@ -407,6 +407,8 @@ class PhiWindowController {
   UINT caption_font_dpi_ = 0;
   // MDL2 at the emoji size, for Space-pip catalog glyphs.
   HFONT chip_icon_font_ = nullptr;
+  // 11pt labels — the bottom bar's Feedback/Chat capsules (the Mac's 11pt).
+  HFONT small_font_ = nullptr;
   UINT dpi_ = 96;
 
   // Caption-band state: which caption button is hot / pressed (an HT* code,
@@ -506,6 +508,33 @@ class PhiWindowController {
   int drag_insert_ = -1;  // Insertion slot 0..n, -1 = none.
   DropBand DropBandAt(POINT client_pt);
 
+  // Drag-reorder animation, Chrome's vertical-tab model
+  // (TabCollectionAnimatingLayoutManager): the dragged row FLOATS with the
+  // cursor while its siblings glide to open the insertion gap — each leg
+  // eases current → target over 200ms, retargeting when the gap moves.
+  std::map<int, double> drag_slide_from_;  // Tab id -> leg start offset px.
+  std::map<int, double> drag_slide_to_;    // Tab id -> leg target offset px.
+  // Pinned cells glide in BOTH axes (a grid gap wraps rows); bookmark rows
+  // glide vertically. Keyed by the stored row's guid.
+  struct SlideVec {
+    double dx = 0.0;
+    double dy = 0.0;
+  };
+  std::map<std::string, SlideVec> row_slide_from_;
+  std::map<std::string, SlideVec> row_slide_to_;
+  ULONGLONG drag_slide_start_ = 0;         // Leg clock; 0 = idle.
+  POINT drag_point_{};                     // Cursor, for the floating row.
+  int drag_grab_dx_ = 0;                   // Cursor offset inside the row.
+  int drag_grab_dy_ = 0;
+  double DragSlideOffset(int tab_id) const;
+  SlideVec RowSlideOffset(const std::string& guid) const;
+  void RetargetDragSlide();  // New targets for the current gap slot.
+  // The pinned grid's placement walk over arbitrary cell widths (1 or 2
+  // slots) — layout uses it for the real cells, the drag preview with a
+  // phantom cell spliced in at the insertion slot.
+  std::vector<RECT> PinnedGridWalk(const std::vector<int>& units,
+                                   const Layout& layout);
+
   // Sidebar edge resize (the Mac's split drag): a 4-DIP grab band in the
   // sidebar's trailing gutter; live while dragging, persisted on release.
   int sidebar_dip_ = kSidebarWidthDefault;
@@ -522,7 +551,10 @@ class PhiWindowController {
   // Hover feedback (the Mac leans on hover: row washes, close affordances).
   // Which chrome element the cursor rests on, as element-kind + position in
   // its vector; repaints fire only when it changes.
-  enum class HoverKind { kNone, kTab, kPin, kBookmark, kGroupHeader, kChip };
+  // kNav: the toolbar's back/forward/reload/search buttons — hover_index_
+  // is 0..3 in that order.
+  enum class HoverKind { kNone, kTab, kPin, kBookmark, kGroupHeader, kChip,
+                         kNav };
   HoverKind hover_kind_ = HoverKind::kNone;
   int hover_index_ = -1;
   void OnChromeMouseMove(POINT client_pt);

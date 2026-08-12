@@ -31,6 +31,22 @@ bool PhiDrawBgra(HDC dc,
                  int width,
                  int height);
 
+// Alpha-blends a PREMULTIPLIED BGRA buffer over whatever the DC already
+// holds — no background read-back, so it survives gradients and curved
+// fills where PhiDrawBgra's flat-colour assumption breaks. GDI blending is
+// unfiltered, so pass a buffer already at `dest`'s pixel size.
+bool PhiBlendBgra(HDC dc,
+                  const RECT& dest,
+                  const unsigned char* bgra,
+                  int width,
+                  int height);
+
+// Anti-aliased capsule (pill: corner radius = half the height) fill and
+// stroke, software-rendered and alpha-blended over the DC — GDI's RoundRect
+// stair-steps at pill radii. The stroke hugs the inside of the boundary.
+bool PhiFillCapsuleAA(HDC dc, const RECT& rect, COLORREF fill);
+bool PhiStrokeCapsuleAA(HDC dc, const RECT& rect, COLORREF ink, int width);
+
 }  // namespace phi_client
 
 #endif  // PHIBROWSER_WIN_CLIENT_PHI_DWRITE_H_
