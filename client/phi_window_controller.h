@@ -96,6 +96,16 @@ class PhiSlotHost {
   // url; as a pinned tab, TWO cross-linked rows with both live panes bound.
   virtual void RequestStoreSplit(int64_t slot, int index_a, int index_b,
                                  bool as_bookmark) = 0;
+  // DRAG conversions — the Mac's moveNormalTab(toPinnd:/toBookmark:): store
+  // tab `index` as a pinned tab or ROOT bookmark at `insert_index` among
+  // its siblings and BIND the live tab to the new row (drag = move; the
+  // menu's bookmark stays an unbound copy).
+  virtual void RequestDropTab(int64_t slot, int index, bool as_bookmark,
+                              int insert_index) = 0;
+  // The split-pair drag: pinned pair or split bookmark at `insert_index`,
+  // live-bound either way (the Mac drag path's bindLiveSplit).
+  virtual void RequestDropSplit(int64_t slot, int index_a, int index_b,
+                                bool as_bookmark, int insert_index) = 0;
   // Removes a stored row (a pinned tab or bookmark) by its guid.
   virtual void RemoveStoredRow(const std::string& guid) = 0;
   // Retitles a stored row — the context menus' Rename….
@@ -483,11 +493,18 @@ class PhiWindowController {
   // through MoveTab / ReorderStoredRow / ReorderSpace. The insertion slot is
   // painted as a 2px accent line while dragging.
   enum class DragKind { kNone, kTab, kPin, kBookmark, kChip };
+  // Where the cursor currently sits during a tab/pin drag — same-band
+  // reorder, a conversion target (the Mac's moveNormalTab toPinnd/
+  // toBookmark), or outside the window entirely (tear-off to a new
+  // window). Chip/bookmark drags stay in their own band.
+  enum class DropBand { kNone, kTabs, kPins, kBookmarks, kOutside };
   DragKind drag_kind_ = DragKind::kNone;
+  DropBand drag_band_ = DropBand::kNone;
   int drag_index_ = -1;   // Position in the element's own vector.
   POINT drag_origin_{};
   bool drag_active_ = false;
   int drag_insert_ = -1;  // Insertion slot 0..n, -1 = none.
+  DropBand DropBandAt(POINT client_pt);
 
   // Sidebar edge resize (the Mac's split drag): a 4-DIP grab band in the
   // sidebar's trailing gutter; live while dragging, persisted on release.

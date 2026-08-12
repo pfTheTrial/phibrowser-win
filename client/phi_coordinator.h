@@ -73,6 +73,10 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   void RequestBookmarkActiveTab(int64_t slot) override;
   void RequestStoreSplit(int64_t slot, int index_a, int index_b,
                          bool as_bookmark) override;
+  void RequestDropTab(int64_t slot, int index, bool as_bookmark,
+                      int insert_index) override;
+  void RequestDropSplit(int64_t slot, int index_a, int index_b,
+                        bool as_bookmark, int insert_index) override;
   void RequestStoreTab(int64_t slot, int index,
                        bool as_bookmark) override;
   void RemoveStoredRow(const std::string& guid) override;
@@ -186,6 +190,14 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   int next_space_id_ = 2;
   // Where the Space list is persisted (user data dir).
   std::wstring spaces_path_;
+  // The shared store-tab/split bodies behind the menu (append, bookmark
+  // unbound) and drag (placed + bound) entry points.
+  void StoreTabInternal(int64_t slot, int index, bool as_bookmark,
+                        int insert_index, bool bind);
+  void StoreSplitInternal(int64_t slot, int index_a, int index_b,
+                          bool as_bookmark, int insert_index,
+                          bool bind_bookmark);
+
   void LoadSpaces();
   void SaveSpaces() const;
   // Publishes the Space list (with each Space's open browser id) into the

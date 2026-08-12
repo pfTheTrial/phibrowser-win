@@ -494,6 +494,22 @@ void PhiCoordinator::RequestOpen(int64_t slot, const std::string& url) {
 
 void PhiCoordinator::RequestStoreTab(int64_t slot, int index,
                                      bool as_bookmark) {
+  // The menu path: pinning MOVES the tab into the cell (the Mac's
+  // togglePin binds); the bookmark item is an unbound copy
+  // (addTabToRootBookmarks).
+  StoreTabInternal(slot, index, as_bookmark, /*insert_index=*/-1,
+                   /*bind=*/!as_bookmark);
+}
+
+void PhiCoordinator::RequestDropTab(int64_t slot, int index, bool as_bookmark,
+                                    int insert_index) {
+  // The drag path always converts — the tab moves into the row it becomes.
+  StoreTabInternal(slot, index, as_bookmark, insert_index, /*bind=*/true);
+}
+
+void PhiCoordinator::StoreTabInternal(int64_t slot, int index,
+                                      bool as_bookmark, int insert_index,
+                                      bool bind) {
   std::string profile_id, space_id;
   if (!framework_ || !OwnerForSlot(slot, &profile_id, &space_id)) {
     return;
@@ -537,6 +553,14 @@ void PhiCoordinator::RequestStoreTab(int64_t slot, int index,
           : tab_store_.AddPinned(profile_id, space_id, title, url, favicon,
                                  favicon_width, favicon_height);
   if (!guid.empty()) {
+    if (insert_index >= 0) {
+      tab_store_.Reorder(guid, insert_index);
+    }
+    if (bind) {
+      // The Mac's updateTabCustomValue: the live tab carries the row's
+      // guid and moves into its cell.
+      framework_->SetTabTag(browser, index, guid.c_str());
+    }
     for (const auto& [s2, controller] : windows_) {
       controller->RefreshTabs();
     }
@@ -545,6 +569,23 @@ void PhiCoordinator::RequestStoreTab(int64_t slot, int index,
 
 void PhiCoordinator::RequestStoreSplit(int64_t slot, int index_a, int index_b,
                                        bool as_bookmark) {
+  // The menu path: a split bookmark is an unbound copy (bindLiveSplit
+  // false); a pinned pair always binds.
+  StoreSplitInternal(slot, index_a, index_b, as_bookmark,
+                     /*insert_index=*/-1, /*bind_bookmark=*/false);
+}
+
+void PhiCoordinator::RequestDropSplit(int64_t slot, int index_a, int index_b,
+                                      bool as_bookmark, int insert_index) {
+  // The drag path binds either way (the Mac's bindLiveSplit: true).
+  StoreSplitInternal(slot, index_a, index_b, as_bookmark, insert_index,
+                     /*bind_bookmark=*/true);
+}
+
+void PhiCoordinator::StoreSplitInternal(int64_t slot, int index_a,
+                                        int index_b, bool as_bookmark,
+                                        int insert_index,
+                                        bool bind_bookmark) {
   std::string profile_id, space_id;
   if (!framework_ || !OwnerForSlot(slot, &profile_id, &space_id)) {
     return;
@@ -592,9 +633,10 @@ void PhiCoordinator::RequestStoreSplit(int64_t slot, int index_a, int index_b,
     return;
   }
   if (as_bookmark) {
-    // The Mac's addSplitBookmarkFromTab (menu path): ONE row keyed on the
-    // primary pane, the second pane riding secondaryUrl/-Title (suppressed
-    // when it duplicates the primary's). No live binding — a copy.
+    // The Mac's addSplitBookmarkFromTab: ONE row keyed on the primary
+    // pane, the second pane riding secondaryUrl/-Title (suppressed when it
+    // duplicates the primary's). The drag path binds the live split to the
+    // row (bindLiveSplit); the menu leaves it an independent copy.
     const std::string guid = tab_store_.AddBookmark(
         profile_id, space_id, std::string(), a.title, a.url,
         /*folder=*/false, a.favicon, a.favicon_width, a.favicon_height);
@@ -602,6 +644,12 @@ void PhiCoordinator::RequestStoreSplit(int64_t slot, int index_a, int index_b,
       tab_store_.SetRowSecondary(guid, b.url,
                                  b.title == a.title ? std::string()
                                                     : b.title);
+      if (insert_index >= 0) {
+        tab_store_.Reorder(guid, insert_index);
+      }
+      if (bind_bookmark) {
+        framework_->SetTabTag(browser, index_a, guid.c_str());
+      }
     }
   } else {
     // The Mac's pinSplit: TWO pinned rows (primary first, so it renders as
@@ -614,6 +662,10 @@ void PhiCoordinator::RequestStoreSplit(int64_t slot, int index_a, int index_b,
                              b.favicon_width, b.favicon_height);
     if (!guid_a.empty() && !guid_b.empty()) {
       tab_store_.LinkSplitPair(guid_a, guid_b);
+      if (insert_index >= 0) {
+        tab_store_.Reorder(guid_a, insert_index);
+        tab_store_.Reorder(guid_b, insert_index + 1);
+      }
       framework_->SetTabTag(browser, index_a, guid_a.c_str());
       framework_->SetTabTag(browser, index_b, guid_b.c_str());
     }

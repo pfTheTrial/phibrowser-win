@@ -1149,6 +1149,32 @@ void PhiWindowController::ArmDrag(DragKind kind, int index, POINT pt) {
   drag_insert_ = -1;
 }
 
+PhiWindowController::DropBand PhiWindowController::DropBandAt(
+    POINT client_pt) {
+  // Outside the shell window entirely = tear-off (the Mac's pure
+  // boundary hit-test — no distance threshold).
+  POINT screen = client_pt;
+  ::ClientToScreen(shell_hwnd_, &screen);
+  RECT window_rect = {};
+  ::GetWindowRect(shell_hwnd_, &window_rect);
+  if (!::PtInRect(&window_rect, screen)) {
+    return DropBand::kOutside;
+  }
+  const Layout layout = ComputeLayout();
+  if (layout.horizontal_tabs) {
+    return DropBand::kTabs;  // The strip has no sidebar bands.
+  }
+  if (::PtInRect(&layout.favorites, client_pt)) {
+    return DropBand::kPins;
+  }
+  if (!bookmarks_.empty() && client_pt.x < layout.sidebar.right &&
+      client_pt.y >= bookmarks_.front().bounds.top &&
+      client_pt.y <= bookmarks_.back().bounds.bottom) {
+    return DropBand::kBookmarks;
+  }
+  return DropBand::kTabs;
+}
+
 void PhiWindowController::UpdateDrag(POINT pt) {
   if (drag_kind_ == DragKind::kNone) {
     return;
@@ -1161,8 +1187,16 @@ void PhiWindowController::UpdateDrag(POINT pt) {
     drag_active_ = true;
     ::SetCapture(shell_hwnd_);
   }
+  // Tab and pin drags can cross bands (conversions, tear-off); the other
+  // kinds stay home.
+  DropBand band = DropBand::kTabs;
+  if (drag_kind_ == DragKind::kTab || drag_kind_ == DragKind::kPin) {
+    band = DropBandAt(pt);
+  }
+  const bool band_changed = band != drag_band_;
+  drag_band_ = band;
   const int slot = DragInsertSlot(pt);
-  if (slot != drag_insert_) {
+  if (slot != drag_insert_ || band_changed) {
     drag_insert_ = slot;
     if (shell_hwnd_) {
       ::InvalidateRect(shell_hwnd_, nullptr, FALSE);
@@ -1172,6 +1206,7 @@ void PhiWindowController::UpdateDrag(POINT pt) {
 
 void PhiWindowController::CommitDrag() {
   const DragKind kind = drag_kind_;
+  const DropBand band = drag_band_;
   const int from_pos = drag_index_;
   const int slot = drag_insert_;
   const bool active = drag_active_;
@@ -1179,6 +1214,65 @@ void PhiWindowController::CommitDrag() {
   if (!active || slot < 0) {
     return;
   }
+
+  // Cross-band drops first — the Mac's drag conversions.
+  if (kind == DragKind::kTab && band != DropBand::kTabs) {
+    if (from_pos < 0 || from_pos >= static_cast<int>(tabs_.size())) {
+      return;
+    }
+    const TabRow& row = tabs_[static_cast<size_t>(from_pos)];
+    const int64_t browser = active_browser_ ? active_browser_ : window_id_;
+    if (band == DropBand::kOutside) {
+      // Tear-off: the tab — or the whole split pair — moves to a fresh
+      // window (the new shell arrives through OnBrowserWindowCreated).
+      if (framework_) {
+        framework_->MoveTabsToNewWindow(browser, row.index, row.b_index);
+      }
+      RefreshTabs();
+    } else if (band == DropBand::kPins && host_) {
+      if (row.b_index >= 0) {
+        host_->RequestDropSplit(window_id_, row.index, row.b_index,
+                                /*as_bookmark=*/false, slot);
+      } else {
+        host_->RequestDropTab(window_id_, row.index, /*as_bookmark=*/false,
+                              slot);
+      }
+    } else if (band == DropBand::kBookmarks && host_) {
+      if (row.b_index >= 0) {
+        host_->RequestDropSplit(window_id_, row.index, row.b_index,
+                                /*as_bookmark=*/true, slot);
+      } else {
+        host_->RequestDropTab(window_id_, row.index, /*as_bookmark=*/true,
+                              slot);
+      }
+    }
+    return;
+  }
+  if (kind == DragKind::kPin && band == DropBand::kTabs) {
+    // The Mac's movePinnedTabOut: the record dissolves and its tab(s)
+    // join the tab list. An unopened record opens first (as a pair for a
+    // split cell); RemoveStoredRow clears the tags, so bound tabs return
+    // to the list as ordinary rows.
+    if (from_pos < 0 || from_pos >= static_cast<int>(pinned_.size()) ||
+        !host_) {
+      return;
+    }
+    const ShortcutRow pin = pinned_[static_cast<size_t>(from_pos)];
+    if (!pin.open && framework_ && !pin.url.empty()) {
+      const int64_t browser = active_browser_ ? active_browser_ : window_id_;
+      const int fresh_a = framework_->NewTab(browser, pin.url.c_str());
+      if (!pin.url_b.empty() && fresh_a >= 0) {
+        const int fresh_b = framework_->NewTab(browser, pin.url_b.c_str());
+        framework_->ActivateTab(browser, fresh_a);
+        if (fresh_b >= 0) {
+          framework_->SplitActiveWith(browser, fresh_b);
+        }
+      }
+    }
+    host_->RemoveStoredRow(pin.guid);
+    return;
+  }
+
   // Insert-before `slot` becomes the final sibling position by removing the
   // dragged element first.
   const int to_pos = slot > from_pos ? slot - 1 : slot;
@@ -1236,6 +1330,7 @@ void PhiWindowController::CommitDrag() {
 void PhiWindowController::CancelDrag() {
   const bool was_active = drag_active_;
   drag_kind_ = DragKind::kNone;
+  drag_band_ = DropBand::kNone;
   drag_index_ = -1;
   drag_active_ = false;
   drag_insert_ = -1;
@@ -1251,8 +1346,40 @@ void PhiWindowController::CancelDrag() {
 
 int PhiWindowController::DragInsertSlot(POINT pt) {
   int slot = 0;
+  // A pinned-grid slot (cell insertion order), shared by pin reorders and
+  // a tab drag hovering the grid (the conversion drop).
+  const auto pinned_slot = [&] {
+    int at = 0;
+    for (const ShortcutRow& pin : pinned_) {
+      if (pt.y > pin.bounds.bottom ||
+          (pt.y >= pin.bounds.top &&
+           pt.x > (pin.bounds.left + pin.bounds.right) / 2)) {
+        ++at;
+      }
+    }
+    return at;
+  };
+  const auto bookmark_slot = [&] {
+    int at = 0;
+    for (const ShortcutRow& bookmark : bookmarks_) {
+      if (pt.y > (bookmark.bounds.top + bookmark.bounds.bottom) / 2) {
+        ++at;
+      }
+    }
+    return at;
+  };
   switch (drag_kind_) {
     case DragKind::kTab: {
+      switch (drag_band_) {
+        case DropBand::kOutside:
+          return 0;  // Tear-off: any non-negative slot commits.
+        case DropBand::kPins:
+          return pinned_slot();
+        case DropBand::kBookmarks:
+          return bookmark_slot();
+        default:
+          break;
+      }
       const Layout layout = ComputeLayout();
       for (const TabRow& row : tabs_) {
         if (row.bounds.right <= row.bounds.left) {
@@ -1267,14 +1394,14 @@ int PhiWindowController::DragInsertSlot(POINT pt) {
       return slot;
     }
     case DragKind::kPin:
-      for (const ShortcutRow& pin : pinned_) {
-        if (pt.y > pin.bounds.bottom ||
-            (pt.y >= pin.bounds.top &&
-             pt.x > (pin.bounds.left + pin.bounds.right) / 2)) {
-          ++slot;
-        }
+      if (drag_band_ == DropBand::kTabs) {
+        return 0;  // Unpin into the list; the position is the list's own.
       }
-      return slot;
+      if (drag_band_ == DropBand::kOutside ||
+          drag_band_ == DropBand::kBookmarks) {
+        return -1;  // Not a pin target; the release is a no-op.
+      }
+      return pinned_slot();
     case DragKind::kBookmark:
       for (const ShortcutRow& bookmark : bookmarks_) {
         if (pt.y > (bookmark.bounds.top + bookmark.bounds.bottom) / 2) {
@@ -1333,10 +1460,26 @@ void PhiWindowController::DrawDragIndicator(HDC dc) {
   const Layout layout = ComputeLayout();
   switch (drag_kind_) {
     case DragKind::kTab:
-      have = pick(tabs_, layout.horizontal_tabs);
+      // The line follows the band under the cursor: the conversion targets
+      // show their own insertion point; outside the window shows nothing.
+      if (drag_band_ == DropBand::kPins) {
+        have = pick(pinned_, /*horizontal_list=*/true);
+      } else if (drag_band_ == DropBand::kBookmarks) {
+        have = pick(bookmarks_, /*horizontal_list=*/false);
+      } else if (drag_band_ == DropBand::kOutside) {
+        have = false;
+      } else {
+        have = pick(tabs_, layout.horizontal_tabs);
+      }
       break;
     case DragKind::kPin:
-      have = pick(pinned_, /*horizontal_list=*/true);
+      if (drag_band_ == DropBand::kTabs ||
+          drag_band_ == DropBand::kOutside ||
+          drag_band_ == DropBand::kBookmarks) {
+        have = false;  // Unpin-out / no-op targets draw no grid line.
+      } else {
+        have = pick(pinned_, /*horizontal_list=*/true);
+      }
       break;
     case DragKind::kBookmark:
       have = pick(bookmarks_, /*horizontal_list=*/false);
