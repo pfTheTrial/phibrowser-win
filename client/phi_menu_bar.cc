@@ -252,7 +252,7 @@ void PhiMenuBar::BuildStatic() {
   Append(view_, kCmdBookmarkBarOnNewTab, L"Show Bookmark Bar on New Tab",
          false);
   Separator(view_);
-  Append(view_, kCmdToggleSidebar, L"Toggle Sidebar\tCtrl+S", false);
+  Append(view_, kCmdToggleSidebar, L"Toggle Sidebar\tCtrl+S");
   Append(view_, kCmdToggleChatbar, L"Toggle Chatbar\tCtrl+Shift+S", false);
   Append(view_, kCmdNewConversation, L"New Conversation\tCtrl+Shift+O",
          false);
@@ -765,6 +765,9 @@ bool PhiMenuBar::OnCommand(UINT id) {
         c->framework_->StopLoading(target);
         c->RefreshTabs();
       }
+      return true;
+    case kCmdToggleSidebar:
+      c->ToggleSidebar();
       return true;
     case kCmdReload:
     case kCmdForceReload:

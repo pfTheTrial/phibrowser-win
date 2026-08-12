@@ -5,7 +5,12 @@
 #include "phibrowser-win/client/phi_window_controller.h"
 
 #include <commctrl.h>
+#include <dwmapi.h>
 #include <windowsx.h>
+
+// dwmapi.h reaches rpcndr.h, which #defines `small` — this file uses it as
+// an identifier.
+#undef small
 
 #include <algorithm>
 #include <cmath>
@@ -108,6 +113,7 @@ constexpr UINT_PTR kHoverCardTimer = 0x516;
 // EASE_IN_OUT) — sibling rows glide to open the insertion gap.
 constexpr int kDragSlideMs = 200;
 constexpr UINT_PTR kDragSlideTimer = 0x518;
+constexpr UINT_PTR kFloatingTickTimer = 0x522;
 
 // Tab groups: the Mac's 32pt TabGroupHeaderView; the group cell sits on an
 // 18% tint of the group color (~46/255).
@@ -484,6 +490,10 @@ PhiWindowController::Layout PhiWindowController::ComputeLayout() {
                                      kSidebarWidthMax));
   }
   const int sidebar = Scaled(sidebar_dip_);
+  // Collapsed: the content card widens to the left margin (which becomes
+  // the floating sidebar's hover trigger). The floating panel paints with
+  // floating_layout_ set, which restores the expanded layout.
+  const bool hide_sidebar = sidebar_collapsed_ && !floating_layout_;
   const int inset = Scaled(kEdgeInset);
   const int btn = Scaled(kNavButton);
   const int m = Scaled(kContentMargin);
@@ -574,12 +584,15 @@ PhiWindowController::Layout PhiWindowController::ComputeLayout() {
     // Navigation and the address bar live in the top bar.
     const int top = tb + Scaled(kNavRowTopNav);
     int r = sidebar - Scaled(kNavRowRightInset);
-    out.search_tabs = {r - btn, top, r, top + btn};
-    place_spaces(0, sidebar, tb + Scaled(kSpacesStripTopNav));
+    if (!hide_sidebar) {
+      out.search_tabs = {r - btn, top, r, top + btn};
+      place_spaces(0, sidebar, tb + Scaled(kSpacesStripTopNav));
+    }
 
     const int gap = tb + Scaled(kContentTopGapTopNav);
-    const int mid = place_top_bar(sidebar, w - m, gap);
-    out.content = {sidebar, gap + Scaled(kTopBarHeight), w - m, h - m};
+    const int bar_left = hide_sidebar ? m : sidebar;
+    const int mid = place_top_bar(bar_left, w - m, gap);
+    out.content = {bar_left, gap + Scaled(kTopBarHeight), w - m, h - m};
     // Chat capsule trailing (balanced shows it in the header, as on Mac).
     const int r2 = w - m - Scaled(kTopBarLeading);
     out.chat = {r2 - Scaled(kChatWidth), mid - Scaled(kPillHeight) / 2, r2,
@@ -600,10 +613,13 @@ PhiWindowController::Layout PhiWindowController::ComputeLayout() {
     out.forward = {r - btn, top, r, top + btn};
     r -= btn + Scaled(kNavGroupSpacing);
     out.back = {r - btn, top, r, top + btn};
-    place_spaces(0, sidebar, tb + Scaled(kSpacesStripTop));
-    out.url_field = {inset, tb + Scaled(kAddressBarTop), sidebar - inset,
-                     tb + Scaled(kAddressBarTop + kAddressBarHeight)};
-    out.content = {sidebar, tb + Scaled(kContentTopGap), w - m, h - m};
+    if (!hide_sidebar) {
+      place_spaces(0, sidebar, tb + Scaled(kSpacesStripTop));
+      out.url_field = {inset, tb + Scaled(kAddressBarTop), sidebar - inset,
+                       tb + Scaled(kAddressBarTop + kAddressBarHeight)};
+    }
+    out.content = {hide_sidebar ? m : sidebar, tb + Scaled(kContentTopGap),
+                   w - m, h - m};
     out.tabs_top = tb + Scaled(kHeaderHeight + kHeaderSpacer);
   }
 
@@ -648,6 +664,17 @@ PhiWindowController::Layout PhiWindowController::ComputeLayout() {
 
   out.tabs_left = inset;
   out.tabs_limit = out.bottom_bar.top - Scaled(kFavoritesSpacer);
+  if (hide_sidebar) {
+    const RECT zero = {};
+    out.favorites = zero;
+    out.new_tab_row = zero;
+    out.bottom_bar = zero;
+    out.downloads = zero;
+    out.memory = zero;
+    out.feedback = zero;
+    out.chat = zero;
+    out.tabs_limit = out.tabs_top;  // No tab rows either.
+  }
   return out;
 }
 
@@ -1088,6 +1115,18 @@ void PhiWindowController::PaintCornerCap(HWND cap, HDC dc) {
   ::DeleteObject(pen);
 }
 
+void PhiWindowController::ToggleSidebar() {
+  if (ComputeLayout().horizontal_tabs) {
+    return;  // Comfortable has no sidebar to collapse.
+  }
+  sidebar_collapsed_ = !sidebar_collapsed_;
+  HideFloatingSidebar(/*animated=*/false);
+  LayoutContents();
+  if (shell_hwnd_) {
+    ::InvalidateRect(shell_hwnd_, nullptr, FALSE);
+  }
+}
+
 void PhiWindowController::LayoutContents() {
   if (!shell_hwnd_) {
     return;
@@ -1095,6 +1134,11 @@ void PhiWindowController::LayoutContents() {
   rows_dirty_ = true;  // Row bounds derive from the client size.
   const Layout layout = ComputeLayout();
   PositionUrlField(layout);
+  if (url_field_) {
+    const bool field_hidden = sidebar_collapsed_ &&
+                              layout.mode == PhiLayoutMode::kPerformance;
+    ::ShowWindow(url_field_, field_hidden ? SW_HIDE : SW_SHOW);
+  }
   if (browser_hwnd_ && ::IsWindow(browser_hwnd_)) {
     const int w = layout.content.right - layout.content.left;
     const int h = layout.content.bottom - layout.content.top;
@@ -3904,6 +3948,242 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
   }
 }
 
+// --- The floating sidebar -------------------------------------------------
+// The Mac panel (WebContentContainerViewController+FloatingSidebar): with
+// the sidebar collapsed, hovering the window's left margin slides in a
+// popup showing the real sidebar. It renders by running PaintChrome
+// against the EXPANDED layout (floating_layout_) into a back buffer and
+// blitting the sidebar band; its mouse events forward through the normal
+// handlers with the band's y offset, so chips, tabs, pins, bookmarks and
+// menus all behave as in the docked sidebar.
+
+void PhiWindowController::ShowFloatingSidebar() {
+  if (floating_sidebar_ || !sidebar_collapsed_ || !shell_hwnd_) {
+    return;
+  }
+  floating_layout_ = true;
+  const Layout layout = ComputeLayout();
+  floating_layout_ = false;
+  if (layout.horizontal_tabs) {
+    return;
+  }
+  // The Mac's 5pt inset from the window edges; the panel band starts below
+  // the caption so the menu row never appears inside it.
+  const int panel_inset = Scaled(5);
+  floating_offset_y_ = layout.title_bar.bottom + panel_inset;
+  const int panel_w = Scaled(sidebar_dip_);
+  const int panel_h = layout.client.bottom - floating_offset_y_ - panel_inset;
+  if (panel_h <= 0 || panel_w <= 0) {
+    return;
+  }
+  static bool registered = false;
+  if (!registered) {
+    registered = true;
+    WNDCLASSW cls = {};
+    cls.lpfnWndProc = &PhiWindowController::FloatingSidebarProc;
+    cls.hInstance = ::GetModuleHandleW(nullptr);
+    cls.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
+    cls.lpszClassName = L"PhiFloatingSidebar";
+    ::RegisterClassW(&cls);
+  }
+  POINT origin = {0, 0};
+  ::ClientToScreen(shell_hwnd_, &origin);
+  floating_sidebar_ = ::CreateWindowExW(
+      WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, L"PhiFloatingSidebar", L"",
+      WS_POPUP, origin.x + panel_inset, origin.y + floating_offset_y_,
+      panel_w, panel_h, shell_hwnd_, nullptr, ::GetModuleHandleW(nullptr),
+      nullptr);
+  if (!floating_sidebar_) {
+    return;
+  }
+  ::SetWindowLongPtrW(floating_sidebar_, GWLP_USERDATA,
+                      reinterpret_cast<LONG_PTR>(this));
+  const DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_ROUND;
+  ::DwmSetWindowAttribute(floating_sidebar_, DWMWA_WINDOW_CORNER_PREFERENCE,
+                          &corner, sizeof(corner));
+  // The Mac's 0.15s ease-out slide-in.
+  ::AnimateWindow(floating_sidebar_, 140, AW_SLIDE | AW_HOR_POSITIVE);
+  ::SetTimer(floating_sidebar_, kFloatingTickTimer, 100, nullptr);
+  floating_shown_tick_ = ::GetTickCount64();
+  floating_outside_tick_ = 0;
+}
+
+void PhiWindowController::HideFloatingSidebar(bool animated) {
+  if (!floating_sidebar_) {
+    return;
+  }
+  HWND panel = floating_sidebar_;
+  floating_sidebar_ = nullptr;
+  ::KillTimer(panel, kFloatingTickTimer);
+  if (animated) {
+    ::AnimateWindow(panel, 140, AW_SLIDE | AW_HOR_NEGATIVE | AW_HIDE);
+  }
+  ::DestroyWindow(panel);
+}
+
+void PhiWindowController::FloatingSidebarTick() {
+  if (!floating_sidebar_) {
+    return;
+  }
+  // Hover states, hover cards and tab changes land on the next tick.
+  ::InvalidateRect(floating_sidebar_, nullptr, FALSE);
+  POINT cursor = {};
+  ::GetCursorPos(&cursor);
+  RECT panel_rc = {};
+  ::GetWindowRect(floating_sidebar_, &panel_rc);
+  bool inside = ::PtInRect(&panel_rc, cursor) != FALSE;
+  if (!inside && shell_hwnd_) {
+    // The trigger strip pins it open, like the Mac's trigger tracking.
+    POINT origin = {0, 0};
+    ::ClientToScreen(shell_hwnd_, &origin);
+    const Layout layout = ComputeLayout();
+    RECT strip = {origin.x, origin.y + layout.title_bar.bottom,
+                  origin.x + layout.content.left,
+                  origin.y + layout.client.bottom};
+    inside = ::PtInRect(&strip, cursor) != FALSE;
+  }
+  const ULONGLONG now = ::GetTickCount64();
+  if (inside) {
+    floating_outside_tick_ = 0;
+    return;
+  }
+  if (!floating_outside_tick_) {
+    floating_outside_tick_ = now;
+    return;
+  }
+  // The Mac's 0.12s leave delay and 0.5s minimum visible time.
+  if (now - floating_outside_tick_ >= 120 &&
+      now - floating_shown_tick_ >= 500) {
+    HideFloatingSidebar(/*animated=*/true);
+  }
+}
+
+void PhiWindowController::PaintFloatingSidebar(HDC dc) {
+  if (!floating_sidebar_) {
+    return;
+  }
+  RECT panel_rc = {};
+  ::GetClientRect(floating_sidebar_, &panel_rc);
+  floating_layout_ = true;
+  RebuildTabs();
+  const Layout layout = ComputeLayout();
+  HDC mem = ::CreateCompatibleDC(dc);
+  HBITMAP bitmap = ::CreateCompatibleBitmap(dc, layout.client.right,
+                                            layout.client.bottom);
+  HGDIOBJ old = ::SelectObject(mem, bitmap);
+  // include_child_controls: the panel has no live EDIT child, so the
+  // address text is painted by hand (the capture path's contract).
+  PaintChrome(mem, layout, /*include_child_controls=*/true);
+  ::BitBlt(dc, 0, 0, panel_rc.right, panel_rc.bottom, mem, 0,
+           floating_offset_y_, SRCCOPY);
+  ::SelectObject(mem, old);
+  ::DeleteObject(bitmap);
+  ::DeleteDC(mem);
+  floating_layout_ = false;
+  rows_dirty_ = true;  // The shell's next paint recomputes collapsed bounds.
+  // The panel's edge hairline (the Mac panel's 1pt border).
+  HPEN pen = ::CreatePen(PS_SOLID, 1, CurrentPalette().border);
+  HGDIOBJ old_pen = ::SelectObject(dc, pen);
+  HGDIOBJ old_brush = ::SelectObject(dc, ::GetStockObject(NULL_BRUSH));
+  ::Rectangle(dc, panel_rc.left, panel_rc.top, panel_rc.right,
+              panel_rc.bottom);
+  ::SelectObject(dc, old_brush);
+  ::SelectObject(dc, old_pen);
+  ::DeleteObject(pen);
+}
+
+// static
+LRESULT CALLBACK PhiWindowController::FloatingSidebarProc(HWND hwnd,
+                                                          UINT msg,
+                                                          WPARAM wparam,
+                                                          LPARAM lparam) {
+  auto* self = reinterpret_cast<PhiWindowController*>(
+      ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+  // Events forward through the docked sidebar's handlers under the
+  // expanded-layout override, shifted by the panel's band offset.
+  const auto forward = [&](auto&& call) {
+    self->floating_layout_ = true;
+    self->RebuildTabs();
+    call();
+    self->floating_layout_ = false;
+    self->rows_dirty_ = true;
+    ::InvalidateRect(hwnd, nullptr, FALSE);
+  };
+  switch (msg) {
+    case WM_MOUSEACTIVATE:
+      return MA_NOACTIVATE;  // Focus stays with the page.
+    case WM_PAINT: {
+      PAINTSTRUCT ps = {};
+      HDC dc = ::BeginPaint(hwnd, &ps);
+      if (self) {
+        self->PaintFloatingSidebar(dc);
+      }
+      ::EndPaint(hwnd, &ps);
+      return 0;
+    }
+    case WM_PRINTCLIENT:  // AnimateWindow renders the slide through this.
+      if (self) {
+        self->PaintFloatingSidebar(reinterpret_cast<HDC>(wparam));
+      }
+      return 0;
+    case WM_MOUSEMOVE:
+      if (self) {
+        forward([&] {
+          POINT pt = {GET_X_LPARAM(lparam),
+                      GET_Y_LPARAM(lparam) + self->floating_offset_y_};
+          self->OnChromeMouseMove(pt);
+        });
+        return 0;
+      }
+      break;
+    case WM_LBUTTONDOWN:
+      if (self) {
+        forward([&] {
+          self->OnChromeClick(GET_X_LPARAM(lparam),
+                              GET_Y_LPARAM(lparam) +
+                                  self->floating_offset_y_);
+          self->CancelDrag();  // Drags never start from the panel.
+        });
+        return 0;
+      }
+      break;
+    case WM_RBUTTONUP:
+      if (self) {
+        forward([&] {
+          self->OnChromeContextMenu(GET_X_LPARAM(lparam),
+                                    GET_Y_LPARAM(lparam) +
+                                        self->floating_offset_y_);
+        });
+        return 0;
+      }
+      break;
+    case WM_MOUSEWHEEL:
+      if (self) {
+        forward([&] {
+          POINT pt = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+          ::ScreenToClient(hwnd, &pt);
+          pt.y += self->floating_offset_y_;
+          self->OnSidebarWheel(pt, GET_WHEEL_DELTA_WPARAM(wparam));
+        });
+        return 0;
+      }
+      break;
+    case WM_TIMER:
+      if (self && wparam == kFloatingTickTimer) {
+        self->FloatingSidebarTick();
+        return 0;
+      }
+      break;
+    case WM_DESTROY:
+      ::KillTimer(hwnd, kFloatingTickTimer);
+      if (self && self->floating_sidebar_ == hwnd) {
+        self->floating_sidebar_ = nullptr;
+      }
+      return 0;
+  }
+  return ::DefWindowProcW(hwnd, msg, wparam, lparam);
+}
+
 void PhiWindowController::PaintChrome(HDC dc,
                                      const Layout& layout,
                                      bool include_child_controls) {
@@ -5163,6 +5443,20 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
                                     wparam == HTCLOSE
                                 ? static_cast<int>(wparam)
                                 : 0);
+        // The collapsed sidebar's hover trigger includes the left RESIZE
+        // band — the outer frame pixels are non-client, so slamming the
+        // cursor to the window edge (the Mac gesture) arrives here, not as
+        // WM_MOUSEMOVE.
+        if (self->sidebar_collapsed_ && !self->floating_sidebar_ &&
+            wparam == HTLEFT) {
+          POINT pt = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+          ::ScreenToClient(hwnd, &pt);
+          const Layout collapsed = self->ComputeLayout();
+          if (!collapsed.horizontal_tabs &&
+              pt.y > collapsed.title_bar.bottom) {
+            self->ShowFloatingSidebar();
+          }
+        }
         // One leave notification when the mouse exits the frame entirely.
         TRACKMOUSEEVENT track = {sizeof(track), TME_LEAVE | TME_NONCLIENT,
                                  hwnd, 0};
@@ -5179,6 +5473,14 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
       if (self) {
         self->SetCaptionHot(0);  // Client moves mean we left the buttons.
         POINT pt = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+        if (self->sidebar_collapsed_ && !self->floating_sidebar_) {
+          const Layout collapsed = self->ComputeLayout();
+          if (!collapsed.horizontal_tabs &&
+              pt.x < collapsed.content.left &&
+              pt.y > collapsed.title_bar.bottom) {
+            self->ShowFloatingSidebar();
+          }
+        }
         int hot = -1;
         const RECT band = self->ComputeLayout().title_bar;
         if (::PtInRect(&band, pt)) {

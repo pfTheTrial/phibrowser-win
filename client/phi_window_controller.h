@@ -358,6 +358,10 @@ class PhiWindowController {
   // menu (activate / rename / change icon / set theme / delete); elsewhere it
   // does nothing, as on Mac.
   void OnChromeContextMenu(int x, int y);
+  // Collapses/restores the sidebar (View > Toggle Sidebar, Ctrl+S). The
+  // content card widens to the left margin; the margin becomes the hover
+  // trigger for the floating sidebar. No-op in the comfortable layout.
+  void ToggleSidebar();
   // Re-reads navigation state (url/title/canGoBack/…) for the toolbar.
   void RebuildNavState();
 
@@ -702,6 +706,26 @@ class PhiWindowController {
   std::vector<SpaceChip> chips_;
   RECT add_space_button_{};
   PhiLayoutMode layout_mode_ = PhiLayoutMode::kPerformance;
+
+  // The Mac floating sidebar (WebContentContainerViewController+
+  // FloatingSidebar): with the sidebar collapsed, hovering the left margin
+  // slides in a popup panel showing the REAL sidebar — PaintChrome runs
+  // against the expanded layout (floating_layout_ override) and the panel
+  // forwards its mouse events through the normal handlers with a y offset.
+  bool sidebar_collapsed_ = false;
+  bool floating_layout_ = false;
+  HWND floating_sidebar_ = nullptr;
+  int floating_offset_y_ = 0;
+  ULONGLONG floating_shown_tick_ = 0;
+  ULONGLONG floating_outside_tick_ = 0;
+  void ShowFloatingSidebar();
+  void HideFloatingSidebar(bool animated);
+  void FloatingSidebarTick();
+  void PaintFloatingSidebar(HDC dc);
+  static LRESULT CALLBACK FloatingSidebarProc(HWND hwnd,
+                                              UINT msg,
+                                              WPARAM wparam,
+                                              LPARAM lparam);
 };
 
 }  // namespace phi_client
