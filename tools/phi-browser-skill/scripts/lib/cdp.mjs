@@ -512,6 +512,20 @@ export class CdpClient {
 
   /** Sends a command. `sessionId` targets a flat-mode attached session. */
   send(method, params = {}, sessionId = undefined, timeoutMs = 40000) {
+    // The PhiAgentSpace CDP domain lives in the Mac fork's DevTools server;
+    // the Windows relay is a transparent byte pipe that would forward these
+    // to Chromium (which has never heard of them). Answer them over the
+    // direct /phi-agent channel instead — same result shape, so callers
+    // cannot tell which client they run against.
+    if (this.phi && method.startsWith('PhiAgentSpace.')) {
+      const verb = 'agentSpace.' + method.slice('PhiAgentSpace.'.length)
+      return this.phi.send(verb, params, timeoutMs).then((reply) => {
+        if (reply && reply.ok === false) {
+          throw new Error(`${method}: ${reply.error || 'failed'}`)
+        }
+        return reply
+      })
+    }
     const id = this.nextId++
     const payload = { id, method, params }
     if (sessionId) payload.sessionId = sessionId

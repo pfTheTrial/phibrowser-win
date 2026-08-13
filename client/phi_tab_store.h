@@ -127,6 +127,17 @@ class PhiTabStore {
   int RemoveForSpace(const std::string& space_id);
   // Moves a row within its siblings.
   bool Reorder(const std::string& guid, int new_index);
+  // The row with `guid`, or null. The pointer holds only until the next
+  // mutation on this store.
+  const PhiRow* Find(const std::string& guid) const;
+  // Rewrites a row's url (pinned tabs and bookmarks; folders refuse).
+  bool SetRowUrl(const std::string& guid, const std::string& url);
+  // Reparents a bookmark row under `new_parent` (empty = the owner's root)
+  // at `new_index` (negative appends). The parent must be a folder with the
+  // same owner; moving a folder into itself or a descendant is refused.
+  bool Move(const std::string& guid,
+            const std::string& new_parent,
+            int new_index);
 
   const std::vector<PhiRow>& rows() const { return rows_; }
 

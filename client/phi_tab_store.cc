@@ -7,6 +7,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <limits>
 #include <map>
 
 #include "base/json/json_reader.h"
@@ -489,6 +490,73 @@ bool PhiTabStore::Reorder(const std::string& guid, int new_index) {
   }
   Save();
   return true;
+}
+
+const PhiRow* PhiTabStore::Find(const std::string& guid) const {
+  for (const PhiRow& row : rows_) {
+    if (row.guid == guid) {
+      return &row;
+    }
+  }
+  return nullptr;
+}
+
+bool PhiTabStore::SetRowUrl(const std::string& guid, const std::string& url) {
+  for (PhiRow& row : rows_) {
+    if (row.guid != guid) {
+      continue;
+    }
+    if (row.type == PhiRowType::kBookmarkFolder || url.empty()) {
+      return false;
+    }
+    row.url = url;
+    // The stored favicon belonged to the old site; drop it rather than show
+    // the wrong icon next to the new url.
+    row.favicon_base64.clear();
+    row.favicon_width = 0;
+    row.favicon_height = 0;
+    Save();
+    return true;
+  }
+  return false;
+}
+
+bool PhiTabStore::Move(const std::string& guid,
+                       const std::string& new_parent,
+                       int new_index) {
+  PhiRow* target = nullptr;
+  for (PhiRow& row : rows_) {
+    if (row.guid == guid) {
+      target = &row;
+      break;
+    }
+  }
+  if (!target || (target->type != PhiRowType::kBookmark &&
+                  target->type != PhiRowType::kBookmarkFolder)) {
+    return false;
+  }
+  if (!new_parent.empty()) {
+    const PhiRow* parent = Find(new_parent);
+    if (!parent || parent->type != PhiRowType::kBookmarkFolder ||
+        parent->profile_id != target->profile_id ||
+        parent->space_id != target->space_id) {
+      return false;
+    }
+    // A folder must not become its own ancestor — walk up from the new
+    // parent and refuse when the chain passes through the moving row.
+    for (const PhiRow* p = parent; p;
+         p = p->parent_guid.empty() ? nullptr : Find(p->parent_guid)) {
+      if (p->guid == guid) {
+        return false;
+      }
+    }
+  }
+  target->parent_guid = new_parent;
+  // Reorder does the real placement: it clamps, renumbers the new sibling
+  // list densely, and saves. INT_MAX (or a negative index) means append.
+  target->index = std::numeric_limits<int>::max();
+  return Reorder(guid,
+                 new_index >= 0 ? new_index : std::numeric_limits<int>::max());
 }
 
 bool PhiTabStore::SetPinScope(PhiPinScope scope) {

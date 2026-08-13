@@ -228,12 +228,14 @@ void PhiCoordinator::LoadSpaces() {
     if (!id || id->empty()) {
       continue;
     }
+    const std::string* color = d.FindString("colorHex");
     loaded.push_back({*id, name ? *name : ("Space " + *id),
                       profile && !profile->empty() ? *profile : "Default",
                       icon && PhiIconIsValid(*icon) ? *icon
                                                     : kPhiDefaultSpaceIcon,
                       theme ? *theme : std::string(),
-                      d.FindInt("saturation").value_or(-1)});
+                      d.FindInt("saturation").value_or(-1),
+                      color ? *color : std::string()});
     max_numeric_id = std::max(max_numeric_id, atoi(id->c_str()));
   }
   if (!loaded.empty()) {
@@ -253,6 +255,7 @@ void PhiCoordinator::SaveSpaces() const {
     d.Set("icon", space.icon);
     d.Set("themeId", space.theme_id);
     d.Set("saturation", space.saturation);
+    d.Set("colorHex", space.color_hex);
     list.Append(std::move(d));
   }
   base::DictValue root;
@@ -310,6 +313,12 @@ void PhiCoordinator::PushRoutingTable() const {
   base::ListValue rules;
   int sort_order = 0;
   for (const UrlRule& rule : url_rules_) {
+    // Incognito rules are stored and listed but stay OUT of the live router
+    // until the client grows Incognito Spaces — a match would cancel the
+    // navigation with nowhere to send it.
+    if (rule.space_id == "space.incognito") {
+      continue;
+    }
     base::DictValue d;
     d.Set("spaceId", rule.space_id);
     d.Set("host", rule.host);
@@ -1228,6 +1237,7 @@ bool PhiCoordinator::DeleteSpace(const std::string& space_id) {
   tab_store_.RemoveForSpace(space_id);
   std::erase_if(url_rules_,
                 [&](const UrlRule& r) { return r.space_id == space_id; });
+  ++url_rules_generation_;  // Wire rule ids regenerate on every write.
   SaveUrlRules();
   spaces_.erase(it);
   SaveSpaces();
@@ -1258,6 +1268,24 @@ bool PhiCoordinator::DeleteProfileById(const std::string& profile_id) {
 bool PhiCoordinator::RenameProfileById(const std::string& profile_id,
                                        const std::string& name) {
   if (profile_id.empty() || name.empty() || !framework_) {
+    return false;
+  }
+  // Refuse an id the framework does not know — the rename callback is
+  // fire-and-forget, so the check has to happen here.
+  std::optional<base::Value> profiles = base::JSONReader::Read(
+      framework_->ListProfilesJson(), base::JSON_PARSE_RFC);
+  bool known = false;
+  if (profiles && profiles->is_list()) {
+    for (const base::Value& v : profiles->GetList()) {
+      const base::DictValue* d = v.GetIfDict();
+      const std::string* id = d ? d->FindString("id") : nullptr;
+      if (id && *id == profile_id) {
+        known = true;
+        break;
+      }
+    }
+  }
+  if (!known) {
     return false;
   }
   framework_->RenameProfile(profile_id.c_str(), name.c_str());
@@ -1399,6 +1427,7 @@ void PhiCoordinator::AddURLRule(const std::string& space_id,
     return;
   }
   url_rules_.push_back({space_id, host, path_prefix, ask});
+  ++url_rules_generation_;  // Wire rule ids regenerate on every write.
   SaveUrlRules();
   PushRoutingTable();
 }
@@ -1412,6 +1441,7 @@ void PhiCoordinator::SetURLRulePattern(int index,
   }
   url_rules_[static_cast<size_t>(index)].host = host;
   url_rules_[static_cast<size_t>(index)].path_prefix = path_prefix;
+  ++url_rules_generation_;  // Wire rule ids regenerate on every write.
   SaveUrlRules();
   PushRoutingTable();
 }
@@ -1425,6 +1455,7 @@ void PhiCoordinator::SetURLRuleTarget(int index,
   }
   url_rules_[static_cast<size_t>(index)].space_id = space_id;
   url_rules_[static_cast<size_t>(index)].ask = ask;
+  ++url_rules_generation_;  // Wire rule ids regenerate on every write.
   SaveUrlRules();
   PushRoutingTable();
 }
@@ -1434,6 +1465,7 @@ void PhiCoordinator::RemoveURLRule(int index) {
     return;
   }
   url_rules_.erase(url_rules_.begin() + index);
+  ++url_rules_generation_;  // Wire rule ids regenerate on every write.
   SaveUrlRules();
   PushRoutingTable();
 }
@@ -1817,6 +1849,15 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
       base::JSONWriter::Write(out, &s);
       return s;
     }
+    // The Mac skill's dialect (tabGroups/splitView/downloads/pinnedTabs/
+    // bookmark-tree/spaces.* forms). Claims name-colliding verbs only for
+    // skill-shaped payloads, so the client-UI handlers below still serve
+    // their own callers.
+    if (HandleSkillDialectVerb(type, payload ? &*payload : nullptr, &out)) {
+      std::string s;
+      base::JSONWriter::Write(out, &s);
+      return s;
+    }
   }
   if (type == "agentSpace.ping") {
     out.Set("ok", true);
@@ -1889,7 +1930,7 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
       s.Set("profileId", space.profile_id);
       s.Set("icon", space.icon);
       s.Set("iconName", space.icon);
-      s.Set("colorHex", "");
+      s.Set("colorHex", space.color_hex);
       s.Set("themeId", space.theme_id);
       s.Set("iconText", PhiIconDisplayText(space.icon));
       s.Set("sortOrder", sort_order++);
@@ -1906,7 +1947,8 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
   } else if (type == "agentSpace.spaces.create") {
     std::optional<base::DictValue> p =
         base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
-    std::string name, profile_id;
+    std::string name, profile_id, color_hex, icon_name;
+    bool activate = false;
     if (p) {
       if (const std::string* n = p->FindString("name")) {
         name = *n;
@@ -1914,6 +1956,13 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
       if (const std::string* pid = p->FindString("profileId")) {
         profile_id = *pid;
       }
+      if (const std::string* c = p->FindString("colorHex")) {
+        color_hex = *c;
+      }
+      if (const std::string* i = p->FindString("iconName")) {
+        icon_name = *i;
+      }
+      activate = p->FindBool("activate").value_or(false);
     }
     const std::string id = std::to_string(next_space_id_++);
     if (name.empty()) {
@@ -1922,14 +1971,28 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
     if (profile_id.empty()) {
       profile_id = "Default";  // A Space always binds exactly one profile.
     }
-    // A new Space draws a random catalog icon, as the Mac's create panel does.
+    // A named icon when the skill gave a valid one; a random catalog draw
+    // otherwise, as the Mac's create panel does.
     const auto& catalog = PhiIconCatalogAll();
     const std::string icon =
-        "phi:" +
-        std::string(catalog[base::RandGenerator(catalog.size())].id);
-    spaces_.push_back({id, name, profile_id, icon});
+        PhiIconIsValid(icon_name)
+            ? icon_name
+            : "phi:" +
+                  std::string(catalog[base::RandGenerator(catalog.size())].id);
+    Space space{id, name, profile_id, icon};
+    space.color_hex = color_hex;
+    spaces_.push_back(std::move(space));
     SaveSpaces();
+    if (activate) {
+      // Surface it in the user's focused window — explicit opt-in only (the
+      // skill's default create never yanks the user's window).
+      PhiWindowController* focused = FocusedUserController();
+      bool pending = false, cold = false;
+      SwitchSlotToSpace(focused ? focused->window_id() : 0, id, &pending,
+                        &cold);
+    }
     out.Set("id", id);
+    out.Set("spaceId", id);
     out.Set("name", name);
     out.Set("profileId", profile_id);
     out.Set("ok", true);
@@ -1944,30 +2007,10 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
         space_id = *s;
       }
     }
-    auto it = windows_.find(slot);
-    auto space_it = std::find_if(spaces_.begin(), spaces_.end(),
-                                 [&](const Space& s) { return s.id == space_id; });
-    bool ok = false;
-    if (it != windows_.end() && space_it != spaces_.end()) {
-      if (it->second->HasSpace(space_id)) {
-        ok = it->second->ShowSpace(space_id);
-        if (ok) {
-          PushSpaceMenu();  // The visible-Space routing map changed.
-        }
-      } else if (framework_) {
-        // First visit: create this Space's browser IN ITS PROFILE and attach
-        // it to the slot. A cold profile loads asynchronously, so the pending
-        // attach stays armed until OnBrowserWindowCreated consumes it.
-        pending_slot_ = slot;
-        pending_space_ = space_id;
-        ok = framework_->CreateSpaceBrowserInProfile(
-            space_it->profile_id.c_str());
-        if (it->second->HasSpace(space_id)) {
-          out.Set("pending", false);
-        } else {
-          out.Set("pending", true);  // Attaching when the browser arrives.
-        }
-      }
+    bool pending = false, cold = false;
+    const bool ok = SwitchSlotToSpace(slot, space_id, &pending, &cold);
+    if (cold) {
+      out.Set("pending", pending);  // Attaching when the browser arrives.
     }
     out.Set("ok", ok);
   } else if (type == "agentSpace.spaces.rename" ||
@@ -1993,11 +2036,17 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
         base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
     std::string id, name;
     if (p) {
+      // Both key spellings: the box probes' {id,name} and the Mac skill's
+      // {profileId,displayName}.
       if (const std::string* i = p->FindString("id")) {
         id = *i;
+      } else if (const std::string* i2 = p->FindString("profileId")) {
+        id = *i2;
       }
       if (const std::string* n = p->FindString("name")) {
         name = *n;
+      } else if (const std::string* n2 = p->FindString("displayName")) {
+        name = *n2;
       }
     }
     const bool ok = type == "agentSpace.profiles.rename"
@@ -2023,12 +2072,32 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
     if (p) {
       if (const std::string* n = p->FindString("name")) {
         name = *n;
+      } else if (const std::string* n2 = p->FindString("displayName")) {
+        name = *n2;  // The Mac skill's key spelling.
       }
     }
-    if (framework_ && !name.empty()) {
+    bool ok = framework_ && !name.empty();
+    if (ok) {
+      // Creation is fire-and-forget in the framework, so the duplicate
+      // display-name refusal has to happen here.
+      std::optional<base::Value> profiles = base::JSONReader::Read(
+          framework_->ListProfilesJson(), base::JSON_PARSE_RFC);
+      if (profiles && profiles->is_list()) {
+        for (const base::Value& v : profiles->GetList()) {
+          const base::DictValue* d = v.GetIfDict();
+          const std::string* existing = d ? d->FindString("name") : nullptr;
+          if (existing && *existing == name) {
+            ok = false;
+            out.Set("error", "duplicate_name");
+            break;
+          }
+        }
+      }
+    }
+    if (ok) {
       framework_->CreateProfile(name.c_str());
     }
-    out.Set("ok", framework_ && !name.empty());
+    out.Set("ok", ok);
   } else if (type == "agentSpace.window.profile") {
     std::optional<base::DictValue> p =
         base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
@@ -2290,8 +2359,12 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
     }
     // Route through RemoveStoredRow: it also clears the identity tag from
     // any tab bound to the row (verb and UI paths must behave alike).
-    const bool ok = !guid.empty() && tab_store_.Contains(guid);
+    const PhiRow* row = tab_store_.Find(guid);
+    const bool ok = !guid.empty() && row != nullptr;
     if (ok) {
+      // The owner rides the response so the skill can settle against the
+      // right Space's list after the row is gone.
+      out.Set("spaceId", row->space_id);
       RemoveStoredRow(guid);
     }
     out.Set("ok", ok);
@@ -3265,10 +3338,14 @@ bool PhiCoordinator::HandleAgentSpaceVerb(const std::string& type,
   }
 
   // --- URL routing rules (the skill's listUrlRules/addUrlRule/...) ---------
-  // Rule "id" is the index as a string — stable only until the next rule
-  // write, matching the Mac contract.
+  // Rule "id" is "g<generation>-<index>" — the generation bumps on every
+  // rule write, so ids REGENERATE across writes (the Mac contract; callers
+  // must re-list before update/delete).
   auto space_exists = [&](const std::string& id) {
-    return std::any_of(spaces_.begin(), spaces_.end(),
+    // 'space.incognito' is the routing wire's Incognito target — always a
+    // legal rule target even though it is not a listed Space.
+    return id == "space.incognito" ||
+           std::any_of(spaces_.begin(), spaces_.end(),
                        [&](const Space& s) { return s.id == id; });
   };
   if (type == "agentSpace.urlRules.list") {
@@ -3277,7 +3354,8 @@ bool PhiCoordinator::HandleAgentSpaceVerb(const std::string& type,
     for (size_t i = 0; i < rows.size(); ++i) {
       const std::vector<std::string> parts = SplitTabRow(rows[i]);
       base::DictValue d;
-      d.Set("id", base::NumberToString(i));
+      d.Set("id", "g" + base::NumberToString(url_rules_generation_) + "-" +
+                      base::NumberToString(i));
       d.Set("spaceId", parts.size() > 0 ? parts[0] : "");
       d.Set("host", parts.size() > 1 ? parts[1] : "");
       if (parts.size() > 2 && !parts[2].empty()) {
@@ -3319,7 +3397,19 @@ bool PhiCoordinator::HandleAgentSpaceVerb(const std::string& type,
       type == "agentSpace.urlRules.delete") {
     int index = -1;
     if (const std::string* id = payload ? payload->FindString("id") : nullptr) {
-      base::StringToInt(*id, &index);
+      const std::string current_gen =
+          "g" + base::NumberToString(url_rules_generation_) + "-";
+      if (id->rfind(current_gen, 0) == 0) {
+        base::StringToInt(id->substr(current_gen.size()), &index);
+      } else if (id->find('-') == std::string::npos) {
+        base::StringToInt(*id, &index);  // Legacy bare-index probes.
+      } else {
+        // A prior generation's id: the list has been rewritten since it was
+        // read, so it no longer names anything.
+        out->Set("ok", false);
+        out->Set("error", "unknown_rule");
+        return true;
+      }
     }
     const std::vector<std::string> rows = URLRuleRows();
     if (index < 0 || index >= static_cast<int>(rows.size())) {
@@ -3996,6 +4086,836 @@ void PhiCoordinator::OnBrowserWindowClosing(int64_t window_id) {
     windows_.erase(it);
   }
   PushSpaceMenu();  // A Space lost its window id.
+}
+
+bool PhiCoordinator::SwitchSlotToSpace(int64_t slot,
+                                       const std::string& space_id,
+                                       bool* pending,
+                                       bool* cold) {
+  auto it = windows_.find(slot);
+  if (it == windows_.end() && slot == 0 && !windows_.empty()) {
+    it = windows_.begin();  // The verb convention: 0 means "the window".
+  }
+  auto space_it =
+      std::find_if(spaces_.begin(), spaces_.end(),
+                   [&](const Space& s) { return s.id == space_id; });
+  if (it == windows_.end() || space_it == spaces_.end()) {
+    return false;
+  }
+  if (it->second->HasSpace(space_id)) {
+    const bool ok = it->second->ShowSpace(space_id);
+    if (ok) {
+      PushSpaceMenu();  // The visible-Space routing map changed.
+    }
+    return ok;
+  }
+  if (!framework_) {
+    return false;
+  }
+  // First visit: create this Space's browser IN ITS PROFILE and attach it to
+  // the slot. A cold profile loads asynchronously, so the pending attach
+  // stays armed until OnBrowserWindowCreated consumes it.
+  if (cold) {
+    *cold = true;
+  }
+  pending_slot_ = it->first;
+  pending_space_ = space_id;
+  const bool ok =
+      framework_->CreateSpaceBrowserInProfile(space_it->profile_id.c_str());
+  if (pending) {
+    *pending = !it->second->HasSpace(space_id);
+  }
+  return ok;
+}
+
+int64_t PhiCoordinator::BrowserForSpace(const std::string& space_id) const {
+  if (space_id.empty()) {
+    return 0;
+  }
+  for (const auto& [slot, controller] : windows_) {
+    const int64_t browser = controller->BrowserIdForSpace(space_id);
+    if (browser) {
+      return browser;
+    }
+  }
+  return 0;
+}
+
+int64_t PhiCoordinator::ResolveScopeBrowser(const base::DictValue* payload,
+                                            std::string* error) {
+  if (const std::string* task =
+          payload ? payload->FindString("taskId") : nullptr) {
+    PhiAgentSpaces::Space* space = agent_spaces_.Find(*task);
+    if (!space) {
+      *error = "unknown_task";
+      return 0;
+    }
+    return ResolveBrowser(space->window_id);
+  }
+  if (const std::string* space_id =
+          payload ? payload->FindString("spaceId") : nullptr) {
+    const int64_t browser = BrowserForSpace(*space_id);
+    if (!browser) {
+      *error = "space_not_open";
+    }
+    return browser;
+  }
+  *error = "invalid_payload";
+  return 0;
+}
+
+PhiWindowController* PhiCoordinator::FocusedUserController() {
+  const HWND foreground = ::GetForegroundWindow();
+  PhiWindowController* first_user = nullptr;
+  for (const auto& [slot, controller] : windows_) {
+    if (controller->is_agent()) {
+      continue;
+    }
+    if (foreground && controller->shell_hwnd() == foreground) {
+      return controller.get();
+    }
+    if (!first_user) {
+      first_user = controller.get();
+    }
+  }
+  return first_user;
+}
+
+bool PhiCoordinator::DialectOwner(const std::string& profile_id_or_empty,
+                                  std::string* profile_id,
+                                  std::string* space_id) {
+  if (!profile_id_or_empty.empty()) {
+    *profile_id = profile_id_or_empty;
+    // Prefer a window whose active Space runs this profile (its space is the
+    // natural owner under space scope); fall back to the profile's first
+    // Space, then to no Space (profile/app-scoped pins still resolve).
+    for (const auto& [slot, controller] : windows_) {
+      if (controller->is_agent()) {
+        continue;
+      }
+      std::string p, s;
+      if (OwnerForSlot(slot, &p, &s) && p == *profile_id) {
+        *space_id = s;
+        return true;
+      }
+    }
+    for (const Space& space : spaces_) {
+      if (space.profile_id == *profile_id) {
+        *space_id = space.id;
+        return true;
+      }
+    }
+    space_id->clear();
+    return true;
+  }
+  PhiWindowController* focused = FocusedUserController();
+  return focused &&
+         OwnerForSlot(focused->window_id(), profile_id, space_id);
+}
+
+bool PhiCoordinator::HandleSkillDialectVerb(const std::string& type,
+                                            const base::DictValue* payload,
+                                            base::DictValue* out) {
+  auto fail = [&](const std::string& code) {
+    out->Set("ok", false);
+    out->Set("error", code);
+    return true;
+  };
+  // The window's tab rows (ListTabsJson parsed), or an empty list.
+  auto tabs_of = [&](int64_t browser) {
+    base::ListValue tabs;
+    if (framework_ && browser) {
+      std::optional<base::Value> parsed = base::JSONReader::Read(
+          framework_->ListTabsJson(browser), base::JSON_PARSE_RFC);
+      if (parsed && parsed->is_list()) {
+        tabs = std::move(*parsed).TakeList();
+      }
+    }
+    return tabs;
+  };
+  auto refresh_all = [&]() {
+    for (const auto& [slot, controller] : windows_) {
+      controller->RefreshTabs();
+    }
+  };
+
+  if (type == "agentSpace.resolveTabIds") {
+    base::ListValue ids;
+    if (const base::ListValue* targets =
+            payload ? payload->FindList("targetIds") : nullptr) {
+      for (const base::Value& v : *targets) {
+        ids.Append(framework_ && v.is_string()
+                       ? framework_->TabIdForCdpTarget(v.GetString().c_str())
+                       : -1);
+      }
+    }
+    out->Set("tabIds", std::move(ids));
+    out->Set("ok", true);
+    return true;
+  }
+
+  // --- Tab groups, the skill dialect (scope + stable tab ids) --------------
+  if (type.rfind("agentSpace.tabGroups.", 0) == 0) {
+    const std::string op = type.substr(21);
+    std::string error;
+    const int64_t browser = ResolveScopeBrowser(payload, &error);
+    if (!browser || !framework_) {
+      return fail(error.empty() ? "space_not_open" : error);
+    }
+    const std::string* token = payload ? payload->FindString("token")
+                                       : nullptr;
+    const base::ListValue* tab_ids = payload ? payload->FindList("tabIds")
+                                             : nullptr;
+    std::string tab_ids_json = "[]";
+    if (tab_ids) {
+      base::JSONWriter::Write(*tab_ids, &tab_ids_json);
+    }
+    if (op == "list") {
+      base::ListValue groups;
+      std::optional<base::Value> parsed = base::JSONReader::Read(
+          framework_->TabGroupsJson(browser), base::JSON_PARSE_RFC);
+      const base::ListValue tabs = tabs_of(browser);
+      if (parsed && parsed->is_list()) {
+        for (const base::Value& v : parsed->GetList()) {
+          const base::DictValue* g = v.GetIfDict();
+          const std::string* id = g ? g->FindString("id") : nullptr;
+          if (!id) {
+            continue;
+          }
+          base::DictValue row;
+          row.Set("token", *id);
+          if (const std::string* title = g->FindString("title")) {
+            row.Set("title", *title);
+          }
+          if (const std::string* color = g->FindString("color")) {
+            row.Set("color", *color);
+          }
+          row.Set("collapsed", g->FindBool("collapsed").value_or(false));
+          base::ListValue member_ids;
+          for (const base::Value& t : tabs) {
+            const base::DictValue* tab = t.GetIfDict();
+            const std::string* group =
+                tab ? tab->FindString("groupId") : nullptr;
+            if (group && *group == *id) {
+              member_ids.Append(tab->FindInt("id").value_or(-1));
+            }
+          }
+          row.Set("tabIds", std::move(member_ids));
+          groups.Append(std::move(row));
+        }
+      }
+      out->Set("groups", std::move(groups));
+      out->Set("ok", true);
+      return true;
+    }
+    if (op == "create") {
+      const std::string created =
+          framework_->CreateTabGroupForTabs(browser, tab_ids_json.c_str());
+      if (created.empty()) {
+        return fail("create_failed");
+      }
+      if (const std::string* title =
+              payload ? payload->FindString("title") : nullptr) {
+        framework_->RenameTabGroup(browser, created.c_str(), title->c_str());
+      }
+      if (const std::string* color =
+              payload ? payload->FindString("color") : nullptr) {
+        framework_->SetTabGroupColor(browser, created.c_str(),
+                                     color->c_str());
+      }
+      out->Set("token", created);
+      out->Set("ok", true);
+      return true;
+    }
+    if (op == "update") {
+      if (!token) {
+        return fail("invalid_payload");
+      }
+      bool ok = true;
+      if (const std::string* title =
+              payload ? payload->FindString("title") : nullptr) {
+        ok &= framework_->RenameTabGroup(browser, token->c_str(),
+                                         title->c_str());
+      }
+      if (const std::string* color =
+              payload ? payload->FindString("color") : nullptr) {
+        ok &= framework_->SetTabGroupColor(browser, token->c_str(),
+                                           color->c_str());
+      }
+      if (std::optional<bool> collapsed =
+              payload ? payload->FindBool("collapsed") : std::nullopt) {
+        ok &= framework_->SetTabGroupCollapsed(browser, token->c_str(),
+                                               *collapsed);
+      }
+      out->Set("ok", ok);
+      return true;
+    }
+    if (op == "addTabs") {
+      if (!token) {
+        return fail("invalid_payload");
+      }
+      out->Set("ok", framework_->AddTabsToGroup(browser, token->c_str(),
+                                                tab_ids_json.c_str()));
+      return true;
+    }
+    if (op == "removeTabs") {
+      out->Set("ok", framework_->RemoveTabsFromGroupByIds(
+                         browser, tab_ids_json.c_str()));
+      return true;
+    }
+    if (op == "ungroup" || op == "close") {
+      if (!token) {
+        return fail("invalid_payload");
+      }
+      out->Set("ok", op == "ungroup"
+                         ? framework_->UngroupTabGroup(browser,
+                                                       token->c_str())
+                         : framework_->CloseTabGroup(browser,
+                                                     token->c_str()));
+      return true;
+    }
+    return fail("invalid_payload");
+  }
+
+  // --- Split view, the skill dialect ----------------------------------------
+  if (type.rfind("agentSpace.splitView.", 0) == 0) {
+    const std::string op = type.substr(21);
+    std::string error;
+    const int64_t browser = ResolveScopeBrowser(payload, &error);
+    if (!browser || !framework_) {
+      return fail(error.empty() ? "space_not_open" : error);
+    }
+    const std::string* split_id = payload ? payload->FindString("splitId")
+                                          : nullptr;
+    if (op == "list") {
+      base::ListValue splits;
+      std::optional<base::Value> parsed = base::JSONReader::Read(
+          framework_->SplitViewsJson(browser), base::JSON_PARSE_RFC);
+      if (parsed && parsed->is_list()) {
+        for (const base::Value& v : parsed->GetList()) {
+          const base::DictValue* s = v.GetIfDict();
+          const std::string* id = s ? s->FindString("id") : nullptr;
+          if (!id) {
+            continue;
+          }
+          base::DictValue row;
+          row.Set("splitId", *id);
+          if (const std::string* layout = s->FindString("layout")) {
+            row.Set("layout", *layout);
+          }
+          row.Set("ratio", s->FindDouble("ratio").value_or(0.5));
+          row.Set("primaryTabId", s->FindInt("primaryTabId").value_or(-1));
+          row.Set("secondaryTabId",
+                  s->FindInt("secondaryTabId").value_or(-1));
+          splits.Append(std::move(row));
+        }
+      }
+      out->Set("splits", std::move(splits));
+      out->Set("ok", true);
+      return true;
+    }
+    if (op == "create") {
+      const int primary =
+          payload ? payload->FindInt("primaryTabId").value_or(-1) : -1;
+      const int secondary =
+          payload ? payload->FindInt("secondaryTabId").value_or(-1) : -1;
+      const std::string* layout = payload ? payload->FindString("layout")
+                                          : nullptr;
+      const std::string created = framework_->CreateSplitViewForTabs(
+          browser, primary, secondary, layout ? layout->c_str() : "");
+      if (created.empty()) {
+        return fail("create_failed");
+      }
+      out->Set("splitId", created);
+      out->Set("ok", true);
+      return true;
+    }
+    if (!split_id) {
+      return fail("invalid_payload");
+    }
+    if (op == "update") {
+      const std::string* layout = payload ? payload->FindString("layout")
+                                          : nullptr;
+      const double ratio =
+          payload ? payload->FindDouble("ratio").value_or(-1.0) : -1.0;
+      out->Set("ok", framework_->UpdateSplitView(
+                         browser, split_id->c_str(),
+                         layout ? layout->c_str() : "", ratio));
+      return true;
+    }
+    if (op == "swap") {
+      out->Set("ok", framework_->SwapSplitView(browser, split_id->c_str()));
+      return true;
+    }
+    if (op == "remove") {
+      out->Set("ok",
+               framework_->RemoveSplitById(browser, split_id->c_str()));
+      return true;
+    }
+    return fail("invalid_payload");
+  }
+
+  // --- Downloads (observe and control only — never open) --------------------
+  if (type.rfind("agentSpace.downloads.", 0) == 0) {
+    const std::string op = type.substr(21);
+    std::string error;
+    const int64_t browser = ResolveScopeBrowser(payload, &error);
+    if (!browser || !framework_) {
+      return fail(error.empty() ? "space_not_open" : error);
+    }
+    if (op == "list") {
+      std::optional<base::Value> parsed = base::JSONReader::Read(
+          framework_->DownloadsJsonForAgent(browser), base::JSON_PARSE_RFC);
+      out->Set("downloads", parsed && parsed->is_list()
+                                ? std::move(*parsed)
+                                : base::Value(base::ListValue()));
+      out->Set("ok", true);
+      return true;
+    }
+    const std::string* guid = payload ? payload->FindString("guid") : nullptr;
+    if (!guid || guid->empty()) {
+      return fail("invalid_payload");
+    }
+    if (op == "get") {
+      std::optional<base::Value> parsed = base::JSONReader::Read(
+          framework_->DownloadsJsonForAgent(browser), base::JSON_PARSE_RFC);
+      if (parsed && parsed->is_list()) {
+        for (const base::Value& v : parsed->GetList()) {
+          const base::DictValue* d = v.GetIfDict();
+          const std::string* g = d ? d->FindString("guid") : nullptr;
+          if (g && *g == *guid) {
+            out->Set("download", d->Clone());
+            out->Set("ok", true);
+            return true;
+          }
+        }
+      }
+      return fail("unknown_download");
+    }
+    if (op == "pause" || op == "resume" || op == "cancel" || op == "remove") {
+      if (!framework_->DownloadActionByGuid(browser, guid->c_str(),
+                                            op.c_str())) {
+        return fail("unknown_download");
+      }
+      out->Set("ok", true);
+      return true;
+    }
+    return fail("invalid_payload");
+  }
+
+  // --- User-Space tabs and focus (the skill's spaces.* family) --------------
+  if (type == "agentSpace.spaces.listTabs") {
+    const std::string* space_id = payload ? payload->FindString("spaceId")
+                                          : nullptr;
+    if (!space_id || space_id->empty()) {
+      return fail("invalid_payload");
+    }
+    const int64_t browser = BrowserForSpace(*space_id);
+    if (!browser || !framework_) {
+      return fail("space_not_open");
+    }
+    base::ListValue rows;
+    for (const base::Value& v : tabs_of(browser)) {
+      const base::DictValue* tab = v.GetIfDict();
+      if (!tab) {
+        continue;
+      }
+      base::DictValue row;
+      row.Set("tabId", tab->FindInt("id").value_or(-1));
+      if (const std::string* url = tab->FindString("url")) {
+        row.Set("url", *url);
+      }
+      if (const std::string* title = tab->FindString("title")) {
+        row.Set("title", *title);
+      }
+      row.Set("active", tab->FindBool("active").value_or(false));
+      rows.Append(std::move(row));
+    }
+    out->Set("tabs", std::move(rows));
+    out->Set("windowId", static_cast<double>(browser));
+    out->Set("ok", true);
+    return true;
+  }
+
+  if (type == "agentSpace.spaces.openTab") {
+    const std::string* space_id = payload ? payload->FindString("spaceId")
+                                          : nullptr;
+    const std::string* url = payload ? payload->FindString("url") : nullptr;
+    if (!space_id || space_id->empty() || !url || url->empty()) {
+      return fail("invalid_payload");
+    }
+    const int64_t browser = BrowserForSpace(*space_id);
+    if (!browser || !framework_) {
+      return fail("space_not_open");
+    }
+    const bool activate =
+        payload->FindBool("activate").value_or(true);
+    int previous_active = -1;
+    if (!activate) {
+      for (const base::Value& v : tabs_of(browser)) {
+        const base::DictValue* tab = v.GetIfDict();
+        if (tab && tab->FindBool("active").value_or(false)) {
+          previous_active = tab->FindInt("index").value_or(-1);
+          break;
+        }
+      }
+    }
+    // Bypassed like every client-side deliberate open: a URL rule pointing
+    // at another Space must not bounce a tab the skill placed HERE.
+    framework_->OpenTabBypassingSpaceRouting(browser, url->c_str());
+    if (!activate && previous_active >= 0) {
+      // The new tab opened foreground; hand the selection back. The old
+      // active tab's index is unchanged by an append/adjacent insert.
+      framework_->ActivateTab(browser, previous_active);
+    }
+    out->Set("windowId", static_cast<double>(browser));
+    out->Set("ok", true);
+    return true;
+  }
+
+  if (type == "agentSpace.spaces.focus") {
+    // A surfaced agent window in the foreground answers as the agent Space.
+    const HWND foreground = ::GetForegroundWindow();
+    for (const auto& [slot, controller] : windows_) {
+      if (!controller->is_agent() || !foreground ||
+          controller->shell_hwnd() != foreground) {
+        continue;
+      }
+      PhiAgentSpaces::Space* agent = agent_spaces_.FindByWindow(slot);
+      if (!agent) {
+        break;
+      }
+      out->Set("spaceId", agent->space_id);
+      out->Set("spaceName", "Agent Space");
+      out->Set("isAgentSpace", true);
+      out->Set("isIncognito", false);
+      out->Set("windowId", static_cast<double>(ResolveBrowser(slot)));
+      out->Set("ok", true);
+      return true;
+    }
+    PhiWindowController* controller = FocusedUserController();
+    if (!controller) {
+      return fail("no_window");
+    }
+    const std::string space_id = controller->active_space();
+    std::string name = space_id;
+    for (const Space& space : spaces_) {
+      if (space.id == space_id) {
+        name = space.name;
+        break;
+      }
+    }
+    out->Set("spaceId", space_id);
+    out->Set("spaceName", name);
+    out->Set("isAgentSpace", false);
+    out->Set("isIncognito", false);
+    const int64_t browser = controller->active_browser();
+    if (browser) {
+      out->Set("windowId", static_cast<double>(browser));
+      for (const base::Value& v : tabs_of(browser)) {
+        const base::DictValue* tab = v.GetIfDict();
+        if (!tab || !tab->FindBool("active").value_or(false)) {
+          continue;
+        }
+        base::DictValue row;
+        row.Set("tabId", tab->FindInt("id").value_or(-1));
+        if (const std::string* url = tab->FindString("url")) {
+          row.Set("url", *url);
+        }
+        if (const std::string* title = tab->FindString("title")) {
+          row.Set("title", *title);
+        }
+        out->Set("tab", std::move(row));
+        break;
+      }
+    }
+    out->Set("ok", true);
+    return true;
+  }
+
+  if (type == "agentSpace.spaces.activate") {
+    const std::string* space_id = payload ? payload->FindString("spaceId")
+                                          : nullptr;
+    if (!space_id || space_id->empty()) {
+      return fail("invalid_payload");
+    }
+    // A slot already hosting the Space surfaces it there; otherwise the
+    // user's focused window takes it (cold-spawning the browser).
+    for (const auto& [slot, controller] : windows_) {
+      if (controller->is_agent() || !controller->HasSpace(*space_id)) {
+        continue;
+      }
+      const bool ok = controller->ShowSpace(*space_id);
+      if (ok) {
+        PushSpaceMenu();
+        if (controller->shell_hwnd()) {
+          ::SetForegroundWindow(controller->shell_hwnd());
+        }
+        controller->RefreshTabs();
+      }
+      out->Set("ok", ok);
+      return true;
+    }
+    PhiWindowController* focused = FocusedUserController();
+    if (!focused) {
+      return fail("no_window");
+    }
+    bool pending = false, cold = false;
+    const bool ok =
+        SwitchSlotToSpace(focused->window_id(), *space_id, &pending, &cold);
+    if (!ok) {
+      return fail("unknown_space");
+    }
+    out->Set("ok", true);
+    return true;
+  }
+
+  if (type == "agentSpace.spaces.update") {
+    const std::string* space_id = payload ? payload->FindString("spaceId")
+                                          : nullptr;
+    if (!space_id || space_id->empty()) {
+      return fail("invalid_payload");
+    }
+    Space* entry = nullptr;
+    for (Space& space : spaces_) {
+      if (space.id == *space_id) {
+        entry = &space;
+        break;
+      }
+    }
+    if (!entry) {
+      return fail("unknown_space");
+    }
+    bool ok = true;
+    if (const std::string* name = payload->FindString("name")) {
+      ok &= RenameSpace(*space_id, *name);
+    }
+    if (const std::string* icon = payload->FindString("iconName")) {
+      if (PhiIconIsValid(*icon)) {
+        entry->icon = *icon;
+        SaveSpaces();
+        refresh_all();
+      } else {
+        ok = false;
+      }
+    }
+    if (const std::string* color = payload->FindString("colorHex")) {
+      entry->color_hex = *color;
+      SaveSpaces();
+    }
+    out->Set("spaceId", *space_id);
+    out->Set("ok", ok);
+    return true;
+  }
+
+  // --- Pinned tabs, the skill dialect (per-profile records) -----------------
+  if (type.rfind("agentSpace.pinnedTabs.", 0) == 0) {
+    const std::string op = type.substr(22);
+    const std::string* given_profile =
+        payload ? payload->FindString("profileId") : nullptr;
+    if (op == "list") {
+      std::string profile_id, space_id;
+      if (!DialectOwner(given_profile ? *given_profile : "", &profile_id,
+                        &space_id)) {
+        return fail("no_window");
+      }
+      base::ListValue rows;
+      for (const PhiRow& row : tab_store_.PinnedFor(profile_id, space_id)) {
+        base::DictValue entry;
+        entry.Set("guid", row.guid);
+        entry.Set("url", row.url);
+        entry.Set("title", row.title);
+        entry.Set("index", row.index);
+        entry.Set("profileId",
+                  row.profile_id.empty() ? profile_id : row.profile_id);
+        rows.Append(std::move(entry));
+      }
+      out->Set("pinnedTabs", std::move(rows));
+      out->Set("ok", true);
+      return true;
+    }
+    if (op == "add") {
+      const std::string* url = payload ? payload->FindString("url") : nullptr;
+      if (!url || url->empty()) {
+        return fail("invalid_payload");
+      }
+      std::string profile_id, space_id;
+      if (!DialectOwner(given_profile ? *given_profile : "", &profile_id,
+                        &space_id)) {
+        return fail("no_window");
+      }
+      const std::string* title = payload->FindString("title");
+      const std::string guid = tab_store_.AddPinned(
+          profile_id, space_id, title ? *title : "", *url,
+          /*favicon_base64=*/"", 0, 0);
+      if (guid.empty()) {
+        return fail("create_failed");
+      }
+      if (std::optional<int> index = payload->FindInt("index")) {
+        tab_store_.Reorder(guid, *index);
+      }
+      refresh_all();
+      out->Set("guid", guid);
+      const PhiRow* row = tab_store_.Find(guid);
+      out->Set("profileId", row && !row->profile_id.empty()
+                                ? row->profile_id
+                                : profile_id);
+      out->Set("ok", true);
+      return true;
+    }
+    const std::string* guid = payload ? payload->FindString("guid") : nullptr;
+    if (!guid || !tab_store_.Contains(*guid)) {
+      return fail("unknown_pin");
+    }
+    if (op == "update") {
+      bool ok = true;
+      if (const std::string* title = payload->FindString("title")) {
+        ok &= RenameStoredRow(*guid, *title);
+      }
+      if (const std::string* url = payload->FindString("url")) {
+        ok &= tab_store_.SetRowUrl(*guid, *url);
+      }
+      refresh_all();
+      out->Set("ok", ok);
+      return true;
+    }
+    if (op == "remove") {
+      RemoveStoredRow(*guid);
+      out->Set("ok", true);
+      return true;
+    }
+    return fail("invalid_payload");
+  }
+
+  // --- Bookmarks, the skill's Space-addressed tree forms ---------------------
+  // list/add collide with the client-UI dialect (windowId-scoped, flat);
+  // the skill's payloads carry no windowId, which is the claim test.
+  const bool bookmarks_tree_shape =
+      type.rfind("agentSpace.bookmarks.", 0) == 0 &&
+      (!payload || !payload->contains("windowId"));
+  if (bookmarks_tree_shape &&
+      (type == "agentSpace.bookmarks.list" ||
+       type == "agentSpace.bookmarks.add" ||
+       type == "agentSpace.bookmarks.addFolder" ||
+       type == "agentSpace.bookmarks.update" ||
+       type == "agentSpace.bookmarks.move")) {
+    const std::string op = type.substr(21);
+    // The target Space: an explicit spaceId, else the default Space.
+    const Space* target = nullptr;
+    if (const std::string* space_id =
+            payload ? payload->FindString("spaceId") : nullptr) {
+      for (const Space& space : spaces_) {
+        if (space.id == *space_id) {
+          target = &space;
+          break;
+        }
+      }
+      if (!target) {
+        return fail("unknown_space");
+      }
+    } else if (!spaces_.empty()) {
+      target = &spaces_.front();
+      for (const Space& space : spaces_) {
+        if (space.id == "1") {  // isDefault, when it still exists.
+          target = &space;
+          break;
+        }
+      }
+    }
+    if (op == "update" || op == "move") {
+      const std::string* guid = payload ? payload->FindString("guid")
+                                        : nullptr;
+      const PhiRow* row = guid ? tab_store_.Find(*guid) : nullptr;
+      if (!row || (row->type != PhiRowType::kBookmark &&
+                   row->type != PhiRowType::kBookmarkFolder)) {
+        return fail("unknown_bookmark");
+      }
+      const std::string owner_space = row->space_id;
+      bool ok = true;
+      if (op == "update") {
+        if (const std::string* title = payload->FindString("title")) {
+          ok &= RenameStoredRow(*guid, *title);
+        }
+        if (const std::string* url = payload->FindString("url")) {
+          ok &= tab_store_.SetRowUrl(*guid, *url);
+        }
+      } else {
+        const std::string* parent = payload->FindString("parentGuid");
+        ok = tab_store_.Move(*guid, parent ? *parent : "",
+                             payload->FindInt("index").value_or(-1));
+      }
+      refresh_all();
+      out->Set("spaceId", owner_space);
+      out->Set("ok", ok);
+      return true;
+    }
+    if (!target) {
+      return fail("unknown_space");
+    }
+    const std::string profile_id = target->profile_id;
+    const std::string space_id = target->id;
+    if (op == "list") {
+      // Folders carry `children`, leaves carry `url` — the Mac tree shape.
+      auto build = [&](auto&& self,
+                       const std::string& parent) -> base::ListValue {
+        base::ListValue nodes;
+        for (const PhiRow& row :
+             tab_store_.BookmarksFor(profile_id, space_id, parent)) {
+          base::DictValue node;
+          node.Set("guid", row.guid);
+          node.Set("title", row.title);
+          node.Set("index", row.index);
+          if (row.type == PhiRowType::kBookmarkFolder) {
+            node.Set("children", self(self, row.guid));
+          } else {
+            node.Set("url", row.url);
+          }
+          nodes.Append(std::move(node));
+        }
+        return nodes;
+      };
+      out->Set("bookmarks", build(build, ""));
+      out->Set("spaceId", space_id);
+      out->Set("ok", true);
+      return true;
+    }
+    if (op == "add" || op == "addFolder") {
+      const bool folder = op == "addFolder";
+      const std::string* url = payload ? payload->FindString("url") : nullptr;
+      const std::string* title = payload ? payload->FindString("title")
+                                         : nullptr;
+      if (folder ? (!title || title->empty()) : (!url || url->empty())) {
+        return fail("invalid_payload");
+      }
+      std::string parent;
+      if (const std::string* p =
+              payload ? payload->FindString("parentGuid") : nullptr) {
+        const PhiRow* parent_row = tab_store_.Find(*p);
+        if (!parent_row || parent_row->type != PhiRowType::kBookmarkFolder ||
+            parent_row->space_id != space_id) {
+          return fail("unknown_folder");
+        }
+        parent = *p;
+      }
+      const std::string guid = tab_store_.AddBookmark(
+          profile_id, space_id, parent, title ? *title : "",
+          folder ? "" : *url, folder, /*favicon_base64=*/"", 0, 0);
+      if (guid.empty()) {
+        return fail("create_failed");
+      }
+      if (std::optional<int> index =
+              payload ? payload->FindInt("index") : std::nullopt) {
+        tab_store_.Reorder(guid, *index);
+      }
+      refresh_all();
+      out->Set("guid", guid);
+      out->Set("spaceId", space_id);
+      out->Set("ok", true);
+      return true;
+    }
+  }
+
+  return false;
 }
 
 }  // namespace phi_client

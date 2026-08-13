@@ -209,6 +209,10 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
     // maps. Empty id and -1 saturation mean "follow the app-wide choice".
     std::string theme_id;
     int saturation = -1;
+    // The Mac wire's per-Space accent ("#RRGGBB"). Cosmetic data the Windows
+    // chrome does not paint yet — stored and echoed so the skill's
+    // create/update/list round-trip agrees across clients.
+    std::string color_hex;
   };
   std::vector<Space> spaces_{{"1", "Space 1", "Default", kPhiDefaultSpaceIcon}};
   int next_space_id_ = 2;
@@ -225,6 +229,10 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
     bool ask = false;
   };
   std::vector<UrlRule> url_rules_;
+  // Bumped on every rule write; the wire rule ids ("g<gen>-<index>") carry
+  // it, so ids from before a write stop resolving — the Mac contract that
+  // callers re-list before update/delete.
+  int url_rules_generation_ = 1;
   std::wstring url_rules_path_;
   void LoadUrlRules();
   void SaveUrlRules() const;
@@ -324,6 +332,37 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
                             const base::DictValue* payload,
                             uint64_t now_ms,
                             base::DictValue* out);
+  // Handles one verb of the Mac skill's dialect — tabGroups.*, splitView.*,
+  // downloads.*, pinnedTabs.*, the bookmark-tree forms, the spaces.listTabs/
+  // openTab/focus/activate/update family and resolveTabIds; true when `type`
+  // was one (result in `out`). Verbs whose names collide with the client-UI
+  // dialect (bookmarks.list/add) claim the call only for skill-shaped
+  // payloads (no windowId) and return false otherwise.
+  bool HandleSkillDialectVerb(const std::string& type,
+                              const base::DictValue* payload,
+                              base::DictValue* out);
+  // Resolves the skill's layout scope — {taskId}: the agent window,
+  // {spaceId}: a user Space's open window — to the browser bound to it.
+  // 0 with `error` set (unknown_task / space_not_open / invalid_payload)
+  // when the scope names nothing live.
+  int64_t ResolveScopeBrowser(const base::DictValue* payload,
+                              std::string* error);
+  // The browser hosting `space_id`'s tabs (possibly hidden behind a sibling
+  // Space), or 0 when the Space has no open window.
+  int64_t BrowserForSpace(const std::string& space_id) const;
+  // The USER window the user is looking at: the foreground shell when it is
+  // one of ours, the first user window otherwise. Null without windows.
+  PhiWindowController* FocusedUserController();
+  // Surfaces `space_id` in `slot` (slot 0: the first window), cold-spawning
+  // its browser in the Space's profile when the slot has none — the
+  // spaces.switch body, shared with the skill's spaces.activate. `cold`
+  // reports the cold-create path; `pending` that the attach is still armed.
+  bool SwitchSlotToSpace(int64_t slot, const std::string& space_id,
+                         bool* pending, bool* cold);
+  // The (profile, space) the skill's pinned/bookmark dialect verbs target:
+  // an explicit profile id wins, else the focused window's active Space.
+  bool DialectOwner(const std::string& profile_id_or_empty,
+                    std::string* profile_id, std::string* space_id);
   // Tears down an agent Space: closes its hidden window and drops the record.
   void CloseAgentSpace(const std::string& task_id);
   // Keep-alive sweep (WM_TIMER id 2): completes and closes expired spaces.

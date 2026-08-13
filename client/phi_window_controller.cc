@@ -766,6 +766,22 @@ PhiWindowController::PhiWindowController(int64_t window_id,
   ::GetWindowRect(browser_hwnd_, &wr);
   int x = CW_USEDEFAULT, y = CW_USEDEFAULT;
   int w = Scaled(1200 + sidebar_dip_), h = Scaled(800);
+  // Distrust a restored rect that is mostly off-screen (a stale placement
+  // saved from an off-screen window, or a monitor that is gone): anchoring
+  // the shell to it would open as a sliver at the screen edge. Chromium's
+  // own restore only guarantees ~30px stays visible, so require a usable
+  // amount before honoring it.
+  if (wr.right > wr.left && wr.bottom > wr.top) {
+    HMONITOR monitor = ::MonitorFromRect(&wr, MONITOR_DEFAULTTONULL);
+    MONITORINFO info = {sizeof(info)};
+    RECT visible = {};
+    if (!monitor || !::GetMonitorInfoW(monitor, &info) ||
+        !::IntersectRect(&visible, &wr, &info.rcWork) ||
+        visible.right - visible.left < 300 ||
+        visible.bottom - visible.top < 200) {
+      wr = {};  // Fall through to the CW_USEDEFAULT defaults above.
+    }
+  }
   if (wr.right > wr.left && wr.bottom > wr.top) {
     const UINT dpi = ::GetDpiForWindow(browser_hwnd_);
     if (dpi) {
