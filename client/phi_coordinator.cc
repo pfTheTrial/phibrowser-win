@@ -109,7 +109,26 @@ void PhiCoordinator::OnFrameworkReady(phi_framework::PhiFramework* framework,
   prefs_path_ = user_data_dir + L"\\PhiPrefs.json";
   url_rules_path_ = user_data_dir + L"\\PhiUrlRules.json";
   credentials_dir_ = user_data_dir;
-  credentials_.Load(user_data_dir);
+  // Prefer the real vault: the out-of-process Bitwarden helper, which owns the
+  // user's actual vault (and links the GPL SDK on its own side of the process
+  // boundary). The local DPAPI store is loaded only as the dev/test fallback
+  // for machines with no helper installed.
+  // PHI_VAULT_HELPER overrides the helper binary (dev/test only — the shipped
+  // path is PhiBitwardenHelper.exe beside our own exe). It names a PATH TO AN
+  // EXE, never arguments, so the no-arguments spawn contract is intact.
+  std::wstring helper_override;
+  {
+    wchar_t buffer[MAX_PATH] = {};
+    const DWORD length =
+        ::GetEnvironmentVariableW(L"PHI_VAULT_HELPER", buffer, MAX_PATH);
+    if (length > 0 && length < MAX_PATH) {
+      helper_override.assign(buffer, length);
+    }
+  }
+  if (!vault_helper_.Start(helper_override)) {
+    LOG(INFO) << "[PhiVault] no helper installed — using the local dev vault";
+    credentials_.Load(user_data_dir);
+  }
   LoadSpaces();
   LoadUrlRules();
   LoadLayoutMode();
@@ -3452,6 +3471,130 @@ base::ListValue CandidateList(
 
 }  // namespace
 
+std::string PhiCoordinator::HelperStatus() {
+  if (!vault_helper_.running()) {
+    return std::string();
+  }
+  std::string error;
+  std::optional<base::DictValue> result =
+      vault_helper_.Call("status", base::DictValue(), &error);
+  if (!result) {
+    return std::string();
+  }
+  const std::string* status = result->FindString("status");
+  return status ? *status : std::string();
+}
+
+std::optional<base::DictValue> PhiCoordinator::HelperLookup(
+    const std::string& domain,
+    const std::string& id,
+    const std::string& search,
+    const std::string& username,
+    std::string* error) {
+  base::DictValue query;
+  if (!domain.empty()) {
+    query.Set("domain", domain);
+    if (!username.empty()) {
+      query.Set("username", username);
+    }
+  } else if (!id.empty()) {
+    query.Set("id", id);
+  } else {
+    query.Set("search", search);
+  }
+  base::DictValue params;
+  params.Set("query", std::move(query));
+  return vault_helper_.Call("lookup", params, error);
+}
+
+bool PhiCoordinator::ResolveCredentialItem(const std::string& domain,
+                                           const std::string& id,
+                                           const std::string& search,
+                                           const std::string& username,
+                                           base::DictValue* item,
+                                           base::DictValue* out) {
+  if (vault_helper_.running()) {
+    std::string error;
+    std::optional<base::DictValue> result =
+        HelperLookup(domain, id, search, username, &error);
+    if (!result) {
+      // The helper refused or died. Never silently fall through to the dev
+      // vault here: that would answer a real-vault question from a different
+      // store.
+      out->Set("ok", false);
+      out->Set("error", error == "helper_unavailable" ? "not_ready"
+                                                      : "provider_error");
+      if (error == "helper_unavailable") {
+        out->Set("status", "unavailable");
+      }
+      return false;
+    }
+    if (result->FindBool("ambiguous").value_or(false)) {
+      out->Set("ok", false);
+      out->Set("error", "ambiguous");
+      out->Set("matches", result->FindInt("matches").value_or(0));
+      if (base::ListValue* candidates = result->FindList("candidates")) {
+        out->Set("candidates", candidates->Clone());
+      }
+      return false;
+    }
+    base::DictValue* hit = result->FindBool("found").value_or(false)
+                               ? result->FindDict("item")
+                               : nullptr;
+    if (!hit) {
+      out->Set("ok", false);
+      out->Set("error", "not_found");
+      return false;
+    }
+    *item = hit->Clone();
+    return true;
+  }
+
+  // Dev/test fallback: the local DPAPI store.
+  if (!credentials_.present()) {
+    out->Set("ok", false);
+    out->Set("error", "not_ready");
+    out->Set("status", "logged_out");
+    return false;
+  }
+  std::vector<const PhiCredentialItem*> matches =
+      credentials_.Match(domain, id, search, username);
+  if (matches.empty()) {
+    out->Set("ok", false);
+    out->Set("error", "not_found");
+    return false;
+  }
+  if (matches.size() > 1) {
+    out->Set("ok", false);
+    out->Set("error", "ambiguous");
+    out->Set("matches", static_cast<int>(matches.size()));
+    out->Set("candidates", CandidateList(matches));
+    return false;
+  }
+  const PhiCredentialItem* found = matches.front();
+  item->Set("type", found->type);
+  item->Set("name", found->name);
+  if (!found->credential_id.empty()) {
+    item->Set("credentialId", found->credential_id);
+  }
+  if (!found->username.empty()) {
+    item->Set("username", found->username);
+  }
+  if (!found->password.empty()) {
+    item->Set("password", found->password);
+  }
+  if (!found->uri.empty()) {
+    item->Set("uri", found->uri);
+  }
+  if (!found->domain.empty()) {
+    item->Set("domain", found->domain);
+  }
+  if (!found->notes.empty()) {
+    item->Set("notes", found->notes);
+  }
+  return true;
+}
+
 bool PhiCoordinator::PromptCredentialApproval(const std::wstring& detail) {
   const std::wstring text =
       L"An agent is requesting a credential from your Phi vault:\n\n" + detail +
@@ -3467,6 +3610,27 @@ bool PhiCoordinator::HandleCredentialsVerb(const std::string& type,
                                            const base::DictValue* payload,
                                            base::DictValue* out) {
   if (type == "credentials.status") {
+    // The helper (the user's real vault) answers when it is running; the dev
+    // store only speaks for itself.
+    const std::string helper_status = HelperStatus();
+    if (!helper_status.empty()) {
+      // Helper wire strings -> the skill's status vocabulary.
+      std::string wire = "unavailable";
+      if (helper_status == "unlocked") {
+        wire = "ready";
+      } else if (helper_status == "locked") {
+        wire = "locked";
+      } else if (helper_status == "loggedOut" ||
+                 helper_status == "notConfigured") {
+        wire = "logged_out";
+      } else if (helper_status == "notInstalled") {
+        wire = "not_installed";
+      }
+      out->Set("ok", true);
+      out->Set("status", wire);
+      out->Set("ready", wire == "ready");
+      return true;
+    }
     out->Set("ok", true);
     out->Set("status", credentials_.present() ? "ready" : "logged_out");
     out->Set("ready", credentials_.ready());
@@ -3487,36 +3651,26 @@ bool PhiCoordinator::HandleCredentialsVerb(const std::string& type,
       out->Set("error", "fill_requires_autofill");
       return true;
     }
-    if (!credentials_.present()) {
-      out->Set("ok", false);
-      out->Set("error", "not_ready");
-      out->Set("status", "logged_out");
-      return true;
-    }
     CredentialQuery q = ParseCredentialQuery(payload);
     if (!q.valid) {
       out->Set("ok", false);
       out->Set("error", "invalid_payload");
       return true;
     }
-    std::vector<const PhiCredentialItem*> matches =
-        credentials_.Match(q.domain, q.id, q.search, q.username);
-    if (matches.empty()) {
-      out->Set("ok", false);
-      out->Set("error", "not_found");
-      return true;
+    base::DictValue item;
+    if (!ResolveCredentialItem(q.domain, q.id, q.search, q.username, &item,
+                               out)) {
+      return true;  // `out` already carries the wire error body.
     }
-    if (matches.size() > 1) {
-      out->Set("ok", false);
-      out->Set("error", "ambiguous");
-      out->Set("matches", static_cast<int>(matches.size()));
-      out->Set("candidates", CandidateList(matches));
-      return true;
-    }
-    const PhiCredentialItem* item = matches.front();
+    auto field_of = [&](const char* key) -> std::string {
+      const std::string* value = item.FindString(key);
+      return value ? *value : std::string();
+    };
+    const std::string item_type =
+        field_of("type").empty() ? "login" : field_of("type");
     std::wstring detail = base::UTF8ToWide(
-        (item->name.empty() ? item->domain : item->name) +
-        (item->username.empty() ? "" : "  (" + item->username + ")"));
+        (field_of("name").empty() ? field_of("domain") : field_of("name")) +
+        (field_of("username").empty() ? "" : "  (" + field_of("username") + ")"));
     if (const std::string* purpose =
             payload ? payload->FindString("purpose") : nullptr) {
       if (!purpose->empty()) {
@@ -3539,26 +3693,21 @@ bool PhiCoordinator::HandleCredentialsVerb(const std::string& type,
       }
     }
     if (fields.empty()) {
-      if (item->type == "note") {
+      if (item_type == "note") {
         fields = {"notes"};
       } else {
         fields = {"username", "password", "uri", "domain"};
       }
     }
     base::DictValue cred;
-    cred.Set("type", item->type);
-    cred.Set("name", item->name);
+    cred.Set("type", item_type);
+    cred.Set("name", field_of("name"));
     for (const std::string& field : fields) {
-      if (field == "username" && !item->username.empty()) {
-        cred.Set("username", item->username);
-      } else if (field == "password" && !item->password.empty()) {
-        cred.Set("password", item->password);
-      } else if (field == "uri" && !item->uri.empty()) {
-        cred.Set("uri", item->uri);
-      } else if (field == "domain" && !item->domain.empty()) {
-        cred.Set("domain", item->domain);
-      } else if (field == "notes" && !item->notes.empty()) {
-        cred.Set("notes", item->notes);
+      // Only the asked-for (or type-default) fields cross to the agent — and
+      // never a TOTP seed: the helper does not encode one at all.
+      const std::string value = field_of(field.c_str());
+      if (!value.empty() && field != "totp") {
+        cred.Set(field, value);
       }
     }
     out->Set("ok", true);
@@ -3568,12 +3717,6 @@ bool PhiCoordinator::HandleCredentialsVerb(const std::string& type,
   }
 
   if (type == "credentials.autofill") {
-    if (!credentials_.present()) {
-      out->Set("ok", false);
-      out->Set("error", "not_ready");
-      out->Set("status", "logged_out");
-      return true;
-    }
     const std::string* token = payload ? payload->FindString("token") : nullptr;
     const std::string* target_id =
         payload ? payload->FindString("targetId") : nullptr;
@@ -3609,29 +3752,25 @@ bool PhiCoordinator::HandleCredentialsVerb(const std::string& type,
       out->Set("error", "page_not_found");
       return true;
     }
-    std::vector<const PhiCredentialItem*> matches =
-        credentials_.Match(q.domain, q.id, q.search, q.username);
-    if (matches.empty()) {
-      out->Set("ok", false);
-      out->Set("error", "not_found");
-      return true;
+    base::DictValue item;
+    if (!ResolveCredentialItem(q.domain, q.id, q.search, q.username, &item,
+                               out)) {
+      return true;  // `out` already carries the wire error body.
     }
-    if (matches.size() > 1) {
-      out->Set("ok", false);
-      out->Set("error", "ambiguous");
-      out->Set("matches", static_cast<int>(matches.size()));
-      out->Set("candidates", CandidateList(matches));
-      return true;
-    }
-    const PhiCredentialItem* item = matches.front();
-    if (item->type != "login") {
+    auto field_of = [&](const char* key) -> std::string {
+      const std::string* v = item.FindString(key);
+      return v ? *v : std::string();
+    };
+    const std::string item_type =
+        field_of("type").empty() ? "login" : field_of("type");
+    if (item_type != "login") {
       out->Set("ok", false);
       out->Set("error", "not_a_login");
-      out->Set("type", item->type);
+      out->Set("type", item_type);
       return true;
     }
     const std::string value =
-        field == "username" ? item->username : item->password;
+        field == "username" ? field_of("username") : field_of("password");
     if (value.empty()) {
       out->Set("ok", false);
       out->Set("error", "field_unavailable");
@@ -3641,8 +3780,9 @@ bool PhiCoordinator::HandleCredentialsVerb(const std::string& type,
     // Origin binding: the page must belong to the credential's site unless the
     // caller explicitly allowed a cross-origin fill.
     const std::string cred_host =
-        item->domain.empty() ? PhiCredentialVault::HostOfUri(item->uri)
-                             : item->domain;
+        field_of("domain").empty()
+            ? PhiCredentialVault::HostOfUri(field_of("uri"))
+            : field_of("domain");
     if (!allow_cross_origin &&
         !PhiCredentialVault::HostMatches(page_host, cred_host)) {
       out->Set("ok", false);
@@ -3651,7 +3791,8 @@ bool PhiCoordinator::HandleCredentialsVerb(const std::string& type,
       return true;
     }
     std::wstring detail =
-        base::UTF8ToWide((item->name.empty() ? cred_host : item->name) +
+        base::UTF8ToWide((field_of("name").empty() ? cred_host
+                                                   : field_of("name")) +
                          "  → fill " + field + " on " + page_host);
     if (!PromptCredentialApproval(detail)) {
       out->Set("ok", false);

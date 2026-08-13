@@ -20,6 +20,7 @@
 #include "phibrowser-win/client/phi_agent_spaces.h"
 #include "phibrowser-win/client/phi_control_server.h"
 #include "phibrowser-win/client/phi_credentials.h"
+#include "phibrowser-win/client/phi_vault_helper.h"
 #include "phibrowser-win/client/phi_emoji.h"
 #include "phibrowser-win/client/phi_settings_window.h"
 #include "phibrowser-win/client/phi_tab_store.h"
@@ -329,8 +330,32 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   void SweepAgentSpaces();
 
   // --- Credentials (the skill's agent password surface) --------------------
+  // The REAL provider: the out-of-process Bitwarden helper (the user's own
+  // vault, same engine as macOS). `credentials_` is a local DPAPI dev/test
+  // store used ONLY when no helper binary is installed.
+  PhiVaultHelper vault_helper_;
   PhiCredentialVault credentials_;
   std::wstring credentials_dir_;
+  // Looks a query up through the helper. Returns the reply's `result` dict, or
+  // nullopt with `error` set (`ambiguous` carries a candidates list).
+  std::optional<base::DictValue> HelperLookup(const std::string& domain,
+                                              const std::string& id,
+                                              const std::string& search,
+                                              const std::string& username,
+                                              std::string* error);
+  // The helper's vault status wire string, or empty when it is not running.
+  std::string HelperStatus();
+  // Resolves a query through whichever provider is active (helper first, dev
+  // vault otherwise) to exactly ONE item. True fills `item` with the vault
+  // item; false fills `out` with the wire error body (not_found / ambiguous +
+  // non-secret candidates / not_ready), so both credential verbs share one
+  // matching and one refusal policy.
+  bool ResolveCredentialItem(const std::string& domain,
+                             const std::string& id,
+                             const std::string& search,
+                             const std::string& username,
+                             base::DictValue* item,
+                             base::DictValue* out);
   // Handles one credentials.* verb; true when `type` was one (result in
   // `out`). The per-request approve/deny prompt and origin binding live here.
   bool HandleCredentialsVerb(const std::string& type,
