@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -118,6 +119,18 @@ class PhiSlotHost {
   // live-bound either way (the Mac drag path's bindLiveSplit).
   virtual void RequestDropSplit(int64_t slot, int index_a, int index_b,
                                 bool as_bookmark, int insert_index) = 0;
+  // Reparents a bookmark row (drop into or out of a folder):
+  // `new_parent_guid` empty = the root, `new_index` = the sibling position
+  // (negative or past-the-end appends). Cycles are refused by the store.
+  virtual void MoveStoredRow(const std::string& guid,
+                             const std::string& new_parent_guid,
+                             int new_index) = 0;
+  // Creates a bookmark folder under `parent_guid` (empty = the root) in the
+  // slot's Space — the sidebar's New Folder entries. Returns the new guid
+  // (empty on refusal).
+  virtual std::string AddBookmarkFolder(int64_t slot,
+                                        const std::string& parent_guid,
+                                        const std::string& title) = 0;
   // Removes a stored row (a pinned tab or bookmark) by its guid.
   virtual void RemoveStoredRow(const std::string& guid) = 0;
   // Retitles a stored row — the context menus' Rename….
@@ -612,6 +625,12 @@ class PhiWindowController {
     std::string url;
     std::wstring title;
     bool folder = false;
+    // Bookmark outline (the Mac's NSOutlineView): an expanded folder splices
+    // its children in below itself, one indent step deeper. `parent_guid`
+    // names the folder a row sits in (empty = the root).
+    int depth = 0;
+    bool expanded = false;
+    std::string parent_guid;
     // A pinned tab bound to a LIVE tab (openOrFocusPinnedTab): the tab lives
     // in the pin's cell — never in the tab list — and the active one gets the
     // Mac's selected wash + 2pt accent ring.
@@ -641,6 +660,19 @@ class PhiWindowController {
   int pinned_row_count_ = 0;
   int bookmark_row_count_ = 0;
   void RebuildShortcuts();
+  // Folders the user has disclosed in the sidebar outline (session-local
+  // view state, like the Mac outline's).
+  std::set<std::string> expanded_bookmarks_;
+  // Where a bookmark drag will land, resolved from the pointer on every
+  // move (the Mac's SidebarBookmarkFolderDropResolver): the target parent
+  // folder (empty = the root), the sibling index within it, and — for a
+  // drop ON a collapsed folder — the visible row to highlight (-1 = an
+  // ordinary gap insertion). Returns the visible slot the gap animation
+  // should open at.
+  int ResolveBookmarkDrop(POINT pt);
+  std::string bookmark_drop_parent_;
+  int bookmark_drop_index_ = -1;
+  int bookmark_drop_folder_row_ = -1;
 
   // Space switch: the PAGE swaps instantly; the SIDEBAR BAND slides — and
   // natively, no macOS snapshot compositing: the leaving Space's laid-out

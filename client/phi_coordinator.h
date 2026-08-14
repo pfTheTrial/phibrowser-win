@@ -91,6 +91,12 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
                         bool as_bookmark, int insert_index) override;
   void RequestStoreTab(int64_t slot, int index,
                        bool as_bookmark) override;
+  void MoveStoredRow(const std::string& guid,
+                     const std::string& new_parent_guid,
+                     int new_index) override;
+  std::string AddBookmarkFolder(int64_t slot,
+                                const std::string& parent_guid,
+                                const std::string& title) override;
   void RemoveStoredRow(const std::string& guid) override;
   bool RenameStoredRow(const std::string& guid,
                        const std::string& name) override;

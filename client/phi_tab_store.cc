@@ -230,9 +230,18 @@ int PhiTabStore::NextIndexFor(PhiRowType type,
                               const std::string& profile_id,
                               const std::string& space_id,
                               const std::string& parent_guid) const {
+  // Folders and bookmarks share ONE sibling sequence (as Reorder treats
+  // them) — separate sequences would hand a folder's mixed children
+  // duplicate indices and an arbitrary guid-tiebreak order.
+  const bool bookmark_kind = type == PhiRowType::kBookmark ||
+                             type == PhiRowType::kBookmarkFolder;
   int next = 0;
   for (const PhiRow& row : rows_) {
-    if (row.type == type && row.profile_id == profile_id &&
+    const bool same_kind =
+        bookmark_kind ? (row.type == PhiRowType::kBookmark ||
+                         row.type == PhiRowType::kBookmarkFolder)
+                      : row.type == type;
+    if (same_kind && row.profile_id == profile_id &&
         row.space_id == space_id && row.parent_guid == parent_guid) {
       next = std::max(next, row.index + 1);
     }

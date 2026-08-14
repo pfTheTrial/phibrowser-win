@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <cmath>
 #include <iterator>
+#include <limits>
 #include <optional>
 #include <string>
 #include <vector>
@@ -85,6 +86,7 @@ constexpr int kContentTopGap = 8;
 constexpr int kContentTopGapTopNav = 12;
 constexpr int kFaviconSlot = 16;    // The 16pt slot in the row…
 constexpr int kFaviconSize = 14;    // …holding a 14pt icon (radius 3).
+constexpr int kBookmarkIndent = 16;  // Outline indent per depth (AppKit's).
 constexpr int kNewTabRowHeight = 36;
 // Pinned tabs: PinnedTabLayout — 45pt cells, 8pt gaps and insets, column
 // limit by width breakpoint (3 at this sidebar width), 53pt minimum width.
@@ -1426,7 +1428,10 @@ void PhiWindowController::RetargetDragSlide() {
         }
       }
     } else if (drag_kind_ == DragKind::kBookmark && drag_index_ >= 0 &&
-               drag_index_ < static_cast<int>(bookmarks_.size())) {
+               drag_index_ < static_cast<int>(bookmarks_.size()) &&
+               bookmark_drop_folder_row_ < 0) {
+      // A drop INTO a collapsed folder opens no gap — the folder row
+      // highlights instead and every displaced row settles home.
       const int to_pos = drag_insert_ > drag_index_ ? drag_insert_ - 1
                                                     : drag_insert_;
       for (int i = 0; i < static_cast<int>(bookmarks_.size()); ++i) {
@@ -1526,11 +1531,19 @@ void PhiWindowController::UpdateDrag(POINT pt) {
   }
   const bool band_changed = band != drag_band_;
   drag_band_ = band;
-  const int slot = DragInsertSlot(pt);
+  int slot = DragInsertSlot(pt);
+  bool folder_target_changed = false;
+  if (drag_kind_ == DragKind::kBookmark) {
+    // Bookmark drags resolve a tree target, not just a flat slot; a change
+    // between INTO-a-folder and a gap repaints even at the same slot.
+    const int folder_before = bookmark_drop_folder_row_;
+    slot = ResolveBookmarkDrop(pt);
+    folder_target_changed = folder_before != bookmark_drop_folder_row_;
+  }
   const bool animated_kind = drag_kind_ == DragKind::kTab ||
                              drag_kind_ == DragKind::kPin ||
                              drag_kind_ == DragKind::kBookmark;
-  if (slot != drag_insert_ || band_changed) {
+  if (slot != drag_insert_ || band_changed || folder_target_changed) {
     drag_insert_ = slot;
     if (animated_kind) {
       RetargetDragSlide();  // The gap moved: siblings glide to the new slot.
@@ -1550,6 +1563,9 @@ void PhiWindowController::CommitDrag() {
   const int from_pos = drag_index_;
   const int slot = drag_insert_;
   const bool active = drag_active_;
+  // The tree target a bookmark drag resolved (CancelDrag clears it).
+  const std::string bookmark_parent = bookmark_drop_parent_;
+  const int bookmark_index = bookmark_drop_index_;
   CancelDrag();
   if (!active || slot < 0) {
     return;
@@ -1578,12 +1594,21 @@ void PhiWindowController::CommitDrag() {
                               slot);
       }
     } else if (band == DropBand::kBookmarks && host_) {
+      // The visible slot counts nested outline rows; conversions land at
+      // the ROOT, so map it to a root sibling position first.
+      int root_slot = 0;
+      for (int i = 0; i < std::min(slot, static_cast<int>(bookmarks_.size()));
+           ++i) {
+        if (bookmarks_[static_cast<size_t>(i)].depth == 0) {
+          ++root_slot;
+        }
+      }
       if (row.b_index >= 0) {
         host_->RequestDropSplit(window_id_, row.index, row.b_index,
-                                /*as_bookmark=*/true, slot);
+                                /*as_bookmark=*/true, root_slot);
       } else {
         host_->RequestDropTab(window_id_, row.index, /*as_bookmark=*/true,
-                              slot);
+                              root_slot);
       }
     }
     return;
@@ -1610,6 +1635,30 @@ void PhiWindowController::CommitDrag() {
       }
     }
     host_->RemoveStoredRow(pin.guid);
+    return;
+  }
+
+  // A bookmark reorder is a TREE move (the outline's resolved target), so
+  // it must not fall into the flat same-slot early-out below: dropping INTO
+  // a folder can share the visible slot with the dragged row's own.
+  if (kind == DragKind::kBookmark) {
+    if (host_ && from_pos >= 0 &&
+        from_pos < static_cast<int>(bookmarks_.size()) &&
+        bookmark_index >= 0) {
+      const ShortcutRow& dragged = bookmarks_[static_cast<size_t>(from_pos)];
+      // Skip the no-op: the same parent at the same sibling position.
+      int current = 0;
+      for (int j = 0; j < from_pos; ++j) {
+        if (bookmarks_[static_cast<size_t>(j)].parent_guid ==
+            dragged.parent_guid) {
+          ++current;
+        }
+      }
+      if (dragged.parent_guid != bookmark_parent ||
+          bookmark_index != current) {
+        host_->MoveStoredRow(dragged.guid, bookmark_parent, bookmark_index);
+      }
+    }
     return;
   }
 
@@ -1650,12 +1699,7 @@ void PhiWindowController::CommitDrag() {
       }
       break;
     case DragKind::kBookmark:
-      if (host_ && from_pos >= 0 &&
-          from_pos < static_cast<int>(bookmarks_.size())) {
-        host_->ReorderStoredRow(
-            bookmarks_[static_cast<size_t>(from_pos)].guid, to_pos);
-      }
-      break;
+      break;  // Handled above — bookmarks resolve a tree target.
     case DragKind::kChip:
       if (host_ && from_pos >= 0 &&
           from_pos < static_cast<int>(chips_.size())) {
@@ -1676,6 +1720,9 @@ void PhiWindowController::CancelDrag() {
   drag_insert_ = -1;
   drag_grab_dx_ = 0;
   drag_grab_dy_ = 0;
+  bookmark_drop_parent_.clear();
+  bookmark_drop_index_ = -1;
+  bookmark_drop_folder_row_ = -1;
   drag_slide_from_.clear();
   drag_slide_to_.clear();
   row_slide_from_.clear();
@@ -1692,6 +1739,69 @@ void PhiWindowController::CancelDrag() {
       ::InvalidateRect(shell_hwnd_, nullptr, FALSE);
     }
   }
+}
+
+int PhiWindowController::ResolveBookmarkDrop(POINT pt) {
+  bookmark_drop_parent_.clear();
+  bookmark_drop_index_ = -1;
+  bookmark_drop_folder_row_ = -1;
+  const int n = static_cast<int>(bookmarks_.size());
+  // The sibling position visible row `i` holds within its parent, with the
+  // dragged row excluded — the store reinserts AFTER pulling it out.
+  const auto sibling_pos = [&](int i) {
+    int at = 0;
+    for (int j = 0; j < i; ++j) {
+      if (j != drag_index_ &&
+          bookmarks_[static_cast<size_t>(j)].parent_guid ==
+              bookmarks_[static_cast<size_t>(i)].parent_guid) {
+        ++at;
+      }
+    }
+    return at;
+  };
+  // The row under the pointer decides the target level (the Mac's
+  // SidebarBookmarkFolderDropResolver); the floating row's own slot and the
+  // gaps between rows fall through to the midpoint rule below.
+  for (int i = 0; i < n; ++i) {
+    const ShortcutRow& row = bookmarks_[static_cast<size_t>(i)];
+    if (i == drag_index_ || pt.y < row.bounds.top ||
+        pt.y > row.bounds.bottom) {
+      continue;
+    }
+    const bool upper = pt.y < (row.bounds.top + row.bounds.bottom) / 2;
+    if (row.folder && row.expanded) {
+      // Anywhere on an expanded folder inserts as its first child — the
+      // gap right below it IS the child slot.
+      bookmark_drop_parent_ = row.guid;
+      bookmark_drop_index_ = 0;
+      return i + 1;
+    }
+    if (row.folder && upper) {
+      // The upper half of a collapsed folder drops INTO it (appended);
+      // the row highlights instead of a gap opening.
+      bookmark_drop_parent_ = row.guid;
+      bookmark_drop_index_ = std::numeric_limits<int>::max();
+      bookmark_drop_folder_row_ = i;
+      return i + 1;
+    }
+    // Before/after the row among ITS OWN siblings.
+    bookmark_drop_parent_ = row.parent_guid;
+    bookmark_drop_index_ = sibling_pos(i) + (upper ? 0 : 1);
+    return i + (upper ? 0 : 1);
+  }
+  // A gap: insert before the first row whose midpoint sits below the
+  // pointer, at that row's level; past the last row appends to the root.
+  for (int i = 0; i < n; ++i) {
+    const ShortcutRow& row = bookmarks_[static_cast<size_t>(i)];
+    if (i != drag_index_ &&
+        pt.y <= (row.bounds.top + row.bounds.bottom) / 2) {
+      bookmark_drop_parent_ = row.parent_guid;
+      bookmark_drop_index_ = sibling_pos(i);
+      return i;
+    }
+  }
+  bookmark_drop_index_ = std::numeric_limits<int>::max();
+  return n;
 }
 
 int PhiWindowController::DragInsertSlot(POINT pt) {
@@ -2624,27 +2734,42 @@ void PhiWindowController::RebuildShortcuts() {
   if (!host_) {
     return;
   }
-  const auto consume = [](std::vector<PhiStoredRowView> in,
-                          std::vector<ShortcutRow>* out) {
-    for (PhiStoredRowView& view : in) {
-      ShortcutRow row;
-      row.title =
-          base::UTF8ToWide(!view.title.empty() ? view.title : view.url);
-      row.guid = std::move(view.guid);
-      row.url = std::move(view.url);
-      row.folder = view.folder;
-      row.favicon = std::move(view.favicon_bgra);
-      row.favicon_width = view.favicon_width;
-      row.favicon_height = view.favicon_height;
-      row.url_b = std::move(view.url_b);
-      row.title_b = base::UTF8ToWide(view.title_b);
-      row.partner_guid = std::move(view.partner_guid);
-      out->push_back(std::move(row));
+  const auto consume = [](PhiStoredRowView view) {
+    ShortcutRow row;
+    row.title =
+        base::UTF8ToWide(!view.title.empty() ? view.title : view.url);
+    row.guid = std::move(view.guid);
+    row.url = std::move(view.url);
+    row.folder = view.folder;
+    row.favicon = std::move(view.favicon_bgra);
+    row.favicon_width = view.favicon_width;
+    row.favicon_height = view.favicon_height;
+    row.url_b = std::move(view.url_b);
+    row.title_b = base::UTF8ToWide(view.title_b);
+    row.partner_guid = std::move(view.partner_guid);
+    return row;
+  };
+  for (PhiStoredRowView& view : host_->PinnedRows(window_id_)) {
+    pinned_.push_back(consume(std::move(view)));
+  }
+  // The sidebar is an outline (the Mac's NSOutlineView): an expanded folder
+  // splices its children in below itself, one indent step deeper.
+  const auto descend = [&](auto&& self, const std::string& parent,
+                           int depth) -> void {
+    for (PhiStoredRowView& view : host_->BookmarkRows(window_id_, parent)) {
+      ShortcutRow row = consume(std::move(view));
+      row.depth = depth;
+      row.parent_guid = parent;
+      row.expanded = row.folder && expanded_bookmarks_.count(row.guid) > 0;
+      const bool recurse = row.expanded;
+      const std::string guid = row.guid;
+      bookmarks_.push_back(std::move(row));
+      if (recurse) {
+        self(self, guid, depth + 1);
+      }
     }
   };
-  consume(host_->PinnedRows(window_id_), &pinned_);
-  // The sidebar shows the root level; folders open from the Bookmarks menu.
-  consume(host_->BookmarkRows(window_id_, std::string()), &bookmarks_);
+  descend(descend, std::string(), 0);
   bookmark_row_count_ = static_cast<int>(bookmarks_.size());
 
   // Collapse pinned SPLIT pairs into one merged cell (the Mac's
@@ -3296,7 +3421,16 @@ void PhiWindowController::OnChromeClick(int x, int y) {
     if (::PtInRect(&bookmark.bounds, pt)) {
       ArmDrag(DragKind::kBookmark,
               static_cast<int>(&bookmark - bookmarks_.data()), pt);
-      if (!bookmark.folder && !bookmark.url.empty()) {
+      if (bookmark.folder) {
+        // A folder click discloses/collapses its children (the Mac's
+        // toggleItemExpanded). Children splice in AFTER the folder row, so
+        // the armed drag index stays valid across the rebuild.
+        const std::string guid = bookmark.guid;
+        if (!expanded_bookmarks_.erase(guid)) {
+          expanded_bookmarks_.insert(guid);
+        }
+        RefreshTabs();
+      } else if (!bookmark.url.empty()) {
         // Sidebar bookmark rows bind like pins (bookmarkGuidBacking); the
         // Bookmarks menu keeps opening plain tabs.
         OpenOrFocusPinned(bookmark.guid, bookmark.url);
@@ -3874,9 +4008,9 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
         continue;
       }
       // The Mac bookmark-row menu: open, open as split, copy, rename,
-      // delete (folders keep rename/delete only).
+      // delete (folders keep rename/new-nested-folder/delete).
       enum : UINT { kOpen = 1, kOpenSplit, kCopyUrl, kCopyLeft, kCopyRight,
-                    kRename, kRemove };
+                    kRename, kNewFolder, kRemove };
       HMENU menu = ::CreatePopupMenu();
       if (!menu) {
         return;
@@ -3893,6 +4027,10 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
         }
       }
       ::AppendMenuW(menu, MF_STRING, kRename, L"Rename...");
+      if (bookmark.folder) {
+        ::AppendMenuW(menu, MF_STRING, kNewFolder,
+                      L"New Nested Folder...");
+      }
       ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
       ::AppendMenuW(menu, MF_STRING, kRemove,
                     bookmark.folder ? L"Delete Folder" : L"Delete");
@@ -3939,14 +4077,52 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
         CopyTextToClipboard(shell_hwnd_, base::UTF8ToWide(url_b));
       } else if (chosen == kRename) {
         std::wstring name = bookmark_title;
-        if (PhiPromptText(shell_hwnd_, L"Rename Bookmark",
-                          L"Enter a new name for this bookmark.", &name)) {
+        if (PhiPromptText(shell_hwnd_,
+                          folder ? L"Rename Folder" : L"Rename Bookmark",
+                          folder ? L"Enter a new name for this folder."
+                                 : L"Enter a new name for this bookmark.",
+                          &name)) {
           host_->RenameStoredRow(guid, base::WideToUTF8(name));
+        }
+      } else if (chosen == kNewFolder && folder) {
+        std::wstring name = L"Untitled";
+        if (PhiPromptText(shell_hwnd_, L"New Folder", L"Folder name:",
+                          &name)) {
+          // Disclose the parent so the new child is visible where it lands.
+          expanded_bookmarks_.insert(guid);
+          host_->AddBookmarkFolder(window_id_, guid, base::WideToUTF8(name));
         }
       } else if (chosen == kRemove && !guid.empty()) {
         host_->RemoveStoredRow(guid);  // A folder takes its subtree.
       }
       return;
+    }
+    // The sidebar background — the Mac tab-area menu's bookmark block
+    // (TabAreaContextMenuHelper): root folder creation lives here.
+    const Layout layout = ComputeLayout();
+    if (!layout.horizontal_tabs && pt.x < layout.sidebar.right &&
+        pt.y > layout.title_bar.bottom) {
+      enum : UINT { kNewRootFolder = 1 };
+      HMENU menu = ::CreatePopupMenu();
+      if (!menu) {
+        return;
+      }
+      ::AppendMenuW(menu, MF_STRING, kNewRootFolder, L"New Folder...");
+      POINT screen = pt;
+      ::ClientToScreen(shell_hwnd_, &screen);
+      const UINT chosen = static_cast<UINT>(::TrackPopupMenu(
+          menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN |
+                    TPM_RIGHTBUTTON,
+          screen.x, screen.y, 0, shell_hwnd_, nullptr));
+      ::DestroyMenu(menu);
+      if (chosen == kNewRootFolder) {
+        std::wstring name = L"Untitled";
+        if (PhiPromptText(shell_hwnd_, L"New Folder", L"Folder name:",
+                          &name)) {
+          host_->AddBookmarkFolder(window_id_, std::string(),
+                                   base::WideToUTF8(name));
+        }
+      }
     }
     return;
   }
@@ -5020,6 +5196,8 @@ void PhiWindowController::PaintSidebarBand(HDC dc,
     }
     pill.top += Scaled(kRowPad);
     pill.bottom -= Scaled(kRowPad);
+    // Outline depth indents the pill itself, as the Mac outline rows do.
+    pill.left += bookmark.depth * Scaled(kBookmarkIndent);
     const bool bookmark_hovered =
         hover_kind_ == HoverKind::kBookmark &&
         hover_index_ == static_cast<int>(&bookmark - bookmarks_.data());
@@ -5027,6 +5205,13 @@ void PhiWindowController::PaintSidebarBand(HDC dc,
       // Lifted, like the dragged tab row.
       FillRounded(dc, pill, palette.hover_strong, Scaled(kCornerRadius));
       StrokeRounded(dc, pill, palette.hover_strong, palette.border,
+                    Scaled(kCornerRadius));
+    } else if (drag_active_ && drag_kind_ == DragKind::kBookmark &&
+               bookmark_drop_folder_row_ ==
+                   static_cast<int>(bookmark_order_index)) {
+      // The Mac resolver's folder highlight: this drop lands INSIDE.
+      FillRounded(dc, pill, palette.hover_strong, Scaled(kCornerRadius));
+      StrokeRounded(dc, pill, palette.hover_strong, palette.accent,
                     Scaled(kCornerRadius));
     } else if (bookmark.active) {
       // Its bound live tab is the active tab: the row IS the tab, so it
@@ -5081,8 +5266,10 @@ void PhiWindowController::PaintSidebarBand(HDC dc,
     }
     ::SetTextColor(dc, kLabel);
     std::wstring label =
-        bookmark.folder ? (std::wstring(L"\u25B8  ") + bookmark.title)
-                        : bookmark.title;
+        bookmark.folder
+            ? (std::wstring(bookmark.expanded ? L"\u25BE  " : L"\u25B8  ") +
+               bookmark.title)
+            : bookmark.title;
     if (split_row) {
       // "primary \u2022 secondary" \u2014 the secondary title, or its www.-stripped
       // host when the title duplicates the primary's (the Mac's fallback).

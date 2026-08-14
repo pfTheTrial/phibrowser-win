@@ -974,6 +974,37 @@ void PhiCoordinator::ReorderStoredRow(const std::string& guid,
   }
 }
 
+void PhiCoordinator::MoveStoredRow(const std::string& guid,
+                                   const std::string& new_parent_guid,
+                                   int new_index) {
+  // The store refuses non-bookmarks, foreign parents, and cycles.
+  if (tab_store_.Move(guid, new_parent_guid, new_index)) {
+    for (const auto& [slot, controller] : windows_) {
+      controller->RefreshTabs();
+    }
+    PhiSettingsWindow::Refresh();
+  }
+}
+
+std::string PhiCoordinator::AddBookmarkFolder(int64_t slot,
+                                              const std::string& parent_guid,
+                                              const std::string& title) {
+  std::string profile_id, space_id;
+  if (title.empty() || !OwnerForSlot(slot, &profile_id, &space_id)) {
+    return std::string();
+  }
+  const std::string guid = tab_store_.AddBookmark(
+      profile_id, space_id, parent_guid, title, std::string(),
+      /*folder=*/true, std::string(), 0, 0);
+  if (!guid.empty()) {
+    for (const auto& [s2, controller] : windows_) {
+      controller->RefreshTabs();
+    }
+    PhiSettingsWindow::Refresh();
+  }
+  return guid;
+}
+
 int PhiCoordinator::SidebarWidth() const {
   return sidebar_width_;
 }
