@@ -67,10 +67,12 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   void OnImportCompleted(const char* source, bool success) override;
   void OnPlaceholderModeChanged(int64_t window_id, bool entered) override;
   void OnContentFullscreenChanged(int64_t window_id, bool fullscreen) override;
+  void OnExtensionsChanged(int64_t window_id) override;
 
   // PhiControlDelegate (called on the control server's I/O thread):
   std::string HandleControlCommand(const std::string& type,
                                    const std::string& payload_json) override;
+  bool AuthorizeAgentPeer(const PhiAgentPeer& peer) override;
 
   // PhiSlotHost (called on the UI thread by a slot's sidebar):
   std::vector<PhiSpaceView> Spaces() const override;
@@ -168,6 +170,8 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
                       bool alt) override;
   void RestoreAllShortcuts() override;
   bool AnyShortcutCustomized() const override;
+  std::vector<std::string> AgentGrantRows() const override;
+  void RemoveAgentGrant(int index) override;
   bool DeveloperMode() const override;
   void SetDeveloperMode(bool enabled) override;
   void OpenBrowserSettings() override;
@@ -234,6 +238,13 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
                                            LPARAM lparam);
   // The shell window owning the focus HWND, or null (focus is elsewhere).
   HWND ShellForFocus() const;
+  // Agent-peer consent (C1): the UI-thread half of AuthorizeAgentPeer —
+  // grant store first, then the session's remembered choices, then the
+  // consent dialog. Grants persist in PhiAgentGrants.json by IMAGE PATH
+  // (lowercased for comparison).
+  bool AuthorizeAgentPeerOnUi(const PhiAgentPeer& peer);
+  void LoadAgentGrants();
+  void SaveAgentGrants() const;
   // The chord a rebindable shortcut currently answers to: its override when
   // one exists, its default otherwise.
   PhiShortcutChord EffectiveChord(const std::string& name) const;
@@ -335,6 +346,12 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // "Restore last session" — persisted app-wide, mirrored into each loaded
   // profile's SessionStartupPref (LAST/DEFAULT).
   bool restore_last_session_ = false;
+  // Persistent "Always Allow" agent grants (lowercased image paths) and the
+  // session-scoped consent memory (allow-once / deny-for-now per path).
+  std::set<std::wstring> agent_grants_;
+  std::set<std::wstring> session_allowed_peers_;
+  std::set<std::wstring> session_denied_peers_;
+  std::wstring agent_grants_path_;
   // The bookmark bar's two visibility switches (the Mac View menu's pair).
   bool always_show_bookmark_bar_ = false;
   bool bookmark_bar_on_new_tab_ = false;

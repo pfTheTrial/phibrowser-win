@@ -30,6 +30,7 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
 #include "phibrowser-win/client/phi_downloads_popover.h"
+#include "phibrowser-win/client/phi_extensions_popover.h"
 #include "phibrowser-win/client/phi_group_overview.h"
 #include "phibrowser-win/client/phi_search_tabs_panel.h"
 #include "phibrowser-win/client/phi_tab_switcher.h"
@@ -597,6 +598,8 @@ PhiWindowController::Layout PhiWindowController::ComputeLayout() {
     int r = w - m - Scaled(kTopBarLeading);
     out.downloads = {r - btn, mid - btn / 2, r, mid + btn / 2};
     r = out.downloads.left - Scaled(kTopBarSpacing);
+    out.extensions = {r - btn, mid - btn / 2, r, mid + btn / 2};
+    r = out.extensions.left - Scaled(kTopBarSpacing);
     out.feedback = {r - Scaled(kFeedbackWidth), mid - Scaled(kPillHeight) / 2,
                     r, mid + Scaled(kPillHeight) / 2};
     const int field_h = Scaled(kTopBarField);
@@ -687,6 +690,8 @@ PhiWindowController::Layout PhiWindowController::ComputeLayout() {
   out.downloads = {bx, bar_top, bx + btn, bar_top + bar_h};
   bx += btn + Scaled(4);
   out.memory = {bx, bar_top, bx + btn, bar_top + bar_h};
+  bx += btn + Scaled(4);
+  out.extensions = {bx, bar_top, bx + btn, bar_top + bar_h};
   int br = sidebar - inset;
   const int pill_top = bar_top + (bar_h - Scaled(kPillHeight)) / 2;
   // The Chat capsule fills the whole 24pt row (ChatButton contentHeight).
@@ -705,6 +710,7 @@ PhiWindowController::Layout PhiWindowController::ComputeLayout() {
     out.bottom_bar = zero;
     out.downloads = zero;
     out.memory = zero;
+    out.extensions = zero;
     out.feedback = zero;
     out.chat = zero;
     out.tabs_limit = out.tabs_top;  // No tab rows either.
@@ -2601,10 +2607,11 @@ void PhiWindowController::OnChromeMouseMove(POINT client_pt) {
   {
     // The nav buttons' hover washes (back/forward/reload/search).
     const Layout layout = ComputeLayout();
-    const std::array<RECT, 8> nav = {layout.back, layout.forward,
+    const std::array<RECT, 9> nav = {layout.back, layout.forward,
                                      layout.reload, layout.search_tabs,
                                      layout.downloads, layout.memory,
-                                     layout.feedback, layout.chat};
+                                     layout.feedback, layout.chat,
+                                     layout.extensions};
     for (size_t i = 0; i < nav.size() && kind == HoverKind::kNone; ++i) {
       if (::PtInRect(&nav[i], client_pt)) {
         kind = HoverKind::kNav;
@@ -4090,6 +4097,20 @@ void PhiWindowController::OnChromeClick(int x, int y) {
                                   framework_,
                                   active_browser_ ? active_browser_
                                                   : window_id_);
+    }
+    return;
+  }
+  if (::PtInRect(&layout.extensions, pt)) {
+    // The extensions popover, off the puzzle button.
+    if (host_ && framework_) {
+      RECT anchor = layout.extensions;
+      ::MapWindowPoints(shell_hwnd_, nullptr,
+                        reinterpret_cast<POINT*>(&anchor), 2);
+      PhiExtensionsPopover::Toggle(shell_hwnd_, anchor,
+                                   host_->PaletteForSlot(window_id_),
+                                   framework_,
+                                   active_browser_ ? active_browser_
+                                                   : window_id_);
     }
     return;
   }
@@ -5767,6 +5788,13 @@ void PhiWindowController::PaintChrome(HDC dc,
           memory_px);
       PhiBlendBgra(dc, layout.memory, memory_bgra.data(), memory_px,
                    memory_px);
+    }
+    if (layout.extensions.right > layout.extensions.left) {
+      // The extensions puzzle button (nav-hover ordinal 8 = bottom_hot(4)).
+      if (bottom_hot(4)) {
+        FillRounded(dc, layout.extensions, palette.hover, Scaled(6));
+      }
+      DrawGlyph(dc, layout.extensions, L"", kLabel);  // Puzzle.
     }
     if (previous_icon_font) {
       ::SelectObject(dc, previous_icon_font);

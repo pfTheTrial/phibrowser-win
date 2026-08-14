@@ -2151,6 +2151,29 @@ void PhiSettingsWindow::BuildDeveloper(int* y) {
                 L"a private socket only this machine's processes can reach.");
   *y += Scaled(kRowPadding);
   EndSection(y);
+  BeginSection(y, L"Approved agents");
+  const std::vector<std::string> grants = host_->AgentGrantRows();
+  if (grants.empty()) {
+    AddSubHint(y, L"No program holds \u201CAlways Allow\u201D. Anything "
+                  L"connecting to control Phi is approved per connection.");
+  } else {
+    for (size_t i = 0; i < grants.size(); ++i) {
+      const std::wstring path = base::UTF8ToWide(grants[i]);
+      const RECT control = AddRow(y, path.c_str(), 22, 22);
+      Item remove;
+      remove.kind = ItemKind::kToolButton;
+      remove.text = L"\uE74D";  // Delete — revokes the standing grant.
+      remove.action = "removegrant";
+      remove.payload = base::NumberToString(static_cast<int>(i));
+      remove.bounds = control;
+      items_.push_back(std::move(remove));
+      if (i + 1 < grants.size()) {
+        AddDividerRow(y);
+      }
+    }
+  }
+  *y += Scaled(kRowPadding);
+  EndSection(y);
   BeginSection(y, L"Agent Password Manager");
   AddToggleRow(y, L"Bitwarden password manager", /*on=*/false,
                /*enabled=*/false, std::string());
@@ -2901,6 +2924,10 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
     }
   } else if (item.action == "restoreshortcuts") {
     host_->RestoreAllShortcuts();
+  } else if (item.action == "removegrant") {
+    int index = -1;
+    base::StringToInt(item.payload, &index);
+    host_->RemoveAgentGrant(index);
   } else if (item.action == "addrule") {
     std::wstring value;
     if (PhiPromptText(hwnd_, L"Add URL Rule",

@@ -452,6 +452,7 @@ class PhiWindowController {
     // it opens from the menu bar, as on Mac. All placeholders except through
     // the menu.
     RECT downloads{}, memory{}, feedback{}, chat{};
+    RECT extensions{};     // The puzzle button (bottom bar / header).
     RECT add_space{};      // The strip's trailing "+" chip.
     int chips_left = 0, chips_top = 0;
     int chips_limit = 0;  // Right edge chips may not cross.

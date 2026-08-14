@@ -14,6 +14,15 @@
 
 namespace phi_client {
 
+// The identity of a pipe client, resolved at connection accept — the
+// Windows analogue of the Mac's process-tree peer identification.
+struct PhiAgentPeer {
+  DWORD pid = 0;
+  // Full image path of the connecting process; empty when the process died
+  // or could not be opened (treated as unidentified).
+  std::wstring image_path;
+};
+
 // Handles /phi-agent control commands. Called on the control server's I/O
 // thread; the implementation marshals to the browser UI thread itself.
 // `type` is the envelope verb (e.g. "agentSpace.list"); `payload_json` is the
@@ -23,6 +32,12 @@ class PhiControlDelegate {
   virtual ~PhiControlDelegate() = default;
   virtual std::string HandleControlCommand(const std::string& type,
                                            const std::string& payload_json) = 0;
+  // Called ONCE per accepted connection, on the I/O thread, BEFORE any
+  // request is served — control channel and CDP relay alike (CDP grants
+  // full browser control, so both families sit behind the same consent).
+  // The implementation marshals to the UI thread and may block on a consent
+  // dialog. False refuses the connection.
+  virtual bool AuthorizeAgentPeer(const PhiAgentPeer& peer) = 0;
 };
 
 // The client's unified control socket — the Windows twin of the Mac

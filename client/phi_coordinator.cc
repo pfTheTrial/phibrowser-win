@@ -24,6 +24,7 @@
 #include "base/values.h"
 #include "base/rand_util.h"
 #include "phibrowser-win/client/phi_icons.h"
+#include "phibrowser-win/client/phi_extensions_popover.h"
 #include "phibrowser-win/client/phi_menu_bar.h"
 #include "phibrowser-win/client/phi_prompt.h"
 #include "phibrowser-win/client/phi_tab_switcher.h"
@@ -118,6 +119,13 @@ PhiCoordinator::~PhiCoordinator() {
 namespace {
 constexpr wchar_t kMsgClassName[] = L"PhiClientControlMsg";
 constexpr UINT WM_PHI_CONTROL = WM_APP + 1;
+constexpr UINT WM_PHI_AUTHORIZE = WM_APP + 2;
+
+// A connection-consent decision marshaled the same way as ControlCall.
+struct AuthorizeCall {
+  RAW_PTR_EXCLUSION const PhiAgentPeer* peer = nullptr;
+  bool allowed = false;
+};
 
 // The command marshaled from the I/O thread to the UI thread by SendMessage.
 // The pointers reference stack strings that outlive the blocking SendMessage.
@@ -160,6 +168,7 @@ void PhiCoordinator::OnFrameworkReady(phi_framework::PhiFramework* framework,
   layout_path_ = user_data_dir + L"\\PhiLayout.json";
   theme_path_ = user_data_dir + L"\\PhiTheme.json";
   prefs_path_ = user_data_dir + L"\\PhiPrefs.json";
+  agent_grants_path_ = user_data_dir + L"\\PhiAgentGrants.json";
   url_rules_path_ = user_data_dir + L"\\PhiUrlRules.json";
   credentials_dir_ = user_data_dir;
   // Prefer the real vault: the out-of-process Bitwarden helper, which owns the
@@ -187,6 +196,7 @@ void PhiCoordinator::OnFrameworkReady(phi_framework::PhiFramework* framework,
   LoadLayoutMode();
   LoadTheme();
   LoadPrefs();
+  LoadAgentGrants();
   PushRestorePreference();  // Into the loaded profiles' startup prefs.
   tab_store_.Load(user_data_dir + L"\\PhiTabData.json");
   PushSpaceMenu();  // The page context menu's "Open Link in Space" list.
@@ -226,6 +236,15 @@ LRESULT CALLBACK PhiCoordinator::MsgWndProc(HWND hwnd,
     }
     return 0;
   }
+  if (msg == WM_PHI_AUTHORIZE) {
+    auto* self = reinterpret_cast<PhiCoordinator*>(
+        ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    auto* call = reinterpret_cast<AuthorizeCall*>(lparam);
+    if (self && call && call->peer) {
+      call->allowed = self->AuthorizeAgentPeerOnUi(*call->peer);
+    }
+    return 0;
+  }
   return ::DefWindowProcW(hwnd, msg, wparam, lparam);
 }
 
@@ -241,6 +260,147 @@ std::string PhiCoordinator::HandleControlCommand(
   ::SendMessageW(msg_hwnd_, WM_PHI_CONTROL, 0,
                  reinterpret_cast<LPARAM>(&call));
   return call.result;
+}
+
+bool PhiCoordinator::AuthorizeAgentPeer(const PhiAgentPeer& peer) {
+  // I/O thread; the decision (and any consent dialog) runs on the UI thread.
+  if (!msg_hwnd_) {
+    return false;
+  }
+  AuthorizeCall call;
+  call.peer = &peer;
+  ::SendMessageW(msg_hwnd_, WM_PHI_AUTHORIZE, 0,
+                 reinterpret_cast<LPARAM>(&call));
+  return call.allowed;
+}
+
+bool PhiCoordinator::AuthorizeAgentPeerOnUi(const PhiAgentPeer& peer) {
+  // An unidentifiable peer (no pid, or the process died before it could be
+  // opened) is refused outright: consent must name WHO is asking.
+  if (peer.image_path.empty()) {
+    LOG(WARNING) << "[PhiAgent] refused unidentified pipe peer (pid "
+                 << peer.pid << ")";
+    return false;
+  }
+  std::wstring key = peer.image_path;
+  for (wchar_t& c : key) {
+    c = towlower(c);
+  }
+  if (agent_grants_.count(key) || session_allowed_peers_.count(key)) {
+    return true;
+  }
+  if (session_denied_peers_.count(key)) {
+    return false;  // Asked and denied this run — no dialog spam per request.
+  }
+  // The consent dialog — the Mac's AgentAccessApprovalAlert. Owned by a
+  // shell window when one exists; a MessageBox fallback (allow-once only)
+  // covers the pre-window startup connection.
+  const std::wstring message =
+      peer.image_path + L"\n(process " + std::to_wstring(peer.pid) +
+      L") wants to control Phi — tabs, navigation, and page content.";
+  HWND owner = nullptr;
+  for (const auto& [slot, controller] : windows_) {
+    if (controller->shell_hwnd()) {
+      owner = controller->shell_hwnd();
+      break;
+    }
+  }
+  int chosen = -1;
+  if (owner) {
+    chosen = PhiPromptChoose(owner, L"Agent access request", message.c_str(),
+                             {L"Allow Once", L"Always Allow", L"Deny"}, 0);
+  } else {
+    chosen = ::MessageBoxW(nullptr,
+                           (message + L"\n\nAllow this connection?").c_str(),
+                           L"Phi — Agent access request",
+                           MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2 |
+                               MB_SETFOREGROUND) == IDYES
+                 ? 0
+                 : 2;
+  }
+  if (chosen == 0) {
+    session_allowed_peers_.insert(key);
+    return true;
+  }
+  if (chosen == 1) {
+    agent_grants_.insert(key);
+    SaveAgentGrants();
+    PhiSettingsWindow::Refresh();
+    return true;
+  }
+  session_denied_peers_.insert(key);
+  return false;
+}
+
+std::vector<std::string> PhiCoordinator::AgentGrantRows() const {
+  std::vector<std::string> rows;
+  for (const std::wstring& path : agent_grants_) {
+    rows.push_back(base::WideToUTF8(path));
+  }
+  return rows;
+}
+
+void PhiCoordinator::RemoveAgentGrant(int index) {
+  if (index < 0 || index >= static_cast<int>(agent_grants_.size())) {
+    return;
+  }
+  auto it = agent_grants_.begin();
+  std::advance(it, index);
+  agent_grants_.erase(it);
+  SaveAgentGrants();
+}
+
+void PhiCoordinator::LoadAgentGrants() {
+  HANDLE f = ::CreateFileW(agent_grants_path_.c_str(), GENERIC_READ,
+                           FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                           FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (f == INVALID_HANDLE_VALUE) {
+    return;
+  }
+  std::string json;
+  char buf[4096];
+  DWORD read = 0;
+  while (::ReadFile(f, buf, sizeof(buf), &read, nullptr) && read > 0) {
+    json.append(buf, read);
+  }
+  ::CloseHandle(f);
+  std::optional<base::DictValue> root =
+      base::JSONReader::ReadDict(json, base::JSON_PARSE_RFC);
+  if (!root) {
+    return;
+  }
+  if (const base::ListValue* always = root->FindList("always")) {
+    for (const base::Value& v : *always) {
+      if (v.is_string()) {
+        std::wstring key = base::UTF8ToWide(v.GetString());
+        for (wchar_t& c : key) {
+          c = towlower(c);
+        }
+        agent_grants_.insert(std::move(key));
+      }
+    }
+  }
+}
+
+void PhiCoordinator::SaveAgentGrants() const {
+  base::DictValue root;
+  base::ListValue always;
+  for (const std::wstring& path : agent_grants_) {
+    always.Append(base::WideToUTF8(path));
+  }
+  root.Set("always", std::move(always));
+  std::string json;
+  base::JSONWriter::Write(root, &json);
+  HANDLE f = ::CreateFileW(agent_grants_path_.c_str(), GENERIC_WRITE, 0,
+                           nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL,
+                           nullptr);
+  if (f == INVALID_HANDLE_VALUE) {
+    return;
+  }
+  DWORD wrote = 0;
+  ::WriteFile(f, json.data(), static_cast<DWORD>(json.size()), &wrote,
+              nullptr);
+  ::CloseHandle(f);
 }
 
 void PhiCoordinator::LoadSpaces() {
@@ -4568,6 +4728,10 @@ LRESULT CALLBACK PhiCoordinator::KeyboardHookProc(int code,
     break;
   }
   return ::CallNextHookEx(nullptr, code, wparam, lparam);
+}
+
+void PhiCoordinator::OnExtensionsChanged(int64_t window_id) {
+  PhiExtensionsPopover::RefreshOpen();
 }
 
 void PhiCoordinator::OnContentFullscreenChanged(int64_t window_id,

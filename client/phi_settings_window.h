@@ -117,6 +117,12 @@ class PhiSettingsHost {
   virtual void RestoreAllShortcuts() = 0;
   virtual bool AnyShortcutCustomized() const = 0;
 
+  // The persisted "Always Allow" agent grants (C1 consent), as displayable
+  // rows (the UTF-8 image path). Removing one revokes it for future
+  // connections; live sessions keep their allow-once.
+  virtual std::vector<std::string> AgentGrantRows() const = 0;
+  virtual void RemoveAgentGrant(int index) = 0;
+
   // Developer mode gates the Developer pane, as on Mac (default off).
   virtual bool DeveloperMode() const = 0;
   virtual void SetDeveloperMode(bool enabled) = 0;

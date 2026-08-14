@@ -11,11 +11,13 @@
 #include <ws2tcpip.h>
 
 #include <sddl.h>
+#include <tlhelp32.h>
 
 #include "phibrowser-win/client/phi_control_server.h"
 
 #include <algorithm>
 #include <cstdint>
+#include <iterator>
 #include <optional>
 #include <string>
 #include <vector>
@@ -342,6 +344,63 @@ void PhiControlServer::ListenLoop() {
 }
 
 void PhiControlServer::HandleConnection(HANDLE pipe) {
+  // Peer identity first: who is on the other end of the pipe. The pid is
+  // the kernel's answer; the image path comes from the (still-running)
+  // process. Consent gates BOTH families below — CDP is full control.
+  PhiAgentPeer peer;
+  if (::GetNamedPipeClientProcessId(pipe, &peer.pid) && peer.pid) {
+    HANDLE process = ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE,
+                                   peer.pid);
+    if (process) {
+      wchar_t path[MAX_PATH * 2] = {};
+      DWORD length = static_cast<DWORD>(std::size(path));
+      if (::QueryFullProcessImageNameW(process, 0, path, &length)) {
+        peer.image_path.assign(path, length);
+      } else {
+        LOG(WARNING) << "[PhiAgent] QueryFullProcessImageName failed for pid "
+                     << peer.pid << ": " << ::GetLastError();
+      }
+      ::CloseHandle(process);
+    } else {
+      // A peer whose process cannot be opened (e.g. an ELEVATED client —
+      // its default owner is Administrators, which denies even
+      // QUERY_LIMITED to the non-elevated browser): fall back to the
+      // Toolhelp snapshot, which serves NAMES without per-process rights.
+      // The "name:" prefix keeps this weaker identity from ever matching a
+      // full-path grant (or the reverse).
+      LOG(WARNING) << "[PhiAgent] OpenProcess failed for pid " << peer.pid
+                   << ": " << ::GetLastError() << " — name-only identity";
+      HANDLE snapshot = ::CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+      if (snapshot != INVALID_HANDLE_VALUE) {
+        PROCESSENTRY32W entry = {};
+        entry.dwSize = sizeof(entry);
+        if (::Process32FirstW(snapshot, &entry)) {
+          do {
+            if (entry.th32ProcessID == peer.pid) {
+              peer.image_path =
+                  std::wstring(L"name:") + entry.szExeFile;
+              break;
+            }
+          } while (::Process32NextW(snapshot, &entry));
+        }
+        ::CloseHandle(snapshot);
+      }
+    }
+  } else {
+    LOG(WARNING) << "[PhiAgent] GetNamedPipeClientProcessId failed: "
+                 << ::GetLastError();
+  }
+  if (!delegate_ || !delegate_->AuthorizeAgentPeer(peer)) {
+    HANDLE deny_ev = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    static const char kDenied[] =
+        "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n";
+    OvWrite(pipe, deny_ev, kDenied, sizeof(kDenied) - 1);
+    ::CloseHandle(deny_ev);
+    ::FlushFileBuffers(pipe);
+    ::DisconnectNamedPipe(pipe);
+    ::CloseHandle(pipe);
+    return;
+  }
   HANDLE ev = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
   std::string head;
   if (ReadHttpHead(pipe, ev, &head)) {
