@@ -24,6 +24,29 @@ bool PhiPromptText(HWND owner,
 // True when the user confirms.
 bool PhiConfirm(HWND owner, const wchar_t* title, const wchar_t* message);
 
+// One keyboard chord — a virtual key plus its modifiers. vk 0 means
+// "unbound" (a rebindable shortcut whose chord was stolen by another).
+struct PhiShortcutChord {
+  UINT vk = 0;
+  bool ctrl = false;
+  bool shift = false;
+  bool alt = false;
+  bool operator==(const PhiShortcutChord&) const = default;
+};
+
+// "Ctrl+Alt+Shift+Key" display form, matching the menu bar's labels;
+// an unbound chord renders as an em dash.
+std::wstring PhiFormatChord(const PhiShortcutChord& chord);
+
+// A modal chord recorder — the Mac Shortcuts pane's inline capture. Shows
+// `message` over a live preview of the held modifiers and waits for one
+// complete chord (Ctrl or Alt required, except for function keys). Escape
+// or Cancel returns false; a captured chord lands in `out`.
+bool PhiPromptShortcut(HWND owner,
+                       const wchar_t* title,
+                       const wchar_t* message,
+                       PhiShortcutChord* out);
+
 // A modal list chooser — the Win32 stand-in for the Mac's Space chooser
 // shown when a navigation matches an "ask first" URL rule. `options` fills
 // a list box with `default_index` preselected; Open (or a double-click)

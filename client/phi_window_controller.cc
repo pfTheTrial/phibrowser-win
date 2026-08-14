@@ -30,6 +30,9 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
 #include "phibrowser-win/client/phi_downloads_popover.h"
+#include "phibrowser-win/client/phi_group_overview.h"
+#include "phibrowser-win/client/phi_search_tabs_panel.h"
+#include "phibrowser-win/client/phi_tab_switcher.h"
 #include "phibrowser-win/client/phi_dwrite.h"
 #include "phibrowser-win/client/phi_icons.h"
 #include "phibrowser-win/client/phi_mac_icons.h"
@@ -86,7 +89,13 @@ constexpr int kContentTopGap = 8;
 constexpr int kContentTopGapTopNav = 12;
 constexpr int kFaviconSlot = 16;    // The 16pt slot in the row…
 constexpr int kFaviconSize = 14;    // …holding a 14pt icon (radius 3).
-constexpr int kBookmarkIndent = 16;  // Outline indent per depth (AppKit's).
+constexpr int kBookmarkIndent = 16;
+// Omnibox suggestion dropdown metrics (DIP). The popup class itself is
+// registered further down (same anonymous namespace) — declared here because
+// the field methods above it need the registration.
+constexpr int kOmniboxRowHeight = 32;
+constexpr int kOmniboxMaxRows = 8;
+ATOM EnsureOmniboxPopupClass();  // Outline indent per depth (AppKit's).
 constexpr int kNewTabRowHeight = 36;
 // Pinned tabs: PinnedTabLayout — 45pt cells, 8pt gaps and insets, column
 // limit by width breakpoint (3 at this sidebar width), 53pt minimum width.
@@ -150,6 +159,7 @@ const PhiGroupColor& GroupColorByName(const std::string& name) {
 
 // Bands used by the two layouts that put navigation above the web content.
 constexpr int kTopBarHeight = 40;      // WebContentConstant.headerHeight
+constexpr int kBookmarkBarHeight = 32;  // The Mac BookmarkBar's barHeight.
 constexpr int kTopBarLeading = 16;     // header leading padding.
 constexpr int kTopBarSpacing = 8;      // header button spacing.
 constexpr int kTopBarField = 26;       // the top address capsule's height.
@@ -219,7 +229,8 @@ ATOM EnsureShellClass() {
   static const ATOM atom = [] {
     WNDCLASSEXW wc = {};
     wc.cbSize = sizeof(wc);
-    wc.style = CS_HREDRAW | CS_VREDRAW;
+    // CS_DBLCLKS: a group header's double-click opens the group overview.
+    wc.style = CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS;
     wc.lpfnWndProc = &PhiWindowController::ShellWndProc;
     wc.hInstance = ::GetModuleHandleW(nullptr);
     wc.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
@@ -484,6 +495,12 @@ PhiWindowController::Layout PhiWindowController::ComputeLayout() {
     }
   }
   EnsureFont();
+  if (content_fullscreen_) {
+    // Content fullscreen: the hosted child owns every pixel of the shell;
+    // every chrome rect stays empty.
+    out.content = out.client;
+    return out;
+  }
   const int w = out.client.right;
   const int h = out.client.bottom;
   if (!sidebar_resizing_ && host_) {
@@ -540,6 +557,18 @@ PhiWindowController::Layout PhiWindowController::ComputeLayout() {
     return mid;
   };
 
+  // The bookmark bar takes the content's first band when visible: the strip
+  // shows the ground tint and the paint pass lays pills over it.
+  const auto carve_bookmark_bar = [&](Layout* l) {
+    if (!BookmarkBarVisible()) {
+      return;
+    }
+    const int bar_h = Scaled(kBookmarkBarHeight);
+    l->bookmark_bar = {l->content.left, l->content.top, l->content.right,
+                       l->content.top + bar_h};
+    l->content.top += bar_h;
+  };
+
   if (layout_mode_ == PhiLayoutMode::kComfortable) {
     // The traditional stack: horizontal tab strip on the tint, a 12pt breath,
     // then the card, whose first band is the header row. No sidebar.
@@ -548,6 +577,7 @@ PhiWindowController::Layout PhiWindowController::ComputeLayout() {
     const int card_top = strip_top + strip_h + Scaled(kContentTopGapTopNav);
     const int mid = place_top_bar(m, w - m, card_top);
     out.content = {m, card_top + Scaled(kTopBarHeight), w - m, h - m};
+    carve_bookmark_bar(&out);
 
     // The strip: the active Space's compact pip leads (the Mac clears the
     // traffic lights with 80pt; Windows has none, so the edge inset does),
@@ -595,6 +625,7 @@ PhiWindowController::Layout PhiWindowController::ComputeLayout() {
     const int bar_left = hide_sidebar ? m : sidebar;
     const int mid = place_top_bar(bar_left, w - m, gap);
     out.content = {bar_left, gap + Scaled(kTopBarHeight), w - m, h - m};
+    carve_bookmark_bar(&out);
     // Chat capsule trailing (balanced shows it in the header, as on Mac).
     const int r2 = w - m - Scaled(kTopBarLeading);
     out.chat = {r2 - Scaled(kChatWidth), mid - Scaled(kPillHeight) / 2, r2,
@@ -622,6 +653,7 @@ PhiWindowController::Layout PhiWindowController::ComputeLayout() {
     }
     out.content = {hide_sidebar ? m : sidebar, tb + Scaled(kContentTopGap),
                    w - m, h - m};
+    carve_bookmark_bar(&out);
     out.tabs_top = tb + Scaled(kHeaderHeight + kHeaderSpacer);
   }
 
@@ -740,12 +772,14 @@ PhiWindowController::PhiWindowController(int64_t window_id,
                                         HWND browser_hwnd,
                                         phi_framework::PhiFramework* framework,
                                         PhiSlotHost* host,
-                                        bool agent)
+                                        bool agent,
+                                        bool incognito)
     : window_id_(window_id),
       browser_hwnd_(browser_hwnd),
       framework_(framework),
       host_(host),
-      agent_(agent) {
+      agent_(agent),
+      incognito_(incognito) {
   if (!browser_hwnd_ || !::IsWindow(browser_hwnd_)) {
     LOG(ERROR) << "[PhiClient] adopt: invalid browser HWND for window "
                << window_id_;
@@ -846,7 +880,9 @@ PhiWindowController::PhiWindowController(int64_t window_id,
   space_order_.push_back("1");
   active_space_ = "1";
   active_browser_ = window_id_;
-  if (framework_) {
+  if (framework_ && !incognito_) {
+    // An incognito shell stays OUT of the Space registry: routed URLs must
+    // never resolve into an off-the-record window.
     framework_->SetWindowSpace(window_id_, "1");
   }
   LayoutContents();
@@ -956,7 +992,9 @@ void PhiWindowController::SyncUrlField(bool force) {
   if (nav_url_ == current.data()) {
     return;  // Unchanged; setting it again would fight the caret.
   }
+  url_field_programmatic_ = true;  // Not the user typing — no autocomplete.
   ::SetWindowTextW(url_field_, nav_url_.c_str());
+  url_field_programmatic_ = false;
 }
 
 void PhiWindowController::CommitUrlField() {
@@ -978,10 +1016,367 @@ void PhiWindowController::CommitUrlField() {
   }
   // The framework resolves what was typed the way the omnibox would — a bare
   // host becomes a URL, free text becomes a search.
-  framework_->Navigate(active_browser_ ? active_browser_ : window_id_,
-                       base::WideToUTF8(typed).c_str());
+  const int64_t browser = active_browser_ ? active_browser_ : window_id_;
+  if (omnibox_new_tab_pending_ || placeholder_browsers_.count(browser)) {
+    // Omnibox new-tab mode — and a placeholder-mode browser, whose strip is
+    // EMPTY (Navigate alone would no-op): the tab is born on commit. The
+    // fresh tab is active, so Navigate applies the full typed-text
+    // resolution to it (NewTab itself loads URLs literally).
+    omnibox_new_tab_pending_ = false;
+    framework_->NewTab(browser, "");
+  }
+  framework_->Navigate(browser, base::WideToUTF8(typed).c_str());
   FocusActiveBrowser();  // Keys belong to the page again once we've navigated.
   RefreshTabs();
+}
+
+void PhiWindowController::OnContentFullscreenChanged(int64_t browser_id,
+                                                     bool fullscreen) {
+  if (!shell_hwnd_) {
+    return;
+  }
+  if (fullscreen) {
+    fullscreen_browser_ = browser_id;
+    if (content_fullscreen_) {
+      return;
+    }
+    content_fullscreen_ = true;
+    // The standard borderless-fullscreen recipe: remember placement and
+    // style, strip the frame, cover the window's monitor.
+    pre_fullscreen_placement_.length = sizeof(WINDOWPLACEMENT);
+    ::GetWindowPlacement(shell_hwnd_, &pre_fullscreen_placement_);
+    pre_fullscreen_style_ = ::GetWindowLongPtrW(shell_hwnd_, GWL_STYLE);
+    MONITORINFO monitor = {};
+    monitor.cbSize = sizeof(monitor);
+    ::GetMonitorInfoW(
+        ::MonitorFromWindow(shell_hwnd_, MONITOR_DEFAULTTONEAREST), &monitor);
+    ::SetWindowLongPtrW(
+        shell_hwnd_, GWL_STYLE,
+        pre_fullscreen_style_ &
+            ~static_cast<LONG_PTR>(WS_CAPTION | WS_THICKFRAME));
+    ::SetWindowPos(shell_hwnd_, HWND_TOP, monitor.rcMonitor.left,
+                   monitor.rcMonitor.top,
+                   monitor.rcMonitor.right - monitor.rcMonitor.left,
+                   monitor.rcMonitor.bottom - monitor.rcMonitor.top,
+                   SWP_FRAMECHANGED | SWP_NOOWNERZORDER);
+  } else {
+    // Exits arrive from whichever tab leaves fullscreen; only the one that
+    // took the shell fullscreen releases it.
+    if (!content_fullscreen_ ||
+        (fullscreen_browser_ && browser_id != fullscreen_browser_)) {
+      return;
+    }
+    content_fullscreen_ = false;
+    fullscreen_browser_ = 0;
+    ::SetWindowLongPtrW(shell_hwnd_, GWL_STYLE, pre_fullscreen_style_);
+    ::SetWindowPlacement(shell_hwnd_, &pre_fullscreen_placement_);
+    ::SetWindowPos(shell_hwnd_, nullptr, 0, 0, 0, 0,
+                   SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+  }
+  LayoutContents();
+  ::InvalidateRect(shell_hwnd_, nullptr, TRUE);
+}
+
+void PhiWindowController::OnPlaceholderModeChanged(int64_t browser_id,
+                                                   bool entered) {
+  if (entered) {
+    placeholder_browsers_.insert(browser_id);
+  } else {
+    placeholder_browsers_.erase(browser_id);
+  }
+  const int64_t effective = active_browser_ ? active_browser_ : window_id_;
+  if (browser_id == effective) {
+    if (browser_hwnd_ && ::IsWindow(browser_hwnd_)) {
+      ::ShowWindow(browser_hwnd_, entered ? SW_HIDE : SW_SHOW);
+    }
+    if (entered && url_field_ && ::IsWindowVisible(url_field_)) {
+      // The address bar stays the way in (the Mac keeps it usable).
+      ::SetFocus(url_field_);
+      ::SendMessageW(url_field_, EM_SETSEL, 0, -1);
+    }
+    RefreshTabs();
+    if (shell_hwnd_) {
+      ::InvalidateRect(shell_hwnd_, nullptr, FALSE);
+    }
+  }
+}
+
+void PhiWindowController::StartNewTab() {
+  // "New tab behavior = Omnibox": Ctrl+T / the New Tab row focus the
+  // address field instead of opening a page; the tab is born on commit
+  // (the Mac's toggleOmniBox new-tab mode). The page mode opens the NTP.
+  if (host_ && host_->NewTabOpensOmnibox() && url_field_ &&
+      ::IsWindowVisible(url_field_)) {
+    omnibox_new_tab_pending_ = true;
+    ::SetFocus(url_field_);
+    ::SendMessageW(url_field_, EM_SETSEL, 0, -1);
+    return;
+  }
+  if (framework_) {
+    framework_->NewTab(active_browser_ ? active_browser_ : window_id_, "");
+    RefreshTabs();
+  }
+}
+
+void PhiWindowController::OnUrlFieldChanged() {
+  // EN_CHANGE while the user types: run/refresh the autocomplete query.
+  // Programmatic sets (SyncUrlField, arrowing onto a row) are suppressed.
+  if (url_field_programmatic_ || !url_field_ || !framework_ ||
+      ::GetFocus() != url_field_) {
+    return;
+  }
+  const int len = ::GetWindowTextLengthW(url_field_);
+  std::vector<wchar_t> buffer(static_cast<size_t>(len) + 1, L'\0');
+  if (len > 0) {
+    ::GetWindowTextW(url_field_, buffer.data(), len + 1);
+  }
+  const std::wstring typed(buffer.data());
+  if (typed.empty()) {
+    CloseOmniboxPopup(/*stop_query=*/true);
+    return;
+  }
+  framework_->StartOmniboxQuery(active_browser_ ? active_browser_ : window_id_,
+                                base::WideToUTF8(typed).c_str());
+}
+
+void PhiWindowController::OnOmniboxResults(int64_t browser_id,
+                                           const std::string& json) {
+  const int64_t effective = active_browser_ ? active_browser_ : window_id_;
+  if (browser_id != effective || !url_field_ ||
+      ::GetFocus() != url_field_) {
+    return;  // A stale query, or the user is no longer typing.
+  }
+  std::optional<base::DictValue> root =
+      base::JSONReader::ReadDict(json, base::JSON_PARSE_RFC);
+  omnibox_rows_.clear();
+  omnibox_selected_ = -1;
+  if (root) {
+    if (const base::ListValue* matches = root->FindList("matches")) {
+      for (const base::Value& v : *matches) {
+        const base::DictValue* m = v.GetIfDict();
+        if (!m ||
+            omnibox_rows_.size() >= static_cast<size_t>(kOmniboxMaxRows)) {
+          continue;
+        }
+        OmniboxRow row;
+        row.line =
+            m->FindInt("line").value_or(static_cast<int>(omnibox_rows_.size()));
+        if (const std::string* s = m->FindString("type")) {
+          row.type = *s;
+        }
+        if (const std::string* s = m->FindString("contents")) {
+          row.contents = base::UTF8ToWide(*s);
+        }
+        if (const std::string* s = m->FindString("description")) {
+          row.description = base::UTF8ToWide(*s);
+        }
+        if (const std::string* s = m->FindString("fillIntoEdit")) {
+          row.fill = base::UTF8ToWide(*s);
+        }
+        row.has_tab_match = m->FindBool("hasTabMatch").value_or(false);
+        omnibox_rows_.push_back(std::move(row));
+      }
+    }
+  }
+  if (omnibox_rows_.empty()) {
+    CloseOmniboxPopup(/*stop_query=*/false);
+  } else {
+    ShowOmniboxPopup();
+  }
+}
+
+void PhiWindowController::ShowOmniboxPopup() {
+  if (!shell_hwnd_ || !url_field_) {
+    return;
+  }
+  EnsureOmniboxPopupClass();
+  if (!omnibox_popup_) {
+    omnibox_popup_ = ::CreateWindowExW(
+        WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, L"PhiOmniboxPopup", L"",
+        WS_POPUP, 0, 0, 0, 0, shell_hwnd_, nullptr,
+        ::GetModuleHandleW(nullptr), this);
+  }
+  if (!omnibox_popup_) {
+    return;
+  }
+  RECT field = {};
+  ::GetWindowRect(url_field_, &field);
+  const int width =
+      std::max<int>(field.right - field.left + Scaled(16), Scaled(320));
+  const int height =
+      static_cast<int>(omnibox_rows_.size()) * Scaled(kOmniboxRowHeight) +
+      Scaled(12);
+  ::SetWindowPos(omnibox_popup_, HWND_TOP, field.left - Scaled(8),
+                 field.bottom + Scaled(6), width, height,
+                 SWP_NOACTIVATE | SWP_SHOWWINDOW);
+  ::InvalidateRect(omnibox_popup_, nullptr, TRUE);
+}
+
+void PhiWindowController::CloseOmniboxPopup(bool stop_query) {
+  omnibox_rows_.clear();
+  omnibox_selected_ = -1;
+  if (stop_query) {
+    omnibox_new_tab_pending_ = false;  // The gesture was abandoned.
+  }
+  if (omnibox_popup_ && ::IsWindow(omnibox_popup_)) {
+    ::ShowWindow(omnibox_popup_, SW_HIDE);
+  }
+  if (stop_query && framework_) {
+    framework_->StopOmniboxQuery(active_browser_ ? active_browser_
+                                                 : window_id_);
+  }
+}
+
+void PhiWindowController::MoveOmniboxSelection(int delta) {
+  if (omnibox_rows_.empty()) {
+    return;
+  }
+  const int count = static_cast<int>(omnibox_rows_.size());
+  int next = omnibox_selected_ + delta;
+  if (next < -1) {
+    next = count - 1;  // Up from the field wraps to the last row.
+  } else if (next >= count) {
+    next = -1;  // Down past the last row returns to the field's own text.
+  }
+  omnibox_selected_ = next;
+  if (omnibox_selected_ >= 0 && url_field_) {
+    const OmniboxRow& row =
+        omnibox_rows_[static_cast<size_t>(omnibox_selected_)];
+    if (!row.fill.empty()) {
+      // The row's fillIntoEdit lands in the field, caret at the end — the
+      // omnibox arrow behavior.
+      url_field_programmatic_ = true;
+      ::SetWindowTextW(url_field_, row.fill.c_str());
+      ::SendMessageW(url_field_, EM_SETSEL, row.fill.size(),
+                     row.fill.size());
+      url_field_programmatic_ = false;
+    }
+  }
+  if (omnibox_popup_) {
+    ::InvalidateRect(omnibox_popup_, nullptr, TRUE);
+  }
+}
+
+void PhiWindowController::CommitOmniboxSelection() {
+  if (omnibox_selected_ < 0 ||
+      omnibox_selected_ >= static_cast<int>(omnibox_rows_.size()) ||
+      !framework_) {
+    return;
+  }
+  const int line = omnibox_rows_[static_cast<size_t>(omnibox_selected_)].line;
+  // The framework opens it with Chromium's own semantics (fixup,
+  // switch-to-tab, shortcuts learning). Omnibox new-tab mode opens it in a
+  // FRESH tab.
+  const bool new_tab = omnibox_new_tab_pending_;
+  omnibox_new_tab_pending_ = false;
+  framework_->OpenOmniboxMatch(active_browser_ ? active_browser_ : window_id_,
+                               line, new_tab);
+  CloseOmniboxPopup(/*stop_query=*/false);
+  FocusActiveBrowser();
+  RefreshTabs();
+}
+
+int PhiWindowController::OmniboxRowAtY(int y) const {
+  const int row = (y - Scaled(6)) / Scaled(kOmniboxRowHeight);
+  return row >= 0 && row < static_cast<int>(omnibox_rows_.size()) ? row : -1;
+}
+
+void PhiWindowController::OmniboxHover(int y) {
+  const int row = OmniboxRowAtY(y);
+  if (row >= 0 && row != omnibox_selected_) {
+    omnibox_selected_ = row;
+    if (omnibox_popup_) {
+      ::InvalidateRect(omnibox_popup_, nullptr, TRUE);
+    }
+  }
+}
+
+void PhiWindowController::OmniboxClick(int y) {
+  const int row = OmniboxRowAtY(y);
+  if (row >= 0) {
+    omnibox_selected_ = row;
+    CommitOmniboxSelection();
+  }
+}
+
+void PhiWindowController::PaintOmniboxPopup(HWND popup, HDC dc) {
+  RECT rc = {};
+  ::GetClientRect(popup, &rc);
+  const PhiPalette palette = CurrentPalette();
+  HBRUSH bg = ::CreateSolidBrush(palette.card);
+  ::FillRect(dc, &rc, bg);
+  ::DeleteObject(bg);
+  HPEN pen = ::CreatePen(PS_SOLID, 1, palette.border);
+  HGDIOBJ old_pen = ::SelectObject(dc, pen);
+  HGDIOBJ old_brush = ::SelectObject(dc, ::GetStockObject(NULL_BRUSH));
+  ::Rectangle(dc, rc.left, rc.top, rc.right, rc.bottom);
+  ::SelectObject(dc, old_brush);
+  ::SelectObject(dc, old_pen);
+  ::DeleteObject(pen);
+  ::SetBkMode(dc, TRANSPARENT);
+  for (size_t i = 0; i < omnibox_rows_.size(); ++i) {
+    const OmniboxRow& row = omnibox_rows_[i];
+    RECT r = {rc.left + Scaled(6),
+              rc.top + Scaled(6) +
+                  static_cast<int>(i) * Scaled(kOmniboxRowHeight),
+              rc.right - Scaled(6), 0};
+    r.bottom = r.top + Scaled(kOmniboxRowHeight);
+    if (static_cast<int>(i) == omnibox_selected_) {
+      HBRUSH sel = ::CreateSolidBrush(palette.hover_strong);
+      HGDIOBJ prev_brush = ::SelectObject(dc, sel);
+      HGDIOBJ prev_pen = ::SelectObject(dc, ::GetStockObject(NULL_PEN));
+      ::RoundRect(dc, r.left, r.top, r.right + 1, r.bottom + 1, Scaled(6),
+                  Scaled(6));
+      ::SelectObject(dc, prev_pen);
+      ::SelectObject(dc, prev_brush);
+      ::DeleteObject(sel);
+    }
+    // Type glyph: search rows a magnifier, bookmarks a star, history a
+    // clock, everything else a globe.
+    const wchar_t glyph =
+        row.type.find("search") != std::string::npos    ? L''
+        : row.type.find("bookmark") != std::string::npos ? L''
+        : row.type.find("history") != std::string::npos  ? L''
+                                                         : L'';
+    RECT glyph_rc = {r.left + Scaled(4), r.top, r.left + Scaled(28),
+                     r.bottom};
+    HGDIOBJ glyph_font =
+        chip_icon_font_ ? ::SelectObject(dc, chip_icon_font_) : nullptr;
+    ::SetTextColor(dc, palette.label_dim);
+    const wchar_t glyph_text[2] = {glyph, L'\0'};
+    ::DrawTextW(dc, glyph_text, 1, &glyph_rc,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    if (glyph_font) {
+      ::SelectObject(dc, glyph_font);
+    }
+    RECT text_rc = {glyph_rc.right + Scaled(6), r.top, r.right - Scaled(8),
+                    r.bottom};
+    HGDIOBJ prev_font = ui_font_ ? ::SelectObject(dc, ui_font_) : nullptr;
+    ::SetTextColor(dc, palette.label);
+    RECT measure = text_rc;
+    ::DrawTextW(dc, row.contents.c_str(), -1, &measure,
+                DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX);
+    RECT contents_rc = text_rc;
+    contents_rc.right = std::min(
+        text_rc.right,
+        static_cast<LONG>(text_rc.left + (measure.right - measure.left)));
+    ::DrawTextW(dc, row.contents.c_str(), -1, &contents_rc,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
+                    DT_NOPREFIX);
+    if (!row.description.empty() &&
+        contents_rc.right + Scaled(16) < text_rc.right) {
+      RECT desc_rc = {contents_rc.right + Scaled(8), r.top, text_rc.right,
+                      r.bottom};
+      ::SetTextColor(dc, palette.label_dim);
+      const std::wstring desc = L"— " + row.description;
+      ::DrawTextW(dc, desc.c_str(), -1, &desc_rc,
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
+                      DT_NOPREFIX);
+    }
+    if (prev_font) {
+      ::SelectObject(dc, prev_font);
+    }
+  }
 }
 
 // static
@@ -995,15 +1390,33 @@ LRESULT CALLBACK PhiWindowController::UrlFieldProc(HWND hwnd,
     case WM_KEYDOWN:
       if (wparam == VK_RETURN) {
         if (self) {
-          self->CommitUrlField();
+          if (self->omnibox_selected_ >= 0) {
+            self->CommitOmniboxSelection();
+          } else {
+            // stop_query=false: the omnibox-new-tab pending flag must
+            // survive into the commit (the query dies with focus anyway).
+            self->CloseOmniboxPopup(/*stop_query=*/false);
+            self->CommitUrlField();
+          }
         }
         return 0;
       }
       if (wparam == VK_ESCAPE) {
         if (self) {
+          if (self->omnibox_popup_ &&
+              ::IsWindowVisible(self->omnibox_popup_)) {
+            // First Escape closes the list; the second reverts the field.
+            self->CloseOmniboxPopup(/*stop_query=*/true);
+            return 0;
+          }
           self->SyncUrlField(/*force=*/true);
           self->FocusActiveBrowser();
         }
+        return 0;
+      }
+      if ((wparam == VK_DOWN || wparam == VK_UP) && self &&
+          !self->omnibox_rows_.empty()) {
+        self->MoveOmniboxSelection(wparam == VK_DOWN ? 1 : -1);
         return 0;
       }
       break;
@@ -1012,6 +1425,12 @@ LRESULT CALLBACK PhiWindowController::UrlFieldProc(HWND hwnd,
       // produce the "unhandled character" beep.
       if (wparam == VK_RETURN || wparam == VK_ESCAPE) {
         return 0;
+      }
+      break;
+    case WM_KILLFOCUS:
+      // The user left the field: the dropdown has nothing to complete.
+      if (self) {
+        self->CloseOmniboxPopup(/*stop_query=*/true);
       }
       break;
     case WM_SETFOCUS: {
@@ -1100,6 +1519,97 @@ ATOM EnsureCornerCapClass() {
   return atom;
 }
 
+// The status bubble rides the content card's bottom-left like the corner
+// caps do: a shell-child sibling raised over the reparented browser (the
+// only way client pixels appear over the page).
+LRESULT CALLBACK StatusBubbleProc(HWND hwnd, UINT msg, WPARAM wparam,
+                                  LPARAM lparam) {
+  if (msg == WM_NCCREATE) {
+    auto* cs = reinterpret_cast<CREATESTRUCTW*>(lparam);
+    ::SetWindowLongPtrW(hwnd, GWLP_USERDATA,
+                        reinterpret_cast<LONG_PTR>(cs->lpCreateParams));
+    return ::DefWindowProcW(hwnd, msg, wparam, lparam);
+  }
+  if (msg == WM_PAINT) {
+    auto* self = reinterpret_cast<PhiWindowController*>(
+        ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    PAINTSTRUCT ps = {};
+    HDC dc = ::BeginPaint(hwnd, &ps);
+    if (self) {
+      self->PaintStatusBubble(hwnd, dc);
+    }
+    ::EndPaint(hwnd, &ps);
+    return 0;
+  }
+  if (msg == WM_NCHITTEST) {
+    return HTTRANSPARENT;  // Hovers keep belonging to the page under it.
+  }
+  return ::DefWindowProcW(hwnd, msg, wparam, lparam);
+}
+
+ATOM EnsureStatusBubbleClass() {
+  static const ATOM atom = [] {
+    WNDCLASSEXW wc = {};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = &StatusBubbleProc;
+    wc.hInstance = ::GetModuleHandleW(nullptr);
+    wc.lpszClassName = L"PhiStatusBubble";
+    return ::RegisterClassExW(&wc);
+  }();
+  return atom;
+}
+
+// The omnibox suggestion dropdown: non-activating, so the address field
+// keeps focus and caret while the list is up (clicks commit rows without a
+// focus dance).
+LRESULT CALLBACK OmniboxPopupProc(HWND hwnd, UINT msg, WPARAM wparam,
+                                  LPARAM lparam) {
+  if (msg == WM_NCCREATE) {
+    auto* cs = reinterpret_cast<CREATESTRUCTW*>(lparam);
+    ::SetWindowLongPtrW(hwnd, GWLP_USERDATA,
+                        reinterpret_cast<LONG_PTR>(cs->lpCreateParams));
+    return ::DefWindowProcW(hwnd, msg, wparam, lparam);
+  }
+  auto* self = reinterpret_cast<PhiWindowController*>(
+      ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+  switch (msg) {
+    case WM_MOUSEACTIVATE:
+      return MA_NOACTIVATE;
+    case WM_PAINT: {
+      PAINTSTRUCT ps = {};
+      HDC dc = ::BeginPaint(hwnd, &ps);
+      if (self) {
+        self->PaintOmniboxPopup(hwnd, dc);
+      }
+      ::EndPaint(hwnd, &ps);
+      return 0;
+    }
+    case WM_MOUSEMOVE:
+      if (self) {
+        self->OmniboxHover(GET_Y_LPARAM(lparam));
+      }
+      return 0;
+    case WM_LBUTTONDOWN:
+      if (self) {
+        self->OmniboxClick(GET_Y_LPARAM(lparam));
+      }
+      return 0;
+  }
+  return ::DefWindowProcW(hwnd, msg, wparam, lparam);
+}
+
+ATOM EnsureOmniboxPopupClass() {
+  static const ATOM atom = [] {
+    WNDCLASSEXW wc = {};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = &OmniboxPopupProc;
+    wc.hInstance = ::GetModuleHandleW(nullptr);
+    wc.lpszClassName = L"PhiOmniboxPopup";
+    return ::RegisterClassExW(&wc);
+  }();
+  return atom;
+}
+
 }  // namespace
 
 void PhiWindowController::PaintCornerCap(HWND cap, HDC dc) {
@@ -1146,6 +1656,104 @@ void PhiWindowController::PaintCornerCap(HWND cap, HDC dc) {
   ::DeleteObject(pen);
 }
 
+void PhiWindowController::OnTargetURLChanged(int64_t browser_id,
+                                             const std::wstring& url) {
+  if (agent_) {
+    return;  // Off-screen agent surfaces show no chrome.
+  }
+  const int64_t effective = active_browser_ ? active_browser_ : window_id_;
+  if (browser_id != effective) {
+    return;  // A hidden Space's page; its bubble would lie about this one.
+  }
+  SetStatusUrl(url);
+}
+
+void PhiWindowController::SetStatusUrl(const std::wstring& url) {
+  if (url == status_url_) {
+    return;
+  }
+  status_url_ = url;
+  if (url.empty()) {
+    if (status_bubble_) {
+      ::ShowWindow(status_bubble_, SW_HIDE);
+    }
+    return;
+  }
+  if (!shell_hwnd_) {
+    return;
+  }
+  EnsureStatusBubbleClass();
+  if (!status_bubble_) {
+    status_bubble_ = ::CreateWindowExW(
+        0, L"PhiStatusBubble", L"", WS_CHILD, 0, 0, 0, 0, shell_hwnd_,
+        nullptr, ::GetModuleHandleW(nullptr), this);
+  }
+  if (!status_bubble_) {
+    return;
+  }
+  const Layout layout = ComputeLayout();
+  const int height = Scaled(24);
+  SIZE text = {};
+  if (HDC dc = ::GetDC(shell_hwnd_)) {
+    HGDIOBJ old_font = small_font_ ? ::SelectObject(dc, small_font_)
+                                   : nullptr;
+    ::GetTextExtentPoint32W(dc, status_url_.c_str(),
+                            static_cast<int>(status_url_.size()), &text);
+    if (old_font) {
+      ::SelectObject(dc, old_font);
+    }
+    ::ReleaseDC(shell_hwnd_, dc);
+  }
+  // At most half the content width (the Mac StatusURLView's cap).
+  const int max_width = std::max<int>(
+      Scaled(60), (layout.content.right - layout.content.left) / 2);
+  const int width = std::min<int>(text.cx + Scaled(24), max_width);
+  ::SetWindowPos(status_bubble_, HWND_TOP, layout.content.left,
+                 layout.content.bottom - height, width, height,
+                 SWP_NOACTIVATE | SWP_SHOWWINDOW);
+  // Only the top-right corner rounds: the rounded rect is oversized so its
+  // other three corners fall outside the window.
+  const int r = Scaled(8);
+  HRGN shape = ::CreateRoundRectRgn(-2 * r, 0, width + 1, height + 2 * r + 1,
+                                    2 * r, 2 * r);
+  ::SetWindowRgn(status_bubble_, shape, TRUE);  // Window owns it now.
+  ::InvalidateRect(status_bubble_, nullptr, TRUE);
+}
+
+void PhiWindowController::PaintStatusBubble(HWND bubble, HDC dc) {
+  RECT rc = {};
+  ::GetClientRect(bubble, &rc);
+  const PhiPalette palette = CurrentPalette();
+  HBRUSH fill = ::CreateSolidBrush(palette.card);
+  ::FillRect(dc, &rc, fill);
+  ::DeleteObject(fill);
+  // The card border along the exposed top and right edges.
+  HPEN pen = ::CreatePen(PS_SOLID, 1, palette.border);
+  HGDIOBJ old_pen = ::SelectObject(dc, pen);
+  HGDIOBJ old_brush = ::SelectObject(dc, ::GetStockObject(NULL_BRUSH));
+  const int r = Scaled(8);
+  ::RoundRect(dc, -2 * r, 0, rc.right, rc.bottom + 2 * r, 2 * r, 2 * r);
+  ::SelectObject(dc, old_brush);
+  ::SelectObject(dc, old_pen);
+  ::DeleteObject(pen);
+  RECT text = rc;
+  text.left += Scaled(10);
+  text.right -= Scaled(12);
+  ::SetBkMode(dc, TRANSPARENT);
+  ::SetTextColor(dc, palette.label);
+  HGDIOBJ old_font = small_font_ ? ::SelectObject(dc, small_font_) : nullptr;
+  // Middle truncation, the way a URL keeps its host and tail readable.
+  ::DrawTextW(dc, status_url_.c_str(), -1, &text,
+              DT_SINGLELINE | DT_VCENTER | DT_PATH_ELLIPSIS | DT_NOPREFIX);
+  if (old_font) {
+    ::SelectObject(dc, old_font);
+  }
+}
+
+RECT PhiWindowController::ContentRect() {
+  return ComputeLayout().content;
+}
+
 void PhiWindowController::ToggleSidebar() {
   if (ComputeLayout().horizontal_tabs) {
     return;  // Comfortable has no sidebar to collapse.
@@ -1158,16 +1766,34 @@ void PhiWindowController::ToggleSidebar() {
   }
 }
 
+void PhiWindowController::ToggleDownloadsPopover() {
+  // The menu / Ctrl+J entry to the same popover the sidebar button toggles.
+  // The popover's own opening grace period absorbs the menu teardown's
+  // activation churn, so this can run inline.
+  if (!host_ || !framework_ || !shell_hwnd_) {
+    return;
+  }
+  RECT anchor = ComputeLayout().downloads;
+  ::MapWindowPoints(shell_hwnd_, nullptr, reinterpret_cast<POINT*>(&anchor),
+                    2);
+  PhiDownloadsPopover::Toggle(shell_hwnd_, anchor,
+                              host_->PaletteForSlot(window_id_), framework_,
+                              active_browser_ ? active_browser_ : window_id_);
+}
+
 void PhiWindowController::LayoutContents() {
   if (!shell_hwnd_) {
     return;
   }
   rows_dirty_ = true;  // Row bounds derive from the client size.
+  SetStatusUrl(std::wstring());  // Anchored to the OLD content rect.
+  CloseOmniboxPopup(/*stop_query=*/false);  // Anchored to the OLD field rect.
   const Layout layout = ComputeLayout();
   PositionUrlField(layout);
   if (url_field_) {
-    const bool field_hidden = sidebar_collapsed_ &&
-                              layout.mode == PhiLayoutMode::kPerformance;
+    const bool field_hidden =
+        content_fullscreen_ ||
+        (sidebar_collapsed_ && layout.mode == PhiLayoutMode::kPerformance);
     ::ShowWindow(url_field_, field_hidden ? SW_HIDE : SW_SHOW);
   }
   if (browser_hwnd_ && ::IsWindow(browser_hwnd_)) {
@@ -1179,9 +1805,15 @@ void PhiWindowController::LayoutContents() {
     const int x = (swap_start_ && swap_reveal_ == browser_hwnd_)
                       ? layout.client.right
                       : layout.content.left;
+    // A placeholder-mode browser stays HIDDEN: its strip is empty and the
+    // dead tab's final frame would linger in the content card.
+    const bool placeholding =
+        placeholder_browsers_.count(active_browser_ ? active_browser_
+                                                    : window_id_) > 0;
     ::SetWindowPos(browser_hwnd_, nullptr, x, layout.content.top,
                    w > 0 ? w : 0, h > 0 ? h : 0,
-                   SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+                   SWP_NOZORDER | SWP_NOACTIVATE |
+                       (placeholding ? SWP_HIDEWINDOW : SWP_SHOWWINDOW));
   }
 
   // The rounded card corners. DComp ignores a region ON the browser child
@@ -1207,7 +1839,7 @@ void PhiWindowController::LayoutContents() {
     if (!corner_caps_[i]) {
       continue;
     }
-    const bool shown = i >= 2 || top_caps;
+    const bool shown = (i >= 2 || top_caps) && !content_fullscreen_;
     ::SetWindowPos(corner_caps_[i], HWND_TOP, positions[i].x, positions[i].y,
                    radius, radius,
                    SWP_NOACTIVATE | (shown ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
@@ -1495,6 +2127,9 @@ PhiWindowController::DropBand PhiWindowController::DropBandAt(
   if (!::PtInRect(&window_rect, screen)) {
     return DropBand::kOutside;
   }
+  if (incognito_) {
+    return DropBand::kTabs;  // No pin/bookmark conversions off the record.
+  }
   const Layout layout = ComputeLayout();
   if (layout.horizontal_tabs) {
     return DropBand::kTabs;  // The strip has no sidebar bands.
@@ -1563,6 +2198,7 @@ void PhiWindowController::CommitDrag() {
   const int from_pos = drag_index_;
   const int slot = drag_insert_;
   const bool active = drag_active_;
+  const POINT release = drag_point_;
   // The tree target a bookmark drag resolved (CancelDrag clears it).
   const std::string bookmark_parent = bookmark_drop_parent_;
   const int bookmark_index = bookmark_drop_index_;
@@ -1579,10 +2215,19 @@ void PhiWindowController::CommitDrag() {
     const TabRow& row = tabs_[static_cast<size_t>(from_pos)];
     const int64_t browser = active_browser_ ? active_browser_ : window_id_;
     if (band == DropBand::kOutside) {
-      // Tear-off: the tab — or the whole split pair — moves to a fresh
-      // window (the new shell arrives through OnBrowserWindowCreated).
-      if (framework_) {
-        framework_->MoveTabsToNewWindow(browser, row.index, row.b_index);
+      // Over ANOTHER shell window, the tab joins that window's strip (the
+      // Mac's window-to-window drop); anywhere else it is a tear-off to a
+      // fresh window (the new shell arrives through OnBrowserWindowCreated).
+      POINT screen = release;
+      ::ClientToScreen(shell_hwnd_, &screen);
+      const int64_t target =
+          host_ ? host_->SlotAtScreenPoint(screen, window_id_) : 0;
+      if (!target || !host_ ||
+          !host_->RequestDropTabOnWindow(window_id_, row.index, row.b_index,
+                                         target)) {
+        if (framework_) {
+          framework_->MoveTabsToNewWindow(browser, row.index, row.b_index);
+        }
       }
       RefreshTabs();
     } else if (band == DropBand::kPins && host_) {
@@ -2335,6 +2980,13 @@ double PhiWindowController::RampEasedProgress() const {
 PhiPalette PhiWindowController::CurrentPalette() const {
   static const PhiPalette kFallback =
       PhiResolvePalette(PhiThemeById("pure"), PhiAppearance::kLight);
+  if (incognito_) {
+    // Incognito is FIXED-DARK regardless of theme/appearance (the Mac's
+    // incognito window contract).
+    static const PhiPalette kIncognito =
+        PhiResolvePalette(PhiThemeById("pure"), PhiAppearance::kDark);
+    return kIncognito;
+  }
   PhiPalette target = host_ ? host_->PaletteForSlot(window_id_) : kFallback;
   const double t = RampEasedProgress();
   if (t < 1.0) {
@@ -2431,6 +3083,8 @@ bool PhiWindowController::ShowSpace(const std::string& space_id) {
                    ::IsWindow(browser_hwnd_))
                       ? browser_hwnd_
                       : nullptr;
+  SetStatusUrl(std::wstring());  // The leaving page's link target is stale.
+  CloseOmniboxPopup(/*stop_query=*/true);  // So is a half-typed query.
   BeginSpaceSwap(space_id);
   browser_hwnd_ = hwnd_it->second;
   active_space_ = space_id;
@@ -2569,7 +3223,8 @@ void PhiWindowController::RebuildChips() {
   chips_.clear();
   const Layout layout = ComputeLayout();
   add_space_button_ = layout.add_space;
-  if (!host_) {
+  if (!host_ || incognito_) {
+    add_space_button_ = RECT{};  // Incognito has no Spaces strip.
     return;
   }
   int x = layout.chips_left;
@@ -2731,8 +3386,8 @@ std::vector<RECT> PhiWindowController::PinnedGridWalk(
 void PhiWindowController::RebuildShortcuts() {
   pinned_.clear();
   bookmarks_.clear();
-  if (!host_) {
-    return;
+  if (!host_ || incognito_) {
+    return;  // Nothing persists from an incognito window.
   }
   const auto consume = [](PhiStoredRowView view) {
     ShortcutRow row;
@@ -2953,6 +3608,10 @@ void PhiWindowController::RebuildTabs() {
                               : (url ? *url : std::string("(untitled)"));
       row.title = base::UTF8ToWide(label);
       row.internal_page = url && url->rfind("chrome://", 0) == 0;
+      if (row.active) {
+        // The bookmark bar's "show on new tab" reads this.
+        active_tab_url_ = url ? *url : std::string();
+      }
       int fw = 0, fh = 0;
       const unsigned char* pixels =
           framework_->TabFaviconBgra(browser, row.index, &fw, &fh);
@@ -3155,6 +3814,26 @@ void PhiWindowController::RebuildTabs() {
       if (gh.container.bottom <= gh.container.top) {
         gh.container = RECT{};
       }
+    }
+  }
+  // MRU bookkeeping for the Ctrl+Tab switcher: the active tab moves to the
+  // front; ids that left the strip fall out.
+  {
+    int active_id = 0;
+    for (const TabRow& row : tabs_) {
+      if (row.active) {
+        active_id = row.id;
+        break;
+      }
+    }
+    std::erase_if(tab_mru_, [&](int id) {
+      return std::none_of(tabs_.begin(), tabs_.end(), [&](const TabRow& row) {
+        return row.id == id || (row.b_index >= 0 && row.id == id);
+      });
+    });
+    if (active_id) {
+      std::erase(tab_mru_, active_id);
+      tab_mru_.insert(tab_mru_.begin(), active_id);
     }
   }
   rows_dirty_ = false;
@@ -3396,6 +4075,10 @@ void PhiWindowController::OnChromeClick(int x, int y) {
     RefreshTabs();
     return;
   }
+  if (::PtInRect(&layout.search_tabs, pt)) {
+    PhiSearchTabsPanel::Toggle(this);  // The header's magnifier.
+    return;
+  }
   if (::PtInRect(&layout.downloads, pt)) {
     // The Mac DownloadButtonView's popover toggle.
     if (host_ && framework_) {
@@ -3407,6 +4090,25 @@ void PhiWindowController::OnChromeClick(int x, int y) {
                                   framework_,
                                   active_browser_ ? active_browser_
                                                   : window_id_);
+    }
+    return;
+  }
+  for (const BarItem& item : bar_items_) {
+    if (!::PtInRect(&item.bounds, pt)) {
+      continue;
+    }
+    if (item.overflow) {
+      // Skip the pills already on the bar; the menu takes the rest.
+      ShowBookmarkBarMenu(item.bounds, std::string(),
+                          static_cast<size_t>(item.bookmark));
+    } else if (item.bookmark >= 0 &&
+               item.bookmark < static_cast<int>(bookmarks_.size())) {
+      const ShortcutRow& row = bookmarks_[static_cast<size_t>(item.bookmark)];
+      if (row.folder) {
+        ShowBookmarkBarMenu(item.bounds, row.guid, 0);
+      } else if (!row.url.empty()) {
+        OpenOrFocusPinned(row.guid, row.url);
+      }
     }
     return;
   }
@@ -3439,8 +4141,7 @@ void PhiWindowController::OnChromeClick(int x, int y) {
     }
   }
   if (framework_ && ::PtInRect(&layout.new_tab_row, pt)) {
-    framework_->NewTab(active_browser_ ? active_browser_ : window_id_, "");
-    RefreshTabs();
+    StartNewTab();
     return;
   }
   RebuildTabs();  // Chips and rows may be stale if no paint has run yet.
@@ -3568,6 +4269,32 @@ void PhiWindowController::OnChromeClick(int x, int y) {
         ArmDrag(DragKind::kTab, static_cast<int>(&row - tabs_.data()), pt);
         framework_->ActivateTab(browser, row.index);
       }
+    }
+    RefreshTabs();
+    return;
+  }
+}
+
+void PhiWindowController::OnChromeMiddleClick(int x, int y) {
+  // Middle-click closes a tab row anywhere on the row (the Mac tab list's
+  // otherMouseDown), merged split rows included. Pins and bookmarks are
+  // persistent — a middle-click must not delete them, so only tab rows react.
+  const POINT pt = {x, y};
+  if (!framework_) {
+    return;
+  }
+  for (const TabRow& row : tabs_) {
+    if (!::PtInRect(&row.bounds, pt)) {
+      continue;
+    }
+    const int64_t browser = active_browser_ ? active_browser_ : window_id_;
+    if (row.b_index >= 0) {
+      framework_->CloseTab(browser, row.index > row.b_index ? row.index
+                                                            : row.b_index);
+      framework_->CloseTab(browser, row.index > row.b_index ? row.b_index
+                                                            : row.index);
+    } else {
+      framework_->CloseTab(browser, row.index);
     }
     RefreshTabs();
     return;
@@ -3761,6 +4488,10 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
                     kOpenAsSplit, kRemoveSplit, kGroup, kUngroupTab,
                     kPinSplit, kBookmarkSplit, kDuplicate, kCopyUrl,
                     kCopyLeft, kCopyRight };
+      // Dynamic Move/Clone-to-Space rows ride these ranges (99 each).
+      constexpr UINT kMoveSpaceFirst = 100;
+      constexpr UINT kCloneSpaceFirst = 200;
+      std::vector<std::string> space_targets;
       HMENU menu = ::CreatePopupMenu();
       if (!menu) {
         return;
@@ -3771,8 +4502,12 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
       const std::string url_b =
           merged ? TabUrlAtIndex(framework_, browser, row.b_index)
                  : std::string();
+      // Pinning/bookmarking persists to the Space store — grayed off the
+      // record.
+      const UINT persist_flags =
+          MF_STRING | (incognito_ ? MF_DISABLED | MF_GRAYED : 0u);
       if (!merged) {
-        ::AppendMenuW(menu, MF_STRING, kPin, L"Pin");
+        ::AppendMenuW(menu, persist_flags, kPin, L"Pin");
         ::AppendMenuW(menu, MF_STRING, kDuplicate, L"Duplicate");
         ::AppendMenuW(menu, MF_STRING, kCopyUrl, L"Copy Link");
         ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
@@ -3795,7 +4530,7 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
                                          : L"Open as Split");
           ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         }
-        ::AppendMenuW(menu, MF_STRING, kBookmark, L"Add to Bookmark");
+        ::AppendMenuW(menu, persist_flags, kBookmark, L"Add to Bookmark");
         ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         if (row.group_id.empty()) {
           ::AppendMenuW(menu, MF_STRING, kGroup, L"New Tab Group");
@@ -3803,16 +4538,51 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
           ::AppendMenuW(menu, MF_STRING, kUngroupTab, L"Remove from Group");
         }
         ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        // Move/Clone to Space — the Mac's cross-Space submenus (the tab's
+        // own Space skipped; nothing persists from incognito).
+        if (!incognito_ && host_) {
+          HMENU move_menu = ::CreatePopupMenu();
+          HMENU clone_menu = ::CreatePopupMenu();
+          for (const PhiSpaceView& space : host_->Spaces()) {
+            if (space.id == active_space_ ||
+                space_targets.size() >= 99u) {
+              continue;
+            }
+            const std::wstring name = base::UTF8ToWide(
+                !space.name.empty() ? space.name : "Space " + space.id);
+            ::AppendMenuW(move_menu, MF_STRING,
+                          kMoveSpaceFirst +
+                              static_cast<UINT>(space_targets.size()),
+                          name.c_str());
+            ::AppendMenuW(clone_menu, MF_STRING,
+                          kCloneSpaceFirst +
+                              static_cast<UINT>(space_targets.size()),
+                          name.c_str());
+            space_targets.push_back(space.id);
+          }
+          if (!space_targets.empty()) {
+            ::AppendMenuW(menu, MF_POPUP | MF_STRING,
+                          reinterpret_cast<UINT_PTR>(move_menu),
+                          L"Move to Space");
+            ::AppendMenuW(menu, MF_POPUP | MF_STRING,
+                          reinterpret_cast<UINT_PTR>(clone_menu),
+                          L"Clone to Space");
+            ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+          } else {
+            ::DestroyMenu(move_menu);
+            ::DestroyMenu(clone_menu);
+          }
+        }
       } else {
         // The merged split row: every action operates on the pair.
-        ::AppendMenuW(menu, MF_STRING, kPinSplit, L"Pin Split");
+        ::AppendMenuW(menu, persist_flags, kPinSplit, L"Pin Split");
         ::AppendMenuW(menu, MF_STRING, kDuplicate, L"Duplicate Split");
         ::AppendMenuW(menu, MF_STRING, kCopyLeft, L"Copy Left URL");
         ::AppendMenuW(menu, MF_STRING, kCopyRight, L"Copy Right URL");
         ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         ::AppendMenuW(menu, MF_STRING, kRemoveSplit, L"Remove from Split");
         ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-        ::AppendMenuW(menu, MF_STRING, kBookmarkSplit,
+        ::AppendMenuW(menu, persist_flags, kBookmarkSplit,
                       L"Add Split to Bookmark");
         ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
       }
@@ -3825,7 +4595,17 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
                     TPM_RIGHTBUTTON,
           screen.x, screen.y, 0, shell_hwnd_, nullptr));
       ::DestroyMenu(menu);
-      if (chosen == kPin) {
+      if (chosen >= kMoveSpaceFirst &&
+          chosen < kMoveSpaceFirst + space_targets.size()) {
+        host_->RequestTabToSpace(window_id_, row.index,
+                                 space_targets[chosen - kMoveSpaceFirst],
+                                 /*move=*/true);
+      } else if (chosen >= kCloneSpaceFirst &&
+                 chosen < kCloneSpaceFirst + space_targets.size()) {
+        host_->RequestTabToSpace(window_id_, row.index,
+                                 space_targets[chosen - kCloneSpaceFirst],
+                                 /*move=*/false);
+      } else if (chosen == kPin) {
         host_->RequestStoreTab(window_id_, row.index, /*as_bookmark=*/false);
       } else if (chosen == kBookmark) {
         host_->RequestStoreTab(window_id_, row.index, /*as_bookmark=*/true);
@@ -4129,8 +4909,8 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
 
   // The Mac's Space row menu: activate, rename, change icon, set theme,
   // delete. Rename prompts, delete confirms (refused for the default Space);
-  // Change Icon still waits for an inline picker — Settings > Spaces has the
-  // real one.
+  // Change Icon lands on Settings > Spaces with this Space selected — the
+  // detail column there IS the picker.
   enum : UINT {
     kActivate = 1,
     kRename,
@@ -4167,8 +4947,7 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
                 kActivate, L"Switch to this Space");
   ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
   ::AppendMenuW(menu, MF_STRING, kRename, L"Rename…");
-  ::AppendMenuW(menu, MF_STRING | MF_DISABLED | MF_GRAYED, kChangeIcon,
-                L"Change Icon…");
+  ::AppendMenuW(menu, MF_STRING, kChangeIcon, L"Change Icon…");
   ::AppendMenuW(menu, MF_POPUP | MF_STRING,
                 reinterpret_cast<UINT_PTR>(themes), L"Set Theme");
   ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
@@ -4200,6 +4979,8 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
                       L"Enter a new name for this Space.", &space_name)) {
       host_->RenameSpace(space_id, base::WideToUTF8(space_name));
     }
+  } else if (chosen == kChangeIcon) {
+    host_->RequestSpaceIconPicker(space_id);
   } else if (chosen == kDelete) {
     if (PhiConfirm(shell_hwnd_, L"Delete Space",
                    L"Bookmarks and pinned tabs belonging to this Space "
@@ -4450,6 +5231,176 @@ LRESULT CALLBACK PhiWindowController::FloatingSidebarProc(HWND hwnd,
   return ::DefWindowProcW(hwnd, msg, wparam, lparam);
 }
 
+bool PhiWindowController::BookmarkBarVisible() {
+  if (!host_ || incognito_ || content_fullscreen_) {
+    return false;
+  }
+  if (host_->AlwaysShowBookmarkBar()) {
+    return true;
+  }
+  if (!host_->BookmarkBarOnNewTab()) {
+    return false;
+  }
+  // "On new tab": Chromium's NTP, a blank tab, or the placeholder shell.
+  if (placeholder_browsers_.count(active_browser_ ? active_browser_
+                                                  : window_id_)) {
+    return true;
+  }
+  return active_tab_url_.empty() || active_tab_url_ == "about:blank" ||
+         active_tab_url_.rfind("chrome://newtab", 0) == 0 ||
+         active_tab_url_.rfind("chrome://new-tab-page", 0) == 0;
+}
+
+void PhiWindowController::PaintBookmarkBar(HDC dc,
+                                           const Layout& layout,
+                                           const PhiPalette& palette) {
+  bar_items_.clear();
+  const RECT& band = layout.bookmark_bar;
+  if (band.right <= band.left || band.bottom <= band.top) {
+    return;
+  }
+  // Root rows only — the sidebar outline's spliced children (depth > 0)
+  // belong to the sidebar's disclosure state, not the bar.
+  std::vector<int> roots;
+  for (size_t i = 0; i < bookmarks_.size(); ++i) {
+    if (bookmarks_[i].depth == 0) {
+      roots.push_back(static_cast<int>(i));
+    }
+  }
+  ::SetBkMode(dc, TRANSPARENT);
+  if (ui_font_) {
+    ::SelectObject(dc, ui_font_);
+  }
+  if (roots.empty()) {
+    // The Mac bar's empty hint, dimmed and leading.
+    RECT hint = band;
+    hint.left += Scaled(12);
+    ::SetTextColor(dc, palette.label_dim);
+    ::DrawTextW(dc, L"Bookmarks you add appear here", -1, &hint,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    return;
+  }
+  const int pill_h = Scaled(24);
+  const int pad = Scaled(8);
+  const int icon_px = Scaled(kFaviconSize);
+  const int more_w = Scaled(24);
+  const int mid = (band.top + band.bottom) / 2;
+  const int limit = band.right - pad - more_w;
+  int x = band.left + pad;
+  size_t shown = 0;
+  for (const int index : roots) {
+    const ShortcutRow& row = bookmarks_[static_cast<size_t>(index)];
+    SIZE extent = {0, 0};
+    ::GetTextExtentPoint32W(dc, row.title.c_str(),
+                            static_cast<int>(row.title.size()), &extent);
+    const int label_w = std::min<int>(extent.cx, Scaled(160));
+    const int pill_w = pad + icon_px + Scaled(6) + label_w + pad;
+    if (x + pill_w > limit) {
+      break;
+    }
+    const RECT pill = {x, mid - pill_h / 2, x + pill_w, mid + pill_h / 2};
+    RECT icon = {pill.left + pad, mid - icon_px / 2, pill.left + pad + icon_px,
+                 mid + icon_px / 2};
+    if (row.folder) {
+      HGDIOBJ previous = caption_font_ ? ::SelectObject(dc, caption_font_)
+                                       : nullptr;
+      DrawGlyph(dc, icon, L"", palette.label_dim);  // Folder.
+      if (previous) {
+        ::SelectObject(dc, previous);
+      }
+    } else if (!row.favicon.empty()) {
+      DrawFavicon(dc, icon, row.favicon.data(), row.favicon_width,
+                  row.favicon_height, palette.ground_top);
+    } else {
+      HGDIOBJ previous = caption_font_ ? ::SelectObject(dc, caption_font_)
+                                       : nullptr;
+      DrawGlyph(dc, icon, L"", palette.label_dim);  // Globe.
+      if (previous) {
+        ::SelectObject(dc, previous);
+      }
+    }
+    RECT text = {icon.right + Scaled(6), pill.top, pill.right - pad,
+                 pill.bottom};
+    if (ui_font_) {
+      ::SelectObject(dc, ui_font_);
+    }
+    ::SetTextColor(dc, palette.label);
+    ::DrawTextW(dc, row.title.c_str(), -1, &text,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
+                    DT_NOPREFIX);
+    bar_items_.push_back({pill, index, false});
+    x = pill.right + Scaled(8);
+    ++shown;
+  }
+  if (shown < roots.size()) {
+    // The Mac's "More Bookmarks" chevron.
+    const RECT more = {limit, mid - pill_h / 2, limit + more_w,
+                       mid + pill_h / 2};
+    HGDIOBJ previous = caption_font_ ? ::SelectObject(dc, caption_font_)
+                                     : nullptr;
+    DrawGlyph(dc, more, L"", palette.label_dim);  // Chevron right.
+    if (previous) {
+      ::SelectObject(dc, previous);
+    }
+    BarItem overflow;
+    overflow.bounds = more;
+    overflow.bookmark = static_cast<int>(shown);  // First hidden root.
+    overflow.overflow = true;
+    bar_items_.push_back(overflow);
+  }
+}
+
+void PhiWindowController::ShowBookmarkBarMenu(const RECT& anchor,
+                                              const std::string& parent_guid,
+                                              size_t skip_first) {
+  if (!host_) {
+    return;
+  }
+  HMENU menu = ::CreatePopupMenu();
+  if (!menu) {
+    return;
+  }
+  std::vector<std::pair<std::string, std::string>> targets;  // guid, url.
+  const auto build = [&](const auto& self, HMENU into,
+                         const std::string& parent, size_t skip,
+                         int depth) -> void {
+    size_t at = 0;
+    for (const PhiStoredRowView& row :
+         host_->BookmarkRows(window_id_, parent)) {
+      if (at++ < skip || targets.size() >= 200) {
+        continue;
+      }
+      const std::wstring title =
+          base::UTF8ToWide(row.title.empty() ? row.url : row.title);
+      if (row.folder) {
+        if (depth >= 4) {
+          continue;
+        }
+        HMENU sub = ::CreatePopupMenu();
+        if (!sub) {
+          continue;
+        }
+        self(self, sub, row.guid, 0, depth + 1);
+        ::AppendMenuW(into, MF_POPUP | MF_STRING,
+                      reinterpret_cast<UINT_PTR>(sub), title.c_str());
+      } else if (!row.url.empty()) {
+        targets.emplace_back(row.guid, row.url);
+        ::AppendMenuW(into, MF_STRING, targets.size(), title.c_str());
+      }
+    }
+  };
+  build(build, menu, parent_guid, skip_first, 0);
+  POINT at = {anchor.left, anchor.bottom};
+  ::ClientToScreen(shell_hwnd_, &at);
+  const UINT chosen = static_cast<UINT>(::TrackPopupMenu(
+      menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, at.x, at.y, 0,
+      shell_hwnd_, nullptr));
+  ::DestroyMenu(menu);
+  if (chosen >= 1 && chosen <= targets.size()) {
+    OpenOrFocusPinned(targets[chosen - 1].first, targets[chosen - 1].second);
+  }
+}
+
 void PhiWindowController::PaintChrome(HDC dc,
                                      const Layout& layout,
                                      bool include_child_controls) {
@@ -4529,6 +5480,8 @@ void PhiWindowController::PaintChrome(HDC dc,
     ::SelectObject(dc, old_frame_pen);
     ::DeleteObject(border_pen);
   }
+
+  PaintBookmarkBar(dc, layout, palette);
 
   ::SetBkMode(dc, TRANSPARENT);
   HGDIOBJ previous_font = ui_font_ ? ::SelectObject(dc, ui_font_) : nullptr;
@@ -4740,7 +5693,11 @@ void PhiWindowController::PaintChrome(HDC dc,
     // own emojiVerticalOffset for the same reason).
     RECT emoji_rc = glyph_rc;
     ::OffsetRect(&emoji_rc, 0, -Scaled(1));
-    if (!chip.icon.empty() && !PhiIsPrivateGlyph(chip.icon) &&
+    if (!chip.icon.empty() &&
+        PhiDrawCatalogArtwork(dc, glyph_rc, chip.icon, Scaled(13),
+                              active ? kLabel : kLabelDim)) {
+      // The Mac catalog's own artwork, tinted like the glyph would be.
+    } else if (!chip.icon.empty() && !PhiIsPrivateGlyph(chip.icon) &&
         PhiDrawColorText(dc, emoji_rc, chip.icon, Scaled(12),
                          active ? kLabel : kLabelDim)) {
       // Emoji rendered in COLOUR via DirectWrite; GDI below is the fallback.
@@ -4766,7 +5723,9 @@ void PhiWindowController::PaintChrome(HDC dc,
                   DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     }
   }
-  DrawGlyph(dc, layout.add_space, L"+", kLabelDim);
+  if (!incognito_) {
+    DrawGlyph(dc, layout.add_space, L"+", kLabelDim);
+  }
 
   PaintBandOrSwipe(dc, layout, palette);
 
@@ -4994,7 +5953,10 @@ void PhiWindowController::DrawHoverCard(HDC dc,
   FillRounded(dc, pill, BlendOver(accent, card_bg, 38), pill_h);
   RECT icon_rc = {pill.left + Scaled(8), mid_y - Scaled(7),
                   pill.left + Scaled(8) + Scaled(14), mid_y + Scaled(7)};
-  if (!chip->icon.empty() && !PhiIsPrivateGlyph(chip->icon) &&
+  if (!chip->icon.empty() &&
+      PhiDrawCatalogArtwork(dc, icon_rc, chip->icon, Scaled(13), accent)) {
+    // The Mac catalog's own artwork, tinted the capsule's accent.
+  } else if (!chip->icon.empty() && !PhiIsPrivateGlyph(chip->icon) &&
       PhiDrawColorText(dc, icon_rc, chip->icon, Scaled(12), accent)) {
     // Colour emoji via DirectWrite; the font paths below are the fallback.
   } else if (!chip->icon.empty() && (emoji_font_ || chip_icon_font_)) {
@@ -5594,8 +6556,11 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
         content = self->ComputeLayout().content;
       }
       const bool in_chrome = self && !::PtInRect(&content, cursor);
-      if (!in_chrome && self && self->browser_hwnd_ &&
-          ::IsWindow(self->browser_hwnd_)) {
+      // While the group overview covers the content, IT owns clicks there —
+      // redirecting focus to the (hidden-under) browser child would close
+      // the overview before its own WM_LBUTTONDOWN ever arrived.
+      if (!in_chrome && self && !PhiGroupOverview::IsOpen() &&
+          self->browser_hwnd_ && ::IsWindow(self->browser_hwnd_)) {
         ::SetFocus(self->browser_hwnd_);
         if (self->framework_) {
           self->framework_->FocusBrowserWindow(self->window_id_);
@@ -5620,8 +6585,8 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
     case WM_CTLCOLOREDIT:
       if (self && reinterpret_cast<HWND>(lparam) == self->url_field_ &&
           self->host_) {
-        const PhiPalette& palette =
-            self->host_->PaletteForSlot(self->window_id_);
+        // CurrentPalette, not the host's: incognito overrides to fixed-dark.
+        const PhiPalette palette = self->CurrentPalette();
         // In the sidebar the field rests on the 4% wash; in a top bar it sits
         // bare on the bar's own ground.
         const COLORREF bg =
@@ -5649,6 +6614,9 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
       // with wparam FALSE (a bare RECT), and skipping it leaves the OS
       // caption alive — its buttons then sit doubled above the band's.
       if (self) {
+        if (self->content_fullscreen_) {
+          return 0;  // Fullscreen: every pixel is client, no borders.
+        }
         RECT* rect =
             wparam == TRUE
                 ? &reinterpret_cast<NCCALCSIZE_PARAMS*>(lparam)->rgrc[0]
@@ -5801,8 +6769,23 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
         self->ClearHover();
       }
       break;
+    case kMsgPhiSwitcherNext:
+    case kMsgPhiSwitcherPrev:
+      if (self) {
+        PhiTabSwitcher::Cycle(self, msg == kMsgPhiSwitcherNext ? 1 : -1);
+        return 0;
+      }
+      break;
+    case kMsgPhiSwitcherCommit:
+      PhiTabSwitcher::Commit();
+      return 0;
     case WM_PHI_RAISE_CAPS:
       if (self) {
+        if (self->status_bubble_ && ::IsWindow(self->status_bubble_) &&
+            ::IsWindowVisible(self->status_bubble_)) {
+          ::SetWindowPos(self->status_bubble_, HWND_TOP, 0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        }
         for (HWND cap : self->corner_caps_) {
           if (cap && ::IsWindow(cap)) {
             ::SetWindowPos(cap, HWND_TOP, 0, 0, 0, 0,
@@ -5826,6 +6809,12 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
           self->menu_bar_->OnCommand(LOWORD(wparam))) {
         return 0;
       }
+      if (self && self->url_field_ &&
+          lparam == reinterpret_cast<LPARAM>(self->url_field_) &&
+          HIWORD(wparam) == EN_CHANGE) {
+        self->OnUrlFieldChanged();  // The user typed: autocomplete runs.
+        return 0;
+      }
       break;
     case WM_RBUTTONUP:
       if (self) {
@@ -5840,6 +6829,28 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
           self->sidebar_resizing_ = true;
           ::SetCapture(hwnd);
           return 0;
+        }
+        self->OnChromeClick(pt.x, pt.y);
+        return 0;
+      }
+      return ::DefWindowProcW(hwnd, msg, wparam, lparam);
+    case WM_MBUTTONDOWN:
+      if (self) {
+        self->OnChromeMiddleClick(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
+        return 0;
+      }
+      return ::DefWindowProcW(hwnd, msg, wparam, lparam);
+    case WM_LBUTTONDBLCLK:
+      if (self) {
+        // A group header's double-click opens the group overview; anywhere
+        // else the second press behaves like a plain click.
+        const POINT pt = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+        self->RebuildTabs();
+        for (const GroupHeader& gh : self->group_headers_) {
+          if (::PtInRect(&gh.bounds, pt)) {
+            PhiGroupOverview::Open(self, gh.id);
+            return 0;
+          }
         }
         self->OnChromeClick(pt.x, pt.y);
         return 0;

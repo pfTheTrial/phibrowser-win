@@ -484,6 +484,18 @@ bool PhiSettingsWindow::ShowSection(const std::string& name) {
   return false;
 }
 
+// static
+void PhiSettingsWindow::ShowSpacePicker(const std::string& space_id) {
+  if (!g_instance) {
+    return;
+  }
+  g_instance->section_ = "spaces";
+  g_instance->selected_space_ = space_id;
+  g_instance->scroll_ = 0;
+  g_instance->SyncTitle();
+  Refresh();
+}
+
 // --- Section plumbing --------------------------------------------------------
 
 void PhiSettingsWindow::BeginSection(int* y, const wchar_t* title) {
@@ -754,8 +766,8 @@ void PhiSettingsWindow::BuildGeneral(int* y) {
   }
   AddDividerRow(y);
   {
-    AddToggleRow(y, L"Restore last session", /*on=*/true, /*enabled=*/false,
-                 std::string());
+    AddToggleRow(y, L"Restore last session", host_->RestoreLastSession(),
+                 /*enabled=*/true, "restoresession");
     AddSubHint(y, L"Reopen your windows and tabs the next time you open Phi.");
   }
   AddDividerRow(y);
@@ -1956,8 +1968,7 @@ void PhiSettingsWindow::BuildShortcuts(int* y) {
   // The Mac Shortcuts pane predates the shared card system: the header row
   // (title + "Restore all shortcuts") sits OUTSIDE one full-height card
   // that is WHITE in light mode, with the search field and the grouped
-  // shortcut table inside. Customising waits for its surface, so the
-  // restore button is drawn disabled.
+  // shortcut table inside.
   {
     Item heading;
     heading.kind = ItemKind::kSectionTitle;
@@ -1968,7 +1979,8 @@ void PhiSettingsWindow::BuildShortcuts(int* y) {
     Item restore;
     restore.kind = ItemKind::kButton;
     restore.text = L"Restore all shortcuts";
-    restore.enabled = false;
+    restore.enabled = host_->AnyShortcutCustomized();
+    restore.action = "restoreshortcuts";
     restore.bounds = {Scaled(kWidth - kMargin) - Scaled(150),
                       *y - Scaled(4),
                       Scaled(kWidth - kMargin),
@@ -2000,34 +2012,28 @@ void PhiSettingsWindow::BuildShortcuts(int* y) {
     *y += 1;
   }
 
-  // The table, grouped as on Mac (App, File, Edit, View, History, Window,
-  // Tab, Spaces), showing the Windows bindings the menu bar displays —
-  // plus the live "Go to Space" rows for the first nine Spaces.
+  // The table, grouped as on Mac (App, File, Edit, View, History,
+  // Bookmarks, Window, Tab, Spaces). The host serves the rows: rebindable
+  // ones (clickable keycap → the chord recorder) carry a stable name and
+  // their EFFECTIVE chord; fixed rows are informational. Plus the live
+  // "Go to Space" rows for the first nine Spaces.
   struct ShortcutRowDef {
     std::wstring group;
     std::wstring name;
     std::wstring keys;
+    std::string id;  // Rebindable stable name; empty = fixed.
+    bool customized = false;
   };
-  std::vector<ShortcutRowDef> rows = {
-      {L"App", L"Preferences", L"Ctrl+,"},
-      {L"App", L"Quit Phi", L"Ctrl+Shift+Q"},
-      {L"File", L"New Tab", L"Ctrl+T"},
-      {L"File", L"New Window", L"Ctrl+N"},
-      {L"File", L"Open Location", L"Ctrl+L"},
-      {L"File", L"Close Tab", L"Ctrl+W"},
-      {L"File", L"Close Window", L"Ctrl+Shift+W"},
-      {L"Edit", L"Copy URL", L"Ctrl+Shift+C"},
-      {L"View", L"Reload This Page", L"Ctrl+R"},
-      {L"View", L"Force Reload This Page", L"Ctrl+Shift+R"},
-      {L"View", L"Toggle Sidebar", L"Ctrl+S"},
-      {L"History", L"Back", L"Alt+Left"},
-      {L"History", L"Forward", L"Alt+Right"},
-      {L"Window", L"Downloads", L"Ctrl+J"},
-      {L"Tab", L"Select Next Tab", L"Ctrl+Tab"},
-      {L"Tab", L"Select Previous Tab", L"Ctrl+Shift+Tab"},
-      {L"Spaces", L"Next Space", L"Ctrl+Alt+Right"},
-      {L"Spaces", L"Previous Space", L"Ctrl+Alt+Left"},
-  };
+  std::vector<ShortcutRowDef> rows;
+  for (const std::string& summary : host_->ShortcutRows()) {
+    const std::vector<std::string> parts = SplitTabs(summary);
+    if (parts.size() < 4) {
+      continue;
+    }
+    rows.push_back({base::UTF8ToWide(parts[0]), base::UTF8ToWide(parts[1]),
+                    base::UTF8ToWide(parts[2]), parts[3],
+                    parts.size() > 4 && parts[4] == "1"});
+  }
   {
     int at = 0;
     for (const std::string& summary : host_->SpaceSummaries()) {
@@ -2095,12 +2101,20 @@ void PhiSettingsWindow::BuildShortcuts(int* y) {
                     *y + row_h};
     items_.push_back(std::move(label));
     // One pill holding the whole chord (min width 80), the Mac's keycap.
+    // A rebindable row's keycap opens the chord recorder; `detail` carries
+    // the label for the prompt's message, `on` marks a customised chord.
     const int cap_w =
         std::max(Scaled(80),
                  Scaled(static_cast<int>(row.keys.size()) * 7 + 24));
     Item cap;
     cap.kind = ItemKind::kKeycap;
     cap.text = row.keys;
+    cap.on = row.customized;
+    if (!row.id.empty()) {
+      cap.action = "shortcut";
+      cap.payload = row.id;
+      cap.detail = row.name;
+    }
     cap.bounds = {Scaled(kWidth - kMargin - kCardPadding) - cap_w,
                   *y + (row_h - Scaled(22)) / 2,
                   Scaled(kWidth - kMargin - kCardPadding),
@@ -2745,8 +2759,11 @@ void PhiSettingsWindow::Paint(HDC dc) {
         const COLORREF cap_bg =
             dark ? Blend(RGB(0xFF, 0xFF, 0xFF), bg, 13)
                  : RGB(0xFF, 0xFF, 0xFF);
-        StrokeRounded(dc, bounds, cap_bg, separator, Scaled(6), 1);
-        ::SetTextColor(dc, secondary);
+        // A customised chord (`on`) shows in the accent, the Mac's cue that
+        // the row departs from its default.
+        StrokeRounded(dc, bounds, cap_bg, item.on ? accent : separator,
+                      Scaled(6), 1);
+        ::SetTextColor(dc, item.on ? accent : secondary);
         ::DrawTextW(dc, item.text.c_str(), -1, &bounds,
                     DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
         break;
@@ -2786,6 +2803,10 @@ void PhiSettingsWindow::Paint(HDC dc) {
           // cell's rounded fill must survive at the corners.
           RECT glyph_rc = bounds;
           ::InflateRect(&glyph_rc, -Scaled(4), -Scaled(4));
+          if (PhiDrawCatalogArtwork(dc, glyph_rc, item.text, Scaled(18),
+                                    row_ink)) {
+            break;  // The Mac catalog's own artwork, tinted the row ink.
+          }
           if (!PhiIsPrivateGlyph(item.text) &&
               PhiDrawColorText(dc, glyph_rc, item.text, Scaled(14),
                                row_ink)) {
@@ -2857,6 +2878,8 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
     host_->SetNewTabBehavior(static_cast<PhiNewTabBehavior>(item.value));
   } else if (item.action == "fullurl") {
     host_->SetAlwaysShowFullUrl(!item.on);
+  } else if (item.action == "restoresession") {
+    host_->SetRestoreLastSession(!item.on);
   } else if (item.action == "devmode") {
     host_->SetDeveloperMode(!item.on);
   } else if (item.action == "gospaces") {
@@ -2867,6 +2890,17 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
     section_ = "urlrules";
     scroll_ = 0;
     SyncTitle();
+  } else if (item.action == "shortcut") {
+    PhiShortcutChord chord;
+    const std::wstring message =
+        L"Press the new keys for \u201C" + item.detail + L"\u201D.";
+    if (PhiPromptShortcut(hwnd_, L"Change Shortcut", message.c_str(),
+                          &chord)) {
+      host_->RebindShortcut(item.payload, chord.vk, chord.ctrl, chord.shift,
+                            chord.alt);
+    }
+  } else if (item.action == "restoreshortcuts") {
+    host_->RestoreAllShortcuts();
   } else if (item.action == "addrule") {
     std::wstring value;
     if (PhiPromptText(hwnd_, L"Add URL Rule",

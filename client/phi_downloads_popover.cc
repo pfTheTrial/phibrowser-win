@@ -134,6 +134,9 @@ struct DownloadRow {
   double total = 0;
   double speed = 0;
   double end_time = 0;
+  // "normal|scanning|warning|blocked|policyBlocked" — the framework's
+  // DownloadSafetyState (the Mac safety-state mapping).
+  std::string danger = "normal";
 };
 
 struct RowAction {
@@ -172,6 +175,7 @@ class Popover {
                             &kCorner, sizeof(kCorner));
     EnsureFonts();
     Refresh();
+    created_tick_ = ::GetTickCount64();
     ::ShowWindow(hwnd_, SW_SHOW);
     ::SetForegroundWindow(hwnd_);
     ::SetTimer(hwnd_, kPollTimer, 500, nullptr);
@@ -264,6 +268,9 @@ class Popover {
         row.total = dict->FindDouble("total").value_or(0);
         row.speed = dict->FindDouble("speed").value_or(0);
         row.end_time = dict->FindDouble("endTime").value_or(0);
+        if (const std::string* danger = dict->FindString("danger")) {
+          row.danger = *danger;
+        }
         rows_.push_back(std::move(row));
       }
     }
@@ -276,6 +283,16 @@ class Popover {
 
   // The per-state action set (DownloadItemRow's normalActionButtons).
   std::vector<RowAction> ActionsFor(const DownloadRow& row) const {
+    // Safe Browsing states first (the Mac popover's keep/discard): a
+    // warning offers Keep + Discard, a block offers Discard only.
+    // "remove" IS the discard — Chromium's bubble does the same (cancel +
+    // delete the temporary file). Scanning rows keep the normal actions.
+    if (row.danger == "warning") {
+      return {{"keep", L''}, {"remove", L''}};
+    }
+    if (row.danger == "blocked" || row.danger == "policyBlocked") {
+      return {{"remove", L''}};
+    }
     if (row.state == "in_progress") {
       return {{"copy", L''},
               {row.paused ? "resume" : "pause",
@@ -400,7 +417,11 @@ class Popover {
       RECT name_rc = {info.left, mid - Scaled(18), info.right,
                       mid - Scaled(1)};
       const wchar_t* status =
-          item.state == "cancelled" ? L"Canceled"
+          item.danger == "warning"         ? L"Dangerous"
+          : item.danger == "blocked"       ? L"Blocked"
+          : item.danger == "policyBlocked" ? L"Blocked by policy"
+          : item.danger == "scanning"      ? L"Scanning..."
+          : item.state == "cancelled"      ? L"Canceled"
           : item.state == "interrupted"
               ? L"Failed"
               : (item.state == "complete" && !item.exists ? L"Deleted"
@@ -633,6 +654,12 @@ class Popover {
       }
       case WM_ACTIVATE:
         if (self && LOWORD(w) == WA_INACTIVE) {
+          // Opening grace: a menu teardown or the browser's async focus can
+          // deactivate the popover the instant it opens; a real click-away
+          // cannot happen this soon. Dismissal resumes after the grace.
+          if (::GetTickCount64() - self->created_tick_ < 500) {
+            break;
+          }
           ::DestroyWindow(hwnd);
           return 0;
         }
@@ -710,6 +737,8 @@ class Popover {
 
   HWND owner_;
   HWND hwnd_ = nullptr;
+  // When the popover was shown — the opening grace against activation churn.
+  ULONGLONG created_tick_ = 0;
   PhiPalette palette_;
   // Not rewritten to raw_ptr: the popover lives strictly inside the
   // framework's lifetime (owned popup of the shell window).

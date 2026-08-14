@@ -22,6 +22,7 @@
 #include "phibrowser-win/client/phi_credentials.h"
 #include "phibrowser-win/client/phi_vault_helper.h"
 #include "phibrowser-win/client/phi_emoji.h"
+#include "phibrowser-win/client/phi_prompt.h"
 #include "phibrowser-win/client/phi_settings_window.h"
 #include "phibrowser-win/client/phi_tab_store.h"
 #include "phibrowser-win/client/phi_theme.h"
@@ -61,6 +62,11 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   void OnRouteURLToSpace(const char* space_id,
                          const char* url,
                          int64_t source_window_id) override;
+  void OnTargetURLChanged(int64_t window_id, const char* url) override;
+  void OnOmniboxResults(int64_t window_id, const char* json) override;
+  void OnImportCompleted(const char* source, bool success) override;
+  void OnPlaceholderModeChanged(int64_t window_id, bool entered) override;
+  void OnContentFullscreenChanged(int64_t window_id, bool fullscreen) override;
 
   // PhiControlDelegate (called on the control server's I/O thread):
   std::string HandleControlCommand(const std::string& type,
@@ -77,6 +83,16 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   const PhiPalette& Palette() const override;
   const PhiPalette& PaletteForSlot(int64_t slot) const override;
   void RequestSettings() override;
+  void RequestSpaceIconPicker(const std::string& space_id) override;
+  int64_t SlotAtScreenPoint(POINT screen, int64_t exclude_slot) const override;
+  bool RequestDropTabOnWindow(int64_t source_slot,
+                              int index,
+                              int b_index,
+                              int64_t target_slot) override;
+  bool AlwaysShowBookmarkBar() const override;
+  void SetAlwaysShowBookmarkBar(bool enabled) override;
+  bool BookmarkBarOnNewTab() const override;
+  void SetBookmarkBarOnNewTab(bool enabled) override;
   std::vector<PhiStoredRowView> PinnedRows(int64_t slot) const override;
   std::vector<PhiStoredRowView> BookmarkRows(
       int64_t slot,
@@ -116,6 +132,21 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   void SetNewTabBehavior(PhiNewTabBehavior behavior) override;
   bool AlwaysShowFullUrl() const override;
   void SetAlwaysShowFullUrl(bool enabled) override;
+  bool RestoreLastSession() const override;
+  void SetRestoreLastSession(bool enabled) override;
+  void FocusWindowForBrowser(int64_t browser_window_id) override;
+  bool NewTabOpensOmnibox() const override;
+  std::string AddBookmarkRow(int64_t slot,
+                             const std::string& parent_guid,
+                             const std::string& title,
+                             const std::string& url) override;
+  void RequestTabToSpace(int64_t slot,
+                         int index,
+                         const std::string& space_id,
+                         bool move) override;
+  // Pushes the persisted restore choice into every loaded profile — run
+  // when the framework comes up and after a profile loads.
+  void PushRestorePreference();
   PhiPinScope PinScope() const override;
   void SetPinScope(PhiPinScope scope) override;
   std::vector<std::string> SpaceSummaries() const override;
@@ -129,6 +160,14 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   bool DeleteProfileById(const std::string& profile_id) override;
   bool RenameProfileById(const std::string& profile_id,
                          const std::string& name) override;
+  std::vector<std::string> ShortcutRows() const override;
+  void RebindShortcut(const std::string& name,
+                      UINT vk,
+                      bool ctrl,
+                      bool shift,
+                      bool alt) override;
+  void RestoreAllShortcuts() override;
+  bool AnyShortcutCustomized() const override;
   bool DeveloperMode() const override;
   void SetDeveloperMode(bool enabled) override;
   void OpenBrowserSettings() override;
@@ -195,6 +234,12 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
                                            LPARAM lparam);
   // The shell window owning the focus HWND, or null (focus is elsewhere).
   HWND ShellForFocus() const;
+  // The chord a rebindable shortcut currently answers to: its override when
+  // one exists, its default otherwise.
+  PhiShortcutChord EffectiveChord(const std::string& name) const;
+  // The command bound to this chord among the REBINDABLE shortcuts, or 0.
+  // Checked by the hook before the fixed table, so a custom chord wins.
+  UINT MatchRebindableChord(UINT vk, bool ctrl, bool shift, bool alt) const;
 
   // One controller per SLOT, keyed by the slot's primary windowId.
   std::map<int64_t, std::unique_ptr<PhiWindowController>> windows_;
@@ -287,6 +332,15 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   int saturation_ = 50;
   PhiNewTabBehavior new_tab_behavior_ = PhiNewTabBehavior::kNewTabPage;
   bool always_show_full_url_ = false;
+  // "Restore last session" — persisted app-wide, mirrored into each loaded
+  // profile's SessionStartupPref (LAST/DEFAULT).
+  bool restore_last_session_ = false;
+  // The bookmark bar's two visibility switches (the Mac View menu's pair).
+  bool always_show_bookmark_bar_ = false;
+  bool bookmark_bar_on_new_tab_ = false;
+  // Shortcut overrides, keyed by the shortcut's STABLE NAME (never the
+  // command int, which is free to be renumbered). vk 0 = explicitly unbound.
+  std::map<std::string, PhiShortcutChord> shortcut_overrides_;
   // Gates the Developer settings pane, as on Mac (default off).
   bool developer_mode_ = false;
   std::wstring prefs_path_;

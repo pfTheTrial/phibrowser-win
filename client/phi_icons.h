@@ -10,6 +10,8 @@
 #include <string>
 #include <vector>
 
+#include "phibrowser-win/client/phi_mac_icons.h"
+
 namespace phi_client {
 
 // The Mac's Phi icon catalog (PhiIconCatalog.swift): 88 icons — 48
@@ -34,6 +36,24 @@ std::string PhiIconCatalogGlyph(const std::string& id);
 // True when `text`'s first character sits in the private-use area — an MDL2
 // glyph, which only renders with the Segoe MDL2 Assets font.
 bool PhiIsPrivateGlyph(const std::wstring& text);
+
+// The Mac catalog ARTWORK (all 88 imageset SVGs rasterized to 48px alpha
+// masks — generated phi_icon_masks.cc): the real shapes, tinted at draw
+// time via PhiTintedIconBgra like the sidebar's other template icons.
+// Null when `id` is not in the catalog. ForGlyph resolves a stand-in
+// glyph character back to its icon's mask, so draw sites holding display
+// text can upgrade to the artwork without re-plumbing storage values.
+const PhiMacIcon* PhiCatalogMask(const std::string& id);
+const PhiMacIcon* PhiCatalogMaskForGlyph(const std::wstring& text);
+
+// Draws `text`'s catalog artwork tinted `ink`, `px` square and centered in
+// `rc`. False when `text` is not a catalog stand-in (emoji, initials) —
+// callers fall through to their font path.
+bool PhiDrawCatalogArtwork(HDC dc,
+                           const RECT& rc,
+                           const std::wstring& text,
+                           int px,
+                           COLORREF ink);
 
 // The Phi app icon (resources\phi.ico beside the exe) at `size`, or null
 // when the artwork is missing. Defined in phi_window_controller.cc.

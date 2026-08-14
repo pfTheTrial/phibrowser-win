@@ -7,6 +7,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <array>
 #include <optional>
 #include <utility>
 
@@ -25,6 +26,7 @@
 #include "phibrowser-win/client/phi_icons.h"
 #include "phibrowser-win/client/phi_menu_bar.h"
 #include "phibrowser-win/client/phi_prompt.h"
+#include "phibrowser-win/client/phi_tab_switcher.h"
 
 namespace phi_client {
 
@@ -49,6 +51,57 @@ std::vector<std::string> SplitTabRow(const std::string& value) {
   }
   return parts;
 }
+
+// The customisable shortcuts (the Mac Shortcuts pane's editable rows), in the
+// pane's display order. `name` is the stable prefs key; the chord here is the
+// default the menu bar advertises. Everything NOT in this table (Quit, zoom,
+// devtools, Ctrl+Tab's MRU switcher, Ctrl+1..9 Spaces...) stays fixed.
+struct RebindableShortcut {
+  const char* name;
+  const wchar_t* group;
+  const wchar_t* label;
+  UINT command;
+  PhiShortcutChord def;
+};
+constexpr RebindableShortcut kRebindableShortcuts[] = {
+      {"newTab", L"File", L"New Tab", kCmdNewTab, {'T', true, false, false}},
+      {"newWindow", L"File", L"New Window", kCmdNewWindow,
+       {'N', true, false, false}},
+      {"newIncognitoWindow", L"File", L"New Incognito Window",
+       kCmdNewIncognitoWindow, {'N', true, true, false}},
+      {"reopenClosedTab", L"File", L"Reopen Closed Tab", kCmdReopenClosedTab,
+       {'T', true, true, false}},
+      {"openLocation", L"File", L"Open Location", kCmdOpenLocation,
+       {'L', true, false, false}},
+      {"closeTab", L"File", L"Close Tab", kCmdCloseTab,
+       {'W', true, false, false}},
+      {"closeWindow", L"File", L"Close Window", kCmdCloseWindow,
+       {'W', true, true, false}},
+      {"copyUrl", L"Edit", L"Copy URL", kCmdCopyUrl,
+       {'C', true, true, false}},
+      {"reload", L"View", L"Reload This Page", kCmdReload,
+       {'R', true, false, false}},
+      {"forceReload", L"View", L"Force Reload This Page", kCmdForceReload,
+       {'R', true, true, false}},
+      {"toggleSidebar", L"View", L"Toggle Sidebar", kCmdToggleSidebar,
+       {'S', true, false, false}},
+      {"toggleBookmarkBar", L"View", L"Always Show Bookmark Bar",
+       kCmdAlwaysShowBookmarkBar, {'B', true, true, false}},
+      {"showFullHistory", L"History", L"Show Full History",
+       kCmdShowFullHistory, {'H', true, false, false}},
+      {"bookmarkThisTab", L"Bookmarks", L"Bookmark This Tab",
+       kCmdBookmarkThisTab, {'D', true, false, false}},
+      {"bookmarkAllTabs", L"Bookmarks", L"Bookmark All Tabs",
+       kCmdBookmarkAllTabs, {'D', true, true, false}},
+      {"downloads", L"Window", L"Downloads", kCmdDownloads,
+       {'J', true, false, false}},
+      {"searchTabs", L"Window", L"Search Tabs", kCmdSearchTabs,
+       {'A', true, true, false}},
+      {"nextSpace", L"Spaces", L"Next Space", kCmdNextSpace,
+       {VK_RIGHT, true, false, true}},
+      {"previousSpace", L"Spaces", L"Previous Space", kCmdPreviousSpace,
+       {VK_LEFT, true, false, true}},
+};
 }  // namespace
 
 PhiCoordinator::PhiCoordinator() {
@@ -134,6 +187,7 @@ void PhiCoordinator::OnFrameworkReady(phi_framework::PhiFramework* framework,
   LoadLayoutMode();
   LoadTheme();
   LoadPrefs();
+  PushRestorePreference();  // Into the loaded profiles' startup prefs.
   tab_store_.Load(user_data_dir + L"\\PhiTabData.json");
   PushSpaceMenu();  // The page context menu's "Open Link in Space" list.
 
@@ -1005,6 +1059,26 @@ std::string PhiCoordinator::AddBookmarkFolder(int64_t slot,
   return guid;
 }
 
+std::string PhiCoordinator::AddBookmarkRow(int64_t slot,
+                                           const std::string& parent_guid,
+                                           const std::string& title,
+                                           const std::string& url) {
+  std::string profile_id, space_id;
+  if (url.empty() || !OwnerForSlot(slot, &profile_id, &space_id)) {
+    return std::string();
+  }
+  const std::string guid = tab_store_.AddBookmark(
+      profile_id, space_id, parent_guid, !title.empty() ? title : url, url,
+      /*folder=*/false, std::string(), 0, 0);
+  if (!guid.empty()) {
+    for (const auto& [s2, controller] : windows_) {
+      controller->RefreshTabs();
+    }
+    PhiSettingsWindow::Refresh();
+  }
+  return guid;
+}
+
 int PhiCoordinator::SidebarWidth() const {
   return sidebar_width_;
 }
@@ -1089,12 +1163,31 @@ void PhiCoordinator::LoadPrefs() {
       saturation_ = root->FindInt("saturation").value_or(saturation_);
       always_show_full_url_ =
           root->FindBool("alwaysShowFullUrl").value_or(always_show_full_url_);
+      restore_last_session_ =
+          root->FindBool("restoreLastSession").value_or(restore_last_session_);
+      always_show_bookmark_bar_ = root->FindBool("alwaysShowBookmarkBar")
+                                      .value_or(always_show_bookmark_bar_);
+      bookmark_bar_on_new_tab_ = root->FindBool("bookmarkBarOnNewTab")
+                                     .value_or(bookmark_bar_on_new_tab_);
       developer_mode_ =
           root->FindBool("developerMode").value_or(developer_mode_);
       if (const std::string* behavior = root->FindString("newTabBehavior")) {
         new_tab_behavior_ = *behavior == "omnibox"
                                 ? PhiNewTabBehavior::kOmnibox
                                 : PhiNewTabBehavior::kNewTabPage;
+      }
+      if (const base::DictValue* shortcuts = root->FindDict("shortcuts")) {
+        for (const auto [name, value] : *shortcuts) {
+          const base::DictValue* chord = value.GetIfDict();
+          if (!chord) {
+            continue;
+          }
+          shortcut_overrides_[name] = {
+              static_cast<UINT>(chord->FindInt("vk").value_or(0)),
+              chord->FindBool("ctrl").value_or(false),
+              chord->FindBool("shift").value_or(false),
+              chord->FindBool("alt").value_or(false)};
+        }
       }
     }
   }
@@ -1107,10 +1200,25 @@ void PhiCoordinator::SavePrefs() const {
   base::DictValue root;
   root.Set("saturation", saturation_);
   root.Set("alwaysShowFullUrl", always_show_full_url_);
+  root.Set("restoreLastSession", restore_last_session_);
+  root.Set("alwaysShowBookmarkBar", always_show_bookmark_bar_);
+  root.Set("bookmarkBarOnNewTab", bookmark_bar_on_new_tab_);
   root.Set("developerMode", developer_mode_);
   root.Set("newTabBehavior", new_tab_behavior_ == PhiNewTabBehavior::kOmnibox
                                  ? "omnibox"
                                  : "newTabPage");
+  if (!shortcut_overrides_.empty()) {
+    base::DictValue shortcuts;
+    for (const auto& [name, chord] : shortcut_overrides_) {
+      base::DictValue entry;
+      entry.Set("vk", static_cast<int>(chord.vk));
+      entry.Set("ctrl", chord.ctrl);
+      entry.Set("shift", chord.shift);
+      entry.Set("alt", chord.alt);
+      shortcuts.Set(name, std::move(entry));
+    }
+    root.Set("shortcuts", std::move(shortcuts));
+  }
   std::string json;
   base::JSONWriter::Write(root, &json);
   HANDLE f = ::CreateFileW(prefs_path_.c_str(), GENERIC_WRITE, 0, nullptr,
@@ -1141,6 +1249,10 @@ PhiNewTabBehavior PhiCoordinator::NewTabBehavior() const {
   return new_tab_behavior_;
 }
 
+bool PhiCoordinator::NewTabOpensOmnibox() const {
+  return new_tab_behavior_ == PhiNewTabBehavior::kOmnibox;
+}
+
 void PhiCoordinator::SetNewTabBehavior(PhiNewTabBehavior behavior) {
   if (behavior == new_tab_behavior_) {
     return;
@@ -1148,6 +1260,239 @@ void PhiCoordinator::SetNewTabBehavior(PhiNewTabBehavior behavior) {
   new_tab_behavior_ = behavior;
   SavePrefs();
   PhiSettingsWindow::Refresh();
+}
+
+PhiShortcutChord PhiCoordinator::EffectiveChord(const std::string& name) const {
+  auto it = shortcut_overrides_.find(name);
+  if (it != shortcut_overrides_.end()) {
+    return it->second;
+  }
+  for (const RebindableShortcut& def : kRebindableShortcuts) {
+    if (name == def.name) {
+      return def.def;
+    }
+  }
+  return {};
+}
+
+UINT PhiCoordinator::MatchRebindableChord(UINT vk,
+                                          bool ctrl,
+                                          bool shift,
+                                          bool alt) const {
+  const PhiShortcutChord pressed{vk, ctrl, shift, alt};
+  for (const RebindableShortcut& def : kRebindableShortcuts) {
+    const PhiShortcutChord chord = EffectiveChord(def.name);
+    if (chord.vk && chord == pressed) {
+      return def.command;
+    }
+  }
+  return 0;
+}
+
+std::vector<std::string> PhiCoordinator::ShortcutRows() const {
+  std::vector<std::string> rows;
+  const auto fixed = [&](const char* group, const char* label,
+                         const char* keys) {
+    rows.push_back(std::string(group) + "\t" + label + "\t" + keys + "\t\t0");
+  };
+  const auto rebindable = [&](const RebindableShortcut& def) {
+    rows.push_back(base::WideToUTF8(def.group) + "\t" +
+                   base::WideToUTF8(def.label) + "\t" +
+                   base::WideToUTF8(PhiFormatChord(EffectiveChord(def.name))) +
+                   "\t" + def.name + "\t" +
+                   (shortcut_overrides_.count(def.name) ? "1" : "0"));
+  };
+  // The pane's groups in Mac order; a group's rebindable rows first, then its
+  // fixed, informational ones (chords the hook special-cases or that other
+  // machinery advertises — shown but not editable).
+  fixed("App", "Preferences", "Ctrl+,");
+  fixed("App", "Quit Phi", "Ctrl+Shift+Q");
+  const std::array<const wchar_t*, 8> kGroups = {
+      L"File", L"Edit", L"View", L"History", L"Bookmarks",
+      L"Window", L"Tab", L"Spaces"};
+  for (const wchar_t* group : kGroups) {
+    for (const RebindableShortcut& def : kRebindableShortcuts) {
+      if (std::wstring(def.group) == group) {
+        rebindable(def);
+      }
+    }
+    if (std::wstring(group) == L"History") {
+      fixed("History", "Back", "Alt+Left");
+      fixed("History", "Forward", "Alt+Right");
+    } else if (std::wstring(group) == L"Tab") {
+      fixed("Tab", "Select Next Tab", "Ctrl+Tab");
+      fixed("Tab", "Select Previous Tab", "Ctrl+Shift+Tab");
+    }
+  }
+  return rows;
+}
+
+void PhiCoordinator::RebindShortcut(const std::string& name,
+                                    UINT vk,
+                                    bool ctrl,
+                                    bool shift,
+                                    bool alt) {
+  const RebindableShortcut* target = nullptr;
+  for (const RebindableShortcut& def : kRebindableShortcuts) {
+    if (name == def.name) {
+      target = &def;
+      break;
+    }
+  }
+  if (!target || !vk) {
+    return;
+  }
+  const PhiShortcutChord chord{vk, ctrl, shift, alt};
+  // Steal the chord from whichever rebindable currently answers to it — the
+  // stolen shortcut goes UNBOUND (vk 0) until given a new chord or restored.
+  for (const RebindableShortcut& def : kRebindableShortcuts) {
+    if (name != def.name && EffectiveChord(def.name) == chord) {
+      shortcut_overrides_[def.name] = {};
+    }
+  }
+  // Rebinding back to the default is a restore, not an override.
+  if (chord == target->def) {
+    shortcut_overrides_.erase(name);
+  } else {
+    shortcut_overrides_[name] = chord;
+  }
+  SavePrefs();
+}
+
+void PhiCoordinator::RestoreAllShortcuts() {
+  if (shortcut_overrides_.empty()) {
+    return;
+  }
+  shortcut_overrides_.clear();
+  SavePrefs();
+}
+
+bool PhiCoordinator::AnyShortcutCustomized() const {
+  return !shortcut_overrides_.empty();
+}
+
+void PhiCoordinator::FocusWindowForBrowser(int64_t browser_window_id) {
+  auto slot_it = browser_to_slot_.find(browser_window_id);
+  if (slot_it == browser_to_slot_.end()) {
+    return;
+  }
+  auto it = windows_.find(slot_it->second);
+  if (it == windows_.end()) {
+    return;
+  }
+  PhiWindowController* controller = it->second.get();
+  if (controller->active_browser() != browser_window_id) {
+    // The browser backs a HIDDEN Space of that slot — surface it first.
+    for (const std::string& space : controller->space_order()) {
+      if (controller->BrowserIdForSpace(space) == browser_window_id) {
+        controller->ShowSpace(space);
+        break;
+      }
+    }
+  }
+  if (controller->shell_hwnd()) {
+    ::SetForegroundWindow(controller->shell_hwnd());
+  }
+  controller->RefreshTabs();
+}
+
+void PhiCoordinator::RequestTabToSpace(int64_t slot,
+                                       int index,
+                                       const std::string& space_id,
+                                       bool move) {
+  auto it = windows_.find(slot);
+  if (it == windows_.end() || !framework_) {
+    return;
+  }
+  PhiWindowController* source = it->second.get();
+  if (source->active_space() == space_id) {
+    return;
+  }
+  const int64_t source_browser =
+      source->active_browser() ? source->active_browser() : slot;
+  // The tab's URL — the clone and cold-Space paths re-open it.
+  std::string url;
+  std::optional<base::Value> tabs = base::JSONReader::Read(
+      framework_->ListTabsJson(source_browser), base::JSON_PARSE_RFC);
+  if (tabs && tabs->is_list()) {
+    for (const base::Value& v : tabs->GetList()) {
+      const base::DictValue* d = v.GetIfDict();
+      if (d && d->FindInt("index").value_or(-1) == index) {
+        if (const std::string* u = d->FindString("url")) {
+          url = *u;
+        }
+        break;
+      }
+    }
+  }
+  // An open target Space (any slot) gets the real move.
+  int64_t target_browser = 0;
+  for (const auto& [other_slot, controller] : windows_) {
+    if (controller->is_agent() || controller->is_incognito()) {
+      continue;
+    }
+    if (const int64_t id = controller->BrowserIdForSpace(space_id)) {
+      target_browser = id;
+      break;
+    }
+  }
+  if (move && target_browser) {
+    if (framework_->MoveTabToWindow(source_browser, index, target_browser)) {
+      FocusWindowForBrowser(target_browser);
+      source->RefreshTabs();
+    }
+    return;
+  }
+  if (url.empty()) {
+    return;
+  }
+  if (target_browser) {
+    framework_->OpenTabBypassingSpaceRouting(target_browser, url.c_str());
+    FocusWindowForBrowser(target_browser);
+  } else {
+    // Cold Space: surface it and open there (the routed-URL tail).
+    RouteUrlToSpace(space_id, url, source_browser);
+  }
+  if (move) {
+    framework_->CloseTab(source_browser, index);
+  }
+  source->RefreshTabs();
+}
+
+bool PhiCoordinator::RestoreLastSession() const {
+  return restore_last_session_;
+}
+
+void PhiCoordinator::SetRestoreLastSession(bool enabled) {
+  if (enabled == restore_last_session_) {
+    return;
+  }
+  restore_last_session_ = enabled;
+  SavePrefs();
+  PushRestorePreference();
+  PhiSettingsWindow::Refresh();
+}
+
+void PhiCoordinator::PushRestorePreference() {
+  // Every LOADED profile takes the app-wide choice; profiles loading later
+  // get it pushed again from the paths that load them.
+  if (!framework_) {
+    return;
+  }
+  std::optional<base::Value> list = base::JSONReader::Read(
+      framework_->ListProfilesJson(), base::JSON_PARSE_RFC);
+  if (!list || !list->is_list()) {
+    return;
+  }
+  for (const base::Value& v : list->GetList()) {
+    if (!v.is_dict()) {
+      continue;
+    }
+    const std::string* id = v.GetDict().FindString("id");
+    if (id && v.GetDict().FindBool("loaded").value_or(false)) {
+      framework_->SetRestoreOnStartup(id->c_str(), restore_last_session_);
+    }
+  }
 }
 
 bool PhiCoordinator::AlwaysShowFullUrl() const {
@@ -1565,12 +1910,27 @@ void PhiCoordinator::ApplyTheme() {
 void PhiCoordinator::RebuildSpacePalettes() {
   palette_by_space_.clear();
   for (const Space& space : spaces_) {
-    if (space.theme_id.empty() && space.saturation < 0) {
+    COLORREF accent = 0;
+    const bool has_hex = PhiParseColorHex(space.color_hex, &accent);
+    if (space.theme_id.empty() && space.saturation < 0 && !has_hex) {
       continue;  // Follows the app-wide theme.
     }
-    const std::string& id = space.theme_id.empty() ? theme_id_ : space.theme_id;
     const int saturation =
         space.saturation < 0 ? saturation_ : space.saturation;
+    if (space.theme_id.empty() && has_hex) {
+      // No pinned theme but a wire colorHex: the hex drives the Space's tint
+      // (the Mac CreateSpacePanel's "colorHex drives the sidebar tint"
+      // contract — Spaces created by the skill carry only the hex).
+      PhiTheme custom = PhiThemeById(std::string());  // Pure's grounds.
+      custom.light.overlay = accent;
+      custom.light.accent = accent;
+      custom.dark.overlay = accent;
+      custom.dark.accent = accent;
+      palette_by_space_[space.id] =
+          PhiResolvePalette(custom, appearance_, saturation);
+      continue;
+    }
+    const std::string& id = space.theme_id.empty() ? theme_id_ : space.theme_id;
     palette_by_space_[space.id] =
         PhiResolvePalette(PhiThemeById(id), appearance_, saturation);
   }
@@ -1646,6 +2006,98 @@ void PhiCoordinator::SetAppearance(PhiAppearance appearance) {
 
 void PhiCoordinator::RequestSettings() {
   PhiSettingsWindow::Open(this);
+}
+
+void PhiCoordinator::RequestSpaceIconPicker(const std::string& space_id) {
+  PhiSettingsWindow::Open(this);
+  PhiSettingsWindow::ShowSpacePicker(space_id);
+}
+
+int64_t PhiCoordinator::SlotAtScreenPoint(POINT screen,
+                                          int64_t exclude_slot) const {
+  // WindowFromPoint respects z-order; a hit on the browser child (or any
+  // shell child) normalizes to its top-level shell.
+  const HWND at = ::GetAncestor(::WindowFromPoint(screen), GA_ROOT);
+  if (!at) {
+    return 0;
+  }
+  for (const auto& [slot, controller] : windows_) {
+    if (slot != exclude_slot && controller->shell_hwnd() == at) {
+      return slot;
+    }
+  }
+  return 0;
+}
+
+bool PhiCoordinator::RequestDropTabOnWindow(int64_t source_slot,
+                                            int index,
+                                            int b_index,
+                                            int64_t target_slot) {
+  auto source = windows_.find(source_slot);
+  auto target = windows_.find(target_slot);
+  if (source == windows_.end() || target == windows_.end() || !framework_) {
+    return false;
+  }
+  // Never across the off-the-record boundary.
+  if (source->second->is_incognito() != target->second->is_incognito()) {
+    return false;
+  }
+  const int64_t source_browser = source->second->active_browser()
+                                     ? source->second->active_browser()
+                                     : source_slot;
+  const int64_t target_browser = target->second->active_browser()
+                                     ? target->second->active_browser()
+                                     : target_slot;
+  // A split pair moves both members; the HIGHER index first so the lower
+  // one's position survives the removal.
+  bool ok = true;
+  if (b_index >= 0) {
+    ok = framework_->MoveTabToWindow(source_browser, std::max(index, b_index),
+                                     target_browser);
+    ok = framework_->MoveTabToWindow(source_browser, std::min(index, b_index),
+                                     target_browser) &&
+         ok;
+  } else {
+    ok = framework_->MoveTabToWindow(source_browser, index, target_browser);
+  }
+  if (ok) {
+    source->second->RefreshTabs();
+    target->second->RefreshTabs();
+  }
+  return ok;
+}
+
+bool PhiCoordinator::AlwaysShowBookmarkBar() const {
+  return always_show_bookmark_bar_;
+}
+
+void PhiCoordinator::SetAlwaysShowBookmarkBar(bool enabled) {
+  if (enabled == always_show_bookmark_bar_) {
+    return;
+  }
+  always_show_bookmark_bar_ = enabled;
+  SavePrefs();
+  // The bar takes/releases a band of the content rect in every window.
+  for (const auto& [slot, controller] : windows_) {
+    controller->LayoutContents();
+    controller->RefreshTabs();
+  }
+}
+
+bool PhiCoordinator::BookmarkBarOnNewTab() const {
+  return bookmark_bar_on_new_tab_;
+}
+
+void PhiCoordinator::SetBookmarkBarOnNewTab(bool enabled) {
+  if (enabled == bookmark_bar_on_new_tab_) {
+    return;
+  }
+  bookmark_bar_on_new_tab_ = enabled;
+  SavePrefs();
+  for (const auto& [slot, controller] : windows_) {
+    controller->LayoutContents();
+    controller->RefreshTabs();
+  }
 }
 
 PhiLayoutMode PhiCoordinator::LayoutMode() const {
@@ -2014,6 +2466,7 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
     space.color_hex = color_hex;
     spaces_.push_back(std::move(space));
     SaveSpaces();
+    RebuildSpacePalettes();  // A wire colorHex tints the new Space.
     if (activate) {
       // Surface it in the user's focused window — explicit opt-in only (the
       // skill's default create never yanks the user's window).
@@ -2556,6 +3009,7 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
                                   ? "omnibox"
                                   : "newTabPage");
     out.Set("alwaysShowFullUrl", always_show_full_url_);
+    out.Set("restoreLastSession", restore_last_session_);
     out.Set("pinScope", PhiPinScopeName(tab_store_.pin_scope()));
     // With a profileId, the per-profile browsing settings too.
     std::optional<base::DictValue> p =
@@ -2583,6 +3037,10 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
       }
       if (std::optional<bool> full = p->FindBool("alwaysShowFullUrl")) {
         SetAlwaysShowFullUrl(*full);
+        ok = true;
+      }
+      if (std::optional<bool> restore = p->FindBool("restoreLastSession")) {
+        SetRestoreLastSession(*restore);
         ok = true;
       }
       if (const std::string* behavior = p->FindString("newTabBehavior")) {
@@ -2621,6 +3079,7 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
     out.Set("developerMode", developer_mode_);
     out.Set("saturation", saturation_);
     out.Set("alwaysShowFullUrl", always_show_full_url_);
+    out.Set("restoreLastSession", restore_last_session_);
     out.Set("newTabBehavior", new_tab_behavior_ == PhiNewTabBehavior::kOmnibox
                                   ? "omnibox"
                                   : "newTabPage");
@@ -3982,12 +4441,23 @@ void PhiCoordinator::OnBrowserWindowCreated(int64_t window_id, void* hwnd) {
     pending_space_.clear();
     pending_open_url_.clear();
   }
+  // An off-the-record browser (IDC_NEW_INCOGNITO_WINDOW) becomes an
+  // INCOGNITO shell: fixed-dark, no Spaces/pins/bookmarks, unrouted.
+  bool incognito = false;
+  if (framework_) {
+    std::optional<base::DictValue> profile = base::JSONReader::ReadDict(
+        framework_->WindowProfileJson(window_id), base::JSON_PARSE_RFC);
+    incognito = profile && profile->FindBool("incognito").value_or(false);
+  }
   auto controller = std::make_unique<PhiWindowController>(
-      window_id, static_cast<HWND>(hwnd), framework_, this);
+      window_id, static_cast<HWND>(hwnd), framework_, this, /*agent=*/false,
+      incognito);
   controller->RefreshTabs();
   windows_[window_id] = std::move(controller);
   browser_to_slot_[window_id] = window_id;
-  PushSpaceMenu();  // The slot's Space gained a window id.
+  if (!incognito) {
+    PushSpaceMenu();  // The slot's Space gained a window id.
+  }
 }
 
 HWND PhiCoordinator::ShellForFocus() const {
@@ -4008,56 +4478,87 @@ HWND PhiCoordinator::ShellForFocus() const {
 LRESULT CALLBACK PhiCoordinator::KeyboardHookProc(int code,
                                                   WPARAM wparam,
                                                   LPARAM lparam) {
-  if (code != HC_ACTION || (lparam & 0x80000000) ||  // Key-up.
-      (lparam & 0x20000000)) {                       // Alt held.
+  PhiCoordinator* self = g_coordinator;
+  if (code != HC_ACTION || !self) {
     return ::CallNextHookEx(nullptr, code, wparam, lparam);
   }
-  PhiCoordinator* self = g_coordinator;
-  if (!self) {
+  if (lparam & 0x80000000) {  // Key-up.
+    // Releasing Ctrl commits an in-flight MRU switch (the Mac's ⌃⇥ HUD).
+    if (wparam == VK_CONTROL && PhiTabSwitcher::IsActive()) {
+      if (HWND shell = self->ShellForFocus()) {
+        ::PostMessageW(shell, kMsgPhiSwitcherCommit, 0, 0);
+      } else {
+        PhiTabSwitcher::Cancel();
+      }
+    }
     return ::CallNextHookEx(nullptr, code, wparam, lparam);
   }
   const bool ctrl = (::GetKeyState(VK_CONTROL) & 0x8000) != 0;
   const bool shift = (::GetKeyState(VK_SHIFT) & 0x8000) != 0;
-  // The menu bar's displayed shortcuts, reserved the way Chrome reserves
-  // its browser shortcuts (they fire even while a page has focus). Edit
-  // keys (Ctrl+C/V/X/Z/A/F...) stay with the web content.
+  const bool alt = (lparam & 0x20000000) != 0;  // The context code bit.
+  if (wparam == VK_TAB && ctrl && !alt) {
+    // Ctrl+Tab drives the MRU switcher HUD, not a plain next-tab hop.
+    if (HWND shell = self->ShellForFocus()) {
+      ::PostMessageW(shell, shift ? kMsgPhiSwitcherPrev : kMsgPhiSwitcherNext,
+                     0, 0);
+      return 1;
+    }
+  }
+  // The REBINDABLE shortcuts first (their effective chords carry the user's
+  // overrides), so a custom chord shadows any fixed one it collides with.
+  if (const UINT command = self->MatchRebindableChord(
+          static_cast<UINT>(wparam), ctrl, shift, alt)) {
+    if (HWND shell = self->ShellForFocus()) {
+      ::PostMessageW(shell, WM_COMMAND, MAKEWPARAM(command, 0), 0);
+      return 1;
+    }
+  }
+  // The menu bar's remaining, FIXED shortcuts, reserved the way Chrome
+  // reserves its browser shortcuts (they fire even while a page has focus).
+  // Edit keys (Ctrl+C/V/X/Z/A/F...) stay with the web content; everything a
+  // user can rebind lives in kRebindableShortcuts, not here.
   struct Accelerator {
     UINT vk;
     bool ctrl;
     bool shift;
+    bool alt;
     UINT command;
   };
   static constexpr Accelerator kAccelerators[] = {
-      {'T', true, false, kCmdNewTab},
-      {'N', true, false, kCmdNewWindow},
-      {'N', true, true, kCmdNewIncognitoWindow},
-      {'T', true, true, kCmdReopenClosedTab},
-      {'W', true, false, kCmdCloseTab},
-      {'W', true, true, kCmdCloseWindow},
-      {'L', true, false, kCmdOpenLocation},
-      {'R', true, false, kCmdReload},
-      {'R', true, true, kCmdForceReload},
-      {VK_F5, false, false, kCmdReload},
-      {'D', true, false, kCmdBookmarkThisTab},
-      {'S', true, false, kCmdToggleSidebar},
-      {VK_OEM_COMMA, true, false, kCmdPreferences},
-      {VK_TAB, true, false, kCmdNextTab},
-      {VK_TAB, true, true, kCmdPreviousTab},
+      {'Q', true, true, false, kCmdQuit},
+      {'O', true, false, false, kCmdOpenFile},
+      {'P', true, false, false, kCmdPrint},
+      {VK_F5, false, false, false, kCmdReload},
+      {'U', true, false, false, kCmdViewSource},
+      {'I', true, true, false, kCmdDevTools},
+      {'J', true, true, false, kCmdJsConsole},
+      // F11 deliberately unbound — see the menu bar's IDC_FULLSCREEN note.
+      {'0', true, false, false, kCmdActualSize},
+      {VK_OEM_PLUS, true, false, false, kCmdZoomIn},
+      {VK_ADD, true, false, false, kCmdZoomIn},
+      {VK_OEM_MINUS, true, false, false, kCmdZoomOut},
+      {VK_SUBTRACT, true, false, false, kCmdZoomOut},
+      {VK_OEM_COMMA, true, false, false, kCmdPreferences},
+      // Ctrl+Tab / Ctrl+Shift+Tab are handled ABOVE — the MRU switcher.
+      // Alt+Left/Right/Home — the history chords Chrome reserves.
+      {VK_LEFT, false, false, true, kCmdBack},
+      {VK_RIGHT, false, false, true, kCmdForward},
+      {VK_HOME, false, false, true, kCmdHome},
       // Ctrl+1..9 switches Spaces (the Mac's ⌃1..⌃9; the Spaces menu and
       // the pips' hover cards advertise these).
-      {'1', true, false, kCmdSpace1},
-      {'2', true, false, kCmdSpace2},
-      {'3', true, false, kCmdSpace3},
-      {'4', true, false, kCmdSpace4},
-      {'5', true, false, kCmdSpace5},
-      {'6', true, false, kCmdSpace6},
-      {'7', true, false, kCmdSpace7},
-      {'8', true, false, kCmdSpace8},
-      {'9', true, false, kCmdSpace9},
+      {'1', true, false, false, kCmdSpace1},
+      {'2', true, false, false, kCmdSpace2},
+      {'3', true, false, false, kCmdSpace3},
+      {'4', true, false, false, kCmdSpace4},
+      {'5', true, false, false, kCmdSpace5},
+      {'6', true, false, false, kCmdSpace6},
+      {'7', true, false, false, kCmdSpace7},
+      {'8', true, false, false, kCmdSpace8},
+      {'9', true, false, false, kCmdSpace9},
   };
   for (const Accelerator& accel : kAccelerators) {
     if (accel.vk != static_cast<UINT>(wparam) || accel.ctrl != ctrl ||
-        accel.shift != shift) {
+        accel.shift != shift || accel.alt != alt) {
       continue;
     }
     if (HWND shell = self->ShellForFocus()) {
@@ -4067,6 +4568,122 @@ LRESULT CALLBACK PhiCoordinator::KeyboardHookProc(int code,
     break;
   }
   return ::CallNextHookEx(nullptr, code, wparam, lparam);
+}
+
+void PhiCoordinator::OnContentFullscreenChanged(int64_t window_id,
+                                                bool fullscreen) {
+  auto slot_it = browser_to_slot_.find(window_id);
+  const int64_t slot = slot_it != browser_to_slot_.end() ? slot_it->second
+                                                         : window_id;
+  auto it = windows_.find(slot);
+  if (it != windows_.end()) {
+    it->second->OnContentFullscreenChanged(window_id, fullscreen);
+  }
+}
+
+void PhiCoordinator::OnTargetURLChanged(int64_t window_id, const char* url) {
+  auto slot_it = browser_to_slot_.find(window_id);
+  const int64_t slot = slot_it != browser_to_slot_.end() ? slot_it->second
+                                                         : window_id;
+  auto it = windows_.find(slot);
+  if (it != windows_.end()) {
+    it->second->OnTargetURLChanged(window_id,
+                                   base::UTF8ToWide(url ? url : ""));
+  }
+}
+
+void PhiCoordinator::OnOmniboxResults(int64_t window_id, const char* json) {
+  auto slot_it = browser_to_slot_.find(window_id);
+  const int64_t slot = slot_it != browser_to_slot_.end() ? slot_it->second
+                                                         : window_id;
+  auto it = windows_.find(slot);
+  if (it != windows_.end()) {
+    it->second->OnOmniboxResults(window_id, json ? json : "");
+  }
+}
+
+void PhiCoordinator::OnImportCompleted(const char* source, bool success) {
+  PhiWindowController* focused = FocusedUserController();
+  HWND owner = focused ? focused->shell_hwnd() : nullptr;
+  if (!success) {
+    ::MessageBoxW(owner, L"The import did not finish. Close Google Chrome "
+                         L"and try again.",
+                  L"Import", MB_OK | MB_ICONWARNING);
+    return;
+  }
+  // History/cookies/passwords landed in the profile directly; bookmarks
+  // landed in the CHROMIUM model, which the Phi sidebar never shows — copy
+  // them into the client store under one folder (the Mac's
+  // saveChromiumBookmarksToLocalStore step).
+  int copied = 0;
+  std::string profile_id, space_id;
+  if (focused && framework_ &&
+      OwnerForSlot(focused->window_id(), &profile_id, &space_id)) {
+    const int64_t browser = focused->active_browser()
+                                ? focused->active_browser()
+                                : focused->window_id();
+    std::optional<base::Value> tree = base::JSONReader::Read(
+        framework_->AllBookmarksJson(browser), base::JSON_PARSE_RFC);
+    if (tree && tree->is_list() && !tree->GetList().empty()) {
+      const std::string root = tab_store_.AddBookmark(
+          profile_id, space_id, std::string(), "Imported from Chrome",
+          std::string(), /*folder=*/true, std::string(), 0, 0);
+      const auto copy = [&](const auto& self, const base::ListValue& nodes,
+                            const std::string& parent) -> void {
+        for (const base::Value& v : nodes) {
+          const base::DictValue* d = v.GetIfDict();
+          if (!d) {
+            continue;
+          }
+          const std::string* title = d->FindString("title");
+          const std::string* url = d->FindString("url");
+          if (d->FindBool("folder").value_or(false)) {
+            const base::ListValue* children = d->FindList("children");
+            if (!children || children->empty()) {
+              continue;  // The permanent nodes arrive empty when unused.
+            }
+            const std::string guid = tab_store_.AddBookmark(
+                profile_id, space_id, parent,
+                title && !title->empty() ? *title : "Folder", std::string(),
+                /*folder=*/true, std::string(), 0, 0);
+            self(self, *children, guid);
+          } else if (url && !url->empty()) {
+            tab_store_.AddBookmark(profile_id, space_id, parent,
+                                   title && !title->empty() ? *title : *url,
+                                   *url, /*folder=*/false, std::string(), 0,
+                                   0);
+            ++copied;
+          }
+        }
+      };
+      copy(copy, tree->GetList(), root);
+      if (copied == 0) {
+        tab_store_.Remove(root);  // Nothing under it — no empty shell.
+      }
+    }
+  }
+  for (const auto& [slot, controller] : windows_) {
+    controller->RefreshTabs();
+  }
+  PhiSettingsWindow::Refresh();
+  std::wstring message = L"Import finished.";
+  if (copied > 0) {
+    message += L" " + std::to_wstring(copied) +
+               L" bookmarks were added to \"Imported from Chrome\".";
+  }
+  ::MessageBoxW(owner, message.c_str(), L"Import",
+                MB_OK | MB_ICONINFORMATION);
+}
+
+void PhiCoordinator::OnPlaceholderModeChanged(int64_t window_id,
+                                              bool entered) {
+  auto slot_it = browser_to_slot_.find(window_id);
+  const int64_t slot = slot_it != browser_to_slot_.end() ? slot_it->second
+                                                         : window_id;
+  auto it = windows_.find(slot);
+  if (it != windows_.end()) {
+    it->second->OnPlaceholderModeChanged(window_id, entered);
+  }
 }
 
 void PhiCoordinator::OnTabsChanged(int64_t window_id) {
@@ -4639,7 +5256,7 @@ bool PhiCoordinator::HandleSkillDialectVerb(const std::string& type,
     out->Set("spaceId", space_id);
     out->Set("spaceName", name);
     out->Set("isAgentSpace", false);
-    out->Set("isIncognito", false);
+    out->Set("isIncognito", controller->is_incognito());
     const int64_t browser = controller->active_browser();
     if (browser) {
       out->Set("windowId", static_cast<double>(browser));
@@ -4733,6 +5350,11 @@ bool PhiCoordinator::HandleSkillDialectVerb(const std::string& type,
     if (const std::string* color = payload->FindString("colorHex")) {
       entry->color_hex = *color;
       SaveSpaces();
+      // The hex drives the Space's tint when no theme is pinned.
+      RebuildSpacePalettes();
+      for (const auto& [slot, controller] : windows_) {
+        controller->ApplyPalette();
+      }
     }
     out->Set("spaceId", *space_id);
     out->Set("ok", ok);

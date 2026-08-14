@@ -4,16 +4,23 @@
 
 #include "phibrowser-win/client/phi_menu_bar.h"
 
+#include <commdlg.h>
+
 #include <algorithm>
 #include <optional>
 #include <utility>
+
+#pragma comment(lib, "comdlg32.lib")
 
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
+#include "chrome/app/chrome_command_ids.h"
 #include "phibrowser-win/client/phi_icons.h"
 #include "phibrowser-win/client/phi_prompt.h"
+#include "phibrowser-win/client/phi_search_tabs_panel.h"
+#include "phibrowser-win/client/phi_toast.h"
 #include "phibrowser-win/client/phi_theme.h"
 #include "phibrowser-win/client/phi_window_controller.h"
 
@@ -58,6 +65,54 @@ void SetEnabled(HMENU menu, UINT id, bool enabled) {
   ::EnableMenuItem(menu, id,
                    MF_BYCOMMAND | (enabled ? MF_ENABLED : MF_DISABLED |
                                                               MF_GRAYED));
+}
+
+// Menu items that route straight through the framework's generic Chromium
+// command wire — features Chromium already implements; the hollowed chrome
+// only lacked the wire. Enablement mirrors the live command state on every
+// menu open, so these behave exactly like Chromium's own menu items.
+struct IdcRoute {
+  UINT cmd;
+  int idc;
+};
+constexpr IdcRoute kIdcRoutes[] = {
+    {kCmdDeleteBrowsingData, IDC_CLEAR_BROWSING_DATA},
+    {kCmdNewIncognitoWindow, IDC_NEW_INCOGNITO_WINDOW},
+    {kCmdReopenClosedTab, IDC_RESTORE_TAB},
+    {kCmdOpenFile, IDC_OPEN_FILE},
+    {kCmdSavePageAs, IDC_SAVE_PAGE},
+    {kCmdPrint, IDC_PRINT},
+    {kCmdFind, IDC_FIND},
+    {kCmdFindNext, IDC_FIND_NEXT},
+    {kCmdFindPrevious, IDC_FIND_PREVIOUS},
+    // IDC_FULLSCREEN is NOT routed: BrowserView fullscreens the reparented
+    // CHILD inside the shell (chrome vanishes, nothing truly fullscreens)
+    // and the exit leaves the child mispositioned. Fullscreen needs the
+    // SHELL to drive it (monitor-sized borderless shell + child relayout).
+    {kCmdActualSize, IDC_ZOOM_NORMAL},
+    {kCmdZoomIn, IDC_ZOOM_PLUS},
+    {kCmdZoomOut, IDC_ZOOM_MINUS},
+    {kCmdViewSource, IDC_VIEW_SOURCE},
+    {kCmdDevTools, IDC_DEV_TOOLS},
+    {kCmdInspect, IDC_DEV_TOOLS_INSPECT},
+    {kCmdJsConsole, IDC_DEV_TOOLS_CONSOLE},
+    {kCmdHome, IDC_HOME},
+    {kCmdShowFullHistory, IDC_SHOW_HISTORY},
+    // IDC_NEW_TAB_TO_RIGHT keys off FEATURE_TABSTRIP, which the hollowed
+    // chrome reports false — kCmdNewTabToRight composes NewTab+MoveTab
+    // instead (see OnCommand).
+    {kCmdDuplicateTab, IDC_DUPLICATE_TAB},
+    {kCmdMuteSite, IDC_WINDOW_MUTE_SITE},
+    {kCmdTaskManager, IDC_TASK_MANAGER},
+};
+
+int IdcForCommand(UINT id) {
+  for (const IdcRoute& route : kIdcRoutes) {
+    if (route.cmd == id) {
+      return route.idc;
+    }
+  }
+  return 0;
 }
 
 // An item's display title, mnemonic marker and "\tCtrl+…" shortcut stripped —
@@ -179,7 +234,7 @@ void PhiMenuBar::BuildStatic() {
   Append(phi_, kCmdCheckUpdate, L"Check for Update...", false);
   Separator(phi_);
   Append(phi_, kCmdDeleteBrowsingData, L"Delete Browsing Data...", false);
-  Append(phi_, kCmdImportBrowser, L"Import from Another Browser...", false);
+  Append(phi_, kCmdImportBrowser, L"Import from Another Browser...");
   Separator(phi_);
   Append(phi_, kCmdQuit, L"Quit Phi\tCtrl+Shift+Q");
 
@@ -248,9 +303,8 @@ void PhiMenuBar::BuildStatic() {
   Append(view_, kCmdLayoutComfortable, L"Comfortable");
   Separator(view_);
   Append(view_, kCmdAlwaysShowBookmarkBar,
-         L"Always Show Bookmark Bar\tCtrl+Shift+B", false);
-  Append(view_, kCmdBookmarkBarOnNewTab, L"Show Bookmark Bar on New Tab",
-         false);
+         L"Always Show Bookmark Bar\tCtrl+Shift+B");
+  Append(view_, kCmdBookmarkBarOnNewTab, L"Show Bookmark Bar on New Tab");
   Separator(view_);
   Append(view_, kCmdToggleSidebar, L"Toggle Sidebar\tCtrl+S");
   Append(view_, kCmdToggleChatbar, L"Toggle Chatbar\tCtrl+Shift+S", false);
@@ -274,7 +328,7 @@ void PhiMenuBar::BuildStatic() {
   Separator(window_);
   Append(window_, kCmdNameWindow, L"Name Window...", false);
   Separator(window_);
-  Append(window_, kCmdDownloads, L"Downloads\tCtrl+J", false);
+  Append(window_, kCmdDownloads, L"Downloads\tCtrl+J");
   Append(window_, kCmdExtensions, L"Extensions", false);
   Append(window_, kCmdTaskManager, L"Task Manager", false);
 
@@ -311,11 +365,33 @@ void PhiMenuBar::OnMenuOpening(HMENU menu) {
     RefreshBookmarks();
   } else if (menu == tab_) {
     RefreshTab();
+  } else if (menu != window_ && menu != help_) {
+    return;  // A submenu; its parent's open already refreshed it.
+  }
+  RefreshChromiumCommands();
+}
+
+void PhiMenuBar::RefreshChromiumCommands() {
+  const int64_t target = controller_->active_browser_
+                             ? controller_->active_browser_
+                             : controller_->window_id_;
+  for (const IdcRoute& route : kIdcRoutes) {
+    // MF_BYCOMMAND searches submenus, so one call from the bar reaches items
+    // inside Find / Developer.
+    const bool on =
+        controller_->framework_ &&
+        controller_->framework_->IsChromiumCommandEnabled(target, route.idc);
+    ::EnableMenuItem(
+        bar_, route.cmd,
+        MF_BYCOMMAND | (on ? MF_ENABLED : MF_DISABLED | MF_GRAYED));
   }
 }
 
 void PhiMenuBar::RefreshPhi() {
   SetEnabled(phi_, kCmdPreferences, controller_->host_ != nullptr);
+  SetEnabled(phi_, kCmdImportBrowser,
+             controller_->framework_ != nullptr &&
+                 !controller_->is_incognito());
 }
 
 void PhiMenuBar::RefreshFile() {
@@ -353,6 +429,17 @@ void PhiMenuBar::RefreshView() {
                           : kCmdLayoutPerformance;
   ::CheckMenuRadioItem(view_, kCmdLayoutBalanced, kCmdLayoutComfortable,
                        chosen, MF_BYCOMMAND);
+  if (controller_->host_) {
+    ::CheckMenuItem(view_, kCmdAlwaysShowBookmarkBar,
+                    MF_BYCOMMAND |
+                        (controller_->host_->AlwaysShowBookmarkBar()
+                             ? MF_CHECKED
+                             : MF_UNCHECKED));
+    ::CheckMenuItem(view_, kCmdBookmarkBarOnNewTab,
+                    MF_BYCOMMAND | (controller_->host_->BookmarkBarOnNewTab()
+                                        ? MF_CHECKED
+                                        : MF_UNCHECKED));
+  }
 }
 
 std::vector<std::pair<std::string, std::wstring>> PhiMenuBar::SpaceList()
@@ -383,9 +470,10 @@ void PhiMenuBar::RefreshSpaces() {
          controller_->host_ != nullptr);
   Append(spaces_, kCmdRenameSpace, L"Rename Space...",
          controller_->host_ != nullptr);
-  // The icon picker lives in Settings > Spaces; this item waits for an
-  // inline surface.
-  Append(spaces_, kCmdChangeIcon, L"Change Icon...", false);
+  // Lands on Settings > Spaces with the active Space selected — the
+  // detail column there is the icon picker.
+  Append(spaces_, kCmdChangeIcon, L"Change Icon...",
+         controller_->host_ != nullptr);
 
   // Edit Theme — the same choices the Space chip's context menu offers,
   // applied to the ACTIVE Space.
@@ -541,11 +629,15 @@ void PhiMenuBar::RefreshBookmarks() {
   bookmark_urls_.clear();
   controller_->RebuildNavState();
   Append(bookmarks_, kCmdBookmarkThisTab, L"Bookmark This Tab...\tCtrl+D",
-         controller_->host_ && !controller_->nav_url_.empty());
+         controller_->host_ && !controller_->nav_url_.empty() &&
+             !controller_->is_incognito());
   Append(bookmarks_, kCmdBookmarkAllTabs,
-         L"Bookmark All Tabs...\tCtrl+Shift+D", false);
+         L"Bookmark All Tabs...\tCtrl+Shift+D",
+         controller_->host_ && !controller_->tabs_.empty() &&
+             !controller_->is_incognito());
   Separator(bookmarks_);
-  Append(bookmarks_, kCmdExportBookmarks, L"Export Bookmarks...", false);
+  Append(bookmarks_, kCmdExportBookmarks, L"Export Bookmarks...",
+         controller_->host_ != nullptr);
   const int fixed = ::GetMenuItemCount(bookmarks_);
   AppendBookmarkRows(bookmarks_, std::string(), 0);
   if (::GetMenuItemCount(bookmarks_) > fixed) {
@@ -561,13 +653,14 @@ void PhiMenuBar::RefreshTab() {
   tab_indices_.clear();
   controller_->RebuildTabs();
   const bool several = controller_->tabs_.size() > 1;
-  Append(tab_, kCmdNewTabToRight, L"New Tab to the Right", false);
+  Append(tab_, kCmdNewTabToRight, L"New Tab to the Right",
+         controller_->framework_ != nullptr);
   Append(tab_, kCmdNextTab, L"Select Next Tab\tCtrl+Tab", several);
   Append(tab_, kCmdPreviousTab, L"Select Previous Tab\tCtrl+Shift+Tab",
          several);
   Append(tab_, kCmdDuplicateTab, L"Duplicate Tab", false);
   Append(tab_, kCmdMuteSite, L"Mute Site", false);
-  Append(tab_, kCmdSearchTabs, L"Search Tabs...\tCtrl+Shift+A", false);
+  Append(tab_, kCmdSearchTabs, L"Search Tabs...\tCtrl+Shift+A");
   if (controller_->tabs_.empty()) {
     return;
   }
@@ -663,6 +756,14 @@ bool PhiMenuBar::OnCommand(UINT id) {
     return true;
   }
 
+  if (const int idc = IdcForCommand(id)) {
+    if (c->framework_) {
+      c->framework_->ExecuteChromiumCommand(target, idc);
+      c->RefreshTabs();
+    }
+    return true;
+  }
+
   switch (id) {
     case kCmdAbout:
       ::MessageBoxW(c->shell_hwnd_,
@@ -681,10 +782,7 @@ bool PhiMenuBar::OnCommand(UINT id) {
       ::PostMessageW(c->shell_hwnd_, WM_CLOSE, 0, 0);
       return true;
     case kCmdNewTab:
-      if (c->framework_) {
-        c->framework_->NewTab(target, "");
-        c->RefreshTabs();
-      }
+      c->StartNewTab();  // Honors the "New tab behavior" setting.
       return true;
     case kCmdNewWindow:
       if (c->framework_) {
@@ -758,12 +856,24 @@ bool PhiMenuBar::OnCommand(UINT id) {
         }
       }
       ::CloseClipboard();
+      // The Mac's copy confirmation toast (OverlayToastCenter).
+      PhiShowToast(c->shell_hwnd_, c->CurrentPalette(), L"URL Copied");
       return true;
     }
     case kCmdStop:
       if (c->framework_) {
         c->framework_->StopLoading(target);
         c->RefreshTabs();
+      }
+      return true;
+    case kCmdAlwaysShowBookmarkBar:
+      if (c->host_) {
+        c->host_->SetAlwaysShowBookmarkBar(!c->host_->AlwaysShowBookmarkBar());
+      }
+      return true;
+    case kCmdBookmarkBarOnNewTab:
+      if (c->host_) {
+        c->host_->SetBookmarkBarOnNewTab(!c->host_->BookmarkBarOnNewTab());
       }
       return true;
     case kCmdToggleSidebar:
@@ -811,6 +921,11 @@ bool PhiMenuBar::OnCommand(UINT id) {
       }
       return true;
     }
+    case kCmdChangeIcon:
+      if (c->host_) {
+        c->host_->RequestSpaceIconPicker(c->active_space_);
+      }
+      return true;
     case kCmdDeleteSpace:
       if (c->host_ &&
           PhiConfirm(c->shell_hwnd_, L"Delete Space",
@@ -874,6 +989,76 @@ bool PhiMenuBar::OnCommand(UINT id) {
         c->host_->RequestBookmarkActiveTab(c->window_id_);
       }
       return true;
+    case kCmdBookmarkAllTabs: {
+      if (!c->host_ || c->is_incognito()) {
+        return true;
+      }
+      std::wstring name = L"Saved Tabs";
+      if (!PhiPromptText(c->shell_hwnd_, L"Bookmark All Tabs",
+                         L"Every open tab will be bookmarked into a new "
+                         L"folder with this name.",
+                         &name) ||
+          name.empty()) {
+        return true;
+      }
+      const std::string folder = c->host_->AddBookmarkFolder(
+          c->window_id_, std::string(), base::WideToUTF8(name));
+      if (folder.empty() || !c->framework_) {
+        return true;
+      }
+      int added = 0;
+      std::optional<base::Value> tabs = base::JSONReader::Read(
+          c->framework_->ListTabsJson(target), base::JSON_PARSE_RFC);
+      if (tabs && tabs->is_list()) {
+        for (const base::Value& v : tabs->GetList()) {
+          const base::DictValue* d = v.GetIfDict();
+          if (!d) {
+            continue;
+          }
+          const std::string* url = d->FindString("url");
+          const std::string* title = d->FindString("title");
+          if (url && !url->empty() &&
+              !c->host_
+                   ->AddBookmarkRow(c->window_id_, folder,
+                                    title ? *title : std::string(), *url)
+                   .empty()) {
+            ++added;
+          }
+        }
+      }
+      PhiShowToast(c->shell_hwnd_, c->CurrentPalette(),
+                   std::to_wstring(added) + L" Tabs Bookmarked");
+      return true;
+    }
+    case kCmdExportBookmarks: {
+      if (!c->host_) {
+        return true;
+      }
+      wchar_t path[MAX_PATH] = L"bookmarks.html";
+      OPENFILENAMEW ofn = {sizeof(ofn)};
+      ofn.hwndOwner = c->shell_hwnd_;
+      ofn.lpstrFilter = L"HTML File\0*.html\0\0";
+      ofn.lpstrFile = path;
+      ofn.nMaxFile = MAX_PATH;
+      ofn.Flags = OFN_OVERWRITEPROMPT;
+      ofn.lpstrDefExt = L"html";
+      if (!::GetSaveFileNameW(&ofn)) {
+        return true;
+      }
+      const std::string html = BuildBookmarksHtml();
+      HANDLE f = ::CreateFileW(path, GENERIC_WRITE, 0, nullptr,
+                               CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL,
+                               nullptr);
+      if (f != INVALID_HANDLE_VALUE) {
+        DWORD wrote = 0;
+        ::WriteFile(f, html.data(), static_cast<DWORD>(html.size()), &wrote,
+                    nullptr);
+        ::CloseHandle(f);
+        PhiShowToast(c->shell_hwnd_, c->CurrentPalette(),
+                     L"Bookmarks Exported");
+      }
+      return true;
+    }
     case kCmdNextTab:
     case kCmdPreviousTab: {
       c->RebuildTabs();
@@ -895,6 +1080,47 @@ bool PhiMenuBar::OnCommand(UINT id) {
       c->RefreshTabs();
       return true;
     }
+    case kCmdImportBrowser:
+      if (c->framework_ &&
+          PhiConfirm(c->shell_hwnd_, L"Import from Google Chrome",
+                     L"History, bookmarks, cookies and passwords from your "
+                     L"Google Chrome profile will be imported into Phi. "
+                     L"This may take a moment.")) {
+        if (!c->framework_->StartChromeImport(target)) {
+          ::MessageBoxW(c->shell_hwnd_,
+                        L"The import could not start. Is Google Chrome "
+                        L"installed?",
+                        L"Import", MB_OK | MB_ICONINFORMATION);
+        }
+      }
+      return true;
+    case kCmdNewTabToRight: {
+      // Composed from the primitives: IDC_NEW_TAB_TO_RIGHT stays disabled in
+      // the hollowed chrome (it keys off FEATURE_TABSTRIP).
+      if (!c->framework_) {
+        return true;
+      }
+      c->RebuildTabs();
+      int active_index = -1;
+      for (const auto& row : c->tabs_) {
+        if (row.active) {
+          active_index = row.index;
+          break;
+        }
+      }
+      const int created = c->framework_->NewTab(target, "");
+      if (created >= 0 && active_index >= 0 && created != active_index + 1) {
+        c->framework_->MoveTab(target, created, active_index + 1);
+      }
+      c->RefreshTabs();
+      return true;
+    }
+    case kCmdSearchTabs:
+      PhiSearchTabsPanel::Toggle(c);
+      return true;
+    case kCmdDownloads:
+      c->ToggleDownloadsPopover();
+      return true;
     case kCmdMinimize:
       ::ShowWindow(c->shell_hwnd_, SW_MINIMIZE);
       return true;
@@ -909,6 +1135,78 @@ bool PhiMenuBar::OnCommand(UINT id) {
   return id >= kCmdAbout && id <= kCmdImportUserData;
 }
 
+std::string PhiMenuBar::BuildBookmarksHtml() const {
+  // The Mac BookmarkHTMLExporter's shape: standard Netscape file, pinned
+  // rows first as one "Favorites" folder, then the bookmark tree.
+  const auto escaped = [](const std::string& text) {
+    std::string out;
+    out.reserve(text.size());
+    for (const char c : text) {
+      switch (c) {
+        case '&':
+          out += "&amp;";
+          break;
+        case '<':
+          out += "&lt;";
+          break;
+        case '>':
+          out += "&gt;";
+          break;
+        case '"':
+          out += "&quot;";
+          break;
+        default:
+          out.push_back(c);
+      }
+    }
+    return out;
+  };
+  std::string html =
+      "<!DOCTYPE NETSCAPE-Bookmark-file-1>\n"
+      "<!-- This is an automatically generated file. -->\n"
+      "<META HTTP-EQUIV=\"Content-Type\" "
+      "CONTENT=\"text/html; charset=UTF-8\">\n"
+      "<TITLE>Bookmarks</TITLE>\n"
+      "<H1>Bookmarks</H1>\n"
+      "<DL><p>\n";
+  if (controller_->host_) {
+    const std::vector<PhiStoredRowView> pins =
+        controller_->host_->PinnedRows(controller_->window_id_);
+    if (!pins.empty()) {
+      html += "    <DT><H3>Favorites</H3>\n    <DL><p>\n";
+      for (const PhiStoredRowView& pin : pins) {
+        if (pin.url.empty()) {
+          continue;
+        }
+        html += "        <DT><A HREF=\"" + escaped(pin.url) + "\">" +
+                escaped(!pin.title.empty() ? pin.title : pin.url) +
+                "</A>\n";
+      }
+      html += "    </DL><p>\n";
+    }
+    const auto descend = [&](const auto& self, const std::string& parent,
+                             const std::string& indent) -> void {
+      for (const PhiStoredRowView& row :
+           controller_->host_->BookmarkRows(controller_->window_id_,
+                                            parent)) {
+        if (row.folder) {
+          html += indent + "<DT><H3>" + escaped(row.title) + "</H3>\n" +
+                  indent + "<DL><p>\n";
+          self(self, row.guid, indent + "    ");
+          html += indent + "</DL><p>\n";
+        } else if (!row.url.empty()) {
+          html += indent + "<DT><A HREF=\"" + escaped(row.url) + "\">" +
+                  escaped(!row.title.empty() ? row.title : row.url) +
+                  "</A>\n";
+        }
+      }
+    };
+    descend(descend, std::string(), "    ");
+  }
+  html += "</DL><p>\n";
+  return html;
+}
+
 std::string PhiMenuBar::ListJson() {
   RefreshPhi();
   RefreshFile();
@@ -918,6 +1216,7 @@ std::string PhiMenuBar::ListJson() {
   RefreshHistory();
   RefreshBookmarks();
   RefreshTab();
+  RefreshChromiumCommands();
 
   // Serialize what the user would see, straight from the HMENUs.
   struct Walker {

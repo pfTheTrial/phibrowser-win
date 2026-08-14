@@ -75,6 +75,10 @@ PhiPalette PhiResolvePalette(const PhiTheme& theme,
 // True when Windows is currently set to a dark app appearance.
 bool PhiSystemPrefersDark();
 
+// Parses the wire's "#RRGGBB" (case-insensitive; the leading '#' optional)
+// into a COLORREF. False on anything else — the caller keeps its default.
+bool PhiParseColorHex(const std::string& hex, COLORREF* out);
+
 }  // namespace phi_client
 
 #endif  // PHIBROWSER_WIN_CLIENT_PHI_THEME_H_

@@ -44,6 +44,10 @@ class PhiSettingsHost {
   virtual void SetNewTabBehavior(PhiNewTabBehavior behavior) = 0;
   virtual bool AlwaysShowFullUrl() const = 0;
   virtual void SetAlwaysShowFullUrl(bool enabled) = 0;
+  // "Restore last session": app-wide choice, pushed into every loaded
+  // profile's Chromium startup pref (SessionStartupPref LAST).
+  virtual bool RestoreLastSession() const = 0;
+  virtual void SetRestoreLastSession(bool enabled) = 0;
 
   // Spaces / Profiles
   virtual PhiPinScope PinScope() const = 0;
@@ -99,6 +103,20 @@ class PhiSettingsHost {
                                 bool ask) = 0;
   virtual void RemoveURLRule(int index) = 0;
 
+  // Rebindable keyboard shortcuts (the Mac Shortcuts pane's customising).
+  // Rows come back as "group\tlabel\tkeys\tname\tcustomized(0|1)" in display
+  // order; `name` is empty for fixed, informational rows. Rebinding takes the
+  // chord's raw parts; a chord already held by another rebindable shortcut is
+  // STOLEN (that one goes unbound), as the Mac pane does.
+  virtual std::vector<std::string> ShortcutRows() const = 0;
+  virtual void RebindShortcut(const std::string& name,
+                              UINT vk,
+                              bool ctrl,
+                              bool shift,
+                              bool alt) = 0;
+  virtual void RestoreAllShortcuts() = 0;
+  virtual bool AnyShortcutCustomized() const = 0;
+
   // Developer mode gates the Developer pane, as on Mac (default off).
   virtual bool DeveloperMode() const = 0;
   virtual void SetDeveloperMode(bool enabled) = 0;
@@ -126,6 +144,10 @@ class PhiSettingsWindow {
   static HWND Handle();
   static std::string CurrentSection();
   static bool ShowSection(const std::string& name);
+  // Lands on Spaces with `space_id` selected — the detail column IS the icon
+  // picker, so this is the "Change Icon…" destination. Needs an open window
+  // (callers Open() first).
+  static void ShowSpacePicker(const std::string& space_id);
 
   ~PhiSettingsWindow();
 

@@ -5,6 +5,7 @@
 #include "phibrowser-win/client/phi_icons.h"
 
 #include "base/no_destructor.h"
+#include "phibrowser-win/client/phi_dwrite.h"
 #include "base/strings/utf_string_conversions.h"
 
 namespace phi_client {
@@ -118,6 +119,22 @@ std::string PhiIconCatalogGlyph(const std::string& id) {
 
 bool PhiIsPrivateGlyph(const std::wstring& text) {
   return !text.empty() && text.front() >= 0xE000 && text.front() <= 0xF8FF;
+}
+
+bool PhiDrawCatalogArtwork(HDC dc,
+                           const RECT& rc,
+                           const std::wstring& text,
+                           int px,
+                           COLORREF ink) {
+  const PhiMacIcon* mask = PhiCatalogMaskForGlyph(text);
+  if (!mask || px <= 0) {
+    return false;
+  }
+  const std::vector<unsigned char> bgra = PhiTintedIconBgra(*mask, ink, px);
+  const int x = rc.left + ((rc.right - rc.left) - px) / 2;
+  const int y = rc.top + ((rc.bottom - rc.top) - px) / 2;
+  const RECT dest = {x, y, x + px, y + px};
+  return PhiBlendBgra(dc, dest, bgra.data(), px, px);
 }
 
 }  // namespace phi_client

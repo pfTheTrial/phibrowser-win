@@ -181,6 +181,12 @@ class PhiMenuBar {
   void RefreshHistory();
   void RefreshBookmarks();
   void RefreshTab();
+  // Re-reads the live enable state of every Chromium-routed item (the
+  // kIdcRoutes table) from the framework — run on every menu open.
+  void RefreshChromiumCommands();
+  // The Netscape bookmark HTML the Mac exporter writes: a Favorites folder
+  // of the pinned rows first, then the Space's bookmark tree.
+  std::string BuildBookmarksHtml() const;
   // Rebuilds the bookmark rows of `menu` from the store's rows under
   // `parent_guid` — folders recurse into submenus, as on Mac.
   void AppendBookmarkRows(HMENU menu, const std::string& parent_guid,

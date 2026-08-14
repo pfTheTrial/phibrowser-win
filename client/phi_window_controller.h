@@ -99,6 +99,27 @@ class PhiSlotHost {
       const std::string& parent_guid) const = 0;
   // Opens `url` in the slot (a pinned tab or bookmark was clicked).
   virtual void RequestOpen(int64_t slot, const std::string& url) = 0;
+  // Surfaces the shell hosting `browser_window_id` (foregrounding it and
+  // switching it to that browser's Space when it is hidden) — the search
+  // palette's cross-window jump.
+  virtual void FocusWindowForBrowser(int64_t browser_window_id) = 0;
+  // "New tab behavior = Omnibox": a new tab focuses the address field
+  // instead of opening a page (the tab is born on commit).
+  virtual bool NewTabOpensOmnibox() const = 0;
+  // Appends one bookmark row under `parent_guid` ("" = root) in `slot`'s
+  // Space — Bookmark All Tabs' per-tab fill. Returns the new row's guid.
+  virtual std::string AddBookmarkRow(int64_t slot,
+                                     const std::string& parent_guid,
+                                     const std::string& title,
+                                     const std::string& url) = 0;
+  // Moves (move=true) or clones the tab at `index` of `slot`'s visible
+  // browser into `space_id` — the Mac's Move to Space / Clone to Space. An
+  // open target Space gets the REAL move (WebContents intact); a cold one
+  // re-opens the URL there.
+  virtual void RequestTabToSpace(int64_t slot,
+                                 int index,
+                                 const std::string& space_id,
+                                 bool move) = 0;
   // Bookmarks the slot's active tab — the menu bar's Bookmark This Tab.
   virtual void RequestBookmarkActiveTab(int64_t slot) = 0;
   // Stores tab `index` of the slot's active browser as a pinned tab
@@ -166,6 +187,25 @@ class PhiSlotHost {
   virtual bool DeleteProfileById(const std::string& profile_id) = 0;
   // Opens the settings window (theme, appearance, layout).
   virtual void RequestSettings() = 0;
+  // Cross-window drag (the Mac's window-to-window tab drop): the slot whose
+  // shell is under `screen` (topmost wins; 0 = none but `exclude_slot`), and
+  // the move itself — the dragged tab (plus its split partner) joins the
+  // target window's strip. False leaves the drop to the tear-off path.
+  virtual int64_t SlotAtScreenPoint(POINT screen,
+                                    int64_t exclude_slot) const = 0;
+  virtual bool RequestDropTabOnWindow(int64_t source_slot,
+                                      int index,
+                                      int b_index,
+                                      int64_t target_slot) = 0;
+  // The bookmark bar's two visibility switches (the Mac View menu's
+  // "Always Show Bookmark Bar" / "Show Bookmark Bar on New Tab").
+  virtual bool AlwaysShowBookmarkBar() const = 0;
+  virtual void SetAlwaysShowBookmarkBar(bool enabled) = 0;
+  virtual bool BookmarkBarOnNewTab() const = 0;
+  virtual void SetBookmarkBarOnNewTab(bool enabled) = 0;
+  // Opens Settings > Spaces with this Space selected — its detail column is
+  // the icon picker (the "Change Icon…" destination).
+  virtual void RequestSpaceIconPicker(const std::string& space_id) = 0;
 };
 
 // The Mac sidebar's default and drag range (MainSplitViewController).
@@ -183,6 +223,14 @@ class PhiMenuBar;
 // client's own window (no DirectComposition conflict, unlike the falsified
 // overlay approach), while web content renders via DComp inside the reparented
 // child's own HWND — two non-overlapping regions, both visible.
+// Shell-window app messages posted by the coordinator's keyboard hook —
+// the Ctrl+Tab MRU switcher gestures (open/advance on the shell's thread).
+enum : UINT {
+  kMsgPhiSwitcherNext = WM_APP + 20,
+  kMsgPhiSwitcherPrev,
+  kMsgPhiSwitcherCommit,
+};
+
 class PhiWindowController {
  public:
   // `agent` hosts the window as a HIDDEN agent Space: the shell is created
@@ -190,11 +238,15 @@ class PhiWindowController {
   // activation so its content still composites and renders for CDP screen
   // capture, but the user never sees it. Everything else is identical, so a
   // future "watch" gesture can move it on-screen.
+  // `incognito` hosts an off-the-record browser: fixed-dark chrome, no
+  // Spaces strip / pinned grid / bookmarks (nothing persists), and the
+  // window stays OUT of the Space registry so URL routing never lands here.
   PhiWindowController(int64_t window_id,
                       HWND browser_hwnd,
                       phi_framework::PhiFramework* framework,
                       PhiSlotHost* host,
-                      bool agent = false);
+                      bool agent = false,
+                      bool incognito = false);
   ~PhiWindowController();
 
   PhiWindowController(const PhiWindowController&) = delete;
@@ -202,6 +254,16 @@ class PhiWindowController {
 
   int64_t window_id() const { return window_id_; }
   bool is_agent() const { return agent_; }
+  bool is_incognito() const { return incognito_; }
+  // For satellite surfaces (search palette, popovers) that act through the
+  // same seams the controller does.
+  PhiSlotHost* host() const { return host_; }
+  phi_framework::PhiFramework* framework() const { return framework_; }
+  PhiPalette CurrentPalette() const;  // Ramped while a switch is in flight.
+  // Tab ids most-recently-used first — the Ctrl+Tab switcher's order.
+  const std::vector<int>& TabMruOrder() const { return tab_mru_; }
+  // The content card's client-coordinate rect (the group overview covers it).
+  RECT ContentRect();
   // Surfaces (visible=true) or parks off-screen (visible=false) an agent
   // window so the user can watch it live. No-op on a non-agent window.
   void SetAgentVisible(bool visible);
@@ -218,6 +280,32 @@ class PhiWindowController {
 
   // Paints one rounded-corner cap (called by its window proc).
   void PaintCornerCap(HWND cap, HDC dc);
+
+  // Paints the bottom-left link-target bubble (called by its window proc).
+  void PaintStatusBubble(HWND bubble, HDC dc);
+  // The pointered link target changed in `browser_id`'s page (empty url =
+  // pointer left the link). Shows/hides the status bubble when that browser
+  // is the one this shell displays.
+  void OnTargetURLChanged(int64_t browser_id, const std::wstring& url);
+
+  // Autocomplete results for `browser_id`'s running omnibox query — feeds
+  // the address field's suggestion dropdown (the Mac OmniBox panel).
+  void OnOmniboxResults(int64_t browser_id, const std::string& json);
+
+  // `browser_id`'s last tab closed but the browser SURVIVES in placeholder
+  // mode (entered) or a new tab ended that mode. The content child hides
+  // while placeholding — the dead tab's final frame would linger otherwise
+  // — and a field commit births the first tab.
+  void OnPlaceholderModeChanged(int64_t browser_id, bool entered);
+  // A tab's content (video/element) entered or left fullscreen: the hosted
+  // child resizes itself to the MONITOR, so the shell must go borderless
+  // fullscreen for the duration or the render is clipped to the window.
+  void OnContentFullscreenChanged(int64_t browser_id, bool fullscreen);
+  // Paints the dropdown (called by its window proc).
+  void PaintOmniboxPopup(HWND popup, HDC dc);
+  // Popup mouse plumbing (client-y within the popup).
+  void OmniboxHover(int y);
+  void OmniboxClick(int y);
 
   // Marks the sidebar dirty and lets the paint happen at the next idle. Used
   // for framework-driven notifications, which arrive DURING the change they
@@ -347,6 +435,9 @@ class PhiWindowController {
     RECT sidebar{};  // Empty in Comfortable.
     RECT top_bar{};  // The band above the content; empty in Performance.
     RECT content{};  // Where the reparented browser child goes.
+    // The bookmark bar band, carved off the content's top when visible
+    // (the Mac's 32pt BookmarkBar under the header).
+    RECT bookmark_bar{};
     // Nav row: the two leading buttons, then the trailing back/forward/reload
     // group — the Mac header's arrangement (SidebarHeaderView).
     RECT search_tabs{};
@@ -389,6 +480,9 @@ class PhiWindowController {
   void SetMenuHot(int index);
   // Handles a click in the chrome (tab rows, close boxes, buttons, toolbar).
   void OnChromeClick(int x, int y);
+  // Middle-click in the chrome: closes the tab row under the pointer (the
+  // Mac tab list's otherMouseDown). Pins/bookmarks deliberately ignore it.
+  void OnChromeMiddleClick(int x, int y);
   // Right-click in the chrome. On a Space chip this raises the Mac's Space
   // menu (activate / rename / change icon / set theme / delete); elsewhere it
   // does nothing, as on Mac.
@@ -397,6 +491,13 @@ class PhiWindowController {
   // content card widens to the left margin; the margin becomes the hover
   // trigger for the floating sidebar. No-op in the comfortable layout.
   void ToggleSidebar();
+  // The New Tab entry points (Ctrl+T, the sidebar row, the menu): honors
+  // the "New tab behavior" setting — page mode opens the NTP, omnibox mode
+  // focuses the address field and the tab is born on commit.
+  void StartNewTab();
+  // Opens/closes the downloads popover, anchored to the sidebar's download
+  // button — the Window menu's and Ctrl+J's path to the button's toggle.
+  void ToggleDownloadsPopover();
   // Re-reads navigation state (url/title/canGoBack/…) for the toolbar.
   void RebuildNavState();
 
@@ -655,6 +756,26 @@ class PhiWindowController {
   };
   std::vector<ShortcutRow> pinned_;
   std::vector<ShortcutRow> bookmarks_;
+  // The bookmark bar (the Mac's 32pt HorizontalBar/BookmarkBar): root-level
+  // rows as favicon+title pills, the rest behind a trailing "›" menu.
+  // Items are laid out by the paint pass and hit-tested from the same list.
+  struct BarItem {
+    RECT bounds{};
+    int bookmark = -1;    // Index into bookmarks_ (a depth-0 row).
+    bool overflow = false;
+  };
+  std::vector<BarItem> bar_items_;
+  bool BookmarkBarVisible();
+  void PaintBookmarkBar(HDC dc, const Layout& layout,
+                        const PhiPalette& palette);
+  // A dropdown of bookmark rows under `anchor`: a bar folder's children
+  // (parent_guid set) or the root's overflow (skip_first shown pills).
+  void ShowBookmarkBarMenu(const RECT& anchor,
+                           const std::string& parent_guid,
+                           size_t skip_first);
+  // The active tab's URL (captured by RebuildTabs) — "show on new tab"
+  // needs to know whether the page IS the new-tab page.
+  std::string active_tab_url_;
   // Counted before the layout is derived, because the bands they occupy push
   // everything below them down.
   int pinned_row_count_ = 0;
@@ -702,7 +823,6 @@ class PhiWindowController {
   ULONGLONG ramp_start_ = 0;  // Theme ramp clock; 0 = idle.
   double SwapEasedProgress() const;  // Slide progress; 1.0 when idle.
   double RampEasedProgress() const;  // Theme progress; 1.0 when idle.
-  PhiPalette CurrentPalette() const; // Ramped while a switch is in flight.
   void ComposeFrame(HDC mem);        // Chrome + drag indicator.
   void BeginSpaceSwap(const std::string& entering_space_id);
   void CancelSpaceSwap();
@@ -745,6 +865,48 @@ class PhiWindowController {
   // The four content-corner caps (TL, TR, BL, BR), siblings above the
   // browser child — the only rounding DComp content respects.
   std::array<HWND, 4> corner_caps_ = {};
+  // The Chrome-style link-target bubble at the content's bottom-left (the
+  // Mac StatusURLView): a shell-child sibling raised over the browser child,
+  // like the corner caps. Created on first use; text empty = hidden.
+  HWND status_bubble_ = nullptr;
+  std::wstring status_url_;
+  void SetStatusUrl(const std::wstring& url);
+
+  // --- Omnibox suggestion dropdown (the Mac OmniBox panel) -----------------
+  // Rows mirror the framework's OnOmniboxResults json; the popup is a
+  // non-activating WS_POPUP under the address field, so the EDIT keeps
+  // focus and its caret while the list is up.
+  struct OmniboxRow {
+    int line = 0;
+    std::string type;
+    std::wstring contents;
+    std::wstring description;
+    std::wstring fill;  // fillIntoEdit — what arrowing onto the row types.
+    bool has_tab_match = false;
+  };
+  std::vector<OmniboxRow> omnibox_rows_;
+  int omnibox_selected_ = -1;  // -1 = nothing armed; Enter commits the text.
+  HWND omnibox_popup_ = nullptr;
+  bool url_field_programmatic_ = false;  // Suppresses EN_CHANGE feedback.
+  // Set by StartNewTab in omnibox mode: the next commit opens a NEW tab.
+  bool omnibox_new_tab_pending_ = false;
+  // Browsers currently in placeholder mode (empty strip, window alive).
+  std::set<int64_t> placeholder_browsers_;
+  // Content-fullscreen state: the shell parks its chrome and covers the
+  // monitor while a tab's content is fullscreen; placement and style are
+  // restored on exit.
+  bool content_fullscreen_ = false;
+  int64_t fullscreen_browser_ = 0;
+  WINDOWPLACEMENT pre_fullscreen_placement_ = {};
+  LONG_PTR pre_fullscreen_style_ = 0;
+  // Tab ids of the ACTIVE browser, most-recently-used first.
+  std::vector<int> tab_mru_;
+  void OnUrlFieldChanged();  // EN_CHANGE: start/refresh/stop the query.
+  void ShowOmniboxPopup();   // Creates/positions the popup under the field.
+  void CloseOmniboxPopup(bool stop_query);
+  void MoveOmniboxSelection(int delta);
+  void CommitOmniboxSelection();
+  int OmniboxRowAtY(int y) const;
   // Owned by the framework (a singleton in chrome.dll); non-owning, and across
   // a module boundary, so not a raw_ptr.
   RAW_PTR_EXCLUSION phi_framework::PhiFramework* const framework_;
@@ -770,6 +932,8 @@ class PhiWindowController {
   bool sidebar_collapsed_ = false;
   // Hosted as a hidden agent Space (off-screen, off-taskbar). See the ctor.
   bool agent_ = false;
+  // Off-the-record shell: fixed-dark, no Spaces/pins/bookmarks, unrouted.
+  bool incognito_ = false;
   // For an agent window: whether it is currently surfaced (being watched).
   bool agent_visible_ = false;
   bool floating_layout_ = false;
