@@ -83,6 +83,11 @@ class PhiSlotHost {
   // by clicking its pip, which toggles its hidden window on/off screen.
   virtual std::vector<PhiAgentPipView> AgentSpaces() const = 0;
   virtual void RequestWatchAgentSpace(const std::string& task_id) = 0;
+  // Watch-mode control pill (C3): ownership transfers ONLY through these —
+  // the fog barrier is what makes that true. Finish ends the task.
+  virtual void RequestAgentTakeControl(const std::string& task_id) = 0;
+  virtual void RequestAgentHandBack(const std::string& task_id) = 0;
+  virtual void RequestAgentFinish(const std::string& task_id) = 0;
   // Creates a Space in this slot's current profile (`new_profile` = false) or
   // in a freshly created profile (true), then switches to it.
   virtual void RequestCreateSpace(int64_t slot, bool new_profile) = 0;

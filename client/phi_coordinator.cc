@@ -23,6 +23,7 @@
 #include "base/time/time.h"
 #include "base/values.h"
 #include "base/rand_util.h"
+#include "phibrowser-win/client/phi_agent_overlay.h"
 #include "phibrowser-win/client/phi_icons.h"
 #include "phibrowser-win/client/phi_extensions_popover.h"
 #include "phibrowser-win/client/phi_menu_bar.h"
@@ -2432,6 +2433,68 @@ void PhiCoordinator::RequestWatchAgentSpace(const std::string& task_id) {
     }
     watched_agent_task_ = task_id;
   }
+  RefreshAgentOverlay();
+  RefreshUserWindows();
+}
+
+void PhiCoordinator::RefreshAgentOverlay() {
+  if (watched_agent_task_.empty()) {
+    PhiAgentOverlay::Hide();
+    return;
+  }
+  PhiAgentSpaces::Space* space = agent_spaces_.Find(watched_agent_task_);
+  if (!space) {
+    PhiAgentOverlay::Hide();
+    return;
+  }
+  auto it = windows_.find(space->window_id);
+  if (it == windows_.end()) {
+    PhiAgentOverlay::Hide();
+    return;
+  }
+  const std::wstring label =
+      space->agent_name.empty() ? L"Agent"
+                                : base::UTF8ToWide(space->agent_name);
+  const bool agent_owns =
+      space->ownership == PhiAgentSpaces::Ownership::kAgent;
+  std::wstring caption = base::UTF8ToWide(space->caption);
+  if (caption.empty()) {
+    caption = agent_owns ? L"Agent is working\u2026" : L"Agent paused";
+  }
+  if (space->status == "failed") {
+    caption = L"\u26A0 " + caption;
+  }
+  PhiAgentOverlay::Show(it->second.get(), watched_agent_task_, label, caption,
+                        agent_owns);
+}
+
+void PhiCoordinator::RequestAgentTakeControl(const std::string& task_id) {
+  if (!agent_spaces_.Find(task_id)) {
+    return;
+  }
+  agent_spaces_.SetOwnership(task_id, PhiAgentSpaces::Ownership::kUser,
+                             static_cast<uint64_t>(::GetTickCount64()));
+  PushOwnershipChanged(task_id);  // The driver must learn it lost control.
+  RefreshAgentOverlay();
+}
+
+void PhiCoordinator::RequestAgentHandBack(const std::string& task_id) {
+  if (!agent_spaces_.Find(task_id)) {
+    return;
+  }
+  agent_spaces_.SetOwnership(task_id, PhiAgentSpaces::Ownership::kAgent,
+                             static_cast<uint64_t>(::GetTickCount64()));
+  PushOwnershipChanged(task_id);
+  RefreshAgentOverlay();
+}
+
+void PhiCoordinator::RequestAgentFinish(const std::string& task_id) {
+  // Ends the task outright — the pill's escape hatch when an agent is stuck.
+  CloseAgentSpace(task_id);
+  if (watched_agent_task_ == task_id) {
+    watched_agent_task_.clear();
+  }
+  PhiAgentOverlay::Hide();
   RefreshUserWindows();
 }
 
@@ -3758,6 +3821,13 @@ bool PhiCoordinator::HandleAgentSpaceVerb(const std::string& type,
     }
     PhiAgentSpaces::Space& space = agent_spaces_.Create(
         task_id, adopted, profile_id, persistent, now_ms);
+    // The driving agent's name rides the create call; the watch-mode pill
+    // shows it so a watching user sees WHO holds the Space, not just "an
+    // agent" (the Mac's AgentDriverBadge).
+    if (const std::string* agent_name =
+            payload ? payload->FindString("agentName") : nullptr) {
+      space.agent_name = *agent_name;
+    }
     // Start the keep-alive sweep once (id 2, every 10s — the Mac sweep tick).
     if (msg_hwnd_) {
       ::SetTimer(msg_hwnd_, 2, 10000, nullptr);
@@ -3838,6 +3908,7 @@ bool PhiCoordinator::HandleAgentSpaceVerb(const std::string& type,
     agent_spaces_.SetOwnership(task_id, PhiAgentSpaces::Ownership::kUser,
                               now_ms);
     PushOwnershipChanged(task_id);
+    RefreshAgentOverlay();
     out->Set("ok", true);
     return true;
   }
@@ -3852,6 +3923,7 @@ bool PhiCoordinator::HandleAgentSpaceVerb(const std::string& type,
     agent_spaces_.SetOwnership(task_id, PhiAgentSpaces::Ownership::kAgent,
                               now_ms);
     PushOwnershipChanged(task_id);
+    RefreshAgentOverlay();
     out->Set("ok", true);
     return true;
   }
@@ -3873,6 +3945,7 @@ bool PhiCoordinator::HandleAgentSpaceVerb(const std::string& type,
     const std::string* state =
         payload ? payload->FindString("state") : nullptr;
     agent_spaces_.SetState(task_id, caption, state, now_ms);
+    RefreshAgentOverlay();  // The pill shows the caption the agent just set.
     out->Set("ok", true);
     return true;
   }

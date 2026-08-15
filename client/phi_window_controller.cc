@@ -29,6 +29,7 @@
 #include "base/no_destructor.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
+#include "phibrowser-win/client/phi_agent_overlay.h"
 #include "phibrowser-win/client/phi_downloads_popover.h"
 #include "phibrowser-win/client/phi_extensions_popover.h"
 #include "phibrowser-win/client/phi_group_overview.h"
@@ -1821,6 +1822,9 @@ void PhiWindowController::LayoutContents() {
                    SWP_NOZORDER | SWP_NOACTIVATE |
                        (placeholding ? SWP_HIDEWINDOW : SWP_SHOWWINDOW));
   }
+
+  // Watch-mode overlay (fog + control pill) tracks the content rect.
+  PhiAgentOverlay::Reposition();
 
   // The rounded card corners. DComp ignores a region ON the browser child
   // (verified by pixel probe: corners stayed page-white), so the corners are

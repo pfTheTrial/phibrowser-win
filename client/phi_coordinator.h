@@ -80,6 +80,9 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   void RequestSwitchSpace(int64_t slot, const std::string& space_id) override;
   std::vector<PhiAgentPipView> AgentSpaces() const override;
   void RequestWatchAgentSpace(const std::string& task_id) override;
+  void RequestAgentTakeControl(const std::string& task_id) override;
+  void RequestAgentHandBack(const std::string& task_id) override;
+  void RequestAgentFinish(const std::string& task_id) override;
   void RequestCreateSpace(int64_t slot, bool new_profile) override;
   PhiLayoutMode LayoutMode() const override;
   void RequestLayoutMode(PhiLayoutMode mode) override;
@@ -522,6 +525,8 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // whose record is already gone is deliberately NOT announced (drivers
   // learn of an ended task from its absence in agentSpace.list).
   void PushOwnershipChanged(const std::string& task_id);
+  // Mounts/updates/tears down the watch-mode overlay for the watched task.
+  void RefreshAgentOverlay();
   bool CredentialGrantCovers(const std::string& scope,
                              CredentialAccessKind kind) const;
   void LoadCredentialGrants();
