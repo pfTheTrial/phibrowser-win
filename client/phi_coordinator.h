@@ -517,6 +517,11 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   bool PromptCredentialApproval(const std::wstring& detail,
                                 CredentialAccessKind kind,
                                 const std::string& scope);
+  // Pushes agentSpace.ownershipChanged to connected drivers — the Mac's
+  // broadcastToTaskDriver. Called after every ownership transition; a task
+  // whose record is already gone is deliberately NOT announced (drivers
+  // learn of an ended task from its absence in agentSpace.list).
+  void PushOwnershipChanged(const std::string& task_id);
   bool CredentialGrantCovers(const std::string& scope,
                              CredentialAccessKind kind) const;
   void LoadCredentialGrants();

@@ -8,9 +8,12 @@
 #include <windows.h>
 
 #include <cstdint>
+#include <memory>
 #include <string>
+#include <vector>
 
 #include "base/memory/raw_ptr_exclusion.h"
+#include "base/synchronization/lock.h"
 
 namespace phi_client {
 
@@ -69,7 +72,27 @@ class PhiControlServer {
   // commands. Idempotent.
   void Start(const std::wstring& user_data_dir, PhiControlDelegate* delegate);
 
+  // Pushes an unsolicited event frame — {"event":<type>,"payloadJson":<json>}
+  // — to every live control channel (the Mac's broadcastToTaskDriver). Safe
+  // to call from any thread, including the UI thread: each channel's writes
+  // are serialized by its own lock and bounded by a short timeout, so one
+  // wedged peer drops its event instead of stalling the caller.
+  void BroadcastEvent(const std::string& type,
+                      const std::string& payload_json);
+
  private:
+  // One live /phi-agent channel. Reply writes (the serve loop) and pushed
+  // events (any thread) share the pipe, so they share `write_lock`; the
+  // broadcast uses its own OVERLAPPED event because one event handle cannot
+  // back two concurrent operations.
+  struct ControlChannel {
+    HANDLE pipe = nullptr;
+    HANDLE write_event = nullptr;
+    base::Lock write_lock;
+  };
+  void RegisterChannel(const std::shared_ptr<ControlChannel>& channel);
+  void UnregisterChannel(const std::shared_ptr<ControlChannel>& channel);
+
   void ListenLoop();
   void HandleConnection(HANDLE pipe);
   // Serves the /phi-agent WebSocket control channel on an accepted pipe whose
@@ -88,6 +111,9 @@ class PhiControlServer {
   RAW_PTR_EXCLUSION PhiControlDelegate* delegate_ = nullptr;
   HANDLE listen_thread_ = nullptr;
   volatile bool started_ = false;
+  // Live control channels, for BroadcastEvent.
+  std::vector<std::shared_ptr<ControlChannel>> channels_;
+  mutable base::Lock channels_lock_;
 };
 
 }  // namespace phi_client

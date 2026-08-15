@@ -83,6 +83,54 @@ bool OvWrite(HANDLE pipe, HANDLE ev, const char* data, size_t len) {
   return true;
 }
 
+// Like OvWrite, but gives up after `timeout_ms` instead of waiting forever —
+// a pushed event must never stall the thread that raised it (the UI thread)
+// on a peer that has stopped reading.
+bool OvWriteTimeout(HANDLE pipe, HANDLE ev, const char* data, size_t len,
+                    DWORD timeout_ms) {
+  size_t off = 0;
+  while (off < len) {
+    OVERLAPPED ov = {};
+    ov.hEvent = ev;
+    ::ResetEvent(ev);
+    DWORD wrote = 0;
+    BOOL ok = ::WriteFile(pipe, data + off, static_cast<DWORD>(len - off),
+                          nullptr, &ov);
+    if (!ok && ::GetLastError() != ERROR_IO_PENDING) {
+      return false;
+    }
+    if (::WaitForSingleObject(ev, timeout_ms) != WAIT_OBJECT_0) {
+      ::CancelIoEx(pipe, &ov);
+      return false;
+    }
+    if (!::GetOverlappedResult(pipe, &ov, &wrote, FALSE) || wrote == 0) {
+      return false;
+    }
+    off += wrote;
+  }
+  return true;
+}
+
+// Frames `text` as a single unmasked WebSocket text message.
+std::string WsTextFrame(const std::string& text) {
+  std::string frame;
+  frame.push_back(static_cast<char>(0x81));
+  const size_t len = text.size();
+  if (len < 126) {
+    frame.push_back(static_cast<char>(len));
+  } else if (len < 65536) {
+    frame.push_back(126);
+    frame.push_back(static_cast<char>((len >> 8) & 0xff));
+    frame.push_back(static_cast<char>(len & 0xff));
+  } else {
+    frame.push_back(127);
+    for (int shift = 56; shift >= 0; shift -= 8) {
+      frame.push_back(static_cast<char>((len >> shift) & 0xff));
+    }
+  }
+  return frame + text;
+}
+
 // Reads the HTTP request head (through the blank line) from the pipe.
 bool ReadHttpHead(HANDLE pipe, HANDLE ev, std::string* head) {
   char buf[4096];
@@ -452,6 +500,15 @@ void PhiControlServer::ServeControlChannel(HANDLE pipe,
     return;
   }
 
+  // Live for pushed events (ownership changes and friends) until this loop
+  // ends. The channel keeps its OWN write event: a broadcast may land while
+  // the loop is blocked reading, and one event handle cannot back two
+  // overlapped operations.
+  auto channel = std::make_shared<ControlChannel>();
+  channel->pipe = pipe;
+  channel->write_event = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+  RegisterChannel(channel);
+
   // Message loop: {id, type, payloadJson} -> {id, responseJson|error}.
   for (;;) {
     int opcode = 0;
@@ -487,9 +544,54 @@ void PhiControlServer::ServeControlChannel(HANDLE pipe,
     }
     std::string out;
     base::JSONWriter::Write(resp_dict, &out);
-    if (!WsSendText(pipe, ev, out)) {
+    bool sent = false;
+    {
+      // Shares the pipe with BroadcastEvent — never interleave two frames.
+      base::AutoLock lock(channel->write_lock);
+      sent = WsSendText(pipe, ev, out);
+    }
+    if (!sent) {
       break;
     }
+  }
+  UnregisterChannel(channel);
+  if (channel->write_event) {
+    ::CloseHandle(channel->write_event);
+  }
+}
+
+void PhiControlServer::RegisterChannel(
+    const std::shared_ptr<ControlChannel>& channel) {
+  base::AutoLock lock(channels_lock_);
+  channels_.push_back(channel);
+}
+
+void PhiControlServer::UnregisterChannel(
+    const std::shared_ptr<ControlChannel>& channel) {
+  base::AutoLock lock(channels_lock_);
+  channels_.erase(std::remove(channels_.begin(), channels_.end(), channel),
+                  channels_.end());
+}
+
+void PhiControlServer::BroadcastEvent(const std::string& type,
+                                      const std::string& payload_json) {
+  base::DictValue frame;
+  frame.Set("event", type);
+  frame.Set("payloadJson", payload_json);
+  std::string text;
+  base::JSONWriter::Write(frame, &text);
+  const std::string bytes = WsTextFrame(text);
+  // Snapshot under the registry lock, then write outside it: a slow peer must
+  // not block another connection from arriving or leaving.
+  std::vector<std::shared_ptr<ControlChannel>> targets;
+  {
+    base::AutoLock lock(channels_lock_);
+    targets = channels_;
+  }
+  for (const std::shared_ptr<ControlChannel>& channel : targets) {
+    base::AutoLock lock(channel->write_lock);
+    OvWriteTimeout(channel->pipe, channel->write_event, bytes.data(),
+                   bytes.size(), 1000);
   }
 }
 

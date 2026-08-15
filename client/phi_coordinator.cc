@@ -3837,6 +3837,7 @@ bool PhiCoordinator::HandleAgentSpaceVerb(const std::string& type,
     }
     agent_spaces_.SetOwnership(task_id, PhiAgentSpaces::Ownership::kUser,
                               now_ms);
+    PushOwnershipChanged(task_id);
     out->Set("ok", true);
     return true;
   }
@@ -3850,6 +3851,7 @@ bool PhiCoordinator::HandleAgentSpaceVerb(const std::string& type,
     }
     agent_spaces_.SetOwnership(task_id, PhiAgentSpaces::Ownership::kAgent,
                               now_ms);
+    PushOwnershipChanged(task_id);
     out->Set("ok", true);
     return true;
   }
@@ -3950,6 +3952,7 @@ bool PhiCoordinator::HandleAgentSpaceVerb(const std::string& type,
       return true;
     }
     out->Set("messages", agent_spaces_.DrainMessages(task_id));
+    out->Set("ok", true);  // Every other verb answers with it.
     return true;
   }
 
@@ -4429,6 +4432,21 @@ bool PhiCoordinator::ResolveCredentialItem(const std::string& domain,
     item->Set("notes", found->notes);
   }
   return true;
+}
+
+void PhiCoordinator::PushOwnershipChanged(const std::string& task_id) {
+  PhiAgentSpaces::Space* space = agent_spaces_.Find(task_id);
+  if (!space) {
+    return;  // Ended task: its disappearance from list() is the signal.
+  }
+  base::DictValue payload;
+  payload.Set("taskId", task_id);
+  payload.Set("owner", space->ownership == PhiAgentSpaces::Ownership::kUser
+                           ? "user"
+                           : "agent");
+  std::string payload_json;
+  base::JSONWriter::Write(payload, &payload_json);
+  control_server_.BroadcastEvent("agentSpace.ownershipChanged", payload_json);
 }
 
 bool PhiCoordinator::CredentialGrantCovers(const std::string& scope,
