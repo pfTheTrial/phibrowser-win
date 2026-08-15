@@ -122,6 +122,12 @@ class PhiSettingsHost {
   // connections; live sessions keep their allow-once.
   virtual std::vector<std::string> AgentGrantRows() const = 0;
   virtual void RemoveAgentGrant(int index) = 0;
+  // Standing credential approvals ("scope\tfill|reveal") and the approval
+  // audit trail ("stamp\tkind\tscope\tdecision", newest first). Revoking a
+  // grant only affects future requests.
+  virtual std::vector<std::string> CredentialGrantRows() const = 0;
+  virtual void RemoveCredentialGrant(int index) = 0;
+  virtual std::vector<std::string> CredentialAuditRows() const = 0;
 
   // Developer mode gates the Developer pane, as on Mac (default off).
   virtual bool DeveloperMode() const = 0;

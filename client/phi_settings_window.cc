@@ -2174,6 +2174,56 @@ void PhiSettingsWindow::BuildDeveloper(int* y) {
   }
   *y += Scaled(kRowPadding);
   EndSection(y);
+  BeginSection(y, L"Credential approvals");
+  const std::vector<std::string> creds = host_->CredentialGrantRows();
+  if (creds.empty()) {
+    AddSubHint(y, L"No standing approvals. Every credential request is "
+                  L"approved individually.");
+  } else {
+    for (size_t i = 0; i < creds.size(); ++i) {
+      const std::vector<std::string> parts = SplitTabs(creds[i]);
+      const bool reveal = parts.size() > 1 && parts[1] == "reveal";
+      // The exposure is part of the row: "reveal" means the secret is handed
+      // to the agent, "fill" means it never leaves Phi.
+      const std::wstring label =
+          base::UTF8ToWide(parts[0]) +
+          (reveal ? L"  \u2014 reveal to agent" : L"  \u2014 fill only");
+      const RECT control = AddRow(y, label.c_str(), 22, 22);
+      Item remove;
+      remove.kind = ItemKind::kToolButton;
+      remove.text = L"\uE74D";
+      remove.action = "removecredgrant";
+      remove.payload = base::NumberToString(static_cast<int>(i));
+      remove.bounds = control;
+      items_.push_back(std::move(remove));
+      if (i + 1 < creds.size()) {
+        AddDividerRow(y);
+      }
+    }
+  }
+  *y += Scaled(kRowPadding);
+  EndSection(y);
+  BeginSection(y, L"Credential activity");
+  const std::vector<std::string> audit = host_->CredentialAuditRows();
+  if (audit.empty()) {
+    AddSubHint(y, L"No credential requests yet.");
+  } else {
+    // Newest first; the pane shows the most recent ten.
+    const size_t shown = std::min<size_t>(audit.size(), 10);
+    for (size_t i = 0; i < shown; ++i) {
+      const std::vector<std::string> parts = SplitTabs(audit[i]);
+      if (parts.size() < 4) {
+        continue;
+      }
+      AddSubHint(y, (base::UTF8ToWide(parts[0]) + L"  " +
+                     base::UTF8ToWide(parts[1]) + L"  " +
+                     base::UTF8ToWide(parts[2]) + L"  \u2014  " +
+                     base::UTF8ToWide(parts[3]))
+                        .c_str());
+    }
+  }
+  *y += Scaled(kRowPadding);
+  EndSection(y);
   BeginSection(y, L"Agent Password Manager");
   AddToggleRow(y, L"Bitwarden password manager", /*on=*/false,
                /*enabled=*/false, std::string());
@@ -2928,6 +2978,10 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
     int index = -1;
     base::StringToInt(item.payload, &index);
     host_->RemoveAgentGrant(index);
+  } else if (item.action == "removecredgrant") {
+    int index = -1;
+    base::StringToInt(item.payload, &index);
+    host_->RemoveCredentialGrant(index);
   } else if (item.action == "addrule") {
     std::wstring value;
     if (PhiPromptText(hwnd_, L"Add URL Rule",

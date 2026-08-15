@@ -392,8 +392,18 @@ int PhiPromptChoose(HWND owner,
   // The list grows with the option count, within reason.
   const int list_height =
       std::min(static_cast<int>(options.size()), 8) * 20 + 6;
+  // The message may be several lines (a credential request states its
+  // EXPOSURE on its own line, and that line must never be clipped): size the
+  // message band to the text and push everything below it down.
+  const std::wstring message_text(message ? message : L"");
+  int message_lines =
+      1 + static_cast<int>(std::count(message_text.begin(),
+                                      message_text.end(), L'\n'));
+  message_lines = std::min(message_lines, 8);
+  const int message_height = message_lines * 16 + 6;
+  const int list_top = 12 + message_height + 8;
   const int width = scaled(380);
-  const int height = scaled(96 + list_height + 44);
+  const int height = scaled(list_top + list_height + 88);
 
   PromptState state;
   RECT anchor = {0, 0, 0, 0};
@@ -429,12 +439,12 @@ int PhiPromptChoose(HWND owner,
     }
     return control;
   };
-  child(L"STATIC", message, SS_ENDELLIPSIS, 16, 12, 340, 36, 0);
+  child(L"STATIC", message, 0, 16, 12, 340, message_height, 0);
   // The list reuses PromptState.edit as its "the control" slot; LBS_NOTIFY's
   // double-click lands on IDOK below.
   state.edit = child(L"LISTBOX", L"",
-                     WS_BORDER | WS_TABSTOP | WS_VSCROLL | LBS_NOTIFY, 16, 52,
-                     340, list_height, 100);
+                     WS_BORDER | WS_TABSTOP | WS_VSCROLL | LBS_NOTIFY, 16,
+                     list_top, 340, list_height, 100);
   for (const std::wstring& option : options) {
     ::SendMessageW(state.edit, LB_ADDSTRING, 0,
                    reinterpret_cast<LPARAM>(option.c_str()));
@@ -444,7 +454,7 @@ int PhiPromptChoose(HWND owner,
     ::SendMessageW(state.edit, LB_SETCURSEL,
                    static_cast<WPARAM>(default_index), 0);
   }
-  const int buttons_y = 52 + list_height + 12;
+  const int buttons_y = list_top + list_height + 12;
   child(L"BUTTON", L"Open", BS_DEFPUSHBUTTON | WS_TABSTOP, 196, buttons_y, 76,
         26, IDOK);
   child(L"BUTTON", L"Keep Here", WS_TABSTOP, 280, buttons_y, 76, 26,

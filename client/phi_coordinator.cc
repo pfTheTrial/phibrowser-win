@@ -169,6 +169,7 @@ void PhiCoordinator::OnFrameworkReady(phi_framework::PhiFramework* framework,
   theme_path_ = user_data_dir + L"\\PhiTheme.json";
   prefs_path_ = user_data_dir + L"\\PhiPrefs.json";
   agent_grants_path_ = user_data_dir + L"\\PhiAgentGrants.json";
+  credential_grants_path_ = user_data_dir + L"\\PhiCredentialGrants.json";
   url_rules_path_ = user_data_dir + L"\\PhiUrlRules.json";
   credentials_dir_ = user_data_dir;
   // Prefer the real vault: the out-of-process Bitwarden helper, which owns the
@@ -197,6 +198,7 @@ void PhiCoordinator::OnFrameworkReady(phi_framework::PhiFramework* framework,
   LoadTheme();
   LoadPrefs();
   LoadAgentGrants();
+  LoadCredentialGrants();
   PushRestorePreference();  // Into the loaded profiles' startup prefs.
   tab_store_.Load(user_data_dir + L"\\PhiTabData.json");
   PushSpaceMenu();  // The page context menu's "Open Link in Space" list.
@@ -348,6 +350,32 @@ void PhiCoordinator::RemoveAgentGrant(int index) {
   std::advance(it, index);
   agent_grants_.erase(it);
   SaveAgentGrants();
+}
+
+std::vector<std::string> PhiCoordinator::CredentialGrantRows() const {
+  std::vector<std::string> rows;
+  for (const auto& [scope, kind] : credential_grants_) {
+    rows.push_back(scope + "\t" +
+                   (kind == CredentialAccessKind::kReveal ? "reveal" : "fill"));
+  }
+  return rows;
+}
+
+void PhiCoordinator::RemoveCredentialGrant(int index) {
+  if (index < 0 || index >= static_cast<int>(credential_grants_.size())) {
+    return;
+  }
+  auto it = credential_grants_.begin();
+  std::advance(it, index);
+  // Drop any live timed grant for the same scope too — revoking must not
+  // leave a ten-minute window standing behind the removed row.
+  credential_timed_grants_.erase(it->first);
+  credential_grants_.erase(it);
+  SaveCredentialGrants();
+}
+
+std::vector<std::string> PhiCoordinator::CredentialAuditRows() const {
+  return credential_audit_;
 }
 
 void PhiCoordinator::LoadAgentGrants() {
@@ -4335,15 +4363,174 @@ bool PhiCoordinator::ResolveCredentialItem(const std::string& domain,
   return true;
 }
 
-bool PhiCoordinator::PromptCredentialApproval(const std::wstring& detail) {
-  const std::wstring text =
-      L"An agent is requesting a credential from your Phi vault:\n\n" + detail +
-      L"\n\nAllow this once?";
-  const int r = ::MessageBoxW(
-      nullptr, text.c_str(), L"Phi — Credential request",
-      MB_YESNO | MB_ICONQUESTION | MB_SETFOREGROUND | MB_TOPMOST |
-          MB_DEFBUTTON2);
-  return r == IDYES;
+bool PhiCoordinator::CredentialGrantCovers(const std::string& scope,
+                                           CredentialAccessKind kind) const {
+  // A REVEAL grant covers everything; anything else must match the kind
+  // exactly — a fill approval must never satisfy a reveal request.
+  const auto covers = [kind](CredentialAccessKind granted) {
+    return granted == CredentialAccessKind::kReveal || granted == kind;
+  };
+  auto always = credential_grants_.find(scope);
+  if (always != credential_grants_.end() && covers(always->second)) {
+    return true;
+  }
+  auto timed = credential_timed_grants_.find(scope);
+  if (timed != credential_timed_grants_.end() &&
+      ::GetTickCount64() < timed->second.expires_tick &&
+      covers(timed->second.kind)) {
+    return true;
+  }
+  return false;
+}
+
+bool PhiCoordinator::PromptCredentialApproval(const std::wstring& detail,
+                                              CredentialAccessKind kind,
+                                              const std::string& scope) {
+  const bool reveal = kind == CredentialAccessKind::kReveal;
+  if (CredentialGrantCovers(scope, kind)) {
+    AppendCredentialAudit(scope, kind, "allowed (standing approval)");
+    return true;
+  }
+  // The exposure banner is the load-bearing line, as on Mac: say plainly
+  // whether the secret stays inside Phi or crosses to the agent.
+  const std::wstring exposure =
+      reveal ? L"The secret will be GIVEN TO THE AGENT."
+             : L"Phi types the secret into the page. The agent never sees it.";
+  const std::wstring text = detail + L"\n\n" + exposure;
+  HWND owner = nullptr;
+  for (const auto& [slot, controller] : windows_) {
+    if (controller->shell_hwnd()) {
+      owner = controller->shell_hwnd();
+      break;
+    }
+  }
+  int chosen = -1;
+  if (owner) {
+    chosen = PhiPromptChoose(
+        owner, L"Credential request", text.c_str(),
+        {L"Allow once", L"Allow for 10 minutes", L"Always allow", L"Deny"},
+        0);
+  } else {
+    // No window yet: the MessageBox fallback offers allow-ONCE only — a
+    // standing grant must never be given through a degraded dialog.
+    chosen = ::MessageBoxW(nullptr, (text + L"\n\nAllow this once?").c_str(),
+                           L"Phi — Credential request",
+                           MB_YESNO | MB_ICONQUESTION | MB_SETFOREGROUND |
+                               MB_TOPMOST | MB_DEFBUTTON2) == IDYES
+                 ? 0
+                 : 3;
+  }
+  if (chosen == 1) {
+    TimedCredentialGrant grant;
+    grant.kind = kind;
+    grant.expires_tick = ::GetTickCount64() + 10 * 60 * 1000;
+    credential_timed_grants_[scope] = grant;
+    AppendCredentialAudit(scope, kind, "allowed (10 minutes)");
+    return true;
+  }
+  if (chosen == 2) {
+    // A stronger kind never downgrades an existing grant.
+    auto existing = credential_grants_.find(scope);
+    if (existing == credential_grants_.end() ||
+        kind == CredentialAccessKind::kReveal) {
+      credential_grants_[scope] = kind;
+    }
+    SaveCredentialGrants();
+    PhiSettingsWindow::Refresh();
+    AppendCredentialAudit(scope, kind, "allowed (always)");
+    return true;
+  }
+  if (chosen == 0) {
+    AppendCredentialAudit(scope, kind, "allowed (once)");
+    return true;
+  }
+  AppendCredentialAudit(scope, kind, "denied");
+  return false;
+}
+
+void PhiCoordinator::AppendCredentialAudit(const std::string& scope,
+                                           CredentialAccessKind kind,
+                                           const char* decision) {
+  SYSTEMTIME now = {};
+  ::GetLocalTime(&now);
+  char stamp[32] = {};
+  ::snprintf(stamp, sizeof(stamp), "%04d-%02d-%02d %02d:%02d", now.wYear,
+             now.wMonth, now.wDay, now.wHour, now.wMinute);
+  credential_audit_.insert(
+      credential_audit_.begin(),
+      std::string(stamp) + "\t" +
+          (kind == CredentialAccessKind::kReveal ? "reveal" : "fill") + "\t" +
+          scope + "\t" + decision);
+  constexpr size_t kMaxAudit = 50;
+  if (credential_audit_.size() > kMaxAudit) {
+    credential_audit_.resize(kMaxAudit);
+  }
+  SaveCredentialGrants();
+  PhiSettingsWindow::Refresh();
+}
+
+void PhiCoordinator::LoadCredentialGrants() {
+  HANDLE f = ::CreateFileW(credential_grants_path_.c_str(), GENERIC_READ,
+                           FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                           FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (f == INVALID_HANDLE_VALUE) {
+    return;
+  }
+  std::string json;
+  char buf[4096];
+  DWORD read = 0;
+  while (::ReadFile(f, buf, sizeof(buf), &read, nullptr) && read > 0) {
+    json.append(buf, read);
+  }
+  ::CloseHandle(f);
+  std::optional<base::DictValue> root =
+      base::JSONReader::ReadDict(json, base::JSON_PARSE_RFC);
+  if (!root) {
+    return;
+  }
+  if (const base::DictValue* grants = root->FindDict("grants")) {
+    for (const auto [scope, value] : *grants) {
+      if (value.is_string()) {
+        credential_grants_[scope] = value.GetString() == "reveal"
+                                        ? CredentialAccessKind::kReveal
+                                        : CredentialAccessKind::kFill;
+      }
+    }
+  }
+  if (const base::ListValue* audit = root->FindList("audit")) {
+    for (const base::Value& v : *audit) {
+      if (v.is_string()) {
+        credential_audit_.push_back(v.GetString());
+      }
+    }
+  }
+}
+
+void PhiCoordinator::SaveCredentialGrants() const {
+  base::DictValue root;
+  base::DictValue grants;
+  for (const auto& [scope, kind] : credential_grants_) {
+    grants.Set(scope, kind == CredentialAccessKind::kReveal ? "reveal"
+                                                            : "fill");
+  }
+  root.Set("grants", std::move(grants));
+  base::ListValue audit;
+  for (const std::string& line : credential_audit_) {
+    audit.Append(line);
+  }
+  root.Set("audit", std::move(audit));
+  std::string json;
+  base::JSONWriter::Write(root, &json);
+  HANDLE f = ::CreateFileW(credential_grants_path_.c_str(), GENERIC_WRITE, 0,
+                           nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL,
+                           nullptr);
+  if (f == INVALID_HANDLE_VALUE) {
+    return;
+  }
+  DWORD wrote = 0;
+  ::WriteFile(f, json.data(), static_cast<DWORD>(json.size()), &wrote,
+              nullptr);
+  ::CloseHandle(f);
 }
 
 bool PhiCoordinator::HandleCredentialsVerb(const std::string& type,
@@ -4408,8 +4595,11 @@ bool PhiCoordinator::HandleCredentialsVerb(const std::string& type,
     };
     const std::string item_type =
         field_of("type").empty() ? "login" : field_of("type");
+    const std::string scope =
+        field_of("name").empty() ? field_of("domain") : field_of("name");
     std::wstring detail = base::UTF8ToWide(
-        (field_of("name").empty() ? field_of("domain") : field_of("name")) +
+        "An agent is requesting a credential from your Phi vault:\n\n" +
+        scope +
         (field_of("username").empty() ? "" : "  (" + field_of("username") + ")"));
     if (const std::string* purpose =
             payload ? payload->FindString("purpose") : nullptr) {
@@ -4417,7 +4607,9 @@ bool PhiCoordinator::HandleCredentialsVerb(const std::string& type,
         detail += L"\n" + base::UTF8ToWide(*purpose);
       }
     }
-    if (!PromptCredentialApproval(detail)) {
+    // A read hands the secret TO the agent — the reveal exposure.
+    if (!PromptCredentialApproval(detail, CredentialAccessKind::kReveal,
+                                  scope)) {
       out->Set("ok", false);
       out->Set("error", "user_denied");
       return true;
@@ -4530,11 +4722,13 @@ bool PhiCoordinator::HandleCredentialsVerb(const std::string& type,
       out->Set("pageHost", page_host);
       return true;
     }
-    std::wstring detail =
-        base::UTF8ToWide((field_of("name").empty() ? cred_host
-                                                   : field_of("name")) +
-                         "  → fill " + field + " on " + page_host);
-    if (!PromptCredentialApproval(detail)) {
+    const std::string scope =
+        field_of("name").empty() ? cred_host : field_of("name");
+    const std::wstring detail = base::UTF8ToWide(
+        "An agent is requesting a credential fill:\n\n" + scope +
+        "  → " + field + " on " + page_host);
+    if (!PromptCredentialApproval(detail, CredentialAccessKind::kFill,
+                                  scope)) {
       out->Set("ok", false);
       out->Set("error", "user_denied");
       return true;

@@ -172,6 +172,9 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   bool AnyShortcutCustomized() const override;
   std::vector<std::string> AgentGrantRows() const override;
   void RemoveAgentGrant(int index) override;
+  std::vector<std::string> CredentialGrantRows() const override;
+  void RemoveCredentialGrant(int index) override;
+  std::vector<std::string> CredentialAuditRows() const override;
   bool DeveloperMode() const override;
   void SetDeveloperMode(bool enabled) override;
   void OpenBrowserSettings() override;
@@ -202,6 +205,14 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   void RemoveURLRule(int index) override;
 
  private:
+  // Agent credential approval (C2) — the Mac's CredentialGrantStore model.
+  // `kind` is the EXPOSURE the user is consenting to: kFill keeps the secret
+  // inside Phi (vault -> framework -> page DOM, never to the agent); kReveal
+  // hands it to the agent outright. A REVEAL grant covers a fill request; a
+  // fill grant NEVER covers a reveal (the Mac's CredentialAccessKind.covers)
+  // — they are different capabilities, not degrees of one.
+  enum class CredentialAccessKind { kFill, kReveal };
+
   // Runs a control command on the UI thread; returns the JSON response. Called
   // via SendMessage to msg_hwnd_ from HandleControlCommand.
   std::string ExecuteControlOnUi(const std::string& type,
@@ -352,6 +363,17 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   std::set<std::wstring> session_allowed_peers_;
   std::set<std::wstring> session_denied_peers_;
   std::wstring agent_grants_path_;
+  // Credential approvals. Only NEVER-EXPIRING grants persist; the timed ones
+  // are session-scoped by design (the Mac's in-memory 10-minute cache), so
+  // a restart is always a clean slate for them.
+  std::map<std::string, CredentialAccessKind> credential_grants_;
+  struct TimedCredentialGrant {
+    CredentialAccessKind kind = CredentialAccessKind::kFill;
+    ULONGLONG expires_tick = 0;
+  };
+  std::map<std::string, TimedCredentialGrant> credential_timed_grants_;
+  std::vector<std::string> credential_audit_;
+  std::wstring credential_grants_path_;
   // The bookmark bar's two visibility switches (the Mac View menu's pair).
   bool always_show_bookmark_bar_ = false;
   bool bookmark_bar_on_new_tab_ = false;
@@ -479,7 +501,21 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
                              base::DictValue* out);
   // The native approve/deny prompt for a credential request. `detail` names
   // the item and purpose. Returns true when the user approves.
-  bool PromptCredentialApproval(const std::wstring& detail);
+  // Consults live grants first; prompts only when none covers the request.
+  // `scope` identifies the credential (its site/name), not the agent: grants
+  // are all-agents, as on Mac.
+  bool PromptCredentialApproval(const std::wstring& detail,
+                                CredentialAccessKind kind,
+                                const std::string& scope);
+  bool CredentialGrantCovers(const std::string& scope,
+                             CredentialAccessKind kind) const;
+  void LoadCredentialGrants();
+  void SaveCredentialGrants() const;
+  // Appends one line to the credential audit trail (newest first, capped)
+  // and persists it — every approval decision is recorded, allowed or not.
+  void AppendCredentialAudit(const std::string& scope,
+                             CredentialAccessKind kind,
+                             const char* decision);
 };
 
 }  // namespace phi_client
