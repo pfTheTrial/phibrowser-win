@@ -28,6 +28,7 @@
 #include "phibrowser-win/client/phi_menu_bar.h"
 #include "phibrowser-win/client/phi_prompt.h"
 #include "phibrowser-win/client/phi_tab_switcher.h"
+#include "phibrowser-win/client/phi_window_capture.h"
 
 namespace phi_client {
 
@@ -261,7 +262,32 @@ std::string PhiCoordinator::HandleControlCommand(
   ControlCall call{&type, &payload_json, {}};
   ::SendMessageW(msg_hwnd_, WM_PHI_CONTROL, 0,
                  reinterpret_cast<LPARAM>(&call));
+  if (type == "agentSpace.profiles.create" && profile_create_pending_) {
+    // Creation is under way on the UI thread; wait for the basename HERE (an
+    // I/O thread) and fold it into the reply, so the skill's
+    // `const {profileId} = await createProfile(...)` holds.
+    const DWORD waited =
+        ::WaitForSingleObject(profile_create_done_, 15000);
+    profile_create_pending_ = false;
+    if (waited == WAIT_OBJECT_0 && !created_profile_id_.empty()) {
+      std::optional<base::DictValue> body =
+          base::JSONReader::ReadDict(call.result, base::JSON_PARSE_RFC);
+      if (body) {
+        body->Set("profileId", created_profile_id_);
+        std::string patched;
+        base::JSONWriter::Write(*body, &patched);
+        return patched;
+      }
+    }
+  }
   return call.result;
+}
+
+void PhiCoordinator::OnProfileCreated(const char* profile_id) {
+  created_profile_id_ = profile_id ? profile_id : "";
+  if (profile_create_done_) {
+    ::SetEvent(profile_create_done_);  // Releases the waiting I/O thread.
+  }
 }
 
 bool PhiCoordinator::AuthorizeAgentPeer(const PhiAgentPeer& peer) {
@@ -2766,7 +2792,17 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
         }
       }
     }
+    if (ok && profile_create_pending_) {
+      ok = false;  // One at a time: the completion has a single slot.
+      out.Set("error", "busy");
+    }
     if (ok) {
+      if (!profile_create_done_) {
+        profile_create_done_ = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+      }
+      ::ResetEvent(profile_create_done_);
+      created_profile_id_.clear();
+      profile_create_pending_ = true;
       framework_->CreateProfile(name.c_str());
     }
     out.Set("ok", ok);
@@ -4007,11 +4043,43 @@ bool PhiCoordinator::HandleAgentSpaceVerb(const std::string& type,
   }
 
   if (type == "agentSpace.captureWindow") {
-    // Whole-window capture (screenshotBrowser) is not wired on Windows yet;
-    // the skill's screenshot()/annotatedScreenshot() use CDP and are
-    // unaffected. Report a clean, detectable failure.
-    out->Set("ok", false);
-    out->Set("error", "capture_failed");
+    // Whole-window capture (screenshotBrowser): render the client-drawn
+    // chrome and composite the CDP web capture the caller already took over
+    // the content rect — the hidden agent window's DComp surface cannot be
+    // read back, exactly as the Mac's GPU surface cannot.
+    const std::string task_id = task_id_of();
+    const std::string* out_path =
+        payload ? payload->FindString("outPath") : nullptr;
+    if (task_id.empty() || !out_path || out_path->empty()) {
+      out->Set("ok", false);
+      out->Set("error", "invalid_payload");
+      return true;
+    }
+    PhiAgentSpaces::Space* space = agent_spaces_.Find(task_id);
+    if (!space || !space->window_id) {
+      out->Set("ok", false);
+      out->Set("error", "unknown_task");
+      return true;
+    }
+    auto it = windows_.find(space->window_id);
+    if (it == windows_.end() || !it->second->shell_hwnd()) {
+      out->Set("ok", false);
+      out->Set("error", "no_window");
+      return true;
+    }
+    const std::string* web_path =
+        payload ? payload->FindString("webPath") : nullptr;
+    if (!PhiCaptureWindowToPng(it->second->shell_hwnd(),
+                               it->second->content_rect(),
+                               web_path ? base::UTF8ToWide(*web_path)
+                                        : std::wstring(),
+                               base::UTF8ToWide(*out_path))) {
+      out->Set("ok", false);
+      out->Set("error", "capture_failed");
+      return true;
+    }
+    out->Set("ok", true);
+    out->Set("path", *out_path);
     return true;
   }
 
@@ -4565,8 +4633,65 @@ bool PhiCoordinator::HandleCredentialsVerb(const std::string& type,
   }
 
   if (type == "credentials.getTotp") {
-    out->Set("ok", false);
-    out->Set("error", "totp_not_supported");
+    // A TOTP code is a SECOND FACTOR handed to the agent — a reveal
+    // exposure, approved like any other, and only the real vault helper can
+    // generate one (the dev store holds no seed, and the helper never
+    // encodes the seed itself — it returns a generated code).
+    if (!vault_helper_.running()) {
+      out->Set("ok", false);
+      out->Set("error", "totp_not_supported");
+      return true;
+    }
+    CredentialQuery q = ParseCredentialQuery(payload);
+    if (!q.valid) {
+      out->Set("ok", false);
+      out->Set("error", "invalid_payload");
+      return true;
+    }
+    // Resolve first, so the approval names the item the code belongs to.
+    base::DictValue item;
+    if (!ResolveCredentialItem(q.domain, q.id, q.search, q.username, &item,
+                               out)) {
+      return true;  // `out` already carries the wire error body.
+    }
+    const std::string* name = item.FindString("name");
+    const std::string* item_domain = item.FindString("domain");
+    const std::string scope =
+        name && !name->empty()
+            ? *name
+            : (item_domain ? *item_domain : q.domain);
+    const std::wstring detail = base::UTF8ToWide(
+        "An agent is requesting a one-time code (2FA) for:\n\n" + scope);
+    if (!PromptCredentialApproval(detail, CredentialAccessKind::kReveal,
+                                  scope)) {
+      out->Set("ok", false);
+      out->Set("error", "user_denied");
+      return true;
+    }
+    base::DictValue query;
+    if (!q.domain.empty()) {
+      query.Set("domain", q.domain);
+      if (!q.username.empty()) {
+        query.Set("username", q.username);
+      }
+    } else if (!q.id.empty()) {
+      query.Set("id", q.id);
+    } else {
+      query.Set("search", q.search);
+    }
+    base::DictValue params;
+    params.Set("query", std::move(query));
+    std::string error;
+    std::optional<base::DictValue> result =
+        vault_helper_.Call("getTotp", params, &error);
+    const std::string* code = result ? result->FindString("totp") : nullptr;
+    if (!code || code->empty()) {
+      out->Set("ok", false);
+      out->Set("error", result ? "totp_unavailable" : "vault_error");
+      return true;
+    }
+    out->Set("ok", true);
+    out->Set("totp", *code);
     return true;
   }
 

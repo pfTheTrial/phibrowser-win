@@ -68,6 +68,7 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   void OnPlaceholderModeChanged(int64_t window_id, bool entered) override;
   void OnContentFullscreenChanged(int64_t window_id, bool fullscreen) override;
   void OnExtensionsChanged(int64_t window_id) override;
+  void OnProfileCreated(const char* profile_id) override;
 
   // PhiControlDelegate (called on the control server's I/O thread):
   std::string HandleControlCommand(const std::string& type,
@@ -374,6 +375,15 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   std::map<std::string, TimedCredentialGrant> credential_timed_grants_;
   std::vector<std::string> credential_audit_;
   std::wstring credential_grants_path_;
+  // profiles.create is ASYNC in Chromium (the basename exists only once the
+  // profile is initialised), but the wire call is synchronous. The UI thread
+  // arms this event before kicking creation and OnProfileCreated signals it;
+  // the I/O thread waits on it AFTER its SendMessage returns, so the UI
+  // thread stays free to actually finish the work. The SetEvent/Wait pair is
+  // the happens-before for `created_profile_id_`.
+  HANDLE profile_create_done_ = nullptr;
+  std::string created_profile_id_;
+  volatile bool profile_create_pending_ = false;
   // The bookmark bar's two visibility switches (the Mac View menu's pair).
   bool always_show_bookmark_bar_ = false;
   bool bookmark_bar_on_new_tab_ = false;
