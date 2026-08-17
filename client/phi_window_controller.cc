@@ -127,6 +127,8 @@ constexpr UINT_PTR kHoverCardTimer = 0x516;
 constexpr int kDragSlideMs = 200;
 constexpr UINT_PTR kDragSlideTimer = 0x518;
 constexpr UINT_PTR kFloatingTickTimer = 0x522;
+// Reverts the copy-link checkmark after its second (triggeredRevertDelay).
+constexpr UINT_PTR kCopyLinkRevertTimer = 0x523;
 
 // Tab groups: the Mac's 32pt TabGroupHeaderView; the group cell sits on an
 // 18% tint of the group color (~46/255).
@@ -654,6 +656,14 @@ PhiWindowController::Layout PhiWindowController::ComputeLayout() {
       place_spaces(0, sidebar, tb + Scaled(kSpacesStripTop));
       out.url_field = {inset, tb + Scaled(kAddressBarTop), sidebar - inset,
                        tb + Scaled(kAddressBarTop + kAddressBarHeight)};
+      // SideAddressBar's trailing stack INSIDE the capsule: the copy-link
+      // button then the extensions-menu button, 24pt each, spacing 2,
+      // trailing inset 2 (rightStackView metrics).
+      const int fmid = (out.url_field.top + out.url_field.bottom) / 2;
+      int fr = out.url_field.right - Scaled(2);
+      out.extensions = {fr - btn, fmid - btn / 2, fr, fmid + btn / 2};
+      fr = out.extensions.left - Scaled(2);
+      out.copy_link = {fr - btn, fmid - btn / 2, fr, fmid + btn / 2};
     }
     out.content = {hide_sidebar ? m : sidebar, tb + Scaled(kContentTopGap),
                    w - m, h - m};
@@ -691,8 +701,13 @@ PhiWindowController::Layout PhiWindowController::ComputeLayout() {
   out.downloads = {bx, bar_top, bx + btn, bar_top + bar_h};
   bx += btn + Scaled(4);
   out.memory = {bx, bar_top, bx + btn, bar_top + bar_h};
-  bx += btn + Scaled(4);
-  out.extensions = {bx, bar_top, bx + btn, bar_top + bar_h};
+  if (layout_mode_ == PhiLayoutMode::kBalanced) {
+    // Balanced keeps the puzzle in the bottom bar (its address bar lives in
+    // the top bar); performance moved it inside the address capsule, where
+    // the Mac SideAddressBar keeps its extension-menu button.
+    bx += btn + Scaled(4);
+    out.extensions = {bx, bar_top, bx + btn, bar_top + bar_h};
+  }
   int br = sidebar - inset;
   const int pill_top = bar_top + (bar_h - Scaled(kPillHeight)) / 2;
   // The Chat capsule fills the whole 24pt row (ChatButton contentHeight).
@@ -975,8 +990,13 @@ void PhiWindowController::PositionUrlField(const Layout& layout) {
   const int text_height = Scaled(20);
   const RECT& box = layout.url_field;
   // SideAddressBar: text starts 12 in from the pill's leading edge, 8 clear
-  // at the trailing end.
-  const int width = box.right - box.left - Scaled(12) - Scaled(8);
+  // before the in-field trailing stack (or the bare trailing edge without
+  // one) — the EDIT must not extend under the buttons or it eats their
+  // clicks.
+  const int right_stop = layout.copy_link.right > layout.copy_link.left
+                             ? layout.copy_link.left
+                             : box.right;
+  const int width = right_stop - Scaled(8) - (box.left + Scaled(12));
   ::MoveWindow(url_field_, box.left + Scaled(12),
                box.top + (box.bottom - box.top - text_height) / 2,
                width > 0 ? width : 1, text_height, TRUE);
@@ -1438,6 +1458,20 @@ LRESULT CALLBACK PhiWindowController::UrlFieldProc(HWND hwnd,
       // The user left the field: the dropdown has nothing to complete.
       if (self) {
         self->CloseOmniboxPopup(/*stop_query=*/true);
+      }
+      break;
+    case WM_MOUSEMOVE:
+      // The capsule's hover brighten while the cursor rides the EDIT (the
+      // child swallows the shell's mouse moves over the text area).
+      if (self && !self->url_field_hover_) {
+        self->SetUrlFieldHover(true);
+        TRACKMOUSEEVENT track = {sizeof(track), TME_LEAVE, hwnd, 0};
+        ::TrackMouseEvent(&track);
+      }
+      break;
+    case WM_MOUSELEAVE:
+      if (self) {
+        self->SetUrlFieldHover(false);
       }
       break;
     case WM_SETFOCUS: {
@@ -2611,11 +2645,11 @@ void PhiWindowController::OnChromeMouseMove(POINT client_pt) {
   {
     // The nav buttons' hover washes (back/forward/reload/search).
     const Layout layout = ComputeLayout();
-    const std::array<RECT, 9> nav = {layout.back, layout.forward,
-                                     layout.reload, layout.search_tabs,
-                                     layout.downloads, layout.memory,
-                                     layout.feedback, layout.chat,
-                                     layout.extensions};
+    const std::array<RECT, 10> nav = {layout.back, layout.forward,
+                                      layout.reload, layout.search_tabs,
+                                      layout.downloads, layout.memory,
+                                      layout.feedback, layout.chat,
+                                      layout.extensions, layout.copy_link};
     for (size_t i = 0; i < nav.size() && kind == HoverKind::kNone; ++i) {
       if (::PtInRect(&nav[i], client_pt)) {
         kind = HoverKind::kNav;
@@ -2648,6 +2682,18 @@ void PhiWindowController::OnChromeMouseMove(POINT client_pt) {
       index = static_cast<int>(i);
     }
   }
+  if (kind == HoverKind::kNone) {
+    const RECT new_tab = ComputeLayout().new_tab_row;
+    if (::PtInRect(&new_tab, client_pt)) {
+      kind = HoverKind::kNewTabRow;
+      index = 0;
+    }
+  }
+  {
+    // The address capsule's rim (the EDIT subclass covers the text area).
+    const RECT field = ComputeLayout().url_field;
+    SetUrlFieldHover(::PtInRect(&field, client_pt) != FALSE);
+  }
   for (size_t i = 0; i < tabs_.size() && kind == HoverKind::kNone; ++i) {
     if (::PtInRect(&tabs_[i].bounds, client_pt)) {
       kind = HoverKind::kTab;
@@ -2662,6 +2708,30 @@ void PhiWindowController::OnChromeMouseMove(POINT client_pt) {
     if (shell_hwnd_) {
       ::InvalidateRect(shell_hwnd_, nullptr, FALSE);
     }
+  }
+}
+
+void PhiWindowController::SetUrlFieldHover(bool hovered) {
+  if (!hovered) {
+    // A leave from one side (EDIT vs shell rim) can land after the enter on
+    // the other; trust the cursor, not the message order.
+    POINT pt = {};
+    if (::GetCursorPos(&pt) && shell_hwnd_ &&
+        ::ScreenToClient(shell_hwnd_, &pt)) {
+      const RECT field = ComputeLayout().url_field;
+      hovered = ::PtInRect(&field, pt) != FALSE;
+    }
+  }
+  if (url_field_hover_ == hovered) {
+    return;
+  }
+  url_field_hover_ = hovered;
+  if (shell_hwnd_) {
+    ::InvalidateRect(shell_hwnd_, nullptr, FALSE);
+  }
+  if (url_field_) {
+    // The EDIT repaints through WM_CTLCOLOREDIT to pick up the new wash.
+    ::InvalidateRect(url_field_, nullptr, TRUE);
   }
 }
 
@@ -3223,6 +3293,11 @@ void PhiWindowController::RebuildNavState() {
   }
   if (const std::string* u = st->FindString("url")) {
     nav_url_ = base::UTF8ToWide(*u);
+  }
+  // The NTP shows the PLACEHOLDER, not its chrome:// url (the Mac's
+  // updateDisplayedURL isNTP blank).
+  if (nav_url_.rfind(L"chrome://newtab", 0) == 0) {
+    nav_url_.clear();
   }
   can_go_back_ = st->FindBool("canGoBack").value_or(false);
   can_go_forward_ = st->FindBool("canGoForward").value_or(false);
@@ -4115,6 +4190,30 @@ void PhiWindowController::OnChromeClick(int x, int y) {
                                    framework_,
                                    active_browser_ ? active_browser_
                                                    : window_id_);
+    }
+    return;
+  }
+  if (::PtInRect(&layout.copy_link, pt)) {
+    // The in-field copy-link button: current URL to the clipboard, glyph
+    // swaps to a checkmark for a second (the Mac copyURLButton).
+    if (!nav_url_.empty() && ::OpenClipboard(shell_hwnd_)) {
+      ::EmptyClipboard();
+      const size_t bytes = (nav_url_.size() + 1) * sizeof(wchar_t);
+      if (HGLOBAL mem = ::GlobalAlloc(GMEM_MOVEABLE, bytes)) {
+        if (wchar_t* dest = static_cast<wchar_t*>(::GlobalLock(mem))) {
+          std::copy_n(nav_url_.c_str(), nav_url_.size() + 1, dest);
+          ::GlobalUnlock(mem);
+          if (!::SetClipboardData(CF_UNICODETEXT, mem)) {
+            ::GlobalFree(mem);
+          }
+        } else {
+          ::GlobalFree(mem);
+        }
+      }
+      ::CloseClipboard();
+      copy_link_flash_ = true;
+      ::SetTimer(shell_hwnd_, kCopyLinkRevertTimer, 1000, nullptr);
+      ::InvalidateRect(shell_hwnd_, nullptr, FALSE);
     }
     return;
   }
@@ -5633,7 +5732,8 @@ void PhiWindowController::PaintChrome(HDC dc,
       const bool hot = hover_kind_ == HoverKind::kNav &&
                        hover_index_ == static_cast<int>(i);
       if (hot && button.enabled) {
-        FillRounded(dc, button.rect, palette.hover_strong, Scaled(6));
+        // The Mac header buttons: cornerRadius 4 on the plain hover wash.
+        FillRounded(dc, button.rect, palette.hover, Scaled(4));
       }
       DrawGlyph(dc, button.rect, button.glyph,
                 button.enabled ? kLabel : kLabelDim);
@@ -5648,7 +5748,11 @@ void PhiWindowController::PaintChrome(HDC dc,
   // Mac -- so only the EDIT's text shows there. The capture path (no children
   // rendered) draws the text itself so a screenshot still shows the address.
   if (layout.mode == PhiLayoutMode::kPerformance) {
-    FillRounded(dc, layout.url_field, kFieldBg, Scaled(kCornerRadius));
+    // Resting 4% wash, brightening to the emphasized 8% under the cursor
+    // (SideAddressBar's hoveredColor).
+    FillRounded(dc, layout.url_field,
+                url_field_hover_ ? palette.hover_strong : kFieldBg,
+                Scaled(kCornerRadius));
   }
   if (include_child_controls) {
     std::wstring shown = nav_url_;
@@ -5663,10 +5767,29 @@ void PhiWindowController::PaintChrome(HDC dc,
     ::SetTextColor(dc, shown.empty() ? kLabelDim : kLabel);
     RECT url_rc = layout.url_field;
     url_rc.left += Scaled(12);  // SideAddressBar.textFieldLeadingInset
-    url_rc.right -= Scaled(8);
+    // Stop before the in-field trailing stack when it exists.
+    url_rc.right = (layout.copy_link.right > layout.copy_link.left
+                        ? layout.copy_link.left
+                        : url_rc.right) -
+                   Scaled(8);
     ::DrawTextW(dc, shown.empty() ? L"Search or Enter URL" : shown.c_str(),
                 -1, &url_rc,
                 DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_PATH_ELLIPSIS);
+  }
+  // The field's in-field copy-link button (SideAddressBar's rightStack lead):
+  // a 12pt link glyph on a radius-4 hover wash; a checkmark for the second
+  // after a copy, the Mac's triggered swap.
+  if (layout.copy_link.right > layout.copy_link.left) {
+    HGDIOBJ previous_link_font =
+        chip_icon_font_ ? ::SelectObject(dc, chip_icon_font_) : nullptr;
+    if (hover_kind_ == HoverKind::kNav && hover_index_ == 9) {
+      FillRounded(dc, layout.copy_link, palette.hover, Scaled(4));
+    }
+    DrawGlyph(dc, layout.copy_link, copy_link_flash_ ? L"" : L"",
+              kLabel);
+    if (previous_link_font) {
+      ::SelectObject(dc, previous_link_font);
+    }
   }
 
   // Space pips: 24pt, icon only. The selected one sits on a selected-pill
@@ -5795,8 +5918,12 @@ void PhiWindowController::PaintChrome(HDC dc,
     }
     if (layout.extensions.right > layout.extensions.left) {
       // The extensions puzzle button (nav-hover ordinal 8 = bottom_hot(4)).
+      // In-field (performance) it wears the header buttons' radius-4 wash;
+      // in the bottom bar (balanced) the bar buttons' radius 6.
       if (bottom_hot(4)) {
-        FillRounded(dc, layout.extensions, palette.hover, Scaled(6));
+        FillRounded(dc, layout.extensions, palette.hover,
+                    Scaled(layout.mode == PhiLayoutMode::kPerformance ? 4
+                                                                      : 6));
       }
       DrawGlyph(dc, layout.extensions, L"", kLabel);  // Puzzle.
     }
@@ -6052,6 +6179,7 @@ void PhiWindowController::PaintSidebarBand(HDC dc,
   const COLORREF kRowSelectedBg = palette.selected;
   const COLORREF kLabel = palette.label;
   const COLORREF kLabelDim = palette.label_dim;
+  const COLORREF kBorder = palette.border;
   const COLORREF kActivePillBorder =
       palette.dark ? BlendOver(RGB(0xFF, 0xFF, 0xFF), kRowSelectedBg, 51)
                    : kRowSelectedBg;
@@ -6292,9 +6420,16 @@ void PhiWindowController::PaintSidebarBand(HDC dc,
   }
 
   // "New Tab": the row heading the tab list -- a 16pt "+" 6pt in, an 8pt
-  // gap, the title in textTertiary (NewTabButtonCellView).
+  // gap, the title in textTertiary (NewTabButtonCellView). Hover raises the
+  // Mac cell's radius-8 wash on the 2pt-inset pill.
   if (layout.new_tab_row.right > layout.new_tab_row.left) {
     const RECT& row = layout.new_tab_row;
+    if (hover_kind_ == HoverKind::kNewTabRow) {
+      RECT pill = row;
+      pill.top += Scaled(kRowPad);
+      pill.bottom -= Scaled(kRowPad);
+      FillRounded(dc, pill, palette.hover, Scaled(kCornerRadius));
+    }
     const int mid = (row.top + row.bottom) / 2;
     const RECT icon = {row.left + Scaled(6), mid - Scaled(8),
                        row.left + Scaled(6) + Scaled(16), mid + Scaled(8)};
@@ -6432,11 +6567,12 @@ void PhiWindowController::PaintSidebarBand(HDC dc,
       StrokeRounded(dc, pill, palette.hover_strong, palette.border,
                     Scaled(kCornerRadius));
     } else if (row.active) {
-      FillRounded(dc, pill, kRowSelectedBg, Scaled(kCornerRadius));
-      if (palette.dark) {
-        StrokeRounded(dc, pill, kRowSelectedBg, kActivePillBorder,
-                      Scaled(kCornerRadius));
-      }
+      // Dark: the Mac's white-20% active border. Light: a hairline stands
+      // in for the Mac's drop shadow — the same trade the Space chip makes,
+      // or the white pill disappears on a white ground.
+      StrokeRounded(dc, pill, kRowSelectedBg,
+                    palette.dark ? kActivePillBorder : kBorder,
+                    Scaled(kCornerRadius));
     } else if (row_hovered) {
       FillRounded(dc, pill, palette.hover, Scaled(kCornerRadius));
     }
@@ -6491,10 +6627,13 @@ void PhiWindowController::PaintSidebarBand(HDC dc,
       ::DrawTextW(dc, (pane_b ? r.b_title : r.title).c_str(), -1, &title_rc,
                   DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     };
+    // The close box shows on HOVER only (SideTabView) \u2014 the active row
+    // included; the title reclaims its slot the rest of the time.
+    const bool show_close = row_hovered && !is_dragged;
     if (row.b_index >= 0) {
       const int div_x = (pill.left + pill.right) / 2;
       draw_pane(pill.left, div_x, row, /*pane_b=*/false);
-      draw_pane(div_x, row.active ? close_box.left : pill.right, row,
+      draw_pane(div_x, show_close ? close_box.left : pill.right, row,
                 /*pane_b=*/true);
       RECT divider = {div_x, pill.top + Scaled(6), div_x + 1,
                       pill.bottom - Scaled(6)};
@@ -6502,10 +6641,10 @@ void PhiWindowController::PaintSidebarBand(HDC dc,
       ::FillRect(dc, &divider, sep);
       ::DeleteObject(sep);
     } else {
-      draw_pane(pill.left, row.active ? close_box.left : pill.right, row,
+      draw_pane(pill.left, show_close ? close_box.left : pill.right, row,
                 /*pane_b=*/false);
     }
-    if ((row.active || row_hovered) && !is_dragged) {
+    if (show_close) {
       DrawGlyph(dc, close_box, L"\u00D7", kLabelDim);
     }
   }
@@ -6619,11 +6758,13 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
           self->host_) {
         // CurrentPalette, not the host's: incognito overrides to fixed-dark.
         const PhiPalette palette = self->CurrentPalette();
-        // In the sidebar the field rests on the 4% wash; in a top bar it sits
-        // bare on the bar's own ground.
+        // In the sidebar the field rests on the 4% wash (8% while hovered,
+        // tracking the capsule's brighten); in a top bar it sits bare on the
+        // bar's own ground.
         const COLORREF bg =
             self->layout_mode_ == PhiLayoutMode::kPerformance
-                ? palette.hover
+                ? (self->url_field_hover_ ? palette.hover_strong
+                                          : palette.hover)
                 : palette.window_bg;
         HDC edit_dc = reinterpret_cast<HDC>(wparam);
         ::SetTextColor(edit_dc, palette.label);
@@ -6937,6 +7078,12 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
     case WM_TIMER:
       if (self && wparam == kHoverCardTimer) {
         self->PromoteHoverCard();  // Kills its own timer.
+        return 0;
+      }
+      if (self && wparam == kCopyLinkRevertTimer) {
+        ::KillTimer(hwnd, kCopyLinkRevertTimer);
+        self->copy_link_flash_ = false;
+        ::InvalidateRect(hwnd, nullptr, FALSE);
         return 0;
       }
       if (self && wparam == kDragSlideTimer) {

@@ -123,17 +123,25 @@ class Popover {
     Refresh();
     const int w = Scaled(kPanelWidth);
     const int h = PanelHeight();
-    // Above the anchor when it is a bottom-bar button; clamped to the work
-    // area either way.
+    // Below the anchor when it sits in the owner's top half (the address
+    // capsule's in-field button — the Mac popover drops downward there);
+    // above it for the bottom bar. Clamped to the work area either way.
+    RECT owner_rect = {};
+    ::GetWindowRect(owner, &owner_rect);
+    const bool anchored_high =
+        anchor.top < (owner_rect.top + owner_rect.bottom) / 2;
     int x = anchor.left;
-    int y = anchor.top - h - Scaled(8);
+    int y = anchored_high ? anchor.bottom + Scaled(8)
+                          : anchor.top - h - Scaled(8);
     HMONITOR monitor = ::MonitorFromWindow(owner, MONITOR_DEFAULTTONEAREST);
     MONITORINFO info = {sizeof(info)};
     if (::GetMonitorInfoW(monitor, &info)) {
       x = std::max(static_cast<int>(info.rcWork.left),
                    std::min(x, static_cast<int>(info.rcWork.right) - w));
       if (y < info.rcWork.top) {
-        y = anchor.bottom + Scaled(8);  // Header buttons open DOWNWARD.
+        y = anchor.bottom + Scaled(8);
+      } else if (y + h > info.rcWork.bottom) {
+        y = anchor.top - h - Scaled(8);
       }
     }
     hwnd_ = ::CreateWindowExW(

@@ -457,7 +457,10 @@ class PhiWindowController {
     // it opens from the menu bar, as on Mac. All placeholders except through
     // the menu.
     RECT downloads{}, memory{}, feedback{}, chat{};
-    RECT extensions{};     // The puzzle button (bottom bar / header).
+    RECT extensions{};     // The puzzle button (in-field / bottom bar / header).
+    // SideAddressBar's in-field copy-link button (performance layout only) —
+    // the leading half of the field's trailing stack, the puzzle its other.
+    RECT copy_link{};
     RECT add_space{};      // The strip's trailing "+" chip.
     int chips_left = 0, chips_top = 0;
     int chips_limit = 0;  // Right edge chips may not cross.
@@ -700,7 +703,7 @@ class PhiWindowController {
   // kNav: the toolbar's back/forward/reload/search buttons — hover_index_
   // is 0..3 in that order.
   enum class HoverKind { kNone, kTab, kPin, kBookmark, kGroupHeader, kChip,
-                         kNav };
+                         kNav, kNewTabRow };
   HoverKind hover_kind_ = HoverKind::kNone;
   int hover_index_ = -1;
   void OnChromeMouseMove(POINT client_pt);
@@ -857,6 +860,15 @@ class PhiWindowController {
   bool can_go_back_ = false;
   bool can_go_forward_ = false;
   bool nav_loading_ = false;
+  // Copy-link acknowledgement: the glyph swaps to a checkmark for a second
+  // after a copy (the Mac's triggeredSystemName/triggeredRevertDelay).
+  bool copy_link_flash_ = false;
+  // The address capsule's hover brighten (SideAddressBar hoveredColor:
+  // resting 4% wash → emphasized 8%). Fed from BOTH sides — the shell's
+  // mouse moves for the capsule's rim, the EDIT subclass for the text area
+  // the child covers.
+  bool url_field_hover_ = false;
+  void SetUrlFieldHover(bool hovered);
 
   const int64_t window_id_;
   HWND browser_hwnd_;  // The VISIBLE Chromium window, reparented as our child.
