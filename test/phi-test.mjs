@@ -43,6 +43,7 @@ class Ws {
     this.sock = sock
     this.buf = Buffer.alloc(0)
     this.waiters = []
+    this.pendingFrames = []
     sock.on('data', (d) => {
       this.buf = Buffer.concat([this.buf, d])
       this.drain()
@@ -68,6 +69,7 @@ class Ws {
       this.buf = this.buf.subarray(off + len)
       const w = this.waiters.shift()
       if (w) w(payload)
+      else this.pendingFrames.push(payload)
     }
   }
   send(text) {
@@ -83,9 +85,19 @@ class Ws {
     this.sock.write(Buffer.concat([Buffer.from(head), mask, masked]))
   }
   next(timeoutMs = 10000) {
+    if (this.pendingFrames.length) {
+      return Promise.resolve(this.pendingFrames.shift())
+    }
     return new Promise((resolve, reject) => {
-      const t = setTimeout(() => reject(new Error('ws read timeout')), timeoutMs)
-      this.waiters.push((v) => { clearTimeout(t); resolve(v) })
+      const waiter = (v) => { clearTimeout(t); resolve(v) }
+      const t = setTimeout(() => {
+        // Drop OUR waiter — a timed-out reader left in the queue would eat
+        // the next frame to arrive (that is how a pushed event goes missing).
+        const i = this.waiters.indexOf(waiter)
+        if (i >= 0) this.waiters.splice(i, 1)
+        reject(new Error('ws read timeout'))
+      }, timeoutMs)
+      this.waiters.push(waiter)
     })
   }
   close() { this.sock.destroy() }
@@ -114,14 +126,43 @@ export async function openControl() {
   })
   const ws = new Ws(sock)
   let id = 0
+  const listeners = []
   return {
     async send(type, payload = {}) {
       const mine = ++id
       ws.send(JSON.stringify({ id: mine, type, payloadJson: JSON.stringify(payload) }))
-      const raw = await ws.next()
-      const env = JSON.parse(raw)
-      if (env.error) throw new Error(`${type}: ${env.error}`)
-      return env.responseJson ? JSON.parse(env.responseJson) : {}
+      // Pushed events (agentSpace.ownershipChanged and friends) interleave
+      // with replies, so read until OUR id comes back — the same id matching
+      // the real skill does.
+      for (;;) {
+        const env = JSON.parse(await ws.next())
+        if (env.event) {
+          let payload = {}
+          try { payload = JSON.parse(env.payloadJson || '{}') } catch {}
+          for (const cb of listeners) { try { cb(env.event, payload) } catch {} }
+          continue
+        }
+        if (env.id != null && env.id !== mine) continue
+        if (env.error) throw new Error(`${type}: ${env.error}`)
+        return env.responseJson ? JSON.parse(env.responseJson) : {}
+      }
+    },
+    /** Registers a pushed-event listener: cb(eventType, payload). */
+    onEvent(cb) { listeners.push(cb); return () => {
+      const i = listeners.indexOf(cb); if (i >= 0) listeners.splice(i, 1) } },
+    /** Drains frames for `ms`, dispatching any events that arrive. */
+    async pump(ms) {
+      const deadline = Date.now() + ms
+      while (Date.now() < deadline) {
+        let raw
+        try { raw = await ws.next(Math.max(1, deadline - Date.now())) } catch { return }
+        let env
+        try { env = JSON.parse(raw) } catch { continue }
+        if (!env.event) continue
+        let payload = {}
+        try { payload = JSON.parse(env.payloadJson || '{}') } catch {}
+        for (const cb of listeners) { try { cb(env.event, payload) } catch {} }
+      }
     },
     close: () => ws.close(),
   }
