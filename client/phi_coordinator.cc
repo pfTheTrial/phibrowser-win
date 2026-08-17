@@ -5142,6 +5142,11 @@ LRESULT CALLBACK PhiCoordinator::KeyboardHookProc(int code,
 
 void PhiCoordinator::OnExtensionsChanged(int64_t window_id) {
   PhiExtensionsPopover::RefreshOpen();
+  // The address capsule's pinned-extension icons follow the same change
+  // notification (a pin toggle, an install, an icon decode).
+  for (auto& [slot, controller] : windows_) {
+    controller->RefreshFieldExtensions();
+  }
 }
 
 void PhiCoordinator::OnContentFullscreenChanged(int64_t window_id,

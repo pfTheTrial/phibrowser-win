@@ -664,6 +664,22 @@ PhiWindowController::Layout PhiWindowController::ComputeLayout() {
       out.extensions = {fr - btn, fmid - btn / 2, fr, fmid + btn / 2};
       fr = out.extensions.left - Scaled(2);
       out.copy_link = {fr - btn, fmid - btn / 2, fr, fmid + btn / 2};
+      if (field_ext_count_ > 0) {
+        // Pinned-extension icons lead the stack — but only while the text
+        // keeps the Mac's 84pt minimum (minimumAddressTextWidth); below
+        // that they hide wholesale, as on Mac.
+        const int strip_w = field_ext_count_ * btn +
+                            (field_ext_count_ - 1) * Scaled(2);
+        const int text_left = out.url_field.left + Scaled(12);
+        const int remaining = out.copy_link.left - Scaled(2) - strip_w -
+                              Scaled(8) - text_left;
+        if (remaining >= Scaled(84)) {
+          out.field_ext_strip = {out.copy_link.left - Scaled(2) - strip_w,
+                                 fmid - btn / 2,
+                                 out.copy_link.left - Scaled(2),
+                                 fmid + btn / 2};
+        }
+      }
     }
     out.content = {hide_sidebar ? m : sidebar, tb + Scaled(kContentTopGap),
                    w - m, h - m};
@@ -710,9 +726,15 @@ PhiWindowController::Layout PhiWindowController::ComputeLayout() {
   }
   int br = sidebar - inset;
   const int pill_top = bar_top + (bar_h - Scaled(kPillHeight)) / 2;
-  // The Chat capsule fills the whole 24pt row (ChatButton contentHeight).
-  out.chat = {br - Scaled(kChatWidth), bar_top, br, bar_top + bar_h};
-  br = out.chat.left - Scaled(4);
+  if (layout_mode_ != PhiLayoutMode::kBalanced) {
+    // The Chat capsule fills the whole 24pt row (ChatButton contentHeight).
+    // Balanced holds its top-bar chat rect instead: the Mac hides the
+    // bottom-bar chat whenever navigation rides at the top
+    // (updateChatButtonVisibility's navigationAtTop) — the capsule lives
+    // in the header there, and this block must not overwrite it.
+    out.chat = {br - Scaled(kChatWidth), bar_top, br, bar_top + bar_h};
+    br = out.chat.left - Scaled(4);
+  }
   // The narrow sidebar takes ViewThatFits' icon-only feedback variant.
   out.feedback = {br - Scaled(kFeedbackIconWidth), pill_top, br,
                   pill_top + Scaled(kPillHeight)};
@@ -993,9 +1015,12 @@ void PhiWindowController::PositionUrlField(const Layout& layout) {
   // before the in-field trailing stack (or the bare trailing edge without
   // one) — the EDIT must not extend under the buttons or it eats their
   // clicks.
-  const int right_stop = layout.copy_link.right > layout.copy_link.left
-                             ? layout.copy_link.left
-                             : box.right;
+  const int right_stop =
+      layout.field_ext_strip.right > layout.field_ext_strip.left
+          ? layout.field_ext_strip.left
+          : (layout.copy_link.right > layout.copy_link.left
+                 ? layout.copy_link.left
+                 : box.right);
   const int width = right_stop - Scaled(8) - (box.left + Scaled(12));
   ::MoveWindow(url_field_, box.left + Scaled(12),
                box.top + (box.bottom - box.top - text_height) / 2,
@@ -2691,8 +2716,16 @@ void PhiWindowController::OnChromeMouseMove(POINT client_pt) {
   }
   {
     // The address capsule's rim (the EDIT subclass covers the text area).
-    const RECT field = ComputeLayout().url_field;
-    SetUrlFieldHover(::PtInRect(&field, client_pt) != FALSE);
+    const Layout layout = ComputeLayout();
+    SetUrlFieldHover(::PtInRect(&layout.url_field, client_pt) != FALSE);
+    for (size_t i = 0;
+         i < field_extensions_.size() && kind == HoverKind::kNone; ++i) {
+      const RECT slot = FieldExtRect(layout, i);
+      if (::PtInRect(&slot, client_pt)) {
+        kind = HoverKind::kFieldExt;
+        index = static_cast<int>(i);
+      }
+    }
   }
   for (size_t i = 0; i < tabs_.size() && kind == HoverKind::kNone; ++i) {
     if (::PtInRect(&tabs_[i].bounds, client_pt)) {
@@ -3305,8 +3338,75 @@ void PhiWindowController::RebuildNavState() {
   SyncUrlField(/*force=*/false);
 }
 
+void PhiWindowController::RefreshFieldExtensions() {
+  std::vector<FieldExtension> next;
+  if (framework_) {
+    const int64_t browser = active_browser_ ? active_browser_ : window_id_;
+    std::optional<base::Value> parsed = base::JSONReader::Read(
+        framework_->ListExtensionsJson(browser), base::JSON_PARSE_RFC);
+    if (parsed && parsed->is_list()) {
+      // The pinned set in toolbar order (pinnedIndex), the Mac's presented
+      // pinned order.
+      std::vector<std::pair<int, std::string>> pinned;
+      for (const base::Value& value : parsed->GetList()) {
+        const base::DictValue* dict = value.GetIfDict();
+        if (!dict || !dict->FindBool("pinned").value_or(false)) {
+          continue;
+        }
+        if (const std::string* id = dict->FindString("id")) {
+          pinned.emplace_back(dict->FindInt("pinnedIndex").value_or(0), *id);
+        }
+      }
+      std::sort(pinned.begin(), pinned.end());
+      for (const auto& [index, id] : pinned) {
+        FieldExtension ext;
+        ext.id = id;
+        int w = 0;
+        int h = 0;
+        const unsigned char* bgra =
+            framework_->ExtensionIconBgra(id.c_str(), &w, &h);
+        if (bgra && w > 0 && h > 0) {
+          const auto source = UNSAFE_BUFFERS(base::span<const unsigned char>(
+              bgra, static_cast<size_t>(w) * h * 4));
+          ext.icon.assign(source.begin(), source.end());
+          ext.icon_w = w;
+          ext.icon_h = h;
+        }
+        next.push_back(std::move(ext));
+      }
+    }
+  }
+  // Repaint only on a REAL change: this runs from paint-triggered rebuilds,
+  // where an unconditional invalidate would loop.
+  const bool changed =
+      next.size() != field_extensions_.size() ||
+      !std::equal(next.begin(), next.end(), field_extensions_.begin(),
+                  [](const FieldExtension& a, const FieldExtension& b) {
+                    return a.id == b.id && a.icon_w == b.icon_w &&
+                           a.icon_h == b.icon_h;
+                  });
+  field_extensions_ = std::move(next);
+  field_ext_count_ = static_cast<int>(field_extensions_.size());
+  if (changed && shell_hwnd_) {
+    PositionUrlField(ComputeLayout());  // The EDIT yields the strip's width.
+    ::InvalidateRect(shell_hwnd_, nullptr, FALSE);
+  }
+}
+
+RECT PhiWindowController::FieldExtRect(const Layout& layout, size_t i) const {
+  if (layout.field_ext_strip.right <= layout.field_ext_strip.left) {
+    return RECT{};
+  }
+  const int btn = Scaled(kNavButton);
+  const LONG left = layout.field_ext_strip.left +
+                    static_cast<LONG>(i) * (btn + Scaled(2));
+  return {left, layout.field_ext_strip.top, left + btn,
+          layout.field_ext_strip.bottom};
+}
+
 void PhiWindowController::RebuildChips() {
   chips_.clear();
+  chips_overflow_ = false;
   const Layout layout = ComputeLayout();
   add_space_button_ = layout.add_space;
   if (!host_ || incognito_) {
@@ -3321,7 +3421,23 @@ void PhiWindowController::RebuildChips() {
       continue;
     }
     if (x + Scaled(kSpaceChip) > layout.chips_limit) {
-      break;  // Row is full; the Mac scrolls here — future work.
+      // Row is full: the trailing slot becomes the Mac's "…" switcher.
+      // The ACTIVE Space must stay visible (the Mac scrolls it into view):
+      // evict the last shown pip for it when it fell past the break.
+      chips_overflow_ = true;
+      if (space.id == active_space_ && !chips_.empty() &&
+          !layout.horizontal_tabs) {
+        SpaceChip active_chip;
+        active_chip.id = space.id;
+        active_chip.label = !space.name.empty()
+                                ? base::UTF8ToWide(space.name)
+                                : L"Space " + base::UTF8ToWide(space.id);
+        active_chip.icon = base::UTF8ToWide(space.icon_text);
+        active_chip.open = HasSpace(space.id);
+        active_chip.bounds = chips_.back().bounds;
+        chips_.back() = std::move(active_chip);
+      }
+      continue;  // Keep scanning so a later active Space can still evict.
     }
     SpaceChip chip;
     chip.id = space.id;
@@ -3341,6 +3457,7 @@ void PhiWindowController::RebuildChips() {
   if (!agent_ && !layout.horizontal_tabs) {
     for (const PhiAgentPipView& pip : host_->AgentSpaces()) {
       if (x + Scaled(kSpaceChip) > layout.chips_limit) {
+        chips_overflow_ = true;
         break;
       }
       SpaceChip chip;
@@ -3653,6 +3770,7 @@ void PhiWindowController::RebuildShortcuts() {
 
 void PhiWindowController::RebuildTabs() {
   RebuildNavState();
+  RefreshFieldExtensions();
   RebuildChips();
   RebuildShortcuts();
   tabs_.clear();
@@ -4193,6 +4311,23 @@ void PhiWindowController::OnChromeClick(int x, int y) {
     }
     return;
   }
+  for (size_t i = 0; i < field_extensions_.size(); ++i) {
+    const RECT slot = FieldExtRect(layout, i);
+    if (slot.right > slot.left && ::PtInRect(&slot, pt)) {
+      // A pinned extension's in-field icon: run its action anchored at the
+      // icon (a popup-bearing action opens Chromium's popup there).
+      if (framework_) {
+        RECT anchor = slot;
+        ::MapWindowPoints(shell_hwnd_, nullptr,
+                          reinterpret_cast<POINT*>(&anchor), 2);
+        framework_->TriggerExtensionAction(
+            active_browser_ ? active_browser_ : window_id_,
+            field_extensions_[i].id.c_str(), anchor.left, anchor.top,
+            anchor.right - anchor.left, anchor.bottom - anchor.top);
+      }
+      return;
+    }
+  }
   if (::PtInRect(&layout.copy_link, pt)) {
     // The in-field copy-link button: current URL to the clipboard, glyph
     // swaps to a checkmark for a second (the Mac copyURLButton).
@@ -4351,7 +4486,52 @@ void PhiWindowController::OnChromeClick(int x, int y) {
     return;
   }
   if (host_ && ::PtInRect(&layout.add_space, pt)) {
-    host_->RequestCreateSpace(window_id_, /*new_profile=*/false);
+    if (!chips_overflow_) {
+      host_->RequestCreateSpace(window_id_, /*new_profile=*/false);
+      RefreshTabs();
+      return;
+    }
+    // Overflow: the "…" opens the full switcher — every Space plus a
+    // "New Space" row (the Mac moreButton's menu).
+    std::vector<std::pair<std::string, std::wstring>> spaces;
+    for (const PhiSpaceView& space : host_->Spaces()) {
+      std::wstring title = base::UTF8ToWide(
+          !space.name.empty() ? space.name : "Space " + space.id);
+      const std::wstring glyph = base::UTF8ToWide(space.icon_text);
+      if (!glyph.empty() && !PhiIsPrivateGlyph(glyph)) {
+        title = glyph + L"  " + title;
+      }
+      spaces.emplace_back(space.id, std::move(title));
+    }
+    HMENU menu = ::CreatePopupMenu();
+    if (!menu) {
+      return;
+    }
+    for (size_t i = 0; i < spaces.size(); ++i) {
+      ::AppendMenuW(menu,
+                    MF_STRING |
+                        (spaces[i].first == active_space_ ? MF_CHECKED : 0),
+                    static_cast<UINT>(i) + 1, spaces[i].second.c_str());
+    }
+    const UINT kNewSpace = static_cast<UINT>(spaces.size()) + 1;
+    ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    ::AppendMenuW(menu, MF_STRING, kNewSpace, L"New Space");
+    POINT screen = {layout.add_space.left, layout.add_space.bottom};
+    ::ClientToScreen(shell_hwnd_, &screen);
+    const UINT chosen = static_cast<UINT>(::TrackPopupMenu(
+        menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, screen.x,
+        screen.y, 0, shell_hwnd_, nullptr));
+    ::DestroyMenu(menu);
+    if (chosen == kNewSpace) {
+      host_->RequestCreateSpace(window_id_, /*new_profile=*/false);
+    } else if (chosen >= 1 && chosen <= spaces.size()) {
+      const std::string space_id = spaces[chosen - 1].first;
+      if (HasSpace(space_id)) {
+        ShowSpace(space_id);
+      } else {
+        host_->RequestSwitchSpace(window_id_, space_id);
+      }
+    }
     RefreshTabs();
     return;
   }
@@ -5753,6 +5933,11 @@ void PhiWindowController::PaintChrome(HDC dc,
     FillRounded(dc, layout.url_field,
                 url_field_hover_ ? palette.hover_strong : kFieldBg,
                 Scaled(kCornerRadius));
+  } else if (url_field_hover_ &&
+             layout.url_field.right > layout.url_field.left) {
+    // The top-bar field rests BARE and takes the wash only under the
+    // cursor (the Mac top bar's transparent-until-hovered field).
+    FillRounded(dc, layout.url_field, palette.hover, Scaled(kCornerRadius));
   }
   if (include_child_controls) {
     std::wstring shown = nav_url_;
@@ -5768,13 +5953,50 @@ void PhiWindowController::PaintChrome(HDC dc,
     RECT url_rc = layout.url_field;
     url_rc.left += Scaled(12);  // SideAddressBar.textFieldLeadingInset
     // Stop before the in-field trailing stack when it exists.
-    url_rc.right = (layout.copy_link.right > layout.copy_link.left
-                        ? layout.copy_link.left
-                        : url_rc.right) -
-                   Scaled(8);
+    url_rc.right =
+        (layout.field_ext_strip.right > layout.field_ext_strip.left
+             ? layout.field_ext_strip.left
+             : (layout.copy_link.right > layout.copy_link.left
+                    ? layout.copy_link.left
+                    : url_rc.right)) -
+        Scaled(8);
     ::DrawTextW(dc, shown.empty() ? L"Search or Enter URL" : shown.c_str(),
                 -1, &url_rc,
                 DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_PATH_ELLIPSIS);
+  }
+  // The pinned-extension icons leading the field's trailing stack: 16pt
+  // icons in 24pt slots on the radius-4 hover wash (SideAddressBar's
+  // extensionIconsStackView).
+  if (layout.field_ext_strip.right > layout.field_ext_strip.left) {
+    const COLORREF field_fill =
+        url_field_hover_ ? palette.hover_strong : kFieldBg;
+    for (size_t i = 0; i < field_extensions_.size(); ++i) {
+      const RECT slot = FieldExtRect(layout, i);
+      if (slot.right <= slot.left) {
+        continue;
+      }
+      if (hover_kind_ == HoverKind::kFieldExt &&
+          hover_index_ == static_cast<int>(i)) {
+        FillRounded(dc, slot, palette.hover, Scaled(4));
+      }
+      const FieldExtension& ext = field_extensions_[i];
+      const int mid_x = (slot.left + slot.right) / 2;
+      const int mid_y = (slot.top + slot.bottom) / 2;
+      RECT icon = {mid_x - Scaled(8), mid_y - Scaled(8), mid_x + Scaled(8),
+                   mid_y + Scaled(8)};
+      if (!ext.icon.empty()) {
+        DrawFavicon(dc, icon, ext.icon.data(), ext.icon_w, ext.icon_h,
+                    field_fill);
+      } else {
+        // Icon not decoded yet: the puzzle stands in.
+        HGDIOBJ previous_ext_font =
+            chip_icon_font_ ? ::SelectObject(dc, chip_icon_font_) : nullptr;
+        DrawGlyph(dc, slot, L"", kLabelDim);
+        if (previous_ext_font) {
+          ::SelectObject(dc, previous_ext_font);
+        }
+      }
+    }
   }
   // The field's in-field copy-link button (SideAddressBar's rightStack lead):
   // a 12pt link glyph on a radius-4 hover wash; a checkmark for the second
@@ -5872,7 +6094,10 @@ void PhiWindowController::PaintChrome(HDC dc,
     }
   }
   if (!incognito_) {
-    DrawGlyph(dc, layout.add_space, L"+", kLabelDim);
+    // The Mac trailing slot: "+" creates; on overflow it becomes the "…"
+    // switcher (moreButton) since not every pip is visible.
+    DrawGlyph(dc, layout.add_space, chips_overflow_ ? L"…" : L"+",
+              kLabelDim);
   }
 
   PaintBandOrSwipe(dc, layout, palette);
@@ -6760,12 +6985,13 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
         const PhiPalette palette = self->CurrentPalette();
         // In the sidebar the field rests on the 4% wash (8% while hovered,
         // tracking the capsule's brighten); in a top bar it sits bare on the
-        // bar's own ground.
+        // bar's own ground, washing only under the cursor.
         const COLORREF bg =
             self->layout_mode_ == PhiLayoutMode::kPerformance
                 ? (self->url_field_hover_ ? palette.hover_strong
                                           : palette.hover)
-                : palette.window_bg;
+                : (self->url_field_hover_ ? palette.hover
+                                          : palette.window_bg);
         HDC edit_dc = reinterpret_cast<HDC>(wparam);
         ::SetTextColor(edit_dc, palette.label);
         ::SetBkColor(edit_dc, bg);

@@ -461,6 +461,10 @@ class PhiWindowController {
     // SideAddressBar's in-field copy-link button (performance layout only) —
     // the leading half of the field's trailing stack, the puzzle its other.
     RECT copy_link{};
+    // The pinned-extension icon strip leading the copy-link button inside
+    // the capsule. Empty when nothing is pinned OR the icons would squeeze
+    // the text below the Mac's 84pt minimum (they hide, as on Mac).
+    RECT field_ext_strip{};
     RECT add_space{};      // The strip's trailing "+" chip.
     int chips_left = 0, chips_top = 0;
     int chips_limit = 0;  // Right edge chips may not cross.
@@ -703,7 +707,7 @@ class PhiWindowController {
   // kNav: the toolbar's back/forward/reload/search buttons — hover_index_
   // is 0..3 in that order.
   enum class HoverKind { kNone, kTab, kPin, kBookmark, kGroupHeader, kChip,
-                         kNav, kNewTabRow };
+                         kNav, kNewTabRow, kFieldExt };
   HoverKind hover_kind_ = HoverKind::kNone;
   int hover_index_ = -1;
   void OnChromeMouseMove(POINT client_pt);
@@ -869,6 +873,28 @@ class PhiWindowController {
   // the child covers.
   bool url_field_hover_ = false;
   void SetUrlFieldHover(bool hovered);
+  // Pinned-extension icons inside the address capsule (SideAddressBar's
+  // right-stack lead): the pinned set with resolved 16px icons, refreshed
+  // with the tab list and on OnExtensionsChanged.
+  struct FieldExtension {
+    std::string id;
+    std::vector<unsigned char> icon;  // Premultiplied BGRA; may be empty.
+    int icon_w = 0;
+    int icon_h = 0;
+  };
+  std::vector<FieldExtension> field_extensions_;
+  // The count ComputeLayout carves capsule slots for (it cannot call the
+  // framework itself).
+  int field_ext_count_ = 0;
+
+ public:
+  // Re-reads the pinned set + icons (delegate's OnExtensionsChanged, and
+  // every tab-list rebuild).
+  void RefreshFieldExtensions();
+
+ private:
+  // Slot `i` of the in-field icon strip, or an empty rect without one.
+  RECT FieldExtRect(const Layout& layout, size_t i) const;
 
   const int64_t window_id_;
   HWND browser_hwnd_;  // The VISIBLE Chromium window, reparented as our child.
@@ -940,6 +966,9 @@ class PhiWindowController {
   };
   std::vector<SpaceChip> chips_;
   RECT add_space_button_{};
+  // True when not every Space fit the strip: the trailing "+" becomes the
+  // Mac's "…" (moreButton) and opens the full switcher menu instead.
+  bool chips_overflow_ = false;
   PhiLayoutMode layout_mode_ = PhiLayoutMode::kPerformance;
 
   // The Mac floating sidebar (WebContentContainerViewController+
