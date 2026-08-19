@@ -19,6 +19,8 @@
 #include "chrome/app/chrome_command_ids.h"
 #include "phibrowser-win/client/phi_icons.h"
 #include "phibrowser-win/client/phi_prompt.h"
+#include "phibrowser-win/client/phi_updater.h"
+#include "phibrowser-win/client/phi_version.h"
 #include "phibrowser-win/client/phi_search_tabs_panel.h"
 #include "phibrowser-win/client/phi_toast.h"
 #include "phibrowser-win/client/phi_theme.h"
@@ -231,7 +233,9 @@ void PhiMenuBar::BuildStatic() {
   Append(phi_, kCmdAbout, L"About Phi");
   Separator(phi_);
   Append(phi_, kCmdPreferences, L"Preferences...\tCtrl+,");
-  Append(phi_, kCmdCheckUpdate, L"Check for Update...", false);
+  // Live only when WinSparkle.dll is deployed beside the client.
+  Append(phi_, kCmdCheckUpdate, L"Check for Update...",
+         PhiUpdater::Available());
   Separator(phi_);
   Append(phi_, kCmdDeleteBrowsingData, L"Delete Browsing Data...", false);
   Append(phi_, kCmdImportBrowser, L"Import from Another Browser...");
@@ -767,9 +771,17 @@ bool PhiMenuBar::OnCommand(UINT id) {
   switch (id) {
     case kCmdAbout:
       ::MessageBoxW(c->shell_hwnd_,
-                    L"Phi Browser for Windows\n"
+                    L"Phi Browser for Windows " PHI_WIN_VERSION_WIDE L"\n"
                     L"The Phi client shell over the Phi framework.",
                     L"About Phi", MB_OK | MB_ICONINFORMATION);
+      return true;
+    case kCmdCheckUpdate:
+      if (!PhiUpdater::CheckForUpdateWithUi()) {
+        ::MessageBoxW(c->shell_hwnd_,
+                      L"The updater is not available in this build\n"
+                      L"(WinSparkle.dll is missing).",
+                      L"Check for Update", MB_OK | MB_ICONINFORMATION);
+      }
       return true;
     case kCmdPreferences:
       if (c->host_) {

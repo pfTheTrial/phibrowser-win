@@ -190,6 +190,18 @@ def main():
     for name in RESOURCES:
         shutil.copy2(os.path.join(CLIENT_DIR, "resources", name),
                      resources_dir)
+    # Stage the vendored WinSparkle.dll beside the client: the sync ships
+    # every top-level DLL, and the updater loads it from the exe's own dir.
+    winsparkle = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "third_party", "winsparkle", "x64",
+                              "WinSparkle.dll")
+    staged = os.path.join(out_dir, "WinSparkle.dll")
+    if os.path.exists(winsparkle) and (
+            not os.path.exists(staged) or
+            os.path.getmtime(staged) < os.path.getmtime(winsparkle)):
+        shutil.copy2(winsparkle, staged)
+        print("staged WinSparkle.dll")
+
     print("CLIENT BUILD OK: " + os.path.join(out_dir, "phi_client.exe"))
 
 

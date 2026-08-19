@@ -24,6 +24,7 @@
 #include "base/values.h"
 #include "base/rand_util.h"
 #include "phibrowser-win/client/phi_agent_overlay.h"
+#include "phibrowser-win/client/phi_updater.h"
 #include "phibrowser-win/client/phi_icons.h"
 #include "phibrowser-win/client/phi_extensions_popover.h"
 #include "phibrowser-win/client/phi_menu_bar.h"
@@ -206,6 +207,10 @@ void PhiCoordinator::OnFrameworkReady(phi_framework::PhiFramework* framework,
   PushSpaceMenu();  // The page context menu's "Open Link in Space" list.
 
   control_server_.Start(user_data_dir, this);
+
+  // Background update checks (WinSparkle over the Mac's appcast pipeline).
+  // A no-op when WinSparkle.dll is not deployed beside the client.
+  PhiUpdater::Init();
 }
 
 // static
