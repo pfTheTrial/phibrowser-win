@@ -2506,6 +2506,47 @@ void PhiCoordinator::RefreshUserWindows() {
   }
 }
 
+void PhiCoordinator::RequestShowTranscript(const std::string& task_id) {
+  if (!agent_spaces_.Find(task_id)) {
+    return;
+  }
+  // Own the panel from the first USER window's shell — the panel floats, so
+  // any live shell serves as its owner.
+  for (const auto& [slot, controller] : windows_) {
+    if (!controller->is_agent() && controller->shell_hwnd()) {
+      PhiTranscriptPanel::Toggle(controller->shell_hwnd(),
+                                 PaletteForSlot(slot), task_id, this);
+      return;
+    }
+  }
+}
+
+std::vector<std::string> PhiCoordinator::TranscriptLines(
+    const std::string& task_id) {
+  std::vector<std::string> lines;
+  if (PhiAgentSpaces::Space* space = agent_spaces_.Find(task_id)) {
+    lines.assign(space->log.begin(), space->log.end());
+  }
+  return lines;
+}
+
+std::string PhiCoordinator::TranscriptAgentName(const std::string& task_id) {
+  PhiAgentSpaces::Space* space = agent_spaces_.Find(task_id);
+  return space && !space->agent_name.empty() ? space->agent_name : "Agent";
+}
+
+bool PhiCoordinator::PushTranscriptMessage(const std::string& task_id,
+                                           const std::string& text) {
+  const std::string id = agent_spaces_.PushMessage(
+      task_id, text, base::Time::Now().InMillisecondsSinceUnixEpoch());
+  if (id.empty()) {
+    return false;
+  }
+  // The console shows the user's line inline, like the wire's userMessage.
+  agent_spaces_.AppendLog(task_id, "You: " + text);
+  return true;
+}
+
 void PhiCoordinator::RequestSwitchSpace(int64_t slot,
                                         const std::string& space_id) {
   base::DictValue payload;
@@ -3987,6 +4028,7 @@ bool PhiCoordinator::HandleAgentSpaceVerb(const std::string& type,
     if (payload->FindBool("touch").value_or(true)) {
       agent_spaces_.Ping(task_id, 0, now_ms);
     }
+    PhiTranscriptPanel::RefreshOpen();
     out->Set("ok", true);
     return true;
   }
@@ -4008,6 +4050,7 @@ bool PhiCoordinator::HandleAgentSpaceVerb(const std::string& type,
         payload ? payload->FindString("message") : nullptr;
     space->status = "failed";
     agent_spaces_.AppendLog(task_id, message ? *message : "error");
+    PhiTranscriptPanel::RefreshOpen();
     out->Set("ok", true);
     return true;
   }
@@ -4042,6 +4085,12 @@ bool PhiCoordinator::HandleAgentSpaceVerb(const std::string& type,
     }
     const std::string id = agent_spaces_.PushMessage(
         task_id, *text, base::Time::Now().InMillisecondsSinceUnixEpoch());
+    if (!id.empty()) {
+      // The console shows the user's own lines inline, the Mac transcript's
+      // interleaving.
+      agent_spaces_.AppendLog(task_id, "You: " + *text);
+      PhiTranscriptPanel::RefreshOpen();
+    }
     out->Set("ok", !id.empty());
     if (!id.empty()) {
       out->Set("id", id);
@@ -4105,14 +4154,39 @@ bool PhiCoordinator::HandleAgentSpaceVerb(const std::string& type,
   }
 
   if (type == "agentSpace.cursor" || type == "agentSpace.effect") {
-    // The user-facing cursor glide / click ripple overlays live on the
-    // watcher; the hidden window has none. Accept and no-op so the skill's
-    // input mirroring never errors.
+    // The cursor glide / input-mirror effects render on the WATCHER's
+    // overlay (the Mac AgentSpaceOverlayView); with nobody watching they
+    // are accepted no-ops so the skill's mirroring never errors.
     const std::string task_id = task_id_of();
     if (task_id.empty() || !agent_spaces_.Find(task_id)) {
       out->Set("ok", false);
       out->Set("error", "unknown_task");
       return true;
+    }
+    if (type == "agentSpace.cursor") {
+      const std::optional<double> x = payload->FindDouble("x");
+      const std::optional<double> y = payload->FindDouble("y");
+      if (!x || !y) {
+        out->Set("ok", false);
+        out->Set("error", "invalid_payload");
+        return true;
+      }
+      PhiAgentOverlay::SetAgentCursor(task_id, *x, *y);
+    } else {
+      const std::string* kind = payload->FindString("kind");
+      if (!kind) {
+        out->Set("ok", false);
+        out->Set("error", "invalid_payload");
+        return true;
+      }
+      const std::optional<double> x = payload->FindDouble("x");
+      const std::optional<double> y = payload->FindDouble("y");
+      PhiAgentOverlay::PlayAgentEffect(
+          task_id, *kind, x.has_value() && y.has_value(),
+          x.value_or(0), y.value_or(0),
+          payload->FindDouble("w").value_or(0),
+          payload->FindDouble("h").value_or(0),
+          payload->FindDouble("dy").value_or(1));
     }
     out->Set("ok", true);
     return true;
@@ -4289,6 +4363,7 @@ void PhiCoordinator::CloseAgentSpace(const std::string& task_id) {
   }
   const int64_t window_id = space->window_id;
   agent_spaces_.Remove(task_id);
+  PhiTranscriptPanel::CloseFor(task_id);
   if (watched_agent_task_ == task_id) {
     watched_agent_task_.clear();
   }
@@ -5286,6 +5361,7 @@ void PhiCoordinator::OnBrowserWindowClosing(int64_t window_id) {
   if (PhiAgentSpaces::Space* space = agent_spaces_.FindByWindow(window_id)) {
     const std::string task_id = space->task_id;
     agent_spaces_.Remove(task_id);
+    PhiTranscriptPanel::CloseFor(task_id);
     if (watched_agent_task_ == task_id) {
       watched_agent_task_.clear();
     }

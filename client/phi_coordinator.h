@@ -24,6 +24,7 @@
 #include "phibrowser-win/client/phi_emoji.h"
 #include "phibrowser-win/client/phi_prompt.h"
 #include "phibrowser-win/client/phi_settings_window.h"
+#include "phibrowser-win/client/phi_transcript_panel.h"
 #include "phibrowser-win/client/phi_tab_store.h"
 #include "phibrowser-win/client/phi_theme.h"
 #include "phibrowser-win/client/phi_window_controller.h"
@@ -38,7 +39,8 @@ namespace phi_client {
 class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
                        public PhiControlDelegate,
                        public PhiSlotHost,
-                       public PhiSettingsHost {
+                       public PhiSettingsHost,
+                       public PhiTranscriptHost {
  public:
   PhiCoordinator();
   ~PhiCoordinator() override;
@@ -83,6 +85,14 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   void RequestAgentTakeControl(const std::string& task_id) override;
   void RequestAgentHandBack(const std::string& task_id) override;
   void RequestAgentFinish(const std::string& task_id) override;
+  void RequestShowTranscript(const std::string& task_id) override;
+
+  // PhiTranscriptHost:
+  std::vector<std::string> TranscriptLines(
+      const std::string& task_id) override;
+  std::string TranscriptAgentName(const std::string& task_id) override;
+  bool PushTranscriptMessage(const std::string& task_id,
+                             const std::string& text) override;
   void RequestCreateSpace(int64_t slot, bool new_profile) override;
   PhiLayoutMode LayoutMode() const override;
   void RequestLayoutMode(PhiLayoutMode mode) override;

@@ -41,6 +41,23 @@ class PhiAgentOverlay {
                    bool agent_owns);
   // Tears the overlay down (watch mode ended, or the task is gone).
   static void Hide();
+  // The agent's virtual cursor (agentSpace.cursor): `x`/`y` in page CSS px.
+  // The overlay converts to device px and GLIDES to the point — the Mac
+  // AgentSpaceOverlayView's distance-scaled travel — teleporting only on
+  // first appearance. No-op unless `task_id` is the shown overlay's task.
+  static void SetAgentCursor(const std::string& task_id, double x, double y);
+  // A transient input-mirror animation (agentSpace.effect): `kind` is
+  // "click" | "type" | "scroll". `has_point` false anchors on the cursor's
+  // current position; `w`/`h` size the typing outline; `dy` signs the
+  // scroll hint's direction. All coordinates in page CSS px.
+  static void PlayAgentEffect(const std::string& task_id,
+                              const std::string& kind,
+                              bool has_point,
+                              double x,
+                              double y,
+                              double w,
+                              double h,
+                              double dy);
   // True while mounted — the shell consults this before handing content
   // clicks to the browser child.
   static bool IsShown();

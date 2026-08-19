@@ -88,6 +88,9 @@ class PhiSlotHost {
   virtual void RequestAgentTakeControl(const std::string& task_id) = 0;
   virtual void RequestAgentHandBack(const std::string& task_id) = 0;
   virtual void RequestAgentFinish(const std::string& task_id) = 0;
+  // Opens the task's transcript console (the agent pip context menu's
+  // "Show Transcript", the Mac showTranscriptAction).
+  virtual void RequestShowTranscript(const std::string& task_id) = 0;
   // Creates a Space in this slot's current profile (`new_profile` = false) or
   // in a freshly created profile (true), then switches to it.
   virtual void RequestCreateSpace(int64_t slot, bool new_profile) = 0;

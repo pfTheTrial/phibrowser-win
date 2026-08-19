@@ -5211,6 +5211,34 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
     return;
   }
 
+  if (target->is_agent) {
+    // The agent pip's own menu (the Mac agentContextMenu): the transcript
+    // console and finishing the task. The Space menu below would misapply
+    // rename/theme/delete to a task id.
+    enum : UINT { kTranscript = 1, kFinish };
+    HMENU agent_menu = ::CreatePopupMenu();
+    if (!agent_menu) {
+      return;
+    }
+    ::AppendMenuW(agent_menu, MF_STRING, kTranscript, L"Show Transcript");
+    ::AppendMenuW(agent_menu, MF_SEPARATOR, 0, nullptr);
+    ::AppendMenuW(agent_menu, MF_STRING, kFinish, L"Finish Task");
+    POINT screen = pt;
+    ::ClientToScreen(shell_hwnd_, &screen);
+    const UINT chosen = static_cast<UINT>(::TrackPopupMenu(
+        agent_menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, screen.x,
+        screen.y, 0, shell_hwnd_, nullptr));
+    ::DestroyMenu(agent_menu);
+    const std::string task = target->id;  // The handlers can rebuild chips_.
+    if (chosen == kTranscript) {
+      host_->RequestShowTranscript(task);
+    } else if (chosen == kFinish) {
+      host_->RequestAgentFinish(task);
+      RefreshTabs();
+    }
+    return;
+  }
+
   // The Mac's Space row menu: activate, rename, change icon, set theme,
   // delete. Rename prompts, delete confirms (refused for the default Space);
   // Change Icon lands on Settings > Spaces with this Space selected — the
