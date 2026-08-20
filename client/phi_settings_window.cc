@@ -1839,6 +1839,11 @@ void PhiSettingsWindow::BuildAccount(int* y) {
   const int card_w = Scaled(264);
   const int right_left = left + card_w + Scaled(16);
   const int right_edge = Scaled(kWidth - kMargin);
+  std::string account_name;
+  std::string account_email;
+  const bool signed_in =
+      host_ && host_->AccountInfo(&account_name, &account_email);
+  const bool signing_in = host_ && host_->AccountSigningIn();
   {
     Item card;
     card.kind = ItemKind::kCard;
@@ -1853,35 +1858,45 @@ void PhiSettingsWindow::BuildAccount(int* y) {
     items_.push_back(std::move(avatar));
     Item name;
     name.kind = ItemKind::kToolButton;  // Centered plain text.
-    name.text = L"You";
+    name.text = signed_in && !account_name.empty()
+                    ? base::UTF8ToWide(account_name)
+                    : L"You";
     name.bounds = {left, top + Scaled(108), left + card_w,
                    top + Scaled(108) + Scaled(22)};
     items_.push_back(std::move(name));
     Item hint;
     hint.kind = ItemKind::kHint;
-    hint.text = L"Sign-in is not available on this build.";
+    hint.text = signed_in ? base::UTF8ToWide(account_email)
+                : signing_in
+                    ? L"Finish signing in from the opened tab…"
+                    : L"Sign in to use your Phi account.";
     hint.bounds = {left + Scaled(30), top + Scaled(134),
                    left + card_w - Scaled(10),
                    top + Scaled(134) + Scaled(kHintHeight)};
     items_.push_back(std::move(hint));
   }
   {
-    // The account card (the Mac's 92pt row): status + Logout.
+    // The account card (the Mac's 92pt row): status + Sign in / Logout.
     Item card;
     card.kind = ItemKind::kCard;
     card.bounds = {right_left, top, right_edge, top + Scaled(92)};
     items_.push_back(std::move(card));
     Item label;
     label.kind = ItemKind::kRowLabel;
-    label.text = L"You are not signed in.";
+    label.text = signed_in
+                     ? L"Signed in as " + base::UTF8ToWide(
+                           account_email.empty() ? account_name
+                                                 : account_email)
+                     : L"You are not signed in.";
     label.bounds = {right_left + Scaled(kCardPadding), top,
                     right_edge - Scaled(kCardPadding + 100),
                     top + Scaled(92)};
     items_.push_back(std::move(label));
     Item button;
     button.kind = ItemKind::kButton;
-    button.text = L"Logout";
-    button.enabled = false;
+    button.text = signed_in ? L"Logout" : L"Sign in";
+    button.action = signed_in ? "signout" : "signin";
+    button.enabled = !signing_in;
     button.bounds = {right_edge - Scaled(kCardPadding) - Scaled(84),
                      top + Scaled(34), right_edge - Scaled(kCardPadding),
                      top + Scaled(58)};
@@ -3172,6 +3187,16 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
     // Windows hands default-browser choice to its own Settings page.
     ::ShellExecuteW(nullptr, L"open", L"ms-settings:defaultapps", nullptr,
                     nullptr, SW_SHOWNORMAL);
+  } else if (item.action == "signin") {
+    if (host_) {
+      host_->RequestSignIn();
+      Rebuild();  // The hint flips to "finish signing in…".
+    }
+  } else if (item.action == "signout") {
+    if (host_) {
+      host_->RequestSignOut();
+      Rebuild();
+    }
   } else if (item.action == "pinscope") {
     // The Mac's popup: Space / Profile / App.
     HMENU menu = ::CreatePopupMenu();

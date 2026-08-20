@@ -35,6 +35,13 @@ class PhiSettingsHost {
   virtual void SetSaturation(int value) = 0;
   virtual const PhiPalette& Palette() const = 0;
 
+  // Account (the Auth0 session; stage 1 of bucket D's auth work).
+  // False when signed out; fills the display identity otherwise.
+  virtual bool AccountInfo(std::string* name, std::string* email) const = 0;
+  virtual bool AccountSigningIn() const = 0;
+  virtual void RequestSignIn() = 0;
+  virtual void RequestSignOut() = 0;
+
   // Appearance
   virtual PhiLayoutMode LayoutMode() const = 0;
   virtual void RequestLayoutMode(PhiLayoutMode mode) = 0;

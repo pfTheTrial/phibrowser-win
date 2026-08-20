@@ -23,6 +23,7 @@
 #include "phibrowser-win/client/phi_vault_helper.h"
 #include "phibrowser-win/client/phi_emoji.h"
 #include "phibrowser-win/client/phi_prompt.h"
+#include "phibrowser-win/client/phi_auth.h"
 #include "phibrowser-win/client/phi_settings_window.h"
 #include "phibrowser-win/client/phi_transcript_panel.h"
 #include "phibrowser-win/client/phi_tab_store.h"
@@ -94,6 +95,10 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   bool PushTranscriptMessage(const std::string& task_id,
                              const std::string& text) override;
   void RequestCreateSpace(int64_t slot, bool new_profile) override;
+  bool AccountInfo(std::string* name, std::string* email) const override;
+  bool AccountSigningIn() const override;
+  void RequestSignIn() override;
+  void RequestSignOut() override;
   PhiLayoutMode LayoutMode() const override;
   void RequestLayoutMode(PhiLayoutMode mode) override;
   const PhiPalette& Palette() const override;
@@ -496,6 +501,8 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // store used ONLY when no helper binary is installed.
   PhiVaultHelper vault_helper_;
   PhiCredentialVault credentials_;
+  // The Auth0 session (bucket D auth, stage 1).
+  PhiAuth auth_;
   std::wstring credentials_dir_;
   // Looks a query up through the helper. Returns the reply's `result` dict, or
   // nullopt with `error` set (`ambiguous` carries a candidates list).

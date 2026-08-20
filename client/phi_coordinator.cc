@@ -123,6 +123,8 @@ namespace {
 constexpr wchar_t kMsgClassName[] = L"PhiClientControlMsg";
 constexpr UINT WM_PHI_CONTROL = WM_APP + 1;
 constexpr UINT WM_PHI_AUTHORIZE = WM_APP + 2;
+// A worker thread finished changing the Auth0 session state.
+constexpr UINT WM_PHI_AUTH_CHANGED = WM_APP + 3;
 
 // A connection-consent decision marshaled the same way as ControlCall.
 struct AuthorizeCall {
@@ -211,6 +213,10 @@ void PhiCoordinator::OnFrameworkReady(phi_framework::PhiFramework* framework,
   // Background update checks (WinSparkle over the Mac's appcast pipeline).
   // A no-op when WinSparkle.dll is not deployed beside the client.
   PhiUpdater::Init();
+
+  // Restore the Auth0 session (validated in the background; the message
+  // refreshes the settings pane whenever the state settles).
+  auth_.Load(user_data_dir, msg_hwnd_, WM_PHI_AUTH_CHANGED);
 }
 
 // static
@@ -243,6 +249,11 @@ LRESULT CALLBACK PhiCoordinator::MsgWndProc(HWND hwnd,
     if (self && call) {
       call->result = self->ExecuteControlOnUi(*call->type, *call->payload);
     }
+    return 0;
+  }
+  if (msg == WM_PHI_AUTH_CHANGED) {
+    // The sign-in/refresh worker settled; the Account pane re-reads state.
+    PhiSettingsWindow::Refresh();
     return 0;
   }
   if (msg == WM_PHI_AUTHORIZE) {
@@ -2318,6 +2329,39 @@ void PhiCoordinator::SetBookmarkBarOnNewTab(bool enabled) {
     controller->LayoutContents();
     controller->RefreshTabs();
   }
+}
+
+bool PhiCoordinator::AccountInfo(std::string* name,
+                                 std::string* email) const {
+  if (!auth_.signed_in()) {
+    return false;
+  }
+  if (name) {
+    *name = auth_.user().name;
+  }
+  if (email) {
+    *email = auth_.user().email;
+  }
+  return true;
+}
+
+bool PhiCoordinator::AccountSigningIn() const {
+  return auth_.signing_in();
+}
+
+void PhiCoordinator::RequestSignIn() {
+  auth_.BeginSignIn([this](const std::string& url) {
+    // The hosted login opens as an ordinary Phi tab — Phi IS the browser
+    // RFC 8252 wants the flow to ride in.
+    if (!windows_.empty()) {
+      RequestOpen(windows_.begin()->first, url);
+    }
+  });
+}
+
+void PhiCoordinator::RequestSignOut() {
+  auth_.SignOut();
+  PhiSettingsWindow::Refresh();
 }
 
 PhiLayoutMode PhiCoordinator::LayoutMode() const {
