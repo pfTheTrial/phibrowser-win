@@ -102,6 +102,7 @@ enum : UINT {
   kCmdBookmarkThisTab,
   kCmdBookmarkAllTabs,
   kCmdExportBookmarks,
+  kCmdBookmarkManager,
   // Tab
   kCmdNewTabToRight,
   kCmdNextTab,

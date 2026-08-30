@@ -137,6 +137,8 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   void RemoveStoredRow(const std::string& guid) override;
   bool SetStoredRowIcon(const std::string& guid,
                         const std::string& icon) override;
+  bool SetStoredRowUrl(const std::string& guid,
+                       const std::string& url) override;
   bool RenameStoredRow(const std::string& guid,
                        const std::string& name) override;
   void ReorderStoredRow(const std::string& guid, int new_index) override;

@@ -4,6 +4,8 @@
 
 #include "phibrowser-win/client/phi_menu_bar.h"
 
+#include "phibrowser-win/client/phi_bookmark_manager.h"
+
 #include <commdlg.h>
 
 #include <algorithm>
@@ -642,6 +644,12 @@ void PhiMenuBar::RefreshBookmarks() {
   Separator(bookmarks_);
   Append(bookmarks_, kCmdExportBookmarks, L"Export Bookmarks...",
          controller_->host_ != nullptr);
+  Separator(bookmarks_);
+  // The Mac's Bookmarks-menu entry for the native manager; Chromium's own
+  // shortcut for IDC_SHOW_BOOKMARK_MANAGER on Windows is Ctrl+Shift+O.
+  Append(bookmarks_, kCmdBookmarkManager, L"Bookmark Manager\tCtrl+Shift+O",
+         controller_->framework_ != nullptr &&
+             !controller_->is_incognito());
   const int fixed = ::GetMenuItemCount(bookmarks_);
   AppendBookmarkRows(bookmarks_, std::string(), 0);
   if (::GetMenuItemCount(bookmarks_) > fixed) {
@@ -1042,6 +1050,16 @@ bool PhiMenuBar::OnCommand(UINT id) {
                    std::to_wstring(added) + L" Tabs Bookmarked");
       return true;
     }
+    case kCmdBookmarkManager:
+      // URL-driven, as on Mac: the manager IS a tab on the bookmark route,
+      // and the client mounts its native page over that tab's content.
+      if (c->framework_) {
+        c->framework_->NewTab(c->active_browser_ ? c->active_browser_
+                                                 : c->window_id_,
+                              PhiBookmarkManager::ManagerUrl());
+        c->RefreshTabs();
+      }
+      return true;
     case kCmdExportBookmarks: {
       if (!c->host_) {
         return true;

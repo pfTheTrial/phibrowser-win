@@ -76,6 +76,7 @@ struct PhiAgentPipView {
 // draw, and requests that only the owner can service (switching to a Space
 // that has no browser yet must create one in that Space's profile).
 class PhiTabPreview;
+class PhiBookmarkManager;
 
 class PhiSlotHost {
  public:
@@ -173,6 +174,9 @@ class PhiSlotHost {
   // Sets a bookmark folder's catalog symbol (the Mac's "Change Icon...").
   virtual bool SetStoredRowIcon(const std::string& guid,
                                 const std::string& icon) = 0;
+  // Retargets a bookmark (the manager's Address cell edit).
+  virtual bool SetStoredRowUrl(const std::string& guid,
+                               const std::string& url) = 0;
   virtual bool RenameStoredRow(const std::string& guid,
                                const std::string& name) = 0;
   // Moves a stored row to `new_index` among its siblings (drag-to-reorder in
@@ -247,6 +251,10 @@ enum : UINT {
   kMsgPhiSwitcherNext = WM_APP + 20,
   kMsgPhiSwitcherPrev,
   kMsgPhiSwitcherCommit,
+  // Posted when a rebuild notices the active tab crossing into or out of the
+  // bookmark route: mounting a child window inside WM_PAINT is not safe, and
+  // the rebuild usually happens there.
+  kMsgPhiSyncBookmarkPage,
 };
 
 class PhiWindowController {
@@ -753,6 +761,11 @@ class PhiWindowController {
   // Unlike the Space card above it floats in its own popup, so it can hang
   // over the Chromium child window.
   std::unique_ptr<PhiTabPreview> tab_preview_;
+  // The native bookmark manager page, mounted over the content card while
+  // the active tab sits on the bookmark route (the Mac's URL-driven mount).
+  std::unique_ptr<PhiBookmarkManager> bookmark_manager_;
+  void SyncBookmarkManager();
+  bool WantsBookmarkPage() const;
   void UpdateTabPreview();  // Re-aims the card at the hovered row.
   // Paints a bookmark folder's chosen catalog symbol into its icon slot.
   void DrawFolderIcon(HDC dc,

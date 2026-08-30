@@ -35,6 +35,7 @@
 #include "phibrowser-win/client/phi_extensions_popover.h"
 #include "phibrowser-win/client/phi_group_overview.h"
 #include "phibrowser-win/client/phi_search_tabs_panel.h"
+#include "phibrowser-win/client/phi_bookmark_manager.h"
 #include "phibrowser-win/client/phi_folder_icon_picker.h"
 #include "phibrowser-win/client/phi_folder_icons.h"
 #include "phibrowser-win/client/phi_tab_preview.h"
@@ -1852,6 +1853,9 @@ void PhiWindowController::ToggleDownloadsPopover() {
 }
 
 void PhiWindowController::LayoutContents() {
+  if (bookmark_manager_ && bookmark_manager_->visible()) {
+    bookmark_manager_->Reposition();
+  }
   if (!shell_hwnd_) {
     return;
   }
@@ -2818,6 +2822,32 @@ bool PhiWindowController::SplitIsStacked(int tab_id) const {
 // which every tab surface installs on its cells). Eligibility is the Mac's:
 // the setting on, no drag in flight, and a LIVE tab behind the row. A split
 // row previews BOTH its panes in one card, the Mac's SplitTabPreview.
+bool PhiWindowController::WantsBookmarkPage() const {
+  return !is_incognito() && PhiBookmarkManager::IsManagerUrl(active_tab_url_);
+}
+
+// Mounts or unmounts the native bookmark page for the ACTIVE tab's URL —
+// the Mac's URL-driven rule, so the tab stays an ordinary browser tab and
+// navigating it away restores the Chromium view.
+void PhiWindowController::SyncBookmarkManager() {
+  const bool wanted = WantsBookmarkPage();
+  if (!wanted) {
+    if (bookmark_manager_) {
+      bookmark_manager_->Hide();
+    }
+    return;
+  }
+  if (!bookmark_manager_) {
+    bookmark_manager_ = std::make_unique<PhiBookmarkManager>(this);
+  }
+  if (bookmark_manager_->visible()) {
+    bookmark_manager_->Reposition();
+    bookmark_manager_->Refresh();
+  } else {
+    bookmark_manager_->Show();
+  }
+}
+
 void PhiWindowController::UpdateTabPreview() {
   if (!host_ || !host_->ShowTabPreviews() || drag_active_) {
     if (tab_preview_) {
@@ -3960,6 +3990,11 @@ void PhiWindowController::RebuildTabs() {
       std::string label = title && !title->empty()
                               ? *title
                               : (url ? *url : std::string("(untitled)"));
+      if (url && PhiBookmarkManager::IsManagerUrl(*url)) {
+        // The Chromium view behind the native page has no WebUI to load, so
+        // its title would be the failed URL; the tab shows the page's name.
+        label = "Bookmarks";
+      }
       row.title = base::UTF8ToWide(label);
       row.url = url ? base::UTF8ToWide(*url) : std::wstring();
       row.internal_page = url && url->rfind("chrome://", 0) == 0;
@@ -4048,6 +4083,15 @@ void PhiWindowController::RebuildTabs() {
     a.b_favicon_height = b.favicon_height;
     a.active = a.active || b.active;
     rows.erase(rows.begin() + i + 1);
+  }
+
+  // The bookmark route can only be entered or left by a rebuild; mounting
+  // the page here would run inside WM_PAINT, so post and do it after.
+  if (shell_hwnd_) {
+    const bool mounted = bookmark_manager_ && bookmark_manager_->visible();
+    if (mounted != WantsBookmarkPage()) {
+      ::PostMessageW(shell_hwnd_, kMsgPhiSyncBookmarkPage, 0, 0);
+    }
   }
 
   // Group visuals for the header rows (title/color/collapsed by id).
@@ -7413,6 +7457,11 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
         self->ClearHover();
       }
       break;
+    case kMsgPhiSyncBookmarkPage:
+      if (self) {
+        self->SyncBookmarkManager();
+      }
+      return 0;
     case kMsgPhiSwitcherNext:
     case kMsgPhiSwitcherPrev:
       if (self) {

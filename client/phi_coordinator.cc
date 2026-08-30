@@ -1251,6 +1251,18 @@ bool PhiCoordinator::SetStoredRowIcon(const std::string& guid,
   return true;
 }
 
+bool PhiCoordinator::SetStoredRowUrl(const std::string& guid,
+                                    const std::string& url) {
+  if (!tab_store_.SetRowUrl(guid, url)) {
+    return false;
+  }
+  for (const auto& [slot, controller] : windows_) {
+    controller->RefreshTabs();
+  }
+  PhiSettingsWindow::Refresh();
+  return true;
+}
+
 bool PhiCoordinator::RenameStoredRow(const std::string& guid,
                                      const std::string& name) {
   if (!tab_store_.RenameRow(guid, name)) {
