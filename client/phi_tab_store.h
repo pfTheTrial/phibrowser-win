@@ -58,6 +58,9 @@ struct PhiRow {
   //   PINNED split — TWO pinned rows cross-linked by partner guid
   //   (splitPartnerGuid on both), rendered as one merged cell.
   std::string split_partner_guid;
+  // Bookmark FOLDERS only: which catalog symbol the folder wears (the Mac's
+  // Bookmark.folderIconName). Empty and unknown ids both mean "default".
+  std::string icon;
 };
 
 // Rows plus the one scope setting, persisted as a single JSON file. Kept
@@ -121,6 +124,8 @@ class PhiTabStore {
   std::string SplitPartner(const std::string& guid) const;
   // Retitles a row (the context menus' Rename). False when unknown.
   bool RenameRow(const std::string& guid, const std::string& title);
+  // Sets a bookmark folder's catalog symbol. False when unknown or unchanged.
+  bool SetRowIcon(const std::string& guid, const std::string& icon);
   // Removes every row OWNED by `space_id` (space-scoped pins, the Space's
   // bookmarks) — what deleting a Space takes with it on Mac. Rows owned at
   // profile or app scope carry no space id and stay. Returns removed count.

@@ -27,6 +27,7 @@
 #include "base/json/json_reader.h"
 #include "base/logging.h"
 #include "base/no_destructor.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
 #include "phibrowser-win/client/phi_agent_overlay.h"
@@ -34,6 +35,9 @@
 #include "phibrowser-win/client/phi_extensions_popover.h"
 #include "phibrowser-win/client/phi_group_overview.h"
 #include "phibrowser-win/client/phi_search_tabs_panel.h"
+#include "phibrowser-win/client/phi_folder_icon_picker.h"
+#include "phibrowser-win/client/phi_folder_icons.h"
+#include "phibrowser-win/client/phi_tab_preview.h"
 #include "phibrowser-win/client/phi_tab_switcher.h"
 #include "phibrowser-win/client/phi_dwrite.h"
 #include "phibrowser-win/client/phi_icons.h"
@@ -2737,6 +2741,7 @@ void PhiWindowController::OnChromeMouseMove(POINT client_pt) {
     hover_kind_ = kind;
     hover_index_ = index;
     UpdateHoverCard();
+    UpdateTabPreview();
     // The model is unchanged — only recompose (no dirty flag).
     if (shell_hwnd_) {
       ::InvalidateRect(shell_hwnd_, nullptr, FALSE);
@@ -2770,6 +2775,9 @@ void PhiWindowController::SetUrlFieldHover(bool hovered) {
 
 void PhiWindowController::ClearHover() {
   DismissHoverCard(std::string());
+  if (tab_preview_) {
+    tab_preview_->PointerExited();
+  }
   if (hover_kind_ != HoverKind::kNone) {
     hover_kind_ = HoverKind::kNone;
     hover_index_ = -1;
@@ -2777,6 +2785,147 @@ void PhiWindowController::ClearHover() {
       ::InvalidateRect(shell_hwnd_, nullptr, FALSE);
     }
   }
+}
+
+// True when `tab_id`'s split stacks its panes. Asked only while a split row
+// is actually hovered, so the framework round-trip stays off the paint path.
+bool PhiWindowController::SplitIsStacked(int tab_id) const {
+  if (!framework_ || tab_id == 0) {
+    return false;
+  }
+  const int64_t browser = active_browser_ ? active_browser_ : window_id_;
+  std::optional<base::Value> parsed = base::JSONReader::Read(
+      framework_->SplitViewsJson(browser), base::JSON_PARSE_RFC);
+  if (!parsed || !parsed->is_list()) {
+    return false;
+  }
+  for (const base::Value& v : parsed->GetList()) {
+    const base::DictValue* split = v.GetIfDict();
+    if (!split) {
+      continue;
+    }
+    if (split->FindInt("primaryTabId").value_or(-1) != tab_id &&
+        split->FindInt("secondaryTabId").value_or(-1) != tab_id) {
+      continue;
+    }
+    const std::string* layout = split->FindString("layout");
+    return layout && *layout == "horizontal";
+  }
+  return false;
+}
+
+// The hovered row's page-snapshot card (the Mac's TabPreviewRegistration,
+// which every tab surface installs on its cells). Eligibility is the Mac's:
+// the setting on, no drag in flight, and a LIVE tab behind the row. A split
+// row previews BOTH its panes in one card, the Mac's SplitTabPreview.
+void PhiWindowController::UpdateTabPreview() {
+  if (!host_ || !host_->ShowTabPreviews() || drag_active_) {
+    if (tab_preview_) {
+      tab_preview_->PointerExited();
+    }
+    return;
+  }
+
+  PhiTabPreview::Target target;
+  bool eligible = false;
+  switch (hover_kind_) {
+    case HoverKind::kTab:
+      if (hover_index_ >= 0 && hover_index_ < static_cast<int>(tabs_.size())) {
+        const TabRow& row = tabs_[static_cast<size_t>(hover_index_)];
+        if (row.id != 0) {
+          target.key = "tab:" + base::NumberToString(row.id);
+          target.tab_id = row.id;
+          target.title = row.title;
+          target.url = row.url;
+          target.foreground = row.active && row.b_index < 0;
+          target.anchor = row.bounds;
+          if (row.b_index >= 0 && row.b_id != 0) {
+            // A merged split row: pane B rides along.
+            target.tab_id_b = row.b_id;
+            target.title_b = row.b_title;
+            target.url_b = row.b_url;
+            target.foreground = row.active && !row.b_active;
+            target.foreground_b = row.b_active;
+          }
+          eligible = true;
+        }
+      }
+      break;
+    case HoverKind::kPin:
+    case HoverKind::kBookmark: {
+      const std::vector<ShortcutRow>& rows =
+          hover_kind_ == HoverKind::kPin ? pinned_ : bookmarks_;
+      if (hover_index_ >= 0 && hover_index_ < static_cast<int>(rows.size())) {
+        const ShortcutRow& row = rows[static_cast<size_t>(hover_index_)];
+        // Folders have no page, and an unopened row has no live tab to
+        // snapshot. A BOOKMARK split carries both panes under one guid, so
+        // there is no second tab id to ask for — it keeps the single card.
+        if (!row.folder && row.open && row.tab_id != 0) {
+          target.key = "row:" + row.guid;
+          target.tab_id = row.tab_id;
+          target.title = row.title;
+          target.url = base::UTF8ToWide(row.url);
+          target.foreground = row.active;
+          target.anchor = row.bounds;
+          if (!row.partner_guid.empty() && row.tab_id_b != 0) {
+            target.tab_id_b = row.tab_id_b;
+            target.title_b = row.title_b;
+            target.url_b = base::UTF8ToWide(row.url_b);
+          }
+          eligible = true;
+        }
+      }
+      break;
+    }
+    default:
+      break;
+  }
+
+  if (!eligible) {
+    if (tab_preview_) {
+      tab_preview_->PointerExited();
+    }
+    return;
+  }
+
+  // TabPreviewURLPolicy: the new-tab page shows no address, and the
+  // bookmark manager opts out of snapshots entirely.
+  const auto apply_url_policy = [&](std::wstring* url, bool* allow) {
+    const std::string utf8 = base::WideToUTF8(*url);
+    if (utf8 == "chrome://newtab/" || utf8 == "chrome://new-tab-page/" ||
+        utf8 == "about:blank") {
+      url->clear();
+    }
+    if (utf8.rfind("chrome://bookmarks", 0) == 0 ||
+        utf8.rfind("phi://bookmarks", 0) == 0) {
+      *allow = false;
+    }
+  };
+  apply_url_policy(&target.url, &target.allow_snapshot);
+  if (target.tab_id_b != 0) {
+    apply_url_policy(&target.url_b, &target.allow_snapshot);
+    target.stacked = SplitIsStacked(target.tab_id);
+  }
+
+  // The card hangs off the row in SCREEN space.
+  POINT top_left = {target.anchor.left, target.anchor.top};
+  POINT bottom_right = {target.anchor.right, target.anchor.bottom};
+  ::ClientToScreen(shell_hwnd_, &top_left);
+  ::ClientToScreen(shell_hwnd_, &bottom_right);
+  target.anchor = {top_left.x, top_left.y, bottom_right.x, bottom_right.y};
+
+  // Sidebar rows hand the card off their right edge; the pinned grid and the
+  // comfortable strip drop it underneath, as the Mac call sites do.
+  const bool comfortable = host_->LayoutMode() == PhiLayoutMode::kComfortable;
+  target.placement =
+      (hover_kind_ == HoverKind::kPin || comfortable)
+          ? PhiTabPreview::Placement::kBelowAttached
+          : PhiTabPreview::Placement::kRightTopAttached;
+
+  if (!tab_preview_) {
+    tab_preview_ = std::make_unique<PhiTabPreview>(this);
+  }
+  tab_preview_->PointerEntered(target);
 }
 
 void PhiWindowController::UpdateHoverCard() {
@@ -3605,6 +3754,7 @@ void PhiWindowController::RebuildShortcuts() {
     row.url_b = std::move(view.url_b);
     row.title_b = base::UTF8ToWide(view.title_b);
     row.partner_guid = std::move(view.partner_guid);
+    row.icon = std::move(view.icon);
     return row;
   };
   for (PhiStoredRowView& view : host_->PinnedRows(window_id_)) {
@@ -3811,6 +3961,7 @@ void PhiWindowController::RebuildTabs() {
                               ? *title
                               : (url ? *url : std::string("(untitled)"));
       row.title = base::UTF8ToWide(label);
+      row.url = url ? base::UTF8ToWide(*url) : std::wstring();
       row.internal_page = url && url->rfind("chrome://", 0) == 0;
       if (row.active) {
         // The bookmark bar's "show on new tab" reads this.
@@ -3860,10 +4011,15 @@ void PhiWindowController::RebuildTabs() {
   };
   const auto flag_bound = [&rows](ShortcutRow& stored) {
     for (const TabRow& r : rows) {
-      if (r.tag == stored.guid ||
-          (!stored.partner_guid.empty() && r.tag == stored.partner_guid)) {
+      if (r.tag == stored.guid) {
         stored.open = true;
         stored.active = stored.active || r.active || r.b_active;
+        stored.tab_id = r.id;
+      } else if (!stored.partner_guid.empty() &&
+                 r.tag == stored.partner_guid) {
+        stored.open = true;
+        stored.active = stored.active || r.active || r.b_active;
+        stored.tab_id_b = r.id;
       }
     }
   };
@@ -3883,8 +4039,10 @@ void PhiWindowController::RebuildTabs() {
       continue;
     }
     a.b_index = b.index;
+    a.b_id = b.id;
     a.b_active = b.active;
     a.b_title = std::move(b.title);
+    a.b_url = std::move(b.url);
     a.b_favicon = std::move(b.favicon);
     a.b_favicon_width = b.favicon_width;
     a.b_favicon_height = b.favicon_height;
@@ -4243,6 +4401,11 @@ void PhiWindowController::SetMenuHot(int index) {
 }
 
 void PhiWindowController::OnChromeClick(int x, int y) {
+  // Any press on the chrome is an interaction: the hover card goes down and
+  // stays down until the pointer leaves the row it was pressed on.
+  if (tab_preview_) {
+    tab_preview_->Cancel();
+  }
   // Clicking anywhere else in the chrome means the user is done editing the
   // address; hand the keyboard back to the page (the field is a child window,
   // so clicks on it never reach here).
@@ -4705,6 +4868,42 @@ std::string TabUrlAtIndex(phi_framework::PhiFramework* framework,
 
 }  // namespace
 
+// A bookmark folder's icon slot: the catalog symbol it wears, or the plain
+// folder glyph for the catalog's "default" (the Mac's BookmarkFolderIcon).
+void PhiWindowController::DrawFolderIcon(HDC dc,
+                                         const RECT& slot,
+                                         const std::string& icon_id,
+                                         COLORREF ink,
+                                         bool expanded) {
+  const std::string resolved = PhiResolveFolderIcon(icon_id);
+  // "default" wears the plain folder, open or closed like the Mac's
+  // fallback art; anything else is its catalog symbol.
+  const PhiMacIcon* mask = resolved == PhiFolderIconDefaultId()
+                               ? PhiPlainFolderMask(expanded)
+                               : PhiFolderIconMask(resolved);
+  if (mask) {
+    const int px = std::min(slot.right - slot.left, slot.bottom - slot.top);
+    if (px > 0) {
+      RECT art = {slot.left + ((slot.right - slot.left) - px) / 2,
+                  slot.top + ((slot.bottom - slot.top) - px) / 2, 0, 0};
+      art.right = art.left + px;
+      art.bottom = art.top + px;
+      const std::vector<unsigned char> bgra =
+          PhiTintedIconBgra(*mask, ink, px);
+      if (!bgra.empty()) {
+        PhiBlendBgra(dc, art, bgra.data(), px, px);
+        return;
+      }
+    }
+  }
+  HGDIOBJ previous = caption_font_ ? ::SelectObject(dc, caption_font_)
+                                   : nullptr;
+  DrawGlyph(dc, slot, L"", ink);  // Folder.
+  if (previous) {
+    ::SelectObject(dc, previous);
+  }
+}
+
 void PhiWindowController::OnChromeContextMenu(int x, int y) {
   if (!host_ || !shell_hwnd_) {
     return;
@@ -5094,7 +5293,7 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
       // The Mac bookmark-row menu: open, open as split, copy, rename,
       // delete (folders keep rename/new-nested-folder/delete).
       enum : UINT { kOpen = 1, kOpenSplit, kCopyUrl, kCopyLeft, kCopyRight,
-                    kRename, kNewFolder, kRemove };
+                    kRename, kNewFolder, kChangeIcon, kRemove };
       HMENU menu = ::CreatePopupMenu();
       if (!menu) {
         return;
@@ -5112,6 +5311,8 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
       }
       ::AppendMenuW(menu, MF_STRING, kRename, L"Rename...");
       if (bookmark.folder) {
+        // The Mac's folder menu: Rename, then the icon picker.
+        ::AppendMenuW(menu, MF_STRING, kChangeIcon, L"Change Icon...");
         ::AppendMenuW(menu, MF_STRING, kNewFolder,
                       L"New Nested Folder...");
       }
@@ -5129,6 +5330,8 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
       const std::string url_b = bookmark.url_b;
       const std::wstring bookmark_title = bookmark.title;
       const bool folder = bookmark.folder;
+      const std::string row_icon = bookmark.icon;
+      const RECT row_bounds = bookmark.bounds;
       ::DestroyMenu(menu);
       const int64_t browser = active_browser_ ? active_browser_ : window_id_;
       if (chosen == kOpen && !folder && !url.empty()) {
@@ -5167,6 +5370,19 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
                                  : L"Enter a new name for this bookmark.",
                           &name)) {
           host_->RenameStoredRow(guid, base::WideToUTF8(name));
+        }
+      } else if (chosen == kChangeIcon && folder) {
+        // The picker hangs off the row, as the Mac's popover does.
+        POINT top_left = {row_bounds.left, row_bounds.top};
+        POINT bottom_right = {row_bounds.right, row_bounds.bottom};
+        ::ClientToScreen(shell_hwnd_, &top_left);
+        ::ClientToScreen(shell_hwnd_, &bottom_right);
+        const RECT anchor = {top_left.x, top_left.y, bottom_right.x,
+                             bottom_right.y};
+        const std::string picked =
+            PhiPickFolderIcon(this, anchor, row_icon);
+        if (!picked.empty()) {
+          host_->SetStoredRowIcon(guid, picked);
         }
       } else if (chosen == kNewFolder && folder) {
         std::wstring name = L"Untitled";
@@ -5634,12 +5850,7 @@ void PhiWindowController::PaintBookmarkBar(HDC dc,
     RECT icon = {pill.left + pad, mid - icon_px / 2, pill.left + pad + icon_px,
                  mid + icon_px / 2};
     if (row.folder) {
-      HGDIOBJ previous = caption_font_ ? ::SelectObject(dc, caption_font_)
-                                       : nullptr;
-      DrawGlyph(dc, icon, L"", palette.label_dim);  // Folder.
-      if (previous) {
-        ::SelectObject(dc, previous);
-      }
+      DrawFolderIcon(dc, icon, row.icon, palette.label_dim, false);
     } else if (!row.favicon.empty()) {
       DrawFavicon(dc, icon, row.favicon.data(), row.favicon_width,
                   row.favicon_height, palette.ground_top);
@@ -6606,11 +6817,17 @@ void PhiWindowController::PaintSidebarBand(HDC dc,
                  mid - Scaled(kFaviconSize) / 2, 0, 0};
     icon.right = icon.left + Scaled(kFaviconSize);
     icon.bottom = icon.top + Scaled(kFaviconSize);
-    if (!bookmark.favicon.empty()) {
+    if (bookmark.folder) {
+      // The Mac paints a Lottie folder carrying the chosen symbol on its
+      // face; with no Lottie runtime here the symbol itself IS the row icon,
+      // drawn from the same imageset artwork the Mac's picker uses. The
+      // catalog's "default" keeps the plain folder glyph.
+      DrawFolderIcon(dc, icon, bookmark.icon, kLabelDim, bookmark.expanded);
+    } else if (!bookmark.favicon.empty()) {
       DrawFavicon(dc, icon, bookmark.favicon.data(), bookmark.favicon_width,
                   bookmark.favicon_height,
                   bookmark.active ? kRowSelectedBg : kTintTop);
-    } else if (!bookmark.folder) {
+    } else {
       HGDIOBJ previous_glyph_font =
           caption_font_ ? ::SelectObject(dc, caption_font_) : nullptr;
       DrawGlyph(dc, icon, L"\uE774", kLabelDim);
@@ -7330,6 +7547,9 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
       }
       return ::DefWindowProcW(hwnd, msg, wparam, lparam);
     case WM_TIMER:
+      if (self && self->tab_preview_ && self->tab_preview_->OnTimer(wparam)) {
+        return 0;
+      }
       if (self && wparam == kHoverCardTimer) {
         self->PromoteHoverCard();  // Kills its own timer.
         return 0;

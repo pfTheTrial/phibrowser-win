@@ -135,6 +135,8 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
                                 const std::string& parent_guid,
                                 const std::string& title) override;
   void RemoveStoredRow(const std::string& guid) override;
+  bool SetStoredRowIcon(const std::string& guid,
+                        const std::string& icon) override;
   bool RenameStoredRow(const std::string& guid,
                        const std::string& name) override;
   void ReorderStoredRow(const std::string& guid, int new_index) override;
@@ -153,6 +155,8 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   void SetNewTabBehavior(PhiNewTabBehavior behavior) override;
   bool AlwaysShowFullUrl() const override;
   void SetAlwaysShowFullUrl(bool enabled) override;
+  bool ShowTabPreviews() const override;
+  void SetShowTabPreviews(bool enabled) override;
   bool RestoreLastSession() const override;
   void SetRestoreLastSession(bool enabled) override;
   void FocusWindowForBrowser(int64_t browser_window_id) override;
@@ -373,6 +377,7 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   int saturation_ = 50;
   PhiNewTabBehavior new_tab_behavior_ = PhiNewTabBehavior::kNewTabPage;
   bool always_show_full_url_ = false;
+  bool show_tab_previews_ = true;  // The Mac's defaultValue.
   // "Restore last session" — persisted app-wide, mirrored into each loaded
   // profile's SessionStartupPref (LAST/DEFAULT).
   bool restore_last_session_ = false;

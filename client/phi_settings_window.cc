@@ -753,6 +753,9 @@ void PhiSettingsWindow::BuildGeneral(int* y) {
   AddToggleRow(y, L"Always show full URL", host_->AlwaysShowFullUrl(),
                /*enabled=*/true, "fullurl");
   AddDividerRow(y);
+  AddToggleRow(y, L"Show tab preview cards", host_->ShowTabPreviews(),
+               /*enabled=*/true, "tabpreviews");
+  AddDividerRow(y);
   {
     const RECT area = AddRow(y, L"Auto picture-in-picture", kPillHeight,
                              kPillWidth);
@@ -2964,6 +2967,8 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
     host_->RequestLayoutMode(static_cast<PhiLayoutMode>(item.value));
   } else if (item.action == "newtab") {
     host_->SetNewTabBehavior(static_cast<PhiNewTabBehavior>(item.value));
+  } else if (item.action == "tabpreviews") {
+    host_->SetShowTabPreviews(!item.on);
   } else if (item.action == "fullurl") {
     host_->SetAlwaysShowFullUrl(!item.on);
   } else if (item.action == "restoresession") {

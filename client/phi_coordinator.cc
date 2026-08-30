@@ -25,6 +25,7 @@
 #include "base/rand_util.h"
 #include "phibrowser-win/client/phi_agent_overlay.h"
 #include "phibrowser-win/client/phi_updater.h"
+#include "phibrowser-win/client/phi_folder_icons.h"
 #include "phibrowser-win/client/phi_icons.h"
 #include "phibrowser-win/client/phi_extensions_popover.h"
 #include "phibrowser-win/client/phi_menu_bar.h"
@@ -950,6 +951,7 @@ PhiStoredRowView StoredRowView(const PhiRow& row) {
   view.url_b = row.url_b;
   view.title_b = row.title_b;
   view.partner_guid = row.split_partner_guid;
+  view.icon = row.icon;
   if (!row.favicon_base64.empty()) {
     std::string decoded;
     if (base::Base64Decode(row.favicon_base64, &decoded)) {
@@ -1237,6 +1239,18 @@ void PhiCoordinator::RemoveStoredRow(const std::string& guid) {
   }
 }
 
+bool PhiCoordinator::SetStoredRowIcon(const std::string& guid,
+                                     const std::string& icon) {
+  if (!tab_store_.SetRowIcon(guid, icon)) {
+    return false;
+  }
+  for (const auto& [slot, controller] : windows_) {
+    controller->RefreshTabs();
+  }
+  PhiSettingsWindow::Refresh();
+  return true;
+}
+
 bool PhiCoordinator::RenameStoredRow(const std::string& guid,
                                      const std::string& name) {
   if (!tab_store_.RenameRow(guid, name)) {
@@ -1394,6 +1408,8 @@ void PhiCoordinator::LoadPrefs() {
       saturation_ = root->FindInt("saturation").value_or(saturation_);
       always_show_full_url_ =
           root->FindBool("alwaysShowFullUrl").value_or(always_show_full_url_);
+      show_tab_previews_ =
+          root->FindBool("showTabPreviews").value_or(show_tab_previews_);
       restore_last_session_ =
           root->FindBool("restoreLastSession").value_or(restore_last_session_);
       always_show_bookmark_bar_ = root->FindBool("alwaysShowBookmarkBar")
@@ -1431,6 +1447,7 @@ void PhiCoordinator::SavePrefs() const {
   base::DictValue root;
   root.Set("saturation", saturation_);
   root.Set("alwaysShowFullUrl", always_show_full_url_);
+  root.Set("showTabPreviews", show_tab_previews_);
   root.Set("restoreLastSession", restore_last_session_);
   root.Set("alwaysShowBookmarkBar", always_show_bookmark_bar_);
   root.Set("bookmarkBarOnNewTab", bookmark_bar_on_new_tab_);
@@ -1739,6 +1756,19 @@ void PhiCoordinator::SetAlwaysShowFullUrl(bool enabled) {
   for (const auto& [slot, controller] : windows_) {
     controller->RefreshTabs();
   }
+  PhiSettingsWindow::Refresh();
+}
+
+bool PhiCoordinator::ShowTabPreviews() const {
+  return show_tab_previews_;
+}
+
+void PhiCoordinator::SetShowTabPreviews(bool enabled) {
+  if (enabled == show_tab_previews_) {
+    return;
+  }
+  show_tab_previews_ = enabled;
+  SavePrefs();
   PhiSettingsWindow::Refresh();
 }
 
@@ -3386,6 +3416,7 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
                                   ? "omnibox"
                                   : "newTabPage");
     out.Set("alwaysShowFullUrl", always_show_full_url_);
+    out.Set("showTabPreviews", show_tab_previews_);
     out.Set("restoreLastSession", restore_last_session_);
     out.Set("pinScope", PhiPinScopeName(tab_store_.pin_scope()));
     // With a profileId, the per-profile browsing settings too.
@@ -3414,6 +3445,10 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
       }
       if (std::optional<bool> full = p->FindBool("alwaysShowFullUrl")) {
         SetAlwaysShowFullUrl(*full);
+        ok = true;
+      }
+      if (std::optional<bool> previews = p->FindBool("showTabPreviews")) {
+        SetShowTabPreviews(*previews);
         ok = true;
       }
       if (std::optional<bool> restore = p->FindBool("restoreLastSession")) {
@@ -3456,6 +3491,7 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
     out.Set("developerMode", developer_mode_);
     out.Set("saturation", saturation_);
     out.Set("alwaysShowFullUrl", always_show_full_url_);
+    out.Set("showTabPreviews", show_tab_previews_);
     out.Set("restoreLastSession", restore_last_session_);
     out.Set("newTabBehavior", new_tab_behavior_ == PhiNewTabBehavior::kOmnibox
                                   ? "omnibox"
@@ -6192,6 +6228,11 @@ bool PhiCoordinator::HandleSkillDialectVerb(const std::string& type,
       if (op == "update") {
         if (const std::string* title = payload->FindString("title")) {
           ok &= RenameStoredRow(*guid, *title);
+        }
+        if (const std::string* icon = payload->FindString("icon")) {
+          // Folders only, as on Mac; an unknown id resolves to "default".
+          ok &= row->type == PhiRowType::kBookmarkFolder &&
+                SetStoredRowIcon(*guid, PhiResolveFolderIcon(*icon));
         }
         if (const std::string* url = payload->FindString("url")) {
           ok &= tab_store_.SetRowUrl(*guid, *url);

@@ -51,6 +51,10 @@ class PhiSettingsHost {
   virtual void SetNewTabBehavior(PhiNewTabBehavior behavior) = 0;
   virtual bool AlwaysShowFullUrl() const = 0;
   virtual void SetAlwaysShowFullUrl(bool enabled) = 0;
+  // GeneralSettings.showTabPreviews — the hover cards on tab, pin and
+  // bookmark rows. On by default, as on Mac.
+  virtual bool ShowTabPreviews() const = 0;
+  virtual void SetShowTabPreviews(bool enabled) = 0;
   // "Restore last session": app-wide choice, pushed into every loaded
   // profile's Chromium startup pref (SessionStartupPref LAST).
   virtual bool RestoreLastSession() const = 0;

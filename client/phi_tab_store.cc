@@ -134,6 +134,9 @@ void PhiTabStore::Load(const std::wstring& path) {
     if (const std::string* title_b = dict.FindString("secondaryTitle")) {
       row.title_b = *title_b;
     }
+    if (const std::string* icon = dict.FindString("icon")) {
+      row.icon = *icon;
+    }
     if (const std::string* partner = dict.FindString("splitPartnerGuid")) {
       row.split_partner_guid = *partner;
     }
@@ -173,6 +176,7 @@ void PhiTabStore::Save() const {
     dict.Set("secondaryUrl", row.url_b);
     dict.Set("secondaryTitle", row.title_b);
     dict.Set("splitPartnerGuid", row.split_partner_guid);
+    dict.Set("icon", row.icon);
     rows.Append(std::move(dict));
   }
   base::DictValue root;
@@ -425,6 +429,21 @@ bool PhiTabStore::RenameRow(const std::string& guid,
   for (PhiRow& row : rows_) {
     if (row.guid == guid) {
       row.title = title;
+      Save();
+      return true;
+    }
+  }
+  return false;
+}
+
+bool PhiTabStore::SetRowIcon(const std::string& guid,
+                             const std::string& icon) {
+  for (PhiRow& row : rows_) {
+    if (row.guid == guid) {
+      if (row.icon == icon) {
+        return false;
+      }
+      row.icon = icon;
       Save();
       return true;
     }

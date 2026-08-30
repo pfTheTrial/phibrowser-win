@@ -51,6 +51,8 @@ struct PhiStoredRowView {
   std::string url_b;
   std::string title_b;  // Empty when it duplicates the primary's.
   std::string partner_guid;
+  // Folders only: the catalog symbol id (the Mac's folderIconName).
+  std::string icon;
 };
 
 // A Space as the chips row and menus consume it.
@@ -73,6 +75,8 @@ struct PhiAgentPipView {
 // What a slot needs from its owner (the coordinator): the full Space list to
 // draw, and requests that only the owner can service (switching to a Space
 // that has no browser yet must create one in that Space's profile).
+class PhiTabPreview;
+
 class PhiSlotHost {
  public:
   virtual ~PhiSlotHost() = default;
@@ -98,6 +102,9 @@ class PhiSlotHost {
   // Mac, so a new window never disagrees with the one beside it.
   virtual PhiLayoutMode LayoutMode() const = 0;
   virtual void RequestLayoutMode(PhiLayoutMode mode) = 0;
+  // The Mac's GeneralSettings.showTabPreviews: whether a settled hover on a
+  // tab, pin or bookmark row raises its page-snapshot card.
+  virtual bool ShowTabPreviews() const = 0;
   // The slot's pinned tabs, in sibling order.
   virtual std::vector<PhiStoredRowView> PinnedRows(int64_t slot) const = 0;
   // Bookmark rows under `parent_guid` (empty = the root), so the menu bar can
@@ -163,6 +170,9 @@ class PhiSlotHost {
   // Removes a stored row (a pinned tab or bookmark) by its guid.
   virtual void RemoveStoredRow(const std::string& guid) = 0;
   // Retitles a stored row — the context menus' Rename….
+  // Sets a bookmark folder's catalog symbol (the Mac's "Change Icon...").
+  virtual bool SetStoredRowIcon(const std::string& guid,
+                                const std::string& icon) = 0;
   virtual bool RenameStoredRow(const std::string& guid,
                                const std::string& name) = 0;
   // Moves a stored row to `new_index` among its siblings (drag-to-reorder in
@@ -588,6 +598,8 @@ class PhiWindowController {
     int favicon_height = 0;
     bool active = false;
     std::wstring title;
+    // The page address, as the hover preview card's second line wants it.
+    std::wstring url;
     // Chromium native side-by-side: members share a splitId. The leading
     // member renders the MERGED row and absorbs its partner as pane B; the
     // partner never becomes its own row.
@@ -601,8 +613,10 @@ class PhiWindowController {
     // chrome:// pages show the Phi mark when no favicon exists.
     bool internal_page = false;
     int b_index = -1;  // -1: not a merged row.
+    int b_id = 0;      // Pane B's session id, for its hover snapshot.
     bool b_active = false;
     std::wstring b_title;
+    std::wstring b_url;
     std::vector<unsigned char> b_favicon;
     int b_favicon_width = 0;
     int b_favicon_height = 0;
@@ -735,6 +749,20 @@ class PhiWindowController {
   void DismissHoverCard(const std::string& suppress_space_id);
   void ResolveHoverCard(const std::string& space_id);  // Fills card_*.
   void DrawHoverCard(HDC dc, const Layout& layout, const PhiPalette& palette);
+  // The hovered row's page-snapshot card (the Mac's TabPreviewController).
+  // Unlike the Space card above it floats in its own popup, so it can hang
+  // over the Chromium child window.
+  std::unique_ptr<PhiTabPreview> tab_preview_;
+  void UpdateTabPreview();  // Re-aims the card at the hovered row.
+  // Paints a bookmark folder's chosen catalog symbol into its icon slot.
+  void DrawFolderIcon(HDC dc,
+                      const RECT& slot,
+                      const std::string& icon_id,
+                      COLORREF ink,
+                      bool expanded);
+  // True when the split holding `tab_id` stacks its panes (the wire's
+  // "horizontal"); false for side-by-side and for a tab in no split.
+  bool SplitIsStacked(int tab_id) const;
   // Pinned tabs (the band under the header) and bookmarks (the section above
   // the open tabs) — both come from the client's own store, as on Mac.
   struct ShortcutRow {
@@ -742,6 +770,8 @@ class PhiWindowController {
     std::string url;
     std::wstring title;
     bool folder = false;
+    // Folders only: the catalog symbol drawn in the row's icon slot.
+    std::string icon;
     // Bookmark outline (the Mac's NSOutlineView): an expanded folder splices
     // its children in below itself, one indent step deeper. `parent_guid`
     // names the folder a row sits in (empty = the root).
@@ -753,6 +783,11 @@ class PhiWindowController {
     // Mac's selected wash + 2pt accent ring.
     bool open = false;
     bool active = false;
+    // The bound tab's session id while `open` — what the hover preview asks
+    // the framework for a snapshot of. A pinned PAIR binds both: `tab_id` is
+    // this row's own tab, `tab_id_b` its partner's.
+    int tab_id = 0;
+    int tab_id_b = 0;
     RECT bounds{};
     // The favicon stored with the row (a pinned tab has no live tab to ask).
     std::vector<unsigned char> favicon;
