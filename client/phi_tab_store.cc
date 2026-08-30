@@ -137,6 +137,9 @@ void PhiTabStore::Load(const std::wstring& path) {
     if (const std::string* icon = dict.FindString("icon")) {
       row.icon = *icon;
     }
+    if (const std::string* layout = dict.FindString("layout")) {
+      row.layout = *layout;
+    }
     if (const std::string* partner = dict.FindString("splitPartnerGuid")) {
       row.split_partner_guid = *partner;
     }
@@ -177,6 +180,7 @@ void PhiTabStore::Save() const {
     dict.Set("secondaryTitle", row.title_b);
     dict.Set("splitPartnerGuid", row.split_partner_guid);
     dict.Set("icon", row.icon);
+    dict.Set("layout", row.layout);
     rows.Append(std::move(dict));
   }
   base::DictValue root;
@@ -449,6 +453,24 @@ bool PhiTabStore::SetRowIcon(const std::string& guid,
     }
   }
   return false;
+}
+
+bool PhiTabStore::SetRowLayout(const std::string& guid,
+                               const std::string& layout) {
+  bool changed = false;
+  for (PhiRow& row : rows_) {
+    // A pinned PAIR is two rows; both carry the layout so either one can
+    // reopen the split with it.
+    const bool mine = row.guid == guid || row.split_partner_guid == guid;
+    if (mine && row.layout != layout) {
+      row.layout = layout;
+      changed = true;
+    }
+  }
+  if (changed) {
+    Save();
+  }
+  return changed;
 }
 
 std::string PhiTabStore::SplitPartner(const std::string& guid) const {

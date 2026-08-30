@@ -53,6 +53,8 @@ struct PhiStoredRowView {
   std::string partner_guid;
   // Folders only: the catalog symbol id (the Mac's folderIconName).
   std::string icon;
+  // Split rows only: "vertical" (side-by-side) or "horizontal" (stacked).
+  std::string layout;
 };
 
 // A Space as the chips row and menus consume it.
@@ -177,6 +179,10 @@ class PhiSlotHost {
   // Retargets a bookmark (the manager's Address cell edit).
   virtual bool SetStoredRowUrl(const std::string& guid,
                                const std::string& url) = 0;
+  // Remembers a split row's divider axis so it reopens stacked or
+  // side-by-side (the Mac's persistent split layout).
+  virtual bool SetStoredRowLayout(const std::string& guid,
+                                  const std::string& layout) = 0;
   virtual bool RenameStoredRow(const std::string& guid,
                                const std::string& name) = 0;
   // Moves a stored row to `new_index` among its siblings (drag-to-reorder in
@@ -776,6 +782,11 @@ class PhiWindowController {
   // True when the split holding `tab_id` stacks its panes (the wire's
   // "horizontal"); false for side-by-side and for a tab in no split.
   bool SplitIsStacked(int tab_id) const;
+  // The split id holding `tab_id`, or empty when it is in none.
+  std::string SplitIdForTab(int tab_id) const;
+  // Re-orients the split holding the tab at `index` (a no-op for the
+  // default side-by-side), used right after a stored split is recreated.
+  void ApplySplitLayout(int index, const std::string& layout);
   // Pinned tabs (the band under the header) and bookmarks (the section above
   // the open tabs) — both come from the client's own store, as on Mac.
   struct ShortcutRow {
@@ -785,6 +796,8 @@ class PhiWindowController {
     bool folder = false;
     // Folders only: the catalog symbol drawn in the row's icon slot.
     std::string icon;
+    // Split rows: the divider axis the pair reopens with.
+    std::string layout;
     // Bookmark outline (the Mac's NSOutlineView): an expanded folder splices
     // its children in below itself, one indent step deeper. `parent_guid`
     // names the folder a row sits in (empty = the root).

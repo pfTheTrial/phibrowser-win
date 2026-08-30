@@ -139,6 +139,10 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
                         const std::string& icon) override;
   bool SetStoredRowUrl(const std::string& guid,
                        const std::string& url) override;
+  bool SetStoredRowLayout(const std::string& guid,
+                          const std::string& layout) override;
+  // The divider axis of the live split holding a tab, for stored rows.
+  std::string LiveSplitLayout(int64_t browser, int index);
   bool RenameStoredRow(const std::string& guid,
                        const std::string& name) override;
   void ReorderStoredRow(const std::string& guid, int new_index) override;

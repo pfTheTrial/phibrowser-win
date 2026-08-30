@@ -952,6 +952,7 @@ PhiStoredRowView StoredRowView(const PhiRow& row) {
   view.title_b = row.title_b;
   view.partner_guid = row.split_partner_guid;
   view.icon = row.icon;
+  view.layout = row.layout;
   if (!row.favicon_base64.empty()) {
     std::string decoded;
     if (base::Base64Decode(row.favicon_base64, &decoded)) {
@@ -1113,6 +1114,44 @@ void PhiCoordinator::RequestDropSplit(int64_t slot, int index_a, int index_b,
                      /*bind_bookmark=*/true);
 }
 
+// The divider axis of the split holding the tab at `index`, or empty when
+// that tab is in no split.
+std::string PhiCoordinator::LiveSplitLayout(int64_t browser, int index) {
+  if (!framework_ || index < 0) {
+    return std::string();
+  }
+  std::string split_id;
+  std::optional<base::Value> tabs = base::JSONReader::Read(
+      framework_->ListTabsJson(browser), base::JSON_PARSE_RFC);
+  if (tabs && tabs->is_list()) {
+    for (const base::Value& v : tabs->GetList()) {
+      const base::DictValue* d = v.GetIfDict();
+      if (d && d->FindInt("index").value_or(-1) == index) {
+        if (const std::string* s = d->FindString("splitId")) {
+          split_id = *s;
+        }
+        break;
+      }
+    }
+  }
+  if (split_id.empty()) {
+    return std::string();
+  }
+  std::optional<base::Value> splits = base::JSONReader::Read(
+      framework_->SplitViewsJson(browser), base::JSON_PARSE_RFC);
+  if (splits && splits->is_list()) {
+    for (const base::Value& v : splits->GetList()) {
+      const base::DictValue* d = v.GetIfDict();
+      const std::string* id = d ? d->FindString("id") : nullptr;
+      if (id && *id == split_id) {
+        const std::string* layout = d->FindString("layout");
+        return layout ? *layout : std::string();
+      }
+    }
+  }
+  return std::string();
+}
+
 void PhiCoordinator::StoreSplitInternal(int64_t slot, int index_a,
                                         int index_b, bool as_bookmark,
                                         int insert_index,
@@ -1163,6 +1202,10 @@ void PhiCoordinator::StoreSplitInternal(int64_t slot, int index_a,
   if (a.url.empty() || b.url.empty()) {
     return;
   }
+  // Remember the arrangement the live split is in, so pinning or
+  // bookmarking a STACKED split reopens it stacked (the Mac persists the
+  // layout on the stored rows, not just on live ones).
+  std::string layout = LiveSplitLayout(browser, index_a);
   if (as_bookmark) {
     // The Mac's addSplitBookmarkFromTab: ONE row keyed on the primary
     // pane, the second pane riding secondaryUrl/-Title (suppressed when it
@@ -1177,6 +1220,9 @@ void PhiCoordinator::StoreSplitInternal(int64_t slot, int index_a,
                                                     : b.title);
       if (insert_index >= 0) {
         tab_store_.Reorder(guid, insert_index);
+      }
+      if (!layout.empty()) {
+        tab_store_.SetRowLayout(guid, layout);
       }
       if (bind_bookmark) {
         framework_->SetTabTag(browser, index_a, guid.c_str());
@@ -1193,6 +1239,9 @@ void PhiCoordinator::StoreSplitInternal(int64_t slot, int index_a,
                              b.favicon_width, b.favicon_height);
     if (!guid_a.empty() && !guid_b.empty()) {
       tab_store_.LinkSplitPair(guid_a, guid_b);
+      if (!layout.empty()) {
+        tab_store_.SetRowLayout(guid_a, layout);  // Stamps both of the pair.
+      }
       if (insert_index >= 0) {
         tab_store_.Reorder(guid_a, insert_index);
         tab_store_.Reorder(guid_b, insert_index + 1);
@@ -1260,6 +1309,17 @@ bool PhiCoordinator::SetStoredRowUrl(const std::string& guid,
     controller->RefreshTabs();
   }
   PhiSettingsWindow::Refresh();
+  return true;
+}
+
+bool PhiCoordinator::SetStoredRowLayout(const std::string& guid,
+                                       const std::string& layout) {
+  if (!tab_store_.SetRowLayout(guid, layout)) {
+    return false;
+  }
+  for (const auto& [slot, controller] : windows_) {
+    controller->RefreshTabs();
+  }
   return true;
 }
 
@@ -6245,6 +6305,11 @@ bool PhiCoordinator::HandleSkillDialectVerb(const std::string& type,
           // Folders only, as on Mac; an unknown id resolves to "default".
           ok &= row->type == PhiRowType::kBookmarkFolder &&
                 SetStoredRowIcon(*guid, PhiResolveFolderIcon(*icon));
+        }
+        if (const std::string* layout = payload->FindString("layout")) {
+          // Split rows only; the divider axis the pair reopens with.
+          ok &= (*layout == "vertical" || *layout == "horizontal") &&
+                SetStoredRowLayout(*guid, *layout);
         }
         if (const std::string* url = payload->FindString("url")) {
           ok &= tab_store_.SetRowUrl(*guid, *url);

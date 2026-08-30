@@ -2818,6 +2818,57 @@ bool PhiWindowController::SplitIsStacked(int tab_id) const {
   return false;
 }
 
+std::string PhiWindowController::SplitIdForTab(int tab_id) const {
+  if (!framework_ || tab_id == 0) {
+    return std::string();
+  }
+  const int64_t browser = active_browser_ ? active_browser_ : window_id_;
+  std::optional<base::Value> parsed = base::JSONReader::Read(
+      framework_->ListTabsJson(browser), base::JSON_PARSE_RFC);
+  if (!parsed || !parsed->is_list()) {
+    return std::string();
+  }
+  for (const base::Value& v : parsed->GetList()) {
+    const base::DictValue* d = v.GetIfDict();
+    if (!d || d->FindInt("id").value_or(0) != tab_id) {
+      continue;
+    }
+    if (const std::string* split = d->FindString("splitId")) {
+      return *split;
+    }
+    return std::string();
+  }
+  return std::string();
+}
+
+// Re-orients a freshly recreated split to the axis its row remembers. The
+// framework creates every split side-by-side, so only "horizontal" is work.
+void PhiWindowController::ApplySplitLayout(int index,
+                                           const std::string& layout) {
+  if (!framework_ || layout.empty() || layout == "vertical" || index < 0) {
+    return;
+  }
+  const int64_t browser = active_browser_ ? active_browser_ : window_id_;
+  std::optional<base::Value> parsed = base::JSONReader::Read(
+      framework_->ListTabsJson(browser), base::JSON_PARSE_RFC);
+  if (!parsed || !parsed->is_list()) {
+    return;
+  }
+  for (const base::Value& v : parsed->GetList()) {
+    const base::DictValue* d = v.GetIfDict();
+    if (!d || d->FindInt("index").value_or(-1) != index) {
+      continue;
+    }
+    const std::string* split = d->FindString("splitId");
+    if (split && !split->empty()) {
+      // A ratio outside [0,1] keeps whatever the split already has.
+      framework_->UpdateSplitView(browser, split->c_str(), layout.c_str(),
+                                  -1.0);
+    }
+    return;
+  }
+}
+
 // The hovered row's page-snapshot card (the Mac's TabPreviewRegistration,
 // which every tab surface installs on its cells). Eligibility is the Mac's:
 // the setting on, no drag in flight, and a LIVE tab behind the row. A split
@@ -3785,6 +3836,7 @@ void PhiWindowController::RebuildShortcuts() {
     row.title_b = base::UTF8ToWide(view.title_b);
     row.partner_guid = std::move(view.partner_guid);
     row.icon = std::move(view.icon);
+    row.layout = std::move(view.layout);
     return row;
   };
   for (PhiStoredRowView& view : host_->PinnedRows(window_id_)) {
@@ -4342,6 +4394,7 @@ void PhiWindowController::OpenStoredSplit(const ShortcutRow& row,
     framework_->ActivateTab(browser, index_a);
     if (index_b >= 0) {
       framework_->SplitActiveWith(browser, index_b);
+      ApplySplitLayout(index_a, row.layout);
     }
     RefreshTabs();
     return;
@@ -4375,6 +4428,7 @@ void PhiWindowController::OpenStoredSplit(const ShortcutRow& row,
   framework_->ActivateTab(browser, index_a);
   if (split_a.empty() || split_a != split_b) {
     framework_->SplitActiveWith(browser, index_b);
+    ApplySplitLayout(index_a, row.layout);
   }
   RefreshTabs();
 }
@@ -5034,7 +5088,7 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
       enum : UINT { kPin = 1, kBookmark, kClose, kCloseOther, kSplitCurrent,
                     kOpenAsSplit, kRemoveSplit, kGroup, kUngroupTab,
                     kPinSplit, kBookmarkSplit, kDuplicate, kCopyUrl,
-                    kCopyLeft, kCopyRight };
+                    kCopyLeft, kCopyRight, kConvertSplit };
       // Dynamic Move/Clone-to-Space rows ride these ranges (99 each).
       constexpr UINT kMoveSpaceFirst = 100;
       constexpr UINT kCloneSpaceFirst = 200;
@@ -5127,6 +5181,12 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
         ::AppendMenuW(menu, MF_STRING, kCopyLeft, L"Copy Left URL");
         ::AppendMenuW(menu, MF_STRING, kCopyRight, L"Copy Right URL");
         ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        // The Mac's convert item, labelled by where it takes you: a
+        // side-by-side pair offers the stacked arrangement and vice versa.
+        ::AppendMenuW(menu, MF_STRING, kConvertSplit,
+                      SplitIsStacked(row.id)
+                          ? L"Convert to Horizontal Split"
+                          : L"Convert to Vertical Split");
         ::AppendMenuW(menu, MF_STRING, kRemoveSplit, L"Remove from Split");
         ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         ::AppendMenuW(menu, persist_flags, kBookmarkSplit,
@@ -5163,7 +5223,9 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
         host_->RequestStoreSplit(window_id_, row.index, row.b_index,
                                  /*as_bookmark=*/true);
       } else if (chosen == kDuplicate && framework_) {
-        // A split duplicates as a fresh split (both panes), as on Mac.
+        // A split duplicates as a fresh split (both panes), as on Mac —
+        // in the same arrangement as the one it came from.
+        const bool stacked = merged && SplitIsStacked(row.id);
         const int fresh_a =
             url_a.empty() ? -1 : framework_->NewTab(browser, url_a.c_str());
         if (merged && fresh_a >= 0 && !url_b.empty()) {
@@ -5171,6 +5233,9 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
           framework_->ActivateTab(browser, fresh_a);
           if (fresh_b >= 0) {
             framework_->SplitActiveWith(browser, fresh_b);
+            if (stacked) {
+              ApplySplitLayout(fresh_a, "horizontal");
+            }
           }
         }
         RefreshTabs();
@@ -5191,6 +5256,19 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
           framework_->SplitActiveWith(browser, fresh);
         }
         RefreshTabs();
+      } else if (chosen == kConvertSplit && framework_) {
+        // Toggle the divider axis, and remember it on the stored rows the
+        // panes are bound to so the split reopens the same way.
+        const std::string split_id = SplitIdForTab(row.id);
+        if (!split_id.empty()) {
+          const bool stacked = SplitIsStacked(row.id);
+          const char* next = stacked ? "vertical" : "horizontal";
+          framework_->UpdateSplitView(browser, split_id.c_str(), next, -1.0);
+          if (host_ && !row.tag.empty()) {
+            host_->SetStoredRowLayout(row.tag, next);
+          }
+          RefreshTabs();
+        }
       } else if (chosen == kRemoveSplit && framework_) {
         framework_->Unsplit(browser, row.index);
         RefreshTabs();
@@ -5249,7 +5327,7 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
       // The Mac pinned-cell menu: open, duplicate, copy, rename, unpin,
       // and close (the bound live tab or pair) when open.
       enum : UINT { kOpen = 1, kUnpin, kDuplicate, kCopyUrl, kCopyLeft,
-                    kCopyRight, kRename, kClose };
+                    kCopyRight, kRename, kClose, kConvertSplit };
       HMENU menu = ::CreatePopupMenu();
       if (!menu) {
         return;
@@ -5265,6 +5343,13 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
         ::AppendMenuW(menu, MF_STRING, kCopyUrl, L"Copy Link");
       }
       ::AppendMenuW(menu, MF_STRING, kRename, L"Rename...");
+      if (split_cell) {
+        ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        ::AppendMenuW(menu, MF_STRING, kConvertSplit,
+                      pin.layout == "horizontal"
+                          ? L"Convert to Horizontal Split"
+                          : L"Convert to Vertical Split");
+      }
       ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
       ::AppendMenuW(menu, MF_STRING, kUnpin,
                     split_cell ? L"Unpin Split" : L"Unpin");
@@ -5283,6 +5368,8 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
       const std::string url = pin.url;
       const std::string url_b = pin.url_b;
       const std::wstring pin_title = pin.title;
+      const std::string pin_layout = pin.layout;
+      const int pin_tab_id = pin.tab_id;
       ::DestroyMenu(menu);
       const int64_t browser = active_browser_ ? active_browser_ : window_id_;
       if (chosen == kOpen && !url.empty()) {
@@ -5308,6 +5395,20 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
                           L"Enter a new name for this pinned tab.", &name)) {
           host_->RenameStoredRow(guid, base::WideToUTF8(name));
         }
+      } else if (chosen == kConvertSplit && host_) {
+        // Flip what the pair REMEMBERS, and the live split too when it is
+        // currently open — the Mac's convertClosedPinnedSplitLayout.
+        const char* next =
+            pin_layout == "horizontal" ? "vertical" : "horizontal";
+        host_->SetStoredRowLayout(guid, next);
+        if (framework_ && pin_tab_id != 0) {
+          const std::string split_id = SplitIdForTab(pin_tab_id);
+          if (!split_id.empty()) {
+            framework_->UpdateSplitView(browser, split_id.c_str(), next,
+                                        -1.0);
+          }
+        }
+        RefreshTabs();
       } else if (chosen == kUnpin && !guid.empty()) {
         // Dropping the store row also drops the binding at the next rebuild,
         // so a live bound tab returns to the tab list as a normal tab. A
@@ -5337,7 +5438,8 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
       // The Mac bookmark-row menu: open, open as split, copy, rename,
       // delete (folders keep rename/new-nested-folder/delete).
       enum : UINT { kOpen = 1, kOpenSplit, kCopyUrl, kCopyLeft, kCopyRight,
-                    kRename, kNewFolder, kChangeIcon, kRemove };
+                    kRename, kNewFolder, kChangeIcon, kRemove,
+                    kConvertSplit };
       HMENU menu = ::CreatePopupMenu();
       if (!menu) {
         return;
@@ -5354,6 +5456,12 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
         }
       }
       ::AppendMenuW(menu, MF_STRING, kRename, L"Rename...");
+      if (split_row) {
+        ::AppendMenuW(menu, MF_STRING, kConvertSplit,
+                      bookmark.layout == "horizontal"
+                          ? L"Convert to Horizontal Split"
+                          : L"Convert to Vertical Split");
+      }
       if (bookmark.folder) {
         // The Mac's folder menu: Rename, then the icon picker.
         ::AppendMenuW(menu, MF_STRING, kChangeIcon, L"Change Icon...");
@@ -5375,6 +5483,8 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
       const std::wstring bookmark_title = bookmark.title;
       const bool folder = bookmark.folder;
       const std::string row_icon = bookmark.icon;
+      const std::string row_layout = bookmark.layout;
+      const int row_tab_id = bookmark.tab_id;
       const RECT row_bounds = bookmark.bounds;
       ::DestroyMenu(menu);
       const int64_t browser = active_browser_ ? active_browser_ : window_id_;
@@ -5415,6 +5525,18 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
                           &name)) {
           host_->RenameStoredRow(guid, base::WideToUTF8(name));
         }
+      } else if (chosen == kConvertSplit && host_) {
+        const char* next =
+            row_layout == "horizontal" ? "vertical" : "horizontal";
+        host_->SetStoredRowLayout(guid, next);
+        if (framework_ && row_tab_id != 0) {
+          const std::string split_id = SplitIdForTab(row_tab_id);
+          if (!split_id.empty()) {
+            framework_->UpdateSplitView(browser, split_id.c_str(), next,
+                                        -1.0);
+          }
+        }
+        RefreshTabs();
       } else if (chosen == kChangeIcon && folder) {
         // The picker hangs off the row, as the Mac's popover does.
         POINT top_left = {row_bounds.left, row_bounds.top};
