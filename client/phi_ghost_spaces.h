@@ -72,6 +72,11 @@ class PhiGhostSpaces {
   // The Space stopped being a ghost: it materialized, or it was deleted.
   void ClearParked(const std::string& space_id);
 
+  // Which Space remembers `window_id` as its window, or nullptr. This is how
+  // a materialized window — announced with the PREVIOUS session's id — finds
+  // the Space it belongs to.
+  const std::string* SpaceForWindowId(int window_id) const;
+
   // Every parked window that no Space claims — dropped rather than left to
   // be replayed as a loose window by the next unfiltered restore.
   std::vector<Remembered> Orphans() const;

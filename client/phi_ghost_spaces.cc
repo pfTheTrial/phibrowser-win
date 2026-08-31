@@ -167,6 +167,18 @@ const PhiGhostSpaces::Remembered* PhiGhostSpaces::Parked(
   return it == parked_.end() ? nullptr : &it->second;
 }
 
+const std::string* PhiGhostSpaces::SpaceForWindowId(int window_id) const {
+  if (window_id == 0) {
+    return nullptr;
+  }
+  for (const auto& [space_id, remembered] : remembered_) {
+    if (remembered.window_id == window_id) {
+      return &space_id;
+    }
+  }
+  return nullptr;
+}
+
 void PhiGhostSpaces::ClearParked(const std::string& space_id) {
   parked_.erase(space_id);
 }

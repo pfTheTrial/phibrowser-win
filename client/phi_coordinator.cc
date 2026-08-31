@@ -5307,6 +5307,30 @@ void PhiCoordinator::OnBrowserWindowCreated(int64_t window_id, void* hwnd) {
     last_agent_window_id_ = window_id;
     return;
   }
+  // LAZY RESTORE: a materialized ghost carries the PREVIOUS session's window
+  // id, which is how it is matched back to the Space that owned it — this
+  // run's session_id() is freshly allocated and never matches what the client
+  // persisted. Readable only here, while Browser::Create is still on the
+  // stack.
+  const int restored_from =
+      framework_ ? framework_->RestoredFromWindowId() : 0;
+  if (restored_from > 0 && pending_slot_ == 0) {
+    if (const std::string* space =
+            ghost_spaces_.SpaceForWindowId(restored_from)) {
+      const std::string space_id = *space;
+      // Attach it to whichever slot is showing that Space's neighbourhood;
+      // with one shell that is simply the first.
+      if (!windows_.empty()) {
+        auto slot = windows_.begin();
+        slot->second->AttachSpaceBrowser(space_id, window_id,
+                                         static_cast<HWND>(hwnd));
+        browser_to_slot_[window_id] = slot->first;
+        ghost_spaces_.ClearParked(space_id);
+        PushSpaceMenu();
+        return;
+      }
+    }
+  }
   if (pending_slot_ != 0) {
     // A Space browser for an existing slot: attach, don't open a new shell.
     auto it = windows_.find(pending_slot_);
