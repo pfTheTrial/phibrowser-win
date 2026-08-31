@@ -1353,6 +1353,10 @@ void PhiCoordinator::RequestReleaseTab(int tab_id) {
   agent_drives_.Release(tab_id);
 }
 
+void PhiCoordinator::OnSessionRestoreSettled(const char* receipt_json) {
+  last_restore_receipt_ = receipt_json ? receipt_json : "";
+}
+
 // --- Agent operating mask for the user's own Spaces ------------------------
 // The browser is the only thing that can see an agent driving one of these
 // tabs, so these three are its report channel (phi::PhiUserSpaceDrive). The
@@ -5894,6 +5898,76 @@ bool PhiCoordinator::HandleSkillDialectVerb(const std::string& type,
                                                        token->c_str())
                          : framework_->CloseTabGroup(browser,
                                                      token->c_str()));
+      return true;
+    }
+    return fail("invalid_payload");
+  }
+
+  // --- Lazy Space restore, phase 2 (harness surface) ------------------------
+  // Deliberately a thin passthrough to the framework: the park/materialize
+  // state machine is phase 3, and these exist so the receipt and the three
+  // materialize outcomes can be exercised BEFORE any client state depends on
+  // them.
+  if (type.rfind("agentSpace.lazyRestore.", 0) == 0) {
+    const std::string op = type.substr(23);
+    if (!framework_) {
+      return fail("no_framework");
+    }
+    if (op == "ghosts") {
+      std::optional<base::Value> parked = base::JSONReader::Read(
+          framework_->GhostWindowsJson(), base::JSON_PARSE_RFC);
+      if (parked) {
+        out->Set("parked", std::move(*parked));
+      }
+      out->Set("receipt", last_restore_receipt_);
+      out->Set("ok", true);
+      return true;
+    }
+    if (op == "restore") {
+      const std::string* preferred =
+          payload ? payload->FindString("profile") : nullptr;
+      const bool armed =
+          payload ? payload->FindBool("armed").value_or(false) : false;
+      std::vector<int> eager;
+      if (const base::ListValue* ids =
+              payload ? payload->FindList("eagerWindowIds") : nullptr) {
+        for (const base::Value& v : *ids) {
+          if (v.is_int()) {
+            eager.push_back(v.GetInt());
+          }
+        }
+      }
+      last_restore_receipt_.clear();
+      framework_->RestorePreviousSession(
+          preferred ? preferred->c_str() : "", armed,
+          eager.empty() ? nullptr : eager.data(),
+          static_cast<int>(eager.size()));
+      out->Set("ok", true);
+      return true;
+    }
+    if (op == "materialize" || op == "drop") {
+      const std::string* profile =
+          payload ? payload->FindString("profile") : nullptr;
+      const std::optional<int> window_id =
+          payload ? payload->FindInt("windowId") : std::nullopt;
+      if (!profile || !window_id) {
+        return fail("invalid_payload");
+      }
+      if (op == "drop") {
+        out->Set("dropped",
+                 framework_->DropGhostWindow(profile->c_str(), *window_id));
+        out->Set("ok", true);
+        return true;
+      }
+      const int outcome =
+          framework_->MaterializeGhostWindow(profile->c_str(), *window_id);
+      // Reported by NAME: "refusedForNow" and "noSuchGhost" mean opposite
+      // things to a caller holding a park record (retry vs give up), and a
+      // bare number invites collapsing them.
+      out->Set("outcome", outcome == 0   ? "materialized"
+                          : outcome == 1 ? "refusedForNow"
+                                         : "noSuchGhost");
+      out->Set("ok", outcome == 0);
       return true;
     }
     return fail("invalid_payload");

@@ -81,6 +81,7 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
                                    int64_t session_id) override;
   void OnAgentStoppedUserSpaceTab(int64_t tab_id,
                                   int64_t session_id) override;
+  void OnSessionRestoreSettled(const char* receipt_json) override;
 
   // PhiControlDelegate (called on the control server's I/O thread):
   std::string HandleControlCommand(const std::string& type,
@@ -400,6 +401,10 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // Which of the user's own tabs an agent currently holds (the operating
   // mask). Fed by the three delegate reports above.
   PhiAgentDriveRegistry agent_drives_;
+  // The last lazy-restore receipt, verbatim. Phase 2 keeps it only so the
+  // harness can read it back; the park/materialize state machine (phase 3)
+  // will REPLACE its records from this, never merge.
+  std::string last_restore_receipt_;
   // Message-window timer ids: 1 profile-space finish, 2 agent-space
   // keep-alive, this one the operating mask's idle/takeover sweep.
   static constexpr UINT_PTR kAgentDriveSweepTimer = 3;
