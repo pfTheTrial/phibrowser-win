@@ -82,6 +82,8 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
                                    int64_t session_id) override;
   void OnAgentStoppedUserSpaceTab(int64_t tab_id,
                                   int64_t session_id) override;
+  void OnTabDistillable(int64_t window_id, int tab_id,
+                        bool distillable) override;
   void OnSessionRestoreSettled(const char* receipt_json) override;
   void OnColdStartRestorePlan(std::vector<int>* eager_window_ids,
                               bool* armed) override;
@@ -179,6 +181,8 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   bool ShowTabPreviews() const override;
   void NoteSpaceWindow(const std::string& space_id,
                        int64_t browser_window_id) override;
+  void NoteTabDistillable(int64_t window_id, int tab_id,
+                          bool distillable) override;
   bool IsTabAgentDriven(int tab_id) const override;
   bool IsTabReclaimed(int tab_id) const override;
   void RequestReclaimTab(int tab_id) override;

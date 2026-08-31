@@ -669,6 +669,17 @@ PhiWindowController::Layout PhiWindowController::ComputeLayout() {
       out.extensions = {fr - btn, fmid - btn / 2, fr, fmid + btn / 2};
       fr = out.extensions.left - Scaled(2);
       out.copy_link = {fr - btn, fmid - btn / 2, fr, fmid + btn / 2};
+      // Reader View leads the stack, and ONLY when the active tab has an
+      // article — a reader button on a page with nothing to read is the
+      // thing the Mac's "show it only where it has something to offer"
+      // change removed.
+      if (ActiveTabDistillable()) {
+        const int rr = out.copy_link.left - Scaled(2);
+        out.reader = {rr - btn, fmid - btn / 2, rr, fmid + btn / 2};
+        fr = out.reader.left;
+      } else {
+        fr = out.copy_link.left;
+      }
       if (field_ext_count_ > 0) {
         // Pinned-extension icons lead the stack — but only while the text
         // keeps the Mac's 84pt minimum (minimumAddressTextWidth); below
@@ -676,12 +687,14 @@ PhiWindowController::Layout PhiWindowController::ComputeLayout() {
         const int strip_w = field_ext_count_ * btn +
                             (field_ext_count_ - 1) * Scaled(2);
         const int text_left = out.url_field.left + Scaled(12);
-        const int remaining = out.copy_link.left - Scaled(2) - strip_w -
-                              Scaled(8) - text_left;
+        const int stack_left =
+            out.reader.right > out.reader.left ? out.reader.left
+                                               : out.copy_link.left;
+        const int remaining =
+            stack_left - Scaled(2) - strip_w - Scaled(8) - text_left;
         if (remaining >= Scaled(84)) {
-          out.field_ext_strip = {out.copy_link.left - Scaled(2) - strip_w,
-                                 fmid - btn / 2,
-                                 out.copy_link.left - Scaled(2),
+          out.field_ext_strip = {stack_left - Scaled(2) - strip_w,
+                                 fmid - btn / 2, stack_left - Scaled(2),
                                  fmid + btn / 2};
         }
       }
@@ -2904,6 +2917,23 @@ void PhiWindowController::SyncBookmarkManager() {
   }
 }
 
+void PhiWindowController::NoteTabDistillable(int tab_id, bool distillable) {
+  const bool changed = distillable ? distillable_tabs_.insert(tab_id).second
+                                   : distillable_tabs_.erase(tab_id) > 0;
+  if (changed && shell_hwnd_) {
+    ::InvalidateRect(shell_hwnd_, nullptr, FALSE);
+  }
+}
+
+bool PhiWindowController::ActiveTabDistillable() const {
+  for (const TabRow& row : tabs_) {
+    if (row.active) {
+      return distillable_tabs_.count(row.id) > 0;
+    }
+  }
+  return false;
+}
+
 void PhiWindowController::UpdateTabPreview() {
   if (!host_ || !host_->ShowTabPreviews() || drag_active_) {
     if (tab_preview_) {
@@ -4597,6 +4627,19 @@ void PhiWindowController::OnChromeClick(int x, int y) {
       }
       return;
     }
+  }
+  if (::PtInRect(&layout.reader, pt)) {
+    if (framework_) {
+      const int64_t browser = active_browser_ ? active_browser_ : window_id_;
+      for (const TabRow& row : tabs_) {
+        if (row.active) {
+          framework_->DistillTab(browser, row.index);
+          break;
+        }
+      }
+      RefreshTabs();
+    }
+    return;
   }
   if (::PtInRect(&layout.copy_link, pt)) {
     // The in-field copy-link button: current URL to the clipboard, glyph
@@ -6428,6 +6471,17 @@ void PhiWindowController::PaintChrome(HDC dc,
   // The field's in-field copy-link button (SideAddressBar's rightStack lead):
   // a 12pt link glyph on a radius-4 hover wash; a checkmark for the second
   // after a copy, the Mac's triggered swap.
+  if (layout.reader.right > layout.reader.left) {
+    HGDIOBJ previous_reader_font =
+        chip_icon_font_ ? ::SelectObject(dc, chip_icon_font_) : nullptr;
+    if (hover_kind_ == HoverKind::kNav && hover_index_ == 11) {
+      FillRounded(dc, layout.reader, palette.hover, Scaled(4));
+    }
+    DrawGlyph(dc, layout.reader, L"\uE736", kLabel);  // Reading mode.
+    if (previous_reader_font) {
+      ::SelectObject(dc, previous_reader_font);
+    }
+  }
   if (layout.copy_link.right > layout.copy_link.left) {
     HGDIOBJ previous_link_font =
         chip_icon_font_ ? ::SelectObject(dc, chip_icon_font_) : nullptr;

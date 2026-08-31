@@ -108,6 +108,11 @@ class PhiSlotHost {
   // The Mac's GeneralSettings.showTabPreviews: whether a settled hover on a
   // tab, pin or bookmark row raises its page-snapshot card.
   virtual bool ShowTabPreviews() const = 0;
+  // Reader View: upstream says this tab has an article. The shell shows its
+  // reader button only for such tabs.
+  virtual void NoteTabDistillable(int64_t window_id,
+                                  int tab_id,
+                                  bool distillable) = 0;
   // A Space's browser is live in this slot. The coordinator remembers the
   // (Space, window id) pair so a later run can name that window when it asks
   // the framework to park or rebuild it (lazy Space restore).
@@ -299,6 +304,8 @@ class PhiWindowController {
   PhiWindowController& operator=(const PhiWindowController&) = delete;
 
   int64_t window_id() const { return window_id_; }
+  // Upstream's distillability verdict for one of this window's tabs.
+  void NoteTabDistillable(int tab_id, bool distillable);
   bool is_agent() const { return agent_; }
   bool is_incognito() const { return incognito_; }
   // For satellite surfaces (search palette, popovers) that act through the
@@ -502,6 +509,10 @@ class PhiWindowController {
     // SideAddressBar's in-field copy-link button (performance layout only) —
     // the leading half of the field's trailing stack, the puzzle its other.
     RECT copy_link{};
+    // Reader View's entry, leading the copy-link button. Empty unless the
+    // ACTIVE tab is distillable — the Mac shows the reader button only where
+    // Reader View has something to offer.
+    RECT reader{};
     // The pinned-extension icon strip leading the copy-link button inside
     // the capsule. Empty when nothing is pinned OR the icons would squeeze
     // the text below the Mac's 84pt minimum (they hide, as on Mac).
@@ -791,6 +802,7 @@ class PhiWindowController {
   void SyncBookmarkManager();
   bool WantsBookmarkPage() const;
   void UpdateTabPreview();  // Re-aims the card at the hovered row.
+  bool ActiveTabDistillable() const;
   // Paints a bookmark folder's chosen catalog symbol into its icon slot.
   void DrawFolderIcon(HDC dc,
                       const RECT& slot,
@@ -949,6 +961,9 @@ class PhiWindowController {
   // Copy-link acknowledgement: the glyph swaps to a checkmark for a second
   // after a copy (the Mac's triggeredSystemName/triggeredRevertDelay).
   bool copy_link_flash_ = false;
+  // Tabs upstream's distiller says carry an article. Positive-only reports,
+  // so entries are added and cleared when the tab navigates away.
+  std::set<int> distillable_tabs_;
   // The address capsule's hover brighten (SideAddressBar hoveredColor:
   // resting 4% wash → emphasized 8%). Fed from BOTH sides — the shell's
   // mouse moves for the capsule's rim, the EDIT subclass for the text area

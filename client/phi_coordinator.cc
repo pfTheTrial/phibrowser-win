@@ -1407,6 +1407,29 @@ void PhiCoordinator::OnColdStartParkedWindows(const char* parked_json,
   PushSpaceMenu();
 }
 
+void PhiCoordinator::OnTabDistillable(int64_t window_id, int tab_id,
+                                     bool distillable) {
+  // Route to the shell hosting this browser. A SPACE browser is mapped
+  // through browser_to_slot_; the slot's ORIGINAL window has no such entry
+  // (it is the slot), so fall back to looking it up directly — otherwise the
+  // primary window, which is most of the time, never hears a verdict.
+  auto slot = browser_to_slot_.find(window_id);
+  const int64_t target =
+      slot != browser_to_slot_.end() ? slot->second : window_id;
+  auto it = windows_.find(target);
+  LOG(INFO) << "[PhiClient] Distillable win=" << window_id << " tab=" << tab_id
+            << " d=" << distillable << " target=" << target
+            << " routed=" << (it != windows_.end());
+  if (it != windows_.end()) {
+    it->second->NoteTabDistillable(tab_id, distillable);
+  }
+}
+
+void PhiCoordinator::NoteTabDistillable(int64_t window_id, int tab_id,
+                                        bool distillable) {
+  OnTabDistillable(window_id, tab_id, distillable);
+}
+
 void PhiCoordinator::NoteSpaceWindow(const std::string& space_id,
                                      int64_t browser_window_id) {
   std::string profile = "Default";
