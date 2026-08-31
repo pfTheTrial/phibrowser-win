@@ -21,6 +21,7 @@
 #include "phibrowser-win/client/phi_control_server.h"
 #include "phibrowser-win/client/phi_credentials.h"
 #include "phibrowser-win/client/phi_kiosk_window.h"
+#include "phibrowser-win/client/phi_peek_panel.h"
 #include "phibrowser-win/client/phi_vault_helper.h"
 #include "phibrowser-win/client/phi_emoji.h"
 #include "phibrowser-win/client/phi_prompt.h"
@@ -327,6 +328,10 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // Kiosk windows, keyed like windows_ but held apart: they are not shell
   // slots, take no Space, and never appear in the slot/space bookkeeping.
   std::map<int64_t, std::unique_ptr<PhiKioskWindow>> kiosks_;
+  // Peek panels, keyed by the peek's own window id. Like kiosks these take no
+  // slot; unlike them they are bound to an opener tab and float inside that
+  // window's content card.
+  std::map<int64_t, std::unique_ptr<PhiPeekPanel>> peeks_;
   int sidebar_width_ = kSidebarWidthDefault;
   // Every browser window -> the slot hosting it (a slot has one per Space).
   std::map<int64_t, int64_t> browser_to_slot_;

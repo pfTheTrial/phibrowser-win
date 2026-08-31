@@ -5391,6 +5391,25 @@ void PhiCoordinator::OnBrowserWindowCreated(int64_t window_id, void* hwnd) {
     kiosks_[window_id] = std::move(kiosk);
     return;
   }
+  // A Peek: floats inside its opener window's content card rather than
+  // taking a window of its own. Same push-not-query marker contract.
+  int64_t peek_opener_window = 0;
+  int64_t peek_opener_tab = 0;
+  if (framework_) {
+    framework_->CreatedWindowPeekOpener(&peek_opener_window, &peek_opener_tab);
+  }
+  if (peek_opener_window != 0) {
+    auto opener = windows_.find(peek_opener_window);
+    if (opener != windows_.end()) {
+      peeks_[window_id] = std::make_unique<PhiPeekPanel>(
+          window_id, static_cast<HWND>(hwnd), peek_opener_window,
+          peek_opener_tab, opener->second.get(), framework_, this);
+      return;
+    }
+    // No opener to float over — close it rather than leave a stray window.
+    LOG(WARNING) << "[PhiClient] peek without an opener window "
+                 << peek_opener_window;
+  }
   // Option B: the client owns a shell window and reparents Chromium's content
   // in. The shell routes activation back through the framework.
   if (!pending_agent_task_.empty()) {
@@ -5716,6 +5735,45 @@ void PhiCoordinator::OnTabsChanged(int64_t window_id) {
     kiosk->second->RefreshState();
     return;
   }
+  auto peek = peeks_.find(window_id);
+  if (peek != peeks_.end()) {
+    peek->second->RefreshState();
+    return;
+  }
+  // A peek belongs to the tab that opened it: it shows only while that tab is
+  // active, and travels with its opener window.
+  int64_t active_tab = 0;
+  bool has_peek_here = false;
+  for (const auto& [peek_id, panel] : peeks_) {
+    if (panel->opener_window_id() == window_id) {
+      has_peek_here = true;
+      break;
+    }
+  }
+  if (has_peek_here && framework_) {
+    if (const char* tabs_json = framework_->ListTabsJson(window_id)) {
+      std::optional<base::DictValue> tabs =
+          base::JSONReader::ReadDict(tabs_json, base::JSON_PARSE_RFC);
+      const base::ListValue* rows = tabs ? tabs->FindList("tabs") : nullptr;
+      if (rows) {
+        for (const base::Value& row : *rows) {
+          const base::DictValue* tab = row.GetIfDict();
+          if (tab && tab->FindBool("active").value_or(false)) {
+            active_tab = static_cast<int64_t>(
+                tab->FindDouble("id").value_or(0));
+            break;
+          }
+        }
+      }
+    }
+  }
+  for (auto& [peek_id, panel] : peeks_) {
+    if (panel->opener_window_id() != window_id) {
+      continue;
+    }
+    panel->Reposition();
+    panel->SetVisibleForActiveTab(active_tab);
+  }
   auto slot_it = browser_to_slot_.find(window_id);
   const int64_t slot = slot_it != browser_to_slot_.end() ? slot_it->second
                                                          : window_id;
@@ -5732,6 +5790,9 @@ void PhiCoordinator::OnBrowserWindowClosing(int64_t window_id) {
   LOG(INFO) << "[PhiClient] OnBrowserWindowClosing windowId=" << window_id;
   if (kiosks_.erase(window_id) > 0) {
     return;  // A Kiosk owns nothing else — no slot, no Space, no bookkeeping.
+  }
+  if (peeks_.erase(window_id) > 0) {
+    return;
   }
   // An agent Space's hidden window closing (via complete(), the user closing
   // the surfaced window, or a crash) drops its record — the skill learns the
