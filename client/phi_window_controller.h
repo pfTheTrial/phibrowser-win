@@ -635,6 +635,10 @@ class PhiWindowController {
     std::string tag;
     // chrome:// pages show the Phi mark when no favicon exists.
     bool internal_page = false;
+    // DORMANT: holds navigation history it has not loaded yet (restored,
+    // duplicated, or discarded). Phi does not load restored background tabs,
+    // so this is a steady state for most of them — the row is drawn dimmed.
+    bool unloaded = false;
     int b_index = -1;  // -1: not a merged row.
     int b_id = 0;      // Pane B's session id, for its hover snapshot.
     bool b_active = false;

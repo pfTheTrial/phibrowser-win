@@ -4050,6 +4050,7 @@ void PhiWindowController::RebuildTabs() {
       row.title = base::UTF8ToWide(label);
       row.url = url ? base::UTF8ToWide(*url) : std::wstring();
       row.internal_page = url && url->rfind("chrome://", 0) == 0;
+      row.unloaded = d.FindBool("unloaded").value_or(false);
       if (row.active) {
         // The bookmark bar's "show on new tab" reads this.
         active_tab_url_ = url ? *url : std::string();
@@ -7270,7 +7271,10 @@ void PhiWindowController::PaintSidebarBand(HDC dc,
           ::SelectObject(dc, previous_glyph_font);
         }
       }
-      ::SetTextColor(dc, kLabel);
+      // A DORMANT tab (restored but never loaded, or discarded) reads
+      // dimmer than a live one — the Mac's isUnloaded treatment. The active
+      // row is never dormant, so this never fights the selected pill.
+      ::SetTextColor(dc, r.unloaded && !r.active ? kLabelDim : kLabel);
       RECT title_rc = {slot.right + Scaled(8), pill.top, right - Scaled(4),
                        pill.bottom};
       ::DrawTextW(dc, (pane_b ? r.b_title : r.title).c_str(), -1, &title_rc,
