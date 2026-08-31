@@ -191,6 +191,7 @@ void PhiCoordinator::OnFrameworkReady(phi_framework::PhiFramework* framework,
   const std::wstring user_data_dir =
       base::UTF8ToWide(user_data_dir_utf8 ? user_data_dir_utf8 : "");
   spaces_path_ = user_data_dir + L"\\PhiSpaces.json";
+  ghost_spaces_.Load(user_data_dir + L"\\PhiGhostSpaces.json");
   layout_path_ = user_data_dir + L"\\PhiLayout.json";
   theme_path_ = user_data_dir + L"\\PhiTheme.json";
   prefs_path_ = user_data_dir + L"\\PhiPrefs.json";
@@ -1353,8 +1354,32 @@ void PhiCoordinator::RequestReleaseTab(int tab_id) {
   agent_drives_.Release(tab_id);
 }
 
+void PhiCoordinator::NoteSpaceWindow(const std::string& space_id,
+                                     int64_t browser_window_id) {
+  std::string profile = "Default";
+  for (const Space& space : spaces_) {
+    if (space.id == space_id) {
+      profile = space.profile_id;
+      break;
+    }
+  }
+  ghost_spaces_.NoteLiveWindow(space_id, profile,
+                               static_cast<int>(browser_window_id));
+}
+
 void PhiCoordinator::OnSessionRestoreSettled(const char* receipt_json) {
   last_restore_receipt_ = receipt_json ? receipt_json : "";
+  // REPLACE, never merge — the receipt describes the whole ghost store.
+  ghost_spaces_.ReplaceFromReceipt(last_restore_receipt_);
+  // Parked windows no Space claims would otherwise be replayed as loose
+  // windows by the next unfiltered restore; drop them now.
+  for (const PhiGhostSpaces::Remembered& orphan : ghost_spaces_.Orphans()) {
+    if (framework_) {
+      framework_->DropGhostWindow(orphan.profile.c_str(), orphan.window_id);
+    }
+  }
+  ghost_spaces_.ClearOrphans();
+  PushSpaceMenu();
 }
 
 // --- Agent operating mask for the user's own Spaces ------------------------
@@ -5637,6 +5662,45 @@ bool PhiCoordinator::SwitchSlotToSpace(int64_t slot,
   }
   if (!framework_) {
     return false;
+  }
+  // LAZY RESTORE: this Space may exist only as a PARKED window from the
+  // previous session. Rebuild that window rather than spawning a fresh one —
+  // the session file still describes the parked one, so a fresh window would
+  // stand beside it as a doubled Space.
+  if (const PhiGhostSpaces::Remembered* ghost = ghost_spaces_.Parked(space_id)) {
+    const std::string profile = ghost->profile;
+    const int window_id = ghost->window_id;
+    if (cold) {
+      *cold = true;
+    }
+    pending_slot_ = it->first;
+    pending_space_ = space_id;
+    const int outcome =
+        framework_->MaterializeGhostWindow(profile.c_str(), window_id);
+    switch (outcome) {
+      case 0:  // Materialized: the window arrives via OnBrowserWindowCreated.
+        ghost_spaces_.ClearParked(space_id);
+        if (pending) {
+          *pending = true;
+        }
+        return true;
+      case 2:
+        // No such ghost — nothing will ever satisfy this. DROP the record,
+        // or the Space stays pinned on a materialization that cannot
+        // succeed, and fall through to spawning it fresh.
+        ghost_spaces_.ClearParked(space_id);
+        break;
+      default:
+        // Refused FOR NOW (profile still loading, a replay in flight). KEEP
+        // the record so the next switch retries; spawning instead would
+        // double the Space.
+        pending_slot_ = 0;
+        pending_space_.clear();
+        if (pending) {
+          *pending = false;
+        }
+        return false;
+    }
   }
   // First visit: create this Space's browser IN ITS PROFILE and attach it to
   // the slot. A cold profile loads asynchronously, so the pending attach

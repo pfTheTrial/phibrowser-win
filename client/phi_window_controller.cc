@@ -929,6 +929,11 @@ PhiWindowController::PhiWindowController(int64_t window_id,
   space_order_.push_back("1");
   active_space_ = "1";
   active_browser_ = window_id_;
+  if (host_ && !incognito_) {
+    // The default Space binds here rather than through AttachSpaceBrowser,
+    // so it needs its own note or lazy restore would never learn its window.
+    host_->NoteSpaceWindow("1", window_id_);
+  }
   if (framework_ && !incognito_) {
     // An incognito shell stays OUT of the Space registry: routed URLs must
     // never resolve into an off-the-record window.
@@ -3236,6 +3241,9 @@ void PhiWindowController::AttachSpaceBrowser(const std::string& space_id,
     space_order_.push_back(space_id);
   }
   space_browsers_[space_id] = browser_window_id;
+  if (host_) {
+    host_->NoteSpaceWindow(space_id, browser_window_id);
+  }
   browser_hwnds_[browser_window_id] = browser_hwnd;
   active_space_ = space_id;
   active_browser_ = browser_window_id;

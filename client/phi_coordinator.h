@@ -27,6 +27,7 @@
 #include "phibrowser-win/client/phi_settings_window.h"
 #include "phibrowser-win/client/phi_transcript_panel.h"
 #include "phibrowser-win/client/phi_agent_drive_registry.h"
+#include "phibrowser-win/client/phi_ghost_spaces.h"
 #include "phibrowser-win/client/phi_tab_store.h"
 #include "phibrowser-win/client/phi_theme.h"
 #include "phibrowser-win/client/phi_window_controller.h"
@@ -172,6 +173,8 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   bool AlwaysShowFullUrl() const override;
   void SetAlwaysShowFullUrl(bool enabled) override;
   bool ShowTabPreviews() const override;
+  void NoteSpaceWindow(const std::string& space_id,
+                       int64_t browser_window_id) override;
   bool IsTabAgentDriven(int tab_id) const override;
   bool IsTabReclaimed(int tab_id) const override;
   void RequestReclaimTab(int tab_id) override;
@@ -405,6 +408,9 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // harness can read it back; the park/materialize state machine (phase 3)
   // will REPLACE its records from this, never merge.
   std::string last_restore_receipt_;
+  // Which Spaces exist only as a parked window, and the window each Space
+  // had last run (the key the ghost store names them by).
+  PhiGhostSpaces ghost_spaces_;
   // Message-window timer ids: 1 profile-space finish, 2 agent-space
   // keep-alive, this one the operating mask's idle/takeover sweep.
   static constexpr UINT_PTR kAgentDriveSweepTimer = 3;

@@ -108,6 +108,11 @@ class PhiSlotHost {
   // The Mac's GeneralSettings.showTabPreviews: whether a settled hover on a
   // tab, pin or bookmark row raises its page-snapshot card.
   virtual bool ShowTabPreviews() const = 0;
+  // A Space's browser is live in this slot. The coordinator remembers the
+  // (Space, window id) pair so a later run can name that window when it asks
+  // the framework to park or rebuild it (lazy Space restore).
+  virtual void NoteSpaceWindow(const std::string& space_id,
+                               int64_t browser_window_id) = 0;
   // --- Agent operating mask (the user's own Spaces) -----------------------
   // True while an agent holds `tab_id`; the row wears the mask badge.
   virtual bool IsTabAgentDriven(int tab_id) const = 0;
