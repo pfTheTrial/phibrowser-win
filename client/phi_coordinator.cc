@@ -1354,6 +1354,59 @@ void PhiCoordinator::RequestReleaseTab(int tab_id) {
   agent_drives_.Release(tab_id);
 }
 
+std::string PhiCoordinator::LastActiveSpaceId() const {
+  // A live slot's current Space wins when there is one (a reopen mid-run);
+  // at cold start there is no window yet, so fall back to the first Space,
+  // which is the default one the shell opens with.
+  for (const auto& [slot, controller] : windows_) {
+    const std::string& active = controller->active_space();
+    if (!active.empty()) {
+      return active;
+    }
+  }
+  return spaces_.empty() ? std::string("1") : spaces_.front().id;
+}
+
+void PhiCoordinator::OnColdStartRestorePlan(
+    std::vector<int>* eager_window_ids,
+    bool* armed) {
+  // Refuse to gate until the Space records are actually loaded. Arming with
+  // an empty set here would park every window the user expected to see; an
+  // unfiltered replay is the correct fallback, and `*armed` arrives false.
+  if (!eager_window_ids || !armed || ghost_spaces_.Empty()) {
+    LOG(INFO) << "[PhiClient] ColdStartRestorePlan: NOT armed (records "
+              << (ghost_spaces_.Empty() ? "not loaded" : "loaded") << ")";
+    return;
+  }
+  // The active Space's window is rebuilt now; every other saved window parks
+  // and materializes when the user switches to it.
+  *eager_window_ids = ghost_spaces_.EagerWindowIds(LastActiveSpaceId());
+  *armed = true;
+  LOG(INFO) << "[PhiClient] ColdStartRestorePlan: armed space="
+            << LastActiveSpaceId() << " eager="
+            << (eager_window_ids->empty() ? 0 : eager_window_ids->front());
+}
+
+void PhiCoordinator::OnColdStartParkedWindows(const char* parked_json,
+                                              const char* reporting_profile) {
+  // Same shape as the reopen receipt's `parked`, so it feeds the one path.
+  // Wrapped to match, since the cold start reports the list bare.
+  base::DictValue receipt;
+  std::optional<base::Value> parked = base::JSONReader::Read(
+      parked_json ? parked_json : "[]", base::JSON_PARSE_RFC);
+  if (parked && parked->is_list()) {
+    receipt.Set("parked", std::move(*parked));
+  } else {
+    receipt.Set("parked", base::ListValue());
+  }
+  std::string json;
+  base::JSONWriter::Write(receipt, &json);
+  LOG(INFO) << "[PhiClient] ColdStartParked profile=" << reporting_profile
+            << " parked=" << (parked_json ? parked_json : "(null)");
+  ghost_spaces_.ReplaceFromReceipt(json);
+  PushSpaceMenu();
+}
+
 void PhiCoordinator::NoteSpaceWindow(const std::string& space_id,
                                      int64_t browser_window_id) {
   std::string profile = "Default";

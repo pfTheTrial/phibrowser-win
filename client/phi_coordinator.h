@@ -83,6 +83,10 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   void OnAgentStoppedUserSpaceTab(int64_t tab_id,
                                   int64_t session_id) override;
   void OnSessionRestoreSettled(const char* receipt_json) override;
+  void OnColdStartRestorePlan(std::vector<int>* eager_window_ids,
+                              bool* armed) override;
+  void OnColdStartParkedWindows(const char* parked_json,
+                                const char* reporting_profile) override;
 
   // PhiControlDelegate (called on the control server's I/O thread):
   std::string HandleControlCommand(const std::string& type,
@@ -411,6 +415,9 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // Which Spaces exist only as a parked window, and the window each Space
   // had last run (the key the ghost store names them by).
   PhiGhostSpaces ghost_spaces_;
+  // Which Space the cold start should rebuild eagerly: the one that was
+  // active when the last run ended.
+  std::string LastActiveSpaceId() const;
   // Message-window timer ids: 1 profile-space finish, 2 agent-space
   // keep-alive, this one the operating mask's idle/takeover sweep.
   static constexpr UINT_PTR kAgentDriveSweepTimer = 3;

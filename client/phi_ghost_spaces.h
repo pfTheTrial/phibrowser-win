@@ -72,6 +72,10 @@ class PhiGhostSpaces {
   // The Space stopped being a ghost: it materialized, or it was deleted.
   void ClearParked(const std::string& space_id);
 
+  // True when nothing has been remembered yet — the client has no basis to
+  // gate a replay on, so it must not try.
+  bool Empty() const { return remembered_.empty(); }
+
   // Which Space remembers `window_id` as its window, or nullptr. This is how
   // a materialized window — announced with the PREVIOUS session's id — finds
   // the Space it belongs to.
