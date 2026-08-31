@@ -5088,7 +5088,8 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
       enum : UINT { kPin = 1, kBookmark, kClose, kCloseOther, kSplitCurrent,
                     kOpenAsSplit, kRemoveSplit, kGroup, kUngroupTab,
                     kPinSplit, kBookmarkSplit, kDuplicate, kCopyUrl,
-                    kCopyLeft, kCopyRight, kConvertSplit };
+                    kCopyLeft, kCopyRight, kConvertSplit, kTakeControl,
+                    kHandBack };
       // Dynamic Move/Clone-to-Space rows ride these ranges (99 each).
       constexpr UINT kMoveSpaceFirst = 100;
       constexpr UINT kCloneSpaceFirst = 200;
@@ -5107,6 +5108,14 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
       // record.
       const UINT persist_flags =
           MF_STRING | (incognito_ ? MF_DISABLED | MF_GRAYED : 0u);
+      // A tab an agent is holding leads with the takeover: it is the action
+      // the badge is asking about.
+      if (host_ && row.id != 0 && host_->IsTabAgentDriven(row.id)) {
+        const bool reclaimed = host_->IsTabReclaimed(row.id);
+        ::AppendMenuW(menu, MF_STRING, reclaimed ? kHandBack : kTakeControl,
+                      reclaimed ? L"Hand Back to Agent" : L"Take Control");
+        ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+      }
       if (!merged) {
         ::AppendMenuW(menu, persist_flags, kPin, L"Pin");
         ::AppendMenuW(menu, MF_STRING, kDuplicate, L"Duplicate");
@@ -5256,6 +5265,10 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
           framework_->SplitActiveWith(browser, fresh);
         }
         RefreshTabs();
+      } else if (chosen == kTakeControl && host_) {
+        host_->RequestReclaimTab(row.id);
+      } else if (chosen == kHandBack && host_) {
+        host_->RequestReleaseTab(row.id);
       } else if (chosen == kConvertSplit && framework_) {
         // Toggle the divider axis, and remember it on the stored rows the
         // panes are bound to so the split reopens the same way.
@@ -7282,6 +7295,26 @@ void PhiWindowController::PaintSidebarBand(HDC dc,
     }
     if (show_close) {
       DrawGlyph(dc, close_box, L"\u00D7", kLabelDim);
+    }
+    // The agent operating mask: a badge on rows an agent is holding. Accent
+    // while the agent drives; dimmed once the user has taken the tab back
+    // (the row keeps the badge so "Hand Back" stays discoverable).
+    if (host_ && row.id != 0 && host_->IsTabAgentDriven(row.id)) {
+      const bool reclaimed = host_->IsTabReclaimed(row.id);
+      const int dot = Scaled(8);
+      const int cx = (show_close ? close_box.left : pill.right) - Scaled(10);
+      const int cy = (pill.top + pill.bottom) / 2;
+      const COLORREF ink =
+          reclaimed ? palette.label_tertiary : palette.accent;
+      HBRUSH fill = ::CreateSolidBrush(ink);
+      HPEN pen = ::CreatePen(PS_SOLID, 1, ink);
+      HGDIOBJ prev_brush = ::SelectObject(dc, fill);
+      HGDIOBJ prev_pen = ::SelectObject(dc, pen);
+      ::Ellipse(dc, cx - dot / 2, cy - dot / 2, cx + dot / 2, cy + dot / 2);
+      ::SelectObject(dc, prev_pen);
+      ::SelectObject(dc, prev_brush);
+      ::DeleteObject(pen);
+      ::DeleteObject(fill);
     }
   }
 

@@ -26,6 +26,7 @@
 #include "phibrowser-win/client/phi_auth.h"
 #include "phibrowser-win/client/phi_settings_window.h"
 #include "phibrowser-win/client/phi_transcript_panel.h"
+#include "phibrowser-win/client/phi_agent_drive_registry.h"
 #include "phibrowser-win/client/phi_tab_store.h"
 #include "phibrowser-win/client/phi_theme.h"
 #include "phibrowser-win/client/phi_window_controller.h"
@@ -72,6 +73,14 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   void OnContentFullscreenChanged(int64_t window_id, bool fullscreen) override;
   void OnExtensionsChanged(int64_t window_id) override;
   void OnProfileCreated(const char* profile_id) override;
+  void OnAgentDroveUserSpaceTab(int64_t tab_id,
+                                int64_t window_id,
+                                int64_t session_id) override;
+  void OnAgentObservedUserSpaceTab(int64_t tab_id,
+                                   int64_t window_id,
+                                   int64_t session_id) override;
+  void OnAgentStoppedUserSpaceTab(int64_t tab_id,
+                                  int64_t session_id) override;
 
   // PhiControlDelegate (called on the control server's I/O thread):
   std::string HandleControlCommand(const std::string& type,
@@ -162,6 +171,10 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   bool AlwaysShowFullUrl() const override;
   void SetAlwaysShowFullUrl(bool enabled) override;
   bool ShowTabPreviews() const override;
+  bool IsTabAgentDriven(int tab_id) const override;
+  bool IsTabReclaimed(int tab_id) const override;
+  void RequestReclaimTab(int tab_id) override;
+  void RequestReleaseTab(int tab_id) override;
   void SetShowTabPreviews(bool enabled) override;
   bool RestoreLastSession() const override;
   void SetRestoreLastSession(bool enabled) override;
@@ -384,6 +397,12 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   PhiNewTabBehavior new_tab_behavior_ = PhiNewTabBehavior::kNewTabPage;
   bool always_show_full_url_ = false;
   bool show_tab_previews_ = true;  // The Mac's defaultValue.
+  // Which of the user's own tabs an agent currently holds (the operating
+  // mask). Fed by the three delegate reports above.
+  PhiAgentDriveRegistry agent_drives_;
+  // Message-window timer ids: 1 profile-space finish, 2 agent-space
+  // keep-alive, this one the operating mask's idle/takeover sweep.
+  static constexpr UINT_PTR kAgentDriveSweepTimer = 3;
   // "Restore last session" — persisted app-wide, mirrored into each loaded
   // profile's SessionStartupPref (LAST/DEFAULT).
   bool restore_last_session_ = false;

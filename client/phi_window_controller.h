@@ -108,6 +108,15 @@ class PhiSlotHost {
   // The Mac's GeneralSettings.showTabPreviews: whether a settled hover on a
   // tab, pin or bookmark row raises its page-snapshot card.
   virtual bool ShowTabPreviews() const = 0;
+  // --- Agent operating mask (the user's own Spaces) -----------------------
+  // True while an agent holds `tab_id`; the row wears the mask badge.
+  virtual bool IsTabAgentDriven(int tab_id) const = 0;
+  // True once the user took `tab_id` back — the badge reads as "you have
+  // control" and the browser refuses that tab's drive commands.
+  virtual bool IsTabReclaimed(int tab_id) const = 0;
+  // "Take control" / "Hand back" on a driven tab.
+  virtual void RequestReclaimTab(int tab_id) = 0;
+  virtual void RequestReleaseTab(int tab_id) = 0;
   // The slot's pinned tabs, in sibling order.
   virtual std::vector<PhiStoredRowView> PinnedRows(int64_t slot) const = 0;
   // Bookmark rows under `parent_guid` (empty = the root), so the menu bar can

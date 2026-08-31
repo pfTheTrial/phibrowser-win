@@ -168,6 +168,26 @@ void PhiCoordinator::OnFrameworkReady(phi_framework::PhiFramework* framework,
   keyboard_hook_ = ::SetWindowsHookExW(WH_KEYBOARD, &KeyboardHookProc,
                                        nullptr, ::GetCurrentThreadId());
 
+  // The operating mask: a hold changing repaints the owning shell, and the
+  // reclaimed set is pushed to the browser, which then REFUSES drive commands
+  // aimed at those tabs (the refusal is the browser's, so a driver cannot
+  // decline to honour the takeover).
+  agent_drives_.set_changed_callback([this](int tab_id) {
+    for (const auto& [slot, controller] : windows_) {
+      controller->RefreshTabs();
+    }
+  });
+  agent_drives_.set_reclaimed_callback([this](const std::vector<int>& tabs) {
+    if (framework_) {
+      framework_->SetUserReclaimedTabs(tabs.empty() ? nullptr : tabs.data(),
+                                       static_cast<int>(tabs.size()));
+    }
+  });
+  if (msg_hwnd_) {
+    ::SetTimer(msg_hwnd_, kAgentDriveSweepTimer,
+               PhiAgentDriveRegistry::kSweepIntervalMs, nullptr);
+  }
+
   const std::wstring user_data_dir =
       base::UTF8ToWide(user_data_dir_utf8 ? user_data_dir_utf8 : "");
   spaces_path_ = user_data_dir + L"\\PhiSpaces.json";
@@ -236,6 +256,11 @@ LRESULT CALLBACK PhiCoordinator::MsgWndProc(HWND hwnd,
         ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
     if (self && wparam == 2) {
       self->SweepAgentSpaces();  // Agent-space keep-alive sweep (10s).
+      return 0;
+    }
+    if (self && wparam == kAgentDriveSweepTimer) {
+      // Retires holds whose driver went quiet and takeovers that aged out.
+      self->agent_drives_.Sweep();
       return 0;
     }
     if (self && self->TryFinishProfileSpace()) {
@@ -1310,6 +1335,43 @@ bool PhiCoordinator::SetStoredRowUrl(const std::string& guid,
   }
   PhiSettingsWindow::Refresh();
   return true;
+}
+
+bool PhiCoordinator::IsTabAgentDriven(int tab_id) const {
+  return agent_drives_.IsMasked(tab_id);
+}
+
+bool PhiCoordinator::IsTabReclaimed(int tab_id) const {
+  return agent_drives_.IsReclaimed(tab_id);
+}
+
+void PhiCoordinator::RequestReclaimTab(int tab_id) {
+  agent_drives_.Reclaim(tab_id);
+}
+
+void PhiCoordinator::RequestReleaseTab(int tab_id) {
+  agent_drives_.Release(tab_id);
+}
+
+// --- Agent operating mask for the user's own Spaces ------------------------
+// The browser is the only thing that can see an agent driving one of these
+// tabs, so these three are its report channel (phi::PhiUserSpaceDrive). The
+// registry owns the lifecycle rules; this just relays.
+void PhiCoordinator::OnAgentDroveUserSpaceTab(int64_t tab_id,
+                                              int64_t window_id,
+                                              int64_t session_id) {
+  agent_drives_.OnDrove(static_cast<int>(tab_id), window_id, session_id);
+}
+
+void PhiCoordinator::OnAgentObservedUserSpaceTab(int64_t tab_id,
+                                                 int64_t window_id,
+                                                 int64_t session_id) {
+  agent_drives_.OnObserved(static_cast<int>(tab_id), window_id, session_id);
+}
+
+void PhiCoordinator::OnAgentStoppedUserSpaceTab(int64_t tab_id,
+                                                int64_t session_id) {
+  agent_drives_.OnStopped(static_cast<int>(tab_id), session_id);
 }
 
 bool PhiCoordinator::SetStoredRowLayout(const std::string& guid,
