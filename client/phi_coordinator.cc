@@ -2436,6 +2436,19 @@ void PhiCoordinator::RebuildSpacePalettes() {
   }
 }
 
+void PhiCoordinator::OpenUrlInMainWindow(const std::string& url) {
+  if (!framework_ || url.empty() || windows_.empty()) {
+    return;
+  }
+  // The first shell window is the main one; a Kiosk has no Space of its own to
+  // prefer, so the page lands wherever the user's browsing already lives.
+  PhiWindowController* main = windows_.begin()->second.get();
+  framework_->NewTab(main->window_id(), url.c_str());
+  if (HWND shell = main->shell_hwnd()) {
+    ::SetForegroundWindow(shell);
+  }
+}
+
 const PhiPalette& PhiCoordinator::PaletteForSlot(int64_t slot) const {
   auto window = windows_.find(slot);
   if (window != windows_.end()) {
@@ -5369,6 +5382,15 @@ bool PhiCoordinator::HandleCredentialsVerb(const std::string& type,
 void PhiCoordinator::OnBrowserWindowCreated(int64_t window_id, void* hwnd) {
   LOG(INFO) << "[PhiClient] OnBrowserWindowCreated windowId=" << window_id
             << " hwnd=" << hwnd;
+  // A Kiosk: ephemeral, single-tab, no Space and no slot. Readable only here,
+  // while Browser::Create is still on the stack (same push-not-query contract
+  // as RestoredFromWindowId below).
+  if (framework_ && framework_->CreatedWindowIsKiosk()) {
+    auto kiosk = std::make_unique<PhiKioskWindow>(
+        window_id, static_cast<HWND>(hwnd), framework_, this);
+    kiosks_[window_id] = std::move(kiosk);
+    return;
+  }
   // Option B: the client owns a shell window and reparents Chromium's content
   // in. The shell routes activation back through the framework.
   if (!pending_agent_task_.empty()) {
@@ -5689,6 +5711,11 @@ void PhiCoordinator::OnPlaceholderModeChanged(int64_t window_id,
 }
 
 void PhiCoordinator::OnTabsChanged(int64_t window_id) {
+  auto kiosk = kiosks_.find(window_id);
+  if (kiosk != kiosks_.end()) {
+    kiosk->second->RefreshState();
+    return;
+  }
   auto slot_it = browser_to_slot_.find(window_id);
   const int64_t slot = slot_it != browser_to_slot_.end() ? slot_it->second
                                                          : window_id;
@@ -5703,6 +5730,9 @@ void PhiCoordinator::OnTabsChanged(int64_t window_id) {
 
 void PhiCoordinator::OnBrowserWindowClosing(int64_t window_id) {
   LOG(INFO) << "[PhiClient] OnBrowserWindowClosing windowId=" << window_id;
+  if (kiosks_.erase(window_id) > 0) {
+    return;  // A Kiosk owns nothing else — no slot, no Space, no bookkeeping.
+  }
   // An agent Space's hidden window closing (via complete(), the user closing
   // the surfaced window, or a crash) drops its record — the skill learns the
   // task ended from its absence in the list.

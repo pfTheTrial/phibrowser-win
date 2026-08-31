@@ -20,6 +20,7 @@
 #include "phibrowser-win/client/phi_agent_spaces.h"
 #include "phibrowser-win/client/phi_control_server.h"
 #include "phibrowser-win/client/phi_credentials.h"
+#include "phibrowser-win/client/phi_kiosk_window.h"
 #include "phibrowser-win/client/phi_vault_helper.h"
 #include "phibrowser-win/client/phi_emoji.h"
 #include "phibrowser-win/client/phi_prompt.h"
@@ -120,6 +121,10 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   void RequestLayoutMode(PhiLayoutMode mode) override;
   const PhiPalette& Palette() const override;
   const PhiPalette& PaletteForSlot(int64_t slot) const override;
+
+  // Opens `url` as a foreground tab in the first shell window and raises it —
+  // how a Kiosk window hands its page over when the user expands it.
+  void OpenUrlInMainWindow(const std::string& url);
   void RequestSettings() override;
   void RequestSpaceIconPicker(const std::string& space_id) override;
   int64_t SlotAtScreenPoint(POINT screen, int64_t exclude_slot) const override;
@@ -319,6 +324,9 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
 
   // One controller per SLOT, keyed by the slot's primary windowId.
   std::map<int64_t, std::unique_ptr<PhiWindowController>> windows_;
+  // Kiosk windows, keyed like windows_ but held apart: they are not shell
+  // slots, take no Space, and never appear in the slot/space bookkeeping.
+  std::map<int64_t, std::unique_ptr<PhiKioskWindow>> kiosks_;
   int sidebar_width_ = kSidebarWidthDefault;
   // Every browser window -> the slot hosting it (a slot has one per Space).
   std::map<int64_t, int64_t> browser_to_slot_;
