@@ -304,6 +304,10 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // bar's shortcuts (Ctrl+T, Ctrl+W, ...) into WM_COMMAND on the focused
   // shell — keys normally land in the browser child, never in our chrome.
   HHOOK keyboard_hook_ = nullptr;
+  // Alt is down with nothing pressed since — a bare tap summons the caption
+  // band's hidden menu titles on release. Cleared by any other key-down, so
+  // Alt+Tab and the Alt+arrow history chords never trip it.
+  bool alt_solo_ = false;
   static LRESULT CALLBACK KeyboardHookProc(int code,
                                            WPARAM wparam,
                                            LPARAM lparam);

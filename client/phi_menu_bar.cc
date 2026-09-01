@@ -155,6 +155,14 @@ PhiMenuBar::PhiMenuBar(PhiWindowController* controller)
     : controller_(controller) {}
 
 PhiMenuBar::~PhiMenuBar() {
+  if (overflow_) {
+    // Detach first: its submenus are `bar_`'s, and DestroyMenu would take
+    // them down with it, leaving `bar_` holding freed handles.
+    while (::GetMenuItemCount(overflow_) > 0) {
+      ::RemoveMenu(overflow_, 0, MF_BYPOSITION);
+    }
+    ::DestroyMenu(overflow_);
+  }
   // Never attached (the shell draws the titles itself), so the tree is ours
   // to destroy — it takes every popup with it.
   if (bar_) {
@@ -227,6 +235,45 @@ void PhiMenuBar::ShowAt(size_t index, int screen_x, int screen_y) {
   // attached bar, so the dynamic rows refresh on the way down. Commands
   // arrive as WM_COMMAND on the shell.
   ::TrackPopupMenu(info.hSubMenu, TPM_LEFTALIGN | TPM_TOPALIGN, screen_x,
+                   screen_y, 0, shell_, nullptr);
+}
+
+void PhiMenuBar::ShowOverflow(int screen_x, int screen_y) {
+  if (!bar_ || !shell_) {
+    return;
+  }
+  // Rebuilt each time: the bar's titles are fixed, but rebuilding is how the
+  // popup picks up a submenu handle that a refresh replaced.
+  if (overflow_) {
+    while (::GetMenuItemCount(overflow_) > 0) {
+      ::RemoveMenu(overflow_, 0, MF_BYPOSITION);
+    }
+  } else {
+    overflow_ = ::CreatePopupMenu();
+    if (!overflow_) {
+      return;
+    }
+  }
+  // The two entries the comfortable layout has no band for. The memory chip
+  // is not among them: it is a readout, with no command behind it.
+  ::AppendMenuW(overflow_, MF_STRING, kCmdToggleChatbar, L"Chat\tCtrl+Shift+C");
+  ::AppendMenuW(overflow_, MF_STRING, kCmdReportIssue, L"Send Feedback…");
+  ::AppendMenuW(overflow_, MF_SEPARATOR, 0, nullptr);
+  const int count = ::GetMenuItemCount(bar_);
+  for (int i = 0; i < count; ++i) {
+    MENUITEMINFOW info = {sizeof(info)};
+    info.fMask = MIIM_SUBMENU;
+    if (!::GetMenuItemInfoW(bar_, static_cast<UINT>(i), TRUE, &info) ||
+        !info.hSubMenu) {
+      continue;
+    }
+    ::AppendMenuW(overflow_, MF_POPUP,
+                  reinterpret_cast<UINT_PTR>(info.hSubMenu),
+                  ItemTitle(bar_, i).c_str());
+  }
+  // Right-aligned: the button trails the toolbar, so a left-aligned popup
+  // would run off the window.
+  ::TrackPopupMenu(overflow_, TPM_RIGHTALIGN | TPM_TOPALIGN, screen_x,
                    screen_y, 0, shell_, nullptr);
 }
 

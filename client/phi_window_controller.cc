@@ -60,25 +60,35 @@ constexpr wchar_t kShellClassName[] = L"PhiClientShell";
 // holds the MENU TITLES and the minimize / maximize / close buttons together
 // — the menu bar lives on the caption row, not under it.
 constexpr int kTitleBarHeight = 32;
+// Comfortable's band is taller: it carries the tab strip as well as the
+// window controls, and a tab is 34 tall over the strip's 6pt top inset.
+constexpr int kTitleBarHeightTabs = 40;
 constexpr int kCaptionButtonWidth = 46;  // The Win11 caption button metric.
 constexpr int kMenuTitlePad = 10;        // Each title's horizontal padding.
 // WebContentConstant.edgesSpacing — THE horizontal gutter. There is no other
 // sidebar padding on Mac; every row applies 8 on each side itself.
 constexpr int kEdgeInset = 8;
-constexpr int kNavRowTop = 8;   // defaultSidebarButtonTopOffset (performance)
-constexpr int kNavRowTopNav = 15;  // legacySidebarButtonTopOffset, 15.5 rounded
 constexpr int kNavButton = 24;     // Every header button is 24x24.
 constexpr int kNavGroupSpacing = 1;   // back/forward/reload stack spacing.
-constexpr int kNavRowRightInset = 9;  // stackView right inset (balanced).
-constexpr int kSpacesStripTop = 40;      // navRow.bottom + 8 (performance)
-constexpr int kSpacesStripTopNav = 47;   // 15.5 + 24 + 8 (balanced)
+// The caption band's trailing control cluster. The vertical layouts moved
+// their header controls up here: search-tabs sits one 16pt gap before
+// minimize (close enough to reach, far enough that a miss does not minimize
+// the window), and performance leads it with back / forward / reload. Both
+// modes park search-tabs at the SAME x, so switching layout does not move
+// the button under the pointer.
+constexpr int kBandTrailingGap = 16;  // cluster → the caption buttons.
+constexpr int kBandGroupGap = 8;      // the nav trio → search-tabs.
+// The sidebar's own top inset. It used to be navRow.bottom + 8; with the nav
+// row gone the Spaces strip starts at the gutter, and every band under it
+// rides up by the 32pt the row occupied.
+constexpr int kSpacesStripTop = 8;
 constexpr int kSpacesStripHeight = 32;   // SpacesStripView.sidebarHeight
 constexpr int kSpacesStripPad = 10;      // horizontalPadding inside the strip.
 constexpr int kSpaceChip = 24;           // stripItemWidth/Height: a 24pt pip.
 constexpr int kSpaceChipGap = 4;         // stripSpacing.
-constexpr int kAddressBarTop = 84;    // spacesStrip.bottom + 12
+constexpr int kAddressBarTop = 52;    // spacesStrip.bottom + 12
 constexpr int kAddressBarHeight = 32;
-constexpr int kHeaderHeight = 120;    // 80 base + 32 strip + 8 gap
+constexpr int kHeaderHeight = 88;     // 48 base + 32 strip + 8 gap
 constexpr int kHeaderSpacer = 5;      // header → pinned band spacer.
 constexpr int kFavoritesSpacer = 3;   // pinned band → tab list spacer.
 constexpr int kTabRowHeight = 36;     // Row pitch adds kTabRowGap below.
@@ -170,16 +180,27 @@ const PhiGroupColor& GroupColorByName(const std::string& name) {
 constexpr int kTopBarHeight = 40;      // WebContentConstant.headerHeight
 constexpr int kBookmarkBarHeight = 32;  // The Mac BookmarkBar's barHeight.
 constexpr int kTopBarLeading = 16;     // header leading padding.
+constexpr int kComfortableLeading = 12;  // …and comfortable's tighter one.
+constexpr int kOmniboxHeight = 28;     // comfortable's omnibox capsule.
 constexpr int kTopBarSpacing = 8;      // header button spacing.
 constexpr int kTopBarField = 26;       // the top address capsule's height.
-constexpr int kHTabStripHeight = 36;   // TabStripMetrics.Strip.height
+// The comfortable layout's tab strip shares the caption band with the
+// window controls, Chrome-style, so the band is taller there and a tab runs
+// from the strip's top inset all the way to the band's bottom edge — where
+// the active one merges into the toolbar under it.
 constexpr int kHTabStripTop = 6;       // Strip top inset (8 − 2).
-constexpr int kHTabHeight = 32;        // Strip.tabHeight
-constexpr int kHTabWidth = 180;        // Tab.idealWidth
-constexpr int kHTabGap = 2;            // Tab.spacing
+constexpr int kHTabStripLeading = 8;   // The Space pip → the first tab.
+constexpr int kHTabHeight = 34;        // kTitleBarHeightTabs − kHTabStripTop
+constexpr int kHTabWidth = 200;        // Tab.idealWidth (a resting tab)
+constexpr int kHTabActiveWidth = 240;  // The active tab takes more room.
+constexpr int kHTabMinWidth = 56;      // Favicon, a breath, and the close box.
+constexpr int kHTabGap = 0;            // Tabs abut; a hairline divides them.
 constexpr int kCloseBoxSize = 24;      // UnifiedTabCloseButton frame.
 // The bottom bar's two capsules (Feedback bordered, Chat on the accent).
-constexpr int kFeedbackWidth = 90;      // Full label variant (header).
+// The sidebar bottom bar is the only place Feedback has a band now: the
+// comfortable header that carried the labelled variant is gone, and its
+// entry moved into the overflow menu. The paint keeps the label branch —
+// ViewThatFits picks it as soon as a band is wide enough for it again.
 constexpr int kFeedbackIconWidth = 32;  // Icon-only variant (bottom bar).
 constexpr int kChatWidth = 58;
 constexpr int kPillHeight = 22;
@@ -529,12 +550,24 @@ PhiWindowController::Layout PhiWindowController::ComputeLayout() {
   // The caption band tops every mode: menu titles leading, minimize /
   // maximize / close trailing. The OS caption is gone (WM_NCCALCSIZE), so
   // this row is both the title bar and the menu bar.
-  const int tb = Scaled(kTitleBarHeight);
+  // Comfortable's band carries the tab strip too, so it is taller there.
+  const int tb = Scaled(layout_mode_ == PhiLayoutMode::kComfortable
+                            ? kTitleBarHeightTabs
+                            : kTitleBarHeight);
   out.title_bar = {0, 0, w, tb};
   const int cap = Scaled(kCaptionButtonWidth);
   out.caption_close = {w - cap, 0, w, tb};
   out.caption_max = {w - 2 * cap, 0, w - cap, tb};
   out.caption_min = {w - 3 * cap, 0, w - 2 * cap, tb};
+  // A 24pt control centred in the caption band, its right edge at `right`.
+  // The band's trailing cluster is built right-to-left from the caption
+  // buttons with this.
+  const auto band_control = [&](int right) {
+    return RECT{right - btn, (tb - btn) / 2, right, (tb + btn) / 2};
+  };
+  // Where the menu titles have to stop: the trailing cluster's left edge.
+  // Filled in by the modes that build one; the caption buttons otherwise.
+  out.band_limit = out.caption_min.left;
 
   // The Spaces strip: 24pt pips from the left (10pt strip padding), one
   // trailing "+" chip. The Mac's second destination (new profile) moved to the
@@ -554,10 +587,10 @@ PhiWindowController::Layout PhiWindowController::ComputeLayout() {
   // The top bar of the two top-nav layouts: the first 40pt band INSIDE the
   // content card (the Mac's WebContentHeader is the card's first stack item),
   // back / forward / reload leading, the address capsule filling the middle.
-  auto place_top_bar = [&](int left, int right, int top) {
+  auto place_top_bar = [&](int left, int right, int top, int leading) {
     out.top_bar = {left, top, right, top + Scaled(kTopBarHeight)};
     const int mid = top + Scaled(kTopBarHeight) / 2;
-    int x = left + Scaled(kTopBarLeading);
+    int x = left + Scaled(leading);
     out.back = {x, mid - btn / 2, x + btn, mid + btn / 2};
     x += btn + Scaled(kTopBarSpacing);
     out.forward = {x, mid - btn / 2, x + btn, mid + btn / 2};
@@ -579,41 +612,54 @@ PhiWindowController::Layout PhiWindowController::ComputeLayout() {
   };
 
   if (layout_mode_ == PhiLayoutMode::kComfortable) {
-    // The traditional stack: horizontal tab strip on the tint, a 12pt breath,
-    // then the card, whose first band is the header row. No sidebar.
-    const int strip_top = tb + Scaled(kHTabStripTop);
-    const int strip_h = Scaled(kHTabStripHeight);
-    const int card_top = strip_top + strip_h + Scaled(kContentTopGapTopNav);
-    const int mid = place_top_bar(m, w - m, card_top);
-    out.content = {m, card_top + Scaled(kTopBarHeight), w - m, h - m};
-    carve_bookmark_bar(&out);
+    // Chrome's stack. The tab strip shares the caption band with the window
+    // controls — the active tab merges downward into the toolbar — the
+    // toolbar runs the full width under it, and the page goes EDGE TO EDGE:
+    // no floating card, no margins. The window tint survives only behind
+    // the tabs, which is the one band the card never covered anyway.
+    //
+    // This band has no menu titles: comfortable's menus live behind the
+    // overflow button at the toolbar's trailing edge, as Chrome's do.
+    out.band_limit = 0;
 
-    // The strip: the active Space's compact pip leads (the Mac clears the
-    // traffic lights with 80pt; Windows has none, so the edge inset does),
-    // then the tabs; the search-tabs magnifier rides at the far right.
-    const int chip_top = strip_top + (strip_h - Scaled(4) - Scaled(kSpaceChip)) / 2;
+    // The active Space's compact pip leads the band (the Mac clears the
+    // traffic lights with 80pt; Windows has none, so the edge inset does).
     out.chips_left = inset;
-    out.chips_top = chip_top;
+    out.chips_top = (tb - Scaled(kSpaceChip)) / 2;
     out.chips_limit = inset + Scaled(kSpaceChip);  // One compact pip.
-    out.search_tabs = {w - inset - btn, chip_top, w - inset, chip_top + btn};
-    out.tabs_left = out.chips_limit + Scaled(6);
-    out.tabs_top = strip_top;
-    out.tabs_limit = out.search_tabs.left - Scaled(kTopBarSpacing);
+    // search-tabs keeps the trailing spot the vertical layouts park it in,
+    // so the button does not move when the layout does.
+    out.search_tabs =
+        band_control(out.caption_min.left - Scaled(kBandTrailingGap));
+    // The "+" follows the last tab; the strip is full when the next tab
+    // would need the room the button is holding.
+    const int new_tab_gap = Scaled(kTopBarSpacing);
+    out.tabs_left = out.chips_limit + Scaled(kHTabStripLeading);
+    out.tabs_top = Scaled(kHTabStripTop);
+    out.tabs_limit = out.search_tabs.left - new_tab_gap - btn - new_tab_gap;
     out.horizontal_tabs = true;
 
-    // Header trailing: downloads, then the Feedback capsule (chat is hidden
-    // in comfortable, as on Mac).
-    int r = w - m - Scaled(kTopBarLeading);
+    // The toolbar: back / forward / reload leading, the omnibox filling the
+    // middle, then extensions, downloads and the overflow menu.
+    const int mid = place_top_bar(0, w, tb, kComfortableLeading);
+    out.content = {0, out.top_bar.bottom, w, h};
+    carve_bookmark_bar(&out);
+    int r = w - Scaled(kTopBarLeading);
+    out.overflow = {r - btn, mid - btn / 2, r, mid + btn / 2};
+    r = out.overflow.left - Scaled(kTopBarSpacing);
     out.downloads = {r - btn, mid - btn / 2, r, mid + btn / 2};
     r = out.downloads.left - Scaled(kTopBarSpacing);
     out.extensions = {r - btn, mid - btn / 2, r, mid + btn / 2};
-    r = out.extensions.left - Scaled(kTopBarSpacing);
-    out.feedback = {r - Scaled(kFeedbackWidth), mid - Scaled(kPillHeight) / 2,
-                    r, mid + Scaled(kPillHeight) / 2};
-    const int field_h = Scaled(kTopBarField);
-    out.url_field = {out.reload.right + Scaled(6), mid - field_h / 2,
-                     out.feedback.left - Scaled(kTopBarSpacing),
+    // Feedback, Chat and the memory chip have no band to sit in here; they
+    // are items in the overflow menu instead.
+    const int field_h = Scaled(kOmniboxHeight);
+    out.url_field = {out.reload.right + Scaled(kTopBarSpacing),
+                     mid - field_h / 2,
+                     out.extensions.left - Scaled(kTopBarSpacing),
                      mid + field_h / 2};
+    const int icon = Scaled(kFaviconSlot);
+    out.page_icon = {out.url_field.left + Scaled(10), mid - icon / 2,
+                     out.url_field.left + Scaled(10) + icon, mid + icon / 2};
     return out;
   }
 
@@ -621,20 +667,20 @@ PhiWindowController::Layout PhiWindowController::ComputeLayout() {
   out.sidebar = {0, 0, sidebar, h};
 
   if (layout_mode_ == PhiLayoutMode::kBalanced) {
-    // Balanced header: the search-tabs button rides at the RIGHT (inset 9)
-    // — the only mode that shows it. The sidebar-toggle stand-in is gone
-    // (it only opened stray windows until the real toggle lands).
-    // Navigation and the address bar live in the top bar.
-    const int top = tb + Scaled(kNavRowTopNav);
-    int r = sidebar - Scaled(kNavRowRightInset);
+    // Balanced: navigation and the address bar live in the top bar, and
+    // search-tabs has left the sidebar header for the caption band — the
+    // SAME trailing spot performance parks it in. That empties the header
+    // row, so the Spaces strip starts at the sidebar's own inset.
+    out.search_tabs =
+        band_control(out.caption_min.left - Scaled(kBandTrailingGap));
+    out.band_limit = out.search_tabs.left;
     if (!hide_sidebar) {
-      out.search_tabs = {r - btn, top, r, top + btn};
-      place_spaces(0, sidebar, tb + Scaled(kSpacesStripTopNav));
+      place_spaces(0, sidebar, tb + Scaled(kSpacesStripTop));
     }
 
     const int gap = tb + Scaled(kContentTopGapTopNav);
     const int bar_left = hide_sidebar ? m : sidebar;
-    const int mid = place_top_bar(bar_left, w - m, gap);
+    const int mid = place_top_bar(bar_left, w - m, gap, kTopBarLeading);
     out.content = {bar_left, gap + Scaled(kTopBarHeight), w - m, h - m};
     carve_bookmark_bar(&out);
     // Chat capsule trailing (balanced shows it in the header, as on Mac).
@@ -647,16 +693,20 @@ PhiWindowController::Layout PhiWindowController::ComputeLayout() {
                      mid + field_h / 2};
     out.tabs_top = out.spaces_strip.bottom + Scaled(kHeaderSpacer);
   } else {
-    // Performance header: back / forward / reload trail (spacing 1, right
-    // inset 9); the address bar sits under the strip. No leading toggle —
-    // the stand-in only opened stray windows until the real one lands.
-    const int top = tb + Scaled(kNavRowTop);
-    int r = sidebar - Scaled(kNavRowRightInset);
-    out.reload = {r - btn, top, r, top + btn};
-    r -= btn + Scaled(kNavGroupSpacing);
-    out.forward = {r - btn, top, r, top + btn};
-    r -= btn + Scaled(kNavGroupSpacing);
-    out.back = {r - btn, top, r, top + btn};
+    // Performance: back / forward / reload and search-tabs trail the caption
+    // band, before the caption buttons — the sidebar has no header row at
+    // all now, so the address bar sits directly under the Spaces strip. The
+    // trio keeps its 1pt stack spacing and search-tabs follows it, at the
+    // same x balanced puts it.
+    int r = out.caption_min.left - Scaled(kBandTrailingGap);
+    out.search_tabs = band_control(r);
+    r = out.search_tabs.left - Scaled(kBandGroupGap);
+    out.reload = band_control(r);
+    r = out.reload.left - Scaled(kNavGroupSpacing);
+    out.forward = band_control(r);
+    r = out.forward.left - Scaled(kNavGroupSpacing);
+    out.back = band_control(r);
+    out.band_limit = out.back.left;
     if (!hide_sidebar) {
       place_spaces(0, sidebar, tb + Scaled(kSpacesStripTop));
       out.url_field = {inset, tb + Scaled(kAddressBarTop), sidebar - inset,
@@ -1044,8 +1094,11 @@ void PhiWindowController::PositionUrlField(const Layout& layout) {
           : (layout.copy_link.right > layout.copy_link.left
                  ? layout.copy_link.left
                  : box.right);
-  const int width = right_stop - Scaled(8) - (box.left + Scaled(12));
-  ::MoveWindow(url_field_, box.left + Scaled(12),
+  const int text_left = layout.page_icon.right > layout.page_icon.left
+                           ? layout.page_icon.right + Scaled(8)
+                           : box.left + Scaled(12);
+  const int width = right_stop - Scaled(8) - text_left;
+  ::MoveWindow(url_field_, text_left,
                box.top + (box.bottom - box.top - text_height) / 2,
                width > 0 ? width : 1, text_height, TRUE);
 }
@@ -2696,8 +2749,11 @@ void PhiWindowController::OnChromeMouseMove(POINT client_pt) {
   {
     // The nav buttons' hover washes (back/forward/reload/search).
     const Layout layout = ComputeLayout();
-    const std::array<RECT, 10> nav = {layout.back, layout.forward,
+    // The first six MUST stay in the paint table's order — PaintChrome keys
+    // a button's hover wash on this index.
+    const std::array<RECT, 12> nav = {layout.back, layout.forward,
                                       layout.reload, layout.search_tabs,
+                                      add_tab_button_, layout.overflow,
                                       layout.downloads, layout.memory,
                                       layout.feedback, layout.chat,
                                       layout.extensions, layout.copy_link};
@@ -4221,6 +4277,42 @@ void PhiWindowController::RebuildTabs() {
     // The strip's pinned section leads; normal chips start after it.
     x = pinned_.back().bounds.right + Scaled(kStripPinToTabs);
   }
+  // Chrome's strip shares its room out: tabs take their ideal width while
+  // they fit and shrink toward the minimum as more open. Fixed widths meant
+  // the tabs past the edge were simply dropped — and the ACTIVE tab was
+  // among them as soon as a fourth opened, which is not a strip at all.
+  // Resting tabs give up their width first; the active one keeps its wider
+  // slot until they are all at the floor.
+  int htab_rest_w = Scaled(kHTabWidth);
+  int htab_active_w = Scaled(kHTabActiveWidth);
+  if (layout.horizontal_tabs) {
+    int resting = 0;
+    bool has_active = false;
+    for (const TabRow& row : rows) {
+      if (!row.tag.empty() && is_pin(row.tag)) {
+        continue;  // Bound to a pinned cell, not on the strip.
+      }
+      if (row.active) {
+        has_active = true;
+      } else {
+        ++resting;
+      }
+    }
+    const int floor_w = Scaled(kHTabMinWidth);
+    const int room = layout.tabs_limit - x;
+    if (!has_active) {
+      htab_active_w = 0;
+    }
+    if (resting * htab_rest_w + htab_active_w > room) {
+      if (resting > 0) {
+        htab_rest_w =
+            std::max(floor_w, (room - htab_active_w) / resting);
+      }
+      if (has_active && resting * htab_rest_w + htab_active_w > room) {
+        htab_active_w = std::max(floor_w, room - resting * htab_rest_w);
+      }
+    }
+  }
   std::string current_group;
   bool current_collapsed = false;
   if (!layout.horizontal_tabs) {
@@ -4263,12 +4355,17 @@ void PhiWindowController::RebuildTabs() {
     }
     const int close_box = Scaled(kCloseBoxSize);
     if (layout.horizontal_tabs) {
-      if (x + Scaled(kHTabWidth) > layout.tabs_limit) {
+      // The active tab takes the wider slot — it is the one carrying the
+      // page, and the extra room is what separates it from its neighbours
+      // now that the tabs abut instead of standing apart.
+      const int tab_w = row.active ? htab_active_w : htab_rest_w;
+      if (x + tab_w > layout.tabs_limit) {
         break;  // Strip is full; overflow handling is future work.
       }
-      // TabStripMetrics: 32pt tabs at the strip's top, 4pt below.
-      row.bounds = {x, y, x + Scaled(kHTabWidth), y + Scaled(kHTabHeight)};
-      x += Scaled(kHTabWidth + kHTabGap);
+      // The tab runs from the strip's top inset to the band's bottom edge,
+      // where the active one merges into the toolbar.
+      row.bounds = {x, y, x + tab_w, y + Scaled(kHTabHeight)};
+      x += tab_w + Scaled(kHTabGap);
     } else {
       row.bounds = {layout.tabs_left, y,
                     Scaled(sidebar_dip_ - kEdgeInset),
@@ -4294,7 +4391,21 @@ void PhiWindowController::RebuildTabs() {
     }
     tabs_.push_back(std::move(row));
   }
-  if (!layout.horizontal_tabs) {
+  if (layout.horizontal_tabs) {
+    // The "+" follows the last tab, centred in the band. It only exists
+    // once the strip's width is known, which is here and not in the layout.
+    const int btn = Scaled(kNavButton);
+    const int gap = Scaled(kTopBarSpacing);
+    const int left = x + gap;
+    // tabs_limit already held this button's room back from the strip, so it
+    // fits unless the tabs overran — clamp rather than draw under search.
+    add_tab_button_ = left + btn + gap <= layout.search_tabs.left
+                          ? RECT{left, (layout.title_bar.bottom - btn) / 2,
+                                 left + btn,
+                                 (layout.title_bar.bottom + btn) / 2}
+                          : RECT{};
+  } else {
+    add_tab_button_ = RECT{};
     // Overflow bookkeeping for the wheel handler; the tinted group cards are
     // clamped to the viewport so they never bleed into the fixed bands.
     const int viewport = layout.tabs_limit - layout.tabs_top;
@@ -4506,9 +4617,40 @@ int PhiWindowController::CaptionHitTest(POINT client_pt) {
   if (::PtInRect(&layout.caption_min, client_pt)) {
     return HTMINBUTTON;
   }
-  EnsureMenuTitleRects();
-  for (const auto& [title, rect] : menu_titles_) {
-    if (::PtInRect(&rect, client_pt)) {
+  // The trailing cluster's controls take their own clicks — without this
+  // the band would drag the window out from under the pointer instead.
+  if (::PtInRect(&layout.back, client_pt) ||
+      ::PtInRect(&layout.forward, client_pt) ||
+      ::PtInRect(&layout.reload, client_pt) ||
+      ::PtInRect(&layout.search_tabs, client_pt)) {
+    return HTCLIENT;
+  }
+  if (layout.horizontal_tabs) {
+    // Comfortable's band IS the tab strip. Everything drawn in it takes its
+    // own clicks; the bare run past the last tab still drags the window,
+    // which is how Chrome's strip behaves.
+    if (::PtInRect(&add_tab_button_, client_pt)) {
+      return HTCLIENT;
+    }
+    for (const TabRow& row : tabs_) {
+      if (::PtInRect(&row.bounds, client_pt)) {
+        return HTCLIENT;
+      }
+    }
+    for (const SpaceChip& chip : chips_) {
+      if (::PtInRect(&chip.bounds, client_pt)) {
+        return HTCLIENT;
+      }
+    }
+    for (const ShortcutRow& pin : pinned_) {
+      if (::PtInRect(&pin.bounds, client_pt)) {
+        return HTCLIENT;
+      }
+    }
+  }
+  const size_t titles = VisibleMenuTitles(layout);
+  for (size_t i = 0; i < titles; ++i) {
+    if (::PtInRect(&menu_titles_[i].second, client_pt)) {
       return HTCLIENT;  // A menu title takes the click itself.
     }
   }
@@ -4520,6 +4662,38 @@ void PhiWindowController::SetCaptionHot(int code) {
     return;
   }
   hot_caption_ = code;
+  if (shell_hwnd_) {
+    const RECT band = ComputeLayout().title_bar;
+    ::InvalidateRect(shell_hwnd_, &band, FALSE);
+  }
+}
+
+size_t PhiWindowController::VisibleMenuTitles(const Layout& layout) {
+  EnsureMenuTitleRects();
+  if (menu_titles_.empty()) {
+    return 0;
+  }
+  // Comfortable gives the whole band to the tab strip and has no titles at
+  // all — its band_limit is 0, so the clip below drops every one of them.
+  // The vertical layouts show the Phi button alone until the band reveals.
+  const bool all = menu_revealed_ || menu_alt_revealed_;
+  const size_t shown = all ? menu_titles_.size() : 1;
+  size_t fits = 0;
+  while (fits < shown &&
+         menu_titles_[fits].second.right <= layout.band_limit) {
+    ++fits;
+  }
+  return fits;
+}
+
+void PhiWindowController::SetMenuRevealed(bool revealed) {
+  if (menu_revealed_ == revealed) {
+    return;
+  }
+  menu_revealed_ = revealed;
+  if (!revealed) {
+    hot_menu_ = -1;  // Nothing under the pointer once the titles are gone.
+  }
   if (shell_hwnd_) {
     const RECT band = ComputeLayout().title_bar;
     ::InvalidateRect(shell_hwnd_, &band, FALSE);
@@ -4552,13 +4726,21 @@ void PhiWindowController::OnChromeClick(int x, int y) {
   const Layout layout = ComputeLayout();
   POINT pt = {x, y};
   // A menu title in the caption band drops its menu, aligned under the title.
-  if (::PtInRect(&layout.title_bar, pt) && menu_bar_) {
-    EnsureMenuTitleRects();
-    for (size_t i = 0; i < menu_titles_.size(); ++i) {
+  // The band's trailing controls are checked BELOW this block, so the
+  // drag-space early-out must not swallow them.
+  if (::PtInRect(&layout.title_bar, pt) && menu_bar_ &&
+      !layout.horizontal_tabs &&
+      !::PtInRect(&layout.back, pt) && !::PtInRect(&layout.forward, pt) &&
+      !::PtInRect(&layout.reload, pt) && !::PtInRect(&layout.search_tabs, pt)) {
+    const size_t titles = VisibleMenuTitles(layout);
+    for (size_t i = 0; i < titles; ++i) {
       if (::PtInRect(&menu_titles_[i].second, pt)) {
         POINT anchor = {menu_titles_[i].second.left, layout.title_bar.bottom};
         ::ClientToScreen(shell_hwnd_, &anchor);
         menu_bar_->ShowAt(i, anchor.x, anchor.y);
+        // The popup is modal, so the bar stayed drawn throughout; Alt's
+        // sticky reveal has done its job by the time it closes.
+        menu_alt_revealed_ = false;
         return;
       }
     }
@@ -4712,8 +4894,17 @@ void PhiWindowController::OnChromeClick(int x, int y) {
       return;
     }
   }
-  if (framework_ && ::PtInRect(&layout.new_tab_row, pt)) {
+  if (framework_ && (::PtInRect(&layout.new_tab_row, pt) ||
+                     ::PtInRect(&add_tab_button_, pt))) {
     StartNewTab();
+    return;
+  }
+  if (menu_bar_ && ::PtInRect(&layout.overflow, pt)) {
+    // Comfortable's only way to the menu bar. Anchored to the button's
+    // trailing edge, under the toolbar, and right-aligned there.
+    POINT anchor = {layout.overflow.right, layout.top_bar.bottom};
+    ::ClientToScreen(shell_hwnd_, &anchor);
+    menu_bar_->ShowOverflow(anchor.x, anchor.y);
     return;
   }
   RebuildTabs();  // Chips and rows may be stale if no paint has run yet.
@@ -4921,6 +5112,27 @@ void PhiWindowController::OnChromeMiddleClick(int x, int y) {
 namespace {
 
 // A filled rounded rect, the Mac client's selection/field shape.
+// A fill rounded on its TOP corners only, square along the bottom — the
+// comfortable tab's shape, which has to sit flush on the toolbar it merges
+// into. Drawing the round rect a radius taller and clipping to `r` puts the
+// arcs where they belong and leaves the bottom edge straight.
+void FillRoundedTop(HDC dc, const RECT& r, COLORREF fill, int radius) {
+  if (r.right <= r.left || r.bottom <= r.top) {
+    return;
+  }
+  const int save = ::SaveDC(dc);
+  ::IntersectClipRect(dc, r.left, r.top, r.right + 1, r.bottom + 1);
+  HBRUSH brush = ::CreateSolidBrush(fill);
+  HGDIOBJ old_brush = ::SelectObject(dc, brush);
+  HGDIOBJ old_pen = ::SelectObject(dc, ::GetStockObject(NULL_PEN));
+  ::RoundRect(dc, r.left, r.top, r.right + 1, r.bottom + 1 + radius, radius,
+              radius);
+  ::SelectObject(dc, old_pen);
+  ::SelectObject(dc, old_brush);
+  ::DeleteObject(brush);
+  ::RestoreDC(dc, save);
+}
+
 void FillRounded(HDC dc, const RECT& r, COLORREF fill, int radius) {
   if (r.right <= r.left || r.bottom <= r.top) {
     return;
@@ -6237,7 +6449,10 @@ void PhiWindowController::PaintChrome(HDC dc,
   // (the Mac's contentOuterBorder), ROUNDED to follow the card's corners —
   // a square frame would cut straight across the corner arcs. Under a top
   // bar the card begins at the bar's top edge, so the outline wraps both.
-  if (layout.content.right > layout.content.left) {
+  if (layout.content.right > layout.content.left &&
+      layout.mode != PhiLayoutMode::kComfortable) {
+    // Comfortable has no card to outline: its page runs edge to edge and
+    // the toolbar's own separator is the only rule above it.
     RECT frame_rc = layout.content;
     if (layout.top_bar.right > layout.top_bar.left) {
       frame_rc.top = layout.top_bar.top;
@@ -6273,8 +6488,8 @@ void PhiWindowController::PaintChrome(HDC dc,
     if (logo_bgra.empty() && !logo) {
       logo = PhiAppIcon(logo_size);  // Fallback: the nearest ICO entry.
     }
-    EnsureMenuTitleRects();
-    for (size_t i = 0; i < menu_titles_.size(); ++i) {
+    const size_t titles = VisibleMenuTitles(layout);
+    for (size_t i = 0; i < titles; ++i) {
       const RECT& title_rc = menu_titles_[i].second;
       if (static_cast<int>(i) == hot_menu_) {
         RECT hot_rc = title_rc;
@@ -6339,14 +6554,20 @@ void PhiWindowController::PaintChrome(HDC dc,
     const RECT& band = layout.top_bar;
     const int radius = Scaled(kContentRadius);
     HBRUSH bg = ::CreateSolidBrush(palette.window_bg);
-    HGDIOBJ old_brush = ::SelectObject(dc, bg);
-    HGDIOBJ old_pen = ::SelectObject(dc, ::GetStockObject(NULL_PEN));
-    ::RoundRect(dc, band.left, band.top, band.right + 1, band.bottom + 1,
-                radius, radius);
-    RECT lower = {band.left, band.top + radius, band.right, band.bottom};
-    ::FillRect(dc, &lower, bg);
-    ::SelectObject(dc, old_pen);
-    ::SelectObject(dc, old_brush);
+    if (layout.mode == PhiLayoutMode::kComfortable) {
+      // Edge to edge and square: there is no card here, and the band's top
+      // corners belong to the tabs merging into it, not to a rounded card.
+      ::FillRect(dc, &band, bg);
+    } else {
+      HGDIOBJ old_brush = ::SelectObject(dc, bg);
+      HGDIOBJ old_pen = ::SelectObject(dc, ::GetStockObject(NULL_PEN));
+      ::RoundRect(dc, band.left, band.top, band.right + 1, band.bottom + 1,
+                  radius, radius);
+      RECT lower = {band.left, band.top + radius, band.right, band.bottom};
+      ::FillRect(dc, &lower, bg);
+      ::SelectObject(dc, old_pen);
+      ::SelectObject(dc, old_brush);
+    }
     ::DeleteObject(bg);
     RECT sep = {band.left, band.bottom - 1, band.right, band.bottom};
     HBRUSH sep_brush = ::CreateSolidBrush(palette.separator);
@@ -6368,11 +6589,14 @@ void PhiWindowController::PaintChrome(HDC dc,
       const wchar_t* glyph;
       bool enabled;
     };
-    const std::array<NavButton, 4> nav_buttons = {{
+    const std::array<NavButton, 6> nav_buttons = {{
         {layout.back, L"\uE72B", can_go_back_},
         {layout.forward, L"\uE72A", can_go_forward_},
         {layout.reload, nav_loading_ ? L"\uE711" : L"\uE72C", true},
         {layout.search_tabs, L"\uE721", true},
+        // Comfortable only: the strip's "+" and the toolbar's overflow.
+        {add_tab_button_, L"\uE710", true},
+        {layout.overflow, L"\uE712", true},
     }};
     for (size_t i = 0; i < nav_buttons.size(); ++i) {
       const NavButton& button = nav_buttons[i];
@@ -6403,6 +6627,23 @@ void PhiWindowController::PaintChrome(HDC dc,
     FillRounded(dc, layout.url_field,
                 url_field_hover_ ? palette.hover_strong : kFieldBg,
                 Scaled(kCornerRadius));
+  } else if (layout.mode == PhiLayoutMode::kComfortable) {
+    // Chrome's omnibox: a full pill standing on the toolbar, on the same 4%
+    // wash the sidebar field uses, brightening under the cursor. Balanced's
+    // field stays bare — it has the card's own ground behind it; this one
+    // has only the flat toolbar, and would vanish into it.
+    const int pill_r = (layout.url_field.bottom - layout.url_field.top) / 2;
+    FillRounded(dc, layout.url_field,
+                url_field_hover_ ? palette.hover_strong : kFieldBg, pill_r);
+    // The page's globe leads the pill, where Chrome puts its site chip.
+    if (layout.page_icon.right > layout.page_icon.left) {
+      HGDIOBJ previous_icon_font =
+          caption_font_ ? ::SelectObject(dc, caption_font_) : nullptr;
+      DrawGlyph(dc, layout.page_icon, L"\uE774", kLabelDim);
+      if (previous_icon_font) {
+        ::SelectObject(dc, previous_icon_font);
+      }
+    }
   } else if (url_field_hover_ &&
              layout.url_field.right > layout.url_field.left) {
     // The top-bar field rests BARE and takes the wash only under the
@@ -7277,7 +7518,27 @@ void PhiWindowController::PaintSidebarBand(HDC dc,
     const bool row_hovered =
         hover_kind_ == HoverKind::kTab &&
         hover_index_ == static_cast<int>(&row - tabs_.data());
-    if (is_dragged) {
+    if (layout.horizontal_tabs) {
+      // Chrome's strip. The active tab is the toolbar's own ground carried
+      // up into the band, rounded on top and flush at the bottom so the two
+      // read as one surface; a resting tab shows only the window tint it
+      // sits on, divided from its neighbour by a hairline. Nothing here
+      // rounds the bottom — that is the whole point of the merge.
+      if (row.active) {
+        FillRoundedTop(dc, pill, palette.window_bg, Scaled(kCornerRadius));
+      } else {
+        if (row_hovered) {
+          FillRoundedTop(dc, pill, palette.hover, Scaled(kCornerRadius));
+        }
+        // The divider rides the tab's trailing edge, inset vertically so it
+        // reads as a separator and not as a full-height rule.
+        RECT divider = {pill.right - 1, pill.top + Scaled(6), pill.right,
+                        pill.bottom - Scaled(6)};
+        HBRUSH divider_brush = ::CreateSolidBrush(palette.separator);
+        ::FillRect(dc, &divider, divider_brush);
+        ::DeleteObject(divider_brush);
+      }
+    } else if (is_dragged) {
       // Lifted: the emphasized wash plus a hairline, Chrome's elevated
       // dragged view.
       FillRounded(dc, pill, palette.hover_strong, Scaled(kCornerRadius));
@@ -7306,9 +7567,11 @@ void PhiWindowController::PaintSidebarBand(HDC dc,
         }
       }
     }
-    const COLORREF row_bg = is_dragged ? palette.hover_strong
-                            : row.active ? kRowSelectedBg
-                                         : ground;
+    const COLORREF row_bg =
+        layout.horizontal_tabs
+            ? (row.active ? palette.window_bg : ground)
+            : (is_dragged ? palette.hover_strong
+                          : row.active ? kRowSelectedBg : ground);
     const auto draw_pane = [&](int left, int right, const TabRow& r,
                                bool pane_b) {
       RECT slot = {left + Scaled(6), mid - Scaled(kFaviconSlot) / 2,
@@ -7481,6 +7744,14 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
     }
     case WM_ACTIVATE:
     case WM_SETFOCUS:
+      // Alt's summoned menu titles go back down when the window deactivates,
+      // as Windows' own Alt-revealed bar does.
+      if (self && msg == WM_ACTIVATE && LOWORD(wparam) == WA_INACTIVE &&
+          self->menu_alt_revealed_) {
+        self->menu_alt_revealed_ = false;
+        const RECT band = self->ComputeLayout().title_bar;
+        ::InvalidateRect(hwnd, &band, FALSE);
+      }
       // Activation/focus arriving at the shell top-level must be forwarded to
       // the child: as a WS_CHILD, Chromium's window reports IsTopLevelWindow()
       // == false and skips its own activation path.
@@ -7501,12 +7772,15 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
         // In the sidebar the field rests on the 4% wash (8% while hovered,
         // tracking the capsule's brighten); in a top bar it sits bare on the
         // bar's own ground, washing only under the cursor.
+        // Comfortable's omnibox is a filled pill like the sidebar's, not a
+        // bare top-bar field: without this the EDIT paints the toolbar's
+        // white straight over the pill and leaves only its rim showing.
         const COLORREF bg =
-            self->layout_mode_ == PhiLayoutMode::kPerformance
-                ? (self->url_field_hover_ ? palette.hover_strong
-                                          : palette.hover)
-                : (self->url_field_hover_ ? palette.hover
-                                          : palette.window_bg);
+            self->layout_mode_ == PhiLayoutMode::kBalanced
+                ? (self->url_field_hover_ ? palette.hover
+                                          : palette.window_bg)
+                : (self->url_field_hover_ ? palette.hover_strong
+                                          : palette.hover);
         HDC edit_dc = reinterpret_cast<HDC>(wparam);
         ::SetTextColor(edit_dc, palette.label);
         ::SetBkColor(edit_dc, bg);
@@ -7604,6 +7878,20 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
                                     wparam == HTCLOSE
                                 ? static_cast<int>(wparam)
                                 : 0);
+        // Most of the caption band hit-tests as HTCAPTION, so the pointer
+        // crossing it arrives here and not as WM_MOUSEMOVE — this is where
+        // the hidden menu titles come out. Anything the band's own controls
+        // were washing is no longer under the pointer.
+        {
+          POINT band_pt = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+          ::ScreenToClient(hwnd, &band_pt);
+          const RECT band = self->ComputeLayout().title_bar;
+          const bool in_band = ::PtInRect(&band, band_pt) != 0;
+          self->SetMenuRevealed(in_band);
+          if (in_band) {
+            self->ClearHover();
+          }
+        }
         // The collapsed sidebar's hover trigger includes the left RESIZE
         // band — the outer frame pixels are non-client, so slamming the
         // cursor to the window edge (the Mac gesture) arrives here, not as
@@ -7628,6 +7916,7 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
       if (self) {
         self->SetCaptionHot(0);
         self->SetMenuHot(-1);
+        self->SetMenuRevealed(false);
       }
       break;
     case WM_MOUSEMOVE:
@@ -7643,10 +7932,12 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
           }
         }
         int hot = -1;
-        const RECT band = self->ComputeLayout().title_bar;
-        if (::PtInRect(&band, pt)) {
-          self->EnsureMenuTitleRects();
-          for (size_t i = 0; i < self->menu_titles_.size(); ++i) {
+        const Layout band_layout = self->ComputeLayout();
+        const bool in_band = ::PtInRect(&band_layout.title_bar, pt) != 0;
+        self->SetMenuRevealed(in_band);
+        if (in_band) {
+          const size_t titles = self->VisibleMenuTitles(band_layout);
+          for (size_t i = 0; i < titles; ++i) {
             if (::PtInRect(&self->menu_titles_[i].second, pt)) {
               hot = static_cast<int>(i);
               break;
@@ -7680,12 +7971,20 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
       if (self) {
         self->SetCaptionHot(0);
         self->SetMenuHot(-1);
+        self->SetMenuRevealed(false);
         self->ClearHover();
       }
       break;
     case kMsgPhiSyncBookmarkPage:
       if (self) {
         self->SyncBookmarkManager();
+      }
+      return 0;
+    case kMsgPhiToggleMenuReveal:
+      if (self) {
+        self->menu_alt_revealed_ = !self->menu_alt_revealed_;
+        const RECT band = self->ComputeLayout().title_bar;
+        ::InvalidateRect(hwnd, &band, FALSE);
       }
       return 0;
     case kMsgPhiSwitcherNext:

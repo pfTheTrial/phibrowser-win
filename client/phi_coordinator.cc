@@ -5525,7 +5525,27 @@ LRESULT CALLBACK PhiCoordinator::KeyboardHookProc(int code,
         PhiTabSwitcher::Cancel();
       }
     }
+    // Alt pressed and released with nothing in between summons the caption
+    // band's hidden menu titles — the keyboard's way to the bar the pointer
+    // reveals by hovering. Any chord (Alt+Tab, Alt+Left, Alt+F4, a mnemonic)
+    // cleared alt_solo_ on its key-down, so only a bare tap gets here. The
+    // key is NOT swallowed: Chromium still sees the release it expects.
+    if (wparam == VK_MENU && self->alt_solo_) {
+      self->alt_solo_ = false;
+      if (HWND shell = self->ShellForFocus()) {
+        ::PostMessageW(shell, kMsgPhiToggleMenuReveal, 0, 0);
+      }
+    }
     return ::CallNextHookEx(nullptr, code, wparam, lparam);
+  }
+  // Track whether Alt is being held alone, for the reveal gesture above.
+  // A repeat (bit 30) is still a solo hold; any other key-down ends it.
+  if (wparam == VK_MENU) {
+    if (!(lparam & 0x40000000)) {
+      self->alt_solo_ = true;
+    }
+  } else {
+    self->alt_solo_ = false;
   }
   const bool ctrl = (::GetKeyState(VK_CONTROL) & 0x8000) != 0;
   const bool shift = (::GetKeyState(VK_SHIFT) & 0x8000) != 0;

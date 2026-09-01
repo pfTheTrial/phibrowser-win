@@ -157,6 +157,12 @@ class PhiMenuBar {
   // Drops menu `index` at screen coordinates. The popup routes WM_COMMAND to
   // the shell (no TPM_RETURNCMD), so the click path is one code path.
   void ShowAt(size_t index, int screen_x, int screen_y);
+  // Drops the comfortable layout's overflow menu — Chrome's ⋮. That layout
+  // gives the caption band to the tab strip, so it has no menu titles: this
+  // is the only way to the bar there. Every top-level menu hangs off it as
+  // a submenu, under the two entries that lost their bands with the sidebar
+  // (Chat and Feedback). Right-aligned, since the button trails the toolbar.
+  void ShowOverflow(int screen_x, int screen_y);
 
   // WM_INITMENUPOPUP: refresh `menu` if it is one of ours. TrackPopupMenu
   // fires it too, so dropped-down menus refresh exactly like attached ones.
@@ -198,6 +204,11 @@ class PhiMenuBar {
 
   RAW_PTR_EXCLUSION PhiWindowController* const controller_;  // Owns this.
   HMENU bar_ = nullptr;
+  // The overflow popup. It borrows the SAME submenu handles `bar_` holds, so
+  // its items are detached before it is destroyed — destroying it outright
+  // would take the shared popups with it and leave `bar_` holding freed
+  // handles.
+  HMENU overflow_ = nullptr;
   HWND shell_ = nullptr;  // Owner for TrackPopupMenu (commands route here).
   HMENU phi_ = nullptr;
   HMENU file_ = nullptr;

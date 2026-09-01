@@ -280,6 +280,10 @@ enum : UINT {
   // bookmark route: mounting a child window inside WM_PAINT is not safe, and
   // the rebuild usually happens there.
   kMsgPhiSyncBookmarkPage,
+  // Alt pressed and released on its own: summon the caption band's hidden
+  // menu titles (and hide them again on a second Alt), the keyboard route
+  // to the bar the pointer reveals by hovering.
+  kMsgPhiToggleMenuReveal,
 };
 
 class PhiWindowController {
@@ -485,14 +489,21 @@ class PhiWindowController {
     // the title bar, so the menu shares it with minimize / maximize / close.
     RECT title_bar{};
     RECT caption_min{}, caption_max{}, caption_close{};
+    // The x the menu titles may not cross: the caption band's trailing
+    // control cluster (back / forward / reload and search-tabs in the
+    // vertical layouts), or the caption buttons where there is no cluster.
+    // A narrow window drops the titles that would collide rather than
+    // painting them under the controls.
+    int band_limit = 0;
     RECT sidebar{};  // Empty in Comfortable.
     RECT top_bar{};  // The band above the content; empty in Performance.
     RECT content{};  // Where the reparented browser child goes.
     // The bookmark bar band, carved off the content's top when visible
     // (the Mac's 32pt BookmarkBar under the header).
     RECT bookmark_bar{};
-    // Nav row: the two leading buttons, then the trailing back/forward/reload
-    // group — the Mac header's arrangement (SidebarHeaderView).
+    // Navigation. In the vertical layouts back / forward / reload and
+    // search-tabs ride the caption band's trailing cluster; comfortable and
+    // balanced keep the trio on the top bar's leading edge.
     RECT search_tabs{};
     RECT back{}, forward{}, reload{};
     RECT spaces_strip{};   // The band the Space chips live in.
@@ -506,6 +517,14 @@ class PhiWindowController {
     // the menu.
     RECT downloads{}, memory{}, feedback{}, chat{};
     RECT extensions{};     // The puzzle button (in-field / bottom bar / header).
+    // Comfortable's overflow menu (Chrome's ⋮): the toolbar's trailing
+    // button. It is that layout's ONLY way to the menu bar — the caption
+    // band has no titles there — and the home of the Feedback, Chat and
+    // memory entries the other layouts keep in bands. Empty elsewhere.
+    RECT overflow{};
+    // The globe leading comfortable's omnibox pill, where Chrome shows the
+    // site chip. Empty in the other layouts, whose fields carry no icon.
+    RECT page_icon{};
     // SideAddressBar's in-field copy-link button (performance layout only) —
     // the leading half of the field's trailing stack, the puzzle its other.
     RECT copy_link{};
@@ -536,6 +555,15 @@ class PhiWindowController {
   // The caption band's menu titles, measured for the current DPI: one rect
   // per top-level menu, in bar order. Rebuilt when the DPI changes.
   void EnsureMenuTitleRects();
+  // How many of `menu_titles_` are live right now, from the leading edge.
+  // The vertical layouts hide every title but the Phi button at rest and
+  // show the whole bar once the band is revealed; the count is then clipped
+  // to `layout.band_limit` so a narrow window drops the titles that would
+  // run under the trailing controls rather than painting them there.
+  size_t VisibleMenuTitles(const Layout& layout);
+  // Pointer-driven reveal of the hidden titles. Repaints the band on a
+  // change; Alt's own sticky reveal (menu_alt_revealed_) is untouched.
+  void SetMenuRevealed(bool revealed);
   // What a point in the caption band hits: HTCLOSE / HTMAXBUTTON /
   // HTMINBUTTON, HTCLIENT over a menu title, HTCAPTION anywhere else in the
   // band, 0 below it.
@@ -621,6 +649,13 @@ class PhiWindowController {
   // pressed_caption_, which arms the button-up action.
   int hot_caption_ = 0;
   int pressed_caption_ = 0;
+  // The vertical layouts keep the menu titles hidden at rest — the band's
+  // left run is drag space — and slide them in when the pointer enters the
+  // band or Alt asks for them. The Alt reveal is sticky: it survives the
+  // pointer leaving, and drops on Escape, on a menu opening, or when the
+  // window loses focus, the way Windows' own Alt-summoned menu bar does.
+  bool menu_revealed_ = false;
+  bool menu_alt_revealed_ = false;
   int hot_menu_ = -1;
   // Menu titles with their band rects, measured for menu_titles_dpi_.
   std::vector<std::pair<std::wstring, RECT>> menu_titles_;
@@ -668,6 +703,11 @@ class PhiWindowController {
     RECT close_box{};    // The row's close affordance.
   };
   std::vector<TabRow> tabs_;
+  // Comfortable's "+" in the caption band, trailing the last tab. Its place
+  // depends on how wide the strip came out, so it is measured with the rows
+  // rather than in ComputeLayout. Empty in the vertical layouts, which put
+  // their New Tab entry in the sidebar list instead.
+  RECT add_tab_button_{};
 
   // Sidebar tab-group headers (TabGroupHeaderView): chevron + color dot +
   // title on the group's 18% color tint, clicking collapses/expands.
