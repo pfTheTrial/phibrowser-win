@@ -4703,7 +4703,21 @@ size_t PhiWindowController::VisibleMenuTitles(const Layout& layout) {
   return fits;
 }
 
+void PhiWindowController::UpdateMenuRevealFromCursor() {
+  POINT pt = {};
+  if (!shell_hwnd_ || !::GetCursorPos(&pt)) {
+    SetMenuRevealed(false);
+    return;
+  }
+  ::ScreenToClient(shell_hwnd_, &pt);
+  const RECT band = ComputeLayout().title_bar;
+  SetMenuRevealed(::PtInRect(&band, pt) != 0);
+}
+
 void PhiWindowController::SetMenuRevealed(bool revealed) {
+  if (!revealed && menu_open_) {
+    return;  // A dropped menu holds the bar open until it closes.
+  }
   if (menu_revealed_ == revealed) {
     return;
   }
@@ -4754,10 +4768,15 @@ void PhiWindowController::OnChromeClick(int x, int y) {
       if (::PtInRect(&menu_titles_[i].second, pt)) {
         POINT anchor = {menu_titles_[i].second.left, layout.title_bar.bottom};
         ::ClientToScreen(shell_hwnd_, &anchor);
+        // The popup takes the pointer, so the leave messages it triggers
+        // must not collapse the bar behind the menu being read.
+        menu_open_ = true;
         menu_bar_->ShowAt(i, anchor.x, anchor.y);
-        // The popup is modal, so the bar stayed drawn throughout; Alt's
-        // sticky reveal has done its job by the time it closes.
+        menu_open_ = false;
+        // Alt's sticky reveal has done its job by the time the menu closes;
+        // the pointer decides from here.
         menu_alt_revealed_ = false;
+        UpdateMenuRevealFromCursor();
         return;
       }
     }
@@ -4921,7 +4940,9 @@ void PhiWindowController::OnChromeClick(int x, int y) {
     // trailing edge, under the toolbar, and right-aligned there.
     POINT anchor = {layout.overflow.right, layout.top_bar.bottom};
     ::ClientToScreen(shell_hwnd_, &anchor);
+    menu_open_ = true;
     menu_bar_->ShowOverflow(anchor.x, anchor.y);
+    menu_open_ = false;
     return;
   }
   RebuildTabs();  // Chips and rows may be stale if no paint has run yet.
@@ -7906,6 +7927,10 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
           const bool in_band = ::PtInRect(&band, band_pt) != 0;
           self->SetMenuRevealed(in_band);
           if (in_band) {
+            // A non-client point is drag space, never a title: no title is
+            // under the pointer, and nothing the band's controls washed is
+            // either.
+            self->SetMenuHot(-1);
             self->ClearHover();
           }
         }
@@ -7930,10 +7955,17 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
       }
       break;
     case WM_NCMOUSELEAVE:
+      // NOT "the pointer left the window". Revealing the titles turns the
+      // band under the pointer from HTCAPTION into HTCLIENT, so this arrives
+      // with the pointer standing perfectly still — and hiding on it put the
+      // reveal in a blink loop: reveal, nc-leave, hide, nc-move, reveal.
+      // Only where the cursor actually is decides.
       if (self) {
         self->SetCaptionHot(0);
-        self->SetMenuHot(-1);
-        self->SetMenuRevealed(false);
+        self->UpdateMenuRevealFromCursor();
+        if (!self->menu_revealed_) {
+          self->SetMenuHot(-1);
+        }
       }
       break;
     case WM_MOUSEMOVE:
@@ -7985,10 +8017,15 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
       }
       break;
     case WM_MOUSELEAVE:
+      // The mirror of WM_NCMOUSELEAVE above: stepping off a menu title onto
+      // the band's own drag space leaves the CLIENT area without leaving the
+      // band, and the titles must stay put.
       if (self) {
         self->SetCaptionHot(0);
-        self->SetMenuHot(-1);
-        self->SetMenuRevealed(false);
+        self->UpdateMenuRevealFromCursor();
+        if (!self->menu_revealed_) {
+          self->SetMenuHot(-1);
+        }
         self->ClearHover();
       }
       break;

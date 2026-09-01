@@ -564,6 +564,10 @@ class PhiWindowController {
   // Pointer-driven reveal of the hidden titles. Repaints the band on a
   // change; Alt's own sticky reveal (menu_alt_revealed_) is untouched.
   void SetMenuRevealed(bool revealed);
+  // Re-derives the reveal from where the cursor ACTUALLY is. The two leave
+  // messages do not mean "the pointer left the band" — see the WM_MOUSELEAVE
+  // handler — so they ask this instead of hiding outright.
+  void UpdateMenuRevealFromCursor();
   // What a point in the caption band hits: HTCLOSE / HTMAXBUTTON /
   // HTMINBUTTON, HTCLIENT over a menu title, HTCAPTION anywhere else in the
   // band, 0 below it.
@@ -656,6 +660,10 @@ class PhiWindowController {
   // window loses focus, the way Windows' own Alt-summoned menu bar does.
   bool menu_revealed_ = false;
   bool menu_alt_revealed_ = false;
+  // A menu is dropped from the band right now. The popup takes the pointer
+  // with it, so the leave messages that follow must not collapse the bar out
+  // from under the menu the user is reading.
+  bool menu_open_ = false;
   int hot_menu_ = -1;
   // Menu titles with their band rects, measured for menu_titles_dpi_.
   std::vector<std::pair<std::wstring, RECT>> menu_titles_;
