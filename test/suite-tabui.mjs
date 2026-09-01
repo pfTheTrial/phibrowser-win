@@ -6,9 +6,10 @@ import { test, run, assert, assertEq, sleep, openControl } from './phi-test.mjs'
 // Mirrors phi_window_controller.cc, in DESIGN UNITS (pixels at 100%). The
 // client lays out in PHYSICAL pixels and uicap captures in the same space, so
 // every constant here goes through scale() first.
-// Sidebar stack (SidebarViewController): header 120 + spacer 5 + favourites
-// spacer 3 -> the tab list starts at 128, rows on the Mac's 32pt rhythm.
-const TABS_TOP_D = 128, ROW_H_D = 32, ROW_GAP_D = 0
+// Sidebar stack: header 88 (the nav row moved to the caption band, taking
+// its 32 with it) + spacer 5 + favourites spacer 3 -> the tab list starts at
+// 96, rows on the Mac's 32pt rhythm. Documentation only — useLayout() takes
+// the live numbers from the client, which is what the assertions run on.
 const SCAN_XS_D = [40, 90, 140, 190]
 let DPI = 96
 const scale = (design) => Math.round((design * DPI) / 96)

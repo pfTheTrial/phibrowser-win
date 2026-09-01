@@ -845,7 +845,12 @@ int PhiWindowController::tab_row_gap() const {
 }
 
 int PhiWindowController::title_bar_height() const {
-  return Scaled(kTitleBarHeight);
+  // Comfortable's band carries the tab strip as well as the window controls,
+  // so it is taller there — this is what the control socket reports, and a
+  // fixed answer would put every caller's arithmetic 8pt out in that layout.
+  return Scaled(layout_mode_ == PhiLayoutMode::kComfortable
+                    ? kTitleBarHeightTabs
+                    : kTitleBarHeight);
 }
 
 int PhiWindowController::sidebar_width() const {
