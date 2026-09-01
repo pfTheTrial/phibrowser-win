@@ -7010,6 +7010,11 @@ void PhiWindowController::PaintSidebarBand(HDC dc,
   }
   for (const size_t bookmark_order_index : bookmark_order) {
     const ShortcutRow& bookmark = bookmarks_[bookmark_order_index];
+    if (bookmark.bounds.right <= bookmark.bounds.left) {
+      continue;  // Parked: comfortable keeps its bookmarks in the menu, and
+                 // an unguarded row here painted its favicon at (0,0) — in
+                 // the window's top-left corner, over the tab strip.
+    }
     const bool bookmark_dragged =
         bookmark_sliding &&
         static_cast<int>(bookmark_order_index) == drag_index_;
