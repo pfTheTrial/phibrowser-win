@@ -102,8 +102,10 @@ constexpr int kCornerRadius = 8;      // The pill radius, everywhere.
 // titleAwareArea breath on top — 8 in performance, 12 under a top bar.
 constexpr int kContentMargin = 8;
 constexpr int kContentRadius = 14;  // webContentContainerCornerRadius (macOS 26)
-constexpr int kContentTopGap = 8;
-constexpr int kContentTopGapTopNav = 12;
+// The breath between the caption band and the content card. The card hugs
+// the band now — 4, not the 8 performance had and the 12 balanced had — so
+// the page starts higher in both vertical layouts.
+constexpr int kContentTopGap = 4;
 constexpr int kFaviconSlot = 16;    // The 16pt slot in the row…
 constexpr int kFaviconSize = 14;    // …holding a 14pt icon (radius 3).
 constexpr int kBookmarkIndent = 16;
@@ -178,12 +180,16 @@ const PhiGroupColor& GroupColorByName(const std::string& name) {
 
 // Bands used by the two layouts that put navigation above the web content.
 constexpr int kTopBarHeight = 40;      // WebContentConstant.headerHeight
+// Balanced's top bar is slimmer: 24pt controls with 4 above and below, the
+// same 32pt band the Spaces strip runs at, so the sidebar's strip and the
+// card's address row sit on ONE line across the window.
+constexpr int kTopBarHeightNav = 32;
 constexpr int kBookmarkBarHeight = 32;  // The Mac BookmarkBar's barHeight.
 constexpr int kTopBarLeading = 16;     // header leading padding.
 constexpr int kComfortableLeading = 12;  // …and comfortable's tighter one.
 constexpr int kOmniboxHeight = 28;     // comfortable's omnibox capsule.
 constexpr int kTopBarSpacing = 8;      // header button spacing.
-constexpr int kTopBarField = 26;       // the top address capsule's height.
+constexpr int kTopBarField = 24;       // balanced's field, on the button line.
 // The comfortable layout's tab strip shares the caption band with the
 // window controls, Chrome-style, so the band is taller there and a tab runs
 // from the strip's top inset all the way to the band's bottom edge — where
@@ -587,9 +593,10 @@ PhiWindowController::Layout PhiWindowController::ComputeLayout() {
   // The top bar of the two top-nav layouts: the first 40pt band INSIDE the
   // content card (the Mac's WebContentHeader is the card's first stack item),
   // back / forward / reload leading, the address capsule filling the middle.
-  auto place_top_bar = [&](int left, int right, int top, int leading) {
-    out.top_bar = {left, top, right, top + Scaled(kTopBarHeight)};
-    const int mid = top + Scaled(kTopBarHeight) / 2;
+  auto place_top_bar = [&](int left, int right, int top, int leading,
+                          int height) {
+    out.top_bar = {left, top, right, top + Scaled(height)};
+    const int mid = top + Scaled(height) / 2;
     int x = left + Scaled(leading);
     out.back = {x, mid - btn / 2, x + btn, mid + btn / 2};
     x += btn + Scaled(kTopBarSpacing);
@@ -641,7 +648,8 @@ PhiWindowController::Layout PhiWindowController::ComputeLayout() {
 
     // The toolbar: back / forward / reload leading, the omnibox filling the
     // middle, then extensions, downloads and the overflow menu.
-    const int mid = place_top_bar(0, w, tb, kComfortableLeading);
+    const int mid =
+        place_top_bar(0, w, tb, kComfortableLeading, kTopBarHeight);
     out.content = {0, out.top_bar.bottom, w, h};
     carve_bookmark_bar(&out);
     int r = w - Scaled(kTopBarLeading);
@@ -674,14 +682,18 @@ PhiWindowController::Layout PhiWindowController::ComputeLayout() {
     out.search_tabs =
         band_control(out.caption_min.left - Scaled(kBandTrailingGap));
     out.band_limit = out.search_tabs.left;
+    const int gap = tb + Scaled(kContentTopGap);
     if (!hide_sidebar) {
-      place_spaces(0, sidebar, tb + Scaled(kSpacesStripTop));
+      // The strip starts on the card's own top edge, so the sidebar's Spaces
+      // row and the card's address row read as ONE 32pt band across the
+      // window rather than two rows that nearly line up.
+      place_spaces(0, sidebar, gap);
     }
 
-    const int gap = tb + Scaled(kContentTopGapTopNav);
     const int bar_left = hide_sidebar ? m : sidebar;
-    const int mid = place_top_bar(bar_left, w - m, gap, kTopBarLeading);
-    out.content = {bar_left, gap + Scaled(kTopBarHeight), w - m, h - m};
+    const int mid =
+        place_top_bar(bar_left, w - m, gap, kTopBarLeading, kTopBarHeightNav);
+    out.content = {bar_left, gap + Scaled(kTopBarHeightNav), w - m, h - m};
     carve_bookmark_bar(&out);
     // Chat capsule trailing (balanced shows it in the header, as on Mac).
     const int r2 = w - m - Scaled(kTopBarLeading);
