@@ -85,6 +85,9 @@ class PhiTelemetry {
   bool PostBatch(const std::string& body, int* http_status, std::string* err);
   void LoadSpool();
   void WriteSpool();
+  // Reads the install id beside the spool, generating and persisting one on
+  // first run.
+  void EnsureDistinctId(const std::wstring& user_data_dir);
 
   // Guards every member below except the thread handle and the config, which
   // are written once by Start() before the thread exists.
@@ -96,6 +99,14 @@ class PhiTelemetry {
 
   std::string endpoint_;   // Empty == unconfigured == the whole thing is off.
   std::string api_key_;
+  // "posthog" shapes the batch for PostHog's capture API; anything else (the
+  // default) sends the generic envelope. This is the ONLY vendor knowledge in
+  // the pipeline — see BuildBatchBody.
+  std::string format_;
+  // Stable per install, generated once and kept beside the spool. PostHog
+  // requires a distinct_id per event; anonymous-but-stable is the honest
+  // default, and nothing here ever ties it to an account.
+  std::string distinct_id_;
   std::wstring spool_path_;
 
   std::deque<Event> queue_;

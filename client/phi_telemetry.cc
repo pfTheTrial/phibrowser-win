@@ -6,6 +6,9 @@
 
 #include <winhttp.h>
 
+#include <objbase.h>
+
+#include <iterator>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -13,6 +16,7 @@
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
 #include "base/logging.h"
+#include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
 
@@ -44,31 +48,125 @@ int64_t NowUnixMs() {
   return static_cast<int64_t>(v.QuadPart / 10000ULL) - 11644473600000LL;
 }
 
-// Splits an https URL into host / path. Returns false for anything that is
-// not https — telemetry does not travel in the clear, and a misconfigured
-// endpoint should switch the pipeline off rather than downgrade it.
-bool SplitHttpsUrl(const std::string& url,
-                   std::wstring* host,
-                   std::wstring* path) {
-  constexpr char kScheme[] = "https://";
-  if (url.compare(0, sizeof(kScheme) - 1, kScheme) != 0) {
+// Is `host` a literal address on this machine or this LAN? Only these may be
+// reached over plain HTTP — see SplitEndpointUrl.
+bool IsPrivateHost(const std::string& host) {
+  if (host == "localhost") {
+    return true;
+  }
+  // Hand-parsed rather than scanf'd: the build's unsafe-libc gate rules those
+  // out, and four bounded integers are not worth a dependency.
+  // Named locals, not an array: -Wunsafe-buffer-usage rejects the indexing,
+  // and only the first two octets decide the range anyway.
+  int first = 0;
+  int second = 0;
+  size_t start = 0;
+  for (int i = 0; i < 4; ++i) {
+    const size_t dot = host.find('.', start);
+    const size_t end = (i == 3) ? host.size() : dot;
+    if ((i < 3 && dot == std::string::npos) || end <= start ||
+        end - start > 3) {
+      return false;  // A NAME, not a literal: it could resolve anywhere.
+    }
+    int value = 0;
+    for (size_t j = start; j < end; ++j) {
+      if (host[j] < '0' || host[j] > '9') {
+        return false;
+      }
+      value = value * 10 + (host[j] - '0');
+    }
+    if (value > 255) {
+      return false;
+    }
+    if (i == 0) {
+      first = value;
+    } else if (i == 1) {
+      second = value;
+    }
+    start = end + 1;
+  }
+  return first == 127 ||                                // loopback
+         first == 10 ||                                 // 10/8
+         (first == 172 && second >= 16 && second < 32) ||  // 172.16/12
+         (first == 192 && second == 168);               // 192.168/16
+}
+
+// Splits an endpoint into host / port / path and says whether to use TLS.
+//
+// HTTPS IS THE RULE. Plain http is accepted for one case only: a LITERAL
+// private or loopback address, which is a collector on this machine or this
+// LAN — a self-hosted PostHog or Sentry during bring-up, where an IP has no
+// certificate to be issued for and the traffic never leaves the network. A
+// hostname is never eligible, however private it looks, because a name
+// resolves wherever DNS says. Anything else returns false, which switches the
+// pipeline off rather than quietly downgrading it.
+bool SplitEndpointUrl(const std::string& url,
+                      std::wstring* host,
+                      std::wstring* path,
+                      int* port,
+                      bool* secure) {
+  constexpr char kHttps[] = "https://";
+  constexpr char kHttp[] = "http://";
+  std::string rest;
+  if (url.compare(0, sizeof(kHttps) - 1, kHttps) == 0) {
+    *secure = true;
+    rest = url.substr(sizeof(kHttps) - 1);
+  } else if (url.compare(0, sizeof(kHttp) - 1, kHttp) == 0) {
+    *secure = false;
+    rest = url.substr(sizeof(kHttp) - 1);
+  } else {
     return false;
   }
-  const std::string rest = url.substr(sizeof(kScheme) - 1);
   if (rest.empty()) {
     return false;
   }
   const size_t slash = rest.find('/');
-  const std::string host_part =
+  std::string authority =
       slash == std::string::npos ? rest : rest.substr(0, slash);
   const std::string path_part =
       slash == std::string::npos ? std::string("/") : rest.substr(slash);
-  if (host_part.empty() || host_part.find(':') != std::string::npos) {
-    return false;  // No explicit ports: the default https port, or nothing.
+  *port = *secure ? INTERNET_DEFAULT_HTTPS_PORT : INTERNET_DEFAULT_HTTP_PORT;
+  const size_t colon = authority.find(':');
+  if (colon != std::string::npos) {
+    const std::string port_part = authority.substr(colon + 1);
+    authority = authority.substr(0, colon);
+    if (port_part.empty() ||
+        port_part.find_first_not_of("0123456789") != std::string::npos) {
+      return false;
+    }
+    const int parsed = std::atoi(port_part.c_str());
+    if (parsed <= 0 || parsed > 65535) {
+      return false;
+    }
+    *port = parsed;
   }
-  *host = base::UTF8ToWide(host_part);
+  if (authority.empty()) {
+    return false;
+  }
+  if (!*secure && !IsPrivateHost(authority)) {
+    return false;  // Cleartext off this machine's network: refused.
+  }
+  *host = base::UTF8ToWide(authority);
   *path = base::UTF8ToWide(path_part);
   return true;
+}
+
+// PostHog's capture API wants an ISO-8601 UTC timestamp.
+std::string Iso8601Utc(int64_t unix_ms) {
+  const int64_t ticks =
+      (unix_ms + 11644473600000LL) * 10000LL;  // Back to FILETIME.
+  ULARGE_INTEGER v = {};
+  v.QuadPart = static_cast<ULONGLONG>(ticks);
+  FILETIME ft = {};
+  ft.dwLowDateTime = v.LowPart;
+  ft.dwHighDateTime = v.HighPart;
+  SYSTEMTIME st = {};
+  if (!::FileTimeToSystemTime(&ft, &st)) {
+    return std::string();
+  }
+  return base::StringPrintf("%04u-%02u-%02uT%02u:%02u:%02u.%03uZ", st.wYear,
+                           st.wMonth, st.wDay, st.wHour, st.wMinute,
+                           st.wSecond, st.wMilliseconds);
 }
 
 std::wstring ConfigPath(const std::wstring& user_data_dir) {
@@ -148,6 +246,7 @@ void PhiTelemetry::Start(const std::wstring& user_data_dir) {
   const std::string config = ReadFileUtf8(ConfigPath(user_data_dir));
   std::string endpoint;
   std::string key;
+  std::string format;
   if (!config.empty()) {
     if (std::optional<base::DictValue> parsed =
             base::JSONReader::ReadDict(config, base::JSON_PARSE_RFC)) {
@@ -157,6 +256,9 @@ void PhiTelemetry::Start(const std::wstring& user_data_dir) {
       if (const std::string* value = parsed->FindString("analytics_key")) {
         key = *value;
       }
+      if (const std::string* value = parsed->FindString("analytics_format")) {
+        format = *value;
+      }
     } else {
       LOG(ERROR) << "[telemetry] phi_telemetry.json is not valid JSON; "
                  << "the pipeline stays off.";
@@ -164,9 +266,12 @@ void PhiTelemetry::Start(const std::wstring& user_data_dir) {
   }
   std::wstring host;
   std::wstring path;
-  if (!endpoint.empty() && !SplitHttpsUrl(endpoint, &host, &path)) {
-    LOG(ERROR) << "[telemetry] analytics_endpoint must be an https URL with "
-               << "no explicit port; the pipeline stays off.";
+  int port = 0;
+  bool secure = false;
+  if (!endpoint.empty() &&
+      !SplitEndpointUrl(endpoint, &host, &path, &port, &secure)) {
+    LOG(ERROR) << "[telemetry] analytics_endpoint must be https, or http to a "
+               << "literal private address; the pipeline stays off.";
     endpoint.clear();
   }
   if (endpoint.empty()) {
@@ -180,9 +285,11 @@ void PhiTelemetry::Start(const std::wstring& user_data_dir) {
   ::EnterCriticalSection(&lock_);
   endpoint_ = endpoint;
   api_key_ = key;
+  format_ = format;
   spool_path_ = user_data_dir + L"\\phi_telemetry_spool.json";
   ::LeaveCriticalSection(&lock_);
 
+  EnsureDistinctId(user_data_dir);
   LoadSpool();
   thread_ = ::CreateThread(nullptr, 0, &PhiTelemetry::UploadThread, this, 0,
                            nullptr);
@@ -332,22 +439,69 @@ void PhiTelemetry::ReturnBatch(std::deque<Event> batch) {
 }
 
 std::string PhiTelemetry::BuildBatchBody(const std::deque<Event>& batch) const {
+  // THE ONE PLACE a collector's ingest shape lives. The generic envelope is
+  // also the SPOOL's on-disk format, so LoadSpool can read back what this
+  // writes — a vendor shape is built for the wire only, at send time.
+  const bool posthog = format_ == "posthog";
   base::ListValue rows;
   for (const Event& event : batch) {
     base::DictValue row;
-    row.Set("module", event.module);
-    row.Set("event", event.name);
-    row.Set("ts", static_cast<double>(event.unix_ms));
-    if (std::optional<base::Value> props = base::JSONReader::Read(
-            event.properties_json, base::JSON_PARSE_RFC)) {
-      row.Set("properties", std::move(*props));
+    std::optional<base::Value> props = base::JSONReader::Read(
+        event.properties_json, base::JSON_PARSE_RFC);
+    if (posthog) {
+      // PostHog's capture API: one object per event, distinct_id inside
+      // properties, ISO-8601 timestamp. The module is not a PostHog concept,
+      // so it rides along as a property rather than being dropped.
+      base::DictValue properties;
+      if (props && props->is_dict()) {
+        properties = std::move(*props).TakeDict();
+      }
+      properties.Set("distinct_id", distinct_id_);
+      properties.Set("phi_module", event.module);
+      row.Set("event", event.name);
+      row.Set("properties", std::move(properties));
+      row.Set("timestamp", Iso8601Utc(event.unix_ms));
+    } else {
+      row.Set("module", event.module);
+      row.Set("event", event.name);
+      row.Set("ts", static_cast<double>(event.unix_ms));
+      if (props) {
+        row.Set("properties", std::move(*props));
+      }
     }
     rows.Append(std::move(row));
   }
   base::DictValue body;
+  if (posthog) {
+    body.Set("api_key", api_key_);
+  }
   body.Set("batch", std::move(rows));
   std::optional<std::string> json = base::WriteJson(body);
   return json ? *json : std::string("{\"batch\":[]}");
+}
+
+void PhiTelemetry::EnsureDistinctId(const std::wstring& user_data_dir) {
+  const std::wstring path = user_data_dir + L"\\phi_telemetry_id";
+  std::string id = ReadFileUtf8(path);
+  while (!id.empty() && (id.back() == '\n' || id.back() == '\r' ||
+                         id.back() == ' ')) {
+    id.pop_back();
+  }
+  if (id.empty()) {
+    GUID guid = {};
+    if (::CoCreateGuid(&guid) == S_OK) {
+      wchar_t buffer[40] = {};
+      ::StringFromGUID2(guid, buffer, static_cast<int>(std::size(buffer)));
+      id = base::WideToUTF8(buffer);
+    }
+    if (id.empty()) {
+      return;  // No id, no PostHog batch; the generic envelope is unaffected.
+    }
+    WriteFileAtomic(path, id);
+  }
+  ::EnterCriticalSection(&lock_);
+  distinct_id_ = id;
+  ::LeaveCriticalSection(&lock_);
 }
 
 bool PhiTelemetry::PostBatch(const std::string& body,
@@ -362,7 +516,9 @@ bool PhiTelemetry::PostBatch(const std::string& body,
 
   std::wstring host;
   std::wstring path;
-  if (!SplitHttpsUrl(endpoint, &host, &path)) {
+  int port = 0;
+  bool secure = false;
+  if (!SplitEndpointUrl(endpoint, &host, &path, &port, &secure)) {
     *err = "bad endpoint";
     return false;
   }
@@ -376,11 +532,11 @@ bool PhiTelemetry::PostBatch(const std::string& body,
   }
   bool ok = false;
   HINTERNET connect = ::WinHttpConnect(session, host.c_str(),
-                                       INTERNET_DEFAULT_HTTPS_PORT, 0);
+                                       static_cast<INTERNET_PORT>(port), 0);
   if (connect) {
     HINTERNET request = ::WinHttpOpenRequest(
         connect, L"POST", path.c_str(), nullptr, WINHTTP_NO_REFERER,
-        WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
+        WINHTTP_DEFAULT_ACCEPT_TYPES, secure ? WINHTTP_FLAG_SECURE : 0);
     if (request) {
       std::wstring headers = L"Content-Type: application/json";
       if (!key.empty()) {
@@ -489,7 +645,25 @@ void PhiTelemetry::WriteSpool() {
     ::DeleteFileW(path.c_str());
     return;
   }
-  WriteFileAtomic(path, BuildBatchBody(snapshot));
+  // The spool is always the generic envelope — LoadSpool reads this back, and
+  // a vendor's wire shape is not a storage format.
+  base::ListValue rows;
+  for (const Event& event : snapshot) {
+    base::DictValue row;
+    row.Set("module", event.module);
+    row.Set("event", event.name);
+    row.Set("ts", static_cast<double>(event.unix_ms));
+    if (std::optional<base::Value> props = base::JSONReader::Read(
+            event.properties_json, base::JSON_PARSE_RFC)) {
+      row.Set("properties", std::move(*props));
+    }
+    rows.Append(std::move(row));
+  }
+  base::DictValue body;
+  body.Set("batch", std::move(rows));
+  if (std::optional<std::string> json = base::WriteJson(body)) {
+    WriteFileAtomic(path, *json);
+  }
 }
 
 }  // namespace phi_client
