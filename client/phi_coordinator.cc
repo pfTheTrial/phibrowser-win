@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 #include "phibrowser-win/client/phi_coordinator.h"
+#include "phibrowser-win/client/phi_telemetry.h"
 
 #include <windows.h>
 
@@ -145,6 +146,13 @@ struct ControlCall {
 void PhiCoordinator::OnFrameworkReady(phi_framework::PhiFramework* framework,
                                      const char* user_data_dir_utf8) {
   framework_ = framework;
+
+  // Start the outbound telemetry pipeline. It reads phi_telemetry.json from
+  // this directory and stays entirely inert — spooling nothing, sending
+  // nothing — until a collector is named there.
+  if (user_data_dir_utf8) {
+    PhiTelemetry::Get().Start(base::UTF8ToWide(user_data_dir_utf8));
+  }
 
   // Message-only window on the UI thread (this callback runs on it), so the
   // control server's I/O thread can marshal framework calls here via
@@ -1441,6 +1449,30 @@ void PhiCoordinator::NoteSpaceWindow(const std::string& space_id,
   }
   ghost_spaces_.NoteLiveWindow(space_id, profile,
                                static_cast<int>(browser_window_id));
+}
+
+void PhiCoordinator::OnAnalyticsEventCaptured(const char* module,
+                                             const char* event_name,
+                                             const char* properties_json) {
+  if (!module || !event_name) {
+    return;
+  }
+  // Out to the collector (a no-op until one is configured), and into the ring
+  // below so the harness can see what crossed regardless.
+  PhiTelemetry::Get().RecordEvent(module, event_name,
+                                  properties_json ? properties_json : "{}");
+  AnalyticsEvent event;
+  event.module = module;
+  event.name = event_name;
+  event.properties_json = properties_json ? properties_json : "{}";
+  // The name and module go to the log; the PROPERTIES do not. The component's
+  // privacy contract keeps event data out of logs, and this is a log the user
+  // can read off disk.
+  VLOG(1) << "[analytics] " << event.module << "/" << event.name;
+  analytics_events_.push_back(std::move(event));
+  while (analytics_events_.size() > kAnalyticsRingSize) {
+    analytics_events_.pop_front();
+  }
 }
 
 void PhiCoordinator::OnSessionRestoreSettled(const char* receipt_json) {
@@ -3795,6 +3827,34 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
     } else {
       out.Set("ok", false);
     }
+  } else if (type == "agentSpace.telemetry.status") {
+    // What the outbound pipeline is doing. `configured:false` is the normal
+    // answer until a collector is named in phi_telemetry.json.
+    if (std::optional<base::Value> status = base::JSONReader::Read(
+            PhiTelemetry::Get().StatusJson(), base::JSON_PARSE_RFC)) {
+      if (base::DictValue* dict = status->GetIfDict()) {
+        out.Merge(std::move(*dict));
+      }
+    }
+    out.Set("ok", true);
+  } else if (type == "agentSpace.analytics.list") {
+    // Everything phi_analytics has delivered this session, oldest first. The
+    // only end-to-end observable of the sink while the client has no
+    // analytics pipeline: an empty list here means the browser's events are
+    // not crossing the boundary.
+    base::ListValue events;
+    for (const AnalyticsEvent& event : analytics_events_) {
+      base::DictValue row;
+      row.Set("module", event.module);
+      row.Set("event", event.name);
+      if (std::optional<base::Value> props = base::JSONReader::Read(
+              event.properties_json, base::JSON_PARSE_RFC)) {
+        row.Set("properties", std::move(*props));
+      }
+      events.Append(std::move(row));
+    }
+    out.Set("events", std::move(events));
+    out.Set("ok", true);
   } else if (type == "agentSpace.menu.list") {
     // The shell window's menu bar as the user would see it, dynamic rows
     // included — the automated stand-in for opening each menu by hand.

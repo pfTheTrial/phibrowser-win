@@ -8,6 +8,7 @@
 #include <windows.h>
 
 #include <cstdint>
+#include <deque>
 #include <map>
 #include <memory>
 #include <set>
@@ -87,6 +88,9 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   void OnTabDistillable(int64_t window_id, int tab_id,
                         bool distillable) override;
   void OnSessionRestoreSettled(const char* receipt_json) override;
+  void OnAnalyticsEventCaptured(const char* module,
+                                const char* event_name,
+                                const char* properties_json) override;
   void OnColdStartRestorePlan(std::vector<int>* eager_window_ids,
                               bool* armed) override;
   void OnColdStartParkedWindows(const char* parked_json,
@@ -265,6 +269,20 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   void RemoveURLRule(int index) override;
 
  private:
+  // One phi_analytics event as it crossed the framework boundary. The client
+  // has no analytics pipeline yet, so the browser's events are kept here —
+  // bounded, newest last — and read back over the control socket. Without
+  // this the component's sink stayed unattached on Windows and every event
+  // it produced (the launch-state snapshots, renderer health) fell out of its
+  // 64-entry pre-attach queue and was discarded.
+  struct AnalyticsEvent {
+    std::string module;
+    std::string name;
+    std::string properties_json;
+  };
+  static constexpr size_t kAnalyticsRingSize = 256;
+  std::deque<AnalyticsEvent> analytics_events_;
+
   // Agent credential approval (C2) — the Mac's CredentialGrantStore model.
   // `kind` is the EXPOSURE the user is consenting to: kFill keeps the secret
   // inside Phi (vault -> framework -> page DOM, never to the agent); kReveal
