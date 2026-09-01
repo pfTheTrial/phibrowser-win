@@ -568,6 +568,10 @@ class PhiWindowController {
   // messages do not mean "the pointer left the band" — see the WM_MOUSELEAVE
   // handler — so they ask this instead of hiding outright.
   void UpdateMenuRevealFromCursor();
+  // Same idea for the hot title: after a dropped menu closes, the pointer may
+  // be somewhere the shell never saw it move to, so the highlight is re-read
+  // from the cursor rather than left where the last WM_MOUSEMOVE put it.
+  void UpdateMenuHotFromCursor();
   // What a point in the caption band hits: HTCLOSE / HTMAXBUTTON /
   // HTMINBUTTON, HTCLIENT over a menu title, HTCAPTION anywhere else in the
   // band, 0 below it.

@@ -4731,7 +4731,34 @@ void PhiWindowController::SetMenuRevealed(bool revealed) {
   }
 }
 
+void PhiWindowController::UpdateMenuHotFromCursor() {
+  POINT pt = {};
+  if (!shell_hwnd_ || !::GetCursorPos(&pt)) {
+    SetMenuHot(-1);
+    return;
+  }
+  ::ScreenToClient(shell_hwnd_, &pt);
+  const Layout layout = ComputeLayout();
+  int hot = -1;
+  if (::PtInRect(&layout.title_bar, pt)) {
+    const size_t titles = VisibleMenuTitles(layout);
+    for (size_t i = 0; i < titles; ++i) {
+      if (::PtInRect(&menu_titles_[i].second, pt)) {
+        hot = static_cast<int>(i);
+        break;
+      }
+    }
+  }
+  SetMenuHot(hot);
+}
+
 void PhiWindowController::SetMenuHot(int index) {
+  if (menu_open_ && index != hot_menu_) {
+    // A dropped menu owns the highlight until it closes. Its popup is modal,
+    // so the shell sees no pointer motion meanwhile — anything trying to move
+    // the highlight now is stale by definition.
+    return;
+  }
   if (hot_menu_ == index) {
     return;
   }
@@ -4768,6 +4795,12 @@ void PhiWindowController::OnChromeClick(int x, int y) {
       if (::PtInRect(&menu_titles_[i].second, pt)) {
         POINT anchor = {menu_titles_[i].second.left, layout.title_bar.bottom};
         ::ClientToScreen(shell_hwnd_, &anchor);
+        // The highlight belongs to the menu that is open, not to wherever
+        // the pointer was last SEEN: clicking a second title while the first
+        // menu is up dismisses that popup and opens this one WITHOUT the
+        // shell ever receiving a move over the new title, so the old title
+        // kept the wash while the new title's menu hung under it.
+        SetMenuHot(static_cast<int>(i));
         // The popup takes the pointer, so the leave messages it triggers
         // must not collapse the bar behind the menu being read.
         menu_open_ = true;
@@ -4777,6 +4810,7 @@ void PhiWindowController::OnChromeClick(int x, int y) {
         // the pointer decides from here.
         menu_alt_revealed_ = false;
         UpdateMenuRevealFromCursor();
+        UpdateMenuHotFromCursor();
         return;
       }
     }
