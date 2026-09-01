@@ -11,6 +11,6 @@ for (const w of windows) {
 }
 ctl.close()
 const out = execFileSync('powershell.exe', ['-NoProfile','-Command',
-  '(Get-Process phibrowser | Where-Object MainWindowHandle -ne 0 | Select-Object -ExpandProperty MainWindowHandle) -join ","'],
+  '(Get-Process Phi | Where-Object MainWindowHandle -ne 0 | Select-Object -ExpandProperty MainWindowHandle) -join ","'],
   {encoding:'utf8'})
-console.log('phibrowser main windows:', out.trim())
+console.log('Phi main windows:', out.trim())

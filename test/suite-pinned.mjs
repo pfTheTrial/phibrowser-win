@@ -187,9 +187,9 @@ test('pinned: pins and bookmarks survive a restart', async () => {
 
   const { execFileSync } = await import('node:child_process')
   execFileSync('powershell.exe', ['-NoProfile', '-Command', `
-Get-Process phibrowser -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Get-Process Phi -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 $deadline = (Get-Date).AddSeconds(20)
-while (((Get-Process phibrowser -ErrorAction SilentlyContinue) | Measure-Object).Count -gt 0 -and (Get-Date) -lt $deadline) {
+while (((Get-Process Phi -ErrorAction SilentlyContinue) | Measure-Object).Count -gt 0 -and (Get-Date) -lt $deadline) {
   Start-Sleep -Milliseconds 400
 }
 Start-Sleep 1

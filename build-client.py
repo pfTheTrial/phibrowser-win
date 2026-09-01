@@ -2,7 +2,7 @@
 # Copyright 2026 The Fyde Innovations Limited. All rights reserved.
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
-"""Builds phibrowser.exe from this repo against a PREBUILT framework.
+"""Builds Phi.exe from this repo against a PREBUILT framework.
 
 The framework build compiles no client code; it exports its recipe —
 compile / rc / link commands plus every chromium-side input — as
@@ -21,7 +21,7 @@ Modes:
   --out <dir>   build inside a local framework out dir (the default,
                 /home/jx/Phi/chromuim/src/out/PhiFxWin)
 
-The exe lands at <out>/phibrowser.exe; client resources (emoji catalog,
+The exe lands at <out>/Phi.exe; client resources (emoji catalog,
 icon) are copied to <out>/resources/.
 """
 
@@ -168,17 +168,17 @@ def main():
         sys.exit(1)
 
     # Link: the recipe's inputs with the scaffold stub swapped for the real
-    # client objects, and the output renamed to phibrowser.exe.
+    # client objects, and the output renamed to Phi.exe.
     inputs = [i for i in kit["link_inputs"]
               if i not in kit["scaffold_objs"]] + client_objs
-    rsp_path = os.path.join(out_dir, "phi_clientkit/phibrowser.exe.rsp")
+    rsp_path = os.path.join(out_dir, "phi_clientkit/Phi.exe.rsp")
     with open(rsp_path, "w") as f:
         f.write("\n".join(inputs) + "\n")
         f.write(kit["libs"] + " " + kit["solibs"] + " " +
                 kit["ldflags"] + "\n")
-    link = kit["link_command"].replace(kit["scaffold_exe"], "phibrowser.exe")
+    link = kit["link_command"].replace(kit["scaffold_exe"], "Phi.exe")
     link = re.sub(r'"@[^"]*"', f'"@{rsp_path}"', link)
-    print("linking phibrowser.exe...")
+    print("linking Phi.exe...")
     proc = subprocess.run(link, shell=True, cwd=out_dir,
                           capture_output=True, text=True, errors="replace")
     if proc.returncode != 0:
@@ -202,7 +202,7 @@ def main():
         shutil.copy2(winsparkle, staged)
         print("staged WinSparkle.dll")
 
-    print("CLIENT BUILD OK: " + os.path.join(out_dir, "phibrowser.exe"))
+    print("CLIENT BUILD OK: " + os.path.join(out_dir, "Phi.exe"))
 
 
 if __name__ == "__main__":
