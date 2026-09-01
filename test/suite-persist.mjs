@@ -6,12 +6,12 @@
 import { execFileSync } from 'node:child_process'
 import { test, run, assert, assertEq, sleep, openControl } from './phi-test.mjs'
 
-/** Restarts phi_client and waits for its control socket to answer again. */
+/** Restarts phibrowser and waits for its control socket to answer again. */
 async function restartApp() {
   execFileSync('powershell.exe', ['-NoProfile', '-Command', `
-Get-Process phi_client -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Get-Process phibrowser -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 $deadline = (Get-Date).AddSeconds(20)
-while (((Get-Process phi_client -ErrorAction SilentlyContinue) | Measure-Object).Count -gt 0 -and (Get-Date) -lt $deadline) {
+while (((Get-Process phibrowser -ErrorAction SilentlyContinue) | Measure-Object).Count -gt 0 -and (Get-Date) -lt $deadline) {
   Start-Sleep -Milliseconds 400
 }
 Start-Sleep 1
