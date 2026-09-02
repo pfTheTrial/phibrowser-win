@@ -39,7 +39,7 @@ CLIENT_DIR = os.path.join(REPO_DIR, "client")
 DEFAULT_OUT = "/home/jx/Phi/chromuim/src/out/PhiFxWin"
 KIT = "phi_clientkit/kit.json"
 OBJ_DIR = "phi_clientkit/obj"
-RESOURCES = ("emoji-catalog.json", "phi.ico")
+RESOURCES = ("emoji-catalog.json", "phi.ico", "strings.json")
 
 
 def stem_of(path):

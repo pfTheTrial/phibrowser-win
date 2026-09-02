@@ -19,6 +19,7 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
 #include "chrome/app/chrome_command_ids.h"
+#include "phibrowser-win/client/phi_i18n.h"
 #include "phibrowser-win/client/phi_icons.h"
 #include "phibrowser-win/client/phi_prompt.h"
 #include "phibrowser-win/client/phi_updater.h"
@@ -194,16 +195,16 @@ void PhiMenuBar::Install(HWND shell) {
     ::AppendMenuW(bar_, MF_POPUP | MF_STRING,
                   reinterpret_cast<UINT_PTR>(menu), title);
   };
-  top(phi_, L"Phi");
-  top(file_, L"&File");
-  top(edit_, L"&Edit");
-  top(view_, L"&View");
-  top(spaces_, L"&Spaces");
-  top(history_, L"Hi&story");
-  top(bookmarks_, L"&Bookmarks");
-  top(tab_, L"&Tab");
-  top(window_, L"&Window");
-  top(help_, L"&Help");
+  top(phi_, PhiStr("app.phi"));
+  top(file_, PhiStr("menuBar.file"));
+  top(edit_, PhiStr("menuBar.edit"));
+  top(view_, PhiStr("menuBar.view"));
+  top(spaces_, PhiStr("menuBar.spaces"));
+  top(history_, PhiStr("menuBar.history"));
+  top(bookmarks_, PhiStr("menuBar.bookmarks"));
+  top(tab_, PhiStr("menuBar.tab"));
+  top(window_, PhiStr("menuBar.window"));
+  top(help_, PhiStr("menuBar.help"));
 
   BuildStatic();
   // No SetMenu: the titles render in the shell's caption band.
@@ -256,8 +257,8 @@ void PhiMenuBar::ShowOverflow(int screen_x, int screen_y) {
   }
   // The two entries the comfortable layout has no band for. The memory chip
   // is not among them: it is a readout, with no command behind it.
-  ::AppendMenuW(overflow_, MF_STRING, kCmdToggleChatbar, L"Chat\tCtrl+Shift+C");
-  ::AppendMenuW(overflow_, MF_STRING, kCmdReportIssue, L"Send Feedback…");
+  ::AppendMenuW(overflow_, MF_STRING, kCmdToggleChatbar, PhiStr("sidebar.chatButton.title"));
+  ::AppendMenuW(overflow_, MF_STRING, kCmdReportIssue, PhiStr("menuBar.sendFeedback"));
   ::AppendMenuW(overflow_, MF_SEPARATOR, 0, nullptr);
   const int count = ::GetMenuItemCount(bar_);
   for (int i = 0; i < count; ++i) {
@@ -279,122 +280,122 @@ void PhiMenuBar::ShowOverflow(int screen_x, int screen_y) {
 
 void PhiMenuBar::BuildStatic() {
   // Phi — the Mac app menu, minus Services/Hide/Show All (Mac-only).
-  Append(phi_, kCmdAbout, L"About Phi");
+  Append(phi_, kCmdAbout, PhiStr("menuBar.aboutPhi"));
   Separator(phi_);
-  Append(phi_, kCmdPreferences, L"Preferences...\tCtrl+,");
+  Append(phi_, kCmdPreferences, PhiStr("menuBar.preferences"));
   // Live only when WinSparkle.dll is deployed beside the client.
-  Append(phi_, kCmdCheckUpdate, L"Check for Update...",
+  Append(phi_, kCmdCheckUpdate, PhiStr("app.phiMenu.checkForUpdatesMenuItem"),
          PhiUpdater::Available());
   Separator(phi_);
-  Append(phi_, kCmdDeleteBrowsingData, L"Delete Browsing Data...", false);
-  Append(phi_, kCmdImportBrowser, L"Import from Another Browser...");
+  Append(phi_, kCmdDeleteBrowsingData, PhiStr("menuBar.deleteBrowsingData"), false);
+  Append(phi_, kCmdImportBrowser, PhiStr("app.phiMenu.importFromAnotherBrowser"));
   Separator(phi_);
-  Append(phi_, kCmdQuit, L"Quit Phi\tCtrl+Shift+Q");
+  Append(phi_, kCmdQuit, PhiStr("menuBar.quitPhi"));
 
   // File. Save Page As has no shortcut — the Mac strips Chromium's.
-  Append(file_, kCmdNewTab, L"New Tab\tCtrl+T");
-  Append(file_, kCmdNewWindow, L"New Window\tCtrl+N");
-  Append(file_, kCmdNewIncognitoWindow, L"New Incognito Window\tCtrl+Shift+N",
+  Append(file_, kCmdNewTab, PhiStr("browser.tabGroupOverview.newTabCardTitle"));
+  Append(file_, kCmdNewWindow, PhiStr("settings.shortcuts.command.newWindow"));
+  Append(file_, kCmdNewIncognitoWindow, PhiStr("settings.shortcuts.command.newIncognitoWindow"),
          false);
-  Append(file_, kCmdNewIncognitoSpace, L"New Incognito Space", false);
-  Append(file_, kCmdReopenClosedTab, L"Reopen Closed Tab\tCtrl+Shift+T",
+  Append(file_, kCmdNewIncognitoSpace, PhiStr("app.fileMenu.createNewIncognitoSpace"), false);
+  Append(file_, kCmdReopenClosedTab, PhiStr("common.tabAreaContextMenu.reopenClosedTabAction"),
          false);
-  Append(file_, kCmdOpenFile, L"Open File...\tCtrl+O", false);
-  Append(file_, kCmdOpenLocation, L"Open Location...\tCtrl+L");
+  Append(file_, kCmdOpenFile, PhiStr("menuBar.openFile"), false);
+  Append(file_, kCmdOpenLocation, PhiStr("menuBar.openLocation"));
   Separator(file_);
-  Append(file_, kCmdCloseWindow, L"Close Window\tCtrl+Shift+W");
-  Append(file_, kCmdCloseTab, L"Close Tab\tCtrl+W");
-  Append(file_, kCmdSavePageAs, L"Save Page As...", false);
+  Append(file_, kCmdCloseWindow, PhiStr("settings.shortcuts.command.closeWindow"));
+  Append(file_, kCmdCloseTab, PhiStr("browser.tabGroupOverview.splitCard.closePaneButtonAccessibilityLabel"));
+  Append(file_, kCmdSavePageAs, PhiStr("menuBar.savePageAs"), false);
   Separator(file_);
-  Append(file_, kCmdPrint, L"Print...\tCtrl+P", false);
+  Append(file_, kCmdPrint, PhiStr("settings.shortcuts.command.printPage"), false);
 
   // Edit. The text commands drive the address field when it has focus; the
   // page's own editing belongs to Chromium and is not routed from here yet.
-  Append(edit_, kCmdUndo, L"Undo\tCtrl+Z");
-  Append(edit_, kCmdRedo, L"Redo\tCtrl+Shift+Z", false);
+  Append(edit_, kCmdUndo, PhiStr("menuBar.undo"));
+  Append(edit_, kCmdRedo, PhiStr("menuBar.redo"), false);
   Separator(edit_);
-  Append(edit_, kCmdCut, L"Cut\tCtrl+X");
-  Append(edit_, kCmdCopy, L"Copy\tCtrl+C");
-  Append(edit_, kCmdCopyUrl, L"Copy URL\tCtrl+Shift+C");
-  Append(edit_, kCmdPaste, L"Paste\tCtrl+V");
-  Append(edit_, kCmdPasteMatchStyle, L"Paste and Match Style\tCtrl+Shift+V",
+  Append(edit_, kCmdCut, PhiStr("menuBar.cut"));
+  Append(edit_, kCmdCopy, PhiStr("menuBar.copy"));
+  Append(edit_, kCmdCopyUrl, PhiStr("app.editMenu.copySelectedTabURLAction"));
+  Append(edit_, kCmdPaste, PhiStr("menuBar.paste"));
+  Append(edit_, kCmdPasteMatchStyle, PhiStr("menuBar.pasteAndMatchStyle"),
          false);
-  Append(edit_, kCmdDelete, L"Delete");
-  Append(edit_, kCmdSelectAll, L"Select All\tCtrl+A");
+  Append(edit_, kCmdDelete, PhiStr("app.deleteProfileConfirmation.deleteButton"));
+  Append(edit_, kCmdSelectAll, PhiStr("menuBar.selectAll"));
   Separator(edit_);
   HMENU find = ::CreatePopupMenu();
-  Append(find, kCmdSearchWeb, L"Search the Web...", false);
+  Append(find, kCmdSearchWeb, PhiStr("settings.shortcuts.command.searchTheWeb"), false);
   Separator(find);
-  Append(find, kCmdFind, L"Find...\tCtrl+F", false);
-  Append(find, kCmdFindNext, L"Find Next\tCtrl+G", false);
-  Append(find, kCmdFindPrevious, L"Find Previous\tCtrl+Shift+G", false);
+  Append(find, kCmdFind, PhiStr("menuBar.find"), false);
+  Append(find, kCmdFindNext, PhiStr("settings.shortcuts.command.findNextMatch"), false);
+  Append(find, kCmdFindPrevious, PhiStr("settings.shortcuts.command.findPreviousMatch"), false);
   ::AppendMenuW(edit_, MF_POPUP | MF_STRING,
-                reinterpret_cast<UINT_PTR>(find), L"Find");
+                reinterpret_cast<UINT_PTR>(find), PhiStr("settings.shortcuts.command.findOnPage"));
 
   // View — Chromium's rows, then the Mac's Phi section (layout modes, bars).
-  Append(view_, kCmdStop, L"Stop\tEsc");
-  Append(view_, kCmdReload, L"Reload This Page\tCtrl+R");
-  Append(view_, kCmdForceReload, L"Force Reload This Page\tCtrl+Shift+R");
+  Append(view_, kCmdStop, PhiStr("browser.webContentHeader.stopButton.accessibilityLabel"));
+  Append(view_, kCmdReload, PhiStr("menuBar.reloadThisPage"));
+  Append(view_, kCmdForceReload, PhiStr("menuBar.forceReloadThisPage"));
   Separator(view_);
-  Append(view_, kCmdFullScreen, L"Enter Full Screen\tF11", false);
-  Append(view_, kCmdActualSize, L"Actual Size\tCtrl+0", false);
-  Append(view_, kCmdZoomIn, L"Zoom In\tCtrl++", false);
-  Append(view_, kCmdZoomOut, L"Zoom Out\tCtrl+-", false);
+  Append(view_, kCmdFullScreen, PhiStr("menuBar.enterFullScreen"), false);
+  Append(view_, kCmdActualSize, PhiStr("menuBar.actualSize"), false);
+  Append(view_, kCmdZoomIn, PhiStr("menuBar.zoomIn"), false);
+  Append(view_, kCmdZoomOut, PhiStr("menuBar.zoomOut"), false);
   Separator(view_);
   HMENU developer = ::CreatePopupMenu();
-  Append(developer, kCmdViewSource, L"View Source\tCtrl+U", false);
-  Append(developer, kCmdDevTools, L"Developer Tools\tCtrl+Shift+I", false);
-  Append(developer, kCmdInspect, L"Inspect Elements", false);
-  Append(developer, kCmdJsConsole, L"JavaScript Console\tCtrl+Shift+J",
+  Append(developer, kCmdViewSource, PhiStr("menuBar.viewSource"), false);
+  Append(developer, kCmdDevTools, PhiStr("menuBar.developerTools"), false);
+  Append(developer, kCmdInspect, PhiStr("menuBar.inspectElements"), false);
+  Append(developer, kCmdJsConsole, PhiStr("menuBar.javascriptConsole"),
          false);
   ::AppendMenuW(view_, MF_POPUP | MF_STRING,
-                reinterpret_cast<UINT_PTR>(developer), L"Developer");
+                reinterpret_cast<UINT_PTR>(developer), PhiStr("settings.general.developerMode.sectionTitle"));
   Separator(view_);
-  Append(view_, kCmdLayoutHeader, L"Layout Mode", false);  // Section header.
-  Append(view_, kCmdLayoutBalanced, L"Balanced");
-  Append(view_, kCmdLayoutPerformance, L"Performance");
-  Append(view_, kCmdLayoutComfortable, L"Comfortable");
+  Append(view_, kCmdLayoutHeader, PhiStr("app.viewMenu.layoutModeSectionTitle"), false);  // Section header.
+  Append(view_, kCmdLayoutBalanced, PhiStr("oobe.layoutSelection.balancedOption"));
+  Append(view_, kCmdLayoutPerformance, PhiStr("oobe.layoutSelection.performanceOption"));
+  Append(view_, kCmdLayoutComfortable, PhiStr("oobe.layoutSelection.comfortableOption"));
   Separator(view_);
   Append(view_, kCmdAlwaysShowBookmarkBar,
-         L"Always Show Bookmark Bar\tCtrl+Shift+B");
-  Append(view_, kCmdBookmarkBarOnNewTab, L"Show Bookmark Bar on New Tab");
+         PhiStr("app.viewMenu.alwaysShowBookmarkBar"));
+  Append(view_, kCmdBookmarkBarOnNewTab, PhiStr("app.viewMenu.showBookmarkBarOnNewTab"));
   Separator(view_);
-  Append(view_, kCmdToggleSidebar, L"Toggle Sidebar\tCtrl+S");
-  Append(view_, kCmdToggleChatbar, L"Toggle Chatbar\tCtrl+Shift+S", false);
-  Append(view_, kCmdNewConversation, L"New Conversation\tCtrl+Shift+O",
+  Append(view_, kCmdToggleSidebar, PhiStr("app.viewMenu.toggleSidebar"));
+  Append(view_, kCmdToggleChatbar, PhiStr("app.viewMenu.toggleChatbar"), false);
+  Append(view_, kCmdNewConversation, PhiStr("app.viewMenu.newConversation"),
          false);
 
   // Spaces / Bookmarks / Tab hold dynamic rows; they are filled on open.
 
   // History. Only Back/Forward have a surface so far.
-  Append(history_, kCmdHome, L"Home\tAlt+Home", false);
-  Append(history_, kCmdBack, L"Back\tAlt+Left");
-  Append(history_, kCmdForward, L"Forward\tAlt+Right");
+  Append(history_, kCmdHome, PhiStr("settings.shortcuts.command.goHome"), false);
+  Append(history_, kCmdBack, PhiStr("agentControl.connectionApproval.backButton"));
+  Append(history_, kCmdForward, PhiStr("browser.webContentHeader.forwardButton.accessibilityLabel"));
   Separator(history_);
-  Append(history_, kCmdRecentlyClosedHeader, L"Recently Closed", false);
+  Append(history_, kCmdRecentlyClosedHeader, PhiStr("searchTabs.section.recentlyClosed"), false);
   Separator(history_);
-  Append(history_, kCmdShowFullHistory, L"Show Full History\tCtrl+H", false);
+  Append(history_, kCmdShowFullHistory, PhiStr("menuBar.showFullHistory"), false);
 
   // Window.
-  Append(window_, kCmdMinimize, L"Minimize");
-  Append(window_, kCmdZoomWindow, L"Zoom");
+  Append(window_, kCmdMinimize, PhiStr("menuBar.minimize"));
+  Append(window_, kCmdZoomWindow, PhiStr("menuBar.zoom"));
   Separator(window_);
-  Append(window_, kCmdNameWindow, L"Name Window...", false);
+  Append(window_, kCmdNameWindow, PhiStr("menuBar.nameWindow"), false);
   Separator(window_);
-  Append(window_, kCmdDownloads, L"Downloads\tCtrl+J");
-  Append(window_, kCmdExtensions, L"Extensions", false);
-  Append(window_, kCmdTaskManager, L"Task Manager", false);
+  Append(window_, kCmdDownloads, PhiStr("browser.headerMoreMenu.downloadsAction"));
+  Append(window_, kCmdExtensions, PhiStr("app.browserMigration.report.labelExtensions"), false);
+  Append(window_, kCmdTaskManager, PhiStr("menuBar.taskManager"), false);
 
   // Help. Time Machine restore is a Mac app-bundle mechanism — skipped.
-  Append(help_, kCmdReportIssue, L"Report an Issue...", false);
-  Append(help_, kCmdWhatsNew, L"What's New", false);
-  Append(help_, kCmdDocumentation, L"Documentation\tF1", false);
+  Append(help_, kCmdReportIssue, PhiStr("menuBar.reportAnIssue"), false);
+  Append(help_, kCmdWhatsNew, PhiStr("app.helpMenu.whatsNew"), false);
+  Append(help_, kCmdDocumentation, PhiStr("menuBar.documentation"), false);
   Separator(help_);
   HMENU user_data = ::CreatePopupMenu();
-  Append(user_data, kCmdExportUserData, L"Export User Data...", false);
-  Append(user_data, kCmdImportUserData, L"Import User Data...", false);
+  Append(user_data, kCmdExportUserData, PhiStr("app.helpMenu.exportUserData"), false);
+  Append(user_data, kCmdImportUserData, PhiStr("app.helpMenu.importUserData"), false);
   ::AppendMenuW(help_, MF_POPUP | MF_STRING,
-                reinterpret_cast<UINT_PTR>(user_data), L"Manage User Data");
+                reinterpret_cast<UINT_PTR>(user_data), PhiStr("app.helpMenu.manageUserData"));
 
   RefreshSpaces();
   RefreshBookmarks();
@@ -519,13 +520,13 @@ void PhiMenuBar::RefreshSpaces() {
   space_ids_.clear();
   profile_ids_.clear();
 
-  Append(spaces_, kCmdNewSpace, L"New Space...",
+  Append(spaces_, kCmdNewSpace, PhiStr("app.activeSpaceContextMenu.newSpaceAction"),
          controller_->host_ != nullptr);
-  Append(spaces_, kCmdRenameSpace, L"Rename Space...",
+  Append(spaces_, kCmdRenameSpace, PhiStr("app.activeSpaceContextMenu.renameSpaceAction"),
          controller_->host_ != nullptr);
   // Lands on Settings > Spaces with the active Space selected — the
   // detail column there is the icon picker.
-  Append(spaces_, kCmdChangeIcon, L"Change Icon...",
+  Append(spaces_, kCmdChangeIcon, PhiStr("menuBar.changeIcon"),
          controller_->host_ != nullptr);
 
   // Edit Theme — the same choices the Space chip's context menu offers,
@@ -536,7 +537,7 @@ void PhiMenuBar::RefreshSpaces() {
       controller_->host_ ? controller_->host_->SpaceThemeId(active)
                          : std::string();
   ::AppendMenuW(themes, MF_STRING | (pinned.empty() ? MF_CHECKED : 0),
-                kThemeFollow, L"Follow app theme");
+                kThemeFollow, PhiStr("menuBar.followAppTheme"));
   Separator(themes);
   const auto& built_in = PhiBuiltInThemes();
   for (size_t i = 0; i < built_in.size(); ++i) {
@@ -546,7 +547,7 @@ void PhiMenuBar::RefreshSpaces() {
                   base::UTF8ToWide(built_in[i].name).c_str());
   }
   ::AppendMenuW(spaces_, MF_POPUP | MF_STRING,
-                reinterpret_cast<UINT_PTR>(themes), L"Edit Theme");
+                reinterpret_cast<UINT_PTR>(themes), PhiStr("app.activeSpaceContextMenu.themeSubmenuTitle"));
 
   // Change Profile — the Mac's radio list; switching is not implemented, so
   // every row is disabled but the binding still reads truthfully. Delete
@@ -592,7 +593,7 @@ void PhiMenuBar::RefreshSpaces() {
         const bool deletable = *id != "Default" && !in_use;
         // The Mac marks in-use rows "<name> — in use by a Space".
         const std::wstring delete_title =
-            in_use ? title + L" — in use by a Space" : title;
+            in_use ? PhiStrF("menuBar.profileInUse", {title}) : title;
         ::AppendMenuW(delete_profiles,
                       MF_STRING |
                           (deletable ? 0u : MF_DISABLED | MF_GRAYED),
@@ -605,27 +606,27 @@ void PhiMenuBar::RefreshSpaces() {
   }
   if (profile_count == 0) {
     ::AppendMenuW(profiles, MF_STRING | MF_DISABLED | MF_GRAYED, 0,
-                  L"No Profiles");
+                  PhiStr("menuBar.noProfiles"));
     ::AppendMenuW(delete_profiles, MF_STRING | MF_DISABLED | MF_GRAYED, 0,
-                  L"No Profiles to Delete");
+                  PhiStr("app.spacesMenu.deleteProfile.emptyPlaceholder"));
   }
   ::AppendMenuW(spaces_, MF_POPUP | MF_STRING,
-                reinterpret_cast<UINT_PTR>(profiles), L"Change Profile");
-  Append(spaces_, kCmdDeleteSpace, L"Delete Space...",
+                reinterpret_cast<UINT_PTR>(profiles), PhiStr("app.activeSpaceContextMenu.profileSubmenuTitle"));
+  Append(spaces_, kCmdDeleteSpace, PhiStr("app.activeSpaceContextMenu.deleteSpaceAction"),
          controller_->host_ && active != "1");
   Separator(spaces_);
   const std::vector<std::pair<std::string, std::wstring>> spaces =
       SpaceList();
   const bool several = spaces.size() > 1;
-  Append(spaces_, kCmdNextSpace, L"Next Space\tCtrl+Alt+Right", several);
-  Append(spaces_, kCmdPreviousSpace, L"Previous Space\tCtrl+Alt+Left",
+  Append(spaces_, kCmdNextSpace, PhiStr("app.spacesMenu.nextSpace"), several);
+  Append(spaces_, kCmdPreviousSpace, PhiStr("app.spacesMenu.previousSpace"),
          several);
   Separator(spaces_);
   for (size_t i = 0; i < spaces.size() && kSpaceFirst + i <= kSpaceLast;
        ++i) {
     std::wstring title = spaces[i].second;
     if (i < 9) {
-      title += L"\tCtrl+" + std::to_wstring(i + 1);
+      title += PhiStr("menuBar.text") + std::to_wstring(i + 1);
     }
     ::AppendMenuW(spaces_,
                   MF_STRING | (spaces[i].first == active ? MF_CHECKED : 0),
@@ -633,13 +634,13 @@ void PhiMenuBar::RefreshSpaces() {
     space_ids_.push_back(spaces[i].first);
   }
   Separator(spaces_);
-  Append(spaces_, kCmdUrlRules, L"URL Rules...", false);
+  Append(spaces_, kCmdUrlRules, PhiStr("menuBar.urlRules"), false);
   Separator(spaces_);
-  Append(spaces_, kCmdNewProfile, L"New Profile...",
+  Append(spaces_, kCmdNewProfile, PhiStr("app.spacesMenu.newProfile"),
          controller_->framework_ != nullptr);
   ::AppendMenuW(spaces_, MF_POPUP | MF_STRING,
                 reinterpret_cast<UINT_PTR>(delete_profiles),
-                L"Delete Profile");
+                PhiStr("app.spacesMenu.deleteProfile.submenuTitle"));
 }
 
 void PhiMenuBar::RefreshHistory() {
@@ -662,7 +663,7 @@ void PhiMenuBar::AppendBookmarkRows(HMENU menu, const std::string& parent_guid,
       HMENU sub = ::CreatePopupMenu();
       AppendBookmarkRows(sub, row.guid, depth + 1);
       if (::GetMenuItemCount(sub) == 0) {
-        ::AppendMenuW(sub, MF_STRING | MF_DISABLED | MF_GRAYED, 0, L"Empty");
+        ::AppendMenuW(sub, MF_STRING | MF_DISABLED | MF_GRAYED, 0, PhiStr("app.bookmarksMenu.emptyFolderPlaceholder"));
       }
       ::AppendMenuW(menu, MF_POPUP | MF_STRING,
                     reinterpret_cast<UINT_PTR>(sub), shown.c_str());
@@ -681,20 +682,20 @@ void PhiMenuBar::RefreshBookmarks() {
   ClearMenu(bookmarks_);
   bookmark_urls_.clear();
   controller_->RebuildNavState();
-  Append(bookmarks_, kCmdBookmarkThisTab, L"Bookmark This Tab...\tCtrl+D",
+  Append(bookmarks_, kCmdBookmarkThisTab, PhiStr("app.bookmarksMenu.addOrEditCurrentTab"),
          controller_->host_ && !controller_->nav_url_.empty() &&
              !controller_->is_incognito());
   Append(bookmarks_, kCmdBookmarkAllTabs,
-         L"Bookmark All Tabs...\tCtrl+Shift+D",
+         PhiStr("app.bookmarksMenu.addAllOpenTabs"),
          controller_->host_ && !controller_->tabs_.empty() &&
              !controller_->is_incognito());
   Separator(bookmarks_);
-  Append(bookmarks_, kCmdExportBookmarks, L"Export Bookmarks...",
+  Append(bookmarks_, kCmdExportBookmarks, PhiStr("app.bookmarksMenu.exportCurrentSpace"),
          controller_->host_ != nullptr);
   Separator(bookmarks_);
   // The Mac's Bookmarks-menu entry for the native manager; Chromium's own
   // shortcut for IDC_SHOW_BOOKMARK_MANAGER on Windows is Ctrl+Shift+O.
-  Append(bookmarks_, kCmdBookmarkManager, L"Bookmark Manager\tCtrl+Shift+O",
+  Append(bookmarks_, kCmdBookmarkManager, PhiStr("menuBar.bookmarkManager"),
          controller_->framework_ != nullptr &&
              !controller_->is_incognito());
   const int fixed = ::GetMenuItemCount(bookmarks_);
@@ -712,14 +713,14 @@ void PhiMenuBar::RefreshTab() {
   tab_indices_.clear();
   controller_->RebuildTabs();
   const bool several = controller_->tabs_.size() > 1;
-  Append(tab_, kCmdNewTabToRight, L"New Tab to the Right",
+  Append(tab_, kCmdNewTabToRight, PhiStr("menuBar.newTabToTheRight"),
          controller_->framework_ != nullptr);
-  Append(tab_, kCmdNextTab, L"Select Next Tab\tCtrl+Tab", several);
-  Append(tab_, kCmdPreviousTab, L"Select Previous Tab\tCtrl+Shift+Tab",
+  Append(tab_, kCmdNextTab, PhiStr("settings.shortcuts.command.selectNextTab"), several);
+  Append(tab_, kCmdPreviousTab, PhiStr("settings.shortcuts.command.selectPreviousTab"),
          several);
-  Append(tab_, kCmdDuplicateTab, L"Duplicate Tab", false);
-  Append(tab_, kCmdMuteSite, L"Mute Site", false);
-  Append(tab_, kCmdSearchTabs, L"Search Tabs...\tCtrl+Shift+A");
+  Append(tab_, kCmdDuplicateTab, PhiStr("settings.shortcuts.command.duplicateTab"), false);
+  Append(tab_, kCmdMuteSite, PhiStr("settings.shortcuts.command.muteSite"), false);
+  Append(tab_, kCmdSearchTabs, PhiStr("menuBar.searchTabs"));
   if (controller_->tabs_.empty()) {
     return;
   }
@@ -730,7 +731,7 @@ void PhiMenuBar::RefreshTab() {
     const auto& row = controller_->tabs_[i];
     ::AppendMenuW(tab_, MF_STRING | (row.active ? MF_CHECKED : 0),
                   kTabFirst + static_cast<UINT>(i),
-                  row.title.empty() ? L"Untitled" : row.title.c_str());
+                  row.title.empty() ? PhiStr("common.bookmarkFolder.defaultName") : row.title.c_str());
     tab_indices_.push_back(row.index);
   }
 }
@@ -806,10 +807,9 @@ bool PhiMenuBar::OnCommand(UINT id) {
   if (id >= kDeleteProfileFirst && id <= kDeleteProfileLast) {
     const size_t i = id - kDeleteProfileFirst;
     if (c->host_ && i < profile_ids_.size() &&
-        PhiConfirm(c->shell_hwnd_, L"Delete Profile",
-                   L"All cookies, history, extensions, and saved data on "
-                   L"this profile will be permanently removed. This cannot "
-                   L"be undone.")) {
+        PhiConfirm(c->shell_hwnd_,
+                   PhiStr("app.spacesMenu.deleteProfile.submenuTitle"),
+                   PhiStr("menuBar.deleteProfileConfirmBody"))) {
       c->host_->DeleteProfileById(profile_ids_[i]);
     }
     return true;
@@ -825,17 +825,17 @@ bool PhiMenuBar::OnCommand(UINT id) {
 
   switch (id) {
     case kCmdAbout:
-      ::MessageBoxW(c->shell_hwnd_,
-                    L"Phi Browser for Windows " PHI_WIN_VERSION_WIDE L"\n"
-                    L"The Phi client shell over the Phi framework.",
-                    L"About Phi", MB_OK | MB_ICONINFORMATION);
+      ::MessageBoxW(
+          c->shell_hwnd_,
+          PhiStrF("menuBar.aboutBody", {PHI_WIN_VERSION_WIDE}).c_str(),
+          PhiStr("menuBar.aboutPhi"), MB_OK | MB_ICONINFORMATION);
       return true;
     case kCmdCheckUpdate:
       if (!PhiUpdater::CheckForUpdateWithUi()) {
         ::MessageBoxW(c->shell_hwnd_,
-                      L"The updater is not available in this build\n"
-                      L"(WinSparkle.dll is missing).",
-                      L"Check for Update", MB_OK | MB_ICONINFORMATION);
+                      PhiStr("menuBar.updaterUnavailableBody"),
+                      PhiStr("menuBar.checkForUpdate"),
+                      MB_OK | MB_ICONINFORMATION);
       }
       return true;
     case kCmdPreferences:
@@ -924,7 +924,7 @@ bool PhiMenuBar::OnCommand(UINT id) {
       }
       ::CloseClipboard();
       // The Mac's copy confirmation toast (OverlayToastCenter).
-      PhiShowToast(c->shell_hwnd_, c->CurrentPalette(), L"URL Copied");
+      PhiShowToast(c->shell_hwnd_, c->CurrentPalette(), PhiStr("app.copyTabURLsToast.single"));
       return true;
     }
     case kCmdStop:
@@ -982,8 +982,8 @@ bool PhiMenuBar::OnCommand(UINT id) {
           break;
         }
       }
-      if (PhiPromptText(c->shell_hwnd_, L"Rename Space",
-                        L"Enter a new name for this Space.", &name)) {
+      if (PhiPromptText(c->shell_hwnd_, PhiStr("app.renameSpaceDialog.title"),
+                        PhiStr("app.renameSpaceDialog.message"), &name)) {
         c->host_->RenameSpace(c->active_space_, base::WideToUTF8(name));
       }
       return true;
@@ -995,20 +995,17 @@ bool PhiMenuBar::OnCommand(UINT id) {
       return true;
     case kCmdDeleteSpace:
       if (c->host_ &&
-          PhiConfirm(c->shell_hwnd_, L"Delete Space",
-                     L"Bookmarks and pinned tabs belonging to this Space "
-                     L"will also be removed. This action cannot be "
-                     L"undone.")) {
+          PhiConfirm(c->shell_hwnd_, PhiStr("menuBar.deleteSpace"),
+                     PhiStr("menuBar.deleteSpaceConfirmBody"))) {
         c->host_->DeleteSpace(c->active_space_);
       }
       return true;
     case kCmdNewProfile: {
       std::wstring name;
       if (c->framework_ &&
-          PhiPromptText(c->shell_hwnd_, L"New Profile",
-                        L"Enter a name for the new profile. Each profile "
-                        L"has its own cookies, history, and extensions.",
-                        &name)) {
+          PhiPromptText(c->shell_hwnd_,
+                        PhiStr("settings.profiles.createDialog.title"),
+                        PhiStr("menuBar.newProfilePromptBody"), &name)) {
         c->framework_->CreateProfile(base::WideToUTF8(name).c_str());
       }
       return true;
@@ -1060,11 +1057,11 @@ bool PhiMenuBar::OnCommand(UINT id) {
       if (!c->host_ || c->is_incognito()) {
         return true;
       }
-      std::wstring name = L"Saved Tabs";
-      if (!PhiPromptText(c->shell_hwnd_, L"Bookmark All Tabs",
-                         L"Every open tab will be bookmarked into a new "
-                         L"folder with this name.",
-                         &name) ||
+      std::wstring name = PhiStr("menuBar.savedTabs");
+      if (!PhiPromptText(
+              c->shell_hwnd_,
+              PhiStr("common.tabAreaContextMenu.bookmarkAllTabsAction"),
+              PhiStr("menuBar.bookmarkAllTabsPromptBody"), &name) ||
           name.empty()) {
         return true;
       }
@@ -1093,8 +1090,9 @@ bool PhiMenuBar::OnCommand(UINT id) {
           }
         }
       }
-      PhiShowToast(c->shell_hwnd_, c->CurrentPalette(),
-                   std::to_wstring(added) + L" Tabs Bookmarked");
+      PhiShowToast(
+          c->shell_hwnd_, c->CurrentPalette(),
+          PhiStrF("menuBar.tabsBookmarkedToast", {std::to_wstring(added)}));
       return true;
     }
     case kCmdBookmarkManager:
@@ -1132,7 +1130,7 @@ bool PhiMenuBar::OnCommand(UINT id) {
                     nullptr);
         ::CloseHandle(f);
         PhiShowToast(c->shell_hwnd_, c->CurrentPalette(),
-                     L"Bookmarks Exported");
+                     PhiStr("menuBar.bookmarksExported"));
       }
       return true;
     }
@@ -1159,15 +1157,12 @@ bool PhiMenuBar::OnCommand(UINT id) {
     }
     case kCmdImportBrowser:
       if (c->framework_ &&
-          PhiConfirm(c->shell_hwnd_, L"Import from Google Chrome",
-                     L"History, bookmarks, cookies and passwords from your "
-                     L"Google Chrome profile will be imported into Phi. "
-                     L"This may take a moment.")) {
+          PhiConfirm(c->shell_hwnd_, PhiStr("menuBar.importFromGoogleChrome"),
+                     PhiStr("menuBar.importChromePromptBody"))) {
         if (!c->framework_->StartChromeImport(target)) {
           ::MessageBoxW(c->shell_hwnd_,
-                        L"The import could not start. Is Google Chrome "
-                        L"installed?",
-                        L"Import", MB_OK | MB_ICONINFORMATION);
+                        PhiStr("menuBar.importChromeFailedBody"),
+                        PhiStr("app.import"), MB_OK | MB_ICONINFORMATION);
         }
       }
       return true;

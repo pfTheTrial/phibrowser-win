@@ -1,0 +1,2591 @@
+{
+ "strings": {
+  "accountDataExport.cancelButton": {
+   "comment": "prompt — used at phi_prompt.cc:124",
+   "en": "Cancel"
+  },
+  "accountDataExport.closeButton": {
+   "comment": "sidebar — used at phi_window_controller.cc:5700",
+   "en": "Close"
+  },
+  "accountRequired.phiAI.loginButton": {
+   "comment": "settings — used at phi_settings_window.cc:1903",
+   "en": "Sign in"
+  },
+  "addressBar.configuration.defaultPlaceholder": {
+   "comment": "sidebar — used at phi_window_controller.cc:1116",
+   "en": "Search or Enter URL"
+  },
+  "agentControl.connectionApproval.agentLabel": {
+   "comment": "app — used at phi_coordinator.cc:3108",
+   "en": "Agent"
+  },
+  "agentControl.connectionApproval.allowOnceButton": {
+   "comment": "app — used at phi_coordinator.cc:562",
+   "en": "Allow Once"
+  },
+  "agentControl.connectionApproval.alwaysAllowButton": {
+   "comment": "app — used at phi_coordinator.cc:562",
+   "en": "Always Allow"
+  },
+  "agentControl.connectionApproval.backButton": {
+   "comment": "menuBar — used at phi_menu_bar.cc:371",
+   "en": "Back\tAlt+Left"
+  },
+  "agentControl.connectionApproval.denyButton": {
+   "comment": "app — used at phi_coordinator.cc:562",
+   "en": "Deny"
+  },
+  "agentOverlay.handBack": {
+   "comment": "agentOverlay — used at phi_agent_overlay.cc:655",
+   "en": "Hand back"
+  },
+  "agentOverlay.takeControl": {
+   "comment": "agentOverlay — used at phi_agent_overlay.cc:655",
+   "en": "Take control"
+  },
+  "agentTranscript.messageTheAgent": {
+   "comment": "agentTranscript — used at phi_transcript_panel.cc:184",
+   "en": "Message the agent…"
+  },
+  "agentTranscript.transcript": {
+   "comment": "agentTranscript — used at phi_transcript_panel.cc:63",
+   "en": "Transcript — "
+  },
+  "app.activeSpaceContextMenu.deleteSpaceAction": {
+   "comment": "menuBar — used at phi_menu_bar.cc:614",
+   "en": "Delete Space..."
+  },
+  "app.activeSpaceContextMenu.newSpaceAction": {
+   "comment": "menuBar — used at phi_menu_bar.cc:522",
+   "en": "New Space..."
+  },
+  "app.activeSpaceContextMenu.profileSubmenuTitle": {
+   "comment": "menuBar — used at phi_menu_bar.cc:613",
+   "en": "Change Profile"
+  },
+  "app.activeSpaceContextMenu.renameSpaceAction": {
+   "comment": "menuBar — used at phi_menu_bar.cc:524",
+   "en": "Rename Space..."
+  },
+  "app.activeSpaceContextMenu.themeSubmenuTitle": {
+   "comment": "menuBar — used at phi_menu_bar.cc:549",
+   "en": "Edit Theme"
+  },
+  "app.agentAccessRequest": {
+   "comment": "app — used at phi_coordinator.cc:561",
+   "en": "Agent access request"
+  },
+  "app.agentPaused": {
+   "comment": "app — used at phi_coordinator.cc:3114",
+   "en": "Agent paused"
+  },
+  "app.allowFor10Minutes": {
+   "comment": "app — used at phi_coordinator.cc:5602",
+   "en": "Allow for 10 minutes"
+  },
+  "app.allowOnce": {
+   "comment": "app — used at phi_coordinator.cc:5602",
+   "en": "Allow once"
+  },
+  "app.allowThisConnection": {
+   "comment": "app — used at phi_coordinator.cc:565",
+   "en": "\n\nAllow this connection?"
+  },
+  "app.allowThisOnce": {
+   "comment": "app — used at phi_coordinator.cc:5607",
+   "en": "\n\nAllow this once?"
+  },
+  "app.alwaysAllow": {
+   "comment": "app — used at phi_coordinator.cc:5602",
+   "en": "Always allow"
+  },
+  "app.alwaysShowBookmarkBar": {
+   "comment": "app — used in phi_coordinator.cc",
+   "en": "Always Show Bookmark Bar"
+  },
+  "app.andTryAgain": {
+   "comment": "app — used at phi_coordinator.cc:6349",
+   "en": "and try again."
+  },
+  "app.appsuselighttheme": {
+   "comment": "app — used in phi_theme.cc",
+   "en": "AppsUseLightTheme"
+  },
+  "app.authorizationBearer": {
+   "comment": "app — used in phi_telemetry.cc",
+   "en": "\r\nAuthorization: Bearer "
+  },
+  "app.bookmarkFolderDialog.createTitle": {
+   "comment": "bookmarkManager — used at phi_bookmark_manager.cc:537",
+   "en": "New Folder"
+  },
+  "app.bookmarkThisTab": {
+   "comment": "app — used at phi_coordinator.cc:99",
+   "en": "Bookmark This Tab"
+  },
+  "app.bookmarksMenu.addAllOpenTabs": {
+   "comment": "menuBar — used at phi_menu_bar.cc:688",
+   "en": "Bookmark All Tabs...\tCtrl+Shift+D"
+  },
+  "app.bookmarksMenu.addOrEditCurrentTab": {
+   "comment": "menuBar — used at phi_menu_bar.cc:684",
+   "en": "Bookmark This Tab...\tCtrl+D"
+  },
+  "app.bookmarksMenu.emptyFolderPlaceholder": {
+   "comment": "menuBar — used at phi_menu_bar.cc:665",
+   "en": "Empty"
+  },
+  "app.bookmarksMenu.exportCurrentSpace": {
+   "comment": "menuBar — used at phi_menu_bar.cc:692",
+   "en": "Export Bookmarks..."
+  },
+  "app.bookmarksMenu.title": {
+   "comment": "bookmarkManager — used at phi_bookmark_manager.cc:518",
+   "en": "Bookmarks"
+  },
+  "app.bookmarksWereAddedToImported": {
+   "comment": "app — used at phi_coordinator.cc:6411",
+   "en": " bookmarks were added to \"Imported from Chrome\"."
+  },
+  "app.browserMigration.report.labelExtensions": {
+   "comment": "extensions — used at phi_extensions_popover.cc:260",
+   "en": "Extensions"
+  },
+  "app.closeTab": {
+   "comment": "app — used in phi_coordinator.cc",
+   "en": "Close Tab"
+  },
+  "app.closeWindow": {
+   "comment": "app — used in phi_coordinator.cc",
+   "en": "Close Window"
+  },
+  "app.contentTypeApplicationJson": {
+   "comment": "app — used in phi_telemetry.cc",
+   "en": "Content-Type: application/json"
+  },
+  "app.contentTypeApplicationXWww": {
+   "comment": "app — used in phi_auth.cc",
+   "en": "Content-Type: application/x-www-form-urlencoded"
+  },
+  "app.copyTabURLsToast.single": {
+   "comment": "menuBar — used at phi_menu_bar.cc:927",
+   "en": "URL Copied"
+  },
+  "app.copyUrl": {
+   "comment": "app — used in phi_coordinator.cc",
+   "en": "Copy URL"
+  },
+  "app.credentialRequest": {
+   "comment": "app — used at phi_coordinator.cc:5601",
+   "en": "Credential request"
+  },
+  "app.current": {
+   "comment": "app — used at phi_coordinator.cc:974",
+   "en": "  (current)"
+  },
+  "app.dPAGaSy": {
+   "comment": "app — used in phi_control_server.cc",
+   "en": "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;OW)"
+  },
+  "app.deleteProfileConfirmation.deleteButton": {
+   "comment": "bookmarkManager — used at phi_bookmark_manager.cc:768",
+   "en": "Delete"
+  },
+  "app.deutsch": {
+   "comment": "app — used in phi_i18n.cc",
+   "en": "Deutsch"
+  },
+  "app.downloads": {
+   "comment": "app — used in phi_coordinator.cc",
+   "en": "Downloads"
+  },
+  "app.editMenu.copySelectedTabURLAction": {
+   "comment": "menuBar — used at phi_menu_bar.cc:318",
+   "en": "Copy URL\tCtrl+Shift+C"
+  },
+  "app.english": {
+   "comment": "app — used in phi_i18n.cc",
+   "en": "English"
+  },
+  "app.espaOl": {
+   "comment": "app — used in phi_i18n.cc",
+   "en": "Español"
+  },
+  "app.fileMenu.createNewIncognitoSpace": {
+   "comment": "menuBar — used at phi_menu_bar.cc:299",
+   "en": "New Incognito Space"
+  },
+  "app.forceReloadThisPage": {
+   "comment": "app — used at phi_coordinator.cc:91",
+   "en": "Force Reload This Page"
+  },
+  "app.franAis": {
+   "comment": "app — used in phi_i18n.cc",
+   "en": "Français"
+  },
+  "app.fydeInnovations": {
+   "comment": "app — used in phi_updater.cc",
+   "en": "Fyde Innovations"
+  },
+  "app.helpMenu.exportUserData": {
+   "comment": "menuBar — used at phi_menu_bar.cc:394",
+   "en": "Export User Data..."
+  },
+  "app.helpMenu.importUserData": {
+   "comment": "menuBar — used at phi_menu_bar.cc:395",
+   "en": "Import User Data..."
+  },
+  "app.helpMenu.manageUserData": {
+   "comment": "menuBar — used at phi_menu_bar.cc:397",
+   "en": "Manage User Data"
+  },
+  "app.helpMenu.whatsNew": {
+   "comment": "menuBar — used at phi_menu_bar.cc:390",
+   "en": "What's New"
+  },
+  "app.imagePng": {
+   "comment": "app — used in phi_window_capture.cc",
+   "en": "image/png"
+  },
+  "app.import": {
+   "comment": "app — used at phi_coordinator.cc:6350",
+   "en": "Import"
+  },
+  "app.importFinished": {
+   "comment": "app — used at phi_coordinator.cc:6408",
+   "en": "Import finished."
+  },
+  "app.mainMenu.spaces": {
+   "comment": "app — used at phi_coordinator.cc:107",
+   "en": "Spaces"
+  },
+  "app.name": {
+   "comment": "app — used in phi_control_server.cc",
+   "en": "name:"
+  },
+  "app.nederlands": {
+   "comment": "app — used in phi_i18n.cc",
+   "en": "Nederlands"
+  },
+  "app.newIncognitoWindow": {
+   "comment": "app — used in phi_coordinator.cc",
+   "en": "New Incognito Window"
+  },
+  "app.newTab": {
+   "comment": "app — used in phi_coordinator.cc",
+   "en": "New Tab"
+  },
+  "app.newWindow": {
+   "comment": "app — used in phi_coordinator.cc",
+   "en": "New Window"
+  },
+  "app.nextSpace": {
+   "comment": "app — used in phi_coordinator.cc",
+   "en": "Next Space"
+  },
+  "app.openInSpace": {
+   "comment": "app — used at phi_coordinator.cc:982",
+   "en": "Open in Space"
+  },
+  "app.openLocation": {
+   "comment": "app — used at phi_coordinator.cc:81",
+   "en": "Open Location"
+  },
+  "app.phi": {
+   "comment": "app — used in phi_kiosk_window.cc",
+   "en": "Phi"
+  },
+  "app.phiAgentAccessRequest": {
+   "comment": "app — used at phi_coordinator.cc:566",
+   "en": "Phi — Agent access request"
+  },
+  "app.phiBrowser": {
+   "comment": "app — used in phi_updater.cc",
+   "en": "Phi Browser"
+  },
+  "app.phiCredentialRequest": {
+   "comment": "app — used at phi_coordinator.cc:5608",
+   "en": "Phi — Credential request"
+  },
+  "app.phiMenu.checkForUpdatesMenuItem": {
+   "comment": "menuBar — used at phi_menu_bar.cc:286",
+   "en": "Check for Update..."
+  },
+  "app.phiMenu.importFromAnotherBrowser": {
+   "comment": "menuBar — used at phi_menu_bar.cc:290",
+   "en": "Import from Another Browser..."
+  },
+  "app.phiTypesTheSecretInto": {
+   "comment": "app — used at phi_coordinator.cc:5589",
+   "en": "Phi types the secret into the page. The agent never sees it."
+  },
+  "app.phiVaultHelper": {
+   "comment": "app — used in phi_coordinator.cc",
+   "en": "PHI_VAULT_HELPER"
+  },
+  "app.phibrowserWin": {
+   "comment": "app — used in phi_auth.cc",
+   "en": "PhiBrowser-Win"
+  },
+  "app.previousSpace": {
+   "comment": "app — used in phi_coordinator.cc",
+   "en": "Previous Space"
+  },
+  "app.process": {
+   "comment": "app — used at phi_coordinator.cc:550",
+   "en": "\n(process "
+  },
+  "app.reloadThisPage": {
+   "comment": "app — used at phi_coordinator.cc:89",
+   "en": "Reload This Page"
+  },
+  "app.renameSpaceDialog.message": {
+   "comment": "menuBar — used at phi_menu_bar.cc:986",
+   "en": "Enter a new name for this Space."
+  },
+  "app.renameSpaceDialog.title": {
+   "comment": "menuBar — used at phi_menu_bar.cc:985",
+   "en": "Rename Space"
+  },
+  "app.reopenClosedTab": {
+   "comment": "app — used in phi_coordinator.cc",
+   "en": "Reopen Closed Tab"
+  },
+  "app.showFullHistory": {
+   "comment": "app — used at phi_coordinator.cc:97",
+   "en": "Show Full History"
+  },
+  "app.softwareMicrosoftWindowsCurrentversionThemes": {
+   "comment": "app — used in phi_theme.cc",
+   "en": "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"
+  },
+  "app.spacesMenu.deleteProfile.emptyPlaceholder": {
+   "comment": "menuBar — used at phi_menu_bar.cc:610",
+   "en": "No Profiles to Delete"
+  },
+  "app.spacesMenu.deleteProfile.submenuTitle": {
+   "comment": "menuBar — used at phi_menu_bar.cc:642",
+   "en": "Delete Profile"
+  },
+  "app.spacesMenu.newProfile": {
+   "comment": "menuBar — used at phi_menu_bar.cc:638",
+   "en": "New Profile..."
+  },
+  "app.spacesMenu.nextSpace": {
+   "comment": "menuBar — used at phi_menu_bar.cc:620",
+   "en": "Next Space\tCtrl+Alt+Right"
+  },
+  "app.spacesMenu.previousSpace": {
+   "comment": "menuBar — used at phi_menu_bar.cc:621",
+   "en": "Previous Space\tCtrl+Alt+Left"
+  },
+  "app.spacesMenu.urlRules": {
+   "comment": "settings — used at phi_settings_window.cc:1248",
+   "en": "URL Rules…"
+  },
+  "app.theImportDidNotFinish": {
+   "comment": "app — used at phi_coordinator.cc:6348",
+   "en": "The import did not finish. Close Google Chrome "
+  },
+  "app.theSecretWillBeGiven": {
+   "comment": "app — used at phi_coordinator.cc:5588",
+   "en": "The secret will be GIVEN TO THE AGENT."
+  },
+  "app.timeMachineBackup.details.dataSizeUnavailable": {
+   "comment": "settings — used at phi_settings_window.cc:1739",
+   "en": "Unavailable"
+  },
+  "app.tmp": {
+   "comment": "app — used in phi_tab_store.cc",
+   "en": ".tmp"
+  },
+  "app.toggleSidebar": {
+   "comment": "app — used in phi_coordinator.cc",
+   "en": "Toggle Sidebar"
+  },
+  "app.urlRulesEditor.windowTitle": {
+   "comment": "settings — used at phi_settings_window.cc:420",
+   "en": "URL Rules"
+  },
+  "app.viewMenu.alwaysShowBookmarkBar": {
+   "comment": "menuBar — used at phi_menu_bar.cc:359",
+   "en": "Always Show Bookmark Bar\tCtrl+Shift+B"
+  },
+  "app.viewMenu.layoutModeSectionTitle": {
+   "comment": "menuBar — used at phi_menu_bar.cc:353",
+   "en": "Layout Mode"
+  },
+  "app.viewMenu.newConversation": {
+   "comment": "menuBar — used at phi_menu_bar.cc:364",
+   "en": "New Conversation\tCtrl+Shift+O"
+  },
+  "app.viewMenu.showBookmarkBarOnNewTab": {
+   "comment": "menuBar — used at phi_menu_bar.cc:360",
+   "en": "Show Bookmark Bar on New Tab"
+  },
+  "app.viewMenu.toggleChatbar": {
+   "comment": "menuBar — used at phi_menu_bar.cc:363",
+   "en": "Toggle Chatbar\tCtrl+Shift+S"
+  },
+  "app.viewMenu.toggleSidebar": {
+   "comment": "menuBar — used at phi_menu_bar.cc:362",
+   "en": "Toggle Sidebar\tCtrl+S"
+  },
+  "app.wantsToControlPhiTabs": {
+   "comment": "app — used at phi_coordinator.cc:551",
+   "en": ") wants to control Phi — tabs, navigation, and page content."
+  },
+  "bookmarkBar.folderContextMenu.renameAction": {
+   "comment": "sidebar — used at phi_window_controller.cc:6353",
+   "en": "Rename…"
+  },
+  "bookmarkManager.deleteBookmarks": {
+   "comment": "bookmarkManager — used at phi_bookmark_manager.cc:717",
+   "en": "Delete Bookmarks"
+  },
+  "bookmarkManager.deleteThe": {
+   "comment": "bookmarkManager — used at phi_bookmark_manager.cc:712",
+   "en": "Delete the "
+  },
+  "bookmarkManager.deleteThisFolderAndEverything": {
+   "comment": "bookmarkManager — used at phi_bookmark_manager.cc:715",
+   "en": "Delete this folder and everything inside it?"
+  },
+  "bookmarkManager.enterANewNameFor": {
+   "comment": "bookmarkManager — used at phi_bookmark_manager.cc:686",
+   "en": "Enter a new name for this bookmark."
+  },
+  "bookmarkManager.enterANewNameFor2": {
+   "comment": "bookmarkManager — used at phi_bookmark_manager.cc:685",
+   "en": "Enter a new name for this folder."
+  },
+  "bookmarkManager.folderName": {
+   "comment": "bookmarkManager — used at phi_bookmark_manager.cc:667",
+   "en": "Folder name:"
+  },
+  "bookmarkManager.noBookmarksMatchYourSearch": {
+   "comment": "bookmarkManager — used at phi_bookmark_manager.cc:556",
+   "en": "No bookmarks match your search"
+  },
+  "bookmarkManager.noBookmarksYet": {
+   "comment": "bookmarkManager — used at phi_bookmark_manager.cc:555",
+   "en": "No bookmarks yet"
+  },
+  "bookmarkManager.open": {
+   "comment": "bookmarkManager — used at phi_bookmark_manager.cc:754",
+   "en": "Open"
+  },
+  "bookmarkManager.renameBookmark": {
+   "comment": "bookmarkManager — used at phi_bookmark_manager.cc:684",
+   "en": "Rename Bookmark"
+  },
+  "bookmarkManager.renameFolder": {
+   "comment": "bookmarkManager — used at phi_bookmark_manager.cc:684",
+   "en": "Rename Folder"
+  },
+  "bookmarkManager.searchBookmarks": {
+   "comment": "bookmarkManager — used at phi_bookmark_manager.cc:195",
+   "en": "Search bookmarks"
+  },
+  "bookmarkManager.selectedItems": {
+   "comment": "bookmarkManager — used at phi_bookmark_manager.cc:714",
+   "en": " selected items?"
+  },
+  "browser.headerMoreMenu.downloadsAction": {
+   "comment": "menuBar — used at phi_menu_bar.cc:384",
+   "en": "Downloads\tCtrl+J"
+  },
+  "browser.headerMoreMenu.feedbackAction": {
+   "comment": "sidebar — used at phi_window_controller.cc:7312",
+   "en": "Feedback"
+  },
+  "browser.tabGroupOverview.newTabCardTitle": {
+   "comment": "menuBar — used at phi_menu_bar.cc:295",
+   "en": "New Tab\tCtrl+T"
+  },
+  "browser.tabGroupOverview.splitCard.closePaneButtonAccessibilityLabel": {
+   "comment": "menuBar — used at phi_menu_bar.cc:306",
+   "en": "Close Tab\tCtrl+W"
+  },
+  "browser.webContentHeader.forwardButton.accessibilityLabel": {
+   "comment": "menuBar — used at phi_menu_bar.cc:372",
+   "en": "Forward\tAlt+Right"
+  },
+  "browser.webContentHeader.stopButton.accessibilityLabel": {
+   "comment": "menuBar — used at phi_menu_bar.cc:335",
+   "en": "Stop\tEsc"
+  },
+  "common.bookmarkEditor.editTitle": {
+   "comment": "sidebar — used at phi_window_controller.cc:6094",
+   "en": "Edit Bookmark"
+  },
+  "common.bookmarkEditor.folderPicker.newFolderAction": {
+   "comment": "sidebar — used at phi_window_controller.cc:5592",
+   "en": "New Folder..."
+  },
+  "common.bookmarkFolder.defaultName": {
+   "comment": "bookmarkManager — used at phi_bookmark_manager.cc:665",
+   "en": "Untitled"
+  },
+  "common.iconPicker.emojiTabTitle": {
+   "comment": "settings — used at phi_settings_window.cc:1045",
+   "en": "Emoji"
+  },
+  "common.iconPicker.iconTabTitle": {
+   "comment": "settings — used at phi_settings_window.cc:1045",
+   "en": "Icon"
+  },
+  "common.pinnedTabEditor.editTitle": {
+   "comment": "sidebar — used at phi_window_controller.cc:5959",
+   "en": "Edit Pinned Tab"
+  },
+  "common.tabAreaContextMenu.bookmarkAllTabsAction": {
+   "comment": "app — used at phi_coordinator.cc:101",
+   "en": "Bookmark All Tabs"
+  },
+  "common.tabAreaContextMenu.reopenClosedTabAction": {
+   "comment": "menuBar — used at phi_menu_bar.cc:300",
+   "en": "Reopen Closed Tab\tCtrl+Shift+T"
+  },
+  "common.tabMultiSelectionContextMenu.addToBookmarksAction": {
+   "comment": "sidebar — used at phi_window_controller.cc:5563",
+   "en": "Add to Bookmark"
+  },
+  "common.tabMultiSelectionContextMenu.addToFolderSubmenu": {
+   "comment": "sidebar — used at phi_window_controller.cc:5595",
+   "en": "Add to Folder"
+  },
+  "common.tabMultiSelectionContextMenu.cloneToSpaceSubmenu": {
+   "comment": "sidebar — used at phi_window_controller.cc:5672",
+   "en": "Clone to Space"
+  },
+  "common.tabMultiSelectionContextMenu.closeOtherTabsAction": {
+   "comment": "sidebar — used at phi_window_controller.cc:5701",
+   "en": "Close Other Tabs"
+  },
+  "common.tabMultiSelectionContextMenu.moveToSpaceSubmenu": {
+   "comment": "sidebar — used at phi_window_controller.cc:5669",
+   "en": "Move to Space"
+  },
+  "common.tabMultiSelectionContextMenu.openAsSplitAction": {
+   "comment": "sidebar — used at phi_window_controller.cc:5560",
+   "en": "Open as Split"
+  },
+  "download.safety.short.blocked": {
+   "comment": "downloads — used at phi_downloads_popover.cc:421",
+   "en": "Blocked"
+  },
+  "download.safety.short.scanning": {
+   "comment": "downloads — used at phi_downloads_popover.cc:423",
+   "en": "Scanning..."
+  },
+  "downloads.bDY": {
+   "comment": "downloads — used in phi_downloads_popover.cc",
+   "en": "%b %d, %Y"
+  },
+  "downloads.blockedByPolicy": {
+   "comment": "downloads — used at phi_downloads_popover.cc:422",
+   "en": "Blocked by policy"
+  },
+  "downloads.dangerous": {
+   "comment": "downloads — used at phi_downloads_popover.cc:420",
+   "en": "Dangerous"
+  },
+  "downloads.daysAgo": {
+   "comment": "downloads — used at phi_downloads_popover.cc:114",
+   "en": " days ago"
+  },
+  "downloads.from": {
+   "comment": "downloads — used at phi_downloads_popover.cc:494",
+   "en": "From "
+  },
+  "downloads.gb": {
+   "comment": "downloads — used in phi_downloads_popover.cc",
+   "en": "GB"
+  },
+  "downloads.hourAgo": {
+   "comment": "downloads — used at phi_downloads_popover.cc:104",
+   "en": " hour ago"
+  },
+  "downloads.item.completed.copyLinkButtonTooltip": {
+   "comment": "bookmarkManager — used at phi_bookmark_manager.cc:759",
+   "en": "Copy Link"
+  },
+  "downloads.item.completedTime.justNow": {
+   "comment": "downloads — used at phi_downloads_popover.cc:98",
+   "en": "Just now"
+  },
+  "downloads.item.completedTime.today": {
+   "comment": "downloads — used at phi_downloads_popover.cc:109",
+   "en": "Today"
+  },
+  "downloads.item.completedTime.yesterday": {
+   "comment": "downloads — used at phi_downloads_popover.cc:112",
+   "en": "Yesterday"
+  },
+  "downloads.item.status.cancelled": {
+   "comment": "downloads — used at phi_downloads_popover.cc:424",
+   "en": "Canceled"
+  },
+  "downloads.item.status.deleted": {
+   "comment": "downloads — used at phi_downloads_popover.cc:427",
+   "en": "Deleted"
+  },
+  "downloads.item.status.failed": {
+   "comment": "downloads — used at phi_downloads_popover.cc:426",
+   "en": "Failed"
+  },
+  "downloads.item.status.pausedIndicator": {
+   "comment": "downloads — used at phi_downloads_popover.cc:471",
+   "en": " ・Paused"
+  },
+  "downloads.kb": {
+   "comment": "downloads — used in phi_downloads_popover.cc",
+   "en": "KB"
+  },
+  "downloads.list.emptyMessage": {
+   "comment": "downloads — used at phi_downloads_popover.cc:381",
+   "en": "No Downloads"
+  },
+  "downloads.list.openAllDownloadsButton": {
+   "comment": "downloads — used at phi_downloads_popover.cc:353",
+   "en": "All Downloads"
+  },
+  "downloads.mb": {
+   "comment": "downloads — used in phi_downloads_popover.cc",
+   "en": "MB"
+  },
+  "downloads.minAgo": {
+   "comment": "downloads — used at phi_downloads_popover.cc:101",
+   "en": " min ago"
+  },
+  "extensions.noExtensionsInstalled": {
+   "comment": "extensions — used at phi_extensions_popover.cc:273",
+   "en": "No extensions installed"
+  },
+  "feedback.form.sendButton": {
+   "comment": "agentTranscript — used at phi_transcript_panel.cc:172",
+   "en": "Send"
+  },
+  "menuBar.aboutBody": {
+   "comment": "About Phi alert - body. {0} is the version string",
+   "en": "Phi Browser for Windows {0}\nThe Phi client shell over the Phi framework.",
+   "translations": {
+    "de": "Phi Browser für Windows {0}\nDie Phi-Client-Shell über dem Phi-Framework.",
+    "es": "Phi Browser para Windows {0}\nEl shell del cliente Phi sobre el framework Phi.",
+    "fr": "Phi Browser pour Windows {0}\nLe shell client Phi au-dessus du framework Phi.",
+    "ja": "Phi Browser for Windows {0}\nPhi フレームワーク上で動作する Phi クライアントシェル。",
+    "ko": "Windows용 Phi Browser {0}\nPhi 프레임워크 위의 Phi 클라이언트 셸입니다.",
+    "nl": "Phi Browser voor Windows {0}\nDe Phi-clientshell boven het Phi-framework.",
+    "zh-Hans": "Phi Browser for Windows {0}\n运行于 Phi 框架之上的 Phi 客户端外壳。",
+    "zh-Hant": "Phi Browser for Windows {0}\n執行於 Phi 框架之上的 Phi 用戶端外殼。"
+   }
+  },
+  "menuBar.aboutPhi": {
+   "comment": "menuBar — used at phi_menu_bar.cc:282",
+   "en": "About Phi",
+   "translations": {
+    "de": "Über Phi",
+    "es": "Acerca de Phi",
+    "fr": "À propos de Phi",
+    "ja": "Phi について",
+    "ko": "Phi 정보",
+    "nl": "Over Phi",
+    "zh-Hans": "关于 Phi",
+    "zh-Hant": "關於 Phi"
+   }
+  },
+  "menuBar.actualSize": {
+   "comment": "menuBar — used at phi_menu_bar.cc:340",
+   "en": "Actual Size\tCtrl+0",
+   "translations": {
+    "de": "Tatsächliche Größe",
+    "es": "Tamaño real",
+    "fr": "Taille réelle",
+    "ja": "実際のサイズ",
+    "ko": "실제 크기",
+    "nl": "Werkelijke grootte",
+    "zh-Hans": "实际大小",
+    "zh-Hant": "實際大小"
+   }
+  },
+  "menuBar.allCookiesHistoryExtensionsAnd": {
+   "comment": "menuBar — used in phi_menu_bar.cc",
+   "en": "All cookies, history, extensions, and saved data on "
+  },
+  "menuBar.bookmarkAllTabsPromptBody": {
+   "comment": "Bookmark All Tabs prompt - body explaining the folder the tabs land in",
+   "en": "Every open tab will be bookmarked into a new folder with this name.",
+   "translations": {
+    "de": "Alle geöffneten Tabs werden in einem neuen Ordner mit diesem Namen als Lesezeichen gesichert.",
+    "es": "Todas las pestañas abiertas se guardarán como marcadores en una nueva carpeta con este nombre.",
+    "fr": "Tous les onglets ouverts seront ajoutés aux favoris dans un nouveau dossier portant ce nom.",
+    "ja": "開いているすべてのタブが、この名前の新しいフォルダにブックマークされます。",
+    "ko": "열려 있는 모든 탭이 이 이름의 새 폴더에 북마크됩니다.",
+    "nl": "Alle geopende tabbladen worden als bladwijzer opgeslagen in een nieuwe map met deze naam.",
+    "zh-Hans": "所有打开的标签页都将保存到使用此名称的新文件夹中。",
+    "zh-Hant": "所有開啟的分頁都會儲存到使用此名稱的新資料夾中。"
+   }
+  },
+  "menuBar.bookmarkManager": {
+   "comment": "menuBar — used at phi_menu_bar.cc:697",
+   "en": "Bookmark Manager\tCtrl+Shift+O",
+   "translations": {
+    "de": "Lesezeichen-Manager",
+    "es": "Administrador de marcadores",
+    "fr": "Gestionnaire de favoris",
+    "ja": "ブックマークマネージャ",
+    "ko": "북마크 관리자",
+    "nl": "Bladwijzerbeheer",
+    "zh-Hans": "书签管理器",
+    "zh-Hant": "書籤管理員"
+   }
+  },
+  "menuBar.bookmarks": {
+   "comment": "Menu bar title. The \"&\" marks the keyboard mnemonic and is part of each translation.",
+   "en": "&Bookmarks",
+   "translations": {
+    "de": "&Lesezeichen",
+    "es": "&Marcadores",
+    "fr": "Fa&voris",
+    "ja": "ブックマーク(&B)",
+    "ko": "북마크(&B)",
+    "nl": "&Bladwijzers",
+    "zh-Hans": "书签(&B)",
+    "zh-Hant": "書籤(&B)"
+   },
+   "verbatim": true
+  },
+  "menuBar.bookmarksAndPinnedTabsBelonging": {
+   "comment": "menuBar — used in phi_menu_bar.cc",
+   "en": "Bookmarks and pinned tabs belonging to this Space "
+  },
+  "menuBar.bookmarksExported": {
+   "comment": "menuBar — used at phi_menu_bar.cc:1135",
+   "en": "Bookmarks Exported",
+   "translations": {
+    "de": "Lesezeichen exportiert",
+    "es": "Marcadores exportados",
+    "fr": "Favoris exportés",
+    "ja": "ブックマークを書き出しました",
+    "ko": "북마크를 내보냈습니다",
+    "nl": "Bladwijzers geëxporteerd",
+    "zh-Hans": "书签已导出",
+    "zh-Hant": "書籤已匯出"
+   }
+  },
+  "menuBar.changeIcon": {
+   "comment": "menuBar — used in phi_menu_bar.cc",
+   "en": "Change Icon...",
+   "translations": {
+    "de": "Symbol ändern...",
+    "es": "Cambiar icono...",
+    "fr": "Changer d’icône...",
+    "ja": "アイコンを変更...",
+    "ko": "아이콘 변경...",
+    "nl": "Pictogram wijzigen...",
+    "zh-Hans": "更改图标...",
+    "zh-Hant": "更改圖示..."
+   }
+  },
+  "menuBar.checkForUpdate": {
+   "comment": "menuBar — used at phi_menu_bar.cc:838",
+   "en": "Check for Update",
+   "translations": {
+    "de": "Nach Updates suchen",
+    "es": "Buscar actualizaciones",
+    "fr": "Rechercher des mises à jour",
+    "ja": "アップデートを確認",
+    "ko": "업데이트 확인",
+    "nl": "Controleren op updates",
+    "zh-Hans": "检查更新",
+    "zh-Hant": "檢查更新"
+   }
+  },
+  "menuBar.copy": {
+   "comment": "menuBar — used at phi_menu_bar.cc:317",
+   "en": "Copy\tCtrl+C",
+   "translations": {
+    "de": "Kopieren",
+    "es": "Copiar",
+    "fr": "Copier",
+    "ja": "コピー",
+    "ko": "복사",
+    "nl": "Kopiëren",
+    "zh-Hans": "复制",
+    "zh-Hant": "複製"
+   }
+  },
+  "menuBar.cut": {
+   "comment": "menuBar — used at phi_menu_bar.cc:316",
+   "en": "Cut\tCtrl+X",
+   "translations": {
+    "de": "Ausschneiden",
+    "es": "Cortar",
+    "fr": "Couper",
+    "ja": "カット",
+    "ko": "잘라내기",
+    "nl": "Knippen",
+    "zh-Hans": "剪切",
+    "zh-Hant": "剪下"
+   }
+  },
+  "menuBar.deleteBrowsingData": {
+   "comment": "menuBar — used at phi_menu_bar.cc:289",
+   "en": "Delete Browsing Data...",
+   "translations": {
+    "de": "Browserdaten löschen...",
+    "es": "Eliminar datos de navegación...",
+    "fr": "Effacer les données de navigation...",
+    "ja": "閲覧データを削除...",
+    "ko": "인터넷 사용 기록 삭제...",
+    "nl": "Browsegegevens wissen...",
+    "zh-Hans": "删除浏览数据...",
+    "zh-Hant": "刪除瀏覽資料..."
+   }
+  },
+  "menuBar.deleteProfileConfirmBody": {
+   "comment": "Delete Profile confirmation - body warning that the profile data is unrecoverable",
+   "en": "All cookies, history, extensions, and saved data on this profile will be permanently removed. This cannot be undone.",
+   "translations": {
+    "de": "Alle Cookies, der Verlauf, Erweiterungen und gesicherten Daten dieses Profils werden dauerhaft entfernt. Dies kann nicht rückgängig gemacht werden.",
+    "es": "Todas las cookies, el historial, las extensiones y los datos guardados de este perfil se eliminarán permanentemente. Esta acción no se puede deshacer.",
+    "fr": "Tous les cookies, l’historique, les extensions et les données enregistrées de ce profil seront définitivement supprimés. Cette action est irréversible.",
+    "ja": "このプロファイルのすべての Cookie、履歴、拡張機能、保存されたデータが完全に削除されます。この操作は取り消せません。",
+    "ko": "이 프로필의 모든 쿠키, 기록, 확장 프로그램 및 저장된 데이터가 영구적으로 삭제됩니다. 이 작업은 취소할 수 없습니다.",
+    "nl": "Alle cookies, geschiedenis, extensies en opgeslagen gegevens van dit profiel worden definitief verwijderd. Dit kan niet ongedaan worden gemaakt.",
+    "zh-Hans": "该个人资料的所有 Cookie、历史记录、扩展程序和已保存的数据都将被永久删除。此操作无法撤销。",
+    "zh-Hant": "此設定檔的所有 Cookie、瀏覽記錄、擴充功能與已儲存的資料都會被永久移除。此操作無法還原。"
+   }
+  },
+  "menuBar.deleteSpace": {
+   "comment": "menuBar — used at phi_menu_bar.cc:998",
+   "en": "Delete Space",
+   "translations": {
+    "de": "Space löschen",
+    "es": "Eliminar Espacio",
+    "fr": "Supprimer l'Espace",
+    "ja": "スペースを削除",
+    "ko": "스페이스 삭제",
+    "nl": "Verwijder Space",
+    "zh-Hans": "删除空间",
+    "zh-Hant": "刪除空間"
+   }
+  },
+  "menuBar.deleteSpaceConfirmBody": {
+   "comment": "Delete Space confirmation - body warning that the Space's stored rows go with it",
+   "en": "Bookmarks and pinned tabs belonging to this Space will also be removed. This action cannot be undone.",
+   "translations": {
+    "de": "Lesezeichen und angeheftete Tabs dieses Space werden ebenfalls entfernt. Diese Aktion kann nicht rückgängig gemacht werden.",
+    "es": "Los marcadores y las pestañas fijadas de este Espacio también se eliminarán. Esta acción no se puede deshacer.",
+    "fr": "Les favoris et les onglets épinglés de cet Espace seront également supprimés. Cette action est irréversible.",
+    "ja": "このスペースのブックマークと固定されたタブも削除されます。この操作は取り消せません。",
+    "ko": "이 스페이스의 북마크와 고정된 탭도 함께 삭제됩니다. 이 작업은 취소할 수 없습니다.",
+    "nl": "Bladwijzers en vastgezette tabbladen van deze Space worden ook verwijderd. Dit kan niet ongedaan worden gemaakt.",
+    "zh-Hans": "属于该空间的书签和固定标签页也将被删除。此操作无法撤销。",
+    "zh-Hant": "屬於此空間的書籤與釘選分頁也會一併移除。此操作無法還原。"
+   }
+  },
+  "menuBar.developerTools": {
+   "comment": "menuBar — used at phi_menu_bar.cc:346",
+   "en": "Developer Tools\tCtrl+Shift+I",
+   "translations": {
+    "de": "Entwicklertools",
+    "es": "Herramientas para desarrolladores",
+    "fr": "Outils de développement",
+    "ja": "デベロッパーツール",
+    "ko": "개발자 도구",
+    "nl": "Ontwikkelaarstools",
+    "zh-Hans": "开发者工具",
+    "zh-Hant": "開發人員工具"
+   }
+  },
+  "menuBar.documentation": {
+   "comment": "menuBar — used at phi_menu_bar.cc:391",
+   "en": "Documentation\tF1",
+   "translations": {
+    "de": "Dokumentation",
+    "es": "Documentación",
+    "fr": "Documentation",
+    "ja": "ドキュメント",
+    "ko": "문서",
+    "nl": "Documentatie",
+    "zh-Hans": "文档",
+    "zh-Hant": "說明文件"
+   }
+  },
+  "menuBar.edit": {
+   "comment": "Menu bar title. The \"&\" marks the keyboard mnemonic and is part of each translation.",
+   "en": "&Edit",
+   "translations": {
+    "de": "&Bearbeiten",
+    "es": "&Edición",
+    "fr": "&Édition",
+    "ja": "編集(&E)",
+    "ko": "편집(&E)",
+    "nl": "Be&werken",
+    "zh-Hans": "编辑(&E)",
+    "zh-Hant": "編輯(&E)"
+   },
+   "verbatim": true
+  },
+  "menuBar.enterANameForThe": {
+   "comment": "menuBar — used in phi_menu_bar.cc",
+   "en": "Enter a name for the new profile. Each profile "
+  },
+  "menuBar.enterFullScreen": {
+   "comment": "menuBar — used at phi_menu_bar.cc:339",
+   "en": "Enter Full Screen\tF11",
+   "translations": {
+    "de": "Vollbild aktivieren",
+    "es": "Entrar en pantalla completa",
+    "fr": "Passer en plein écran",
+    "ja": "フルスクリーンにする",
+    "ko": "전체 화면 시작",
+    "nl": "Volledig scherm",
+    "zh-Hans": "进入全屏",
+    "zh-Hant": "進入全螢幕"
+   }
+  },
+  "menuBar.everyOpenTabWillBe": {
+   "comment": "menuBar — used in phi_menu_bar.cc",
+   "en": "Every open tab will be bookmarked into a new "
+  },
+  "menuBar.file": {
+   "comment": "Menu bar title. The \"&\" marks the keyboard mnemonic and is part of each translation.",
+   "en": "&File",
+   "translations": {
+    "de": "&Datei",
+    "es": "&Archivo",
+    "fr": "&Fichier",
+    "ja": "ファイル(&F)",
+    "ko": "파일(&F)",
+    "nl": "&Bestand",
+    "zh-Hans": "文件(&F)",
+    "zh-Hant": "檔案(&F)"
+   },
+   "verbatim": true
+  },
+  "menuBar.find": {
+   "comment": "menuBar — used at phi_menu_bar.cc:328",
+   "en": "Find...\tCtrl+F",
+   "translations": {
+    "de": "Suchen...",
+    "es": "Buscar...",
+    "fr": "Rechercher...",
+    "ja": "検索...",
+    "ko": "찾기...",
+    "nl": "Zoeken...",
+    "zh-Hans": "查找...",
+    "zh-Hant": "尋找..."
+   }
+  },
+  "menuBar.followAppTheme": {
+   "comment": "menuBar — used at phi_menu_bar.cc:539",
+   "en": "Follow app theme",
+   "translations": {
+    "de": "App-Design folgen",
+    "es": "Seguir el tema de la app",
+    "fr": "Suivre le thème de l'app",
+    "ja": "アプリのテーマに従う",
+    "ko": "앱 테마 따르기",
+    "nl": "Volg app-thema",
+    "zh-Hans": "跟随应用主题",
+    "zh-Hant": "跟隨應用程式主題"
+   }
+  },
+  "menuBar.forceReloadThisPage": {
+   "comment": "menuBar — used at phi_menu_bar.cc:337",
+   "en": "Force Reload This Page\tCtrl+Shift+R",
+   "translations": {
+    "de": "Neuladen erzwingen",
+    "es": "Forzar recarga de la página",
+    "fr": "Forcer le rechargement",
+    "ja": "強制的に再読み込み",
+    "ko": "강제 새로고침",
+    "nl": "Vernieuwen forceren",
+    "zh-Hans": "强制重新加载此页",
+    "zh-Hant": "強制重新載入此頁"
+   }
+  },
+  "menuBar.help": {
+   "comment": "Menu bar title. The \"&\" marks the keyboard mnemonic and is part of each translation.",
+   "en": "&Help",
+   "translations": {
+    "de": "&Hilfe",
+    "es": "A&yuda",
+    "fr": "Aid&e",
+    "ja": "ヘルプ(&H)",
+    "ko": "도움말(&H)",
+    "nl": "&Help",
+    "zh-Hans": "帮助(&H)",
+    "zh-Hant": "說明(&H)"
+   },
+   "verbatim": true
+  },
+  "menuBar.history": {
+   "comment": "Menu bar title. The \"&\" marks the keyboard mnemonic and is part of each translation.",
+   "en": "Hi&story",
+   "translations": {
+    "de": "Ver&lauf",
+    "es": "Hi&storial",
+    "fr": "Hi&storique",
+    "ja": "履歴(&Y)",
+    "ko": "기록(&Y)",
+    "nl": "Ge&schiedenis",
+    "zh-Hans": "历史记录(&Y)",
+    "zh-Hant": "瀏覽記錄(&Y)"
+   },
+   "verbatim": true
+  },
+  "menuBar.historyBookmarksCookiesAndPasswords": {
+   "comment": "menuBar — used in phi_menu_bar.cc",
+   "en": "History, bookmarks, cookies and passwords from your "
+  },
+  "menuBar.importChromeFailedBody": {
+   "comment": "Import failure alert - body shown when Chrome could not be found",
+   "en": "The import could not start. Is Google Chrome installed?",
+   "translations": {
+    "de": "Der Import konnte nicht gestartet werden. Ist Google Chrome installiert?",
+    "es": "No se pudo iniciar la importación. ¿Está instalado Google Chrome?",
+    "fr": "L’importation n’a pas pu démarrer. Google Chrome est-il installé ?",
+    "ja": "インポートを開始できませんでした。Google Chrome はインストールされていますか?",
+    "ko": "가져오기를 시작할 수 없습니다. Google Chrome이 설치되어 있나요?",
+    "nl": "Het importeren kon niet worden gestart. Is Google Chrome geïnstalleerd?",
+    "zh-Hans": "无法开始导入。是否已安装 Google Chrome？",
+    "zh-Hant": "無法開始匯入。是否已安裝 Google Chrome？"
+   }
+  },
+  "menuBar.importChromePromptBody": {
+   "comment": "Import from Google Chrome confirmation - body listing what is imported",
+   "en": "History, bookmarks, cookies and passwords from your Google Chrome profile will be imported into Phi. This may take a moment.",
+   "translations": {
+    "de": "Verlauf, Lesezeichen, Cookies und Passwörter aus deinem Google Chrome-Profil werden in Phi importiert. Das kann einen Moment dauern.",
+    "es": "El historial, los marcadores, las cookies y las contraseñas de tu perfil de Google Chrome se importarán a Phi. Esto puede tardar un momento.",
+    "fr": "L’historique, les favoris, les cookies et les mots de passe de ton profil Google Chrome seront importés dans Phi. Cela peut prendre un moment.",
+    "ja": "Google Chrome プロファイルの履歴、ブックマーク、Cookie、パスワードが Phi にインポートされます。少し時間がかかることがあります。",
+    "ko": "Google Chrome 프로필의 기록, 북마크, 쿠키 및 비밀번호를 Phi로 가져옵니다. 잠시 시간이 걸릴 수 있습니다.",
+    "nl": "Geschiedenis, bladwijzers, cookies en wachtwoorden uit je Google Chrome-profiel worden geïmporteerd in Phi. Dit kan even duren.",
+    "zh-Hans": "你的 Google Chrome 个人资料中的历史记录、书签、Cookie 和密码将导入 Phi。这可能需要一点时间。",
+    "zh-Hant": "你的 Google Chrome 設定檔中的瀏覽記錄、書籤、Cookie 與密碼將匯入 Phi。這可能需要一點時間。"
+   }
+  },
+  "menuBar.importFromGoogleChrome": {
+   "comment": "menuBar — used at phi_menu_bar.cc:1162",
+   "en": "Import from Google Chrome",
+   "translations": {
+    "de": "Aus Google Chrome importieren",
+    "es": "Importar desde Google Chrome",
+    "fr": "Importer depuis Google Chrome",
+    "ja": "Google Chrome からインポート",
+    "ko": "Google Chrome에서 가져오기",
+    "nl": "Importeren uit Google Chrome",
+    "zh-Hans": "从 Google Chrome 导入",
+    "zh-Hant": "從 Google Chrome 匯入"
+   }
+  },
+  "menuBar.inspectElements": {
+   "comment": "menuBar — used at phi_menu_bar.cc:347",
+   "en": "Inspect Elements",
+   "translations": {
+    "de": "Elemente untersuchen",
+    "es": "Inspeccionar elementos",
+    "fr": "Inspecter les éléments",
+    "ja": "要素を検証",
+    "ko": "요소 검사",
+    "nl": "Elementen inspecteren",
+    "zh-Hans": "检查元素",
+    "zh-Hant": "檢查元素"
+   }
+  },
+  "menuBar.javascriptConsole": {
+   "comment": "menuBar — used at phi_menu_bar.cc:348",
+   "en": "JavaScript Console\tCtrl+Shift+J",
+   "translations": {
+    "de": "JavaScript-Konsole",
+    "es": "Consola de JavaScript",
+    "fr": "Console JavaScript",
+    "ja": "JavaScript コンソール",
+    "ko": "JavaScript 콘솔",
+    "nl": "JavaScript-console",
+    "zh-Hans": "JavaScript 控制台",
+    "zh-Hant": "JavaScript 主控台"
+   }
+  },
+  "menuBar.minimize": {
+   "comment": "menuBar — used at phi_menu_bar.cc:379",
+   "en": "Minimize",
+   "translations": {
+    "de": "Minimieren",
+    "es": "Minimizar",
+    "fr": "Réduire",
+    "ja": "しまう",
+    "ko": "최소화",
+    "nl": "Minimaliseren",
+    "zh-Hans": "最小化",
+    "zh-Hant": "縮到最小"
+   }
+  },
+  "menuBar.nameWindow": {
+   "comment": "menuBar — used at phi_menu_bar.cc:382",
+   "en": "Name Window...",
+   "translations": {
+    "de": "Fenster benennen...",
+    "es": "Nombrar ventana...",
+    "fr": "Nommer la fenêtre...",
+    "ja": "ウインドウに名前を付ける...",
+    "ko": "창 이름 지정...",
+    "nl": "Venster een naam geven...",
+    "zh-Hans": "命名窗口...",
+    "zh-Hant": "命名視窗..."
+   }
+  },
+  "menuBar.newProfilePromptBody": {
+   "comment": "New Profile prompt - body explaining what a profile separates",
+   "en": "Enter a name for the new profile. Each profile has its own cookies, history, and extensions.",
+   "translations": {
+    "de": "Gib einen Namen für das neue Profil ein. Jedes Profil hat eigene Cookies, einen eigenen Verlauf und eigene Erweiterungen.",
+    "es": "Introduce un nombre para el nuevo perfil. Cada perfil tiene sus propias cookies, historial y extensiones.",
+    "fr": "Saisis un nom pour le nouveau profil. Chaque profil possède ses propres cookies, son historique et ses extensions.",
+    "ja": "新しいプロファイルの名前を入力してください。各プロファイルは独自の Cookie、履歴、拡張機能を持ちます。",
+    "ko": "새 프로필의 이름을 입력하세요. 각 프로필은 자체 쿠키, 기록 및 확장 프로그램을 가집니다.",
+    "nl": "Voer een naam in voor het nieuwe profiel. Elk profiel heeft eigen cookies, geschiedenis en extensies.",
+    "zh-Hans": "为新的个人资料输入名称。每个个人资料都有各自的 Cookie、历史记录和扩展程序。",
+    "zh-Hant": "為新設定檔輸入名稱。每個設定檔都有各自的 Cookie、瀏覽記錄與擴充功能。"
+   }
+  },
+  "menuBar.newTabToTheRight": {
+   "comment": "menuBar — used at phi_menu_bar.cc:715",
+   "en": "New Tab to the Right",
+   "translations": {
+    "de": "Neuer Tab rechts",
+    "es": "Nueva pestaña a la derecha",
+    "fr": "Nouvel onglet à droite",
+    "ja": "右に新しいタブ",
+    "ko": "오른쪽에 새 탭",
+    "nl": "Nieuw tabblad rechts",
+    "zh-Hans": "在右侧新建标签页",
+    "zh-Hant": "在右側新增分頁"
+   }
+  },
+  "menuBar.noProfiles": {
+   "comment": "menuBar — used at phi_menu_bar.cc:608",
+   "en": "No Profiles",
+   "translations": {
+    "de": "Keine Profile",
+    "es": "Sin perfiles",
+    "fr": "Aucun profil",
+    "ja": "プロファイルなし",
+    "ko": "프로필 없음",
+    "nl": "Geen profielen",
+    "zh-Hans": "无个人资料",
+    "zh-Hant": "沒有設定檔"
+   }
+  },
+  "menuBar.openFile": {
+   "comment": "menuBar — used at phi_menu_bar.cc:302",
+   "en": "Open File...\tCtrl+O",
+   "translations": {
+    "de": "Datei öffnen...",
+    "es": "Abrir archivo...",
+    "fr": "Ouvrir un fichier...",
+    "ja": "ファイルを開く...",
+    "ko": "파일 열기...",
+    "nl": "Bestand openen...",
+    "zh-Hans": "打开文件...",
+    "zh-Hant": "開啟檔案..."
+   }
+  },
+  "menuBar.openLocation": {
+   "comment": "menuBar — used at phi_menu_bar.cc:303",
+   "en": "Open Location...\tCtrl+L",
+   "translations": {
+    "de": "Adresse öffnen...",
+    "es": "Abrir ubicación...",
+    "fr": "Ouvrir une adresse...",
+    "ja": "場所を開く...",
+    "ko": "위치 열기...",
+    "nl": "Locatie openen...",
+    "zh-Hans": "打开地址...",
+    "zh-Hant": "開啟位址..."
+   }
+  },
+  "menuBar.paste": {
+   "comment": "menuBar — used at phi_menu_bar.cc:319",
+   "en": "Paste\tCtrl+V",
+   "translations": {
+    "de": "Einsetzen",
+    "es": "Pegar",
+    "fr": "Coller",
+    "ja": "ペースト",
+    "ko": "붙여넣기",
+    "nl": "Plakken",
+    "zh-Hans": "粘贴",
+    "zh-Hant": "貼上"
+   }
+  },
+  "menuBar.pasteAndMatchStyle": {
+   "comment": "menuBar — used at phi_menu_bar.cc:320",
+   "en": "Paste and Match Style\tCtrl+Shift+V",
+   "translations": {
+    "de": "Einsetzen und Stil anpassen",
+    "es": "Pegar y aplicar el estilo",
+    "fr": "Coller en adaptant le style",
+    "ja": "ペーストしてスタイルを合わせる",
+    "ko": "붙여넣고 스타일 일치",
+    "nl": "Plakken en stijl aanpassen",
+    "zh-Hans": "粘贴并匹配样式",
+    "zh-Hant": "貼上並符合樣式"
+   }
+  },
+  "menuBar.preferences": {
+   "comment": "menuBar — used at phi_menu_bar.cc:284",
+   "en": "Preferences...\tCtrl+,",
+   "translations": {
+    "de": "Einstellungen...",
+    "es": "Preferencias...",
+    "fr": "Préférences...",
+    "ja": "設定...",
+    "ko": "환경설정...",
+    "nl": "Voorkeuren...",
+    "zh-Hans": "偏好设置...",
+    "zh-Hant": "偏好設定..."
+   }
+  },
+  "menuBar.profileInUse": {
+   "comment": "Profile row in the Spaces menu. {0} is the profile name; the suffix marks a profile a Space is bound to",
+   "en": "{0} — in use by a Space",
+   "translations": {
+    "de": "{0} — von einem Space verwendet",
+    "es": "{0} — en uso por un Espacio",
+    "fr": "{0} — utilisé par un Espace",
+    "ja": "{0} — スペースで使用中",
+    "ko": "{0} — 스페이스에서 사용 중",
+    "nl": "{0} — in gebruik door een Space",
+    "zh-Hans": "{0} — 已被空间使用",
+    "zh-Hant": "{0} — 已被空間使用"
+   }
+  },
+  "menuBar.quitPhi": {
+   "comment": "menuBar — used at phi_menu_bar.cc:292",
+   "en": "Quit Phi\tCtrl+Shift+Q",
+   "translations": {
+    "de": "Phi beenden",
+    "es": "Salir de Phi",
+    "fr": "Quitter Phi",
+    "ja": "Phi を終了",
+    "ko": "Phi 종료",
+    "nl": "Phi afsluiten",
+    "zh-Hans": "退出 Phi",
+    "zh-Hant": "結束 Phi"
+   }
+  },
+  "menuBar.redo": {
+   "comment": "menuBar — used at phi_menu_bar.cc:314",
+   "en": "Redo\tCtrl+Shift+Z",
+   "translations": {
+    "de": "Wiederholen",
+    "es": "Rehacer",
+    "fr": "Rétablir",
+    "ja": "やり直す",
+    "ko": "다시 실행",
+    "nl": "Opnieuw",
+    "zh-Hans": "重做",
+    "zh-Hant": "重做"
+   }
+  },
+  "menuBar.reloadThisPage": {
+   "comment": "menuBar — used at phi_menu_bar.cc:336",
+   "en": "Reload This Page\tCtrl+R",
+   "translations": {
+    "de": "Seite neu laden",
+    "es": "Recargar la página",
+    "fr": "Recharger la page",
+    "ja": "ページを再読み込み",
+    "ko": "페이지 새로고침",
+    "nl": "Pagina vernieuwen",
+    "zh-Hans": "重新加载此页",
+    "zh-Hant": "重新載入此頁"
+   }
+  },
+  "menuBar.reportAnIssue": {
+   "comment": "menuBar — used at phi_menu_bar.cc:389",
+   "en": "Report an Issue...",
+   "translations": {
+    "de": "Problem melden...",
+    "es": "Informar de un problema...",
+    "fr": "Signaler un problème...",
+    "ja": "問題を報告...",
+    "ko": "문제 신고...",
+    "nl": "Probleem melden...",
+    "zh-Hans": "报告问题...",
+    "zh-Hant": "回報問題..."
+   }
+  },
+  "menuBar.savePageAs": {
+   "comment": "menuBar — used at phi_menu_bar.cc:307",
+   "en": "Save Page As...",
+   "translations": {
+    "de": "Seite sichern unter...",
+    "es": "Guardar página como...",
+    "fr": "Enregistrer la page sous...",
+    "ja": "ページを別名で保存...",
+    "ko": "다른 이름으로 페이지 저장...",
+    "nl": "Pagina opslaan als...",
+    "zh-Hans": "将页面另存为...",
+    "zh-Hant": "另存頁面為..."
+   }
+  },
+  "menuBar.savedTabs": {
+   "comment": "menuBar — used at phi_menu_bar.cc:1063",
+   "en": "Saved Tabs",
+   "translations": {
+    "de": "Gesicherte Tabs",
+    "es": "Pestañas guardadas",
+    "fr": "Onglets enregistrés",
+    "ja": "保存されたタブ",
+    "ko": "저장된 탭",
+    "nl": "Opgeslagen tabbladen",
+    "zh-Hans": "已保存的标签页",
+    "zh-Hant": "已儲存的分頁"
+   }
+  },
+  "menuBar.searchTabs": {
+   "comment": "menuBar — used at phi_menu_bar.cc:722",
+   "en": "Search Tabs...\tCtrl+Shift+A",
+   "translations": {
+    "de": "Tabs durchsuchen...",
+    "es": "Buscar pestañas...",
+    "fr": "Rechercher des onglets...",
+    "ja": "タブを検索...",
+    "ko": "탭 검색...",
+    "nl": "Tabbladen zoeken...",
+    "zh-Hans": "搜索标签页...",
+    "zh-Hant": "搜尋分頁..."
+   }
+  },
+  "menuBar.selectAll": {
+   "comment": "menuBar — used at phi_menu_bar.cc:323",
+   "en": "Select All\tCtrl+A",
+   "translations": {
+    "de": "Alles auswählen",
+    "es": "Seleccionar todo",
+    "fr": "Tout sélectionner",
+    "ja": "すべてを選択",
+    "ko": "전체 선택",
+    "nl": "Alles selecteren",
+    "zh-Hans": "全选",
+    "zh-Hant": "全選"
+   }
+  },
+  "menuBar.sendFeedback": {
+   "comment": "menuBar — used at phi_menu_bar.cc:260",
+   "en": "Send Feedback…",
+   "translations": {
+    "de": "Feedback senden…",
+    "es": "Enviar comentarios…",
+    "fr": "Envoyer un commentaire…",
+    "ja": "フィードバックを送信…",
+    "ko": "피드백 보내기…",
+    "nl": "Feedback versturen…",
+    "zh-Hans": "发送反馈…",
+    "zh-Hant": "傳送意見回饋…"
+   }
+  },
+  "menuBar.showFullHistory": {
+   "comment": "menuBar — used at phi_menu_bar.cc:376",
+   "en": "Show Full History\tCtrl+H",
+   "translations": {
+    "de": "Gesamten Verlauf anzeigen",
+    "es": "Mostrar todo el historial",
+    "fr": "Afficher tout l'historique",
+    "ja": "すべての履歴を表示",
+    "ko": "전체 기록 보기",
+    "nl": "Volledige geschiedenis tonen",
+    "zh-Hans": "显示完整历史记录",
+    "zh-Hant": "顯示完整瀏覽記錄"
+   }
+  },
+  "menuBar.spaces": {
+   "comment": "Menu bar title. The \"&\" marks the keyboard mnemonic and is part of each translation.",
+   "en": "&Spaces",
+   "translations": {
+    "de": "&Spaces",
+    "es": "E&spacios",
+    "fr": "E&spaces",
+    "ja": "スペース(&S)",
+    "ko": "스페이스(&S)",
+    "nl": "&Spaces",
+    "zh-Hans": "空间(&S)",
+    "zh-Hant": "空間(&S)"
+   },
+   "verbatim": true
+  },
+  "menuBar.tab": {
+   "comment": "Menu bar title. The \"&\" marks the keyboard mnemonic and is part of each translation.",
+   "en": "&Tab",
+   "translations": {
+    "de": "&Tab",
+    "es": "&Pestaña",
+    "fr": "&Onglet",
+    "ja": "タブ(&T)",
+    "ko": "탭(&T)",
+    "nl": "&Tabblad",
+    "zh-Hans": "标签页(&T)",
+    "zh-Hant": "分頁(&T)"
+   },
+   "verbatim": true
+  },
+  "menuBar.tabsBookmarkedToast": {
+   "comment": "Toast after Bookmark All Tabs. {0} is the number of tabs saved",
+   "en": "{0} Tabs Bookmarked",
+   "translations": {
+    "de": "{0} Tabs als Lesezeichen gesichert",
+    "es": "{0} pestañas guardadas en marcadores",
+    "fr": "{0} onglets ajoutés aux favoris",
+    "ja": "{0} 個のタブをブックマークしました",
+    "ko": "탭 {0}개를 북마크했습니다",
+    "nl": "{0} tabbladen opgeslagen als bladwijzer",
+    "zh-Hans": "已将 {0} 个标签页加入书签",
+    "zh-Hant": "已將 {0} 個分頁加入書籤"
+   }
+  },
+  "menuBar.taskManager": {
+   "comment": "menuBar — used at phi_menu_bar.cc:386",
+   "en": "Task Manager",
+   "translations": {
+    "de": "Task-Manager",
+    "es": "Administrador de tareas",
+    "fr": "Moniteur d’activité",
+    "ja": "タスクマネージャ",
+    "ko": "작업 관리자",
+    "nl": "Taakbeheer",
+    "zh-Hans": "任务管理器",
+    "zh-Hant": "工作管理員"
+   }
+  },
+  "menuBar.text": {
+   "comment": "menuBar — used in phi_menu_bar.cc",
+   "en": "\tCtrl+"
+  },
+  "menuBar.theImportCouldNotStart": {
+   "comment": "menuBar — used in phi_menu_bar.cc",
+   "en": "The import could not start. Is Google Chrome "
+  },
+  "menuBar.theUpdaterIsNotAvailable": {
+   "comment": "menuBar — used in phi_menu_bar.cc",
+   "en": "The updater is not available in this build\n"
+  },
+  "menuBar.undo": {
+   "comment": "menuBar — used at phi_menu_bar.cc:313",
+   "en": "Undo\tCtrl+Z",
+   "translations": {
+    "de": "Widerrufen",
+    "es": "Deshacer",
+    "fr": "Annuler",
+    "ja": "取り消す",
+    "ko": "실행 취소",
+    "nl": "Ongedaan maken",
+    "zh-Hans": "撤销",
+    "zh-Hant": "還原"
+   }
+  },
+  "menuBar.updaterUnavailableBody": {
+   "comment": "Check for Update alert - body shown when the build ships without the updater library",
+   "en": "The updater is not available in this build\n(WinSparkle.dll is missing).",
+   "translations": {
+    "de": "Der Updater ist in diesem Build nicht verfügbar\n(WinSparkle.dll fehlt).",
+    "es": "El actualizador no está disponible en esta compilación\n(falta WinSparkle.dll).",
+    "fr": "Le programme de mise à jour n’est pas disponible dans cette version\n(WinSparkle.dll est introuvable).",
+    "ja": "このビルドではアップデーターを利用できません\n(WinSparkle.dll がありません)。",
+    "ko": "이 빌드에서는 업데이트 도구를 사용할 수 없습니다\n(WinSparkle.dll 없음).",
+    "nl": "De updater is niet beschikbaar in deze build\n(WinSparkle.dll ontbreekt).",
+    "zh-Hans": "此版本不包含更新程序\n(缺少 WinSparkle.dll)。",
+    "zh-Hant": "此版本不包含更新程式\n(缺少 WinSparkle.dll)。"
+   }
+  },
+  "menuBar.urlRules": {
+   "comment": "menuBar — used in phi_menu_bar.cc",
+   "en": "URL Rules...",
+   "translations": {
+    "de": "URL-Regeln...",
+    "es": "Reglas de URL...",
+    "fr": "Règles d’URL...",
+    "ja": "URL ルール...",
+    "ko": "URL 규칙...",
+    "nl": "URL-regels...",
+    "zh-Hans": "网址规则...",
+    "zh-Hant": "網址規則..."
+   }
+  },
+  "menuBar.view": {
+   "comment": "Menu bar title. The \"&\" marks the keyboard mnemonic and is part of each translation.",
+   "en": "&View",
+   "translations": {
+    "de": "&Ansicht",
+    "es": "&Ver",
+    "fr": "&Affichage",
+    "ja": "表示(&V)",
+    "ko": "보기(&V)",
+    "nl": "Beel&d",
+    "zh-Hans": "查看(&V)",
+    "zh-Hant": "檢視(&V)"
+   },
+   "verbatim": true
+  },
+  "menuBar.viewSource": {
+   "comment": "menuBar — used at phi_menu_bar.cc:345",
+   "en": "View Source\tCtrl+U",
+   "translations": {
+    "de": "Seitenquelltext anzeigen",
+    "es": "Ver código fuente",
+    "fr": "Afficher le code source",
+    "ja": "ソースを表示",
+    "ko": "소스 보기",
+    "nl": "Bron weergeven",
+    "zh-Hans": "查看网页源代码",
+    "zh-Hant": "檢視原始碼"
+   }
+  },
+  "menuBar.window": {
+   "comment": "Menu bar title. The \"&\" marks the keyboard mnemonic and is part of each translation.",
+   "en": "&Window",
+   "translations": {
+    "de": "&Fenster",
+    "es": "&Ventana",
+    "fr": "&Fenêtre",
+    "ja": "ウインドウ(&W)",
+    "ko": "창(&W)",
+    "nl": "&Venster",
+    "zh-Hans": "窗口(&W)",
+    "zh-Hant": "視窗(&W)"
+   },
+   "verbatim": true
+  },
+  "menuBar.zoom": {
+   "comment": "menuBar — used at phi_menu_bar.cc:380",
+   "en": "Zoom",
+   "translations": {
+    "de": "Zoomen",
+    "es": "Zoom",
+    "fr": "Zoom",
+    "ja": "ズーム",
+    "ko": "확대/축소",
+    "nl": "Zoomen",
+    "zh-Hans": "缩放",
+    "zh-Hant": "縮放"
+   }
+  },
+  "menuBar.zoomIn": {
+   "comment": "menuBar — used at phi_menu_bar.cc:341",
+   "en": "Zoom In\tCtrl++",
+   "translations": {
+    "de": "Größer",
+    "es": "Aumentar",
+    "fr": "Agrandir",
+    "ja": "拡大",
+    "ko": "확대",
+    "nl": "Inzoomen",
+    "zh-Hans": "放大",
+    "zh-Hant": "放大"
+   }
+  },
+  "menuBar.zoomOut": {
+   "comment": "menuBar — used at phi_menu_bar.cc:342",
+   "en": "Zoom Out\tCtrl+-",
+   "translations": {
+    "de": "Kleiner",
+    "es": "Reducir",
+    "fr": "Réduire",
+    "ja": "縮小",
+    "ko": "축소",
+    "nl": "Uitzoomen",
+    "zh-Hans": "缩小",
+    "zh-Hant": "縮小"
+   }
+  },
+  "oobe.layoutSelection.balancedOption": {
+   "comment": "menuBar — used at phi_menu_bar.cc:354",
+   "en": "Balanced"
+  },
+  "oobe.layoutSelection.comfortableOption": {
+   "comment": "menuBar — used at phi_menu_bar.cc:356",
+   "en": "Comfortable"
+  },
+  "oobe.layoutSelection.performanceOption": {
+   "comment": "menuBar — used at phi_menu_bar.cc:355",
+   "en": "Performance"
+  },
+  "oobe.passwordManager.finishButton": {
+   "comment": "agentOverlay — used at phi_agent_overlay.cc:661",
+   "en": "Finish"
+  },
+  "prompt.alt": {
+   "comment": "prompt — used in phi_prompt.cc",
+   "en": "Alt+"
+  },
+  "prompt.backspace": {
+   "comment": "prompt — used at phi_prompt.cc:206",
+   "en": "Backspace"
+  },
+  "prompt.ctrl": {
+   "comment": "prompt — used in phi_prompt.cc",
+   "en": "Ctrl+"
+  },
+  "prompt.down": {
+   "comment": "prompt — used at phi_prompt.cc:199",
+   "en": "Down"
+  },
+  "prompt.end": {
+   "comment": "prompt — used at phi_prompt.cc:201",
+   "en": "End"
+  },
+  "prompt.enter": {
+   "comment": "prompt — used at phi_prompt.cc:205",
+   "en": "Enter"
+  },
+  "prompt.home": {
+   "comment": "prompt — used in phi_prompt.cc",
+   "en": "Home"
+  },
+  "prompt.includeCtrlOrAlt": {
+   "comment": "prompt — used at phi_prompt.cc:339",
+   "en": "Include Ctrl or Alt"
+  },
+  "prompt.insert": {
+   "comment": "prompt — used at phi_prompt.cc:208",
+   "en": "Insert"
+  },
+  "prompt.keepHere": {
+   "comment": "prompt — used at phi_prompt.cc:460",
+   "en": "Keep Here"
+  },
+  "prompt.key": {
+   "comment": "prompt — used at phi_prompt.cc:216",
+   "en": "Key"
+  },
+  "prompt.left": {
+   "comment": "prompt — used at phi_prompt.cc:196",
+   "en": "Left"
+  },
+  "prompt.listbox": {
+   "comment": "prompt — used in phi_prompt.cc",
+   "en": "LISTBOX"
+  },
+  "prompt.ok": {
+   "comment": "prompt — used in phi_prompt.cc",
+   "en": "OK"
+  },
+  "prompt.pagedown": {
+   "comment": "prompt — used at phi_prompt.cc:203",
+   "en": "PageDown"
+  },
+  "prompt.pageup": {
+   "comment": "prompt — used at phi_prompt.cc:202",
+   "en": "PageUp"
+  },
+  "prompt.right": {
+   "comment": "prompt — used at phi_prompt.cc:197",
+   "en": "Right"
+  },
+  "prompt.shift": {
+   "comment": "prompt — used in phi_prompt.cc",
+   "en": "Shift+"
+  },
+  "prompt.space": {
+   "comment": "prompt — used in phi_prompt.cc",
+   "en": "Space"
+  },
+  "prompt.up": {
+   "comment": "prompt — used at phi_prompt.cc:198",
+   "en": "Up"
+  },
+  "searchTabs.searchField.placeholder": {
+   "comment": "app — used at phi_coordinator.cc:105",
+   "en": "Search Tabs"
+  },
+  "searchTabs.searchTabsBookmarks": {
+   "comment": "searchTabs — used at phi_search_tabs_panel.cc:121",
+   "en": "Search tabs, bookmarks..."
+  },
+  "searchTabs.section.openTabs": {
+   "comment": "searchTabs — used at phi_search_tabs_panel.cc:300",
+   "en": "Open Tabs"
+  },
+  "searchTabs.section.pinnedTabs": {
+   "comment": "searchTabs — used at phi_search_tabs_panel.cc:301",
+   "en": "Pinned Tabs"
+  },
+  "searchTabs.section.recentlyClosed": {
+   "comment": "menuBar — used at phi_menu_bar.cc:374",
+   "en": "Recently Closed"
+  },
+  "settings.aPrivateSocketOnlyThis": {
+   "comment": "settings — used at phi_settings_window.cc:2172",
+   "en": "a private socket only this machine's processes can reach."
+  },
+  "settings.account.defaultBrowser.defaultStatus": {
+   "comment": "Account settings - Status text when Phi is the default browser",
+   "en": "Phi is your default browser"
+  },
+  "settings.account.defaultBrowser.notDefaultStatus": {
+   "comment": "Account settings - Status text when Phi is not the default browser",
+   "en": "Phi is not your default browser"
+  },
+  "settings.account.defaultBrowser.setDefaultButton": {
+   "comment": "Account settings - button that hands the choice to the Windows default-apps page",
+   "en": "Set as default"
+  },
+  "settings.account.displayName.fallback": {
+   "comment": "settings — used at phi_settings_window.cc:112",
+   "en": "You"
+  },
+  "settings.addUrlRule": {
+   "comment": "settings — used at phi_settings_window.cc:3010",
+   "en": "Add URL Rule"
+  },
+  "settings.agentAccessPermissionsAndThe": {
+   "comment": "settings — used at phi_settings_window.cc:833",
+   "en": "Agent access, permissions, and the password manager "
+  },
+  "settings.agentToolsDrivePhiOver": {
+   "comment": "settings — used at phi_settings_window.cc:2171",
+   "en": "Agent tools drive Phi over the DevTools Protocol through "
+  },
+  "settings.ai.browserMemory.manageButtonTitle": {
+   "comment": "settings — used at phi_settings_window.cc:1945",
+   "en": "View and manage your browser memory"
+  },
+  "settings.ai.browserMemory.sectionTitle": {
+   "comment": "settings — used at phi_settings_window.cc:1943",
+   "en": "Browser memory"
+  },
+  "settings.ai.connectors.enableToggle": {
+   "comment": "settings — used at phi_settings_window.cc:1979",
+   "en": "Enable External Data Connectors"
+  },
+  "settings.ai.connectors.listSectionTitle": {
+   "comment": "settings — used at phi_settings_window.cc:1978",
+   "en": "External Data Connectors"
+  },
+  "settings.ai.features.enableToggle": {
+   "comment": "settings — used at phi_settings_window.cc:1940",
+   "en": "Enable AI features in Phi Browser"
+  },
+  "settings.ai.newTabPage.proactiveSuggestionsToggle": {
+   "comment": "settings — used at phi_settings_window.cc:1970",
+   "en": "Show proactive suggestions on the new tab page"
+  },
+  "settings.ai.newTabPage.sectionTitle": {
+   "comment": "settings — used at phi_settings_window.cc:732",
+   "en": "New Tab Page"
+  },
+  "settings.ai.phiSentinel.sectionTitle": {
+   "comment": "settings — used at phi_settings_window.cc:1955",
+   "en": "Phi Sentinel"
+  },
+  "settings.ai.privateAI.title": {
+   "comment": "settings — used at phi_settings_window.cc:1960",
+   "en": "Private AI"
+  },
+  "settings.ai.sidebar.sectionTitle": {
+   "comment": "settings — used at phi_settings_window.cc:1973",
+   "en": "AI Sidebar"
+  },
+  "settings.alsoBeRemovedThisAction": {
+   "comment": "settings — used at phi_settings_window.cc:3295",
+   "en": "also be removed. This action cannot be undone."
+  },
+  "settings.andTheAgentPasswordManager": {
+   "comment": "settings — used at phi_settings_window.cc:836",
+   "en": "and the agent password manager. An agent that "
+  },
+  "settings.approvedAgents": {
+   "comment": "settings — used at phi_settings_window.cc:2175",
+   "en": "Approved agents"
+  },
+  "settings.approvedIndividually": {
+   "comment": "settings — used at phi_settings_window.cc:2202",
+   "en": "approved individually."
+  },
+  "settings.automaticallyAddCurrentTabAs": {
+   "comment": "settings — used at phi_settings_window.cc:1974",
+   "en": "Automatically add current tab as context to new "
+  },
+  "settings.bookmarksAndPinnedTabsBelonging": {
+   "comment": "settings — used at phi_settings_window.cc:3294",
+   "en": "Bookmarks and pinned tabs belonging to this Space will "
+  },
+  "settings.changeShortcut": {
+   "comment": "settings — used at phi_settings_window.cc:2993",
+   "en": "Change Shortcut"
+  },
+  "settings.connectingToControlPhiIs": {
+   "comment": "settings — used at phi_settings_window.cc:2179",
+   "en": "connecting to control Phi is approved per connection."
+  },
+  "settings.connectsLaterCanAskYou": {
+   "comment": "settings — used at phi_settings_window.cc:837",
+   "en": "connects later can ask you to turn it back on."
+  },
+  "settings.contextForBetterAiExperience": {
+   "comment": "settings — used at phi_settings_window.cc:1983",
+   "en": "context for better AI experience"
+  },
+  "settings.credentialActivity": {
+   "comment": "settings — used at phi_settings_window.cc:2227",
+   "en": "Credential activity"
+  },
+  "settings.credentialApprovals": {
+   "comment": "settings — used at phi_settings_window.cc:2198",
+   "en": "Credential approvals"
+  },
+  "settings.defaultBadge": {
+   "comment": "settings — used at phi_settings_window.cc:2773",
+   "en": "Default"
+  },
+  "settings.developer.agentControl.enableToggle": {
+   "comment": "settings — used at phi_settings_window.cc:2168",
+   "en": "Allow agents to control Phi (CDP)"
+  },
+  "settings.developer.agentControl.sectionTitle": {
+   "comment": "settings — used at phi_settings_window.cc:2167",
+   "en": "Agent control"
+  },
+  "settings.developer.passwordManager.bitwarden.toggleTitle": {
+   "comment": "settings — used at phi_settings_window.cc:2249",
+   "en": "Bitwarden password manager"
+  },
+  "settings.developer.passwordManager.sectionTitle": {
+   "comment": "settings — used at phi_settings_window.cc:2248",
+   "en": "Agent Password Manager"
+  },
+  "settings.displayLanguage": {
+   "comment": "General settings - label of the row that picks the UI language",
+   "en": "Display language",
+   "translations": {
+    "de": "Anzeigesprache",
+    "es": "Idioma de la interfaz",
+    "fr": "Langue d'affichage",
+    "ja": "表示言語",
+    "ko": "표시 언어",
+    "nl": "Weergavetaal",
+    "zh-Hans": "显示语言",
+    "zh-Hant": "顯示語言"
+   }
+  },
+  "settings.editUrlRule": {
+   "comment": "settings — used at phi_settings_window.cc:3042",
+   "en": "Edit URL Rule"
+  },
+  "settings.enterADomainOrUrl": {
+   "comment": "settings — used at phi_settings_window.cc:3011",
+   "en": "Enter a domain or URL (e.g. example.com or "
+  },
+  "settings.enterADomainOrUrl2": {
+   "comment": "settings — used at phi_settings_window.cc:3043",
+   "en": "Enter a domain or URL for this rule."
+  },
+  "settings.enterANameForThe": {
+   "comment": "settings — used at phi_settings_window.cc:3275",
+   "en": "Enter a name for the new Space."
+  },
+  "settings.enterANameForThe2": {
+   "comment": "settings — used at phi_settings_window.cc:3323",
+   "en": "Enter a name for the new profile. Each profile has "
+  },
+  "settings.exampleComPath": {
+   "comment": "settings — used at phi_settings_window.cc:3012",
+   "en": "example.com/path)."
+  },
+  "settings.externalDataConnectorsHelpTo": {
+   "comment": "settings — used at phi_settings_window.cc:1982",
+   "en": "External Data Connectors help to provide additional "
+  },
+  "settings.finishSigningInFromThe": {
+   "comment": "settings — used at phi_settings_window.cc:1877",
+   "en": "Finish signing in from the opened tab…"
+  },
+  "settings.general.additionalBrowserSettings.title": {
+   "comment": "settings — used at phi_settings_window.cc:779",
+   "en": "Additional browser settings"
+  },
+  "settings.general.addressBar.showFullURLToggle": {
+   "comment": "settings — used at phi_settings_window.cc:753",
+   "en": "Always show full URL"
+  },
+  "settings.general.appearance.sectionTitle": {
+   "comment": "settings — used at phi_settings_window.cc:658",
+   "en": "Appearance"
+  },
+  "settings.general.appearance.title": {
+   "comment": "settings — used at phi_settings_window.cc:691",
+   "en": "Color appearance"
+  },
+  "settings.general.browsing.sectionTitle": {
+   "comment": "settings — used at phi_settings_window.cc:720",
+   "en": "Browsing"
+  },
+  "settings.general.developerMode.enableToggle": {
+   "comment": "settings — used at phi_settings_window.cc:829",
+   "en": "Developer mode"
+  },
+  "settings.general.developerMode.sectionTitle": {
+   "comment": "menuBar — used at phi_menu_bar.cc:351",
+   "en": "Developer"
+  },
+  "settings.general.language.displayLanguageTitle": {
+   "comment": "settings — used at phi_settings_window.cc:590",
+   "en": "Display language"
+  },
+  "settings.general.language.sectionTitle": {
+   "comment": "settings — used at phi_settings_window.cc:589",
+   "en": "Language"
+  },
+  "settings.general.language.systemDefaultOption": {
+   "comment": "settings — used at phi_settings_window.cc:591",
+   "en": "System Default"
+  },
+  "settings.general.layoutMode.title": {
+   "comment": "settings — used at phi_settings_window.cc:662",
+   "en": "Layout mode"
+  },
+  "settings.general.newTabShortcut.addressBarOption": {
+   "comment": "settings — used at phi_settings_window.cc:733",
+   "en": "Omnibox"
+  },
+  "settings.general.newTabShortcut.title": {
+   "comment": "settings — used at phi_settings_window.cc:724",
+   "en": "New tab behavior"
+  },
+  "settings.general.pictureInPicture.normalDescription": {
+   "comment": "settings — used at phi_settings_window.cc:762",
+   "en": "Pop out playing video when you switch tabs or apps"
+  },
+  "settings.general.pictureInPicture.normalOption": {
+   "comment": "settings — used at phi_settings_window.cc:765",
+   "en": "Normal"
+  },
+  "settings.general.pictureInPicture.title": {
+   "comment": "settings — used at phi_settings_window.cc:760",
+   "en": "Auto picture-in-picture"
+  },
+  "settings.general.pinnedTabScope.openSpacesSettingsLink": {
+   "comment": "settings — used at phi_settings_window.cc:648",
+   "en": "Edit in Spaces settings…"
+  },
+  "settings.general.profile.openProfilesSettingsLink": {
+   "comment": "settings — used at phi_settings_window.cc:807",
+   "en": "Edit in Profiles settings…"
+  },
+  "settings.general.profile.sectionTitle": {
+   "comment": "settings — used at phi_settings_window.cc:800",
+   "en": "Profile"
+  },
+  "settings.general.restoreLastSession.enabledHint": {
+   "comment": "settings — used at phi_settings_window.cc:774",
+   "en": "Reopen your windows and tabs the next time you open Phi."
+  },
+  "settings.general.restoreLastSession.toggle": {
+   "comment": "settings — used at phi_settings_window.cc:772",
+   "en": "Restore last session"
+  },
+  "settings.general.theme.colorTitle": {
+   "comment": "settings — used at phi_settings_window.cc:599",
+   "en": "Color"
+  },
+  "settings.general.theme.opacityTitle": {
+   "comment": "settings — used at phi_settings_window.cc:624",
+   "en": "Saturation"
+  },
+  "settings.general.theme.sectionTitle": {
+   "comment": "settings — used at phi_settings_window.cc:594",
+   "en": "Theme"
+  },
+  "settings.general.theme.webSelectionTintToggle": {
+   "comment": "settings — used at phi_settings_window.cc:654",
+   "en": "Apply theme to text selection on web pages"
+  },
+  "settings.helperPasswordsNeverTouchThe": {
+   "comment": "settings — used at phi_settings_window.cc:2253",
+   "en": "helper — passwords never touch the browser process."
+  },
+  "settings.itsOwnCookiesHistoryAnd": {
+   "comment": "settings — used at phi_settings_window.cc:3324",
+   "en": "its own cookies, history, and extensions."
+  },
+  "settings.languageHint": {
+   "comment": "Language picker - sub-hint clarifying that this is the app UI language, not the page language",
+   "en": "The language Phi’s own menus and settings are shown in.",
+   "translations": {
+    "de": "Die Sprache, in der Phis eigene Menüs und Einstellungen angezeigt werden.",
+    "es": "El idioma en el que se muestran los menús y ajustes de Phi.",
+    "fr": "La langue dans laquelle les menus et réglages de Phi sont affichés.",
+    "ja": "Phi のメニューと設定を表示する言語です。",
+    "ko": "Phi의 메뉴와 설정이 표시되는 언어입니다.",
+    "nl": "De taal waarin de menu’s en instellingen van Phi worden weergegeven.",
+    "zh-Hans": "Phi 的菜单和设置所使用的语言。",
+    "zh-Hant": "Phi 的選單與設定所使用的語言。"
+   }
+  },
+  "settings.languageSystemDefault": {
+   "comment": "Language picker - the option that follows the operating system UI language",
+   "en": "System default",
+   "translations": {
+    "de": "Systemstandard",
+    "es": "Predeterminado del sistema",
+    "fr": "Valeur système par défaut",
+    "ja": "システムのデフォルト",
+    "ko": "시스템 기본값",
+    "nl": "Systeemstandaard",
+    "zh-Hans": "系统默认",
+    "zh-Hant": "系統預設"
+   }
+  },
+  "settings.launchPhiSentinelAutomaticallyAt": {
+   "comment": "settings — used at phi_settings_window.cc:1956",
+   "en": "Launch Phi Sentinel automatically at login"
+  },
+  "settings.liveInTheDeveloperTab": {
+   "comment": "settings — used at phi_settings_window.cc:834",
+   "en": "live in the Developer tab."
+  },
+  "settings.loginsForPhiAndAgent": {
+   "comment": "settings — used at phi_settings_window.cc:2252",
+   "en": "Logins for Phi and agent requests, held by a separate "
+  },
+  "settings.logout": {
+   "comment": "settings — used at phi_settings_window.cc:1903",
+   "en": "Logout"
+  },
+  "settings.msSettingsDefaultapps": {
+   "comment": "settings — used in phi_settings_window.cc",
+   "en": "ms-settings:defaultapps"
+  },
+  "settings.navigation.generalTitle": {
+   "comment": "settings — used at phi_settings_window.cc:113",
+   "en": "General"
+  },
+  "settings.navigation.profilesTitle": {
+   "comment": "settings — used at phi_settings_window.cc:114",
+   "en": "Profiles"
+  },
+  "settings.navigation.shortcutsTitle": {
+   "comment": "settings — used at phi_settings_window.cc:117",
+   "en": "Shortcuts"
+  },
+  "settings.noCredentialRequestsYet": {
+   "comment": "settings — used at phi_settings_window.cc:2230",
+   "en": "No credential requests yet."
+  },
+  "settings.noStandingApprovalsEveryCredential": {
+   "comment": "settings — used at phi_settings_window.cc:2201",
+   "en": "No standing approvals. Every credential request is "
+  },
+  "settings.phiAi": {
+   "comment": "settings — used at phi_settings_window.cc:116",
+   "en": "Phi & AI"
+  },
+  "settings.pinnedTabsAreSharedAcross": {
+   "comment": "settings — used at phi_settings_window.cc:1229",
+   "en": "Pinned tabs are shared across all profiles and "
+  },
+  "settings.profileManagesItsOwnSettings": {
+   "comment": "settings — used at phi_settings_window.cc:803",
+   "en": "profile manages its own settings."
+  },
+  "settings.profiles.createDialog.title": {
+   "comment": "menuBar — used at phi_menu_bar.cc:1008",
+   "en": "New Profile"
+  },
+  "settings.profiles.dataLinks.clearBrowsingData": {
+   "comment": "settings — used at phi_settings_window.cc:1804",
+   "en": "Clear Browsing Data"
+  },
+  "settings.profiles.dataLinks.notifications": {
+   "comment": "settings — used at phi_settings_window.cc:1802",
+   "en": "Notifications"
+  },
+  "settings.profiles.dataLinks.privacyAndSecurity": {
+   "comment": "settings — used at phi_settings_window.cc:1801",
+   "en": "Privacy and Security"
+  },
+  "settings.profiles.dataLinks.sectionTitle": {
+   "comment": "settings — used at phi_settings_window.cc:1787",
+   "en": "Your Data and Settings"
+  },
+  "settings.profiles.details.downloadLocationLabel": {
+   "comment": "settings — used at phi_settings_window.cc:1775",
+   "en": "Download Location"
+  },
+  "settings.profiles.details.emptyPlaceholder": {
+   "comment": "settings — used at phi_settings_window.cc:1687",
+   "en": "Select a profile to view its settings."
+  },
+  "settings.profiles.details.searchEngineLabel": {
+   "comment": "settings — used at phi_settings_window.cc:1768",
+   "en": "Search Engine"
+  },
+  "settings.profiles.downloadLocation.choosePlaceholder": {
+   "comment": "settings — used at phi_settings_window.cc:1756",
+   "en": "Choose…"
+  },
+  "settings.profiles.downloadLocation.pickerMessage": {
+   "comment": "settings — used at phi_settings_window.cc:3190",
+   "en": "Choose a download location for this profile."
+  },
+  "settings.profiles.listTitle": {
+   "comment": "settings — used at phi_settings_window.cc:1587",
+   "en": "Your Profiles"
+  },
+  "settings.profiles.renameDialog.message": {
+   "comment": "settings — used at phi_settings_window.cc:3309",
+   "en": "Enter a new name for this profile."
+  },
+  "settings.profiles.renameDialog.title": {
+   "comment": "settings — used at phi_settings_window.cc:3308",
+   "en": "Rename Profile"
+  },
+  "settings.profiles.unusedStatus": {
+   "comment": "settings — used at phi_settings_window.cc:1618",
+   "en": "Not used"
+  },
+  "settings.setsItsOwnColorAnd": {
+   "comment": "settings — used at phi_settings_window.cc:644",
+   "en": "sets its own color and opacity."
+  },
+  "settings.shortcuts.command.closeWindow": {
+   "comment": "menuBar — used at phi_menu_bar.cc:305",
+   "en": "Close Window\tCtrl+Shift+W"
+  },
+  "settings.shortcuts.command.duplicateTab": {
+   "comment": "menuBar — used at phi_menu_bar.cc:720",
+   "en": "Duplicate Tab"
+  },
+  "settings.shortcuts.command.findNextMatch": {
+   "comment": "menuBar — used at phi_menu_bar.cc:329",
+   "en": "Find Next\tCtrl+G"
+  },
+  "settings.shortcuts.command.findOnPage": {
+   "comment": "menuBar — used at phi_menu_bar.cc:332",
+   "en": "Find"
+  },
+  "settings.shortcuts.command.findPreviousMatch": {
+   "comment": "menuBar — used at phi_menu_bar.cc:330",
+   "en": "Find Previous\tCtrl+Shift+G"
+  },
+  "settings.shortcuts.command.goHome": {
+   "comment": "menuBar — used at phi_menu_bar.cc:370",
+   "en": "Home\tAlt+Home"
+  },
+  "settings.shortcuts.command.muteSite": {
+   "comment": "menuBar — used at phi_menu_bar.cc:721",
+   "en": "Mute Site"
+  },
+  "settings.shortcuts.command.newIncognitoWindow": {
+   "comment": "menuBar — used at phi_menu_bar.cc:297",
+   "en": "New Incognito Window\tCtrl+Shift+N"
+  },
+  "settings.shortcuts.command.newWindow": {
+   "comment": "menuBar — used at phi_menu_bar.cc:296",
+   "en": "New Window\tCtrl+N"
+  },
+  "settings.shortcuts.command.printPage": {
+   "comment": "menuBar — used at phi_menu_bar.cc:309",
+   "en": "Print...\tCtrl+P"
+  },
+  "settings.shortcuts.command.searchTheWeb": {
+   "comment": "menuBar — used at phi_menu_bar.cc:326",
+   "en": "Search the Web..."
+  },
+  "settings.shortcuts.command.selectNextTab": {
+   "comment": "menuBar — used at phi_menu_bar.cc:717",
+   "en": "Select Next Tab\tCtrl+Tab"
+  },
+  "settings.shortcuts.command.selectPreviousTab": {
+   "comment": "menuBar — used at phi_menu_bar.cc:718",
+   "en": "Select Previous Tab\tCtrl+Shift+Tab"
+  },
+  "settings.shortcuts.group.app": {
+   "comment": "settings — used at phi_settings_window.cc:1238",
+   "en": "App"
+  },
+  "settings.shortcuts.group.edit": {
+   "comment": "app — used at phi_coordinator.cc:87",
+   "en": "Edit"
+  },
+  "settings.shortcuts.group.file": {
+   "comment": "app — used at phi_coordinator.cc:74",
+   "en": "File"
+  },
+  "settings.shortcuts.group.help": {
+   "comment": "menuBar — used at phi_menu_bar.cc:206",
+   "en": "&Help"
+  },
+  "settings.shortcuts.group.history": {
+   "comment": "app — used at phi_coordinator.cc:97",
+   "en": "History"
+  },
+  "settings.shortcuts.group.tab": {
+   "comment": "app — used at phi_coordinator.cc:2066",
+   "en": "Tab"
+  },
+  "settings.shortcuts.group.view": {
+   "comment": "app — used at phi_coordinator.cc:89",
+   "en": "View"
+  },
+  "settings.shortcuts.group.window": {
+   "comment": "app — used at phi_coordinator.cc:103",
+   "en": "Window"
+  },
+  "settings.shortcuts.restoreDefaultsButton": {
+   "comment": "settings — used at phi_settings_window.cc:2002",
+   "en": "Restore all shortcuts"
+  },
+  "settings.shortcuts.searchField.placeholder": {
+   "comment": "settings — used at phi_settings_window.cc:2882",
+   "en": "Find shortcut keys"
+  },
+  "settings.shortcuts.searchResults.emptyMessage": {
+   "comment": "settings — used at phi_settings_window.cc:2155",
+   "en": "No Results"
+  },
+  "settings.showTabPreviewCards": {
+   "comment": "settings — used at phi_settings_window.cc:756",
+   "en": "Show tab preview cards"
+  },
+  "settings.signInToUseYour": {
+   "comment": "settings — used at phi_settings_window.cc:1878",
+   "en": "Sign in to use your Phi account."
+  },
+  "settings.signedInAs": {
+   "comment": "settings — used at phi_settings_window.cc:1893",
+   "en": "Signed in as "
+  },
+  "settings.spaces": {
+   "comment": "settings — used at phi_settings_window.cc:1230",
+   "en": "Spaces."
+  },
+  "settings.spaces.details.emptyPlaceholder": {
+   "comment": "settings — used at phi_settings_window.cc:1209",
+   "en": "Select a Space to view its settings."
+  },
+  "settings.spaces.listTitle": {
+   "comment": "settings — used at phi_settings_window.cc:925",
+   "en": "Your Spaces"
+  },
+  "settings.spaces.newButtonTooltip": {
+   "comment": "settings — used at phi_settings_window.cc:3275",
+   "en": "New Space"
+  },
+  "settings.spaces.pinnedTabScope.profileDescription": {
+   "comment": "settings — used at phi_settings_window.cc:1226",
+   "en": "Spaces using the same profile share pinned tabs."
+  },
+  "settings.spaces.pinnedTabScope.spaceDescription": {
+   "comment": "settings — used at phi_settings_window.cc:1223",
+   "en": "Each Space has its own pinned tabs."
+  },
+  "settings.spaces.pinnedTabScope.spaceOption": {
+   "comment": "sidebar — used at phi_window_controller.cc:3807",
+   "en": "Space "
+  },
+  "settings.spaces.pinnedTabScope.title": {
+   "comment": "settings — used at phi_settings_window.cc:1219",
+   "en": "Pinned tab scope"
+  },
+  "settings.turningDeveloperModeOffTurns": {
+   "comment": "settings — used at phi_settings_window.cc:835",
+   "en": "Turning developer mode off turns off agent access "
+  },
+  "settings.url": {
+   "comment": "settings — used in phi_settings_window.cc",
+   "en": "URL"
+  },
+  "settings.urlsMatchingARuleAlways": {
+   "comment": "settings — used at phi_settings_window.cc:1452",
+   "en": "URLs matching a rule always open in its Space, no matter "
+  },
+  "settings.whereYouClickOrType": {
+   "comment": "settings — used at phi_settings_window.cc:1453",
+   "en": "where you click or type them."
+  },
+  "settings.youAreNotSignedIn": {
+   "comment": "settings — used at phi_settings_window.cc:1896",
+   "en": "You are not signed in."
+  },
+  "settings.youHaveMoreThanOne": {
+   "comment": "settings — used at phi_settings_window.cc:643",
+   "en": "You have more than one Space, so each Space "
+  },
+  "settings.youHaveMoreThanOne2": {
+   "comment": "settings — used at phi_settings_window.cc:802",
+   "en": "You have more than one profile, so each "
+  },
+  "sidebar.address": {
+   "comment": "sidebar — used at phi_window_controller.cc:5959",
+   "en": "Address:"
+  },
+  "sidebar.agentContextMenu.showTranscriptAction": {
+   "comment": "sidebar — used at phi_window_controller.cc:6295",
+   "en": "Show Transcript"
+  },
+  "sidebar.bookmarkContextMenu.changeIconAction": {
+   "comment": "sidebar — used at phi_window_controller.cc:6354",
+   "en": "Change Icon…"
+  },
+  "sidebar.bookmarkContextMenu.copyLeftPrimaryUrl": {
+   "comment": "bookmarkManager — used at phi_bookmark_manager.cc:756",
+   "en": "Copy Left URL"
+  },
+  "sidebar.bookmarkContextMenu.copyRightSecondaryUrl": {
+   "comment": "bookmarkManager — used at phi_bookmark_manager.cc:757",
+   "en": "Copy Right URL"
+  },
+  "sidebar.bookmarkContextMenu.editAction": {
+   "comment": "bookmarkManager — used at phi_bookmark_manager.cc:762",
+   "en": "Edit..."
+  },
+  "sidebar.bookmarkContextMenu.newNestedFolderAction": {
+   "comment": "bookmarkManager — used at phi_bookmark_manager.cc:764",
+   "en": "New Nested Folder..."
+  },
+  "sidebar.bookmarkContextMenu.openInNewTabAction": {
+   "comment": "sidebar — used at phi_window_controller.cc:6005",
+   "en": "Open in New Tab"
+  },
+  "sidebar.bookmarksYouAddAppearHere": {
+   "comment": "sidebar — used at phi_window_controller.cc:6686",
+   "en": "Bookmarks you add appear here"
+  },
+  "sidebar.chat": {
+   "comment": "sidebar — used in phi_window_controller.cc",
+   "en": "Chat"
+  },
+  "sidebar.chatButton.title": {
+   "comment": "menuBar — used at phi_menu_bar.cc:259",
+   "en": "Chat\tCtrl+Shift+C"
+  },
+  "sidebar.chromeNewtab": {
+   "comment": "sidebar — used in phi_window_controller.cc",
+   "en": "chrome://newtab"
+  },
+  "sidebar.ctrl": {
+   "comment": "sidebar — used in phi_window_controller.cc",
+   "en": "Ctrl"
+  },
+  "sidebar.deleteFolder": {
+   "comment": "sidebar — used at phi_window_controller.cc:6066",
+   "en": "Delete Folder"
+  },
+  "sidebar.editUrl": {
+   "comment": "sidebar — used at phi_window_controller.cc:5889",
+   "en": "Edit URL..."
+  },
+  "sidebar.enterANewNameFor": {
+   "comment": "sidebar — used at phi_window_controller.cc:5940",
+   "en": "Enter a new name for this pinned tab."
+  },
+  "sidebar.finishTask": {
+   "comment": "sidebar — used at phi_window_controller.cc:6297",
+   "en": "Finish Task"
+  },
+  "sidebar.groupName": {
+   "comment": "sidebar — used at phi_window_controller.cc:5466",
+   "en": "Group name:"
+  },
+  "sidebar.handBackToAgent": {
+   "comment": "sidebar — used at phi_window_controller.cc:5536",
+   "en": "Hand Back to Agent"
+  },
+  "sidebar.newSpaceWithNewProfile": {
+   "comment": "sidebar — used at phi_window_controller.cc:5158",
+   "en": "New Space with New Profile..."
+  },
+  "sidebar.rename": {
+   "comment": "sidebar — used in phi_window_controller.cc",
+   "en": "Rename..."
+  },
+  "sidebar.renameGroup": {
+   "comment": "sidebar — used at phi_window_controller.cc:5445",
+   "en": "Rename Group..."
+  },
+  "sidebar.renamePinnedTab": {
+   "comment": "sidebar — used at phi_window_controller.cc:5939",
+   "en": "Rename Pinned Tab"
+  },
+  "sidebar.setTheme": {
+   "comment": "sidebar — used at phi_window_controller.cc:6356",
+   "en": "Set Theme"
+  },
+  "sidebar.switchToThisSpace": {
+   "comment": "sidebar — used at phi_window_controller.cc:6351",
+   "en": "Switch to this Space"
+  },
+  "sidebar.tabContextMenu.addSplitToBookmarks": {
+   "comment": "sidebar — used at phi_window_controller.cc:5697",
+   "en": "Add Split to Bookmark"
+  },
+  "sidebar.tabContextMenu.addToGroupSubmenu": {
+   "comment": "sidebar — used at phi_window_controller.cc:5617",
+   "en": "Add to Group"
+  },
+  "sidebar.tabContextMenu.convertToHorizontalSplit": {
+   "comment": "sidebar — used at phi_window_controller.cc:5692",
+   "en": "Convert to Horizontal Split"
+  },
+  "sidebar.tabContextMenu.convertToVerticalSplit": {
+   "comment": "sidebar — used at phi_window_controller.cc:5693",
+   "en": "Convert to Vertical Split"
+  },
+  "sidebar.tabContextMenu.duplicateSplit": {
+   "comment": "sidebar — used at phi_window_controller.cc:5682",
+   "en": "Duplicate Split"
+  },
+  "sidebar.tabContextMenu.duplicateTab": {
+   "comment": "sidebar — used at phi_window_controller.cc:5541",
+   "en": "Duplicate"
+  },
+  "sidebar.tabContextMenu.moveToGroupSubmenu": {
+   "comment": "sidebar — used at phi_window_controller.cc:5636",
+   "en": "Move to Group"
+  },
+  "sidebar.tabContextMenu.moveToNewGroup": {
+   "comment": "sidebar — used at phi_window_controller.cc:5640",
+   "en": "Move to New Group"
+  },
+  "sidebar.tabContextMenu.newTabGroup": {
+   "comment": "sidebar — used at phi_window_controller.cc:5602",
+   "en": "New Tab Group"
+  },
+  "sidebar.tabContextMenu.pinSplit": {
+   "comment": "sidebar — used at phi_window_controller.cc:5681",
+   "en": "Pin Split"
+  },
+  "sidebar.tabContextMenu.pinTab": {
+   "comment": "sidebar — used at phi_window_controller.cc:5540",
+   "en": "Pin"
+  },
+  "sidebar.tabContextMenu.removeFromGroup": {
+   "comment": "sidebar — used at phi_window_controller.cc:5641",
+   "en": "Remove from Group"
+  },
+  "sidebar.tabContextMenu.removeFromSplit": {
+   "comment": "sidebar — used at phi_window_controller.cc:5694",
+   "en": "Remove from Split"
+  },
+  "sidebar.tabContextMenu.reverseSplitPanes": {
+   "comment": "sidebar — used at phi_window_controller.cc:5687",
+   "en": "Reverse Panes"
+  },
+  "sidebar.tabContextMenu.splitWithCurrent": {
+   "comment": "sidebar — used at phi_window_controller.cc:5559",
+   "en": "Split with Current"
+  },
+  "sidebar.tabContextMenu.unpinClosedSplit": {
+   "comment": "sidebar — used at phi_window_controller.cc:5900",
+   "en": "Unpin Split"
+  },
+  "sidebar.tabContextMenu.unpinTab": {
+   "comment": "sidebar — used at phi_window_controller.cc:5900",
+   "en": "Unpin"
+  },
+  "sidebar.tabGroupContextMenu.changeColorSubmenu": {
+   "comment": "sidebar — used at phi_window_controller.cc:5447",
+   "en": "Change Color"
+  },
+  "sidebar.tabGroupContextMenu.closeGroupAction": {
+   "comment": "sidebar — used at phi_window_controller.cc:5450",
+   "en": "Close Group"
+  },
+  "sidebar.tabGroupContextMenu.renameAction": {
+   "comment": "sidebar — used at phi_window_controller.cc:5466",
+   "en": "Rename Group"
+  },
+  "sidebar.tabGroupContextMenu.ungroupAction": {
+   "comment": "sidebar — used at phi_window_controller.cc:5449",
+   "en": "Ungroup"
+  },
+  "sidebar.takeControl": {
+   "comment": "sidebar — used at phi_window_controller.cc:5536",
+   "en": "Take Control"
+  },
+  "sidebar.urlRulesEditor.addRuleButton": {
+   "comment": "settings — used at phi_settings_window.cc:1549",
+   "en": "Add Rule"
+  },
+  "sidebar.urlRulesEditor.emptyTitle": {
+   "comment": "settings — used at phi_settings_window.cc:1470",
+   "en": "No rules yet."
+  },
+  "sidebar.urlRulesEditor.matchType.domain": {
+   "comment": "settings — used at phi_settings_window.cc:1289",
+   "en": "Domain"
+  },
+  "sidebar.urlRulesEditor.matchType.domainContains": {
+   "comment": "settings — used at phi_settings_window.cc:1291",
+   "en": "Domain contains"
+  },
+  "sidebar.urlRulesEditor.matchType.domainSuffix": {
+   "comment": "settings — used at phi_settings_window.cc:1287",
+   "en": "Domain suffix"
+  },
+  "sidebar.urlRulesEditor.target.askEveryTimeOption": {
+   "comment": "settings — used at phi_settings_window.cc:1519",
+   "en": "Ask every time"
+  },
+  "sidebar.willAlsoBeRemovedThis": {
+   "comment": "sidebar — used at phi_window_controller.cc:6394",
+   "en": "will also be removed. This action cannot be undone."
+  },
+  "tabs.tabGroup.colorName.blue": {
+   "comment": "sidebar — used at phi_window_controller.cc:164",
+   "en": "Blue"
+  },
+  "tabs.tabGroup.colorName.cyan": {
+   "comment": "sidebar — used at phi_window_controller.cc:170",
+   "en": "Cyan"
+  },
+  "tabs.tabGroup.colorName.green": {
+   "comment": "sidebar — used at phi_window_controller.cc:167",
+   "en": "Green"
+  },
+  "tabs.tabGroup.colorName.grey": {
+   "comment": "sidebar — used at phi_window_controller.cc:163",
+   "en": "Grey"
+  },
+  "tabs.tabGroup.colorName.orange": {
+   "comment": "sidebar — used at phi_window_controller.cc:171",
+   "en": "Orange"
+  },
+  "tabs.tabGroup.colorName.pink": {
+   "comment": "sidebar — used at phi_window_controller.cc:168",
+   "en": "Pink"
+  },
+  "tabs.tabGroup.colorName.purple": {
+   "comment": "sidebar — used at phi_window_controller.cc:169",
+   "en": "Purple"
+  },
+  "tabs.tabGroup.colorName.red": {
+   "comment": "sidebar — used at phi_window_controller.cc:165",
+   "en": "Red"
+  },
+  "tabs.tabGroup.colorName.yellow": {
+   "comment": "sidebar — used at phi_window_controller.cc:166",
+   "en": "Yellow"
+  },
+  "themes.appearance.darkOption": {
+   "comment": "settings — used at phi_settings_window.cc:700",
+   "en": "Dark"
+  },
+  "themes.appearance.lightOption": {
+   "comment": "settings — used at phi_settings_window.cc:699",
+   "en": "Light"
+  },
+  "themes.appearance.systemOption": {
+   "comment": "settings — used at phi_settings_window.cc:698",
+   "en": "System"
+  }
+ }
+}

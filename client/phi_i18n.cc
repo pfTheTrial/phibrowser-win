@@ -1,0 +1,334 @@
+// Copyright 2026 The Fyde Innovations Limited. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#include "phibrowser-win/client/phi_i18n.h"
+
+#include <windows.h>
+
+#include <map>
+#include <optional>
+
+#include "base/containers/span.h"
+#include "base/files/file_path.h"
+#include "base/json/json_reader.h"
+#include "base/logging.h"
+#include "base/no_destructor.h"
+#include "base/path_service.h"
+#include "base/strings/utf_string_conversions.h"
+#include "base/values.h"
+
+namespace phi_client {
+
+namespace {
+
+// One locale's strings. Held in a NEVER-ERASED registry so that a pointer
+// returned by PhiStr stays valid for the life of the process — a language
+// switch points at a different map instead of rewriting this one.
+using Catalog = std::map<std::string, std::wstring, std::less<>>;
+
+struct State {
+  bool loaded = false;
+  std::vector<std::string> locales;         // "en" first.
+  std::map<std::string, Catalog> catalogs;  // locale -> strings
+  std::string preference;                   // "" = follow the system
+  std::string active = "en";
+  // Keys asked for that the catalog does not carry. Their wide form is
+  // parked here so PhiStr can still hand back a stable pointer.
+  std::map<std::string, std::wstring, std::less<>> unknown;
+};
+
+State& Get() {
+  static base::NoDestructor<State> state;
+  return *state;
+}
+
+// Reads a whole file with plain Win32 I/O. See the header: the catalog loads
+// lazily on the UI thread, where base::ReadFileToString is a blocking call
+// the thread disallows once the message loop runs.
+bool ReadWholeFile(const std::wstring& path, std::string* out) {
+  HANDLE f = ::CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ,
+                           nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
+                           nullptr);
+  if (f == INVALID_HANDLE_VALUE) {
+    return false;
+  }
+  char buf[16384];
+  DWORD read = 0;
+  while (::ReadFile(f, buf, sizeof(buf), &read, nullptr) && read > 0) {
+    out->append(buf, read);
+  }
+  ::CloseHandle(f);
+  return true;
+}
+
+// The operating system's preferred UI languages, as BCP-47 tags.
+std::vector<std::string> SystemUILanguages() {
+  std::vector<std::string> out;
+  ULONG count = 0;
+  ULONG chars = 0;
+  if (!::GetUserPreferredUILanguages(MUI_LANGUAGE_NAME, &count, nullptr,
+                                     &chars) ||
+      chars == 0) {
+    return out;
+  }
+  std::vector<wchar_t> buffer(chars);
+  if (!::GetUserPreferredUILanguages(MUI_LANGUAGE_NAME, &count, buffer.data(),
+                                     &chars)) {
+    return out;
+  }
+  // A double-NUL-terminated list of NUL-separated tags
+  // ("zh-Hans-CN\0en-US\0\0"). Split by scanning indices — no pointer walk,
+  // so the bounds stay checked all the way to the terminator.
+  const base::span<const wchar_t> tags(buffer);
+  size_t start = 0;
+  for (size_t at = 0; at < tags.size(); ++at) {
+    if (tags[at] != L'\0') {
+      continue;
+    }
+    if (at == start) {
+      break;  // The empty tag: the list's double NUL.
+    }
+    out.push_back(base::WideToUTF8(
+        std::wstring(tags.subspan(start, at - start).begin(),
+                     tags.subspan(start, at - start).end())));
+    start = at + 1;
+  }
+  return out;
+}
+
+// Case-insensitive equality for locale tags (Windows reports "zh-hans-cn",
+// the catalog carries "zh-Hans").
+bool TagEquals(const std::string& a, const std::string& b) {
+  if (a.size() != b.size()) {
+    return false;
+  }
+  for (size_t i = 0; i < a.size(); ++i) {
+    if (::tolower(static_cast<unsigned char>(a[i])) !=
+        ::tolower(static_cast<unsigned char>(b[i]))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Best catalog locale for an OS tag. Exact match wins; then the script-aware
+// Chinese rules (a tag naming Hant, or a Hant-only region, is Traditional and
+// everything else Chinese is Simplified); then the bare language subtag.
+std::string MatchLocale(const std::string& os_tag,
+                        const std::vector<std::string>& available) {
+  for (const std::string& tag : available) {
+    if (TagEquals(os_tag, tag)) {
+      return tag;
+    }
+  }
+  std::string lower;
+  for (char c : os_tag) {
+    lower.push_back(static_cast<char>(::tolower(static_cast<unsigned char>(c))));
+  }
+  const std::string language = lower.substr(0, lower.find('-'));
+  if (language == "zh") {
+    const bool traditional = lower.find("hant") != std::string::npos ||
+                             lower.find("-tw") != std::string::npos ||
+                             lower.find("-hk") != std::string::npos ||
+                             lower.find("-mo") != std::string::npos;
+    const std::string want = traditional ? "zh-Hant" : "zh-Hans";
+    for (const std::string& tag : available) {
+      if (TagEquals(want, tag)) {
+        return tag;
+      }
+    }
+    return std::string();
+  }
+  for (const std::string& tag : available) {
+    if (TagEquals(language, tag.substr(0, tag.find('-')))) {
+      return tag;
+    }
+  }
+  return std::string();
+}
+
+// Resolves `preference` (or the system list when it is empty) to a locale the
+// catalog carries. Always yields something: "en" is the floor.
+std::string ResolveActive(const State& state) {
+  if (!state.preference.empty()) {
+    const std::string matched = MatchLocale(state.preference, state.locales);
+    if (!matched.empty()) {
+      return matched;
+    }
+  } else {
+    for (const std::string& os_tag : SystemUILanguages()) {
+      const std::string matched = MatchLocale(os_tag, state.locales);
+      if (!matched.empty()) {
+        return matched;
+      }
+    }
+  }
+  return "en";
+}
+
+void EnsureLoaded() {
+  State& state = Get();
+  if (state.loaded) {
+    return;
+  }
+  state.loaded = true;  // One attempt: a missing catalog must not re-read.
+  state.locales.push_back("en");
+
+  base::FilePath dir;
+  if (!base::PathService::Get(base::DIR_EXE, &dir)) {
+    return;
+  }
+  const base::FilePath path =
+      dir.AppendASCII("resources").AppendASCII("strings.json");
+  std::string json;
+  if (!ReadWholeFile(path.value(), &json)) {
+    LOG(ERROR) << "[PhiClient] string catalog missing: " << path
+               << " — the UI stays English";
+    return;
+  }
+  std::optional<base::DictValue> root =
+      base::JSONReader::ReadDict(json, base::JSON_PARSE_RFC);
+  if (!root) {
+    LOG(ERROR) << "[PhiClient] string catalog is not valid JSON";
+    return;
+  }
+  if (const base::ListValue* locales = root->FindList("locales")) {
+    state.locales.clear();
+    for (const base::Value& v : *locales) {
+      if (v.is_string()) {
+        state.locales.push_back(v.GetString());
+      }
+    }
+  }
+  if (state.locales.empty()) {
+    state.locales.push_back("en");
+  }
+  const base::DictValue* strings = root->FindDict("strings");
+  if (strings) {
+    for (const auto [key, value] : *strings) {
+      const base::DictValue* per_locale = value.GetIfDict();
+      if (!per_locale) {
+        continue;
+      }
+      for (const auto [locale, text] : *per_locale) {
+        if (text.is_string()) {
+          state.catalogs[std::string(locale)][std::string(key)] =
+              base::UTF8ToWide(text.GetString());
+        }
+      }
+    }
+  }
+  state.active = ResolveActive(state);
+  LOG(INFO) << "[PhiClient] strings: " << (strings ? strings->size() : 0u)
+            << " keys, " << state.locales.size() << " locales, active "
+            << state.active;
+}
+
+}  // namespace
+
+const std::string& PhiActiveLocale() {
+  EnsureLoaded();
+  return Get().active;
+}
+
+const std::vector<std::string>& PhiAvailableLocales() {
+  EnsureLoaded();
+  return Get().locales;
+}
+
+const wchar_t* PhiLocaleDisplayName(const std::string& tag) {
+  // Endonyms: a language is named in itself, the way every browser's language
+  // picker does it — someone looking for their own language should not have
+  // to read the current one to find it.
+  struct Entry {
+    const char* tag;
+    const wchar_t* name;
+  };
+  static constexpr Entry kNames[] = {
+      {"en", L"English"},
+      {"de", L"Deutsch"},
+      {"es", L"Español"},
+      {"fr", L"Français"},
+      {"ja", L"日本語"},
+      {"ko", L"한국어"},
+      {"nl", L"Nederlands"},
+      {"zh-Hans", L"简体中文"},
+      {"zh-Hant", L"繁體中文"},
+  };
+  for (const Entry& entry : kNames) {
+    if (tag == entry.tag) {
+      return entry.name;
+    }
+  }
+  static base::NoDestructor<std::map<std::string, std::wstring>> fallback;
+  auto it = fallback->find(tag);
+  if (it == fallback->end()) {
+    it = fallback->emplace(tag, base::UTF8ToWide(tag)).first;
+  }
+  return it->second.c_str();
+}
+
+bool PhiSetLanguage(const std::string& tag) {
+  EnsureLoaded();
+  State& state = Get();
+  state.preference = tag;
+  const std::string next = ResolveActive(state);
+  if (next == state.active) {
+    return false;
+  }
+  state.active = next;
+  LOG(INFO) << "[PhiClient] language switched to " << next
+            << (tag.empty() ? " (following the system)" : "");
+  return true;
+}
+
+const std::string& PhiLanguagePreference() {
+  EnsureLoaded();
+  return Get().preference;
+}
+
+const wchar_t* PhiStr(const char* key) {
+  EnsureLoaded();
+  State& state = Get();
+  const std::string_view wanted(key ? key : "");
+  // Active locale, then English, then the key itself.
+  auto locale = state.catalogs.find(state.active);
+  if (locale != state.catalogs.end()) {
+    auto found = locale->second.find(wanted);
+    if (found != locale->second.end()) {
+      return found->second.c_str();
+    }
+  }
+  if (state.active != "en") {
+    auto english = state.catalogs.find("en");
+    if (english != state.catalogs.end()) {
+      auto found = english->second.find(wanted);
+      if (found != english->second.end()) {
+        return found->second.c_str();
+      }
+    }
+  }
+  auto unknown = state.unknown.find(wanted);
+  if (unknown == state.unknown.end()) {
+    LOG(WARNING) << "[PhiClient] no string for key: " << wanted;
+    unknown = state.unknown
+                  .emplace(std::string(wanted), base::UTF8ToWide(wanted))
+                  .first;
+  }
+  return unknown->second.c_str();
+}
+
+std::wstring PhiStrF(const char* key, const std::vector<std::wstring>& args) {
+  std::wstring out = PhiStr(key);
+  for (size_t i = 0; i < args.size(); ++i) {
+    const std::wstring token = L"{" + std::to_wstring(i) + L"}";
+    for (size_t at = out.find(token); at != std::wstring::npos;
+         at = out.find(token, at + args[i].size())) {
+      out.replace(at, token.size(), args[i]);
+    }
+  }
+  return out;
+}
+
+}  // namespace phi_client
