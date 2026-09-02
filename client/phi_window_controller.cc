@@ -89,9 +89,44 @@ constexpr int kBandGroupGap = 8;      // the nav trio → search-tabs.
 // rides up by the 32pt the row occupied.
 constexpr int kSpacesStripTop = 8;
 constexpr int kSpacesStripHeight = 32;   // SpacesStripView.sidebarHeight
-constexpr int kSpacesStripPad = 10;      // horizontalPadding inside the strip.
+// The strip's own gutter. The Mac's SpacesStripView uses 10, which leaves
+// the pip row standing a hair inside the address bar and the tab rows below
+// it; here the strip shares the sidebar's gutter instead, so the row of pip
+// backgrounds spans EXACTLY the width of the address bar under it.
+constexpr int kSpacesStripPad = kEdgeInset;
 constexpr int kSpaceChip = 24;           // stripItemWidth/Height: a 24pt pip.
+// The sidebar has room the caption band has not, so the vertical layouts run
+// the pip at the strip band's FULL height: a Space's icon reads at a glance
+// there instead of as a speck. Comfortable keeps the Mac's 24pt — its single
+// compact pip shares the band with the tab strip. The band is unchanged
+// either way, so nothing under the strip moves.
+constexpr int kSpaceChipVertical = kSpacesStripHeight;
 constexpr int kSpaceChipGap = 4;         // stripSpacing.
+// The pip's glyph, sized to the box the paint pass's 4pt inset leaves it
+// (16pt inside a 24pt pip, 24pt inside a 32pt one): the MDL2 size first, the
+// colour emoji one step down — it rides larger in its line box. Catalog
+// artwork derives its own size from these, below.
+constexpr int kSpaceGlyph = 13;          // SpacesStripView.emojiFontSize
+constexpr int kSpaceEmoji = 12;
+// The big pip's glyphs sit a size under what its box would take: the icon
+// keeps the sidebar's own 8pt gutter clear inside the 32pt pill, which is
+// what stops a Space's icon from crowding its background.
+constexpr int kSpaceGlyphVertical = 16;
+constexpr int kSpaceEmojiVertical = 15;
+// Catalog ARTWORK asks for its canvas, not its ink: the Mac imageset is a
+// 48px square and the shape covers about five eighths of it, the rest being
+// the imageset's own padding. Drawn at the glyph size it therefore lands a
+// third smaller than an emoji beside it — so the canvas takes the padding
+// back, and a typical icon's ink then matches the emoji's. The mask is
+// transparent outside the shape, so the wider canvas paints nothing extra.
+constexpr int kSpaceArt = kSpaceGlyph * 8 / 5;
+constexpr int kSpaceArtVertical = kSpaceGlyphVertical * 8 / 5;
+// The strip's TEXT at the larger pip: the first letter of a Space with no
+// icon, and the trailing slot's "+" / "…". A letter's ink is shorter than a
+// glyph's em box, so it sits a size under the icons rather than matching
+// them. (The 24pt pip draws both in the UI font, which is already this
+// relation to its 13pt glyphs.)
+constexpr int kSpaceTextVertical = 14;
 constexpr int kAddressBarTop = 52;    // spacesStrip.bottom + 12
 constexpr int kAddressBarHeight = 32;
 constexpr int kHeaderHeight = 88;     // 48 base + 32 strip + 8 gap
@@ -480,12 +515,37 @@ void PhiWindowController::EnsureFont() {
   }
   // The same MDL2 face at the EMOJI size, for Space-pip catalog glyphs — one
   // optical size whether a pip wears an emoji or a Phi icon.
-  caption.lfHeight = -Scaled(13);
+  caption.lfHeight = -Scaled(kSpaceGlyph);
   if (HFONT chip_built = ::CreateFontIndirectW(&caption)) {
     if (chip_icon_font_) {
       ::DeleteObject(chip_icon_font_);
     }
     chip_icon_font_ = chip_built;
+  }
+  // Both pip faces again at the vertical layouts' larger pip size — the GDI
+  // fallback there, for a private-use glyph with no catalog artwork and for
+  // emoji when DirectWrite is unavailable.
+  caption.lfHeight = -Scaled(kSpaceGlyphVertical);
+  if (HFONT pip_icon_built = ::CreateFontIndirectW(&caption)) {
+    if (pip_icon_font_) {
+      ::DeleteObject(pip_icon_font_);
+    }
+    pip_icon_font_ = pip_icon_built;
+  }
+  emoji.lfHeight = -Scaled(kSpaceEmojiVertical);
+  if (HFONT pip_emoji_built = ::CreateFontIndirectW(&emoji)) {
+    if (pip_emoji_font_) {
+      ::DeleteObject(pip_emoji_font_);
+    }
+    pip_emoji_font_ = pip_emoji_built;
+  }
+  LOGFONTW pip_text = metrics.lfMessageFont;
+  pip_text.lfHeight = -Scaled(kSpaceTextVertical);
+  if (HFONT pip_text_built = ::CreateFontIndirectW(&pip_text)) {
+    if (pip_text_font_) {
+      ::DeleteObject(pip_text_font_);
+    }
+    pip_text_font_ = pip_text_built;
   }
 }
 
@@ -545,6 +605,7 @@ void PhiWindowController::EnsureMenuTitleRects() {
 PhiWindowController::Layout PhiWindowController::ComputeLayout() {
   Layout out;
   out.mode = layout_mode_;
+  out.chip_size = kSpaceChip;  // The vertical strip below raises it.
   if (shell_hwnd_) {
     ::GetClientRect(shell_hwnd_, &out.client);
     if (const UINT dpi = ::GetDpiForWindow(shell_hwnd_)) {
@@ -600,14 +661,14 @@ PhiWindowController::Layout PhiWindowController::ComputeLayout() {
   // trailing "+" chip. The Mac's second destination (new profile) moved to the
   // Spaces menu.
   auto place_spaces = [&](int left, int right, int top) {
+    out.chip_size = kSpaceChipVertical;  // Only the vertical layouts call this.
+    const int pip = Scaled(out.chip_size);
     out.spaces_strip = {left, top, right, top + Scaled(kSpacesStripHeight)};
-    const int chip_top =
-        top + (Scaled(kSpacesStripHeight) - Scaled(kSpaceChip)) / 2;
+    const int chip_top = top + (Scaled(kSpacesStripHeight) - pip) / 2;
     out.chips_left = left + Scaled(kSpacesStripPad);
     out.chips_top = chip_top;
-    out.add_space = {right - Scaled(kSpacesStripPad) - Scaled(kSpaceChip),
-                     chip_top, right - Scaled(kSpacesStripPad),
-                     chip_top + Scaled(kSpaceChip)};
+    out.add_space = {right - Scaled(kSpacesStripPad) - pip, chip_top,
+                     right - Scaled(kSpacesStripPad), chip_top + pip};
     out.chips_limit = out.add_space.left - Scaled(kSpaceChipGap);
   };
 
@@ -1121,6 +1182,15 @@ PhiWindowController::~PhiWindowController() {
   }
   if (chip_icon_font_) {
     ::DeleteObject(chip_icon_font_);
+  }
+  if (pip_icon_font_) {
+    ::DeleteObject(pip_icon_font_);
+  }
+  if (pip_emoji_font_) {
+    ::DeleteObject(pip_emoji_font_);
+  }
+  if (pip_text_font_) {
+    ::DeleteObject(pip_text_font_);
   }
   if (small_font_) {
     ::DeleteObject(small_font_);
@@ -4219,7 +4289,7 @@ void PhiWindowController::RebuildChips() {
     if (layout.horizontal_tabs && space.id != active_space_) {
       continue;
     }
-    if (x + Scaled(kSpaceChip) > chips_limit) {
+    if (x + Scaled(layout.chip_size) > chips_limit) {
       // Row is full: the trailing slot becomes the Mac's "…" switcher.
       // The ACTIVE Space must stay visible (the Mac scrolls it into view):
       // evict the last shown pip for it when it fell past the break.
@@ -4245,17 +4315,17 @@ void PhiWindowController::RebuildChips() {
                      : L"Space " + base::UTF8ToWide(space.id);
     chip.icon = base::UTF8ToWide(space.icon_text);
     chip.open = HasSpace(space.id);
-    chip.bounds = {x, layout.chips_top, x + Scaled(kSpaceChip),
-                   layout.chips_top + Scaled(kSpaceChip)};
+    chip.bounds = {x, layout.chips_top, x + Scaled(layout.chip_size),
+                   layout.chips_top + Scaled(layout.chip_size)};
     chips_.push_back(std::move(chip));
-    x += Scaled(kSpaceChip + kSpaceChipGap);
+    x += Scaled(layout.chip_size + kSpaceChipGap);
   }
   // Live agent Spaces trail the user Spaces as robot pips (only in a real
   // user window — the agent's own hidden window never lists them). Clicking
   // one surfaces its window so the user can watch the agent work live.
   if (!agent_ && !layout.horizontal_tabs) {
     for (const PhiAgentPipView& pip : host_->AgentSpaces()) {
-      if (x + Scaled(kSpaceChip) > chips_limit) {
+      if (x + Scaled(layout.chip_size) > chips_limit) {
         chips_overflow_ = true;
         break;
       }
@@ -4267,10 +4337,10 @@ void PhiWindowController::RebuildChips() {
                        ? L"Agent"
                        : base::UTF8ToWide(pip.caption);
       chip.icon = L"\U0001F916";  // 🤖
-      chip.bounds = {x, layout.chips_top, x + Scaled(kSpaceChip),
-                     layout.chips_top + Scaled(kSpaceChip)};
+      chip.bounds = {x, layout.chips_top, x + Scaled(layout.chip_size),
+                     layout.chips_top + Scaled(layout.chip_size)};
       chips_.push_back(std::move(chip));
-      x += Scaled(kSpaceChip + kSpaceChipGap);
+      x += Scaled(layout.chip_size + kSpaceChipGap);
     }
   }
   if (creating_space_ && !layout.horizontal_tabs) {
@@ -7689,30 +7759,40 @@ void PhiWindowController::PaintChrome(HDC dc,
       FillRounded(dc, chip.bounds, palette.hover, Scaled(kCornerRadius));
     }
     ::SetTextColor(dc, active ? kLabel : kLabelDim);
+    // The vertical layouts' pip fills the strip band; its glyph grows with
+    // it, at the same proportion the 24pt pip gives its own.
+    const bool big_pip = layout.chip_size >= kSpaceChipVertical;
+    const int emoji_pt = big_pip ? kSpaceEmojiVertical : kSpaceEmoji;
+    const int art_pt = big_pip ? kSpaceArtVertical : kSpaceArt;
     // The glyph box is INSET from the pip: the colour pass repaints its
     // whole rect from a sampled corner pixel, and on a selected pip the
     // PIP's corner is ground tint — a full-rect clear would erase the pill.
+    // 4pt is as tight as the inset goes: the sample must land inside the
+    // pill's radius-8 corner arc.
     RECT glyph_rc = chip.bounds;
     ::InflateRect(&glyph_rc, -Scaled(4), -Scaled(4));
-    // Colour emoji ink rides LOW and LARGE in its line box; one size down
-    // and a 1px lift centre it against the MDL2 glyphs (the Mac applies its
-    // own emojiVerticalOffset for the same reason).
-    RECT emoji_rc = glyph_rc;
-    ::OffsetRect(&emoji_rc, 0, -Scaled(1));
+    // Colour emoji take the same box: the colour pass centres their INK in
+    // it, so the old hand-tuned lift (they ride low in their line box) is
+    // gone — it left the repainted patch sitting higher than the pip it
+    // belongs to.
     if (!chip.icon.empty() &&
-        PhiDrawCatalogArtwork(dc, glyph_rc, chip.icon, Scaled(13),
+        PhiDrawCatalogArtwork(dc, glyph_rc, chip.icon, Scaled(art_pt),
                               active ? kLabel : kLabelDim)) {
       // The Mac catalog's own artwork, tinted like the glyph would be.
     } else if (!chip.icon.empty() && !PhiIsPrivateGlyph(chip.icon) &&
-        PhiDrawColorText(dc, emoji_rc, chip.icon, Scaled(12),
+        PhiDrawColorText(dc, glyph_rc, chip.icon, Scaled(emoji_pt),
                          active ? kLabel : kLabelDim)) {
       // Emoji rendered in COLOUR via DirectWrite; GDI below is the fallback.
     } else if (!chip.icon.empty() &&
                (emoji_font_ || chip_icon_font_)) {
       // A private-use glyph is one of the Phi icon catalog's MDL2 stand-ins
-      // (same 13pt as the emoji, so the two align); everything else emoji.
+      // (one step above the emoji, so the two align); everything else emoji.
+      // Each face comes in both pip sizes; the small one stands in if the
+      // big one failed to build.
       HFONT icon_font =
-          PhiIsPrivateGlyph(chip.icon) ? chip_icon_font_ : emoji_font_;
+          PhiIsPrivateGlyph(chip.icon)
+              ? (big_pip && pip_icon_font_ ? pip_icon_font_ : chip_icon_font_)
+              : (big_pip && pip_emoji_font_ ? pip_emoji_font_ : emoji_font_);
       HGDIOBJ previous_icon_font =
           icon_font ? ::SelectObject(dc, icon_font) : nullptr;
       ::DrawTextW(dc, chip.icon.c_str(), -1, &glyph_rc,
@@ -7722,11 +7802,18 @@ void PhiWindowController::PaintChrome(HDC dc,
       }
     } else {
       // No icon: the name's first character stands in (the pip has no room
-      // for the name itself).
+      // for the name itself). It rides the UI font, so the big pip needs the
+      // strip's own text font to keep pace with its glyphs.
       const std::wstring initial =
           chip.label.empty() ? std::wstring(L"?") : chip.label.substr(0, 1);
+      HGDIOBJ previous_initial_font =
+          big_pip && pip_text_font_ ? ::SelectObject(dc, pip_text_font_)
+                                    : nullptr;
       ::DrawTextW(dc, initial.c_str(), -1, const_cast<RECT*>(&chip.bounds),
                   DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+      if (previous_initial_font) {
+        ::SelectObject(dc, previous_initial_font);
+      }
     }
   }
   if (creating_space_ &&
@@ -7791,8 +7878,15 @@ void PhiWindowController::PaintChrome(HDC dc,
         FillRounded(dc, layout.add_space,
                     BlendOver(palette.hover, ground, alpha), Scaled(6));
       }
+      HGDIOBJ previous_slot_font =
+          layout.chip_size >= kSpaceChipVertical && pip_text_font_
+              ? ::SelectObject(dc, pip_text_font_)
+              : nullptr;
       DrawGlyph(dc, layout.add_space, chips_overflow_ ? L"…" : L"+",
                 BlendOver(kLabelDim, ground, alpha));
+      if (previous_slot_font) {
+        ::SelectObject(dc, previous_slot_font);
+      }
     }
   }
 
@@ -8034,10 +8128,12 @@ void PhiWindowController::DrawHoverCard(HDC dc,
   RECT icon_rc = {pill.left + Scaled(8), mid_y - Scaled(7),
                   pill.left + Scaled(8) + Scaled(14), mid_y + Scaled(7)};
   if (!chip->icon.empty() &&
-      PhiDrawCatalogArtwork(dc, icon_rc, chip->icon, Scaled(13), accent)) {
+      PhiDrawCatalogArtwork(dc, icon_rc, chip->icon, Scaled(kSpaceArt),
+                            accent)) {
     // The Mac catalog's own artwork, tinted the capsule's accent.
   } else if (!chip->icon.empty() && !PhiIsPrivateGlyph(chip->icon) &&
-      PhiDrawColorText(dc, icon_rc, chip->icon, Scaled(12), accent)) {
+      PhiDrawColorText(dc, icon_rc, chip->icon, Scaled(kSpaceEmoji),
+                       accent)) {
     // Colour emoji via DirectWrite; the font paths below are the fallback.
   } else if (!chip->icon.empty() && (emoji_font_ || chip_icon_font_)) {
     HFONT icon_font =

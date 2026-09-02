@@ -627,6 +627,10 @@ class PhiWindowController {
     // the text below the Mac's 84pt minimum (they hide, as on Mac).
     RECT field_ext_strip{};
     RECT add_space{};      // The strip's trailing "+" chip.
+    // The pip's edge in points, the trailing slot's with it: the vertical
+    // layouts fill the strip band with it, comfortable keeps the Mac's
+    // compact caption pip.
+    int chip_size = 0;
     int chips_left = 0, chips_top = 0;
     int chips_limit = 0;  // Right edge chips may not cross.
     int tabs_left = 0, tabs_top = 0;
@@ -744,6 +748,13 @@ class PhiWindowController {
   UINT caption_font_dpi_ = 0;
   // MDL2 at the emoji size, for Space-pip catalog glyphs.
   HFONT chip_icon_font_ = nullptr;
+  // The same two faces at the vertical layouts' larger pip size. Built with
+  // the caption font, so `caption_font_dpi_` covers them.
+  HFONT pip_icon_font_ = nullptr;
+  HFONT pip_emoji_font_ = nullptr;
+  // The UI face at the strip's text size, for the big pip's initial-letter
+  // stand-in and the trailing slot's "+" / "…".
+  HFONT pip_text_font_ = nullptr;
   // 11pt labels — the bottom bar's Feedback/Chat capsules (the Mac's 11pt).
   HFONT small_font_ = nullptr;
   UINT dpi_ = 96;
