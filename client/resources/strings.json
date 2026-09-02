@@ -874,6 +874,17 @@
    "zh-Hans": "反馈",
    "zh-Hant": "意見回饋"
   },
+  "browser.newTabPage.incognitoLabel": {
+   "de": "Inkognito",
+   "en": "Incognito",
+   "es": "Incógnito",
+   "fr": "Navigation privée",
+   "ja": "シークレット",
+   "ko": "시크릿 모드",
+   "nl": "Incognito",
+   "zh-Hans": "无痕",
+   "zh-Hant": "無痕模式"
+  },
   "browser.tabGroupOverview.newTabCardTitle": {
    "de": "Neuer Tab\tCtrl+T",
    "en": "New Tab\tCtrl+T",
@@ -972,6 +983,17 @@
    "nl": "Symbool",
    "zh-Hans": "图标",
    "zh-Hant": "圖像"
+  },
+  "common.newTabPage.incognitoTitle": {
+   "de": "Neuer Inkognito-Tab",
+   "en": "New Incognito Tab",
+   "es": "Nueva pestaña de incógnito",
+   "fr": "Nouvel onglet de navigation privée",
+   "ja": "新しいシークレットタブ",
+   "ko": "새 시크릿 탭",
+   "nl": "Nieuw Incognito-tabblad",
+   "zh-Hans": "新无痕标签页",
+   "zh-Hant": "新無痕分頁"
   },
   "common.pinnedTabEditor.editTitle": {
    "de": "Angehefteten Tab bearbeiten",

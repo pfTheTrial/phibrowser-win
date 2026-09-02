@@ -771,8 +771,9 @@ void PhiSettingsWindow::BuildGeneral(int* y) {
 
   BeginSection(y, L"Browsing");
   {
-    // "New tab behavior": two picture cards (New Tab Page requires AI on
-    // Mac; there is no AI here yet, so it is drawn dim).
+    // "New tab behavior": two picture cards. New Tab Page opens the native
+    // new-tab page (phi_new_tab_page.cc, the Mac's NewTabViewController);
+    // Omnibox focuses the address field and the tab is born on commit.
     const RECT area = AddRow(y, L"New tab behavior", kImageCardBlock,
                              2 * kImageCardW + kImageCardGap);
     const struct {

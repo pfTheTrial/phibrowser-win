@@ -244,7 +244,74 @@ double CapsuleDistance(double px, double py, double w, double h) {
   return std::sqrt(dx * dx + dy * dy) - radius;
 }
 
+// Signed distance to a rounded rectangle's boundary (negative inside): the
+// distance to the inner core rectangle's nearest point, minus the corner
+// radius.
+double RoundRectDistance(double px, double py, double w, double h,
+                         double radius) {
+  radius = std::min(radius, std::min(w, h) / 2.0);
+  const double cx = std::min(std::max(px, radius), w - radius);
+  const double cy = std::min(std::max(py, radius), h - radius);
+  const double dx = px - cx;
+  const double dy = py - cy;
+  return std::sqrt(dx * dx + dy * dy) - radius;
+}
+
+// Software-renders `coverage(x, y)` (0..1) of `ink` into a premultiplied
+// buffer and blends it over the DC.
+template <typename Coverage>
+bool BlendCoverage(HDC dc, const RECT& rect, COLORREF ink,
+                   Coverage coverage) {
+  const int w = rect.right - rect.left;
+  const int h = rect.bottom - rect.top;
+  if (w <= 0 || h <= 0) {
+    return false;
+  }
+  std::vector<unsigned char> bgra(static_cast<size_t>(w) * h * 4);
+  const unsigned r = GetRValue(ink);
+  const unsigned g = GetGValue(ink);
+  const unsigned b = GetBValue(ink);
+  for (int y = 0; y < h; ++y) {
+    for (int x = 0; x < w; ++x) {
+      const double c = std::min(1.0, std::max(0.0, coverage(x + 0.5, y + 0.5)));
+      const unsigned a = static_cast<unsigned>(c * 255.0 + 0.5);
+      const size_t at = (static_cast<size_t>(y) * w + x) * 4;
+      bgra[at] = static_cast<unsigned char>(b * a / 255);
+      bgra[at + 1] = static_cast<unsigned char>(g * a / 255);
+      bgra[at + 2] = static_cast<unsigned char>(r * a / 255);
+      bgra[at + 3] = static_cast<unsigned char>(a);
+    }
+  }
+  return PhiBlendBgra(dc, rect, bgra.data(), w, h);
+}
+
 }  // namespace
+
+bool PhiFillRoundRectAA(HDC dc, const RECT& rect, int radius, COLORREF fill) {
+  const double w = rect.right - rect.left;
+  const double h = rect.bottom - rect.top;
+  return BlendCoverage(dc, rect, fill, [&](double px, double py) {
+    return 0.5 - RoundRectDistance(px, py, w, h, radius);
+  });
+}
+
+bool PhiStrokeRoundRectAA(HDC dc,
+                          const RECT& rect,
+                          int radius,
+                          COLORREF ink,
+                          int width) {
+  if (width <= 0) {
+    return false;
+  }
+  const double w = rect.right - rect.left;
+  const double h = rect.bottom - rect.top;
+  const double half = width / 2.0;
+  return BlendCoverage(dc, rect, ink, [&](double px, double py) {
+    // Band of `width` just inside the boundary, feathered half a pixel.
+    const double d = RoundRectDistance(px, py, w, h, radius) + half;
+    return half + 0.5 - std::abs(d);
+  });
+}
 
 bool PhiFillCapsuleAA(HDC dc, const RECT& rect, COLORREF fill) {
   const int w = rect.right - rect.left;

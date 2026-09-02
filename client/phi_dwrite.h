@@ -47,6 +47,16 @@ bool PhiBlendBgra(HDC dc,
 bool PhiFillCapsuleAA(HDC dc, const RECT& rect, COLORREF fill);
 bool PhiStrokeCapsuleAA(HDC dc, const RECT& rect, COLORREF ink, int width);
 
+// The same, for a rounded rectangle of corner `radius` (the Mac's
+// continuous-corner cards — the omnibox box, radius 14). A radius of half
+// the height is the capsule.
+bool PhiFillRoundRectAA(HDC dc, const RECT& rect, int radius, COLORREF fill);
+bool PhiStrokeRoundRectAA(HDC dc,
+                          const RECT& rect,
+                          int radius,
+                          COLORREF ink,
+                          int width);
+
 }  // namespace phi_client
 
 #endif  // PHIBROWSER_WIN_CLIENT_PHI_DWRITE_H_

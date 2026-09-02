@@ -45,6 +45,8 @@
 #include "phibrowser-win/client/phi_icons.h"
 #include "phibrowser-win/client/phi_mac_icons.h"
 #include "phibrowser-win/client/phi_menu_bar.h"
+#include "phibrowser-win/client/phi_i18n.h"
+#include "phibrowser-win/client/phi_new_tab_page.h"
 #include "phibrowser-win/client/phi_prompt.h"
 
 namespace phi_client {
@@ -1124,15 +1126,37 @@ void PhiWindowController::EnsureUrlField() {
   // The Mac's placeholder, shown by the EDIT itself while empty (and by the
   // capture path, which renders without children).
   ::SendMessageW(url_field_, EM_SETCUEBANNER, TRUE,
-                 reinterpret_cast<LPARAM>(L"Search or Enter URL"));
-  ::SetWindowLongPtrW(url_field_, GWLP_USERDATA,
-                      reinterpret_cast<LONG_PTR>(this));
-  WNDPROC previous = reinterpret_cast<WNDPROC>(::SetWindowLongPtrW(
-      url_field_, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&UrlFieldProc)));
-  if (!g_edit_base_proc) {
-    g_edit_base_proc = previous;
-  }
+                 reinterpret_cast<LPARAM>(
+                     PhiStr("addressBar.configuration.defaultPlaceholder")));
+  AttachOmniboxField(url_field_);
   PositionUrlField(ComputeLayout());
+}
+
+void PhiWindowController::AttachOmniboxField(HWND edit) {
+  if (!edit || !::IsWindow(edit)) {
+    return;
+  }
+  ::SetWindowLongPtrW(edit, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
+  WNDPROC previous = reinterpret_cast<WNDPROC>(::SetWindowLongPtrW(
+      edit, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&UrlFieldProc)));
+  if (!g_edit_base_proc) {
+    g_edit_base_proc = previous;  // The EDIT class proc — one for all fields.
+  }
+}
+
+HWND PhiWindowController::FocusedOmniboxField() const {
+  const HWND focus = ::GetFocus();
+  if (!focus) {
+    return nullptr;
+  }
+  if (url_field_ && focus == url_field_) {
+    return url_field_;
+  }
+  if (new_tab_page_ && new_tab_page_->field() &&
+      focus == new_tab_page_->field()) {
+    return new_tab_page_->field();
+  }
+  return nullptr;
 }
 
 void PhiWindowController::PositionUrlField(const Layout& layout) {
@@ -1186,13 +1210,17 @@ void PhiWindowController::SyncUrlField(bool force) {
 }
 
 void PhiWindowController::CommitUrlField() {
-  if (!url_field_ || !framework_) {
+  CommitOmniboxField(url_field_);
+}
+
+void PhiWindowController::CommitOmniboxField(HWND field) {
+  if (!field || !::IsWindow(field) || !framework_) {
     return;
   }
-  const int len = ::GetWindowTextLengthW(url_field_);
+  const int len = ::GetWindowTextLengthW(field);
   std::vector<wchar_t> buffer(static_cast<size_t>(len) + 1, L'\0');
   if (len > 0) {
-    ::GetWindowTextW(url_field_, buffer.data(), len + 1);
+    ::GetWindowTextW(field, buffer.data(), len + 1);
   }
   std::wstring typed(buffer.data());
   const size_t first = typed.find_first_not_of(L" \t");
@@ -1201,6 +1229,13 @@ void PhiWindowController::CommitUrlField() {
                                         : typed.substr(first, last - first + 1);
   if (typed.empty()) {
     return;
+  }
+  if (new_tab_page_ && new_tab_page_->visible()) {
+    // omniBoxDidClear: the native page blanks its controls now, so nothing
+    // of the new-tab page lingers over the arriving one; the rebuild that
+    // sees the new URL unmounts it.
+    ntp_commit_tab_id_ = active_tab_id_;
+    new_tab_page_->HideControls();
   }
   // The framework resolves what was typed the way the omnibox would — a bare
   // host becomes a URL, free text becomes a search.
@@ -1306,17 +1341,17 @@ void PhiWindowController::StartNewTab() {
   }
 }
 
-void PhiWindowController::OnUrlFieldChanged() {
+void PhiWindowController::OnOmniboxFieldChanged(HWND field) {
   // EN_CHANGE while the user types: run/refresh the autocomplete query.
   // Programmatic sets (SyncUrlField, arrowing onto a row) are suppressed.
-  if (url_field_programmatic_ || !url_field_ || !framework_ ||
-      ::GetFocus() != url_field_) {
+  if (url_field_programmatic_ || !field || !framework_ ||
+      ::GetFocus() != field) {
     return;
   }
-  const int len = ::GetWindowTextLengthW(url_field_);
+  const int len = ::GetWindowTextLengthW(field);
   std::vector<wchar_t> buffer(static_cast<size_t>(len) + 1, L'\0');
   if (len > 0) {
-    ::GetWindowTextW(url_field_, buffer.data(), len + 1);
+    ::GetWindowTextW(field, buffer.data(), len + 1);
   }
   const std::wstring typed(buffer.data());
   if (typed.empty()) {
@@ -1330,8 +1365,7 @@ void PhiWindowController::OnUrlFieldChanged() {
 void PhiWindowController::OnOmniboxResults(int64_t browser_id,
                                            const std::string& json) {
   const int64_t effective = active_browser_ ? active_browser_ : window_id_;
-  if (browser_id != effective || !url_field_ ||
-      ::GetFocus() != url_field_) {
+  if (browser_id != effective || !FocusedOmniboxField()) {
     return;  // A stale query, or the user is no longer typing.
   }
   std::optional<base::DictValue> root =
@@ -1374,7 +1408,8 @@ void PhiWindowController::OnOmniboxResults(int64_t browser_id,
 }
 
 void PhiWindowController::ShowOmniboxPopup() {
-  if (!shell_hwnd_ || !url_field_) {
+  const HWND field = FocusedOmniboxField();
+  if (!shell_hwnd_ || !field) {
     return;
   }
   EnsureOmniboxPopupClass();
@@ -1387,16 +1422,26 @@ void PhiWindowController::ShowOmniboxPopup() {
   if (!omnibox_popup_) {
     return;
   }
-  RECT field = {};
-  ::GetWindowRect(url_field_, &field);
-  const int width =
-      std::max<int>(field.right - field.left + Scaled(16), Scaled(320));
   const int height =
       static_cast<int>(omnibox_rows_.size()) * Scaled(kOmniboxRowHeight) +
       Scaled(12);
-  ::SetWindowPos(omnibox_popup_, HWND_TOP, field.left - Scaled(8),
-                 field.bottom + Scaled(6), width, height,
-                 SWP_NOACTIVATE | SWP_SHOWWINDOW);
+  RECT anchor = {};
+  int left = 0;
+  int width = 0;
+  if (new_tab_page_ && field == new_tab_page_->field()) {
+    // Flush under the new-tab page's box and exactly as wide — the Mac's
+    // suggestion list grows out of the box itself.
+    anchor = new_tab_page_->BoxScreenRect();
+    left = anchor.left;
+    width = anchor.right - anchor.left;
+  } else {
+    ::GetWindowRect(field, &anchor);
+    left = anchor.left - Scaled(8);
+    width = std::max<int>(anchor.right - anchor.left + Scaled(16),
+                          Scaled(320));
+  }
+  ::SetWindowPos(omnibox_popup_, HWND_TOP, left, anchor.bottom + Scaled(6),
+                 width, height, SWP_NOACTIVATE | SWP_SHOWWINDOW);
   ::InvalidateRect(omnibox_popup_, nullptr, TRUE);
 }
 
@@ -1427,16 +1472,16 @@ void PhiWindowController::MoveOmniboxSelection(int delta) {
     next = -1;  // Down past the last row returns to the field's own text.
   }
   omnibox_selected_ = next;
-  if (omnibox_selected_ >= 0 && url_field_) {
+  const HWND field = FocusedOmniboxField();
+  if (omnibox_selected_ >= 0 && field) {
     const OmniboxRow& row =
         omnibox_rows_[static_cast<size_t>(omnibox_selected_)];
     if (!row.fill.empty()) {
       // The row's fillIntoEdit lands in the field, caret at the end — the
       // omnibox arrow behavior.
       url_field_programmatic_ = true;
-      ::SetWindowTextW(url_field_, row.fill.c_str());
-      ::SendMessageW(url_field_, EM_SETSEL, row.fill.size(),
-                     row.fill.size());
+      ::SetWindowTextW(field, row.fill.c_str());
+      ::SendMessageW(field, EM_SETSEL, row.fill.size(), row.fill.size());
       url_field_programmatic_ = false;
     }
   }
@@ -1584,7 +1629,7 @@ LRESULT CALLBACK PhiWindowController::UrlFieldProc(HWND hwnd,
             // stop_query=false: the omnibox-new-tab pending flag must
             // survive into the commit (the query dies with focus anyway).
             self->CloseOmniboxPopup(/*stop_query=*/false);
-            self->CommitUrlField();
+            self->CommitOmniboxField(hwnd);
           }
         }
         return 0;
@@ -1595,6 +1640,12 @@ LRESULT CALLBACK PhiWindowController::UrlFieldProc(HWND hwnd,
               ::IsWindowVisible(self->omnibox_popup_)) {
             // First Escape closes the list; the second reverts the field.
             self->CloseOmniboxPopup(/*stop_query=*/true);
+            return 0;
+          }
+          if (hwnd != self->url_field_) {
+            // The new-tab page's omnibox has no URL to revert to: Escape
+            // clears what was typed and keeps the caret.
+            ::SetWindowTextW(hwnd, L"");
             return 0;
           }
           self->SyncUrlField(/*force=*/true);
@@ -1623,15 +1674,16 @@ LRESULT CALLBACK PhiWindowController::UrlFieldProc(HWND hwnd,
       break;
     case WM_MOUSEMOVE:
       // The capsule's hover brighten while the cursor rides the EDIT (the
-      // child swallows the shell's mouse moves over the text area).
-      if (self && !self->url_field_hover_) {
+      // child swallows the shell's mouse moves over the text area). The
+      // new-tab page's field has no capsule.
+      if (self && hwnd == self->url_field_ && !self->url_field_hover_) {
         self->SetUrlFieldHover(true);
         TRACKMOUSEEVENT track = {sizeof(track), TME_LEAVE, hwnd, 0};
         ::TrackMouseEvent(&track);
       }
       break;
     case WM_MOUSELEAVE:
-      if (self) {
+      if (self && hwnd == self->url_field_) {
         self->SetUrlFieldHover(false);
       }
       break;
@@ -1986,6 +2038,9 @@ void PhiWindowController::ToggleDownloadsPopover() {
 void PhiWindowController::LayoutContents() {
   if (bookmark_manager_ && bookmark_manager_->visible()) {
     bookmark_manager_->Reposition();
+  }
+  if (new_tab_page_ && new_tab_page_->visible()) {
+    new_tab_page_->Reposition();
   }
   if (!shell_hwnd_) {
     return;
@@ -3033,6 +3088,93 @@ void PhiWindowController::SyncBookmarkManager() {
   }
 }
 
+// The native new-tab page (phi_new_tab_page.cc) mounts by the same rule:
+// the ACTIVE tab sits on a new-tab URL — or the browser has no tabs at all
+// (placeholder mode), where the page's omnibox is the way back in. Agent
+// windows keep Chromium's web NTP: the agent drives it over CDP and no one
+// looks at a native one there.
+bool PhiWindowController::WantsNativeNtp() const {
+  if (agent_ || content_fullscreen_) {
+    return false;
+  }
+  const int64_t browser = active_browser_ ? active_browser_ : window_id_;
+  if (placeholder_browsers_.count(browser)) {
+    return true;
+  }
+  return PhiNewTabPage::IsNewTabUrl(active_tab_url_);
+}
+
+void PhiWindowController::SyncNativeNtp() {
+  if (swap_reveal_) {
+    // A Space switch is mid-slide: the page arrives (or leaves) with the
+    // content, when RevealSwappedContent re-runs this — the Mac reveals the
+    // target Space's content, native page included, on completion.
+    return;
+  }
+  if (!WantsNativeNtp()) {
+    if (new_tab_page_ && new_tab_page_->visible()) {
+      const HWND focus = ::GetFocus();
+      const bool had_focus =
+          focus && (focus == new_tab_page_->hwnd() ||
+                    focus == new_tab_page_->field());
+      new_tab_page_->Hide();
+      if (had_focus) {
+        FocusActiveBrowser();  // Never leave the keyboard on a hidden field.
+      }
+    }
+    return;
+  }
+  if (!new_tab_page_) {
+    new_tab_page_ = std::make_unique<PhiNewTabPage>(this);
+  }
+  if (new_tab_page_->visible()) {
+    // Controls blanked by a commit come back once that navigation is no
+    // longer the active tab's business: another tab is active, or the load
+    // ended and this tab is still a new tab (a new-tab URL typed in, a
+    // navigation that never left).
+    if (new_tab_page_->controls_hidden() &&
+        (active_tab_id_ != ntp_commit_tab_id_ || !nav_loading_)) {
+      new_tab_page_->Reset();
+      FocusNativeNtpIfIdle();
+    } else {
+      new_tab_page_->Refresh();  // A palette ramp repaints it with the chrome.
+    }
+    return;
+  }
+  new_tab_page_->Show();
+  if (shell_hwnd_) {
+    // The corner caps go back on top of the page, as they ride the browser.
+    ::PostMessageW(shell_hwnd_, WM_PHI_RAISE_CAPS, 0, 0);
+    // viewDidAppear focuses the omnibox — in the window the user is in; a
+    // background window mounting its page must not pull the focus over.
+    if (::GetForegroundWindow() == shell_hwnd_) {
+      new_tab_page_->FocusField();
+    }
+  }
+}
+
+void PhiWindowController::FocusNativeNtpIfIdle() {
+  if (!new_tab_page_ || !shell_hwnd_ ||
+      ::GetForegroundWindow() != shell_hwnd_) {
+    return;
+  }
+  const HWND focus = ::GetFocus();
+  if (focus && focus != shell_hwnd_ && focus != browser_hwnd_ &&
+      focus != new_tab_page_->hwnd() && focus != new_tab_page_->field()) {
+    return;  // The user is in another control (the address field, a panel).
+  }
+  new_tab_page_->FocusField();
+}
+
+void PhiWindowController::ResetNativeNtp() {
+  if (new_tab_page_ && new_tab_page_->visible()) {
+    new_tab_page_->Reset();
+    FocusNativeNtpIfIdle();
+    return;
+  }
+  SyncNativeNtp();
+}
+
 void PhiWindowController::NoteTabDistillable(int tab_id, bool distillable) {
   const bool changed = distillable ? distillable_tabs_.insert(tab_id).second
                                    : distillable_tabs_.erase(tab_id) > 0;
@@ -3407,6 +3549,12 @@ void PhiWindowController::AttachSpaceBrowser(const std::string& space_id,
 }
 
 void PhiWindowController::FocusActiveBrowser() {
+  if (new_tab_page_ && new_tab_page_->WantsFocus()) {
+    // The native new-tab page owns the keyboard while it is up: its omnibox
+    // IS the page (the Mac focuses it in viewDidAppear).
+    new_tab_page_->FocusField();
+    return;
+  }
   // Showing a different browser child is not enough: as a WS_CHILD it never
   // gets WM_ACTIVATE, so without this the keyboard still goes to the browser
   // that was visible before the Space switch (input appears dead until the
@@ -3553,6 +3701,7 @@ void PhiWindowController::RevealSwappedContent() {
   swap_reveal_ = nullptr;
   swap_conceal_ = nullptr;
   if (had_reveal) {
+    SyncNativeNtp();  // Deferred past the slide, like the content itself.
     FocusActiveBrowser();
   }
 }
@@ -4188,6 +4337,10 @@ void PhiWindowController::RebuildTabs() {
   tabs_.clear();
   group_headers_.clear();
   rows_dirty_ = false;
+  // Re-captured from the active row below; empty when the strip is
+  // (placeholder mode), so no stale URL keeps a native page mounted.
+  active_tab_url_.clear();
+  active_tab_id_ = 0;
   if (!framework_) {
     return;
   }
@@ -4228,12 +4381,19 @@ void PhiWindowController::RebuildTabs() {
         label = "Bookmarks";
       }
       row.title = base::UTF8ToWide(label);
+      if (incognito_ && url && PhiNewTabPage::IsNewTabUrl(*url)) {
+        // The Mac's incognito new-tab title (Tab.incognitoNewTabTitle) in
+        // place of Chromium's plain "New Tab".
+        row.title = PhiStr("common.newTabPage.incognitoTitle");
+      }
       row.url = url ? base::UTF8ToWide(*url) : std::wstring();
       row.internal_page = url && url->rfind("chrome://", 0) == 0;
       row.unloaded = d.FindBool("unloaded").value_or(false);
       if (row.active) {
-        // The bookmark bar's "show on new tab" reads this.
+        // The bookmark bar's "show on new tab" and the native new-tab page
+        // read these.
         active_tab_url_ = url ? *url : std::string();
+        active_tab_id_ = row.id;
       }
       int fw = 0, fh = 0;
       const unsigned char* pixels =
@@ -4318,12 +4478,23 @@ void PhiWindowController::RebuildTabs() {
     rows.erase(rows.begin() + i + 1);
   }
 
-  // The bookmark route can only be entered or left by a rebuild; mounting
-  // the page here would run inside WM_PAINT, so post and do it after.
+  // The native-page routes (bookmark manager, new-tab page) can only be
+  // entered or left by a rebuild; mounting a page here would run inside
+  // WM_PAINT, so post and do it after.
   if (shell_hwnd_) {
     const bool mounted = bookmark_manager_ && bookmark_manager_->visible();
-    if (mounted != WantsBookmarkPage()) {
-      ::PostMessageW(shell_hwnd_, kMsgPhiSyncBookmarkPage, 0, 0);
+    const bool ntp_mounted = new_tab_page_ && new_tab_page_->visible();
+    // A page blanked by a commit whose navigation is over (or belongs to
+    // another tab now) needs the sync too, to bring its controls back.
+    const bool ntp_stale =
+        ntp_mounted && new_tab_page_->controls_hidden() &&
+        (active_tab_id_ != ntp_commit_tab_id_ || !nav_loading_);
+    if (ntp_mounted) {
+      new_tab_page_->Refresh();  // Palette ramps repaint it with the chrome.
+    }
+    if (mounted != WantsBookmarkPage() || ntp_mounted != WantsNativeNtp() ||
+        ntp_stale) {
+      ::PostMessageW(shell_hwnd_, kMsgPhiSyncNativePages, 0, 0);
     }
   }
 
@@ -8163,7 +8334,10 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
       // While the group overview covers the content, IT owns clicks there —
       // redirecting focus to the (hidden-under) browser child would close
       // the overview before its own WM_LBUTTONDOWN ever arrived.
+      // Likewise while the native new-tab page covers the content: its own
+      // window takes the click and decides where focus goes.
       if (!in_chrome && self && !PhiGroupOverview::IsOpen() &&
+          !(self->new_tab_page_ && self->new_tab_page_->visible()) &&
           self->browser_hwnd_ && ::IsWindow(self->browser_hwnd_)) {
         ::SetFocus(self->browser_hwnd_);
         if (self->framework_) {
@@ -8188,6 +8362,11 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
       if (self && self->browser_hwnd_ && ::IsWindow(self->browser_hwnd_) &&
           ::GetFocus() != self->url_field_ &&
           !(msg == WM_ACTIVATE && LOWORD(wparam) == WA_INACTIVE)) {
+        if (self->new_tab_page_ && self->new_tab_page_->WantsFocus()) {
+          // The native new-tab page is up: its omnibox is the focus.
+          self->new_tab_page_->FocusField();
+          return 0;
+        }
         ::SetFocus(self->browser_hwnd_);
         if (self->framework_) {
           self->framework_->FocusBrowserWindow(self->window_id_);
@@ -8421,9 +8600,10 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
         self->ClearHover();
       }
       break;
-    case kMsgPhiSyncBookmarkPage:
+    case kMsgPhiSyncNativePages:
       if (self) {
         self->SyncBookmarkManager();
+        self->SyncNativeNtp();
       }
       return 0;
     case kMsgPhiToggleMenuReveal:
@@ -8445,6 +8625,11 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
       return 0;
     case WM_PHI_RAISE_CAPS:
       if (self) {
+        if (self->new_tab_page_ && self->new_tab_page_->visible()) {
+          // Above the browser child; the bubble and caps go above it next.
+          ::SetWindowPos(self->new_tab_page_->hwnd(), HWND_TOP, 0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        }
         if (self->status_bubble_ && ::IsWindow(self->status_bubble_) &&
             ::IsWindowVisible(self->status_bubble_)) {
           ::SetWindowPos(self->status_bubble_, HWND_TOP, 0, 0, 0, 0,
@@ -8476,7 +8661,8 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
       if (self && self->url_field_ &&
           lparam == reinterpret_cast<LPARAM>(self->url_field_) &&
           HIWORD(wparam) == EN_CHANGE) {
-        self->OnUrlFieldChanged();  // The user typed: autocomplete runs.
+        // The user typed: autocomplete runs.
+        self->OnOmniboxFieldChanged(self->url_field_);
         return 0;
       }
       break;

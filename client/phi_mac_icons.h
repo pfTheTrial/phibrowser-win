@@ -26,6 +26,13 @@ const PhiMacIcon& PhiMemoryIcon();
 const PhiMacIcon& PhiChatIcon();
 const PhiMacIcon& PhiFeedbackIcon();
 
+// The native new-tab page's artwork (native-NTP-icon / native-NTP-incognito
+// imagesets), 192px masks generated into phi_ntp_art.cc by
+// tools/gen-ntp-art.py. The Mac shows them at 64pt in black (light) or
+// #F8F8F8 (dark); the page tints them the same way.
+const PhiMacIcon& PhiNativeNtpLogo();
+const PhiMacIcon& PhiNativeNtpIncognito();
+
 // `icon` tinted `color` as premultiplied BGRA at `out_size` pixels square
 // (area-averaged from the 48px mask), ready for PhiBlendBgra — the Mac's
 // template rendering. Pass out_size <= 0 to keep the mask's own size.

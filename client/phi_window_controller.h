@@ -79,6 +79,7 @@ struct PhiAgentPipView {
 // that has no browser yet must create one in that Space's profile).
 class PhiTabPreview;
 class PhiBookmarkManager;
+class PhiNewTabPage;
 
 class PhiSlotHost {
  public:
@@ -287,10 +288,11 @@ enum : UINT {
   kMsgPhiSwitcherNext = WM_APP + 20,
   kMsgPhiSwitcherPrev,
   kMsgPhiSwitcherCommit,
-  // Posted when a rebuild notices the active tab crossing into or out of the
-  // bookmark route: mounting a child window inside WM_PAINT is not safe, and
-  // the rebuild usually happens there.
-  kMsgPhiSyncBookmarkPage,
+  // Posted when a rebuild notices the active tab crossing into or out of a
+  // NATIVE-PAGE route (the bookmark manager, the new-tab page): mounting a
+  // child window inside WM_PAINT is not safe, and the rebuild usually
+  // happens there.
+  kMsgPhiSyncNativePages,
   // Alt pressed and released on its own: summon the caption band's hidden
   // menu titles (and hide them again on a second Alt), the keyboard route
   // to the bar the pointer reveals by hovering.
@@ -444,6 +446,16 @@ class PhiWindowController {
   void RequestClose();
   // Gives the currently shown browser Win32 focus and Chromium activation.
   void FocusActiveBrowser();
+  // --- Native new-tab page (phi_new_tab_page.cc) ---------------------------
+  // The page's omnibox joins this window's ONE omnibox session: `edit` gets
+  // the address field's subclass (Enter / Escape / arrows, the suggestion
+  // dropdown) and reports its EN_CHANGE through OnOmniboxFieldChanged.
+  void AttachOmniboxField(HWND edit);
+  void OnOmniboxFieldChanged(HWND field);
+  // A Space URL rule re-homed a navigation that began on this window's new
+  // tab (the framework's OnRefreshNewTab): the native page returns to its
+  // clean state, as the Mac's resetToInitialState does.
+  void ResetNativeNtp();
 
   // The shell window's menu bar (null before the shell exists). The control
   // socket reads and clicks it through here.
@@ -637,8 +649,14 @@ class PhiWindowController {
   // Pushes the current page's URL into the field. Skipped while the user is
   // typing unless `force` (the Escape-reverts path).
   void SyncUrlField(bool force);
-  // Navigates to whatever is typed, then hands focus back to the page.
-  void CommitUrlField();
+  // Navigates to whatever is typed in `field` — the address field or the
+  // native new-tab page's omnibox — then hands focus back to the page.
+  void CommitOmniboxField(HWND field);
+  void CommitUrlField();  // CommitOmniboxField(url_field_).
+  // The omnibox field holding keyboard focus (the address field or the
+  // new-tab page's), or null: the session's query, dropdown and arrow fills
+  // all act on this one.
+  HWND FocusedOmniboxField() const;
   // Draws a favicon's BGRA pixels into `dest`, composited over `background`.
   // GDI has no alpha blit without msimg32 (AlphaBlend), and we always know what
   // is behind the icon, so the blend is done in software and the result blitted
@@ -880,6 +898,14 @@ class PhiWindowController {
   std::unique_ptr<PhiBookmarkManager> bookmark_manager_;
   void SyncBookmarkManager();
   bool WantsBookmarkPage() const;
+  // The native new-tab page, mounted over the content card while the active
+  // tab sits on a new-tab URL (or the browser is in placeholder mode) — the
+  // Mac's NewTabViewController, URL-driven like the bookmark manager.
+  std::unique_ptr<PhiNewTabPage> new_tab_page_;
+  void SyncNativeNtp();
+  bool WantsNativeNtp() const;
+  // Focuses the page's omnibox unless the user is busy in another control.
+  void FocusNativeNtpIfIdle();
   void UpdateTabPreview();  // Re-aims the card at the hovered row.
   bool ActiveTabDistillable() const;
   // Paints a bookmark folder's chosen catalog symbol into its icon slot.
@@ -962,6 +988,10 @@ class PhiWindowController {
   // The active tab's URL (captured by RebuildTabs) — "show on new tab"
   // needs to know whether the page IS the new-tab page.
   std::string active_tab_url_;
+  int active_tab_id_ = 0;  // Its session id; 0 with no active tab.
+  // The tab whose native new-tab page blanked on an omnibox commit; the
+  // controls return once another tab is active or that load has ended.
+  int ntp_commit_tab_id_ = 0;
   // Counted before the layout is derived, because the bands they occupy push
   // everything below them down.
   int pinned_row_count_ = 0;
@@ -1121,7 +1151,6 @@ class PhiWindowController {
   LONG_PTR pre_fullscreen_style_ = 0;
   // Tab ids of the ACTIVE browser, most-recently-used first.
   std::vector<int> tab_mru_;
-  void OnUrlFieldChanged();  // EN_CHANGE: start/refresh/stop the query.
   void ShowOmniboxPopup();   // Creates/positions the popup under the field.
   void CloseOmniboxPopup(bool stop_query);
   void MoveOmniboxSelection(int delta);

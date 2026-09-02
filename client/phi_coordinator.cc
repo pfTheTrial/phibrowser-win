@@ -6482,6 +6482,19 @@ void PhiCoordinator::OnPlaceholderModeChanged(int64_t window_id,
   }
 }
 
+void PhiCoordinator::OnRefreshNewTab(int64_t window_id) {
+  // A Space URL rule re-homed a navigation that began on this window's new
+  // tab: the tab is a new tab again, so its native page goes back to its
+  // clean state (the Mac's resetToInitialState).
+  auto slot_it = browser_to_slot_.find(window_id);
+  const int64_t slot = slot_it != browser_to_slot_.end() ? slot_it->second
+                                                         : window_id;
+  auto it = windows_.find(slot);
+  if (it != windows_.end()) {
+    it->second->ResetNativeNtp();
+  }
+}
+
 void PhiCoordinator::OnTabsChanged(int64_t window_id) {
   auto kiosk = kiosks_.find(window_id);
   if (kiosk != kiosks_.end()) {

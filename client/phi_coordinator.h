@@ -75,6 +75,7 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   void OnOmniboxResults(int64_t window_id, const char* json) override;
   void OnImportCompleted(const char* source, bool success) override;
   void OnPlaceholderModeChanged(int64_t window_id, bool entered) override;
+  void OnRefreshNewTab(int64_t window_id) override;
   void OnContentFullscreenChanged(int64_t window_id, bool fullscreen) override;
   void OnExtensionsChanged(int64_t window_id) override;
   void OnProfileCreated(const char* profile_id) override;

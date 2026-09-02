@@ -500,6 +500,10 @@
    "comment": "sidebar — used at phi_window_controller.cc:7312",
    "en": "Feedback"
   },
+  "browser.newTabPage.incognitoLabel": {
+   "comment": "newTabPage — used at phi_new_tab_page.cc",
+   "en": "Incognito"
+  },
   "browser.tabGroupOverview.newTabCardTitle": {
    "comment": "menuBar — used at phi_menu_bar.cc:295",
    "en": "New Tab\tCtrl+T"
@@ -535,6 +539,10 @@
   "common.iconPicker.iconTabTitle": {
    "comment": "settings — used at phi_settings_window.cc:1045",
    "en": "Icon"
+  },
+  "common.newTabPage.incognitoTitle": {
+   "comment": "sidebar — used at phi_window_controller.cc (incognito new-tab row title)",
+   "en": "New Incognito Tab"
   },
   "common.pinnedTabEditor.editTitle": {
    "comment": "sidebar — used at phi_window_controller.cc:5959",
