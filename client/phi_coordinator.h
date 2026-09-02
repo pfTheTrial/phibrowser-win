@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "base/memory/raw_ptr_exclusion.h"
+#include "base/synchronization/lock.h"
 #include "chrome/browser/phinomenon/phi_framework/phi_framework_api.h"
 #include "phibrowser-win/client/phi_agent_spaces.h"
 #include "phibrowser-win/client/phi_control_server.h"
@@ -77,6 +78,7 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   void OnContentFullscreenChanged(int64_t window_id, bool fullscreen) override;
   void OnExtensionsChanged(int64_t window_id) override;
   void OnProfileCreated(const char* profile_id) override;
+  void OnReaderArticleExtracted(int request_id, const char* json) override;
   void OnAgentDroveUserSpaceTab(int64_t tab_id,
                                 int64_t window_id,
                                 int64_t session_id) override;
@@ -122,6 +124,7 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   bool AccountSigningIn() const override;
   void RequestSignIn() override;
   void RequestSignOut() override;
+  void RequestDefaultBrowser() override;
   PhiLayoutMode LayoutMode() const override;
   void RequestLayoutMode(PhiLayoutMode mode) override;
   const PhiPalette& Palette() const override;
@@ -162,6 +165,9 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
                                 const std::string& parent_guid,
                                 const std::string& title) override;
   void RemoveStoredRow(const std::string& guid) override;
+  bool MoveStoredRowToSpace(const std::string& guid,
+                            const std::string& space_id,
+                            bool clone) override;
   bool SetStoredRowIcon(const std::string& guid,
                         const std::string& icon) override;
   bool SetStoredRowUrl(const std::string& guid,
@@ -198,6 +204,8 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   void RequestReclaimTab(int tab_id) override;
   void RequestReleaseTab(int tab_id) override;
   void SetShowTabPreviews(bool enabled) override;
+  std::string LanguagePreference() const override;
+  void SetLanguagePreference(const std::string& tag) override;
   bool RestoreLastSession() const override;
   void SetRestoreLastSession(bool enabled) override;
   void FocusWindowForBrowser(int64_t browser_window_id) override;
@@ -223,6 +231,15 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   bool RenameSpace(const std::string& space_id,
                    const std::string& name) override;
   bool DeleteSpace(const std::string& space_id) override;
+  // The Space holding the DEFAULT role (the Mac's currentDefaultSpaceId):
+  // the landing target for retreats and windows opened without a Space, the
+  // pre-selected bookmark target, the badge in Settings. Starts on "1" and,
+  // when its holder is deleted, is handed to the first remaining Space —
+  // persisted with the Space list so the hand-off survives relaunches.
+  std::string DefaultSpaceId() const override;
+  // Everything is deletable except the LAST remaining Space: retreat targets
+  // and new-window fallbacks need one persisted Space to land on.
+  bool CanDeleteSpace(const std::string& space_id) const override;
   bool DeleteProfileById(const std::string& profile_id) override;
   bool RenameProfileById(const std::string& profile_id,
                          const std::string& name) override;
@@ -322,6 +339,16 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // bar's shortcuts (Ctrl+T, Ctrl+W, ...) into WM_COMMAND on the focused
   // shell — keys normally land in the browser child, never in our chrome.
   HHOOK keyboard_hook_ = nullptr;
+  // Thread-scoped mouse hook: a click anywhere in a shell OUTSIDE its open
+  // Peek card dismisses the card (the Mac's click-outside monitor). Clicks
+  // reach the browser child's own HWNDs, never the shell, so a hook is the
+  // only place that sees them first.
+  HHOOK mouse_hook_ = nullptr;
+  static LRESULT CALLBACK MouseHookProc(int code, WPARAM wparam, LPARAM lparam);
+  // Dismisses the Peek card(s) floating over `shell`, skipping any whose
+  // card contains `inside` (a click landing in the card itself). Returns
+  // true when one was dismissed.
+  bool DismissPeeksForShell(HWND shell, HWND inside);
   // Alt is down with nothing pressed since — a bare tap summons the caption
   // band's hidden menu titles on release. Cleared by any other key-down, so
   // Alt+Tab and the Alt+arrow history chords never trip it.
@@ -378,6 +405,8 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   };
   std::vector<Space> spaces_{{"1", "Space 1", "Default", kPhiDefaultSpaceIcon}};
   int next_space_id_ = 2;
+  // The default role's holder (see DefaultSpaceId); validated on load.
+  std::string default_space_id_ = "1";
   // Where the Space list is persisted (user data dir).
   std::wstring spaces_path_;
   // A Space URL routing rule, the Mac's SpaceURLRule. `host` is stored in
@@ -488,6 +517,29 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // the happens-before for `created_profile_id_`.
   HANDLE profile_create_done_ = nullptr;
   std::string created_profile_id_;
+
+  // --- Deferred control replies -------------------------------------------
+  // A verb whose answer arrives asynchronously (reader extraction) returns
+  // {"pendingReply":<id>} from the UI thread; HandleControlCommand (the pipe
+  // I/O thread) then waits on the id's event and returns the JSON the UI
+  // thread stored for it — the profiles.create pattern, generalised. The
+  // map is the only coordinator state touched from two threads.
+  struct PendingReply {
+    HANDLE event = nullptr;  // Manual-reset; owned by the I/O waiter.
+    std::string json;
+    bool document = false;      // readerDocument (else readerArticle)
+    bool include_html = true;   // readerArticle {includeHTML}
+  };
+  base::Lock pending_replies_lock_;
+  std::map<int, PendingReply> pending_replies_;
+  int next_pending_reply_ = 1;
+  // UI thread: registers a slot and returns its id.
+  int RegisterPendingReply(bool document, bool include_html);
+  // UI thread: stores the answer and wakes the waiter (no-op if it gave up).
+  void CompletePendingReply(int id, std::string json);
+  // I/O thread: waits up to `timeout_ms` and returns the stored JSON (or a
+  // timeout error), releasing the slot either way.
+  std::string WaitPendingReply(int id, DWORD timeout_ms);
   volatile bool profile_create_pending_ = false;
   // The bookmark bar's two visibility switches (the Mac View menu's pair).
   bool always_show_bookmark_bar_ = false;
@@ -500,6 +552,12 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   std::wstring prefs_path_;
   void LoadPrefs();
   void SavePrefs() const;
+  // Hands the display language to the framework, which owns Chromium's own
+  // locale (context menus, error pages, Accept-Language). The client catalog
+  // and Chromium keep separate copies of the choice, so this runs both when
+  // it changes and once at startup, where it reconciles a preference file
+  // that was edited while the browser was not running.
+  void PushDisplayLanguageToChromium();
   // Pinned tabs and bookmarks, the Mac's LocalStore equivalent.
   PhiTabStore tab_store_;
   // The (profile, space) a slot's pinned/bookmark rows belong to.
@@ -539,6 +597,34 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // (rather than a normal visible slot) and records its id here.
   std::string pending_agent_task_;
   int64_t last_agent_window_id_ = 0;
+
+  // --- Shadow windows (the skill's invisible background windows) ----------
+  // A shadow window is an agent-style off-screen window WITHOUT a presence:
+  // no pip, no watch, no transcript, no ownership — the Mac's
+  // AgentSpaceManager+Shadow registry, keyed by the skill's taskId. Kept out
+  // of agent_spaces_ so nothing that draws or surfaces agent Spaces sees it;
+  // the window itself is adopted exactly like an agent Space's (hidden
+  // controller, parked off-screen, composited for CDP).
+  struct ShadowWindow {
+    std::string task_id;
+    int64_t window_id = 0;  // == Browser::session_id().id() == CDP windowId
+    std::string profile_id;
+    bool incognito = false;
+    int64_t created_ms = 0;              // epoch ms (the list's createdAt)
+    uint64_t keepalive_deadline_ms = 0;  // GetTickCount64 ms; swept when past
+  };
+  std::map<std::string, ShadowWindow> shadow_windows_;
+  // Set for the duration of an agentSpace.shadow.create so the re-entrant
+  // OnBrowserWindowCreated adopts the browser off-screen (the agent path,
+  // which stamps last_agent_window_id_).
+  std::string pending_shadow_task_;
+  ShadowWindow* FindShadowByWindow(int64_t window_id);
+  void CloseShadowWindow(const std::string& task_id, const char* reason);
+  // agentSpace.shadow.* (create / list / openTab / ping / close).
+  bool HandleShadowVerb(const std::string& type,
+                        const base::DictValue* payload,
+                        uint64_t now_ms,
+                        base::DictValue* out);
   // Handles one agentSpace.* control verb; returns true when `type` was an
   // agent-space verb (its result is in `out`), false to fall through to the
   // client-UI verbs. `now_ms` is GetTickCount64().

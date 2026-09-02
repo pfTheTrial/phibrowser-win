@@ -56,6 +56,9 @@ class PhiPeekPanel {
   int64_t window_id() const { return window_id_; }
   int64_t opener_window_id() const { return opener_window_id_; }
   int64_t opener_tab_id() const { return opener_tab_id_; }
+  // The card's own window (the peek's browser is reparented inside it) —
+  // what the click-outside test compares against.
+  HWND hwnd() const { return hwnd_; }
 
   // The opener window moved or resized: re-fit the card to its content rect.
   void Reposition();

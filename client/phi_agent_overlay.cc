@@ -110,8 +110,14 @@ class Overlay {
               bool agent_owns) {
     agent_label_ = agent_label;
     caption_ = caption;
+    const bool owner_changed = agent_owns_ != agent_owns;
     agent_owns_ = agent_owns;
     Reposition();
+    if (owner_changed) {
+      // The drawn cursor follows ownership (see ComposeSprite): it leaves
+      // with a takeover and returns where it was on hand-back.
+      ComposeSprite();
+    }
     // The fog only exists while the AGENT owns the Space; once the user takes
     // control the page must be usable, so the barrier comes down entirely.
     ::ShowWindow(fog_, agent_owns_ ? SW_SHOWNOACTIVATE : SW_HIDE);
@@ -330,7 +336,12 @@ class Overlay {
       for (const Effect& effect : effects_) {
         DrawEffect(&graphics, effect, now);
       }
-      if (cursor_shown_) {
+      // Hidden while the USER holds control (the Mac's moveCursor guard):
+      // the agent stops reporting on takeover, so its last position would
+      // otherwise sit frozen beside the real cursor until the task ended.
+      // The stored point survives the flip, so the cursor reappears where it
+      // was when control is handed back.
+      if (cursor_shown_ && agent_owns_) {
         DrawCursor(&graphics, CursorNow(now));
       }
     }

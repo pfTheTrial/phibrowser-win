@@ -191,6 +191,12 @@ class PhiSlotHost {
                                         const std::string& title) = 0;
   // Removes a stored row (a pinned tab or bookmark) by its guid.
   virtual void RemoveStoredRow(const std::string& guid) = 0;
+  // Re-homes a LEAF bookmark row into another Space (the Mac bookmark
+  // menu's Move / Clone to Space): a copy at the target Space's root and,
+  // for a move, the original removed. Folders and pins are refused.
+  virtual bool MoveStoredRowToSpace(const std::string& guid,
+                                    const std::string& space_id,
+                                    bool clone) = 0;
   // Retitles a stored row — the context menus' Rename….
   // Sets a bookmark folder's catalog symbol (the Mac's "Change Icon...").
   virtual bool SetStoredRowIcon(const std::string& guid,
@@ -229,6 +235,11 @@ class PhiSlotHost {
   virtual bool RenameSpace(const std::string& space_id,
                            const std::string& name) = 0;
   virtual bool DeleteSpace(const std::string& space_id) = 0;
+  // The Space holding the default role — what a fresh shell binds its first
+  // browser to (see the coordinator's DefaultSpaceId).
+  virtual std::string DefaultSpaceId() const = 0;
+  // Whether the Space menu may offer Delete (never for the last Space).
+  virtual bool CanDeleteSpace(const std::string& space_id) const = 0;
   // Profile management. Deleting Default, or a profile still bound to a
   // Space, is refused (bindings are immutable).
   virtual bool DeleteProfileById(const std::string& profile_id) = 0;
@@ -393,6 +404,22 @@ class PhiWindowController {
   // Shows the Space's browser, hiding the current one. False if unknown.
   bool ShowSpace(const std::string& space_id);
   bool HasSpace(const std::string& space_id) const;
+  // Recreates the menu bar from the CURRENT language. The bar caches every
+  // title and item string as wide text inside its HMENUs, so a language
+  // change cannot be repainted — the menus have to be built again, and the
+  // caption band's measured title rects re-measured with them.
+  void RebuildMenuBar();
+  // The Space whose browser is `browser_id` in this slot, or empty — the
+  // reverse of BrowserIdForSpace, for a skill payload that names a WINDOW
+  // and wants the Space it shows.
+  std::string SpaceForBrowser(int64_t browser_id) const {
+    for (const auto& [space, browser] : space_browsers_) {
+      if (browser == browser_id) {
+        return space;
+      }
+    }
+    return std::string();
+  }
   const std::string& active_space() const { return active_space_; }
   // The browser window id currently displayed (for tab/nav commands).
   int64_t active_browser() const { return active_browser_; }

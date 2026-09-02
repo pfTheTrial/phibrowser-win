@@ -5,6 +5,7 @@
 #include "phibrowser-win/client/phi_settings_window.h"
 
 #include <shellapi.h>
+#include <shlwapi.h>
 #include <shobjidl.h>
 #include <windowsx.h>
 #include <wrl/client.h>
@@ -21,6 +22,7 @@
 #include "base/strings/utf_string_conversions.h"
 #include "phibrowser-win/client/phi_emoji.h"
 #include "phibrowser-win/client/phi_dwrite.h"
+#include "phibrowser-win/client/phi_i18n.h"
 #include "phibrowser-win/client/phi_icons.h"
 #include "phibrowser-win/client/phi_prompt.h"
 
@@ -29,6 +31,40 @@ namespace phi_client {
 namespace {
 
 constexpr wchar_t kClassName[] = L"PhiSettingsWindow";
+
+// Is Phi the browser Windows launches for an http: URL?
+//
+// The Mac asks LaunchServices for the handler of "http://example.com" and
+// compares BUNDLE IDENTIFIERS. Windows has no bundle identity, so the same
+// question is asked of the association store and answered by comparing
+// EXECUTABLE PATHS — AssocQueryString resolves the user's choice through
+// UserChoice and the ProgId's open command, which is the whole chain the
+// shell itself walks.
+//
+// A registry read, not file I/O, so it does not need the raw-Win32 dance the
+// rest of the client does to stay off the UI thread's blocking check.
+bool ThisExeIsDefaultBrowser() {
+  wchar_t handler[MAX_PATH * 2] = {};
+  DWORD length = static_cast<DWORD>(std::size(handler));
+  if (FAILED(::AssocQueryStringW(
+          ASSOCF_IS_PROTOCOL | ASSOCF_INIT_IGNOREUNKNOWN, ASSOCSTR_EXECUTABLE,
+          L"http", nullptr, handler, &length))) {
+    return false;  // No handler at all, or none this API can name.
+  }
+  wchar_t self[MAX_PATH * 2] = {};
+  if (!::GetModuleFileNameW(nullptr, self,
+                            static_cast<DWORD>(std::size(self)))) {
+    return false;
+  }
+  const bool ours =
+      ::CompareStringOrdinal(handler, -1, self, -1, /*bIgnoreCase=*/TRUE) ==
+      CSTR_EQUAL;
+  // The one observable for a state the user cannot otherwise inspect: when
+  // the row says "not your default browser", this says who is.
+  LOG(INFO) << "[PhiClient] http handler: " << base::WideToUTF8(handler)
+            << (ours ? " (ours)" : " (not ours)");
+  return ours;
+}
 
 // The Mac window: content is a FIXED 680x561 in every pane
 // (each pane pins view.snp to that size); the toolbar rides above it.
@@ -586,9 +622,25 @@ void PhiSettingsWindow::BuildGeneral(int* y) {
 
   // The Mac's section order: Language, Theme, Appearance, Browsing,
   // Profile, Developer.
-  BeginSection(y, L"Language");
-  AddChips(AddRow(y, L"Display language", kPillHeight, kPillWidth),
-           {L"System Default"}, 0, std::string());
+  BeginSection(y, PhiStr("settings.general.language.sectionTitle"));
+  {
+    // The row was a dead chip until the string catalog existed. Now it is the
+    // language picker: "System default" leads because it is the default and
+    // the only choice that follows a later OS change, and the rest are
+    // endonyms, so someone hunting for their own language does not first have
+    // to read the language the app happens to be in.
+    const RECT area = AddRow(y, PhiStr("settings.displayLanguage"), kPillHeight,
+                             kPillWidth);
+    AddSubHint(y, PhiStr("settings.languageHint"));
+    Item pill;
+    pill.kind = ItemKind::kPopup;
+    pill.text = host_->LanguagePreference().empty()
+                    ? PhiStr("settings.languageSystemDefault")
+                    : PhiLocaleDisplayName(host_->LanguagePreference());
+    pill.action = "language";
+    pill.bounds = area;
+    items_.push_back(std::move(pill));
+  }
   EndSection(y);
 
   BeginSection(y, L"Theme");
@@ -969,7 +1021,9 @@ void PhiSettingsWindow::BuildSpaces(int* y) {
       }
     }
     row.selected = id == selected_space_;
-    row.on = id == "1";  // The default Space wears the badge, as on Mac.
+    // The default ROLE's holder wears the badge, as on Mac (it moves when
+    // the default Space is deleted).
+    row.on = host_ && id == host_->DefaultSpaceId();
     row.value = 1;       // Solid-accent selection (the Spaces list style).
     row.action = "selectspace";
     row.payload = id;
@@ -992,9 +1046,10 @@ void PhiSettingsWindow::BuildSpaces(int* y) {
       bool enabled;
     } kTools[] = {
         {0xE710, "newspace", true},  // Add
-        // The default Space is permanent, as on Mac.
+        // Only the LAST Space is permanent (the Mac's last-Space rule).
         {0xE738, "delspace",
-         !selected_space_.empty() && selected_space_ != "1"},  // Remove
+         !selected_space_.empty() && host_ &&
+             host_->CanDeleteSpace(selected_space_)},  // Remove
         {0xE70F, "renspace", !selected_space_.empty()},        // Edit
     };
     int x = list_left;
@@ -1913,17 +1968,26 @@ void PhiSettingsWindow::BuildAccount(int* y) {
     card.bounds = {right_left, section_top, right_edge,
                    section_top + Scaled(74)};
     items_.push_back(std::move(card));
+    if (!is_default_browser_.has_value()) {
+      is_default_browser_ = ThisExeIsDefaultBrowser();
+    }
+    const bool is_default = *is_default_browser_;
     Item label;
     label.kind = ItemKind::kRowLabel;
-    label.text = L"Phi is not your default browser";
+    label.text =
+        PhiStr(is_default ? "settings.account.defaultBrowser.defaultStatus"
+                          : "settings.account.defaultBrowser.notDefaultStatus");
     label.bounds = {right_left + Scaled(kCardPadding), section_top,
                     right_edge - Scaled(kCardPadding + 124),
                     section_top + Scaled(74)};
     items_.push_back(std::move(label));
     Item button;
     button.kind = ItemKind::kButton;
-    button.text = L"Set as default";
+    button.text = PhiStr("settings.account.defaultBrowser.setDefaultButton");
     button.action = "defaultbrowser";
+    // Already default: the button stays visible but goes inert and dim, as
+    // it does on Mac.
+    button.enabled = !is_default;
     button.bounds = {right_edge - Scaled(kCardPadding) - Scaled(116),
                      section_top + Scaled(25),
                      right_edge - Scaled(kCardPadding),
@@ -3189,9 +3253,16 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
       host_->SetDownloadDirectory(item.payload, base::WideToUTF8(folder));
     }
   } else if (item.action == "defaultbrowser") {
-    // Windows hands default-browser choice to its own Settings page.
-    ::ShellExecuteW(nullptr, L"open", L"ms-settings:defaultapps", nullptr,
-                    nullptr, SW_SHOWNORMAL);
+    // Windows hands the choice itself to its own Settings page — but only
+    // offers a browser that has registered, so the framework registers Phi
+    // first and then deep-links to its entry there. The answer changes while
+    // that page is up: WM_ACTIVATE re-asks when this window comes back.
+    if (host_) {
+      host_->RequestDefaultBrowser();
+    } else {
+      ::ShellExecuteW(nullptr, L"open", L"ms-settings:defaultapps", nullptr,
+                      nullptr, SW_SHOWNORMAL);
+    }
   } else if (item.action == "signin") {
     if (host_) {
       host_->RequestSignIn();
@@ -3201,6 +3272,35 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
     if (host_) {
       host_->RequestSignOut();
       Rebuild();
+    }
+  } else if (item.action == "language") {
+    // System default, then every locale the catalog carries, each named in
+    // its own language.
+    HMENU menu = ::CreatePopupMenu();
+    if (!menu) {
+      return;
+    }
+    const std::string current = host_->LanguagePreference();
+    ::AppendMenuW(menu, MF_STRING | (current.empty() ? MF_CHECKED : 0), 1,
+                  PhiStr("settings.languageSystemDefault"));
+    ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    const std::vector<std::string>& locales = PhiAvailableLocales();
+    for (size_t i = 0; i < locales.size(); ++i) {
+      ::AppendMenuW(menu,
+                    MF_STRING | (current == locales[i] ? MF_CHECKED : 0),
+                    static_cast<UINT>(i) + 2,
+                    PhiLocaleDisplayName(locales[i]));
+    }
+    POINT anchor = {item.bounds.left, item.bounds.bottom};
+    ::ClientToScreen(hwnd_, &anchor);
+    const UINT chosen = static_cast<UINT>(::TrackPopupMenu(
+        menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, anchor.x,
+        anchor.y, 0, hwnd_, nullptr));
+    ::DestroyMenu(menu);
+    if (chosen == 1) {
+      host_->SetLanguagePreference(std::string());
+    } else if (chosen >= 2 && chosen < 2 + locales.size()) {
+      host_->SetLanguagePreference(locales[chosen - 2]);
     }
   } else if (item.action == "pinscope") {
     // The Mac's popup: Space / Profile / App.
@@ -3517,6 +3617,17 @@ LRESULT CALLBACK PhiSettingsWindow::WndProc(HWND hwnd,
         ::InvalidateRect(hwnd, nullptr, TRUE);
       }
       return 0;
+    case WM_ACTIVATE:
+      // The "Set as default" button hands the choice to the Windows Settings
+      // app, so the answer changes while this window is in the background.
+      // Coming back to the front is the cue to ask again — the Mac re-checks
+      // in viewWillAppear for the same reason. Falls through to
+      // DefWindowProc, which the custom caption still needs.
+      if (self && LOWORD(wparam) != WA_INACTIVE) {
+        self->is_default_browser_.reset();
+        ::InvalidateRect(hwnd, nullptr, TRUE);
+      }
+      break;
     case WM_CLOSE:
       ::ShowWindow(hwnd, SW_HIDE);  // Keep it around; reopening is instant.
       return 0;

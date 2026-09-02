@@ -13,6 +13,7 @@
 #undef small
 
 #include <algorithm>
+#include <functional>
 #include <cmath>
 #include <iterator>
 #include <limits>
@@ -477,6 +478,17 @@ void PhiWindowController::EnsureFont() {
     }
     chip_icon_font_ = chip_built;
   }
+}
+
+void PhiWindowController::RebuildMenuBar() {
+  if (!shell_hwnd_ || !::IsWindow(shell_hwnd_)) {
+    return;
+  }
+  menu_bar_ = std::make_unique<PhiMenuBar>(this);  // The old bar's HMENUs go
+  menu_bar_->Install(shell_hwnd_);                 // with its destructor.
+  menu_titles_.clear();  // Re-measured on the next paint, in the new language.
+  menu_titles_dpi_ = 0;
+  ::InvalidateRect(shell_hwnd_, nullptr, TRUE);
 }
 
 void PhiWindowController::EnsureMenuTitleRects() {
@@ -964,10 +976,33 @@ PhiWindowController::PhiWindowController(int64_t window_id,
     const int border_y =
         ::GetSystemMetricsForDpi(SM_CYSIZEFRAME, frame_dpi) +
         ::GetSystemMetricsForDpi(SM_CXPADDEDBORDER, frame_dpi);
-    x = wr.left - Scaled(sidebar_dip_) - border_x;
-    y = wr.top - Scaled(kTitleBarHeight) - Scaled(kContentTopGap);
-    w = (wr.right + Scaled(kContentMargin) + border_x) - x;
-    h = (wr.bottom + Scaled(kContentMargin) + border_y) - y;
+    // Where the content region starts inside the client, PER LAYOUT — the
+    // numbers ComputeLayout produces: comfortable has no sidebar and stacks
+    // the taller band and the toolbar; balanced adds the navigation bar
+    // below the band and the gap; performance is the band and the gap. The
+    // trailing margin is the content card's everywhere but comfortable,
+    // whose page runs edge to edge. A mode-blind conversion was placing
+    // balanced and comfortable windows a bar (or a sidebar) off on their
+    // first frame.
+    int content_left = Scaled(sidebar_dip_);
+    int content_top = Scaled(kTitleBarHeight) + Scaled(kContentTopGap);
+    int trailing = Scaled(kContentMargin);
+    switch (layout_mode_) {
+      case PhiLayoutMode::kComfortable:
+        content_left = 0;
+        content_top = Scaled(kTitleBarHeightTabs) + Scaled(kTopBarHeight);
+        trailing = 0;
+        break;
+      case PhiLayoutMode::kBalanced:
+        content_top += Scaled(kTopBarHeightNav);
+        break;
+      default:
+        break;
+    }
+    x = wr.left - content_left - border_x;
+    y = wr.top - content_top;
+    w = (wr.right + trailing + border_x) - x;
+    h = (wr.bottom + trailing + border_y) - y;
   }
 
   if (agent_) {
@@ -1003,21 +1038,29 @@ PhiWindowController::PhiWindowController(int64_t window_id,
 
   AdoptBrowserAsChild();
   EnsureUrlField();
-  // The window the slot was created with backs the default Space.
-  space_browsers_["1"] = window_id_;
+  // The window the slot was created with backs the DEFAULT Space — whichever
+  // Space holds that role now (it moves when its holder is deleted).
+  const std::string default_space =
+      host_ ? host_->DefaultSpaceId() : std::string("1");
+  space_browsers_[default_space] = window_id_;
   browser_hwnds_[window_id_] = browser_hwnd_;
-  space_order_.push_back("1");
-  active_space_ = "1";
+  space_order_.push_back(default_space);
+  active_space_ = default_space;
   active_browser_ = window_id_;
-  if (host_ && !incognito_) {
+  if (host_ && !incognito_ && !agent_) {
     // The default Space binds here rather than through AttachSpaceBrowser,
     // so it needs its own note or lazy restore would never learn its window.
-    host_->NoteSpaceWindow("1", window_id_);
+    // NEVER for an agent/shadow window: it nominally binds the default Space
+    // too, and noting it made the Space's remembered window THE AGENT'S —
+    // an agent alive at quit then put the agent window (omitted from the
+    // session) in the cold-start eager set and PARKED the user's real one.
+    host_->NoteSpaceWindow(default_space, window_id_);
   }
-  if (framework_ && !incognito_) {
+  if (framework_ && !incognito_ && !agent_) {
     // An incognito shell stays OUT of the Space registry: routed URLs must
-    // never resolve into an off-the-record window.
-    framework_->SetWindowSpace(window_id_, "1");
+    // never resolve into an off-the-record window — and so does an agent
+    // window, which the framework registers as "space.agent" itself.
+    framework_->SetWindowSpace(window_id_, default_space.c_str());
   }
   LayoutContents();
   ::ShowWindow(shell_hwnd_, agent_ ? SW_SHOWNOACTIVATE : SW_SHOW);
@@ -3818,6 +3861,32 @@ void PhiWindowController::RebuildChips() {
 }
 
 
+namespace {
+
+// The Mac's TabDiscardedFaviconOutline: a 1px dashed ring around the favicon
+// of a tab whose renderer is gone — restored-but-never-loaded (unloaded) or
+// discarded. The Mac aligned both states on this ring (dda300c6) after a
+// short-lived dimmed-favicon treatment; the dimmed TITLE stays, as before.
+void DrawDormantRing(HDC dc, const RECT& icon, COLORREF color) {
+  HPEN pen = ::CreatePen(PS_DOT, 1, color);
+  if (!pen) {
+    return;
+  }
+  const int old_mode = ::SetBkMode(dc, TRANSPARENT);  // Gaps stay see-through.
+  HGDIOBJ old_pen = ::SelectObject(dc, pen);
+  HGDIOBJ old_brush = ::SelectObject(dc, ::GetStockObject(NULL_BRUSH));
+  // 2px of air around a 16px icon; scales with the icon at higher DPI.
+  const int inset = std::max(2, static_cast<int>(icon.right - icon.left) / 8);
+  ::Ellipse(dc, icon.left - inset, icon.top - inset, icon.right + inset,
+            icon.bottom + inset);
+  ::SelectObject(dc, old_brush);
+  ::SelectObject(dc, old_pen);
+  ::DeleteObject(pen);
+  ::SetBkMode(dc, old_mode);
+}
+
+}  // namespace
+
 void PhiWindowController::DrawFavicon(HDC dc,
                                      const RECT& dest,
                                      const unsigned char* bgra,
@@ -5090,8 +5159,14 @@ void PhiWindowController::OnChromeClick(int x, int y) {
                     static_cast<UINT>(i) + 1, spaces[i].second.c_str());
     }
     const UINT kNewSpace = static_cast<UINT>(spaces.size()) + 1;
+    const UINT kNewSpaceProfile = kNewSpace + 1;
     ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     ::AppendMenuW(menu, MF_STRING, kNewSpace, L"New Space");
+    // The Mac's create panel offers a fresh Profile for the new Space; here
+    // it is the second row (profile creation is asynchronous — the Space
+    // follows once the profile exists).
+    ::AppendMenuW(menu, MF_STRING, kNewSpaceProfile,
+                  L"New Space with New Profile...");
     POINT screen = {layout.add_space.left, layout.add_space.bottom};
     ::ClientToScreen(shell_hwnd_, &screen);
     const UINT chosen = static_cast<UINT>(::TrackPopupMenu(
@@ -5100,6 +5175,8 @@ void PhiWindowController::OnChromeClick(int x, int y) {
     ::DestroyMenu(menu);
     if (chosen == kNewSpace) {
       host_->RequestCreateSpace(window_id_, /*new_profile=*/false);
+    } else if (chosen == kNewSpaceProfile) {
+      host_->RequestCreateSpace(window_id_, /*new_profile=*/true);
     } else if (chosen >= 1 && chosen <= spaces.size()) {
       const std::string space_id = spaces[chosen - 1].first;
       if (HasSpace(space_id)) {
@@ -5425,11 +5502,29 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
                     kOpenAsSplit, kRemoveSplit, kGroup, kUngroupTab,
                     kPinSplit, kBookmarkSplit, kDuplicate, kCopyUrl,
                     kCopyLeft, kCopyRight, kConvertSplit, kTakeControl,
-                    kHandBack };
-      // Dynamic Move/Clone-to-Space rows ride these ranges (99 each).
+                    kHandBack, kReversePanes, kMoveNewGroup, kFolderNew };
+      // Dynamic rows ride these ranges (99 each): Move/Clone-to-Space,
+      // the bookmark folders of "Add to Folder", the groups of "Add/Move
+      // to Group".
       constexpr UINT kMoveSpaceFirst = 100;
       constexpr UINT kCloneSpaceFirst = 200;
+      constexpr UINT kFolderFirst = 300;
+      constexpr UINT kGroupFirst = 400;
       std::vector<std::string> space_targets;
+      std::vector<std::string> folder_targets;
+      std::vector<std::string> group_targets;
+      // A group's menu title: its name (or "Untitled") with its member
+      // count, the Mac's displayTitle(memberCount:).
+      const auto group_label = [&](const GroupHeader& gh) {
+        int members = 0;
+        for (const TabRow& t : tabs_) {
+          if (t.group_id == gh.id) {
+            ++members;
+          }
+        }
+        return (gh.title.empty() ? std::wstring(L"Untitled") : gh.title) +
+               L" (" + std::to_wstring(members) + L")";
+      };
       HMENU menu = ::CreatePopupMenu();
       if (!menu) {
         return;
@@ -5477,10 +5572,83 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
           ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         }
         ::AppendMenuW(menu, persist_flags, kBookmark, L"Add to Bookmark");
+        // "Add to Folder": this Space's bookmark folders in outline order,
+        // nesting indented, then a fresh folder — the Mac's addToFolder
+        // submenu. Nothing persists from incognito.
+        if (!incognito_ && host_) {
+          HMENU folder_menu = ::CreatePopupMenu();
+          std::function<void(const std::string&, int)> append_folders =
+              [&](const std::string& parent, int depth) {
+                for (const PhiStoredRowView& stored :
+                     host_->BookmarkRows(window_id_, parent)) {
+                  if (!stored.folder || folder_targets.size() >= 99u) {
+                    continue;
+                  }
+                  folder_targets.push_back(stored.guid);
+                  std::wstring label(static_cast<size_t>(depth) * 2, L' ');
+                  label += base::UTF8ToWide(
+                      stored.title.empty() ? "Untitled" : stored.title);
+                  ::AppendMenuW(
+                      folder_menu, MF_STRING,
+                      kFolderFirst +
+                          static_cast<UINT>(folder_targets.size() - 1),
+                      label.c_str());
+                  append_folders(stored.guid, depth + 1);
+                }
+              };
+          append_folders(std::string(), 0);
+          if (!folder_targets.empty()) {
+            ::AppendMenuW(folder_menu, MF_SEPARATOR, 0, nullptr);
+          }
+          ::AppendMenuW(folder_menu, MF_STRING, kFolderNew, L"New Folder...");
+          ::AppendMenuW(menu, MF_POPUP | MF_STRING,
+                        reinterpret_cast<UINT_PTR>(folder_menu),
+                        L"Add to Folder");
+        }
         ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        // The Mac's group block: an ungrouped tab may start a group or join
+        // one that exists; a grouped tab may move to another, to a new one,
+        // or leave.
         if (row.group_id.empty()) {
           ::AppendMenuW(menu, MF_STRING, kGroup, L"New Tab Group");
+          HMENU add_menu = ::CreatePopupMenu();
+          for (const GroupHeader& gh : group_headers_) {
+            if (group_targets.size() >= 99u) {
+              break;
+            }
+            group_targets.push_back(gh.id);
+            ::AppendMenuW(add_menu, MF_STRING,
+                          kGroupFirst +
+                              static_cast<UINT>(group_targets.size() - 1),
+                          group_label(gh).c_str());
+          }
+          if (!group_targets.empty()) {
+            ::AppendMenuW(menu, MF_POPUP | MF_STRING,
+                          reinterpret_cast<UINT_PTR>(add_menu),
+                          L"Add to Group");
+          } else {
+            ::DestroyMenu(add_menu);
+          }
         } else {
+          HMENU move_group_menu = ::CreatePopupMenu();
+          for (const GroupHeader& gh : group_headers_) {
+            if (gh.id == row.group_id || group_targets.size() >= 99u) {
+              continue;
+            }
+            group_targets.push_back(gh.id);
+            ::AppendMenuW(move_group_menu, MF_STRING,
+                          kGroupFirst +
+                              static_cast<UINT>(group_targets.size() - 1),
+                          group_label(gh).c_str());
+          }
+          if (!group_targets.empty()) {
+            ::AppendMenuW(menu, MF_POPUP | MF_STRING,
+                          reinterpret_cast<UINT_PTR>(move_group_menu),
+                          L"Move to Group");
+          } else {
+            ::DestroyMenu(move_group_menu);
+          }
+          ::AppendMenuW(menu, MF_STRING, kMoveNewGroup, L"Move to New Group");
           ::AppendMenuW(menu, MF_STRING, kUngroupTab, L"Remove from Group");
         }
         ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
@@ -5526,6 +5694,8 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
         ::AppendMenuW(menu, MF_STRING, kCopyLeft, L"Copy Left URL");
         ::AppendMenuW(menu, MF_STRING, kCopyRight, L"Copy Right URL");
         ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        // The Mac's "Reverse Panes": swap the two sides of this split.
+        ::AppendMenuW(menu, MF_STRING, kReversePanes, L"Reverse Panes");
         // The Mac's convert item, labelled by where it takes you: a
         // side-by-side pair offers the stacked arrangement and vice versa.
         ::AppendMenuW(menu, MF_STRING, kConvertSplit,
@@ -5557,6 +5727,39 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
         host_->RequestTabToSpace(window_id_, row.index,
                                  space_targets[chosen - kCloneSpaceFirst],
                                  /*move=*/false);
+      } else if (chosen >= kFolderFirst &&
+                 chosen < kFolderFirst + folder_targets.size()) {
+        host_->AddBookmarkRow(window_id_, folder_targets[chosen - kFolderFirst],
+                              base::WideToUTF8(row.title), url_a);
+      } else if (chosen == kFolderNew && host_) {
+        std::wstring name = L"Untitled";
+        if (PhiPromptText(shell_hwnd_, L"New Folder", L"Folder name:",
+                          &name)) {
+          const std::string folder = host_->AddBookmarkFolder(
+              window_id_, std::string(), base::WideToUTF8(name));
+          if (!folder.empty()) {
+            host_->AddBookmarkRow(window_id_, folder,
+                                  base::WideToUTF8(row.title), url_a);
+          }
+        }
+      } else if (chosen >= kGroupFirst &&
+                 chosen < kGroupFirst + group_targets.size() && framework_) {
+        // Joining (or moving to) an existing group: the model takes the tab
+        // out of its current group atomically, so one call covers both.
+        const std::string ids = "[" + std::to_string(row.id) + "]";
+        framework_->AddTabsToGroup(browser,
+                                   group_targets[chosen - kGroupFirst].c_str(),
+                                   ids.c_str());
+        RefreshTabs();
+      } else if (chosen == kMoveNewGroup && framework_) {
+        framework_->AddTabToNewGroup(browser, row.index);
+        RefreshTabs();
+      } else if (chosen == kReversePanes && framework_) {
+        const std::string split_id = SplitIdForTab(row.id);
+        if (!split_id.empty()) {
+          framework_->SwapSplitView(browser, split_id.c_str());
+        }
+        RefreshTabs();
       } else if (chosen == kPin) {
         host_->RequestStoreTab(window_id_, row.index, /*as_bookmark=*/false);
       } else if (chosen == kBookmark) {
@@ -5676,7 +5879,7 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
       // The Mac pinned-cell menu: open, duplicate, copy, rename, unpin,
       // and close (the bound live tab or pair) when open.
       enum : UINT { kOpen = 1, kUnpin, kDuplicate, kCopyUrl, kCopyLeft,
-                    kCopyRight, kRename, kClose, kConvertSplit };
+                    kCopyRight, kRename, kClose, kConvertSplit, kEditUrl };
       HMENU menu = ::CreatePopupMenu();
       if (!menu) {
         return;
@@ -5692,6 +5895,10 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
         ::AppendMenuW(menu, MF_STRING, kCopyUrl, L"Copy Link");
       }
       ::AppendMenuW(menu, MF_STRING, kRename, L"Rename...");
+      // The Mac's Edit…: the pin's address (a split pin keeps its panes).
+      if (!split_cell) {
+        ::AppendMenuW(menu, MF_STRING, kEditUrl, L"Edit URL...");
+      }
       if (split_cell) {
         ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         ::AppendMenuW(menu, MF_STRING, kConvertSplit,
@@ -5758,6 +5965,13 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
           }
         }
         RefreshTabs();
+      } else if (chosen == kEditUrl && host_ && !guid.empty()) {
+        std::wstring edited = base::UTF8ToWide(url);
+        if (PhiPromptText(shell_hwnd_, L"Edit Pinned Tab", L"Address:",
+                          &edited) &&
+            !edited.empty()) {
+          host_->SetStoredRowUrl(guid, base::WideToUTF8(edited));
+        }
       } else if (chosen == kUnpin && !guid.empty()) {
         // Dropping the store row also drops the binding at the next rebuild,
         // so a live bound tab returns to the tab list as a normal tab. A
@@ -5788,7 +6002,11 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
       // delete (folders keep rename/new-nested-folder/delete).
       enum : UINT { kOpen = 1, kOpenSplit, kCopyUrl, kCopyLeft, kCopyRight,
                     kRename, kNewFolder, kChangeIcon, kRemove,
-                    kConvertSplit };
+                    kConvertSplit, kEditUrl };
+      // Move/Clone-to-Space rows ride these ranges (99 each).
+      constexpr UINT kMoveSpaceFirst = 100;
+      constexpr UINT kCloneSpaceFirst = 200;
+      std::vector<std::string> space_targets;
       HMENU menu = ::CreatePopupMenu();
       if (!menu) {
         return;
@@ -5805,6 +6023,9 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
         }
       }
       ::AppendMenuW(menu, MF_STRING, kRename, L"Rename...");
+      if (!bookmark.folder && !split_row) {
+        ::AppendMenuW(menu, MF_STRING, kEditUrl, L"Edit URL...");  // Mac: Edit…
+      }
       if (split_row) {
         ::AppendMenuW(menu, MF_STRING, kConvertSplit,
                       bookmark.layout == "horizontal"
@@ -5816,6 +6037,40 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
         ::AppendMenuW(menu, MF_STRING, kChangeIcon, L"Change Icon...");
         ::AppendMenuW(menu, MF_STRING, kNewFolder,
                       L"New Nested Folder...");
+      }
+      // Move/Clone to Space — the Mac's appendSpaceTransferMenuItems, leaf
+      // rows only (a folder's subtree stays where it is).
+      if (!bookmark.folder && !incognito_ && host_) {
+        HMENU move_menu = ::CreatePopupMenu();
+        HMENU clone_menu = ::CreatePopupMenu();
+        for (const PhiSpaceView& space : host_->Spaces()) {
+          if (space.id == active_space_ || space_targets.size() >= 99u) {
+            continue;
+          }
+          const std::wstring name = base::UTF8ToWide(
+              !space.name.empty() ? space.name : "Space " + space.id);
+          ::AppendMenuW(move_menu, MF_STRING,
+                        kMoveSpaceFirst +
+                            static_cast<UINT>(space_targets.size()),
+                        name.c_str());
+          ::AppendMenuW(clone_menu, MF_STRING,
+                        kCloneSpaceFirst +
+                            static_cast<UINT>(space_targets.size()),
+                        name.c_str());
+          space_targets.push_back(space.id);
+        }
+        if (!space_targets.empty()) {
+          ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+          ::AppendMenuW(menu, MF_POPUP | MF_STRING,
+                        reinterpret_cast<UINT_PTR>(move_menu),
+                        L"Move to Space");
+          ::AppendMenuW(menu, MF_POPUP | MF_STRING,
+                        reinterpret_cast<UINT_PTR>(clone_menu),
+                        L"Clone to Space");
+        } else {
+          ::DestroyMenu(move_menu);
+          ::DestroyMenu(clone_menu);
+        }
       }
       ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
       ::AppendMenuW(menu, MF_STRING, kRemove,
@@ -5837,7 +6092,22 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
       const RECT row_bounds = bookmark.bounds;
       ::DestroyMenu(menu);
       const int64_t browser = active_browser_ ? active_browser_ : window_id_;
-      if (chosen == kOpen && !folder && !url.empty()) {
+      if (chosen >= kMoveSpaceFirst &&
+          chosen < kMoveSpaceFirst + space_targets.size()) {
+        host_->MoveStoredRowToSpace(guid, space_targets[chosen - kMoveSpaceFirst],
+                                    /*clone=*/false);
+      } else if (chosen >= kCloneSpaceFirst &&
+                 chosen < kCloneSpaceFirst + space_targets.size()) {
+        host_->MoveStoredRowToSpace(
+            guid, space_targets[chosen - kCloneSpaceFirst], /*clone=*/true);
+      } else if (chosen == kEditUrl && !folder && host_) {
+        std::wstring edited = base::UTF8ToWide(url);
+        if (PhiPromptText(shell_hwnd_, L"Edit Bookmark", L"Address:",
+                          &edited) &&
+            !edited.empty()) {
+          host_->SetStoredRowUrl(guid, base::WideToUTF8(edited));
+        }
+      } else if (chosen == kOpen && !folder && !url.empty()) {
         OpenOrFocusPinned(guid, url);
       } else if (chosen == kOpenSplit && !folder && framework_ &&
                  !url.empty()) {
@@ -5917,26 +6187,108 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
     const Layout layout = ComputeLayout();
     if (!layout.horizontal_tabs && pt.x < layout.sidebar.right &&
         pt.y > layout.title_bar.bottom) {
-      enum : UINT { kNewRootFolder = 1 };
+      // The Mac tab-area menu (TabAreaContextMenuHelper): new tab, reopen,
+      // the bookmark block, the layout switch, then the active Space's own
+      // controls (the Spaces menu's rows, for the Space under the pointer).
+      enum : UINT { kNewTab = 1, kReopen, kNewRootFolder, kBookmarkAll,
+                    kLayoutPerformance, kLayoutBalanced, kLayoutComfortable,
+                    kNewSpace, kRenameSpace, kChangeSpaceIcon, kDeleteSpace };
       HMENU menu = ::CreatePopupMenu();
-      if (!menu) {
+      HMENU layout_menu = ::CreatePopupMenu();
+      if (!menu || !layout_menu) {
+        if (menu) {
+          ::DestroyMenu(menu);
+        }
+        if (layout_menu) {
+          ::DestroyMenu(layout_menu);
+        }
         return;
       }
-      ::AppendMenuW(menu, MF_STRING, kNewRootFolder, L"New Folder...");
+      const UINT persist_flags =
+          MF_STRING | (incognito_ ? MF_DISABLED | MF_GRAYED : 0u);
+      ::AppendMenuW(menu, MF_STRING, kNewTab, L"New Tab");
+      ::AppendMenuW(menu, MF_STRING, kReopen, L"Reopen Closed Tab");
+      ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+      ::AppendMenuW(menu, persist_flags, kNewRootFolder, L"New Folder...");
+      ::AppendMenuW(menu, persist_flags | (tabs_.empty() ? MF_DISABLED : 0u),
+                    kBookmarkAll, L"Bookmark All Tabs");
+      ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+      const struct {
+        UINT id;
+        PhiLayoutMode mode;
+        const wchar_t* label;
+      } kLayouts[] = {
+          {kLayoutPerformance, PhiLayoutMode::kPerformance, L"Performance"},
+          {kLayoutBalanced, PhiLayoutMode::kBalanced, L"Balanced"},
+          {kLayoutComfortable, PhiLayoutMode::kComfortable, L"Comfortable"},
+      };
+      for (const auto& entry : kLayouts) {
+        ::AppendMenuW(layout_menu,
+                      MF_STRING | (layout_mode_ == entry.mode ? MF_CHECKED : 0u),
+                      entry.id, entry.label);
+      }
+      ::AppendMenuW(menu, MF_POPUP | MF_STRING,
+                    reinterpret_cast<UINT_PTR>(layout_menu), L"Layout Mode");
+      if (!incognito_) {
+        ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        ::AppendMenuW(menu, MF_STRING, kNewSpace, L"New Space...");
+        ::AppendMenuW(menu, MF_STRING, kRenameSpace, L"Rename Space...");
+        ::AppendMenuW(menu, MF_STRING, kChangeSpaceIcon, L"Change Icon...");
+        ::AppendMenuW(menu,
+                      MF_STRING | (host_->CanDeleteSpace(active_space_)
+                                       ? 0u
+                                       : MF_DISABLED | MF_GRAYED),
+                      kDeleteSpace, L"Delete Space...");
+      }
       POINT screen = pt;
       ::ClientToScreen(shell_hwnd_, &screen);
       const UINT chosen = static_cast<UINT>(::TrackPopupMenu(
           menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN |
                     TPM_RIGHTBUTTON,
           screen.x, screen.y, 0, shell_hwnd_, nullptr));
-      ::DestroyMenu(menu);
-      if (chosen == kNewRootFolder) {
-        std::wstring name = L"Untitled";
-        if (PhiPromptText(shell_hwnd_, L"New Folder", L"Folder name:",
-                          &name)) {
-          host_->AddBookmarkFolder(window_id_, std::string(),
-                                   base::WideToUTF8(name));
+      ::DestroyMenu(menu);  // Owns the layout submenu.
+      switch (chosen) {
+        case kNewTab:
+          StartNewTab();
+          break;
+        case kNewRootFolder: {
+          std::wstring name = L"Untitled";
+          if (PhiPromptText(shell_hwnd_, L"New Folder", L"Folder name:",
+                            &name)) {
+            host_->AddBookmarkFolder(window_id_, std::string(),
+                                     base::WideToUTF8(name));
+          }
+          break;
         }
+        case kLayoutPerformance:
+          host_->RequestLayoutMode(PhiLayoutMode::kPerformance);
+          break;
+        case kLayoutBalanced:
+          host_->RequestLayoutMode(PhiLayoutMode::kBalanced);
+          break;
+        case kLayoutComfortable:
+          host_->RequestLayoutMode(PhiLayoutMode::kComfortable);
+          break;
+        // The rest are the menu bar's own commands, run through it so the
+        // sidebar and the bar cannot drift apart.
+        case kReopen:
+        case kBookmarkAll:
+        case kNewSpace:
+        case kRenameSpace:
+        case kChangeSpaceIcon:
+        case kDeleteSpace:
+          if (menu_bar_) {
+            menu_bar_->OnCommand(chosen == kReopen        ? kCmdReopenClosedTab
+                                 : chosen == kBookmarkAll ? kCmdBookmarkAllTabs
+                                 : chosen == kNewSpace    ? kCmdNewSpace
+                                 : chosen == kRenameSpace ? kCmdRenameSpace
+                                 : chosen == kChangeSpaceIcon
+                                     ? kCmdChangeIcon
+                                     : kCmdDeleteSpace);
+          }
+          break;
+        default:
+          break;
       }
     }
     return;
@@ -6014,9 +6366,12 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
   ::AppendMenuW(menu, MF_POPUP | MF_STRING,
                 reinterpret_cast<UINT_PTR>(themes), L"Set Theme");
   ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+  // Delete is refused for the LAST Space only (the Mac's last-Space rule);
+  // the default Space itself may go, handing its role on.
   ::AppendMenuW(menu,
-                MF_STRING |
-                    (target->id == "1" ? MF_DISABLED | MF_GRAYED : 0u),
+                MF_STRING | (host_ && host_->CanDeleteSpace(target->id)
+                                 ? 0u
+                                 : MF_DISABLED | MF_GRAYED),
                 kDelete, L"Delete Space");
 
   POINT screen = pt;
@@ -7673,9 +8028,12 @@ void PhiWindowController::PaintSidebarBand(HDC dc,
           ::SelectObject(dc, previous_glyph_font);
         }
       }
-      // A DORMANT tab (restored but never loaded, or discarded) reads
-      // dimmer than a live one — the Mac's isUnloaded treatment. The active
-      // row is never dormant, so this never fights the selected pill.
+      // A DORMANT tab (restored but never loaded, or discarded) wears the
+      // Mac's dashed favicon ring and reads dimmer than a live one. The
+      // active row is never dormant, so this never fights the selected pill.
+      if (r.unloaded && !r.active) {
+        DrawDormantRing(dc, icon, kLabelDim);
+      }
       ::SetTextColor(dc, r.unloaded && !r.active ? kLabelDim : kLabel);
       RECT title_rc = {slot.right + Scaled(8), pill.top, right - Scaled(4),
                        pill.bottom};

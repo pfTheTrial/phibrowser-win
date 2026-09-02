@@ -49,6 +49,10 @@ class PhiTranscriptPanel {
   static void RefreshOpen();
   // Closes the panel if it is showing `task_id` (the task ended).
   static void CloseFor(const std::string& task_id);
+  // Whether the console is open at all — the skill's session-mirror gate
+  // (agentSpace.list's `transcriptMirror`): with nobody reading a
+  // transcript, the driving agent spawns no mirror daemon.
+  static bool IsOpen();
 };
 
 }  // namespace phi_client

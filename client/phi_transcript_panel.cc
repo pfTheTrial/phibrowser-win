@@ -327,6 +327,11 @@ void PhiTranscriptPanel::RefreshOpen() {
 }
 
 // static
+bool PhiTranscriptPanel::IsOpen() {
+  return Panel::instance != nullptr;
+}
+
+// static
 void PhiTranscriptPanel::CloseFor(const std::string& task_id) {
   if (Panel::instance && Panel::instance->task_id() == task_id) {
     Panel* panel = Panel::instance;

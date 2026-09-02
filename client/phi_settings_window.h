@@ -7,6 +7,7 @@
 
 #include <windows.h>
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -41,6 +42,10 @@ class PhiSettingsHost {
   virtual bool AccountSigningIn() const = 0;
   virtual void RequestSignIn() = 0;
   virtual void RequestSignOut() = 0;
+  // Registers Phi with Windows and opens the system Default apps page. The
+  // choice itself is the user's to make there — Windows 10 and later allow
+  // no other way.
+  virtual void RequestDefaultBrowser() = 0;
 
   // Appearance
   virtual PhiLayoutMode LayoutMode() const = 0;
@@ -55,6 +60,10 @@ class PhiSettingsHost {
   // bookmark rows. On by default, as on Mac.
   virtual bool ShowTabPreviews() const = 0;
   virtual void SetShowTabPreviews(bool enabled) = 0;
+  // The UI language. An EMPTY tag means "follow the operating system", which
+  // is the default and the only value that tracks a later OS change.
+  virtual std::string LanguagePreference() const = 0;
+  virtual void SetLanguagePreference(const std::string& tag) = 0;
   // "Restore last session": app-wide choice, pushed into every loaded
   // profile's Chromium startup pref (SessionStartupPref LAST).
   virtual bool RestoreLastSession() const = 0;
@@ -78,6 +87,10 @@ class PhiSettingsHost {
   virtual bool RenameSpace(const std::string& space_id,
                            const std::string& name) = 0;
   virtual bool DeleteSpace(const std::string& space_id) = 0;
+  // The Space wearing the default badge, and whether Remove is offered for
+  // a Space (refused for the last one) — see the coordinator's twins.
+  virtual std::string DefaultSpaceId() const = 0;
+  virtual bool CanDeleteSpace(const std::string& space_id) const = 0;
   virtual bool DeleteProfileById(const std::string& profile_id) = 0;
   virtual bool RenameProfileById(const std::string& profile_id,
                                  const std::string& name) = 0;
@@ -303,6 +316,12 @@ class PhiSettingsWindow {
   // The Shortcuts pane's filter text ("Find shortcut keys"), fed by WM_CHAR
   // while that pane is up.
   std::wstring shortcut_search_;
+  // Whether this exe is the system's http handler. Resolved on demand — the
+  // Account pane rebuilds on every paint — and dropped when the window is
+  // activated, which is when the user comes back from the Windows Settings
+  // page that the "Set as default" button opens. The Mac's twin re-checks in
+  // viewWillAppear for the same reason.
+  std::optional<bool> is_default_browser_;
 };
 
 }  // namespace phi_client
