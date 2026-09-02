@@ -39,6 +39,11 @@ const CANDIDATE_DIRS = [
 // The consent prompt can hold the very first connection open while the user
 // decides, so the first HTTP request tolerates a long wait.
 const CONSENT_WAIT_MS = 180000
+// When another advertised channel is available, do not let a connected but
+// non-responsive higher-precedence pipe shadow it for the full consent
+// window. The final/only candidate still gets CONSENT_WAIT_MS so a genuine
+// first-run approval prompt remains usable.
+export const FALLBACK_ENDPOINT_WAIT_MS = 5000
 
 // How long to wait for a just-launched Phi to publish its socket. Cold start
 // has to bring up Chromium and restore the session before the listener runs.
@@ -77,6 +82,28 @@ const DENIED_MESSAGE =
   '30 minutes or for good, in which case retrying will not prompt again — ask ' +
   'them to allow it, or to unblock it under Settings ▸ Developer ▸ Remote ' +
   'debugging ▸ Blocked agents.'
+
+/** A refusal from the app (HTTP 403), tagged so callers can tell it apart
+ * from the connection failures that surround it.
+ *
+ * The distinction is the difference between waiting and giving up. A pipe
+ * that isn't there yet, a wedged endpoint, a browser mid-restart — those are
+ * states that pass, and a long-lived helper is right to keep trying. A 403 is
+ * not a state, it is an answer: the user denied this agent, or the app
+ * refused the connection outright. Retrying an answer just asks the same
+ * question forever, which is how a detached daemon ends up reconnecting once
+ * a second for the life of the session. */
+function deniedError() {
+  const err = new Error(DENIED_MESSAGE)
+  err.phiDenied = true
+  return err
+}
+
+/** Whether an error is the app's refusal rather than a transient failure.
+ * Callers that retry must stop when this is true. */
+export function isPhiDenied(err) {
+  return Boolean(err && err.phiDenied)
+}
 
 /**
  * All plausible socket endpoints in precedence order — the PHI_USER_DATA_DIR
@@ -154,6 +181,13 @@ export function isDeadSocketError(err) {
   return /ECONNREFUSED|ENOENT/.test(String(err?.message || err))
 }
 
+/** True when an endpoint accepted the connection but never answered its
+ * probe. */
+export function isEndpointTimeout(err) {
+  return err?.code === 'ETIMEDOUT' || /\[timed out\]|timed out after/i.test(
+    String(err?.message || err))
+}
+
 /** Legacy sync discovery: the first candidate by precedence, unprobed. */
 export function discoverEndpoint() {
   const all = discoverEndpoints()
@@ -198,7 +232,7 @@ function httpGetJson(endpoint, path, timeoutMs, agentPid = null,
       res.setEncoding('utf8')
       res.on('data', (d) => { body += d })
       res.on('end', () => {
-        if (res.statusCode === 403) { reject(new Error(DENIED_MESSAGE)); return }
+        if (res.statusCode === 403) { reject(deniedError()); return }
         if (res.statusCode !== 200) {
           reject(new Error(`status ${res.statusCode}`)); return
         }
@@ -217,13 +251,14 @@ function httpGetJson(endpoint, path, timeoutMs, agentPid = null,
  * so it may trigger (and wait on) the consent prompt.
  */
 export async function verifyEndpoint(endpoint, { agentPid = null,
-                                                 agentCapability = null } = {}) {
+                                                 agentCapability = null,
+                                                 timeoutMs = CONSENT_WAIT_MS } = {}) {
   let version
   try {
-    version = await httpGetJson(endpoint, '/json/version', CONSENT_WAIT_MS,
+    version = await httpGetJson(endpoint, '/json/version', timeoutMs,
                                 agentPid, agentCapability)
   } catch (err) {
-    if (err.message === DENIED_MESSAGE) throw err
+    if (isPhiDenied(err)) throw err  // an answer, not a state — never retried
     // Codex runs shell commands in a seatbelt sandbox that by default denies
     // ALL network syscalls — including connect() on Phi's unix socket, which
     // then fails in 0 ms. Phi itself is usually fine and toggling it cannot
@@ -238,10 +273,14 @@ export async function verifyEndpoint(endpoint, { agentPid = null,
         `to ~/.codex/config.toml, or re-run this command with escalated ` +
         `(unsandboxed) permissions. [${err.message}]`)
     }
-    throw new Error(
+    const wrapped = new Error(
       `Phi Browser CDP endpoint is not responding. A consent prompt may be ` +
       `waiting for the user in Phi; otherwise check that Phi Browser is ` +
       `running. [${err.message}]`)
+    if (err?.code === 'ETIMEDOUT' || err?.message === 'timed out') {
+      wrapped.code = 'ETIMEDOUT'
+    }
+    throw wrapped
   }
   // The browser advertises its target as ws://<host>/devtools/browser/<uuid>;
   // only the path matters (the transport is our socket, not that host:port).
@@ -339,8 +378,8 @@ export class UnixWebSocket {
       if (!/ 101 /.test(statusLine)) {
         const denied = / 403 /.test(statusLine)
         this._emit('error', {
-          error: new Error(denied ? DENIED_MESSAGE
-                                  : `WebSocket upgrade failed: ${statusLine}`),
+          error: denied ? deniedError()
+                        : new Error(`WebSocket upgrade failed: ${statusLine}`),
         })
         this.close()
         return
@@ -687,31 +726,74 @@ export class DirectPhiChannel {
  * every one turned out to be a crash-orphaned socket file, leaving the last
  * such error in `out.lastErr`. Any other failure (denial, sandbox wall, no
  * WebSocket) is a real answer from a live endpoint and propagates.
+ *
+ * Precedence survives a slow first reply: a higher-precedence endpoint whose
+ * first /json/version outlives the short probe may be sitting on the
+ * FIRST-RUN CONSENT PROMPT — the app deliberately holds the request open
+ * while the user decides, which is indistinguishable from a wedged pipe
+ * from out here. So the walk first maps the landscape with the short probe,
+ * then, before settling for a lower-precedence endpoint, gives each
+ * higher-precedence timeout the full consent window: silently driving the
+ * wrong install would contradict the documented precedence, and the user's
+ * eventual Allow would land on an abandoned connection. A DEAD leftover
+ * pipe name still refuses instantly and is walked past at no cost.
  */
 async function connectOverCandidates(candidates, opts, out) {
-  for (const endpoint of candidates) {
-    let browserWsPath
+  const timedOut = []
+  let chosen = null
+  for (let index = 0; index < candidates.length; index++) {
+    const endpoint = candidates[index]
+    const hasFallback = index + 1 < candidates.length
     try {
-      ({ browserWsPath } = await verifyEndpoint(endpoint, opts))
+      const { browserWsPath } = await verifyEndpoint(endpoint, {
+        ...opts,
+        ...(hasFallback ? { timeoutMs: FALLBACK_ENDPOINT_WAIT_MS } : {}),
+      })
+      chosen = { endpoint, browserWsPath }
+      break
     } catch (err) {
-      // A crashed app's leftover socket refuses instantly — walk on so a
-      // dead canary pointer can never shadow a live stable Phi.
-      if (isDeadSocketError(err)) { out.lastErr = err; continue }
+      // A crashed app's leftover pipe refuses instantly — walk on so a
+      // dead pointer can never shadow a live Phi.
+      if (isDeadSocketError(err)) {
+        out.lastErr = err
+        continue
+      }
+      if (hasFallback && isEndpointTimeout(err)) {
+        out.lastErr = err
+        timedOut.push(endpoint)
+        continue
+      }
       throw err
     }
-    const client = new CdpClient({ socketPath: endpoint.socketPath,
-                                   wsPath: browserWsPath, ...opts })
-    await client.connect()
-    // Management + lifecycle go straight to the app over a second WS on the
-    // same socket (/phi-agent); page automation stays on the Chromium
-    // browser-target WS above.
-    client.phi = await new DirectPhiChannel({
-      socketPath: endpoint.socketPath,
-      ...opts,
-    }).connect()
-    return client
   }
-  return null
+  // Every endpoint that timed out above outranks whatever verified after it
+  // (the first success breaks the walk). Re-probe them with the full consent
+  // window, in precedence order; the first to come live wins the connection.
+  for (const endpoint of timedOut) {
+    try {
+      const { browserWsPath } = await verifyEndpoint(endpoint, opts)
+      chosen = { endpoint, browserWsPath }
+      break
+    } catch (err) {
+      if (isDeadSocketError(err) || (chosen && isEndpointTimeout(err))) {
+        out.lastErr = err
+        continue
+      }
+      throw err
+    }
+  }
+  if (!chosen) return null
+  const client = new CdpClient({ socketPath: chosen.endpoint.socketPath,
+                                 wsPath: chosen.browserWsPath, ...opts })
+  await client.connect()
+  // Management + lifecycle go straight to the app over a second WS on the
+  // same pipe (/phi-agent); page automation stays on the Chromium
+  // browser-target WS above.
+  client.phi = await new DirectPhiChannel({
+    socketPath: chosen.endpoint.socketPath,
+    ...opts,
+  }).connect()
+  return client
 }
 
 /**

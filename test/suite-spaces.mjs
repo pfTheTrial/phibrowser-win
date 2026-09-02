@@ -78,7 +78,7 @@ test('spaces: switching back restores the original space tabs', async () => {
   try {
     const windowId = await firstWindow(ctl)
     const spaces = (await ctl.send('agentSpace.spaces.list', { windowId })).spaces
-    const home = spaces.find((s) => s.id === '1')
+    const home = spaces.find((s) => s.isDefault)  // the default ROLE, not id "1"
     assert(home, 'default space exists')
 
     // Put a distinctive page in the CURRENT (non-default) space.
@@ -88,14 +88,14 @@ test('spaces: switching back restores the original space tabs', async () => {
     await sleep(600)
 
     assertEq((await ctl.send('agentSpace.spaces.switch',
-                             { windowId, spaceId: '1' })).ok, true, 'switch home ok')
+                             { windowId, spaceId: home.id })).ok, true, 'switch home ok')
     await sleep(700)
     const homeTabs = (await ctl.send('agentSpace.tabs.list', { windowId })).tabs
     assert(!homeTabs.some((t) => (t.title || '').includes(otherMark)),
            'home space does not show the other space page')
 
     const listed = (await ctl.send('agentSpace.spaces.list', { windowId })).spaces
-    assertEq(listed.find((s) => s.id === '1').active, true, 'home is active again')
+    assertEq(listed.find((s) => s.id === home.id).active, true, 'home is active again')
   } finally { ctl.close() }
 })
 
@@ -202,12 +202,35 @@ test('spaces: delete removes the space, its data, and its browser', async () => 
   } finally { ctl.close() }
 })
 
-test('spaces: the default space refuses deletion', async () => {
+test('spaces: only the LAST space refuses deletion; the default hands its role on', async () => {
+  // The Mac's last-Space rule (139edbb2): everything is deletable except the
+  // last remaining Space; deleting the default passes the role to the first
+  // remaining one, persisted with the list.
   const ctl = await openControl()
   try {
+    const windowId = (await ctl.send('agentSpace.list')).windows[0]
+    let { spaces } = await ctl.send('agentSpace.spaces.list', { windowId })
+    const def = spaces.find((s) => s.isDefault)
+    assert(def, 'a default space exists')
+    const spare = await ctl.send('agentSpace.spaces.create', { name: 'Successor' })
+    assertEq(spare.ok, true, 'spare created')
+    const gone = await ctl.send('agentSpace.spaces.delete', { spaceId: def.id })
+    assertEq(gone.ok, true, 'the default is deletable while another space exists')
+    ;({ spaces } = await ctl.send('agentSpace.spaces.list', { windowId }))
+    assertEq(spaces.some((s) => s.id === def.id), false, 'the old default is gone')
+    const next = spaces.find((s) => s.isDefault)
+    assert(next && next.id === spaces[0].id, 'the first remaining space holds the role')
+    // Strip down to one, then the last must be refused.
+    for (const s of spaces.slice(1)) {
+      assertEq((await ctl.send('agentSpace.spaces.delete', { spaceId: s.id })).ok,
+               true, `delete ${s.id}`)
+    }
+    ;({ spaces } = await ctl.send('agentSpace.spaces.list', { windowId }))
+    assertEq(spaces.length, 1, 'one space left')
     assertEq((await ctl.send('agentSpace.spaces.delete',
-                             { spaceId: '1' })).ok, false,
-             'the default space is permanent')
+                             { spaceId: spaces[0].id })).ok, false,
+             'the last space is permanent')
+    assertEq(spaces[0].isDefault, true, 'and it holds the default role')
   } finally { ctl.close() }
 })
 

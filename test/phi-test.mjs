@@ -173,16 +173,19 @@ export async function cdpHttp(path) {
   const sock = await connect()
   sock.write(`GET ${path} HTTP/1.1\r\nHost: phi\r\n\r\n`)
   const body = await new Promise((resolve, reject) => {
-    let acc = ''
+    // Accumulate BYTES: Content-Length counts bytes, and a decoded string's
+    // length counts code units — a single non-ASCII tab title (the box's
+    // zh-CN new-tab page, say) made the old string compare wait forever.
+    let acc = Buffer.alloc(0)
     sock.on('data', (d) => {
-      acc += d.toString('utf8')
+      acc = Buffer.concat([acc, d])
       const i = acc.indexOf('\r\n\r\n')
       if (i < 0) return
-      const head = acc.slice(0, i)
+      const head = acc.subarray(0, i).toString('latin1')
       const m = /Content-Length:\s*(\d+)/i.exec(head)
       const need = m ? Number(m[1]) : 0
-      const rest = acc.slice(i + 4)
-      if (rest.length >= need) resolve(rest.slice(0, need))
+      const rest = acc.subarray(i + 4)
+      if (rest.length >= need) resolve(rest.subarray(0, need).toString('utf8'))
     })
     sock.once('error', reject)
     setTimeout(() => reject(new Error('cdp http timeout')), 8000)

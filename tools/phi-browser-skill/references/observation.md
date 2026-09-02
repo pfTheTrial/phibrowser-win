@@ -113,7 +113,19 @@ can render fine over broken XHRs.
   pagination to settle before printing (for pages that self-paginate; no-op
   otherwise). Returns `{file, bytes}`.
 - `archivePage(path?)` — the complete page as one self-contained MHTML file.
-  Returns `{file, bytes}`.
+  Returns `{file, bytes}`. A snapshot embeds only what the page has actually
+  fetched, so on a page that defers images until they scroll into view,
+  `scroll` through it first.
+- `saveArticle(path?, {complete, inlineImages})` — the page distilled to its
+  article as one standalone HTML file: Phi's own Reader View export, styled
+  the way the reader renders it, not a re-render of a scrape. Images are
+  inlined by default so the file opens with no network; `{inlineImages:
+  false}` leaves them as origin URLs, which is smaller. `{complete: true}`
+  waits for the whole of a paginated document (a long PDF) instead of the
+  pages the reader opens with. Extraction walks the page first, so deferred
+  images are already resolved — unlike `archivePage`, this needs no scrolling
+  beforehand. Throws for pages that are not articles, exactly as
+  `readerArticle` does. Returns `{file, bytes, title, rung, isComplete}`.
 - `scrapeMedia({types, within, dir, limit, maxBytes})` — bulk-download the
   page's media and write a `manifest.json` beside the files. `types`
   defaults to `['image']` (add `'video'`/`'audio'`); collects `<img>`

@@ -1,10 +1,11 @@
 # Task lifecycle — detail
 
 Deep semantics behind the lifecycle rules in SKILL.md: profiles and agent
-permissions, persistent Spaces, `spaceStatus()`, keep-alive, the completion
-safety net and session mirror, saved state, and user console commands. Read
-this before a task that spans days or relaunches, uses `saveState`/
-`importCookies`, or co-works with the user through the console.
+permissions, persistent Spaces, shadow windows, `spaceStatus()`, keep-alive,
+the completion safety net and session mirror, saved state, and user console
+commands. Read this before a task that spans days or relaunches, runs in a
+shadow window, uses `saveState`/`importCookies`, or co-works with the user
+through the console.
 
 ## Profiles and agent permissions
 
@@ -49,6 +50,86 @@ Spaces remain the right default for one-shot tasks — do not create
 persistent Spaces unprompted: they accumulate in the user's switcher until
 the user deletes them.
 
+## Shadow windows
+
+`enterContext({ kind: 'shadow', name, profile? })` binds a **shadow window**:
+a real browser window on a real profile — real cookies, real renderers, driven
+by every page helper exactly as a Space is — that the user **cannot see**. It
+sits off-screen at alpha 0, absent from the Space switcher, Mission Control
+and the Windows menu, and omitted from session restore.
+
+```js
+await enterContext({ kind: 'shadow', name: 'nightly price check' })
+await openTab('https://example.com/pricing')
+cliLog(await snapshotText())
+await complete()          // closes the window — always do this
+```
+
+**Agent Space is the default; shadow is for background work the user
+explicitly asked to keep out of their way.** The difference is not cosmetic:
+
+| | agent Space | shadow window |
+|---|---|---|
+| pip in the Space switcher | yes | **none** |
+| user can watch live | yes | **no** |
+| take control / hand back | yes | **no** |
+| transcript console | yes | **no** |
+| page automation | full | full |
+
+Everything needing a human is therefore impossible here — a login, a captcha,
+a payment, a consent choice: there is no way to ask and no way for the user to
+step in. If a task might hit one, use an agent Space. If one turns up
+mid-run, stop, close the window, and tell the user what needs doing.
+
+These refuse loudly rather than doing nothing quietly, because each means the
+task has outgrown a shadow window: `spaceStatus`, `say`, `readUserMessages`,
+`waitForUserMessage`, `ownership`, `handOff`, `handOffAndWait`, `takeOver`,
+`waitForAgentControl`, and `screenshotBrowser` (nothing to photograph — plain
+`screenshot()` works, it captures the page through the renderer). `setStatus`
+/ `narrate` and `markError` are quiet no-ops instead, matching user-space
+mode, so shared flows need no branching. Nothing you narrate reaches a
+console, so **the user-facing result belongs in your chat reply.**
+
+Other differences worth knowing:
+
+- **Permission.** The whole feature sits behind Settings ▸ Developer ▸ "Allow
+  agents to operate your Spaces". With it off, every shadow call fails
+  `user_space_operations_disabled` — the answer is an agent Space, not a
+  workaround. Per-profile agent permissions apply as usual
+  (`profile_not_agent_allowed`).
+- **Incognito.** `enterContext({kind: 'shadow', name, incognito: true})`
+  opens the window in a unique off-the-record session instead of the profile
+  itself: no cookies, logins, or storage come in from the profile, nothing
+  browsed there persists, and the session is destroyed when the window
+  closes. Each incognito shadow window gets its OWN fresh session — isolated
+  from the user's Cmd+Shift+N incognito windows, from the Incognito Space,
+  and from other shadow tasks. `profile` still names the PARENT profile
+  (extensions and settings come from it; per-profile agent permission
+  applies), so `credentialStatus`/`fillCredential` vault access works but the
+  page starts logged OUT of everything. Use it for clean-state checks —
+  "how does this page look logged out", price comparisons without
+  personalization, testing a signup flow. A taskId's incognito-ness is fixed
+  at creation: re-binding the same name with the other value fails
+  `shadow_incognito_mismatch` (pick a new name instead). On an app build
+  that predates the feature, `enterContext` throws rather than silently
+  browsing in the regular profile — update Phi Browser.
+- **Always `complete()`.** It closes the window. Leaving it to the keep-alive
+  sweep strands an invisible window burning a renderer the user cannot find
+  or close. Same ~120s-while-driving / ~30-min-between-rounds clock as an
+  ephemeral Space, with no pause-on-handoff (there is no handoff);
+  `ping(ttlSeconds)` extends it identically.
+- **Re-binding** works like a Space: the same `name` in a later round returns
+  the same window and re-attaches to the tab it last drove.
+  `listShadowWindows()` lists the ones you have open (yours only — another
+  agent's background work is not visible); `closeShadowWindow(name)` cleans
+  up one an earlier round abandoned, without binding to it.
+- **Closing the last tab destroys the window** — shadow browsers skip
+  placeholder mode, so unlike a Space there is no empty window left behind.
+  The next `enterContext` under that name spawns a fresh one; page state is
+  lost.
+- **Viewport** is the window's own real off-screen frame, not a mirror of the
+  user's window, so `setViewport` is normally unnecessary.
+
 ## Space status
 
 `spaceStatus()` is the one-call "what does my Space look like right now":
@@ -61,8 +142,13 @@ with the tab inventory in hand — check it before opening more tabs.
 
 - It is PASSIVE: safe while the user holds control (no activation, no
   viewport override), and it does not refresh the keep-alive clock it
-  reports. `{gone: true}` means the Space no longer exists — the task is
-  over; do not recreate it just to look around.
+  reports. A fresh round also defers its page-session attachment while the
+  user owns the Space; the attach completes lazily — from `takeOver()` or a
+  successful `waitForAgentControl()`, from the first acting helper after a
+  hand-back flips ownership, or (activation-free) from the first passive
+  observation helper that needs the session.
+  `{gone: true}` means the Space no longer exists — the task is over; do not
+  recreate it just to look around.
 - `{shots: 'current'}` adds `shot`, a PNG path of the ATTACHED tab (view
   it), or null if the capture fails. Only the attached tab can be shot:
   background tabs of the hidden window do not paint, so there is no

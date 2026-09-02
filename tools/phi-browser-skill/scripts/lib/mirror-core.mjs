@@ -23,7 +23,19 @@ import {
 import { execFileSync, spawn } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join, basename } from 'node:path'
-import { discoverEndpoints, isDeadSocketError, DirectPhiChannel } from './cdp.mjs'
+import {
+  discoverEndpoints,
+  isDeadSocketError,
+  isEndpointTimeout,
+  isPhiDenied,
+  verifyEndpoint,
+  FALLBACK_ENDPOINT_WAIT_MS,
+  DirectPhiChannel,
+} from './cdp.mjs'
+
+// Re-exported so the daemon can tell a refusal from a restart without
+// reaching past this module into the transport.
+export { isPhiDenied }
 
 // Same directory as helpers.mjs's task files — path derived identically on
 // both sides so writer (heredoc) and reader (daemon) always agree.
@@ -217,22 +229,62 @@ function sanitizeKey(id) {
 export async function openPhiChannel({ agentPid = null, agentCapability = null } = {}) {
   const endpoints = discoverEndpoints()
   if (endpoints.length === 0) throw new Error('no app socket endpoint')
+  const probeOpts = { agentPid, agentCapability }
   let lastErr = null
-  for (const endpoint of endpoints) {
+  const timedOut = []
+  let live = null
+  for (let index = 0; index < endpoints.length; index++) {
+    const endpoint = endpoints[index]
+    const hasFallback = index + 1 < endpoints.length
     try {
-      return await new DirectPhiChannel({
-        socketPath: endpoint.socketPath,
-        agentPid,
-        agentCapability,
-      }).connect()
+      // Avoid opening a WebSocket that can wait forever on a published but
+      // wedged higher-precedence channel. The driving round already obtained
+      // consent; this is a liveness probe carrying the same identity proof.
+      await verifyEndpoint(endpoint, {
+        ...probeOpts,
+        ...(hasFallback ? { timeoutMs: FALLBACK_ENDPOINT_WAIT_MS } : {}),
+      })
+      live = endpoint
+      break
     } catch (err) {
       // Crash-orphaned socket file — walk on to the next candidate. (Never
       // probe with a naked connect: see isDeadSocketError in cdp.mjs.)
-      if (isDeadSocketError(err)) { lastErr = err; continue }
+      if (isDeadSocketError(err)) {
+        lastErr = err
+        continue
+      }
+      if (hasFallback && isEndpointTimeout(err)) {
+        lastErr = err
+        timedOut.push(endpoint)
+        continue
+      }
       throw err
     }
   }
-  throw lastErr
+  // A higher-precedence endpoint that outlived the short probe may be busy
+  // (or holding a first-run consent prompt open) rather than wedged. Give it
+  // the full window before binding a LOWER-precedence install: the daemon
+  // must mirror into the same browser the driving round connects to, and
+  // that walk prefers precedence the same way (see connectOverCandidates).
+  for (const endpoint of timedOut) {
+    try {
+      await verifyEndpoint(endpoint, probeOpts)
+      live = endpoint
+      break
+    } catch (err) {
+      if (isDeadSocketError(err) || (live && isEndpointTimeout(err))) {
+        lastErr = err
+        continue
+      }
+      throw err
+    }
+  }
+  if (!live) throw lastErr
+  return await new DirectPhiChannel({
+    socketPath: live.socketPath,
+    agentPid,
+    agentCapability,
+  }).connect()
 }
 
 /**
