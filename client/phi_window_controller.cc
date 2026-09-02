@@ -723,6 +723,17 @@ PhiWindowController::Layout PhiWindowController::ComputeLayout() {
         kPhiAiEnabled ? out.chat.left - Scaled(kTopBarSpacing) : r2;
     out.url_field = {out.reload.right + Scaled(6), mid - field_h / 2,
                      field_right, mid + field_h / 2};
+    // WebContentAddressBar's trailing stack, INSIDE the capsule: the Mac
+    // keeps the extensions menu there in balanced exactly as SideAddressBar
+    // keeps it in performance — 2pt from the trailing edge, and a 22pt glyph
+    // box (its menuButton is a 22pt Lottie in a 24pt hover circle inside the
+    // 26pt bar). The Mac's full order is reader, copy link, extensions menu;
+    // only the extensions menu is built for this layout so far, and the two
+    // others will slot in ahead of it.
+    const int fmid = (out.url_field.top + out.url_field.bottom) / 2;
+    const int fbtn = field_h - Scaled(2);
+    const int fr = out.url_field.right - Scaled(2);
+    out.extensions = {fr - fbtn, fmid - fbtn / 2, fr, fmid + fbtn / 2};
     out.tabs_top = out.spaces_strip.bottom + Scaled(kHeaderSpacer);
   } else {
     // Performance: back / forward / reload and search-tabs trail the caption
@@ -821,13 +832,10 @@ PhiWindowController::Layout PhiWindowController::ComputeLayout() {
     bx += btn + Scaled(4);
     out.memory = {bx, bar_top, bx + btn, bar_top + bar_h};
   }
-  if (layout_mode_ == PhiLayoutMode::kBalanced) {
-    // Balanced keeps the puzzle in the bottom bar (its address bar lives in
-    // the top bar); performance moved it inside the address capsule, where
-    // the Mac SideAddressBar keeps its extension-menu button.
-    bx += btn + Scaled(4);
-    out.extensions = {bx, bar_top, bx + btn, bar_top + bar_h};
-  }
+  // No extensions button down here in any layout: the Mac's bottom bar holds
+  // downloads, memory and the notification card leading, feedback and chat
+  // trailing — the extensions menu lives inside whichever address bar the
+  // layout has (SideAddressBar or WebContentAddressBar).
   int br = sidebar - inset;
   const int pill_top = bar_top + (bar_h - Scaled(kPillHeight)) / 2;
   if (layout_mode_ != PhiLayoutMode::kBalanced) {
@@ -1184,12 +1192,19 @@ void PhiWindowController::PositionUrlField(const Layout& layout) {
   // before the in-field trailing stack (or the bare trailing edge without
   // one) — the EDIT must not extend under the buttons or it eats their
   // clicks.
-  const int right_stop =
-      layout.field_ext_strip.right > layout.field_ext_strip.left
-          ? layout.field_ext_strip.left
-          : (layout.copy_link.right > layout.copy_link.left
-                 ? layout.copy_link.left
-                 : box.right);
+  int right_stop = box.right;
+  // Whatever the trailing stack holds in this layout — the pinned-icon strip
+  // and copy link in performance, the extensions menu in either — the text
+  // stops at the LEFTMOST of them. Rects that sit outside the capsule (the
+  // comfortable layout keeps its extensions button in the top bar) are not
+  // candidates.
+  for (const RECT& accessory : {layout.field_ext_strip, layout.copy_link,
+                                layout.extensions}) {
+    if (accessory.right > accessory.left && accessory.left > box.left &&
+        accessory.left < right_stop) {
+      right_stop = accessory.left;
+    }
+  }
   const int text_left = layout.page_icon.right > layout.page_icon.left
                            ? layout.page_icon.right + Scaled(8)
                            : box.left + Scaled(12);
@@ -7273,14 +7288,18 @@ void PhiWindowController::PaintChrome(HDC dc,
     ::SetTextColor(dc, shown.empty() ? kLabelDim : kLabel);
     RECT url_rc = layout.url_field;
     url_rc.left += Scaled(12);  // SideAddressBar.textFieldLeadingInset
-    // Stop before the in-field trailing stack when it exists.
-    url_rc.right =
-        (layout.field_ext_strip.right > layout.field_ext_strip.left
-             ? layout.field_ext_strip.left
-             : (layout.copy_link.right > layout.copy_link.left
-                    ? layout.copy_link.left
-                    : url_rc.right)) -
-        Scaled(8);
+    // Stop before the in-field trailing stack when it exists — the leftmost
+    // accessory that actually sits inside the capsule (see PositionUrlField).
+    int text_right = url_rc.right;
+    for (const RECT& accessory : {layout.field_ext_strip, layout.copy_link,
+                                  layout.extensions}) {
+      if (accessory.right > accessory.left &&
+          accessory.left > layout.url_field.left &&
+          accessory.left < text_right) {
+        text_right = accessory.left;
+      }
+    }
+    url_rc.right = text_right - Scaled(8);
     ::DrawTextW(dc, shown.empty() ? L"Search or Enter URL" : shown.c_str(),
                 -1, &url_rc,
                 DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_PATH_ELLIPSIS);
