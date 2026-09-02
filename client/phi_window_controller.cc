@@ -644,11 +644,15 @@ PhiWindowController::Layout PhiWindowController::ComputeLayout() {
     // overflow button at the toolbar's trailing edge, as Chrome's do.
     out.band_limit = 0;
 
-    // The active Space's compact pip leads the band (the Mac clears the
-    // traffic lights with 80pt; Windows has none, so the edge inset does).
-    out.chips_left = inset;
+    // The Phi button leads the band — the corner the Mac's menu bar gives
+    // the Phi menu, and where the vertical layouts start their titles. The
+    // active Space's compact pip follows it (the Mac clears the traffic
+    // lights with 80pt; Windows has none, so the edge inset does).
+    out.phi_menu = {inset, (tb - btn) / 2, inset + btn, (tb + btn) / 2};
+    out.chips_left = out.phi_menu.right + Scaled(kTopBarSpacing);
     out.chips_top = (tb - Scaled(kSpaceChip)) / 2;
-    out.chips_limit = inset + Scaled(kSpaceChip);  // One compact pip.
+    // One compact pip.
+    out.chips_limit = out.chips_left + Scaled(kSpaceChip);
     // search-tabs keeps the trailing spot the vertical layouts park it in,
     // so the button does not move when the layout does.
     out.search_tabs =
@@ -2893,12 +2897,13 @@ void PhiWindowController::OnChromeMouseMove(POINT client_pt) {
     const Layout layout = ComputeLayout();
     // The first six MUST stay in the paint table's order — PaintChrome keys
     // a button's hover wash on this index.
-    const std::array<RECT, 12> nav = {layout.back, layout.forward,
+    const std::array<RECT, 13> nav = {layout.back, layout.forward,
                                       layout.reload, layout.search_tabs,
                                       add_tab_button_, layout.overflow,
                                       layout.downloads, layout.memory,
                                       layout.feedback, layout.chat,
-                                      layout.extensions, layout.copy_link};
+                                      layout.extensions, layout.copy_link,
+                                      layout.phi_menu};
     for (size_t i = 0; i < nav.size() && kind == HoverKind::kNone; ++i) {
       if (::PtInRect(&nav[i], client_pt)) {
         kind = HoverKind::kNav;
@@ -4901,12 +4906,14 @@ int PhiWindowController::CaptionHitTest(POINT client_pt) {
   if (::PtInRect(&layout.caption_min, client_pt)) {
     return HTMINBUTTON;
   }
-  // The trailing cluster's controls take their own clicks — without this
-  // the band would drag the window out from under the pointer instead.
+  // The band's own controls take their own clicks — the trailing cluster,
+  // and comfortable's leading Phi button — without this the band would drag
+  // the window out from under the pointer instead.
   if (::PtInRect(&layout.back, client_pt) ||
       ::PtInRect(&layout.forward, client_pt) ||
       ::PtInRect(&layout.reload, client_pt) ||
-      ::PtInRect(&layout.search_tabs, client_pt)) {
+      ::PtInRect(&layout.search_tabs, client_pt) ||
+      ::PtInRect(&layout.phi_menu, client_pt)) {
     return HTCLIENT;
   }
   if (layout.horizontal_tabs) {
@@ -5050,6 +5057,17 @@ void PhiWindowController::OnChromeClick(int x, int y) {
   }
   const Layout layout = ComputeLayout();
   POINT pt = {x, y};
+  // Comfortable's Phi button. That band carries no titles, so the leading
+  // logo drops the bar's first menu itself — the rest of the bar hangs off
+  // the toolbar's overflow.
+  if (menu_bar_ && ::PtInRect(&layout.phi_menu, pt)) {
+    POINT anchor = {layout.phi_menu.left, layout.title_bar.bottom};
+    ::ClientToScreen(shell_hwnd_, &anchor);
+    menu_open_ = true;
+    menu_bar_->ShowAt(0, anchor.x, anchor.y);
+    menu_open_ = false;
+    return;
+  }
   // A menu title in the caption band drops its menu, aligned under the title.
   // The band's trailing controls are checked BELOW this block, so the
   // drag-space early-out must not swallow them.
@@ -7113,6 +7131,31 @@ void PhiWindowController::PaintChrome(HDC dc,
     if (logo_bgra.empty() && !logo) {
       logo = PhiAppIcon(logo_size);  // Fallback: the nearest ICO entry.
     }
+    // One draw for both callers: the Phi title's icon, and comfortable's
+    // standalone Phi button.
+    const auto draw_logo = [&](int logo_x, int logo_y) {
+      RECT logo_rc = {logo_x, logo_y, logo_x + logo_size,
+                      logo_y + logo_size};
+      const bool drew =
+          !logo_bgra.empty() &&
+          PhiDrawBgra(dc, logo_rc, logo_bgra.data(), logo_native,
+                      logo_native);
+      if (!drew && logo) {
+        ::DrawIconEx(dc, logo_x, logo_y, logo, logo_size, logo_size, 0,
+                     nullptr, DI_NORMAL);
+      }
+    };
+    // Comfortable draws no titles — the tab strip owns the band — so the Phi
+    // menu shows as the logo alone in the leading slot, with the same hover
+    // wash the band's other buttons take. (Its index in the hover table.)
+    if (layout.phi_menu.right > layout.phi_menu.left) {
+      if (hover_kind_ == HoverKind::kNav && hover_index_ == 12) {
+        FillRounded(dc, layout.phi_menu, palette.hover, Scaled(4));
+      }
+      draw_logo(
+          (layout.phi_menu.left + layout.phi_menu.right - logo_size) / 2,
+          (layout.phi_menu.top + layout.phi_menu.bottom - logo_size) / 2);
+    }
     const size_t titles = VisibleMenuTitles(layout);
     for (size_t i = 0; i < titles; ++i) {
       const RECT& title_rc = menu_titles_[i].second;
@@ -7125,20 +7168,8 @@ void PhiWindowController::PaintChrome(HDC dc,
       RECT text_rc = title_rc;
       if (i == 0) {
         // The Phi button: icon leading, label after — one hit target.
-        {
-          const int logo_x = title_rc.left + Scaled(kMenuTitlePad);
-          const int logo_y = (title_rc.bottom + title_rc.top - logo_size) / 2;
-          RECT logo_rc = {logo_x, logo_y, logo_x + logo_size,
-                          logo_y + logo_size};
-          const bool drew =
-              !logo_bgra.empty() &&
-              PhiDrawBgra(dc, logo_rc, logo_bgra.data(), logo_native,
-                          logo_native);
-          if (!drew && logo) {
-            ::DrawIconEx(dc, logo_x, logo_y, logo, logo_size, logo_size, 0,
-                         nullptr, DI_NORMAL);
-          }
-        }
+        draw_logo(title_rc.left + Scaled(kMenuTitlePad),
+                  (title_rc.bottom + title_rc.top - logo_size) / 2);
         text_rc.left += Scaled(kMenuTitlePad) + logo_size + Scaled(6);
         ::DrawTextW(dc, menu_titles_[i].first.c_str(), -1, &text_rc,
                     DT_LEFT | DT_VCENTER | DT_SINGLELINE);

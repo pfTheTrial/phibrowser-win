@@ -561,6 +561,12 @@ class PhiWindowController {
     // band has no titles there — and the home of the Feedback, Chat and
     // memory entries the other layouts keep in bands. Empty elsewhere.
     RECT overflow{};
+    // Comfortable's Phi button: the logo alone at the caption band's leading
+    // edge, the corner the Mac's menu bar gives the Phi menu and where the
+    // vertical layouts start their titles. It drops the bar's FIRST popup;
+    // the rest of the bar stays behind the overflow. Empty in the other
+    // layouts, which draw the real "Phi" title there instead.
+    RECT phi_menu{};
     // The globe leading comfortable's omnibox pill, where Chrome shows the
     // site chip. Empty in the other layouts, whose fields carry no icon.
     RECT page_icon{};
