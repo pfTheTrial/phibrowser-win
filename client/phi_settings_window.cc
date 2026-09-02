@@ -3531,12 +3531,40 @@ LRESULT CALLBACK PhiSettingsWindow::WndProc(HWND hwnd,
         return 0;
       }
       break;
+    case WM_ERASEBKGND:
+      // Nothing erases: the pane below paints every pixel of the client area
+      // itself. Letting the class brush blank it first is what made scrolling
+      // and switching panes flash white.
+      return 1;
     case WM_PAINT: {
       PAINTSTRUCT ps = {};
       HDC dc = ::BeginPaint(hwnd, &ps);
       if (self) {
+        // Back-buffered, like the bookmark manager: a pane repaints wholesale
+        // on every scroll notch and hover, and drawing that straight to the
+        // window shows the ground between the fill and the content.
+        RECT rc = {};
+        ::GetClientRect(hwnd, &rc);
+        const int page_w = rc.right - rc.left;
+        const int page_h = rc.bottom - rc.top;
+        HDC mem = ::CreateCompatibleDC(dc);
+        HBITMAP buffer =
+            mem ? ::CreateCompatibleBitmap(dc, page_w, page_h) : nullptr;
         self->Rebuild();
-        self->Paint(dc);
+        if (mem && buffer) {
+          HGDIOBJ prev = ::SelectObject(mem, buffer);
+          self->Paint(mem);
+          ::BitBlt(dc, 0, 0, page_w, page_h, mem, 0, 0, SRCCOPY);
+          ::SelectObject(mem, prev);
+        } else {
+          self->Paint(dc);
+        }
+        if (buffer) {
+          ::DeleteObject(buffer);
+        }
+        if (mem) {
+          ::DeleteDC(mem);
+        }
       }
       ::EndPaint(hwnd, &ps);
       return 0;
