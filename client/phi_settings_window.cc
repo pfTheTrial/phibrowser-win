@@ -21,6 +21,7 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "phibrowser-win/client/phi_emoji.h"
+#include "phibrowser-win/client/phi_features.h"
 #include "phibrowser-win/client/phi_dwrite.h"
 #include "phibrowser-win/client/phi_i18n.h"
 #include "phibrowser-win/client/phi_icons.h"
@@ -507,6 +508,10 @@ bool PhiSettingsWindow::ShowSection(const std::string& name) {
     // Developer exists only in developer mode, exactly as on Mac.
     if (name == "developer" && g_instance && g_instance->host_ &&
         !g_instance->host_->DeveloperMode()) {
+      return false;
+    }
+    // Phi & AI is not mounted while the AI suite is off.
+    if (name == "ai" && !kPhiAiEnabled) {
       return false;
     }
     if (g_instance) {
@@ -2323,12 +2328,24 @@ void PhiSettingsWindow::Rebuild() {
   if (!host_) {
     return;
   }
-  // The pane toolbar, centred across the top; Developer only in dev mode.
+  // The pane toolbar, centred across the top. Two panes are not always
+  // mounted: Developer outside developer mode, and Phi & AI while the AI
+  // suite is off (phi_features.h).
   const bool developer = host_->DeveloperMode();
-  const int shown = static_cast<int>(kSections.size()) - (developer ? 0 : 1);
+  const auto unmounted = [developer](const char* id) {
+    const std::string name(id);
+    return (!developer && name == "developer") ||
+           (!kPhiAiEnabled && name == "ai");
+  };
+  int shown = 0;
+  for (const SectionDef& section : kSections) {
+    if (!unmounted(section.id)) {
+      ++shown;
+    }
+  }
   int x = Scaled((kWidth - shown * kToolbarItemWidth) / 2);
   for (const SectionDef& section : kSections) {
-    if (!developer && std::string(section.id) == "developer") {
+    if (unmounted(section.id)) {
       continue;
     }
     Item entry;
@@ -2347,7 +2364,7 @@ void PhiSettingsWindow::Rebuild() {
     items_.push_back(std::move(entry));
     x += Scaled(kToolbarItemWidth);
   }
-  if (!developer && section_ == "developer") {
+  if (unmounted(section_.c_str())) {
     section_ = "general";  // The pane vanished under us, as on Mac.
     SyncTitle();
   }

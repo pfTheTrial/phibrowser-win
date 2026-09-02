@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "phibrowser-win/client/phi_features.h"
 #include "phibrowser-win/client/phi_window_controller.h"
 
 #include <commctrl.h>
@@ -710,13 +711,18 @@ PhiWindowController::Layout PhiWindowController::ComputeLayout() {
     out.content = {bar_left, gap + Scaled(kTopBarHeightNav), w - m, h - m};
     carve_bookmark_bar(&out);
     // Chat capsule trailing (balanced shows it in the header, as on Mac).
+    // With the AI suite off it is not laid out at all and the address bar
+    // takes the room back.
     const int r2 = w - m - Scaled(kTopBarLeading);
-    out.chat = {r2 - Scaled(kChatWidth), mid - Scaled(kPillHeight) / 2, r2,
-                mid + Scaled(kPillHeight) / 2};
+    if (kPhiAiEnabled) {
+      out.chat = {r2 - Scaled(kChatWidth), mid - Scaled(kPillHeight) / 2, r2,
+                  mid + Scaled(kPillHeight) / 2};
+    }
     const int field_h = Scaled(kTopBarField);
+    const int field_right =
+        kPhiAiEnabled ? out.chat.left - Scaled(kTopBarSpacing) : r2;
     out.url_field = {out.reload.right + Scaled(6), mid - field_h / 2,
-                     out.chat.left - Scaled(kTopBarSpacing),
-                     mid + field_h / 2};
+                     field_right, mid + field_h / 2};
     out.tabs_top = out.spaces_strip.bottom + Scaled(kHeaderSpacer);
   } else {
     // Performance: back / forward / reload and search-tabs trail the caption
@@ -809,8 +815,12 @@ PhiWindowController::Layout PhiWindowController::ComputeLayout() {
   out.bottom_bar = {0, bar_top, sidebar, bar_top + bar_h};
   int bx = inset;
   out.downloads = {bx, bar_top, bx + btn, bar_top + bar_h};
-  bx += btn + Scaled(4);
-  out.memory = {bx, bar_top, bx + btn, bar_top + bar_h};
+  // The browser-memory chip follows downloads only while the AI suite is on;
+  // otherwise nothing takes its slot.
+  if (kPhiAiEnabled) {
+    bx += btn + Scaled(4);
+    out.memory = {bx, bar_top, bx + btn, bar_top + bar_h};
+  }
   if (layout_mode_ == PhiLayoutMode::kBalanced) {
     // Balanced keeps the puzzle in the bottom bar (its address bar lives in
     // the top bar); performance moved it inside the address capsule, where
@@ -826,8 +836,10 @@ PhiWindowController::Layout PhiWindowController::ComputeLayout() {
     // bottom-bar chat whenever navigation rides at the top
     // (updateChatButtonVisibility's navigationAtTop) — the capsule lives
     // in the header there, and this block must not overwrite it.
-    out.chat = {br - Scaled(kChatWidth), bar_top, br, bar_top + bar_h};
-    br = out.chat.left - Scaled(4);
+    if (kPhiAiEnabled) {
+      out.chat = {br - Scaled(kChatWidth), bar_top, br, bar_top + bar_h};
+      br = out.chat.left - Scaled(4);
+    }
   }
   // The narrow sidebar takes ViewThatFits' icon-only feedback variant.
   out.feedback = {br - Scaled(kFeedbackIconWidth), pill_top, br,

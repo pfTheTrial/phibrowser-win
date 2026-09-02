@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "phibrowser-win/client/phi_features.h"
 #include "phibrowser-win/client/phi_menu_bar.h"
 
 #include "phibrowser-win/client/phi_bookmark_manager.h"
@@ -255,9 +256,13 @@ void PhiMenuBar::ShowOverflow(int screen_x, int screen_y) {
       return;
     }
   }
-  // The two entries the comfortable layout has no band for. The memory chip
-  // is not among them: it is a readout, with no command behind it.
-  ::AppendMenuW(overflow_, MF_STRING, kCmdToggleChatbar, PhiStr("sidebar.chatButton.title"));
+  // The entries the comfortable layout has no band for. The memory chip is
+  // not among them: it is a readout, with no command behind it. Chat is here
+  // only while the AI suite is on (phi_features.h).
+  if (kPhiAiEnabled) {
+    ::AppendMenuW(overflow_, MF_STRING, kCmdToggleChatbar,
+                  PhiStr("sidebar.chatButton.title"));
+  }
   ::AppendMenuW(overflow_, MF_STRING, kCmdReportIssue, PhiStr("menuBar.sendFeedback"));
   ::AppendMenuW(overflow_, MF_SEPARATOR, 0, nullptr);
   const int count = ::GetMenuItemCount(bar_);
@@ -361,9 +366,14 @@ void PhiMenuBar::BuildStatic() {
   Append(view_, kCmdBookmarkBarOnNewTab, PhiStr("app.viewMenu.showBookmarkBarOnNewTab"));
   Separator(view_);
   Append(view_, kCmdToggleSidebar, PhiStr("app.viewMenu.toggleSidebar"));
-  Append(view_, kCmdToggleChatbar, PhiStr("app.viewMenu.toggleChatbar"), false);
-  Append(view_, kCmdNewConversation, PhiStr("app.viewMenu.newConversation"),
-         false);
+  // The chat pair belongs to the AI suite: greyed out on Mac because it is
+  // signed-out, absent here because the suite is off.
+  if (kPhiAiEnabled) {
+    Append(view_, kCmdToggleChatbar, PhiStr("app.viewMenu.toggleChatbar"),
+           false);
+    Append(view_, kCmdNewConversation, PhiStr("app.viewMenu.newConversation"),
+           false);
+  }
 
   // Spaces / Bookmarks / Tab hold dynamic rows; they are filled on open.
 
