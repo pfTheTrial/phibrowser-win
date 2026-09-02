@@ -4,10 +4,11 @@
 
 #include "phibrowser-win/client/phi_emoji.h"
 
+#include <windows.h>
+
 #include <map>
 
 #include "base/files/file_path.h"
-#include "base/files/file_util.h"
 #include "base/json/json_reader.h"
 #include "base/logging.h"
 #include "base/no_destructor.h"
@@ -24,6 +25,28 @@ struct Catalog {
   std::map<std::string, std::string> text_by_id;
 };
 
+// Reads a whole file with plain Win32 I/O. The catalog loads LAZILY, on the
+// browser UI thread, from whichever surface first needs an emoji (the icon
+// picker, agentSpace.emoji.*) — and that thread disallows blocking calls once
+// the main loop runs, so base::ReadFileToString there is a DCHECK crash in
+// the dev build (thread_restrictions.cc:62, seen on the box). The client's
+// other stores read this way for the same reason; the catalog is ~200 KB.
+bool ReadWholeFile(const std::wstring& path, std::string* out) {
+  HANDLE f = ::CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ,
+                           nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
+                           nullptr);
+  if (f == INVALID_HANDLE_VALUE) {
+    return false;
+  }
+  char buf[16384];
+  DWORD read = 0;
+  while (::ReadFile(f, buf, sizeof(buf), &read, nullptr) && read > 0) {
+    out->append(buf, read);
+  }
+  ::CloseHandle(f);
+  return true;
+}
+
 // Reads the catalog the Mac bundles, shipped beside the exe by the build.
 Catalog LoadCatalog() {
   Catalog catalog;
@@ -34,7 +57,7 @@ Catalog LoadCatalog() {
   const base::FilePath path =
       dir.AppendASCII("resources").AppendASCII("emoji-catalog.json");
   std::string json;
-  if (!base::ReadFileToString(path, &json)) {
+  if (!ReadWholeFile(path.value(), &json)) {
     LOG(ERROR) << "[PhiClient] emoji catalog missing: " << path;
     return catalog;
   }
