@@ -38,11 +38,13 @@
 #include "phibrowser-win/client/phi_group_overview.h"
 #include "phibrowser-win/client/phi_search_tabs_panel.h"
 #include "phibrowser-win/client/phi_bookmark_manager.h"
+#include "phibrowser-win/client/phi_create_space_panel.h"
 #include "phibrowser-win/client/phi_folder_icon_picker.h"
 #include "phibrowser-win/client/phi_folder_icons.h"
 #include "phibrowser-win/client/phi_tab_preview.h"
 #include "phibrowser-win/client/phi_tab_switcher.h"
 #include "phibrowser-win/client/phi_dwrite.h"
+#include "phibrowser-win/client/phi_emoji.h"
 #include "phibrowser-win/client/phi_icons.h"
 #include "phibrowser-win/client/phi_mac_icons.h"
 #include "phibrowser-win/client/phi_menu_bar.h"
@@ -150,6 +152,10 @@ constexpr UINT_PTR kDragSlideTimer = 0x518;
 constexpr UINT_PTR kFloatingTickTimer = 0x522;
 // Reverts the copy-link checkmark after its second (triggeredRevertDelay).
 constexpr UINT_PTR kCopyLinkRevertTimer = 0x523;
+// The Spaces strip's "+" fading in and out with the row hover
+// (SpacesStripView.addButton: .animation(.easeInOut(duration: 0.15))).
+constexpr int kAddSpaceFadeMs = 150;
+constexpr UINT_PTR kAddSpaceFadeTimer = 0x524;
 
 // Tab groups: the Mac's 32pt TabGroupHeaderView; the group cell sits on an
 // 18% tint of the group color (~46/255).
@@ -2081,6 +2087,15 @@ void PhiWindowController::LayoutContents() {
   CloseOmniboxPopup(/*stop_query=*/false);  // Anchored to the OLD field rect.
   const Layout layout = ComputeLayout();
   PositionUrlField(layout);
+  if (creating_space_) {
+    // The form lives only in a docked vertical sidebar: a layout switch or
+    // a collapse ends it (the Mac re-routes to its standalone window).
+    if (layout_mode_ == PhiLayoutMode::kComfortable || sidebar_collapsed_) {
+      CancelCreateSpaceForm();
+    } else if (create_space_panel_) {
+      create_space_panel_->Reposition(CreateSpaceFormRect());
+    }
+  }
   if (url_field_) {
     const bool field_hidden =
         content_fullscreen_ ||
@@ -2917,6 +2932,26 @@ void PhiWindowController::OnChromeMouseMove(POINT client_pt) {
       index = static_cast<int>(i);
     }
   }
+  {
+    // The strip's trailing slot ("+" / "…"), and — tracked apart from the
+    // hover kind, since resting on a pip is both a pip hover and a row
+    // hover — the strip's ROW: inside its 10pt padding, pips and the empty
+    // run to the trailing slot included. The row is the "+" button's
+    // reveal region (the Mac's onHover on the whole row). Empty slot =
+    // no strip in this layout (comfortable, incognito): no row to hover.
+    bool row_hovered = false;
+    if (add_space_button_.right > add_space_button_.left) {
+      if (kind == HoverKind::kNone &&
+          ::PtInRect(&add_space_button_, client_pt)) {
+        kind = HoverKind::kAddSpace;
+        index = 0;
+      }
+      RECT row = ComputeLayout().spaces_strip;
+      ::InflateRect(&row, -Scaled(kSpacesStripPad), 0);
+      row_hovered = ::PtInRect(&row, client_pt) != FALSE;
+    }
+    SetStripRowHovered(row_hovered);
+  }
   for (size_t i = 0; i < pinned_.size() && kind == HoverKind::kNone; ++i) {
     if (::PtInRect(&pinned_[i].bounds, client_pt)) {
       kind = HoverKind::kPin;
@@ -3000,6 +3035,7 @@ void PhiWindowController::SetUrlFieldHover(bool hovered) {
 
 void PhiWindowController::ClearHover() {
   DismissHoverCard(std::string());
+  SetStripRowHovered(false);
   if (tab_preview_) {
     tab_preview_->PointerExited();
   }
@@ -3009,6 +3045,187 @@ void PhiWindowController::ClearHover() {
     if (shell_hwnd_) {
       ::InvalidateRect(shell_hwnd_, nullptr, FALSE);
     }
+  }
+}
+
+void PhiWindowController::SetStripRowHovered(bool hovered) {
+  if (strip_row_hovered_ == hovered) {
+    return;
+  }
+  strip_row_hovered_ = hovered;
+  const ULONGLONG now = ::GetTickCount64();
+  const ULONGLONG elapsed =
+      add_space_fade_start_ ? now - add_space_fade_start_ : 0;
+  // A flip mid-fade reverses from where the fade stands: the curve is
+  // symmetric, so backdating the clock by the leg still to run lands the
+  // reversed fade exactly on the current opacity — a quick in-and-out
+  // never snaps.
+  add_space_fade_start_ =
+      add_space_fade_start_ &&
+              elapsed < static_cast<ULONGLONG>(kAddSpaceFadeMs)
+          ? now - (static_cast<ULONGLONG>(kAddSpaceFadeMs) - elapsed)
+          : now;
+  if (shell_hwnd_) {
+    ::SetTimer(shell_hwnd_, kAddSpaceFadeTimer, 16, nullptr);
+    ::InvalidateRect(shell_hwnd_, nullptr, FALSE);
+  }
+}
+
+double PhiWindowController::AddSpaceRevealProgress() const {
+  double eased = 1.0;
+  if (add_space_fade_start_) {
+    const double linear = std::min(
+        1.0, static_cast<double>(::GetTickCount64() - add_space_fade_start_) /
+                 kAddSpaceFadeMs);
+    eased = linear * linear * (3.0 - 2.0 * linear);
+  }
+  return strip_row_hovered_ ? eased : 1.0 - eased;
+}
+
+RECT PhiWindowController::CreateSpaceFormRect() {
+  const Layout layout = ComputeLayout();
+  return {layout.sidebar.left, layout.spaces_strip.bottom,
+          layout.sidebar.right, layout.sidebar.bottom};
+}
+
+void PhiWindowController::ShowCreateSpaceForm() {
+  if (!host_) {
+    return;
+  }
+  // CreateSpacePanel.requestCreation: the vertical layouts host the form
+  // inline in the docked sidebar. The horizontal layout, a collapsed
+  // sidebar (the floating panel does not host it here) and windows without
+  // a Spaces strip create at once instead — the Mac's standalone window has
+  // no Windows counterpart yet.
+  const RECT form = CreateSpaceFormRect();
+  const bool can_host = !incognito_ && !agent_ && !floating_layout_ &&
+                        !sidebar_collapsed_ &&
+                        layout_mode_ != PhiLayoutMode::kComfortable &&
+                        form.right - form.left > Scaled(120) &&
+                        form.bottom - form.top > Scaled(200);
+  if (!can_host) {
+    host_->RequestCreateSpace(window_id_, /*new_profile=*/false);
+    RefreshTabs();
+    return;
+  }
+  if (creating_space_) {
+    if (create_space_panel_) {
+      create_space_panel_->FocusField();
+    }
+    return;
+  }
+  if (!create_space_panel_) {
+    create_space_panel_ = std::make_unique<PhiCreateSpacePanel>(this);
+  }
+  // Seeded from the Space the "+" was pressed in: its profile opens the
+  // picker, its theme is what the random pick must differ from.
+  std::string profile_id = "Default";
+  for (const PhiSpaceView& space : host_->Spaces()) {
+    if (space.id == active_space_) {
+      profile_id = space.profile_id;
+      break;
+    }
+  }
+  std::string theme_id = host_->SpaceThemeId(active_space_);
+  if (theme_id.empty()) {
+    theme_id = host_->ThemeId();
+  }
+  creating_space_ = true;
+  preview_until_switch_ = false;
+  DismissHoverCard(std::string());
+  create_space_panel_->Show(form, profile_id, theme_id, host_->Saturation());
+  RefreshTabs();  // The strip reserves the placeholder pip's slot.
+  create_space_panel_->FocusField();
+}
+
+void PhiWindowController::CommitCreateSpaceForm(const PhiNewSpaceSpec& spec) {
+  if (!creating_space_) {
+    return;
+  }
+  creating_space_ = false;
+  creating_space_icon_text_.clear();
+  if (create_space_panel_) {
+    // Instant: the new Space presents over this window (the Mac's
+    // `animated: false` activation after the sidebar flow).
+    create_space_panel_->Hide(/*animated=*/false);
+  }
+  // The previewed theme stays up until the created Space presents, so the
+  // chrome never flashes back to the source theme in between.
+  preview_until_switch_ = true;
+  const std::string id =
+      host_ ? host_->RequestCreateSpaceWithOptions(window_id_, spec)
+            : std::string();
+  if (id.empty()) {
+    EndCreateSpacePreview();  // Creation failed: back to the source theme.
+  }
+  FocusActiveBrowser();
+  RefreshTabs();
+}
+
+void PhiWindowController::CancelCreateSpaceForm() {
+  if (!creating_space_) {
+    return;
+  }
+  creating_space_ = false;
+  creating_space_icon_text_.clear();
+  if (create_space_panel_) {
+    create_space_panel_->Hide(/*animated=*/true);
+  }
+  EndCreateSpacePreview();
+  FocusActiveBrowser();
+  RefreshTabs();
+}
+
+void PhiWindowController::PreviewCreateSpaceTheme(const std::string& theme_id,
+                                                  int saturation) {
+  if (!host_ || !creating_space_) {
+    return;
+  }
+  preview_palette_ = PhiResolvePalette(PhiThemeById(theme_id),
+                                       host_->Appearance(), saturation);
+  ApplyPalette();
+  if (create_space_panel_) {
+    create_space_panel_->Refresh();
+  }
+  if (new_tab_page_ && new_tab_page_->visible()) {
+    new_tab_page_->Refresh();
+  }
+  for (HWND cap : corner_caps_) {
+    if (cap) {
+      ::InvalidateRect(cap, nullptr, TRUE);
+    }
+  }
+}
+
+void PhiWindowController::EndCreateSpacePreview() {
+  if (!preview_palette_ && !preview_until_switch_) {
+    return;
+  }
+  preview_palette_.reset();
+  preview_until_switch_ = false;
+  ApplyPalette();
+  if (new_tab_page_ && new_tab_page_->visible()) {
+    new_tab_page_->Refresh();
+  }
+  for (HWND cap : corner_caps_) {
+    if (cap) {
+      ::InvalidateRect(cap, nullptr, TRUE);
+    }
+  }
+}
+
+void PhiWindowController::SetCreateSpaceIcon(const std::string& storage_value) {
+  creating_space_icon_text_ =
+      base::UTF8ToWide(PhiIconDisplayText(storage_value));
+  if (shell_hwnd_) {
+    ::InvalidateRect(shell_hwnd_, nullptr, FALSE);
+  }
+}
+
+void PhiWindowController::OnSpaceFormProfileCreated(
+    const std::string& profile_id) {
+  if (creating_space_ && create_space_panel_) {
+    create_space_panel_->OnProfileCreated(profile_id);
   }
 }
 
@@ -3567,6 +3784,9 @@ void PhiWindowController::AttachSpaceBrowser(const std::string& space_id,
   browser_hwnds_[browser_window_id] = browser_hwnd;
   active_space_ = space_id;
   active_browser_ = browser_window_id;
+  if (preview_until_switch_) {
+    EndCreateSpacePreview();
+  }
   if (framework_) {
     framework_->SetWindowSpace(browser_window_id, space_id.c_str());
   }
@@ -3664,6 +3884,9 @@ PhiPalette PhiWindowController::CurrentPalette() const {
     static const PhiPalette kIncognito =
         PhiResolvePalette(PhiThemeById("pure"), PhiAppearance::kDark);
     return kIncognito;
+  }
+  if (preview_palette_) {
+    return *preview_palette_;  // The create form's live theme preview.
   }
   PhiPalette target = host_ ? host_->PaletteForSlot(window_id_) : kFallback;
   const double t = RampEasedProgress();
@@ -3768,6 +3991,9 @@ bool PhiWindowController::ShowSpace(const std::string& space_id) {
   browser_hwnd_ = hwnd_it->second;
   active_space_ = space_id;
   active_browser_ = it->second;
+  if (preview_until_switch_) {
+    EndCreateSpacePreview();
+  }
   if (swap_start_) {
     // Deferred: the entering page is positioned hidden and revealed when
     // the band slide completes; the leaving page stays up until then.
@@ -3979,13 +4205,21 @@ void PhiWindowController::RebuildChips() {
     return;
   }
   int x = layout.chips_left;
+  // While the create form is up the row's end holds the dashed placeholder
+  // pip (the Mac's creatingSpacePlaceholderPip): reserve its slot so the
+  // real pips can never collide with it.
+  int chips_limit = layout.chips_limit;
+  creating_pip_bounds_ = RECT{};
+  if (creating_space_ && !layout.horizontal_tabs) {
+    chips_limit -= Scaled(kSpaceChip + kSpaceChipGap);
+  }
   for (const PhiSpaceView& space : host_->Spaces()) {
     // Comfortable shows a single compact pip — the ACTIVE Space; the rest
     // live in the popup it opens.
     if (layout.horizontal_tabs && space.id != active_space_) {
       continue;
     }
-    if (x + Scaled(kSpaceChip) > layout.chips_limit) {
+    if (x + Scaled(kSpaceChip) > chips_limit) {
       // Row is full: the trailing slot becomes the Mac's "…" switcher.
       // The ACTIVE Space must stay visible (the Mac scrolls it into view):
       // evict the last shown pip for it when it fell past the break.
@@ -4021,7 +4255,7 @@ void PhiWindowController::RebuildChips() {
   // one surfaces its window so the user can watch the agent work live.
   if (!agent_ && !layout.horizontal_tabs) {
     for (const PhiAgentPipView& pip : host_->AgentSpaces()) {
-      if (x + Scaled(kSpaceChip) > layout.chips_limit) {
+      if (x + Scaled(kSpaceChip) > chips_limit) {
         chips_overflow_ = true;
         break;
       }
@@ -4038,6 +4272,10 @@ void PhiWindowController::RebuildChips() {
       chips_.push_back(std::move(chip));
       x += Scaled(kSpaceChip + kSpaceChipGap);
     }
+  }
+  if (creating_space_ && !layout.horizontal_tabs) {
+    creating_pip_bounds_ = {x, layout.chips_top, x + Scaled(kSpaceChip),
+                            layout.chips_top + Scaled(kSpaceChip)};
   }
 }
 
@@ -5336,6 +5574,9 @@ void PhiWindowController::OnChromeClick(int x, int y) {
       RefreshTabs();
       return;
     }
+    if (creating_space_) {
+      return;  // Read-only while the form is up (the Mac's isCreatingSpace).
+    }
     if (chip.open) {
       ShowSpace(chip.id);
     } else if (host_) {
@@ -5347,9 +5588,17 @@ void PhiWindowController::OnChromeClick(int x, int y) {
     return;
   }
   if (host_ && ::PtInRect(&layout.add_space, pt)) {
+    if (creating_space_) {
+      return;  // The form is already up: requestCreation is a no-op then.
+    }
     if (!chips_overflow_) {
-      host_->RequestCreateSpace(window_id_, /*new_profile=*/false);
-      RefreshTabs();
+      // The pointer is on the row, so the "+" is up — or would be, had the
+      // hover-in reached us: a click under a pointer that never moved since
+      // a menu dismissed over it reveals the button rather than being lost.
+      // (The Mac's flag is watchdog-verified against the real pointer, so
+      // its hidden-and-disabled "+" never sits under a pointer on the row.)
+      SetStripRowHovered(true);
+      ShowCreateSpaceForm();
       return;
     }
     // Overflow: the "…" opens the full switcher — every Space plus a
@@ -5390,7 +5639,7 @@ void PhiWindowController::OnChromeClick(int x, int y) {
         screen.y, 0, shell_hwnd_, nullptr));
     ::DestroyMenu(menu);
     if (chosen == kNewSpace) {
-      host_->RequestCreateSpace(window_id_, /*new_profile=*/false);
+      ShowCreateSpaceForm();
     } else if (chosen == kNewSpaceProfile) {
       host_->RequestCreateSpace(window_id_, /*new_profile=*/true);
     } else if (chosen >= 1 && chosen <= spaces.size()) {
@@ -7411,6 +7660,11 @@ void PhiWindowController::PaintChrome(HDC dc,
     if (chip.id != active_space_ && !(chip.is_agent && chip.open)) {
       continue;
     }
+    if (creating_space_ && !chip.is_agent) {
+      // The dashed placeholder is the Space in focus while the form is up;
+      // the source Space must not keep reading as active beside it.
+      continue;
+    }
     RECT pill = chip.bounds;
     if (!chip.is_agent && swap_start_ &&
         swap_chip_from_.right > swap_chip_from_.left) {
@@ -7475,11 +7729,71 @@ void PhiWindowController::PaintChrome(HDC dc,
                   DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     }
   }
-  if (!incognito_) {
+  if (creating_space_ &&
+      creating_pip_bounds_.right > creating_pip_bounds_.left) {
+    // The Mac's creatingSpacePlaceholderPip: a dashed outline where the new
+    // Space will land, carrying the form's currently selected icon.
+    const RECT& pip = creating_pip_bounds_;
+    HPEN dash_pen = ::CreatePen(PS_DASH, 1,
+                                BlendOver(kLabelDim, palette.ground_top, 166));
+    HGDIOBJ previous_pen = ::SelectObject(dc, dash_pen);
+    HGDIOBJ previous_brush =
+        ::SelectObject(dc, ::GetStockObject(NULL_BRUSH));
+    ::RoundRect(dc, pip.left, pip.top, pip.right, pip.bottom,
+                Scaled(kCornerRadius), Scaled(kCornerRadius));
+    ::SelectObject(dc, previous_brush);
+    ::SelectObject(dc, previous_pen);
+    ::DeleteObject(dash_pen);
+    if (!creating_space_icon_text_.empty()) {
+      RECT glyph_rc = pip;
+      ::InflateRect(&glyph_rc, -Scaled(4), -Scaled(4));
+      RECT emoji_rc = glyph_rc;
+      ::OffsetRect(&emoji_rc, 0, -Scaled(1));
+      if (PhiDrawCatalogArtwork(dc, glyph_rc, creating_space_icon_text_,
+                                Scaled(13), kLabel)) {
+        // The catalog's own artwork.
+      } else if (!PhiIsPrivateGlyph(creating_space_icon_text_) &&
+                 PhiDrawColorText(dc, emoji_rc, creating_space_icon_text_,
+                                  Scaled(12), kLabel)) {
+        // Colour emoji.
+      } else if (emoji_font_ || chip_icon_font_) {
+        HFONT pip_icon_font = PhiIsPrivateGlyph(creating_space_icon_text_)
+                                  ? chip_icon_font_
+                                  : emoji_font_;
+        HGDIOBJ previous_pip_font =
+            pip_icon_font ? ::SelectObject(dc, pip_icon_font) : nullptr;
+        ::SetTextColor(dc, kLabel);
+        ::DrawTextW(dc, creating_space_icon_text_.c_str(), -1, &glyph_rc,
+                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        if (previous_pip_font) {
+          ::SelectObject(dc, previous_pip_font);
+        }
+      }
+    }
+  }
+  if (!incognito_ && layout.add_space.right > layout.add_space.left) {
     // The Mac trailing slot: "+" creates; on overflow it becomes the "…"
-    // switcher (moreButton) since not every pip is visible.
-    DrawGlyph(dc, layout.add_space, chips_overflow_ ? L"…" : L"+",
-              kLabelDim);
+    // switcher (moreButton) since not every pip is visible. The "+" is up
+    // only while the pointer is over the strip's row (addButton's opacity
+    // rides slot.isStripRowHovered, 0.15s easeInOut); the "…" always is.
+    // Whichever shows wears the pips' hover wash (radius 6) under the
+    // cursor. GDI has no opacity: the fade blends toward the ground the
+    // slot sits on, sampled from its corner — nothing else paints there.
+    const double reveal = chips_overflow_ ? 1.0 : AddSpaceRevealProgress();
+    if (reveal > 0.0) {
+      COLORREF ground =
+          ::GetPixel(dc, layout.add_space.left, layout.add_space.top);
+      if (ground == CLR_INVALID) {
+        ground = palette.ground_top;
+      }
+      const int alpha = static_cast<int>(std::lround(reveal * 255.0));
+      if (hover_kind_ == HoverKind::kAddSpace) {
+        FillRounded(dc, layout.add_space,
+                    BlendOver(palette.hover, ground, alpha), Scaled(6));
+      }
+      DrawGlyph(dc, layout.add_space, chips_overflow_ ? L"…" : L"+",
+                BlendOver(kLabelDim, ground, alpha));
+    }
   }
 
   PaintBandOrSwipe(dc, layout, palette);
@@ -8826,6 +9140,17 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
         ::KillTimer(hwnd, kCopyLinkRevertTimer);
         self->copy_link_flash_ = false;
         ::InvalidateRect(hwnd, nullptr, FALSE);
+        return 0;
+      }
+      if (self && wparam == kAddSpaceFadeTimer) {
+        // The "+" reveal fade: repaint until it settles.
+        ::InvalidateRect(hwnd, nullptr, FALSE);
+        if (!self->add_space_fade_start_ ||
+            ::GetTickCount64() - self->add_space_fade_start_ >=
+                static_cast<ULONGLONG>(kAddSpaceFadeMs)) {
+          ::KillTimer(hwnd, kAddSpaceFadeTimer);
+          self->add_space_fade_start_ = 0;
+        }
         return 0;
       }
       if (self && wparam == kDragSlideTimer) {

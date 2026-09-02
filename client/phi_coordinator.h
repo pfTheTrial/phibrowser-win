@@ -136,6 +136,11 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   void OpenUrlInMainWindow(const std::string& url);
   void RequestSettings() override;
   void RequestSpaceIconPicker(const std::string& space_id) override;
+  void RequestCreateProfileForSpaceForm(int64_t slot,
+                                        const std::string& name) override;
+  std::string RequestCreateSpaceWithOptions(
+      int64_t slot,
+      const PhiNewSpaceSpec& spec) override;
   int64_t SlotAtScreenPoint(POINT screen, int64_t exclude_slot) const override;
   bool RequestDropTabOnWindow(int64_t source_slot,
                               int index,
@@ -580,6 +585,9 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // A "+ Space & profile" request waiting for its profile to appear (profile
   // creation is asynchronous). Polled from a WM_TIMER on msg_hwnd_.
   int64_t pending_profile_slot_ = 0;
+  // True when the pending profile is for the create-Space form: the form
+  // selects it (no Space is created for it here).
+  bool pending_profile_for_form_ = false;
   std::set<std::string> known_profiles_before_;
   int pending_profile_ticks_ = 0;
   // Returns true when finished (created the Space, or gave up).

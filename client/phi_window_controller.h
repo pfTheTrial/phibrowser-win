@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <utility>
@@ -66,6 +67,16 @@ struct PhiSpaceView {
   std::string icon_text;  // Resolved display glyph, UTF-8 (may be PUA).
 };
 
+// What the create-Space form commits — CreateSpacePanel.create's arguments.
+struct PhiNewSpaceSpec {
+  std::string name;        // Already defaulted ("Space N") by the form.
+  std::string profile_id;
+  std::string icon;        // Storage form ("phi:<id>" / "emoji:<id>").
+  std::string theme_id;    // A built-in theme, pinned to the new Space.
+  int saturation = -1;     // The slider once dragged; -1 = follow the app.
+  std::string color_hex;   // The theme overlay, "#RRGGBB" (the Mac's colorHex).
+};
+
 // A live agent Space as a pip in the switcher — the Mac's robot Space pip.
 // The user clicks it to watch the (normally hidden) agent Space live.
 struct PhiAgentPipView {
@@ -80,6 +91,7 @@ struct PhiAgentPipView {
 class PhiTabPreview;
 class PhiBookmarkManager;
 class PhiNewTabPage;
+class PhiCreateSpacePanel;
 
 class PhiSlotHost {
  public:
@@ -265,6 +277,21 @@ class PhiSlotHost {
   // Opens Settings > Spaces with this Space selected — its detail column is
   // the icon picker (the "Change Icon…" destination).
   virtual void RequestSpaceIconPicker(const std::string& space_id) = 0;
+  // The create-Space form (PhiCreateSpacePanel). The first four are the
+  // Settings host's spellings, so one coordinator override serves both.
+  virtual std::vector<std::string> ProfileSummaries() const = 0;  // "id\tname"
+  virtual std::string ThemeId() const = 0;  // The app-wide theme.
+  virtual PhiAppearance Appearance() const = 0;
+  virtual int Saturation() const = 0;  // 0..100.
+  // Creates a profile for the form; the slot's controller hears
+  // OnSpaceFormProfileCreated once it exists (creation is asynchronous).
+  virtual void RequestCreateProfileForSpaceForm(int64_t slot,
+                                                const std::string& name) = 0;
+  // Creates the Space the form described, pins its theme, and switches
+  // `slot` to it. Returns the new Space's id, or empty on failure.
+  virtual std::string RequestCreateSpaceWithOptions(
+      int64_t slot,
+      const PhiNewSpaceSpec& spec) = 0;
 };
 
 // The Mac sidebar's default and drag range (MainSplitViewController).
@@ -334,6 +361,24 @@ class PhiWindowController {
   const std::vector<int>& TabMruOrder() const { return tab_mru_; }
   // The content card's client-coordinate rect (the group overview covers it).
   RECT ContentRect();
+  // The create-Space form — the Mac's CreateSpacePanel hosted in the
+  // sidebar (SidebarViewController.showCreateSpaceOverlay). Every "New
+  // Space" entry point (the strip's "+", the switcher menus, the menu bar)
+  // routes through ShowCreateSpaceForm; where a docked vertical sidebar
+  // cannot host the form it creates at once instead (the Mac opens a
+  // standalone window there).
+  void ShowCreateSpaceForm();
+  void CommitCreateSpaceForm(const PhiNewSpaceSpec& spec);
+  void CancelCreateSpaceForm();
+  // The form's live theme preview: the chrome paints with this palette
+  // until the created Space presents, or the form is cancelled.
+  void PreviewCreateSpaceTheme(const std::string& theme_id, int saturation);
+  // The form's icon, mirrored on the strip's dashed placeholder pip.
+  void SetCreateSpaceIcon(const std::string& storage_value);
+  void OnSpaceFormProfileCreated(const std::string& profile_id);
+  bool creating_space() const { return creating_space_; }
+  // Where the form mounts: the sidebar below the Spaces strip.
+  RECT CreateSpaceFormRect();
   // Surfaces (visible=true) or parks off-screen (visible=false) an agent
   // window so the user can watch it live. No-op on a non-agent window.
   void SetAgentVisible(bool visible);
@@ -869,8 +914,10 @@ class PhiWindowController {
   // its vector; repaints fire only when it changes.
   // kNav: the toolbar's back/forward/reload/search buttons — hover_index_
   // is 0..3 in that order.
+  // kAddSpace: the Spaces strip's trailing slot — the "+" or, on overflow,
+  // the "…" switcher standing in for it.
   enum class HoverKind { kNone, kTab, kPin, kBookmark, kGroupHeader, kChip,
-                         kNav, kNewTabRow, kFieldExt };
+                         kNav, kNewTabRow, kFieldExt, kAddSpace };
   HoverKind hover_kind_ = HoverKind::kNone;
   int hover_index_ = -1;
   void OnChromeMouseMove(POINT client_pt);
@@ -908,6 +955,7 @@ class PhiWindowController {
   // tab sits on a new-tab URL (or the browser is in placeholder mode) — the
   // Mac's NewTabViewController, URL-driven like the bookmark manager.
   std::unique_ptr<PhiNewTabPage> new_tab_page_;
+  std::unique_ptr<PhiCreateSpacePanel> create_space_panel_;
   void SyncNativeNtp();
   bool WantsNativeNtp() const;
   // Focuses the page's omnibox unless the user is busy in another control.
@@ -1180,6 +1228,27 @@ class PhiWindowController {
   // True when not every Space fit the strip: the trailing "+" becomes the
   // Mac's "…" (moreButton) and opens the full switcher menu instead.
   bool chips_overflow_ = false;
+  // The Mac's SpacesStripView shows its "+" only while the pointer is over
+  // the strip's ROW (slot.isStripRowHovered): the whole row is the hover
+  // region, so the button is already up by the time the cursor could reach
+  // its far-right slot, and the slot stays reserved so the pips never
+  // reflow. The overflow "…" is never gated. A flip fades the button over
+  // kAddSpaceFadeMs (the Mac's 0.15s easeInOut on the button's opacity).
+  bool strip_row_hovered_ = false;
+  ULONGLONG add_space_fade_start_ = 0;  // Fade clock; 0 = settled.
+  void SetStripRowHovered(bool hovered);
+  double AddSpaceRevealProgress() const;  // 0 = hidden … 1 = fully shown.
+  // The create-Space form's host state — the Mac SpaceWindowSlot's
+  // isCreatingSpace / creatingSpaceIconValue: the strip reserves a dashed
+  // placeholder pip at its end, hides the active pill and turns read-only.
+  // The palette override is the form's live theme preview, kept through the
+  // created Space's arrival so the chrome never flashes the source theme.
+  bool creating_space_ = false;
+  std::wstring creating_space_icon_text_;
+  RECT creating_pip_bounds_{};
+  std::optional<PhiPalette> preview_palette_;
+  bool preview_until_switch_ = false;
+  void EndCreateSpacePreview();
   PhiLayoutMode layout_mode_ = PhiLayoutMode::kPerformance;
 
   // The Mac floating sidebar (WebContentContainerViewController+

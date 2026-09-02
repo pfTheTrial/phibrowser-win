@@ -31,6 +31,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import re
 import json
 import os
 import sys
@@ -48,6 +49,29 @@ MAC_CATALOG = os.path.join(
 LOCALES = ["en", "de", "es", "fr", "ja", "ko", "nl", "zh-Hans", "zh-Hant"]
 
 
+# The Mac's values carry printf placeholders ("%d", "%@", "%1$@"); PhiStrF
+# substitutes positional "{0}" tokens. Convert on the way in so a key shared
+# with the Mac formats on Windows too.
+_PRINTF = re.compile(
+    r"%(\d+\$)?[-+ 0#]*\d*(?:\.\d+)?(?:hh|h|ll|l|q|z|t|j)?[@dsifuxXc]")
+
+
+def positionalize(text):
+    if not text or "%" not in text:
+        return text
+    counter = [0]
+
+    def repl(match):
+        if match.group(1):
+            index = int(match.group(1)[:-1]) - 1
+        else:
+            index = counter[0]
+            counter[0] += 1
+        return "{%d}" % index
+
+    return _PRINTF.sub(repl, text.replace("%%", "%"))
+
+
 def load_mac(path):
     """(by_key, by_english) views of the Mac catalog's translations."""
     if not os.path.exists(path):
@@ -61,7 +85,7 @@ def load_mac(path):
         table = {}
         for locale, value in (entry.get("localizations") or {}).items():
             unit = value.get("stringUnit") or {}
-            text = unit.get("value")
+            text = positionalize(unit.get("value"))
             # A "variations" entry is plural/device-specific; the Windows
             # client has no such call sites, so those keys are skipped rather
             # than flattened to an arbitrary branch.

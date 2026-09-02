@@ -2103,6 +2103,10 @@
    "comment": "settings — used at phi_settings_window.cc:803",
    "en": "profile manages its own settings."
   },
+  "settings.profiles.createDialog.message": {
+   "comment": "createSpace — used at phi_create_space_panel.cc",
+   "en": "Enter a name for the new profile. Each profile has its own cookies, history, and extensions."
+  },
   "settings.profiles.createDialog.title": {
    "comment": "menuBar — used at phi_menu_bar.cc:1008",
    "en": "New Profile"
@@ -2378,6 +2382,38 @@
   "sidebar.chromeNewtab": {
    "comment": "sidebar — used in phi_window_controller.cc",
    "en": "chrome://newtab"
+  },
+  "sidebar.createSpace.cancelButton": {
+   "comment": "createSpace — used at phi_create_space_panel.cc",
+   "en": "Cancel"
+  },
+  "sidebar.createSpace.createButton": {
+   "comment": "createSpace — used at phi_create_space_panel.cc",
+   "en": "Create Space"
+  },
+  "sidebar.createSpace.defaultName": {
+   "comment": "createSpace — used at phi_create_space_panel.cc",
+   "en": "Space {0}"
+  },
+  "sidebar.createSpace.nameField.placeholder": {
+   "comment": "createSpace — used at phi_create_space_panel.cc",
+   "en": "Space name"
+  },
+  "sidebar.createSpace.profilePicker.label": {
+   "comment": "createSpace — used at phi_create_space_panel.cc",
+   "en": "Profile"
+  },
+  "sidebar.createSpace.profilePicker.newProfileAction": {
+   "comment": "createSpace — used at phi_create_space_panel.cc",
+   "en": "New Profile…"
+  },
+  "sidebar.createSpace.subtitle": {
+   "comment": "createSpace — used at phi_create_space_panel.cc",
+   "en": "Each space has its own independent bookmarks"
+  },
+  "sidebar.createSpace.title": {
+   "comment": "createSpace — used at phi_create_space_panel.cc",
+   "en": "Create a Space"
   },
   "sidebar.ctrl": {
    "comment": "sidebar — used in phi_window_controller.cc",

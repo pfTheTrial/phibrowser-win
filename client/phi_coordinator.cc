@@ -3048,6 +3048,7 @@ bool PhiCoordinator::TryFinishProfileSpace() {
   if (++pending_profile_ticks_ > 40) {  // ~20s
     LOG(ERROR) << "[PhiClient] profile creation timed out";
     pending_profile_slot_ = 0;
+    pending_profile_for_form_ = false;
     return true;
   }
   std::optional<base::Value> now = base::JSONReader::Read(
@@ -3062,6 +3063,17 @@ bool PhiCoordinator::TryFinishProfileSpace() {
     const std::string* id = v.GetDict().FindString("id");
     if (!id || known_profiles_before_.count(*id)) {
       continue;
+    }
+    if (pending_profile_for_form_) {
+      // The create-Space form asked for it: the form's picker selects it,
+      // and the Space follows when the form is submitted.
+      pending_profile_for_form_ = false;
+      const int64_t form_slot = pending_profile_slot_;
+      pending_profile_slot_ = 0;
+      if (PhiWindowController* controller = ControllerForSlot(form_slot)) {
+        controller->OnSpaceFormProfileCreated(*id);
+      }
+      return true;
     }
     // The new profile: create its Space and enter it.
     base::DictValue payload;
@@ -3298,6 +3310,7 @@ void PhiCoordinator::RequestCreateSpace(int64_t slot, bool new_profile) {
     }
     pending_profile_slot_ = slot;
     pending_profile_ticks_ = 0;
+    pending_profile_for_form_ = false;
     framework_->CreateProfile(
         ("Phi Space " + std::to_string(next_space_id_)).c_str());
     if (msg_hwnd_) {
@@ -3318,6 +3331,83 @@ void PhiCoordinator::RequestCreateSpace(int64_t slot, bool new_profile) {
       RequestSwitchSpace(slot, *id);
     }
   }
+}
+
+void PhiCoordinator::RequestCreateProfileForSpaceForm(int64_t slot,
+                                                      const std::string& name) {
+  if (!framework_ || name.empty()) {
+    return;
+  }
+  // Same asynchronous flow as "New Space with New Profile": snapshot the
+  // profiles, ask for one, and poll until a new id shows up — except the
+  // form gets the id instead of a ready-made Space.
+  known_profiles_before_.clear();
+  std::optional<base::Value> before = base::JSONReader::Read(
+      framework_->ListProfilesJson(), base::JSON_PARSE_RFC);
+  if (before && before->is_list()) {
+    for (const base::Value& v : before->GetList()) {
+      if (v.is_dict()) {
+        if (const std::string* id = v.GetDict().FindString("id")) {
+          known_profiles_before_.insert(*id);
+        }
+      }
+    }
+  }
+  pending_profile_slot_ = slot;
+  pending_profile_ticks_ = 0;
+  pending_profile_for_form_ = true;
+  framework_->CreateProfile(name.c_str());
+  if (msg_hwnd_) {
+    ::SetTimer(msg_hwnd_, 1, 500, nullptr);
+  }
+}
+
+std::string PhiCoordinator::RequestCreateSpaceWithOptions(
+    int64_t slot,
+    const PhiNewSpaceSpec& spec) {
+  // CreateSpacePanel.create: the Space through the one creation flow, then
+  // its theme pinned (setTheme / setOverlaySaturation), then activated in
+  // the window the form was in.
+  base::DictValue payload;
+  if (!spec.name.empty()) {
+    payload.Set("name", spec.name);
+  }
+  payload.Set("profileId",
+              spec.profile_id.empty() ? std::string("Default") : spec.profile_id);
+  if (!spec.icon.empty()) {
+    payload.Set("iconName", spec.icon);
+  }
+  if (!spec.color_hex.empty()) {
+    payload.Set("colorHex", spec.color_hex);
+  }
+  std::string json;
+  base::JSONWriter::Write(payload, &json);
+  const std::string created = ExecuteControlOnUi("agentSpace.spaces.create", json);
+  std::optional<base::DictValue> r =
+      base::JSONReader::ReadDict(created, base::JSON_PARSE_RFC);
+  const std::string* id = r ? r->FindString("id") : nullptr;
+  if (!id) {
+    return std::string();
+  }
+  const std::string new_id = *id;
+  if (!spec.theme_id.empty()) {
+    for (Space& space : spaces_) {
+      if (space.id == new_id) {
+        space.theme_id = PhiThemeById(spec.theme_id).id;
+        space.saturation =
+            spec.saturation < 0 ? -1 : std::min(100, spec.saturation);
+        break;
+      }
+    }
+    SaveSpaces();
+    RebuildSpacePalettes();
+    for (const auto& [window_slot, controller] : windows_) {
+      controller->ApplyPalette();
+    }
+    PhiSettingsWindow::Refresh();
+  }
+  RequestSwitchSpace(slot, new_id);
+  return new_id;
 }
 
 PhiWindowController* PhiCoordinator::ControllerForSlot(int64_t slot) {

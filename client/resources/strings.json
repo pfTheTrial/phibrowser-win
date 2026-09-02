@@ -2831,6 +2831,17 @@
   "settings.profileManagesItsOwnSettings": {
    "en": "profile manages its own settings."
   },
+  "settings.profiles.createDialog.message": {
+   "de": "Gib einen Namen für das neue Profil ein. Jedes Profil hat eigene Cookies, einen eigenen Verlauf und eigene Erweiterungen.",
+   "en": "Enter a name for the new profile. Each profile has its own cookies, history, and extensions.",
+   "es": "Introduce un nombre para el perfil nuevo. Cada perfil tiene sus propias cookies, historial y extensiones.",
+   "fr": "Saisissez un nom pour le nouveau profil. Chaque profil possède ses propres cookies, son historique et ses extensions.",
+   "ja": "新しいプロファイルの名前を入力してください。各プロファイルには独自のCookie、履歴、拡張機能があります。",
+   "ko": "새 프로필의 이름을 입력하세요. 프로필마다 별도의 쿠키, 방문 기록, 확장 프로그램이 있어요.",
+   "nl": "Voer een naam in voor het nieuwe profiel. Elk profiel heeft zijn eigen cookies, geschiedenis en extensies.",
+   "zh-Hans": "输入新个人资料的名称。每个个人资料都有自己的 Cookie、历史记录和扩展程序。",
+   "zh-Hant": "請輸入新設定檔的名稱。每個設定檔都有自己的 Cookie、歷史記錄和擴充功能。"
+  },
   "settings.profiles.createDialog.title": {
    "de": "Neues Profil",
    "en": "New Profile",
@@ -3477,6 +3488,94 @@
   },
   "sidebar.chromeNewtab": {
    "en": "chrome://newtab"
+  },
+  "sidebar.createSpace.cancelButton": {
+   "de": "Abbrechen",
+   "en": "Cancel",
+   "es": "Cancelar",
+   "fr": "Annuler",
+   "ja": "キャンセル",
+   "ko": "취소",
+   "nl": "Annuleer",
+   "zh-Hans": "取消",
+   "zh-Hant": "取消"
+  },
+  "sidebar.createSpace.createButton": {
+   "de": "Space erstellen",
+   "en": "Create Space",
+   "es": "Crear Espacio",
+   "fr": "Créer l'Espace",
+   "ja": "スペースを作成",
+   "ko": "스페이스 만들기",
+   "nl": "Maak Space aan",
+   "zh-Hans": "创建空间",
+   "zh-Hant": "建立空間"
+  },
+  "sidebar.createSpace.defaultName": {
+   "de": "Space {0}",
+   "en": "Space {0}",
+   "es": "Espacio {0}",
+   "fr": "Espace {0}",
+   "ja": "スペース{0}",
+   "ko": "스페이스 {0}",
+   "nl": "Space {0}",
+   "zh-Hans": "空间 {0}",
+   "zh-Hant": "空間 {0}"
+  },
+  "sidebar.createSpace.nameField.placeholder": {
+   "de": "Space-Name",
+   "en": "Space name",
+   "es": "Nombre del Espacio",
+   "fr": "Nom de l'Espace",
+   "ja": "スペース名",
+   "ko": "스페이스 이름",
+   "nl": "Space-naam",
+   "zh-Hans": "空间名称",
+   "zh-Hant": "空間名稱"
+  },
+  "sidebar.createSpace.profilePicker.label": {
+   "de": "Profil",
+   "en": "Profile",
+   "es": "Perfil",
+   "fr": "Profil",
+   "ja": "プロファイル",
+   "ko": "프로필",
+   "nl": "Profiel",
+   "zh-Hans": "个人资料",
+   "zh-Hant": "設定檔"
+  },
+  "sidebar.createSpace.profilePicker.newProfileAction": {
+   "de": "Neues Profil…",
+   "en": "New Profile…",
+   "es": "Nuevo perfil…",
+   "fr": "Nouveau profil…",
+   "ja": "新しいプロファイル…",
+   "ko": "새 프로필…",
+   "nl": "Nieuw profiel…",
+   "zh-Hans": "新建个人资料…",
+   "zh-Hant": "新增設定檔…"
+  },
+  "sidebar.createSpace.subtitle": {
+   "de": "Jeder Space hat seine eigenen Lesezeichen",
+   "en": "Each space has its own independent bookmarks",
+   "es": "Cada Espacio tiene sus propios marcadores independientes",
+   "fr": "Chaque Espace dispose de ses propres favoris",
+   "ja": "各スペースには独立したブックマークがあります",
+   "ko": "스페이스마다 독립된 북마크가 있어요",
+   "nl": "Elke space heeft zijn eigen onafhankelijke bladwijzers",
+   "zh-Hans": "每个空间都有自己独立的书签",
+   "zh-Hant": "每個空間都有自己獨立的書籤"
+  },
+  "sidebar.createSpace.title": {
+   "de": "Neuen Space erstellen",
+   "en": "Create a Space",
+   "es": "Crear un Espacio",
+   "fr": "Créer un Espace",
+   "ja": "スペースを作成",
+   "ko": "스페이스 만들기",
+   "nl": "Maak een Space aan",
+   "zh-Hans": "创建空间",
+   "zh-Hant": "建立空間"
   },
   "sidebar.ctrl": {
    "en": "Ctrl"

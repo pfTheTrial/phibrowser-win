@@ -974,10 +974,7 @@ bool PhiMenuBar::OnCommand(UINT id) {
       }
       return true;
     case kCmdNewSpace:
-      if (c->host_) {
-        c->host_->RequestCreateSpace(c->window_id_, /*new_profile=*/false);
-        c->RefreshTabs();
-      }
+      c->ShowCreateSpaceForm();  // The sidebar form, or at once without one.
       return true;
     case kCmdRenameSpace: {
       if (!c->host_) {
