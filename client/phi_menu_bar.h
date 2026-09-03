@@ -202,9 +202,16 @@ class PhiMenuBar {
   // `parent_guid` — folders recurse into submenus, as on Mac.
   void AppendBookmarkRows(HMENU menu, const std::string& parent_guid,
                           int depth);
-  // Every Space as {id, display title} from the owner's full list — the
-  // strip's chips only mirror what fits (one, in the comfortable layout).
-  std::vector<std::pair<std::string, std::wstring>> SpaceList() const;
+  // Every Space from the owner's full list — the strip's chips only mirror
+  // what fits (one, in the comfortable layout). The title is the bare name;
+  // the icon glyph rides beside it, rasterized into the row's bitmap.
+  struct SpaceEntry {
+    std::string id;
+    std::wstring title;
+    std::wstring glyph;
+  };
+  std::vector<SpaceEntry> SpaceList() const;
+  void ReleaseSpaceBitmaps();
 
   RAW_PTR_EXCLUSION PhiWindowController* const controller_;  // Owns this.
   HMENU bar_ = nullptr;
@@ -227,6 +234,7 @@ class PhiMenuBar {
 
   // What the dynamic ids currently mean, rebuilt with their menus.
   std::vector<std::string> space_ids_;     // kSpaceFirst + i
+  std::vector<HBITMAP> space_bitmaps_;     // The Space rows' icons; ours.
   std::vector<std::string> profile_ids_;   // kDeleteProfileFirst + i
   std::vector<std::string> bookmark_urls_; // kBookmarkFirst + i
   std::vector<int> tab_indices_;           // kTabFirst + i

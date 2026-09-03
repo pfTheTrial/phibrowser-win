@@ -45,6 +45,7 @@
 #include "phibrowser-win/client/phi_tab_switcher.h"
 #include "phibrowser-win/client/phi_dwrite.h"
 #include "phibrowser-win/client/phi_emoji.h"
+#include "phibrowser-win/client/phi_glyph_bitmap.h"
 #include "phibrowser-win/client/phi_icons.h"
 #include "phibrowser-win/client/phi_mac_icons.h"
 #include "phibrowser-win/client/phi_menu_bar.h"
@@ -5737,12 +5738,22 @@ void PhiWindowController::OnChromeClick(int x, int y) {
         }
         return;
       }
+      // Each row wears its Space's icon as a bitmap — the strip's artwork
+      // or colour emoji, which menu text cannot render.
+      std::vector<HBITMAP> bitmaps;
       for (size_t i = 0; i < spaces.size(); ++i) {
+        // Bold (the default item) marks the active Space: a row with a
+        // bitmap shows no check mark.
         ::AppendMenuW(menu,
                       MF_STRING | (spaces[i].first == active_space_
-                                       ? MF_CHECKED
+                                       ? MF_CHECKED | MF_DEFAULT
                                        : 0),
                       static_cast<UINT>(i) + 1, spaces[i].second.c_str());
+        if (HBITMAP bitmap = PhiSpaceGlyphBitmap(
+                glyphs[i], Scaled(16), ::GetSysColor(COLOR_MENUTEXT))) {
+          bitmaps.push_back(bitmap);
+          PhiSetMenuItemBitmap(menu, static_cast<UINT>(i) + 1, bitmap);
+        }
       }
       POINT screen = pt;
       ::ClientToScreen(shell_hwnd_, &screen);
@@ -5750,6 +5761,9 @@ void PhiWindowController::OnChromeClick(int x, int y) {
           menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, screen.x,
           screen.y, 0, shell_hwnd_, nullptr));
       ::DestroyMenu(menu);
+      for (HBITMAP bitmap : bitmaps) {
+        ::DeleteObject(bitmap);
+      }
       if (chosen >= 1 && chosen <= spaces.size()) {
         const std::string space_id = spaces[chosen - 1].first;
         if (HasSpace(space_id)) {
@@ -5791,24 +5805,32 @@ void PhiWindowController::OnChromeClick(int x, int y) {
     // Overflow: the "…" opens the full switcher — every Space plus a
     // "New Space" row (the Mac moreButton's menu).
     std::vector<std::pair<std::string, std::wstring>> spaces;
+    std::vector<std::wstring> glyphs;
     for (const PhiSpaceView& space : host_->Spaces()) {
-      std::wstring title = base::UTF8ToWide(
-          !space.name.empty() ? space.name : "Space " + space.id);
-      const std::wstring glyph = base::UTF8ToWide(space.icon_text);
-      if (!glyph.empty() && !PhiIsPrivateGlyph(glyph)) {
-        title = glyph + L"  " + title;
-      }
-      spaces.emplace_back(space.id, std::move(title));
+      spaces.emplace_back(
+          space.id, base::UTF8ToWide(!space.name.empty()
+                                         ? space.name
+                                         : "Space " + space.id));
+      glyphs.push_back(base::UTF8ToWide(space.icon_text));
     }
     HMENU menu = ::CreatePopupMenu();
     if (!menu) {
       return;
     }
+    // Each row wears its Space's icon as a bitmap (see the compact pip's
+    // switcher above).
+    std::vector<HBITMAP> bitmaps;
     for (size_t i = 0; i < spaces.size(); ++i) {
       ::AppendMenuW(menu,
-                    MF_STRING |
-                        (spaces[i].first == active_space_ ? MF_CHECKED : 0),
+                    MF_STRING | (spaces[i].first == active_space_
+                                     ? MF_CHECKED | MF_DEFAULT
+                                     : 0),
                     static_cast<UINT>(i) + 1, spaces[i].second.c_str());
+      if (HBITMAP bitmap = PhiSpaceGlyphBitmap(
+              glyphs[i], Scaled(16), ::GetSysColor(COLOR_MENUTEXT))) {
+        bitmaps.push_back(bitmap);
+        PhiSetMenuItemBitmap(menu, static_cast<UINT>(i) + 1, bitmap);
+      }
     }
     const UINT kNewSpace = static_cast<UINT>(spaces.size()) + 1;
     const UINT kNewSpaceProfile = kNewSpace + 1;
@@ -5825,6 +5847,9 @@ void PhiWindowController::OnChromeClick(int x, int y) {
         menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, screen.x,
         screen.y, 0, shell_hwnd_, nullptr));
     ::DestroyMenu(menu);
+    for (HBITMAP bitmap : bitmaps) {
+      ::DeleteObject(bitmap);
+    }
     if (chosen == kNewSpace) {
       ShowCreateSpaceForm();
     } else if (chosen == kNewSpaceProfile) {

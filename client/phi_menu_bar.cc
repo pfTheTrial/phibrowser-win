@@ -20,6 +20,7 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
 #include "chrome/app/chrome_command_ids.h"
+#include "phibrowser-win/client/phi_glyph_bitmap.h"
 #include "phibrowser-win/client/phi_i18n.h"
 #include "phibrowser-win/client/phi_icons.h"
 #include "phibrowser-win/client/phi_prompt.h"
@@ -157,6 +158,7 @@ PhiMenuBar::PhiMenuBar(PhiWindowController* controller)
     : controller_(controller) {}
 
 PhiMenuBar::~PhiMenuBar() {
+  ReleaseSpaceBitmaps();
   if (overflow_) {
     // Detach first: its submenus are `bar_`'s, and DestroyMenu would take
     // them down with it, leaving `bar_` holding freed handles.
@@ -517,27 +519,31 @@ void PhiMenuBar::RefreshView() {
   }
 }
 
-std::vector<std::pair<std::string, std::wstring>> PhiMenuBar::SpaceList()
-    const {
-  std::vector<std::pair<std::string, std::wstring>> spaces;
+std::vector<PhiMenuBar::SpaceEntry> PhiMenuBar::SpaceList() const {
+  std::vector<SpaceEntry> spaces;
   if (!controller_->host_) {
     return spaces;
   }
   for (const PhiSpaceView& space : controller_->host_->Spaces()) {
-    std::wstring title = base::UTF8ToWide(
-        !space.name.empty() ? space.name : "Space " + space.id);
-    const std::wstring glyph = base::UTF8ToWide(space.icon_text);
-    // MDL2 stand-ins only render in the MDL2 face; menus use the UI font.
-    if (!glyph.empty() && !PhiIsPrivateGlyph(glyph)) {
-      title = glyph + L"  " + title;
-    }
-    spaces.emplace_back(space.id, std::move(title));
+    spaces.push_back(
+        {space.id,
+         base::UTF8ToWide(!space.name.empty() ? space.name
+                                              : "Space " + space.id),
+         base::UTF8ToWide(space.icon_text)});
   }
   return spaces;
 }
 
+void PhiMenuBar::ReleaseSpaceBitmaps() {
+  for (HBITMAP bitmap : space_bitmaps_) {
+    ::DeleteObject(bitmap);
+  }
+  space_bitmaps_.clear();
+}
+
 void PhiMenuBar::RefreshSpaces() {
   ClearMenu(spaces_);
+  ReleaseSpaceBitmaps();  // The rows that held them are gone.
   space_ids_.clear();
   profile_ids_.clear();
 
@@ -636,8 +642,7 @@ void PhiMenuBar::RefreshSpaces() {
   Append(spaces_, kCmdDeleteSpace, PhiStr("app.activeSpaceContextMenu.deleteSpaceAction"),
          controller_->host_ && active != "1");
   Separator(spaces_);
-  const std::vector<std::pair<std::string, std::wstring>> spaces =
-      SpaceList();
+  const std::vector<SpaceEntry> spaces = SpaceList();
   const bool several = spaces.size() > 1;
   Append(spaces_, kCmdNextSpace, PhiStr("app.spacesMenu.nextSpace"), several);
   Append(spaces_, kCmdPreviousSpace, PhiStr("app.spacesMenu.previousSpace"),
@@ -645,14 +650,28 @@ void PhiMenuBar::RefreshSpaces() {
   Separator(spaces_);
   for (size_t i = 0; i < spaces.size() && kSpaceFirst + i <= kSpaceLast;
        ++i) {
-    std::wstring title = spaces[i].second;
+    std::wstring title = spaces[i].title;
     if (i < 9) {
       title += PhiStr("menuBar.text") + std::to_wstring(i + 1);
     }
+    // The active Space is the menu's DEFAULT item too: a row with a bitmap
+    // shows no check mark, and the default's bold text is what the menu
+    // can still render to say "you are here".
     ::AppendMenuW(spaces_,
-                  MF_STRING | (spaces[i].first == active ? MF_CHECKED : 0),
+                  MF_STRING | (spaces[i].id == active
+                                   ? MF_CHECKED | MF_DEFAULT
+                                   : 0),
                   kSpaceFirst + static_cast<UINT>(i), title.c_str());
-    space_ids_.push_back(spaces[i].first);
+    space_ids_.push_back(spaces[i].id);
+    // The Space's icon as the row's picture: catalog artwork or colour
+    // emoji, which menu TEXT could show as neither.
+    if (HBITMAP bitmap = PhiSpaceGlyphBitmap(
+            spaces[i].glyph, controller_->Scaled(16),
+            ::GetSysColor(COLOR_MENUTEXT))) {
+      space_bitmaps_.push_back(bitmap);
+      PhiSetMenuItemBitmap(spaces_, kSpaceFirst + static_cast<UINT>(i),
+                           bitmap);
+    }
   }
   Separator(spaces_);
   Append(spaces_, kCmdUrlRules, PhiStr("menuBar.urlRules"), false);
@@ -779,11 +798,10 @@ bool PhiMenuBar::OnCommand(UINT id) {
   if (id >= kCmdSpace1 && id <= kCmdSpace9) {
     // Ctrl+N from the keyboard hook: resolved against the LIVE Space list
     // (space_ids_ only refreshes when the Spaces menu opens).
-    const std::vector<std::pair<std::string, std::wstring>> spaces =
-        SpaceList();
+    const std::vector<SpaceEntry> spaces = SpaceList();
     const size_t i = id - kCmdSpace1;
-    if (i < spaces.size() && spaces[i].first != c->active_space_) {
-      const std::string space_id = spaces[i].first;
+    if (i < spaces.size() && spaces[i].id != c->active_space_) {
+      const std::string space_id = spaces[i].id;
       if (c->HasSpace(space_id)) {
         c->ShowSpace(space_id);
       } else if (c->host_) {
@@ -1036,14 +1054,13 @@ bool PhiMenuBar::OnCommand(UINT id) {
     }
     case kCmdNextSpace:
     case kCmdPreviousSpace: {
-      const std::vector<std::pair<std::string, std::wstring>> spaces =
-          SpaceList();
+      const std::vector<SpaceEntry> spaces = SpaceList();
       if (spaces.size() < 2) {
         return true;
       }
       size_t at = 0;
       for (size_t i = 0; i < spaces.size(); ++i) {
-        if (spaces[i].first == c->active_space_) {
+        if (spaces[i].id == c->active_space_) {
           at = i;
           break;
         }
@@ -1051,7 +1068,7 @@ bool PhiMenuBar::OnCommand(UINT id) {
       const size_t next = id == kCmdNextSpace
                               ? (at + 1) % spaces.size()
                               : (at + spaces.size() - 1) % spaces.size();
-      const std::string space_id = spaces[next].first;
+      const std::string space_id = spaces[next].id;
       if (c->HasSpace(space_id)) {
         c->ShowSpace(space_id);
       } else if (c->host_) {
