@@ -2043,15 +2043,18 @@ void PhiWindowController::PaintCornerCap(HWND cap, HDC dc) {
                   GetBValue(palette.ground_bottom))));
   ::FillRect(dc, &rc, tint);
   ::DeleteObject(tint);
-  // The card's 1px border, continued around the arc.
+  // The card's 1px border, continued around the arc: the ring just OUTSIDE
+  // the region's circle (same centre, radius + 1), which is also the circle
+  // the shell's frame RoundRect follows, so the two meet at the cap's edge.
+  // A ring on the region's own circle would fall inside the bite and be
+  // clipped away — the corners then showed a bare, unstroked arc.
   const int r = rc.right;
   HPEN pen = ::CreatePen(PS_SOLID, 1, palette.border);
   HGDIOBJ old_pen = ::SelectObject(dc, pen);
   HGDIOBJ old_brush = ::SelectObject(dc, ::GetStockObject(NULL_BRUSH));
-  // The full circle, clipped by the cap's region to this corner's arc.
-  const int cx = (corner == 0 || corner == 2) ? r : -r;
-  const int cy = corner < 2 ? r : -r;
-  ::Ellipse(dc, cx - r, cy - r, cx + r, cy + r);
+  const int cx = (corner == 0 || corner == 2) ? r : 0;
+  const int cy = corner < 2 ? r : 0;
+  ::Ellipse(dc, cx - r - 1, cy - r - 1, cx + r + 1, cy + r + 1);
   ::SelectObject(dc, old_brush);
   ::SelectObject(dc, old_pen);
   ::DeleteObject(pen);
@@ -2268,12 +2271,15 @@ void PhiWindowController::LayoutContents() {
                    radius, radius,
                    SWP_NOACTIVATE | (shown ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
     // Shape: the radius-square minus the quarter circle — only the bite
-    // outside the card's curve remains visible.
+    // outside the card's curve remains visible. The circle is centred on
+    // the cap's inner corner with radius `radius` exactly; PaintCornerCap
+    // strokes the ring one pixel outside it, and the shell's frame uses the
+    // same circle, so the hairline runs unbroken around the arc.
     HRGN square = ::CreateRectRgn(0, 0, radius + 1, radius + 1);
     const int cx = (i == 0 || i == 2) ? radius : 0;
     const int cy = i < 2 ? radius : 0;
-    HRGN circle = ::CreateEllipticRgn(cx - radius, cy - radius, cx + radius + 1,
-                                      cy + radius + 1);
+    HRGN circle = ::CreateEllipticRgn(cx - radius, cy - radius, cx + radius,
+                                      cy + radius);
     ::CombineRgn(square, square, circle, RGN_DIFF);
     ::DeleteObject(circle);
     ::SetWindowRgn(corner_caps_[i], square, TRUE);  // Window owns it now.
@@ -7535,7 +7541,10 @@ void PhiWindowController::PaintChrome(HDC dc,
     HGDIOBJ old_frame_pen = ::SelectObject(dc, border_pen);
     HGDIOBJ old_frame_brush =
         ::SelectObject(dc, ::GetStockObject(NULL_BRUSH));
-    const int ellipse = 2 * Scaled(kContentRadius);
+    // The frame sits 1px outside the card, so its corner circle is the
+    // card's (the caps' region circle) grown by 1 — concentric, and the
+    // very circle each cap strokes inside its bite.
+    const int ellipse = 2 * (Scaled(kContentRadius) + 1);
     ::RoundRect(dc, frame_rc.left, frame_rc.top, frame_rc.right,
                 frame_rc.bottom, ellipse, ellipse);
     ::SelectObject(dc, old_frame_brush);
