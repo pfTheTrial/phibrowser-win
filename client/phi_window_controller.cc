@@ -100,32 +100,37 @@ constexpr int kSpacesStripHeight = 32;   // SpacesStripView.sidebarHeight
 // backgrounds spans EXACTLY the width of the address bar under it.
 constexpr int kSpacesStripPad = kEdgeInset;
 constexpr int kSpaceChip = 24;           // stripItemWidth/Height: a 24pt pip.
-// The sidebar has room the caption band has not, so the vertical layouts run
-// the pip at the strip band's FULL height: a Space's icon reads at a glance
-// there instead of as a speck. Comfortable keeps the Mac's 24pt — its single
-// compact pip shares the band with the tab strip. The band is unchanged
-// either way, so nothing under the strip moves.
-constexpr int kSpaceChipVertical = kSpacesStripHeight;
+// The vertical layouts' cell: the painted card (the Mac's 24pt chip) plus a
+// point of hit area on each side. Cell and gap together set what the eye
+// reads as the space BETWEEN two Spaces — 2 of cell margin and 4 of gap, so
+// six points of ground, where a cell the full height of the band left
+// twelve and the row read as scattered. Comfortable keeps the plain 24pt
+// pip: its single compact one shares the band with the tab strip.
+constexpr int kSpaceChipVertical = 26;
 constexpr int kSpaceChipGap = 4;         // stripSpacing.
-// The pip's glyph, sized to the box the paint pass's 4pt inset leaves it
-// (16pt inside a 24pt pip, 24pt inside a 32pt one): the MDL2 size first, the
-// colour emoji one step down — it rides larger in its line box. Catalog
-// artwork derives its own size from these, below.
-constexpr int kSpaceGlyph = 13;          // SpacesStripView.emojiFontSize
-constexpr int kSpaceEmoji = 12;
-// The big pip's glyphs sit a size under what its box would take: the icon
-// keeps the sidebar's own 8pt gutter clear inside the 32pt pill, which is
-// what stops a Space's icon from crowding its background.
-constexpr int kSpaceGlyphVertical = 16;
-constexpr int kSpaceEmojiVertical = 15;
-// Catalog ARTWORK asks for its canvas, not its ink: the Mac imageset is a
-// 48px square and the shape covers about five eighths of it, the rest being
-// the imageset's own padding. Drawn at the glyph size it therefore lands a
-// third smaller than an emoji beside it — so the canvas takes the padding
-// back, and a typical icon's ink then matches the emoji's. The mask is
-// transparent outside the shape, so the wider canvas paints nothing extra.
-constexpr int kSpaceArt = kSpaceGlyph * 8 / 5;
-constexpr int kSpaceArtVertical = kSpaceGlyphVertical * 8 / 5;
+// The selected card's corner RADIUS — and it is passed DOUBLED to the
+// draws: GDI's RoundRect takes the corner's ellipse, not its radius, so
+// every rounded rect in this file that hands its radius straight over is
+// rounding half as hard as the Mac constant it is named for. The Mac draws
+// 8 on its 24pt chip (a third of the side) as a `.continuous` squircle;
+// 9 of real radius stands in for that on a circular arc. It is also about
+// as far as the corner goes: the colour pass clears the glyph box whole,
+// and a rounder card would have the box's own corners poking out of it and
+// squaring it back off.
+constexpr int kSpaceCardRadius = 9;
+// ONE size per pip: what a Space's ICON measures, whichever medium it comes
+// from — catalog artwork, colour emoji, or an MDL2 stand-in. Each medium
+// needs a different number to land there (an imageset pads its canvas; a
+// font's em is bigger than its ink, by a different amount per glyph), so
+// the draws take the ink size and work the number out per glyph rather than
+// the call site guessing one for all of them. The Mac carries three
+// constants that all come out at ~15pt of ink in its 24pt strip item
+// (phiIconSize 24, emojiFontSize 13 — "approximately 15pt visible" — and
+// SF-symbol iconSize 14); this is that invariant, kept directly.
+constexpr int kSpaceIcon = 13;
+// The big pip keeps the sidebar's own 8pt gutter clear inside its 32pt
+// pill, which is what stops a Space's icon from crowding its background.
+constexpr int kSpaceIconVertical = 14;
 // The strip's TEXT at the larger pip: the first letter of a Space with no
 // icon, and the trailing slot's "+" / "…". A letter's ink is shorter than a
 // glyph's em box, so it sits a size under the icons rather than matching
@@ -485,7 +490,7 @@ void PhiWindowController::EnsureFont() {
   std::copy_n(emoji_face.begin(),
               std::min(emoji_face.size(), std::size(emoji.lfFaceName) - 1),
               std::begin(emoji.lfFaceName));
-  emoji.lfHeight = -Scaled(13);  // SpacesStripView.emojiFontSize
+  emoji.lfHeight = -Scaled(kSpaceIcon);
   HFONT emoji_built = ::CreateFontIndirectW(&emoji);
   if (emoji_built) {
     HFONT previous_emoji = emoji_font_;
@@ -520,7 +525,7 @@ void PhiWindowController::EnsureFont() {
   }
   // The same MDL2 face at the EMOJI size, for Space-pip catalog glyphs — one
   // optical size whether a pip wears an emoji or a Phi icon.
-  caption.lfHeight = -Scaled(kSpaceGlyph);
+  caption.lfHeight = -Scaled(kSpaceIcon);
   if (HFONT chip_built = ::CreateFontIndirectW(&caption)) {
     if (chip_icon_font_) {
       ::DeleteObject(chip_icon_font_);
@@ -530,14 +535,14 @@ void PhiWindowController::EnsureFont() {
   // Both pip faces again at the vertical layouts' larger pip size — the GDI
   // fallback there, for a private-use glyph with no catalog artwork and for
   // emoji when DirectWrite is unavailable.
-  caption.lfHeight = -Scaled(kSpaceGlyphVertical);
+  caption.lfHeight = -Scaled(kSpaceIconVertical);
   if (HFONT pip_icon_built = ::CreateFontIndirectW(&caption)) {
     if (pip_icon_font_) {
       ::DeleteObject(pip_icon_font_);
     }
     pip_icon_font_ = pip_icon_built;
   }
-  emoji.lfHeight = -Scaled(kSpaceEmojiVertical);
+  emoji.lfHeight = -Scaled(kSpaceIconVertical);
   if (HFONT pip_emoji_built = ::CreateFontIndirectW(&emoji)) {
     if (pip_emoji_font_) {
       ::DeleteObject(pip_emoji_font_);
@@ -6033,6 +6038,20 @@ void FillRounded(HDC dc, const RECT& r, COLORREF fill, int radius) {
 }
 
 // A rounded rect with a hairline border — the address field.
+// The chip the paint pass draws: `painted` square, centred in whatever cell
+// the layout hands it. The vertical layouts' cell is the whole 32pt strip
+// band — that size is hit area and spacing, and a selection card filling it
+// would swallow the icon it exists to frame, so the card stays the Mac's
+// 24pt chip (radius 8 on it, the third-of-a-side the Mac draws).
+RECT PaintedChip(const RECT& cell, int painted) {
+  RECT chip = cell;
+  ::InflateRect(
+      &chip,
+      -std::max(0, static_cast<int>(cell.right - cell.left) - painted) / 2,
+      -std::max(0, static_cast<int>(cell.bottom - cell.top) - painted) / 2);
+  return chip;
+}
+
 void StrokeRounded(HDC dc, const RECT& r, COLORREF fill, COLORREF border,
                    int radius) {
   if (r.right <= r.left || r.bottom <= r.top) {
@@ -8025,53 +8044,59 @@ void PhiWindowController::PaintChrome(HDC dc,
       // the source Space must not keep reading as active beside it.
       continue;
     }
-    RECT pill = chip.bounds;
+    RECT pill = PaintedChip(chip.bounds, Scaled(kSpaceChip));
     if (!chip.is_agent && swap_start_ &&
         swap_chip_from_.right > swap_chip_from_.left) {
       const double t = SwapEasedProgress();
       const auto mix = [t](LONG from, LONG to) {
         return from + static_cast<LONG>(std::lround((to - from) * t));
       };
-      pill.left = mix(swap_chip_from_.left, chip.bounds.left);
-      pill.top = mix(swap_chip_from_.top, chip.bounds.top);
-      pill.right = mix(swap_chip_from_.right, chip.bounds.right);
-      pill.bottom = mix(swap_chip_from_.bottom, chip.bounds.bottom);
+      const RECT from = PaintedChip(swap_chip_from_, Scaled(kSpaceChip));
+      const RECT to = PaintedChip(chip.bounds, Scaled(kSpaceChip));
+      pill.left = mix(from.left, to.left);
+      pill.top = mix(from.top, to.top);
+      pill.right = mix(from.right, to.right);
+      pill.bottom = mix(from.bottom, to.bottom);
     }
     StrokeRounded(dc, pill, kRowSelectedBg,
                   palette.dark ? kActivePillBorder : kBorder,
-                  Scaled(kCornerRadius));
+                  Scaled(kSpaceCardRadius) * 2);
   }
   for (const SpaceChip& chip : chips_) {
     const bool active = (chip.id == active_space_);
     if (!active && hover_kind_ == HoverKind::kChip &&
         hover_index_ == static_cast<int>(&chip - chips_.data())) {
       // The Mac's dim hover wash on an inactive pip (sidebarTabHovered).
-      FillRounded(dc, chip.bounds, palette.hover, Scaled(kCornerRadius));
+      FillRounded(dc, PaintedChip(chip.bounds, Scaled(kSpaceChip)),
+                  palette.hover, Scaled(kSpaceCardRadius) * 2);
     }
-    ::SetTextColor(dc, active ? kLabel : kLabelDim);
+    // Every pip's icon is the label colour, active or not — the Mac tints
+    // them all Color.primary and lets the selected chip alone say which one
+    // is current. Only the trailing slot's "+" / "…" is secondary.
+    ::SetTextColor(dc, kLabel);
     // The vertical layouts' pip fills the strip band; its glyph grows with
     // it, at the same proportion the 24pt pip gives its own.
     const bool big_pip = layout.chip_size >= kSpaceChipVertical;
-    const int emoji_pt = big_pip ? kSpaceEmojiVertical : kSpaceEmoji;
-    const int art_pt = big_pip ? kSpaceArtVertical : kSpaceArt;
-    // The glyph box is INSET from the pip: the colour pass repaints its
-    // whole rect from a sampled corner pixel, and on a selected pip the
-    // PIP's corner is ground tint — a full-rect clear would erase the pill.
-    // 4pt is as tight as the inset goes: the sample must land inside the
-    // pill's radius-8 corner arc.
-    RECT glyph_rc = chip.bounds;
-    ::InflateRect(&glyph_rc, -Scaled(4), -Scaled(4));
+    const int icon_pt = big_pip ? kSpaceIconVertical : kSpaceIcon;
+    // The glyph box is INSET FROM THE PAINTED CHIP, not from the cell: the
+    // colour pass repaints its whole rect from a pixel sampled at the
+    // rect's corner, so a box reaching the chip's own corners would sample
+    // the ground tint outside the rounded corner and clear the card away —
+    // and, where it did survive, square off the corners it covered. 3pt
+    // keeps the sample inside the radius-8 arc with room for the icon.
+    RECT glyph_rc = PaintedChip(chip.bounds, Scaled(kSpaceChip));
+    ::InflateRect(&glyph_rc, -Scaled(3), -Scaled(3));
     // Colour emoji take the same box: the colour pass centres their INK in
     // it, so the old hand-tuned lift (they ride low in their line box) is
     // gone — it left the repainted patch sitting higher than the pip it
     // belongs to.
     if (!chip.icon.empty() &&
-        PhiDrawCatalogArtwork(dc, glyph_rc, chip.icon, Scaled(art_pt),
-                              active ? kLabel : kLabelDim)) {
+        PhiDrawCatalogIcon(dc, glyph_rc, chip.icon, Scaled(icon_pt),
+                           kLabel)) {
       // The Mac catalog's own artwork, tinted like the glyph would be.
     } else if (!chip.icon.empty() && !PhiIsPrivateGlyph(chip.icon) &&
-        PhiDrawColorText(dc, glyph_rc, chip.icon, Scaled(emoji_pt),
-                         active ? kLabel : kLabelDim)) {
+        PhiDrawColorIcon(dc, glyph_rc, chip.icon, Scaled(icon_pt),
+                         kLabel)) {
       // Emoji rendered in COLOUR via DirectWrite; GDI below is the fallback.
     } else if (!chip.icon.empty() &&
                (emoji_font_ || chip_icon_font_)) {
@@ -8168,14 +8193,34 @@ void PhiWindowController::PaintChrome(HDC dc,
         FillRounded(dc, layout.add_space,
                     BlendOver(palette.hover, ground, alpha), Scaled(6));
       }
-      HGDIOBJ previous_slot_font =
-          layout.chip_size >= kSpaceChipVertical && pip_text_font_
-              ? ::SelectObject(dc, pip_text_font_)
-              : nullptr;
-      DrawGlyph(dc, layout.add_space, chips_overflow_ ? L"…" : L"+",
-                BlendOver(kLabelDim, ground, alpha));
-      if (previous_slot_font) {
-        ::SelectObject(dc, previous_slot_font);
+      const COLORREF slot_ink = BlendOver(kLabelDim, ground, alpha);
+      if (chips_overflow_) {
+        // The Mac's moreButton is SF Symbols' `ellipsis` — three ROUND dots
+        // at the icon size. A text "…" is not that: its dots are small,
+        // square-cornered and sit on the baseline, which reads as a typo
+        // beside the icons. Three circles, 3pt across on a 5pt pitch,
+        // centred in the slot.
+        const int dot = Scaled(3);
+        const int pitch = Scaled(5);
+        const int mid_x = (layout.add_space.left + layout.add_space.right) / 2;
+        const int mid_y = (layout.add_space.top + layout.add_space.bottom) / 2;
+        for (int i = -1; i <= 1; ++i) {
+          const RECT d = {mid_x + i * pitch - dot / 2, mid_y - dot / 2,
+                          mid_x + i * pitch - dot / 2 + dot,
+                          mid_y - dot / 2 + dot};
+          if (!PhiFillCapsuleAA(dc, d, slot_ink)) {
+            FillRounded(dc, d, slot_ink, dot);  // GDI, aliased.
+          }
+        }
+      } else {
+        HGDIOBJ previous_slot_font =
+            layout.chip_size >= kSpaceChipVertical && pip_text_font_
+                ? ::SelectObject(dc, pip_text_font_)
+                : nullptr;
+        DrawGlyph(dc, layout.add_space, L"+", slot_ink);
+        if (previous_slot_font) {
+          ::SelectObject(dc, previous_slot_font);
+        }
       }
     }
   }
@@ -8418,11 +8463,11 @@ void PhiWindowController::DrawHoverCard(HDC dc,
   RECT icon_rc = {pill.left + Scaled(8), mid_y - Scaled(7),
                   pill.left + Scaled(8) + Scaled(14), mid_y + Scaled(7)};
   if (!chip->icon.empty() &&
-      PhiDrawCatalogArtwork(dc, icon_rc, chip->icon, Scaled(kSpaceArt),
-                            accent)) {
+      PhiDrawCatalogIcon(dc, icon_rc, chip->icon, Scaled(kSpaceIcon),
+                         accent)) {
     // The Mac catalog's own artwork, tinted the capsule's accent.
   } else if (!chip->icon.empty() && !PhiIsPrivateGlyph(chip->icon) &&
-      PhiDrawColorText(dc, icon_rc, chip->icon, Scaled(kSpaceEmoji),
+      PhiDrawColorIcon(dc, icon_rc, chip->icon, Scaled(kSpaceIcon),
                        accent)) {
     // Colour emoji via DirectWrite; the font paths below are the fallback.
   } else if (!chip->icon.empty() && (emoji_font_ || chip_icon_font_)) {

@@ -22,6 +22,16 @@ bool PhiDrawColorText(HDC dc,
                       int pixel_size,
                       COLORREF ink);
 
+// Draws `text` so its INK — not its em box — spans `ink_size` pixels,
+// centred in `rect`. Use it wherever a run of glyphs has to read as ONE
+// size: every emoji covers a different part of its em, so PhiDrawColorText
+// at a fixed size renders them visibly unequal. Same fallback contract.
+bool PhiDrawColorIcon(HDC dc,
+                      const RECT& rect,
+                      const std::wstring& text,
+                      int ink_size,
+                      COLORREF ink);
+
 // Draws a PREMULTIPLIED BGRA buffer scaled into `dest` with high-quality
 // interpolation — crisp favicons and logos at any DPI, where GDI's
 // StretchDIBits stair-steps. Same fallback contract as PhiDrawColorText.

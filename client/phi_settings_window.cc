@@ -2822,14 +2822,16 @@ void PhiSettingsWindow::Paint(HDC dc) {
         if (!item.icon.empty()) {
           // The Space's icon in an 18pt box: catalog artwork tinted the
           // row ink, colour emoji via DirectWrite, GDI glyph as the last
-          // resort — the same ladder as the picker's cells.
+          // resort — the same ladder as the picker's cells. Both draws take
+          // the icon's INK size, so a column of Spaces reads as one size
+          // whatever medium each icon comes from.
           const int mid = (bounds.top + bounds.bottom) / 2;
           RECT icon_rc = {x, mid - Scaled(9), x + Scaled(18), mid + Scaled(9)};
           const bool drawn =
-              PhiDrawCatalogArtwork(dc, icon_rc, item.icon, Scaled(16),
-                                    text_ink) ||
+              PhiDrawCatalogIcon(dc, icon_rc, item.icon, Scaled(13),
+                                 text_ink) ||
               (!PhiIsPrivateGlyph(item.icon) &&
-               PhiDrawColorText(dc, icon_rc, item.icon, Scaled(13),
+               PhiDrawColorIcon(dc, icon_rc, item.icon, Scaled(13),
                                 text_ink));
           if (!drawn) {
             HFONT icon_font =
@@ -3003,12 +3005,15 @@ void PhiSettingsWindow::Paint(HDC dc) {
           // cell's rounded fill must survive at the corners.
           RECT glyph_rc = bounds;
           ::InflateRect(&glyph_rc, -Scaled(4), -Scaled(4));
-          if (PhiDrawCatalogArtwork(dc, glyph_rc, item.text, Scaled(18),
-                                    row_ink)) {
+          // One ink size for every cell: the catalog's shapes and the
+          // emoji each cover a different share of their own box, so sizing
+          // by canvas or em leaves the grid visibly ragged.
+          if (PhiDrawCatalogIcon(dc, glyph_rc, item.text, Scaled(15),
+                                 row_ink)) {
             break;  // The Mac catalog's own artwork, tinted the row ink.
           }
           if (!PhiIsPrivateGlyph(item.text) &&
-              PhiDrawColorText(dc, glyph_rc, item.text, Scaled(14),
+              PhiDrawColorIcon(dc, glyph_rc, item.text, Scaled(15),
                                row_ink)) {
             break;  // Colour emoji via DirectWrite; GDI is the fallback.
           }

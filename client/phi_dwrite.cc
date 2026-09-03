@@ -24,14 +24,25 @@ namespace {
 
 using Microsoft::WRL::ComPtr;
 
+// A string's INK — the pixels it actually covers — inside a centre-aligned
+// layout box: its size, and how far its centre sits from the box's. Both
+// are properties of the glyph and its em size alone (they cancel the box
+// size out), which is what lets one measurement serve every draw.
+struct InkMetrics {
+  float dx = 0.0f;
+  float dy = 0.0f;
+  float width = 0.0f;
+  float height = 0.0f;
+};
+
 // Shared, lazily created, never torn down (process-lifetime singletons).
 struct DWriteState {
   ComPtr<ID2D1Factory> d2d;
   ComPtr<IDWriteFactory> dwrite;
   ComPtr<ID2D1DCRenderTarget> target;
   std::map<int, ComPtr<IDWriteTextFormat>> formats;  // By pixel size.
-  // The ink-centring offset for a drawn string, by (pixel size, text).
-  std::map<std::pair<int, std::wstring>, D2D1_POINT_2F> ink_offsets;
+  // What a string's ink measures, and where it sits, by (em size, text).
+  std::map<std::pair<int, std::wstring>, InkMetrics> ink_metrics;
   bool failed = false;
 };
 
@@ -99,36 +110,39 @@ IDWriteTextFormat* FormatFor(int pixel_size) {
 // box size out (it depends only on the glyph and its size), so one
 // measurement per string serves every draw; the map keeps it off the paint
 // path after the first.
-D2D1_POINT_2F InkCentringOffset(const std::wstring& text,
-                                int pixel_size,
-                                float width,
-                                float height) {
+const InkMetrics& MetricsFor(const std::wstring& text, int pixel_size) {
   DWriteState& state = State();
   const auto key = std::make_pair(pixel_size, text);
-  auto cached = state.ink_offsets.find(key);
-  if (cached != state.ink_offsets.end()) {
+  auto cached = state.ink_metrics.find(key);
+  if (cached != state.ink_metrics.end()) {
     return cached->second;
   }
-  D2D1_POINT_2F offset = D2D1::Point2F(0.0f, 0.0f);
+  // Any box measures the same ink; a generous one keeps a wide glyph off
+  // the wrap.
+  const float box = static_cast<float>(pixel_size) * 4.0f;
+  InkMetrics metrics;
   IDWriteTextFormat* format = FormatFor(pixel_size);
   ComPtr<IDWriteTextLayout> layout;
   DWRITE_OVERHANG_METRICS overhang = {};
   if (format &&
       SUCCEEDED(state.dwrite->CreateTextLayout(
-          text.c_str(), static_cast<UINT32>(text.size()), format, width,
-          height, layout.GetAddressOf())) &&
+          text.c_str(), static_cast<UINT32>(text.size()), format, box, box,
+          layout.GetAddressOf())) &&
       SUCCEEDED(layout->GetOverhangMetrics(&overhang))) {
-    // Each overhang is the ink's distance beyond that edge of the box, so
-    // half the difference between opposite pairs recentres it. A font that
+    // Each overhang is the ink's distance beyond that edge of the box: their
+    // sum with the box is the ink's own size, and half the difference
+    // between opposite pairs is how far off centre it sits. A font that
     // reports no ink bounds gives zeros and nothing moves; half the glyph
     // caps anything wilder.
     const float limit = pixel_size / 2.0f;
-    offset = D2D1::Point2F(
-        std::clamp((overhang.left - overhang.right) / 2.0f, -limit, limit),
-        std::clamp((overhang.top - overhang.bottom) / 2.0f, -limit, limit));
+    metrics.dx =
+        std::clamp((overhang.left - overhang.right) / 2.0f, -limit, limit);
+    metrics.dy =
+        std::clamp((overhang.top - overhang.bottom) / 2.0f, -limit, limit);
+    metrics.width = std::max(0.0f, box + overhang.left + overhang.right);
+    metrics.height = std::max(0.0f, box + overhang.top + overhang.bottom);
   }
-  state.ink_offsets.emplace(key, offset);
-  return offset;
+  return state.ink_metrics.emplace(key, metrics).first->second;
 }
 
 D2D1_COLOR_F ToColor(COLORREF color) {
@@ -169,11 +183,10 @@ bool PhiDrawColorText(HDC dc,
     const float width = static_cast<float>(rect.right - rect.left);
     const float height = static_cast<float>(rect.bottom - rect.top);
     // Drawn ink-centred in the rect, not advance-centred (see above).
-    const D2D1_POINT_2F offset =
-        InkCentringOffset(text, pixel_size, width, height);
-    const D2D1_RECT_F bounds = D2D1::RectF(offset.x, offset.y,
-                                           width + offset.x,
-                                           height + offset.y);
+    const InkMetrics& metrics = MetricsFor(text, pixel_size);
+    const D2D1_RECT_F bounds = D2D1::RectF(metrics.dx, metrics.dy,
+                                           width + metrics.dx,
+                                           height + metrics.dy);
     // ENABLE_COLOR_FONT is the whole point: COLR glyph layers render in
     // colour; non-colour glyphs take the ink brush.
     state.target->DrawTextW(text.c_str(), static_cast<UINT32>(text.size()),
@@ -186,6 +199,30 @@ bool PhiDrawColorText(HDC dc,
     return false;
   }
   return true;
+}
+
+bool PhiDrawColorIcon(HDC dc,
+                      const RECT& rect,
+                      const std::wstring& text,
+                      int ink_size,
+                      COLORREF ink) {
+  if (text.empty() || ink_size <= 0 || !EnsureState()) {
+    return false;
+  }
+  // An em size says nothing about how much of it a glyph covers: a face
+  // emoji nearly fills its line box where a heart or a cog sits well inside
+  // it, so a row drawn at one em size reads as a row of different sizes.
+  // Measure the ink at the asked-for size and scale the em by what it
+  // missed — ink is linear in em, so one correction lands it.
+  const InkMetrics& probe = MetricsFor(text, ink_size);
+  const float span = std::max(probe.width, probe.height);
+  int em = ink_size;
+  if (span > 0.5f) {
+    em = std::clamp(
+        static_cast<int>(std::lround(ink_size * ink_size / span)), 1,
+        ink_size * 4);
+  }
+  return PhiDrawColorText(dc, rect, text, em, ink);
 }
 
 bool PhiDrawBgra(HDC dc,

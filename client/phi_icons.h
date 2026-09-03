@@ -55,6 +55,23 @@ bool PhiDrawCatalogArtwork(HDC dc,
                            int px,
                            COLORREF ink);
 
+// The bounding box of a mask's INK — the drawing inside the imageset's
+// padded canvas. Inclusive; a blank mask reports the whole canvas.
+struct PhiIconInkBox {
+  int left, top, right, bottom;
+};
+const PhiIconInkBox& PhiCatalogInkBox(const PhiMacIcon& icon);
+
+// Draws `text`'s catalog artwork tinted `ink` so its INK — not its padded
+// canvas — spans `ink_size` and is centred in `rc`. Every icon then reads
+// as one size, which fitting the canvas does not give: the shapes cover
+// different parts of it. False when `text` is not a catalog stand-in.
+bool PhiDrawCatalogIcon(HDC dc,
+                        const RECT& rc,
+                        const std::wstring& text,
+                        int ink_size,
+                        COLORREF ink);
+
 // The Phi app icon (resources\phi.ico beside the exe) at `size`, or null
 // when the artwork is missing. Defined in phi_window_controller.cc.
 HICON PhiAppIcon(int size);
