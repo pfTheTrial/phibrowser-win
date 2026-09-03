@@ -112,7 +112,12 @@ void PhiNewTabPage::EnsureWindow() {
   if (!dpi_) {
     dpi_ = 96;
   }
-  hwnd_ = ::CreateWindowExW(0, kClassName, L"", WS_CHILD | WS_CLIPCHILDREN, 0,
+  hwnd_ = ::CreateWindowExW(
+      0, kClassName, L"",
+      // WS_CLIPSIBLINGS: this covers the content card, and without it the
+      // page paints straight over the corner caps stacked above it —
+      // squaring off the card's rounded corners.
+      WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS, 0,
                             0, 0, 0, owner, nullptr,
                             ::GetModuleHandleW(nullptr), nullptr);
   if (!hwnd_) {

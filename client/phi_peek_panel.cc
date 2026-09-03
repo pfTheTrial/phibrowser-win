@@ -110,7 +110,9 @@ PhiPeekPanel::PhiPeekPanel(int64_t window_id,
   // A child of the opener's shell, above the hosted browser: it clips into the
   // content card and travels with the window, the same trick the bookmark
   // manager uses for its URL-mounted page.
-  hwnd_ = ::CreateWindowExW(0, kPeekClassName, L"", WS_CHILD | WS_CLIPCHILDREN,
+  hwnd_ = ::CreateWindowExW(0, kPeekClassName, L"",
+                          // Keeps the card's corner caps visible.
+                          WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
                             0, 0, 0, 0, shell, nullptr,
                             ::GetModuleHandleW(nullptr), this);
   if (!hwnd_) {

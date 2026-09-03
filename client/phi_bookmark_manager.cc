@@ -166,7 +166,10 @@ void PhiBookmarkManager::EnsureWindow() {
     return ::RegisterClassW(&cls) != 0;
   }();
   (void)registered;
-  hwnd_ = ::CreateWindowExW(0, kClassName, L"", WS_CHILD | WS_CLIPCHILDREN, 0,
+  hwnd_ = ::CreateWindowExW(
+      0, kClassName, L"",
+      // WS_CLIPSIBLINGS keeps the content card's corner caps visible.
+      WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS, 0,
                             0, 0, 0, owner, nullptr,
                             ::GetModuleHandleW(nullptr), nullptr);
   if (!hwnd_) {

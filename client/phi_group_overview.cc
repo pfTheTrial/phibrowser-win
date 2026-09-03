@@ -56,7 +56,9 @@ class Overview {
     dpi_ = ::GetDpiForWindow(controller_->shell_hwnd());
     Register();
     BuildCards();
-    hwnd_ = ::CreateWindowExW(0, L"PhiGroupOverview", L"", WS_CHILD, 0, 0, 0,
+    hwnd_ = ::CreateWindowExW(0, L"PhiGroupOverview", L"",
+                              // Keeps the card's corner caps visible.
+                              WS_CHILD | WS_CLIPSIBLINGS, 0, 0, 0,
                               0, controller_->shell_hwnd(), nullptr,
                               ::GetModuleHandleW(nullptr), nullptr);
     font_ = ::CreateFontW(-Scaled(12), 0, 0, 0, FW_NORMAL, FALSE, FALSE,
