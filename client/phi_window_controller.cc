@@ -51,6 +51,7 @@
 #include "phibrowser-win/client/phi_menu_bar.h"
 #include "phibrowser-win/client/phi_i18n.h"
 #include "phibrowser-win/client/phi_new_tab_page.h"
+#include "phibrowser-win/client/phi_reader.h"
 #include "phibrowser-win/client/phi_prompt.h"
 
 namespace phi_client {
@@ -4983,6 +4984,9 @@ void PhiWindowController::RebuildTabs() {
   // Parse every live tab first — geometry comes after the pinned bindings
   // have pulled their tabs out of the list.
   std::vector<TabRow> rows;
+  // The origin a skipped reading surface stood for, when that surface was the
+  // active tab — see the skip below.
+  int reader_surface_origin = 0;
   std::optional<base::Value> parsed = base::JSONReader::Read(
       framework_->ListTabsJson(browser), base::JSON_PARSE_RFC);
   if (parsed && parsed->is_list()) {
@@ -4995,6 +4999,26 @@ void PhiWindowController::RebuildTabs() {
       row.index = d.FindInt("index").value_or(0);
       row.id = d.FindInt("id").value_or(0);
       row.active = d.FindBool("active").value_or(false);
+      // Reader View's reading surface is NEVER a row. It arrives as a tab in
+      // this strip because the extension makes it with chrome.tabs.create,
+      // and it is moved into a panel of its own a moment later — but the
+      // strip must not flash a tab in between, and must not keep one if the
+      // move is delayed or refused. The Mac has the same rule by holding the
+      // surface out of its tab list altogether.
+      //
+      // When the skipped row is the ACTIVE one, the tab it stands in for
+      // takes the selection: its id is in the surface's URL fragment, and
+      // that is the tab whose page is underneath and whose address the bar
+      // should show.
+      if (const std::string* surface = d.FindString("url")) {
+        if (std::optional<int> origin =
+                PhiReaderBridge::OriginTabIdOfReaderPage(*surface)) {
+          if (row.active) {
+            reader_surface_origin = *origin;
+          }
+          continue;
+        }
+      }
       if (const std::string* split = d.FindString("splitId")) {
         row.split_id = *split;
       }
@@ -5045,6 +5069,18 @@ void PhiWindowController::RebuildTabs() {
         row.favicon_height = fh;
       }
       rows.push_back(std::move(row));
+    }
+  }
+  if (reader_surface_origin != 0) {
+    // Nothing is marked active now — the row that was is gone. Give the
+    // selection, and the address bar, to the tab the reader is covering.
+    for (TabRow& row : rows) {
+      if (row.id == reader_surface_origin) {
+        row.active = true;
+        active_tab_id_ = row.id;
+        active_tab_url_ = base::WideToUTF8(row.url);
+        break;
+      }
     }
   }
 

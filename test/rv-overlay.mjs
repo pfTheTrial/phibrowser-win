@@ -26,6 +26,16 @@ const layout = async () => ctl.send('agentSpace.window.layout', { windowId: w })
 const readerTargets = async () =>
   (await cdpHttp('/json/list')).filter((t) => (t.url || '').startsWith(READER_PREFIX))
 
+// The menu item is a TOGGLE, so every run must start from a known state or
+// each step does the opposite of what it says.
+async function ensureClosed() {
+  if ((await ctl.send('agentSpace.window.layout', { windowId: w })).readerActive) {
+    await ctl.send('agentSpace.menu.click', { windowId: w, path: ['View', 'Toggle Reader View'] })
+    await sleep(3000)
+  }
+}
+await ensureClosed()
+
 let list = await tabs()
 while (list.length > 1) {
   await ctl.send('agentSpace.tabs.close', { windowId: w, index: list.length - 1 })
