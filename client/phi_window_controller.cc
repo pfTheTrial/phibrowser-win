@@ -4595,8 +4595,10 @@ void PhiWindowController::RebuildChips() {
   }
   if (reserve_placeholder) {
     const int x = total > 0 ? viewport_right + gap : layout.chips_left;
-    creating_pip_bounds_ = {x, layout.chips_top, x + Scaled(kSpaceChip),
-                            layout.chips_top + Scaled(kSpaceChip)};
+    // The same CELL a real pip gets; the dashed ring is painted inside it at
+    // the chip size, exactly as a pip's card is.
+    creating_pip_bounds_ = {x, layout.chips_top, x + item,
+                            layout.chips_top + item};
   }
 }
 
@@ -8167,7 +8169,7 @@ void PhiWindowController::PaintChrome(HDC dc,
       creating_pip_bounds_.right > creating_pip_bounds_.left) {
     // The Mac's creatingSpacePlaceholderPip: a dashed outline where the new
     // Space will land, carrying the form's currently selected icon.
-    const RECT& pip = creating_pip_bounds_;
+    const RECT pip = PaintedChip(creating_pip_bounds_, Scaled(kSpaceChip));
     HPEN dash_pen = ::CreatePen(PS_DASH, 1,
                                 BlendOver(kLabelDim, palette.ground_top, 166));
     HGDIOBJ previous_pen = ::SelectObject(dc, dash_pen);
@@ -8179,21 +8181,27 @@ void PhiWindowController::PaintChrome(HDC dc,
     ::SelectObject(dc, previous_pen);
     ::DeleteObject(dash_pen);
     if (!creating_space_icon_text_.empty()) {
+      // Sized like a real pip's icon, through the same ink-fitting draws:
+      // the old fixed-point artwork/text path rendered the chosen icon
+      // visibly smaller than the pips it stands among.
+      const bool big_pip = layout.chip_size >= kSpaceChipVertical;
+      const int icon_pt = big_pip ? kSpaceIconVertical : kSpaceIcon;
       RECT glyph_rc = pip;
-      ::InflateRect(&glyph_rc, -Scaled(4), -Scaled(4));
-      RECT emoji_rc = glyph_rc;
-      ::OffsetRect(&emoji_rc, 0, -Scaled(1));
-      if (PhiDrawCatalogArtwork(dc, glyph_rc, creating_space_icon_text_,
-                                Scaled(13), kLabel)) {
+      ::InflateRect(&glyph_rc, -Scaled(3), -Scaled(3));
+      if (PhiDrawCatalogIcon(dc, glyph_rc, creating_space_icon_text_,
+                             Scaled(icon_pt), kLabel)) {
         // The catalog's own artwork.
       } else if (!PhiIsPrivateGlyph(creating_space_icon_text_) &&
-                 PhiDrawColorText(dc, emoji_rc, creating_space_icon_text_,
-                                  Scaled(12), kLabel)) {
+                 PhiDrawColorIcon(dc, glyph_rc, creating_space_icon_text_,
+                                  Scaled(icon_pt), kLabel)) {
         // Colour emoji.
       } else if (emoji_font_ || chip_icon_font_) {
-        HFONT pip_icon_font = PhiIsPrivateGlyph(creating_space_icon_text_)
-                                  ? chip_icon_font_
-                                  : emoji_font_;
+        HFONT pip_icon_font =
+            PhiIsPrivateGlyph(creating_space_icon_text_)
+                ? (big_pip && pip_icon_font_ ? pip_icon_font_
+                                             : chip_icon_font_)
+                : (big_pip && pip_emoji_font_ ? pip_emoji_font_
+                                              : emoji_font_);
         HGDIOBJ previous_pip_font =
             pip_icon_font ? ::SelectObject(dc, pip_icon_font) : nullptr;
         ::SetTextColor(dc, kLabel);
