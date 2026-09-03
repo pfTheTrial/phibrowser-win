@@ -10,16 +10,23 @@ import { openControl, cdpHttp, openCdp, sleep } from './phi-test.mjs'
 // Reader panels are browsers of their own and are NOT listed as client
 // windows, so close their pages first — a surviving panel keeps the process
 // alive after the last real window is gone.
+// Best-effort: a CDP hiccup must not abort the quit, which is the part that
+// actually frees Phi.exe for a deploy. Closing the origin windows takes any
+// panel with it anyway (PhiCoordinator::OnBrowserWindowClosing).
 const READER_PREFIX = 'chrome-extension://ickhcgejficcoofnjnnobadfdnfbilnm/reader.html'
-for (const t of (await cdpHttp('/json/list')).filter((x) => (x.url || '').startsWith(READER_PREFIX))) {
-  try {
-    const cdp = await openCdp(t.webSocketDebuggerUrl.replace(/^ws:\/\/[^/]+/, ''))
-    await cdp.send('Page.close')
-    cdp.close()
-    console.log('closed reader surface', t.id)
-    await sleep(500)
-  } catch (e) { console.log('reader close failed', String(e.message)) }
-}
+try {
+  const targets = (await cdpHttp('/json/list'))
+      .filter((x) => (x.url || '').startsWith(READER_PREFIX))
+  for (const t of targets) {
+    try {
+      const cdp = await openCdp(t.webSocketDebuggerUrl.replace(/^ws:\/\/[^/]+/, ''))
+      await cdp.send('Page.close')
+      cdp.close()
+      console.log('closed reader surface', t.id)
+      await sleep(500)
+    } catch (e) { console.log('reader close failed', String(e.message)) }
+  }
+} catch (e) { console.log('target list unavailable:', String(e.message)) }
 
 const ctl = await openControl()
 const { windows } = await ctl.send('agentSpace.list')

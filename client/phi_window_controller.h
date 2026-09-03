@@ -409,6 +409,9 @@ class PhiWindowController {
   // through them (the Mac's rule). Only the native new-tab page is refused —
   // it has no web contents to extract from.
   bool ActiveTabCanUseReader() const;
+  // The URL gate both of the above sit behind — the Mac's
+  // ReaderExtractionService.canOfferReader.
+  static bool CanOfferReaderForUrl(const std::string& url);
   bool is_agent() const { return agent_; }
   bool is_incognito() const { return incognito_; }
   // For satellite surfaces (search palette, popovers) that act through the

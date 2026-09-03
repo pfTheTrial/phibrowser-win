@@ -761,6 +761,15 @@ PhiWindowController::Layout PhiWindowController::ComputeLayout() {
     const int icon = Scaled(kFaviconSlot);
     out.page_icon = {out.url_field.left + Scaled(10), mid - icon / 2,
                      out.url_field.left + Scaled(10) + icon, mid + icon / 2};
+    // Reader View trails INSIDE the pill, where the Mac's
+    // WebContentAddressBar keeps it (and where Chrome keeps its own reading
+    // icon) — and ONLY when the active tab has an article, the same rule the
+    // sidebar's capsule follows.
+    if (ActiveTabReaderOfferable()) {
+      const int fbtn = field_h - Scaled(2);
+      const int fr = out.url_field.right - Scaled(2);
+      out.reader = {fr - fbtn, mid - fbtn / 2, fr, mid + fbtn / 2};
+    }
     return out;
   }
 
@@ -806,12 +815,15 @@ PhiWindowController::Layout PhiWindowController::ComputeLayout() {
     // keeps it in performance — 2pt from the trailing edge, and a 22pt glyph
     // box (its menuButton is a 22pt Lottie in a 24pt hover circle inside the
     // 26pt bar). The Mac's full order is reader, copy link, extensions menu;
-    // only the extensions menu is built for this layout so far, and the two
-    // others will slot in ahead of it.
+    // copy link is the one still to slot in, between the two below.
     const int fmid = (out.url_field.top + out.url_field.bottom) / 2;
     const int fbtn = field_h - Scaled(2);
     const int fr = out.url_field.right - Scaled(2);
     out.extensions = {fr - fbtn, fmid - fbtn / 2, fr, fmid + fbtn / 2};
+    if (ActiveTabReaderOfferable()) {
+      const int rr = out.extensions.left - Scaled(2);
+      out.reader = {rr - fbtn, fmid - fbtn / 2, rr, fmid + fbtn / 2};
+    }
     out.tabs_top = out.spaces_strip.bottom + Scaled(kHeaderSpacer);
   } else {
     // Performance: back / forward / reload and search-tabs trail the caption
@@ -1294,8 +1306,8 @@ void PhiWindowController::PositionUrlField(const Layout& layout) {
   // stops at the LEFTMOST of them. Rects that sit outside the capsule (the
   // comfortable layout keeps its extensions button in the top bar) are not
   // candidates.
-  for (const RECT& accessory : {layout.field_ext_strip, layout.copy_link,
-                                layout.extensions}) {
+  for (const RECT& accessory : {layout.field_ext_strip, layout.reader,
+                                layout.copy_link, layout.extensions}) {
     if (accessory.right > accessory.left && accessory.left > box.left &&
         accessory.left < right_stop) {
       right_stop = accessory.left;
@@ -1305,9 +1317,25 @@ void PhiWindowController::PositionUrlField(const Layout& layout) {
                            ? layout.page_icon.right + Scaled(8)
                            : box.left + Scaled(12);
   const int width = right_stop - Scaled(8) - text_left;
-  ::MoveWindow(url_field_, text_left,
-               box.top + (box.bottom - box.top - text_height) / 2,
-               width > 0 ? width : 1, text_height, TRUE);
+  const RECT target = {text_left,
+                       box.top + (box.bottom - box.top - text_height) / 2,
+                       text_left + (width > 0 ? width : 1),
+                       box.top + (box.bottom - box.top - text_height) / 2 +
+                           text_height};
+  // Idempotent, because the paint path calls this too: the in-field accessory
+  // set changes with the page — the reader button comes and goes — and the
+  // EDIT is a real child window, so a stale width paints straight over
+  // whatever just appeared beside it. Moving only on a real change keeps that
+  // call from feeding itself more paints.
+  RECT current = {};
+  if (::GetWindowRect(url_field_, &current) &&
+      ::MapWindowPoints(HWND_DESKTOP, shell_hwnd_,
+                        reinterpret_cast<POINT*>(&current), 2) &&
+      ::EqualRect(&current, &target)) {
+    return;
+  }
+  ::MoveWindow(url_field_, target.left, target.top,
+               target.right - target.left, target.bottom - target.top, TRUE);
 }
 
 void PhiWindowController::SyncUrlField(bool force) {
@@ -3034,13 +3062,15 @@ void PhiWindowController::OnChromeMouseMove(POINT client_pt) {
     const Layout layout = ComputeLayout();
     // The first six MUST stay in the paint table's order — PaintChrome keys
     // a button's hover wash on this index.
-    const std::array<RECT, 13> nav = {layout.back, layout.forward,
+    // APPEND ONLY: PaintChrome keys a button's hover wash on its index here,
+    // so inserting into the middle silently moves someone else's wash.
+    const std::array<RECT, 14> nav = {layout.back, layout.forward,
                                       layout.reload, layout.search_tabs,
                                       add_tab_button_, layout.overflow,
                                       layout.downloads, layout.memory,
                                       layout.feedback, layout.chat,
                                       layout.extensions, layout.copy_link,
-                                      layout.phi_menu};
+                                      layout.phi_menu, layout.reader};
     for (size_t i = 0; i < nav.size() && kind == HoverKind::kNone; ++i) {
       if (::PtInRect(&nav[i], client_pt)) {
         kind = HoverKind::kNav;
@@ -3564,7 +3594,7 @@ bool PhiWindowController::ActiveTabDistillable() const {
 }
 
 bool PhiWindowController::ActiveTabReaderOfferable() const {
-  if (active_tab_id_ == 0) {
+  if (active_tab_id_ == 0 || !CanOfferReaderForUrl(active_tab_url_)) {
     return false;
   }
   if (ActiveTabDistillable()) {
@@ -3580,8 +3610,38 @@ bool PhiWindowController::ActiveTabShowsReader() const {
 }
 
 bool PhiWindowController::ActiveTabCanUseReader() const {
-  return active_tab_id_ != 0 && !active_tab_url_.empty() &&
-         !PhiNewTabPage::IsNewTabUrl(active_tab_url_);
+  return active_tab_id_ != 0 && CanOfferReaderForUrl(active_tab_url_);
+}
+
+// static
+bool PhiWindowController::CanOfferReaderForUrl(const std::string& url) {
+  // The Mac's ReaderExtractionService.canOfferReader: a real document, not
+  // one of Phi's own pages, and never a PDF — the reader's extraction ladder
+  // is a DOM one and a PDF has no DOM to walk (the migration plan lists PDFs
+  // and file:// as out of scope on purpose). This gate sits AHEAD of both
+  // verdicts, so no signal can light the button on a page the reader could
+  // not open anyway.
+  if (url.empty() || PhiNewTabPage::IsNewTabUrl(url)) {
+    return false;
+  }
+  for (const char* local : {"chrome://conversation", "phi://skills",
+                            "chrome://skills"}) {
+    if (url.rfind(local, 0) == 0) {
+      return false;
+    }
+  }
+  // The path's extension, ignoring any query or fragment.
+  const size_t cut = url.find_first_of("?#");
+  std::string path = cut == std::string::npos ? url : url.substr(0, cut);
+  const size_t dot = path.rfind('.');
+  if (dot == std::string::npos) {
+    return true;
+  }
+  std::string ext = path.substr(dot + 1);
+  for (char& c : ext) {
+    c = static_cast<char>(::tolower(static_cast<unsigned char>(c)));
+  }
+  return ext != "pdf";
 }
 
 void PhiWindowController::CardRoundedCorners(bool* top, bool* bottom) const {
@@ -7741,11 +7801,37 @@ void PhiWindowController::PaintChrome(HDC dc,
   // (SideAddressBar); in the top bar it is bare -- transparent until hovered on
   // Mac -- so only the EDIT's text shows there. The capture path (no children
   // rendered) draws the text itself so a screenshot still shows the address.
+  // The in-field trailing stack (reader, copy link, extensions menu) sits ON
+  // the address field, which already wears the resting 4% wash — so a button
+  // there takes the EMPHASIZED one, or it paints itself invisible. And while
+  // the pointer is on one of them the field drops back to resting, so what
+  // reads as lit is the button rather than the whole bar: the Mac lights the
+  // button's own circle, not the address bar behind it.
+  // The EDIT must give the accessories their room back the moment one
+  // appears; nothing else re-fits it between layout changes.
+  PositionUrlField(layout);
+  const auto on_field = [&](const RECT& r) {
+    return layout.url_field.right > layout.url_field.left && r.right > r.left &&
+           r.left >= layout.url_field.left && r.right <= layout.url_field.right;
+  };
+  const auto accessory_hot = [&](int index, const RECT& r) {
+    return hover_kind_ == HoverKind::kNav && hover_index_ == index &&
+           r.right > r.left;
+  };
+  const auto accessory_wash = [&](const RECT& r) {
+    return on_field(r) ? palette.hover_strong : palette.hover;
+  };
+  const bool pointer_on_field_accessory =
+      (accessory_hot(13, layout.reader) && on_field(layout.reader)) ||
+      (accessory_hot(11, layout.copy_link) && on_field(layout.copy_link)) ||
+      (accessory_hot(10, layout.extensions) && on_field(layout.extensions));
+  const bool field_hot = url_field_hover_ && !pointer_on_field_accessory;
+
   if (layout.mode == PhiLayoutMode::kPerformance) {
     // Resting 4% wash, brightening to the emphasized 8% under the cursor
     // (SideAddressBar's hoveredColor).
     FillRounded(dc, layout.url_field,
-                url_field_hover_ ? palette.hover_strong : kFieldBg,
+                field_hot ? palette.hover_strong : kFieldBg,
                 Scaled(kCornerRadius));
   } else if (layout.mode == PhiLayoutMode::kComfortable) {
     // Chrome's omnibox: a full pill standing on the toolbar, on the same 4%
@@ -7754,7 +7840,7 @@ void PhiWindowController::PaintChrome(HDC dc,
     // has only the flat toolbar, and would vanish into it.
     const int pill_r = (layout.url_field.bottom - layout.url_field.top) / 2;
     FillRounded(dc, layout.url_field,
-                url_field_hover_ ? palette.hover_strong : kFieldBg, pill_r);
+                field_hot ? palette.hover_strong : kFieldBg, pill_r);
     // The page's globe leads the pill, where Chrome puts its site chip.
     if (layout.page_icon.right > layout.page_icon.left) {
       HGDIOBJ previous_icon_font =
@@ -7764,7 +7850,7 @@ void PhiWindowController::PaintChrome(HDC dc,
         ::SelectObject(dc, previous_icon_font);
       }
     }
-  } else if (url_field_hover_ &&
+  } else if (field_hot &&
              layout.url_field.right > layout.url_field.left) {
     // The top-bar field rests BARE and takes the wash only under the
     // cursor (the Mac top bar's transparent-until-hovered field).
@@ -7839,8 +7925,10 @@ void PhiWindowController::PaintChrome(HDC dc,
   if (layout.reader.right > layout.reader.left) {
     HGDIOBJ previous_reader_font =
         chip_icon_font_ ? ::SelectObject(dc, chip_icon_font_) : nullptr;
-    if (hover_kind_ == HoverKind::kNav && hover_index_ == 11) {
-      FillRounded(dc, layout.reader, palette.hover, Scaled(4));
+    // Washed on hover, and held lit while the reader is UP — the Mac's
+    // ReaderButtonView shows its circle for `isButtonHovering || isActive`.
+    if (accessory_hot(13, layout.reader) || ActiveTabShowsReader()) {
+      FillRounded(dc, layout.reader, accessory_wash(layout.reader), Scaled(4));
     }
     DrawGlyph(dc, layout.reader, L"\uE736", kLabel);  // Reading mode.
     if (previous_reader_font) {
@@ -7850,8 +7938,9 @@ void PhiWindowController::PaintChrome(HDC dc,
   if (layout.copy_link.right > layout.copy_link.left) {
     HGDIOBJ previous_link_font =
         chip_icon_font_ ? ::SelectObject(dc, chip_icon_font_) : nullptr;
-    if (hover_kind_ == HoverKind::kNav && hover_index_ == 9) {
-      FillRounded(dc, layout.copy_link, palette.hover, Scaled(4));
+    if (accessory_hot(11, layout.copy_link)) {
+      FillRounded(dc, layout.copy_link, accessory_wash(layout.copy_link),
+                  Scaled(4));
     }
     DrawGlyph(dc, layout.copy_link, copy_link_flash_ ? L"" : L"",
               kLabel);
