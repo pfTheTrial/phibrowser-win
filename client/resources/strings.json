@@ -1466,6 +1466,17 @@
    "zh-Hans": "网址",
    "zh-Hant": "網址"
   },
+  "kiosk.toolbar.openInSpace": {
+   "de": "Öffnen in",
+   "en": "Open in",
+   "es": "Abrir en",
+   "fr": "Ouvrir dans",
+   "ja": "開く:",
+   "ko": "열기 위치",
+   "nl": "Openen in",
+   "zh-Hans": "打开到",
+   "zh-Hant": "開啟於"
+  },
   "menuBar.aboutBody": {
    "de": "Phi Browser für Windows {0}\nDie Phi-Client-Shell über dem Phi-Framework.",
    "en": "Phi Browser for Windows {0}\nThe Phi client shell over the Phi framework.",

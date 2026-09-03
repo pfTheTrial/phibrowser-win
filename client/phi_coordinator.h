@@ -180,6 +180,10 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // Opens `url` as a foreground tab in the first shell window and raises it —
   // how a Kiosk window hands its page over when the user expands it.
   void OpenUrlInMainWindow(const std::string& url);
+  // The Space a Kiosk offers to hand its page to: the main window's ACTIVE
+  // Space, the Space holding the default role when no window is up — the
+  // Mac's KioskSpaceMenuTargetResolver.primarySpace.
+  std::string KioskTargetSpaceId() const;
   void RequestSettings() override;
   void RequestFeedback(int64_t slot,
                        const PhiFeedbackContext& context) override;

@@ -756,6 +756,10 @@
    "comment": "feedback — URL row label (Mac key)",
    "en": "URL"
   },
+  "kiosk.toolbar.openInSpace": {
+   "comment": "kiosk — used in phi_kiosk_window.cc",
+   "en": "Open in"
+  },
   "menuBar.aboutBody": {
    "comment": "About Phi alert - body. {0} is the version string",
    "en": "Phi Browser for Windows {0}\nThe Phi client shell over the Phi framework.",

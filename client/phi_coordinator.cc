@@ -3281,6 +3281,18 @@ void PhiCoordinator::OpenUrlInMainWindow(const std::string& url) {
   }
 }
 
+std::string PhiCoordinator::KioskTargetSpaceId() const {
+  if (!windows_.empty()) {
+    const std::string& active = windows_.begin()->second->active_space();
+    if (!active.empty()) {
+      return active;
+    }
+  }
+  // DefaultSpaceId itself falls back to the first Space, so this always
+  // names one as long as any exists.
+  return DefaultSpaceId();
+}
+
 const PhiPalette& PhiCoordinator::PaletteForSlot(int64_t slot) const {
   auto window = windows_.find(slot);
   if (window != windows_.end()) {
