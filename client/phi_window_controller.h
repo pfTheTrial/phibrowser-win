@@ -20,6 +20,7 @@
 #include "base/memory/raw_ptr_exclusion.h"
 #include "chrome/browser/phinomenon/phi_framework/phi_framework_api.h"
 #include "phibrowser-win/client/phi_feedback_window.h"
+#include "phibrowser-win/client/phi_split_drop.h"
 #include "phibrowser-win/client/phi_theme.h"
 
 namespace phi_client {
@@ -965,9 +966,10 @@ class PhiWindowController {
   enum class DragKind { kNone, kTab, kPin, kBookmark, kChip };
   // Where the cursor currently sits during a tab/pin drag — same-band
   // reorder, a conversion target (the Mac's moveNormalTab toPinnd/
-  // toBookmark), or outside the window entirely (tear-off to a new
-  // window). Chip/bookmark drags stay in their own band.
-  enum class DropBand { kNone, kTabs, kPins, kBookmarks, kOutside };
+  // toBookmark), the PAGE (a split drop, the Mac's SplitTabDropContainer —
+  // the one band bookmark drags also reach), or outside the window entirely
+  // (tear-off to a new window). Chip drags stay in their own band.
+  enum class DropBand { kNone, kTabs, kPins, kBookmarks, kOutside, kContent };
   DragKind drag_kind_ = DragKind::kNone;
   DropBand drag_band_ = DropBand::kNone;
   int drag_index_ = -1;   // Position in the element's own vector.
@@ -975,6 +977,67 @@ class PhiWindowController {
   bool drag_active_ = false;
   int drag_insert_ = -1;  // Insertion slot 0..n, -1 = none.
   DropBand DropBandAt(POINT client_pt);
+
+  // DROP ON THE PAGE — the Mac's SplitTabDropContainer. A tab, pinned tab or
+  // bookmark dragged over the content area forms a split with the focused
+  // tab (create mode), or swaps into one pane of the focused split (replace
+  // mode). Resolved on every pointer move while the cursor is over the page,
+  // and consumed by CommitDrag.
+  PhiSplitDropZone split_drop_zone_ = PhiSplitDropZone::kNone;
+  // Whether this drag can form a split at all. Resolved ONCE when the pointer
+  // enters the page (nothing it depends on can change mid-drag), so a pointer
+  // move costs a zone hit-test rather than a framework round-trip.
+  bool split_drop_valid_ = false;
+  bool split_drop_replace_ = false;
+  std::string split_drop_split_id_;  // Replace mode: the split being re-paned.
+  bool split_drop_stacked_ = false;  // Its divider axis, for the pane cards.
+  double split_drop_ratio_ = 0.5;    // The primary pane's share.
+  // Resolves what a drop at `pt` would do and shows (or hides) the hint
+  // cards. True while this drag is a valid split candidate over the page —
+  // the zone may still be kNone, which is the dead middle band: the cards
+  // stay up, but no drop lands.
+  bool ResolveSplitDrop(POINT pt, bool rebuild);
+  // Performs the drop ResolveSplitDrop described. Takes its inputs by value
+  // because CommitDrag clears the drag state before acting.
+  void CommitSplitDrop(DragKind kind,
+                       int from_pos,
+                       int focused_id,
+                       PhiSplitDropZone zone,
+                       bool replace,
+                       const std::string& split_id);
+  // The dragged row as the page drop sees it: `tab_id` its live tab (0 when
+  // the row has none open), `url` the address to open in that case. False
+  // when this drag can never form a split — a split row, a bookmark folder,
+  // a row with nothing to open.
+  // `guid` names the stored row a pinned/bookmark drag came from, so the
+  // caller can re-resolve its LIVE tab against the strip: the press that
+  // armed the drag has already opened that row, which the cached view row
+  // may not know yet.
+  bool SplitDragSource(DragKind kind,
+                       int index,
+                       int* tab_id,
+                       std::string* url,
+                       std::string* guid) const;
+  // Pairs two live tabs into a split with `primary_id` in the leading (left
+  // or top) pane. Chromium normalizes the primary to the lower-indexed tab,
+  // so this reverses the pair afterwards when that is not the one asked for —
+  // the Mac's pendingSplitPrimaryByCreateId follow-up. Returns the split id.
+  std::string FormSplitOrdered(int64_t browser,
+                               int primary_id,
+                               int secondary_id,
+                               const char* layout);
+  // Drops a tab's pin/bookmark binding (the Mac's makeTabNormalOpened): the
+  // stored row stays put as an unopened one, the tab joins the plain list.
+  // No-op for an untagged tab.
+  void UnbindStoredTab(int64_t browser, int tab_id);
+  // Splits the ACTIVE tab with `tab_id`, after dropping any pin or bookmark
+  // binding on EITHER pane. A SPLIT NEVER LIVES IN A STORED CELL: the Mac
+  // runs makeTabNormalOpened over both panes in every split-formation path
+  // (openNewTabAsSplit, formSplitFromBookmark, the page drop), leaving the
+  // stored row behind as an unopened placeholder, so the pair always shows
+  // as one merged row in the NORMAL tab list. Reopening a STORED split is
+  // the other direction and stays bound — see OpenStoredSplit.
+  bool SplitActiveWithNormalized(int64_t browser, int tab_id);
 
   // Drag-reorder animation, Chrome's vertical-tab model
   // (TabCollectionAnimatingLayoutManager): the dragged row FLOATS with the
@@ -994,6 +1057,13 @@ class PhiWindowController {
   POINT drag_point_{};                     // Cursor, for the floating row.
   int drag_grab_dx_ = 0;                   // Cursor offset inside the row.
   int drag_grab_dy_ = 0;
+  // The tab that was FOCUSED when this drag was armed — the split drop's
+  // other pane. It has to be captured at arming time: the same mouse-down
+  // that arms a drag also activates the tab it grabbed (and OPENS the pinned
+  // tab or bookmark it grabbed), so by the time the pointer reaches the page
+  // active_tab_id_ is the dragged row itself and the page the user was
+  // looking at is gone.
+  int drag_focus_tab_id_ = 0;
   double DragSlideOffset(int tab_id) const;
   SlideVec RowSlideOffset(const std::string& guid) const;
   void RetargetDragSlide();  // New targets for the current gap slot.

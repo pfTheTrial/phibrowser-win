@@ -1224,6 +1224,10 @@ PhiWindowController::PhiWindowController(int64_t window_id,
 }
 
 PhiWindowController::~PhiWindowController() {
+  // A window closing under a live drag would leave the split-drop cards
+  // holding this controller. Only one drag runs at a time (it owns the
+  // mouse capture), so taking them down unconditionally is safe.
+  PhiSplitDropOverlay::Hide();
   // Detach the browser child before tearing down our window, so its teardown
   // is not entangled with ours. Full close plumbing is a later slice.
   if (browser_hwnd_ && ::IsWindow(browser_hwnd_)) {
@@ -2073,6 +2077,99 @@ ATOM EnsureOmniboxPopupClass() {
   return atom;
 }
 
+// One row of the framework's tab list. The split-drop paths map ids to
+// indices and back several times inside a single drop (a NewTab shifts every
+// index after it), so they read the strip ONCE and walk this instead.
+struct StripTab {
+  int index = -1;
+  int id = 0;
+  bool active = false;
+  std::string tag;
+  std::string split_id;
+  std::string url;
+};
+
+std::vector<StripTab> ReadStrip(phi_framework::PhiFramework* framework,
+                                int64_t browser) {
+  std::vector<StripTab> strip;
+  if (!framework) {
+    return strip;
+  }
+  std::optional<base::Value> parsed = base::JSONReader::Read(
+      framework->ListTabsJson(browser), base::JSON_PARSE_RFC);
+  if (!parsed || !parsed->is_list()) {
+    return strip;
+  }
+  for (const base::Value& v : parsed->GetList()) {
+    const base::DictValue* d = v.GetIfDict();
+    if (!d) {
+      continue;
+    }
+    StripTab tab;
+    tab.index = d->FindInt("index").value_or(-1);
+    tab.id = d->FindInt("id").value_or(0);
+    tab.active = d->FindBool("active").value_or(false);
+    if (const std::string* tag = d->FindString("tag")) {
+      tab.tag = *tag;
+    }
+    if (const std::string* split = d->FindString("splitId")) {
+      tab.split_id = *split;
+    }
+    if (const std::string* url = d->FindString("url")) {
+      tab.url = *url;
+    }
+    strip.push_back(std::move(tab));
+  }
+  return strip;
+}
+
+const StripTab* StripTabById(const std::vector<StripTab>& strip, int id) {
+  if (id == 0) {
+    return nullptr;
+  }
+  for (const StripTab& tab : strip) {
+    if (tab.id == id) {
+      return &tab;
+    }
+  }
+  return nullptr;
+}
+
+// The strip index of `id` right now — resolved fresh against a strip read
+// after the last mutation, never carried across one.
+int StripIndexOfId(const std::vector<StripTab>& strip, int id) {
+  const StripTab* tab = StripTabById(strip, id);
+  return tab ? tab->index : -1;
+}
+
+// The live tab bound to a stored row, or `fallback` when the row has none.
+// A pinned tab or bookmark is OPENED by the very press that arms its drag, so
+// the view row the drag was armed from can still say "closed" when the drop
+// lands — and opening its url a second time would leave a duplicate tab
+// beside the pane.
+int LiveTabForStoredRow(const std::vector<StripTab>& strip,
+                        const std::string& guid,
+                        int fallback) {
+  if (guid.empty()) {
+    return fallback;
+  }
+  for (const StripTab& tab : strip) {
+    if (tab.tag == guid) {
+      return tab.id;
+    }
+  }
+  return fallback;
+}
+
+int StripIdAtIndex(const std::vector<StripTab>& strip, int index) {
+  for (const StripTab& tab : strip) {
+    if (tab.index == index) {
+      return tab.id;
+    }
+  }
+  return 0;
+}
+
 }  // namespace
 
 void PhiWindowController::PaintCornerCap(HWND cap, HDC dc) {
@@ -2362,6 +2459,11 @@ bool PhiWindowController::InSidebarResizeBand(POINT client_pt) {
 void PhiWindowController::ArmDrag(DragKind kind, int index, POINT pt) {
   drag_kind_ = kind;
   drag_index_ = index;
+  // Read BEFORE the caller acts on the press: every arming site activates the
+  // row it grabbed (a tab) or opens it (a pinned tab, a bookmark), so this is
+  // the last moment the page the user is actually looking at is still the
+  // active one. A split drop pairs the dragged row with THAT page.
+  drag_focus_tab_id_ = active_tab_id_;
   drag_origin_ = pt;
   drag_point_ = pt;
   drag_active_ = false;
@@ -2619,10 +2721,16 @@ PhiWindowController::DropBand PhiWindowController::DropBandAt(
   if (!::PtInRect(&window_rect, screen)) {
     return DropBand::kOutside;
   }
+  const Layout layout = ComputeLayout();
+  // The PAGE first, and before the incognito and horizontal-layout exits
+  // below: a split drop is offered in every layout and off the record too
+  // (it forms no stored row, so there is nothing to keep).
+  if (::PtInRect(&layout.content, client_pt)) {
+    return DropBand::kContent;
+  }
   if (incognito_) {
     return DropBand::kTabs;  // No pin/bookmark conversions off the record.
   }
-  const Layout layout = ComputeLayout();
   if (layout.horizontal_tabs) {
     return DropBand::kTabs;  // The strip has no sidebar bands.
   }
@@ -2649,15 +2757,39 @@ void PhiWindowController::UpdateDrag(POINT pt) {
     drag_active_ = true;
     ::SetCapture(shell_hwnd_);
   }
-  // Tab and pin drags can cross bands (conversions, tear-off); the other
-  // kinds stay home.
+  // Tab and pin drags can cross bands (conversions, tear-off); a bookmark
+  // drag stays in its own outline EXCEPT over the page, where it can form a
+  // split like the other two (the Mac's bookmark DragSource).
   drag_point_ = pt;
   DropBand band = DropBand::kTabs;
   if (drag_kind_ == DragKind::kTab || drag_kind_ == DragKind::kPin) {
     band = DropBandAt(pt);
+  } else if (drag_kind_ == DragKind::kBookmark) {
+    const RECT page = ComputeLayout().content;
+    if (::PtInRect(&page, pt)) {
+      band = DropBand::kContent;
+    }
   }
   const bool band_changed = band != drag_band_;
   drag_band_ = band;
+  if (band == DropBand::kContent) {
+    // The page has no insertion slot: the drop is described by the split
+    // zone under the cursor, and the hint cards are the whole feedback.
+    ResolveSplitDrop(pt, /*rebuild=*/band_changed);
+    if (drag_insert_ != -1 || band_changed) {
+      drag_insert_ = -1;
+      RetargetDragSlide();  // The row leaves the list while it hovers here.
+      if (shell_hwnd_) {
+        ::InvalidateRect(shell_hwnd_, nullptr, FALSE);
+      }
+    } else if (shell_hwnd_) {
+      ::InvalidateRect(shell_hwnd_, nullptr, FALSE);  // The floating row.
+    }
+    return;
+  }
+  PhiSplitDropOverlay::Hide();
+  split_drop_valid_ = false;
+  split_drop_zone_ = PhiSplitDropZone::kNone;
   int slot = DragInsertSlot(pt);
   bool folder_target_changed = false;
   if (drag_kind_ == DragKind::kBookmark) {
@@ -2694,7 +2826,21 @@ void PhiWindowController::CommitDrag() {
   // The tree target a bookmark drag resolved (CancelDrag clears it).
   const std::string bookmark_parent = bookmark_drop_parent_;
   const int bookmark_index = bookmark_drop_index_;
+  // What a drop on the page would do (CancelDrag clears these too).
+  const PhiSplitDropZone split_zone = split_drop_zone_;
+  const bool split_replace = split_drop_replace_;
+  const std::string split_id = split_drop_split_id_;
+  const int split_focus = drag_focus_tab_id_;
   CancelDrag();
+  // The page band lands before the slot paths below: a split drop has no
+  // insertion slot at all, and the dead middle band is a no-op.
+  if (band == DropBand::kContent) {
+    if (active && split_zone != PhiSplitDropZone::kNone) {
+      CommitSplitDrop(kind, from_pos, split_focus, split_zone, split_replace,
+                      split_id);
+    }
+    return;
+  }
   if (!active || slot < 0) {
     return;
   }
@@ -2863,6 +3009,12 @@ void PhiWindowController::CancelDrag() {
   bookmark_drop_parent_.clear();
   bookmark_drop_index_ = -1;
   bookmark_drop_folder_row_ = -1;
+  drag_focus_tab_id_ = 0;
+  split_drop_valid_ = false;
+  split_drop_zone_ = PhiSplitDropZone::kNone;
+  split_drop_replace_ = false;
+  split_drop_split_id_.clear();
+  PhiSplitDropOverlay::Hide();
   drag_slide_from_.clear();
   drag_slide_to_.clear();
   row_slide_from_.clear();
@@ -2879,6 +3031,404 @@ void PhiWindowController::CancelDrag() {
       ::InvalidateRect(shell_hwnd_, nullptr, FALSE);
     }
   }
+}
+
+// --- Drop on the page: form or re-pane a split -----------------------------
+//
+// The Mac's SplitTabDropContainer, whose three drag sources (a tab, a pinned
+// tab, a bookmark) are this client's kTab / kPin / kBookmark drags.
+
+bool PhiWindowController::SplitDragSource(DragKind kind,
+                                          int index,
+                                          int* tab_id,
+                                          std::string* url,
+                                          std::string* guid) const {
+  *tab_id = 0;
+  url->clear();
+  guid->clear();
+  if (index < 0) {
+    return false;
+  }
+  if (kind == DragKind::kTab) {
+    if (index >= static_cast<int>(tabs_.size())) {
+      return false;
+    }
+    const TabRow& row = tabs_[static_cast<size_t>(index)];
+    // A split row is never a source — the page cannot nest a split inside a
+    // split (the Mac's isSourceASplit).
+    if (!row.split_id.empty() || row.b_index >= 0) {
+      return false;
+    }
+    *tab_id = row.id;
+    return row.id != 0;
+  }
+  if (kind != DragKind::kPin && kind != DragKind::kBookmark) {
+    return false;
+  }
+  const std::vector<ShortcutRow>& rows =
+      kind == DragKind::kPin ? pinned_ : bookmarks_;
+  if (index >= static_cast<int>(rows.size())) {
+    return false;
+  }
+  const ShortcutRow& row = rows[static_cast<size_t>(index)];
+  // A folder holds no page, and a STORED split — a pinned pair or a
+  // two-url bookmark — cannot become one pane of another split.
+  if (row.folder || !row.partner_guid.empty() || !row.url_b.empty()) {
+    return false;
+  }
+  // Both are answered: an OPEN row can hand over its live tab, and the url is
+  // what a closed one (or a self-drop) opens instead.
+  *tab_id = row.open ? row.tab_id : 0;
+  *url = row.url;
+  *guid = row.guid;
+  return *tab_id != 0 || !url->empty();
+}
+
+bool PhiWindowController::ResolveSplitDrop(POINT pt, bool rebuild) {
+  const auto no_drop = [&] {
+    split_drop_valid_ = false;
+    split_drop_zone_ = PhiSplitDropZone::kNone;
+    split_drop_replace_ = false;
+    split_drop_split_id_.clear();
+    PhiSplitDropOverlay::Hide();
+    return false;
+  };
+  const RECT area = ComputeLayout().content;
+  if (!::PtInRect(&area, pt)) {
+    return no_drop();
+  }
+  if (!rebuild) {
+    // Mid-hover: nothing the mode depends on can change while the button is
+    // down, so only the zone under the pointer is recomputed.
+    if (!split_drop_valid_) {
+      return false;
+    }
+    split_drop_zone_ =
+        split_drop_replace_
+            ? PhiSplitReplaceZoneAt(area, pt, split_drop_stacked_,
+                                    split_drop_ratio_)
+            : PhiSplitCreateZoneAt(area, pt, split_drop_zone_);
+    PhiSplitDropHints hints;
+    hints.area = area;
+    hints.replace = split_drop_replace_;
+    hints.stacked = split_drop_stacked_;
+    hints.ratio = split_drop_ratio_;
+    hints.active = split_drop_zone_;
+    PhiSplitDropOverlay::Show(this, hints);
+    return true;
+  }
+  const int focused_id =
+      drag_focus_tab_id_ != 0 ? drag_focus_tab_id_ : active_tab_id_;
+  if (!framework_ || focused_id == 0) {
+    return no_drop();
+  }
+  int source_id = 0;
+  std::string source_url;
+  std::string source_guid;
+  if (!SplitDragSource(drag_kind_, drag_index_, &source_id, &source_url,
+                       &source_guid)) {
+    return no_drop();
+  }
+  const int64_t browser = active_browser_ ? active_browser_ : window_id_;
+  const std::vector<StripTab> strip = ReadStrip(framework_, browser);
+  source_id = LiveTabForStoredRow(strip, source_guid, source_id);
+  const StripTab* focused = StripTabById(strip, focused_id);
+  if (!focused) {
+    return no_drop();  // The page the drag started from has closed.
+  }
+  // A live pinned tab or bookmark tab that is already a pane cannot be
+  // dragged into another split either.
+  if (const StripTab* source = StripTabById(strip, source_id);
+      source && !source->split_id.empty()) {
+    return no_drop();
+  }
+
+  PhiSplitDropHints hints;
+  hints.area = area;
+  if (focused->split_id.empty()) {
+    // CREATE: the four edge thirds, the middle a no-drop band.
+    split_drop_replace_ = false;
+    split_drop_split_id_.clear();
+    split_drop_zone_ = PhiSplitCreateZoneAt(area, pt, split_drop_zone_);
+  } else {
+    // REPLACE: the page maps onto the focused split's two panes.
+    const auto stored_is_pinned = [&](const std::string& guid) {
+      if (guid.empty()) {
+        return false;
+      }
+      for (const ShortcutRow& row : pinned_) {
+        if (row.guid == guid || row.partner_guid == guid) {
+          return true;
+        }
+      }
+      return false;
+    };
+    for (const StripTab& tab : strip) {
+      if (tab.split_id != focused->split_id) {
+        continue;
+      }
+      // Replacing a pane with itself (or with its own sibling) is a no-op,
+      // and a PINNED split persists as a guid pair the swap would strand —
+      // the evicted pane would stay flagged pinned while the incoming one
+      // is not. Neither offers a drop.
+      if (tab.id == source_id || stored_is_pinned(tab.tag)) {
+        return no_drop();
+      }
+    }
+    bool stacked = false;
+    double ratio = 0.5;
+    if (std::optional<base::Value> parsed = base::JSONReader::Read(
+            framework_->SplitViewsJson(browser), base::JSON_PARSE_RFC);
+        parsed && parsed->is_list()) {
+      for (const base::Value& v : parsed->GetList()) {
+        const base::DictValue* d = v.GetIfDict();
+        const std::string* id = d ? d->FindString("id") : nullptr;
+        if (!id || *id != focused->split_id) {
+          continue;
+        }
+        const std::string* layout = d->FindString("layout");
+        stacked = layout && *layout == "horizontal";
+        ratio = d->FindDouble("ratio").value_or(0.5);
+        break;
+      }
+    }
+    split_drop_replace_ = true;
+    split_drop_split_id_ = focused->split_id;
+    split_drop_stacked_ = stacked;
+    split_drop_ratio_ = ratio;
+    split_drop_zone_ = PhiSplitReplaceZoneAt(area, pt, stacked, ratio);
+    hints.replace = true;
+    hints.stacked = stacked;
+    hints.ratio = ratio;
+  }
+  hints.active = split_drop_zone_;
+  split_drop_valid_ = true;
+  PhiSplitDropOverlay::Show(this, hints);
+  return true;
+}
+
+std::string PhiWindowController::FormSplitOrdered(int64_t browser,
+                                                  int primary_id,
+                                                  int secondary_id,
+                                                  const char* layout) {
+  if (!framework_ || primary_id == 0 || secondary_id == 0 ||
+      primary_id == secondary_id) {
+    return std::string();
+  }
+  std::string split(framework_->CreateSplitViewForTabs(browser, primary_id,
+                                                       secondary_id, layout));
+  if (split.empty()) {
+    return split;
+  }
+  // Chromium normalizes the primary pane to the LOWER-indexed tab, so the
+  // pair can land the other way round from what the drop asked for. Reversing
+  // only reorders the strip — no tab is re-activated, so no pane blinks.
+  std::optional<base::Value> parsed = base::JSONReader::Read(
+      framework_->SplitViewsJson(browser), base::JSON_PARSE_RFC);
+  if (!parsed || !parsed->is_list()) {
+    return split;
+  }
+  for (const base::Value& v : parsed->GetList()) {
+    const base::DictValue* d = v.GetIfDict();
+    const std::string* id = d ? d->FindString("id") : nullptr;
+    if (!id || *id != split) {
+      continue;
+    }
+    if (d->FindInt("primaryTabId").value_or(0) != primary_id) {
+      framework_->SwapSplitView(browser, split.c_str());
+    }
+    break;
+  }
+  return split;
+}
+
+void PhiWindowController::UnbindStoredTab(int64_t browser, int tab_id) {
+  if (!framework_ || tab_id == 0) {
+    return;
+  }
+  const std::vector<StripTab> strip = ReadStrip(framework_, browser);
+  const StripTab* tab = StripTabById(strip, tab_id);
+  if (!tab || tab->tag.empty() || tab->index < 0) {
+    return;  // Already a plain tab.
+  }
+  // The stored row keeps its place and its url — it simply stops being
+  // "open", which is the Mac's placeholder left behind by
+  // demotePinnedTabLeavingPlaceholder.
+  framework_->SetTabTag(browser, tab->index, "");
+}
+
+bool PhiWindowController::SplitActiveWithNormalized(int64_t browser,
+                                                    int tab_id) {
+  if (!framework_ || tab_id == 0) {
+    return false;
+  }
+  // The ACTIVE tab is read from the strip, not from active_tab_id_: callers
+  // routinely activate the pane they are about to split with, and the cached
+  // id is only refreshed by a rebuild.
+  for (const StripTab& tab : ReadStrip(framework_, browser)) {
+    if (tab.active) {
+      UnbindStoredTab(browser, tab.id);
+      break;
+    }
+  }
+  UnbindStoredTab(browser, tab_id);
+  // Clearing a tag never moves a tab, but the index is resolved after it
+  // anyway — the id is the only thing worth carrying across a mutation.
+  const int index = StripIndexOfId(ReadStrip(framework_, browser), tab_id);
+  return index >= 0 && framework_->SplitActiveWith(browser, index);
+}
+
+void PhiWindowController::CommitSplitDrop(DragKind kind,
+                                          int from_pos,
+                                          int focused_id,
+                                          PhiSplitDropZone zone,
+                                          bool replace,
+                                          const std::string& split_id) {
+  if (!framework_ || zone == PhiSplitDropZone::kNone || focused_id == 0) {
+    return;
+  }
+  int source_id = 0;
+  std::string source_url;
+  std::string source_guid;
+  if (!SplitDragSource(kind, from_pos, &source_id, &source_url,
+                       &source_guid)) {
+    return;
+  }
+  const int64_t browser = active_browser_ ? active_browser_ : window_id_;
+  source_id =
+      LiveTabForStoredRow(ReadStrip(framework_, browser), source_guid,
+                          source_id);
+  // The dragged item lands in the pane the cursor was over; the layout names
+  // the divider, not the arrangement.
+  const bool dropped_primary = PhiSplitZoneIsPrimary(zone);
+  const char* layout = PhiSplitZoneLayout(zone);
+
+  // A fresh tab on `url`, as a stable id (NewTab answers with an index, and
+  // every later mutation moves it).
+  const auto open_tab = [&](const std::string& url) {
+    const int index = framework_->NewTab(browser, url.c_str());
+    if (index < 0) {
+      return 0;
+    }
+    return StripIdAtIndex(ReadStrip(framework_, browser), index);
+  };
+
+  if (replace) {
+    if (split_id.empty()) {
+      return;
+    }
+    // Which pane the drop targets, and which tab it evicts.
+    const int slot = dropped_primary ? 0 : 1;
+    int evicted_id = 0;
+    if (std::optional<base::Value> parsed = base::JSONReader::Read(
+            framework_->SplitViewsJson(browser), base::JSON_PARSE_RFC);
+        parsed && parsed->is_list()) {
+      for (const base::Value& v : parsed->GetList()) {
+        const base::DictValue* d = v.GetIfDict();
+        const std::string* id = d ? d->FindString("id") : nullptr;
+        if (!id || *id != split_id) {
+          continue;
+        }
+        evicted_id = d->FindInt(slot == 0 ? "primaryTabId" : "secondaryTabId")
+                         .value_or(0);
+        break;
+      }
+    }
+    if (evicted_id == 0) {
+      return;  // The split went away mid-drag.
+    }
+    // The evicted pane is kept as a standalone tab beside the split, unless
+    // it is an empty new-tab page — closing that beats littering the strip
+    // (the Mac's splitPaneReplacementKeepsEvicted).
+    const std::vector<StripTab> before = ReadStrip(framework_, browser);
+    const StripTab* evicted = StripTabById(before, evicted_id);
+    const bool keep_evicted =
+        !evicted || !PhiNewTabPage::IsNewTabUrl(evicted->url);
+    int incoming_id = source_id;
+    if (incoming_id != 0) {
+      // A live pinned tab or bookmark tab keeps its page: drop the binding
+      // and let the tab itself take the pane. Unconditional, because the
+      // COMFORTABLE layout leaves bookmark-bound tabs on the strip, so even
+      // a plain tab drag can be carrying a binding.
+      UnbindStoredTab(browser, incoming_id);
+    } else {
+      if (source_url.empty()) {
+        return;
+      }
+      incoming_id = open_tab(source_url);
+    }
+    if (incoming_id == 0 || incoming_id == evicted_id) {
+      return;
+    }
+    const int index = StripIndexOfId(ReadStrip(framework_, browser),
+                                     incoming_id);
+    if (index >= 0) {
+      framework_->SwapTabIntoSplit(browser, split_id.c_str(), slot, index,
+                                   keep_evicted);
+    }
+    RefreshTabs();
+    return;
+  }
+
+  // CREATE. Each source keeps the Mac's own rule for what happens when it
+  // resolves to the focused tab itself.
+  int dragged_id = 0;
+  if (kind == DragKind::kTab) {
+    if (source_id == focused_id) {
+      // Dragged = focused: a fresh new-tab page becomes the partner and takes
+      // the slot OPPOSITE the drop, since the dragged tab visually lands
+      // where the cursor is.
+      UnbindStoredTab(browser, focused_id);
+      const int fresh = open_tab(std::string());
+      if (fresh == 0) {
+        return;
+      }
+      FormSplitOrdered(browser, dropped_primary ? focused_id : fresh,
+                       dropped_primary ? fresh : focused_id, layout);
+      RefreshTabs();
+      return;
+    }
+    dragged_id = source_id;
+  } else if (source_id != 0 && source_id != focused_id) {
+    // A live stored row: the tab joins the split and its row stays behind as
+    // an unopened one.
+    dragged_id = source_id;
+  } else if (kind == DragKind::kBookmark && source_id == focused_id) {
+    // The bookmark's live tab IS the focused pane. Opening its url again
+    // would just duplicate what the user is looking at, so the partner is a
+    // fresh new-tab page in the opposite slot.
+    UnbindStoredTab(browser, focused_id);
+    const int fresh = open_tab(std::string());
+    if (fresh == 0) {
+      return;
+    }
+    FormSplitOrdered(browser, dropped_primary ? focused_id : fresh,
+                     dropped_primary ? fresh : focused_id, layout);
+    RefreshTabs();
+    return;
+  } else {
+    // A closed row — or a pinned one whose live tab is the focused pane:
+    // its url opens as the new pane and the stored row is left intact, so
+    // the slot still exists for next time.
+    if (source_url.empty()) {
+      return;
+    }
+    dragged_id = open_tab(source_url);
+  }
+  if (dragged_id == 0 || dragged_id == focused_id) {
+    return;
+  }
+  // NEITHER pane may carry a stored binding: a split never lives inside a
+  // pinned cell or a bookmark cell, it shows as one merged row in the normal
+  // tab list. Each stored row stays where it is, as an unopened placeholder
+  // (the Mac's makeTabNormalOpened /
+  // demotePinnedTabLeavingPlaceholder, which every one of its
+  // split-formation paths runs over both panes).
+  UnbindStoredTab(browser, focused_id);
+  UnbindStoredTab(browser, dragged_id);
+  FormSplitOrdered(browser, dropped_primary ? dragged_id : focused_id,
+                   dropped_primary ? focused_id : dragged_id, layout);
+  RefreshTabs();
 }
 
 int PhiWindowController::ResolveBookmarkDrop(POINT pt) {
@@ -6152,8 +6702,9 @@ void PhiWindowController::OnChromeClick(int x, int y) {
         }
       } else if (row.split_id.empty() && (::GetKeyState(VK_MENU) & 0x8000)) {
         // Alt-click, the Mac's option-click: split this tab with the active
-        // one (performSplitAction).
-        framework_->SplitActiveWith(browser, row.index);
+        // one (performSplitAction). Either pane may be bound to a pinned tab
+        // or a bookmark — the split takes both into the normal list.
+        SplitActiveWithNormalized(browser, row.id);
       } else if (row.b_index >= 0 && ::PtInRect(&row.pane_b, pt)) {
         framework_->ActivateTab(browser, row.b_index);
       } else {
@@ -6801,14 +7352,22 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
       } else if (chosen == kCopyRight) {
         CopyTextToClipboard(shell_hwnd_, base::UTF8ToWide(url_b));
       } else if (chosen == kSplitCurrent && framework_) {
-        framework_->SplitActiveWith(browser, row.index);
+        SplitActiveWithNormalized(browser, row.id);
         RefreshTabs();
       } else if (chosen == kOpenAsSplit && framework_) {
-        // A fresh blank pane beside this tab, the Mac's openAsSplit.
+        // A fresh blank pane beside this tab, the Mac's openAsSplit. The row
+        // becomes the active pane first; ids carry across the new tab, whose
+        // insertion can shift every index after it.
+        const int row_id = row.id;
         const int fresh = framework_->NewTab(browser, "");
-        framework_->ActivateTab(browser, row.index);
         if (fresh >= 0) {
-          framework_->SplitActiveWith(browser, fresh);
+          const std::vector<StripTab> strip = ReadStrip(framework_, browser);
+          const int fresh_id = StripIdAtIndex(strip, fresh);
+          const int row_index = StripIndexOfId(strip, row_id);
+          if (row_index >= 0) {
+            framework_->ActivateTab(browser, row_index);
+            SplitActiveWithNormalized(browser, fresh_id);
+          }
         }
         RefreshTabs();
       } else if (chosen == kTakeControl && host_) {
@@ -7123,18 +7682,27 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
           OpenOrFocusPinned(guid, url);
         } else {
           // Pair the bookmark with the currently focused tab (the Mac's
-          // openAsSplit on a bookmark row).
-          int current = -1;
-          for (const TabRow& r : tabs_) {
-            if (r.active && r.b_index < 0 && r.split_id.empty()) {
-              current = r.index;
+          // openAsSplit on a bookmark row → formSplitFromBookmark). The
+          // partner is read from the STRIP, not from tabs_: a focused tab
+          // bound to a pinned cell or another bookmark is not a row there,
+          // and skipping it would silently do nothing. It is unbound with
+          // the new pane below, so the pair lands in the normal tab list.
+          int partner_id = 0;
+          for (const StripTab& tab : ReadStrip(framework_, browser)) {
+            if (tab.active && tab.split_id.empty()) {
+              partner_id = tab.id;
               break;
             }
           }
           const int fresh = framework_->NewTab(browser, url.c_str());
-          if (current >= 0 && fresh >= 0) {
-            framework_->ActivateTab(browser, current);
-            framework_->SplitActiveWith(browser, fresh);
+          if (partner_id != 0 && fresh >= 0) {
+            const std::vector<StripTab> strip = ReadStrip(framework_, browser);
+            const int fresh_id = StripIdAtIndex(strip, fresh);
+            const int partner_index = StripIndexOfId(strip, partner_id);
+            if (partner_index >= 0) {
+              framework_->ActivateTab(browser, partner_index);
+              SplitActiveWithNormalized(browser, fresh_id);
+            }
           }
           RefreshTabs();
         }

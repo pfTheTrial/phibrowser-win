@@ -528,6 +528,38 @@
    "comment": "reader — used at phi_reader.cc",
    "en": "Reader View is unavailable on this page"
   },
+  "browser.splitDropHint.bottom": {
+   "comment": "splitDrop — used at phi_split_drop.cc",
+   "en": "Replace Bottom"
+  },
+  "browser.splitDropHint.bottomThird": {
+   "comment": "splitDrop — used at phi_split_drop.cc",
+   "en": "Add Bottom Split"
+  },
+  "browser.splitDropHint.leftHalf": {
+   "comment": "splitDrop — used at phi_split_drop.cc",
+   "en": "Replace Left"
+  },
+  "browser.splitDropHint.leftThird": {
+   "comment": "splitDrop — used at phi_split_drop.cc",
+   "en": "Add Left Split"
+  },
+  "browser.splitDropHint.rightHalf": {
+   "comment": "splitDrop — used at phi_split_drop.cc",
+   "en": "Replace Right"
+  },
+  "browser.splitDropHint.rightThird": {
+   "comment": "splitDrop — used at phi_split_drop.cc",
+   "en": "Add Right Split"
+  },
+  "browser.splitDropHint.top": {
+   "comment": "splitDrop — used at phi_split_drop.cc",
+   "en": "Replace Top"
+  },
+  "browser.splitDropHint.topThird": {
+   "comment": "splitDrop — used at phi_split_drop.cc",
+   "en": "Add Top Split"
+  },
   "browser.tabGroupOverview.newTabCardTitle": {
    "comment": "menuBar — used at phi_menu_bar.cc:295",
    "en": "New Tab\tCtrl+T"
