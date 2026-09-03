@@ -289,6 +289,14 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // Pushes the persisted restore choice into every loaded profile — run
   // when the framework comes up and after a profile loads.
   void PushRestorePreference();
+  bool PeekViewEnabled() const override;
+  void SetPeekViewEnabled(bool enabled) override;
+  bool AutoPeekViewEnabled() const override;
+  void SetAutoPeekViewEnabled(bool enabled) override;
+  // Pushes both Peek switches into the framework, which owns the two
+  // decisions they gate (the context-menu item and the cross-domain
+  // throttle's diversion). Run once the framework is up and on every change.
+  void PushPeekPreferences();
   PhiPinScope PinScope() const override;
   void SetPinScope(PhiPinScope scope) override;
   std::vector<std::string> SpaceSummaries() const override;
@@ -556,6 +564,11 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   PhiNewTabBehavior new_tab_behavior_ = PhiNewTabBehavior::kNewTabPage;
   bool always_show_full_url_ = false;
   bool show_tab_previews_ = true;  // The Mac's defaultValue.
+  // Peek View: master gate and the automatic bound-opener diversion under
+  // it. Both the Mac's defaultValue, and what the framework did before it
+  // was asked.
+  bool peek_view_enabled_ = true;
+  bool auto_peek_view_enabled_ = true;
   // Which of the user's own tabs an agent currently holds (the operating
   // mask). Fed by the three delegate reports above.
   PhiAgentDriveRegistry agent_drives_;

@@ -4,11 +4,11 @@
 import { test, run, assert, assertEq, sleep, openControl } from './phi-test.mjs'
 
 // The Mac's panes() list, in its order (AppController+Settings.swift):
-// Account, General, Profiles, Spaces, AI, Shortcuts, Developer. There is
-// no Phi Link pane — IMChannels exists in the Mac source but is never
-// mounted.
-const MAC_PANES = ['account', 'general', 'profiles', 'spaces', 'ai',
-                   'shortcuts', 'developer']
+// Account, General, Profiles, Spaces, Navigation, AI, Shortcuts, Developer.
+// There is no Phi Link pane — IMChannels exists in the Mac source but is
+// never mounted.
+const MAC_PANES = ['account', 'general', 'profiles', 'spaces', 'navigation',
+                   'ai', 'shortcuts', 'developer']
 
 test('settings: every Mac pane is offered, in order', async () => {
   const ctl = await openControl()

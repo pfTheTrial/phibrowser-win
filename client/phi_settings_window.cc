@@ -136,9 +136,10 @@ constexpr int kEmojiCell = 26;
 constexpr int kEmojiGap = 4;
 
 // The Mac's panes(), in order (AppController+Settings.panes(): Account,
-// General, Profiles, Spaces, Phi & AI, Shortcuts, Developer — there is NO
-// Phi Link pane; IMChannels exists in source but is never mounted). The
-// Account pane is titled with the user's name ("You" when signed out).
+// General, Profiles, Spaces, Navigation, Phi & AI, Shortcuts, Developer —
+// there is NO Phi Link pane; IMChannels exists in source but is never
+// mounted). The Account pane is titled with the user's name ("You" when
+// signed out).
 // Glyphs are MDL2 codepoints standing in for the Mac's 32pt template PDFs
 // (~14-18pt of ink); Developer mirrors the Mac's SF "hammer".
 struct SectionDef {
@@ -146,11 +147,12 @@ struct SectionDef {
   const wchar_t* label;
   wchar_t glyph;
 };
-constexpr std::array<SectionDef, 7> kSections = {{
+constexpr std::array<SectionDef, 8> kSections = {{
     {"account", L"You", 0xE77B},        // Contact
     {"general", L"General", 0xE713},    // Settings gear
     {"profiles", L"Profiles", 0xE716},  // People
     {"spaces", L"Spaces", 0xE8A9},      // ViewAll grid
+    {"navigation", L"Navigation", 0xE71B},  // Link — the Mac's navigations.svg
     {"ai", L"Phi & AI", 0xE734},        // Sparkle (the catalog's own pick)
     {"shortcuts", L"Shortcuts", 0xE765},  // Keyboard
     {"developer", L"Developer", 0xE90F},  // Repair — the Mac's hammer
@@ -919,6 +921,26 @@ void PhiSettingsWindow::AddSubHint(int* y, const wchar_t* text) {
   *y += Scaled(kHintHeight);
 }
 
+void PhiSettingsWindow::AddSectionHeading(int* y, const wchar_t* title,
+                                          const wchar_t* description) {
+  Item heading;
+  heading.kind = ItemKind::kSectionTitle;
+  heading.text = title;
+  heading.bounds = {Scaled(kMargin), *y, Scaled(kWidth - kMargin),
+                    *y + Scaled(kSectionTitleHeight)};
+  items_.push_back(std::move(heading));
+  *y += Scaled(kSectionTitleHeight) + Scaled(4);
+  Item subtitle;
+  subtitle.kind = ItemKind::kSubtitle;
+  subtitle.text = description;
+  subtitle.bounds = {Scaled(kMargin), *y, Scaled(kWidth - kMargin),
+                     *y + Scaled(kHintHeight)};
+  items_.push_back(std::move(subtitle));
+  // Leaves `y` where BeginSection(y, nullptr) expects it: the card follows at
+  // the same title-to-card gap a titled section uses.
+  *y += Scaled(kHintHeight) + Scaled(kTitleToCard) - Scaled(kRowPadding);
+}
+
 void PhiSettingsWindow::AddToggleRow(int* y, const wchar_t* title, bool on,
                                      bool enabled,
                                      const std::string& action) {
@@ -1297,11 +1319,54 @@ void PhiSettingsWindow::BuildSpaces(int* y) {
     items_.push_back(std::move(pill));
   }
   EndSection(y);
+}
 
-  // Pane-wide card: the URL Rules editor drill-in.
+// The Mac's Navigations pane (NavigationsSettingsView): the link-opening
+// controls, collected out of General and Spaces. Peek and URL Rules are real.
+//
+// The two KIOSK switches are drawn for the shape of the pane but sit INERT,
+// because neither gesture reaches Windows: the Cmd+Opt link remap is
+// IS_MAC_PHI in Browser::OpenURLFromTab, and the client has no external-link
+// entry point at all. They become live rows once the framework takes a client
+// answer for them, the way the Peek pair now does.
+void PhiSettingsWindow::BuildNavigation(int* y) {
+  AddSectionHeading(y, L"Kiosk",
+                    L"Open links in a lightweight window, one page at a "
+                    L"time.");
   BeginSection(y, nullptr);
+  AddToggleRow(y, L"Open external links in Kiosk", /*on=*/false,
+               /*enabled=*/false, std::string());
+  AddSubHint(y, L"Links opened from other apps use a focused, single-page "
+                L"Kiosk window.");
+  AddDividerRow(y);
+  AddToggleRow(y, L"Open Kiosk when clicking links with Ctrl+Alt held",
+               /*on=*/true, /*enabled=*/false, std::string());
+  AddSubHint(y, L"Hold Ctrl and Alt while clicking a link to open it in a "
+                L"Kiosk window.");
+  AddDividerRow(y);
+  AddSubHint(y, L"On Windows, Kiosk opens from a link's context menu and "
+                L"from URL rules.");
+  *y += Scaled(kRowPadding);
+  EndSection(y);
+
+  AddSectionHeading(y, L"Peek",
+                    L"Preview a link without opening it in a new tab.");
+  const bool peek = host_->PeekViewEnabled();
+  BeginSection(y, nullptr);
+  AddToggleRow(y, L"Enable Peek View", peek, /*enabled=*/true, "peekview");
+  AddSubHint(y, L"Choose \u201COpen Link in Peek View\u201D to preview a "
+                L"link in a floating panel over the page.");
+  AddDividerRow(y);
+  // The sub-switch is dimmed and inert while the master is off, as on Mac.
+  AddToggleRow(y, L"Automatically peek from pinned tabs and bookmarks",
+               host_->AutoPeekViewEnabled(), /*enabled=*/peek, "autopeek");
+  AddSubHint(y, L"Links that leave a pinned tab\u2019s or bookmark\u2019s "
+                L"site open in a Peek panel instead of a new tab.");
+  EndSection(y);
+
+  BeginSection(y, L"URL Rules");
   {
-    const RECT area = AddRow(y, L"URL Rules…", kRowLabelHeight, 20);
+    const RECT area = AddRow(y, L"Manage URL Rules…", kRowLabelHeight, 20);
     Item chevron;
     chevron.kind = ItemKind::kLink;
     chevron.text = L"›";
@@ -1313,6 +1378,8 @@ void PhiSettingsWindow::BuildSpaces(int* y) {
     if (label.kind == ItemKind::kRowLabel) {
       label.action = "urlrules";
     }
+    AddSubHint(y, L"Route matching domains or URLs to a Space, or ask every "
+                  L"time.");
   }
   EndSection(y);
 }
@@ -1494,13 +1561,13 @@ RuleMatchType RuleTypeForInput(const std::string& value) {
 }  // namespace
 
 void PhiSettingsWindow::BuildUrlRules(int* y) {
-  // Back link to the Spaces pane the editor drills out of.
+  // Back link to the Navigation pane the editor drills out of.
   {
     Item back;
     back.kind = ItemKind::kLink;
-    back.text = L"\u2039 Spaces";
-    back.action = "gospaces";
-    back.bounds = {Scaled(kMargin), *y, Scaled(kMargin) + Scaled(90),
+    back.text = L"\u2039 Navigation";
+    back.action = "gonavigation";
+    back.bounds = {Scaled(kMargin), *y, Scaled(kMargin) + Scaled(110),
                    *y + Scaled(kRowLabelHeight)};
     items_.push_back(std::move(back));
     *y += Scaled(kRowLabelHeight) + Scaled(8);
@@ -2350,11 +2417,11 @@ void PhiSettingsWindow::Rebuild() {
     entry.kind = ItemKind::kToolbarItem;
     entry.text = section.label;
     entry.payload = section.id;
-    // The URL Rules editor is a drill-in of the Spaces pane; its toolbar
+    // The URL Rules editor is a drill-in of the Navigation pane; its toolbar
     // item stays lit.
     entry.selected = section_ == section.id ||
                      (section_ == "urlrules" &&
-                      std::string(section.id) == "spaces");
+                      std::string(section.id) == "navigation");
     entry.action = "section";
     entry.bounds = {x, Scaled(kCaptionHeight + 8),
                     x + Scaled(kToolbarItemWidth),
@@ -2375,6 +2442,8 @@ void PhiSettingsWindow::Rebuild() {
     BuildGeneral(&y);
   } else if (section_ == "spaces") {
     BuildSpaces(&y);
+  } else if (section_ == "navigation") {
+    BuildNavigation(&y);
   } else if (section_ == "urlrules") {
     BuildUrlRules(&y);
   } else if (section_ == "profiles") {
@@ -3087,10 +3156,23 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
     host_->SetAlwaysShowFullUrl(!item.on);
   } else if (item.action == "restoresession") {
     host_->SetRestoreLastSession(!item.on);
+  } else if (item.action == "peekview") {
+    const bool on = !item.on;
+    host_->SetPeekViewEnabled(on);
+    // The automatic sub-switch follows the master's transitions: switching
+    // Peek on re-arms it, switching Peek off stands it down (the Mac's
+    // NavigationsSettingsView does exactly this).
+    host_->SetAutoPeekViewEnabled(on);
+  } else if (item.action == "autopeek") {
+    host_->SetAutoPeekViewEnabled(!item.on);
   } else if (item.action == "devmode") {
     host_->SetDeveloperMode(!item.on);
   } else if (item.action == "gospaces") {
     section_ = "spaces";
+    scroll_ = 0;
+    SyncTitle();
+  } else if (item.action == "gonavigation") {
+    section_ = "navigation";
     scroll_ = 0;
     SyncTitle();
   } else if (item.action == "urlrules") {

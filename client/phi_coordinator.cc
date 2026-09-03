@@ -262,6 +262,7 @@ void PhiCoordinator::OnFrameworkReady(phi_framework::PhiFramework* framework,
   LoadAgentGrants();
   LoadCredentialGrants();
   PushRestorePreference();  // Into the loaded profiles' startup prefs.
+  PushPeekPreferences();    // Into the framework, which owns both decisions.
   // Straight after LoadPrefs, which is where the language is read. Chromium
   // chose its own locale long before this — it reads its pref at startup —
   // so this is the moment a preference file edited while the browser was
@@ -2334,6 +2335,10 @@ void PhiCoordinator::LoadPrefs() {
           root->FindBool("alwaysShowFullUrl").value_or(always_show_full_url_);
       show_tab_previews_ =
           root->FindBool("showTabPreviews").value_or(show_tab_previews_);
+      peek_view_enabled_ =
+          root->FindBool("peekViewEnabled").value_or(peek_view_enabled_);
+      auto_peek_view_enabled_ = root->FindBool("autoPeekViewEnabled")
+                                    .value_or(auto_peek_view_enabled_);
       restore_last_session_ =
           root->FindBool("restoreLastSession").value_or(restore_last_session_);
       always_show_bookmark_bar_ = root->FindBool("alwaysShowBookmarkBar")
@@ -2383,6 +2388,8 @@ void PhiCoordinator::SavePrefs() const {
   root.Set("saturation", saturation_);
   root.Set("alwaysShowFullUrl", always_show_full_url_);
   root.Set("showTabPreviews", show_tab_previews_);
+  root.Set("peekViewEnabled", peek_view_enabled_);
+  root.Set("autoPeekViewEnabled", auto_peek_view_enabled_);
   root.Set("restoreLastSession", restore_last_session_);
   root.Set("alwaysShowBookmarkBar", always_show_bookmark_bar_);
   root.Set("bookmarkBarOnNewTab", bookmark_bar_on_new_tab_);
@@ -2745,6 +2752,41 @@ void PhiCoordinator::SetShowTabPreviews(bool enabled) {
   show_tab_previews_ = enabled;
   SavePrefs();
   PhiSettingsWindow::Refresh();
+}
+
+bool PhiCoordinator::PeekViewEnabled() const {
+  return peek_view_enabled_;
+}
+
+void PhiCoordinator::SetPeekViewEnabled(bool enabled) {
+  if (enabled == peek_view_enabled_) {
+    return;
+  }
+  peek_view_enabled_ = enabled;
+  SavePrefs();
+  PushPeekPreferences();
+  PhiSettingsWindow::Refresh();
+}
+
+bool PhiCoordinator::AutoPeekViewEnabled() const {
+  return auto_peek_view_enabled_;
+}
+
+void PhiCoordinator::SetAutoPeekViewEnabled(bool enabled) {
+  if (enabled == auto_peek_view_enabled_) {
+    return;
+  }
+  auto_peek_view_enabled_ = enabled;
+  SavePrefs();
+  PushPeekPreferences();
+  PhiSettingsWindow::Refresh();
+}
+
+void PhiCoordinator::PushPeekPreferences() {
+  if (framework_) {
+    framework_->SetPeekPreferences(peek_view_enabled_,
+                                   auto_peek_view_enabled_);
+  }
 }
 
 PhiPinScope PhiCoordinator::PinScope() const {
@@ -4645,8 +4687,8 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
     // The Mac's panes(), in its order; Developer only in developer mode.
     // (There is no Phi Link pane on Mac — IMChannels exists in its source
     // but is never mounted.)
-    for (const char* name : {"account", "general", "profiles", "spaces", "ai",
-                             "shortcuts"}) {
+    for (const char* name : {"account", "general", "profiles", "spaces",
+                             "navigation", "ai", "shortcuts"}) {
       sections.Append(name);
     }
     if (developer_mode_) {
@@ -4664,6 +4706,8 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
     out.Set("alwaysShowFullUrl", always_show_full_url_);
     out.Set("showTabPreviews", show_tab_previews_);
     out.Set("restoreLastSession", restore_last_session_);
+    out.Set("peekViewEnabled", peek_view_enabled_);
+    out.Set("autoPeekViewEnabled", auto_peek_view_enabled_);
     out.Set("pinScope", PhiPinScopeName(tab_store_.pin_scope()));
     // With a profileId, the per-profile browsing settings too.
     std::optional<base::DictValue> p =
@@ -4699,6 +4743,17 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
       }
       if (std::optional<bool> restore = p->FindBool("restoreLastSession")) {
         SetRestoreLastSession(*restore);
+        ok = true;
+      }
+      // Peek's master first: turning it off drags the sub-switch down with
+      // it, so a payload carrying both still ends where it asked to.
+      if (std::optional<bool> peek = p->FindBool("peekViewEnabled")) {
+        SetPeekViewEnabled(*peek);
+        SetAutoPeekViewEnabled(*peek);
+        ok = true;
+      }
+      if (std::optional<bool> auto_peek = p->FindBool("autoPeekViewEnabled")) {
+        SetAutoPeekViewEnabled(*auto_peek);
         ok = true;
       }
       if (const std::string* behavior = p->FindString("newTabBehavior")) {
@@ -4739,6 +4794,8 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
     out.Set("alwaysShowFullUrl", always_show_full_url_);
     out.Set("showTabPreviews", show_tab_previews_);
     out.Set("restoreLastSession", restore_last_session_);
+    out.Set("peekViewEnabled", peek_view_enabled_);
+    out.Set("autoPeekViewEnabled", auto_peek_view_enabled_);
     out.Set("newTabBehavior", new_tab_behavior_ == PhiNewTabBehavior::kOmnibox
                                   ? "omnibox"
                                   : "newTabPage");

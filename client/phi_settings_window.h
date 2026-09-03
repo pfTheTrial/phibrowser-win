@@ -110,6 +110,18 @@ class PhiSettingsHost {
   // Creates a Space (Default profile) — the list's "+" button.
   virtual void CreateSpaceNamed(const std::string& name) = 0;
 
+  // Navigation
+  // Peek View, the Mac's peekViewEnabled / autoPeekViewEnabled pair. The
+  // master gate governs the "Open Link in Peek View" context-menu item and,
+  // under it, the automatic diversion; the sub-gate governs that diversion
+  // alone — a cross-site link leaving a bookmark- or pinned-bound tab
+  // previews in a Peek instead of taking a new tab. Both are pushed into the
+  // framework, which is where both decisions are actually made.
+  virtual bool PeekViewEnabled() const = 0;
+  virtual void SetPeekViewEnabled(bool enabled) = 0;
+  virtual bool AutoPeekViewEnabled() const = 0;
+  virtual void SetAutoPeekViewEnabled(bool enabled) = 0;
+
   // Space URL routing rules (the Mac's universal URL Rules editor).
   // Rows come back as "spaceId\thost\tpathPrefix\task(0|1)"; `host` is the
   // wire form ("github.com" exact, "*.foo.com" suffix, "*needle*"
@@ -240,7 +252,9 @@ class PhiSettingsWindow {
   void BuildAccount(int* y);
   void BuildGeneral(int* y);
   void BuildSpaces(int* y);
-  // The URL Rules editor, a drill-in of the Spaces pane (the Mac's
+  // The Mac's Navigations pane: Kiosk, Peek and URL Rules.
+  void BuildNavigation(int* y);
+  // The URL Rules editor, a drill-in of the Navigation pane (the Mac's
   // universal editor window).
   void BuildUrlRules(int* y);
   void BuildProfiles(int* y);
@@ -259,6 +273,10 @@ class PhiSettingsWindow {
   void BeginSection(int* y, const wchar_t* title);
   void EndSection(int* y);
   void AddHint(int* y, const wchar_t* text);
+  // A section title with the Mac's 11pt description line under it, for a
+  // card BeginSection then opens title-less.
+  void AddSectionHeading(int* y, const wchar_t* title,
+                         const wchar_t* description);
   // The 1px separator between two rows of the open card.
   void AddDividerRow(int* y);
   // An 11pt tertiary line tucked under the row just added.
