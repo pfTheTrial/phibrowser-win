@@ -6049,6 +6049,65 @@ void StrokeRounded(HDC dc, const RECT& r, COLORREF fill, COLORREF border,
   ::DeleteObject(brush);
 }
 
+// Reader View's icon: SF Symbol `doc.plaintext`, which is what BOTH Mac
+// address bars draw (SideAddressBar's HoverableButtonConfig and
+// ReaderButtonView). Segoe MDL2's nearest neighbour is ReadingMode (E736), an
+// OPEN BOOK — a different picture altogether — so the symbol is drawn instead
+// of substituted: a rounded page outline with lines of text in it.
+//
+// Proportions are the symbol's own, in units of the glyph box: the page is
+// 0.72 wide by 0.90 tall, corner radius 0.14, stroke 0.085, and the text runs
+// as three lines inset 0.17 from each side, the last one short — four lines
+// at this size close up into a smudge.
+void DrawReaderGlyph(HDC dc, const RECT& button, COLORREF ink, UINT dpi) {
+  if (button.right <= button.left || button.bottom <= button.top) {
+    return;
+  }
+  const auto scaled = [dpi](double units, double box) {
+    return static_cast<int>(units * box * dpi / 96.0 + 0.5);
+  };
+  // The glyph box the symbol is laid out in: the Mac draws a 12pt image in a
+  // 24pt button, so half the button, and never bigger than it fits.
+  const double box = (std::min)(button.right - button.left,
+                                button.bottom - button.top) * 96.0 / dpi / 2.0;
+  const int page_w = scaled(0.72, box);
+  const int page_h = scaled(0.90, box);
+  if (page_w <= 2 || page_h <= 2) {
+    return;
+  }
+  const int cx = (button.left + button.right) / 2;
+  const int cy = (button.top + button.bottom) / 2;
+  RECT page = {cx - page_w / 2, cy - page_h / 2, cx - page_w / 2 + page_w,
+               cy - page_h / 2 + page_h};
+  const int stroke = (std::max)(1, scaled(0.085, box));
+  PhiStrokeRoundRectAA(dc, page, (std::max)(1, scaled(0.14, box)), ink, stroke);
+
+  const int inset = scaled(0.17, box);
+  const int line_left = page.left + inset;
+  const int line_right = page.right - inset;
+  if (line_right - line_left <= 1) {
+    return;
+  }
+  // Evenly spaced across the page's inner height, so the block of text sits
+  // optically centred rather than crowding either edge.
+  const int rows = 3;
+  const int top = page.top + inset;
+  const int bottom = page.bottom - inset;
+  // Solid fills, not the AA helper: a one-pixel bar antialiases to about half
+  // coverage and the text would read lighter than the outline around it.
+  HBRUSH text_ink = ::CreateSolidBrush(ink);
+  for (int i = 0; i < rows; ++i) {
+    const int y = top + (bottom - top - stroke) * i / (rows - 1);
+    // The last line is short, as the symbol's is.
+    const int right = i == rows - 1
+                          ? line_left + (line_right - line_left) * 3 / 5
+                          : line_right;
+    RECT line = {line_left, y, right, y + stroke};
+    ::FillRect(dc, &line, text_ink);
+  }
+  ::DeleteObject(text_ink);
+}
+
 void DrawGlyph(HDC dc, const RECT& r, const wchar_t* glyph, COLORREF ink) {
   if (r.right <= r.left) {
     return;
@@ -7923,17 +7982,14 @@ void PhiWindowController::PaintChrome(HDC dc,
   // a 12pt link glyph on a radius-4 hover wash; a checkmark for the second
   // after a copy, the Mac's triggered swap.
   if (layout.reader.right > layout.reader.left) {
-    HGDIOBJ previous_reader_font =
-        chip_icon_font_ ? ::SelectObject(dc, chip_icon_font_) : nullptr;
+    // No icon font to select: this one is drawn, not typeset (see
+    // DrawReaderGlyph).
     // Washed on hover, and held lit while the reader is UP — the Mac's
     // ReaderButtonView shows its circle for `isButtonHovering || isActive`.
     if (accessory_hot(13, layout.reader) || ActiveTabShowsReader()) {
       FillRounded(dc, layout.reader, accessory_wash(layout.reader), Scaled(4));
     }
-    DrawGlyph(dc, layout.reader, L"\uE736", kLabel);  // Reading mode.
-    if (previous_reader_font) {
-      ::SelectObject(dc, previous_reader_font);
-    }
+    DrawReaderGlyph(dc, layout.reader, kLabel, dpi_);
   }
   if (layout.copy_link.right > layout.copy_link.left) {
     HGDIOBJ previous_link_font =
