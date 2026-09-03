@@ -149,6 +149,9 @@ constexpr int kRowPad = 2;            // 36pt row → 32pt pill (vertical inset)
 constexpr int kBottomBarHeight = 24;  // SidebarBottomBarState.singleRowHeight
 constexpr int kBottomSpacer = 8;
 constexpr int kCornerRadius = 8;      // The pill radius, everywhere.
+// How far a shell with no placement to inherit sits off the work area's
+// top-left corner (see the first-run placement in the constructor).
+constexpr int kDefaultPlacementMargin = 24;
 // The web content is an inset rounded card floating on the tint. Margins are
 // the Mac's: LEFT FLUSH against the sidebar, 8 right/bottom, and a
 // titleAwareArea breath on top — 8 in performance, 12 under a top bar.
@@ -1069,6 +1072,9 @@ PhiWindowController::PhiWindowController(int64_t window_id,
   // Anchoring the content instead makes the round trip a fixed point.
   RECT wr = {};
   ::GetWindowRect(browser_hwnd_, &wr);
+  if (const UINT dpi = ::GetDpiForWindow(browser_hwnd_)) {
+    dpi_ = dpi;  // Lay the first frame out for the monitor we open on.
+  }
   int x = CW_USEDEFAULT, y = CW_USEDEFAULT;
   int w = Scaled(1200 + sidebar_dip_), h = Scaled(800);
   // Distrust a restored rect that is mostly off-screen (a stale placement
@@ -1088,22 +1094,15 @@ PhiWindowController::PhiWindowController(int64_t window_id,
     }
   }
   if (wr.right > wr.left && wr.bottom > wr.top) {
-    const UINT dpi = ::GetDpiForWindow(browser_hwnd_);
-    if (dpi) {
-      dpi_ = dpi;  // Lay the first frame out for the monitor we open on.
-    }
     // The shell's frame is CUSTOM (WM_NCCALCSIZE): the client reaches the
     // window's top edge and only the resize borders remain non-client, so
     // AdjustWindowRectEx (which assumes an OS caption) would be wrong. The
     // content region sits at (sidebar, titleBand + topGap) inside the client;
     // place the window so that region lands exactly on the browser's bounds.
-    const UINT frame_dpi = dpi ? dpi : 96;
-    const int border_x =
-        ::GetSystemMetricsForDpi(SM_CXSIZEFRAME, frame_dpi) +
-        ::GetSystemMetricsForDpi(SM_CXPADDEDBORDER, frame_dpi);
-    const int border_y =
-        ::GetSystemMetricsForDpi(SM_CYSIZEFRAME, frame_dpi) +
-        ::GetSystemMetricsForDpi(SM_CXPADDEDBORDER, frame_dpi);
+    const int border_x = ::GetSystemMetricsForDpi(SM_CXSIZEFRAME, dpi_) +
+                         ::GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi_);
+    const int border_y = ::GetSystemMetricsForDpi(SM_CYSIZEFRAME, dpi_) +
+                         ::GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi_);
     // Where the content region starts inside the client, PER LAYOUT — the
     // numbers ComputeLayout produces: comfortable has no sidebar and stacks
     // the taller band and the toolbar; balanced adds the navigation bar
@@ -1131,6 +1130,32 @@ PhiWindowController::PhiWindowController(int64_t window_id,
     y = wr.top - content_top;
     w = (wr.right + trailing + border_x) - x;
     h = (wr.bottom + trailing + border_y) - y;
+  }
+
+  // FIRST RUN — and any rect rejected above: there is no shell placement to
+  // inherit, only Chromium's DEFAULT bounds, which sit a tile inside the work
+  // area's top-left. Anchoring the CONTENT to those drags the sidebar off the
+  // left edge and the caption band off the top: the window comes up with the
+  // page pinned to the screen corner and its chrome out of reach. Open the
+  // SHELL off that corner instead, by a margin of its own. Only the position
+  // is chosen here — the size the anchor produced is Chromium's own default,
+  // kept unless it would overflow the margin on the far edges. From the next
+  // launch the saved rect reproduces this placement through the round trip
+  // above, so this runs once per profile.
+  MONITORINFO home = {sizeof(home)};
+  if (::GetMonitorInfoW(
+          ::MonitorFromWindow(browser_hwnd_, MONITOR_DEFAULTTOPRIMARY),
+          &home) &&
+      (x == CW_USEDEFAULT || x < home.rcWork.left || y < home.rcWork.top)) {
+    const int work_w = home.rcWork.right - home.rcWork.left;
+    const int work_h = home.rcWork.bottom - home.rcWork.top;
+    // The margin gives way on a work area too small to hold it.
+    const int margin = std::min(Scaled(kDefaultPlacementMargin),
+                                std::min(work_w, work_h) / 8);
+    x = home.rcWork.left + margin;
+    y = home.rcWork.top + margin;
+    w = std::min(w, work_w - 2 * margin);
+    h = std::min(h, work_h - 2 * margin);
   }
 
   if (agent_) {
