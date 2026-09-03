@@ -1319,6 +1319,23 @@ class PhiWindowController {
     RECT bounds{};
   };
   std::vector<SpaceChip> chips_;
+  // The Mac's SpacesStripView pip viewport: when the row overflows, a
+  // clipped window of `visible` whole pips slides along the FULL row,
+  // widened by 65% of a pip at any edge with pips hidden past it so the
+  // neighbour peeks through — the cue that the row continues. `chips_`
+  // holds the windowed pips plus those peeked ones; `chips_first_index_`
+  // is the row index of chips_[0], and `chips_clip_` the viewport rect
+  // (empty when nothing is hidden) that bounds both paint and hit tests.
+  int chips_start_ = 0;         // stripStartIndex: first whole pip shown.
+  int chips_first_index_ = 0;
+  RECT chips_clip_{};
+  // The window re-centres on the active pip when the active Space or the
+  // pip count changes (ensureActivePipVisible); wheel steps move it freely
+  // in between, so both are remembered to tell the two apart.
+  std::string chips_anchor_space_;
+  int chips_anchor_visible_ = -1;
+  bool ChipHit(const SpaceChip& chip, POINT client_pt) const;
+  void StepChipsViewport(int step);  // stepViewport: +1 toward the end.
   RECT add_space_button_{};
   // True when not every Space fit the strip: the trailing "+" becomes the
   // Mac's "…" (moreButton) and opens the full switcher menu instead.

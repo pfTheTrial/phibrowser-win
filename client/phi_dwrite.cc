@@ -152,6 +152,25 @@ D2D1_COLOR_F ToColor(COLORREF color) {
 
 }  // namespace
 
+namespace {
+
+// The ground colour the caller already painted under `rect`, sampled just
+// inside its corner — pulled inside the DC's clip box first: a pixel outside
+// the clip reads CLR_INVALID (a pip half-hidden by the Spaces strip's
+// viewport clip would otherwise clear to white).
+COLORREF SampleBackground(HDC dc, const RECT& rect) {
+  POINT sample = {rect.left + 1, rect.top + 1};
+  RECT clip = {};
+  if (::GetClipBox(dc, &clip) > NULLREGION && clip.right > clip.left &&
+      clip.bottom > clip.top) {
+    sample.x = std::max(clip.left, std::min(sample.x, clip.right - 1));
+    sample.y = std::max(clip.top, std::min(sample.y, clip.bottom - 1));
+  }
+  return ::GetPixel(dc, sample.x, sample.y);
+}
+
+}  // namespace
+
 bool PhiDrawColorText(HDC dc,
                       const RECT& rect,
                       const std::wstring& text,
@@ -168,8 +187,7 @@ bool PhiDrawColorText(HDC dc,
   DWriteState& state = State();
   // D2D repaints the whole bound rect on EndDraw, so start from what is
   // already painted beneath (the caller's pill or ground fill).
-  const COLORREF background =
-      ::GetPixel(dc, rect.left + 1, rect.top + 1);
+  const COLORREF background = SampleBackground(dc, rect);
   if (FAILED(state.target->BindDC(dc, &rect))) {
     return false;
   }
@@ -235,7 +253,7 @@ bool PhiDrawBgra(HDC dc,
     return false;
   }
   DWriteState& state = State();
-  const COLORREF background = ::GetPixel(dc, dest.left + 1, dest.top + 1);
+  const COLORREF background = SampleBackground(dc, dest);
   if (FAILED(state.target->BindDC(dc, &dest))) {
     return false;
   }

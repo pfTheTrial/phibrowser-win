@@ -2812,7 +2812,10 @@ void PhiWindowController::CommitDrag() {
     case DragKind::kChip:
       if (host_ && from_pos >= 0 &&
           from_pos < static_cast<int>(chips_.size())) {
-        host_->ReorderSpace(chips_[static_cast<size_t>(from_pos)].id, to_pos);
+        // The slot counts the WINDOWED pips; the row index adds those
+        // scrolled out of the viewport ahead of it.
+        host_->ReorderSpace(chips_[static_cast<size_t>(from_pos)].id,
+                            to_pos + chips_first_index_);
       }
       break;
     case DragKind::kNone:
@@ -3084,7 +3087,7 @@ void PhiWindowController::OnChromeMouseMove(POINT client_pt) {
     }
   }
   for (size_t i = 0; i < chips_.size() && kind == HoverKind::kNone; ++i) {
-    if (::PtInRect(&chips_[i].bounds, client_pt)) {
+    if (ChipHit(chips_[i], client_pt)) {
       kind = HoverKind::kChip;
       index = static_cast<int>(i);
     }
@@ -3967,6 +3970,13 @@ bool PhiWindowController::OnSidebarWheel(POINT client_pt, int wheel_delta) {
     return false;
   }
   const Layout layout = ComputeLayout();
+  if (::PtInRect(&layout.spaces_strip, client_pt)) {
+    // Over the strip the wheel slides the pip viewport by whole pips, one
+    // per notch (the Mac's SpacesStripWheelTracker): a notch toward the
+    // user reveals later pips, the direction a vertical list would scroll.
+    StepChipsViewport(wheel_delta < 0 ? 1 : -1);
+    return true;
+  }
   if (!::PtInRect(&layout.sidebar, client_pt) || tabs_scroll_max_ <= 0) {
     return false;
   }
@@ -4456,45 +4466,25 @@ RECT PhiWindowController::FieldExtRect(const Layout& layout, size_t i) const {
 void PhiWindowController::RebuildChips() {
   chips_.clear();
   chips_overflow_ = false;
+  chips_clip_ = RECT{};
+  chips_first_index_ = 0;
+  creating_pip_bounds_ = RECT{};
   const Layout layout = ComputeLayout();
   add_space_button_ = layout.add_space;
   if (!host_ || incognito_) {
     add_space_button_ = RECT{};  // Incognito has no Spaces strip.
     return;
   }
-  int x = layout.chips_left;
-  // While the create form is up the row's end holds the dashed placeholder
-  // pip (the Mac's creatingSpacePlaceholderPip): reserve its slot so the
-  // real pips can never collide with it.
-  int chips_limit = layout.chips_limit;
-  creating_pip_bounds_ = RECT{};
-  if (creating_space_ && !layout.horizontal_tabs) {
-    chips_limit -= Scaled(kSpaceChip + kSpaceChipGap);
-  }
+  // The full pip row in strip order (the Mac's stripOrderedSpaces): the
+  // user Spaces, then — only in a real user window; the agent's own hidden
+  // window never lists them — the live agent Spaces as robot pips. Clicking
+  // one surfaces its window so the user can watch the agent work live.
+  std::vector<SpaceChip> row;
   for (const PhiSpaceView& space : host_->Spaces()) {
     // Comfortable shows a single compact pip — the ACTIVE Space; the rest
     // live in the popup it opens.
     if (layout.horizontal_tabs && space.id != active_space_) {
       continue;
-    }
-    if (x + Scaled(layout.chip_size) > chips_limit) {
-      // Row is full: the trailing slot becomes the Mac's "…" switcher.
-      // The ACTIVE Space must stay visible (the Mac scrolls it into view):
-      // evict the last shown pip for it when it fell past the break.
-      chips_overflow_ = true;
-      if (space.id == active_space_ && !chips_.empty() &&
-          !layout.horizontal_tabs) {
-        SpaceChip active_chip;
-        active_chip.id = space.id;
-        active_chip.label = !space.name.empty()
-                                ? base::UTF8ToWide(space.name)
-                                : L"Space " + base::UTF8ToWide(space.id);
-        active_chip.icon = base::UTF8ToWide(space.icon_text);
-        active_chip.open = HasSpace(space.id);
-        active_chip.bounds = chips_.back().bounds;
-        chips_.back() = std::move(active_chip);
-      }
-      continue;  // Keep scanning so a later active Space can still evict.
     }
     SpaceChip chip;
     chip.id = space.id;
@@ -4503,20 +4493,10 @@ void PhiWindowController::RebuildChips() {
                      : L"Space " + base::UTF8ToWide(space.id);
     chip.icon = base::UTF8ToWide(space.icon_text);
     chip.open = HasSpace(space.id);
-    chip.bounds = {x, layout.chips_top, x + Scaled(layout.chip_size),
-                   layout.chips_top + Scaled(layout.chip_size)};
-    chips_.push_back(std::move(chip));
-    x += Scaled(layout.chip_size + kSpaceChipGap);
+    row.push_back(std::move(chip));
   }
-  // Live agent Spaces trail the user Spaces as robot pips (only in a real
-  // user window — the agent's own hidden window never lists them). Clicking
-  // one surfaces its window so the user can watch the agent work live.
   if (!agent_ && !layout.horizontal_tabs) {
     for (const PhiAgentPipView& pip : host_->AgentSpaces()) {
-      if (x + Scaled(layout.chip_size) > chips_limit) {
-        chips_overflow_ = true;
-        break;
-      }
       SpaceChip chip;
       chip.id = pip.task_id;
       chip.is_agent = true;
@@ -4525,18 +4505,141 @@ void PhiWindowController::RebuildChips() {
                        ? L"Agent"
                        : base::UTF8ToWide(pip.caption);
       chip.icon = L"\U0001F916";  // 🤖
-      chip.bounds = {x, layout.chips_top, x + Scaled(layout.chip_size),
-                     layout.chips_top + Scaled(layout.chip_size)};
-      chips_.push_back(std::move(chip));
-      x += Scaled(layout.chip_size + kSpaceChipGap);
+      row.push_back(std::move(chip));
     }
   }
-  if (creating_space_ && !layout.horizontal_tabs) {
+  const int item = Scaled(layout.chip_size);
+  const int gap = Scaled(kSpaceChipGap);
+  const auto width = [&](int pips) {
+    return pips <= 0 ? 0 : pips * item + (pips - 1) * gap;
+  };
+  const int total = static_cast<int>(row.size());
+  const bool reserve_placeholder = creating_space_ && !layout.horizontal_tabs;
+  // visiblePipCount: the room left of the trailing slot (`chips_limit`
+  // already keeps the gap before it). While the create form is up the row's
+  // end holds the dashed placeholder pip (the Mac's
+  // creatingSpacePlaceholderPip): reserve its slot so the real pips can
+  // never collide with it.
+  int budget = layout.chips_limit - layout.chips_left;
+  if (reserve_placeholder) {
+    budget -= item + gap;
+  }
+  // 65% of a pip (plus its gap) of a hidden neighbour shows past an edge
+  // that hides pips — enough of the icon to read; the peeked pip is laid
+  // out whole and clipped.
+  const int peek = item * 13 / 20 + gap;
+  // Whole pips that fit beside ONE peek (the window at either end of the
+  // row) and beside both (anywhere between). The Mac reserves both at every
+  // position so its animated slide never reflows; this slide is instant, so
+  // the window keeps only the peeks it shows and the pips fill the room up
+  // to the "…" instead of leaving a blank slot before it.
+  int count_edge = total;
+  int count_mid = total;
+  if (total > 0 && width(total) > budget) {
+    chips_overflow_ = true;
+    count_edge = total - 1;
+    while (count_edge > 1 && width(count_edge) + peek > budget) {
+      --count_edge;
+    }
+    count_mid = count_edge;
+    while (count_mid > 1 && width(count_mid) + 2 * peek > budget) {
+      --count_mid;
+    }
+  }
+  const int max_start = std::max(0, total - count_edge);
+  if (reserve_placeholder) {
+    // slideViewportToEnd: the placeholder stands after the last pip, so an
+    // overflowing row shows its tail for the placeholder to read as
+    // continuing it.
+    chips_start_ = max_start;
+  } else if (chips_anchor_space_ != active_space_ ||
+             chips_anchor_visible_ != count_mid) {
+    // ensureActivePipVisible: centre the active pip in the window, clamped
+    // at the row's ends so the first/last few pips still fill it. Wheel
+    // steps between switches are a manual peek and are left alone.
+    chips_anchor_space_ = active_space_;
+    chips_anchor_visible_ = count_mid;
+    int index = 0;
+    for (int i = 0; i < total; ++i) {
+      if (!row[static_cast<size_t>(i)].is_agent &&
+          row[static_cast<size_t>(i)].id == active_space_) {
+        index = i;
+        break;
+      }
+    }
+    chips_start_ = std::max(0, std::min(index - count_mid / 2, max_start));
+  }
+  chips_start_ = std::max(0, std::min(chips_start_, max_start));
+  const bool at_edge = chips_start_ == 0 || chips_start_ == max_start;
+  const int visible =
+      std::min(at_edge ? count_edge : count_mid, total - chips_start_);
+  const int leading_peek = chips_start_ > 0 ? peek : 0;
+  const int trailing_peek = chips_start_ + visible < total ? peek : 0;
+  const int first = chips_start_ - (leading_peek ? 1 : 0);
+  const int end = std::min(total, chips_start_ + visible + (trailing_peek ? 1 : 0));
+  chips_first_index_ = first;
+  const int origin =
+      layout.chips_left + leading_peek - chips_start_ * (item + gap);
+  for (int i = first; i < end; ++i) {
+    SpaceChip chip = std::move(row[static_cast<size_t>(i)]);
+    const int x = origin + i * (item + gap);
+    chip.bounds = {x, layout.chips_top, x + item, layout.chips_top + item};
+    chips_.push_back(std::move(chip));
+  }
+  const int viewport_right =
+      layout.chips_left + leading_peek + width(visible) + trailing_peek;
+  if (leading_peek || trailing_peek) {
+    chips_clip_ = {layout.chips_left, layout.chips_top, viewport_right,
+                   layout.chips_top + item};
+  }
+  if (reserve_placeholder) {
+    const int x = total > 0 ? viewport_right + gap : layout.chips_left;
     creating_pip_bounds_ = {x, layout.chips_top, x + Scaled(kSpaceChip),
                             layout.chips_top + Scaled(kSpaceChip)};
   }
 }
 
+bool PhiWindowController::ChipHit(const SpaceChip& chip,
+                                  POINT client_pt) const {
+  // A peeked pip is hit only on the part that shows (the Mac's
+  // peekHitTarget): its full rect would leak past the clip into the padding.
+  if (!::PtInRect(&chip.bounds, client_pt)) {
+    return false;
+  }
+  return chips_clip_.right <= chips_clip_.left ||
+         ::PtInRect(&chips_clip_, client_pt);
+}
+
+void PhiWindowController::StepChipsViewport(int step) {
+  // Purely a manual peek at off-screen pips, clamped at the row's ends: the
+  // next Space switch re-anchors the window on the active pip. Ignored
+  // mid-drag, where sliding the row under the drop targets would scramble
+  // the reorder, and while the create form pins the window to the end.
+  if (step == 0 || !chips_overflow_ || drag_active_ || creating_space_) {
+    return;
+  }
+  // RebuildChips clamps the window to the row's true end; only a step that
+  // can never move it is refused here, so the repaint is not wasted.
+  if (step < 0 && chips_start_ == 0) {
+    return;
+  }
+  chips_start_ = std::max(0, chips_start_ + step);
+  // The pips move under a RESTING pointer: re-hover against the new row now,
+  // not at the next paint, so the wash and the hover card follow the pip
+  // that is under the cursor rather than the index that used to be.
+  RebuildChips();
+  // A one-pip step often leaves the SAME chips_ index under the cursor with
+  // a different pip in it; forget the old hover so the re-hover registers
+  // as a change and hands the card over.
+  hover_kind_ = HoverKind::kNone;
+  hover_index_ = -1;
+  POINT cursor = {};
+  if (shell_hwnd_ && ::GetCursorPos(&cursor)) {
+    ::ScreenToClient(shell_hwnd_, &cursor);
+    OnChromeMouseMove(cursor);
+  }
+  ScheduleRefresh();
+}
 
 namespace {
 
@@ -5425,7 +5528,7 @@ int PhiWindowController::CaptionHitTest(POINT client_pt) {
       }
     }
     for (const SpaceChip& chip : chips_) {
-      if (::PtInRect(&chip.bounds, client_pt)) {
+      if (ChipHit(chip, client_pt)) {
         return HTCLIENT;
       }
     }
@@ -5766,7 +5869,7 @@ void PhiWindowController::OnChromeClick(int x, int y) {
   }
   RebuildTabs();  // Chips and rows may be stale if no paint has run yet.
   for (const SpaceChip& chip : chips_) {
-    if (!::PtInRect(&chip.bounds, pt)) {
+    if (!ChipHit(chip, pt)) {
       continue;
     }
     // An agent pip toggles watching that agent Space (surface / park its
@@ -6244,7 +6347,7 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
   POINT pt = {x, y};
   const SpaceChip* target = nullptr;
   for (const SpaceChip& chip : chips_) {
-    if (::PtInRect(&chip.bounds, pt)) {
+    if (ChipHit(chip, pt)) {
       target = &chip;
       break;
     }
@@ -7143,95 +7246,9 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
     return;
   }
 
-  // The Mac's Space row menu: activate, rename, change icon, set theme,
-  // delete. Rename prompts, delete confirms (refused for the default Space);
-  // Change Icon lands on Settings > Spaces with this Space selected — the
-  // detail column there IS the picker.
-  enum : UINT {
-    kActivate = 1,
-    kRename,
-    kChangeIcon,
-    kDelete,
-    kThemeFollow,
-    kThemeFirst,  // + index into the built-in themes.
-  };
-  HMENU menu = ::CreatePopupMenu();
-  HMENU themes = ::CreatePopupMenu();
-  if (!menu || !themes) {
-    if (menu) {
-      ::DestroyMenu(menu);
-    }
-    if (themes) {
-      ::DestroyMenu(themes);
-    }
-    return;
-  }
-  const std::string pinned = host_->SpaceThemeId(target->id);
-  ::AppendMenuW(themes, MF_STRING | (pinned.empty() ? MF_CHECKED : 0),
-                kThemeFollow, L"Follow app theme");
-  ::AppendMenuW(themes, MF_SEPARATOR, 0, nullptr);
-  const auto& built_in = PhiBuiltInThemes();
-  for (size_t i = 0; i < built_in.size(); ++i) {
-    const bool on = pinned == built_in[i].id;
-    ::AppendMenuW(themes, MF_STRING | (on ? MF_CHECKED : 0),
-                  kThemeFirst + static_cast<UINT>(i),
-                  base::UTF8ToWide(built_in[i].name).c_str());
-  }
-
-  const bool active = target->id == active_space_;
-  ::AppendMenuW(menu, MF_STRING | (active ? MF_DISABLED | MF_GRAYED : 0),
-                kActivate, L"Switch to this Space");
-  ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-  ::AppendMenuW(menu, MF_STRING, kRename, L"Rename…");
-  ::AppendMenuW(menu, MF_STRING, kChangeIcon, L"Change Icon…");
-  ::AppendMenuW(menu, MF_POPUP | MF_STRING,
-                reinterpret_cast<UINT_PTR>(themes), L"Set Theme");
-  ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-  // Delete is refused for the LAST Space only (the Mac's last-Space rule);
-  // the default Space itself may go, handing its role on.
-  ::AppendMenuW(menu,
-                MF_STRING | (host_ && host_->CanDeleteSpace(target->id)
-                                 ? 0u
-                                 : MF_DISABLED | MF_GRAYED),
-                kDelete, L"Delete Space");
-
-  POINT screen = pt;
-  ::ClientToScreen(shell_hwnd_, &screen);
-  // TPM_RETURNCMD keeps the choice here rather than routing a WM_COMMAND back
-  // through a window proc that has no other commands to handle.
-  const UINT chosen = static_cast<UINT>(::TrackPopupMenu(
-      menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RIGHTBUTTON,
-      screen.x, screen.y, 0, shell_hwnd_, nullptr));
-  // `chips_` is rebuilt below; keep what the handlers need.
-  const std::string space_id = target->id;
-  std::wstring space_name = target->label;
-  ::DestroyMenu(menu);  // Takes the submenu with it.
-
-  if (chosen == kActivate) {
-    if (HasSpace(space_id)) {
-      ShowSpace(space_id);
-    } else {
-      host_->RequestSwitchSpace(window_id_, space_id);
-    }
-  } else if (chosen == kRename) {
-    if (PhiPromptText(shell_hwnd_, L"Rename Space",
-                      L"Enter a new name for this Space.", &space_name)) {
-      host_->RenameSpace(space_id, base::WideToUTF8(space_name));
-    }
-  } else if (chosen == kChangeIcon) {
-    host_->RequestSpaceIconPicker(space_id);
-  } else if (chosen == kDelete) {
-    if (PhiConfirm(shell_hwnd_, L"Delete Space",
-                   L"Bookmarks and pinned tabs belonging to this Space "
-                   L"will also be removed. This action cannot be undone.")) {
-      host_->DeleteSpace(space_id);
-    }
-  } else if (chosen == kThemeFollow) {
-    host_->SetSpaceTheme(space_id, std::string());
-  } else if (chosen >= kThemeFirst &&
-             chosen < kThemeFirst + built_in.size()) {
-    host_->SetSpaceTheme(space_id, built_in[chosen - kThemeFirst].id);
-  }
+  // A user Space pip has no context menu: switching is a click, and
+  // rename / icon / theme / delete live in Settings > Spaces and the
+  // Spaces menu.
 }
 
 // --- The floating sidebar -------------------------------------------------
@@ -8039,6 +8056,13 @@ void PhiWindowController::PaintChrome(HDC dc,
   // must draw over it, not vanish under it. The pips themselves stay put.
   // The hairline stands in for the Mac chip's drop shadow — without it the
   // white pill disappears on a white ground.
+  // An overflowing row paints through the viewport clip: the peeked
+  // neighbours show partly, the cue that the row continues.
+  const int chips_clip_save = ::SaveDC(dc);
+  if (chips_clip_.right > chips_clip_.left) {
+    ::IntersectClipRect(dc, chips_clip_.left, layout.spaces_strip.top,
+                        chips_clip_.right, layout.spaces_strip.bottom);
+  }
   for (const SpaceChip& chip : chips_) {
     // A watched agent pip wears the selection pill too, so "which agent am I
     // watching" reads at a glance.
@@ -8137,6 +8161,7 @@ void PhiWindowController::PaintChrome(HDC dc,
       }
     }
   }
+  ::RestoreDC(dc, chips_clip_save);
   if (creating_space_ &&
       creating_pip_bounds_.right > creating_pip_bounds_.left) {
     // The Mac's creatingSpacePlaceholderPip: a dashed outline where the new
