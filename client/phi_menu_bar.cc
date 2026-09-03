@@ -347,6 +347,9 @@ void PhiMenuBar::BuildStatic() {
   Append(view_, kCmdZoomIn, PhiStr("menuBar.zoomIn"), false);
   Append(view_, kCmdZoomOut, PhiStr("menuBar.zoomOut"), false);
   Separator(view_);
+  // Reader View — the Mirage extension's reading surface for the active tab.
+  Append(view_, kCmdToggleReader, PhiStr("app.viewMenu.toggleReaderView"));
+  Separator(view_);
   HMENU developer = ::CreatePopupMenu();
   Append(developer, kCmdViewSource, PhiStr("menuBar.viewSource"), false);
   Append(developer, kCmdDevTools, PhiStr("menuBar.developerTools"), false);
@@ -483,6 +486,14 @@ void PhiMenuBar::RefreshEdit() {
 void PhiMenuBar::RefreshView() {
   controller_->RebuildNavState();
   SetEnabled(view_, kCmdStop, controller_->nav_loading_);
+  // Reader View is offered where it has something to show, and ticked while
+  // its surface is up — which is also the state that makes the item mean
+  // "leave" rather than "enter".
+  const bool reader_active = controller_->ActiveTabShowsReader();
+  SetEnabled(view_, kCmdToggleReader,
+             reader_active || controller_->ActiveTabCanUseReader());
+  ::CheckMenuItem(view_, kCmdToggleReader,
+                  MF_BYCOMMAND | (reader_active ? MF_CHECKED : MF_UNCHECKED));
   PhiLayoutMode mode = PhiLayoutMode::kPerformance;
   if (controller_->host_) {
     mode = controller_->host_->LayoutMode();
@@ -959,6 +970,9 @@ bool PhiMenuBar::OnCommand(UINT id) {
     case kCmdToggleSidebar:
       c->ToggleSidebar();
       return true;
+    case kCmdToggleReader:
+      c->ToggleReaderView();
+      return true;
     case kCmdReload:
     case kCmdForceReload:
       if (c->framework_) {
@@ -1047,12 +1061,20 @@ bool PhiMenuBar::OnCommand(UINT id) {
       return true;
     }
     case kCmdBack:
+      // Back over a tab the reader is covering means "leave the reader" —
+      // the same rule the toolbar's back button follows.
+      if (c->LeaveReaderViewForNavigation()) {
+        return true;
+      }
       if (c->framework_) {
         c->framework_->GoBack(target);
         c->RefreshTabs();
       }
       return true;
     case kCmdForward:
+      if (c->LeaveReaderViewForNavigation()) {
+        return true;
+      }
       if (c->framework_) {
         c->framework_->GoForward(target);
         c->RefreshTabs();

@@ -432,6 +432,10 @@
    "comment": "menuBar — used at phi_menu_bar.cc:363",
    "en": "Toggle Chatbar\tCtrl+Shift+S"
   },
+  "app.viewMenu.toggleReaderView": {
+   "comment": "menuBar — used at phi_menu_bar.cc",
+   "en": "Toggle Reader View\tCtrl+Alt+R"
+  },
   "app.viewMenu.toggleSidebar": {
    "comment": "menuBar — used at phi_menu_bar.cc:362",
    "en": "Toggle Sidebar\tCtrl+S"
@@ -507,6 +511,14 @@
   "browser.newTabPage.incognitoLabel": {
    "comment": "newTabPage — used at phi_new_tab_page.cc",
    "en": "Incognito"
+  },
+  "browser.readerView.noArticleFound": {
+   "comment": "reader — used at phi_reader.cc",
+   "en": "No article found on this page"
+  },
+  "browser.readerView.unavailable": {
+   "comment": "reader — used at phi_reader.cc",
+   "en": "Reader View is unavailable on this page"
   },
   "browser.tabGroupOverview.newTabCardTitle": {
    "comment": "menuBar — used at phi_menu_bar.cc:295",

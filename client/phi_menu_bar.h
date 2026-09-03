@@ -123,6 +123,10 @@ enum : UINT {
   kCmdDocumentation,
   kCmdExportUserData,
   kCmdImportUserData,
+  // APPEND ONLY below this line: the box test rigs post these ids as raw
+  // WM_COMMAND numbers, so renumbering an existing entry silently rewires
+  // their clicks.
+  kCmdToggleReader,  // View — Reader View for the active tab.
 };
 
 class PhiWindowController;

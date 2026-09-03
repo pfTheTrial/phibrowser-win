@@ -94,6 +94,10 @@ constexpr RebindableShortcut kRebindableShortcuts[] = {
        {'R', true, true, false}},
       {"toggleSidebar", L"View", L"Toggle Sidebar", kCmdToggleSidebar,
        {'S', true, false, false}},
+      // Ctrl+Alt+R, the Mac's Cmd-Opt-R: Safari's reader chord (Cmd-Shift-R)
+      // is Chromium's hard reload on both platforms.
+      {"toggleReader", L"View", L"Toggle Reader View", kCmdToggleReader,
+       {'R', true, false, true}},
       {"toggleBookmarkBar", L"View", L"Always Show Bookmark Bar",
        kCmdAlwaysShowBookmarkBar, {'B', true, true, false}},
       {"showFullHistory", L"History", L"Show Full History",
@@ -133,6 +137,21 @@ constexpr UINT WM_PHI_CONTROL = WM_APP + 1;
 constexpr UINT WM_PHI_AUTHORIZE = WM_APP + 2;
 // A worker thread finished changing the Auth0 session state.
 constexpr UINT WM_PHI_AUTH_CHANGED = WM_APP + 3;
+// Reader View: settle the reader panels of one browser window. DEFERRED,
+// because OnTabsChanged fires from INSIDE the tab-strip change it reports —
+// a tab being removed is still in the strip — and this pass both reads the
+// strip and closes tabs in it. Doing that inline recursed until the stack
+// gave out. wparam carries the browser window id.
+constexpr UINT WM_PHI_READER_SWEEP = WM_APP + 4;
+// Reader View: hand a reader panel's page back to its origin window as a tab.
+// DEFERRED for a harder reason than the sweep — the navigation that triggers
+// it is reported from inside a WebContents observer walk, and both opening a
+// tab and closing a browser from there trip
+// `!observers_.is_notifying_observers()`. wparam carries the panel window id.
+constexpr UINT WM_PHI_READER_EXPAND = WM_APP + 5;
+// Reader View: close a panel browser whose surface tab has gone. Same
+// deferral reason as the expand above. wparam carries the panel window id.
+constexpr UINT WM_PHI_READER_RETIRE = WM_APP + 6;
 
 // A connection-consent decision marshaled the same way as ControlCall.
 struct AuthorizeCall {
@@ -300,6 +319,31 @@ LRESULT CALLBACK PhiCoordinator::MsgWndProc(HWND hwnd,
     auto* call = reinterpret_cast<ControlCall*>(lparam);
     if (self && call) {
       call->result = self->ExecuteControlOnUi(*call->type, *call->payload);
+    }
+    return 0;
+  }
+  if (msg == WM_PHI_READER_RETIRE) {
+    auto* self = reinterpret_cast<PhiCoordinator*>(
+        ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    const auto panel = static_cast<int64_t>(wparam);
+    if (self && self->readers_.count(panel) && self->framework_) {
+      self->framework_->CloseBrowserWindow(panel);
+    }
+    return 0;
+  }
+  if (msg == WM_PHI_READER_EXPAND) {
+    auto* self = reinterpret_cast<PhiCoordinator*>(
+        ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    if (self) {
+      self->FinishReaderPanelExpand(static_cast<int64_t>(wparam));
+    }
+    return 0;
+  }
+  if (msg == WM_PHI_READER_SWEEP) {
+    auto* self = reinterpret_cast<PhiCoordinator*>(
+        ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    if (self) {
+      self->UpdateReaderPanelsForWindow(static_cast<int64_t>(wparam));
     }
     return 0;
   }
@@ -509,7 +553,24 @@ void PhiCoordinator::OnReaderArticleExtracted(int request_id,
     out.Set("ok", true);
     out.Set("title", title ? *title : "");
     out.Set("sourceURL", source ? *source : "");
-    out.Set("rung", "distiller");
+    // The reader extension's ladder knows which rung produced the article,
+    // how much of the page it covered, who wrote it and which site rule
+    // fired; the framework's distiller knows none of that, so each field
+    // rides along only when its source supplied it. An answer with no rung
+    // came from the distiller and says so.
+    const std::string* rung = article->FindString("rung");
+    out.Set("rung", rung ? *rung : "distiller");
+    for (const char* key : {"byline", "siteName", "lang", "rule"}) {
+      if (const std::string* value = article->FindString(key)) {
+        out.Set(key, *value);
+      }
+    }
+    if (std::optional<double> coverage = article->FindDouble("coverage")) {
+      out.Set("coverage", *coverage);
+    }
+    if (std::optional<int> blocks = article->FindInt("codeBlockCount")) {
+      out.Set("codeBlockCount", *blocks);
+    }
     out.Set("isComplete", true);
     if (document) {
       out.Set("suggestedFileName",
@@ -1642,6 +1703,346 @@ void PhiCoordinator::NoteTabDistillable(int64_t window_id, int tab_id,
   OnTabDistillable(window_id, tab_id, distillable);
 }
 
+void PhiCoordinator::OnExtensionMessage(const char* request_id,
+                                        const char* sender_id,
+                                        const char* type,
+                                        const char* payload_json) {
+  const std::string id = request_id ? request_id : "";
+  const std::string sender = sender_id ? sender_id : "";
+  const std::string message_type = type ? type : "";
+  if (reader_.HandleExtensionMessage(
+          id, sender, message_type,
+          payload_json && *payload_json ? payload_json : "{}")) {
+    return;
+  }
+  // Nothing here speaks this type. Fail it rather than leave the extension
+  // waiting out its own timeout for an answer that will never come.
+  LOG(INFO) << "[PhiClient] unhandled extension message " << message_type
+            << " from " << sender;
+  if (framework_ && !id.empty()) {
+    framework_->FailExtensionMessage(id.c_str(), "Unhandled message type");
+  }
+}
+
+void PhiCoordinator::OnOpenReaderView(int64_t window_id, int64_t tab_id) {
+  // Right-click "Open in Reading Mode" in the page's own context menu.
+  // ENTERS rather than toggles: the item is only reachable by right-clicking
+  // the LIVE page, which is what is on screen when the reader is closed.
+  const int tab = static_cast<int>(tab_id);
+  LOG(INFO) << "[PhiClient] context menu reader win=" << window_id
+            << " tab=" << tab;
+  if (reader_.HasSurface(tab)) {
+    return;
+  }
+  reader_.Open(tab);
+}
+
+void PhiCoordinator::RespondToExtension(const std::string& request_id,
+                                        const std::string& response_json) {
+  if (framework_ && !request_id.empty()) {
+    framework_->RespondToExtensionMessage(request_id.c_str(),
+                                          response_json.c_str());
+  }
+}
+
+bool PhiCoordinator::BroadcastToExtensions(const std::string& type,
+                                           const std::string& payload_json) {
+  return framework_ && framework_->BroadcastToExtensions(type.c_str(),
+                                                         payload_json.c_str());
+}
+
+PhiWindowController* PhiCoordinator::WindowShowingTab(int tab_id) {
+  for (const auto& [id, window] : windows_) {
+    if (window && window->ShowsTab(tab_id)) {
+      return window.get();
+    }
+  }
+  return nullptr;
+}
+
+void PhiCoordinator::OnReaderStyleChanged() {
+  SavePrefs();
+}
+
+// The tab rows of `browser`, or an empty list. The framework emits a JSON
+// ARRAY here, not an object.
+namespace {
+std::vector<base::DictValue> TabRowsOf(phi_framework::PhiFramework* framework,
+                                       int64_t browser) {
+  std::vector<base::DictValue> rows;
+  if (!framework) {
+    return rows;
+  }
+  std::optional<base::Value> tabs = base::JSONReader::Read(
+      framework->ListTabsJson(browser), base::JSON_PARSE_RFC);
+  if (!tabs || !tabs->is_list()) {
+    return rows;
+  }
+  for (const base::Value& v : tabs->GetList()) {
+    if (const base::DictValue* row = v.GetIfDict()) {
+      rows.push_back(row->Clone());
+    }
+  }
+  return rows;
+}
+}  // namespace
+
+void PhiCoordinator::ActivateTabById(int64_t browser, int tab_id) {
+  for (const base::DictValue& row : TabRowsOf(framework_, browser)) {
+    if (row.FindInt("id").value_or(0) == tab_id) {
+      framework_->ActivateTab(browser, row.FindInt("index").value_or(0));
+      return;
+    }
+  }
+}
+
+bool PhiCoordinator::PanelizeReaderSurface(int origin_tab_id) {
+  if (!framework_ || HasReaderPanelForOrigin(origin_tab_id)) {
+    return false;
+  }
+  PhiWindowController* window = WindowShowingTab(origin_tab_id);
+  if (!window) {
+    return false;
+  }
+  const int64_t browser =
+      window->active_browser() ? window->active_browser() : window->window_id();
+  int surface_tab_id = 0;
+  for (const base::DictValue& row : TabRowsOf(framework_, browser)) {
+    const std::string* url = row.FindString("url");
+    if (!url) {
+      continue;
+    }
+    std::optional<int> origin = PhiReaderBridge::OriginTabIdOfReaderPage(*url);
+    if (origin && *origin == origin_tab_id) {
+      surface_tab_id = row.FindInt("id").value_or(0);
+      break;
+    }
+  }
+  if (!surface_tab_id) {
+    // Not an error: chrome.tabs.create resolves before the navigation
+    // commits, and ListTabsJson reports the COMMITTED url. The sweep that
+    // follows the commit finds it.
+    return false;
+  }
+  const int64_t panel = framework_->MoveTabToReaderPanel(
+      browser, surface_tab_id, origin_tab_id);
+  if (!panel) {
+    LOG(WARNING) << "[PhiClient] could not panel reader surface "
+                 << surface_tab_id;
+    return false;
+  }
+  auto panelled = readers_.find(panel);
+  if (panelled != readers_.end()) {
+    panelled->second->BindSurfaceTab(surface_tab_id);
+  }
+  // Chromium foregrounded the surface when the extension created it, and
+  // moving it out leaves whatever neighbour it landed on active. Hand the
+  // strip back to the origin so tab-scoped commands keep targeting the
+  // article the reader is showing — the Mac's setAsActiveTab step.
+  ActivateTabById(browser, origin_tab_id);
+  window->ScheduleRefresh();
+  return true;
+}
+
+bool PhiCoordinator::HasReaderPanelForOrigin(int origin_tab_id) const {
+  for (const auto& [panel_id, panel] : readers_) {
+    if (panel->origin_tab_id() == origin_tab_id) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void PhiCoordinator::CloseReaderPanelForOrigin(int origin_tab_id) {
+  int64_t panel_window = 0;
+  for (const auto& [panel_id, panel] : readers_) {
+    if (panel->origin_tab_id() == origin_tab_id) {
+      panel_window = panel_id;
+      break;
+    }
+  }
+  if (panel_window && framework_) {
+    // Closing the window closes the surface tab with it; the extension drops
+    // its cache on tabs.onRemoved, so both sides end up agreeing.
+    framework_->CloseBrowserWindow(panel_window);
+  }
+}
+
+void PhiCoordinator::ExpandReaderPanelIntoTab(int64_t panel_window_id,
+                                              const std::string& url) {
+  if (!readers_.count(panel_window_id)) {
+    return;
+  }
+  pending_reader_expands_[panel_window_id] = url;
+  if (msg_hwnd_) {
+    ::PostMessageW(msg_hwnd_, WM_PHI_READER_EXPAND,
+                   static_cast<WPARAM>(panel_window_id), 0);
+  }
+}
+
+void PhiCoordinator::FinishReaderPanelExpand(int64_t panel_window_id) {
+  auto pending = pending_reader_expands_.find(panel_window_id);
+  if (pending == pending_reader_expands_.end()) {
+    return;
+  }
+  const std::string url = pending->second;
+  pending_reader_expands_.erase(pending);
+  auto reader = readers_.find(panel_window_id);
+  if (reader == readers_.end() || !framework_) {
+    return;
+  }
+  const int64_t origin_window = reader->second->origin_window_id();
+  // Like Peek's expand, this RE-OPENS the url rather than moving the live tab
+  // across: the destination has only just started loading, and moving the tab
+  // out would empty the panel browser mid-move.
+  framework_->NewTab(origin_window, url.c_str());
+  framework_->CloseBrowserWindow(panel_window_id);
+}
+
+void PhiCoordinator::UpdateReaderPanelsForWindow(int64_t window_id) {
+  if (!framework_) {
+    return;
+  }
+  const std::vector<base::DictValue> rows = TabRowsOf(framework_, window_id);
+  int active_tab = 0;
+  std::set<int> live;
+  for (const base::DictValue& row : rows) {
+    const int id = row.FindInt("id").value_or(0);
+    live.insert(id);
+    if (row.FindBool("active").value_or(false)) {
+      active_tab = id;
+    }
+  }
+  // Every reader page in a normal strip is one of two things, and this is the
+  // pass that decides which. A LIVE surface — the extension reported it up,
+  // or an open is still in flight — belongs in a panel over its origin; the
+  // move is retried here rather than only when `reader.state` lands, because
+  // a tab created a moment ago has no COMMITTED url yet and so cannot be
+  // recognised at that point. Anything else is a HUSK: a reader page restored
+  // or reopened after the extraction it was showing died with the extension's
+  // session storage, which the Mac closes on sight.
+  for (const base::DictValue& row : rows) {
+    const std::string* url = row.FindString("url");
+    if (!url) {
+      continue;
+    }
+    std::optional<int> origin = PhiReaderBridge::OriginTabIdOfReaderPage(*url);
+    if (!origin || HasReaderPanelForOrigin(*origin)) {
+      continue;
+    }
+    if (reader_.HasSurface(*origin) || reader_.HasPendingOpen(*origin)) {
+      PanelizeReaderSurface(*origin);
+      return;  // The strip moved under us either way.
+    }
+    LOG(INFO) << "[PhiClient] closing orphaned reader surface tab in window "
+              << window_id;
+    framework_->CloseTab(window_id, row.FindInt("index").value_or(0));
+    return;  // Indices shifted; the next change re-runs this.
+  }
+  if (readers_.empty()) {
+    return;
+  }
+  // An origin that left the strip — closed, torn off, moved to another Space
+  // — takes its reader with it (the Mac's readerOverlayOriginWatch).
+  std::vector<int64_t> orphaned;
+  for (const auto& [panel_id, panel] : readers_) {
+    if (panel->origin_window_id() != window_id) {
+      continue;
+    }
+    if (!live.count(static_cast<int>(panel->origin_tab_id()))) {
+      orphaned.push_back(panel_id);
+      continue;
+    }
+    panel->Reposition();
+    panel->SetVisibleForActiveTab(active_tab);
+  }
+  for (int64_t panel_id : orphaned) {
+    LOG(INFO) << "[PhiClient] reader panel " << panel_id
+              << " origin left the strip — closing";
+    if (framework_) {
+      framework_->CloseBrowserWindow(panel_id);
+    }
+  }
+}
+
+int PhiCoordinator::ActiveTabId(int64_t browser) {
+  if (!framework_) {
+    return 0;
+  }
+  std::optional<base::Value> tabs = base::JSONReader::Read(
+      framework_->ListTabsJson(browser), base::JSON_PARSE_RFC);
+  if (!tabs || !tabs->is_list()) {
+    return 0;
+  }
+  for (const base::Value& v : tabs->GetList()) {
+    if (v.is_dict() && v.GetDict().FindBool("active").value_or(false)) {
+      return v.GetDict().FindInt("id").value_or(0);
+    }
+  }
+  return 0;
+}
+
+void PhiCoordinator::OnReaderOfferabilityChanged(int tab_id) {
+  // The reader button is laid out from this verdict, so the window showing
+  // the tab has to repaint. At the next idle: the report can arrive during a
+  // navigation the strip has not caught up with yet.
+  if (PhiWindowController* window = WindowShowingTab(tab_id)) {
+    window->ScheduleRefresh();
+  }
+}
+
+bool PhiCoordinator::IsReaderOfferable(int tab_id,
+                                       const std::string& url) const {
+  return reader_.IsOfferable(tab_id, url);
+}
+
+bool PhiCoordinator::IsReaderActive(int tab_id,
+                                    const std::string& url) const {
+  return PhiReaderBridge::IsReaderPageUrl(url) || reader_.HasSurface(tab_id);
+}
+
+void PhiCoordinator::RequestToggleReaderView(int tab_id,
+                                             const std::string& url) {
+  reader_.Toggle(tab_id, url);
+}
+
+void PhiCoordinator::RequestCloseReaderView(int tab_id) {
+  CloseReaderPanelForOrigin(tab_id);
+}
+
+void PhiCoordinator::RaiseReaderPanels(int64_t slot) {
+  for (const auto& [panel_id, panel] : readers_) {
+    auto mapped = browser_to_slot_.find(panel->origin_window_id());
+    const int64_t panel_slot = mapped != browser_to_slot_.end()
+                                   ? mapped->second
+                                   : panel->origin_window_id();
+    if (panel_slot == slot) {
+      panel->Raise();
+    }
+  }
+}
+
+void PhiCoordinator::NoteContentLayoutChanged(int64_t slot) {
+  for (const auto& [panel_id, panel] : readers_) {
+    auto mapped = browser_to_slot_.find(panel->origin_window_id());
+    const int64_t panel_slot = mapped != browser_to_slot_.end()
+                                   ? mapped->second
+                                   : panel->origin_window_id();
+    if (panel_slot == slot) {
+      panel->Reposition();
+    }
+  }
+  for (const auto& [peek_id, peek] : peeks_) {
+    auto mapped = browser_to_slot_.find(peek->opener_window_id());
+    const int64_t peek_slot = mapped != browser_to_slot_.end()
+                                  ? mapped->second
+                                  : peek->opener_window_id();
+    if (peek_slot == slot) {
+      peek->Reposition();
+    }
+  }
+}
+
 void PhiCoordinator::NoteSpaceWindow(const std::string& space_id,
                                      int64_t browser_window_id) {
   std::string profile = "Default";
@@ -1952,6 +2353,11 @@ void PhiCoordinator::LoadPrefs() {
                                 ? PhiNewTabBehavior::kOmnibox
                                 : PhiNewTabBehavior::kNewTabPage;
       }
+      // Reader View's presentation, set from the controls inside the
+      // reading surface rather than from Settings.
+      if (const base::DictValue* reader = root->FindDict("reader")) {
+        reader_.mutable_style().MergeFrom(*reader);
+      }
       if (const base::DictValue* shortcuts = root->FindDict("shortcuts")) {
         for (const auto [name, value] : *shortcuts) {
           const base::DictValue* chord = value.GetIfDict();
@@ -1985,6 +2391,7 @@ void PhiCoordinator::SavePrefs() const {
   root.Set("newTabBehavior", new_tab_behavior_ == PhiNewTabBehavior::kOmnibox
                                  ? "omnibox"
                                  : "newTabPage");
+  root.Set("reader", reader_.style().ToDict());
   if (!shortcut_overrides_.empty()) {
     base::DictValue shortcuts;
     for (const auto& [name, chord] : shortcut_overrides_) {
@@ -4368,6 +4775,19 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
       field.Set("width", static_cast<int>(url.right - url.left));
       field.Set("height", static_cast<int>(url.bottom - url.top));
       out.Set("urlField", std::move(field));
+      // Reader View's button, and the two verdicts behind it. An empty rect
+      // means the reader is not being offered for the active tab; the two
+      // flags say which signal (if either) would have offered it.
+      const RECT reader = it->second->reader_button_rect();
+      base::DictValue reader_rect;
+      reader_rect.Set("x", static_cast<int>(reader.left));
+      reader_rect.Set("y", static_cast<int>(reader.top));
+      reader_rect.Set("width", static_cast<int>(reader.right - reader.left));
+      reader_rect.Set("height", static_cast<int>(reader.bottom - reader.top));
+      out.Set("reader", std::move(reader_rect));
+      out.Set("readerProbe", it->second->ActiveTabExtensionOfferable());
+      out.Set("readerDistillable", it->second->ActiveTabDistillable());
+      out.Set("readerActive", it->second->ActiveTabShowsReader());
       out.Set("tabsTop", it->second->tabs_top());
       out.Set("rowHeight", it->second->tab_row_height());
       out.Set("rowGap", it->second->tab_row_gap());
@@ -4864,6 +5284,21 @@ bool PhiCoordinator::HandleAgentSpaceVerb(const std::string& type,
     const bool document = type == "agentSpace.readerDocument";
     const int id = RegisterPendingReply(
         document, payload->FindBool("includeHTML").value_or(true));
+    // Reader View's own pipeline first — the same site rules, ladder and
+    // coverage gate the reader button runs, which is what the Mac answers
+    // this verb with. It needs a chrome tab id rather than a CDP target.
+    if (reader_.ExtensionAlive()) {
+      const int tab_id =
+          target && !target->empty()
+              ? framework_->TabIdForCdpTarget(target->c_str())
+              : ActiveTabId(browser);
+      // Settling walks the page for lazy content first: nobody is watching
+      // this tab, so the wait costs the caller time and nothing else.
+      if (tab_id > 0 && reader_.StartExtraction(tab_id, id, /*settle=*/true)) {
+        out->Set("pendingReply", id);
+        return true;
+      }
+    }
     if (!framework_->StartReaderExtraction(
             browser, target ? target->c_str() : "", id)) {
       CompletePendingReply(id, "{\"ok\":false,\"error\":\"unknown_target\"}");
@@ -6343,6 +6778,32 @@ void PhiCoordinator::OnBrowserWindowCreated(int64_t window_id, void* hwnd) {
   if (framework_) {
     framework_->CreatedWindowPeekOpener(&peek_opener_window, &peek_opener_tab);
   }
+  // A Reader View surface: the extension's reading page, moved out of its
+  // origin window's strip into a browser of its own so it can be hosted over
+  // that origin's live page. Same push-not-query marker contract as the peek
+  // above.
+  int64_t reader_origin_window = 0;
+  int64_t reader_origin_tab = 0;
+  if (framework_) {
+    framework_->CreatedWindowReaderOrigin(&reader_origin_window,
+                                          &reader_origin_tab);
+  }
+  if (reader_origin_window != 0) {
+    auto slot = browser_to_slot_.find(reader_origin_window);
+    const int64_t target = slot != browser_to_slot_.end() ? slot->second
+                                                          : reader_origin_window;
+    auto origin = windows_.find(target);
+    if (origin != windows_.end()) {
+      LOG(INFO) << "[PhiClient] reader panel " << window_id << " over tab "
+                << reader_origin_tab << " in window " << reader_origin_window;
+      readers_[window_id] = std::make_unique<PhiReaderPanel>(
+          window_id, static_cast<HWND>(hwnd), reader_origin_window,
+          reader_origin_tab, origin->second.get(), framework_, this);
+      return;
+    }
+    LOG(WARNING) << "[PhiClient] reader panel without an origin window "
+                 << reader_origin_window;
+  }
   if (peek_opener_window != 0) {
     auto opener = windows_.find(peek_opener_window);
     if (opener != windows_.end()) {
@@ -6741,6 +7202,18 @@ void PhiCoordinator::OnImportCompleted(const char* source, bool success) {
 
 void PhiCoordinator::OnPlaceholderModeChanged(int64_t window_id,
                                               bool entered) {
+  // A reader panel holds exactly the reading surface. Losing it means the
+  // reader is over — but this fork keeps a tabless browser ALIVE in
+  // placeholder mode, so the panel would otherwise stay parented over the
+  // origin's page showing a new-tab page instead of revealing the article.
+  // Retire it. Deferred: this arrives from inside the tab removal that
+  // caused it, and closing a browser from there trips
+  // `!observers_.is_notifying_observers()`.
+  if (entered && readers_.count(window_id) && msg_hwnd_) {
+    ::PostMessageW(msg_hwnd_, WM_PHI_READER_RETIRE,
+                   static_cast<WPARAM>(window_id), 0);
+    return;
+  }
   auto slot_it = browser_to_slot_.find(window_id);
   const int64_t slot = slot_it != browser_to_slot_.end() ? slot_it->second
                                                          : window_id;
@@ -6773,6 +7246,18 @@ void PhiCoordinator::OnTabsChanged(int64_t window_id) {
   if (peek != peeks_.end()) {
     peek->second->RefreshState();
     return;
+  }
+  auto reader = readers_.find(window_id);
+  if (reader != readers_.end()) {
+    // The panel's own browser: the only thing that can change in it is the
+    // page, and the only page change that matters is leaving reader.html.
+    reader->second->RefreshState();
+    return;
+  }
+  if (msg_hwnd_) {
+    // Deferred — see WM_PHI_READER_SWEEP.
+    ::PostMessageW(msg_hwnd_, WM_PHI_READER_SWEEP,
+                   static_cast<WPARAM>(window_id), 0);
   }
   // A peek belongs to the tab that opened it: it shows only while that tab is
   // active, and travels with its opener window.
@@ -6826,6 +7311,38 @@ void PhiCoordinator::OnBrowserWindowClosing(int64_t window_id) {
     return;  // A Kiosk owns nothing else — no slot, no Space, no bookkeeping.
   }
   if (peeks_.erase(window_id) > 0) {
+    return;
+  }
+  // The origin window is going: its readers go with it. They are browsers of
+  // their own, so nothing else would close them — and a surviving panel
+  // browser keeps the whole process alive after the last window is gone
+  // (the Mac's teardownReaderOverlayForWindowClose).
+  std::vector<int64_t> orphaned;
+  for (const auto& [panel_id, panel] : readers_) {
+    if (panel->origin_window_id() == window_id) {
+      orphaned.push_back(panel_id);
+    }
+  }
+  for (int64_t panel_id : orphaned) {
+    readers_.erase(panel_id);
+    if (framework_) {
+      framework_->CloseBrowserWindow(panel_id);
+    }
+  }
+
+  // A reader panel's browser holds only the surface tab, so it closes when
+  // the extension removes that tab (reader.close, or the reading page's own
+  // X) — which is the whole teardown. Hand the strip back to the origin, the
+  // way the Mac reveals the page the overlay was covering.
+  auto reader = readers_.find(window_id);
+  if (reader != readers_.end()) {
+    const int64_t origin_window = reader->second->origin_window_id();
+    const int origin_tab = static_cast<int>(reader->second->origin_tab_id());
+    readers_.erase(reader);
+    ActivateTabById(origin_window, origin_tab);
+    if (PhiWindowController* window = WindowShowingTab(origin_tab)) {
+      window->ScheduleRefresh();
+    }
     return;
   }
   // A shadow window closing (shadow.close, the keep-alive sweep, a crash)

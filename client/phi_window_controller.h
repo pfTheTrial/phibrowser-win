@@ -127,6 +127,28 @@ class PhiSlotHost {
   virtual void NoteTabDistillable(int64_t window_id,
                                   int tab_id,
                                   bool distillable) = 0;
+  // Reader View proper is the Mirage extension's — it probes every page,
+  // extracts in-page and renders on its own surface, and the client relays
+  // intent. True when the extension's probe (or a site rule) says this tab's
+  // CURRENT document has an article; the shell ORs it with upstream's
+  // distillability verdict, which is the Mac's rule for offering the button.
+  virtual bool IsReaderOfferable(int tab_id, const std::string& url) const = 0;
+  // True while the extension's reading surface stands for this tab — either
+  // the tab IS that surface, or the surface is open on its behalf.
+  virtual bool IsReaderActive(int tab_id, const std::string& url) const = 0;
+  // Enters Reader View for the tab, or leaves it when the tab already shows
+  // the reading surface. `url` is what tells those two apart.
+  virtual void RequestToggleReaderView(int tab_id, const std::string& url) = 0;
+  // Leaving Reader View because the page underneath is about to change or
+  // move: an address-bar navigation or Back/Forward on the origin, or the
+  // pane being re-laid-out. The reader covers the whole page pane, so it
+  // cannot be left sitting over a page that changed beneath it.
+  virtual void RequestCloseReaderView(int tab_id) = 0;
+  // The content card moved or resized: re-fit whatever is hosted over it.
+  virtual void NoteContentLayoutChanged(int64_t slot) = 0;
+  // Raise this slot's reader panels above the browser child, so the corner
+  // caps can then be raised above THEM (see RaiseCornerCaps).
+  virtual void RaiseReaderPanels(int64_t slot) = 0;
   // A Space's browser is live in this slot. The coordinator remembers the
   // (Space, window id) pair so a later run can name that window when it asks
   // the framework to park or rebuild it (lazy Space restore).
@@ -356,6 +378,37 @@ class PhiWindowController {
   int64_t window_id() const { return window_id_; }
   // Upstream's distillability verdict for one of this window's tabs.
   void NoteTabDistillable(int tab_id, bool distillable);
+  // True when `tab_id` is in the strip this window is currently drawing.
+  bool ShowsTab(int tab_id) const;
+  // Which corners of the content card are rounded right now. The reader panel
+  // covers that card and has to wear the same shape: the TOP corners belong
+  // to the bar band in the layouts that have one (only performance rounds
+  // them), and content fullscreen rounds nothing — the same rule the corner
+  // caps are shown by.
+  void CardRoundedCorners(bool* top, bool* bottom) const;
+  // Puts the rounded-card corner caps back on top. They are sibling windows
+  // ABOVE the page (DirectComposition ignores a region on the browser child),
+  // so anything else raised over the content card — the reader panel — buries
+  // them and squares the card's corners until this runs.
+  void RaiseCornerCaps();
+  // Reader View for the ACTIVE tab: enter, or leave when the tab already
+  // shows the extension's reading surface. The reader button, the View menu
+  // item, its shortcut and the page context menu all land here.
+  void ToggleReaderView();
+  // Back/Forward or an address-bar commit on a tab the reader is covering:
+  // leaves the reader and returns true, so the caller skips the navigation
+  // (Back) or lets it land on the page underneath (the address bar). False
+  // when no reader is up and the command is an ordinary one.
+  bool LeaveReaderViewForNavigation();
+  // Whether the active tab is in Reader View right now (the item's tick, and
+  // what makes the toggle mean "leave").
+  bool ActiveTabShowsReader() const;
+  // Whether the View menu's Reader View item is reachable. DELIBERATELY not
+  // the button's offerability test: the menu and its shortcut offer the
+  // reader on any real page, so a page the probe misjudges still opens
+  // through them (the Mac's rule). Only the native new-tab page is refused —
+  // it has no web contents to extract from.
+  bool ActiveTabCanUseReader() const;
   bool is_agent() const { return agent_; }
   bool is_incognito() const { return incognito_; }
   // For satellite surfaces (search palette, popovers) that act through the
@@ -528,6 +581,16 @@ class PhiWindowController {
   // Chrome geometry, published so tools and tests can locate what they are
   // asserting about instead of mirroring constants that then drift.
   RECT url_field_rect();
+  // The reader button's slot inside the address capsule, empty when the
+  // reader is not being offered for the active tab. Published for the same
+  // reason as the field: a test asserting the button appeared should read the
+  // layout, not count pixels.
+  RECT reader_button_rect();
+  // The two signals behind that offer, separately — a test needs to know
+  // WHICH one lit the button (upstream's distiller, or the reader
+  // extension's own in-page probe and site rules).
+  bool ActiveTabExtensionOfferable() const;
+  bool ActiveTabDistillable() const;
   int tabs_top();
   int tab_row_height() const;
   // The gap between rows (the Mac's 2pt intercell spacing); row pitch is
@@ -981,7 +1044,13 @@ class PhiWindowController {
   // Focuses the page's omnibox unless the user is busy in another control.
   void FocusNativeNtpIfIdle();
   void UpdateTabPreview();  // Re-aims the card at the hovered row.
-  bool ActiveTabDistillable() const;
+
+  // Whether to offer the reader control for the active tab: upstream's
+  // distiller verdict OR the reader extension's own probe — either alone is
+  // incomplete, since the distiller misses pages a site rule rescues and the
+  // probe misses tabs whose content script never ran — and always while the
+  // reader is already up, which is the way back out of it.
+  bool ActiveTabReaderOfferable() const;
   // Paints a bookmark folder's chosen catalog symbol into its icon slot.
   void DrawFolderIcon(HDC dc,
                       const RECT& slot,

@@ -843,7 +843,7 @@ PhiWindowController::Layout PhiWindowController::ComputeLayout() {
       // article — a reader button on a page with nothing to read is the
       // thing the Mac's "show it only where it has something to offer"
       // change removed.
-      if (ActiveTabDistillable()) {
+      if (ActiveTabReaderOfferable()) {
         const int rr = out.copy_link.left - Scaled(2);
         out.reader = {rr - btn, fmid - btn / 2, rr, fmid + btn / 2};
         fr = out.reader.left;
@@ -953,6 +953,15 @@ RECT PhiWindowController::content_rect() {
 
 RECT PhiWindowController::url_field_rect() {
   return ComputeLayout().url_field;
+}
+
+RECT PhiWindowController::reader_button_rect() {
+  return ComputeLayout().reader;
+}
+
+bool PhiWindowController::ActiveTabExtensionOfferable() const {
+  return host_ && active_tab_id_ != 0 &&
+         host_->IsReaderOfferable(active_tab_id_, active_tab_url_);
 }
 
 int PhiWindowController::tabs_top() {
@@ -1361,6 +1370,10 @@ void PhiWindowController::CommitOmniboxField(HWND field) {
     omnibox_new_tab_pending_ = false;
     framework_->NewTab(browser, "");
   }
+  // The typed URL replaces the ORIGIN tab's page, which the reader is
+  // covering — leave the reader, or what arrives loads unseen behind it
+  // (the Mac's closeReaderOverlayForAddressBarNavigation).
+  LeaveReaderViewForNavigation();
   framework_->Navigate(browser, base::WideToUTF8(typed).c_str());
   FocusActiveBrowser();  // Keys belong to the page again once we've navigated.
   RefreshTabs();
@@ -2175,6 +2188,11 @@ void PhiWindowController::LayoutContents() {
   }
   if (new_tab_page_ && new_tab_page_->visible()) {
     new_tab_page_->Reposition();
+  }
+  // Reader and peek panels are hosted OVER the content card, in windows the
+  // coordinator owns rather than this controller — they have to follow it.
+  if (host_) {
+    host_->NoteContentLayoutChanged(window_id_);
   }
   if (!shell_hwnd_) {
     return;
@@ -3536,6 +3554,68 @@ bool PhiWindowController::ActiveTabDistillable() const {
     }
   }
   return false;
+}
+
+bool PhiWindowController::ActiveTabReaderOfferable() const {
+  if (active_tab_id_ == 0) {
+    return false;
+  }
+  if (ActiveTabDistillable()) {
+    return true;
+  }
+  return host_ && (host_->IsReaderOfferable(active_tab_id_, active_tab_url_) ||
+                   host_->IsReaderActive(active_tab_id_, active_tab_url_));
+}
+
+bool PhiWindowController::ActiveTabShowsReader() const {
+  return host_ && active_tab_id_ != 0 &&
+         host_->IsReaderActive(active_tab_id_, active_tab_url_);
+}
+
+bool PhiWindowController::ActiveTabCanUseReader() const {
+  return active_tab_id_ != 0 && !active_tab_url_.empty() &&
+         !PhiNewTabPage::IsNewTabUrl(active_tab_url_);
+}
+
+void PhiWindowController::CardRoundedCorners(bool* top, bool* bottom) const {
+  const bool any = !content_fullscreen_;
+  if (bottom) {
+    *bottom = any;
+  }
+  if (top) {
+    *top = any && layout_mode_ == PhiLayoutMode::kPerformance;
+  }
+}
+
+void PhiWindowController::RaiseCornerCaps() {
+  if (shell_hwnd_) {
+    ::PostMessageW(shell_hwnd_, WM_PHI_RAISE_CAPS, 0, 0);
+  }
+}
+
+bool PhiWindowController::ShowsTab(int tab_id) const {
+  for (const TabRow& row : tabs_) {
+    if (row.id == tab_id) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void PhiWindowController::ToggleReaderView() {
+  if (!host_ || active_tab_id_ == 0) {
+    return;
+  }
+  host_->RequestToggleReaderView(active_tab_id_, active_tab_url_);
+}
+
+bool PhiWindowController::LeaveReaderViewForNavigation() {
+  if (!host_ || active_tab_id_ == 0 ||
+      !host_->IsReaderActive(active_tab_id_, active_tab_url_)) {
+    return false;
+  }
+  host_->RequestCloseReaderView(active_tab_id_);
+  return true;
 }
 
 void PhiWindowController::UpdateTabPreview() {
@@ -5437,11 +5517,20 @@ void PhiWindowController::OnChromeClick(int x, int y) {
     return;  // The rest of the band is drag space; no chrome lives here.
   }
   if (framework_ && ::PtInRect(&layout.back, pt)) {
+    // Back while the reader covers this tab reads as "leave the reader" —
+    // the Mac's closeReaderOverlayForBackForwardNavigation, and what the
+    // in-place reader did before there was an overlay.
+    if (LeaveReaderViewForNavigation()) {
+      return;
+    }
     framework_->GoBack(active_browser_ ? active_browser_ : window_id_);
     RefreshTabs();
     return;
   }
   if (framework_ && ::PtInRect(&layout.forward, pt)) {
+    if (LeaveReaderViewForNavigation()) {
+      return;
+    }
     framework_->GoForward(active_browser_ ? active_browser_ : window_id_);
     RefreshTabs();
     return;
@@ -5505,16 +5594,7 @@ void PhiWindowController::OnChromeClick(int x, int y) {
     }
   }
   if (::PtInRect(&layout.reader, pt)) {
-    if (framework_) {
-      const int64_t browser = active_browser_ ? active_browser_ : window_id_;
-      for (const TabRow& row : tabs_) {
-        if (row.active) {
-          framework_->DistillTab(browser, row.index);
-          break;
-        }
-      }
-      RefreshTabs();
-    }
+    ToggleReaderView();
     return;
   }
   if (::PtInRect(&layout.copy_link, pt)) {
@@ -9132,6 +9212,11 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
           // Above the browser child; the bubble and caps go above it next.
           ::SetWindowPos(self->new_tab_page_->hwnd(), HWND_TOP, 0, 0, 0, 0,
                          SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        }
+        if (self->host_) {
+          // The reader panel covers the whole card, so it has to come up
+          // before the caps that round it.
+          self->host_->RaiseReaderPanels(self->window_id_);
         }
         if (self->status_bubble_ && ::IsWindow(self->status_bubble_) &&
             ::IsWindowVisible(self->status_bubble_)) {

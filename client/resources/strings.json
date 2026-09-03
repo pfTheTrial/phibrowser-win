@@ -799,6 +799,17 @@
    "zh-Hans": "切换 Chatbar\tCtrl+Shift+S",
    "zh-Hant": "切換 Chatbar\tCtrl+Shift+S"
   },
+  "app.viewMenu.toggleReaderView": {
+   "de": "Lesemodus ein-/ausschalten\tCtrl+Alt+R",
+   "en": "Toggle Reader View\tCtrl+Alt+R",
+   "es": "Mostrar u ocultar el Lector\tCtrl+Alt+R",
+   "fr": "Activer/désactiver le mode Lecture\tCtrl+Alt+R",
+   "ja": "リーダー表示を切り替え\tCtrl+Alt+R",
+   "ko": "읽기 모드 전환\tCtrl+Alt+R",
+   "nl": "Schakel Reader-weergave in of uit\tCtrl+Alt+R",
+   "zh-Hans": "切换阅读模式\tCtrl+Alt+R",
+   "zh-Hant": "切換閱讀模式\tCtrl+Alt+R"
+  },
   "app.viewMenu.toggleSidebar": {
    "de": "Seitenleiste ein-/ausblenden\tCtrl+S",
    "en": "Toggle Sidebar\tCtrl+S",
@@ -895,6 +906,28 @@
    "nl": "Incognito",
    "zh-Hans": "无痕",
    "zh-Hant": "無痕模式"
+  },
+  "browser.readerView.noArticleFound": {
+   "de": "Kein Artikel auf dieser Seite gefunden",
+   "en": "No article found on this page",
+   "es": "No se encontró ningún artículo en esta página",
+   "fr": "Aucun article trouvé sur cette page",
+   "ja": "このページに記事が見つかりませんでした",
+   "ko": "이 페이지에서 기사를 찾을 수 없어요",
+   "nl": "Geen artikel gevonden op deze pagina",
+   "zh-Hans": "此网页上未找到文章",
+   "zh-Hant": "這個網頁找不到文章內容"
+  },
+  "browser.readerView.unavailable": {
+   "de": "Lesemodus auf dieser Seite nicht verfügbar",
+   "en": "Reader View is unavailable on this page",
+   "es": "El Lector no está disponible en esta página",
+   "fr": "Le mode Lecture n'est pas disponible sur cette page",
+   "ja": "このページではリーダー表示を利用できません",
+   "ko": "이 페이지에서는 읽기 모드를 사용할 수 없어요",
+   "nl": "Reader-weergave is niet beschikbaar op deze pagina",
+   "zh-Hans": "无法在此网页使用阅读模式",
+   "zh-Hant": "這個網頁無法使用閱讀模式"
   },
   "browser.tabGroupOverview.newTabCardTitle": {
    "de": "Neuer Tab\tCtrl+T",

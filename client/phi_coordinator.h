@@ -27,6 +27,8 @@
 #include "phibrowser-win/client/phi_vault_helper.h"
 #include "phibrowser-win/client/phi_emoji.h"
 #include "phibrowser-win/client/phi_prompt.h"
+#include "phibrowser-win/client/phi_reader.h"
+#include "phibrowser-win/client/phi_reader_panel.h"
 #include "phibrowser-win/client/phi_auth.h"
 #include "phibrowser-win/client/phi_feedback_window.h"
 #include "phibrowser-win/client/phi_settings_window.h"
@@ -94,6 +96,11 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
                                   int64_t session_id) override;
   void OnTabDistillable(int64_t window_id, int tab_id,
                         bool distillable) override;
+  void OnExtensionMessage(const char* request_id,
+                          const char* sender_id,
+                          const char* type,
+                          const char* payload_json) override;
+  void OnOpenReaderView(int64_t window_id, int64_t tab_id) override;
   void OnSessionRestoreSettled(const char* receipt_json) override;
   void OnAnalyticsEventCaptured(const char* module,
                                 const char* event_name,
@@ -102,6 +109,41 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
                               bool* armed) override;
   void OnColdStartParkedWindows(const char* parked_json,
                                 const char* reporting_profile) override;
+
+  // --- Reader View ---------------------------------------------------------
+  // Reader View lives in the Mirage extension; PhiReaderBridge is the app's
+  // half of that conversation and these are the seams it acts through.
+  PhiReaderBridge& reader() { return reader_; }
+  // Answers one extension request (see PhiFramework::RespondToExtensionMessage).
+  void RespondToExtension(const std::string& request_id,
+                          const std::string& response_json);
+  // App -> extensions. False when the broadcast reached nobody.
+  bool BroadcastToExtensions(const std::string& type,
+                             const std::string& payload_json);
+  // The window whose visible strip holds `tab_id`, or null when the tab is
+  // not on screen anywhere (a background Space, or a tab already gone).
+  PhiWindowController* WindowShowingTab(int tab_id);
+  // The reader extension's surface tab has appeared in the origin's strip:
+  // move it into a browser of its own and host that in a panel over the
+  // origin's page. False when there is no such tab to move.
+  bool PanelizeReaderSurface(int origin_tab_id);
+  // Closes the reader panel covering `origin_tab_id`, if any. The panel's
+  // browser holds only the surface tab, so closing the window is the whole
+  // teardown.
+  void CloseReaderPanelForOrigin(int origin_tab_id);
+  // Whether a reader panel is currently up for this origin tab.
+  bool HasReaderPanelForOrigin(int origin_tab_id) const;
+  // A link inside the reading surface navigated it away from reader.html:
+  // hand `url` back to the origin window as a normal tab and drop the panel.
+  void ExpandReaderPanelIntoTab(int64_t panel_window_id,
+                                const std::string& url);
+  // The deferred half of the above (WM_PHI_READER_EXPAND).
+  void FinishReaderPanelExpand(int64_t panel_window_id);
+  // A reader style axis moved: persist it.
+  void OnReaderStyleChanged();
+  // The reader affordance for `tab_id` may have changed — repaint the window
+  // showing it.
+  void OnReaderOfferabilityChanged(int tab_id);
 
   // PhiControlDelegate (called on the control server's I/O thread):
   std::string HandleControlCommand(const std::string& type,
@@ -219,6 +261,12 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
                        int64_t browser_window_id) override;
   void NoteTabDistillable(int64_t window_id, int tab_id,
                           bool distillable) override;
+  bool IsReaderOfferable(int tab_id, const std::string& url) const override;
+  bool IsReaderActive(int tab_id, const std::string& url) const override;
+  void RequestToggleReaderView(int tab_id, const std::string& url) override;
+  void RequestCloseReaderView(int tab_id) override;
+  void NoteContentLayoutChanged(int64_t slot) override;
+  void RaiseReaderPanels(int64_t slot) override;
   bool IsTabAgentDriven(int tab_id) const override;
   bool IsTabReclaimed(int tab_id) const override;
   void RequestReclaimTab(int tab_id) override;
@@ -335,6 +383,15 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // Maps a slot id (what callers pass as windowId) to the browser currently
   // shown in it — the Space's browser, not necessarily the slot's original.
   int64_t ResolveBrowser(int64_t slot_or_browser) const;
+  // The session id of `browser`'s active tab (what ListTabsJson emits as
+  // "id", and what the extensions API calls a tab id), or 0.
+  int ActiveTabId(int64_t browser);
+  // Activates the tab with this session id in `browser` (indices shift; ids
+  // do not).
+  void ActivateTabById(int64_t browser, int tab_id);
+  // A window's tab strip changed: re-fit, re-hide and retire the reader
+  // panels bound to it.
+  void UpdateReaderPanelsForWindow(int64_t window_id);
   // Swaps in the url-favicon service's larger icon when it beats the row's
   // stored 16px capture.
   void UpgradeFavicon(int64_t slot,
@@ -401,6 +458,12 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // slot; unlike them they are bound to an opener tab and float inside that
   // window's content card.
   std::map<int64_t, std::unique_ptr<PhiPeekPanel>> peeks_;
+  // Reader View panels, keyed like peeks_ by the panel BROWSER's window id.
+  // Each holds exactly the surface tab moved out of an origin window's strip.
+  std::map<int64_t, std::unique_ptr<PhiReaderPanel>> readers_;
+  // Panels whose page left reader.html, with the url to re-open, until the
+  // deferred expand runs.
+  std::map<int64_t, std::string> pending_reader_expands_;
   int sidebar_width_ = kSidebarWidthDefault;
   // Every browser window -> the slot hosting it (a slot has one per Space).
   std::map<int64_t, int64_t> browser_to_slot_;
@@ -569,6 +632,10 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   std::map<std::string, PhiShortcutChord> shortcut_overrides_;
   // Gates the Developer settings pane, as on Mac (default off).
   bool developer_mode_ = false;
+  // Reader View's app half. Holds the reading style (one store for every
+  // reader surface, persisted in PhiPrefs.json) and the per-tab offer/state
+  // the extension reports.
+  PhiReaderBridge reader_{this};
   std::wstring prefs_path_;
   void LoadPrefs();
   void SavePrefs() const;
