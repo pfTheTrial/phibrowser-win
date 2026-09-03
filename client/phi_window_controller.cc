@@ -1431,6 +1431,27 @@ void PhiWindowController::OnPlaceholderModeChanged(int64_t browser_id,
   }
 }
 
+void PhiWindowController::OpenFeedback() {
+  if (!host_) {
+    return;
+  }
+  // About the focused tab of the VISIBLE browser (the active Space's), whose
+  // profile also supplies the report's system logs.
+  PhiFeedbackContext context;
+  context.window_id = active_browser_ ? active_browser_ : window_id_;
+  for (const TabRow& row : tabs_) {
+    if (row.active) {
+      context.url = base::WideToUTF8(row.url);
+      context.title = base::WideToUTF8(row.title);
+      break;
+    }
+  }
+  if (context.url.empty()) {
+    context.url = active_tab_url_;
+  }
+  host_->RequestFeedback(window_id_, context);
+}
+
 void PhiWindowController::StartNewTab() {
   // "New tab behavior = Omnibox": Ctrl+T / the New Tab row focus the
   // address field instead of opening a page; the tab is born on commit
@@ -5440,6 +5461,10 @@ void PhiWindowController::OnChromeClick(int x, int y) {
                                   active_browser_ ? active_browser_
                                                   : window_id_);
     }
+    return;
+  }
+  if (::PtInRect(&layout.feedback, pt)) {
+    OpenFeedback();  // The sidebar's Feedback capsule (SidebarBottomBar).
     return;
   }
   if (::PtInRect(&layout.extensions, pt)) {

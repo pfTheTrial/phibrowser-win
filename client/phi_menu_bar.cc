@@ -397,7 +397,7 @@ void PhiMenuBar::BuildStatic() {
   Append(window_, kCmdTaskManager, PhiStr("menuBar.taskManager"), false);
 
   // Help. Time Machine restore is a Mac app-bundle mechanism — skipped.
-  Append(help_, kCmdReportIssue, PhiStr("menuBar.reportAnIssue"), false);
+  Append(help_, kCmdReportIssue, PhiStr("menuBar.reportAnIssue"));
   Append(help_, kCmdWhatsNew, PhiStr("app.helpMenu.whatsNew"), false);
   Append(help_, kCmdDocumentation, PhiStr("menuBar.documentation"), false);
   Separator(help_);
@@ -839,6 +839,9 @@ bool PhiMenuBar::OnCommand(UINT id) {
           c->shell_hwnd_,
           PhiStrF("menuBar.aboutBody", {PHI_WIN_VERSION_WIDE}).c_str(),
           PhiStr("menuBar.aboutPhi"), MB_OK | MB_ICONINFORMATION);
+      return true;
+    case kCmdReportIssue:
+      c->OpenFeedback();
       return true;
     case kCmdCheckUpdate:
       if (!PhiUpdater::CheckForUpdateWithUi()) {

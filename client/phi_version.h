@@ -11,4 +11,10 @@
 #define PHI_WIN_VERSION_STRING "0.1.0"
 #define PHI_WIN_VERSION_WIDE L"0.1.0"
 
+// The release ring this build ships on, as feedback reports name it (the
+// Mac maps its nightly builds to "canary" and everything else to "stable";
+// a DCHECK build reports "debug" regardless). Set alongside the version
+// when a ring changes.
+#define PHI_WIN_CHANNEL "canary"
+
 #endif  // PHIBROWSER_WIN_CLIENT_PHI_VERSION_H_

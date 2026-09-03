@@ -212,6 +212,10 @@
    "comment": "app — used in phi_i18n.cc",
    "en": "Español"
   },
+  "app.feedback.windowTitle": {
+   "comment": "feedback — the form's window title (Mac key)",
+   "en": "Send Feedback to Phi"
+  },
   "app.fileMenu.createNewIncognitoSpace": {
    "comment": "menuBar — used at phi_menu_bar.cc:299",
    "en": "New Incognito Space"
@@ -672,9 +676,73 @@
    "comment": "extensions — used at phi_extensions_popover.cc:273",
    "en": "No extensions installed"
   },
+  "feedback.form.additionalInfoSection.title": {
+   "comment": "feedback — optional section headline (Mac key)",
+   "en": "Additional info (optional)"
+  },
+  "feedback.form.attachment.previewTooltip": {
+   "comment": "feedback — preview button (Mac key)",
+   "en": "Preview attachment"
+  },
+  "feedback.form.attachment.removeTooltip": {
+   "comment": "feedback — remove button (Mac key)",
+   "en": "Remove attachment"
+  },
+  "feedback.form.attachment.showInExplorerTooltip": {
+   "comment": "feedback — reveal a picked file; Windows-only wording of the Mac's Show in Finder",
+   "en": "Show in Explorer"
+  },
+  "feedback.form.attachmentFailure.title": {
+   "comment": "feedback — alert title when a picked file is refused (Mac key)",
+   "en": "Could Not Add Attachment"
+  },
+  "feedback.form.attachmentsSection.chooseFilesButton": {
+   "comment": "feedback — file picker button (Mac key)",
+   "en": "Choose Files"
+  },
+  "feedback.form.attachmentsSection.pasteImageHint": {
+   "comment": "feedback — hint under Attach files (Mac key)",
+   "en": "Or paste an image"
+  },
+  "feedback.form.attachmentsSection.title": {
+   "comment": "feedback — attachments row label (Mac key)",
+   "en": "Attach files"
+  },
+  "feedback.form.descriptionSection.title": {
+   "comment": "feedback — description headline (Mac key)",
+   "en": "Describe the issue in detail"
+  },
+  "feedback.form.localSaveFailure.title": {
+   "comment": "feedback — alert title when the outbox write fails (Mac key)",
+   "en": "Could Not Save Feedback"
+  },
+  "feedback.form.privacyNotice": {
+   "comment": "feedback — legal notice above the links (Mac key)",
+   "en": "Some account and system information may be sent to Phinomenon. We will use the information you give us to help address technical issues and to improve our services, subject to our Privacy Policy and Terms of Service."
+  },
+  "feedback.form.privacyPolicyLink": {
+   "comment": "feedback — link button under the notice; Windows-only (the Mac links inline)",
+   "en": "Privacy Policy"
+  },
   "feedback.form.sendButton": {
    "comment": "agentTranscript — used at phi_transcript_panel.cc:172",
    "en": "Send"
+  },
+  "feedback.form.sending": {
+   "comment": "feedback — Send button label while the system logs are being collected; Windows-only",
+   "en": "Sending…"
+  },
+  "feedback.form.signInPrompt": {
+   "comment": "feedback — asked when Send is pressed while signed out; Windows-only (the Mac shows an error)",
+   "en": "Sign in to your Phi account to send feedback. Sign in now?"
+  },
+  "feedback.form.termsOfServiceLink": {
+   "comment": "feedback — link button under the notice; Windows-only (the Mac links inline)",
+   "en": "Terms of Service"
+  },
+  "feedback.form.urlField.label": {
+   "comment": "feedback — URL row label (Mac key)",
+   "en": "URL"
   },
   "menuBar.aboutBody": {
    "comment": "About Phi alert - body. {0} is the version string",

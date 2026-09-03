@@ -394,6 +394,17 @@
   "app.espaOl": {
    "en": "Español"
   },
+  "app.feedback.windowTitle": {
+   "de": "Feedback an Phi senden",
+   "en": "Send Feedback to Phi",
+   "es": "Enviar comentarios a Phi",
+   "fr": "Envoyer des commentaires à Phi",
+   "ja": "Phiにフィードバックを送信",
+   "ko": "Phi에 피드백 보내기",
+   "nl": "Stuur feedback naar Phi",
+   "zh-Hans": "向 Phi 发送反馈",
+   "zh-Hant": "傳送意見回饋給 Phi"
+  },
   "app.fileMenu.createNewIncognitoSpace": {
    "de": "Neuer Inkognito-Space",
    "en": "New Incognito Space",
@@ -1259,6 +1270,130 @@
   "extensions.noExtensionsInstalled": {
    "en": "No extensions installed"
   },
+  "feedback.form.additionalInfoSection.title": {
+   "de": "Zusätzliche Angaben (optional)",
+   "en": "Additional info (optional)",
+   "es": "Información adicional (opcional)",
+   "fr": "Informations complémentaires (facultatif)",
+   "ja": "追加情報（任意）",
+   "ko": "추가 정보 (선택 사항)",
+   "nl": "Aanvullende informatie (optioneel)",
+   "zh-Hans": "补充信息（可选）",
+   "zh-Hant": "其他資訊（選填）"
+  },
+  "feedback.form.attachment.previewTooltip": {
+   "de": "Anhang in Vorschau anzeigen",
+   "en": "Preview attachment",
+   "es": "Previsualizar el archivo adjunto",
+   "fr": "Aperçu de la pièce jointe",
+   "ja": "添付ファイルをプレビュー",
+   "ko": "첨부 파일 미리보기",
+   "nl": "Voorvertoning van bijlage",
+   "zh-Hans": "预览附件",
+   "zh-Hant": "預覽附件"
+  },
+  "feedback.form.attachment.removeTooltip": {
+   "de": "Anhang entfernen",
+   "en": "Remove attachment",
+   "es": "Quitar el archivo adjunto",
+   "fr": "Supprimer la pièce jointe",
+   "ja": "添付ファイルを削除",
+   "ko": "첨부 파일 제거",
+   "nl": "Bijlage verwijderen",
+   "zh-Hans": "移除附件",
+   "zh-Hant": "移除附件"
+  },
+  "feedback.form.attachment.showInExplorerTooltip": {
+   "en": "Show in Explorer"
+  },
+  "feedback.form.attachmentFailure.title": {
+   "de": "Anhang konnte nicht hinzugefügt werden",
+   "en": "Could Not Add Attachment",
+   "es": "No se pudo agregar el archivo adjunto",
+   "fr": "Impossible d'ajouter les pièces jointes",
+   "ja": "添付ファイルを追加できませんでした",
+   "ko": "첨부 파일을 추가할 수 없음",
+   "nl": "Kan bijlage niet toevoegen",
+   "zh-Hans": "无法添加附件",
+   "zh-Hant": "無法加入附件"
+  },
+  "feedback.form.attachmentsSection.chooseFilesButton": {
+   "de": "Dateien auswählen",
+   "en": "Choose Files",
+   "es": "Seleccionar archivos",
+   "fr": "Choisir des fichiers",
+   "ja": "ファイルを選択",
+   "ko": "파일 선택",
+   "nl": "Kies bestanden",
+   "zh-Hans": "选取文件",
+   "zh-Hant": "選擇檔案"
+  },
+  "feedback.form.attachmentsSection.pasteImageHint": {
+   "de": "Oder ein Bild einfügen",
+   "en": "Or paste an image",
+   "es": "O pega una imagen",
+   "fr": "Ou collez une image",
+   "ja": "画像を貼り付けて追加することもできます",
+   "ko": "또는 이미지를 붙여넣으세요",
+   "nl": "Of plak een afbeelding",
+   "zh-Hans": "或粘贴图片",
+   "zh-Hant": "或貼上圖片"
+  },
+  "feedback.form.attachmentsSection.title": {
+   "de": "Dateien anhängen",
+   "en": "Attach files",
+   "es": "Adjuntar archivos",
+   "fr": "Joindre des fichiers",
+   "ja": "ファイルを添付",
+   "ko": "파일 첨부",
+   "nl": "Bestanden bijvoegen",
+   "zh-Hans": "附加文件",
+   "zh-Hant": "附加檔案"
+  },
+  "feedback.form.descriptionSection.title": {
+   "de": "Beschreibe das Problem im Detail",
+   "en": "Describe the issue in detail",
+   "es": "Describe el problema en detalle",
+   "fr": "Décrivez le problème en détail",
+   "ja": "問題を詳しく説明してください",
+   "ko": "문제를 자세히 설명해 주세요",
+   "nl": "Beschrijf het probleem in detail",
+   "zh-Hans": "详细描述问题",
+   "zh-Hant": "詳細描述問題"
+  },
+  "feedback.form.localSaveFailure.title": {
+   "de": "Feedback konnte nicht gespeichert werden",
+   "en": "Could Not Save Feedback",
+   "es": "No se pudieron guardar los comentarios",
+   "fr": "Impossible d'enregistrer les commentaires",
+   "ja": "フィードバックを保存できませんでした",
+   "ko": "피드백을 저장할 수 없음",
+   "nl": "Kan feedback niet bewaren",
+   "zh-Hans": "无法保存反馈",
+   "zh-Hant": "無法儲存意見回饋"
+  },
+  "feedback.form.privacyNotice": {
+   "de": "Möglicherweise werden einige Konto- und Systeminformationen an Phinomenon gesendet. Wir verwenden die Informationen, die du uns gibst, um technische Probleme zu beheben und unsere Dienste zu verbessern, gemäß unserer Datenschutzerklärung und unseren Nutzungsbedingungen.",
+   "en": "Some account and system information may be sent to Phinomenon. We will use the information you give us to help address technical issues and to improve our services, subject to our Privacy Policy and Terms of Service.",
+   "es": "Es posible que se envíe cierta información de la cuenta y del sistema a Phinomenon. Usaremos la información que nos des para ayudar a resolver problemas técnicos y mejorar nuestros servicios, conforme a nuestra Política de Privacidad y a nuestros Términos del Servicio.",
+   "fr": "Certaines informations relatives à votre compte et à votre système peuvent être envoyées à Phinomenon. Nous utiliserons les informations que vous nous communiquez pour résoudre les problèmes techniques et améliorer nos services, conformément à nos Règles de confidentialité et à nos Conditions d'utilisation.",
+   "ja": "アカウントやシステムに関する一部の情報がPhinomenonに送信される場合があります。ご提供いただいた情報は、プライバシーポリシーおよび利用規約に従って、技術的な問題の解決とサービスの改善のために使用します。",
+   "ko": "일부 계정 및 시스템 정보가 Phinomenon에 전송될 수 있어요. 보내 주신 정보는 개인정보처리방침과 서비스 약관에 따라 기술적 문제를 해결하고 서비스를 개선하는 데 사용해요.",
+   "nl": "Mogelijk worden er account- en systeemgegevens naar Phinomenon gestuurd. We gebruiken de informatie die je ons geeft om technische problemen op te lossen en onze diensten te verbeteren, in overeenstemming met ons privacybeleid en onze servicevoorwaarden.",
+   "zh-Hans": "部分账号和系统信息可能会发送给 Phinomenon。我们会使用你提供的信息来帮助解决技术问题并改进我们的服务，具体以我们的隐私政策和服务条款为准。",
+   "zh-Hant": "部分帳號與系統資訊可能會傳送給 Phinomenon。我們會依照隱私權政策與服務條款，使用你提供的資訊來協助解決技術問題並改善我們的服務。"
+  },
+  "feedback.form.privacyPolicyLink": {
+   "de": "Datenschutzerklärung",
+   "en": "Privacy Policy",
+   "es": "Política de Privacidad",
+   "fr": "Politique de confidentialité",
+   "ja": "プライバシーポリシー",
+   "ko": "개인정보 처리방침",
+   "nl": "Privacybeleid",
+   "zh-Hans": "隐私政策",
+   "zh-Hant": "隱私權政策"
+  },
   "feedback.form.sendButton": {
    "de": "Senden",
    "en": "Send",
@@ -1269,6 +1404,34 @@
    "nl": "Stuur",
    "zh-Hans": "发送",
    "zh-Hant": "傳送"
+  },
+  "feedback.form.sending": {
+   "en": "Sending…"
+  },
+  "feedback.form.signInPrompt": {
+   "en": "Sign in to your Phi account to send feedback. Sign in now?"
+  },
+  "feedback.form.termsOfServiceLink": {
+   "de": "Nutzungsbedingungen",
+   "en": "Terms of Service",
+   "es": "Términos del Servicio",
+   "fr": "Conditions d'utilisation",
+   "ja": "利用規約",
+   "ko": "서비스 이용약관",
+   "nl": "Servicevoorwaarden",
+   "zh-Hans": "服务条款",
+   "zh-Hant": "服務條款"
+  },
+  "feedback.form.urlField.label": {
+   "de": "URL",
+   "en": "URL",
+   "es": "URL",
+   "fr": "URL",
+   "ja": "URL",
+   "ko": "URL",
+   "nl": "URL",
+   "zh-Hans": "网址",
+   "zh-Hant": "網址"
   },
   "menuBar.aboutBody": {
    "de": "Phi Browser für Windows {0}\nDie Phi-Client-Shell über dem Phi-Framework.",

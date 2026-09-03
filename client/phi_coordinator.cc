@@ -26,6 +26,7 @@
 #include "base/values.h"
 #include "base/rand_util.h"
 #include "phibrowser-win/client/phi_agent_overlay.h"
+#include "phibrowser-win/client/phi_feedback_outbox.h"
 #include "phibrowser-win/client/phi_updater.h"
 #include "phibrowser-win/client/phi_folder_icons.h"
 #include "phibrowser-win/client/phi_i18n.h"
@@ -259,6 +260,10 @@ void PhiCoordinator::OnFrameworkReady(phi_framework::PhiFramework* framework,
   // Restore the Auth0 session (validated in the background; the message
   // refreshes the settings pane whenever the state settles).
   auth_.Load(user_data_dir, msg_hwnd_, WM_PHI_AUTH_CHANGED);
+  // The feedback outbox: reports queued by earlier runs resume uploading
+  // once the account is known (the Mac's FeedbackOutboxUploader.start).
+  PhiFeedbackOutbox::Get().Start(user_data_dir, &auth_);
+  SyncFeedbackAccount();
 }
 
 // static
@@ -299,8 +304,14 @@ LRESULT CALLBACK PhiCoordinator::MsgWndProc(HWND hwnd,
     return 0;
   }
   if (msg == WM_PHI_AUTH_CHANGED) {
-    // The sign-in/refresh worker settled; the Account pane re-reads state.
+    // The sign-in/refresh worker settled; the Account pane re-reads state,
+    // and the feedback outbox learns whose jobs to work on.
     PhiSettingsWindow::Refresh();
+    auto* self = reinterpret_cast<PhiCoordinator*>(
+        ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    if (self) {
+      self->SyncFeedbackAccount();
+    }
     return 0;
   }
   if (msg == WM_PHI_AUTHORIZE) {
@@ -2893,6 +2904,91 @@ void PhiCoordinator::RequestSettings() {
   PhiSettingsWindow::Open(this);
 }
 
+void PhiCoordinator::RequestFeedback(int64_t slot,
+                                     const PhiFeedbackContext& context) {
+  const auto it = windows_.find(slot);
+  PhiFeedbackWindow::Open(this, context,
+                          it != windows_.end() ? it->second->shell_hwnd()
+                                               : nullptr);
+}
+
+void PhiCoordinator::OnShowFeedbackRequested() {
+  // Chromium's IDC_FEEDBACK (Help ▸ Report an Issue via the framework, the
+  // sad tab's Send feedback, …): the window the user is looking at.
+  if (PhiWindowController* controller = FocusedUserController()) {
+    controller->OpenFeedback();
+  }
+}
+
+void PhiCoordinator::OnFeedbackSystemLogs(int request_id, const char* text) {
+  PhiFeedbackWindow::OnSystemLogs(request_id, text);
+}
+
+bool PhiCoordinator::FeedbackAccount(std::string* email) {
+  if (auth_.signed_in()) {
+    *email = auth_.user().email;
+    return true;
+  }
+  if (!test_feedback_user_id_.empty()) {
+    *email = test_feedback_email_;
+    return true;
+  }
+  return false;
+}
+
+void PhiCoordinator::RequestFeedbackSignIn() {
+  RequestSignIn();
+}
+
+void PhiCoordinator::OpenFeedbackLink(int64_t window_id,
+                                      const std::string& url) {
+  if (!framework_) {
+    return;
+  }
+  framework_->NewTab(window_id, url.c_str());
+  FocusWindowForBrowser(window_id);
+}
+
+bool PhiCoordinator::FetchFeedbackSystemLogs(int64_t window_id,
+                                             int request_id) {
+  return framework_ &&
+         framework_->FetchFeedbackSystemLogs(window_id, request_id);
+}
+
+std::map<std::string, std::string> PhiCoordinator::PhiExtensionVersions(
+    int64_t window_id) {
+  std::map<std::string, std::string> versions;
+  if (!framework_) {
+    return versions;
+  }
+  const char* json = framework_->ListExtensionsJson(window_id);
+  std::optional<base::Value> list =
+      base::JSONReader::Read(json ? json : "[]", base::JSON_PARSE_RFC);
+  if (!list || !list->is_list()) {
+    return versions;
+  }
+  for (const base::Value& row : list->GetList()) {
+    const base::DictValue* dict = row.GetIfDict();
+    const std::string* id = dict ? dict->FindString("id") : nullptr;
+    const std::string* name = dict ? dict->FindString("name") : nullptr;
+    const std::string* version =
+        dict ? dict->FindString("version") : nullptr;
+    if (id && name && version && PhiFeedbackOutbox::IsPhiExtensionId(*id)) {
+      versions[*name] = *version;
+    }
+  }
+  return versions;
+}
+
+void PhiCoordinator::SyncFeedbackAccount() {
+  if (auth_.signed_in()) {
+    PhiFeedbackOutbox::Get().SetAccount(auth_.user().sub, auth_.user().email);
+    return;
+  }
+  PhiFeedbackOutbox::Get().SetAccount(test_feedback_user_id_,
+                                      test_feedback_email_);
+}
+
 void PhiCoordinator::RequestSpaceIconPicker(const std::string& space_id) {
   PhiSettingsWindow::Open(this);
   PhiSettingsWindow::ShowSpacePicker(space_id);
@@ -4286,6 +4382,88 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
     } else {
       out.Set("ok", false);
     }
+  } else if (type == "agentSpace.feedback.status") {
+    // The outbox (every job of the current account with its state) and the
+    // form, when open — the harness's view of the feedback pipeline.
+    if (std::optional<base::Value> status = base::JSONReader::Read(
+            PhiFeedbackOutbox::Get().StatusJson(), base::JSON_PARSE_RFC)) {
+      if (base::DictValue* dict = status->GetIfDict()) {
+        out.Merge(std::move(*dict));
+      }
+    }
+    if (std::optional<base::Value> form = base::JSONReader::Read(
+            PhiFeedbackWindow::StateJson(), base::JSON_PARSE_RFC)) {
+      out.Set("form", std::move(*form));
+    }
+    out.Set("ok", true);
+  } else if (type == "agentSpace.feedback.open") {
+    // Opens the form for {windowId} (a slot), else the focused window —
+    // exactly what Help ▸ Report an Issue does.
+    std::optional<base::DictValue> p =
+        base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
+    PhiWindowController* controller = nullptr;
+    if (p) {
+      if (std::optional<double> window_id = p->FindDouble("windowId")) {
+        const auto it = windows_.find(static_cast<int64_t>(*window_id));
+        controller = it != windows_.end() ? it->second.get() : nullptr;
+      }
+    }
+    if (!controller) {
+      controller = FocusedUserController();
+    }
+    if (controller) {
+      controller->OpenFeedback();
+    }
+    const HWND form = PhiFeedbackWindow::Handle();
+    out.Set("ok", form != nullptr);
+    out.Set("hwnd", static_cast<double>(reinterpret_cast<uintptr_t>(form)));
+  } else if (type == "agentSpace.feedback.form") {
+    // Drives the open form: {description?, url?, attachFiles?:[path],
+    // send?:true} — the Send path is the button's own.
+    std::optional<base::DictValue> p =
+        base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
+    std::string description;
+    std::string url;
+    std::vector<std::wstring> files;
+    bool set_description = false;
+    bool set_url = false;
+    bool send = false;
+    if (p) {
+      if (const std::string* value = p->FindString("description")) {
+        description = *value;
+        set_description = true;
+      }
+      if (const std::string* value = p->FindString("url")) {
+        url = *value;
+        set_url = true;
+      }
+      if (const base::ListValue* list = p->FindList("attachFiles")) {
+        for (const base::Value& v : *list) {
+          if (v.is_string()) {
+            files.push_back(base::UTF8ToWide(v.GetString()));
+          }
+        }
+      }
+      send = p->FindBool("send").value_or(false);
+    }
+    const std::string error = PhiFeedbackWindow::Drive(
+        description, set_description, url, set_url, files, send);
+    out.Set("ok", error.empty());
+    if (!error.empty()) {
+      out.Set("error", error);
+    }
+  } else if (type == "agentSpace.feedback.setAccount") {
+    // Harness only: {userId, email} stands in for a signed-in account on a
+    // box without one (empty clears). A real session always wins.
+    std::optional<base::DictValue> p =
+        base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
+    const std::string* user_id = p ? p->FindString("userId") : nullptr;
+    const std::string* email = p ? p->FindString("email") : nullptr;
+    test_feedback_user_id_ = user_id ? *user_id : std::string();
+    test_feedback_email_ = email ? *email : std::string();
+    SyncFeedbackAccount();
+    out.Set("ok", true);
+    out.Set("signedIn", auth_.signed_in());
   } else if (type == "agentSpace.telemetry.status") {
     // What the outbound pipeline is doing. `configured:false` is the normal
     // answer until a collector is named in phi_telemetry.json.

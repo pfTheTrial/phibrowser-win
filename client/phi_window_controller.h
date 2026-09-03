@@ -19,6 +19,7 @@
 
 #include "base/memory/raw_ptr_exclusion.h"
 #include "chrome/browser/phinomenon/phi_framework/phi_framework_api.h"
+#include "phibrowser-win/client/phi_feedback_window.h"
 #include "phibrowser-win/client/phi_theme.h"
 
 namespace phi_client {
@@ -258,6 +259,11 @@ class PhiSlotHost {
   virtual bool DeleteProfileById(const std::string& profile_id) = 0;
   // Opens the settings window (theme, appearance, layout).
   virtual void RequestSettings() = 0;
+  // Opens the feedback form for `slot`, about `context` (its focused
+  // tab) — Help ▸ Report an Issue, the sidebar's Feedback capsule, and
+  // Chromium's own feedback command all land here.
+  virtual void RequestFeedback(int64_t slot,
+                               const PhiFeedbackContext& context) = 0;
   // Cross-window drag (the Mac's window-to-window tab drop): the slot whose
   // shell is under `screen` (topmost wins; 0 = none but `exclude_slot`), and
   // the move itself — the dragged tab (plus its split partner) joins the
@@ -356,6 +362,9 @@ class PhiWindowController {
   // same seams the controller does.
   PhiSlotHost* host() const { return host_; }
   phi_framework::PhiFramework* framework() const { return framework_; }
+  // The feedback form about this window's focused tab (the Mac's
+  // showFeedbackWindow).
+  void OpenFeedback();
   PhiPalette CurrentPalette() const;  // Ramped while a switch is in flight.
   // Tab ids most-recently-used first — the Ctrl+Tab switcher's order.
   const std::vector<int>& TabMruOrder() const { return tab_mru_; }

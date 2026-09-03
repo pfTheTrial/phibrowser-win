@@ -28,6 +28,7 @@
 #include "phibrowser-win/client/phi_emoji.h"
 #include "phibrowser-win/client/phi_prompt.h"
 #include "phibrowser-win/client/phi_auth.h"
+#include "phibrowser-win/client/phi_feedback_window.h"
 #include "phibrowser-win/client/phi_settings_window.h"
 #include "phibrowser-win/client/phi_transcript_panel.h"
 #include "phibrowser-win/client/phi_agent_drive_registry.h"
@@ -47,7 +48,8 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
                        public PhiControlDelegate,
                        public PhiSlotHost,
                        public PhiSettingsHost,
-                       public PhiTranscriptHost {
+                       public PhiTranscriptHost,
+                       public PhiFeedbackHost {
  public:
   PhiCoordinator();
   ~PhiCoordinator() override;
@@ -80,6 +82,8 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   void OnExtensionsChanged(int64_t window_id) override;
   void OnProfileCreated(const char* profile_id) override;
   void OnReaderArticleExtracted(int request_id, const char* json) override;
+  void OnShowFeedbackRequested() override;
+  void OnFeedbackSystemLogs(int request_id, const char* text) override;
   void OnAgentDroveUserSpaceTab(int64_t tab_id,
                                 int64_t window_id,
                                 int64_t session_id) override;
@@ -135,7 +139,17 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // how a Kiosk window hands its page over when the user expands it.
   void OpenUrlInMainWindow(const std::string& url);
   void RequestSettings() override;
+  void RequestFeedback(int64_t slot,
+                       const PhiFeedbackContext& context) override;
   void RequestSpaceIconPicker(const std::string& space_id) override;
+
+  // PhiFeedbackHost:
+  bool FeedbackAccount(std::string* email) override;
+  void RequestFeedbackSignIn() override;
+  void OpenFeedbackLink(int64_t window_id, const std::string& url) override;
+  bool FetchFeedbackSystemLogs(int64_t window_id, int request_id) override;
+  std::map<std::string, std::string> PhiExtensionVersions(
+      int64_t window_id) override;
   void RequestCreateProfileForSpaceForm(int64_t slot,
                                         const std::string& name) override;
   std::string RequestCreateSpaceWithOptions(
@@ -685,6 +699,15 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   PhiCredentialVault credentials_;
   // The Auth0 session (bucket D auth, stage 1).
   PhiAuth auth_;
+  // Hands the signed-in account to the feedback outbox (whose jobs are
+  // filed and uploaded per account) after every auth change.
+  void SyncFeedbackAccount();
+  // A harness-set stand-in account (agentSpace.feedback.setAccount) for a
+  // box with no Auth0 session: reports file and prepare under it, and the
+  // upload then fails for want of a token — which is the testable part.
+  // Ignored while a real session is signed in.
+  std::string test_feedback_user_id_;
+  std::string test_feedback_email_;
   std::wstring credentials_dir_;
   // Looks a query up through the helper. Returns the reply's `result` dict, or
   // nullopt with `error` set (`ambiguous` carries a candidates list).

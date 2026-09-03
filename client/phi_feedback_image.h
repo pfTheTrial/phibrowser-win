@@ -1,0 +1,30 @@
+// Copyright 2026 The Fyde Innovations Limited. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#ifndef PHIBROWSER_WIN_CLIENT_PHI_FEEDBACK_IMAGE_H_
+#define PHIBROWSER_WIN_CLIENT_PHI_FEEDBACK_IMAGE_H_
+
+#include <cstdint>
+#include <string>
+
+namespace phi_client {
+
+// The feedback form's image codecs, over WIC — the Mac's FeedbackImageEncoder
+// (NSBitmapImageRep) twin.
+
+// True when the clipboard holds an image the form can attach (a DIB or
+// bitmap); `png` receives it PNG-encoded. UI thread (opens the clipboard).
+bool PhiClipboardImageToPng(std::string* png);
+
+// Re-encodes the image at `source` as a JPEG no larger than `max_bytes`,
+// walking the Mac's ladder (longest side 8192 → 1024, quality 0.92 → 0.42)
+// and writing the first fit to `destination`. False when no rung fits or
+// the source does not decode. Any thread with COM initialized.
+bool PhiEncodeJpegUnderLimit(const std::wstring& source,
+                             int64_t max_bytes,
+                             const std::wstring& destination);
+
+}  // namespace phi_client
+
+#endif  // PHIBROWSER_WIN_CLIENT_PHI_FEEDBACK_IMAGE_H_

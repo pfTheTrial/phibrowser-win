@@ -64,6 +64,20 @@ class PhiAuth {
   // Mac's clearCachedAccount — the remote Auth0 session is not touched.
   void SignOut();
 
+  // The bearer token for an account-service call, for a WORKER thread: the
+  // cached access token, or a fresh one from a refresh round trip when none
+  // is cached — the Mac's getAccessTokenSyncly. Empty when signed out or the
+  // refresh fails. Blocks on the network, so never from the UI thread.
+  std::string AccessTokenBlocking();
+  // Forgets the cached access token so the next AccessTokenBlocking refreshes
+  // — a caller's answer to a 401.
+  void InvalidateAccessToken();
+  // The account service this tenant's tokens are for — the Mac APIClient's
+  // accountBaseURL: the staging host for the staging Auth0 tenant, the
+  // production host otherwise. PHI_ACCOUNT_BASE_URL overrides (no trailing
+  // slash).
+  static std::string AccountBaseUrl();
+
   bool signed_in() const { return signed_in_; }
   bool signing_in() const { return signing_in_; }
   const PhiAuthUser& user() const { return user_; }
@@ -92,6 +106,11 @@ class PhiAuth {
   PhiAuthUser user_;
   std::string refresh_token_;
   std::string access_token_;  // Memory only; empty until a refresh/exchange.
+  // Serializes refresh round trips: a rotating tenant hands out a new
+  // refresh token per exchange, so two concurrent refreshes (the launch
+  // validation and a worker asking for a bearer token) would invalidate
+  // each other's session.
+  CRITICAL_SECTION refresh_lock_;
 
   struct SignInJob;
   // Owned by the listener thread once started; excluded from raw_ptr as a

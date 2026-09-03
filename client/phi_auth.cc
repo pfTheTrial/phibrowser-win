@@ -314,8 +314,43 @@ struct PhiAuth::SignInJob {
   std::string redirect_uri;
 };
 
-PhiAuth::PhiAuth() = default;
-PhiAuth::~PhiAuth() = default;
+PhiAuth::PhiAuth() {
+  ::InitializeCriticalSection(&refresh_lock_);
+}
+
+PhiAuth::~PhiAuth() {
+  ::DeleteCriticalSection(&refresh_lock_);
+}
+
+std::string PhiAuth::AccessTokenBlocking() {
+  if (!signed_in_) {
+    return std::string();
+  }
+  ::EnterCriticalSection(&refresh_lock_);
+  if (access_token_.empty() && !RefreshSession()) {
+    access_token_.clear();
+  }
+  std::string token = access_token_;
+  ::LeaveCriticalSection(&refresh_lock_);
+  return token;
+}
+
+void PhiAuth::InvalidateAccessToken() {
+  ::EnterCriticalSection(&refresh_lock_);
+  access_token_.clear();
+  ::LeaveCriticalSection(&refresh_lock_);
+}
+
+// static
+std::string PhiAuth::AccountBaseUrl() {
+  const std::string override = EnvOr("PHI_ACCOUNT_BASE_URL", "");
+  if (!override.empty()) {
+    return override;
+  }
+  return Domain().find(".stag.") != std::string::npos
+             ? "https://account.stag.phibrowser.com"
+             : "https://account.phibrowser.com";
+}
 
 void PhiAuth::Load(const std::wstring& user_data_dir,
                    HWND notify_hwnd,
@@ -548,7 +583,10 @@ void PhiAuth::CompleteSignIn(const std::string& code,
 // static
 DWORD WINAPI PhiAuth::RefreshThread(void* param) {
   auto* auth = static_cast<PhiAuth*>(param);
-  if (!auth->RefreshSession()) {
+  ::EnterCriticalSection(&auth->refresh_lock_);
+  const bool alive = auth->RefreshSession();
+  ::LeaveCriticalSection(&auth->refresh_lock_);
+  if (!alive) {
     LOG(INFO) << "[PhiAuth] stored session no longer valid; signing out";
     auth->SignOut();
   }
