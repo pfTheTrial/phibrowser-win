@@ -265,6 +265,12 @@ class PhiSlotHost {
   virtual std::string SpaceThemeId(const std::string& space_id) const = 0;
   virtual void SetSpaceTheme(const std::string& space_id,
                              const std::string& theme_id) = 0;
+  // A Space's own overlay saturation, 0..100 (-1 = follow the app-wide
+  // slider), and setting it — the Set Theme panel's second row. The setter
+  // is the Settings host's spelling, so one coordinator override serves
+  // both.
+  virtual int SpaceSaturation(const std::string& space_id) const = 0;
+  virtual void SetSpaceSaturation(const std::string& space_id, int value) = 0;
   // Space management (the menu bar and the chip context menu). Deleting the
   // default Space is refused; deletion takes the Space's bookmarks and
   // space-scoped pins with it, as on Mac.
@@ -276,8 +282,15 @@ class PhiSlotHost {
   virtual std::string DefaultSpaceId() const = 0;
   // Whether the Space menu may offer Delete (never for the last Space).
   virtual bool CanDeleteSpace(const std::string& space_id) const = 0;
+  // Re-binds a Space to another profile — the Space menu's "Change Profile",
+  // the Mac's SpaceManager.changeProfile. A window's profile is baked in at
+  // spawn, so the Space's browser is closed and respawned with its tabs
+  // reopened there; the default Space keeps its binding. False when nothing
+  // changed.
+  virtual bool SetSpaceProfile(const std::string& space_id,
+                               const std::string& profile_id) = 0;
   // Profile management. Deleting Default, or a profile still bound to a
-  // Space, is refused (bindings are immutable).
+  // Space, is refused (re-bind or delete those Spaces first).
   virtual bool DeleteProfileById(const std::string& profile_id) = 0;
   // Opens the settings window (theme, appearance, layout).
   virtual void RequestSettings() = 0;

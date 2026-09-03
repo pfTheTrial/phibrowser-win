@@ -76,6 +76,9 @@ enum : UINT {
   kCmdNewSpace,
   kCmdRenameSpace,
   kCmdChangeIcon,
+  // Opens the Set Theme panel on the active Space (the Mac's Edit Theme,
+  // which presents SpaceThemeEditorView rather than a list of themes).
+  kCmdEditSpaceTheme,
   kCmdDeleteSpace,
   kCmdNextSpace,
   kCmdPreviousSpace,
@@ -235,7 +238,8 @@ class PhiMenuBar {
   // What the dynamic ids currently mean, rebuilt with their menus.
   std::vector<std::string> space_ids_;     // kSpaceFirst + i
   std::vector<HBITMAP> space_bitmaps_;     // The Space rows' icons; ours.
-  std::vector<std::string> profile_ids_;   // kDeleteProfileFirst + i
+  std::vector<std::string> profile_ids_;   // kProfileFirst / kDeleteProfileFirst + i
+  std::vector<std::wstring> profile_names_;  // Their display names, in step.
   std::vector<std::string> bookmark_urls_; // kBookmarkFirst + i
   std::vector<int> tab_indices_;           // kTabFirst + i
 };

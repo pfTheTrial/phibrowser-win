@@ -291,7 +291,37 @@
    "en": " bookmarks were added to \"Imported from Chrome\"."
   },
   "app.browserMigration.report.labelExtensions": {
-   "en": "Extensions"
+   "de": "Erweiterungen",
+   "en": "Extensions",
+   "es": "Extensiones",
+   "fr": "Extensions",
+   "ja": "拡張機能",
+   "ko": "확장 프로그램",
+   "nl": "Extensies",
+   "zh-Hans": "扩展程序",
+   "zh-Hant": "擴充功能"
+  },
+  "app.changeSpaceProfileConfirmation.profileScopedMessage": {
+   "de": "Das Fenster dieses Space wird mit dem neuen Profil erneut geöffnet und seine offenen Tabs werden dort neu geladen. Website-Anmeldungen werden nicht übernommen. Lesezeichen bleiben beim Space, angeheftete Tabs sind dann die des neuen Profils.",
+   "en": "This Space's window will be reopened with the new profile and its open tabs will be reloaded there. Site logins won't carry over. Bookmarks stay with the Space; pinned tabs will be the new profile's.",
+   "es": "La ventana de este Espacio se volverá a abrir con el perfil nuevo y sus pestañas abiertas se recargarán ahí. Los inicios de sesión de los sitios no se conservarán. Los marcadores se quedan con el Espacio; las pestañas fijadas serán las del perfil nuevo.",
+   "fr": "La fenêtre de cet Espace sera rouverte avec le nouveau profil et ses onglets ouverts y seront rechargés. Les connexions aux sites ne seront pas conservées. Les favoris restent associés à l'Espace ; les onglets épinglés seront ceux du nouveau profil.",
+   "ja": "このスペースのウインドウは新しいプロファイルで開き直され、開いているタブはそこで再読み込みされます。サイトのログイン状態は引き継がれません。ブックマークはスペースに残り、固定タブは新しいプロファイルのものになります。",
+   "ko": "이 스페이스의 윈도우가 새 프로필로 다시 열리고, 열려 있던 탭도 그곳에서 다시 불러와요. 사이트 로그인 정보는 이어지지 않아요. 북마크는 스페이스에 남고, 고정된 탭은 새 프로필의 것으로 바뀌어요.",
+   "nl": "Het venster van deze Space wordt opnieuw geopend met het nieuwe profiel en de geopende tabbladen worden daar opnieuw geladen. Sitelogins gaan niet mee. Bladwijzers blijven bij de Space; vastgezette tabbladen worden die van het nieuwe profiel.",
+   "zh-Hans": "此空间的窗口将以新的个人资料重新打开，其中已打开的标签页会在那里重新加载。网站登录状态不会保留。书签仍归此空间所有；固定标签页将变为新个人资料的固定标签页。",
+   "zh-Hant": "這個空間的視窗會以新的設定檔重新開啟，其中開啟的分頁也會在該視窗重新載入。網站登入狀態不會一併轉移。書籤會留在這個空間；釘選分頁則會改用新設定檔的。"
+  },
+  "app.changeSpaceProfileConfirmation.title": {
+   "de": "Zu Profil „{0}“ wechseln?",
+   "en": "Change Profile to “{0}”?",
+   "es": "¿Cambiar el perfil a “{0}”?",
+   "fr": "Changer le profil pour « {0} » ?",
+   "ja": "プロファイルを「{0}」に変更しますか？",
+   "ko": "프로필을 “{0}”(으)로 변경할까요?",
+   "nl": "Profiel wijzigen in “{0}”?",
+   "zh-Hans": "要将个人资料更改为「{0}」吗？",
+   "zh-Hant": "要將設定檔變更為「{0}」嗎？"
   },
   "app.closeTab": {
    "de": "Tab schließen",
@@ -1719,17 +1749,6 @@
    "nl": "Zoeken...\tCtrl+F",
    "zh-Hans": "查找...\tCtrl+F",
    "zh-Hant": "尋找...\tCtrl+F"
-  },
-  "menuBar.followAppTheme": {
-   "de": "App-Design folgen",
-   "en": "Follow app theme",
-   "es": "Seguir el tema de la app",
-   "fr": "Suivre le thème de l'app",
-   "ja": "アプリのテーマに従う",
-   "ko": "앱 테마 따르기",
-   "nl": "Volg app-thema",
-   "zh-Hans": "跟随应用主题",
-   "zh-Hant": "跟隨應用程式主題"
   },
   "menuBar.forceReloadThisPage": {
    "de": "Neuladen erzwingen\tCtrl+Shift+R",
@@ -3558,6 +3577,28 @@
    "nl": "Bereik van vastgezette tabbladen",
    "zh-Hans": "固定标签页范围",
    "zh-Hant": "釘選分頁範圍"
+  },
+  "settings.spaces.theme.colorLabel": {
+   "de": "Farbe",
+   "en": "Color",
+   "es": "Color",
+   "fr": "Couleur",
+   "ja": "カラー",
+   "ko": "색상",
+   "nl": "Kleur",
+   "zh-Hans": "颜色",
+   "zh-Hant": "顏色"
+  },
+  "settings.spaces.theme.saturationLabel": {
+   "de": "Sättigung",
+   "en": "Saturation",
+   "es": "Saturación",
+   "fr": "Saturation",
+   "ja": "彩度",
+   "ko": "채도",
+   "nl": "Verzadiging",
+   "zh-Hans": "饱和度",
+   "zh-Hant": "飽和度"
   },
   "settings.turningDeveloperModeOffTurns": {
    "en": "Turning developer mode off turns off agent access "

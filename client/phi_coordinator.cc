@@ -2832,6 +2832,15 @@ void PhiCoordinator::SetSpaceIcon(const std::string& space_id,
   }
 }
 
+int PhiCoordinator::SpaceSaturation(const std::string& space_id) const {
+  for (const Space& space : spaces_) {
+    if (space.id == space_id) {
+      return space.saturation;  // -1 follows the app-wide slider.
+    }
+  }
+  return -1;
+}
+
 void PhiCoordinator::SetSpaceSaturation(const std::string& space_id,
                                         int value) {
   for (Space& space : spaces_) {
@@ -2957,9 +2966,94 @@ bool PhiCoordinator::CanDeleteSpace(const std::string& space_id) const {
   return known && spaces_.size() > 1;
 }
 
+bool PhiCoordinator::SetSpaceProfile(const std::string& space_id,
+                                     const std::string& profile_id) {
+  if (space_id.empty() || profile_id.empty() || !framework_) {
+    return false;
+  }
+  auto it = std::find_if(spaces_.begin(), spaces_.end(),
+                         [&](const Space& s) { return s.id == space_id; });
+  if (it == spaces_.end() || it->profile_id == profile_id) {
+    return false;
+  }
+  // The default Space keeps its binding: it is what a fresh shell's FIRST
+  // browser lands on, and that browser exists before any Space is chosen —
+  // the Mac refuses the same Space for the same reason.
+  const std::string retreat = DefaultSpaceId();
+  if (space_id == retreat) {
+    return false;
+  }
+  // A window's profile is baked in at spawn, so the Space's browser cannot
+  // be re-pointed: it is closed and respawned in the new profile with its
+  // open tabs reopened there (the Mac's changeProfile promise).
+  std::vector<std::string> urls;
+  int64_t respawn_slot = 0;
+  for (const auto& [slot, controller] : windows_) {
+    if (controller->is_agent() || !controller->HasSpace(space_id)) {
+      continue;
+    }
+    if (!respawn_slot) {
+      respawn_slot = slot;
+      std::optional<base::Value> tabs = base::JSONReader::Read(
+          framework_->ListTabsJson(controller->BrowserIdForSpace(space_id)),
+          base::JSON_PARSE_RFC);
+      if (tabs && tabs->is_list()) {
+        for (const base::Value& v : tabs->GetList()) {
+          const base::DictValue* d = v.GetIfDict();
+          const std::string* url = d ? d->FindString("url") : nullptr;
+          if (url && !url->empty()) {
+            urls.push_back(*url);
+          }
+        }
+      }
+    }
+    // A slot whose ONLY browser is this Space's would be torn down by the
+    // close below (a window closes with its last browser) — retreat it to
+    // the default Space first, the delete path's order.
+    bool has_other = false;
+    for (const Space& space : spaces_) {
+      if (space.id != space_id && controller->HasSpace(space.id)) {
+        has_other = true;
+        break;
+      }
+    }
+    if (!has_other) {
+      bool pending = false, cold = false;
+      SwitchSlotToSpace(slot, retreat, &pending, &cold);
+    }
+  }
+  for (const auto& [slot, controller] : windows_) {
+    controller->CloseSpaceBrowser(space_id);
+  }
+  it->profile_id = profile_id;
+  SaveSpaces();
+  // The rows the Space owns move with it — the Mac's "bookmarks stay with
+  // the Space". Pins held at profile or app scope carry no Space and stay
+  // with their profile, so a re-profiled Space picks the new one's up.
+  tab_store_.RehomeSpace(space_id, profile_id);
+  // Any parked window from the previous session belongs to the OLD profile;
+  // materializing it now would reopen the Space where it no longer lives.
+  ghost_spaces_.ClearParked(space_id);
+  for (const auto& [slot, controller] : windows_) {
+    controller->RefreshTabs();
+  }
+  PhiSettingsWindow::Refresh();
+  PushSpaceMenu();  // The wire's Space list carries the binding.
+  if (respawn_slot) {
+    pending_open_urls_ = urls;
+    bool pending = false, cold = false;
+    if (!SwitchSlotToSpace(respawn_slot, space_id, &pending, &cold)) {
+      pending_open_urls_.clear();
+    }
+  }
+  LOG(INFO) << "[PhiClient] Space " << space_id << " re-bound to profile "
+            << profile_id;
+  return true;
+}
+
 bool PhiCoordinator::DeleteProfileById(const std::string& profile_id) {
-  // Default is permanent, and a profile still bound to a Space stays —
-  // bindings are immutable, so the Spaces must go first.
+  // Default is permanent, and a profile still bound to a Space stays — the
+  // Spaces must be re-profiled or deleted first.
   if (profile_id.empty() || profile_id == "Default" || !framework_) {
     return false;
   }
@@ -6952,6 +7046,14 @@ void PhiCoordinator::OnBrowserWindowCreated(int64_t window_id, void* hwnd) {
         }
         pending_open_url_.clear();
       }
+      // A re-profiled Space (SetSpaceProfile): the tabs its old browser was
+      // showing reopen here, routing exempt for the same reason.
+      for (const std::string& url : pending_open_urls_) {
+        if (framework_) {
+          framework_->OpenTabBypassingSpaceRouting(window_id, url.c_str());
+        }
+      }
+      pending_open_urls_.clear();
       pending_slot_ = 0;
       pending_space_.clear();
       PushSpaceMenu();  // The Space gained a window id.
@@ -6960,6 +7062,7 @@ void PhiCoordinator::OnBrowserWindowCreated(int64_t window_id, void* hwnd) {
     pending_slot_ = 0;
     pending_space_.clear();
     pending_open_url_.clear();
+    pending_open_urls_.clear();
   }
   // An off-the-record browser (IDC_NEW_INCOGNITO_WINDOW) becomes an
   // INCOGNITO shell: fixed-dark, no Spaces/pins/bookmarks, unrouted.

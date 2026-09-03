@@ -152,6 +152,14 @@
    "comment": "extensions — used at phi_extensions_popover.cc:260",
    "en": "Extensions"
   },
+  "app.changeSpaceProfileConfirmation.profileScopedMessage": {
+   "comment": "spaces — Change Profile confirmation body; used at phi_window_controller.cc, phi_menu_bar.cc",
+   "en": "This Space's window will be reopened with the new profile and its open tabs will be reloaded there. Site logins won't carry over. Bookmarks stay with the Space; pinned tabs will be the new profile's."
+  },
+  "app.changeSpaceProfileConfirmation.title": {
+   "comment": "spaces — Change Profile confirmation title. {0} is the profile name; used at phi_window_controller.cc, phi_menu_bar.cc",
+   "en": "Change Profile to “{0}”?"
+  },
   "app.closeTab": {
    "comment": "app — used in phi_coordinator.cc",
    "en": "Close Tab"
@@ -1071,20 +1079,6 @@
     "nl": "Zoeken...",
     "zh-Hans": "查找...",
     "zh-Hant": "尋找..."
-   }
-  },
-  "menuBar.followAppTheme": {
-   "comment": "menuBar — used at phi_menu_bar.cc:539",
-   "en": "Follow app theme",
-   "translations": {
-    "de": "App-Design folgen",
-    "es": "Seguir el tema de la app",
-    "fr": "Suivre le thème de l'app",
-    "ja": "アプリのテーマに従う",
-    "ko": "앱 테마 따르기",
-    "nl": "Volg app-thema",
-    "zh-Hans": "跟随应用主题",
-    "zh-Hant": "跟隨應用程式主題"
    }
   },
   "menuBar.forceReloadThisPage": {
@@ -2390,6 +2384,14 @@
   "settings.spaces.pinnedTabScope.title": {
    "comment": "settings — used at phi_settings_window.cc:1219",
    "en": "Pinned tab scope"
+  },
+  "settings.spaces.theme.colorLabel": {
+   "comment": "spaces — Set Theme panel, color row label; used at phi_space_theme_panel.cc",
+   "en": "Color"
+  },
+  "settings.spaces.theme.saturationLabel": {
+   "comment": "spaces — Set Theme panel, saturation row label; used at phi_space_theme_panel.cc",
+   "en": "Saturation"
   },
   "settings.turningDeveloperModeOffTurns": {
    "comment": "settings — used at phi_settings_window.cc:835",

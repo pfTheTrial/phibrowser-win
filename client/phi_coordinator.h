@@ -308,6 +308,7 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   void SetSpaceIcon(const std::string& space_id,
                     const std::string& icon) override;
   void SetSpaceSaturation(const std::string& space_id, int value) override;
+  int SpaceSaturation(const std::string& space_id) const override;
   bool RenameSpace(const std::string& space_id,
                    const std::string& name) override;
   bool DeleteSpace(const std::string& space_id) override;
@@ -320,6 +321,12 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // Everything is deletable except the LAST remaining Space: retreat targets
   // and new-window fallbacks need one persisted Space to land on.
   bool CanDeleteSpace(const std::string& space_id) const override;
+  // Re-binds a Space to another profile (the Mac's changeProfile): its
+  // browser is closed and respawned in the new profile with its open tabs,
+  // and the rows it owns move with it. Refused for the default Space, whose
+  // browser is the one a fresh shell binds to.
+  bool SetSpaceProfile(const std::string& space_id,
+                       const std::string& profile_id) override;
   bool DeleteProfileById(const std::string& profile_id) override;
   bool RenameProfileById(const std::string& profile_id,
                          const std::string& name) override;
@@ -480,8 +487,9 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // Every browser window -> the slot hosting it (a slot has one per Space).
   std::map<int64_t, int64_t> browser_to_slot_;
   // Spaces are a client concept. Each binds EXACTLY ONE profile; several
-  // Spaces may share a profile (the fork's model — the binding is immutable
-  // once created).
+  // Spaces may share a profile (the fork's model). The binding is fixed for
+  // the life of a browser window — changing it goes through SetSpaceProfile,
+  // which respawns the Space's window.
   struct Space {
     std::string id;
     std::string name;
@@ -680,6 +688,10 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   std::string pending_space_;
   // "Open Link in Space" into a cold Space: opened when its browser attaches.
   std::string pending_open_url_;
+  // The tabs a re-profiled Space is carrying across (SetSpaceProfile): its
+  // browser is closed and respawned in the new profile, and these reopen
+  // there when the replacement attaches.
+  std::vector<std::string> pending_open_urls_;
   // A "+ Space & profile" request waiting for its profile to appear (profile
   // creation is asynchronous). Polled from a WM_TIMER on msg_hwnd_.
   int64_t pending_profile_slot_ = 0;

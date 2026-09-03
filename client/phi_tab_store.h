@@ -136,6 +136,12 @@ class PhiTabStore {
   // bookmarks) — what deleting a Space takes with it on Mac. Rows owned at
   // profile or app scope carry no space id and stay. Returns removed count.
   int RemoveForSpace(const std::string& space_id);
+  // Re-homes every row OWNED by `space_id` onto `profile_id` — what changing
+  // a Space's profile does. The Mac's promise is that bookmarks (and, at
+  // Space scope, pinned tabs) stay with the SPACE, so the profile half of
+  // their owner moves with it; rows owned at profile or app scope carry no
+  // space id and stay where they are. Returns the number rewritten.
+  int RehomeSpace(const std::string& space_id, const std::string& profile_id);
   // Moves a row within its siblings.
   bool Reorder(const std::string& guid, int new_index);
   // The row with `guid`, or null. The pointer holds only until the next

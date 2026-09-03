@@ -37,6 +37,7 @@
 #include "phibrowser-win/client/phi_extensions_popover.h"
 #include "phibrowser-win/client/phi_group_overview.h"
 #include "phibrowser-win/client/phi_search_tabs_panel.h"
+#include "phibrowser-win/client/phi_space_theme_panel.h"
 #include "phibrowser-win/client/phi_bookmark_manager.h"
 #include "phibrowser-win/client/phi_create_space_panel.h"
 #include "phibrowser-win/client/phi_folder_icon_picker.h"
@@ -7198,15 +7199,18 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
       // controls (the Spaces menu's rows, for the Space under the pointer).
       enum : UINT { kNewTab = 1, kReopen, kNewRootFolder, kBookmarkAll,
                     kLayoutPerformance, kLayoutBalanced, kLayoutComfortable,
-                    kNewSpace, kRenameSpace, kChangeSpaceIcon, kDeleteSpace };
+                    kNewSpace, kRenameSpace, kChangeSpaceIcon, kSetTheme,
+                    kDeleteSpace,
+                    // The Change Profile submenu's rows ride this range.
+                    kProfileFirst = 600 };
       HMENU menu = ::CreatePopupMenu();
       HMENU layout_menu = ::CreatePopupMenu();
-      if (!menu || !layout_menu) {
-        if (menu) {
-          ::DestroyMenu(menu);
-        }
-        if (layout_menu) {
-          ::DestroyMenu(layout_menu);
+      HMENU profile_menu = ::CreatePopupMenu();
+      if (!menu || !layout_menu || !profile_menu) {
+        for (HMENU created : {menu, layout_menu, profile_menu}) {
+          if (created) {
+            ::DestroyMenu(created);
+          }
         }
         return;
       }
@@ -7235,16 +7239,64 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
       }
       ::AppendMenuW(menu, MF_POPUP | MF_STRING,
                     reinterpret_cast<UINT_PTR>(layout_menu), L"Layout Mode");
+      // The active Space's own theme and profile, in the Mac's order
+      // (appendActiveSpaceMenuItems): rename, icon, theme, profile, delete.
+      std::vector<std::string> profile_ids;
+      std::vector<std::wstring> profile_names;
       if (!incognito_) {
+        // Change Profile — the Mac's radio list. Re-binding respawns the
+        // Space's window, which the default Space's cannot be (a fresh
+        // shell's first browser lands there), so its rows read the binding
+        // out but stay disabled.
+        std::string space_profile;
+        for (const PhiSpaceView& space : host_->Spaces()) {
+          if (space.id == active_space_) {
+            space_profile = space.profile_id;
+            break;
+          }
+        }
+        const bool can_reprofile = active_space_ != host_->DefaultSpaceId();
+        for (const std::string& summary : host_->ProfileSummaries()) {
+          const size_t tab = summary.find('\t');
+          const std::string id = summary.substr(0, tab);
+          const std::string name =
+              tab == std::string::npos ? id : summary.substr(tab + 1);
+          if (id.empty()) {
+            continue;
+          }
+          ::AppendMenuW(profile_menu,
+                        MF_STRING | (id == space_profile ? MF_CHECKED : 0u) |
+                            (can_reprofile ? 0u : MF_DISABLED | MF_GRAYED),
+                        kProfileFirst + static_cast<UINT>(profile_ids.size()),
+                        base::UTF8ToWide(name).c_str());
+          profile_ids.push_back(id);
+          profile_names.push_back(base::UTF8ToWide(name));
+        }
+        if (profile_ids.empty()) {
+          ::AppendMenuW(profile_menu, MF_STRING | MF_DISABLED | MF_GRAYED, 0,
+                        PhiStr("menuBar.noProfiles"));
+        }
         ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         ::AppendMenuW(menu, MF_STRING, kNewSpace, L"New Space...");
         ::AppendMenuW(menu, MF_STRING, kRenameSpace, L"Rename Space...");
         ::AppendMenuW(menu, MF_STRING, kChangeSpaceIcon, L"Change Icon...");
+        // Set Theme opens the Mac's editor panel (swatch row + saturation
+        // slider) rather than a list of theme names: color and saturation
+        // are one control there, and a Space always wears a concrete theme,
+        // so there is no "follow the app" row to offer.
+        ::AppendMenuW(menu, MF_STRING, kSetTheme, PhiStr("sidebar.setTheme"));
+        ::AppendMenuW(menu, MF_POPUP | MF_STRING,
+                      reinterpret_cast<UINT_PTR>(profile_menu),
+                      PhiStr("app.activeSpaceContextMenu.profileSubmenuTitle"));
         ::AppendMenuW(menu,
                       MF_STRING | (host_->CanDeleteSpace(active_space_)
                                        ? 0u
                                        : MF_DISABLED | MF_GRAYED),
                       kDeleteSpace, L"Delete Space...");
+      } else {
+        // Incognito shells have no Spaces, so the profile submenu never
+        // gets attached — free it here rather than leaking its handle.
+        ::DestroyMenu(profile_menu);
       }
       POINT screen = pt;
       ::ClientToScreen(shell_hwnd_, &screen);
@@ -7252,7 +7304,31 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
           menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN |
                     TPM_RIGHTBUTTON,
           screen.x, screen.y, 0, shell_hwnd_, nullptr));
-      ::DestroyMenu(menu);  // Owns the layout submenu.
+      ::DestroyMenu(menu);  // Owns every submenu it was given.
+      if (chosen == kSetTheme) {
+        // Anchored on the click, like the Mac's .nearTrigger placement.
+        const RECT anchor = {screen.x, screen.y, screen.x, screen.y};
+        PhiShowSpaceThemePanel(this, anchor, active_space_);
+        return;
+      }
+      // The profile rows' dynamic range — a switch cannot express it.
+      if (chosen >= kProfileFirst &&
+          chosen - kProfileFirst < profile_ids.size()) {
+        const size_t i = chosen - kProfileFirst;
+        // Confirmed like the Mac's: the Space's window is replaced and its
+        // tabs reload in the new profile, where the old profile's logins do
+        // not exist.
+        if (PhiConfirm(shell_hwnd_,
+                       PhiStrF("app.changeSpaceProfileConfirmation.title",
+                               {profile_names[i]})
+                           .c_str(),
+                       PhiStr("app.changeSpaceProfileConfirmation."
+                              "profileScopedMessage"))) {
+          host_->SetSpaceProfile(active_space_, profile_ids[i]);
+          RefreshTabs();
+        }
+        return;
+      }
       switch (chosen) {
         case kNewTab:
           StartNewTab();
@@ -7329,8 +7405,9 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
   }
 
   // A user Space pip has no context menu: switching is a click, and
-  // rename / icon / theme / delete live in Settings > Spaces and the
-  // Spaces menu.
+  // rename / icon / theme / profile / delete live in the sidebar's own
+  // menu (right-click its empty space), Settings > Spaces and the Spaces
+  // menu.
 }
 
 // --- The floating sidebar -------------------------------------------------

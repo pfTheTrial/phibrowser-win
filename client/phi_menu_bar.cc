@@ -27,6 +27,7 @@
 #include "phibrowser-win/client/phi_updater.h"
 #include "phibrowser-win/client/phi_version.h"
 #include "phibrowser-win/client/phi_search_tabs_panel.h"
+#include "phibrowser-win/client/phi_space_theme_panel.h"
 #include "phibrowser-win/client/phi_toast.h"
 #include "phibrowser-win/client/phi_theme.h"
 #include "phibrowser-win/client/phi_window_controller.h"
@@ -40,9 +41,6 @@ namespace {
 // Dynamic ranges.
 constexpr UINT kSpaceFirst = 2000;       // + index into space_ids_
 constexpr UINT kSpaceLast = 2099;
-constexpr UINT kThemeFollow = 2100;      // "Follow app theme"
-constexpr UINT kThemeFirst = 2101;       // + index into PhiBuiltInThemes()
-constexpr UINT kThemeLast = 2140;
 constexpr UINT kProfileFirst = 2200;     // Change Profile rows (disabled)
 constexpr UINT kProfileLast = 2299;
 constexpr UINT kDeleteProfileFirst = 2300;  // Delete Profile rows (disabled)
@@ -546,6 +544,7 @@ void PhiMenuBar::RefreshSpaces() {
   ReleaseSpaceBitmaps();  // The rows that held them are gone.
   space_ids_.clear();
   profile_ids_.clear();
+  profile_names_.clear();
 
   Append(spaces_, kCmdNewSpace, PhiStr("app.activeSpaceContextMenu.newSpaceAction"),
          controller_->host_ != nullptr);
@@ -556,30 +555,20 @@ void PhiMenuBar::RefreshSpaces() {
   Append(spaces_, kCmdChangeIcon, PhiStr("menuBar.changeIcon"),
          controller_->host_ != nullptr);
 
-  // Edit Theme — the same choices the Space chip's context menu offers,
-  // applied to the ACTIVE Space.
+  // Edit Theme — the Mac's item of the same name: it presents the Space
+  // theme editor (swatch row + saturation slider) on the ACTIVE Space
+  // rather than listing theme names, so color and saturation are one
+  // control and a Space always wears a concrete theme.
   const std::string active = controller_->active_space_;
-  HMENU themes = ::CreatePopupMenu();
-  const std::string pinned =
-      controller_->host_ ? controller_->host_->SpaceThemeId(active)
-                         : std::string();
-  ::AppendMenuW(themes, MF_STRING | (pinned.empty() ? MF_CHECKED : 0),
-                kThemeFollow, PhiStr("menuBar.followAppTheme"));
-  Separator(themes);
-  const auto& built_in = PhiBuiltInThemes();
-  for (size_t i = 0; i < built_in.size(); ++i) {
-    ::AppendMenuW(themes,
-                  MF_STRING | (pinned == built_in[i].id ? MF_CHECKED : 0),
-                  kThemeFirst + static_cast<UINT>(i),
-                  base::UTF8ToWide(built_in[i].name).c_str());
-  }
-  ::AppendMenuW(spaces_, MF_POPUP | MF_STRING,
-                reinterpret_cast<UINT_PTR>(themes), PhiStr("app.activeSpaceContextMenu.themeSubmenuTitle"));
+  Append(spaces_, kCmdEditSpaceTheme,
+         PhiStr("app.activeSpaceContextMenu.themeSubmenuTitle"),
+         controller_->host_ != nullptr && !active.empty());
 
-  // Change Profile — the Mac's radio list; switching is not implemented, so
-  // every row is disabled but the binding still reads truthfully. Delete
-  // Profile rows ARE live, guarded the Mac's way: Default and any profile
-  // still bound to a Space refuse.
+  // Change Profile — the Mac's radio list: picking a row re-binds the ACTIVE
+  // Space, respawning its window in the new profile. The default Space's
+  // binding is fixed, so its rows stay disabled and only read the binding
+  // out. Delete Profile rows are guarded the Mac's way: Default and any
+  // profile still bound to a Space refuse.
   std::string active_profile;
   std::vector<std::string> bound_profiles;
   if (controller_->host_) {
@@ -592,6 +581,8 @@ void PhiMenuBar::RefreshSpaces() {
   }
   HMENU profiles = ::CreatePopupMenu();
   HMENU delete_profiles = ::CreatePopupMenu();
+  const bool can_reprofile = controller_->host_ && !active.empty() &&
+                             active != controller_->host_->DefaultSpaceId();
   int profile_count = 0;
   if (controller_->framework_) {
     std::optional<base::Value> list = base::JSONReader::Read(
@@ -610,10 +601,12 @@ void PhiMenuBar::RefreshSpaces() {
         const std::wstring title =
             base::UTF8ToWide(name && !name->empty() ? *name : *id);
         ::AppendMenuW(profiles,
-                      MF_STRING | MF_DISABLED | MF_GRAYED |
+                      MF_STRING |
+                          (can_reprofile ? 0u : MF_DISABLED | MF_GRAYED) |
                           (*id == active_profile ? MF_CHECKED : 0),
                       kProfileFirst + static_cast<UINT>(profile_count),
                       title.c_str());
+        profile_names_.push_back(title);
         const bool in_use =
             std::find(bound_profiles.begin(), bound_profiles.end(), *id) !=
             bound_profiles.end();
@@ -811,20 +804,6 @@ bool PhiMenuBar::OnCommand(UINT id) {
     }
     return true;
   }
-  if (id == kThemeFollow) {
-    if (c->host_) {
-      c->host_->SetSpaceTheme(c->active_space_, std::string());
-    }
-    return true;
-  }
-  if (id >= kThemeFirst && id <= kThemeLast) {
-    const auto& built_in = PhiBuiltInThemes();
-    const size_t i = id - kThemeFirst;
-    if (c->host_ && i < built_in.size()) {
-      c->host_->SetSpaceTheme(c->active_space_, built_in[i].id);
-    }
-    return true;
-  }
   if (id >= kTabFirst && id <= kTabLast) {
     const size_t i = id - kTabFirst;
     if (c->framework_ && i < tab_indices_.size()) {
@@ -841,7 +820,21 @@ bool PhiMenuBar::OnCommand(UINT id) {
     return true;
   }
   if (id >= kProfileFirst && id <= kProfileLast) {
-    return true;  // Change Profile rows are drawn disabled; nothing to do.
+    // Re-binds the active Space. Confirmed like the Mac's: the Space's
+    // window is replaced and its tabs reload in the new profile, where the
+    // old profile's logins do not exist.
+    const size_t i = id - kProfileFirst;
+    if (c->host_ && i < profile_ids_.size() &&
+        PhiConfirm(c->shell_hwnd_,
+                   PhiStrF("app.changeSpaceProfileConfirmation.title",
+                           {i < profile_names_.size() ? profile_names_[i]
+                                                      : std::wstring()})
+                       .c_str(),
+                   PhiStr("app.changeSpaceProfileConfirmation."
+                          "profileScopedMessage"))) {
+      c->host_->SetSpaceProfile(c->active_space_, profile_ids_[i]);
+    }
+    return true;
   }
   if (id >= kDeleteProfileFirst && id <= kDeleteProfileLast) {
     const size_t i = id - kDeleteProfileFirst;
@@ -1035,6 +1028,19 @@ bool PhiMenuBar::OnCommand(UINT id) {
         c->host_->RequestSpaceIconPicker(c->active_space_);
       }
       return true;
+    case kCmdEditSpaceTheme: {
+      // The Mac's .windowTop placement: the menu bar has no trigger point
+      // to hang the panel off, so it drops under the caption, centred on
+      // the window (the panel centres itself in an anchor wider than it).
+      if (!c->host_ || c->active_space_.empty() || !c->shell_hwnd_) {
+        return true;
+      }
+      RECT shell = {};
+      ::GetWindowRect(c->shell_hwnd_, &shell);
+      const RECT anchor = {shell.left, shell.top, shell.right, shell.top};
+      PhiShowSpaceThemePanel(c, anchor, c->active_space_);
+      return true;
+    }
     case kCmdDeleteSpace:
       if (c->host_ &&
           PhiConfirm(c->shell_hwnd_, PhiStr("menuBar.deleteSpace"),

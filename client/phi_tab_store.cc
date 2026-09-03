@@ -502,6 +502,24 @@ int PhiTabStore::RemoveForSpace(const std::string& space_id) {
   return removed;
 }
 
+int PhiTabStore::RehomeSpace(const std::string& space_id,
+                             const std::string& profile_id) {
+  if (space_id.empty() || profile_id.empty()) {
+    return 0;
+  }
+  int moved = 0;
+  for (PhiRow& row : rows_) {
+    if (row.space_id == space_id && row.profile_id != profile_id) {
+      row.profile_id = profile_id;
+      ++moved;
+    }
+  }
+  if (moved > 0) {
+    Save();
+  }
+  return moved;
+}
+
 bool PhiTabStore::Reorder(const std::string& guid, int new_index) {
   // A real sibling move: pull the row out of its ordered sibling list,
   // reinsert at `new_index`, and renumber densely — writing a bare index
