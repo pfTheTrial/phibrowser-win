@@ -71,6 +71,10 @@ constexpr int kTitleBarHeight = 32;
 constexpr int kTitleBarHeightTabs = 40;
 constexpr int kCaptionButtonWidth = 46;  // The Win11 caption button metric.
 constexpr int kMenuTitlePad = 10;        // Each title's horizontal padding.
+// The Phi title's leading pad: its rect starts kPhiTitlePad short of the
+// sidebar's edge inset, so the logo lands ON kEdgeInset — the left edge the
+// Spaces pips, the pinned card and the tab rows below all share.
+constexpr int kPhiTitlePad = 4;
 // WebContentConstant.edgesSpacing — THE horizontal gutter. There is no other
 // sidebar padding on Mac; every row applies 8 on each side itself.
 constexpr int kEdgeInset = 8;
@@ -578,7 +582,7 @@ void PhiWindowController::EnsureMenuTitleRects() {
   }
   HGDIOBJ previous = ui_font_ ? ::SelectObject(dc, ui_font_) : nullptr;
   menu_titles_.clear();
-  int x = Scaled(kMenuTitlePad);
+  int x = Scaled(kEdgeInset) - Scaled(kPhiTitlePad);
   const int band = Scaled(kTitleBarHeight);
   bool first = true;
   for (const std::wstring& title : titles) {
@@ -588,8 +592,10 @@ void PhiWindowController::EnsureMenuTitleRects() {
     int width = extent.cx + 2 * Scaled(kMenuTitlePad);
     if (first) {
       // The logo and "Phi" are ONE button: the first title's rect carries
-      // the icon (18) and its gap (6) ahead of the text.
-      width += Scaled(18) + Scaled(6);
+      // the icon (18) and its gap (6) ahead of the text, behind the shorter
+      // leading pad that aligns the logo with the sidebar content.
+      width += Scaled(kPhiTitlePad) - Scaled(kMenuTitlePad) + Scaled(18) +
+               Scaled(6);
       first = false;
     }
     menu_titles_.emplace_back(title, RECT{x, 0, x + width, band});
@@ -7512,9 +7518,9 @@ void PhiWindowController::PaintChrome(HDC dc,
       RECT text_rc = title_rc;
       if (i == 0) {
         // The Phi button: icon leading, label after — one hit target.
-        draw_logo(title_rc.left + Scaled(kMenuTitlePad),
+        draw_logo(title_rc.left + Scaled(kPhiTitlePad),
                   (title_rc.bottom + title_rc.top - logo_size) / 2);
-        text_rc.left += Scaled(kMenuTitlePad) + logo_size + Scaled(6);
+        text_rc.left += Scaled(kPhiTitlePad) + logo_size + Scaled(6);
         ::DrawTextW(dc, menu_titles_[i].first.c_str(), -1, &text_rc,
                     DT_LEFT | DT_VCENTER | DT_SINGLELINE);
         continue;
