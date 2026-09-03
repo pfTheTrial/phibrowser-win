@@ -75,15 +75,20 @@ class PhiPeekPanel {
                                   UINT msg,
                                   WPARAM wparam,
                                   LPARAM lparam);
+  static LRESULT CALLBACK ControlsWndProc(HWND hwnd,
+                                          UINT msg,
+                                          WPARAM wparam,
+                                          LPARAM lparam);
 
  private:
   LRESULT Handle(UINT msg, WPARAM wparam, LPARAM lparam);
 
   struct Layout {
     RECT card;     // The page, edge to edge.
-    RECT gutter;   // The control strip kept to the card's right.
+    RECT gutter;   // The control column floating over the page's top-right.
     RECT close;
-    RECT expand;
+    RECT expand;   // Promote the preview into a tab of the opener window.
+    RECT split;    // ...and put it beside the tab that opened it.
   };
   Layout ComputeLayout() const;
 
@@ -92,12 +97,35 @@ class PhiPeekPanel {
   void OnClick(POINT pt);
   void PositionContent();
   void Dismiss();
+  // The control chips live in a window of their OWN, above the hosted page:
+  // a child window always paints over its parent, so chips drawn by the panel
+  // would be buried under the page they belong to.
+  void PositionControls();
+  void PaintControls();
+  LRESULT HandleControls(UINT msg, WPARAM wparam, LPARAM lparam);
+  // Strip index of the tab this peek was opened from, or -1. Split needs it
+  // because opening the preview as a tab makes THAT tab the active one.
+  int OpenerTabIndex() const;
+  // Rounds the card. The hosted browser is a child of this window, so the
+  // region that clips it is this one's.
+  void ApplyCardShape();
+  // Re-renders and repositions the drop shadow under the card.
+  void UpdateShadow();
+  // Shadow first, then the card over it — both above the opener's page.
+  void Raise();
 
   int Scaled(int design) const { return ::MulDiv(design, dpi_, 96); }
 
   int64_t window_id_ = 0;
   HWND hwnd_ = nullptr;
   HWND browser_hwnd_ = nullptr;
+  // The card's drop shadow: a LAYERED sibling beneath the panel. A plain
+  // child window is opaque and could only shade its own background, so the
+  // blur would never reach the opener's page.
+  HWND shadow_ = nullptr;
+  // The close / new-tab / split chips, a child of this window stacked above
+  // the hosted browser.
+  HWND controls_ = nullptr;
   int64_t opener_window_id_ = 0;
   int64_t opener_tab_id_ = 0;
   RAW_PTR_EXCLUSION PhiWindowController* opener_ = nullptr;
