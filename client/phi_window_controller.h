@@ -1027,7 +1027,33 @@ class PhiWindowController {
   void PromoteHoverCard();  // Delay elapsed: pending becomes shown.
   void DismissHoverCard(const std::string& suppress_space_id);
   void ResolveHoverCard(const std::string& space_id);  // Fills card_*.
-  void DrawHoverCard(HDC dc, const Layout& layout, const PhiPalette& palette);
+  // The Space pip's hover card. It is a floating POPUP (like PhiTabPreview),
+  // not shell-DC chrome: it hangs below the strip, where the omnibox EDIT
+  // child would paint over anything the shell drew and the content child
+  // would clip it. PaintChrome measures it (MeasureHoverCard, with the
+  // shell DC's font) and SyncHoverCardPopup shows / moves / hides the popup,
+  // which paints the measured geometry at its own origin.
+  struct HoverCardGeometry {
+    RECT card{};
+    int pill_h = 0, pill_w = 0, name_w = 0, profile_w = 0, keys_w = 0;
+    int dot_w = 0, gap = 0;
+    std::vector<int> key_widths;
+    std::vector<std::wstring> keycaps;
+    std::wstring icon, name, profile;
+  };
+  HoverCardGeometry hover_card_geom_;  // As last synced; card at (0, 0).
+  HWND hover_card_popup_ = nullptr;
+  RECT hover_card_popup_rect_{};  // Screen rect last applied to the popup.
+  bool MeasureHoverCard(HDC dc, const Layout& layout, HoverCardGeometry* out);
+  void PaintHoverCard(HDC dc,
+                      const HoverCardGeometry& geometry,
+                      const PhiPalette& palette);
+  void SyncHoverCardPopup(HDC dc, const Layout& layout);
+  void PaintHoverCardPopup(HWND popup, HDC dc);
+  static LRESULT CALLBACK HoverCardPopupProc(HWND hwnd,
+                                             UINT msg,
+                                             WPARAM wparam,
+                                             LPARAM lparam);
   // The hovered row's page-snapshot card (the Mac's TabPreviewController).
   // Unlike the Space card above it floats in its own popup, so it can hang
   // over the Chromium child window.

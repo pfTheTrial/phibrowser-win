@@ -189,6 +189,7 @@ constexpr UINT_PTR kSpaceSwapTimer = 0x515;
 // (SpacesStripView.hoverCardDelay), so a cursor just passing across the
 // strip doesn't flash cards.
 constexpr int kHoverCardDelayMs = 300;
+constexpr int kHoverCardRadius = 12;  // Rounder than the pills' 8.
 constexpr UINT_PTR kHoverCardTimer = 0x516;
 // Drag-reorder slide: Chrome's vertical-tab layout animation (200ms,
 // EASE_IN_OUT) — sibling rows glide to open the insertion gap.
@@ -8382,9 +8383,9 @@ void PhiWindowController::PaintChrome(HDC dc,
     }
   }
 
-  // Last, so it overlays the header the way the Mac's floating panel
-  // overlays the window.
-  DrawHoverCard(dc, layout, palette);
+  // The Space hover card floats over the window as a popup, the way the
+  // Mac's panel does; it is measured with this DC's font.
+  SyncHoverCardPopup(dc, layout);
 
   if (previous_font) {
     ::SelectObject(dc, previous_font);
@@ -8396,11 +8397,11 @@ void PhiWindowController::PaintChrome(HDC dc,
 // shortcut as keycaps, floating just above the pip on a bordered card. The
 // header above the strip is all shell-drawn — no child window clips it —
 // which is why the card anchors UPWARD, like the Mac panel.
-void PhiWindowController::DrawHoverCard(HDC dc,
-                                        const Layout& layout,
-                                        const PhiPalette& palette) {
+bool PhiWindowController::MeasureHoverCard(HDC dc,
+                                           const Layout& layout,
+                                           HoverCardGeometry* out) {
   if (hover_card_space_.empty() || drag_active_) {
-    return;
+    return false;
   }
   const SpaceChip* chip = nullptr;
   for (const SpaceChip& c : chips_) {
@@ -8410,146 +8411,279 @@ void PhiWindowController::DrawHoverCard(HDC dc,
     }
   }
   if (!chip) {
-    return;  // The Space left the strip; the next hover change prunes state.
+    return false;  // The Space left the strip; the next hover change prunes state.
   }
-  const COLORREF card_bg = palette.card;
-  const COLORREF accent = card_accent_;
-  const std::wstring name = chip->label.empty() ? L"Space" : chip->label;
-  const std::wstring profile =
-      card_profile_.empty() ? L"Default" : card_profile_;
+  HoverCardGeometry g;
+  g.icon = chip->icon;
+  g.name = chip->label.empty() ? L"Space" : chip->label;
+  g.profile = card_profile_.empty() ? L"Default" : card_profile_;
 
-  // Measure the two labels, clamped so the card always fits the sidebar.
+  // Measure the two labels in the card's (small) font, clamped so the card
+  // always fits the window.
+  HGDIOBJ previous_font =
+      small_font_ ? ::SelectObject(dc, small_font_) : nullptr;
   const auto measure = [&](const std::wstring& text, int max_w) {
     RECT rc = {0, 0, 0, 0};
     ::DrawTextW(dc, text.c_str(), -1, &rc,
                 DT_CALCRECT | DT_SINGLELINE | DT_LEFT);
     return std::min(static_cast<int>(rc.right), max_w);
   };
-  // SpaceHoverCard's metrics: capsule 8/3 padding around a 14pt icon and the
-  // name; 8pt between sections; 18pt keycaps with 3pt gaps; 10/7 card
-  // padding.
-  const int pill_h = Scaled(22);
-  const int dot_w = Scaled(6);
-  const int gap = Scaled(8);
-  std::vector<std::wstring> keycaps;
+  // A compact take on SpaceHoverCard's metrics: an 18pt capsule with 6/3
+  // padding around a 12pt icon and the name; 6pt between sections; 15pt
+  // keycaps with 2pt gaps; 8/5 card padding.
+  g.pill_h = Scaled(18);
+  g.dot_w = Scaled(5);
+  g.gap = Scaled(6);
   if (card_shortcut_ > 0) {
-    keycaps.push_back(L"Ctrl");
-    keycaps.push_back(std::to_wstring(card_shortcut_));
+    g.keycaps.push_back(L"Ctrl");
+    g.keycaps.push_back(std::to_wstring(card_shortcut_));
   }
-  int keys_w = 0;
-  std::vector<int> key_widths;
-  for (const std::wstring& token : keycaps) {
-    const int w = std::max(Scaled(18), measure(token, Scaled(40)) + Scaled(8));
-    key_widths.push_back(w);
-    keys_w += (keys_w ? Scaled(3) : 0) + w;
+  for (const std::wstring& token : g.keycaps) {
+    const int w = std::max(Scaled(15), measure(token, Scaled(36)) + Scaled(6));
+    g.key_widths.push_back(w);
+    g.keys_w += (g.keys_w ? Scaled(2) : 0) + w;
   }
 
-  // The card must stay within the band the shell owns: the Mac's panel
-  // floats over the whole window, but pixels past the sidebar here belong
-  // to the content CHILD, which clips them. Shrink the name first, then
-  // the profile — never the keycaps.
-  const int band_right = layout.horizontal_tabs
-                             ? layout.client.right - Scaled(4)
-                             : Scaled(sidebar_dip_) - Scaled(4);
-  int name_w = measure(name, Scaled(110));
-  int profile_w = measure(profile, Scaled(80));
-  const int fixed_w = 2 * Scaled(8) + Scaled(14) + Scaled(5) +  // Pill chrome.
-                      gap + dot_w + gap +
-                      (keys_w ? gap + dot_w + gap + keys_w : 0);
-  const int avail = band_right - Scaled(4) - 2 * Scaled(10);
+  // The popup floats over the whole window, content child included, so
+  // only the window's own width bounds it. Shrink the name first, then the
+  // profile — never the keycaps.
+  const int band_right = static_cast<int>(layout.client.right) - Scaled(4);
+  int name_w = measure(g.name, Scaled(100));
+  int profile_w = measure(g.profile, Scaled(72));
+  if (previous_font) {
+    ::SelectObject(dc, previous_font);
+  }
+  const int fixed_w = 2 * Scaled(6) + Scaled(12) + Scaled(4) +  // Pill chrome.
+                      g.gap + g.dot_w + g.gap +
+                      (g.keys_w ? g.gap + g.dot_w + g.gap + g.keys_w : 0);
+  const int avail = band_right - Scaled(4) - 2 * Scaled(8);
   int overflow = fixed_w + name_w + profile_w - avail;
-  if (overflow > 0 && name_w > Scaled(50)) {
-    const int take = std::min(overflow, name_w - Scaled(50));
+  if (overflow > 0 && name_w > Scaled(44)) {
+    const int take = std::min(overflow, name_w - Scaled(44));
     name_w -= take;
     overflow -= take;
   }
-  if (overflow > 0 && profile_w > Scaled(36)) {
-    profile_w -= std::min(overflow, profile_w - Scaled(36));
+  if (overflow > 0 && profile_w > Scaled(32)) {
+    profile_w -= std::min(overflow, profile_w - Scaled(32));
   }
-  const int pill_w = 2 * Scaled(8) + Scaled(14) + Scaled(5) + name_w;
-  int content_w = pill_w + gap + dot_w + gap + profile_w;
-  if (keys_w) {
-    content_w += gap + dot_w + gap + keys_w;
+  g.name_w = name_w;
+  g.profile_w = profile_w;
+  g.pill_w = 2 * Scaled(6) + Scaled(12) + Scaled(4) + name_w;
+  int content_w = g.pill_w + g.gap + g.dot_w + g.gap + profile_w;
+  if (g.keys_w) {
+    content_w += g.gap + g.dot_w + g.gap + g.keys_w;
   }
-  const int card_w = content_w + 2 * Scaled(10);
-  const int card_h = pill_h + 2 * Scaled(7);
+  const int card_w = content_w + 2 * Scaled(8);
+  const int card_h = g.pill_h + 2 * Scaled(5);
 
-  // Centered over the pip, clamped to the band the shell owns; above the
-  // strip, pushed down only when the window is too short for it.
+  // Centered under the pip, clamped to the window; always BELOW the strip,
+  // so it never covers the caption row or the pips.
   const int mid_x = (chip->bounds.left + chip->bounds.right) / 2;
   int left = mid_x - card_w / 2;
   left = std::min(left, band_right - card_w);
   left = std::max(left, Scaled(4));
-  int top = chip->bounds.top - Scaled(6) - card_h;
-  top = std::max(top, Scaled(2));
-  const RECT card = {left, top, left + card_w, top + card_h};
-  StrokeRounded(dc, card, card_bg, palette.border, Scaled(kCornerRadius));
+  int top = chip->bounds.bottom + Scaled(4);
+  top = std::min(top,
+                 static_cast<int>(layout.client.bottom) - Scaled(2) - card_h);
+  g.card = {left, top, left + card_w, top + card_h};
+  *out = std::move(g);
+  return true;
+}
+
+void PhiWindowController::PaintHoverCard(HDC dc,
+                                         const HoverCardGeometry& g,
+                                         const PhiPalette& palette) {
+  const COLORREF card_bg = palette.card;
+  const COLORREF accent = card_accent_;
+  const RECT& card = g.card;
+  StrokeRounded(dc, card, card_bg, palette.border, Scaled(kHoverCardRadius));
 
   const int mid_y = (card.top + card.bottom) / 2;
-  int x = card.left + Scaled(10);
+  int x = card.left + Scaled(8);
 
   // The Space capsule: icon + name on the accent's 15% wash.
-  const RECT pill = {x, mid_y - pill_h / 2, x + pill_w, mid_y + pill_h / 2};
-  FillRounded(dc, pill, BlendOver(accent, card_bg, 38), pill_h);
-  RECT icon_rc = {pill.left + Scaled(8), mid_y - Scaled(7),
-                  pill.left + Scaled(8) + Scaled(14), mid_y + Scaled(7)};
-  if (!chip->icon.empty() &&
-      PhiDrawCatalogIcon(dc, icon_rc, chip->icon, Scaled(kSpaceIcon),
-                         accent)) {
-    // The Mac catalog's own artwork, tinted the capsule's accent.
-  } else if (!chip->icon.empty() && !PhiIsPrivateGlyph(chip->icon) &&
-      PhiDrawColorIcon(dc, icon_rc, chip->icon, Scaled(kSpaceIcon),
-                       accent)) {
+  const RECT pill = {x, mid_y - g.pill_h / 2, x + g.pill_w,
+                     mid_y + g.pill_h / 2};
+  FillRounded(dc, pill, BlendOver(accent, card_bg, 38), g.pill_h);
+  RECT icon_rc = {pill.left + Scaled(6), mid_y - Scaled(6),
+                  pill.left + Scaled(6) + Scaled(12), mid_y + Scaled(6)};
+  // The icon keeps its strip colours — catalog art in the label ink, emoji
+  // in their own — only the name and keycaps wear the accent.
+  const COLORREF icon_ink = palette.label;
+  if (!g.icon.empty() &&
+      PhiDrawCatalogIcon(dc, icon_rc, g.icon, Scaled(12), icon_ink)) {
+    // The Mac catalog's own artwork.
+  } else if (!g.icon.empty() && !PhiIsPrivateGlyph(g.icon) &&
+             PhiDrawColorIcon(dc, icon_rc, g.icon, Scaled(12), icon_ink)) {
     // Colour emoji via DirectWrite; the font paths below are the fallback.
-  } else if (!chip->icon.empty() && (emoji_font_ || chip_icon_font_)) {
-    HFONT icon_font =
-        PhiIsPrivateGlyph(chip->icon) ? chip_icon_font_ : emoji_font_;
+  } else if (!g.icon.empty() && (emoji_font_ || chip_icon_font_)) {
+    HFONT icon_font = PhiIsPrivateGlyph(g.icon) ? chip_icon_font_ : emoji_font_;
     HGDIOBJ previous_icon_font =
         icon_font ? ::SelectObject(dc, icon_font) : nullptr;
-    ::SetTextColor(dc, accent);
-    ::DrawTextW(dc, chip->icon.c_str(), -1, &icon_rc,
+    ::SetTextColor(dc, icon_ink);
+    ::DrawTextW(dc, g.icon.c_str(), -1, &icon_rc,
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     if (previous_icon_font) {
       ::SelectObject(dc, previous_icon_font);
     }
   } else {
-    ::SetTextColor(dc, accent);
-    const std::wstring initial = name.substr(0, 1);
+    ::SetTextColor(dc, icon_ink);
+    const std::wstring initial = g.name.substr(0, 1);
     ::DrawTextW(dc, initial.c_str(), -1, &icon_rc,
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE);
   }
   ::SetTextColor(dc, accent);
-  RECT name_rc = {icon_rc.right + Scaled(5), pill.top,
-                  pill.right - Scaled(8), pill.bottom};
-  ::DrawTextW(dc, name.c_str(), -1, &name_rc,
+  RECT name_rc = {icon_rc.right + Scaled(4), pill.top, pill.right - Scaled(6),
+                  pill.bottom};
+  ::DrawTextW(dc, g.name.c_str(), -1, &name_rc,
               DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-  x += pill_w + gap;
+  x += g.pill_w + g.gap;
 
   // Middle-dot separators and the profile, dim like the Mac's secondary.
-  const RECT dot1 = {x, card.top, x + dot_w, card.bottom};
+  const RECT dot1 = {x, card.top, x + g.dot_w, card.bottom};
   DrawGlyph(dc, dot1, L"·", palette.label_dim);
-  x += dot_w + gap;
+  x += g.dot_w + g.gap;
   ::SetTextColor(dc, palette.label_dim);
-  RECT profile_rc = {x, card.top, x + profile_w, card.bottom};
-  ::DrawTextW(dc, profile.c_str(), -1, &profile_rc,
+  RECT profile_rc = {x, card.top, x + g.profile_w, card.bottom};
+  ::DrawTextW(dc, g.profile.c_str(), -1, &profile_rc,
               DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-  x += profile_w;
+  x += g.profile_w;
 
   // The switch shortcut as keycaps, tinted like the address tooltip's.
-  if (keys_w) {
-    x += gap;
-    const RECT dot2 = {x, card.top, x + dot_w, card.bottom};
+  if (g.keys_w) {
+    x += g.gap;
+    const RECT dot2 = {x, card.top, x + g.dot_w, card.bottom};
     DrawGlyph(dc, dot2, L"·", palette.label_dim);
-    x += dot_w + gap;
-    for (size_t i = 0; i < keycaps.size(); ++i) {
-      const RECT key = {x, mid_y - Scaled(9), x + key_widths[i],
-                        mid_y + Scaled(9)};
+    x += g.dot_w + g.gap;
+    for (size_t i = 0; i < g.keycaps.size(); ++i) {
+      const RECT key = {x, mid_y - Scaled(7), x + g.key_widths[i],
+                        mid_y + Scaled(8)};
       StrokeRounded(dc, key, BlendOver(accent, card_bg, 36),
                     BlendOver(accent, card_bg, 140), Scaled(4));
-      DrawGlyph(dc, key, keycaps[i].c_str(), accent);
-      x += key_widths[i] + Scaled(3);
+      DrawGlyph(dc, key, g.keycaps[i].c_str(), accent);
+      x += g.key_widths[i] + Scaled(2);
     }
   }
+}
+
+void PhiWindowController::SyncHoverCardPopup(HDC dc, const Layout& layout) {
+  HoverCardGeometry g;
+  if (!shell_hwnd_ || !MeasureHoverCard(dc, layout, &g)) {
+    if (hover_card_popup_ && ::IsWindowVisible(hover_card_popup_)) {
+      ::ShowWindow(hover_card_popup_, SW_HIDE);
+    }
+    return;
+  }
+  // Layout → screen. The floating sidebar's panel shows the expanded layout
+  // from floating_offset_y_ down at its own origin.
+  POINT origin = {g.card.left, g.card.top};
+  if (floating_layout_ && floating_sidebar_ && ::IsWindow(floating_sidebar_)) {
+    origin.y -= floating_offset_y_;
+    ::ClientToScreen(floating_sidebar_, &origin);
+  } else {
+    ::ClientToScreen(shell_hwnd_, &origin);
+  }
+  const int w = g.card.right - g.card.left;
+  const int h = g.card.bottom - g.card.top;
+  const RECT screen = {origin.x, origin.y, origin.x + w, origin.y + h};
+  if (!hover_card_popup_) {
+    static const ATOM atom = [] {
+      WNDCLASSW cls = {};
+      cls.lpfnWndProc = &PhiWindowController::HoverCardPopupProc;
+      cls.hInstance = ::GetModuleHandleW(nullptr);
+      cls.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
+      cls.lpszClassName = L"PhiSpaceHoverCard";
+      return ::RegisterClassW(&cls);
+    }();
+    (void)atom;
+    // Owned by the shell, so it stays above the shell and its children
+    // without WS_EX_TOPMOST; transparent to the pointer, so it never takes
+    // the hover it is showing for.
+    hover_card_popup_ = ::CreateWindowExW(
+        WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT,
+        L"PhiSpaceHoverCard", L"", WS_POPUP, 0, 0, 0, 0, shell_hwnd_, nullptr,
+        ::GetModuleHandleW(nullptr), this);
+    if (!hover_card_popup_) {
+      return;
+    }
+  }
+  g.card = {0, 0, w, h};  // Painted at the popup's own origin.
+  hover_card_geom_ = std::move(g);
+  const bool moved = !::EqualRect(&screen, &hover_card_popup_rect_);
+  if (moved) {
+    // The corners come from a window region: DWM's rounding is fixed at
+    // the pills' 8, and the card is rounder than that.
+    const int r = Scaled(kHoverCardRadius);
+    ::SetWindowRgn(hover_card_popup_,
+                   ::CreateRoundRectRgn(0, 0, w + 1, h + 1, 2 * r, 2 * r),
+                   FALSE);
+    hover_card_popup_rect_ = screen;
+  }
+  if (moved || !::IsWindowVisible(hover_card_popup_)) {
+    ::SetWindowPos(hover_card_popup_, HWND_TOP, screen.left, screen.top, w, h,
+                   SWP_NOACTIVATE | SWP_SHOWWINDOW);
+  }
+  // Repainted with every shell frame so it rides the theme ramp too.
+  ::InvalidateRect(hover_card_popup_, nullptr, FALSE);
+}
+
+void PhiWindowController::PaintHoverCardPopup(HWND popup, HDC dc) {
+  RECT rc = {};
+  ::GetClientRect(popup, &rc);
+  if (rc.right <= 0 || rc.bottom <= 0) {
+    return;
+  }
+  HDC mem = ::CreateCompatibleDC(dc);
+  HBITMAP bitmap = ::CreateCompatibleBitmap(dc, rc.right, rc.bottom);
+  HGDIOBJ old_bitmap = ::SelectObject(mem, bitmap);
+  HFONT card_font = small_font_ ? small_font_ : ui_font_;
+  HGDIOBJ old_font = card_font ? ::SelectObject(mem, card_font) : nullptr;
+  ::SetBkMode(mem, TRANSPARENT);
+  const PhiPalette palette = CurrentPalette();
+  HBRUSH ground = ::CreateSolidBrush(palette.card);
+  ::FillRect(mem, &rc, ground);  // Under the region's trimmed corners.
+  ::DeleteObject(ground);
+  PaintHoverCard(mem, hover_card_geom_, palette);
+  ::BitBlt(dc, 0, 0, rc.right, rc.bottom, mem, 0, 0, SRCCOPY);
+  if (old_font) {
+    ::SelectObject(mem, old_font);
+  }
+  ::SelectObject(mem, old_bitmap);
+  ::DeleteObject(bitmap);
+  ::DeleteDC(mem);
+}
+
+// static
+LRESULT CALLBACK PhiWindowController::HoverCardPopupProc(HWND hwnd,
+                                                         UINT msg,
+                                                         WPARAM wparam,
+                                                         LPARAM lparam) {
+  if (msg == WM_NCCREATE) {
+    auto* cs = reinterpret_cast<CREATESTRUCTW*>(lparam);
+    ::SetWindowLongPtrW(hwnd, GWLP_USERDATA,
+                        reinterpret_cast<LONG_PTR>(cs->lpCreateParams));
+    return ::DefWindowProcW(hwnd, msg, wparam, lparam);
+  }
+  auto* self = reinterpret_cast<PhiWindowController*>(
+      ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+  switch (msg) {
+    case WM_NCHITTEST:
+      return HTTRANSPARENT;  // Never takes the pointer.
+    case WM_MOUSEACTIVATE:
+      return MA_NOACTIVATE;
+    case WM_ERASEBKGND:
+      return 1;  // PaintHoverCardPopup covers the whole client rect.
+    case WM_PAINT: {
+      PAINTSTRUCT ps = {};
+      HDC dc = ::BeginPaint(hwnd, &ps);
+      if (self) {
+        self->PaintHoverCardPopup(hwnd, dc);
+      }
+      ::EndPaint(hwnd, &ps);
+      return 0;
+    }
+  }
+  return ::DefWindowProcW(hwnd, msg, wparam, lparam);
 }
 
 // static
