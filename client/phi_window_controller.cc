@@ -5783,17 +5783,14 @@ void PhiWindowController::OnChromeClick(int x, int y) {
       // opens the switcher popup over the FULL Space list, the Mac's
       // SpacesStripView compact-chip behaviour.
       std::vector<std::pair<std::string, std::wstring>> spaces;
+      std::vector<std::wstring> glyphs;
       if (host_) {
         for (const PhiSpaceView& space : host_->Spaces()) {
-          std::wstring title =
-              base::UTF8ToWide(!space.name.empty()
-                                   ? space.name
-                                   : "Space " + space.id);
-          const std::wstring glyph = base::UTF8ToWide(space.icon_text);
-          if (!glyph.empty() && !PhiIsPrivateGlyph(glyph)) {
-            title = glyph + L"  " + title;
-          }
-          spaces.emplace_back(space.id, std::move(title));
+          spaces.emplace_back(
+              space.id, base::UTF8ToWide(!space.name.empty()
+                                             ? space.name
+                                             : "Space " + space.id));
+          glyphs.push_back(base::UTF8ToWide(space.icon_text));
         }
       }
       HMENU menu = ::CreatePopupMenu();
