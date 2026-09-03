@@ -46,7 +46,9 @@ async function reset(url = ARTICLE) {
 const openReader = async () => {
   await ensureClosed()
   await ctl.send('agentSpace.menu.click', { windowId: w, path: ['View', 'Toggle Reader View'] })
-  await sleep(7000)
+  // Poll rather than sleep: extraction takes as long as it takes, and a fixed
+  // wait samples too early on a slow run.
+  for (let i = 0; i < 25 && !(await layout()).readerActive; i++) await sleep(600)
 }
 
 // --- 1. link click inside the reader ---------------------------------------

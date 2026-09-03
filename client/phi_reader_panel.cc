@@ -121,10 +121,12 @@ void PhiReaderPanel::Reposition() {
   if (!hwnd_ || !::IsWindow(hwnd_) || !origin_) {
     return;
   }
-  // The WHOLE page pane, edge to edge — the reading surface replaces the page
-  // rather than floating over it, which is what makes leaving the reader read
-  // as the pane switching back rather than a card closing.
-  const RECT content = origin_->ContentRect();
+  // The whole CARD, not just the page below the bar — on the Mac the reader
+  // covers `pageCardView`, which is the container the navigation bar lives
+  // INSIDE (see WebContentViewController's hierarchy). Covering only the page
+  // would leave the panel's top corners in the middle of the card, square
+  // against a card whose rounding is up at the bar.
+  const RECT content = origin_->card_rect();
   const int width = content.right - content.left;
   const int height = content.bottom - content.top;
   if (width <= 0 || height <= 0) {

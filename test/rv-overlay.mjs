@@ -26,6 +26,18 @@ const layout = async () => ctl.send('agentSpace.window.layout', { windowId: w })
 const readerTargets = async () =>
   (await cdpHttp('/json/list')).filter((t) => (t.url || '').startsWith(READER_PREFIX))
 
+// Every checkpoint polls: the extraction, the tab move and the panel teardown
+// all take as long as they take, and a fixed sleep turns a slow run into a
+// phantom failure.
+async function waitFor(what, predicate, tries = 25) {
+  for (let i = 0; i < tries; i++) {
+    if (await predicate()) return true
+    await sleep(600)
+  }
+  console.log(`  (timed out waiting for ${what})`)
+  return false
+}
+
 // The menu item is a TOGGLE, so every run must start from a known state or
 // each step does the opposite of what it says.
 async function ensureClosed() {
@@ -46,7 +58,10 @@ await sleep(6000)
 log('before:', JSON.stringify((await tabs()).map((t) => t.url.slice(0, 60))))
 
 await ctl.send('agentSpace.menu.click', { windowId: w, path: ['View', 'Toggle Reader View'] })
-await sleep(7000)
+// Extraction takes as long as it takes — a fixed sleep samples too early on a
+// slow run and the whole suite then reads one step out of phase.
+await waitFor('the reader to mount', async () => (await layout()).readerActive)
+await waitFor('its page target', async () => (await readerTargets()).length > 0)
 
 log('1 strip after open:', JSON.stringify((await tabs()).map((t) => t.url.slice(0, 60))))
 log('2 reader page targets:', JSON.stringify((await readerTargets()).map((t) => t.title)))
@@ -55,7 +70,7 @@ log('3 readerActive', l.readerActive, '| windows still', JSON.stringify(
     (await ctl.send('agentSpace.list')).windows))
 
 await ctl.send('agentSpace.menu.click', { windowId: w, path: ['View', 'Toggle Reader View'] })
-await sleep(4000)
+await waitFor('the reader to go', async () => !(await layout()).readerActive)
 log('4 readerActive after close', (await layout()).readerActive,
     '| reader targets', (await readerTargets()).length)
 log('5 strip after close:', JSON.stringify((await tabs()).map((t) => t.url.slice(0, 60))))

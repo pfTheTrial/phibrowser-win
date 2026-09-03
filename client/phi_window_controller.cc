@@ -3654,13 +3654,31 @@ bool PhiWindowController::CanOfferReaderForUrl(const std::string& url) {
   return ext != "pdf";
 }
 
+RECT PhiWindowController::card_rect() {
+  const Layout layout = ComputeLayout();
+  RECT card = layout.content;
+  // The top bar is the card's first band, so the card starts at ITS top —
+  // the same rule the card's outline follows (see the frame in PaintChrome).
+  // Comfortable is excluded there and here alike: no card, no wrapping.
+  if (layout.mode != PhiLayoutMode::kComfortable &&
+      layout.top_bar.right > layout.top_bar.left) {
+    card.top = layout.top_bar.top;
+  }
+  return card;
+}
+
 void PhiWindowController::CardRoundedCorners(bool* top, bool* bottom) const {
   const bool any = !content_fullscreen_;
   if (bottom) {
     *bottom = any;
   }
+  // The card's top corners are rounded wherever there IS a card — in the
+  // layouts with a top bar they are the BAR's corners (painted by its own
+  // RoundRect), which is why a surface covering the card must round them and
+  // one covering only the page below the bar must not. Comfortable has no
+  // card: its page is edge to edge and the band above it is the window's.
   if (top) {
-    *top = any && layout_mode_ == PhiLayoutMode::kPerformance;
+    *top = any && layout_mode_ != PhiLayoutMode::kComfortable;
   }
 }
 
@@ -7881,8 +7899,14 @@ void PhiWindowController::PaintChrome(HDC dc,
     } else {
       HGDIOBJ old_brush = ::SelectObject(dc, bg);
       HGDIOBJ old_pen = ::SelectObject(dc, ::GetStockObject(NULL_PEN));
+      // GDI's RoundRect takes the corner ELLIPSE's size, not its radius, so
+      // this is twice kContentRadius. Passing the radius drew the card's top
+      // corners at HALF the curve its hairline and its bottom corner caps use
+      // — the two arcs did not meet, and the gap between them read as a bite
+      // out of the card's top corners.
+      const int ellipse = 2 * radius;
       ::RoundRect(dc, band.left, band.top, band.right + 1, band.bottom + 1,
-                  radius, radius);
+                  ellipse, ellipse);
       RECT lower = {band.left, band.top + radius, band.right, band.bottom};
       ::FillRect(dc, &lower, bg);
       ::SelectObject(dc, old_pen);
