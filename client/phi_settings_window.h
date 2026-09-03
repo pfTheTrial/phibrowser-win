@@ -225,6 +225,7 @@ class PhiSettingsWindow {
     RECT bounds{};
     std::wstring text;
     std::wstring detail;  // Second line / trailing text, kind-dependent.
+    std::wstring icon;    // A list row's leading Space icon (glyph text).
     bool selected = false;
     bool on = false;
     bool enabled = true;  // Drawn dim and inert when false.
@@ -296,10 +297,15 @@ class PhiSettingsWindow {
   // press state for its close button.
   bool close_hot_ = false;
   int pressed_caption_ = 0;
-  // The icon picker's segment ("icon" | "emoji", Icon default as on Mac) and
-  // page (the Mac scrolls; this pages through the same content).
+  // The icon picker's segment ("icon" | "emoji", Icon default as on Mac)
+  // and its scroll position: the first visible cell row, clamped by the
+  // Spaces build to `picker_max_line_`. `picker_grid_` is the grid's
+  // viewport (client px) so the wheel over it scrolls the picker, not the
+  // pane; empty on every other pane.
   std::string picker_tab_ = "icon";
-  int picker_page_ = 0;
+  int picker_scroll_ = 0;
+  int picker_max_line_ = 0;
+  RECT picker_grid_{};
   UINT font_dpi_ = 0;
   UINT dpi_ = 96;
   std::string section_ = "general";

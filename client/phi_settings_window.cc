@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdlib>
 #include <cwctype>
 #include <string>
 #include <vector>
@@ -1011,11 +1012,11 @@ void PhiSettingsWindow::BuildSpaces(int* y) {
     Item row;
     row.kind = ItemKind::kListRow;
     row.text = base::UTF8ToWide(parts[0]);
-    if (parts.size() > 1 && !parts[1].empty()) {
-      const std::wstring glyph = base::UTF8ToWide(parts[1]);
-      if (!PhiIsPrivateGlyph(glyph)) {
-        row.text = glyph + L"  " + row.text;
-      }
+    if (parts.size() > 1) {
+      // The Space's icon, drawn by the paint pass as the Mac catalog's
+      // artwork or a colour emoji (it used to be pasted into the text,
+      // which dropped catalog icons and greyed emoji out).
+      row.icon = base::UTF8ToWide(parts[1]);
     }
     row.detail = L"";
     if (parts.size() > 2) {
@@ -1094,8 +1095,8 @@ void PhiSettingsWindow::BuildSpaces(int* y) {
       items_.push_back(std::move(card));
     }
     // The Mac picker's segmented control (128x26, centered): the Phi icon
-    // catalog, then the emoji library. The Mac scrolls in place; this pages
-    // the same content with the trailing arrows.
+    // catalog, then the emoji library. The grid below scrolls in place
+    // under the wheel, as the Mac's does.
     {
       const struct {
         const wchar_t* label;
@@ -1114,22 +1115,6 @@ void PhiSettingsWindow::BuildSpaces(int* y) {
         items_.push_back(std::move(segment));
         seg_x += Scaled(64);
       }
-      Item back;
-      back.kind = ItemKind::kToolButton;
-      back.text = L"\u2039";
-      back.action = "pickerpage";
-      back.value = -1;
-      back.bounds = {detail_right - Scaled(56), band_top + Scaled(8),
-                     detail_right - Scaled(32), band_top + Scaled(34)};
-      items_.push_back(std::move(back));
-      Item forward;
-      forward.kind = ItemKind::kToolButton;
-      forward.text = L"\u203A";
-      forward.action = "pickerpage";
-      forward.value = 1;
-      forward.bounds = {detail_right - Scaled(32), band_top + Scaled(8),
-                        detail_right - Scaled(8), band_top + Scaled(34)};
-      items_.push_back(std::move(forward));
     }
     // One flat cell list: the catalog, or every emoji group in Mac order.
     std::vector<std::pair<std::wstring, std::string>> cells;
@@ -1146,34 +1131,47 @@ void PhiSettingsWindow::BuildSpaces(int* y) {
         }
       }
     }
+    // The Space's current icon, so its cell reads selected as on Mac.
+    std::wstring current_icon;
+    for (const std::string& summary : spaces) {
+      const std::vector<std::string> parts = SplitTabs(summary);
+      if (parts.size() > 3 && parts[3] == selected_space_) {
+        current_icon = base::UTF8ToWide(parts[1]);
+        break;
+      }
+    }
+    // The grid scrolls a whole cell row at a time (three per wheel notch,
+    // like the create-space form's grid), so no row ever straddles the
+    // viewport's edge and nothing needs clipping. `picker_scroll_` is the
+    // first visible row, clamped here against the content.
     const int grid_left = detail_left + Scaled(10);
     const int grid_top = band_top + Scaled(34);
+    const int grid_bottom = picker_bottom - Scaled(8);
+    const int pitch = Scaled(kEmojiCell + kEmojiGap);
     const int per_row = std::max(
         1, (detail_right - Scaled(10) - grid_left + Scaled(kEmojiGap)) /
-               Scaled(kEmojiCell + kEmojiGap));
-    const int rows_fit = std::max(
-        1, (picker_bottom - Scaled(8) - grid_top) /
-               Scaled(kEmojiCell + kEmojiGap));
-    const int per_page = per_row * rows_fit;
-    const int pages =
-        std::max(1, (static_cast<int>(cells.size()) + per_page - 1) /
-                        per_page);
-    picker_page_ = std::max(0, std::min(picker_page_, pages - 1));
-    const size_t first = static_cast<size_t>(picker_page_) *
-                         static_cast<size_t>(per_page);
-    for (size_t i = first;
-         i < cells.size() && i < first + static_cast<size_t>(per_page);
-         ++i) {
+               pitch);
+    const int rows_fit = std::max(1, (grid_bottom - grid_top) / pitch);
+    const int lines =
+        (static_cast<int>(cells.size()) + per_row - 1) / per_row;
+    picker_max_line_ = std::max(0, lines - rows_fit);
+    picker_scroll_ = std::max(0, std::min(picker_scroll_, picker_max_line_));
+    picker_grid_ = {detail_left, grid_top, detail_right, grid_bottom};
+    const size_t first = static_cast<size_t>(picker_scroll_) *
+                         static_cast<size_t>(per_row);
+    const size_t per_page = static_cast<size_t>(per_row * rows_fit);
+    for (size_t i = first; i < cells.size() && i < first + per_page; ++i) {
       const int index = static_cast<int>(i - first);
       const int col = index % per_row;
       const int line = index / per_row;
       Item cell;
       cell.kind = ItemKind::kEmojiCell;
       cell.text = cells[i].first;
+      cell.selected = !current_icon.empty() && cells[i].first == current_icon;
       cell.action = "spaceicon";
       cell.payload = selected_space_ + "\t" + cells[i].second;
-      const int x = grid_left + col * Scaled(kEmojiCell + kEmojiGap);
-      const int top = grid_top + line * Scaled(kEmojiCell + kEmojiGap);
+      const int x = grid_left + col * pitch;
+      const int top = grid_top + line * pitch;
       cell.bounds = {x, top, x + Scaled(kEmojiCell),
                      top + Scaled(kEmojiCell)};
       items_.push_back(std::move(cell));
@@ -2369,6 +2367,8 @@ void PhiSettingsWindow::Rebuild() {
     SyncTitle();
   }
 
+  picker_grid_ = {};  // Only the Spaces pane mounts the icon picker.
+  picker_max_line_ = 0;
   int y = Scaled(kChromeTop + kMargin) - scroll_;
   const int top = y;
   if (section_ == "general") {
@@ -2818,6 +2818,33 @@ void PhiSettingsWindow::Paint(HDC dc) {
             ::SelectObject(dc, font_);
           }
           x += Scaled(14) + Scaled(8);
+        }
+        if (!item.icon.empty()) {
+          // The Space's icon in an 18pt box: catalog artwork tinted the
+          // row ink, colour emoji via DirectWrite, GDI glyph as the last
+          // resort — the same ladder as the picker's cells.
+          const int mid = (bounds.top + bounds.bottom) / 2;
+          RECT icon_rc = {x, mid - Scaled(9), x + Scaled(18), mid + Scaled(9)};
+          const bool drawn =
+              PhiDrawCatalogArtwork(dc, icon_rc, item.icon, Scaled(16),
+                                    text_ink) ||
+              (!PhiIsPrivateGlyph(item.icon) &&
+               PhiDrawColorText(dc, icon_rc, item.icon, Scaled(13),
+                                text_ink));
+          if (!drawn) {
+            HFONT icon_font =
+                PhiIsPrivateGlyph(item.icon) ? mdl2_font_ : emoji_font_;
+            if (icon_font) {
+              ::SelectObject(dc, icon_font);
+            }
+            ::SetTextColor(dc, text_ink);
+            ::DrawTextW(dc, item.icon.c_str(), -1, &icon_rc,
+                        DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            if (font_) {
+              ::SelectObject(dc, font_);
+            }
+          }
+          x += Scaled(18) + Scaled(8);
         }
         ::SetTextColor(dc, text_ink);
         RECT text = bounds;
@@ -3379,12 +3406,7 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
     selected_profile_ = item.payload;
   } else if (item.action == "pickertab") {
     picker_tab_ = item.payload;
-    picker_page_ = 0;
-  } else if (item.action == "pickerpage") {
-    picker_page_ += item.value;  // Clamped when the grid rebuilds.
-    if (picker_page_ < 0) {
-      picker_page_ = 0;
-    }
+    picker_scroll_ = 0;
   } else if (item.action == "newspace") {
     std::wstring name;
     if (PhiPromptText(hwnd_, L"New Space", L"Enter a name for the new Space.",
@@ -3637,6 +3659,18 @@ LRESULT CALLBACK PhiSettingsWindow::WndProc(HWND hwnd,
       // Pane content can outgrow the fixed window; the Mac scrolls, so do we.
       if (self) {
         const int delta = GET_WHEEL_DELTA_WPARAM(wparam);
+        POINT pt = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+        ::ScreenToClient(hwnd, &pt);
+        if (self->picker_max_line_ > 0 &&
+            ::PtInRect(&self->picker_grid_, pt)) {
+          // Over the icon picker: three cell rows per notch, in place.
+          const int rows = std::max(1, 3 * std::abs(delta) / WHEEL_DELTA);
+          self->picker_scroll_ = std::max(
+              0, std::min(self->picker_max_line_,
+                          self->picker_scroll_ + (delta > 0 ? -rows : rows)));
+          ::InvalidateRect(hwnd, nullptr, TRUE);
+          return 0;
+        }
         RECT client = {};
         ::GetClientRect(hwnd, &client);
         const int visible = client.bottom - self->Scaled(kChromeTop);
