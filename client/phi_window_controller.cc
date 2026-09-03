@@ -4219,6 +4219,14 @@ void PhiWindowController::CancelSpaceSwap() {
   }
   swap_start_ = 0;
   ramp_start_ = 0;
+  RepaintUrlField();  // The palette jumped to its target.
+}
+
+void PhiWindowController::RepaintUrlField() {
+  if (url_field_ && ::IsWindow(url_field_)) {
+    // Erase so WM_CTLCOLOREDIT hands the EDIT the current palette's brush.
+    ::InvalidateRect(url_field_, nullptr, TRUE);
+  }
 }
 
 bool PhiWindowController::ShowSpace(const std::string& space_id) {
@@ -4258,6 +4266,7 @@ bool PhiWindowController::ShowSpace(const std::string& space_id) {
     FocusActiveBrowser();
   }
   RefreshTabs();
+  RepaintUrlField();  // Comfortable switches with no ramp: retint now.
   return true;
 }
 
@@ -9604,6 +9613,7 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
             ::InvalidateRect(cap, nullptr, TRUE);
           }
         }
+        self->RepaintUrlField();  // The omnibox EDIT rides the ramp too.
         if (self->RampEasedProgress() >= 1.0 && !self->swap_start_) {
           ::KillTimer(hwnd, kSpaceSwapTimer);
           self->ramp_start_ = 0;

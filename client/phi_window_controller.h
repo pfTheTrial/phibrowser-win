@@ -1302,6 +1302,9 @@ class PhiWindowController {
   void MoveOmniboxSelection(int delta);
   void CommitOmniboxSelection();
   int OmniboxRowAtY(int y) const;
+  // The EDIT only repaints on its own events, so a palette change (Space
+  // swap ramp, instant switch) must invalidate it or it keeps the old wash.
+  void RepaintUrlField();
   // Owned by the framework (a singleton in chrome.dll); non-owning, and across
   // a module boundary, so not a raw_ptr.
   RAW_PTR_EXCLUSION phi_framework::PhiFramework* const framework_;
