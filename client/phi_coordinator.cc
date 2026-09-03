@@ -6805,8 +6805,17 @@ void PhiCoordinator::OnBrowserWindowCreated(int64_t window_id, void* hwnd) {
                  << reader_origin_window;
   }
   if (peek_opener_window != 0) {
-    auto opener = windows_.find(peek_opener_window);
+    // The opener is named by BROWSER id; the controller is filed under its
+    // slot, and the two only coincide until that slot switches Space. Map it
+    // the way the reader branch above does, or an auto-peek from a window
+    // that has switched Space finds no opener and falls through into a shell.
+    auto peek_slot = browser_to_slot_.find(peek_opener_window);
+    auto opener = windows_.find(peek_slot != browser_to_slot_.end()
+                                    ? peek_slot->second
+                                    : peek_opener_window);
     if (opener != windows_.end()) {
+      LOG(INFO) << "[PhiClient] peek " << window_id << " over tab "
+                << peek_opener_tab << " in window " << peek_opener_window;
       peeks_[window_id] = std::make_unique<PhiPeekPanel>(
           window_id, static_cast<HWND>(hwnd), peek_opener_window,
           peek_opener_tab, opener->second.get(), framework_, this);
@@ -7270,18 +7279,18 @@ void PhiCoordinator::OnTabsChanged(int64_t window_id) {
     }
   }
   if (has_peek_here && framework_) {
-    if (const char* tabs_json = framework_->ListTabsJson(window_id)) {
-      std::optional<base::DictValue> tabs =
-          base::JSONReader::ReadDict(tabs_json, base::JSON_PARSE_RFC);
-      const base::ListValue* rows = tabs ? tabs->FindList("tabs") : nullptr;
-      if (rows) {
-        for (const base::Value& row : *rows) {
-          const base::DictValue* tab = row.GetIfDict();
-          if (tab && tab->FindBool("active").value_or(false)) {
-            active_tab = static_cast<int64_t>(
-                tab->FindDouble("id").value_or(0));
-            break;
-          }
+    // ListTabsJson answers with a bare ARRAY of tabs, the way every other
+    // caller reads it. Reading it as an object with a "tabs" member always
+    // came back empty, which left `active_tab` at 0 and hid the panel a
+    // frame after its constructor showed it — a peek that blinked and went.
+    std::optional<base::Value> tabs = base::JSONReader::Read(
+        framework_->ListTabsJson(window_id), base::JSON_PARSE_RFC);
+    if (tabs && tabs->is_list()) {
+      for (const base::Value& row : tabs->GetList()) {
+        const base::DictValue* tab = row.GetIfDict();
+        if (tab && tab->FindBool("active").value_or(false)) {
+          active_tab = static_cast<int64_t>(tab->FindDouble("id").value_or(0));
+          break;
         }
       }
     }
