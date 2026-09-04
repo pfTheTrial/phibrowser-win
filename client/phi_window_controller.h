@@ -1074,6 +1074,9 @@ class PhiWindowController {
   // active_tab_id_ is the dragged row itself and the page the user was
   // looking at is gone.
   int drag_focus_tab_id_ = 0;
+  // The tab row a press armed WITHOUT activating it: a plain click
+  // activates on release, a drag never does (the Mac's click-to-select).
+  int drag_click_tab_id_ = 0;
   double DragSlideOffset(int tab_id) const;
   SlideVec RowSlideOffset(const std::string& guid) const;
   void RetargetDragSlide();  // New targets for the current gap slot.

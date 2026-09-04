@@ -2905,7 +2905,18 @@ bool PhiWindowController::CommitDragImpl() {
   const bool split_replace = split_drop_replace_;
   const std::string split_id = split_drop_split_id_;
   const int split_focus = drag_focus_tab_id_;
+  const int click_tab = drag_click_tab_id_;
   CancelDrag();
+  if (!active && kind == DragKind::kTab && click_tab != 0 && framework_) {
+    // A plain click on a tab row: the deferred activation.
+    const int64_t browser = active_browser_ ? active_browser_ : window_id_;
+    const int index = StripIndexOfId(ReadStrip(framework_, browser), click_tab);
+    if (index >= 0) {
+      framework_->ActivateTab(browser, index);
+      RefreshTabs();
+    }
+    return false;
+  }
   // The page band lands before the slot paths below: a split drop has no
   // insertion slot at all, and the dead middle band is a no-op.
   if (band == DropBand::kContent) {
@@ -3103,6 +3114,7 @@ void PhiWindowController::CancelDrag() {
   bookmark_drop_index_ = -1;
   bookmark_drop_folder_row_ = -1;
   drag_focus_tab_id_ = 0;
+  drag_click_tab_id_ = 0;
   split_drop_valid_ = false;
   split_drop_zone_ = PhiSplitDropZone::kNone;
   split_drop_replace_ = false;
@@ -7279,8 +7291,12 @@ void PhiWindowController::OnChromeClick(int x, int y) {
       } else if (row.b_index >= 0 && ::PtInRect(&row.pane_b, pt)) {
         framework_->ActivateTab(browser, row.b_index);
       } else {
+        // The press only ARMS: a tab activates on the release of a plain
+        // click (CommitDragImpl), never because it was dragged — the Mac's
+        // outline selects on click, not on mouse-down, so dragging a
+        // background tab leaves the page the user was reading in place.
         ArmDrag(DragKind::kTab, static_cast<int>(&row - tabs_.data()), pt);
-        framework_->ActivateTab(browser, row.index);
+        drag_click_tab_id_ = row.id;
       }
     }
     RefreshTabs();

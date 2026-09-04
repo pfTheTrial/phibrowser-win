@@ -38,8 +38,10 @@ constexpr double kBandCardWidth = 300.0;
 constexpr double kBandCardHeight = 120.0;
 constexpr double kSideCardInset = 14.0;
 constexpr double kBandCardInset = 18.0;
-// The card the cursor is resolving to grows, the Mac's activeDropHintScale.
-constexpr double kActiveCardScale = 1.1;
+// The card the cursor is resolving to grows (the Mac's activeDropHintScale is
+// 1.1; Jixiang asked for half again as large here) and turns OPAQUE — the
+// chosen target must read as solid, not as glass over the page.
+constexpr double kActiveCardScale = 1.5;
 constexpr int kCardCornerRadius = 32;
 constexpr int kCardLabelSize = 14;
 // The Mac's dashed stroke, in reference points.
@@ -322,13 +324,21 @@ class Cards {
     Gdiplus::RectF rect = base;
     if (active) {
       // Grows around its own centre, so the card the drop will land on reads
-      // as the chosen one without moving off its edge.
+      // as the chosen one — then nudged back inside the page area, since at
+      // this scale a side card would otherwise run past the edge.
       const Gdiplus::REAL dw =
           rect.Width * static_cast<Gdiplus::REAL>(kActiveCardScale - 1.0);
       const Gdiplus::REAL dh =
           rect.Height * static_cast<Gdiplus::REAL>(kActiveCardScale - 1.0);
       rect = Gdiplus::RectF(rect.X - dw / 2, rect.Y - dh / 2, rect.Width + dw,
                             rect.Height + dh);
+      const auto area_w = static_cast<Gdiplus::REAL>(Width(hints_.area));
+      const auto area_h = static_cast<Gdiplus::REAL>(Height(hints_.area));
+      const Gdiplus::REAL margin = static_cast<Gdiplus::REAL>(Scaled(8));
+      rect.Width = std::min(rect.Width, std::max<Gdiplus::REAL>(0, area_w - margin * 2));
+      rect.Height = std::min(rect.Height, std::max<Gdiplus::REAL>(0, area_h - margin * 2));
+      rect.X = std::max(margin, std::min(rect.X, area_w - margin - rect.Width));
+      rect.Y = std::max(margin, std::min(rect.Y, area_h - margin - rect.Height));
     }
     const auto radius = static_cast<Gdiplus::REAL>(
         std::min<double>(Scaled(kCardCornerRadius),
@@ -336,10 +346,12 @@ class Cards {
     Gdiplus::GraphicsPath path;
     AddRoundedPath(&path, rect, radius);
     // The Mac fills the glass card with white at 60%; in dark mode the same
-    // wash has to come from the dark side or the label cannot be read.
+    // wash has to come from the dark side or the label cannot be read. The
+    // ACTIVE card is solid: the target the drop will land on hides the page
+    // under it instead of letting it bleed through.
     const COLORREF wash = palette.dark ? RGB(0x1C, 0x1C, 0x1E)
                                        : RGB(0xFF, 0xFF, 0xFF);
-    Gdiplus::SolidBrush fill(Blend(wash, 0.60));
+    Gdiplus::SolidBrush fill(Blend(wash, active ? 1.0 : 0.60));
     graphics->FillPath(&fill, &path);
     if (active) {
       // The Mac's active scrim: a flat ink wash that reads consistently over
