@@ -686,6 +686,9 @@ class PhiWindowController {
     // search-tabs ride the caption band's trailing cluster; comfortable and
     // balanced keep the trio on the top bar's leading edge.
     RECT search_tabs{};
+    // The hairline closing the band's trailing cluster, in the gap between
+    // search-tabs and the caption buttons. Every layout has one.
+    RECT band_divider{};
     RECT back{}, forward{}, reload{};
     RECT spaces_strip{};   // The band the Space chips live in.
     RECT url_field{};

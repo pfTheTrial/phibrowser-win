@@ -91,6 +91,9 @@ constexpr int kNavGroupSpacing = 1;   // back/forward/reload stack spacing.
 // the button under the pointer.
 constexpr int kBandTrailingGap = 16;  // cluster → the caption buttons.
 constexpr int kBandGroupGap = 8;      // the nav trio → search-tabs.
+// The hairline standing in that gap: short enough to read as a seam between
+// the app's controls and the window's, not as a border round either.
+constexpr int kBandDividerHeight = 16;
 // The sidebar's own top inset. It used to be navRow.bottom + 8; with the nav
 // row gone the Spaces strip starts at the gutter, and every band under it
 // rides up by the 32pt the row occupied.
@@ -674,6 +677,19 @@ PhiWindowController::Layout PhiWindowController::ComputeLayout() {
   // Where the menu titles have to stop: the trailing cluster's left edge.
   // Filled in by the modes that build one; the caption buttons otherwise.
   out.band_limit = out.caption_min.left;
+  // The seam between the band's last control and the caption buttons, set
+  // by each mode once it knows what ends its cluster (search-tabs, in all
+  // three). It centres in kBandTrailingGap and rides the cluster's own
+  // line, so comfortable's copy follows the strip down with the rest.
+  const auto place_band_divider = [&](const RECT& last) {
+    const int mid = (last.top + last.bottom) / 2;
+    const int half = Scaled(kBandDividerHeight) / 2;
+    // A 1pt rule, so it thickens with the controls it separates: the band's
+    // own bottom edge can stay one physical pixel because it runs the whole
+    // window, but a 16pt stub at 200% would read as a scratch.
+    const int x = (last.right + out.caption_min.left) / 2;
+    out.band_divider = {x, mid - half, x + Scaled(1), mid + half};
+  };
 
   // The Spaces strip: 24pt pips from the left (10pt strip padding), one
   // trailing "+" chip. The Mac's second destination (new profile) moved to the
@@ -752,6 +768,7 @@ PhiWindowController::Layout PhiWindowController::ComputeLayout() {
     const int search_right = out.caption_min.left - Scaled(kBandTrailingGap);
     out.search_tabs = {search_right - btn, strip_mid - btn / 2, search_right,
                        strip_mid + btn / 2};
+    place_band_divider(out.search_tabs);
     // The "+" follows the last tab; the strip is full when the next tab
     // would need the room the button is holding.
     const int new_tab_gap = Scaled(kTopBarSpacing);
@@ -804,6 +821,7 @@ PhiWindowController::Layout PhiWindowController::ComputeLayout() {
     // row, so the Spaces strip starts at the sidebar's own inset.
     out.search_tabs =
         band_control(out.caption_min.left - Scaled(kBandTrailingGap));
+    place_band_divider(out.search_tabs);
     out.band_limit = out.search_tabs.left;
     const int gap = tb + Scaled(kContentTopGap);
     if (!hide_sidebar) {
@@ -854,6 +872,7 @@ PhiWindowController::Layout PhiWindowController::ComputeLayout() {
     // same x balanced puts it.
     int r = out.caption_min.left - Scaled(kBandTrailingGap);
     out.search_tabs = band_control(r);
+    place_band_divider(out.search_tabs);
     r = out.search_tabs.left - Scaled(kBandGroupGap);
     out.reload = band_control(r);
     r = out.reload.left - Scaled(kNavGroupSpacing);
@@ -8558,6 +8577,15 @@ void PhiWindowController::PaintChrome(HDC dc,
       }
       ::DrawTextW(dc, menu_titles_[i].first.c_str(), -1, &text_rc,
                   DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    }
+    // The seam between the app's band controls and the window's. It draws in
+    // the TERTIARY ink (30%), not the 6% separator the band's own bottom
+    // edge uses: a hairline that short, standing alone in a gap rather than
+    // running the window's width, disappears at 6%.
+    if (layout.band_divider.right > layout.band_divider.left) {
+      HBRUSH divider_brush = ::CreateSolidBrush(palette.label_tertiary);
+      ::FillRect(dc, &layout.band_divider, divider_brush);
+      ::DeleteObject(divider_brush);
     }
     // Hot fills first (close turns the Win11 red), then the MDL2 glyphs.
     if (hot_caption_ == HTMINBUTTON || hot_caption_ == HTMAXBUTTON) {
