@@ -1188,6 +1188,39 @@ PhiWindowController::PhiWindowController(int64_t window_id,
     h = std::min(h, work_h - 2 * margin);
   }
 
+  // A TEAR-OFF opens AROUND the point the tab was dropped at — the Mac's
+  // resolvedTearOffWindowFrame: the drop's normalized position in the work
+  // area becomes its position inside the new window, so a drop near the
+  // top-left corner puts the window's top-left there, and one near the
+  // bottom-right pulls the window up and left to stay on screen. The size
+  // is whatever the placement above produced.
+  POINT drop = {};
+  if (!agent_ && host_ && host_->TakeTearOffDrop(&drop)) {
+    MONITORINFO target = {sizeof(target)};
+    if (::GetMonitorInfoW(::MonitorFromPoint(drop, MONITOR_DEFAULTTONEAREST),
+                          &target)) {
+      const RECT& work = target.rcWork;
+      const int work_w = work.right - work.left;
+      const int work_h = work.bottom - work.top;
+      if (work_w > 1 && work_h > 1) {
+        w = std::min(w, work_w);
+        h = std::min(h, work_h);
+        const double rx = std::min(
+            1.0, std::max(0.0, static_cast<double>(drop.x - work.left) /
+                                   work_w));
+        const double ry = std::min(
+            1.0, std::max(0.0, static_cast<double>(drop.y - work.top) /
+                                   work_h));
+        x = std::max<int>(work.left,
+                          std::min<int>(drop.x - static_cast<int>(rx * w),
+                                        work.right - w));
+        y = std::max<int>(work.top,
+                          std::min<int>(drop.y - static_cast<int>(ry * h),
+                                        work.bottom - h));
+      }
+    }
+  }
+
   if (agent_) {
     // A hidden agent surface: fixed size, parked far off-screen, kept off the
     // taskbar. It is still shown (below) so its content composites and CDP
@@ -1257,6 +1290,7 @@ PhiWindowController::~PhiWindowController() {
   // holding this controller. Only one drag runs at a time (it owns the
   // mouse capture), so taking them down unconditionally is safe.
   PhiSplitDropOverlay::Hide();
+  PhiDragImage::OwnerGone(shell_hwnd_);
   // Detach the browser child before tearing down our window, so its teardown
   // is not entangled with ours. Full close plumbing is a later slice.
   if (browser_hwnd_ && ::IsWindow(browser_hwnd_)) {
@@ -2497,22 +2531,6 @@ void PhiWindowController::ArmDrag(DragKind kind, int index, POINT pt) {
   drag_point_ = pt;
   drag_active_ = false;
   drag_insert_ = -1;
-  drag_grab_dx_ = 0;
-  drag_grab_dy_ = 0;
-  // Where inside the element the cursor grabbed it, so the floating copy
-  // keeps that grip while it follows the cursor.
-  if (kind == DragKind::kTab && index >= 0 &&
-      index < static_cast<int>(tabs_.size())) {
-    drag_grab_dy_ = pt.y - tabs_[static_cast<size_t>(index)].bounds.top;
-  } else if (kind == DragKind::kPin && index >= 0 &&
-             index < static_cast<int>(pinned_.size())) {
-    drag_grab_dx_ = pt.x - pinned_[static_cast<size_t>(index)].bounds.left;
-    drag_grab_dy_ = pt.y - pinned_[static_cast<size_t>(index)].bounds.top;
-  } else if (kind == DragKind::kBookmark && index >= 0 &&
-             index < static_cast<int>(bookmarks_.size())) {
-    drag_grab_dy_ =
-        pt.y - bookmarks_[static_cast<size_t>(index)].bounds.top;
-  }
 }
 
 PhiWindowController::SlideVec PhiWindowController::RowSlideOffset(
@@ -2785,22 +2803,34 @@ void PhiWindowController::UpdateDrag(POINT pt) {
     }
     drag_active_ = true;
     ::SetCapture(shell_hwnd_);
+    BeginDragImage(pt);  // The element lifts off into its own window.
   }
   // Tab and pin drags can cross bands (conversions, tear-off); a bookmark
   // drag stays in its own outline EXCEPT over the page, where it can form a
-  // split like the other two (the Mac's bookmark DragSource).
+  // split like the other two (the Mac's bookmark DragSource), and outside
+  // the window, where its live tab tears off like theirs.
   drag_point_ = pt;
   DropBand band = DropBand::kTabs;
   if (drag_kind_ == DragKind::kTab || drag_kind_ == DragKind::kPin) {
     band = DropBandAt(pt);
   } else if (drag_kind_ == DragKind::kBookmark) {
+    band = DropBand::kBookmarks;
+    POINT screen = pt;
+    ::ClientToScreen(shell_hwnd_, &screen);
+    RECT window_rect = {};
+    ::GetWindowRect(shell_hwnd_, &window_rect);
     const RECT page = ComputeLayout().content;
-    if (::PtInRect(&page, pt)) {
+    if (!::PtInRect(&window_rect, screen)) {
+      band = DropBand::kOutside;
+    } else if (::PtInRect(&page, pt)) {
       band = DropBand::kContent;
     }
   }
   const bool band_changed = band != drag_band_;
   drag_band_ = band;
+  // The image first: crossing out of the sidebar swaps the row for the page
+  // card, which captures the page BEFORE the hint cards go up over it.
+  SyncDragImage(pt);
   if (band == DropBand::kContent) {
     // The page has no insertion slot: the drop is described by the split
     // zone under the cursor, and the hint cards are the whole feedback.
@@ -2811,8 +2841,6 @@ void PhiWindowController::UpdateDrag(POINT pt) {
       if (shell_hwnd_) {
         ::InvalidateRect(shell_hwnd_, nullptr, FALSE);
       }
-    } else if (shell_hwnd_) {
-      ::InvalidateRect(shell_hwnd_, nullptr, FALSE);  // The floating row.
     }
     return;
   }
@@ -2823,9 +2851,16 @@ void PhiWindowController::UpdateDrag(POINT pt) {
   bool folder_target_changed = false;
   if (drag_kind_ == DragKind::kBookmark) {
     // Bookmark drags resolve a tree target, not just a flat slot; a change
-    // between INTO-a-folder and a gap repaints even at the same slot.
+    // between INTO-a-folder and a gap repaints even at the same slot. Off
+    // the outline there is no tree target at all.
     const int folder_before = bookmark_drop_folder_row_;
-    slot = ResolveBookmarkDrop(pt);
+    if (band == DropBand::kBookmarks) {
+      slot = ResolveBookmarkDrop(pt);
+    } else {
+      bookmark_drop_parent_.clear();
+      bookmark_drop_index_ = -1;
+      bookmark_drop_folder_row_ = -1;
+    }
     folder_target_changed = folder_before != bookmark_drop_folder_row_;
   }
   const bool animated_kind = drag_kind_ == DragKind::kTab ||
@@ -2839,13 +2874,23 @@ void PhiWindowController::UpdateDrag(POINT pt) {
     if (shell_hwnd_) {
       ::InvalidateRect(shell_hwnd_, nullptr, FALSE);
     }
-  } else if (animated_kind && shell_hwnd_) {
-    // The floating element follows every cursor move.
-    ::InvalidateRect(shell_hwnd_, nullptr, FALSE);
   }
+  // A plain move repaints nothing: the dragged element rides the drag image
+  // window, and the chrome only changes when the gap does.
 }
 
 void PhiWindowController::CommitDrag() {
+  // Read before the drop clears them: whether the image slides home or just
+  // goes depends on where the pointer was and whether anything happened.
+  const bool active = drag_active_;
+  const bool inside = drag_image_inside_;
+  const bool acted = CommitDragImpl();
+  if (active) {
+    EndDragImage(acted, inside);
+  }
+}
+
+bool PhiWindowController::CommitDragImpl() {
   const DragKind kind = drag_kind_;
   const DropBand band = drag_band_;
   const int from_pos = drag_index_;
@@ -2867,24 +2912,38 @@ void PhiWindowController::CommitDrag() {
     if (active && split_zone != PhiSplitDropZone::kNone) {
       CommitSplitDrop(kind, from_pos, split_focus, split_zone, split_replace,
                       split_id);
+      return true;
     }
-    return;
+    return false;
   }
-  if (!active || slot < 0) {
-    return;
+  if (!active) {
+    return false;
+  }
+  // A pinned row or bookmark released outside the window: its live tab
+  // joins the shell under the cursor or tears off (the Mac's live-wrapper
+  // tear-off). Before the slot check — these bands resolve no slot.
+  if ((kind == DragKind::kPin || kind == DragKind::kBookmark) &&
+      band == DropBand::kOutside) {
+    return TearOffStoredRow(kind, from_pos, release);
+  }
+  if (slot < 0) {
+    return false;
   }
 
   // Cross-band drops first — the Mac's drag conversions.
   if (kind == DragKind::kTab && band != DropBand::kTabs) {
     if (from_pos < 0 || from_pos >= static_cast<int>(tabs_.size())) {
-      return;
+      return false;
     }
     const TabRow& row = tabs_[static_cast<size_t>(from_pos)];
     const int64_t browser = active_browser_ ? active_browser_ : window_id_;
     if (band == DropBand::kOutside) {
       // Over ANOTHER shell window, the tab joins that window's strip (the
       // Mac's window-to-window drop); anywhere else it is a tear-off to a
-      // fresh window (the new shell arrives through OnBrowserWindowCreated).
+      // fresh window (the new shell arrives through OnBrowserWindowCreated,
+      // placed around the drop point). The drag image comes down first so
+      // the hit test underneath cannot land on it.
+      PhiDragImage::Hide();
       POINT screen = release;
       ::ClientToScreen(shell_hwnd_, &screen);
       const int64_t target =
@@ -2893,6 +2952,9 @@ void PhiWindowController::CommitDrag() {
           !host_->RequestDropTabOnWindow(window_id_, row.index, row.b_index,
                                          target)) {
         if (framework_) {
+          if (host_) {
+            host_->NoteTearOffDrop(screen);
+          }
           framework_->MoveTabsToNewWindow(browser, row.index, row.b_index);
         }
       }
@@ -2923,7 +2985,7 @@ void PhiWindowController::CommitDrag() {
                               root_slot);
       }
     }
-    return;
+    return true;
   }
   if (kind == DragKind::kPin && band == DropBand::kTabs) {
     // The Mac's movePinnedTabOut: the record dissolves and its tab(s)
@@ -2932,7 +2994,7 @@ void PhiWindowController::CommitDrag() {
     // to the list as ordinary rows.
     if (from_pos < 0 || from_pos >= static_cast<int>(pinned_.size()) ||
         !host_) {
-      return;
+      return false;
     }
     const ShortcutRow pin = pinned_[static_cast<size_t>(from_pos)];
     if (!pin.open && framework_ && !pin.url.empty()) {
@@ -2947,7 +3009,7 @@ void PhiWindowController::CommitDrag() {
       }
     }
     host_->RemoveStoredRow(pin.guid);
-    return;
+    return true;
   }
 
   // A bookmark reorder is a TREE move (the outline's resolved target), so
@@ -2969,22 +3031,23 @@ void PhiWindowController::CommitDrag() {
       if (dragged.parent_guid != bookmark_parent ||
           bookmark_index != current) {
         host_->MoveStoredRow(dragged.guid, bookmark_parent, bookmark_index);
+        return true;
       }
     }
-    return;
+    return false;
   }
 
   // Insert-before `slot` becomes the final sibling position by removing the
   // dragged element first.
   const int to_pos = slot > from_pos ? slot - 1 : slot;
   if (to_pos == from_pos) {
-    return;
+    return false;
   }
   switch (kind) {
     case DragKind::kTab: {
       if (!framework_ || from_pos < 0 ||
           from_pos >= static_cast<int>(tabs_.size())) {
-        return;
+        return false;
       }
       // Map the visual slot to a framework strip index (bound rows are
       // hidden, so visual neighbours carry the real indices).
@@ -3001,17 +3064,18 @@ void PhiWindowController::CommitDrag() {
       framework_->MoveTab(active_browser_ ? active_browser_ : window_id_,
                           from, to);
       RefreshTabs();
-      break;
+      return true;
     }
     case DragKind::kPin:
       if (host_ && from_pos >= 0 &&
           from_pos < static_cast<int>(pinned_.size())) {
         host_->ReorderStoredRow(pinned_[static_cast<size_t>(from_pos)].guid,
                                 to_pos);
+        return true;
       }
-      break;
+      return false;
     case DragKind::kBookmark:
-      break;  // Handled above — bookmarks resolve a tree target.
+      return false;  // Handled above — bookmarks resolve a tree target.
     case DragKind::kChip:
       if (host_ && from_pos >= 0 &&
           from_pos < static_cast<int>(chips_.size())) {
@@ -3019,11 +3083,13 @@ void PhiWindowController::CommitDrag() {
         // scrolled out of the viewport ahead of it.
         host_->ReorderSpace(chips_[static_cast<size_t>(from_pos)].id,
                             to_pos + chips_first_index_);
+        return true;
       }
-      break;
+      return false;
     case DragKind::kNone:
       break;
   }
+  return false;
 }
 
 void PhiWindowController::CancelDrag() {
@@ -3033,8 +3099,6 @@ void PhiWindowController::CancelDrag() {
   drag_index_ = -1;
   drag_active_ = false;
   drag_insert_ = -1;
-  drag_grab_dx_ = 0;
-  drag_grab_dy_ = 0;
   bookmark_drop_parent_.clear();
   bookmark_drop_index_ = -1;
   bookmark_drop_folder_row_ = -1;
@@ -3060,6 +3124,479 @@ void PhiWindowController::CancelDrag() {
       ::InvalidateRect(shell_hwnd_, nullptr, FALSE);
     }
   }
+}
+
+void PhiWindowController::AbortDrag() {
+  const bool active = drag_active_;
+  const bool inside = drag_image_inside_;
+  CancelDrag();
+  if (active) {
+    EndDragImage(/*acted=*/false, inside);
+  }
+}
+
+// --- The drag image ----------------------------------------------------------
+//
+// The Mac's NSDraggingSession image with TabDraggingSession's switching on
+// top of it. See PhiDragImage for the window; this is the shell's side —
+// what to lift, where the boundary runs, and what the page card shows.
+
+RECT PhiWindowController::DragSourceRect() {
+  const Layout layout = ComputeLayout();
+  RECT r = {};
+  switch (drag_kind_) {
+    case DragKind::kTab:
+      if (drag_index_ >= 0 && drag_index_ < static_cast<int>(tabs_.size())) {
+        r = tabs_[static_cast<size_t>(drag_index_)].bounds;
+        if (!layout.horizontal_tabs) {
+          r.top += Scaled(kRowPad);  // The pill inside the row.
+          r.bottom -= Scaled(kRowPad);
+        }
+      }
+      break;
+    case DragKind::kPin:
+      if (drag_index_ >= 0 &&
+          drag_index_ < static_cast<int>(pinned_.size())) {
+        r = pinned_[static_cast<size_t>(drag_index_)].bounds;
+      }
+      break;
+    case DragKind::kBookmark:
+      if (drag_index_ >= 0 &&
+          drag_index_ < static_cast<int>(bookmarks_.size())) {
+        const ShortcutRow& row = bookmarks_[static_cast<size_t>(drag_index_)];
+        r = row.bounds;
+        r.top += Scaled(kRowPad);
+        r.bottom -= Scaled(kRowPad);
+        r.left += row.depth * Scaled(kBookmarkIndent);
+      }
+      break;
+    case DragKind::kChip:
+    case DragKind::kNone:
+      break;
+  }
+  return r;
+}
+
+bool PhiWindowController::DragImageInside(POINT pt) {
+  if (drag_kind_ == DragKind::kBookmark && drag_index_ >= 0 &&
+      drag_index_ < static_cast<int>(bookmarks_.size()) &&
+      bookmarks_[static_cast<size_t>(drag_index_)].folder) {
+    return true;  // A folder has no page to show (shouldTrackDraggingImage).
+  }
+  const Layout layout = ComputeLayout();
+  RECT band = layout.sidebar;
+  if (layout.horizontal_tabs) {
+    band = layout.title_bar;  // The strip lives in the caption band.
+  } else {
+    // The Mac's boundary is the vertical tab list's view: pins, bookmarks,
+    // "+ New Tab" and the tabs — not the header above them.
+    band.top = layout.favorites.top;
+    if (layout.bottom_bar.bottom > layout.bottom_bar.top) {
+      band.bottom = layout.bottom_bar.top;
+    }
+  }
+  if (::PtInRect(&band, pt)) {
+    return true;
+  }
+  POINT screen = pt;
+  ::ClientToScreen(shell_hwnd_, &screen);
+  RECT window_rect = {};
+  ::GetWindowRect(shell_hwnd_, &window_rect);
+  if (::PtInRect(&window_rect, screen)) {
+    return false;  // The page, the header, the caption band.
+  }
+  // Another shell window under the cursor takes the row into its strip, so
+  // the row is what shows there (isInsideAnyOtherBrowserTabDragBoundary).
+  return host_ && host_->SlotAtScreenPoint(screen, window_id_) != 0;
+}
+
+void PhiWindowController::BeginDragImage(POINT pt) {
+  if (drag_kind_ == DragKind::kChip || drag_kind_ == DragKind::kNone ||
+      !shell_hwnd_) {
+    return;  // A chip drag paints its own pill in the strip.
+  }
+  const RECT source = DragSourceRect();
+  if (source.right <= source.left || source.bottom <= source.top) {
+    return;
+  }
+  // Lift the element's pixels straight out of the frame, painted at home in
+  // its lifted style — the Mac's createDraggingSnapshot of the cell.
+  drag_capture_ = true;
+  const PhiDragBitmap row = CaptureChromeRect(source);
+  drag_capture_ = false;
+  if (row.empty()) {
+    return;
+  }
+  POINT corners[2] = {{source.left, source.top}, {source.right, source.bottom}};
+  ::MapWindowPoints(shell_hwnd_, nullptr, corners, 2);
+  drag_home_screen_ = {corners[0].x, corners[0].y, corners[1].x, corners[1].y};
+  drag_image_inside_ = true;
+  drag_card_built_ = false;
+  drag_card_ = PhiDragCard();
+  POINT screen = pt;
+  ::ClientToScreen(shell_hwnd_, &screen);
+  PhiDragImage::Begin(shell_hwnd_, dpi_, row, Scaled(kCornerRadius),
+                      POINT{pt.x - source.left, pt.y - source.top}, screen);
+  // The element leaves the chrome: its slot is the gap from here on.
+  ::InvalidateRect(shell_hwnd_, nullptr, FALSE);
+}
+
+void PhiWindowController::SyncDragImage(POINT pt) {
+  if (!drag_active_ || !shell_hwnd_ || !PhiDragImage::active()) {
+    return;
+  }
+  POINT screen = pt;
+  ::ClientToScreen(shell_hwnd_, &screen);
+  const bool inside = DragImageInside(pt);
+  if (inside == drag_image_inside_) {
+    PhiDragImage::MoveTo(screen);
+    return;
+  }
+  drag_image_inside_ = inside;
+  if (inside) {
+    PhiDragImage::ShowRow(screen);  // Back in: the row again.
+    return;
+  }
+  if (!drag_card_built_) {
+    // Composed once per drag, the first time the cursor leaves — the Mac's
+    // cachedTabSnapshotImage. Out of sight first: the card may read the
+    // page off the screen, and the row image is hanging over its edge.
+    drag_card_built_ = true;
+    PhiDragImage::Conceal();
+    drag_card_ = BuildDragCard();
+  }
+  PhiDragImage::ShowCard(drag_card_, CurrentPalette(), screen);
+}
+
+void PhiWindowController::EndDragImage(bool acted, bool inside) {
+  if (!PhiDragImage::active()) {
+    return;
+  }
+  // AppKit's animatesToStartingPositionsOnCancelOrFail: true inside the
+  // sidebar, false once the drag has left it (a tear-off must not bounce).
+  if (!acted && inside) {
+    PhiDragImage::SlideBack(drag_home_screen_);
+  } else {
+    PhiDragImage::Hide();
+  }
+}
+
+PhiDragBitmap PhiWindowController::CaptureChromeRect(const RECT& client_rect) {
+  PhiDragBitmap out;
+  if (!shell_hwnd_) {
+    return out;
+  }
+  RECT client = {};
+  ::GetClientRect(shell_hwnd_, &client);
+  RECT clipped = {};
+  if (!::IntersectRect(&clipped, &client_rect, &client)) {
+    return out;
+  }
+  const int frame_w = client.right;
+  const int frame_h = client.bottom;
+  if (frame_w <= 0 || frame_h <= 0) {
+    return out;
+  }
+  BITMAPINFO info = {};
+  info.bmiHeader.biSize = sizeof(info.bmiHeader);
+  info.bmiHeader.biWidth = frame_w;
+  info.bmiHeader.biHeight = -frame_h;  // Top-down.
+  info.bmiHeader.biPlanes = 1;
+  info.bmiHeader.biBitCount = 32;
+  info.bmiHeader.biCompression = BI_RGB;
+  void* bits = nullptr;
+  HDC screen = ::GetDC(nullptr);
+  HDC mem = ::CreateCompatibleDC(screen);
+  HBITMAP dib =
+      ::CreateDIBSection(mem, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
+  ::ReleaseDC(nullptr, screen);
+  if (!dib || !bits) {
+    if (dib) {
+      ::DeleteObject(dib);
+    }
+    ::DeleteDC(mem);
+    return out;
+  }
+  HGDIOBJ old = ::SelectObject(mem, dib);
+  HBRUSH fill = ::CreateSolidBrush(BackgroundFill());
+  ::FillRect(mem, &client, fill);
+  ::DeleteObject(fill);
+  // The same frame WM_PAINT composes, into our own bits.
+  PaintChrome(mem, ComputeLayout(), /*include_child_controls=*/false);
+  ::GdiFlush();
+  const int w = clipped.right - clipped.left;
+  const int h = clipped.bottom - clipped.top;
+  const size_t row_bytes = static_cast<size_t>(w) * 4;
+  // SAFETY: the DIB was created frame_w x frame_h at 32bpp, top-down, so it
+  // holds exactly frame_w * frame_h * 4 bytes with no stride padding.
+  const auto frame = UNSAFE_BUFFERS(base::span<const unsigned char>(
+      static_cast<const unsigned char*>(bits),
+      static_cast<size_t>(frame_w) * static_cast<size_t>(frame_h) * 4));
+  out.bgra.resize(row_bytes * static_cast<size_t>(h));
+  base::span<unsigned char> dest(out.bgra);
+  for (int y = 0; y < h; ++y) {
+    const size_t from =
+        (static_cast<size_t>(clipped.top + y) * static_cast<size_t>(frame_w) +
+         static_cast<size_t>(clipped.left)) *
+        4;
+    dest.subspan(static_cast<size_t>(y) * row_bytes, row_bytes)
+        .copy_from(frame.subspan(from, row_bytes));
+  }
+  out.width = w;
+  out.height = h;
+  ::SelectObject(mem, old);
+  ::DeleteObject(dib);
+  ::DeleteDC(mem);
+  return out;
+}
+
+PhiDragBitmap PhiWindowController::CaptureContentFromScreen() {
+  PhiDragBitmap out;
+  if (!browser_hwnd_ || !::IsWindow(browser_hwnd_) ||
+      !::IsWindowVisible(browser_hwnd_) || !shell_hwnd_ ||
+      ::IsIconic(shell_hwnd_)) {
+    return out;
+  }
+  // The child paints through DirectComposition, which PrintWindow cannot
+  // read (the same blindness captureWindow works around over CDP) — but
+  // the screen itself can be read back, and the page is on it right now.
+  RECT page = {};
+  ::GetWindowRect(browser_hwnd_, &page);
+  MONITORINFO monitor = {sizeof(monitor)};
+  if (!::GetMonitorInfoW(
+          ::MonitorFromWindow(browser_hwnd_, MONITOR_DEFAULTTONULL),
+          &monitor)) {
+    return out;
+  }
+  RECT visible = {};
+  if (!::IntersectRect(&visible, &page, &monitor.rcMonitor)) {
+    return out;
+  }
+  const int w = visible.right - visible.left;
+  const int h = visible.bottom - visible.top;
+  if (w < 32 || h < 32) {
+    return out;
+  }
+  // Downscale on the way in: the card is 220 DIPs wide, and four times that
+  // keeps the bicubic pass sharp without dragging a 4K frame around.
+  const int limit = Scaled(PhiDragImage::kCardWidth * 4);
+  const double scale =
+      std::min(1.0, static_cast<double>(limit) / std::max(w, h));
+  const int tw = std::max(1, static_cast<int>(w * scale));
+  const int th = std::max(1, static_cast<int>(h * scale));
+  BITMAPINFO info = {};
+  info.bmiHeader.biSize = sizeof(info.bmiHeader);
+  info.bmiHeader.biWidth = tw;
+  info.bmiHeader.biHeight = -th;
+  info.bmiHeader.biPlanes = 1;
+  info.bmiHeader.biBitCount = 32;
+  info.bmiHeader.biCompression = BI_RGB;
+  void* bits = nullptr;
+  HDC screen = ::GetDC(nullptr);
+  HDC mem = ::CreateCompatibleDC(screen);
+  HBITMAP dib =
+      ::CreateDIBSection(mem, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
+  if (!dib || !bits) {
+    if (dib) {
+      ::DeleteObject(dib);
+    }
+    ::DeleteDC(mem);
+    ::ReleaseDC(nullptr, screen);
+    return out;
+  }
+  HGDIOBJ old = ::SelectObject(mem, dib);
+  ::SetStretchBltMode(mem, HALFTONE);
+  ::SetBrushOrgEx(mem, 0, 0, nullptr);
+  const bool copied = ::StretchBlt(mem, 0, 0, tw, th, screen, visible.left,
+                                   visible.top, w, h, SRCCOPY) != FALSE;
+  ::GdiFlush();
+  if (copied) {
+    const size_t bytes = static_cast<size_t>(tw) * static_cast<size_t>(th) * 4;
+    // SAFETY: the DIB is tw x th at 32bpp, top-down — exactly `bytes`.
+    const auto pixels = UNSAFE_BUFFERS(base::span<const unsigned char>(
+        static_cast<const unsigned char*>(bits), bytes));
+    out.bgra.assign(pixels.begin(), pixels.end());
+    // Screen pixels carry no alpha; the card composes them premultiplied.
+    for (size_t i = 3; i < out.bgra.size(); i += 4) {
+      out.bgra[i] = 0xFF;
+    }
+    out.width = tw;
+    out.height = th;
+  }
+  ::SelectObject(mem, old);
+  ::DeleteObject(dib);
+  ::DeleteDC(mem);
+  ::ReleaseDC(nullptr, screen);
+  if (PhiDragBitmapIsUniform(out)) {
+    out = PhiDragBitmap();  // A page that has not painted yet is no page.
+  }
+  return out;
+}
+
+PhiDragCard PhiWindowController::BuildDragCard() {
+  PhiDragCard card;
+  const int64_t browser = active_browser_ ? active_browser_ : window_id_;
+  const std::vector<StripTab> strip =
+      framework_ ? ReadStrip(framework_, browser) : std::vector<StripTab>();
+  const auto copy_favicon = [](const std::vector<unsigned char>& bgra,
+                               int width, int height, PhiDragBitmap* out) {
+    if (!bgra.empty() && width > 0 && height > 0) {
+      out->bgra = bgra;
+      out->width = width;
+      out->height = height;
+    }
+  };
+  int tab_a = 0;
+  int tab_b = 0;
+  switch (drag_kind_) {
+    case DragKind::kTab: {
+      if (drag_index_ < 0 || drag_index_ >= static_cast<int>(tabs_.size())) {
+        return card;
+      }
+      const TabRow& row = tabs_[static_cast<size_t>(drag_index_)];
+      tab_a = row.id;
+      card.a.title = row.title;
+      copy_favicon(row.favicon, row.favicon_width, row.favicon_height,
+                   &card.a.favicon);
+      if (row.b_index >= 0) {
+        card.split = true;
+        card.stacked = SplitIsStacked(row.id);
+        tab_b = row.b_id;
+        card.b.title = row.b_title;
+        copy_favicon(row.b_favicon, row.b_favicon_width, row.b_favicon_height,
+                     &card.b.favicon);
+      }
+      break;
+    }
+    case DragKind::kPin:
+    case DragKind::kBookmark: {
+      const std::vector<ShortcutRow>& rows =
+          drag_kind_ == DragKind::kPin ? pinned_ : bookmarks_;
+      if (drag_index_ < 0 || drag_index_ >= static_cast<int>(rows.size())) {
+        return card;
+      }
+      const ShortcutRow& row = rows[static_cast<size_t>(drag_index_)];
+      card.a.title = row.title;
+      copy_favicon(row.favicon, row.favicon_width, row.favicon_height,
+                   &card.a.favicon);
+      // The press that armed the drag opened the row: its live tab is found
+      // by tag, which the cached view row may not know yet.
+      tab_a = LiveTabForStoredRow(strip, row.guid, row.open ? row.tab_id : 0);
+      if (!row.url_b.empty() || !row.partner_guid.empty()) {
+        card.split = true;
+        card.stacked = row.layout == "horizontal";
+        card.b.title = row.title_b;
+        copy_favicon(row.favicon_b, row.favicon_b_width, row.favicon_b_height,
+                     &card.b.favicon);
+        tab_b = row.partner_guid.empty()
+                    ? (row.open ? row.tab_id_b : 0)
+                    : LiveTabForStoredRow(strip, row.partner_guid,
+                                          row.tab_id_b);
+      }
+      break;
+    }
+    case DragKind::kChip:
+    case DragKind::kNone:
+      return card;
+  }
+  // What is on screen beats the cache (the Mac's live capture for the
+  // active tab): after the press, the dragged row's page is the one showing
+  // — and a split shows both panes at once, so the capture IS the composite.
+  bool showing = false;
+  for (const StripTab& tab : strip) {
+    if (tab.active && (tab.id == tab_a || (tab_b != 0 && tab.id == tab_b))) {
+      showing = true;
+      break;
+    }
+  }
+  if (showing) {
+    card.whole = CaptureContentFromScreen();
+  }
+  if (card.whole.empty() && framework_) {
+    const auto thumbnail = [&](int tab_id, PhiDragBitmap* out) {
+      if (tab_id == 0) {
+        return;
+      }
+      int width = 0;
+      int height = 0;
+      const unsigned char* pixels =
+          framework_->TabThumbnailBgra(browser, tab_id, &width, &height);
+      if (!pixels || width <= 0 || height <= 0) {
+        return;
+      }
+      // SAFETY: TabThumbnailBgra reports the dimensions of the buffer it
+      // just returned, the same contract TabFaviconBgra carries.
+      const auto copy = UNSAFE_BUFFERS(base::span<const unsigned char>(
+          pixels, static_cast<size_t>(width) * static_cast<size_t>(height) * 4));
+      out->bgra.assign(copy.begin(), copy.end());
+      out->width = width;
+      out->height = height;
+    };
+    thumbnail(tab_a, &card.a.snapshot);
+    if (card.split) {
+      thumbnail(tab_b, &card.b.snapshot);
+    }
+  }
+  return card;
+}
+
+bool PhiWindowController::TearOffStoredRow(DragKind kind,
+                                           int from_pos,
+                                           POINT release) {
+  const std::vector<ShortcutRow>& rows =
+      kind == DragKind::kPin ? pinned_ : bookmarks_;
+  if (!framework_ || from_pos < 0 ||
+      from_pos >= static_cast<int>(rows.size())) {
+    return false;
+  }
+  const ShortcutRow row = rows[static_cast<size_t>(from_pos)];
+  if (row.folder) {
+    return false;  // Nothing to open.
+  }
+  const int64_t browser = active_browser_ ? active_browser_ : window_id_;
+  std::vector<StripTab> strip = ReadStrip(framework_, browser);
+  // The press that armed the drag opened the row, so its live tab(s) are
+  // found by tag — the Mac's live-wrapper path. A row that failed to open
+  // has nothing to tear off.
+  const int id_a = LiveTabForStoredRow(strip, row.guid,
+                                       row.open ? row.tab_id : 0);
+  int id_b = 0;
+  if (!row.partner_guid.empty()) {
+    id_b = LiveTabForStoredRow(strip, row.partner_guid, row.tab_id_b);
+  } else if (!row.url_b.empty() && row.open) {
+    id_b = row.tab_id_b;  // A bookmark split's second pane carries no tag.
+  }
+  if (id_a == 0) {
+    return false;
+  }
+  // The stored row stays behind as an unopened placeholder: the Mac clears
+  // custom_value on every pane before the move, or the panes would snap
+  // back into the cell in the new window.
+  UnbindStoredTab(browser, id_a);
+  if (id_b != 0) {
+    UnbindStoredTab(browser, id_b);
+  }
+  strip = ReadStrip(framework_, browser);
+  const int index_a = StripIndexOfId(strip, id_a);
+  const int index_b = id_b != 0 ? StripIndexOfId(strip, id_b) : -1;
+  if (index_a < 0) {
+    return false;
+  }
+  // The drag image comes down first so the hit test cannot land on it.
+  PhiDragImage::Hide();
+  POINT screen = release;
+  ::ClientToScreen(shell_hwnd_, &screen);
+  const int64_t target =
+      host_ ? host_->SlotAtScreenPoint(screen, window_id_) : 0;
+  if (!target || !host_ ||
+      !host_->RequestDropTabOnWindow(window_id_, index_a, index_b, target)) {
+    if (host_) {
+      host_->NoteTearOffDrop(screen);
+    }
+    framework_->MoveTabsToNewWindow(browser, index_a, index_b);
+  }
+  RefreshTabs();
+  return true;
 }
 
 // --- Drop on the page: form or re-pane a split -----------------------------
@@ -3582,6 +4119,9 @@ int PhiWindowController::DragInsertSlot(POINT pt) {
       }
       return pinned_slot();
     case DragKind::kBookmark:
+      if (drag_band_ == DropBand::kOutside) {
+        return -1;  // The release tears off; there is no outline slot.
+      }
       for (const ShortcutRow& bookmark : bookmarks_) {
         if (pt.y > (bookmark.bounds.top + bookmark.bounds.bottom) / 2) {
           ++slot;
@@ -8228,7 +8768,7 @@ LRESULT CALLBACK PhiWindowController::FloatingSidebarProc(HWND hwnd,
           self->OnChromeClick(GET_X_LPARAM(lparam),
                               GET_Y_LPARAM(lparam) +
                                   self->floating_offset_y_);
-          self->CancelDrag();  // Drags never start from the panel.
+          self->AbortDrag();  // Drags never start from the panel.
         });
         return 0;
       }
@@ -9550,13 +10090,14 @@ void PhiWindowController::PaintSidebarBand(HDC dc,
     const ShortcutRow& pin = pinned_[pin_order_index];
     const bool pin_dragged =
         pin_sliding && static_cast<int>(pin_order_index) == drag_index_;
-    // The dragged cell floats at the cursor's grip; siblings glide by
-    // their slide offsets (both axes — a grid gap wraps rows).
+    if (pin_dragged && !drag_capture_) {
+      continue;  // It rides the drag image window; its slot is the gap.
+    }
+    // Siblings glide by their slide offsets (both axes — a grid gap wraps
+    // rows); the dragged cell is only ever painted here at home, lifted,
+    // for its snapshot.
     RECT cell = pin.bounds;
-    if (pin_dragged) {
-      ::OffsetRect(&cell, drag_point_.x - drag_grab_dx_ - pin.bounds.left,
-                   drag_point_.y - drag_grab_dy_ - pin.bounds.top);
-    } else if (drag_active_ && !layout.horizontal_tabs) {
+    if (!pin_dragged && drag_active_ && !layout.horizontal_tabs) {
       const SlideVec offset = RowSlideOffset(pin.guid);
       ::OffsetRect(&cell, static_cast<int>(offset.dx),
                    static_cast<int>(offset.dy));
@@ -9656,11 +10197,11 @@ void PhiWindowController::PaintSidebarBand(HDC dc,
     const bool bookmark_dragged =
         bookmark_sliding &&
         static_cast<int>(bookmark_order_index) == drag_index_;
+    if (bookmark_dragged && !drag_capture_) {
+      continue;  // It rides the drag image window; its slot is the gap.
+    }
     RECT pill = bookmark.bounds;
-    if (bookmark_dragged) {
-      ::OffsetRect(&pill, 0,
-                   drag_point_.y - drag_grab_dy_ - bookmark.bounds.top);
-    } else if (drag_active_ && !layout.horizontal_tabs) {
+    if (!bookmark_dragged && drag_active_ && !layout.horizontal_tabs) {
       const SlideVec offset = RowSlideOffset(bookmark.guid);
       ::OffsetRect(&pill, static_cast<int>(offset.dx),
                    static_cast<int>(offset.dy));
@@ -9883,25 +10424,13 @@ void PhiWindowController::PaintSidebarBand(HDC dc,
     }
     const bool is_dragged =
         sliding && static_cast<int>(order_index) == drag_index_;
-    if (is_dragged && rows_clip_active) {
-      // The floating row escapes the list viewport — it may hover the
-      // pinned grid or bookmark band above it.
-      ::RestoreDC(dc, rows_clip_save);
-      rows_clip_active = false;
+    if (is_dragged && !drag_capture_) {
+      continue;  // It rides the drag image window; its slot is the gap.
     }
+    // Siblings glide by their slide offsets; the dragged row is only ever
+    // painted here at home, lifted, for its snapshot.
     int dy = 0;
-    if (is_dragged) {
-      // The floating row keeps the cursor's grip — clamped to the list
-      // only while the list is the target; over the conversion bands it
-      // follows the cursor to them.
-      const int height = row.bounds.bottom - row.bounds.top;
-      int top = drag_point_.y - drag_grab_dy_;
-      if (drag_band_ == DropBand::kTabs) {
-        top = std::max(top, static_cast<int>(layout.tabs_top));
-        top = std::min(top, layout.tabs_limit - height);
-      }
-      dy = top - row.bounds.top;
-    } else if (sliding) {
+    if (!is_dragged && sliding) {
       dy = static_cast<int>(DragSlideOffset(row.id));
     }
     RECT pill = row.bounds;
@@ -10556,7 +11085,7 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
             self->host_->RequestSidebarWidth(self->sidebar_dip_);
           }
         }
-        self->CancelDrag();
+        self->AbortDrag();
       }
       return ::DefWindowProcW(hwnd, msg, wparam, lparam);
     case WM_SETCURSOR:

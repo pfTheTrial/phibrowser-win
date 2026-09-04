@@ -206,6 +206,8 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
                               int index,
                               int b_index,
                               int64_t target_slot) override;
+  void NoteTearOffDrop(POINT screen) override;
+  bool TakeTearOffDrop(POINT* screen) override;
   bool AlwaysShowBookmarkBar() const override;
   void SetAlwaysShowBookmarkBar(bool enabled) override;
   bool BookmarkBarOnNewTab() const override;
@@ -692,6 +694,11 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // browser is closed and respawned in the new profile, and these reopen
   // there when the replacement attaches.
   std::vector<std::string> pending_open_urls_;
+  // A tear-off's drop point, waiting for the new window it asked for (the
+  // Mac's pendingTearOffWindowPlacement): the next shell opens around it.
+  // `tear_off_drop_at_` is the tick it was noted at; 0 = none pending.
+  POINT tear_off_drop_{};
+  ULONGLONG tear_off_drop_at_ = 0;
   // A "+ Space & profile" request waiting for its profile to appear (profile
   // creation is asynchronous). Polled from a WM_TIMER on msg_hwnd_.
   int64_t pending_profile_slot_ = 0;

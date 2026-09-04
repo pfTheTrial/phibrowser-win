@@ -3569,6 +3569,28 @@ int64_t PhiCoordinator::SlotAtScreenPoint(POINT screen,
   return 0;
 }
 
+void PhiCoordinator::NoteTearOffDrop(POINT screen) {
+  tear_off_drop_ = screen;
+  tear_off_drop_at_ = ::GetTickCount64();
+}
+
+bool PhiCoordinator::TakeTearOffDrop(POINT* screen) {
+  if (!tear_off_drop_at_) {
+    return false;
+  }
+  // The Mac's tearOffPlacementTimeout: a tear-off the framework never
+  // answered must not place some unrelated window later.
+  constexpr ULONGLONG kTearOffPlacementTimeoutMs = 4000;
+  const bool fresh =
+      ::GetTickCount64() - tear_off_drop_at_ <= kTearOffPlacementTimeoutMs;
+  tear_off_drop_at_ = 0;
+  if (!fresh) {
+    return false;
+  }
+  *screen = tear_off_drop_;
+  return true;
+}
+
 bool PhiCoordinator::RequestDropTabOnWindow(int64_t source_slot,
                                             int index,
                                             int b_index,

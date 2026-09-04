@@ -19,6 +19,7 @@
 
 #include "base/memory/raw_ptr_exclusion.h"
 #include "chrome/browser/phinomenon/phi_framework/phi_framework_api.h"
+#include "phibrowser-win/client/phi_drag_image.h"
 #include "phibrowser-win/client/phi_feedback_window.h"
 #include "phibrowser-win/client/phi_split_drop.h"
 #include "phibrowser-win/client/phi_theme.h"
@@ -310,6 +311,14 @@ class PhiSlotHost {
                                       int index,
                                       int b_index,
                                       int64_t target_slot) = 0;
+  // Tear-off placement (the Mac's TabDraggingSession
+  // resolvedTearOffWindowFrame): the screen point a tab was dropped at
+  // outside every window, noted by the dragging controller just before it
+  // asks the framework for the new window, and taken by that window's
+  // constructor so it opens AROUND the drop instead of at the saved
+  // placement. Stale after a few seconds, in case no window ever came.
+  virtual void NoteTearOffDrop(POINT screen) = 0;
+  virtual bool TakeTearOffDrop(POINT* screen) = 0;
   // The bookmark bar's two visibility switches (the Mac View menu's
   // "Always Show Bookmark Bar" / "Show Bookmark Bar on New Tab").
   virtual bool AlwaysShowBookmarkBar() const = 0;
@@ -1057,9 +1066,7 @@ class PhiWindowController {
   std::map<std::string, SlideVec> row_slide_from_;
   std::map<std::string, SlideVec> row_slide_to_;
   ULONGLONG drag_slide_start_ = 0;         // Leg clock; 0 = idle.
-  POINT drag_point_{};                     // Cursor, for the floating row.
-  int drag_grab_dx_ = 0;                   // Cursor offset inside the row.
-  int drag_grab_dy_ = 0;
+  POINT drag_point_{};                     // Cursor, for the drop.
   // The tab that was FOCUSED when this drag was armed — the split drop's
   // other pane. It has to be captured at arming time: the same mouse-down
   // that arms a drag also activates the tab it grabbed (and OPENS the pinned
@@ -1070,6 +1077,52 @@ class PhiWindowController {
   double DragSlideOffset(int tab_id) const;
   SlideVec RowSlideOffset(const std::string& guid) const;
   void RetargetDragSlide();  // New targets for the current gap slot.
+
+  // THE DRAG IMAGE — the Mac's NSDraggingSession image with
+  // TabDraggingSession's switching: the dragged row's snapshot while the
+  // cursor is inside the sidebar, the page card once it leaves, and AppKit's
+  // slide-back when a drag ends inside the sidebar without effect. It lives
+  // in its own topmost layered window (PhiDragImage): the shell's DC cannot
+  // paint over the reparented Chromium child or past the window's edge,
+  // which is exactly where the old in-DC floating row vanished. While it is
+  // up, the painters leave the dragged element OUT of the chrome (its gap
+  // is what the siblings glide around).
+  //
+  // `drag_capture_` is the one exception: PaintChrome renders the dragged
+  // element at home, in its lifted style, so BeginDragImage can lift its
+  // pixels straight out of the frame — the Mac's createDraggingSnapshot.
+  bool drag_capture_ = false;
+  bool drag_image_inside_ = true;  // Last boundary verdict: row or card.
+  bool drag_card_built_ = false;   // The card is composed once per drag.
+  PhiDragCard drag_card_;
+  RECT drag_home_screen_{};  // The element's rect at lift-off, for the slide.
+  // The dragged element's own rect — the pill, the cell — in client coords.
+  RECT DragSourceRect();
+  // The Mac's drag-image boundary (containsTabDragBoundary): inside the
+  // sidebar's list band, or over ANOTHER shell window, the row image shows;
+  // elsewhere — the page, the header, off the window — the page card does.
+  bool DragImageInside(POINT client_pt);
+  void BeginDragImage(POINT client_pt);  // At drag activation.
+  void SyncDragImage(POINT client_pt);   // Every pointer move.
+  // After the drop: slides home when nothing happened and the pointer was
+  // still inside the sidebar; otherwise just takes the image down.
+  void EndDragImage(bool acted, bool inside);
+  // An external cancel (the capture was taken away, a panel press): the
+  // state goes and the image slides home or vanishes on the same rule.
+  void AbortDrag();
+  bool CommitDragImpl();  // True when the drop changed something.
+  // The page card's model for this drag: the dragged row's live page as
+  // seen on screen, else its cached thumbnail(s), else favicon + title.
+  PhiDragCard BuildDragCard();
+  // `client_rect` of the shell's chrome as it paints right now, opaque.
+  PhiDragBitmap CaptureChromeRect(const RECT& client_rect);
+  // The browser child's on-screen pixels, downscaled toward the card; empty
+  // when the page has not painted (uniform) or the child is not visible.
+  PhiDragBitmap CaptureContentFromScreen();
+  // A pinned row or bookmark released outside the window: its live tab(s)
+  // move to the shell under the cursor, else tear off into a new window —
+  // the Mac's live-wrapper tear-off, the stored row left behind unopened.
+  bool TearOffStoredRow(DragKind kind, int from_pos, POINT release);
   // The pinned grid's placement walk over arbitrary cell widths (1 or 2
   // slots) — layout uses it for the real cells, the drag preview with a
   // phantom cell spliced in at the insertion slot.
