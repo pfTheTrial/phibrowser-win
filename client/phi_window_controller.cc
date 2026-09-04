@@ -729,19 +729,29 @@ PhiWindowController::Layout PhiWindowController::ComputeLayout() {
     // overflow button at the toolbar's trailing edge, as Chrome's do.
     out.band_limit = 0;
 
+    // This band's controls sit on the TAB STRIP's centre line, not the
+    // band's: the strip starts kHTabStripTop below the top edge and runs to
+    // the band's bottom (where the active tab merges into the toolbar), so
+    // anything centred on the band reads half that inset high against the
+    // tabs it flanks. band_control's band centre is right for the layouts
+    // whose band carries nothing but these controls.
+    const int strip_mid = (Scaled(kHTabStripTop) + tb) / 2;
     // The Phi button leads the band — the corner the Mac's menu bar gives
     // the Phi menu, and where the vertical layouts start their titles. The
     // active Space's compact pip follows it (the Mac clears the traffic
     // lights with 80pt; Windows has none, so the edge inset does).
-    out.phi_menu = {inset, (tb - btn) / 2, inset + btn, (tb + btn) / 2};
+    out.phi_menu = {inset, strip_mid - btn / 2, inset + btn,
+                    strip_mid + btn / 2};
     out.chips_left = out.phi_menu.right + Scaled(kTopBarSpacing);
-    out.chips_top = (tb - Scaled(kSpaceChip)) / 2;
+    out.chips_top = strip_mid - Scaled(kSpaceChip) / 2;
     // One compact pip.
     out.chips_limit = out.chips_left + Scaled(kSpaceChip);
     // search-tabs keeps the trailing spot the vertical layouts park it in,
-    // so the button does not move when the layout does.
-    out.search_tabs =
-        band_control(out.caption_min.left - Scaled(kBandTrailingGap));
+    // so the button does not move when the layout does — on the strip's
+    // line here, the band's there.
+    const int search_right = out.caption_min.left - Scaled(kBandTrailingGap);
+    out.search_tabs = {search_right - btn, strip_mid - btn / 2, search_right,
+                       strip_mid + btn / 2};
     // The "+" follows the last tab; the strip is full when the next tab
     // would need the room the button is holding.
     const int new_tab_gap = Scaled(kTopBarSpacing);
@@ -5913,17 +5923,19 @@ void PhiWindowController::RebuildTabs() {
     tabs_.push_back(std::move(row));
   }
   if (layout.horizontal_tabs) {
-    // The "+" follows the last tab, centred in the band. It only exists
-    // once the strip's width is known, which is here and not in the layout.
+    // The "+" follows the last tab, centred on the strip's line — the tabs
+    // run from tabs_top to the band's bottom edge, and the band's other
+    // controls are centred on that same line. It only exists once the
+    // strip's width is known, which is here and not in the layout.
     const int btn = Scaled(kNavButton);
     const int gap = Scaled(kTopBarSpacing);
     const int left = x + gap;
+    const int strip_mid = (layout.tabs_top + layout.title_bar.bottom) / 2;
     // tabs_limit already held this button's room back from the strip, so it
     // fits unless the tabs overran — clamp rather than draw under search.
     add_tab_button_ = left + btn + gap <= layout.search_tabs.left
-                          ? RECT{left, (layout.title_bar.bottom - btn) / 2,
-                                 left + btn,
-                                 (layout.title_bar.bottom + btn) / 2}
+                          ? RECT{left, strip_mid - btn / 2, left + btn,
+                                 strip_mid + btn / 2}
                           : RECT{};
   } else {
     add_tab_button_ = RECT{};
@@ -8545,9 +8557,24 @@ void PhiWindowController::PaintChrome(HDC dc,
     HGDIOBJ previous_caption =
         caption_font_ ? ::SelectObject(dc, caption_font_) : nullptr;
     const bool zoomed = shell_hwnd_ && ::IsZoomed(shell_hwnd_);
-    DrawGlyph(dc, layout.caption_min, L"\uE921", kLabel);
-    DrawGlyph(dc, layout.caption_max, zoomed ? L"\uE923" : L"\uE922", kLabel);
-    DrawGlyph(dc, layout.caption_close, L"\uE8BB",
+    // Comfortable's band carries the tab strip, and everything on it sits on
+    // the STRIP's line rather than the band's — the caption glyphs follow, so
+    // the trio reads level with search-tabs next to it. Only the glyphs move:
+    // the buttons keep the full band height, which is the Win11 hit target
+    // (and the hover wash) whatever the glyph inside is doing.
+    const int glyph_drop =
+        layout.mode == PhiLayoutMode::kComfortable
+            ? (layout.tabs_top + layout.title_bar.bottom) / 2 -
+                  (layout.title_bar.top + layout.title_bar.bottom) / 2
+            : 0;
+    const auto glyph_rc = [&](const RECT& rc) {
+      return RECT{rc.left, rc.top + glyph_drop, rc.right,
+                  rc.bottom + glyph_drop};
+    };
+    DrawGlyph(dc, glyph_rc(layout.caption_min), L"\uE921", kLabel);
+    DrawGlyph(dc, glyph_rc(layout.caption_max),
+              zoomed ? L"\uE923" : L"\uE922", kLabel);
+    DrawGlyph(dc, glyph_rc(layout.caption_close), L"\uE8BB",
               hot_caption_ == HTCLOSE ? RGB(0xFF, 0xFF, 0xFF) : kLabel);
     if (previous_caption) {
       ::SelectObject(dc, previous_caption);
