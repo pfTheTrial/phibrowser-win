@@ -1,0 +1,708 @@
+// Copyright 2026 The Fyde Innovations Limited. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#include "phibrowser-win/client/phi_popup_chrome.h"
+
+#include <commctrl.h>
+#include <dwmapi.h>
+#include <uxtheme.h>
+#include <windowsx.h>
+
+#include <algorithm>
+#include <iterator>
+#include <vector>
+
+#include "phibrowser-win/client/phi_dwrite.h"
+#include "phibrowser-win/client/phi_icons.h"
+
+#pragma comment(lib, "comctl32.lib")
+#pragma comment(lib, "dwmapi.lib")
+#pragma comment(lib, "uxtheme.lib")
+
+namespace phi_client {
+
+namespace {
+
+// The band and the Win11 caption-button metric, in design units.
+constexpr int kCaptionHeight = 32;
+constexpr int kCaptionButtonWidth = 46;
+constexpr int kMarkSize = 16;
+constexpr int kMarkInset = 12;
+// PhiAlertButton: radius 8, 13pt label; disabled at 0.55, pressed at 0.78.
+constexpr int kButtonRadius = 8;
+constexpr int kWellRadius = 8;
+// Segoe MDL2 Assets — the OS caption buttons' own glyphs.
+constexpr wchar_t kGlyphMinimize[] = L"\uE921";
+constexpr wchar_t kGlyphMaximize[] = L"\uE922";
+constexpr wchar_t kGlyphRestore[] = L"\uE923";
+constexpr wchar_t kGlyphClose[] = L"\uE8BB";
+constexpr COLORREF kCloseHot = RGB(0xC4, 0x2B, 0x1C);
+
+// Newer DWM attributes than the SDK headers we build against may declare.
+constexpr DWORD kDwmUseImmersiveDarkMode = 20;
+constexpr DWORD kDwmWindowCornerPreference = 33;
+constexpr DWORD kDwmBorderColor = 34;
+constexpr DWORD kDwmCornerRound = 2;
+
+const PhiPalette* g_live_palette = nullptr;
+
+// The owner-draw button's role and hover state, kept on a subclass so the
+// parent's WM_DRAWITEM can read them back.
+struct ButtonState {
+  PhiPopupButtonRole role = PhiPopupButtonRole::kSecondary;
+  bool hot = false;
+};
+
+constexpr UINT_PTR kButtonSubclassId = 0x5049;  // 'PI'
+
+LRESULT CALLBACK ButtonProc(HWND hwnd,
+                            UINT msg,
+                            WPARAM wparam,
+                            LPARAM lparam,
+                            UINT_PTR id,
+                            DWORD_PTR data) {
+  auto* state = reinterpret_cast<ButtonState*>(data);
+  switch (msg) {
+    case WM_NCDESTROY:
+      ::RemoveWindowSubclass(hwnd, &ButtonProc, id);
+      delete state;
+      break;
+    case WM_MOUSEMOVE:
+      if (state && !state->hot) {
+        state->hot = true;
+        TRACKMOUSEEVENT track = {sizeof(track), TME_LEAVE, hwnd, 0};
+        ::TrackMouseEvent(&track);
+        ::InvalidateRect(hwnd, nullptr, FALSE);
+      }
+      break;
+    case WM_MOUSELEAVE:
+      if (state && state->hot) {
+        state->hot = false;
+        ::InvalidateRect(hwnd, nullptr, FALSE);
+      }
+      break;
+    case WM_ERASEBKGND:
+      return 1;  // The owner-draw paints every pixel.
+    case WM_SETCURSOR:
+      if (state && state->role == PhiPopupButtonRole::kLink) {
+        ::SetCursor(::LoadCursorW(nullptr, IDC_HAND));
+        return TRUE;
+      }
+      break;
+    default:
+      break;
+  }
+  return ::DefSubclassProc(hwnd, msg, wparam, lparam);
+}
+
+void SetFace(LOGFONTW* lf, const wchar_t* face) {
+  const std::wstring name(face);
+  std::fill(std::begin(lf->lfFaceName), std::end(lf->lfFaceName), L'\0');
+  std::copy_n(name.begin(),
+              std::min(name.size(), std::size(lf->lfFaceName) - 1),
+              std::begin(lf->lfFaceName));
+}
+
+int Border(UINT dpi, bool vertical) {
+  return ::GetSystemMetricsForDpi(vertical ? SM_CYSIZEFRAME : SM_CXSIZEFRAME,
+                                  dpi) +
+         ::GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
+}
+
+}  // namespace
+
+PhiPopupColors PhiPopupColorsFor(bool dark, COLORREF accent) {
+  PhiPopupColors c;
+  c.dark = dark;
+  c.bg = dark ? RGB(0x25, 0x25, 0x25) : RGB(0xEA, 0xEA, 0xEA);
+  c.ink = dark ? RGB(0xFF, 0xFF, 0xFF) : RGB(0, 0, 0);
+  c.label = dark ? PhiPopupBlend(c.ink, c.bg, 204) : RGB(0x26, 0x26, 0x26);
+  c.label_strong = c.ink;
+  c.secondary = dark ? RGB(0xB3, 0xB3, 0xB3) : RGB(0x66, 0x66, 0x66);
+  c.tertiary = PhiPopupBlend(c.ink, c.bg, 77);
+  // controlBackgroundColor: white / the Mac's #1E1E1E control ground.
+  c.card = dark ? RGB(0x1E, 0x1E, 0x1E) : RGB(0xFF, 0xFF, 0xFF);
+  c.card_border = PhiPopupBlend(c.ink, c.bg, 20);
+  c.separator = PhiPopupBlend(c.ink, c.bg, 15);
+  c.well = PhiPopupBlend(c.ink, c.bg, dark ? 20 : 13);
+  c.hover = PhiPopupBlend(c.ink, c.bg, dark ? 26 : 16);
+  c.accent = accent;
+  // themeColorOnHover: the accent nudged 5% darker (light) / lighter (dark).
+  c.accent_hover = dark ? PhiPopupBlend(RGB(0xFF, 0xFF, 0xFF), accent, 26)
+                        : PhiPopupBlend(RGB(0, 0, 0), accent, 26);
+  const int grey = dark ? 0x3D : 0xE0;        // calibratedWhite 0.24 / 0.88
+  const int grey_hot = dark ? 0x4D : 0xD1;    // 0.30 / 0.82
+  c.button = RGB(grey, grey, grey);
+  c.button_hover = RGB(grey_hot, grey_hot, grey_hot);
+  c.destructive = dark ? RGB(0xFF, 0x45, 0x3A) : RGB(0xFF, 0x3B, 0x30);
+  c.destructive_hover = PhiPopupBlend(c.bg, c.destructive, 46);  // 0.82
+  c.warning = dark ? RGB(0xFF, 0xD6, 0x0A) : RGB(0xB0, 0x80, 0x00);
+  c.error = dark ? RGB(0xFF, 0x6B, 0x6B) : RGB(0xC0, 0x1E, 0x1E);
+  return c;
+}
+
+PhiPopupColors PhiPopupColorsNow() {
+  if (g_live_palette) {
+    return PhiPopupColorsFor(g_live_palette->dark, g_live_palette->accent);
+  }
+  const bool dark = PhiSystemPrefersDark();
+  return PhiPopupColorsFor(dark, dark ? RGB(0x1E, 0x70, 0x99)
+                                      : RGB(0x3A, 0xA4, 0xD5));
+}
+
+void PhiSetPopupPalette(const PhiPalette* live) {
+  g_live_palette = live;
+}
+
+COLORREF PhiPopupBlend(COLORREF over, COLORREF base, int alpha) {
+  auto mix = [&](int a, int b) { return (a * alpha + b * (255 - alpha)) / 255; };
+  return RGB(mix(GetRValue(over), GetRValue(base)),
+             mix(GetGValue(over), GetGValue(base)),
+             mix(GetBValue(over), GetBValue(base)));
+}
+
+void PhiPopupFillRounded(HDC dc, const RECT& r, COLORREF fill, int radius) {
+  if (r.right <= r.left || r.bottom <= r.top) {
+    return;
+  }
+  if (PhiFillRoundRectAA(dc, r, radius, fill)) {
+    return;
+  }
+  HBRUSH brush = ::CreateSolidBrush(fill);
+  HGDIOBJ old_brush = ::SelectObject(dc, brush);
+  HGDIOBJ old_pen = ::SelectObject(dc, ::GetStockObject(NULL_PEN));
+  ::RoundRect(dc, r.left, r.top, r.right + 1, r.bottom + 1, radius * 2,
+              radius * 2);
+  ::SelectObject(dc, old_pen);
+  ::SelectObject(dc, old_brush);
+  ::DeleteObject(brush);
+}
+
+void PhiPopupStrokeRounded(HDC dc,
+                           const RECT& r,
+                           COLORREF fill,
+                           COLORREF border,
+                           int radius,
+                           int width) {
+  if (r.right <= r.left || r.bottom <= r.top) {
+    return;
+  }
+  if (PhiFillRoundRectAA(dc, r, radius, fill) &&
+      PhiStrokeRoundRectAA(dc, r, radius, border, width)) {
+    return;
+  }
+  HBRUSH brush = ::CreateSolidBrush(fill);
+  HPEN pen = ::CreatePen(PS_SOLID, width, border);
+  HGDIOBJ old_brush = ::SelectObject(dc, brush);
+  HGDIOBJ old_pen = ::SelectObject(dc, pen);
+  ::RoundRect(dc, r.left, r.top, r.right, r.bottom, radius * 2, radius * 2);
+  ::SelectObject(dc, old_pen);
+  ::SelectObject(dc, old_brush);
+  ::DeleteObject(pen);
+  ::DeleteObject(brush);
+}
+
+HFONT PhiPopupFont(UINT dpi, int size, int weight) {
+  NONCLIENTMETRICSW metrics = {};
+  metrics.cbSize = sizeof(metrics);
+  LOGFONTW lf = {};
+  if (::SystemParametersInfoForDpi(SPI_GETNONCLIENTMETRICS, sizeof(metrics),
+                                   &metrics, 0, dpi)) {
+    lf = metrics.lfMessageFont;
+  } else {
+    SetFace(&lf, L"Segoe UI");
+    lf.lfQuality = CLEARTYPE_QUALITY;
+  }
+  lf.lfHeight = -::MulDiv(size, static_cast<int>(dpi), 96);
+  lf.lfWeight = weight;
+  return ::CreateFontIndirectW(&lf);
+}
+
+HFONT PhiPopupGlyphFont(UINT dpi) {
+  LOGFONTW lf = {};
+  SetFace(&lf, L"Segoe MDL2 Assets");
+  lf.lfHeight = -::MulDiv(10, static_cast<int>(dpi), 96);
+  lf.lfWeight = FW_NORMAL;
+  lf.lfCharSet = DEFAULT_CHARSET;
+  lf.lfQuality = CLEARTYPE_QUALITY;
+  return ::CreateFontIndirectW(&lf);
+}
+
+void PhiPopupStyleButton(HWND button, PhiPopupButtonRole role) {
+  if (!button) {
+    return;
+  }
+  auto* state = new ButtonState;
+  state->role = role;
+  if (!::SetWindowSubclass(button, &ButtonProc, kButtonSubclassId,
+                           reinterpret_cast<DWORD_PTR>(state))) {
+    delete state;
+    return;
+  }
+  // BS_OWNERDRAW is a button TYPE — it replaces push / default-push.
+  LONG_PTR style = ::GetWindowLongPtrW(button, GWL_STYLE);
+  style = (style & ~static_cast<LONG_PTR>(BS_TYPEMASK)) | BS_OWNERDRAW;
+  ::SetWindowLongPtrW(button, GWL_STYLE, style);
+}
+
+void PhiPopupPaintButton(HDC dc,
+                         const RECT& bounds,
+                         const std::wstring& text,
+                         PhiPopupButtonRole role,
+                         bool hot,
+                         bool pressed,
+                         bool enabled,
+                         const PhiPopupColors& colors,
+                         HFONT font,
+                         UINT dpi) {
+  const int radius = ::MulDiv(kButtonRadius, static_cast<int>(dpi), 96);
+  COLORREF fill = colors.button;
+  COLORREF ink = colors.label;
+  switch (role) {
+    case PhiPopupButtonRole::kPrimary:
+      fill = hot ? colors.accent_hover : colors.accent;
+      ink = RGB(0xFF, 0xFF, 0xFF);
+      break;
+    case PhiPopupButtonRole::kSecondary:
+      fill = hot ? colors.button_hover : colors.button;
+      break;
+    case PhiPopupButtonRole::kDestructive:
+      fill = hot ? colors.destructive_hover : colors.destructive;
+      ink = RGB(0xFF, 0xFF, 0xFF);
+      break;
+    case PhiPopupButtonRole::kLink:
+      fill = colors.bg;
+      ink = colors.accent;
+      break;
+  }
+  if (!enabled) {
+    // The Mac dims the whole button to 0.55.
+    fill = PhiPopupBlend(fill, colors.bg, 140);
+    ink = PhiPopupBlend(ink, colors.bg, 140);
+  } else if (pressed) {
+    fill = PhiPopupBlend(fill, colors.bg, 199);  // 0.78
+  }
+  HBRUSH ground = ::CreateSolidBrush(colors.bg);
+  ::FillRect(dc, &bounds, ground);
+  ::DeleteObject(ground);
+  if (role != PhiPopupButtonRole::kLink) {
+    PhiPopupFillRounded(dc, bounds, fill, radius);
+  }
+  ::SetBkMode(dc, TRANSPARENT);
+  ::SetTextColor(dc, ink);
+  HGDIOBJ previous = font ? ::SelectObject(dc, font) : nullptr;
+  RECT text_rc = bounds;
+  ::DrawTextW(dc, text.c_str(), -1, &text_rc,
+              DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+  if (role == PhiPopupButtonRole::kLink && hot && enabled) {
+    // The Mac's inline link: underlined while hovered.
+    RECT measure = bounds;
+    ::DrawTextW(dc, text.c_str(), -1, &measure,
+                DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX);
+    const int w = measure.right - measure.left;
+    const int x = (bounds.left + bounds.right - w) / 2;
+    const int y = (bounds.top + bounds.bottom + (measure.bottom - measure.top)) /
+                      2 -
+                  1;
+    RECT line = {x, y, x + w, y + 1};
+    HBRUSH under = ::CreateSolidBrush(ink);
+    ::FillRect(dc, &line, under);
+    ::DeleteObject(under);
+  }
+  if (previous) {
+    ::SelectObject(dc, previous);
+  }
+}
+
+bool PhiPopupDrawButton(const DRAWITEMSTRUCT& item,
+                        const PhiPopupColors& colors,
+                        HFONT font) {
+  if (item.CtlType != ODT_BUTTON) {
+    return false;
+  }
+  DWORD_PTR data = 0;
+  ButtonState* state =
+      ::GetWindowSubclass(item.hwndItem, &ButtonProc, kButtonSubclassId,
+                          &data)
+          ? reinterpret_cast<ButtonState*>(data)
+          : nullptr;
+  const PhiPopupButtonRole role =
+      state ? state->role : PhiPopupButtonRole::kSecondary;
+  wchar_t text[256] = {};
+  ::GetWindowTextW(item.hwndItem, text, 255);
+  HFONT face = font ? font
+                    : reinterpret_cast<HFONT>(
+                          ::SendMessageW(item.hwndItem, WM_GETFONT, 0, 0));
+  PhiPopupPaintButton(item.hDC, item.rcItem, text, role, state && state->hot,
+                      (item.itemState & ODS_SELECTED) != 0,
+                      (item.itemState & ODS_DISABLED) == 0, colors, face,
+                      ::GetDpiForWindow(item.hwndItem));
+  return true;
+}
+
+void PhiPopupPaintWell(HDC dc,
+                       const RECT& bounds,
+                       const PhiPopupColors& c,
+                       UINT dpi) {
+  const int radius = ::MulDiv(kWellRadius, static_cast<int>(dpi), 96);
+  PhiPopupStrokeRounded(dc, bounds, c.card, c.card_border, radius, 1);
+}
+
+void PhiPopupThemeControl(HWND control, bool dark) {
+  if (!control) {
+    return;
+  }
+  ::SetWindowTheme(control, dark ? L"DarkMode_Explorer" : L"Explorer",
+                   nullptr);
+}
+
+PhiPopupChrome::PhiPopupChrome() = default;
+
+PhiPopupChrome::~PhiPopupChrome() {
+  for (HFONT font : {title_font_, glyph_font_}) {
+    if (font) {
+      ::DeleteObject(font);
+    }
+  }
+}
+
+void PhiPopupChrome::Attach(HWND hwnd,
+                            unsigned buttons,
+                            const PhiPopupColors& colors) {
+  hwnd_ = hwnd;
+  buttons_ = buttons;
+  if (const UINT dpi = ::GetDpiForWindow(hwnd)) {
+    dpi_ = dpi;
+  }
+  EnsureFonts();
+  ApplyColors(colors);
+  if (HICON big = PhiAppIcon(32)) {
+    ::SendMessageW(hwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(big));
+  }
+  if (HICON small_icon = PhiAppIcon(16)) {
+    ::SendMessageW(hwnd, WM_SETICON, ICON_SMALL,
+                   reinterpret_cast<LPARAM>(small_icon));
+  }
+  // Re-run WM_NCCALCSIZE so the caption is ours from the first paint.
+  ::SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE |
+                     SWP_FRAMECHANGED);
+}
+
+void PhiPopupChrome::ApplyColors(const PhiPopupColors& colors) {
+  if (!hwnd_) {
+    return;
+  }
+  const BOOL dark = colors.dark ? TRUE : FALSE;
+  ::DwmSetWindowAttribute(hwnd_, kDwmUseImmersiveDarkMode, &dark,
+                          sizeof(dark));
+  const DWORD corner = kDwmCornerRound;
+  ::DwmSetWindowAttribute(hwnd_, kDwmWindowCornerPreference, &corner,
+                          sizeof(corner));
+  // The 1px DWM edge takes the ground's own separator, not the OS accent.
+  const COLORREF edge = PhiPopupBlend(colors.ink, colors.bg, 46);
+  ::DwmSetWindowAttribute(hwnd_, kDwmBorderColor, &edge, sizeof(edge));
+}
+
+int PhiPopupChrome::Scaled(int design) const {
+  return ::MulDiv(design, static_cast<int>(dpi_), 96);
+}
+
+int PhiPopupChrome::CaptionHeight() const {
+  return Scaled(kCaptionHeight);
+}
+
+SIZE PhiPopupChrome::OuterSize(int content_w, int content_h) const {
+  SIZE size = {Scaled(content_w) + 2 * Border(dpi_, false),
+               Scaled(content_h + kCaptionHeight) + Border(dpi_, true)};
+  return size;
+}
+
+RECT PhiPopupChrome::ContentRect() const {
+  RECT client = {};
+  if (hwnd_) {
+    ::GetClientRect(hwnd_, &client);
+  }
+  client.top = std::min<LONG>(client.top + CaptionHeight(), client.bottom);
+  return client;
+}
+
+void PhiPopupChrome::EnsureFonts() {
+  if (font_dpi_ == dpi_ && title_font_ && glyph_font_) {
+    return;
+  }
+  HFONT title = PhiPopupFont(dpi_, 13, FW_SEMIBOLD);
+  HFONT glyph = PhiPopupGlyphFont(dpi_);
+  if (!title || !glyph) {
+    for (HFONT font : {title, glyph}) {
+      if (font) {
+        ::DeleteObject(font);
+      }
+    }
+    return;
+  }
+  for (HFONT font : {title_font_, glyph_font_}) {
+    if (font) {
+      ::DeleteObject(font);
+    }
+  }
+  title_font_ = title;
+  glyph_font_ = glyph;
+  font_dpi_ = dpi_;
+}
+
+RECT PhiPopupChrome::ButtonRect(int hit_code) const {
+  RECT client = {};
+  if (hwnd_) {
+    ::GetClientRect(hwnd_, &client);
+  }
+  const int w = Scaled(kCaptionButtonWidth);
+  const int h = CaptionHeight();
+  int right = client.right;
+  // Trailing to leading: close, maximize, minimize.
+  for (const auto [flag, code] :
+       {std::pair{kPhiCaptionClose, HTCLOSE},
+        std::pair{kPhiCaptionMaximize, HTMAXBUTTON},
+        std::pair{kPhiCaptionMinimize, HTMINBUTTON}}) {
+    if (!(buttons_ & flag)) {
+      continue;
+    }
+    if (code == hit_code) {
+      return RECT{right - w, 0, right, h};
+    }
+    right -= w;
+  }
+  return RECT{0, 0, 0, 0};
+}
+
+int PhiPopupChrome::HitTestCaption(POINT pt) const {
+  if (pt.y < 0 || pt.y >= CaptionHeight()) {
+    return HTCLIENT;
+  }
+  for (const int code : {HTCLOSE, HTMAXBUTTON, HTMINBUTTON}) {
+    const RECT rc = ButtonRect(code);
+    if (rc.right > rc.left && ::PtInRect(&rc, pt)) {
+      return code;
+    }
+  }
+  return HTCAPTION;
+}
+
+void PhiPopupChrome::SetHot(int hit_code) {
+  if (hot_ == hit_code) {
+    return;
+  }
+  hot_ = hit_code;
+  InvalidateBand();
+}
+
+void PhiPopupChrome::InvalidateBand() {
+  if (!hwnd_) {
+    return;
+  }
+  RECT client = {};
+  ::GetClientRect(hwnd_, &client);
+  client.bottom = std::min<LONG>(client.bottom, CaptionHeight());
+  ::InvalidateRect(hwnd_, &client, FALSE);
+}
+
+bool PhiPopupChrome::HandleMessage(UINT msg,
+                                   WPARAM wparam,
+                                   LPARAM lparam,
+                                   LRESULT* result) {
+  if (!hwnd_) {
+    return false;
+  }
+  const bool resizable =
+      (::GetWindowLongPtrW(hwnd_, GWL_STYLE) & WS_THICKFRAME) != 0;
+  switch (msg) {
+    case WM_NCCALCSIZE: {
+      // Claim the OS caption for the client (the band is drawn there);
+      // only the thin side/bottom borders stay non-client. BOTH wparam
+      // forms matter — the first calc at creation is the FALSE one, and
+      // skipping it leaves the OS caption alive.
+      RECT* rect = wparam == TRUE
+                       ? &reinterpret_cast<NCCALCSIZE_PARAMS*>(lparam)->rgrc[0]
+                       : reinterpret_cast<RECT*>(lparam);
+      const UINT dpi = ::GetDpiForWindow(hwnd_);
+      const int border_x = Border(dpi, false);
+      const int border_y = Border(dpi, true);
+      rect->left += border_x;
+      rect->right -= border_x;
+      rect->bottom -= border_y;
+      if (::IsZoomed(hwnd_)) {
+        rect->top += border_y;  // Maximized frames overhang the monitor.
+      }
+      *result = 0;
+      return true;
+    }
+    case WM_NCHITTEST: {
+      const LRESULT hit = ::DefWindowProcW(hwnd_, msg, wparam, lparam);
+      if (hit != HTCLIENT) {
+        *result = hit;  // The real borders.
+        return true;
+      }
+      POINT pt = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+      ::ScreenToClient(hwnd_, &pt);
+      if (resizable && !::IsZoomed(hwnd_) &&
+          pt.y < Border(::GetDpiForWindow(hwnd_), true)) {
+        *result = HTTOP;  // The band's first pixels still resize.
+        return true;
+      }
+      *result = HitTestCaption(pt);
+      return true;
+    }
+    case WM_NCMOUSEMOVE: {
+      const int code = static_cast<int>(wparam);
+      SetHot(code == HTMINBUTTON || code == HTMAXBUTTON || code == HTCLOSE
+                 ? code
+                 : 0);
+      TRACKMOUSEEVENT track = {sizeof(track), TME_LEAVE | TME_NONCLIENT,
+                               hwnd_, 0};
+      ::TrackMouseEvent(&track);
+      *result = 0;
+      return true;
+    }
+    case WM_NCMOUSELEAVE:
+      SetHot(0);
+      pressed_ = 0;
+      *result = 0;
+      return true;
+    case WM_MOUSEMOVE:
+      SetHot(0);  // Client moves mean we left the window controls.
+      return false;
+    case WM_NCLBUTTONDOWN:
+      // Swallow presses on the drawn window controls; the action fires on
+      // release over the same button, like the OS ones.
+      if (wparam == HTMINBUTTON || wparam == HTMAXBUTTON ||
+          wparam == HTCLOSE) {
+        pressed_ = static_cast<int>(wparam);
+        *result = 0;
+        return true;
+      }
+      break;
+    case WM_NCLBUTTONUP:
+      if (pressed_) {
+        const int pressed = pressed_;
+        pressed_ = 0;
+        if (static_cast<int>(wparam) == pressed) {
+          if (pressed == HTMINBUTTON) {
+            ::ShowWindow(hwnd_, SW_MINIMIZE);
+          } else if (pressed == HTMAXBUTTON) {
+            ::ShowWindow(hwnd_, ::IsZoomed(hwnd_) ? SW_RESTORE : SW_MAXIMIZE);
+          } else {
+            ::PostMessageW(hwnd_, WM_CLOSE, 0, 0);
+          }
+        }
+        *result = 0;
+        return true;
+      }
+      break;
+    case WM_NCLBUTTONDBLCLK:
+      if (wparam == HTCAPTION && !(buttons_ & kPhiCaptionMaximize)) {
+        *result = 0;  // Nothing to zoom to.
+        return true;
+      }
+      break;
+    case WM_ACTIVATE:
+    case WM_SIZE:
+    case WM_SETTEXT:
+      InvalidateBand();  // Title dims when inactive; buttons move on resize.
+      return false;
+    case WM_DPICHANGED:
+      dpi_ = HIWORD(wparam);
+      EnsureFonts();
+      return false;
+    default:
+      break;
+  }
+  return false;
+}
+
+void PhiPopupChrome::PaintCaption(HDC dc,
+                                  const PhiPopupColors& colors,
+                                  bool show_mark,
+                                  const wchar_t* title) {
+  if (!hwnd_) {
+    return;
+  }
+  EnsureFonts();
+  RECT client = {};
+  ::GetClientRect(hwnd_, &client);
+  const int h = CaptionHeight();
+  RECT band = {0, 0, client.right, h};
+  HBRUSH ground = ::CreateSolidBrush(colors.bg);
+  ::FillRect(dc, &band, ground);
+  ::DeleteObject(ground);
+  ::SetBkMode(dc, TRANSPARENT);
+
+  const bool active = ::GetActiveWindow() == hwnd_;
+  if (show_mark) {
+    const std::vector<unsigned char>& logo = PhiLogoBgra256();
+    if (!logo.empty()) {
+      const int mark = Scaled(kMarkSize);
+      RECT mark_rc = {Scaled(kMarkInset), (h - mark) / 2,
+                      Scaled(kMarkInset) + mark, (h + mark) / 2};
+      PhiDrawBgra(dc, mark_rc, logo.data(), 256, 256);
+    }
+  }
+
+  wchar_t text[256] = {};
+  if (!title) {
+    ::GetWindowTextW(hwnd_, text, 255);
+    title = text;
+  }
+  if (*title) {
+    // Centred between the mark and the button cluster, never under either.
+    int left = show_mark ? Scaled(kMarkInset * 2 + kMarkSize) : Scaled(12);
+    int right = client.right;
+    for (const int code : {HTCLOSE, HTMAXBUTTON, HTMINBUTTON}) {
+      const RECT rc = ButtonRect(code);
+      if (rc.right > rc.left) {
+        right = std::min<int>(right, rc.left);
+      }
+    }
+    const int reserve = std::max(left, static_cast<int>(client.right) - right);
+    RECT title_rc = {reserve, 0, client.right - reserve, h};
+    HGDIOBJ previous = title_font_ ? ::SelectObject(dc, title_font_) : nullptr;
+    ::SetTextColor(dc, active ? colors.label : colors.tertiary);
+    ::DrawTextW(dc, title, -1, &title_rc,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX |
+                    DT_END_ELLIPSIS);
+    if (previous) {
+      ::SelectObject(dc, previous);
+    }
+  }
+
+  // The window controls: the hot fill first (close turns the Win11 red),
+  // then the OS buttons' own glyphs.
+  HGDIOBJ previous = glyph_font_ ? ::SelectObject(dc, glyph_font_) : nullptr;
+  const bool zoomed = ::IsZoomed(hwnd_);
+  for (const auto [code, glyph] :
+       {std::pair{HTMINBUTTON, kGlyphMinimize},
+        std::pair{HTMAXBUTTON, zoomed ? kGlyphRestore : kGlyphMaximize},
+        std::pair{HTCLOSE, kGlyphClose}}) {
+    const RECT rc = ButtonRect(code);
+    if (rc.right <= rc.left) {
+      continue;
+    }
+    COLORREF ink = active ? colors.label : colors.tertiary;
+    if (hot_ == code) {
+      const bool close = code == HTCLOSE;
+      HBRUSH fill = ::CreateSolidBrush(close ? kCloseHot : colors.hover);
+      ::FillRect(dc, &rc, fill);
+      ::DeleteObject(fill);
+      ink = close ? RGB(0xFF, 0xFF, 0xFF) : colors.label;
+    }
+    ::SetTextColor(dc, ink);
+    RECT box = rc;
+    ::DrawTextW(dc, glyph, -1, &box,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+  }
+  if (previous) {
+    ::SelectObject(dc, previous);
+  }
+}
+
+}  // namespace phi_client

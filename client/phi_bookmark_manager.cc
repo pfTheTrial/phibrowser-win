@@ -716,9 +716,8 @@ void PhiBookmarkManager::DeleteSelection() {
                   base::UTF8ToWide(base::NumberToString(guids.size())) +
                   L" selected items?"
             : L"Delete this folder and everything inside it?";
-    if (::MessageBoxW(controller_->shell_hwnd(), message.c_str(),
-                      L"Delete Bookmarks",
-                      MB_OKCANCEL | MB_ICONWARNING) != IDOK) {
+    if (!PhiConfirm(controller_->shell_hwnd(), L"Delete Bookmarks",
+                    message.c_str(), L"Delete")) {
       return;
     }
   }

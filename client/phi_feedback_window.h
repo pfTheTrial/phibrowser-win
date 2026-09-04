@@ -14,6 +14,7 @@
 
 #include "base/memory/raw_ptr_exclusion.h"
 #include "phibrowser-win/client/phi_feedback_outbox.h"
+#include "phibrowser-win/client/phi_popup_chrome.h"
 
 namespace phi_client {
 
@@ -51,10 +52,12 @@ class PhiFeedbackHost {
 // system logs through the framework, files the report in the outbox and
 // closes; the upload happens in the background from there.
 //
-// Native controls on a plain top-level window (the phi_prompt look), not
-// the custom-painted chrome: this is a form, and the Mac's is stock AppKit
-// too. Modeless, like the Mac's — the user can go back to the page to check
-// a detail while composing.
+// Native fields on the shared popup chrome (the caption band with the
+// Windows minimize / close pair), laid out as the Mac FeedbackView: the
+// description well, the "Additional info" card with its divided rows, the
+// legal notice with inline links, and the footer's Send. Modeless, like the
+// Mac's — the user can go back to the page to check a detail while
+// composing.
 class PhiFeedbackWindow {
  public:
   static void Open(PhiFeedbackHost* host,
@@ -102,6 +105,7 @@ class PhiFeedbackWindow {
 
   void Build();
   void Layout();
+  void Paint();
   void Rebind(const PhiFeedbackContext& context);
   void RefreshAttachmentList();
   void RefreshSendState();
@@ -129,6 +133,10 @@ class PhiFeedbackWindow {
   PhiFeedbackContext context_;
   HWND hwnd_ = nullptr;
   UINT dpi_ = 96;
+  PhiPopupChrome chrome_;
+  PhiPopupColors colors_;
+  HBRUSH bg_brush_ = nullptr;
+  HBRUSH card_brush_ = nullptr;
   HFONT font_ = nullptr;
   HFONT headline_font_ = nullptr;
   HFONT small_font_ = nullptr;

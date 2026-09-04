@@ -3516,7 +3516,8 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
   } else if (item.action == "delspace") {
     if (PhiConfirm(hwnd_, L"Delete Space",
                    L"Bookmarks and pinned tabs belonging to this Space will "
-                   L"also be removed. This action cannot be undone.") &&
+                   L"also be removed. This action cannot be undone.",
+                   L"Delete") &&
         host_->DeleteSpace(selected_space_)) {
       selected_space_.clear();
     }
@@ -3537,7 +3538,8 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
     if (PhiConfirm(hwnd_, L"Delete Profile",
                    L"All cookies, history, extensions, and saved data on "
                    L"this profile will be permanently removed. This cannot "
-                   L"be undone.") &&
+                   L"be undone.",
+                   L"Delete") &&
         host_->DeleteProfileById(selected_profile_)) {
       selected_profile_.clear();
     }

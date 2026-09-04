@@ -33,6 +33,7 @@
 #include "phibrowser-win/client/phi_icons.h"
 #include "phibrowser-win/client/phi_extensions_popover.h"
 #include "phibrowser-win/client/phi_menu_bar.h"
+#include "phibrowser-win/client/phi_popup_chrome.h"
 #include "phibrowser-win/client/phi_prompt.h"
 #include "phibrowser-win/client/phi_tab_switcher.h"
 #include "phibrowser-win/client/phi_window_capture.h"
@@ -119,6 +120,8 @@ constexpr RebindableShortcut kRebindableShortcuts[] = {
 
 PhiCoordinator::PhiCoordinator() {
   g_coordinator = this;
+  // Every secondary window follows the app palette from here on.
+  PhiSetPopupPalette(&palette_);
 }
 
 PhiCoordinator::~PhiCoordinator() {
@@ -638,7 +641,8 @@ bool PhiCoordinator::AuthorizeAgentPeerOnUi(const PhiAgentPeer& peer) {
   int chosen = -1;
   if (owner) {
     chosen = PhiPromptChoose(owner, L"Agent access request", message.c_str(),
-                             {L"Allow Once", L"Always Allow", L"Deny"}, 0);
+                             {L"Allow Once", L"Always Allow", L"Deny"}, 0,
+                             L"Continue", L"Cancel");
   } else {
     chosen = ::MessageBoxW(nullptr,
                            (message + L"\n\nAllow this connection?").c_str(),
@@ -6523,7 +6527,7 @@ bool PhiCoordinator::PromptCredentialApproval(const std::wstring& detail,
     chosen = PhiPromptChoose(
         owner, L"Credential request", text.c_str(),
         {L"Allow once", L"Allow for 10 minutes", L"Always allow", L"Deny"},
-        0);
+        0, L"Continue", L"Cancel");
   } else {
     // No window yet: the MessageBox fallback offers allow-ONCE only — a
     // standing grant must never be given through a degraded dialog.
@@ -7312,9 +7316,9 @@ void PhiCoordinator::OnImportCompleted(const char* source, bool success) {
   PhiWindowController* focused = FocusedUserController();
   HWND owner = focused ? focused->shell_hwnd() : nullptr;
   if (!success) {
-    ::MessageBoxW(owner, L"The import did not finish. Close Google Chrome "
-                         L"and try again.",
-                  L"Import", MB_OK | MB_ICONWARNING);
+    PhiNotice(owner, L"Import",
+              L"The import did not finish. Close Google Chrome and try "
+              L"again.");
     return;
   }
   // History/cookies/passwords landed in the profile directly; bookmarks
@@ -7377,8 +7381,7 @@ void PhiCoordinator::OnImportCompleted(const char* source, bool success) {
     message += L" " + std::to_wstring(copied) +
                L" bookmarks were added to \"Imported from Chrome\".";
   }
-  ::MessageBoxW(owner, message.c_str(), L"Import",
-                MB_OK | MB_ICONINFORMATION);
+  PhiNotice(owner, L"Import", message.c_str());
 }
 
 void PhiCoordinator::OnPlaceholderModeChanged(int64_t window_id,

@@ -831,7 +831,8 @@ bool PhiMenuBar::OnCommand(UINT id) {
                                                       : std::wstring()})
                        .c_str(),
                    PhiStr("app.changeSpaceProfileConfirmation."
-                          "profileScopedMessage"))) {
+                          "profileScopedMessage"),
+                   nullptr, /*destructive=*/false)) {
       c->host_->SetSpaceProfile(c->active_space_, profile_ids_[i]);
     }
     return true;
@@ -841,7 +842,7 @@ bool PhiMenuBar::OnCommand(UINT id) {
     if (c->host_ && i < profile_ids_.size() &&
         PhiConfirm(c->shell_hwnd_,
                    PhiStr("app.spacesMenu.deleteProfile.submenuTitle"),
-                   PhiStr("menuBar.deleteProfileConfirmBody"))) {
+                   PhiStr("menuBar.deleteProfileConfirmBody"), L"Delete")) {
       c->host_->DeleteProfileById(profile_ids_[i]);
     }
     return true;
@@ -857,20 +858,16 @@ bool PhiMenuBar::OnCommand(UINT id) {
 
   switch (id) {
     case kCmdAbout:
-      ::MessageBoxW(
-          c->shell_hwnd_,
-          PhiStrF("menuBar.aboutBody", {PHI_WIN_VERSION_WIDE}).c_str(),
-          PhiStr("menuBar.aboutPhi"), MB_OK | MB_ICONINFORMATION);
+      PhiNotice(c->shell_hwnd_, PhiStr("menuBar.aboutPhi"),
+                PhiStrF("menuBar.aboutBody", {PHI_WIN_VERSION_WIDE}).c_str());
       return true;
     case kCmdReportIssue:
       c->OpenFeedback();
       return true;
     case kCmdCheckUpdate:
       if (!PhiUpdater::CheckForUpdateWithUi()) {
-        ::MessageBoxW(c->shell_hwnd_,
-                      PhiStr("menuBar.updaterUnavailableBody"),
-                      PhiStr("menuBar.checkForUpdate"),
-                      MB_OK | MB_ICONINFORMATION);
+        PhiNotice(c->shell_hwnd_, PhiStr("menuBar.checkForUpdate"),
+                  PhiStr("menuBar.updaterUnavailableBody"));
       }
       return true;
     case kCmdPreferences:
@@ -1044,7 +1041,7 @@ bool PhiMenuBar::OnCommand(UINT id) {
     case kCmdDeleteSpace:
       if (c->host_ &&
           PhiConfirm(c->shell_hwnd_, PhiStr("menuBar.deleteSpace"),
-                     PhiStr("menuBar.deleteSpaceConfirmBody"))) {
+                     PhiStr("menuBar.deleteSpaceConfirmBody"), L"Delete")) {
         c->host_->DeleteSpace(c->active_space_);
       }
       return true;
@@ -1213,11 +1210,11 @@ bool PhiMenuBar::OnCommand(UINT id) {
     case kCmdImportBrowser:
       if (c->framework_ &&
           PhiConfirm(c->shell_hwnd_, PhiStr("menuBar.importFromGoogleChrome"),
-                     PhiStr("menuBar.importChromePromptBody"))) {
+                     PhiStr("menuBar.importChromePromptBody"),
+                     PhiStr("app.import"), /*destructive=*/false)) {
         if (!c->framework_->StartChromeImport(target)) {
-          ::MessageBoxW(c->shell_hwnd_,
-                        PhiStr("menuBar.importChromeFailedBody"),
-                        PhiStr("app.import"), MB_OK | MB_ICONINFORMATION);
+          PhiNotice(c->shell_hwnd_, PhiStr("app.import"),
+                    PhiStr("menuBar.importChromeFailedBody"));
         }
       }
       return true;

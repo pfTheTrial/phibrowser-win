@@ -20,6 +20,7 @@
 #include "phibrowser-win/client/phi_feedback_image.h"
 #include "phibrowser-win/client/phi_i18n.h"
 #include "phibrowser-win/client/phi_icons.h"
+#include "phibrowser-win/client/phi_prompt.h"
 
 #pragma comment(lib, "comctl32.lib")
 
@@ -28,10 +29,33 @@ namespace phi_client {
 namespace {
 
 constexpr wchar_t kClassName[] = L"PhiFeedbackWindow";
-// The Mac window: 520x580 points.
+// The Mac window: 520x580 points of content (the caption band rides
+// above), 24 of padding, sections 24 apart; wells and the info card are
+// radius-8 controlBackground cards with a separator stroke, 16 of inner
+// padding and 11 between rows.
 constexpr int kWidth = 520;
 constexpr int kHeight = 580;
 constexpr int kMargin = 24;
+constexpr int kCardPad = 16;
+constexpr int kInner = kWidth - 2 * kMargin;  // 472
+// Rows, top to bottom (design units below the band).
+constexpr int kHeadline1Y = 20;
+constexpr int kDescriptionY = 48;
+constexpr int kDescriptionH = 144;
+constexpr int kCounterY = 196;
+constexpr int kHeadline2Y = 220;
+constexpr int kCardY = 248;
+constexpr int kCardH = 212;
+constexpr int kUrlRowY = kCardY + kCardPad;          // 264
+constexpr int kDivider1Y = kUrlRowY + 24 + 8;         // 296
+constexpr int kAttachRowY = kDivider1Y + 10;          // 306
+constexpr int kDivider2Y = kAttachRowY + 40;          // 346
+constexpr int kListY = kDivider2Y + 8;                // 354
+constexpr int kListH = 60;
+constexpr int kListButtonsY = kListY + kListH + 6;    // 420
+constexpr int kNoticeY = kCardY + kCardH + 8;         // 468
+constexpr int kLinksY = kNoticeY + 50;                // 518
+constexpr int kFooterY = kHeight - 14 - 30;           // 536
 constexpr int kMaxDescriptionLength = 4096;
 constexpr int kCounterThreshold = 3000;
 // How long Send waits for Chromium's system logs before filing the report
@@ -271,13 +295,15 @@ PhiFeedbackWindow::PhiFeedbackWindow(PhiFeedbackHost* host,
     wc.lpfnWndProc = &PhiFeedbackWindow::WndProc;
     wc.hInstance = ::GetModuleHandleW(nullptr);
     wc.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
-    wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
     wc.lpszClassName = kClassName;
     return ::RegisterClassExW(&wc);
   }();
   (void)atom;
-  const DWORD style =
-      WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
+  colors_ = PhiPopupColorsNow();
+  bg_brush_ = ::CreateSolidBrush(colors_.bg);
+  card_brush_ = ::CreateSolidBrush(colors_.card);
+  const DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU |
+                      WS_MINIMIZEBOX | WS_CLIPCHILDREN;
   hwnd_ = ::CreateWindowExW(0, kClassName, PhiStr("app.feedback.windowTitle"),
                             style, CW_USEDEFAULT, CW_USEDEFAULT, 100, 100,
                             nullptr, nullptr, ::GetModuleHandleW(nullptr),
@@ -286,22 +312,12 @@ PhiFeedbackWindow::PhiFeedbackWindow(PhiFeedbackHost* host,
     LOG(ERROR) << "[Feedback] CreateWindowEx failed err=" << ::GetLastError();
     return;
   }
-  if (const UINT dpi = ::GetDpiForWindow(hwnd_)) {
-    dpi_ = dpi;
-  }
-  RECT client = {0, 0, Scaled(kWidth), Scaled(kHeight)};
-  ::AdjustWindowRectExForDpi(&client, style, FALSE, 0, dpi_);
-  ::SetWindowPos(hwnd_, nullptr, 0, 0, client.right - client.left,
-                 client.bottom - client.top,
+  // The Mac window is closable only; Windows keeps the minimize it had.
+  chrome_.Attach(hwnd_, kPhiCaptionClose | kPhiCaptionMinimize, colors_);
+  dpi_ = chrome_.dpi();
+  const SIZE outer = chrome_.OuterSize(kWidth, kHeight);
+  ::SetWindowPos(hwnd_, nullptr, 0, 0, outer.cx, outer.cy,
                  SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
-  if (HICON big = PhiAppIcon(32)) {
-    ::SendMessageW(hwnd_, WM_SETICON, ICON_BIG,
-                   reinterpret_cast<LPARAM>(big));
-  }
-  if (HICON small_icon = PhiAppIcon(16)) {
-    ::SendMessageW(hwnd_, WM_SETICON, ICON_SMALL,
-                   reinterpret_cast<LPARAM>(small_icon));
-  }
   Build();
   Rebind(context);
 }
@@ -310,6 +326,11 @@ PhiFeedbackWindow::~PhiFeedbackWindow() {
   for (HFONT font : {font_, headline_font_, small_font_}) {
     if (font) {
       ::DeleteObject(font);
+    }
+  }
+  for (HBRUSH brush : {bg_brush_, card_brush_}) {
+    if (brush) {
+      ::DeleteObject(brush);
     }
   }
   for (const Attachment& a : attachments_) {
@@ -343,24 +364,15 @@ HWND PhiFeedbackWindow::Child(const wchar_t* cls,
 }
 
 void PhiFeedbackWindow::Build() {
-  NONCLIENTMETRICSW metrics = {};
-  metrics.cbSize = sizeof(metrics);
-  if (::SystemParametersInfoForDpi(SPI_GETNONCLIENTMETRICS, sizeof(metrics),
-                                   &metrics, 0, dpi_)) {
-    font_ = ::CreateFontIndirectW(&metrics.lfMessageFont);
-    LOGFONTW headline = metrics.lfMessageFont;
-    headline.lfWeight = FW_SEMIBOLD;
-    headline.lfHeight = headline.lfHeight * 8 / 7;
-    headline_font_ = ::CreateFontIndirectW(&headline);
-    LOGFONTW small_font = metrics.lfMessageFont;  // (`small` is a macro.)
-    small_font.lfHeight = small_font.lfHeight * 11 / 12;
-    small_font_ = ::CreateFontIndirectW(&small_font);
-  }
+  // The Mac's ladder: 13pt body, .headline (13pt semibold), 11pt captions.
+  font_ = PhiPopupFont(dpi_, 13);
+  headline_font_ = PhiPopupFont(dpi_, 13, FW_SEMIBOLD);
+  small_font_ = PhiPopupFont(dpi_, 11);
 
   Child(L"STATIC", PhiStr("feedback.form.descriptionSection.title"), 0,
         kIdHeadlineDescription);
   description_ = Child(L"EDIT", L"",
-                       WS_BORDER | WS_TABSTOP | WS_VSCROLL | ES_MULTILINE |
+                       WS_TABSTOP | WS_VSCROLL | ES_MULTILINE |
                            ES_AUTOVSCROLL | ES_WANTRETURN,
                        kIdDescription);
   ::SendMessageW(description_, EM_SETLIMITTEXT, kMaxDescriptionLength, 0);
@@ -368,7 +380,7 @@ void PhiFeedbackWindow::Build() {
   Child(L"STATIC", PhiStr("feedback.form.additionalInfoSection.title"), 0,
         kIdHeadlineInfo);
   Child(L"STATIC", PhiStr("feedback.form.urlField.label"), 0, kIdUrlLabel);
-  url_ = Child(L"EDIT", L"", WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL, kIdUrl);
+  url_ = Child(L"EDIT", L"", WS_TABSTOP | ES_AUTOHSCROLL, kIdUrl);
   Child(L"STATIC", PhiStr("feedback.form.attachmentsSection.title"), 0,
         kIdAttachLabel);
   Child(L"STATIC", PhiStr("feedback.form.attachmentsSection.pasteImageHint"),
@@ -377,8 +389,7 @@ void PhiFeedbackWindow::Build() {
                   PhiStr("feedback.form.attachmentsSection.chooseFilesButton"),
                   WS_TABSTOP | BS_PUSHBUTTON, kIdChoose);
   list_ = Child(L"LISTBOX", L"",
-                WS_BORDER | WS_TABSTOP | WS_VSCROLL | LBS_NOTIFY |
-                    LBS_NOINTEGRALHEIGHT,
+                WS_TABSTOP | WS_VSCROLL | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT,
                 kIdList);
   preview_ = Child(L"BUTTON", PhiStr("feedback.form.attachment.previewTooltip"),
                    WS_TABSTOP | BS_PUSHBUTTON, kIdPreview);
@@ -407,6 +418,18 @@ void PhiFeedbackWindow::Build() {
       ::SendMessageW(child, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
     }
   }
+  // The Mac's button roles: Send is the prominent one, Choose Files and
+  // the attachment actions are bordered, the legal links are inline text.
+  PhiPopupStyleButton(send_, PhiPopupButtonRole::kPrimary);
+  PhiPopupStyleButton(choose_, PhiPopupButtonRole::kSecondary);
+  PhiPopupStyleButton(preview_, PhiPopupButtonRole::kSecondary);
+  PhiPopupStyleButton(remove_, PhiPopupButtonRole::kSecondary);
+  PhiPopupStyleButton(::GetDlgItem(hwnd_, kIdPrivacy),
+                      PhiPopupButtonRole::kLink);
+  PhiPopupStyleButton(::GetDlgItem(hwnd_, kIdTerms),
+                      PhiPopupButtonRole::kLink);
+  PhiPopupThemeControl(description_, colors_.dark);
+  PhiPopupThemeControl(list_, colors_.dark);
   Layout();
   RefreshAttachmentList();
   RefreshCounter();
@@ -414,29 +437,64 @@ void PhiFeedbackWindow::Build() {
 }
 
 void PhiFeedbackWindow::Layout() {
+  const int band = chrome_.CaptionHeight();
   const auto place = [&](UINT_PTR id, int x, int y, int w, int h) {
     if (HWND control = ::GetDlgItem(hwnd_, static_cast<int>(id))) {
-      ::SetWindowPos(control, nullptr, Scaled(x), Scaled(y), Scaled(w),
-                     Scaled(h), SWP_NOZORDER | SWP_NOACTIVATE);
+      ::SetWindowPos(control, nullptr, Scaled(x), band + Scaled(y),
+                     Scaled(w), Scaled(h), SWP_NOZORDER | SWP_NOACTIVATE);
     }
   };
-  const int inner = kWidth - 2 * kMargin;  // 472
-  place(kIdHeadlineDescription, kMargin, 20, inner, 20);
-  place(kIdDescription, kMargin, 46, inner, 144);
-  place(kIdCounter, kMargin, 194, inner, 16);
-  place(kIdHeadlineInfo, kMargin, 218, inner, 20);
-  place(kIdUrlLabel, kMargin, 250, 60, 18);
-  place(kIdUrl, kMargin + 64, 246, inner - 64, 24);
-  place(kIdAttachLabel, kMargin, 282, 300, 18);
-  place(kIdAttachHint, kMargin, 300, 300, 16);
-  place(kIdChoose, kMargin + inner - 120, 282, 120, 26);
-  place(kIdList, kMargin, 328, inner, 84);
-  place(kIdPreview, kMargin + inner - 208, 418, 100, 24);
-  place(kIdRemove, kMargin + inner - 100, 418, 100, 24);
-  place(kIdNotice, kMargin, 452, inner, 56);
-  place(kIdPrivacy, kMargin, 510, 110, 22);
-  place(kIdTerms, kMargin + 116, 510, 120, 22);
-  place(kIdSend, kMargin + inner - 96, 536, 96, 30);
+  const int card_x = kMargin + kCardPad;          // 40
+  const int card_w = kInner - 2 * kCardPad;       // 440
+  place(kIdHeadlineDescription, kMargin, kHeadline1Y, kInner, 20);
+  // The fields sit inset in their drawn wells.
+  place(kIdDescription, kMargin + 8, kDescriptionY + 6, kInner - 16,
+        kDescriptionH - 12);
+  place(kIdCounter, kMargin, kCounterY, kInner, 16);
+  place(kIdHeadlineInfo, kMargin, kHeadline2Y, kInner, 20);
+  place(kIdUrlLabel, card_x, kUrlRowY + 3, 60, 18);
+  place(kIdUrl, card_x + 64, kUrlRowY + 3, card_w - 64, 18);
+  place(kIdAttachLabel, card_x, kAttachRowY, 280, 18);
+  place(kIdAttachHint, card_x, kAttachRowY + 20, 280, 16);
+  place(kIdChoose, card_x + card_w - 120, kAttachRowY + 2, 120, 30);
+  place(kIdList, card_x, kListY, card_w, kListH);
+  place(kIdPreview, card_x + card_w - 270, kListButtonsY, 132, 24);
+  place(kIdRemove, card_x + card_w - 132, kListButtonsY, 132, 24);
+  place(kIdNotice, kMargin, kNoticeY, kInner, 50);
+  place(kIdPrivacy, kMargin - 4, kLinksY, 110, 20);
+  place(kIdTerms, kMargin + 112, kLinksY, 130, 20);
+  place(kIdSend, kMargin + kInner - 96, kFooterY, 96, 30);
+  ::InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void PhiFeedbackWindow::Paint() {
+  PAINTSTRUCT ps = {};
+  HDC dc = ::BeginPaint(hwnd_, &ps);
+  if (!dc) {
+    return;
+  }
+  RECT client = {};
+  ::GetClientRect(hwnd_, &client);
+  ::FillRect(dc, &client, bg_brush_);
+  chrome_.PaintCaption(dc, colors_, /*show_mark=*/true);
+
+  const int band = chrome_.CaptionHeight();
+  const auto rect = [&](int x, int y, int w, int h) {
+    return RECT{Scaled(x), band + Scaled(y), Scaled(x + w),
+                band + Scaled(y + h)};
+  };
+  // The description well and the "Additional info" card.
+  PhiPopupPaintWell(dc, rect(kMargin, kDescriptionY, kInner, kDescriptionH),
+                    colors_, dpi_);
+  PhiPopupPaintWell(dc, rect(kMargin, kCardY, kInner, kCardH), colors_, dpi_);
+  // The card's dividers between its rows.
+  HBRUSH divider = ::CreateSolidBrush(colors_.separator);
+  for (const int y : {kDivider1Y, kDivider2Y}) {
+    RECT line = rect(kMargin + kCardPad, y, kInner - 2 * kCardPad, 1);
+    ::FillRect(dc, &line, divider);
+  }
+  ::DeleteObject(divider);
+  ::EndPaint(hwnd_, &ps);
 }
 
 void PhiFeedbackWindow::Rebind(const PhiFeedbackContext& context) {
@@ -527,9 +585,8 @@ bool PhiFeedbackWindow::AddFiles(const std::vector<std::wstring>& paths) {
     if (errors.size() > 3) {
       shown += "\n+" + std::to_string(errors.size() - 3) + " more";
     }
-    ::MessageBoxW(hwnd_, Widen(shown).c_str(),
-                  PhiStr("feedback.form.attachmentFailure.title"),
-                  MB_OK | MB_ICONWARNING);
+    PhiNotice(hwnd_, PhiStr("feedback.form.attachmentFailure.title"),
+              Widen(shown).c_str());
     return false;
   }
   return true;
@@ -644,9 +701,11 @@ bool PhiFeedbackWindow::Send(bool interactive) {
     }
     // The Mac fails the enqueue with "No account is available"; here the
     // sign-in is one click away, so offer it.
-    if (::MessageBoxW(hwnd_, PhiStr("feedback.form.signInPrompt"),
-                      PhiStr("app.feedback.windowTitle"),
-                      MB_YESNO | MB_ICONQUESTION) == IDYES) {
+    if (PhiAlert(hwnd_, PhiStr("app.feedback.windowTitle"),
+                 PhiStr("feedback.form.signInPrompt"),
+                 {{L"Cancel", PhiAlertRole::kSecondary},
+                  {L"Sign In", PhiAlertRole::kPrimary}},
+                 1, 0) == 1) {
       host_->RequestFeedbackSignIn();
     }
     return false;
@@ -685,9 +744,8 @@ void PhiFeedbackWindow::CompleteSend(const char* logs) {
   LOG(ERROR) << "[Feedback] enqueue failed: " << error;
   submitting_ = false;
   RefreshSendState();
-  ::MessageBoxW(hwnd_, Widen(error).c_str(),
-                PhiStr("feedback.form.localSaveFailure.title"),
-                MB_OK | MB_ICONERROR);
+  PhiNotice(hwnd_, PhiStr("feedback.form.localSaveFailure.title"),
+            Widen(error).c_str());
 }
 
 // static
@@ -782,7 +840,30 @@ LRESULT CALLBACK PhiFeedbackWindow::WndProc(HWND hwnd,
   if (!self) {
     return ::DefWindowProcW(hwnd, msg, wparam, lparam);
   }
+  LRESULT chrome_result = 0;
+  if (self->chrome_.HandleMessage(msg, wparam, lparam, &chrome_result)) {
+    return chrome_result;
+  }
   switch (msg) {
+    case WM_ERASEBKGND:
+      return 1;
+    case WM_PAINT:
+      self->Paint();
+      return 0;
+    case WM_DRAWITEM:
+      if (PhiPopupDrawButton(*reinterpret_cast<DRAWITEMSTRUCT*>(lparam),
+                             self->colors_, nullptr)) {
+        return TRUE;
+      }
+      break;
+    case WM_CTLCOLOREDIT:
+    case WM_CTLCOLORLISTBOX: {
+      // The fields paint on their wells' card colour.
+      HDC dc = reinterpret_cast<HDC>(wparam);
+      ::SetTextColor(dc, self->colors_.label);
+      ::SetBkColor(dc, self->colors_.card);
+      return reinterpret_cast<LRESULT>(self->card_brush_);
+    }
     case WM_COMMAND: {
       const UINT_PTR id = LOWORD(wparam);
       const UINT code = HIWORD(wparam);
@@ -833,16 +914,22 @@ LRESULT CALLBACK PhiFeedbackWindow::WndProc(HWND hwnd,
       HDC dc = reinterpret_cast<HDC>(wparam);
       HWND control = reinterpret_cast<HWND>(lparam);
       const int id = ::GetDlgCtrlID(control);
-      ::SetBkMode(dc, TRANSPARENT);
+      // Labels inside the info card stand on the card; the rest on the
+      // window ground.
+      const bool in_card = id == kIdUrlLabel || id == kIdAttachLabel ||
+                           id == kIdAttachHint;
+      const PhiPopupColors& c = self->colors_;
+      ::SetBkColor(dc, in_card ? c.card : c.bg);
+      ::SetTextColor(dc, c.label);
       if (id == kIdCounter) {
         const int length = ::GetWindowTextLengthW(self->description_);
-        ::SetTextColor(dc, length >= kMaxDescriptionLength
-                               ? RGB(0xC0, 0x1E, 0x1E)
-                               : RGB(0xB0, 0x80, 0x00));
+        ::SetTextColor(dc, length >= kMaxDescriptionLength ? c.error
+                                                           : c.warning);
       } else if (id == kIdAttachHint || id == kIdNotice) {
-        ::SetTextColor(dc, ::GetSysColor(COLOR_GRAYTEXT));
+        ::SetTextColor(dc, c.secondary);
       }
-      return reinterpret_cast<LRESULT>(::GetSysColorBrush(COLOR_WINDOW));
+      return reinterpret_cast<LRESULT>(in_card ? self->card_brush_
+                                               : self->bg_brush_);
     }
     case WM_TIMER:
       if (wparam == kLogsTimer) {
