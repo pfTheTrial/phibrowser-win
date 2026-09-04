@@ -8411,9 +8411,18 @@ void PhiWindowController::PaintChrome(HDC dc,
   const COLORREF kLabel = palette.label;
   const COLORREF kLabelDim = palette.label_dim;
   const COLORREF kBorder = palette.border;
-  // The sidebar address bar rests on the 4% wash (sidebarTabHovered), NOT a
-  // bordered white box — SideAddressBar's showBackgroundWhenInactive.
-  const COLORREF kFieldBg = palette.hover;
+  // The address field's two fills. In performance the field is a pill in the
+  // SIDEBAR, so it rests on the 4% wash over the Space tint (sidebarTabHovered
+  // — SideAddressBar's showBackgroundWhenInactive), brightening to 8%. In
+  // balanced and comfortable it sits on the TOP BAR, whose ground is
+  // windowBackground: the Mac composites the very same translucent overlays
+  // there (WebContentAddressBar's .sidebarTabHovered over the header), so the
+  // field carries no Space tint in those two. Blending them over the tinted
+  // ground instead is what painted a themed pill on the untinted bar.
+  const bool kFieldOnBar = layout.mode != PhiLayoutMode::kPerformance;
+  const COLORREF kFieldBg = kFieldOnBar ? palette.bar_hover : palette.hover;
+  const COLORREF kFieldBgHot =
+      kFieldOnBar ? palette.bar_hover_strong : palette.hover_strong;
   // The active pill's 1pt outline exists only in dark mode (white 20%).
   const COLORREF kActivePillBorder =
       palette.dark ? BlendOver(RGB(0xFF, 0xFF, 0xFF), kRowSelectedBg, 51)
@@ -8688,7 +8697,9 @@ void PhiWindowController::PaintChrome(HDC dc,
            r.right > r.left;
   };
   const auto accessory_wash = [&](const RECT& r) {
-    return on_field(r) ? palette.hover_strong : palette.hover;
+    // Inside the capsule the button lights the field's own emphasized fill;
+    // out on the bar it takes the bar's plain wash, like the nav buttons.
+    return on_field(r) ? kFieldBgHot : palette.hover;
   };
   const bool pointer_on_field_accessory =
       (accessory_hot(13, layout.reader) && on_field(layout.reader)) ||
@@ -8699,8 +8710,7 @@ void PhiWindowController::PaintChrome(HDC dc,
   if (layout.mode == PhiLayoutMode::kPerformance) {
     // Resting 4% wash, brightening to the emphasized 8% under the cursor
     // (SideAddressBar's hoveredColor).
-    FillRounded(dc, layout.url_field,
-                field_hot ? palette.hover_strong : kFieldBg,
+    FillRounded(dc, layout.url_field, field_hot ? kFieldBgHot : kFieldBg,
                 Scaled(kCornerRadius));
   } else if (layout.mode == PhiLayoutMode::kComfortable) {
     // Chrome's omnibox: a full pill standing on the toolbar, on the same 4%
@@ -8708,8 +8718,8 @@ void PhiWindowController::PaintChrome(HDC dc,
     // field stays bare — it has the card's own ground behind it; this one
     // has only the flat toolbar, and would vanish into it.
     const int pill_r = (layout.url_field.bottom - layout.url_field.top) / 2;
-    FillRounded(dc, layout.url_field,
-                field_hot ? palette.hover_strong : kFieldBg, pill_r);
+    FillRounded(dc, layout.url_field, field_hot ? kFieldBgHot : kFieldBg,
+                pill_r);
     // The page's globe leads the pill, where Chrome puts its site chip.
     if (layout.page_icon.right > layout.page_icon.left) {
       HGDIOBJ previous_icon_font =
@@ -8723,7 +8733,7 @@ void PhiWindowController::PaintChrome(HDC dc,
              layout.url_field.right > layout.url_field.left) {
     // The top-bar field rests BARE and takes the wash only under the
     // cursor (the Mac top bar's transparent-until-hovered field).
-    FillRounded(dc, layout.url_field, palette.hover, Scaled(kCornerRadius));
+    FillRounded(dc, layout.url_field, kFieldBg, Scaled(kCornerRadius));
   }
   if (include_child_controls) {
     std::wstring shown = nav_url_;
@@ -8758,8 +8768,7 @@ void PhiWindowController::PaintChrome(HDC dc,
   // icons in 24pt slots on the radius-4 hover wash (SideAddressBar's
   // extensionIconsStackView).
   if (layout.field_ext_strip.right > layout.field_ext_strip.left) {
-    const COLORREF field_fill =
-        url_field_hover_ ? palette.hover_strong : kFieldBg;
+    const COLORREF field_fill = url_field_hover_ ? kFieldBgHot : kFieldBg;
     for (size_t i = 0; i < field_extensions_.size(); ++i) {
       const RECT slot = FieldExtRect(layout, i);
       if (slot.right <= slot.left) {
@@ -10129,10 +10138,16 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
         // Comfortable's omnibox is a filled pill like the sidebar's, not a
         // bare top-bar field: without this the EDIT paints the toolbar's
         // white straight over the pill and leaves only its rim showing.
+        // Balanced and comfortable wash over the bar's own windowBackground,
+        // so the EDIT carries no Space tint there; only performance's
+        // sidebar pill blends over the tinted ground (see kFieldBg).
         const COLORREF bg =
             self->layout_mode_ == PhiLayoutMode::kBalanced
-                ? (self->url_field_hover_ ? palette.hover
+                ? (self->url_field_hover_ ? palette.bar_hover
                                           : palette.window_bg)
+            : self->layout_mode_ == PhiLayoutMode::kComfortable
+                ? (self->url_field_hover_ ? palette.bar_hover_strong
+                                          : palette.bar_hover)
                 : (self->url_field_hover_ ? palette.hover_strong
                                           : palette.hover);
         HDC edit_dc = reinterpret_cast<HDC>(wparam);

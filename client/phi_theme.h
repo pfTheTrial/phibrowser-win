@@ -56,6 +56,13 @@ struct PhiPalette {
   COLORREF selected;        // sidebar-tab-selectedColor: white / white 30%.
   COLORREF hover;           // sidebar-tab-hoveredColor: ink 4%.
   COLORREF hover_strong;    // …-emphasized: ink 8%. Also resting field fill.
+  // The same two overlays composited over `window_bg` instead of the tinted
+  // ground — what the Mac gets for free by keeping them translucent. The top
+  // bar stands on windowBackground, so anything washed THERE (the balanced /
+  // comfortable address field) must blend over that, not over the Space tint:
+  // blending over the tint paints a themed pill on an untinted bar.
+  COLORREF bar_hover;
+  COLORREF bar_hover_strong;
   COLORREF label;           // textPrimary: black 85% / white 80%.
   COLORREF label_dim;       // textSecondary.
   COLORREF label_tertiary;  // textTertiary: ink 30% — "New Tab", placeholders.

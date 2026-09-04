@@ -143,6 +143,9 @@ PhiPalette PhiResolvePalette(const PhiTheme& theme,
   // Alphas as /255: 4% ≈ 10, 6% ≈ 15, 8% ≈ 20, 30% ≈ 77, 80% ≈ 204, 85% ≈ 217.
   palette.hover = Blend(ink, palette.ground_top, 10);
   palette.hover_strong = Blend(ink, palette.ground_top, 20);
+  // The top bar's copies: same ink, its own ground.
+  palette.bar_hover = Blend(ink, palette.window_bg, 10);
+  palette.bar_hover_strong = Blend(ink, palette.window_bg, 20);
   palette.label_tertiary = Blend(ink, palette.ground_top, 77);
   palette.border = Blend(ink, palette.ground_bottom, 20);
   palette.separator = Blend(ink, palette.ground_top, 15);
