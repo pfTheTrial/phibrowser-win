@@ -41,6 +41,10 @@ struct DWriteState {
   ComPtr<IDWriteFactory> dwrite;
   ComPtr<ID2D1DCRenderTarget> target;
   std::map<int, ComPtr<IDWriteTextFormat>> formats;  // By pixel size.
+  // The icon face (Segoe MDL2 Assets), resolved once: glyph rasterization
+  // goes straight through the font face, no layout in the way.
+  ComPtr<IDWriteFontFace> icon_face;
+  bool icon_face_failed = false;
   // What a string's ink measures, and where it sits, by (em size, text).
   std::map<std::pair<int, std::wstring>, InkMetrics> ink_metrics;
   bool failed = false;
@@ -145,6 +149,40 @@ const InkMetrics& MetricsFor(const std::wstring& text, int pixel_size) {
   return state.ink_metrics.emplace(key, metrics).first->second;
 }
 
+// The icon face, created on first use. A missing face (a stripped Windows
+// install) fails once and stays failed — every draw then takes the caller's
+// GDI path.
+IDWriteFontFace* IconFace() {
+  DWriteState& state = State();
+  if (state.icon_face) {
+    return state.icon_face.Get();
+  }
+  if (state.icon_face_failed) {
+    return nullptr;
+  }
+  state.icon_face_failed = true;  // Cleared on success below.
+  ComPtr<IDWriteFontCollection> collection;
+  UINT32 index = 0;
+  BOOL exists = FALSE;
+  ComPtr<IDWriteFontFamily> family;
+  ComPtr<IDWriteFont> font;
+  if (FAILED(state.dwrite->GetSystemFontCollection(collection.GetAddressOf(),
+                                                   FALSE)) ||
+      FAILED(collection->FindFamilyName(L"Segoe MDL2 Assets", &index,
+                                        &exists)) ||
+      !exists ||
+      FAILED(collection->GetFontFamily(index, family.GetAddressOf())) ||
+      FAILED(family->GetFirstMatchingFont(
+          DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+          DWRITE_FONT_STYLE_NORMAL, font.GetAddressOf())) ||
+      FAILED(font->CreateFontFace(state.icon_face.GetAddressOf()))) {
+    state.icon_face.Reset();
+    return nullptr;
+  }
+  state.icon_face_failed = false;
+  return state.icon_face.Get();
+}
+
 D2D1_COLOR_F ToColor(COLORREF color) {
   return D2D1::ColorF(GetRValue(color) / 255.0f, GetGValue(color) / 255.0f,
                       GetBValue(color) / 255.0f);
@@ -241,6 +279,112 @@ bool PhiDrawColorIcon(HDC dc,
         ink_size * 4);
   }
   return PhiDrawColorText(dc, rect, text, em, ink);
+}
+
+bool PhiDrawIconGlyph(HDC dc,
+                      const RECT& rect,
+                      const std::wstring& glyph,
+                      int pixel_size,
+                      COLORREF ink) {
+  if (glyph.empty() || pixel_size <= 0 || rect.right <= rect.left ||
+      rect.bottom <= rect.top || !EnsureState()) {
+    return false;
+  }
+  DWriteState& state = State();
+  IDWriteFontFace* face = IconFace();
+  if (!face) {
+    return false;
+  }
+  // One code point, surrogate pair included — the MDL2 icons are BMP
+  // private-use characters, but the pair costs two lines to honour.
+  UINT32 codepoint = static_cast<UINT32>(glyph[0]);
+  if (glyph.size() >= 2 && glyph[0] >= 0xD800 && glyph[0] <= 0xDBFF &&
+      glyph[1] >= 0xDC00 && glyph[1] <= 0xDFFF) {
+    codepoint = 0x10000 + ((codepoint - 0xD800) << 10) +
+                (static_cast<UINT32>(glyph[1]) - 0xDC00);
+  }
+  UINT16 index = 0;
+  if (FAILED(face->GetGlyphIndices(&codepoint, 1, &index)) || index == 0) {
+    return false;  // .notdef: not this face's glyph, let GDI try.
+  }
+  DWRITE_FONT_METRICS font_metrics = {};
+  face->GetMetrics(&font_metrics);
+  DWRITE_GLYPH_METRICS glyph_metrics = {};
+  if (!font_metrics.designUnitsPerEm ||
+      FAILED(face->GetDesignGlyphMetrics(&index, 1, &glyph_metrics, FALSE))) {
+    return false;
+  }
+  // Placed exactly where DT_CENTER | DT_VCENTER would put it: the advance
+  // centred across the box, the ascent + descent line box centred down it.
+  const float em = static_cast<float>(pixel_size);
+  const float upem = static_cast<float>(font_metrics.designUnitsPerEm);
+  const float ascent = em * font_metrics.ascent / upem;
+  const float descent = em * font_metrics.descent / upem;
+  const float advance = em * glyph_metrics.advanceWidth / upem;
+  const float box_w = static_cast<float>(rect.right - rect.left);
+  const float box_h = static_cast<float>(rect.bottom - rect.top);
+  const float origin_x = (box_w - advance) / 2.0f;
+  const float origin_y = (box_h - (ascent + descent)) / 2.0f + ascent;
+  DWRITE_GLYPH_RUN run = {};
+  run.fontFace = face;
+  run.fontEmSize = em;
+  run.glyphCount = 1;
+  run.glyphIndices = &index;
+  ComPtr<IDWriteGlyphRunAnalysis> analysis;
+  // NATURAL_SYMMETRIC is what makes this worth doing: outlines are hinted
+  // vertically only and antialiased in both axes, so a circle stays round
+  // instead of being snapped onto the pixel grid stem by stem.
+  if (FAILED(state.dwrite->CreateGlyphRunAnalysis(
+          &run, 1.0f, nullptr, DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC,
+          DWRITE_MEASURING_MODE_NATURAL, origin_x, origin_y,
+          analysis.GetAddressOf()))) {
+    return false;
+  }
+  // The coverage texture is three bytes per pixel (one per subpixel);
+  // averaging them is the grayscale coverage, free of ClearType's colour.
+  RECT bounds = {};
+  if (FAILED(analysis->GetAlphaTextureBounds(DWRITE_TEXTURE_CLEARTYPE_3x1,
+                                             &bounds)) ||
+      bounds.right <= bounds.left || bounds.bottom <= bounds.top) {
+    return false;
+  }
+  // Clipped to the box, as DrawText clips to its rect.
+  bounds.left = std::max<LONG>(bounds.left, 0);
+  bounds.top = std::max<LONG>(bounds.top, 0);
+  bounds.right = std::min<LONG>(bounds.right, static_cast<LONG>(box_w));
+  bounds.bottom = std::min<LONG>(bounds.bottom, static_cast<LONG>(box_h));
+  if (bounds.right <= bounds.left || bounds.bottom <= bounds.top) {
+    return false;
+  }
+  const int w = bounds.right - bounds.left;
+  const int h = bounds.bottom - bounds.top;
+  std::vector<unsigned char> coverage(static_cast<size_t>(w) * h * 3);
+  if (FAILED(analysis->CreateAlphaTexture(
+          DWRITE_TEXTURE_CLEARTYPE_3x1, &bounds, coverage.data(),
+          static_cast<UINT32>(coverage.size())))) {
+    return false;
+  }
+  std::vector<unsigned char> bgra(static_cast<size_t>(w) * h * 4);
+  const unsigned r = GetRValue(ink);
+  const unsigned g = GetGValue(ink);
+  const unsigned b = GetBValue(ink);
+  for (int y = 0; y < h; ++y) {
+    for (int x = 0; x < w; ++x) {
+      const size_t from = (static_cast<size_t>(y) * w + x) * 3;
+      const unsigned a =
+          (static_cast<unsigned>(coverage[from]) + coverage[from + 1] +
+           coverage[from + 2] + 1) /
+          3;
+      const size_t at = (static_cast<size_t>(y) * w + x) * 4;
+      bgra[at] = static_cast<unsigned char>(b * a / 255);
+      bgra[at + 1] = static_cast<unsigned char>(g * a / 255);
+      bgra[at + 2] = static_cast<unsigned char>(r * a / 255);
+      bgra[at + 3] = static_cast<unsigned char>(a);
+    }
+  }
+  const RECT dest = {rect.left + bounds.left, rect.top + bounds.top,
+                     rect.left + bounds.right, rect.top + bounds.bottom};
+  return PhiBlendBgra(dc, dest, bgra.data(), w, h);
 }
 
 bool PhiDrawBgra(HDC dc,

@@ -32,6 +32,21 @@ bool PhiDrawColorIcon(HDC dc,
                       int ink_size,
                       COLORREF ink);
 
+// Draws one MONOCHROME icon glyph (a Segoe MDL2 Assets code point) centred
+// in `rect` at `pixel_size` em, in `ink`. DirectWrite rasterizes it with
+// grayscale coverage in BOTH axes and composites through the alpha blend,
+// so it lands over whatever the caller already painted (a hover wash, a
+// tab fill) — where GDI's DrawText renders these with ClearType, which
+// smooths horizontally only and fringes an icon's curves and diagonals.
+// Placement mirrors DT_CENTER | DT_VCENTER so a call site can swap either
+// way. Returns false when DirectWrite is unavailable OR the face has no
+// such glyph; the caller then falls back to the GDI path.
+bool PhiDrawIconGlyph(HDC dc,
+                      const RECT& rect,
+                      const std::wstring& glyph,
+                      int pixel_size,
+                      COLORREF ink);
+
 // Draws a PREMULTIPLIED BGRA buffer scaled into `dest` with high-quality
 // interpolation — crisp favicons and logos at any DPI, where GDI's
 // StretchDIBits stair-steps. Same fallback contract as PhiDrawColorText.

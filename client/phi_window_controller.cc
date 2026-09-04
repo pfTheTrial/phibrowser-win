@@ -6910,6 +6910,23 @@ void DrawGlyph(HDC dc, const RECT& r, const wchar_t* glyph, COLORREF ink) {
               DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 }
 
+// The same, for an MDL2 ICON: rasterized by DirectWrite at `pixel_size`
+// (the em the caller's GDI font was built at, so the glyph lands the same
+// size in the same place) and alpha-blended over what is already painted.
+// GDI renders these with ClearType — horizontal smoothing only, plus a
+// grid-fit per stem — which is what stepped the magnifier's arc and fringed
+// every diagonal in colour. Falls back to GDI whenever DirectWrite or the
+// glyph is missing, so nothing depends on it being there.
+void DrawIconGlyph(HDC dc, const RECT& r, const wchar_t* glyph,
+                   int pixel_size, COLORREF ink) {
+  if (r.right <= r.left) {
+    return;
+  }
+  if (!PhiDrawIconGlyph(dc, r, glyph, pixel_size, ink)) {
+    DrawGlyph(dc, r, glyph, ink);
+  }
+}
+
 // `over` at `alpha`/255 on `base` — the Mac's translucent overlays, opaque.
 COLORREF BlendOver(COLORREF over, COLORREF base, int alpha) {
   auto mix = [&](int a, int b) { return (a * alpha + b * (255 - alpha)) / 255; };
@@ -8695,8 +8712,8 @@ void PhiWindowController::PaintChrome(HDC dc,
         // The Mac header buttons: cornerRadius 4 on the plain hover wash.
         FillRounded(dc, button.rect, palette.hover, Scaled(4));
       }
-      DrawGlyph(dc, button.rect, button.glyph,
-                button.enabled ? kLabel : kLabelDim);
+      DrawIconGlyph(dc, button.rect, button.glyph, Scaled(kSpaceIcon),
+                    button.enabled ? kLabel : kLabelDim);
     }
     if (previous_nav_font) {
       ::SelectObject(dc, previous_nav_font);
