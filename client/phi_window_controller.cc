@@ -203,6 +203,10 @@ constexpr UINT_PTR kHoverCardTimer = 0x516;
 // EASE_IN_OUT) — sibling rows glide to open the insertion gap.
 constexpr int kDragSlideMs = 200;
 constexpr UINT_PTR kDragSlideTimer = 0x518;
+// A reserved row_slide key: how far everything BELOW the bookmark outline
+// ("+ New Tab", group headers, the tab rows) is pushed while a drag opens a
+// row-sized gap in the outline. Rides the same clock as the row slides.
+constexpr char kBandShiftKey[] = "\x01" "band";
 constexpr UINT_PTR kFloatingTickTimer = 0x522;
 // Reverts the copy-link checkmark after its second (triggeredRevertDelay).
 constexpr UINT_PTR kCopyLinkRevertTimer = 0x523;
@@ -2622,14 +2626,11 @@ void PhiWindowController::RetargetDragSlide() {
               dy = pitch;
             }
           } else {
-            // Leaving the list: later rows close the vacated slot; a
-            // bookmark conversion also pushes the whole list down by the
-            // row the bookmark band gains.
+            // Leaving the list: later rows close the vacated slot. (The
+            // outline gap a bookmark conversion opens pushes the whole band
+            // below it — the band shift, below.)
             if (i > dragged_pos) {
               dy = -pitch;
-            }
-            if (drag_band_ == DropBand::kBookmarks) {
-              dy += pitch;
             }
           }
           if (dy != 0.0) {
@@ -2665,6 +2666,78 @@ void PhiWindowController::RetargetDragSlide() {
                 SlideVec{0.0, static_cast<double>(pitch)};
           }
         }
+      }
+    } else if (drag_kind_ == DragKind::kPin &&
+               drag_band_ != DropBand::kPins && drag_index_ >= 0 &&
+               drag_index_ < static_cast<int>(pinned_.size())) {
+      // The cell has left the grid (unpinning into the list, or becoming a
+      // bookmark): the grid closes its slot, and over the outline the
+      // bookmark rows part at the target — unless the drop goes INTO a
+      // collapsed folder, which highlights instead of opening a gap.
+      std::vector<int> units;
+      for (int i = 0; i < static_cast<int>(pinned_.size()); ++i) {
+        if (i != drag_index_) {
+          units.push_back(
+              pinned_[static_cast<size_t>(i)].url_b.empty() ? 1 : 2);
+        }
+      }
+      const std::vector<RECT> target = PinnedGridWalk(units, layout);
+      for (int i = 0; i < static_cast<int>(pinned_.size()); ++i) {
+        if (i == drag_index_) {
+          continue;
+        }
+        const size_t j = static_cast<size_t>(i > drag_index_ ? i - 1 : i);
+        if (j >= target.size()) {
+          continue;
+        }
+        const SlideVec v = {
+            static_cast<double>(target[j].left - pinned_[i].bounds.left),
+            static_cast<double>(target[j].top - pinned_[i].bounds.top)};
+        if (v.dx != 0.0 || v.dy != 0.0) {
+          row_to[pinned_[static_cast<size_t>(i)].guid] = v;
+        }
+      }
+      if (drag_band_ == DropBand::kBookmarks &&
+          bookmark_drop_folder_row_ < 0) {
+        for (int i = 0; i < static_cast<int>(bookmarks_.size()); ++i) {
+          if (i >= drag_insert_) {
+            row_to[bookmarks_[static_cast<size_t>(i)].guid] =
+                SlideVec{0.0, static_cast<double>(pitch)};
+          }
+        }
+      }
+    } else if (drag_kind_ == DragKind::kBookmark &&
+               drag_band_ == DropBand::kPins && drag_index_ >= 0 &&
+               drag_index_ < static_cast<int>(bookmarks_.size())) {
+      // A bookmark over the grid (the Mac's moveBookmarkOut(toPinnedTabs:)):
+      // a phantom cell of the width it will take opens the grid slot, and
+      // the outline closes the row it is leaving.
+      const ShortcutRow& dragged = bookmarks_[static_cast<size_t>(drag_index_)];
+      std::vector<int> units;
+      for (const ShortcutRow& pin : pinned_) {
+        units.push_back(pin.url_b.empty() ? 1 : 2);
+      }
+      const int at = std::max(
+          0, std::min(drag_insert_, static_cast<int>(units.size())));
+      std::vector<int> preview = units;
+      preview.insert(preview.begin() + at, dragged.url_b.empty() ? 1 : 2);
+      const std::vector<RECT> target = PinnedGridWalk(preview, layout);
+      for (int i = 0; i < static_cast<int>(pinned_.size()); ++i) {
+        const size_t j = static_cast<size_t>(i < at ? i : i + 1);
+        if (j >= target.size()) {
+          continue;
+        }
+        const SlideVec v = {
+            static_cast<double>(target[j].left - pinned_[i].bounds.left),
+            static_cast<double>(target[j].top - pinned_[i].bounds.top)};
+        if (v.dx != 0.0 || v.dy != 0.0) {
+          row_to[pinned_[static_cast<size_t>(i)].guid] = v;
+        }
+      }
+      for (int i = drag_index_ + 1; i < static_cast<int>(bookmarks_.size());
+           ++i) {
+        row_to[bookmarks_[static_cast<size_t>(i)].guid] =
+            SlideVec{0.0, static_cast<double>(-pitch)};
       }
     } else if (drag_kind_ == DragKind::kPin &&
                drag_band_ == DropBand::kPins && drag_index_ >= 0 &&
@@ -2723,6 +2796,13 @@ void PhiWindowController::RetargetDragSlide() {
         }
       }
     }
+  }
+  // A gap opening in the outline pushes everything under it down by a row:
+  // "+ New Tab", the group headers and the tab rows all ride the band shift.
+  if (drag_active_ && !layout.horizontal_tabs && drag_insert_ >= 0 &&
+      drag_band_ == DropBand::kBookmarks && bookmark_drop_folder_row_ < 0 &&
+      (drag_kind_ == DragKind::kTab || drag_kind_ == DragKind::kPin)) {
+    row_to[kBandShiftKey] = SlideVec{0.0, static_cast<double>(pitch)};
   }
   // Displaced elements whose displacement ended slide home; settled ones
   // drop out of the books entirely.
@@ -2819,11 +2899,17 @@ void PhiWindowController::UpdateDrag(POINT pt) {
     ::ClientToScreen(shell_hwnd_, &screen);
     RECT window_rect = {};
     ::GetWindowRect(shell_hwnd_, &window_rect);
-    const RECT page = ComputeLayout().content;
+    const Layout bookmark_layout = ComputeLayout();
+    const bool folder =
+        drag_index_ >= 0 && drag_index_ < static_cast<int>(bookmarks_.size()) &&
+        bookmarks_[static_cast<size_t>(drag_index_)].folder;
     if (!::PtInRect(&window_rect, screen)) {
       band = DropBand::kOutside;
-    } else if (::PtInRect(&page, pt)) {
+    } else if (::PtInRect(&bookmark_layout.content, pt)) {
       band = DropBand::kContent;
+    } else if (!folder && !incognito_ && !bookmark_layout.horizontal_tabs &&
+               ::PtInRect(&bookmark_layout.favorites, pt)) {
+      band = DropBand::kPins;  // The Mac's moveBookmarkOut(toPinnedTabs:).
     }
   }
   const bool band_changed = band != drag_band_;
@@ -2849,10 +2935,11 @@ void PhiWindowController::UpdateDrag(POINT pt) {
   split_drop_zone_ = PhiSplitDropZone::kNone;
   int slot = DragInsertSlot(pt);
   bool folder_target_changed = false;
-  if (drag_kind_ == DragKind::kBookmark) {
-    // Bookmark drags resolve a tree target, not just a flat slot; a change
-    // between INTO-a-folder and a gap repaints even at the same slot. Off
-    // the outline there is no tree target at all.
+  if (drag_kind_ == DragKind::kBookmark || drag_kind_ == DragKind::kPin) {
+    // Bookmark drags — and a pinned cell over the outline, the Mac's
+    // movePinnedTabOut(toBookmark:) — resolve a tree target, not just a flat
+    // slot; a change between INTO-a-folder and a gap repaints even at the
+    // same slot. Off the outline there is no tree target at all.
     const int folder_before = bookmark_drop_folder_row_;
     if (band == DropBand::kBookmarks) {
       slot = ResolveBookmarkDrop(pt);
@@ -2997,6 +3084,31 @@ bool PhiWindowController::CommitDragImpl() {
       }
     }
     return true;
+  }
+  // ACROSS the sidebar's two cells — the Mac's movePinnedTabOut(toBookmark:)
+  // and moveBookmarkOut(toPinnedTabs:): the row changes kind in the store,
+  // its live tab(s) following it.
+  if (kind == DragKind::kPin && band == DropBand::kBookmarks) {
+    if (host_ && from_pos >= 0 &&
+        from_pos < static_cast<int>(pinned_.size()) && bookmark_index >= 0) {
+      host_->ConvertStoredRow(window_id_,
+                              pinned_[static_cast<size_t>(from_pos)].guid,
+                              /*to_bookmark=*/true, bookmark_parent,
+                              bookmark_index);
+      return true;
+    }
+    return false;
+  }
+  if (kind == DragKind::kBookmark && band == DropBand::kPins) {
+    if (host_ && from_pos >= 0 &&
+        from_pos < static_cast<int>(bookmarks_.size()) &&
+        !bookmarks_[static_cast<size_t>(from_pos)].folder) {
+      host_->ConvertStoredRow(window_id_,
+                              bookmarks_[static_cast<size_t>(from_pos)].guid,
+                              /*to_bookmark=*/false, std::string(), slot);
+      return true;
+    }
+    return false;
   }
   if (kind == DragKind::kPin && band == DropBand::kTabs) {
     // The Mac's movePinnedTabOut: the record dissolves and its tab(s)
@@ -4014,12 +4126,15 @@ int PhiWindowController::ResolveBookmarkDrop(POINT pt) {
   bookmark_drop_index_ = -1;
   bookmark_drop_folder_row_ = -1;
   const int n = static_cast<int>(bookmarks_.size());
+  // Only a BOOKMARK drag has a row of its own in this outline to leave out;
+  // a pinned cell arriving here (the conversion drop) excludes nothing.
+  const int exclude = drag_kind_ == DragKind::kBookmark ? drag_index_ : -1;
   // The sibling position visible row `i` holds within its parent, with the
   // dragged row excluded — the store reinserts AFTER pulling it out.
   const auto sibling_pos = [&](int i) {
     int at = 0;
     for (int j = 0; j < i; ++j) {
-      if (j != drag_index_ &&
+      if (j != exclude &&
           bookmarks_[static_cast<size_t>(j)].parent_guid ==
               bookmarks_[static_cast<size_t>(i)].parent_guid) {
         ++at;
@@ -4032,7 +4147,7 @@ int PhiWindowController::ResolveBookmarkDrop(POINT pt) {
   // gaps between rows fall through to the midpoint rule below.
   for (int i = 0; i < n; ++i) {
     const ShortcutRow& row = bookmarks_[static_cast<size_t>(i)];
-    if (i == drag_index_ || pt.y < row.bounds.top ||
+    if (i == exclude || pt.y < row.bounds.top ||
         pt.y > row.bounds.bottom) {
       continue;
     }
@@ -4061,7 +4176,7 @@ int PhiWindowController::ResolveBookmarkDrop(POINT pt) {
   // pointer, at that row's level; past the last row appends to the root.
   for (int i = 0; i < n; ++i) {
     const ShortcutRow& row = bookmarks_[static_cast<size_t>(i)];
-    if (i != drag_index_ &&
+    if (i != exclude &&
         pt.y <= (row.bounds.top + row.bounds.bottom) / 2) {
       bookmark_drop_parent_ = row.parent_guid;
       bookmark_drop_index_ = sibling_pos(i);
@@ -4133,6 +4248,9 @@ int PhiWindowController::DragInsertSlot(POINT pt) {
     case DragKind::kBookmark:
       if (drag_band_ == DropBand::kOutside) {
         return -1;  // The release tears off; there is no outline slot.
+      }
+      if (drag_band_ == DropBand::kPins) {
+        return pinned_slot();  // Into the grid: a cell slot.
       }
       for (const ShortcutRow& bookmark : bookmarks_) {
         if (pt.y > (bookmark.bounds.top + bookmark.bounds.bottom) / 2) {
@@ -10234,7 +10352,9 @@ void PhiWindowController::PaintSidebarBand(HDC dc,
       FillRounded(dc, pill, palette.hover_strong, Scaled(kCornerRadius));
       StrokeRounded(dc, pill, palette.hover_strong, palette.border,
                     Scaled(kCornerRadius));
-    } else if (drag_active_ && drag_kind_ == DragKind::kBookmark &&
+    } else if (drag_active_ &&
+               (drag_kind_ == DragKind::kBookmark ||
+                drag_kind_ == DragKind::kPin) &&
                bookmark_drop_folder_row_ ==
                    static_cast<int>(bookmark_order_index)) {
       // The Mac resolver's folder highlight: this drop lands INSIDE.
@@ -10334,8 +10454,14 @@ void PhiWindowController::PaintSidebarBand(HDC dc,
   // "New Tab": the row heading the tab list -- a 16pt "+" 6pt in, an 8pt
   // gap, the title in textTertiary (NewTabButtonCellView). Hover raises the
   // Mac cell's radius-8 wash on the 2pt-inset pill.
+  // Everything from here down to the tab rows rides the band shift while a
+  // drag holds a gap open in the bookmark outline above it.
+  const int band_shift = drag_active_ && !layout.horizontal_tabs
+                             ? static_cast<int>(RowSlideOffset(kBandShiftKey).dy)
+                             : 0;
   if (layout.new_tab_row.right > layout.new_tab_row.left) {
-    const RECT& row = layout.new_tab_row;
+    RECT row = layout.new_tab_row;
+    ::OffsetRect(&row, 0, band_shift);
     if (hover_kind_ == HoverKind::kNewTabRow) {
       RECT pill = row;
       pill.top += Scaled(kRowPad);
@@ -10366,6 +10492,10 @@ void PhiWindowController::PaintSidebarBand(HDC dc,
   // Tab groups: TabGroupCellView — the whole group cell rests on an 18%
   // tint of the group color; the 32pt header row carries the chevron, the
   // color dot (white ring) and the title. Clicking the header collapses.
+  // The headers are drawn through a shifted viewport rather than by
+  // offsetting each of their rects (the band shift, see above).
+  POINT viewport_before = {};
+  ::OffsetViewportOrgEx(dc, 0, band_shift, &viewport_before);
   for (const GroupHeader& gh : group_headers_) {
     if (gh.container.right > gh.container.left) {
       FillRounded(dc, gh.container,
@@ -10410,6 +10540,7 @@ void PhiWindowController::PaintSidebarBand(HDC dc,
     ::DrawTextW(dc, gh.title.c_str(), -1, &title_rc,
                 DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
   }
+  ::SetViewportOrgEx(dc, viewport_before.x, viewport_before.y, nullptr);
 
   // Tab rows: a 32pt pill inside the 36pt row (2pt vertical padding), radius
   // 8. The title is textPrimary whether active or not (SideTabView); only the
@@ -10445,9 +10576,9 @@ void PhiWindowController::PaintSidebarBand(HDC dc,
     }
     // Siblings glide by their slide offsets; the dragged row is only ever
     // painted here at home, lifted, for its snapshot.
-    int dy = 0;
+    int dy = band_shift;
     if (!is_dragged && sliding) {
-      dy = static_cast<int>(DragSlideOffset(row.id));
+      dy += static_cast<int>(DragSlideOffset(row.id));
     }
     RECT pill = row.bounds;
     ::OffsetRect(&pill, 0, dy);

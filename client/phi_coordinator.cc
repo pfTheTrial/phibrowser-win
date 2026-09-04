@@ -3591,6 +3591,175 @@ bool PhiCoordinator::TakeTearOffDrop(POINT* screen) {
   return true;
 }
 
+bool PhiCoordinator::ConvertStoredRow(int64_t slot,
+                                      const std::string& guid,
+                                      bool to_bookmark,
+                                      const std::string& parent_guid,
+                                      int index) {
+  const PhiRow* found = tab_store_.Find(guid);
+  if (!found) {
+    return false;
+  }
+  const PhiRow row = *found;  // The store mutates below; keep a copy.
+  if (to_bookmark ? row.type != PhiRowType::kPinnedTab
+                  : row.type != PhiRowType::kBookmark) {
+    return false;  // Folders and same-kind rows never convert.
+  }
+  // The NEW row belongs to the Space it was dropped in (the Mac passes the
+  // state's profileId/spaceId) — not to the old row's owner: a profile- or
+  // app-scoped pin carries no Space, and a bookmark made under that owner
+  // would show in no sidebar at all.
+  std::string profile_id, space_id;
+  if (!OwnerForSlot(slot, &profile_id, &space_id)) {
+    return false;
+  }
+  const std::string partner = tab_store_.SplitPartner(guid);
+  // A pinned pair's second row, for the split bookmark it becomes.
+  PhiRow partner_row;
+  if (!partner.empty()) {
+    if (const PhiRow* p = tab_store_.Find(partner)) {
+      partner_row = *p;
+    }
+  }
+  // Every live tab bound to the row (and its pinned partner), by tag — the
+  // Mac's `tabs.first(where: guidInLocalDB == guid)`, across every browser
+  // since a profile- or app-scoped pin can be open in any of them.
+  struct Bound {
+    int64_t browser = 0;
+    int index = -1;
+    int id = 0;
+  };
+  std::vector<Bound> bound_a, bound_b;
+  if (framework_) {
+    for (const auto& [browser_id, s] : browser_to_slot_) {
+      std::optional<base::Value> parsed = base::JSONReader::Read(
+          framework_->ListTabsJson(browser_id), base::JSON_PARSE_RFC);
+      if (!parsed || !parsed->is_list()) {
+        continue;
+      }
+      for (const base::Value& v : parsed->GetList()) {
+        const base::DictValue* d = v.GetIfDict();
+        const std::string* tag = d ? d->FindString("tag") : nullptr;
+        if (!tag) {
+          continue;
+        }
+        const Bound b = {browser_id, d->FindInt("index").value_or(-1),
+                         d->FindInt("id").value_or(0)};
+        if (*tag == guid) {
+          bound_a.push_back(b);
+        } else if (!partner.empty() && *tag == partner) {
+          bound_b.push_back(b);
+        }
+      }
+    }
+  }
+  std::string new_guid, new_guid_b;
+  if (to_bookmark) {
+    // The Mac's movePinnedTabOut(toBookmark:) — a pinned pair is saved as
+    // ONE split bookmark (savePinnedSplitAsBookmark).
+    new_guid = tab_store_.AddBookmark(profile_id, space_id,
+                                      parent_guid, row.title, row.url,
+                                      /*folder=*/false, row.favicon_base64,
+                                      row.favicon_width, row.favicon_height);
+    if (new_guid.empty()) {
+      return false;
+    }
+    if (!partner_row.guid.empty() && !partner_row.url.empty()) {
+      tab_store_.SetRowSecondary(new_guid, partner_row.url,
+                                 partner_row.title == row.title
+                                     ? std::string()
+                                     : partner_row.title);
+    }
+    if (!row.layout.empty()) {
+      tab_store_.SetRowLayout(new_guid, row.layout);
+    }
+    tab_store_.Reorder(new_guid, index >= 0 ? index
+                                            : std::numeric_limits<int>::max());
+  } else {
+    // The Mac's moveBookmarkOut(toPinnedTabs:) — a split bookmark pins as
+    // a cross-linked pair (savePinnedSplitFromBookmark).
+    new_guid = tab_store_.AddPinned(profile_id, space_id, row.title,
+                                    row.url, row.favicon_base64,
+                                    row.favicon_width, row.favicon_height);
+    if (new_guid.empty()) {
+      return false;
+    }
+    if (!row.url_b.empty()) {
+      new_guid_b = tab_store_.AddPinned(
+          profile_id, space_id,
+          row.title_b.empty() ? row.title : row.title_b, row.url_b,
+          std::string(), 0, 0);
+      if (!new_guid_b.empty()) {
+        tab_store_.LinkSplitPair(new_guid, new_guid_b);
+      }
+    }
+    if (!row.layout.empty()) {
+      tab_store_.SetRowLayout(new_guid, row.layout);
+    }
+    if (index >= 0) {
+      tab_store_.Reorder(new_guid, index);
+      if (!new_guid_b.empty()) {
+        tab_store_.Reorder(new_guid_b, index + 1);
+      }
+    }
+  }
+  // Retarget the live tab(s) at the new row — the Mac's updateTabCustomValue
+  // — BEFORE the old row goes, so nothing reads as closed in between.
+  if (framework_) {
+    for (const Bound& b : bound_a) {
+      framework_->SetTabTag(b.browser, b.index, new_guid.c_str());
+    }
+    for (const Bound& b : bound_b) {
+      // A split bookmark's second pane carries no tag; a pinned pair's does.
+      framework_->SetTabTag(b.browser, b.index,
+                            to_bookmark ? "" : new_guid_b.c_str());
+    }
+    if (!to_bookmark && !new_guid_b.empty() && bound_b.empty() &&
+        !bound_a.empty()) {
+      // A bookmark split's second pane was untagged: it is the live split
+      // partner of the first, and the pinned pair binds both.
+      const Bound& a = bound_a.front();
+      std::optional<base::Value> splits = base::JSONReader::Read(
+          framework_->SplitViewsJson(a.browser), base::JSON_PARSE_RFC);
+      if (splits && splits->is_list()) {
+        for (const base::Value& v : splits->GetList()) {
+          const base::DictValue* d = v.GetIfDict();
+          if (!d) {
+            continue;
+          }
+          const int primary = d->FindInt("primaryTabId").value_or(0);
+          const int secondary = d->FindInt("secondaryTabId").value_or(0);
+          const int other = primary == a.id ? secondary
+                            : secondary == a.id ? primary
+                                                : 0;
+          if (other == 0) {
+            continue;
+          }
+          std::optional<base::Value> tabs = base::JSONReader::Read(
+              framework_->ListTabsJson(a.browser), base::JSON_PARSE_RFC);
+          if (tabs && tabs->is_list()) {
+            for (const base::Value& t : tabs->GetList()) {
+              const base::DictValue* td = t.GetIfDict();
+              if (td && td->FindInt("id").value_or(0) == other) {
+                framework_->SetTabTag(a.browser,
+                                      td->FindInt("index").value_or(-1),
+                                      new_guid_b.c_str());
+              }
+            }
+          }
+          break;
+        }
+      }
+    }
+  }
+  tab_store_.Remove(guid);  // Takes a pinned partner row with it.
+  for (const auto& [s2, controller] : windows_) {
+    controller->RefreshTabs();
+  }
+  PhiSettingsWindow::Refresh();
+  return true;
+}
+
 bool PhiCoordinator::RequestDropTabOnWindow(int64_t source_slot,
                                             int index,
                                             int b_index,

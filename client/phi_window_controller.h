@@ -319,6 +319,17 @@ class PhiSlotHost {
   // placement. Stale after a few seconds, in case no window ever came.
   virtual void NoteTearOffDrop(POINT screen) = 0;
   virtual bool TakeTearOffDrop(POINT* screen) = 0;
+  // A stored row dragged across the sidebar's two cells — the Mac's
+  // movePinnedTabOut(toBookmark:) / moveBookmarkOut(toPinnedTabs:): the row
+  // becomes one of the OTHER kind (a new guid) at `parent_guid`/`index` (a
+  // bookmark's tree target; the grid slot for a pin), its live tab(s) rebound
+  // to the new row, the old row removed. Splits carry over as a split
+  // bookmark or a pinned pair. False when refused (a folder, an unknown row).
+  virtual bool ConvertStoredRow(int64_t slot,
+                                const std::string& guid,
+                                bool to_bookmark,
+                                const std::string& parent_guid,
+                                int index) = 0;
   // The bookmark bar's two visibility switches (the Mac View menu's
   // "Always Show Bookmark Bar" / "Show Bookmark Bar on New Tab").
   virtual bool AlwaysShowBookmarkBar() const = 0;

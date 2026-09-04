@@ -208,6 +208,11 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
                               int64_t target_slot) override;
   void NoteTearOffDrop(POINT screen) override;
   bool TakeTearOffDrop(POINT* screen) override;
+  bool ConvertStoredRow(int64_t slot,
+                        const std::string& guid,
+                        bool to_bookmark,
+                        const std::string& parent_guid,
+                        int index) override;
   bool AlwaysShowBookmarkBar() const override;
   void SetAlwaysShowBookmarkBar(bool enabled) override;
   bool BookmarkBarOnNewTab() const override;
