@@ -7769,11 +7769,19 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
       }
       return;
     }
-    // The sidebar background — the Mac tab-area menu's bookmark block
-    // (TabAreaContextMenuHelper): root folder creation lives here.
+    // The tab area's background — the Mac tab-area menu's bookmark block
+    // (TabAreaContextMenuHelper): root folder creation lives here. Both
+    // orientations share it, as the Mac's two hosts share one
+    // TabAreaContextMenuHelper: the sidebar below the band in the vertical
+    // layouts, and in comfortable the caption band itself, whose bare run
+    // past the last tab IS that layout's empty tab-strip space
+    // (TabStripBarController hangs the same stripContextMenu off the bar).
     const Layout layout = ComputeLayout();
-    if (!layout.horizontal_tabs && pt.x < layout.sidebar.right &&
-        pt.y > layout.title_bar.bottom) {
+    const bool in_tab_area =
+        layout.horizontal_tabs
+            ? ::PtInRect(&layout.title_bar, pt) != 0
+            : (pt.x < layout.sidebar.right && pt.y > layout.title_bar.bottom);
+    if (in_tab_area) {
       // The Mac tab-area menu (TabAreaContextMenuHelper): new tab, reopen,
       // the bookmark block, the layout switch, then the active Space's own
       // controls (the Spaces menu's rows, for the Space under the pointer).
@@ -10216,6 +10224,23 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
       }
       if (self) {
         self->pressed_caption_ = 0;
+      }
+      break;
+    case WM_NCRBUTTONUP:
+      // Comfortable's band IS the tab strip, and its bare run past the last
+      // tab drags the window (CaptionHitTest serves HTCAPTION there), so a
+      // right-click on it never reaches WM_RBUTTONUP — Windows would drop
+      // the system menu instead of the strip's own. Claim it, the way the
+      // Mac's tab-strip bar claims titlebar right-clicks
+      // (shouldConsumeTitlebarEvent) to pop the same menu the sidebar shows.
+      if (self && wparam == HTCAPTION) {
+        POINT pt = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+        ::ScreenToClient(hwnd, &pt);
+        const Layout band = self->ComputeLayout();
+        if (band.horizontal_tabs && ::PtInRect(&band.title_bar, pt)) {
+          self->OnChromeContextMenu(pt.x, pt.y);
+          return 0;  // No WM_CONTEXTMENU, so no system menu behind ours.
+        }
       }
       break;
     case WM_NCMOUSEMOVE:
