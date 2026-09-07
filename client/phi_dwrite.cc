@@ -11,11 +11,15 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <map>
 #include <utility>
+#include <string>
+#include <string_view>
 #include <vector>
 
 #include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/no_destructor.h"
 
 namespace phi_client {
@@ -478,40 +482,177 @@ bool PhiBlendBgra(HDC dc,
   return ok != FALSE;
 }
 
+// ---------------------------------------------------------------------------
+// Anti-aliased shapes.
+//
+// Every shape here is a signed-distance field sampled at pixel centres:
+// negative inside, positive outside, in pixels. A fill's coverage is
+// 0.5 - d clamped to 0..1 (a pixel whose centre sits on the boundary is
+// half covered); a stroke of `width` is the band of distances [-width, 0]
+// with the same half-pixel feather at both edges. The coverage becomes the
+// alpha of a premultiplied buffer that GdiAlphaBlend composites over the
+// DC — no Direct2D involved, so these work wherever GDI does.
+
 namespace {
 
-// Signed distance from a pixel centre to a pill's boundary (negative
-// inside): distance to the horizontal core segment, minus the cap radius.
-double CapsuleDistance(double px, double py, double w, double h) {
-  const double radius = h / 2.0;
-  const double cx = std::min(std::max(px, radius), w - radius);
-  const double dx = px - cx;
-  const double dy = py - radius;
-  return std::sqrt(dx * dx + dy * dy) - radius;
+constexpr double kPi = 3.14159265358979323846;
+
+double Clamp01(double v) {
+  return std::min(1.0, std::max(0.0, v));
 }
 
-// Signed distance to a rounded rectangle's boundary (negative inside): the
-// distance to the inner core rectangle's nearest point, minus the corner
-// radius.
-double RoundRectDistance(double px, double py, double w, double h,
-                         double radius) {
-  radius = std::min(radius, std::min(w, h) / 2.0);
-  const double cx = std::min(std::max(px, radius), w - radius);
-  const double cy = std::min(std::max(py, radius), h - radius);
+// Signed distance to a rounded rectangle's boundary: the distance to the
+// inner core rectangle's nearest point, minus the corner radius. A corner
+// left out of `corners` (bit 0..3 = TL, TR, BL, BR) stays square.
+double RoundRectDistance(double px,
+                         double py,
+                         double w,
+                         double h,
+                         double radius,
+                         unsigned corners = 0xF) {
+  radius = std::max(0.0, std::min(radius, std::min(w, h) / 2.0));
+  const bool left = px < w / 2.0;
+  const bool top = py < h / 2.0;
+  const unsigned bit = (top ? 0u : 2u) + (left ? 0u : 1u);
+  const double r = (corners & (1u << bit)) ? radius : 0.0;
+  const double cx = std::min(std::max(px, r), w - r);
+  const double cy = std::min(std::max(py, r), h - r);
   const double dx = px - cx;
   const double dy = py - cy;
-  return std::sqrt(dx * dx + dy * dy) - radius;
+  if (dx == 0.0 || dy == 0.0) {
+    // On an edge's run: the distance to the nearest of the four sides,
+    // negative inside — the core-rect distance with r taken back off would
+    // only be right for a pixel out past a corner.
+    const double inside = std::min(std::min(px, w - px), std::min(py, h - py));
+    if (px >= 0.0 && px <= w && py >= 0.0 && py <= h) {
+      return -inside;
+    }
+    return std::sqrt(dx * dx + dy * dy) - r;
+  }
+  return std::sqrt(dx * dx + dy * dy) - r;
 }
 
-// Software-renders `coverage(x, y)` (0..1) of `ink` into a premultiplied
-// buffer and blends it over the DC.
+// Signed distance to the ellipse inscribed in w x h. Exact for a circle;
+// for an ellipse the first-order estimate (f - 1) / |grad f| on the
+// normalized radius f, which is accurate within a pixel of the boundary —
+// the only place coverage is fractional.
+double EllipseDistance(double px, double py, double w, double h) {
+  const double a = w / 2.0;
+  const double b = h / 2.0;
+  if (a <= 0.0 || b <= 0.0) {
+    return 1.0;
+  }
+  const double x = px - a;
+  const double y = py - b;
+  const double f = std::sqrt((x * x) / (a * a) + (y * y) / (b * b));
+  if (f < 1e-6) {
+    return -std::min(a, b);
+  }
+  const double grad =
+      std::sqrt((x * x) / (a * a * a * a) + (y * y) / (b * b * b * b)) / f;
+  return grad > 0.0 ? (f - 1.0) / grad : -std::min(a, b);
+}
+
+// Where along the rounded rectangle's perimeter the boundary point nearest
+// (px, py) lies, in pixels from the top-left arc's end, clockwise — the
+// parameter a dash pattern runs on. `*perimeter` receives the total.
+double RoundRectPerimeterAt(double px,
+                            double py,
+                            double w,
+                            double h,
+                            double radius,
+                            double* perimeter) {
+  const double r = std::max(0.0, std::min(radius, std::min(w, h) / 2.0));
+  const double run_x = w - 2.0 * r;
+  const double run_y = h - 2.0 * r;
+  const double arc = kPi * r / 2.0;
+  *perimeter = 2.0 * run_x + 2.0 * run_y + 4.0 * arc;
+  const double cx = std::min(std::max(px, r), w - r);
+  const double cy = std::min(std::max(py, r), h - r);
+  const double dx = px - cx;
+  const double dy = py - cy;
+  if (dx != 0.0 && dy != 0.0) {
+    const double theta = std::atan2(dy, dx);  // -pi..pi, y down.
+    if (dx > 0.0 && dy < 0.0) {               // Top-right arc.
+      return run_x + (theta + kPi / 2.0) * r;
+    }
+    if (dx > 0.0) {                           // Bottom-right arc.
+      return run_x + arc + run_y + theta * r;
+    }
+    if (dy > 0.0) {                           // Bottom-left arc.
+      return 2.0 * run_x + 2.0 * arc + run_y + (theta - kPi / 2.0) * r;
+    }
+    return 2.0 * run_x + 3.0 * arc + 2.0 * run_y + (theta + kPi) * r;
+  }
+  // On a straight run: nearest side decides.
+  const double to_top = py;
+  const double to_bottom = h - py;
+  const double to_left = px;
+  const double to_right = w - px;
+  const double nearest =
+      std::min(std::min(to_top, to_bottom), std::min(to_left, to_right));
+  if (nearest == to_top) {
+    return cx - r;
+  }
+  if (nearest == to_right) {
+    return run_x + arc + (cy - r);
+  }
+  if (nearest == to_bottom) {
+    return run_x + 2.0 * arc + run_y + (w - r - cx);
+  }
+  return 2.0 * run_x + 3.0 * arc + run_y + (h - r - cy);
+}
+
+// The same for the inscribed ellipse: the angle scaled by the mean radius.
+double EllipsePerimeterAt(double px,
+                          double py,
+                          double w,
+                          double h,
+                          double* perimeter) {
+  const double a = w / 2.0;
+  const double b = h / 2.0;
+  const double mean = (a + b) / 2.0;
+  *perimeter = 2.0 * kPi * mean;
+  const double theta = std::atan2((py - b) / std::max(b, 1e-6),
+                                  (px - a) / std::max(a, 1e-6));
+  return (theta + kPi) * mean;
+}
+
+// Coverage of a dash pattern at perimeter position `t`: `dash` on, `gap`
+// off, the period stretched so a whole number of them fit `perimeter`;
+// dash ends feathered half a pixel like every other edge.
+double DashCoverage(double t, double perimeter, int dash, int gap) {
+  const double period = static_cast<double>(dash + gap);
+  if (period <= 0.0 || perimeter <= period) {
+    return 1.0;
+  }
+  const double count = std::max(1.0, std::round(perimeter / period));
+  const double fitted = perimeter / count;
+  const double on = dash * fitted / period;
+  double s = std::fmod(t, fitted);
+  if (s < 0.0) {
+    s += fitted;
+  }
+  return Clamp01(std::min(s, on - s) + 0.5);
+}
+
+double FillCoverage(double d) {
+  return Clamp01(0.5 - d);
+}
+
+double BandCoverage(double d, double width) {
+  const double half = width / 2.0;
+  return Clamp01(half + 0.5 - std::abs(d + half));
+}
+
+// Software-renders `coverage(x, y)` (0..1, in the rect's own frame) of
+// `ink` into a premultiplied buffer and blends it over the DC.
 template <typename Coverage>
-bool BlendCoverage(HDC dc, const RECT& rect, COLORREF ink,
-                   Coverage coverage) {
+bool BlendCoverage(HDC dc, const RECT& rect, COLORREF ink, Coverage coverage) {
   const int w = rect.right - rect.left;
   const int h = rect.bottom - rect.top;
   if (w <= 0 || h <= 0) {
-    return false;
+    return true;  // Nothing to draw is not a failure.
   }
   std::vector<unsigned char> bgra(static_cast<size_t>(w) * h * 4);
   const unsigned r = GetRValue(ink);
@@ -519,7 +660,7 @@ bool BlendCoverage(HDC dc, const RECT& rect, COLORREF ink,
   const unsigned b = GetBValue(ink);
   for (int y = 0; y < h; ++y) {
     for (int x = 0; x < w; ++x) {
-      const double c = std::min(1.0, std::max(0.0, coverage(x + 0.5, y + 0.5)));
+      const double c = Clamp01(coverage(x + 0.5, y + 0.5));
       const unsigned a = static_cast<unsigned>(c * 255.0 + 0.5);
       const size_t at = (static_cast<size_t>(y) * w + x) * 4;
       bgra[at] = static_cast<unsigned char>(b * a / 255);
@@ -531,14 +672,126 @@ bool BlendCoverage(HDC dc, const RECT& rect, COLORREF ink,
   return PhiBlendBgra(dc, rect, bgra.data(), w, h);
 }
 
+void GdiFill(HDC dc, const RECT& rect, COLORREF fill) {
+  if (rect.right <= rect.left || rect.bottom <= rect.top) {
+    return;
+  }
+  HBRUSH brush = ::CreateSolidBrush(fill);
+  ::FillRect(dc, &rect, brush);
+  ::DeleteObject(brush);
+}
+
+// The GDI rendering of the same shape, for when a blend surface cannot be
+// had (a DIB allocation failing under memory pressure). Stair-stepped, but
+// the shape is there.
+void GdiRoundRect(HDC dc,
+                  const RECT& rect,
+                  int radius,
+                  const COLORREF* fill,
+                  const COLORREF* ink,
+                  int width) {
+  HBRUSH brush = fill ? ::CreateSolidBrush(*fill) : nullptr;
+  HPEN pen = ink ? ::CreatePen(PS_SOLID, width, *ink) : nullptr;
+  HGDIOBJ old_brush = ::SelectObject(
+      dc, brush ? static_cast<HGDIOBJ>(brush) : ::GetStockObject(NULL_BRUSH));
+  HGDIOBJ old_pen = ::SelectObject(
+      dc, pen ? static_cast<HGDIOBJ>(pen) : ::GetStockObject(NULL_PEN));
+  // A NULL_PEN fill stops a pixel short; a stroked one does not.
+  const int grow = pen ? 0 : 1;
+  ::RoundRect(dc, rect.left, rect.top, rect.right + grow, rect.bottom + grow,
+              2 * radius, 2 * radius);
+  ::SelectObject(dc, old_pen);
+  ::SelectObject(dc, old_brush);
+  if (pen) {
+    ::DeleteObject(pen);
+  }
+  if (brush) {
+    ::DeleteObject(brush);
+  }
+}
+
+void GdiEllipse(HDC dc,
+                const RECT& rect,
+                const COLORREF* fill,
+                const COLORREF* ink,
+                int width) {
+  HBRUSH brush = fill ? ::CreateSolidBrush(*fill) : nullptr;
+  HPEN pen = ink ? ::CreatePen(PS_SOLID, width, *ink) : nullptr;
+  HGDIOBJ old_brush = ::SelectObject(
+      dc, brush ? static_cast<HGDIOBJ>(brush) : ::GetStockObject(NULL_BRUSH));
+  HGDIOBJ old_pen = ::SelectObject(
+      dc, pen ? static_cast<HGDIOBJ>(pen) : ::GetStockObject(NULL_PEN));
+  const int grow = pen ? 0 : 1;
+  ::Ellipse(dc, rect.left, rect.top, rect.right + grow, rect.bottom + grow);
+  ::SelectObject(dc, old_pen);
+  ::SelectObject(dc, old_brush);
+  if (pen) {
+    ::DeleteObject(pen);
+  }
+  if (brush) {
+    ::DeleteObject(brush);
+  }
+}
+
+// Blends `coverage` (in `rect`'s frame) over the four `tile`-square corner
+// tiles of `rect` only — the straight runs between them are the caller's
+// to fill, opaque and cheap.
+template <typename Coverage>
+bool BlendCornerTiles(HDC dc,
+                      const RECT& rect,
+                      int tile,
+                      COLORREF ink,
+                      Coverage coverage) {
+  const int w = rect.right - rect.left;
+  const int h = rect.bottom - rect.top;
+  tile = std::min(tile, std::min(w, h));
+  const int xs[2] = {0, w - tile};
+  const int ys[2] = {0, h - tile};
+  for (int y : ys) {
+    for (int x : xs) {
+      const RECT part = {rect.left + x, rect.top + y, rect.left + x + tile,
+                         rect.top + y + tile};
+      if (!BlendCoverage(dc, part, ink, [&](double px, double py) {
+            return coverage(px + x, py + y);
+          })) {
+        return false;
+      }
+      if (w <= tile) {
+        break;  // One column: both tiles are the same pixels.
+      }
+    }
+    if (h <= tile) {
+      break;
+    }
+  }
+  return true;
+}
+
 }  // namespace
 
 bool PhiFillRoundRectAA(HDC dc, const RECT& rect, int radius, COLORREF fill) {
-  const double w = rect.right - rect.left;
-  const double h = rect.bottom - rect.top;
-  return BlendCoverage(dc, rect, fill, [&](double px, double py) {
-    return 0.5 - RoundRectDistance(px, py, w, h, radius);
-  });
+  const int w = rect.right - rect.left;
+  const int h = rect.bottom - rect.top;
+  if (w <= 0 || h <= 0) {
+    return false;
+  }
+  const int r = std::max(0, std::min(radius, std::min(w, h) / 2));
+  if (r == 0) {
+    GdiFill(dc, rect, fill);
+    return true;
+  }
+  // The cross between the corner tiles is straight-edged on pixel bounds:
+  // opaque, through GDI.
+  GdiFill(dc, {rect.left + r, rect.top, rect.right - r, rect.bottom}, fill);
+  GdiFill(dc, {rect.left, rect.top + r, rect.left + r, rect.bottom - r}, fill);
+  GdiFill(dc, {rect.right - r, rect.top + r, rect.right, rect.bottom - r},
+          fill);
+  if (!BlendCornerTiles(dc, rect, r, fill, [&](double px, double py) {
+        return FillCoverage(RoundRectDistance(px, py, w, h, r));
+      })) {
+    GdiRoundRect(dc, rect, r, &fill, nullptr, 0);
+  }
+  return true;
 }
 
 bool PhiStrokeRoundRectAA(HDC dc,
@@ -546,70 +799,294 @@ bool PhiStrokeRoundRectAA(HDC dc,
                           int radius,
                           COLORREF ink,
                           int width) {
-  if (width <= 0) {
-    return false;
-  }
-  const double w = rect.right - rect.left;
-  const double h = rect.bottom - rect.top;
-  const double half = width / 2.0;
-  return BlendCoverage(dc, rect, ink, [&](double px, double py) {
-    // Band of `width` just inside the boundary, feathered half a pixel.
-    const double d = RoundRectDistance(px, py, w, h, radius) + half;
-    return half + 0.5 - std::abs(d);
-  });
-}
-
-bool PhiFillCapsuleAA(HDC dc, const RECT& rect, COLORREF fill) {
-  const int w = rect.right - rect.left;
-  const int h = rect.bottom - rect.top;
-  if (w <= 0 || h <= 0) {
-    return false;
-  }
-  std::vector<unsigned char> bgra(static_cast<size_t>(w) * h * 4);
-  const unsigned r = GetRValue(fill);
-  const unsigned g = GetGValue(fill);
-  const unsigned b = GetBValue(fill);
-  for (int y = 0; y < h; ++y) {
-    for (int x = 0; x < w; ++x) {
-      const double d = CapsuleDistance(x + 0.5, y + 0.5, w, h);
-      const double coverage = std::min(1.0, std::max(0.0, 0.5 - d));
-      const unsigned a = static_cast<unsigned>(coverage * 255.0 + 0.5);
-      const size_t at = (static_cast<size_t>(y) * w + x) * 4;
-      bgra[at] = static_cast<unsigned char>(b * a / 255);
-      bgra[at + 1] = static_cast<unsigned char>(g * a / 255);
-      bgra[at + 2] = static_cast<unsigned char>(r * a / 255);
-      bgra[at + 3] = static_cast<unsigned char>(a);
-    }
-  }
-  return PhiBlendBgra(dc, rect, bgra.data(), w, h);
-}
-
-bool PhiStrokeCapsuleAA(HDC dc, const RECT& rect, COLORREF ink, int width) {
   const int w = rect.right - rect.left;
   const int h = rect.bottom - rect.top;
   if (w <= 0 || h <= 0 || width <= 0) {
     return false;
   }
-  std::vector<unsigned char> bgra(static_cast<size_t>(w) * h * 4);
-  const unsigned r = GetRValue(ink);
-  const unsigned g = GetGValue(ink);
-  const unsigned b = GetBValue(ink);
-  const double half = width / 2.0;
-  for (int y = 0; y < h; ++y) {
-    for (int x = 0; x < w; ++x) {
-      // Band of `width` just inside the boundary, feathered half a pixel.
-      const double d = CapsuleDistance(x + 0.5, y + 0.5, w, h) + half;
-      const double coverage =
-          std::min(1.0, std::max(0.0, half + 0.5 - std::abs(d)));
-      const unsigned a = static_cast<unsigned>(coverage * 255.0 + 0.5);
-      const size_t at = (static_cast<size_t>(y) * w + x) * 4;
-      bgra[at] = static_cast<unsigned char>(b * a / 255);
-      bgra[at + 1] = static_cast<unsigned char>(g * a / 255);
-      bgra[at + 2] = static_cast<unsigned char>(r * a / 255);
-      bgra[at + 3] = static_cast<unsigned char>(a);
+  if (2 * width >= std::min(w, h)) {
+    return PhiFillRoundRectAA(dc, rect, radius, ink);  // All band.
+  }
+  const int r = std::max(0, std::min(radius, std::min(w, h) / 2));
+  // The tiles must hold the whole band where it turns: the larger of the
+  // radius and the stroke width.
+  const int tile = std::min(std::max(r, width), std::min(w, h) / 2);
+  GdiFill(dc, {rect.left + tile, rect.top, rect.right - tile, rect.top + width},
+          ink);
+  GdiFill(dc,
+          {rect.left + tile, rect.bottom - width, rect.right - tile,
+           rect.bottom},
+          ink);
+  GdiFill(dc,
+          {rect.left, rect.top + tile, rect.left + width, rect.bottom - tile},
+          ink);
+  GdiFill(dc,
+          {rect.right - width, rect.top + tile, rect.right, rect.bottom - tile},
+          ink);
+  if (!BlendCornerTiles(dc, rect, tile, ink, [&](double px, double py) {
+        return BandCoverage(RoundRectDistance(px, py, w, h, r), width);
+      })) {
+    GdiRoundRect(dc, rect, r, nullptr, &ink, width);
+  }
+  return true;
+}
+
+bool PhiFillCapsuleAA(HDC dc, const RECT& rect, COLORREF fill) {
+  return PhiFillRoundRectAA(dc, rect, (rect.bottom - rect.top) / 2, fill);
+}
+
+bool PhiStrokeCapsuleAA(HDC dc, const RECT& rect, COLORREF ink, int width) {
+  return PhiStrokeRoundRectAA(dc, rect, (rect.bottom - rect.top) / 2, ink,
+                              width);
+}
+
+bool PhiFillEllipseAA(HDC dc, const RECT& rect, COLORREF fill) {
+  const int w = rect.right - rect.left;
+  const int h = rect.bottom - rect.top;
+  if (w <= 0 || h <= 0) {
+    return false;
+  }
+  if (!BlendCoverage(dc, rect, fill, [&](double px, double py) {
+        return FillCoverage(EllipseDistance(px, py, w, h));
+      })) {
+    GdiEllipse(dc, rect, &fill, nullptr, 0);
+  }
+  return true;
+}
+
+bool PhiStrokeEllipseAA(HDC dc, const RECT& rect, COLORREF ink, int width) {
+  const int w = rect.right - rect.left;
+  const int h = rect.bottom - rect.top;
+  if (w <= 0 || h <= 0 || width <= 0) {
+    return false;
+  }
+  if (!BlendCoverage(dc, rect, ink, [&](double px, double py) {
+        return BandCoverage(EllipseDistance(px, py, w, h), width);
+      })) {
+    GdiEllipse(dc, rect, nullptr, &ink, width);
+  }
+  return true;
+}
+
+bool PhiStrokeRoundRectDashedAA(HDC dc,
+                                const RECT& rect,
+                                int radius,
+                                COLORREF ink,
+                                int width,
+                                int dash,
+                                int gap) {
+  const int w = rect.right - rect.left;
+  const int h = rect.bottom - rect.top;
+  if (w <= 0 || h <= 0 || width <= 0) {
+    return false;
+  }
+  const int r = std::max(0, std::min(radius, std::min(w, h) / 2));
+  if (!BlendCoverage(dc, rect, ink, [&](double px, double py) {
+        const double band =
+            BandCoverage(RoundRectDistance(px, py, w, h, r), width);
+        if (band <= 0.0) {
+          return 0.0;
+        }
+        double perimeter = 0.0;
+        const double t = RoundRectPerimeterAt(px, py, w, h, r, &perimeter);
+        return band * DashCoverage(t, perimeter, dash, gap);
+      })) {
+    GdiRoundRect(dc, rect, r, nullptr, &ink, width);
+  }
+  return true;
+}
+
+bool PhiStrokeEllipseDashedAA(HDC dc,
+                              const RECT& rect,
+                              COLORREF ink,
+                              int width,
+                              int dash,
+                              int gap) {
+  const int w = rect.right - rect.left;
+  const int h = rect.bottom - rect.top;
+  if (w <= 0 || h <= 0 || width <= 0) {
+    return false;
+  }
+  if (!BlendCoverage(dc, rect, ink, [&](double px, double py) {
+        const double band = BandCoverage(EllipseDistance(px, py, w, h), width);
+        if (band <= 0.0) {
+          return 0.0;
+        }
+        double perimeter = 0.0;
+        const double t = EllipsePerimeterAt(px, py, w, h, &perimeter);
+        return band * DashCoverage(t, perimeter, dash, gap);
+      })) {
+    GdiEllipse(dc, rect, nullptr, &ink, width);
+  }
+  return true;
+}
+
+bool PhiKnockOutRoundRectAA(HDC dc,
+                            const RECT& rect,
+                            int radius,
+                            COLORREF outside) {
+  const int w = rect.right - rect.left;
+  const int h = rect.bottom - rect.top;
+  if (w <= 0 || h <= 0) {
+    return false;
+  }
+  const int r = std::max(0, std::min(radius, std::min(w, h) / 2));
+  if (r == 0) {
+    return true;
+  }
+  return BlendCornerTiles(dc, rect, r, outside, [&](double px, double py) {
+    return 1.0 - FillCoverage(RoundRectDistance(px, py, w, h, r));
+  });
+}
+
+double PhiRoundRectCoverage(double px,
+                            double py,
+                            double width,
+                            double height,
+                            double radius,
+                            unsigned corners) {
+  return FillCoverage(
+      RoundRectDistance(px, py, width, height, radius, corners));
+}
+
+// ---------------------------------------------------------------------------
+// Icon glyphs through DrawText's signature.
+
+int PhiDrawTextAA(HDC dc,
+                  const wchar_t* text,
+                  int length,
+                  RECT* rect,
+                  UINT format) {
+  if (text && rect && !(format & DT_CALCRECT)) {
+    // SAFETY: DrawTextW's contract — `text` holds `length` characters, or
+    // is NUL-terminated when `length` is -1.
+    const std::wstring_view view = UNSAFE_BUFFERS(
+        length < 0 ? std::wstring_view(text)
+                   : std::wstring_view(text, static_cast<size_t>(length)));
+    // One code point, surrogate pair allowed; the MDL2 icons are BMP
+    // private-use characters (U+E000..U+F8FF).
+    const bool one = view.size() == 1 ||
+                     (view.size() == 2 && view[0] >= 0xD800 &&
+                      view[0] <= 0xDBFF);
+    if (one && view[0] >= 0xE000 && view[0] <= 0xF8FF) {
+      LOGFONTW lf = {};
+      HGDIOBJ font = ::GetCurrentObject(dc, OBJ_FONT);
+      if (font && ::GetObjectW(font, sizeof(lf), &lf) &&
+          std::wstring_view(lf.lfFaceName) == L"Segoe MDL2 Assets" &&
+          lf.lfHeight != 0) {
+        // A negative height is the em size; a positive one the cell
+        // height, which for this face is the em plus a little leading.
+        const int em = std::abs(static_cast<int>(lf.lfHeight));
+        RECT box = *rect;
+        if (format & DT_RIGHT) {
+          box.left = std::max(box.left, box.right - em);
+        } else if (!(format & DT_CENTER)) {
+          box.right = std::min(box.right, box.left + em);
+        }
+        if (format & DT_BOTTOM) {
+          box.top = std::max(box.top, box.bottom - em);
+        } else if (!(format & DT_VCENTER)) {
+          box.bottom = std::min(box.bottom, box.top + em);
+        }
+        if (PhiDrawIconGlyph(dc, box, std::wstring(view), em,
+                             ::GetTextColor(dc))) {
+          return em;
+        }
+      }
     }
   }
-  return PhiBlendBgra(dc, rect, bgra.data(), w, h);
+  return ::DrawTextW(dc, text, length, rect, format);
+}
+
+// ---------------------------------------------------------------------------
+// Shaped layered windows.
+
+bool PhiCommitShapedLayer(HWND hwnd,
+                          int width,
+                          int height,
+                          base::FunctionRef<void(HDC)> paint,
+                          base::FunctionRef<double(double, double)> coverage) {
+  if (!hwnd || !::IsWindow(hwnd) || width <= 0 || height <= 0) {
+    return false;
+  }
+  BITMAPINFO info = {};
+  info.bmiHeader.biSize = sizeof(info.bmiHeader);
+  info.bmiHeader.biWidth = width;
+  info.bmiHeader.biHeight = -height;  // Top-down.
+  info.bmiHeader.biPlanes = 1;
+  info.bmiHeader.biBitCount = 32;
+  info.bmiHeader.biCompression = BI_RGB;
+  void* bits = nullptr;
+  HBITMAP dib =
+      ::CreateDIBSection(nullptr, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
+  if (!dib || !bits) {
+    if (dib) {
+      ::DeleteObject(dib);
+    }
+    return false;
+  }
+  HDC screen = ::GetDC(nullptr);
+  HDC mem = ::CreateCompatibleDC(screen);
+  HGDIOBJ previous = ::SelectObject(mem, dib);
+  paint(mem);
+  ::GdiFlush();
+  const size_t bytes = static_cast<size_t>(width) * height * 4;
+  // SAFETY: the DIB section was sized width * height * 4 above.
+  const auto pixels = UNSAFE_BUFFERS(
+      base::span<unsigned char>(static_cast<unsigned char*>(bits), bytes));
+  for (int y = 0; y < height; ++y) {
+    for (int x = 0; x < width; ++x) {
+      const size_t at = (static_cast<size_t>(y) * width + x) * 4;
+      const double c = Clamp01(coverage(x + 0.5, y + 0.5));
+      const unsigned a = static_cast<unsigned>(c * 255.0 + 0.5);
+      pixels[at] = static_cast<unsigned char>(pixels[at] * a / 255);
+      pixels[at + 1] = static_cast<unsigned char>(pixels[at + 1] * a / 255);
+      pixels[at + 2] = static_cast<unsigned char>(pixels[at + 2] * a / 255);
+      pixels[at + 3] = static_cast<unsigned char>(a);
+    }
+  }
+  SIZE size = {width, height};
+  POINT origin = {0, 0};
+  BLENDFUNCTION blend = {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
+  const BOOL ok = ::UpdateLayeredWindow(hwnd, nullptr, nullptr, &size, mem,
+                                        &origin, 0, &blend, ULW_ALPHA);
+  ::SelectObject(mem, previous);
+  ::DeleteDC(mem);
+  ::ReleaseDC(nullptr, screen);
+  ::DeleteObject(dib);
+  return ok != FALSE;
+}
+
+bool PhiCommitCornerCap(HWND cap,
+                        int corner,
+                        int radius,
+                        COLORREF tint,
+                        COLORREF ring) {
+  if (radius <= 0 || corner < 0 || corner > 3) {
+    return false;
+  }
+  // The circle is centred on the cap's inner corner — the card's corner
+  // centre — so the quarter inside the cap is the card's arc.
+  const double cx = (corner == 0 || corner == 2) ? radius : 0.0;
+  const double cy = corner < 2 ? radius : 0.0;
+  const double r = radius;
+  auto ring_at = [&](double px, double py) {
+    const double d = std::sqrt((px - cx) * (px - cx) + (py - cy) * (py - cy));
+    return Clamp01(1.0 - std::abs(d - r - 0.5));  // The band [r, r + 1].
+  };
+  return PhiCommitShapedLayer(
+      cap, radius, radius,
+      [&](HDC dc) {
+        // The tint everywhere, then the hairline's colour where the ring
+        // runs — the coverage pass keys the alpha.
+        GdiFill(dc, {0, 0, radius, radius}, tint);
+        BlendCoverage(dc, {0, 0, radius, radius}, ring, ring_at);
+      },
+      [&](double px, double py) {
+        const double d =
+            std::sqrt((px - cx) * (px - cx) + (py - cy) * (py - cy));
+        return Clamp01(0.5 + (d - r));  // Outside the circle.
+      });
 }
 
 }  // namespace phi_client

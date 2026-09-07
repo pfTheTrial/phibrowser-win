@@ -92,46 +92,18 @@ COLORREF Blend(COLORREF over, COLORREF base, int alpha) {
 }
 
 // Anti-aliased where Direct2D is available, GDI's RoundRect otherwise.
+// Antialiased, true-radius shapes (phi_dwrite.h); they never need a GDI
+// fallback of their own.
 void FillRound(HDC dc, const RECT& r, int radius, COLORREF fill) {
-  if (r.right <= r.left || r.bottom <= r.top) {
-    return;
-  }
-  if (PhiFillRoundRectAA(dc, r, radius, fill)) {
-    return;
-  }
-  HBRUSH brush = ::CreateSolidBrush(fill);
-  HGDIOBJ old_brush = ::SelectObject(dc, brush);
-  HGDIOBJ old_pen = ::SelectObject(dc, ::GetStockObject(NULL_PEN));
-  ::RoundRect(dc, r.left, r.top, r.right + 1, r.bottom + 1, radius, radius);
-  ::SelectObject(dc, old_pen);
-  ::SelectObject(dc, old_brush);
-  ::DeleteObject(brush);
+  PhiFillRoundRectAA(dc, r, radius, fill);
 }
 
 void FillCircle(HDC dc, const RECT& r, COLORREF fill) {
-  if (PhiFillCapsuleAA(dc, r, fill)) {
-    return;
-  }
-  HBRUSH brush = ::CreateSolidBrush(fill);
-  HGDIOBJ old_brush = ::SelectObject(dc, brush);
-  HGDIOBJ old_pen = ::SelectObject(dc, ::GetStockObject(NULL_PEN));
-  ::Ellipse(dc, r.left, r.top, r.right + 1, r.bottom + 1);
-  ::SelectObject(dc, old_pen);
-  ::SelectObject(dc, old_brush);
-  ::DeleteObject(brush);
+  PhiFillEllipseAA(dc, r, fill);
 }
 
 void StrokeCircle(HDC dc, const RECT& r, COLORREF ink, int width) {
-  if (PhiStrokeCapsuleAA(dc, r, ink, width)) {
-    return;
-  }
-  HPEN pen = ::CreatePen(PS_SOLID, width, ink);
-  HGDIOBJ old_pen = ::SelectObject(dc, pen);
-  HGDIOBJ old_brush = ::SelectObject(dc, ::GetStockObject(NULL_BRUSH));
-  ::Ellipse(dc, r.left, r.top, r.right, r.bottom);
-  ::SelectObject(dc, old_brush);
-  ::SelectObject(dc, old_pen);
-  ::DeleteObject(pen);
+  PhiStrokeEllipseAA(dc, r, ink, width);
 }
 
 void RgbToHsv(COLORREF c, double* h, double* s, double* v) {
@@ -191,7 +163,7 @@ std::string HexOf(COLORREF c) {
 int MeasureTextWidth(HDC dc, HFONT font, const std::wstring& text) {
   HGDIOBJ prev = font ? ::SelectObject(dc, font) : nullptr;
   RECT rc = {0, 0, 0, 0};
-  ::DrawTextW(dc, text.c_str(), -1, &rc,
+  PhiDrawTextAA(dc, text.c_str(), -1, &rc,
               DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX);
   if (prev) {
     ::SelectObject(dc, prev);
@@ -529,12 +501,12 @@ PhiCreateSpacePanel::Geometry PhiCreateSpacePanel::ComputeGeometry() const {
   if (dc) {
     HGDIOBJ prev = ::SelectObject(dc, title_font_);
     RECT m = {0, 0, column_w, 0};
-    ::DrawTextW(dc, PhiStr("sidebar.createSpace.title"), -1, &m,
+    PhiDrawTextAA(dc, PhiStr("sidebar.createSpace.title"), -1, &m,
                 DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX);
     title_h = m.bottom - m.top;
     ::SelectObject(dc, subtitle_font_);
     m = {0, 0, column_w, 0};
-    ::DrawTextW(dc, PhiStr("sidebar.createSpace.subtitle"), -1, &m,
+    PhiDrawTextAA(dc, PhiStr("sidebar.createSpace.subtitle"), -1, &m,
                 DT_CALCRECT | DT_WORDBREAK | DT_CENTER | DT_NOPREFIX);
     subtitle_h = m.bottom - m.top;
     ::SelectObject(dc, prev);
@@ -930,12 +902,12 @@ void PhiCreateSpacePanel::Paint(HDC dc) {
   HGDIOBJ prev = ::SelectObject(dc, title_font_);
   ::SetTextColor(dc, label);
   RECT title = g.title;
-  ::DrawTextW(dc, PhiStr("sidebar.createSpace.title"), -1, &title,
+  PhiDrawTextAA(dc, PhiStr("sidebar.createSpace.title"), -1, &title,
               DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
   ::SelectObject(dc, subtitle_font_);
   ::SetTextColor(dc, label50);
   RECT subtitle = g.subtitle;
-  ::DrawTextW(dc, PhiStr("sidebar.createSpace.subtitle"), -1, &subtitle,
+  PhiDrawTextAA(dc, PhiStr("sidebar.createSpace.subtitle"), -1, &subtitle,
               DT_CENTER | DT_WORDBREAK | DT_NOPREFIX);
 
   // Name field (the EDIT paints its own text over this row).
@@ -948,7 +920,7 @@ void PhiCreateSpacePanel::Paint(HDC dc) {
   RECT profile_label = {g.profile_row.left + Scaled(kRowLead),
                         g.profile_row.top, g.pill.left - Scaled(8),
                         g.profile_row.bottom};
-  ::DrawTextW(dc, PhiStr("sidebar.createSpace.profilePicker.label"), -1,
+  PhiDrawTextAA(dc, PhiStr("sidebar.createSpace.profilePicker.label"), -1,
               &profile_label,
               DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
   if (!PhiFillCapsuleAA(dc, g.pill,
@@ -963,13 +935,13 @@ void PhiCreateSpacePanel::Paint(HDC dc) {
                         Scaled(kPillChevronGap),
                     g.pill.bottom};
   const std::wstring profile_name = SelectedProfileName();
-  ::DrawTextW(dc, profile_name.c_str(), -1, &pill_text,
+  PhiDrawTextAA(dc, profile_name.c_str(), -1, &pill_text,
               DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX |
                   DT_END_ELLIPSIS);
   ::SetTextColor(dc, label50);
   RECT chevron = {g.pill.right - Scaled(kPillTrail) - Scaled(kPillChevron),
                   g.pill.top, g.pill.right - Scaled(kPillTrail), g.pill.bottom};
-  ::DrawTextW(dc, L"↕", -1, &chevron,
+  PhiDrawTextAA(dc, L"↕", -1, &chevron,
               DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
 
   // Icon picker: the segmented control over the scrolling grid.
@@ -983,11 +955,11 @@ void PhiCreateSpacePanel::Paint(HDC dc) {
     ::SelectObject(dc, body_font_);
     ::SetTextColor(dc, tab_ == Tab::kIcon ? label : label50);
     RECT seg = g.seg_icon;
-    ::DrawTextW(dc, PhiStr("common.iconPicker.iconTabTitle"), -1, &seg,
+    PhiDrawTextAA(dc, PhiStr("common.iconPicker.iconTabTitle"), -1, &seg,
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
     ::SetTextColor(dc, tab_ == Tab::kEmoji ? label : label50);
     seg = g.seg_emoji;
-    ::DrawTextW(dc, PhiStr("common.iconPicker.emojiTabTitle"), -1, &seg,
+    PhiDrawTextAA(dc, PhiStr("common.iconPicker.emojiTabTitle"), -1, &seg,
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
   }
   PaintCells(dc, g, palette);
@@ -1039,11 +1011,11 @@ void PhiCreateSpacePanel::Paint(HDC dc) {
     ::SelectObject(dc, body_medium_font_);
     ::SetTextColor(dc, RGB(0xF7, 0xF7, 0xF7));  // white 95%
     RECT create = g.create_button;
-    ::DrawTextW(dc, PhiStr("sidebar.createSpace.createButton"), -1, &create,
+    PhiDrawTextAA(dc, PhiStr("sidebar.createSpace.createButton"), -1, &create,
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
     ::SetTextColor(dc, hover_ == Hit::kCancel ? label : Blend(ink, ground, 200));
     RECT cancel = g.cancel_button;
-    ::DrawTextW(dc, PhiStr("sidebar.createSpace.cancelButton"), -1, &cancel,
+    PhiDrawTextAA(dc, PhiStr("sidebar.createSpace.cancelButton"), -1, &cancel,
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
   }
   ::SelectObject(dc, prev);
@@ -1090,7 +1062,7 @@ void PhiCreateSpacePanel::PaintCells(HDC dc,
     HGDIOBJ prev = font ? ::SelectObject(dc, font) : nullptr;
     ::SetTextColor(dc, palette.label);
     RECT text_rc = cell;
-    ::DrawTextW(dc, text.c_str(), -1, &text_rc,
+    PhiDrawTextAA(dc, text.c_str(), -1, &text_rc,
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
     if (prev) {
       ::SelectObject(dc, prev);
@@ -1113,10 +1085,9 @@ void PhiCreateSpacePanel::PaintSlider(HDC dc,
   const int span = track.right - track.left;
   double hue = 0, sat = 0, val = 0;
   RgbToHsv(overlay, &hue, &sat, &val);
-  const int save = ::SaveDC(dc);
-  HRGN clip = ::CreateRoundRectRgn(track.left, track.top, track.right + 1,
-                                   track.bottom + 1, Scaled(10), Scaled(10));
-  ::ExtSelectClipRgn(dc, clip, RGN_AND);
+  // Painted square, then the corners are knocked back to the ground
+  // (antialiased) — a region clip would cut the rounded track on the
+  // pixel grid.
   const int bands = 32;
   for (int i = 0; i < bands; ++i) {
     RECT band = {track.left + span * i / bands, track.top,
@@ -1134,8 +1105,7 @@ void PhiCreateSpacePanel::PaintSlider(HDC dc,
     ::FillRect(dc, &band, brush);
     ::DeleteObject(brush);
   }
-  ::RestoreDC(dc, save);
-  ::DeleteObject(clip);
+  PhiKnockOutRoundRectAA(dc, track, Scaled(5), palette.ground_top);
   PhiStrokeRoundRectAA(dc, track, Scaled(5), palette.border, 1);
   const int knob = Scaled(kSliderKnob);
   const int at = track.left + (span - knob) * slider_ / 100;

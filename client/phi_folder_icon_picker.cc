@@ -90,18 +90,11 @@ void Paint(HWND hwnd, PickerState& state, HDC dc) {
     const bool is_selected = state.selected == all[i].id;
     const bool is_hover = state.hover == static_cast<int>(i);
     if (is_selected || is_hover) {
-      HBRUSH fill = ::CreateSolidBrush(is_selected ? palette.hover_strong
-                                                   : palette.hover);
-      HGDIOBJ prev_brush = ::SelectObject(dc, fill);
-      HPEN pen = ::CreatePen(PS_SOLID, 1,
-                             is_selected ? palette.accent : palette.border);
-      HGDIOBJ prev_pen = ::SelectObject(dc, pen);
       const int r = Scaled(state, kItemRadius);
-      ::RoundRect(dc, cell.left, cell.top, cell.right, cell.bottom, r, r);
-      ::SelectObject(dc, prev_pen);
-      ::SelectObject(dc, prev_brush);
-      ::DeleteObject(pen);
-      ::DeleteObject(fill);
+      PhiFillRoundRectAA(dc, cell, r,
+                         is_selected ? palette.hover_strong : palette.hover);
+      PhiStrokeRoundRectAA(dc, cell, r,
+                           is_selected ? palette.accent : palette.border, 1);
     }
     const PhiMacIcon* mask = PhiFolderIconMask(all[i].id);
     if (!mask) {

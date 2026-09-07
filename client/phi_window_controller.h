@@ -464,6 +464,10 @@ class PhiWindowController {
 
   // Paints one rounded-corner cap (called by its window proc).
   void PaintCornerCap(HWND cap, HDC dc);
+  // Commits cap `index` as a per-pixel-alpha layer (an antialiased arc);
+  // false when the layer cannot be built, and the cap keeps its region cut.
+  bool CommitCornerCap(int index);
+  void RefreshCornerCaps();  // Re-commits (or repaints) all four.
 
   // Paints the bottom-left link-target bubble (called by its window proc).
   void PaintStatusBubble(HWND bubble, HDC dc);

@@ -163,20 +163,7 @@ COLORREF PhiPopupBlend(COLORREF over, COLORREF base, int alpha) {
 }
 
 void PhiPopupFillRounded(HDC dc, const RECT& r, COLORREF fill, int radius) {
-  if (r.right <= r.left || r.bottom <= r.top) {
-    return;
-  }
-  if (PhiFillRoundRectAA(dc, r, radius, fill)) {
-    return;
-  }
-  HBRUSH brush = ::CreateSolidBrush(fill);
-  HGDIOBJ old_brush = ::SelectObject(dc, brush);
-  HGDIOBJ old_pen = ::SelectObject(dc, ::GetStockObject(NULL_PEN));
-  ::RoundRect(dc, r.left, r.top, r.right + 1, r.bottom + 1, radius * 2,
-              radius * 2);
-  ::SelectObject(dc, old_pen);
-  ::SelectObject(dc, old_brush);
-  ::DeleteObject(brush);
+  PhiFillRoundRectAA(dc, r, radius, fill);
 }
 
 void PhiPopupStrokeRounded(HDC dc,
@@ -185,22 +172,8 @@ void PhiPopupStrokeRounded(HDC dc,
                            COLORREF border,
                            int radius,
                            int width) {
-  if (r.right <= r.left || r.bottom <= r.top) {
-    return;
-  }
-  if (PhiFillRoundRectAA(dc, r, radius, fill) &&
-      PhiStrokeRoundRectAA(dc, r, radius, border, width)) {
-    return;
-  }
-  HBRUSH brush = ::CreateSolidBrush(fill);
-  HPEN pen = ::CreatePen(PS_SOLID, width, border);
-  HGDIOBJ old_brush = ::SelectObject(dc, brush);
-  HGDIOBJ old_pen = ::SelectObject(dc, pen);
-  ::RoundRect(dc, r.left, r.top, r.right, r.bottom, radius * 2, radius * 2);
-  ::SelectObject(dc, old_pen);
-  ::SelectObject(dc, old_brush);
-  ::DeleteObject(pen);
-  ::DeleteObject(brush);
+  PhiFillRoundRectAA(dc, r, radius, fill);
+  PhiStrokeRoundRectAA(dc, r, radius, border, width);
 }
 
 HFONT PhiPopupFont(UINT dpi, int size, int weight) {
@@ -293,12 +266,12 @@ void PhiPopupPaintButton(HDC dc,
   ::SetTextColor(dc, ink);
   HGDIOBJ previous = font ? ::SelectObject(dc, font) : nullptr;
   RECT text_rc = bounds;
-  ::DrawTextW(dc, text.c_str(), -1, &text_rc,
+  PhiDrawTextAA(dc, text.c_str(), -1, &text_rc,
               DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
   if (role == PhiPopupButtonRole::kLink && hot && enabled) {
     // The Mac's inline link: underlined while hovered.
     RECT measure = bounds;
-    ::DrawTextW(dc, text.c_str(), -1, &measure,
+    PhiDrawTextAA(dc, text.c_str(), -1, &measure,
                 DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX);
     const int w = measure.right - measure.left;
     const int x = (bounds.left + bounds.right - w) / 2;
@@ -667,7 +640,7 @@ void PhiPopupChrome::PaintCaption(HDC dc,
     RECT title_rc = {reserve, 0, client.right - reserve, h};
     HGDIOBJ previous = title_font_ ? ::SelectObject(dc, title_font_) : nullptr;
     ::SetTextColor(dc, active ? colors.label : colors.tertiary);
-    ::DrawTextW(dc, title, -1, &title_rc,
+    PhiDrawTextAA(dc, title, -1, &title_rc,
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX |
                     DT_END_ELLIPSIS);
     if (previous) {
@@ -697,7 +670,7 @@ void PhiPopupChrome::PaintCaption(HDC dc,
     }
     ::SetTextColor(dc, ink);
     RECT box = rc;
-    ::DrawTextW(dc, glyph, -1, &box,
+    PhiDrawTextAA(dc, glyph, -1, &box,
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
   }
   if (previous) {

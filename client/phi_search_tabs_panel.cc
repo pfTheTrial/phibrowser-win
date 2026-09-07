@@ -4,6 +4,8 @@
 
 #include "phibrowser-win/client/phi_search_tabs_panel.h"
 
+#include "phibrowser-win/client/phi_dwrite.h"
+
 #include <windows.h>
 
 #include <commctrl.h>
@@ -468,14 +470,7 @@ class Panel {
       }
       RECT r = {list.left, y, list.right, y + Scaled(kRowHeight)};
       if (static_cast<int>(i) == selected_) {
-        HBRUSH sel = ::CreateSolidBrush(palette.hover_strong);
-        HGDIOBJ prev_brush = ::SelectObject(dc, sel);
-        HGDIOBJ prev_pen = ::SelectObject(dc, ::GetStockObject(NULL_PEN));
-        ::RoundRect(dc, r.left, r.top, r.right + 1, r.bottom + 1, Scaled(6),
-                    Scaled(6));
-        ::SelectObject(dc, prev_pen);
-        ::SelectObject(dc, prev_brush);
-        ::DeleteObject(sel);
+        PhiFillRoundRectAA(dc, r, Scaled(6), palette.hover_strong);
       }
       // Recency right-aligned; title then dim url fill the rest.
       RECT detail_rc = {r.right - Scaled(150), r.top, r.right - Scaled(10),

@@ -1902,14 +1902,7 @@ void PhiWindowController::PaintOmniboxPopup(HWND popup, HDC dc) {
               rc.right - Scaled(6), 0};
     r.bottom = r.top + Scaled(kOmniboxRowHeight);
     if (static_cast<int>(i) == omnibox_selected_) {
-      HBRUSH sel = ::CreateSolidBrush(palette.hover_strong);
-      HGDIOBJ prev_brush = ::SelectObject(dc, sel);
-      HGDIOBJ prev_pen = ::SelectObject(dc, ::GetStockObject(NULL_PEN));
-      ::RoundRect(dc, r.left, r.top, r.right + 1, r.bottom + 1, Scaled(6),
-                  Scaled(6));
-      ::SelectObject(dc, prev_pen);
-      ::SelectObject(dc, prev_brush);
-      ::DeleteObject(sel);
+      PhiFillRoundRectAA(dc, r, Scaled(6), palette.hover_strong);
     }
     // Type glyph: search rows a magnifier, bookmarks a star, history a
     // clock, everything else a globe.
@@ -1924,7 +1917,7 @@ void PhiWindowController::PaintOmniboxPopup(HWND popup, HDC dc) {
         chip_icon_font_ ? ::SelectObject(dc, chip_icon_font_) : nullptr;
     ::SetTextColor(dc, palette.label_dim);
     const wchar_t glyph_text[2] = {glyph, L'\0'};
-    ::DrawTextW(dc, glyph_text, 1, &glyph_rc,
+    PhiDrawTextAA(dc, glyph_text, 1, &glyph_rc,
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     if (glyph_font) {
       ::SelectObject(dc, glyph_font);
@@ -1934,13 +1927,13 @@ void PhiWindowController::PaintOmniboxPopup(HWND popup, HDC dc) {
     HGDIOBJ prev_font = ui_font_ ? ::SelectObject(dc, ui_font_) : nullptr;
     ::SetTextColor(dc, palette.label);
     RECT measure = text_rc;
-    ::DrawTextW(dc, row.contents.c_str(), -1, &measure,
+    PhiDrawTextAA(dc, row.contents.c_str(), -1, &measure,
                 DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX);
     RECT contents_rc = text_rc;
     contents_rc.right = std::min(
         text_rc.right,
         static_cast<LONG>(text_rc.left + (measure.right - measure.left)));
-    ::DrawTextW(dc, row.contents.c_str(), -1, &contents_rc,
+    PhiDrawTextAA(dc, row.contents.c_str(), -1, &contents_rc,
                 DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
                     DT_NOPREFIX);
     if (!row.description.empty() &&
@@ -1949,7 +1942,7 @@ void PhiWindowController::PaintOmniboxPopup(HWND popup, HDC dc) {
                       r.bottom};
       ::SetTextColor(dc, palette.label_dim);
       const std::wstring desc = L"— " + row.description;
-      ::DrawTextW(dc, desc.c_str(), -1, &desc_rc,
+      PhiDrawTextAA(dc, desc.c_str(), -1, &desc_rc,
                   DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
                       DT_NOPREFIX);
     }
@@ -2330,6 +2323,63 @@ int StripIdAtIndex(const std::vector<StripTab>& strip, int index) {
 
 }  // namespace
 
+namespace {
+
+// The ground tint at `y` of a `height`-tall window: the band gradient's
+// colour there, which is what a corner cap shows outside the card's arc.
+COLORREF GroundTintAt(const PhiPalette& palette, int y, int height) {
+  height = height > 0 ? height : 1;
+  auto channel = [&](int top, int bottom) {
+    return top + (bottom - top) * y / height;
+  };
+  return RGB(
+      channel(GetRValue(palette.ground_top), GetRValue(palette.ground_bottom)),
+      channel(GetGValue(palette.ground_top), GetGValue(palette.ground_bottom)),
+      channel(GetBValue(palette.ground_top),
+              GetBValue(palette.ground_bottom)));
+}
+
+}  // namespace
+
+bool PhiWindowController::CommitCornerCap(int index) {
+  if (index < 0 || index > 3 || !corner_caps_[index] ||
+      !::IsWindow(corner_caps_[index])) {
+    return false;
+  }
+  RECT rc = {};
+  ::GetClientRect(corner_caps_[index], &rc);
+  const int radius = rc.right;
+  if (radius <= 0 || rc.bottom != radius) {
+    return false;
+  }
+  const Layout layout = ComputeLayout();
+  const PhiPalette palette = CurrentPalette();
+  const int y = index < 2 ? layout.content.top
+                          : layout.content.bottom - radius;
+  // The card's 1px hairline rides the ring just outside the arc — the same
+  // circle the frame's PhiStrokeRoundRectAA of kContentRadius + 1 follows,
+  // so the two meet at the cap's edge.
+  return PhiCommitCornerCap(corner_caps_[index], index, radius,
+                            GroundTintAt(palette, y, layout.client.bottom),
+                            palette.border);
+}
+
+void PhiWindowController::RefreshCornerCaps() {
+  for (int i = 0; i < 4; ++i) {
+    HWND cap = corner_caps_[i];
+    if (!cap || !::IsWindow(cap)) {
+      continue;
+    }
+    const bool layered =
+        (::GetWindowLongPtrW(cap, GWL_EXSTYLE) & WS_EX_LAYERED) != 0;
+    if (!layered || !CommitCornerCap(i)) {
+      ::InvalidateRect(cap, nullptr, TRUE);
+    }
+  }
+}
+
+// The GDI path, for a cap whose layer could not be committed and so keeps
+// the region cut: the tint over the bite, and the hairline around it.
 void PhiWindowController::PaintCornerCap(HWND cap, HDC dc) {
   int corner = -1;
   for (int i = 0; i < 4; ++i) {
@@ -2345,36 +2395,22 @@ void PhiWindowController::PaintCornerCap(HWND cap, HDC dc) {
   const Layout layout = ComputeLayout();
   const PhiPalette palette = CurrentPalette();
   // The ground tint at this cap's height, matching the band gradient.
-  const int height = layout.client.bottom > 0 ? layout.client.bottom : 1;
   const int y = corner < 2 ? layout.content.top
                            : layout.content.bottom - rc.bottom;
-  auto channel = [&](int top, int bottom) {
-    return top + (bottom - top) * y / height;
-  };
-  HBRUSH tint = ::CreateSolidBrush(
-      RGB(channel(GetRValue(palette.ground_top),
-                  GetRValue(palette.ground_bottom)),
-          channel(GetGValue(palette.ground_top),
-                  GetGValue(palette.ground_bottom)),
-          channel(GetBValue(palette.ground_top),
-                  GetBValue(palette.ground_bottom))));
+  HBRUSH tint =
+      ::CreateSolidBrush(GroundTintAt(palette, y, layout.client.bottom));
   ::FillRect(dc, &rc, tint);
   ::DeleteObject(tint);
   // The card's 1px border, continued around the arc: the ring just OUTSIDE
   // the region's circle (same centre, radius + 1), which is also the circle
-  // the shell's frame RoundRect follows, so the two meet at the cap's edge.
+  // the shell's frame stroke follows, so the two meet at the cap's edge.
   // A ring on the region's own circle would fall inside the bite and be
   // clipped away — the corners then showed a bare, unstroked arc.
   const int r = rc.right;
-  HPEN pen = ::CreatePen(PS_SOLID, 1, palette.border);
-  HGDIOBJ old_pen = ::SelectObject(dc, pen);
-  HGDIOBJ old_brush = ::SelectObject(dc, ::GetStockObject(NULL_BRUSH));
   const int cx = (corner == 0 || corner == 2) ? r : 0;
   const int cy = corner < 2 ? r : 0;
-  ::Ellipse(dc, cx - r - 1, cy - r - 1, cx + r + 1, cy + r + 1);
-  ::SelectObject(dc, old_brush);
-  ::SelectObject(dc, old_pen);
-  ::DeleteObject(pen);
+  PhiStrokeEllipseAA(dc, {cx - r - 1, cy - r - 1, cx + r + 1, cy + r + 1},
+                     palette.border, 1);
 }
 
 void PhiWindowController::OnTargetURLChanged(int64_t browser_id,
@@ -2405,9 +2441,10 @@ void PhiWindowController::SetStatusUrl(const std::wstring& url) {
   }
   EnsureStatusBubbleClass();
   if (!status_bubble_) {
+    // Layered: its rounded corner is alpha, not a region's stair-step.
     status_bubble_ = ::CreateWindowExW(
-        0, L"PhiStatusBubble", L"", WS_CHILD, 0, 0, 0, 0, shell_hwnd_,
-        nullptr, ::GetModuleHandleW(nullptr), this);
+        WS_EX_LAYERED, L"PhiStatusBubble", L"", WS_CHILD, 0, 0, 0, 0,
+        shell_hwnd_, nullptr, ::GetModuleHandleW(nullptr), this);
   }
   if (!status_bubble_) {
     return;
@@ -2432,9 +2469,28 @@ void PhiWindowController::SetStatusUrl(const std::wstring& url) {
   ::SetWindowPos(status_bubble_, HWND_TOP, layout.content.left,
                  layout.content.bottom - height, width, height,
                  SWP_NOACTIVATE | SWP_SHOWWINDOW);
-  // Only the top-right corner rounds: the rounded rect is oversized so its
-  // other three corners fall outside the window.
+  // Only the top-right corner rounds. The bubble's surface is committed
+  // with that corner as alpha coverage; should the layer fail, the same
+  // shape goes on as a window region (oversized so the other three corners
+  // fall outside the window) and the bubble paints through WM_PAINT.
   const int r = Scaled(8);
+  const bool layered =
+      (::GetWindowLongPtrW(status_bubble_, GWL_EXSTYLE) & WS_EX_LAYERED) != 0;
+  if (layered &&
+      PhiCommitShapedLayer(
+          status_bubble_, width, height,
+          [&](HDC dc) { PaintStatusBubble(status_bubble_, dc); },
+          [&](double px, double py) {
+            return PhiRoundRectCoverage(px, py, width, height, r,
+                                        /*corners=*/0x2);
+          })) {
+    return;
+  }
+  if (layered) {
+    ::SetWindowLongPtrW(
+        status_bubble_, GWL_EXSTYLE,
+        ::GetWindowLongPtrW(status_bubble_, GWL_EXSTYLE) & ~WS_EX_LAYERED);
+  }
   HRGN shape = ::CreateRoundRectRgn(-2 * r, 0, width + 1, height + 2 * r + 1,
                                     2 * r, 2 * r);
   ::SetWindowRgn(status_bubble_, shape, TRUE);  // Window owns it now.
@@ -2448,15 +2504,11 @@ void PhiWindowController::PaintStatusBubble(HWND bubble, HDC dc) {
   HBRUSH fill = ::CreateSolidBrush(palette.card);
   ::FillRect(dc, &rc, fill);
   ::DeleteObject(fill);
-  // The card border along the exposed top and right edges.
-  HPEN pen = ::CreatePen(PS_SOLID, 1, palette.border);
-  HGDIOBJ old_pen = ::SelectObject(dc, pen);
-  HGDIOBJ old_brush = ::SelectObject(dc, ::GetStockObject(NULL_BRUSH));
+  // The card border along the exposed top and right edges: a rounded rect
+  // oversized past the left and bottom, so only its top-right arc shows.
   const int r = Scaled(8);
-  ::RoundRect(dc, -2 * r, 0, rc.right, rc.bottom + 2 * r, 2 * r, 2 * r);
-  ::SelectObject(dc, old_brush);
-  ::SelectObject(dc, old_pen);
-  ::DeleteObject(pen);
+  PhiStrokeRoundRectAA(dc, {-2 * r, 0, rc.right, rc.bottom + 2 * r}, r,
+                       palette.border, 1);
   RECT text = rc;
   text.left += Scaled(10);
   text.right -= Scaled(12);
@@ -2464,7 +2516,7 @@ void PhiWindowController::PaintStatusBubble(HWND bubble, HDC dc) {
   ::SetTextColor(dc, palette.label);
   HGDIOBJ old_font = small_font_ ? ::SelectObject(dc, small_font_) : nullptr;
   // Middle truncation, the way a URL keeps its host and tail readable.
-  ::DrawTextW(dc, status_url_.c_str(), -1, &text,
+  PhiDrawTextAA(dc, status_url_.c_str(), -1, &text,
               DT_SINGLELINE | DT_VCENTER | DT_PATH_ELLIPSIS | DT_NOPREFIX);
   if (old_font) {
     ::SelectObject(dc, old_font);
@@ -2576,9 +2628,11 @@ void PhiWindowController::LayoutContents() {
   }};
   for (int i = 0; i < 4; ++i) {
     if (!corner_caps_[i]) {
+      // Layered (per-pixel alpha, a child since Windows 8): the arc is a
+      // coverage ramp, not a region's pixel-grid cut.
       corner_caps_[i] = ::CreateWindowExW(
-          0, L"PhiCornerCap", L"", WS_CHILD, 0, 0, radius, radius,
-          shell_hwnd_, nullptr, ::GetModuleHandleW(nullptr), this);
+          WS_EX_LAYERED, L"PhiCornerCap", L"", WS_CHILD, 0, 0, radius,
+          radius, shell_hwnd_, nullptr, ::GetModuleHandleW(nullptr), this);
     }
     if (!corner_caps_[i]) {
       continue;
@@ -2588,10 +2642,23 @@ void PhiWindowController::LayoutContents() {
                    radius, radius,
                    SWP_NOACTIVATE | (shown ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
     // Shape: the radius-square minus the quarter circle — only the bite
-    // outside the card's curve remains visible. The circle is centred on
-    // the cap's inner corner with radius `radius` exactly; PaintCornerCap
-    // strokes the ring one pixel outside it, and the shell's frame uses the
-    // same circle, so the hairline runs unbroken around the arc.
+    // outside the card's curve shows. The circle is centred on the cap's
+    // inner corner with radius `radius` exactly; the cap strokes the ring
+    // one pixel outside it, and the shell's frame uses the same circle, so
+    // the hairline runs unbroken around the arc. The layer carries the
+    // shape as alpha; only if it cannot be committed does the cap fall
+    // back to a window region (the same shape, on the pixel grid).
+    const bool layered =
+        (::GetWindowLongPtrW(corner_caps_[i], GWL_EXSTYLE) & WS_EX_LAYERED) !=
+        0;
+    if (layered && CommitCornerCap(i)) {
+      continue;
+    }
+    if (layered) {
+      ::SetWindowLongPtrW(
+          corner_caps_[i], GWL_EXSTYLE,
+          ::GetWindowLongPtrW(corner_caps_[i], GWL_EXSTYLE) & ~WS_EX_LAYERED);
+    }
     HRGN square = ::CreateRectRgn(0, 0, radius + 1, radius + 1);
     const int cx = (i == 0 || i == 2) ? radius : 0;
     const int cy = i < 2 ? radius : 0;
@@ -4605,11 +4672,7 @@ void PhiWindowController::PreviewCreateSpaceTheme(const std::string& theme_id,
   if (new_tab_page_ && new_tab_page_->visible()) {
     new_tab_page_->Refresh();
   }
-  for (HWND cap : corner_caps_) {
-    if (cap) {
-      ::InvalidateRect(cap, nullptr, TRUE);
-    }
-  }
+  RefreshCornerCaps();
 }
 
 void PhiWindowController::EndCreateSpacePreview() {
@@ -4622,11 +4685,7 @@ void PhiWindowController::EndCreateSpacePreview() {
   if (new_tab_page_ && new_tab_page_->visible()) {
     new_tab_page_->Refresh();
   }
-  for (HWND cap : corner_caps_) {
-    if (cap) {
-      ::InvalidateRect(cap, nullptr, TRUE);
-    }
-  }
+  RefreshCornerCaps();
 }
 
 void PhiWindowController::SetCreateSpaceIcon(const std::string& storage_value) {
@@ -5950,21 +6009,13 @@ namespace {
 // discarded. The Mac aligned both states on this ring (dda300c6) after a
 // short-lived dimmed-favicon treatment; the dimmed TITLE stays, as before.
 void DrawDormantRing(HDC dc, const RECT& icon, COLORREF color) {
-  HPEN pen = ::CreatePen(PS_DOT, 1, color);
-  if (!pen) {
-    return;
-  }
-  const int old_mode = ::SetBkMode(dc, TRANSPARENT);  // Gaps stay see-through.
-  HGDIOBJ old_pen = ::SelectObject(dc, pen);
-  HGDIOBJ old_brush = ::SelectObject(dc, ::GetStockObject(NULL_BRUSH));
-  // 2px of air around a 16px icon; scales with the icon at higher DPI.
+  // 2px of air around a 16px icon; scales with the icon at higher DPI. The
+  // dashes scale the same way (2 on, 2 off at 16px).
   const int inset = std::max(2, static_cast<int>(icon.right - icon.left) / 8);
-  ::Ellipse(dc, icon.left - inset, icon.top - inset, icon.right + inset,
-            icon.bottom + inset);
-  ::SelectObject(dc, old_brush);
-  ::SelectObject(dc, old_pen);
-  ::DeleteObject(pen);
-  ::SetBkMode(dc, old_mode);
+  PhiStrokeEllipseDashedAA(dc,
+                           {icon.left - inset, icon.top - inset,
+                            icon.right + inset, icon.bottom + inset},
+                           color, 1, inset, inset);
 }
 
 }  // namespace
@@ -7377,34 +7428,24 @@ namespace {
 // comfortable tab's shape, which has to sit flush on the toolbar it merges
 // into. Drawing the round rect a radius taller and clipping to `r` puts the
 // arcs where they belong and leaves the bottom edge straight.
+// Every rounded shape here is antialiased and takes the TRUE corner radius
+// (phi_dwrite.h). The GDI RoundRect these replaced took the corner
+// ellipse's diameter, so a pill asked for kCornerRadius came out at half
+// of it — and the active pin's ring, which passed 2 * kCornerRadius, was
+// the one shape that drew the radius the constant names.
 void FillRoundedTop(HDC dc, const RECT& r, COLORREF fill, int radius) {
   if (r.right <= r.left || r.bottom <= r.top) {
     return;
   }
   const int save = ::SaveDC(dc);
-  ::IntersectClipRect(dc, r.left, r.top, r.right + 1, r.bottom + 1);
-  HBRUSH brush = ::CreateSolidBrush(fill);
-  HGDIOBJ old_brush = ::SelectObject(dc, brush);
-  HGDIOBJ old_pen = ::SelectObject(dc, ::GetStockObject(NULL_PEN));
-  ::RoundRect(dc, r.left, r.top, r.right + 1, r.bottom + 1 + radius, radius,
-              radius);
-  ::SelectObject(dc, old_pen);
-  ::SelectObject(dc, old_brush);
-  ::DeleteObject(brush);
+  ::IntersectClipRect(dc, r.left, r.top, r.right, r.bottom);
+  PhiFillRoundRectAA(dc, {r.left, r.top, r.right, r.bottom + radius}, radius,
+                     fill);
   ::RestoreDC(dc, save);
 }
 
 void FillRounded(HDC dc, const RECT& r, COLORREF fill, int radius) {
-  if (r.right <= r.left || r.bottom <= r.top) {
-    return;
-  }
-  HBRUSH brush = ::CreateSolidBrush(fill);
-  HGDIOBJ old_brush = ::SelectObject(dc, brush);
-  HGDIOBJ old_pen = ::SelectObject(dc, ::GetStockObject(NULL_PEN));
-  ::RoundRect(dc, r.left, r.top, r.right + 1, r.bottom + 1, radius, radius);
-  ::SelectObject(dc, old_pen);
-  ::SelectObject(dc, old_brush);
-  ::DeleteObject(brush);
+  PhiFillRoundRectAA(dc, r, radius, fill);
 }
 
 // A rounded rect with a hairline border — the address field.
@@ -7424,18 +7465,8 @@ RECT PaintedChip(const RECT& cell, int painted) {
 
 void StrokeRounded(HDC dc, const RECT& r, COLORREF fill, COLORREF border,
                    int radius) {
-  if (r.right <= r.left || r.bottom <= r.top) {
-    return;
-  }
-  HBRUSH brush = ::CreateSolidBrush(fill);
-  HPEN pen = ::CreatePen(PS_SOLID, 1, border);
-  HGDIOBJ old_brush = ::SelectObject(dc, brush);
-  HGDIOBJ old_pen = ::SelectObject(dc, pen);
-  ::RoundRect(dc, r.left, r.top, r.right, r.bottom, radius, radius);
-  ::SelectObject(dc, old_pen);
-  ::SelectObject(dc, old_brush);
-  ::DeleteObject(pen);
-  ::DeleteObject(brush);
+  PhiFillRoundRectAA(dc, r, radius, fill);
+  PhiStrokeRoundRectAA(dc, r, radius, border, 1);
 }
 
 // Reader View's icon: SF Symbol `doc.plaintext`, which is what BOTH Mac
@@ -7502,8 +7533,10 @@ void DrawGlyph(HDC dc, const RECT& r, const wchar_t* glyph, COLORREF ink) {
     return;
   }
   ::SetTextColor(dc, ink);
-  ::DrawTextW(dc, glyph, -1, const_cast<RECT*>(&r),
-              DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+  // An MDL2 icon under an MDL2 font goes through DirectWrite (grayscale
+  // antialiasing both ways); text takes GDI as before.
+  PhiDrawTextAA(dc, glyph, -1, const_cast<RECT*>(&r),
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 }
 
 // The same, for an MDL2 ICON: rasterized by DirectWrite at `pixel_size`
@@ -8852,7 +8885,7 @@ void PhiWindowController::PaintBookmarkBar(HDC dc,
     RECT hint = band;
     hint.left += Scaled(12);
     ::SetTextColor(dc, palette.label_dim);
-    ::DrawTextW(dc, L"Bookmarks you add appear here", -1, &hint,
+    PhiDrawTextAA(dc, L"Bookmarks you add appear here", -1, &hint,
                 DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     return;
   }
@@ -8896,7 +8929,7 @@ void PhiWindowController::PaintBookmarkBar(HDC dc,
       ::SelectObject(dc, ui_font_);
     }
     ::SetTextColor(dc, palette.label);
-    ::DrawTextW(dc, row.title.c_str(), -1, &text,
+    PhiDrawTextAA(dc, row.title.c_str(), -1, &text,
                 DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
                     DT_NOPREFIX);
     bar_items_.push_back({pill, index, false});
@@ -9052,19 +9085,11 @@ void PhiWindowController::PaintChrome(HDC dc,
       frame_rc.top = layout.top_bar.top;
     }
     ::InflateRect(&frame_rc, 1, 1);
-    HPEN border_pen = ::CreatePen(PS_SOLID, 1, palette.border);
-    HGDIOBJ old_frame_pen = ::SelectObject(dc, border_pen);
-    HGDIOBJ old_frame_brush =
-        ::SelectObject(dc, ::GetStockObject(NULL_BRUSH));
     // The frame sits 1px outside the card, so its corner circle is the
-    // card's (the caps' region circle) grown by 1 — concentric, and the
-    // very circle each cap strokes inside its bite.
-    const int ellipse = 2 * (Scaled(kContentRadius) + 1);
-    ::RoundRect(dc, frame_rc.left, frame_rc.top, frame_rc.right,
-                frame_rc.bottom, ellipse, ellipse);
-    ::SelectObject(dc, old_frame_brush);
-    ::SelectObject(dc, old_frame_pen);
-    ::DeleteObject(border_pen);
+    // card's (the caps' circle) grown by 1 — concentric, and the very
+    // circle each cap strokes inside its bite.
+    PhiStrokeRoundRectAA(dc, frame_rc, Scaled(kContentRadius) + 1,
+                         palette.border, 1);
   }
 
   PaintBookmarkBar(dc, layout, palette);
@@ -9125,11 +9150,11 @@ void PhiWindowController::PaintChrome(HDC dc,
         draw_logo(title_rc.left + Scaled(kPhiTitlePad),
                   (title_rc.bottom + title_rc.top - logo_size) / 2);
         text_rc.left += Scaled(kPhiTitlePad) + logo_size + Scaled(6);
-        ::DrawTextW(dc, menu_titles_[i].first.c_str(), -1, &text_rc,
+        PhiDrawTextAA(dc, menu_titles_[i].first.c_str(), -1, &text_rc,
                     DT_LEFT | DT_VCENTER | DT_SINGLELINE);
         continue;
       }
-      ::DrawTextW(dc, menu_titles_[i].first.c_str(), -1, &text_rc,
+      PhiDrawTextAA(dc, menu_titles_[i].first.c_str(), -1, &text_rc,
                   DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     }
     // The seam between the app's band controls and the window's. It draws in
@@ -9193,20 +9218,11 @@ void PhiWindowController::PaintChrome(HDC dc,
       // corners belong to the tabs merging into it, not to a rounded card.
       ::FillRect(dc, &band, bg);
     } else {
-      HGDIOBJ old_brush = ::SelectObject(dc, bg);
-      HGDIOBJ old_pen = ::SelectObject(dc, ::GetStockObject(NULL_PEN));
-      // GDI's RoundRect takes the corner ELLIPSE's size, not its radius, so
-      // this is twice kContentRadius. Passing the radius drew the card's top
-      // corners at HALF the curve its hairline and its bottom corner caps use
-      // — the two arcs did not meet, and the gap between them read as a bite
-      // out of the card's top corners.
-      const int ellipse = 2 * radius;
-      ::RoundRect(dc, band.left, band.top, band.right + 1, band.bottom + 1,
-                  ellipse, ellipse);
+      // The card's top corners at kContentRadius — the same curve its
+      // hairline and its bottom corner caps use, so the arcs meet.
+      PhiFillRoundRectAA(dc, band, radius, palette.window_bg);
       RECT lower = {band.left, band.top + radius, band.right, band.bottom};
       ::FillRect(dc, &lower, bg);
-      ::SelectObject(dc, old_pen);
-      ::SelectObject(dc, old_brush);
     }
     ::DeleteObject(bg);
     RECT sep = {band.left, band.bottom - 1, band.right, band.bottom};
@@ -9342,7 +9358,7 @@ void PhiWindowController::PaintChrome(HDC dc,
       }
     }
     url_rc.right = text_right - Scaled(8);
-    ::DrawTextW(dc, shown.empty() ? L"Search or Enter URL" : shown.c_str(),
+    PhiDrawTextAA(dc, shown.empty() ? L"Search or Enter URL" : shown.c_str(),
                 -1, &url_rc,
                 DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_PATH_ELLIPSIS);
   }
@@ -9499,7 +9515,7 @@ void PhiWindowController::PaintChrome(HDC dc,
               : (big_pip && pip_emoji_font_ ? pip_emoji_font_ : emoji_font_);
       HGDIOBJ previous_icon_font =
           icon_font ? ::SelectObject(dc, icon_font) : nullptr;
-      ::DrawTextW(dc, chip.icon.c_str(), -1, &glyph_rc,
+      PhiDrawTextAA(dc, chip.icon.c_str(), -1, &glyph_rc,
                   DT_CENTER | DT_VCENTER | DT_SINGLELINE);
       if (previous_icon_font) {
         ::SelectObject(dc, previous_icon_font);
@@ -9513,7 +9529,7 @@ void PhiWindowController::PaintChrome(HDC dc,
       HGDIOBJ previous_initial_font =
           big_pip && pip_text_font_ ? ::SelectObject(dc, pip_text_font_)
                                     : nullptr;
-      ::DrawTextW(dc, initial.c_str(), -1, const_cast<RECT*>(&chip.bounds),
+      PhiDrawTextAA(dc, initial.c_str(), -1, const_cast<RECT*>(&chip.bounds),
                   DT_CENTER | DT_VCENTER | DT_SINGLELINE);
       if (previous_initial_font) {
         ::SelectObject(dc, previous_initial_font);
@@ -9526,16 +9542,9 @@ void PhiWindowController::PaintChrome(HDC dc,
     // The Mac's creatingSpacePlaceholderPip: a dashed outline where the new
     // Space will land, carrying the form's currently selected icon.
     const RECT pip = PaintedChip(creating_pip_bounds_, Scaled(kSpaceChip));
-    HPEN dash_pen = ::CreatePen(PS_DASH, 1,
-                                BlendOver(kLabelDim, palette.ground_top, 166));
-    HGDIOBJ previous_pen = ::SelectObject(dc, dash_pen);
-    HGDIOBJ previous_brush =
-        ::SelectObject(dc, ::GetStockObject(NULL_BRUSH));
-    ::RoundRect(dc, pip.left, pip.top, pip.right, pip.bottom,
-                Scaled(kCornerRadius), Scaled(kCornerRadius));
-    ::SelectObject(dc, previous_brush);
-    ::SelectObject(dc, previous_pen);
-    ::DeleteObject(dash_pen);
+    PhiStrokeRoundRectDashedAA(dc, pip, Scaled(kCornerRadius),
+                               BlendOver(kLabelDim, palette.ground_top, 166),
+                               1, Scaled(3), Scaled(2));
     if (!creating_space_icon_text_.empty()) {
       // Sized like a real pip's icon, through the same ink-fitting draws:
       // the old fixed-point artwork/text path rendered the chosen icon
@@ -9561,7 +9570,7 @@ void PhiWindowController::PaintChrome(HDC dc,
         HGDIOBJ previous_pip_font =
             pip_icon_font ? ::SelectObject(dc, pip_icon_font) : nullptr;
         ::SetTextColor(dc, kLabel);
-        ::DrawTextW(dc, creating_space_icon_text_.c_str(), -1, &glyph_rc,
+        PhiDrawTextAA(dc, creating_space_icon_text_.c_str(), -1, &glyph_rc,
                     DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         if (previous_pip_font) {
           ::SelectObject(dc, previous_pip_font);
@@ -9604,9 +9613,7 @@ void PhiWindowController::PaintChrome(HDC dc,
           const RECT d = {mid_x + i * pitch - dot / 2, mid_y - dot / 2,
                           mid_x + i * pitch - dot / 2 + dot,
                           mid_y - dot / 2 + dot};
-          if (!PhiFillCapsuleAA(dc, d, slot_ink)) {
-            FillRounded(dc, d, slot_ink, dot);  // GDI, aliased.
-          }
+          PhiFillEllipseAA(dc, d, slot_ink);
         }
       } else {
         HGDIOBJ previous_slot_font =
@@ -9692,7 +9699,7 @@ void PhiWindowController::PaintChrome(HDC dc,
     int group_w = icon_w;
     RECT measure = {0, 0, 0, 0};
     if (!icon_only) {
-      ::DrawTextW(dc, L"Feedback", -1, &measure,
+      PhiDrawTextAA(dc, L"Feedback", -1, &measure,
                   DT_CALCRECT | DT_SINGLELINE);
       group_w += Scaled(4) + measure.right;
     }
@@ -9712,7 +9719,7 @@ void PhiWindowController::PaintChrome(HDC dc,
       ::SetTextColor(dc, kLabel);
       RECT text_rc = {icon_rc.right + Scaled(4), layout.feedback.top,
                       layout.feedback.right, layout.feedback.bottom};
-      ::DrawTextW(dc, L"Feedback", -1, &text_rc,
+      PhiDrawTextAA(dc, L"Feedback", -1, &text_rc,
                   DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     }
     if (previous_small) {
@@ -9740,7 +9747,7 @@ void PhiWindowController::PaintChrome(HDC dc,
     ::SetTextColor(dc, RGB(0xFF, 0xFF, 0xFF));
     RECT chat_rc = {icon_rc.right + Scaled(2), layout.chat.top,
                     layout.chat.right - Scaled(8), layout.chat.bottom};
-    ::DrawTextW(dc, L"Chat", -1, &chat_rc,
+    PhiDrawTextAA(dc, L"Chat", -1, &chat_rc,
                 DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     if (previous_small) {
       ::SelectObject(dc, previous_small);
@@ -9788,7 +9795,7 @@ bool PhiWindowController::MeasureHoverCard(HDC dc,
       small_font_ ? ::SelectObject(dc, small_font_) : nullptr;
   const auto measure = [&](const std::wstring& text, int max_w) {
     RECT rc = {0, 0, 0, 0};
-    ::DrawTextW(dc, text.c_str(), -1, &rc,
+    PhiDrawTextAA(dc, text.c_str(), -1, &rc,
                 DT_CALCRECT | DT_SINGLELINE | DT_LEFT);
     return std::min(static_cast<int>(rc.right), max_w);
   };
@@ -9885,7 +9892,7 @@ void PhiWindowController::PaintHoverCard(HDC dc,
     HGDIOBJ previous_icon_font =
         icon_font ? ::SelectObject(dc, icon_font) : nullptr;
     ::SetTextColor(dc, icon_ink);
-    ::DrawTextW(dc, g.icon.c_str(), -1, &icon_rc,
+    PhiDrawTextAA(dc, g.icon.c_str(), -1, &icon_rc,
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     if (previous_icon_font) {
       ::SelectObject(dc, previous_icon_font);
@@ -9893,13 +9900,13 @@ void PhiWindowController::PaintHoverCard(HDC dc,
   } else {
     ::SetTextColor(dc, icon_ink);
     const std::wstring initial = g.name.substr(0, 1);
-    ::DrawTextW(dc, initial.c_str(), -1, &icon_rc,
+    PhiDrawTextAA(dc, initial.c_str(), -1, &icon_rc,
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE);
   }
   ::SetTextColor(dc, accent);
   RECT name_rc = {icon_rc.right + Scaled(4), pill.top, pill.right - Scaled(6),
                   pill.bottom};
-  ::DrawTextW(dc, g.name.c_str(), -1, &name_rc,
+  PhiDrawTextAA(dc, g.name.c_str(), -1, &name_rc,
               DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
   x += g.pill_w + g.gap;
 
@@ -9909,7 +9916,7 @@ void PhiWindowController::PaintHoverCard(HDC dc,
   x += g.dot_w + g.gap;
   ::SetTextColor(dc, palette.label_dim);
   RECT profile_rc = {x, card.top, x + g.profile_w, card.bottom};
-  ::DrawTextW(dc, g.profile.c_str(), -1, &profile_rc,
+  PhiDrawTextAA(dc, g.profile.c_str(), -1, &profile_rc,
               DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
   x += g.profile_w;
 
@@ -9963,8 +9970,12 @@ void PhiWindowController::SyncHoverCardPopup(HDC dc, const Layout& layout) {
     // Owned by the shell, so it stays above the shell and its children
     // without WS_EX_TOPMOST; transparent to the pointer, so it never takes
     // the hover it is showing for.
+    // Layered: the card's corners are alpha coverage (antialiased at any
+    // radius), where a window region cuts them on the pixel grid and DWM's
+    // own rounding is fixed at the pills' 8.
     hover_card_popup_ = ::CreateWindowExW(
-        WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT,
+        WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT |
+            WS_EX_LAYERED,
         L"PhiSpaceHoverCard", L"", WS_POPUP, 0, 0, 0, 0, shell_hwnd_, nullptr,
         ::GetModuleHandleW(nullptr), this);
     if (!hover_card_popup_) {
@@ -9974,20 +9985,41 @@ void PhiWindowController::SyncHoverCardPopup(HDC dc, const Layout& layout) {
   g.card = {0, 0, w, h};  // Painted at the popup's own origin.
   hover_card_geom_ = std::move(g);
   const bool moved = !::EqualRect(&screen, &hover_card_popup_rect_);
-  if (moved) {
-    // The corners come from a window region: DWM's rounding is fixed at
-    // the pills' 8, and the card is rounder than that.
-    const int r = Scaled(kHoverCardRadius);
+  const int r = Scaled(kHoverCardRadius);
+  const bool layered =
+      (::GetWindowLongPtrW(hover_card_popup_, GWL_EXSTYLE) & WS_EX_LAYERED) !=
+      0;
+  if (moved && !layered) {
+    // The region path: the corners cut on the pixel grid.
     ::SetWindowRgn(hover_card_popup_,
                    ::CreateRoundRectRgn(0, 0, w + 1, h + 1, 2 * r, 2 * r),
                    FALSE);
+  }
+  if (moved) {
     hover_card_popup_rect_ = screen;
   }
   if (moved || !::IsWindowVisible(hover_card_popup_)) {
     ::SetWindowPos(hover_card_popup_, HWND_TOP, screen.left, screen.top, w, h,
                    SWP_NOACTIVATE | SWP_SHOWWINDOW);
   }
-  // Repainted with every shell frame so it rides the theme ramp too.
+  // Recommitted with every shell frame so it rides the theme ramp too.
+  if (layered) {
+    if (PhiCommitShapedLayer(
+            hover_card_popup_, w, h,
+            [&](HDC dc) { PaintHoverCardPopup(hover_card_popup_, dc); },
+            [&](double px, double py) {
+              return PhiRoundRectCoverage(px, py, w, h, r);
+            })) {
+      return;
+    }
+    // No layer to be had: fall back to the region for good.
+    ::SetWindowLongPtrW(
+        hover_card_popup_, GWL_EXSTYLE,
+        ::GetWindowLongPtrW(hover_card_popup_, GWL_EXSTYLE) & ~WS_EX_LAYERED);
+    ::SetWindowRgn(hover_card_popup_,
+                   ::CreateRoundRectRgn(0, 0, w + 1, h + 1, 2 * r, 2 * r),
+                   FALSE);
+  }
   ::InvalidateRect(hover_card_popup_, nullptr, FALSE);
 }
 
@@ -10139,16 +10171,10 @@ void PhiWindowController::PaintSidebarBand(HDC dc,
       StrokeRounded(dc, cell, pin_bg, palette.border, Scaled(kCornerRadius));
     }
     if (pin.active && !layout.horizontal_tabs) {
-      HPEN ring = ::CreatePen(PS_SOLID, Scaled(2), palette.accent);
-      HGDIOBJ old_pen = ::SelectObject(dc, ring);
-      HGDIOBJ old_brush = ::SelectObject(dc, ::GetStockObject(NULL_BRUSH));
       RECT rr = cell;
       ::InflateRect(&rr, -Scaled(1), -Scaled(1));
-      const int d = 2 * Scaled(kCornerRadius);
-      ::RoundRect(dc, rr.left, rr.top, rr.right, rr.bottom, d, d);
-      ::SelectObject(dc, old_brush);
-      ::SelectObject(dc, old_pen);
-      ::DeleteObject(ring);
+      PhiStrokeRoundRectAA(dc, rr, Scaled(kCornerRadius), palette.accent,
+                           Scaled(2));
     }
     if (!pin.url_b.empty()) {
       // A merged split cell: two 16pt favicons side by side, the Mac's
@@ -10190,7 +10216,7 @@ void PhiWindowController::PaintSidebarBand(HDC dc,
       ::SetTextColor(dc, kLabel);
       const std::wstring initial =
           pin.title.empty() ? std::wstring(L"?") : pin.title.substr(0, 1);
-      ::DrawTextW(dc, initial.c_str(), -1, &cell,
+      PhiDrawTextAA(dc, initial.c_str(), -1, &cell,
                   DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     }
     if (pin.attached_surface != SidebarSurface::kContent &&
@@ -10357,7 +10383,7 @@ void PhiWindowController::PaintSidebarBand(HDC dc,
                    static_cast<int>(offset.dy));
       text.right = bookmark_badge.left - Scaled(4);
     }
-    ::DrawTextW(dc, label.c_str(), -1, &text,
+    PhiDrawTextAA(dc, label.c_str(), -1, &text,
                 DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     if (bookmark_attached) {
       DrawSurfaceBadge(dc, bookmark_badge, bookmark.attached_surface,
@@ -10390,7 +10416,7 @@ void PhiWindowController::PaintSidebarBand(HDC dc,
     RECT text = row;
     text.left = icon.right + Scaled(8);
     ::SetTextColor(dc, palette.label_tertiary);
-    ::DrawTextW(dc, L"New Tab", -1, &text,
+    PhiDrawTextAA(dc, L"New Tab", -1, &text,
                 DT_LEFT | DT_VCENTER | DT_SINGLELINE);
   }
 
@@ -10436,23 +10462,18 @@ void PhiWindowController::PaintSidebarBand(HDC dc,
     }
     // The dot: colored centre in a white ring (TabGroupHeaderColorIndicator).
     const int cx = chevron.right + Scaled(4) + Scaled(6);
-    HGDIOBJ old_pen = ::SelectObject(dc, ::GetStockObject(NULL_PEN));
-    HBRUSH ring = ::CreateSolidBrush(RGB(0xFF, 0xFF, 0xFF));
-    HGDIOBJ old_brush = ::SelectObject(dc, ring);
-    ::Ellipse(dc, cx - Scaled(6), mid - Scaled(6), cx + Scaled(6),
-              mid + Scaled(6));
-    HBRUSH centre = ::CreateSolidBrush(gh.color);
-    ::SelectObject(dc, centre);
-    ::Ellipse(dc, cx - Scaled(5), mid - Scaled(5), cx + Scaled(5),
-              mid + Scaled(5));
-    ::SelectObject(dc, old_brush);
-    ::SelectObject(dc, old_pen);
-    ::DeleteObject(ring);
-    ::DeleteObject(centre);
+    PhiFillEllipseAA(dc,
+                     {cx - Scaled(6), mid - Scaled(6), cx + Scaled(6),
+                      mid + Scaled(6)},
+                     RGB(0xFF, 0xFF, 0xFF));
+    PhiFillEllipseAA(dc,
+                     {cx - Scaled(5), mid - Scaled(5), cx + Scaled(5),
+                      mid + Scaled(5)},
+                     gh.color);
     ::SetTextColor(dc, kLabel);
     RECT title_rc = {cx + Scaled(6) + Scaled(6), gh.bounds.top,
                      gh.bounds.right - Scaled(6), gh.bounds.bottom};
-    ::DrawTextW(dc, gh.title.c_str(), -1, &title_rc,
+    PhiDrawTextAA(dc, gh.title.c_str(), -1, &title_rc,
                 DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
   }
   ::SetViewportOrgEx(dc, viewport_before.x, viewport_before.y, nullptr);
@@ -10598,7 +10619,7 @@ void PhiWindowController::PaintSidebarBand(HDC dc,
       ::SetTextColor(dc, r.unloaded && !r.active ? kLabelDim : kLabel);
       RECT title_rc = {slot.right + Scaled(8), pill.top, right - Scaled(4),
                        pill.bottom};
-      ::DrawTextW(dc, (pane_b ? r.b_title : r.title).c_str(), -1, &title_rc,
+      PhiDrawTextAA(dc, (pane_b ? r.b_title : r.title).c_str(), -1, &title_rc,
                   DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     };
     // The close box shows on HOVER only (SideTabView) \u2014 the active row
@@ -10640,15 +10661,8 @@ void PhiWindowController::PaintSidebarBand(HDC dc,
       const int cy = (pill.top + pill.bottom) / 2;
       const COLORREF ink =
           reclaimed ? palette.label_tertiary : palette.accent;
-      HBRUSH fill = ::CreateSolidBrush(ink);
-      HPEN pen = ::CreatePen(PS_SOLID, 1, ink);
-      HGDIOBJ prev_brush = ::SelectObject(dc, fill);
-      HGDIOBJ prev_pen = ::SelectObject(dc, pen);
-      ::Ellipse(dc, cx - dot / 2, cy - dot / 2, cx + dot / 2, cy + dot / 2);
-      ::SelectObject(dc, prev_pen);
-      ::SelectObject(dc, prev_brush);
-      ::DeleteObject(pen);
-      ::DeleteObject(fill);
+      PhiFillEllipseAA(
+          dc, {cx - dot / 2, cy - dot / 2, cx + dot / 2, cy + dot / 2}, ink);
     }
   }
 
@@ -11226,11 +11240,7 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
         // The whole chrome repaints per tick: the band slide advances and
         // the theme ramp covers the statics. The caps ride the same ramp.
         ::InvalidateRect(hwnd, nullptr, FALSE);
-        for (HWND cap : self->corner_caps_) {
-          if (cap) {
-            ::InvalidateRect(cap, nullptr, TRUE);
-          }
-        }
+        self->RefreshCornerCaps();
         self->RepaintUrlField();  // The omnibox EDIT rides the ramp too.
         if (self->RampEasedProgress() >= 1.0 && !self->swap_start_) {
           ::KillTimer(hwnd, kSpaceSwapTimer);

@@ -4,6 +4,8 @@
 
 #include "phibrowser-win/client/phi_toast.h"
 
+#include "phibrowser-win/client/phi_dwrite.h"
+
 #include <algorithm>
 
 namespace phi_client {
@@ -76,16 +78,9 @@ LRESULT CALLBACK ToastProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
       if (self) {
         RECT rc = {};
         ::GetClientRect(hwnd, &rc);
-        HBRUSH bg = ::CreateSolidBrush(self->palette.card);
-        HGDIOBJ old_brush = ::SelectObject(dc, bg);
-        HPEN pen = ::CreatePen(PS_SOLID, 1, self->palette.border);
-        HGDIOBJ old_pen = ::SelectObject(dc, pen);
-        ::RoundRect(dc, rc.left, rc.top, rc.right, rc.bottom,
-                    self->Scaled(12), self->Scaled(12));
-        ::SelectObject(dc, old_pen);
-        ::SelectObject(dc, old_brush);
-        ::DeleteObject(pen);
-        ::DeleteObject(bg);
+        PhiFillRoundRectAA(dc, rc, self->Scaled(12), self->palette.card);
+        PhiStrokeRoundRectAA(dc, rc, self->Scaled(12), self->palette.border,
+                             1);
         ::SetBkMode(dc, TRANSPARENT);
         RECT text = rc;
         text.left += self->Scaled(16);

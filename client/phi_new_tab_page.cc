@@ -279,7 +279,7 @@ PhiNewTabPage::Geometry PhiNewTabPage::ComputeGeometry() const {
     if (dc) {
       HGDIOBJ prev = ::SelectObject(dc, label_font_);
       RECT measure = {0, 0, 0, 0};
-      ::DrawTextW(dc, PhiStr("browser.newTabPage.incognitoLabel"), -1,
+      PhiDrawTextAA(dc, PhiStr("browser.newTabPage.incognitoLabel"), -1,
                   &measure, DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX);
       ::SelectObject(dc, prev);
       ::ReleaseDC(hwnd_, dc);
@@ -361,7 +361,7 @@ void PhiNewTabPage::Paint(HDC dc) {
     HGDIOBJ prev = ::SelectObject(dc, label_font_);
     ::SetTextColor(dc, palette.label);
     RECT label = g.label;
-    ::DrawTextW(dc, PhiStr("browser.newTabPage.incognitoLabel"), -1, &label,
+    PhiDrawTextAA(dc, PhiStr("browser.newTabPage.incognitoLabel"), -1, &label,
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
     ::SelectObject(dc, prev);
   }
@@ -379,7 +379,7 @@ void PhiNewTabPage::Paint(HDC dc) {
                   g.box.bottom};
     HGDIOBJ prev = ::SelectObject(dc, glyph_font_);
     ::SetTextColor(dc, palette.label_dim);  // secondaryLabelColor
-    ::DrawTextW(dc, kSearchGlyph, -1, &glyph,
+    PhiDrawTextAA(dc, kSearchGlyph, -1, &glyph,
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
     ::SelectObject(dc, prev);
   }

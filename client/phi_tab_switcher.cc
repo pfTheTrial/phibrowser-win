@@ -207,16 +207,8 @@ class Hud {
     RECT rc = {};
     ::GetClientRect(hwnd_, &rc);
     const PhiPalette palette = controller_->CurrentPalette();
-    HBRUSH bg = ::CreateSolidBrush(palette.card);
-    HGDIOBJ old_brush = ::SelectObject(dc, bg);
-    HPEN pen = ::CreatePen(PS_SOLID, 1, palette.border);
-    HGDIOBJ old_pen = ::SelectObject(dc, pen);
-    ::RoundRect(dc, rc.left, rc.top, rc.right, rc.bottom, Scaled(16),
-                Scaled(16));
-    ::SelectObject(dc, old_pen);
-    ::SelectObject(dc, old_brush);
-    ::DeleteObject(pen);
-    ::DeleteObject(bg);
+    PhiFillRoundRectAA(dc, rc, Scaled(16), palette.card);
+    PhiStrokeRoundRectAA(dc, rc, Scaled(16), palette.border, 1);
     ::SetBkMode(dc, TRANSPARENT);
     int x = rc.left + Scaled(kPanelPad);
     for (size_t i = 0; i < cards_.size() && i < kMaxCards; ++i) {
@@ -225,18 +217,11 @@ class Hud {
                       x + Scaled(kCardWidth),
                       rc.top + Scaled(kPanelPad) + Scaled(kCardHeight)};
       if (static_cast<int>(i) == selected_) {
-        HBRUSH sel = ::CreateSolidBrush(palette.hover_strong);
-        HGDIOBJ prev_brush = ::SelectObject(dc, sel);
-        HPEN accent = ::CreatePen(PS_SOLID, Scaled(2), palette.accent);
-        HGDIOBJ prev_pen = ::SelectObject(dc, accent);
         RECT halo = card_rc;
         ::InflateRect(&halo, Scaled(4), Scaled(4));
-        ::RoundRect(dc, halo.left, halo.top, halo.right, halo.bottom,
-                    Scaled(10), Scaled(10));
-        ::SelectObject(dc, prev_pen);
-        ::SelectObject(dc, prev_brush);
-        ::DeleteObject(accent);
-        ::DeleteObject(sel);
+        PhiFillRoundRectAA(dc, halo, Scaled(10), palette.hover_strong);
+        PhiStrokeRoundRectAA(dc, halo, Scaled(10), palette.accent,
+                             Scaled(2));
       }
       // Snapshot area (16:10-ish) with the footer strip below it.
       RECT shot = card_rc;

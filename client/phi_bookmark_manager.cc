@@ -418,17 +418,9 @@ void PhiBookmarkManager::PaintRow(HDC dc,
                                   const PhiPalette& palette) {
   const bool is_selected = selected_.count(row.guid) > 0;
   if (is_selected) {
-    HBRUSH fill = ::CreateSolidBrush(palette.hover_strong);
-    HGDIOBJ prev_brush = ::SelectObject(dc, fill);
-    HPEN pen = ::CreatePen(PS_SOLID, 1, palette.accent);
-    HGDIOBJ prev_pen = ::SelectObject(dc, pen);
     const int r = Scaled(kRowRadius);
-    ::RoundRect(dc, row.bounds.left, row.bounds.top, row.bounds.right,
-                row.bounds.bottom, r, r);
-    ::SelectObject(dc, prev_pen);
-    ::SelectObject(dc, prev_brush);
-    ::DeleteObject(pen);
-    ::DeleteObject(fill);
+    PhiFillRoundRectAA(dc, row.bounds, r, palette.hover_strong);
+    PhiStrokeRoundRectAA(dc, row.bounds, r, palette.accent, 1);
   }
 
   const int mid = (row.bounds.top + row.bounds.bottom) / 2;
@@ -528,18 +520,9 @@ void PhiBookmarkManager::Paint(HDC dc) {
               DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
 
   // "New Folder" button.
-  HBRUSH fill = ::CreateSolidBrush(new_folder_hot_ ? palette.hover_strong
-                                                   : palette.hover);
-  HGDIOBJ prev_brush = ::SelectObject(dc, fill);
-  HPEN pen = ::CreatePen(PS_SOLID, 1, palette.border);
-  HGDIOBJ prev_pen = ::SelectObject(dc, pen);
-  ::RoundRect(dc, new_folder_button_.left, new_folder_button_.top,
-              new_folder_button_.right, new_folder_button_.bottom,
-              Scaled(6), Scaled(6));
-  ::SelectObject(dc, prev_pen);
-  ::SelectObject(dc, prev_brush);
-  ::DeleteObject(pen);
-  ::DeleteObject(fill);
+  PhiFillRoundRectAA(dc, new_folder_button_, Scaled(6),
+                     new_folder_hot_ ? palette.hover_strong : palette.hover);
+  PhiStrokeRoundRectAA(dc, new_folder_button_, Scaled(6), palette.border, 1);
   ::SelectObject(dc, button_font_);
   ::SetTextColor(dc, palette.label);
   RECT button_text = new_folder_button_;

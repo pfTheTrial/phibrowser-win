@@ -54,15 +54,7 @@ bool EnsureGdiPlus() {
 }
 
 void FillRounded(HDC dc, const RECT& r, COLORREF color, int radius) {
-  HBRUSH brush = ::CreateSolidBrush(color);
-  HPEN pen = ::CreatePen(PS_SOLID, 1, color);
-  HGDIOBJ old_brush = ::SelectObject(dc, brush);
-  HGDIOBJ old_pen = ::SelectObject(dc, pen);
-  ::RoundRect(dc, r.left, r.top, r.right, r.bottom, radius * 2, radius * 2);
-  ::SelectObject(dc, old_pen);
-  ::SelectObject(dc, old_brush);
-  ::DeleteObject(pen);
-  ::DeleteObject(brush);
+  PhiFillRoundRectAA(dc, r, radius, color);
 }
 
 class Overlay {

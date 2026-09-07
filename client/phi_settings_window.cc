@@ -160,51 +160,26 @@ constexpr std::array<SectionDef, 8> kSections = {{
 
 PhiSettingsWindow* g_instance = nullptr;
 
+// The shape helpers take the TRUE corner radius (a capsule is half the
+// height) and render antialiased — see phi_dwrite.h. Their GDI forebears
+// took the corner ellipse's diameter, so a bar asked for "radius 4" came
+// out at 2, and every curve was stair-stepped.
 void FillRounded(HDC dc, const RECT& r, COLORREF fill, int radius) {
-  if (r.right <= r.left || r.bottom <= r.top) {
-    return;
-  }
-  HBRUSH brush = ::CreateSolidBrush(fill);
-  HGDIOBJ old_brush = ::SelectObject(dc, brush);
-  HGDIOBJ old_pen = ::SelectObject(dc, ::GetStockObject(NULL_PEN));
-  ::RoundRect(dc, r.left, r.top, r.right + 1, r.bottom + 1, radius, radius);
-  ::SelectObject(dc, old_pen);
-  ::SelectObject(dc, old_brush);
-  ::DeleteObject(brush);
+  PhiFillRoundRectAA(dc, r, radius, fill);
 }
 
 void StrokeRounded(HDC dc, const RECT& r, COLORREF fill, COLORREF border,
                    int radius, int width) {
-  if (r.right <= r.left || r.bottom <= r.top) {
-    return;
-  }
-  HBRUSH brush = ::CreateSolidBrush(fill);
-  HPEN pen = ::CreatePen(PS_SOLID, width, border);
-  HGDIOBJ old_brush = ::SelectObject(dc, brush);
-  HGDIOBJ old_pen = ::SelectObject(dc, pen);
-  ::RoundRect(dc, r.left, r.top, r.right, r.bottom, radius, radius);
-  ::SelectObject(dc, old_pen);
-  ::SelectObject(dc, old_brush);
-  ::DeleteObject(pen);
-  ::DeleteObject(brush);
+  PhiFillRoundRectAA(dc, r, radius, fill);
+  PhiStrokeRoundRectAA(dc, r, radius, border, width);
 }
 
 void Ellipse(HDC dc, const RECT& r, COLORREF fill, COLORREF border,
              int border_width) {
-  HBRUSH brush = ::CreateSolidBrush(fill);
-  HPEN pen = border_width > 0 ? ::CreatePen(PS_SOLID, border_width, border)
-                              : nullptr;
-  HGDIOBJ old_brush = ::SelectObject(dc, brush);
-  HGDIOBJ old_pen =
-      ::SelectObject(dc, pen ? static_cast<HGDIOBJ>(pen)
-                             : ::GetStockObject(NULL_PEN));
-  ::Ellipse(dc, r.left, r.top, r.right, r.bottom);
-  ::SelectObject(dc, old_pen);
-  ::SelectObject(dc, old_brush);
-  if (pen) {
-    ::DeleteObject(pen);
+  PhiFillEllipseAA(dc, r, fill);
+  if (border_width > 0) {
+    PhiStrokeEllipseAA(dc, r, border, border_width);
   }
-  ::DeleteObject(brush);
 }
 
 // `over` at alpha/255 on `base` — the Mac's percentage overlays, opaque.
@@ -219,13 +194,7 @@ COLORREF Blend(COLORREF over, COLORREF base, int alpha) {
 // (StrokeRounded fills, which erased the slider gradient it framed).
 void OutlineRounded(HDC dc, const RECT& r, COLORREF border, int radius,
                     int width) {
-  HPEN pen = ::CreatePen(PS_SOLID, width, border);
-  HGDIOBJ old_pen = ::SelectObject(dc, pen);
-  HGDIOBJ old_brush = ::SelectObject(dc, ::GetStockObject(NULL_BRUSH));
-  ::RoundRect(dc, r.left, r.top, r.right, r.bottom, radius, radius);
-  ::SelectObject(dc, old_brush);
-  ::SelectObject(dc, old_pen);
-  ::DeleteObject(pen);
+  PhiStrokeRoundRectAA(dc, r, radius, border, width);
 }
 
 // RGB <-> HSV, for the saturation slider's track gradient — the Mac ramps the
@@ -2514,7 +2483,7 @@ void PhiSettingsWindow::Paint(HDC dc) {
     }
     ::SetTextColor(dc, label);
     RECT title_rc = {0, 0, client.right, Scaled(kCaptionHeight)};
-    ::DrawTextW(dc, title, -1, &title_rc,
+    PhiDrawTextAA(dc, title, -1, &title_rc,
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
     RECT close_rc = {client.right - Scaled(kCaptionButtonWidth), 0,
                      client.right, Scaled(kCaptionHeight)};
@@ -2527,7 +2496,7 @@ void PhiSettingsWindow::Paint(HDC dc) {
       ::SelectObject(dc, caption_font_);
     }
     ::SetTextColor(dc, close_hot_ ? RGB(0xFF, 0xFF, 0xFF) : label);
-    ::DrawTextW(dc, L"", -1, &close_rc,
+    PhiDrawTextAA(dc, L"", -1, &close_rc,
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     if (font_) {
       ::SelectObject(dc, font_);
@@ -2564,7 +2533,7 @@ void PhiSettingsWindow::Paint(HDC dc) {
           ::SelectObject(dc, mdl2_font_);
         }
         const std::wstring mark_text(1, mark);
-        ::DrawTextW(dc, mark_text.c_str(), -1, &glyph,
+        PhiDrawTextAA(dc, mark_text.c_str(), -1, &glyph,
                     DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         RECT caption = bounds;
         caption.top = glyph.bottom;
@@ -2572,7 +2541,7 @@ void PhiSettingsWindow::Paint(HDC dc) {
           ::SelectObject(dc, small_font_);
         }
         // NOPREFIX: "Phi & AI" must keep its ampersand.
-        ::DrawTextW(dc, item.text.c_str(), -1, &caption,
+        PhiDrawTextAA(dc, item.text.c_str(), -1, &caption,
                     DT_CENTER | DT_TOP | DT_SINGLELINE | DT_NOPREFIX);
         if (font_) {
           ::SelectObject(dc, font_);
@@ -2592,7 +2561,7 @@ void PhiSettingsWindow::Paint(HDC dc) {
           ::SelectObject(dc, small_font_);
         }
         ::SetTextColor(dc, secondary);
-        ::DrawTextW(dc, item.text.c_str(), -1, &bounds,
+        PhiDrawTextAA(dc, item.text.c_str(), -1, &bounds,
                     DT_LEFT | DT_BOTTOM | DT_SINGLELINE);
         if (font_) {
           ::SelectObject(dc, font_);
@@ -2604,7 +2573,7 @@ void PhiSettingsWindow::Paint(HDC dc) {
           ::SelectObject(dc, hint_font_);
         }
         ::SetTextColor(dc, tertiary);
-        ::DrawTextW(dc, item.text.c_str(), -1, &bounds,
+        PhiDrawTextAA(dc, item.text.c_str(), -1, &bounds,
                     DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
         if (font_) {
           ::SelectObject(dc, font_);
@@ -2614,7 +2583,7 @@ void PhiSettingsWindow::Paint(HDC dc) {
         // Single line, truly centred: DT_WORDBREAK silently disables
         // DT_VCENTER, which left labels riding the top of tall rows.
         ::SetTextColor(dc, row_ink);
-        ::DrawTextW(dc, item.text.c_str(), -1, &bounds,
+        PhiDrawTextAA(dc, item.text.c_str(), -1, &bounds,
                     DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
                         DT_NOPREFIX);
         break;
@@ -2623,7 +2592,7 @@ void PhiSettingsWindow::Paint(HDC dc) {
           ::SelectObject(dc, small_font_);
         }
         ::SetTextColor(dc, item.enabled ? accent : tertiary);
-        ::DrawTextW(dc, item.text.c_str(), -1, &bounds,
+        PhiDrawTextAA(dc, item.text.c_str(), -1, &bounds,
                     DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
         if (font_) {
           ::SelectObject(dc, font_);
@@ -2665,7 +2634,7 @@ void PhiSettingsWindow::Paint(HDC dc) {
           RECT caption = {bounds.left - Scaled(6), bounds.top + ring +
                           Scaled(6), bounds.right + Scaled(6), bounds.bottom};
           ::SetTextColor(dc, row_ink);
-          ::DrawTextW(dc, item.text.c_str(), -1, &caption,
+          PhiDrawTextAA(dc, item.text.c_str(), -1, &caption,
                       DT_CENTER | DT_TOP | DT_SINGLELINE);
           if (font_) {
             ::SelectObject(dc, font_);
@@ -2777,7 +2746,7 @@ void PhiSettingsWindow::Paint(HDC dc) {
         RECT caption = {bounds.left, image.bottom + Scaled(10) - Scaled(4),
                         bounds.right, bounds.bottom};
         ::SetTextColor(dc, row_ink);
-        ::DrawTextW(dc, item.text.c_str(), -1, &caption,
+        PhiDrawTextAA(dc, item.text.c_str(), -1, &caption,
                     DT_CENTER | DT_TOP | DT_SINGLELINE);
         if (font_) {
           ::SelectObject(dc, font_);
@@ -2790,7 +2759,7 @@ void PhiSettingsWindow::Paint(HDC dc) {
         if (!item.enabled) {
           fill = Blend(fill, bg, 120);
         }
-        FillRounded(dc, bounds, fill, height);
+        FillRounded(dc, bounds, fill, height / 2);
         const int knob = height - Scaled(4);
         const int left = item.on ? bounds.right - knob - Scaled(2)
                                  : bounds.left + Scaled(2);
@@ -2810,12 +2779,9 @@ void PhiSettingsWindow::Paint(HDC dc) {
         const int span = track.right - track.left;
         double hue = 0, sat = 0, val = 0;
         RgbToHsv(item.swatch, &hue, &sat, &val);
-        // The gradient clips to the rounded track, as the Mac's image does.
-        const int save_clip = ::SaveDC(dc);
-        HRGN clip = ::CreateRoundRectRgn(track.left, track.top,
-                                         track.right + 1, track.bottom + 1,
-                                         Scaled(10), Scaled(10));
-        ::ExtSelectClipRgn(dc, clip, RGN_AND);
+        // The gradient is painted square and its corners knocked back to
+        // the card ground afterwards (antialiased), where a region clip
+        // would cut the rounded track on the pixel grid.
         const int bands = 32;
         for (int i = 0; i < bands; ++i) {
           RECT band = {track.left + span * i / bands, track.top,
@@ -2836,8 +2802,7 @@ void PhiSettingsWindow::Paint(HDC dc) {
           ::FillRect(dc, &band, brush);
           ::DeleteObject(brush);
         }
-        ::RestoreDC(dc, save_clip);
-        ::DeleteObject(clip);
+        PhiKnockOutRoundRectAA(dc, track, Scaled(5), card_bg);
         OutlineRounded(dc, track, card_border, Scaled(5), 1);
         const int knob = Scaled(kSliderKnob);
         const int at = track.left + (span - knob) * item.value / 100;
@@ -2851,12 +2816,12 @@ void PhiSettingsWindow::Paint(HDC dc) {
         RECT text = bounds;
         text.left += Scaled(10);
         text.right -= Scaled(18);
-        ::DrawTextW(dc, item.text.c_str(), -1, &text,
+        PhiDrawTextAA(dc, item.text.c_str(), -1, &text,
                     DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
         RECT arrows = bounds;
         arrows.left = bounds.right - Scaled(16);
         ::SetTextColor(dc, secondary);
-        ::DrawTextW(dc, L"↕", -1, &arrows,
+        PhiDrawTextAA(dc, L"↕", -1, &arrows,
                     DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         break;
       }
@@ -2881,7 +2846,7 @@ void PhiSettingsWindow::Paint(HDC dc) {
           }
           ::SetTextColor(dc, on_accent ? RGB(0xFF, 0xFF, 0xFF) : secondary);
           RECT handle = {x, bounds.top, x + Scaled(14), bounds.bottom};
-          ::DrawTextW(dc, L"\uE700", -1, &handle,
+          PhiDrawTextAA(dc, L"\uE700", -1, &handle,
                       DT_LEFT | DT_VCENTER | DT_SINGLELINE);
           if (font_) {
             ::SelectObject(dc, font_);
@@ -2909,7 +2874,7 @@ void PhiSettingsWindow::Paint(HDC dc) {
               ::SelectObject(dc, icon_font);
             }
             ::SetTextColor(dc, text_ink);
-            ::DrawTextW(dc, item.icon.c_str(), -1, &icon_rc,
+            PhiDrawTextAA(dc, item.icon.c_str(), -1, &icon_rc,
                         DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
             if (font_) {
               ::SelectObject(dc, font_);
@@ -2921,13 +2886,13 @@ void PhiSettingsWindow::Paint(HDC dc) {
         RECT text = bounds;
         text.left = x;
         text.right -= Scaled(item.on ? 130 : 76);
-        ::DrawTextW(dc, item.text.c_str(), -1, &text,
+        PhiDrawTextAA(dc, item.text.c_str(), -1, &text,
                     DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
                         DT_NOPREFIX);
         int badge_left = text.left;
         if (!item.text.empty()) {
           RECT measured = {0, 0, 0, 0};
-          ::DrawTextW(dc, item.text.c_str(), -1, &measured,
+          PhiDrawTextAA(dc, item.text.c_str(), -1, &measured,
                       DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX);
           badge_left += std::min<int>(measured.right,
                                       text.right - text.left);
@@ -2945,9 +2910,9 @@ void PhiSettingsWindow::Paint(HDC dc) {
           FillRounded(dc, cap,
                       on_accent ? Blend(RGB(0xFF, 0xFF, 0xFF), accent, 51)
                                 : Blend(ink, bg, 38),
-                      cap.bottom - cap.top);
+                      (cap.bottom - cap.top) / 2);
           ::SetTextColor(dc, on_accent ? RGB(0xFF, 0xFF, 0xFF) : secondary);
-          ::DrawTextW(dc, L"Default", -1, &cap,
+          PhiDrawTextAA(dc, L"Default", -1, &cap,
                       DT_CENTER | DT_VCENTER | DT_SINGLELINE);
           if (font_) {
             ::SelectObject(dc, font_);
@@ -2960,14 +2925,14 @@ void PhiSettingsWindow::Paint(HDC dc) {
           RECT detail = bounds;
           detail.right -= Scaled(solid ? 20 : 8);
           ::SetTextColor(dc, on_accent ? RGB(0xFF, 0xFF, 0xFF) : secondary);
-          ::DrawTextW(dc, item.detail.c_str(), -1, &detail,
+          PhiDrawTextAA(dc, item.detail.c_str(), -1, &detail,
                       DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
           if (solid) {
             // The Mac row hosts a profile picker; its chevron.up.down
             // stands in (bindings are immutable here).
             RECT chev = bounds;
             chev.right -= Scaled(6);
-            ::DrawTextW(dc, L"↕", -1, &chev,
+            PhiDrawTextAA(dc, L"↕", -1, &chev,
                         DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
           }
           if (font_) {
@@ -2984,7 +2949,7 @@ void PhiSettingsWindow::Paint(HDC dc) {
           ::SelectObject(dc, mdl2_font_);
         }
         ::SetTextColor(dc, item.enabled ? row_ink : tertiary);
-        ::DrawTextW(dc, item.text.c_str(), -1, &bounds,
+        PhiDrawTextAA(dc, item.text.c_str(), -1, &bounds,
                     DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
         if (mdl2 && font_) {
           ::SelectObject(dc, font_);
@@ -3013,7 +2978,7 @@ void PhiSettingsWindow::Paint(HDC dc) {
         ::SetTextColor(dc, !item.enabled ? tertiary
                                          : (item.selected ? accent
                                                           : secondary));
-        ::DrawTextW(dc, item.text.c_str(), -1, &bounds,
+        PhiDrawTextAA(dc, item.text.c_str(), -1, &bounds,
                     DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         if (font_) {
           ::SelectObject(dc, font_);
@@ -3035,7 +3000,7 @@ void PhiSettingsWindow::Paint(HDC dc) {
         StrokeRounded(dc, bounds, cap_bg, item.on ? accent : separator,
                       Scaled(6), 1);
         ::SetTextColor(dc, item.on ? accent : secondary);
-        ::DrawTextW(dc, item.text.c_str(), -1, &bounds,
+        PhiDrawTextAA(dc, item.text.c_str(), -1, &bounds,
                     DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
         break;
       }
@@ -3047,7 +3012,7 @@ void PhiSettingsWindow::Paint(HDC dc) {
         ::SetTextColor(dc, secondary);
         RECT glass = {bounds.left + Scaled(12), bounds.top,
                       bounds.left + Scaled(28), bounds.bottom};
-        ::DrawTextW(dc, L"", -1, &glass,
+        PhiDrawTextAA(dc, L"", -1, &glass,
                     DT_LEFT | DT_VCENTER | DT_SINGLELINE);
         if (font_) {
           ::SelectObject(dc, font_);
@@ -3056,11 +3021,11 @@ void PhiSettingsWindow::Paint(HDC dc) {
                      bounds.right - Scaled(12), bounds.bottom};
         if (item.text.empty()) {
           ::SetTextColor(dc, tertiary);
-          ::DrawTextW(dc, L"Find shortcut keys", -1, &text,
+          PhiDrawTextAA(dc, L"Find shortcut keys", -1, &text,
                       DT_LEFT | DT_VCENTER | DT_SINGLELINE);
         } else {
           ::SetTextColor(dc, row_ink);
-          ::DrawTextW(dc, item.text.c_str(), -1, &text,
+          PhiDrawTextAA(dc, item.text.c_str(), -1, &text,
                       DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
         }
         break;
@@ -3095,7 +3060,7 @@ void PhiSettingsWindow::Paint(HDC dc) {
           }
         }
         ::SetTextColor(dc, row_ink);
-        ::DrawTextW(dc, item.text.c_str(), -1, &bounds,
+        PhiDrawTextAA(dc, item.text.c_str(), -1, &bounds,
                     DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         if (font_) {
           ::SelectObject(dc, font_);
@@ -3109,7 +3074,7 @@ void PhiSettingsWindow::Paint(HDC dc) {
           ::SelectObject(dc, hint_font_);
         }
         ::SetTextColor(dc, secondary);
-        ::DrawTextW(dc, item.text.c_str(), -1, &bounds,
+        PhiDrawTextAA(dc, item.text.c_str(), -1, &bounds,
                     DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         if (font_) {
           ::SelectObject(dc, font_);
@@ -3124,7 +3089,7 @@ void PhiSettingsWindow::Paint(HDC dc) {
                         Scaled(kRadius), 1);
         }
         ::SetTextColor(dc, item.selected ? RGB(0xFF, 0xFF, 0xFF) : row_ink);
-        ::DrawTextW(dc, item.text.c_str(), -1, &bounds,
+        PhiDrawTextAA(dc, item.text.c_str(), -1, &bounds,
                     DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         break;
     }

@@ -194,15 +194,7 @@ class Overview {
     ::SetBkMode(dc, TRANSPARENT);
     for (const Card& card : cards_) {
       if (card.add_card) {
-        HBRUSH wash = ::CreateSolidBrush(palette.hover);
-        HGDIOBJ prev_brush = ::SelectObject(dc, wash);
-        HGDIOBJ prev_pen = ::SelectObject(dc, ::GetStockObject(NULL_PEN));
-        ::RoundRect(dc, card.bounds.left, card.bounds.top,
-                    card.bounds.right + 1, card.bounds.bottom + 1,
-                    Scaled(10), Scaled(10));
-        ::SelectObject(dc, prev_pen);
-        ::SelectObject(dc, prev_brush);
-        ::DeleteObject(wash);
+        PhiFillRoundRectAA(dc, card.bounds, Scaled(10), palette.hover);
         RECT plus = card.bounds;
         HGDIOBJ prev_font = font_ ? ::SelectObject(dc, font_) : nullptr;
         ::SetTextColor(dc, palette.label_dim);

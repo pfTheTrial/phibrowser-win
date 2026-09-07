@@ -122,20 +122,7 @@ std::string Narrow(const std::wstring& wide) {
 // A rounded fill through the anti-aliased path, GDI's stair-stepping
 // RoundRect standing in where Direct2D is unavailable.
 void FillRounded(HDC dc, const RECT& rc, COLORREF fill, int radius) {
-  if (rc.right <= rc.left || rc.bottom <= rc.top) {
-    return;
-  }
-  if (PhiFillRoundRectAA(dc, rc, radius, fill)) {
-    return;
-  }
-  HBRUSH brush = ::CreateSolidBrush(fill);
-  HGDIOBJ old_brush = ::SelectObject(dc, brush);
-  HGDIOBJ old_pen = ::SelectObject(dc, ::GetStockObject(NULL_PEN));
-  ::RoundRect(dc, rc.left, rc.top, rc.right + 1, rc.bottom + 1, 2 * radius,
-              2 * radius);
-  ::SelectObject(dc, old_pen);
-  ::SelectObject(dc, old_brush);
-  ::DeleteObject(brush);
+  PhiFillRoundRectAA(dc, rc, radius, fill);
 }
 
 void FillCapsule(HDC dc, const RECT& rc, COLORREF fill) {
@@ -143,20 +130,7 @@ void FillCapsule(HDC dc, const RECT& rc, COLORREF fill) {
 }
 
 void StrokeCapsule(HDC dc, const RECT& rc, COLORREF ink, int width) {
-  if (rc.right <= rc.left || rc.bottom <= rc.top) {
-    return;
-  }
-  if (PhiStrokeCapsuleAA(dc, rc, ink, width)) {
-    return;
-  }
-  HPEN pen = ::CreatePen(PS_SOLID, width, ink);
-  HGDIOBJ old_pen = ::SelectObject(dc, pen);
-  HGDIOBJ old_brush = ::SelectObject(dc, ::GetStockObject(NULL_BRUSH));
-  const int diameter = rc.bottom - rc.top;
-  ::RoundRect(dc, rc.left, rc.top, rc.right, rc.bottom, diameter, diameter);
-  ::SelectObject(dc, old_brush);
-  ::SelectObject(dc, old_pen);
-  ::DeleteObject(pen);
+  PhiStrokeCapsuleAA(dc, rc, ink, width);
 }
 
 // A Space's icon the way the sidebar draws it: the catalog's own artwork,
@@ -182,7 +156,7 @@ void DrawSpaceIcon(HDC dc,
   HGDIOBJ previous = font ? ::SelectObject(dc, font) : nullptr;
   ::SetTextColor(dc, ink);
   RECT box = rc;
-  ::DrawTextW(dc, icon.c_str(), -1, &box,
+  PhiDrawTextAA(dc, icon.c_str(), -1, &box,
               DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
   if (previous) {
     ::SelectObject(dc, previous);
@@ -599,7 +573,7 @@ void PhiKioskWindow::Paint() {
                               COLORREF ink) {
     ::SetTextColor(mem, ink);
     RECT box = rc;
-    ::DrawTextW(mem, glyph, -1, &box,
+    PhiDrawTextAA(mem, glyph, -1, &box,
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
   };
 
@@ -650,7 +624,7 @@ void PhiKioskWindow::Paint() {
     RECT name = {icon.right + Scaled(kSpacePad), layout.profile.top,
                  layout.profile.right - Scaled(kChipPad) / 2,
                  layout.profile.bottom};
-    ::DrawTextW(mem, profile_name_.c_str(), -1, &name,
+    PhiDrawTextAA(mem, profile_name_.c_str(), -1, &name,
                 DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX |
                     DT_END_ELLIPSIS);
     if (previous_name_font) {
@@ -665,7 +639,7 @@ void PhiKioskWindow::Paint() {
   ::SetTextColor(mem, palette.label);
   RECT url_rc = layout.url;
   const std::wstring shown = DisplayUrl();
-  ::DrawTextW(mem, shown.c_str(), -1, &url_rc,
+  PhiDrawTextAA(mem, shown.c_str(), -1, &url_rc,
               DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX |
                   DT_END_ELLIPSIS);
   if (previous_url_font) {
@@ -722,7 +696,7 @@ void PhiKioskWindow::Paint() {
     RECT prefix_rc = {x, layout.space_menu.top,
                       layout.space_primary.right - Scaled(kSpacePad),
                       layout.space_menu.bottom};
-    ::DrawTextW(mem, prefix.c_str(), -1, &prefix_rc,
+    PhiDrawTextAA(mem, prefix.c_str(), -1, &prefix_rc,
                 DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
     x += space_prefix_w_ + Scaled(kSpacePad);
     if (previous_prefix_font) {
@@ -740,7 +714,7 @@ void PhiKioskWindow::Paint() {
       RECT name = {x, layout.space_menu.top,
                    layout.space_primary.right - Scaled(kSpacePad),
                    layout.space_menu.bottom};
-      ::DrawTextW(mem, target->name.c_str(), -1, &name,
+      PhiDrawTextAA(mem, target->name.c_str(), -1, &name,
                   DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX |
                       DT_END_ELLIPSIS);
       if (previous_space_font) {

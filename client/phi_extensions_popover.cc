@@ -43,15 +43,7 @@ void FillRect(HDC dc, const RECT& r, COLORREF color) {
 }
 
 void FillRounded(HDC dc, const RECT& r, COLORREF color, int radius) {
-  HBRUSH brush = ::CreateSolidBrush(color);
-  HPEN pen = ::CreatePen(PS_SOLID, 1, color);
-  HGDIOBJ old_brush = ::SelectObject(dc, brush);
-  HGDIOBJ old_pen = ::SelectObject(dc, pen);
-  ::RoundRect(dc, r.left, r.top, r.right, r.bottom, radius * 2, radius * 2);
-  ::SelectObject(dc, old_pen);
-  ::SelectObject(dc, old_brush);
-  ::DeleteObject(pen);
-  ::DeleteObject(brush);
+  PhiFillRoundRectAA(dc, r, radius, color);
 }
 
 // Box-averages a premultiplied BGRA buffer down to `out_px` square — the
@@ -257,7 +249,7 @@ class Popover {
                   Scaled(kHeaderHeight)};
     ::SelectObject(dc, title_font_);
     ::SetTextColor(dc, label);
-    ::DrawTextW(dc, L"Extensions", -1, &title,
+    PhiDrawTextAA(dc, L"Extensions", -1, &title,
                 DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
     if (rows_.empty()) {
@@ -265,12 +257,12 @@ class Popover {
                     Scaled(kHeaderHeight + 48)};
       ::SelectObject(dc, empty_font_);
       ::SetTextColor(dc, dim);
-      ::DrawTextW(dc, L"", -1, &glyph,
+      PhiDrawTextAA(dc, L"", -1, &glyph,
                   DT_CENTER | DT_VCENTER | DT_SINGLELINE);
       RECT hint = {0, glyph.bottom, client.right,
                    glyph.bottom + Scaled(20)};
       ::SelectObject(dc, name_font_);
-      ::DrawTextW(dc, L"No extensions installed", -1, &hint,
+      PhiDrawTextAA(dc, L"No extensions installed", -1, &hint,
                   DT_CENTER | DT_VCENTER | DT_SINGLELINE);
       return;
     }
@@ -300,7 +292,7 @@ class Popover {
       } else {
         ::SelectObject(dc, glyph_font_);
         ::SetTextColor(dc, dim);
-        ::DrawTextW(dc, L"", -1, &icon,
+        PhiDrawTextAA(dc, L"", -1, &icon,
                     DT_CENTER | DT_VCENTER | DT_SINGLELINE);
       }
       // Pin toggle, trailing (the Mac popover's pin column).
@@ -315,14 +307,14 @@ class Popover {
       }
       ::SelectObject(dc, glyph_font_);
       ::SetTextColor(dc, row.pinned ? palette_.accent : dim);
-      ::DrawTextW(dc, row.pinned ? L"" : L"", -1, &row.pin_box,
+      PhiDrawTextAA(dc, row.pinned ? L"" : L"", -1, &row.pin_box,
                   DT_CENTER | DT_VCENTER | DT_SINGLELINE);
       // Name.
       RECT text = {icon.right + Scaled(10), row.bounds.top,
                    row.pin_box.left - Scaled(8), row.bounds.bottom};
       ::SelectObject(dc, name_font_);
       ::SetTextColor(dc, label);
-      ::DrawTextW(dc, row.name.c_str(), -1, &text,
+      PhiDrawTextAA(dc, row.name.c_str(), -1, &text,
                   DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
                       DT_NOPREFIX);
       y += Scaled(kRowHeight);

@@ -61,15 +61,7 @@ void FillRect(HDC dc, const RECT& r, COLORREF color) {
 }
 
 void FillRounded(HDC dc, const RECT& r, COLORREF color, int radius) {
-  HBRUSH brush = ::CreateSolidBrush(color);
-  HPEN pen = ::CreatePen(PS_SOLID, 1, color);
-  HGDIOBJ old_brush = ::SelectObject(dc, brush);
-  HGDIOBJ old_pen = ::SelectObject(dc, pen);
-  ::RoundRect(dc, r.left, r.top, r.right, r.bottom, radius, radius);
-  ::SelectObject(dc, old_pen);
-  ::SelectObject(dc, old_brush);
-  ::DeleteObject(pen);
-  ::DeleteObject(brush);
+  PhiFillRoundRectAA(dc, r, radius, color);
 }
 
 std::wstring FormatBytes(double bytes) {
@@ -350,7 +342,7 @@ class Popover {
     RECT measure = {0, 0, 0, 0};
     HDC dc = ::GetDC(hwnd_);
     HGDIOBJ old = ::SelectObject(dc, small_font_);
-    ::DrawTextW(dc, L"All Downloads", -1, &measure,
+    PhiDrawTextAA(dc, L"All Downloads", -1, &measure,
                 DT_CALCRECT | DT_SINGLELINE);
     ::SelectObject(dc, old);
     ::ReleaseDC(hwnd_, dc);
@@ -373,12 +365,12 @@ class Popover {
       ::SetTextColor(dc, p.label_dim);
       RECT glyph = list;
       glyph.bottom = (list.top + list.bottom) / 2 + Scaled(6);
-      ::DrawTextW(dc, L"", -1, &glyph,
+      PhiDrawTextAA(dc, L"", -1, &glyph,
                   DT_CENTER | DT_BOTTOM | DT_SINGLELINE);
       ::SelectObject(dc, small_font_);
       RECT text = list;
       text.top = glyph.bottom + Scaled(8);
-      ::DrawTextW(dc, L"No Downloads", -1, &text,
+      PhiDrawTextAA(dc, L"No Downloads", -1, &text,
                   DT_CENTER | DT_TOP | DT_SINGLELINE);
       ::SelectObject(dc, old);
     }
@@ -427,21 +419,21 @@ class Popover {
               : (item.state == "complete" && !item.exists ? L"Deleted"
                                                           : nullptr);
       RECT name_measure = name_rc;
-      ::DrawTextW(dc, item.name.c_str(), -1, &name_measure,
+      PhiDrawTextAA(dc, item.name.c_str(), -1, &name_measure,
                   DT_CALCRECT | DT_SINGLELINE);
       RECT name_draw = name_rc;
       if (status) {
         RECT tag_measure = {0, 0, 0, 0};
         ::SelectObject(dc, small_bold_font_);
         std::wstring tag = std::wstring(L"· ") + status;
-        ::DrawTextW(dc, tag.c_str(), -1, &tag_measure,
+        PhiDrawTextAA(dc, tag.c_str(), -1, &tag_measure,
                     DT_CALCRECT | DT_SINGLELINE);
         name_draw.right =
             std::min(static_cast<int>(name_rc.right - tag_measure.right) -
                          Scaled(4),
                      static_cast<int>(name_rc.left + name_measure.right));
         ::SelectObject(dc, failed ? name_strike_font_ : name_font_);
-        ::DrawTextW(dc, item.name.c_str(), -1, &name_draw,
+        PhiDrawTextAA(dc, item.name.c_str(), -1, &name_draw,
                     DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
                         DT_NOPREFIX);
         RECT tag_rc = {std::min(name_draw.right,
@@ -450,10 +442,10 @@ class Popover {
                        name_rc.top, name_rc.right, name_rc.bottom};
         ::SelectObject(dc, small_bold_font_);
         ::SetTextColor(dc, dim);
-        ::DrawTextW(dc, tag.c_str(), -1, &tag_rc,
+        PhiDrawTextAA(dc, tag.c_str(), -1, &tag_rc,
                     DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
       } else {
-        ::DrawTextW(dc, item.name.c_str(), -1, &name_draw,
+        PhiDrawTextAA(dc, item.name.c_str(), -1, &name_draw,
                     DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
                         DT_NOPREFIX);
       }
@@ -472,7 +464,7 @@ class Popover {
           } else if (item.speed > 0) {
             text += L" ・ " + FormatBytes(item.speed) + L"/s";
           }
-          ::DrawTextW(dc, text.c_str(), -1, &sub,
+          PhiDrawTextAA(dc, text.c_str(), -1, &sub,
                       DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
         } else {
           const int bar_mid = (sub.top + sub.bottom) / 2;
@@ -492,7 +484,7 @@ class Popover {
             item.state == "complete" && item.end_time > 0
                 ? FormatRelative(item.end_time)
                 : L"From " + item.host;
-        ::DrawTextW(dc, text.c_str(), -1, &sub,
+        PhiDrawTextAA(dc, text.c_str(), -1, &sub,
                     DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
       }
 
@@ -507,7 +499,7 @@ class Popover {
         }
         ::SetTextColor(dc, actions[a].enabled ? p.label : p.label_tertiary);
         wchar_t glyph[2] = {actions[a].glyph, 0};
-        ::DrawTextW(dc, glyph, 1, const_cast<RECT*>(&button),
+        PhiDrawTextAA(dc, glyph, 1, const_cast<RECT*>(&button),
                     DT_CENTER | DT_VCENTER | DT_SINGLELINE);
       }
       ::SelectObject(dc, old);
@@ -534,11 +526,11 @@ class Popover {
     ::SetTextColor(dc, p.accent);
     RECT text = {button.left + Scaled(8), button.top,
                  button.right - Scaled(18), button.bottom};
-    ::DrawTextW(dc, L"All Downloads", -1, &text,
+    PhiDrawTextAA(dc, L"All Downloads", -1, &text,
                 DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     ::SelectObject(dc, glyph_font_);
     RECT chevron = {text.right, button.top, button.right, button.bottom};
-    ::DrawTextW(dc, L"", 1, &chevron,
+    PhiDrawTextAA(dc, L"", 1, &chevron,
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     ::SelectObject(dc, old);
 

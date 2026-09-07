@@ -4,6 +4,8 @@
 
 #include "phibrowser-win/client/phi_peek_panel.h"
 
+#include "phibrowser-win/client/phi_dwrite.h"
+
 #include <windowsx.h>
 
 #include <algorithm>
@@ -546,17 +548,10 @@ void PhiPeekPanel::PaintControls() {
   // The chips read against arbitrary page content, so each is an opaque
   // rounded plate — the Mac's 8pt corners — not a bare glyph.
   auto plate = [&](int index, const RECT& rc) {
-    HBRUSH fill = ::CreateSolidBrush(index == hot_ ? palette.selected
-                                                   : palette.card);
-    HPEN edge = ::CreatePen(PS_SOLID, 1, palette.border);
-    HGDIOBJ old_brush = ::SelectObject(dc, fill);
-    HGDIOBJ old_pen = ::SelectObject(dc, edge);
-    const int chip = Scaled(kControlRadius) * 2;
-    ::RoundRect(dc, rc.left, rc.top, rc.right, rc.bottom, chip, chip);
-    ::SelectObject(dc, old_pen);
-    ::SelectObject(dc, old_brush);
-    ::DeleteObject(edge);
-    ::DeleteObject(fill);
+    const int chip = Scaled(kControlRadius);
+    PhiFillRoundRectAA(dc, rc, chip,
+                       index == hot_ ? palette.selected : palette.card);
+    PhiStrokeRoundRectAA(dc, rc, chip, palette.border, 1);
   };
   auto shift = [&origin](const RECT& rc) {
     return RECT{rc.left - origin.x, rc.top - origin.y, rc.right - origin.x,
@@ -568,7 +563,7 @@ void PhiPeekPanel::PaintControls() {
     plate(index, rc);
     ::SetTextColor(dc, palette.label);
     RECT text = rc;
-    ::DrawTextW(dc, glyph, -1, &text,
+    PhiDrawTextAA(dc, glyph, -1, &text,
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
   };
   glyph_chip(kHotClose, layout.close, kGlyphClose);
