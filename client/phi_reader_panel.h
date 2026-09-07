@@ -11,6 +11,7 @@
 #include <string>
 
 #include "base/memory/raw_ptr_exclusion.h"
+#include "phibrowser-win/client/phi_surface_registry.h"
 
 namespace phi_framework {
 class PhiFramework;
@@ -39,7 +40,7 @@ class PhiWindowController;
 //
 // One reader per origin tab, any number of origins: a panel shows only while
 // its origin tab is the active one, exactly like a peek.
-class PhiReaderPanel {
+class PhiReaderPanel : public PhiSurfacePanel {
  public:
   PhiReaderPanel(int64_t window_id,
                  HWND browser_hwnd,
@@ -48,39 +49,40 @@ class PhiReaderPanel {
                  PhiWindowController* origin,
                  phi_framework::PhiFramework* framework,
                  PhiCoordinator* coordinator);
-  ~PhiReaderPanel();
+  ~PhiReaderPanel() override;
 
   PhiReaderPanel(const PhiReaderPanel&) = delete;
   PhiReaderPanel& operator=(const PhiReaderPanel&) = delete;
 
-  int64_t window_id() const { return window_id_; }
-  int64_t origin_window_id() const { return origin_window_id_; }
-  int64_t origin_tab_id() const { return origin_tab_id_; }
+  // PhiSurfacePanel.
+  SidebarSurface kind() const override;
+  int64_t window_id() const override;
+  int64_t origin_window_id() const override;
+  int64_t origin_tab_id() const override;
+  HWND hwnd() const override;
 
   // The surface tab that was moved in, once the move has happened (the panel
   // is constructed re-entrantly from Browser::Create, before it has one).
   // What tells a link click apart from the tab going away: an emptied panel
   // browser is handed a placeholder new-tab page, which is a DIFFERENT tab,
   // not a navigation of this one.
-  void BindSurfaceTab(int64_t surface_tab_id) {
-    surface_tab_id_ = surface_tab_id;
-  }
+  void BindSurfaceTab(int64_t surface_tab_id) override;
 
   // Puts the panel above the origin's browser child, without disturbing the
   // corner caps that have to sit above IT (see PhiWindowController::
   // RaiseCornerCaps) — raising this window alone squares the card's corners.
-  void Raise();
+  void Raise() override;
   // The origin window moved or resized: re-fit to its content rect.
-  void Reposition();
+  void Reposition() override;
   // The origin switched tabs: a reader belongs to the tab it was opened for.
-  void SetVisibleForActiveTab(int64_t active_tab_id);
+  void SetVisibleForActiveTab(int64_t active_tab_id) override;
   // The hosted page moved. A link inside the reader is a plain link, so a
   // click navigates the surface away from reader.html — the panel then hands
   // the URL back to the origin window as a normal tab rather than showing an
   // arbitrary site inside the reading surface (the Mac's
   // expandReaderOverlayIntoTab; like Peek, this client re-opens the URL
   // instead of moving the live tab across).
-  void RefreshState();
+  void RefreshState() override;
 
   static LRESULT CALLBACK WndProc(HWND hwnd,
                                   UINT msg,

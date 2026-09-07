@@ -11,6 +11,7 @@
 #include <string>
 
 #include "base/memory/raw_ptr_exclusion.h"
+#include "phibrowser-win/client/phi_surface_registry.h"
 
 namespace phi_framework {
 class PhiFramework;
@@ -39,7 +40,7 @@ class PhiWindowController;
 // phi_peek_window.h) whose window is parented into this panel. The panel is a
 // WS_CHILD of the opener's shell — the bookmark manager's trick — so it
 // clips into the content card and travels with the window.
-class PhiPeekPanel {
+class PhiPeekPanel : public PhiSurfacePanel {
  public:
   PhiPeekPanel(int64_t window_id,
                HWND browser_hwnd,
@@ -48,28 +49,35 @@ class PhiPeekPanel {
                PhiWindowController* opener,
                phi_framework::PhiFramework* framework,
                PhiCoordinator* coordinator);
-  ~PhiPeekPanel();
+  ~PhiPeekPanel() override;
 
   PhiPeekPanel(const PhiPeekPanel&) = delete;
   PhiPeekPanel& operator=(const PhiPeekPanel&) = delete;
 
-  int64_t window_id() const { return window_id_; }
+  // PhiSurfacePanel. The "opener" is the surface's origin.
+  SidebarSurface kind() const override;
+  int64_t window_id() const override;
+  int64_t origin_window_id() const override;
+  int64_t origin_tab_id() const override;
   int64_t opener_window_id() const { return opener_window_id_; }
   int64_t opener_tab_id() const { return opener_tab_id_; }
   // The card's own window (the peek's browser is reparented inside it) —
   // what the click-outside test compares against.
-  HWND hwnd() const { return hwnd_; }
+  HWND hwnd() const override;
 
   // The opener window moved or resized: re-fit the card to its content rect.
-  void Reposition();
+  void Reposition() override;
 
   // The opener switched tabs: a peek belongs to the tab that opened it, so it
   // shows only while that tab is active.
-  void SetVisibleForActiveTab(int64_t active_tab_id);
+  void SetVisibleForActiveTab(int64_t active_tab_id) override;
 
   // The framework says this peek's page moved: re-read the url for the title
   // strip and repaint.
-  void RefreshState();
+  void RefreshState() override;
+
+  // Shadow first, then the card over it — both above the opener's page.
+  void Raise() override;
 
   static LRESULT CALLBACK WndProc(HWND hwnd,
                                   UINT msg,
@@ -111,8 +119,6 @@ class PhiPeekPanel {
   void ApplyCardShape();
   // Re-renders and repositions the drop shadow under the card.
   void UpdateShadow();
-  // Shadow first, then the card over it — both above the opener's page.
-  void Raise();
 
   int Scaled(int design) const { return ::MulDiv(design, dpi_, 96); }
 

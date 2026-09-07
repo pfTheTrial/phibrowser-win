@@ -275,6 +275,9 @@ void PhiBookmarkManager::AppendSubtree(const std::string& parent_guid,
     row.url = view.url;
     row.title_b = base::UTF8ToWide(view.title_b);
     row.url_b = view.url_b;
+    row.favicon_b = std::move(view.favicon_b_bgra);
+    row.favicon_b_width = view.favicon_b_width;
+    row.favicon_b_height = view.favicon_b_height;
     row.icon = view.icon;
     row.folder = view.folder;
     row.depth = depth;
@@ -324,6 +327,9 @@ void PhiBookmarkManager::AppendMatches(const std::string& parent_guid) {
       row.url = view.url;
       row.title_b = title_b;
       row.url_b = view.url_b;
+      row.favicon_b = std::move(view.favicon_b_bgra);
+      row.favicon_b_width = view.favicon_b_width;
+      row.favicon_b_height = view.favicon_b_height;
       row.icon = view.icon;
       row.folder = folder;
       // Results are FLAT root rows and folders are not expandable here, as

@@ -224,6 +224,22 @@ void PhiPeekPanel::Raise() {
   }
 }
 
+SidebarSurface PhiPeekPanel::kind() const {
+  return SidebarSurface::kPeek;
+}
+int64_t PhiPeekPanel::window_id() const {
+  return window_id_;
+}
+int64_t PhiPeekPanel::origin_window_id() const {
+  return opener_window_id_;
+}
+int64_t PhiPeekPanel::origin_tab_id() const {
+  return opener_tab_id_;
+}
+HWND PhiPeekPanel::hwnd() const {
+  return hwnd_;
+}
+
 PhiPeekPanel::~PhiPeekPanel() {
   if (browser_hwnd_ && ::IsWindow(browser_hwnd_)) {
     ::SetParent(browser_hwnd_, nullptr);

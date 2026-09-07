@@ -5,6 +5,7 @@
 #ifndef PHIBROWSER_WIN_CLIENT_PHI_TAB_STORE_H_
 #define PHIBROWSER_WIN_CLIENT_PHI_TAB_STORE_H_
 
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -15,7 +16,15 @@ namespace phi_client {
 // the Mac's LocalStore (Sources/LocalStorage). Same shape, deliberately: ONE
 // row type distinguished by `type`, so pinned tabs and bookmarks share their
 // storage, ordering and ownership rules exactly as they do on Mac.
-enum class PhiRowType { kTab = 0, kPinnedTab = 1, kBookmark = 2, kBookmarkFolder = 3 };
+// Persisted as the integer; 0 was an unused "tab" kind and is rejected on
+// load.
+enum class PhiRowType { kPinnedTab = 1, kBookmark = 2, kBookmarkFolder = 3 };
+
+// The JSON file's schema version. 1: pinned splits were TWO rows cross-linked
+// by splitPartnerGuid. 2 (2026-09-07): ONE row per cell for pins and
+// bookmarks alike, pane B in url_b/title_b/favicon_b (see
+// docs/sidebar-architecture.md §4.1); Load folds schema-1 pairs.
+inline constexpr int kPhiTabStoreSchema = 2;
 
 // WHERE A PINNED TAB LIVES — the Mac's PinnedTabScope, an APP-WIDE setting
 // rather than a per-tab one. It decides who owns the row:
@@ -50,14 +59,14 @@ struct PhiRow {
   // Survives a scope change so rows that came from one original pin can be
   // merged back together, as the Mac's pinLineageId does.
   std::string lineage_id;
-  // Split view, stored the Mac's two ways (TabDataModel V4/V5):
-  //   BOOKMARK split — ONE row; the second pane rides here (secondaryUrl /
-  //   secondaryTitle; the title is empty when it duplicates the primary's).
+  // Split cell (pins and bookmarks alike): ONE row, the second pane riding
+  // here. url_b non-empty is what makes a row a split. Pane B keeps its own
+  // title and favicon; a live pane B is tagged TagFor(guid, /*pane_b=*/true).
   std::string url_b;
   std::string title_b;
-  //   PINNED split — TWO pinned rows cross-linked by partner guid
-  //   (splitPartnerGuid on both), rendered as one merged cell.
-  std::string split_partner_guid;
+  std::string favicon_b_base64;
+  int favicon_b_width = 0;
+  int favicon_b_height = 0;
   // Bookmark FOLDERS only: which catalog symbol the folder wears (the Mac's
   // Bookmark.folderIconName). Empty and unknown ids both mean "default".
   std::string icon;
@@ -67,9 +76,9 @@ struct PhiRow {
   std::string layout;
 };
 
-// Rows plus the one scope setting, persisted as a single JSON file. Kept
-// deliberately simple: the Mac needs SwiftData migrations because its schema
-// has nine versions behind it; this starts at one.
+// Rows plus the one scope setting, persisted as a single JSON file with a
+// schema number (kPhiTabStoreSchema). Older files are migrated on Load and
+// rewritten at once, so a change is a migration, never a guess.
 class PhiTabStore {
  public:
   PhiTabStore();
@@ -111,27 +120,26 @@ class PhiTabStore {
                           int favicon_width,
                           int favicon_height);
 
-  // Removes a row and, for a folder, everything beneath it. A pinned-split
-  // member takes its partner row with it — the pair is one unit, as on Mac.
+  // Removes a row and, for a folder, everything beneath it.
   bool Remove(const std::string& guid);
   // Whether a row with `guid` exists (any type).
   bool Contains(const std::string& guid) const;
-  // Marks `guid` as a split bookmark: the second pane's url/title
-  // (title empty when it duplicates the primary's). False when unknown.
+  // Makes `guid` a split cell (pin or bookmark) by setting its second pane,
+  // or clears pane B when `url_b` is empty. False when unknown.
   bool SetRowSecondary(const std::string& guid,
                        const std::string& url_b,
-                       const std::string& title_b);
-  // Cross-links two pinned rows as a split pair (the Mac's
-  // updateTabSplitPartner, both directions).
-  bool LinkSplitPair(const std::string& guid_a, const std::string& guid_b);
-  // The split partner of `guid`, or empty.
-  std::string SplitPartner(const std::string& guid) const;
+                       const std::string& title_b,
+                       const std::string& favicon_b_base64 = std::string(),
+                       int favicon_b_width = 0,
+                       int favicon_b_height = 0);
   // Retitles a row (the context menus' Rename). False when unknown.
   bool RenameRow(const std::string& guid, const std::string& title);
   // Sets a bookmark folder's catalog symbol. False when unknown or unchanged.
   bool SetRowIcon(const std::string& guid, const std::string& icon);
   // Sets a split row's divider axis. False when unknown or unchanged.
   bool SetRowLayout(const std::string& guid, const std::string& layout);
+  // Swaps a split cell's two panes (title/url/favicon). False unless split.
+  bool SwapPanes(const std::string& guid);
   // Removes every row OWNED by `space_id` (space-scoped pins, the Space's
   // bookmarks) — what deleting a Space takes with it on Mac. Rows owned at
   // profile or app scope carry no space id and stay. Returns removed count.
@@ -157,6 +165,15 @@ class PhiTabStore {
             int new_index);
 
   const std::vector<PhiRow>& rows() const { return rows_; }
+  // Schema 1 -> 2 leftovers: the guid of every pinned row folded away as a
+  // pane B, mapped to the tag its live tab must carry now
+  // (TagFor(survivor, true)). Session restore brings such tabs back with the
+  // old guid as their tag — possibly launches later — so the map is
+  // persisted with the file and each entry dropped once applied.
+  const std::map<std::string, std::string>& legacy_tag_aliases() const {
+    return legacy_tag_aliases_;
+  }
+  void DropLegacyTagAlias(const std::string& old_guid);
 
  private:
   // The (profileId, spaceId) a new pinned row gets under the current scope.
@@ -164,12 +181,16 @@ class PhiTabStore {
                      const std::string& space_id,
                      std::string* out_profile,
                      std::string* out_space) const;
+  // Schema 1 -> 2 (see kPhiTabStoreSchema).
+  void FoldLegacySplitPairs(
+      const std::map<std::string, std::string>& partner_of);
   int NextIndexFor(PhiRowType type,
                    const std::string& profile_id,
                    const std::string& space_id,
                    const std::string& parent_guid) const;
 
   std::vector<PhiRow> rows_;
+  std::map<std::string, std::string> legacy_tag_aliases_;
   PhiPinScope pin_scope_ = PhiPinScope::kProfile;  // The Mac's fallback.
   std::wstring path_;
 };

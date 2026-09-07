@@ -107,6 +107,25 @@ PhiReaderPanel::PhiReaderPanel(int64_t window_id,
   }
 }
 
+SidebarSurface PhiReaderPanel::kind() const {
+  return SidebarSurface::kReader;
+}
+int64_t PhiReaderPanel::window_id() const {
+  return window_id_;
+}
+int64_t PhiReaderPanel::origin_window_id() const {
+  return origin_window_id_;
+}
+int64_t PhiReaderPanel::origin_tab_id() const {
+  return origin_tab_id_;
+}
+HWND PhiReaderPanel::hwnd() const {
+  return hwnd_;
+}
+void PhiReaderPanel::BindSurfaceTab(int64_t surface_tab_id) {
+  surface_tab_id_ = surface_tab_id;
+}
+
 PhiReaderPanel::~PhiReaderPanel() {
   if (browser_hwnd_ && ::IsWindow(browser_hwnd_)) {
     ::SetParent(browser_hwnd_, nullptr);
@@ -214,8 +233,21 @@ void PhiReaderPanel::RefreshState() {
     return;
   }
   const base::DictValue* row = tabs->GetList().front().GetIfDict();
-  if (!row || !surface_tab_id_ ||
-      row->FindInt("id").value_or(0) != surface_tab_id_) {
+  if (!row) {
+    return;
+  }
+  const std::string* surface = row->FindString("surface");
+  const bool is_surface = surface && *surface == "reader";
+  if (!surface_tab_id_) {
+    // The framework panelled the surface itself (the insertion divert), so
+    // nobody bound it here: adopt the reader page standing for our origin.
+    if (is_surface &&
+        row->FindInt("originTabId").value_or(0) == origin_tab_id_) {
+      surface_tab_id_ = row->FindInt("id").value_or(0);
+    }
+    return;
+  }
+  if (row->FindInt("id").value_or(0) != surface_tab_id_) {
     // Not the tab that was moved in: the surface has gone and this browser
     // is on its way out with a placeholder page. Nothing to hand back.
     return;
@@ -225,7 +257,7 @@ void PhiReaderPanel::RefreshState() {
     return;
   }
   url_ = base::UTF8ToWide(*url);
-  if (PhiReaderBridge::IsReaderPageUrl(*url) || *url == "about:blank") {
+  if (is_surface || *url == "about:blank") {
     return;
   }
   // A link clicked inside the reader. The reading surface is not a place to

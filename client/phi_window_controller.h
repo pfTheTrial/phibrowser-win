@@ -18,10 +18,15 @@
 #include <vector>
 
 #include "base/memory/raw_ptr_exclusion.h"
+#include "base/values.h"
 #include "chrome/browser/phinomenon/phi_framework/phi_framework_api.h"
 #include "phibrowser-win/client/phi_drag_image.h"
 #include "phibrowser-win/client/phi_feedback_window.h"
 #include "phibrowser-win/client/phi_split_drop.h"
+#include "phibrowser-win/client/phi_sidebar_actions.h"
+#include "phibrowser-win/client/phi_sidebar_drop.h"
+#include "phibrowser-win/client/phi_sidebar_layout.h"
+#include "phibrowser-win/client/phi_sidebar_model.h"
 #include "phibrowser-win/client/phi_theme.h"
 
 namespace phi_client {
@@ -50,11 +55,12 @@ struct PhiStoredRowView {
   std::vector<unsigned char> favicon_bgra;
   int favicon_width = 0;
   int favicon_height = 0;
-  // Split view (the Mac's model): a bookmark split is ONE row carrying the
-  // second pane here; a pinned split is TWO rows cross-linked by partner.
+  // Split cell (pin or bookmark): ONE row, the second pane riding here.
   std::string url_b;
-  std::string title_b;  // Empty when it duplicates the primary's.
-  std::string partner_guid;
+  std::string title_b;
+  std::vector<unsigned char> favicon_b_bgra;
+  int favicon_b_width = 0;
+  int favicon_b_height = 0;
   // Folders only: the catalog symbol id (the Mac's folderIconName).
   std::string icon;
   // Split rows only: "vertical" (side-by-side) or "horizontal" (stacked).
@@ -141,14 +147,14 @@ class PhiSlotHost {
   // Enters Reader View for the tab, or leaves it when the tab already shows
   // the reading surface. `url` is what tells those two apart.
   virtual void RequestToggleReaderView(int tab_id, const std::string& url) = 0;
-  // Leaving Reader View because the page underneath is about to change or
-  // move: an address-bar navigation or Back/Forward on the origin, or the
-  // pane being re-laid-out. The reader covers the whole page pane, so it
-  // cannot be left sitting over a page that changed beneath it.
-  virtual void RequestCloseReaderView(int tab_id) = 0;
+  // The page underneath the tab's attached surfaces (Reader View, Peek) is
+  // about to change or move — an address-bar navigation or Back/Forward on
+  // the origin — so every surface attached to it closes first. A surface
+  // cannot be left over a page that changed beneath it.
+  virtual void RequestCloseSurfaces(int tab_id) = 0;
   // The content card moved or resized: re-fit whatever is hosted over it.
   virtual void NoteContentLayoutChanged(int64_t slot) = 0;
-  // Raise this slot's reader panels above the browser child, so the corner
+  // Raise this slot's surface panels above the browser child, so the corner
   // caps can then be raised above THEM (see RaiseCornerCaps).
   virtual void RaiseReaderPanels(int64_t slot) = 0;
   // A Space's browser is live in this slot. The coordinator remembers the
@@ -167,6 +173,19 @@ class PhiSlotHost {
   virtual void RequestReleaseTab(int tab_id) = 0;
   // The slot's pinned tabs, in sibling order.
   virtual std::vector<PhiStoredRowView> PinnedRows(int64_t slot) const = 0;
+  // Complete scoped identity inventory, independent of folder expansion,
+  // layout, and favicon loading. The sidebar model owns live reconciliation.
+  virtual std::vector<SidebarStoredItem> SidebarStoredItems(int64_t slot) const = 0;
+  // THE mutator for sidebar state (docs/sidebar-architecture.md §5): every
+  // gesture, menu item and shortcut is a SidebarCommand applied against the
+  // slot's current tree. False when the command was refused or was a no-op.
+  virtual bool Apply(int64_t slot,
+                     const SidebarCommand& command,
+                     const SidebarTree& tree) = 0;
+  // Peek/Reader surfaces attached to tabs of `browser`: origin tab id ->
+  // kind. The model puts the indicator on whichever row owns the origin.
+  virtual std::map<int, SidebarSurface> AttachedSurfaces(
+      int64_t browser) const = 0;
   // Bookmark rows under `parent_guid` (empty = the root), so the menu bar can
   // descend into folders the way the Mac's Bookmarks menu does.
   virtual std::vector<PhiStoredRowView> BookmarkRows(
@@ -187,40 +206,8 @@ class PhiSlotHost {
                                      const std::string& parent_guid,
                                      const std::string& title,
                                      const std::string& url) = 0;
-  // Moves (move=true) or clones the tab at `index` of `slot`'s visible
-  // browser into `space_id` — the Mac's Move to Space / Clone to Space. An
-  // open target Space gets the REAL move (WebContents intact); a cold one
-  // re-opens the URL there.
-  virtual void RequestTabToSpace(int64_t slot,
-                                 int index,
-                                 const std::string& space_id,
-                                 bool move) = 0;
   // Bookmarks the slot's active tab — the menu bar's Bookmark This Tab.
   virtual void RequestBookmarkActiveTab(int64_t slot) = 0;
-  // Stores tab `index` of the slot's active browser as a pinned tab
-  // (`as_bookmark` false) or a bookmark — the row context menus.
-  virtual void RequestStoreTab(int64_t slot, int index, bool as_bookmark) = 0;
-  // Stores a live SPLIT (panes at `index_a` — the leading member — and
-  // `index_b`) the Mac's two ways: as a bookmark, ONE row with a second
-  // url; as a pinned tab, TWO cross-linked rows with both live panes bound.
-  virtual void RequestStoreSplit(int64_t slot, int index_a, int index_b,
-                                 bool as_bookmark) = 0;
-  // DRAG conversions — the Mac's moveNormalTab(toPinnd:/toBookmark:): store
-  // tab `index` as a pinned tab or ROOT bookmark at `insert_index` among
-  // its siblings and BIND the live tab to the new row (drag = move; the
-  // menu's bookmark stays an unbound copy).
-  virtual void RequestDropTab(int64_t slot, int index, bool as_bookmark,
-                              int insert_index) = 0;
-  // The split-pair drag: pinned pair or split bookmark at `insert_index`,
-  // live-bound either way (the Mac drag path's bindLiveSplit).
-  virtual void RequestDropSplit(int64_t slot, int index_a, int index_b,
-                                bool as_bookmark, int insert_index) = 0;
-  // Reparents a bookmark row (drop into or out of a folder):
-  // `new_parent_guid` empty = the root, `new_index` = the sibling position
-  // (negative or past-the-end appends). Cycles are refused by the store.
-  virtual void MoveStoredRow(const std::string& guid,
-                             const std::string& new_parent_guid,
-                             int new_index) = 0;
   // Creates a bookmark folder under `parent_guid` (empty = the root) in the
   // slot's Space — the sidebar's New Folder entries. Returns the new guid
   // (empty on refusal).
@@ -229,12 +216,6 @@ class PhiSlotHost {
                                         const std::string& title) = 0;
   // Removes a stored row (a pinned tab or bookmark) by its guid.
   virtual void RemoveStoredRow(const std::string& guid) = 0;
-  // Re-homes a LEAF bookmark row into another Space (the Mac bookmark
-  // menu's Move / Clone to Space): a copy at the target Space's root and,
-  // for a move, the original removed. Folders and pins are refused.
-  virtual bool MoveStoredRowToSpace(const std::string& guid,
-                                    const std::string& space_id,
-                                    bool clone) = 0;
   // Retitles a stored row — the context menus' Rename….
   // Sets a bookmark folder's catalog symbol (the Mac's "Change Icon...").
   virtual bool SetStoredRowIcon(const std::string& guid,
@@ -248,9 +229,6 @@ class PhiSlotHost {
                                   const std::string& layout) = 0;
   virtual bool RenameStoredRow(const std::string& guid,
                                const std::string& name) = 0;
-  // Moves a stored row to `new_index` among its siblings (drag-to-reorder in
-  // the pinned grid and bookmark list).
-  virtual void ReorderStoredRow(const std::string& guid, int new_index) = 0;
   // Moves a Space to `new_index` in the Space list (chip drag).
   virtual void ReorderSpace(const std::string& space_id, int new_index) = 0;
   // The sidebar width in DIP — one app-wide value like the layout mode,
@@ -308,8 +286,8 @@ class PhiSlotHost {
   virtual int64_t SlotAtScreenPoint(POINT screen,
                                     int64_t exclude_slot) const = 0;
   virtual bool RequestDropTabOnWindow(int64_t source_slot,
-                                      int index,
-                                      int b_index,
+                                      int tab_a,
+                                      int tab_b,
                                       int64_t target_slot) = 0;
   // Tear-off placement (the Mac's TabDraggingSession
   // resolvedTearOffWindowFrame): the screen point a tab was dropped at
@@ -319,17 +297,6 @@ class PhiSlotHost {
   // placement. Stale after a few seconds, in case no window ever came.
   virtual void NoteTearOffDrop(POINT screen) = 0;
   virtual bool TakeTearOffDrop(POINT* screen) = 0;
-  // A stored row dragged across the sidebar's two cells — the Mac's
-  // movePinnedTabOut(toBookmark:) / moveBookmarkOut(toPinnedTabs:): the row
-  // becomes one of the OTHER kind (a new guid) at `parent_guid`/`index` (a
-  // bookmark's tree target; the grid slot for a pin), its live tab(s) rebound
-  // to the new row, the old row removed. Splits carry over as a split
-  // bookmark or a pinned pair. False when refused (a folder, an unknown row).
-  virtual bool ConvertStoredRow(int64_t slot,
-                                const std::string& guid,
-                                bool to_bookmark,
-                                const std::string& parent_guid,
-                                int index) = 0;
   // The bookmark bar's two visibility switches (the Mac View menu's
   // "Always Show Bookmark Bar" / "Show Bookmark Bar on New Tab").
   virtual bool AlwaysShowBookmarkBar() const = 0;
@@ -378,10 +345,13 @@ enum : UINT {
   kMsgPhiSwitcherPrev,
   kMsgPhiSwitcherCommit,
   // Posted when a rebuild notices the active tab crossing into or out of a
-  // NATIVE-PAGE route (the bookmark manager, the new-tab page): mounting a
-  // child window inside WM_PAINT is not safe, and the rebuild usually
-  // happens there.
+  // NATIVE-PAGE route (the bookmark manager, the new-tab page), so the
+  // mount happens on its own turn rather than inside the rebuild.
   kMsgPhiSyncNativePages,
+  // The coalesced row rebuild (ScheduleRefresh): framework notifications
+  // arrive DURING the change they describe and WM_PAINT must never rebuild,
+  // so the model rebuilds on this posted turn and the paint recomposes.
+  kMsgPhiRebuildRows,
   // Alt pressed and released on its own: summon the caption band's hidden
   // menu titles (and hide them again on a second Alt), the keyboard route
   // to the bar the pointer reveals by hovering.
@@ -638,6 +608,13 @@ class PhiWindowController {
   bool ActiveTabDistillable() const;
   int tabs_top();
   int tab_row_height() const;
+  // The placed sidebar rows (keys + client rects) for the agent dialect's
+  // window.layout, so a box probe can aim a real drag without pixels.
+  base::ListValue LayoutRowsJson() const;
+  // The attached-surface indicator: a plate with the kind's glyph, or the
+  // minus that closes it while its row is hovered.
+  void DrawSurfaceBadge(HDC dc, const RECT& box, SidebarSurface kind,
+                        bool hovered, COLORREF ground);
   // The gap between rows (the Mac's 2pt intercell spacing); row pitch is
   // tab_row_height() + tab_row_gap().
   int tab_row_gap() const;
@@ -902,6 +879,7 @@ class PhiWindowController {
 
   // One rendered tab row: what to draw and what a click at that row does.
   struct TabRow {
+    SidebarKey key;  // The tree node this row paints (kTab or kSplit).
     int index = 0;
     int id = 0;  // Session id — stable while indices shift; pins bind to it.
     // The tab's favicon, copied out of the framework's scratch buffer (which
@@ -937,11 +915,21 @@ class PhiWindowController {
     std::vector<unsigned char> b_favicon;
     int b_favicon_width = 0;
     int b_favicon_height = 0;
+    // A Peek or Reader View attached to this row's tab (either pane): the
+    // trailing indicator, whose minus closes it (docs/sidebar-architecture
+    // §4.6). While one is attached the row's own close box is withheld —
+    // the indicator is the one close affordance, as on the Mac.
+    SidebarSurface attached_surface = SidebarSurface::kContent;
     RECT bounds{};       // Row rect in client coords.
     RECT pane_b{};       // Right half of a merged row (activates pane B).
     RECT close_box{};    // The row's close affordance.
+    RECT surface_box{};  // The attached-surface indicator.
   };
   std::vector<TabRow> tabs_;
+  // The model — what every live tab IS (docs/sidebar-architecture.md §4.5).
+  // tabs_, pinned_ and bookmarks_ are paint/hit-test caches derived from it
+  // in RebuildTabs; nothing decides bindings or split rows anywhere else.
+  SidebarTree sidebar_tree_;
   // Comfortable's "+" in the caption band, trailing the last tab. Its place
   // depends on how wide the strip came out, so it is measured with the rows
   // rather than in ComputeLayout. Empty in the vertical layouts, which put
@@ -964,6 +952,7 @@ class PhiWindowController {
   // (ScheduleRefresh/RefreshTabs/LayoutContents mark this), not per paint.
   // WM_PRINTCLIENT still forces a rebuild — captures must be current.
   bool rows_dirty_ = true;
+  bool rebuild_posted_ = false;  // A kMsgPhiRebuildRows is in the queue.
   // Cached paint resources, recreated on resize / palette change instead of
   // per WM_PAINT: the full-window backbuffer bitmap and the ground-gradient
   // band brushes.
@@ -995,10 +984,20 @@ class PhiWindowController {
   enum class DropBand { kNone, kTabs, kPins, kBookmarks, kOutside, kContent };
   DragKind drag_kind_ = DragKind::kNone;
   DropBand drag_band_ = DropBand::kNone;
-  int drag_index_ = -1;   // Position in the element's own vector.
+  // WHAT is dragged: a key, never an index — rows rebuild under a drag
+  // (a folder toggle, a notification) and a key survives that.
+  SidebarKey drag_key_;
+  // Its current position in the kind's own vector (-1 when it is gone),
+  // looked up fresh each time for the paint/slide code that walks vectors.
+  int DragIndex() const;
   POINT drag_origin_{};
   bool drag_active_ = false;
-  int drag_insert_ = -1;  // Insertion slot 0..n, -1 = none.
+  int drag_insert_ = -1;  // The gap slot for the slide animation, -1 = none.
+  // WHERE it lands (docs/sidebar-architecture.md §5), resolved by the pure
+  // drop resolvers on every move; consumed by CommitDrag as a SidebarMove.
+  SidebarPlace drag_place_;
+  bool drag_place_valid_ = false;
+  SidebarKey drag_folder_key_;  // A drop INTO this collapsed folder.
   DropBand DropBandAt(POINT client_pt);
 
   // DROP ON THE PAGE — the Mac's SplitTabDropContainer. A tab, pinned tab or
@@ -1023,7 +1022,7 @@ class PhiWindowController {
   // Performs the drop ResolveSplitDrop described. Takes its inputs by value
   // because CommitDrag clears the drag state before acting.
   void CommitSplitDrop(DragKind kind,
-                       int from_pos,
+                       const SidebarKey& source,
                        int focused_id,
                        PhiSplitDropZone zone,
                        bool replace,
@@ -1037,7 +1036,7 @@ class PhiWindowController {
   // armed the drag has already opened that row, which the cached view row
   // may not know yet.
   bool SplitDragSource(DragKind kind,
-                       int index,
+                       const SidebarKey& key,
                        int* tab_id,
                        std::string* url,
                        std::string* guid) const;
@@ -1136,7 +1135,7 @@ class PhiWindowController {
   // A pinned row or bookmark released outside the window: its live tab(s)
   // move to the shell under the cursor, else tear off into a new window —
   // the Mac's live-wrapper tear-off, the stored row left behind unopened.
-  bool TearOffStoredRow(DragKind kind, int from_pos, POINT release);
+  bool TearOffStoredRow(DragKind kind, const SidebarKey& key, POINT release);
   // The pinned grid's placement walk over arbitrary cell widths (1 or 2
   // slots) — layout uses it for the real cells, the drag preview with a
   // phantom cell spliced in at the insertion slot.
@@ -1149,7 +1148,7 @@ class PhiWindowController {
   bool sidebar_resizing_ = false;
   bool InSidebarResizeBand(POINT client_pt);
 
-  void ArmDrag(DragKind kind, int index, POINT pt);
+  void ArmDrag(const SidebarKey& key, POINT pt);
   void UpdateDrag(POINT pt);
   void CommitDrag();
   void CancelDrag();
@@ -1258,6 +1257,7 @@ class PhiWindowController {
   // Pinned tabs (the band under the header) and bookmarks (the section above
   // the open tabs) — both come from the client's own store, as on Mac.
   struct ShortcutRow {
+    SidebarKey key;  // kCell or kFolder.
     std::string guid;  // The store row, so the context menu can remove it.
     std::string url;
     std::wstring title;
@@ -1277,6 +1277,10 @@ class PhiWindowController {
     // Mac's selected wash + 2pt accent ring.
     bool open = false;
     bool active = false;
+    // A Peek or Reader View attached to a bound pane — the indicator (a
+    // trailing slot on a bookmark row, a corner badge on a pinned cell).
+    SidebarSurface attached_surface = SidebarSurface::kContent;
+    RECT surface_box{};
     // The bound tab's session id while `open` — what the hover preview asks
     // the framework for a snapshot of. A pinned PAIR binds both: `tab_id` is
     // this row's own tab, `tab_id_b` its partner's.
@@ -1287,14 +1291,12 @@ class PhiWindowController {
     std::vector<unsigned char> favicon;
     int favicon_width = 0;
     int favicon_height = 0;
-    // Split rows (the Mac's model). A pinned pair collapses into ONE cell
-    // spanning two grid slots (this row is the leading member; the partner
-    // row is consumed into the b_* fields). A bookmark split is one row
-    // whose second pane rides url_b/title_b, drawn with both favicons and
-    // a "primary • secondary" title.
+    // Split cell: one row whose second pane rides url_b/title_b/favicon_b
+    // (a pinned split spans two grid slots; a bookmark split draws both
+    // favicons and a "primary • secondary" title). Pane B's live tab is
+    // tagged TagFor(guid, true) and lands in tab_id_b.
     std::string url_b;
     std::wstring title_b;
-    std::string partner_guid;  // Pinned pair only.
     std::vector<unsigned char> favicon_b;
     int favicon_b_width = 0;
     int favicon_b_height = 0;
@@ -1329,7 +1331,15 @@ class PhiWindowController {
   // everything below them down.
   int pinned_row_count_ = 0;
   int bookmark_row_count_ = 0;
-  void RebuildShortcuts();
+  // Pinned cells and the bookmark outline as paint rows, from the tree's
+  // cells (order, depth, bindings) and the store's views (titles, urls,
+  // favicons), placed within `layout`. The tree must be built first.
+  void RebuildShortcuts(const Layout& layout);
+  // The bookmark cells an expanded chain reveals, in outline order.
+  std::vector<const SidebarCell*> VisibleBookmarkCells() const;
+  // The pinned grid's metrics for LayoutPinnedGrid, from the sidebar width
+  // and `layout.favorites`.
+  PinnedGridMetrics GridMetrics(const Layout& layout) const;
   // Folders the user has disclosed in the sidebar outline (session-local
   // view state, like the Mac outline's).
   std::set<std::string> expanded_bookmarks_;
@@ -1339,10 +1349,13 @@ class PhiWindowController {
   // drop ON a collapsed folder — the visible row to highlight (-1 = an
   // ordinary gap insertion). Returns the visible slot the gap animation
   // should open at.
-  int ResolveBookmarkDrop(POINT pt);
-  std::string bookmark_drop_parent_;
-  int bookmark_drop_index_ = -1;
-  int bookmark_drop_folder_row_ = -1;
+  int bookmark_drop_folder_row_ = -1;  // Visible row of drag_folder_key_.
+  // The section's rows as the pure resolvers see them.
+  std::vector<DropRow> TabDropRows() const;
+  std::vector<DropRow> PinnedDropRows() const;
+  std::vector<DropRow> BookmarkDropRows() const;
+  // Sends a command to the host against the current tree; the host refreshes.
+  bool Apply(const SidebarCommand& command);
 
   // Space switch: the PAGE swaps instantly; the SIDEBAR BAND slides — and
   // natively, no macOS snapshot compositing: the leaving Space's laid-out
@@ -1389,11 +1402,12 @@ class PhiWindowController {
   // bindings survive a restart. Bookmark bindings hide their tab from the
   // list only in vertical layouts.
   // The current index of the tab tagged `tag`, or -1 when none is.
+  void CloseStoredContent(const std::string& guid);
   int IndexOfTagged(int64_t browser, const std::string& tag) const;
   // Reopens or refocuses a STORED split (a pinned pair or a split
   // bookmark): missing panes are created, tags applied, and the pair
   // married — the Mac's openPinnedSplit / openTwoURLsAsSplit.
-  void OpenStoredSplit(const ShortcutRow& row, bool bookmark);
+  void OpenStoredSplit(const ShortcutRow& row);
 
   // Navigation state for the client toolbar, refreshed with the tab list.
   std::wstring nav_url_;

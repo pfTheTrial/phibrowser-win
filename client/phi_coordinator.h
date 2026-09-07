@@ -29,6 +29,7 @@
 #include "phibrowser-win/client/phi_prompt.h"
 #include "phibrowser-win/client/phi_reader.h"
 #include "phibrowser-win/client/phi_reader_panel.h"
+#include "phibrowser-win/client/phi_surface_registry.h"
 #include "phibrowser-win/client/phi_auth.h"
 #include "phibrowser-win/client/phi_feedback_window.h"
 #include "phibrowser-win/client/phi_settings_window.h"
@@ -131,6 +132,10 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // browser holds only the surface tab, so closing the window is the whole
   // teardown.
   void CloseReaderPanelForOrigin(int origin_tab_id);
+  // Closes every surface of `kind` (kContent = all kinds) attached to the
+  // tab: the panel browsers close, and OnBrowserWindowClosing forgets them.
+  void CloseSurfacesForOrigin(int origin_tab_id,
+                              SidebarSurface kind = SidebarSurface::kContent);
   // Whether a reader panel is currently up for this origin tab.
   bool HasReaderPanelForOrigin(int origin_tab_id) const;
   // A link inside the reading surface navigated it away from reader.html:
@@ -202,45 +207,31 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
       int64_t slot,
       const PhiNewSpaceSpec& spec) override;
   int64_t SlotAtScreenPoint(POINT screen, int64_t exclude_slot) const override;
-  bool RequestDropTabOnWindow(int64_t source_slot,
+  bool RequestDropTabOnWindow(int64_t source_slot,  // tab ids
                               int index,
                               int b_index,
                               int64_t target_slot) override;
   void NoteTearOffDrop(POINT screen) override;
   bool TakeTearOffDrop(POINT* screen) override;
-  bool ConvertStoredRow(int64_t slot,
-                        const std::string& guid,
-                        bool to_bookmark,
-                        const std::string& parent_guid,
-                        int index) override;
   bool AlwaysShowBookmarkBar() const override;
   void SetAlwaysShowBookmarkBar(bool enabled) override;
   bool BookmarkBarOnNewTab() const override;
   void SetBookmarkBarOnNewTab(bool enabled) override;
   std::vector<PhiStoredRowView> PinnedRows(int64_t slot) const override;
+  std::vector<SidebarStoredItem> SidebarStoredItems(int64_t slot) const override;
+  bool Apply(int64_t slot,
+             const SidebarCommand& command,
+             const SidebarTree& tree) override;
+  std::map<int, SidebarSurface> AttachedSurfaces(int64_t browser) const override;
   std::vector<PhiStoredRowView> BookmarkRows(
       int64_t slot,
       const std::string& parent_guid) const override;
   void RequestOpen(int64_t slot, const std::string& url) override;
   void RequestBookmarkActiveTab(int64_t slot) override;
-  void RequestStoreSplit(int64_t slot, int index_a, int index_b,
-                         bool as_bookmark) override;
-  void RequestDropTab(int64_t slot, int index, bool as_bookmark,
-                      int insert_index) override;
-  void RequestDropSplit(int64_t slot, int index_a, int index_b,
-                        bool as_bookmark, int insert_index) override;
-  void RequestStoreTab(int64_t slot, int index,
-                       bool as_bookmark) override;
-  void MoveStoredRow(const std::string& guid,
-                     const std::string& new_parent_guid,
-                     int new_index) override;
   std::string AddBookmarkFolder(int64_t slot,
                                 const std::string& parent_guid,
                                 const std::string& title) override;
   void RemoveStoredRow(const std::string& guid) override;
-  bool MoveStoredRowToSpace(const std::string& guid,
-                            const std::string& space_id,
-                            bool clone) override;
   bool SetStoredRowIcon(const std::string& guid,
                         const std::string& icon) override;
   bool SetStoredRowUrl(const std::string& guid,
@@ -251,7 +242,6 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   std::string LiveSplitLayout(int64_t browser, int index);
   bool RenameStoredRow(const std::string& guid,
                        const std::string& name) override;
-  void ReorderStoredRow(const std::string& guid, int new_index) override;
   void ReorderSpace(const std::string& space_id, int new_index) override;
   int SidebarWidth() const override;
   void RequestSidebarWidth(int dip) override;
@@ -275,7 +265,7 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   bool IsReaderOfferable(int tab_id, const std::string& url) const override;
   bool IsReaderActive(int tab_id, const std::string& url) const override;
   void RequestToggleReaderView(int tab_id, const std::string& url) override;
-  void RequestCloseReaderView(int tab_id) override;
+  void RequestCloseSurfaces(int tab_id) override;
   void NoteContentLayoutChanged(int64_t slot) override;
   void RaiseReaderPanels(int64_t slot) override;
   bool IsTabAgentDriven(int tab_id) const override;
@@ -293,10 +283,6 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
                              const std::string& parent_guid,
                              const std::string& title,
                              const std::string& url) override;
-  void RequestTabToSpace(int64_t slot,
-                         int index,
-                         const std::string& space_id,
-                         bool move) override;
   // Pushes the persisted restore choice into every loaded profile — run
   // when the framework comes up and after a profile loads.
   void PushRestorePreference();
@@ -418,6 +404,10 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // A window's tab strip changed: re-fit, re-hide and retire the reader
   // panels bound to it.
   void UpdateReaderPanelsForWindow(int64_t window_id);
+  // Finishes the store's schema 1 -> 2 fold on LIVE tabs: a tab still tagged
+  // with a folded-away pin guid (session restore brings them back) is retagged
+  // to the survivor's pane-B tag. No-op once the store has no aliases.
+  void ApplyLegacyTagAliases(int64_t window_id);
   // Swaps in the url-favicon service's larger icon when it beats the row's
   // stored 16px capture.
   void UpgradeFavicon(int64_t slot,
@@ -480,13 +470,9 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // Kiosk windows, keyed like windows_ but held apart: they are not shell
   // slots, take no Space, and never appear in the slot/space bookkeeping.
   std::map<int64_t, std::unique_ptr<PhiKioskWindow>> kiosks_;
-  // Peek panels, keyed by the peek's own window id. Like kiosks these take no
-  // slot; unlike them they are bound to an opener tab and float inside that
-  // window's content card.
-  std::map<int64_t, std::unique_ptr<PhiPeekPanel>> peeks_;
-  // Reader View panels, keyed like peeks_ by the panel BROWSER's window id.
-  // Each holds exactly the surface tab moved out of an origin window's strip.
-  std::map<int64_t, std::unique_ptr<PhiReaderPanel>> readers_;
+  // Peek and Reader View panels — browsers of their own, hosted over an
+  // origin tab's page, one lifecycle for both kinds (see the registry).
+  PhiSurfaceRegistry surfaces_;
   // Panels whose page left reader.html, with the url to re-open, until the
   // deferred expand runs.
   std::map<int64_t, std::string> pending_reader_expands_;
@@ -550,6 +536,40 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
                        int64_t source_window_id);
   // The shared store-tab/split bodies behind the menu (append, bookmark
   // unbound) and drag (placed + bound) entry points.
+  // One cell from live tab(s), by STABLE id: a single (tab_b 0) or a split
+  // (both panes), as a pin or a bookmark under `parent_guid`, at
+  // `insert_index` among its siblings (INT_MAX = end), bound when `bind`.
+  // Returns the new guid, empty on refusal.
+  std::string StoreTabsById(int64_t slot,
+                            int tab_a,
+                            int tab_b,
+                            bool as_bookmark,
+                            const std::string& parent_guid,
+                            int insert_index,
+                            bool bind);
+  // A live tab's strip facts by id, or false when it is not in `browser`.
+  struct LiveTabInfo {
+    int index = -1;
+    std::string title, url, split_id;
+  };
+  bool LiveTab(int64_t browser, int tab_id, LiveTabInfo* out) const;
+  // The Move transition table (SidebarMove).
+  bool ApplyMove(int64_t slot, const SidebarMove& move, const SidebarTree& tree);
+  // Opens a closed cell's pane(s) as live tab(s) bound to it; returns pane A.
+  int OpenCell(int64_t browser, const std::string& guid);
+  // Former host verbs, now internal to Apply and the agent dialect.
+  bool ConvertStoredRow(int64_t slot,
+                        const std::string& guid,
+                        bool to_bookmark,
+                        const std::string& parent_guid,
+                        int index);
+  bool MoveStoredRowToSpace(const std::string& guid,
+                            const std::string& space_id,
+                            bool clone);
+  void RequestTabToSpace(int64_t slot,
+                         int index,
+                         const std::string& space_id,
+                         bool move);
   void StoreTabInternal(int64_t slot, int index, bool as_bookmark,
                         int insert_index, bool bind);
   void StoreSplitInternal(int64_t slot, int index_a, int index_b,

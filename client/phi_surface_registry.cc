@@ -1,0 +1,102 @@
+// Copyright 2026 The Fyde Innovations Limited. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#include "phibrowser-win/client/phi_surface_registry.h"
+
+namespace phi_client {
+
+PhiSurfaceRegistry::PhiSurfaceRegistry() = default;
+PhiSurfaceRegistry::~PhiSurfaceRegistry() = default;
+
+void PhiSurfaceRegistry::Attach(std::unique_ptr<PhiSurfacePanel> panel) {
+  if (!panel) {
+    return;
+  }
+  const int64_t id = panel->window_id();
+  panels_[id] = std::move(panel);
+}
+
+std::optional<PhiSurfaceRegistry::Origin> PhiSurfaceRegistry::Detach(
+    int64_t window_id) {
+  const auto it = panels_.find(window_id);
+  if (it == panels_.end()) {
+    return std::nullopt;
+  }
+  Origin origin;
+  origin.kind = it->second->kind();
+  origin.window_id = window_id;
+  origin.origin_window_id = it->second->origin_window_id();
+  origin.origin_tab_id = static_cast<int>(it->second->origin_tab_id());
+  panels_.erase(it);
+  return origin;
+}
+
+PhiSurfacePanel* PhiSurfaceRegistry::Find(int64_t window_id) const {
+  const auto it = panels_.find(window_id);
+  return it == panels_.end() ? nullptr : it->second.get();
+}
+
+PhiSurfacePanel* PhiSurfaceRegistry::ForOrigin(int origin_tab_id,
+                                               SidebarSurface kind) const {
+  if (origin_tab_id == 0) {
+    return nullptr;
+  }
+  for (const auto& [id, panel] : panels_) {
+    if (panel->origin_tab_id() == origin_tab_id &&
+        (kind == SidebarSurface::kContent || panel->kind() == kind)) {
+      return panel.get();
+    }
+  }
+  return nullptr;
+}
+
+std::vector<PhiSurfacePanel*> PhiSurfaceRegistry::OverWindow(
+    int64_t origin_window_id) const {
+  std::vector<PhiSurfacePanel*> over;
+  for (const auto& [id, panel] : panels_) {
+    if (panel->origin_window_id() == origin_window_id) {
+      over.push_back(panel.get());
+    }
+  }
+  return over;
+}
+
+std::map<int, SidebarSurface> PhiSurfaceRegistry::Surfaces(
+    int64_t origin_window_id) const {
+  std::map<int, SidebarSurface> surfaces;
+  // A reader covers the page; a peek floats over it. When both are attached
+  // to one origin the reader is what the user sees, so it is what the row
+  // shows.
+  for (const auto& [id, panel] : panels_) {
+    if (panel->origin_window_id() != origin_window_id ||
+        panel->origin_tab_id() == 0) {
+      continue;
+    }
+    const int tab = static_cast<int>(panel->origin_tab_id());
+    const auto existing = surfaces.find(tab);
+    if (existing == surfaces.end() ||
+        panel->kind() == SidebarSurface::kReader) {
+      surfaces[tab] = panel->kind();
+    }
+  }
+  return surfaces;
+}
+
+bool PhiSurfaceRegistry::HasKind(SidebarSurface kind) const {
+  for (const auto& [id, panel] : panels_) {
+    if (panel->kind() == kind) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void PhiSurfaceRegistry::ForEach(
+    const std::function<void(PhiSurfacePanel&)>& fn) const {
+  for (const auto& [id, panel] : panels_) {
+    fn(*panel);
+  }
+}
+
+}  // namespace phi_client

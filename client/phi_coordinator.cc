@@ -16,6 +16,7 @@
 #include "base/containers/span.h"
 #include "base/compiler_specific.h"
 #include "base/json/json_reader.h"
+#include "third_party/abseil-cpp/absl/functional/overload.h"
 #include "base/json/json_writer.h"
 #include "base/logging.h"
 #include "base/strings/string_number_conversions.h"
@@ -330,7 +331,7 @@ LRESULT CALLBACK PhiCoordinator::MsgWndProc(HWND hwnd,
     auto* self = reinterpret_cast<PhiCoordinator*>(
         ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
     const auto panel = static_cast<int64_t>(wparam);
-    if (self && self->readers_.count(panel) && self->framework_) {
+    if (self && self->surfaces_.Find(panel) && self->framework_) {
       self->framework_->CloseBrowserWindow(panel);
     }
     return 0;
@@ -347,6 +348,7 @@ LRESULT CALLBACK PhiCoordinator::MsgWndProc(HWND hwnd,
     auto* self = reinterpret_cast<PhiCoordinator*>(
         ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
     if (self) {
+      self->ApplyLegacyTagAliases(static_cast<int64_t>(wparam));
       self->UpdateReaderPanelsForWindow(static_cast<int64_t>(wparam));
     }
     return 0;
@@ -1254,7 +1256,6 @@ PhiStoredRowView StoredRowView(const PhiRow& row) {
   view.folder = row.type == PhiRowType::kBookmarkFolder;
   view.url_b = row.url_b;
   view.title_b = row.title_b;
-  view.partner_guid = row.split_partner_guid;
   view.icon = row.icon;
   view.layout = row.layout;
   if (!row.favicon_base64.empty()) {
@@ -1263,6 +1264,14 @@ PhiStoredRowView StoredRowView(const PhiRow& row) {
       view.favicon_bgra.assign(decoded.begin(), decoded.end());
       view.favicon_width = row.favicon_width;
       view.favicon_height = row.favicon_height;
+    }
+  }
+  if (!row.favicon_b_base64.empty()) {
+    std::string decoded;
+    if (base::Base64Decode(row.favicon_b_base64, &decoded)) {
+      view.favicon_b_bgra.assign(decoded.begin(), decoded.end());
+      view.favicon_b_width = row.favicon_b_width;
+      view.favicon_b_height = row.favicon_b_height;
     }
   }
   return view;
@@ -1297,6 +1306,511 @@ std::vector<PhiStoredRowView> PhiCoordinator::BookmarkRows(
   return out;
 }
 
+std::vector<SidebarStoredItem> PhiCoordinator::SidebarStoredItems(
+    int64_t slot) const {
+  std::vector<SidebarStoredItem> items;
+  std::string profile_id, space_id;
+  if (!OwnerForSlot(slot, &profile_id, &space_id)) return items;
+  for (const PhiRow& row : tab_store_.PinnedFor(profile_id, space_id)) {
+    items.push_back({row.guid, SidebarStoredKind::kPin, {}, row.index,
+                     !row.url_b.empty()});
+  }
+  // Read the entire owned tree, including children of collapsed folders.
+  // Expansion is presentation state and cannot decide whether a tab binds.
+  for (const PhiRow& row : tab_store_.rows()) {
+    if (row.profile_id != profile_id || row.space_id != space_id) continue;
+    if (row.type == PhiRowType::kBookmark ||
+        row.type == PhiRowType::kBookmarkFolder) {
+      items.push_back({row.guid,
+                       row.type == PhiRowType::kBookmarkFolder
+                           ? SidebarStoredKind::kFolder
+                           : SidebarStoredKind::kBookmark,
+                       row.parent_guid, row.index, !row.url_b.empty()});
+    }
+  }
+  return items;
+}
+
+std::map<int, SidebarSurface> PhiCoordinator::AttachedSurfaces(
+    int64_t browser) const {
+  return surfaces_.Surfaces(browser);
+}
+
+// ---- The sidebar's one mutator (docs/sidebar-architecture.md §5) ---------
+
+namespace {
+
+std::string IdsJson(int a, int b) {
+  std::string json = "[" + std::to_string(a);
+  if (b != 0 && b != a) {
+    json += "," + std::to_string(b);
+  }
+  return json + "]";
+}
+
+}  // namespace
+
+bool PhiCoordinator::LiveTab(int64_t browser,
+                             int tab_id,
+                             LiveTabInfo* out) const {
+  if (!framework_ || tab_id == 0) {
+    return false;
+  }
+  std::optional<base::Value> tabs = base::JSONReader::Read(
+      framework_->ListTabsJson(browser), base::JSON_PARSE_RFC);
+  if (!tabs || !tabs->is_list()) {
+    return false;
+  }
+  for (const base::Value& v : tabs->GetList()) {
+    const base::DictValue* d = v.GetIfDict();
+    if (!d || d->FindInt("id").value_or(0) != tab_id) {
+      continue;
+    }
+    out->index = d->FindInt("index").value_or(-1);
+    if (const std::string* t = d->FindString("title")) {
+      out->title = *t;
+    }
+    if (const std::string* u = d->FindString("url")) {
+      out->url = *u;
+    }
+    if (const std::string* sp = d->FindString("splitId")) {
+      out->split_id = *sp;
+    }
+    return out->index >= 0;
+  }
+  return false;
+}
+
+std::string PhiCoordinator::StoreTabsById(int64_t slot,
+                                          int tab_a,
+                                          int tab_b,
+                                          bool as_bookmark,
+                                          const std::string& parent_guid,
+                                          int insert_index,
+                                          bool bind) {
+  std::string profile_id, space_id;
+  if (!framework_ || !OwnerForSlot(slot, &profile_id, &space_id)) {
+    return std::string();
+  }
+  const int64_t browser = ResolveBrowser(slot);
+  LiveTabInfo a, b;
+  if (!LiveTab(browser, tab_a, &a) || a.url.empty()) {
+    return std::string();
+  }
+  const bool split = tab_b != 0 && tab_b != tab_a;
+  if (split && (!LiveTab(browser, tab_b, &b) || b.url.empty())) {
+    return std::string();
+  }
+  struct Icon {
+    std::string base64;
+    int width = 0, height = 0;
+  };
+  const auto favicon = [&](int tab_id) {
+    Icon icon;
+    const unsigned char* pixels = framework_->TabFaviconBgraById(
+        browser, tab_id, &icon.width, &icon.height);
+    if (pixels && icon.width > 0 && icon.height > 0) {
+      const size_t bytes = static_cast<size_t>(icon.width) *
+                           static_cast<size_t>(icon.height) * 4;
+      // SAFETY: TabFaviconBgraById reports the buffer's own dimensions.
+      const auto view =
+          UNSAFE_BUFFERS(base::span<const uint8_t>(pixels, bytes));
+      icon.base64 = base::Base64Encode(view);
+    } else {
+      icon.width = 0;
+      icon.height = 0;
+    }
+    return icon;
+  };
+  const Icon icon_a = favicon(tab_a);
+  const std::string layout = split ? LiveSplitLayout(browser, a.index)
+                                   : std::string();
+  // Pins have no tree; a bookmark lands under `parent_guid`.
+  const std::string guid =
+      as_bookmark
+          ? tab_store_.AddBookmark(profile_id, space_id, parent_guid, a.title,
+                                   a.url, /*folder=*/false, icon_a.base64,
+                                   icon_a.width, icon_a.height)
+          : tab_store_.AddPinned(profile_id, space_id, a.title, a.url,
+                                 icon_a.base64, icon_a.width, icon_a.height);
+  if (guid.empty()) {
+    return guid;
+  }
+  if (split) {
+    const Icon icon_b = favicon(tab_b);
+    tab_store_.SetRowSecondary(guid, b.url, b.title, icon_b.base64,
+                               icon_b.width, icon_b.height);
+    if (!layout.empty()) {
+      tab_store_.SetRowLayout(guid, layout);
+    }
+  }
+  if (insert_index >= 0) {
+    tab_store_.Reorder(guid, insert_index);
+  }
+  if (bind) {
+    // The Mac's updateTabCustomValue: the live tab(s) carry the cell's
+    // guid and move into it.
+    framework_->SetTabTagById(browser, tab_a, TagFor(guid, false).c_str());
+    if (split) {
+      framework_->SetTabTagById(browser, tab_b, TagFor(guid, true).c_str());
+    }
+  }
+  for (const auto& [s2, controller] : windows_) {
+    controller->RefreshTabs();
+  }
+  return guid;
+}
+
+int PhiCoordinator::OpenCell(int64_t browser, const std::string& guid) {
+  const PhiRow* row = tab_store_.Find(guid);
+  if (!framework_ || !row || row->url.empty() ||
+      row->type == PhiRowType::kBookmarkFolder) {
+    return 0;
+  }
+  // NewTab answers with an index; the id is read back before anything else
+  // can shift the strip.
+  const auto open = [&](const std::string& url) {
+    const int index = framework_->NewTab(browser, url.c_str());
+    if (index < 0) {
+      return 0;
+    }
+    std::optional<base::Value> tabs = base::JSONReader::Read(
+        framework_->ListTabsJson(browser), base::JSON_PARSE_RFC);
+    if (tabs && tabs->is_list()) {
+      for (const base::Value& v : tabs->GetList()) {
+        const base::DictValue* d = v.GetIfDict();
+        if (d && d->FindInt("index").value_or(-1) == index) {
+          return d->FindInt("id").value_or(0);
+        }
+      }
+    }
+    return 0;
+  };
+  const std::string url_b = row->url_b;
+  const std::string layout = row->layout;
+  const int a = open(row->url);
+  if (a == 0) {
+    return 0;
+  }
+  framework_->SetTabTagById(browser, a, TagFor(guid, false).c_str());
+  if (!url_b.empty()) {
+    const int b = open(url_b);
+    if (b != 0) {
+      framework_->SetTabTagById(browser, b, TagFor(guid, true).c_str());
+      framework_->CreateSplitViewForTabs(
+          browser, a, b, layout.empty() ? "vertical" : layout.c_str());
+    }
+  }
+  return a;
+}
+
+bool PhiCoordinator::ApplyMove(int64_t slot,
+                               const SidebarMove& move,
+                               const SidebarTree& tree) {
+  const SidebarKey& key = move.key;
+  const SidebarPlace& place = move.place;
+  if (!framework_ || key.empty() || MoveIsNoop(tree, key, place)) {
+    return false;
+  }
+  const int64_t browser = ResolveBrowser(slot);
+  const bool live = key.kind == SidebarKey::Kind::kTab ||
+                    key.kind == SidebarKey::Kind::kSplit;
+  const bool stored = key.kind == SidebarKey::Kind::kCell ||
+                      key.kind == SidebarKey::Kind::kFolder;
+  const SidebarCell* cell = stored ? tree.CellFor(key.id) : nullptr;
+  if (stored && !cell) {
+    return false;
+  }
+  const auto refresh = [&] {
+    for (const auto& [s2, controller] : windows_) {
+      controller->RefreshTabs();
+    }
+  };
+  if (place.section == SidebarPlace::Section::kTabs) {
+    const int anchor = PlaceAnchorTab(tree, place);
+    const char* group = place.group_explicit ? place.group_id.c_str() : nullptr;
+    if (live) {
+      // A reorder (the pair moves as a unit inside the framework), possibly
+      // joining or leaving a group on the way.
+      const bool ok = framework_->MoveTabBefore(
+          browser, TabOfKey(tree, key, 0), anchor, group);
+      refresh();
+      return ok;
+    }
+    if (key.kind != SidebarKey::Kind::kCell) {
+      return false;  // Folders and groups never become tabs.
+    }
+    // Unpin / un-bookmark into the list (the Mac's movePinnedTabOut /
+    // moveBookmarkOut(toNormalTabs:)): the cell's tab(s) — opened first
+    // when it was closed — become plain and land at the anchor; the cell
+    // goes.
+    int tab = cell->binding.tab_a ? cell->binding.tab_a : cell->binding.tab_b;
+    if (tab == 0) {
+      tab = OpenCell(browser, key.id);
+    }
+    RemoveStoredRow(key.id);  // Clears the tags; the tabs stay plain.
+    if (tab != 0 && (anchor != 0 || group)) {
+      framework_->MoveTabBefore(browser, tab, anchor, group);
+    }
+    refresh();
+    return true;
+  }
+  // A stored destination: the pinned grid or a bookmark folder.
+  const bool as_bookmark = place.section == SidebarPlace::Section::kBookmarks;
+  const std::string parent = as_bookmark ? place.parent_guid : std::string();
+  if (live) {
+    // The drag conversions (the Mac's moveNormalTab(toPinnd:/toBookmark:)):
+    // the tab(s) become a bound cell at the anchor.
+    const int tab_b = key.kind == SidebarKey::Kind::kSplit
+                          ? TabOfKey(tree, key, 1)
+                          : 0;
+    return !StoreTabsById(slot, TabOfKey(tree, key, 0), tab_b, as_bookmark,
+                          parent, PlaceSiblingIndex(tree, place, ""),
+                          /*bind=*/true)
+                .empty();
+  }
+  const bool is_pin = cell->kind == SidebarStoredKind::kPin;
+  if (is_pin == !as_bookmark) {
+    // Same section: a reorder (pins) or a tree move (bookmarks, folders).
+    const int index = PlaceSiblingIndex(tree, place, key.id);
+    const bool ok = is_pin ? tab_store_.Reorder(key.id, index)
+                           : tab_store_.Move(key.id, parent, index);
+    if (ok) {
+      refresh();
+      PhiSettingsWindow::Refresh();
+    }
+    return ok;
+  }
+  if (cell->kind == SidebarStoredKind::kFolder) {
+    return false;  // A folder cannot become a pin.
+  }
+  // Across the two stored sections: the row changes kind, its live panes
+  // following it (the Mac's movePinnedTabOut(toBookmark:) and
+  // moveBookmarkOut(toPinnedTabs:)).
+  return ConvertStoredRow(slot, key.id, as_bookmark, parent,
+                          PlaceSiblingIndex(tree, place, ""));
+}
+
+bool PhiCoordinator::Apply(int64_t slot,
+                           const SidebarCommand& command,
+                           const SidebarTree& tree) {
+  if (!framework_) {
+    return false;
+  }
+  const int64_t browser = ResolveBrowser(slot);
+  const auto refresh = [&] {
+    for (const auto& [s2, controller] : windows_) {
+      controller->RefreshTabs();
+    }
+  };
+  // The live split a key stands for: a split row's token, or a split cell's
+  // live split when both panes are open.
+  const auto split_of = [&](const SidebarKey& key) -> std::string {
+    if (key.kind == SidebarKey::Kind::kSplit) {
+      return key.id;
+    }
+    if (key.kind == SidebarKey::Kind::kCell) {
+      if (const SidebarCell* cell = tree.CellFor(key.id)) {
+        return cell->binding.split_id;
+      }
+    }
+    if (key.kind == SidebarKey::Kind::kTab) {
+      LiveTabInfo info;
+      if (LiveTab(browser, key.tab_id(), &info)) {
+        return info.split_id;
+      }
+    }
+    return std::string();
+  };
+  // A key's tab, opening a closed cell when the command needs a live one.
+  const auto live_or_open = [&](const SidebarKey& key) {
+    int tab = TabOfKey(tree, key, 0);
+    if (tab == 0 && key.kind == SidebarKey::Kind::kCell) {
+      tab = OpenCell(browser, key.id);
+    }
+    return tab;
+  };
+  return std::visit(
+      absl::Overload{
+          [&](const SidebarMove& move) { return ApplyMove(slot, move, tree); },
+          [&](const SidebarActivate& cmd) {
+            const int tab = TabOfKey(tree, cmd.key, cmd.pane);
+            if (tab == 0) {
+              return false;  // A closed cell: the controller opens it.
+            }
+            const bool ok = framework_->ActivateTabById(browser, tab);
+            refresh();
+            return ok;
+          },
+          [&](const SidebarClose& cmd) {
+            bool ok = false;
+            for (int pane : {1, 0}) {  // Pane B first; ids hold either way.
+              if (cmd.pane >= 0 && cmd.pane != pane) {
+                continue;
+              }
+              const int tab = TabOfKey(tree, cmd.key, pane);
+              if (tab != 0) {
+                ok = framework_->CloseTabById(browser, tab) || ok;
+              }
+            }
+            refresh();
+            return ok;
+          },
+          [&](const SidebarRemoveCell& cmd) {
+            if (cmd.key.kind != SidebarKey::Kind::kCell &&
+                cmd.key.kind != SidebarKey::Kind::kFolder) {
+              return false;
+            }
+            RemoveStoredRow(cmd.key.id);
+            return true;
+          },
+          [&](const SidebarFormSplit& cmd) {
+            const int a = live_or_open(cmd.a);
+            const int b = live_or_open(cmd.b);
+            if (a == 0 || b == 0 || a == b) {
+              return false;
+            }
+            // A split never lives in a stored cell by accident: both panes
+            // become plain first (their cells stay as closed placeholders).
+            framework_->SetTabTagById(browser, a, "");
+            framework_->SetTabTagById(browser, b, "");
+            const char* created = framework_->CreateSplitViewForTabs(
+                browser, a, b,
+                cmd.layout.empty() ? "vertical" : cmd.layout.c_str());
+            refresh();
+            return created && *created;
+          },
+          [&](const SidebarBreakSplit& cmd) {
+            const std::string split_id = split_of(cmd.key);
+            if (split_id.empty()) {
+              return false;
+            }
+            if (cmd.key.kind == SidebarKey::Kind::kCell) {
+              // The cell stays as a closed split placeholder.
+              for (int pane : {0, 1}) {
+                if (const int tab = TabOfKey(tree, cmd.key, pane)) {
+                  framework_->SetTabTagById(browser, tab, "");
+                }
+              }
+            }
+            const bool ok = framework_->RemoveSplitById(browser, split_id.c_str());
+            refresh();
+            return ok;
+          },
+          [&](const SidebarSwapPanes& cmd) {
+            const std::string split_id = split_of(cmd.key);
+            bool ok = false;
+            if (!split_id.empty()) {
+              ok = framework_->SwapSplitView(browser, split_id.c_str());
+            }
+            if (cmd.key.kind == SidebarKey::Kind::kCell) {
+              // The stored panes and their tags follow the live order.
+              const int a = TabOfKey(tree, cmd.key, 0);
+              const int b = TabOfKey(tree, cmd.key, 1);
+              ok = tab_store_.SwapPanes(cmd.key.id) || ok;
+              if (a) framework_->SetTabTagById(browser, a, TagFor(cmd.key.id, true).c_str());
+              if (b) framework_->SetTabTagById(browser, b, TagFor(cmd.key.id, false).c_str());
+            }
+            refresh();
+            return ok;
+          },
+          [&](const SidebarSetLayout& cmd) {
+            bool ok = false;
+            const std::string split_id = split_of(cmd.key);
+            if (!split_id.empty()) {
+              ok = framework_->UpdateSplitView(browser, split_id.c_str(),
+                                               cmd.layout.c_str(), -1.0);
+            }
+            // The stored cell remembers the axis so the split reopens with
+            // it — the cell itself, or the cell a split row's pane is bound to.
+            std::string guid;
+            if (cmd.key.kind == SidebarKey::Kind::kCell) {
+              guid = cmd.key.id;
+            } else {
+              const int tab = TabOfKey(tree, cmd.key, 0);
+              const auto owner = tree.owner_of.find(tab);
+              if (owner != tree.owner_of.end()) {
+                guid = owner->second.id;
+              }
+            }
+            if (!guid.empty()) {
+              ok = tab_store_.SetRowLayout(guid, cmd.layout) || ok;
+            }
+            refresh();
+            return ok;
+          },
+          [&](const SidebarJoinGroup& cmd) {
+            const int a = TabOfKey(tree, cmd.key, 0);
+            if (a == 0) {
+              return false;
+            }
+            const std::string ids = IdsJson(a, TabOfKey(tree, cmd.key, 1));
+            bool ok;
+            if (cmd.group_id.empty()) {
+              const char* created =
+                  framework_->CreateTabGroupForTabs(browser, ids.c_str());
+              ok = created && *created;
+            } else {
+              ok = framework_->AddTabsToGroup(browser, cmd.group_id.c_str(),
+                                              ids.c_str());
+            }
+            refresh();
+            return ok;
+          },
+          [&](const SidebarLeaveGroup& cmd) {
+            const int a = TabOfKey(tree, cmd.key, 0);
+            if (a == 0) {
+              return false;
+            }
+            const std::string ids = IdsJson(a, TabOfKey(tree, cmd.key, 1));
+            const bool ok = framework_->RemoveTabsFromGroupByIds(browser, ids.c_str());
+            refresh();
+            return ok;
+          },
+          [&](const SidebarSetGroupCollapsed& cmd) {
+            if (cmd.key.kind != SidebarKey::Kind::kGroup) {
+              return false;
+            }
+            const bool ok = framework_->SetTabGroupCollapsed(
+                browser, cmd.key.id.c_str(), cmd.collapsed);
+            refresh();
+            return ok;
+          },
+          [&](const SidebarBookmarkCopy& cmd) {
+            const int tab_b = cmd.key.kind == SidebarKey::Kind::kSplit
+                                  ? TabOfKey(tree, cmd.key, 1)
+                                  : 0;
+            return !StoreTabsById(slot, TabOfKey(tree, cmd.key, 0), tab_b,
+                                  /*as_bookmark=*/true, std::string(),
+                                  /*insert_index=*/-1, /*bind=*/false)
+                        .empty();
+          },
+          [&](const SidebarCloseSurface& cmd) {
+            bool any = false;
+            for (int pane : {0, 1}) {
+              const int tab = TabOfKey(tree, cmd.key, pane);
+              if (tab != 0 && surfaces_.ForOrigin(tab)) {
+                CloseSurfacesForOrigin(tab);
+                any = true;
+              }
+            }
+            return any;
+          },
+          [&](const SidebarMoveToSpace& cmd) {
+            if (cmd.key.kind == SidebarKey::Kind::kCell) {
+              return MoveStoredRowToSpace(cmd.key.id, cmd.space_id, cmd.clone);
+            }
+            LiveTabInfo info;
+            if (!LiveTab(browser, TabOfKey(tree, cmd.key, 0), &info)) {
+              return false;
+            }
+            RequestTabToSpace(slot, info.index, cmd.space_id, !cmd.clone);
+            return true;
+          },
+      },
+      command);
+}
+
 void PhiCoordinator::UpgradeFavicon(int64_t slot,
                                     const std::string& url,
                                     PhiStoredRowView* view) const {
@@ -1326,21 +1840,6 @@ void PhiCoordinator::RequestOpen(int64_t slot, const std::string& url) {
   if (framework_ && !url.empty()) {
     framework_->NewTab(ResolveBrowser(slot), url.c_str());
   }
-}
-
-void PhiCoordinator::RequestStoreTab(int64_t slot, int index,
-                                     bool as_bookmark) {
-  // The menu path: pinning MOVES the tab into the cell (the Mac's
-  // togglePin binds); the bookmark item is an unbound copy
-  // (addTabToRootBookmarks).
-  StoreTabInternal(slot, index, as_bookmark, /*insert_index=*/-1,
-                   /*bind=*/!as_bookmark);
-}
-
-void PhiCoordinator::RequestDropTab(int64_t slot, int index, bool as_bookmark,
-                                    int insert_index) {
-  // The drag path always converts — the tab moves into the row it becomes.
-  StoreTabInternal(slot, index, as_bookmark, insert_index, /*bind=*/true);
 }
 
 void PhiCoordinator::StoreTabInternal(int64_t slot, int index,
@@ -1401,21 +1900,6 @@ void PhiCoordinator::StoreTabInternal(int64_t slot, int index,
       controller->RefreshTabs();
     }
   }
-}
-
-void PhiCoordinator::RequestStoreSplit(int64_t slot, int index_a, int index_b,
-                                       bool as_bookmark) {
-  // The menu path: a split bookmark is an unbound copy (bindLiveSplit
-  // false); a pinned pair always binds.
-  StoreSplitInternal(slot, index_a, index_b, as_bookmark,
-                     /*insert_index=*/-1, /*bind_bookmark=*/false);
-}
-
-void PhiCoordinator::RequestDropSplit(int64_t slot, int index_a, int index_b,
-                                      bool as_bookmark, int insert_index) {
-  // The drag path binds either way (the Mac's bindLiveSplit: true).
-  StoreSplitInternal(slot, index_a, index_b, as_bookmark, insert_index,
-                     /*bind_bookmark=*/true);
 }
 
 // The divider axis of the split holding the tab at `index`, or empty when
@@ -1510,48 +1994,32 @@ void PhiCoordinator::StoreSplitInternal(int64_t slot, int index_a,
   // bookmarking a STACKED split reopens it stacked (the Mac persists the
   // layout on the stored rows, not just on live ones).
   std::string layout = LiveSplitLayout(browser, index_a);
-  if (as_bookmark) {
-    // The Mac's addSplitBookmarkFromTab: ONE row keyed on the primary
-    // pane, the second pane riding secondaryUrl/-Title (suppressed when it
-    // duplicates the primary's). The drag path binds the live split to the
-    // row (bindLiveSplit); the menu leaves it an independent copy.
-    const std::string guid = tab_store_.AddBookmark(
-        profile_id, space_id, std::string(), a.title, a.url,
-        /*folder=*/false, a.favicon, a.favicon_width, a.favicon_height);
-    if (!guid.empty()) {
-      tab_store_.SetRowSecondary(guid, b.url,
-                                 b.title == a.title ? std::string()
-                                                    : b.title);
-      if (insert_index >= 0) {
-        tab_store_.Reorder(guid, insert_index);
-      }
-      if (!layout.empty()) {
-        tab_store_.SetRowLayout(guid, layout);
-      }
-      if (bind_bookmark) {
-        framework_->SetTabTag(browser, index_a, guid.c_str());
-      }
+  // ONE row per split cell, pin or bookmark alike (docs/sidebar-architecture
+  // §4.1): pane A is the row, pane B rides url_b/title_b/favicon_b. A live
+  // pane binds by tag — TagFor(guid, false) / TagFor(guid, true). A pinned
+  // split always binds; a split bookmark binds only on the drag path
+  // (the Mac's bindLiveSplit), the menu leaves an independent copy.
+  const std::string guid =
+      as_bookmark
+          ? tab_store_.AddBookmark(profile_id, space_id, std::string(),
+                                   a.title, a.url, /*folder=*/false,
+                                   a.favicon, a.favicon_width,
+                                   a.favicon_height)
+          : tab_store_.AddPinned(profile_id, space_id, a.title, a.url,
+                                 a.favicon, a.favicon_width,
+                                 a.favicon_height);
+  if (!guid.empty()) {
+    tab_store_.SetRowSecondary(guid, b.url, b.title, b.favicon,
+                               b.favicon_width, b.favicon_height);
+    if (insert_index >= 0) {
+      tab_store_.Reorder(guid, insert_index);
     }
-  } else {
-    // The Mac's pinSplit: TWO pinned rows (primary first, so it renders as
-    // the left pane), cross-linked, with BOTH live panes bound by tag.
-    const std::string guid_a =
-        tab_store_.AddPinned(profile_id, space_id, a.title, a.url, a.favicon,
-                             a.favicon_width, a.favicon_height);
-    const std::string guid_b =
-        tab_store_.AddPinned(profile_id, space_id, b.title, b.url, b.favicon,
-                             b.favicon_width, b.favicon_height);
-    if (!guid_a.empty() && !guid_b.empty()) {
-      tab_store_.LinkSplitPair(guid_a, guid_b);
-      if (!layout.empty()) {
-        tab_store_.SetRowLayout(guid_a, layout);  // Stamps both of the pair.
-      }
-      if (insert_index >= 0) {
-        tab_store_.Reorder(guid_a, insert_index);
-        tab_store_.Reorder(guid_b, insert_index + 1);
-      }
-      framework_->SetTabTag(browser, index_a, guid_a.c_str());
-      framework_->SetTabTag(browser, index_b, guid_b.c_str());
+    if (!layout.empty()) {
+      tab_store_.SetRowLayout(guid, layout);
+    }
+    if (!as_bookmark || bind_bookmark) {
+      framework_->SetTabTag(browser, index_a, TagFor(guid, false).c_str());
+      framework_->SetTabTag(browser, index_b, TagFor(guid, true).c_str());
     }
   }
   for (const auto& [s2, controller] : windows_) {
@@ -1560,13 +2028,10 @@ void PhiCoordinator::StoreSplitInternal(int64_t slot, int index_a,
 }
 
 void PhiCoordinator::RemoveStoredRow(const std::string& guid) {
-  // A pinned-split member takes its partner row (the store removes both);
-  // capture the partner guid FIRST so its tag can be cleared too.
-  const std::string partner = tab_store_.SplitPartner(guid);
   if (tab_store_.Remove(guid)) {
-    // Clear the identity tag from any tab bound to the removed row(s) — it
-    // returns to the tab list as a normal tab, and a stale tag would keep
-    // it excluded from tab groups (the Phi-managed rule).
+    // Clear the identity tag from any tab bound to the removed row (either
+    // pane) — it returns to the tab list as a normal tab, and a stale tag
+    // would keep it excluded from tab groups (the Phi-managed rule).
     if (framework_) {
       for (const auto& [browser_id, slot] : browser_to_slot_) {
         std::optional<base::Value> parsed = base::JSONReader::Read(
@@ -1577,8 +2042,8 @@ void PhiCoordinator::RemoveStoredRow(const std::string& guid) {
         for (const base::Value& v : parsed->GetList()) {
           const base::DictValue* d = v.GetIfDict();
           const std::string* tag = d ? d->FindString("tag") : nullptr;
-          if (tag && (*tag == guid ||
-                      (!partner.empty() && *tag == partner))) {
+          SidebarTag parsed_tag;
+          if (tag && ParseTag(*tag, &parsed_tag) && parsed_tag.guid == guid) {
             framework_->SetTabTag(browser_id,
                                   d->FindInt("index").value_or(-1), "");
           }
@@ -1813,20 +2278,17 @@ bool PhiCoordinator::PanelizeReaderSurface(int origin_tab_id) {
       window->active_browser() ? window->active_browser() : window->window_id();
   int surface_tab_id = 0;
   for (const base::DictValue& row : TabRowsOf(framework_, browser)) {
-    const std::string* url = row.FindString("url");
-    if (!url) {
-      continue;
-    }
-    std::optional<int> origin = PhiReaderBridge::OriginTabIdOfReaderPage(*url);
-    if (origin && *origin == origin_tab_id) {
+    const std::string* surface = row.FindString("surface");
+    if (surface && *surface == "reader" &&
+        row.FindInt("originTabId").value_or(0) == origin_tab_id) {
       surface_tab_id = row.FindInt("id").value_or(0);
       break;
     }
   }
   if (!surface_tab_id) {
-    // Not an error: chrome.tabs.create resolves before the navigation
-    // commits, and ListTabsJson reports the COMMITTED url. The sweep that
-    // follows the commit finds it.
+    // Not an error: the framework panels a surface at insertion (see
+    // DivertReaderSurfaceAfterInsert); by the time the extension reports
+    // the open, the tab is usually already out of this strip.
     return false;
   }
   const int64_t panel = framework_->MoveTabToReaderPanel(
@@ -1836,9 +2298,8 @@ bool PhiCoordinator::PanelizeReaderSurface(int origin_tab_id) {
                  << surface_tab_id;
     return false;
   }
-  auto panelled = readers_.find(panel);
-  if (panelled != readers_.end()) {
-    panelled->second->BindSurfaceTab(surface_tab_id);
+  if (PhiSurfacePanel* panelled = surfaces_.Find(panel)) {
+    panelled->BindSurfaceTab(surface_tab_id);
   }
   // Chromium foregrounded the surface when the extension created it, and
   // moving it out leaves whatever neighbour it landed on active. Hand the
@@ -1850,32 +2311,37 @@ bool PhiCoordinator::PanelizeReaderSurface(int origin_tab_id) {
 }
 
 bool PhiCoordinator::HasReaderPanelForOrigin(int origin_tab_id) const {
-  for (const auto& [panel_id, panel] : readers_) {
-    if (panel->origin_tab_id() == origin_tab_id) {
-      return true;
-    }
-  }
-  return false;
+  return surfaces_.ForOrigin(origin_tab_id, SidebarSurface::kReader) != nullptr;
 }
 
 void PhiCoordinator::CloseReaderPanelForOrigin(int origin_tab_id) {
-  int64_t panel_window = 0;
-  for (const auto& [panel_id, panel] : readers_) {
-    if (panel->origin_tab_id() == origin_tab_id) {
-      panel_window = panel_id;
-      break;
-    }
+  CloseSurfacesForOrigin(origin_tab_id, SidebarSurface::kReader);
+}
+
+void PhiCoordinator::CloseSurfacesForOrigin(int origin_tab_id,
+                                            SidebarSurface kind) {
+  if (!framework_) {
+    return;
   }
-  if (panel_window && framework_) {
-    // Closing the window closes the surface tab with it; the extension drops
-    // its cache on tabs.onRemoved, so both sides end up agreeing.
-    framework_->CloseBrowserWindow(panel_window);
+  // Snapshot first: closing a browser runs OnBrowserWindowClosing, which
+  // detaches the record from the registry.
+  std::vector<int64_t> doomed;
+  surfaces_.ForEach([&](PhiSurfacePanel& panel) {
+    if (panel.origin_tab_id() == origin_tab_id &&
+        (kind == SidebarSurface::kContent || panel.kind() == kind)) {
+      doomed.push_back(panel.window_id());
+    }
+  });
+  for (int64_t window : doomed) {
+    // Closing the window closes the surface tab with it; the reader
+    // extension drops its cache on tabs.onRemoved, so both sides agree.
+    framework_->CloseBrowserWindow(window);
   }
 }
 
 void PhiCoordinator::ExpandReaderPanelIntoTab(int64_t panel_window_id,
                                               const std::string& url) {
-  if (!readers_.count(panel_window_id)) {
+  if (!surfaces_.Find(panel_window_id)) {
     return;
   }
   pending_reader_expands_[panel_window_id] = url;
@@ -1892,16 +2358,52 @@ void PhiCoordinator::FinishReaderPanelExpand(int64_t panel_window_id) {
   }
   const std::string url = pending->second;
   pending_reader_expands_.erase(pending);
-  auto reader = readers_.find(panel_window_id);
-  if (reader == readers_.end() || !framework_) {
+  PhiSurfacePanel* reader = surfaces_.Find(panel_window_id);
+  if (!reader || !framework_) {
     return;
   }
-  const int64_t origin_window = reader->second->origin_window_id();
+  const int64_t origin_window = reader->origin_window_id();
   // Like Peek's expand, this RE-OPENS the url rather than moving the live tab
   // across: the destination has only just started loading, and moving the tab
   // out would empty the panel browser mid-move.
   framework_->NewTab(origin_window, url.c_str());
   framework_->CloseBrowserWindow(panel_window_id);
+}
+
+void PhiCoordinator::ApplyLegacyTagAliases(int64_t window_id) {
+  const auto& aliases = tab_store_.legacy_tag_aliases();
+  if (aliases.empty() || !framework_) {
+    return;
+  }
+  std::optional<base::Value> parsed = base::JSONReader::Read(
+      framework_->ListTabsJson(window_id), base::JSON_PARSE_RFC);
+  if (!parsed || !parsed->is_list()) {
+    return;
+  }
+  std::vector<std::string> applied;
+  for (const base::Value& v : parsed->GetList()) {
+    const base::DictValue* d = v.GetIfDict();
+    const std::string* tag = d ? d->FindString("tag") : nullptr;
+    if (!tag) {
+      continue;
+    }
+    const auto alias = aliases.find(*tag);
+    if (alias == aliases.end()) {
+      continue;
+    }
+    framework_->SetTabTag(window_id, d->FindInt("index").value_or(-1),
+                          alias->second.c_str());
+    applied.push_back(alias->first);
+  }
+  const bool changed = !applied.empty();
+  for (const std::string& old_guid : applied) {
+    tab_store_.DropLegacyTagAlias(old_guid);
+  }
+  if (changed) {
+    for (const auto& [slot, controller] : windows_) {
+      controller->RefreshTabs();
+    }
+  }
 }
 
 void PhiCoordinator::UpdateReaderPanelsForWindow(int64_t window_id) {
@@ -1918,25 +2420,22 @@ void PhiCoordinator::UpdateReaderPanelsForWindow(int64_t window_id) {
       active_tab = id;
     }
   }
-  // Every reader page in a normal strip is one of two things, and this is the
-  // pass that decides which. A LIVE surface — the extension reported it up,
-  // or an open is still in flight — belongs in a panel over its origin; the
-  // move is retried here rather than only when `reader.state` lands, because
-  // a tab created a moment ago has no COMMITTED url yet and so cannot be
-  // recognised at that point. Anything else is a HUSK: a reader page restored
-  // or reopened after the extraction it was showing died with the extension's
-  // session storage, which the Mac closes on sight.
+  // The framework panels a reader surface at insertion and closes husks
+  // (DivertReaderSurfaceAfterInsert); this is the FALLBACK for one it could
+  // not place — a live surface (the extension reported it up, or an open is
+  // still in flight) goes into a panel over its origin, anything else is a
+  // husk and closes, as the Mac does on sight.
   for (const base::DictValue& row : rows) {
-    const std::string* url = row.FindString("url");
-    if (!url) {
+    const std::string* surface = row.FindString("surface");
+    if (!surface || *surface != "reader") {
       continue;
     }
-    std::optional<int> origin = PhiReaderBridge::OriginTabIdOfReaderPage(*url);
-    if (!origin || HasReaderPanelForOrigin(*origin)) {
+    const int origin = row.FindInt("originTabId").value_or(0);
+    if (!origin || HasReaderPanelForOrigin(origin)) {
       continue;
     }
-    if (reader_.HasSurface(*origin) || reader_.HasPendingOpen(*origin)) {
-      PanelizeReaderSurface(*origin);
+    if (reader_.HasSurface(origin) || reader_.HasPendingOpen(origin)) {
+      PanelizeReaderSurface(origin);
       return;  // The strip moved under us either way.
     }
     LOG(INFO) << "[PhiClient] closing orphaned reader surface tab in window "
@@ -1944,25 +2443,21 @@ void PhiCoordinator::UpdateReaderPanelsForWindow(int64_t window_id) {
     framework_->CloseTab(window_id, row.FindInt("index").value_or(0));
     return;  // Indices shifted; the next change re-runs this.
   }
-  if (readers_.empty()) {
-    return;
-  }
-  // An origin that left the strip — closed, torn off, moved to another Space
-  // — takes its reader with it (the Mac's readerOverlayOriginWatch).
+  // Every surface over this window, both kinds: an origin that left the
+  // strip — closed, torn off, moved to another Space — takes its surface
+  // with it (the Mac's origin watch); the rest re-fit and show only over
+  // the active tab.
   std::vector<int64_t> orphaned;
-  for (const auto& [panel_id, panel] : readers_) {
-    if (panel->origin_window_id() != window_id) {
-      continue;
-    }
+  for (PhiSurfacePanel* panel : surfaces_.OverWindow(window_id)) {
     if (!live.count(static_cast<int>(panel->origin_tab_id()))) {
-      orphaned.push_back(panel_id);
+      orphaned.push_back(panel->window_id());
       continue;
     }
     panel->Reposition();
     panel->SetVisibleForActiveTab(active_tab);
   }
   for (int64_t panel_id : orphaned) {
-    LOG(INFO) << "[PhiClient] reader panel " << panel_id
+    LOG(INFO) << "[PhiClient] surface " << panel_id
               << " origin left the strip — closing";
     if (framework_) {
       framework_->CloseBrowserWindow(panel_id);
@@ -2011,41 +2506,32 @@ void PhiCoordinator::RequestToggleReaderView(int tab_id,
   reader_.Toggle(tab_id, url);
 }
 
-void PhiCoordinator::RequestCloseReaderView(int tab_id) {
-  CloseReaderPanelForOrigin(tab_id);
+void PhiCoordinator::RequestCloseSurfaces(int tab_id) {
+  CloseSurfacesForOrigin(tab_id);
 }
 
 void PhiCoordinator::RaiseReaderPanels(int64_t slot) {
-  for (const auto& [panel_id, panel] : readers_) {
-    auto mapped = browser_to_slot_.find(panel->origin_window_id());
+  surfaces_.ForEach([&](PhiSurfacePanel& panel) {
+    auto mapped = browser_to_slot_.find(panel.origin_window_id());
     const int64_t panel_slot = mapped != browser_to_slot_.end()
                                    ? mapped->second
-                                   : panel->origin_window_id();
+                                   : panel.origin_window_id();
     if (panel_slot == slot) {
-      panel->Raise();
+      panel.Raise();
     }
-  }
+  });
 }
 
 void PhiCoordinator::NoteContentLayoutChanged(int64_t slot) {
-  for (const auto& [panel_id, panel] : readers_) {
-    auto mapped = browser_to_slot_.find(panel->origin_window_id());
+  surfaces_.ForEach([&](PhiSurfacePanel& panel) {
+    auto mapped = browser_to_slot_.find(panel.origin_window_id());
     const int64_t panel_slot = mapped != browser_to_slot_.end()
                                    ? mapped->second
-                                   : panel->origin_window_id();
+                                   : panel.origin_window_id();
     if (panel_slot == slot) {
-      panel->Reposition();
+      panel.Reposition();
     }
-  }
-  for (const auto& [peek_id, peek] : peeks_) {
-    auto mapped = browser_to_slot_.find(peek->opener_window_id());
-    const int64_t peek_slot = mapped != browser_to_slot_.end()
-                                  ? mapped->second
-                                  : peek->opener_window_id();
-    if (peek_slot == slot) {
-      peek->Reposition();
-    }
-  }
+  });
 }
 
 void PhiCoordinator::NoteSpaceWindow(const std::string& space_id,
@@ -2144,28 +2630,6 @@ bool PhiCoordinator::RenameStoredRow(const std::string& guid,
   return true;
 }
 
-void PhiCoordinator::ReorderStoredRow(const std::string& guid,
-                                      int new_index) {
-  if (tab_store_.Reorder(guid, new_index)) {
-    for (const auto& [slot, controller] : windows_) {
-      controller->RefreshTabs();
-    }
-    PhiSettingsWindow::Refresh();
-  }
-}
-
-void PhiCoordinator::MoveStoredRow(const std::string& guid,
-                                   const std::string& new_parent_guid,
-                                   int new_index) {
-  // The store refuses non-bookmarks, foreign parents, and cycles.
-  if (tab_store_.Move(guid, new_parent_guid, new_index)) {
-    for (const auto& [slot, controller] : windows_) {
-      controller->RefreshTabs();
-    }
-    PhiSettingsWindow::Refresh();
-  }
-}
-
 std::string PhiCoordinator::AddBookmarkFolder(int64_t slot,
                                               const std::string& parent_guid,
                                               const std::string& title) {
@@ -2235,7 +2699,9 @@ bool PhiCoordinator::MoveStoredRowToSpace(const std::string& guid,
     return false;
   }
   if (!row.url_b.empty()) {
-    tab_store_.SetRowSecondary(added, row.url_b, row.title_b);
+    tab_store_.SetRowSecondary(added, row.url_b, row.title_b,
+                               row.favicon_b_base64, row.favicon_b_width,
+                               row.favicon_b_height);
   }
   if (!row.layout.empty()) {
     tab_store_.SetRowLayout(added, row.layout);
@@ -3613,23 +4079,14 @@ bool PhiCoordinator::ConvertStoredRow(int64_t slot,
   if (!OwnerForSlot(slot, &profile_id, &space_id)) {
     return false;
   }
-  const std::string partner = tab_store_.SplitPartner(guid);
-  // A pinned pair's second row, for the split bookmark it becomes.
-  PhiRow partner_row;
-  if (!partner.empty()) {
-    if (const PhiRow* p = tab_store_.Find(partner)) {
-      partner_row = *p;
-    }
-  }
-  // Every live tab bound to the row (and its pinned partner), by tag — the
-  // Mac's `tabs.first(where: guidInLocalDB == guid)`, across every browser
-  // since a profile- or app-scoped pin can be open in any of them.
+  // Every live tab bound to the row — either pane — by tag, across every
+  // browser since a profile- or app-scoped pin can be open in any of them.
   struct Bound {
     int64_t browser = 0;
     int index = -1;
-    int id = 0;
+    bool pane_b = false;
   };
-  std::vector<Bound> bound_a, bound_b;
+  std::vector<Bound> bound;
   if (framework_) {
     for (const auto& [browser_id, s] : browser_to_slot_) {
       std::optional<base::Value> parsed = base::JSONReader::Read(
@@ -3640,119 +4097,47 @@ bool PhiCoordinator::ConvertStoredRow(int64_t slot,
       for (const base::Value& v : parsed->GetList()) {
         const base::DictValue* d = v.GetIfDict();
         const std::string* tag = d ? d->FindString("tag") : nullptr;
-        if (!tag) {
-          continue;
-        }
-        const Bound b = {browser_id, d->FindInt("index").value_or(-1),
-                         d->FindInt("id").value_or(0)};
-        if (*tag == guid) {
-          bound_a.push_back(b);
-        } else if (!partner.empty() && *tag == partner) {
-          bound_b.push_back(b);
+        SidebarTag parsed_tag;
+        if (tag && ParseTag(*tag, &parsed_tag) && parsed_tag.guid == guid) {
+          bound.push_back({browser_id, d->FindInt("index").value_or(-1),
+                           parsed_tag.pane_b});
         }
       }
     }
   }
-  std::string new_guid, new_guid_b;
-  if (to_bookmark) {
-    // The Mac's movePinnedTabOut(toBookmark:) — a pinned pair is saved as
-    // ONE split bookmark (savePinnedSplitAsBookmark).
-    new_guid = tab_store_.AddBookmark(profile_id, space_id,
-                                      parent_guid, row.title, row.url,
-                                      /*folder=*/false, row.favicon_base64,
-                                      row.favicon_width, row.favicon_height);
-    if (new_guid.empty()) {
-      return false;
-    }
-    if (!partner_row.guid.empty() && !partner_row.url.empty()) {
-      tab_store_.SetRowSecondary(new_guid, partner_row.url,
-                                 partner_row.title == row.title
-                                     ? std::string()
-                                     : partner_row.title);
-    }
-    if (!row.layout.empty()) {
-      tab_store_.SetRowLayout(new_guid, row.layout);
-    }
-    tab_store_.Reorder(new_guid, index >= 0 ? index
-                                            : std::numeric_limits<int>::max());
-  } else {
-    // The Mac's moveBookmarkOut(toPinnedTabs:) — a split bookmark pins as
-    // a cross-linked pair (savePinnedSplitFromBookmark).
-    new_guid = tab_store_.AddPinned(profile_id, space_id, row.title,
-                                    row.url, row.favicon_base64,
-                                    row.favicon_width, row.favicon_height);
-    if (new_guid.empty()) {
-      return false;
-    }
-    if (!row.url_b.empty()) {
-      new_guid_b = tab_store_.AddPinned(
-          profile_id, space_id,
-          row.title_b.empty() ? row.title : row.title_b, row.url_b,
-          std::string(), 0, 0);
-      if (!new_guid_b.empty()) {
-        tab_store_.LinkSplitPair(new_guid, new_guid_b);
-      }
-    }
-    if (!row.layout.empty()) {
-      tab_store_.SetRowLayout(new_guid, row.layout);
-    }
-    if (index >= 0) {
-      tab_store_.Reorder(new_guid, index);
-      if (!new_guid_b.empty()) {
-        tab_store_.Reorder(new_guid_b, index + 1);
-      }
-    }
+  // The other kind of row, same panes, same favicons, same arrangement —
+  // the Mac's movePinnedTabOut(toBookmark:) / moveBookmarkOut(toPinnedTabs:).
+  const std::string new_guid =
+      to_bookmark
+          ? tab_store_.AddBookmark(profile_id, space_id, parent_guid,
+                                   row.title, row.url, /*folder=*/false,
+                                   row.favicon_base64, row.favicon_width,
+                                   row.favicon_height)
+          : tab_store_.AddPinned(profile_id, space_id, row.title, row.url,
+                                 row.favicon_base64, row.favicon_width,
+                                 row.favicon_height);
+  if (new_guid.empty()) {
+    return false;
   }
+  if (!row.url_b.empty()) {
+    tab_store_.SetRowSecondary(new_guid, row.url_b, row.title_b,
+                               row.favicon_b_base64, row.favicon_b_width,
+                               row.favicon_b_height);
+  }
+  if (!row.layout.empty()) {
+    tab_store_.SetRowLayout(new_guid, row.layout);
+  }
+  tab_store_.Reorder(new_guid, index >= 0 ? index
+                                          : std::numeric_limits<int>::max());
   // Retarget the live tab(s) at the new row — the Mac's updateTabCustomValue
   // — BEFORE the old row goes, so nothing reads as closed in between.
   if (framework_) {
-    for (const Bound& b : bound_a) {
-      framework_->SetTabTag(b.browser, b.index, new_guid.c_str());
-    }
-    for (const Bound& b : bound_b) {
-      // A split bookmark's second pane carries no tag; a pinned pair's does.
+    for (const Bound& b : bound) {
       framework_->SetTabTag(b.browser, b.index,
-                            to_bookmark ? "" : new_guid_b.c_str());
-    }
-    if (!to_bookmark && !new_guid_b.empty() && bound_b.empty() &&
-        !bound_a.empty()) {
-      // A bookmark split's second pane was untagged: it is the live split
-      // partner of the first, and the pinned pair binds both.
-      const Bound& a = bound_a.front();
-      std::optional<base::Value> splits = base::JSONReader::Read(
-          framework_->SplitViewsJson(a.browser), base::JSON_PARSE_RFC);
-      if (splits && splits->is_list()) {
-        for (const base::Value& v : splits->GetList()) {
-          const base::DictValue* d = v.GetIfDict();
-          if (!d) {
-            continue;
-          }
-          const int primary = d->FindInt("primaryTabId").value_or(0);
-          const int secondary = d->FindInt("secondaryTabId").value_or(0);
-          const int other = primary == a.id ? secondary
-                            : secondary == a.id ? primary
-                                                : 0;
-          if (other == 0) {
-            continue;
-          }
-          std::optional<base::Value> tabs = base::JSONReader::Read(
-              framework_->ListTabsJson(a.browser), base::JSON_PARSE_RFC);
-          if (tabs && tabs->is_list()) {
-            for (const base::Value& t : tabs->GetList()) {
-              const base::DictValue* td = t.GetIfDict();
-              if (td && td->FindInt("id").value_or(0) == other) {
-                framework_->SetTabTag(a.browser,
-                                      td->FindInt("index").value_or(-1),
-                                      new_guid_b.c_str());
-              }
-            }
-          }
-          break;
-        }
-      }
+                            TagFor(new_guid, b.pane_b).c_str());
     }
   }
-  tab_store_.Remove(guid);  // Takes a pinned partner row with it.
+  tab_store_.Remove(guid);
   for (const auto& [s2, controller] : windows_) {
     controller->RefreshTabs();
   }
@@ -3761,8 +4146,8 @@ bool PhiCoordinator::ConvertStoredRow(int64_t slot,
 }
 
 bool PhiCoordinator::RequestDropTabOnWindow(int64_t source_slot,
-                                            int index,
-                                            int b_index,
+                                            int tab_a,
+                                            int tab_b,
                                             int64_t target_slot) {
   auto source = windows_.find(source_slot);
   auto target = windows_.find(target_slot);
@@ -3779,17 +4164,21 @@ bool PhiCoordinator::RequestDropTabOnWindow(int64_t source_slot,
   const int64_t target_browser = target->second->active_browser()
                                      ? target->second->active_browser()
                                      : target_slot;
-  // A split pair moves both members; the HIGHER index first so the lower
-  // one's position survives the removal.
+  // Ids in, indices resolved fresh per move: a split pair moves both members,
+  // each looked up after the previous move shifted the strip.
   bool ok = true;
-  if (b_index >= 0) {
-    ok = framework_->MoveTabToWindow(source_browser, std::max(index, b_index),
-                                     target_browser);
-    ok = framework_->MoveTabToWindow(source_browser, std::min(index, b_index),
+  for (int tab : {tab_a, tab_b}) {
+    if (tab == 0) {
+      continue;
+    }
+    LiveTabInfo info;
+    if (!LiveTab(source_browser, tab, &info)) {
+      ok = false;
+      continue;
+    }
+    ok = framework_->MoveTabToWindow(source_browser, info.index,
                                      target_browser) &&
          ok;
-  } else {
-    ok = framework_->MoveTabToWindow(source_browser, index, target_browser);
   }
   if (ok) {
     source->second->RefreshTabs();
@@ -4653,7 +5042,9 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
         entry.Set("favicon", row.favicon_base64);
         entry.Set("faviconWidth", row.favicon_width);
         entry.Set("faviconHeight", row.favicon_height);
-        entry.Set("splitPartnerGuid", row.split_partner_guid);
+        entry.Set("secondaryUrl", row.url_b);
+        entry.Set("secondaryTitle", row.title_b);
+        entry.Set("layout", row.layout);
         list.Append(std::move(entry));
       }
     }
@@ -5156,6 +5547,19 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
       out.Set("frameLeft", static_cast<int>(frame.x));
       out.Set("frameTop", static_cast<int>(frame.y));
       out.Set("mode", PhiLayoutModeName(layout_mode_));
+      out.Set("rows", it->second->LayoutRowsJson());
+      {
+        // The surface registry's view of this window: origin tab -> kind.
+        base::DictValue surfaces;
+        const int64_t browser = it->second->active_browser()
+                                    ? it->second->active_browser()
+                                    : slot;
+        for (const auto& [tab, kind] : surfaces_.Surfaces(browser)) {
+          surfaces.Set(std::to_string(tab),
+                       kind == SidebarSurface::kPeek ? "peek" : "reader");
+        }
+        out.Set("surfaces", std::move(surfaces));
+      }
       out.Set("ok", true);
     } else {
       out.Set("ok", false);
@@ -5443,8 +5847,9 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
       const int index_b = static_cast<int>(
           p->FindDouble("indexB").value_or(-1));
       if (window_id && index_a >= 0 && index_b >= 0) {
-        RequestStoreSplit(window_id, index_a, index_b,
-                          p->FindBool("asBookmark").value_or(false));
+        StoreSplitInternal(window_id, index_a, index_b,
+                           p->FindBool("asBookmark").value_or(false),
+                           /*insert_index=*/-1, /*bind_bookmark=*/false);
         ok = true;
       }
     }
@@ -5502,7 +5907,11 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
     }
     const bool ok = !guid.empty() && index >= 0 && tab_store_.Contains(guid);
     if (ok) {
-      ReorderStoredRow(guid, index);
+      if (tab_store_.Reorder(guid, index)) {
+        for (const auto& [s2, controller] : windows_) {
+          controller->RefreshTabs();
+        }
+      }
     }
     out.Set("ok", ok);
   } else if (type == "agentSpace.spaces.reorder") {
@@ -7154,9 +7563,9 @@ void PhiCoordinator::OnBrowserWindowCreated(int64_t window_id, void* hwnd) {
     if (origin != windows_.end()) {
       LOG(INFO) << "[PhiClient] reader panel " << window_id << " over tab "
                 << reader_origin_tab << " in window " << reader_origin_window;
-      readers_[window_id] = std::make_unique<PhiReaderPanel>(
+      surfaces_.Attach(std::make_unique<PhiReaderPanel>(
           window_id, static_cast<HWND>(hwnd), reader_origin_window,
-          reader_origin_tab, origin->second.get(), framework_, this);
+          reader_origin_tab, origin->second.get(), framework_, this));
       return;
     }
     LOG(WARNING) << "[PhiClient] reader panel without an origin window "
@@ -7174,9 +7583,13 @@ void PhiCoordinator::OnBrowserWindowCreated(int64_t window_id, void* hwnd) {
     if (opener != windows_.end()) {
       LOG(INFO) << "[PhiClient] peek " << window_id << " over tab "
                 << peek_opener_tab << " in window " << peek_opener_window;
-      peeks_[window_id] = std::make_unique<PhiPeekPanel>(
+      // One peek per opener: a second replaces the first (the Mac's
+      // presentPeek `.replaced`).
+      CloseSurfacesForOrigin(static_cast<int>(peek_opener_tab),
+                             SidebarSurface::kPeek);
+      surfaces_.Attach(std::make_unique<PhiPeekPanel>(
           window_id, static_cast<HWND>(hwnd), peek_opener_window,
-          peek_opener_tab, opener->second.get(), framework_, this);
+          peek_opener_tab, opener->second.get(), framework_, this));
       return;
     }
     // No opener to float over — close it rather than leave a stray window.
@@ -7283,7 +7696,7 @@ LRESULT CALLBACK PhiCoordinator::MouseHookProc(int code,
                                                WPARAM wparam,
                                                LPARAM lparam) {
   PhiCoordinator* self = g_coordinator;
-  if (code == HC_ACTION && self && !self->peeks_.empty() &&
+  if (code == HC_ACTION && self && self->surfaces_.HasKind(SidebarSurface::kPeek) &&
       (wparam == WM_LBUTTONDOWN || wparam == WM_RBUTTONDOWN ||
        wparam == WM_MBUTTONDOWN || wparam == WM_NCLBUTTONDOWN ||
        wparam == WM_NCRBUTTONDOWN || wparam == WM_NCMBUTTONDOWN)) {
@@ -7300,23 +7713,26 @@ bool PhiCoordinator::DismissPeeksForShell(HWND shell, HWND inside) {
   if (!shell) {
     return false;
   }
-  std::vector<PhiPeekPanel*> to_dismiss;
-  for (const auto& [window_id, peek] : peeks_) {
-    const HWND card = peek->hwnd();
+  std::vector<int64_t> to_dismiss;
+  surfaces_.ForEach([&](PhiSurfacePanel& panel) {
+    if (panel.kind() != SidebarSurface::kPeek) {
+      return;
+    }
+    const HWND card = panel.hwnd();
     if (!card || ::GetAncestor(card, GA_ROOT) != shell) {
-      continue;
+      return;
     }
     if (inside && (inside == card || ::IsChild(card, inside))) {
-      continue;  // A click INSIDE the card is the card's own business.
+      return;  // A click INSIDE the card is the card's own business.
     }
-    to_dismiss.push_back(peek.get());
-  }
+    to_dismiss.push_back(panel.window_id());
+  });
   // Closing the peek's browser is the dismissal (the card's own close chip
-  // does the same); OnBrowserWindowClosing then erases the entry from
-  // peeks_ — so iterate a snapshot, never the map.
-  for (PhiPeekPanel* peek : to_dismiss) {
+  // does the same); OnBrowserWindowClosing then detaches the record — so
+  // iterate a snapshot, never the registry.
+  for (int64_t window : to_dismiss) {
     if (framework_) {
-      framework_->CloseBrowserWindow(peek->window_id());
+      framework_->CloseBrowserWindow(window);
     }
   }
   return !to_dismiss.empty();
@@ -7584,7 +8000,7 @@ void PhiCoordinator::OnPlaceholderModeChanged(int64_t window_id,
   // Retire it. Deferred: this arrives from inside the tab removal that
   // caused it, and closing a browser from there trips
   // `!observers_.is_notifying_observers()`.
-  if (entered && readers_.count(window_id) && msg_hwnd_) {
+  if (entered && surfaces_.Find(window_id) && msg_hwnd_) {
     ::PostMessageW(msg_hwnd_, WM_PHI_READER_RETIRE,
                    static_cast<WPARAM>(window_id), 0);
     return;
@@ -7617,56 +8033,19 @@ void PhiCoordinator::OnTabsChanged(int64_t window_id) {
     kiosk->second->RefreshState();
     return;
   }
-  auto peek = peeks_.find(window_id);
-  if (peek != peeks_.end()) {
-    peek->second->RefreshState();
-    return;
-  }
-  auto reader = readers_.find(window_id);
-  if (reader != readers_.end()) {
-    // The panel's own browser: the only thing that can change in it is the
-    // page, and the only page change that matters is leaving reader.html.
-    reader->second->RefreshState();
+  if (PhiSurfacePanel* panel = surfaces_.Find(window_id)) {
+    // A surface's own browser: the only thing that can change in it is the
+    // page (a reader's only page change that matters is leaving reader.html).
+    panel->RefreshState();
     return;
   }
   if (msg_hwnd_) {
-    // Deferred — see WM_PHI_READER_SWEEP.
+    // Deferred — see WM_PHI_READER_SWEEP: the surfaces over this window
+    // settle there (re-fit, show only over the active tab, close when the
+    // origin left the strip), off the notification's own turn and from ONE
+    // strip read.
     ::PostMessageW(msg_hwnd_, WM_PHI_READER_SWEEP,
                    static_cast<WPARAM>(window_id), 0);
-  }
-  // A peek belongs to the tab that opened it: it shows only while that tab is
-  // active, and travels with its opener window.
-  int64_t active_tab = 0;
-  bool has_peek_here = false;
-  for (const auto& [peek_id, panel] : peeks_) {
-    if (panel->opener_window_id() == window_id) {
-      has_peek_here = true;
-      break;
-    }
-  }
-  if (has_peek_here && framework_) {
-    // ListTabsJson answers with a bare ARRAY of tabs, the way every other
-    // caller reads it. Reading it as an object with a "tabs" member always
-    // came back empty, which left `active_tab` at 0 and hid the panel a
-    // frame after its constructor showed it — a peek that blinked and went.
-    std::optional<base::Value> tabs = base::JSONReader::Read(
-        framework_->ListTabsJson(window_id), base::JSON_PARSE_RFC);
-    if (tabs && tabs->is_list()) {
-      for (const base::Value& row : tabs->GetList()) {
-        const base::DictValue* tab = row.GetIfDict();
-        if (tab && tab->FindBool("active").value_or(false)) {
-          active_tab = static_cast<int64_t>(tab->FindDouble("id").value_or(0));
-          break;
-        }
-      }
-    }
-  }
-  for (auto& [peek_id, panel] : peeks_) {
-    if (panel->opener_window_id() != window_id) {
-      continue;
-    }
-    panel->Reposition();
-    panel->SetVisibleForActiveTab(active_tab);
   }
   auto slot_it = browser_to_slot_.find(window_id);
   const int64_t slot = slot_it != browser_to_slot_.end() ? slot_it->second
@@ -7685,40 +8064,41 @@ void PhiCoordinator::OnBrowserWindowClosing(int64_t window_id) {
   if (kiosks_.erase(window_id) > 0) {
     return;  // A Kiosk owns nothing else — no slot, no Space, no bookkeeping.
   }
-  if (peeks_.erase(window_id) > 0) {
+  // A surface's own browser closing (its close chip, Esc, the reader's
+  // surface tab removed, click-outside) is the whole teardown. Hand the
+  // strip back to the origin, the way the Mac reveals the page the overlay
+  // was covering, and repaint the row that carried the indicator.
+  if (const std::optional<PhiSurfaceRegistry::Origin> gone =
+          surfaces_.Detach(window_id)) {
+    ActivateTabById(gone->origin_window_id, gone->origin_tab_id);
+    // Repaint by the origin WINDOW: the origin tab may be hidden in a pin or
+    // bookmark cell, which no visible-row lookup would find — and when it
+    // was already active, re-activating it raises no tab notification.
+    auto slot = browser_to_slot_.find(gone->origin_window_id);
+    auto window = windows_.find(slot != browser_to_slot_.end()
+                                    ? slot->second
+                                    : gone->origin_window_id);
+    if (window != windows_.end()) {
+      window->second->ScheduleRefresh();
+    } else if (PhiWindowController* shown =
+                   WindowShowingTab(gone->origin_tab_id)) {
+      shown->ScheduleRefresh();
+    }
     return;
   }
-  // The origin window is going: its readers go with it. They are browsers of
-  // their own, so nothing else would close them — and a surviving panel
-  // browser keeps the whole process alive after the last window is gone
-  // (the Mac's teardownReaderOverlayForWindowClose).
+  // An origin window is going: every surface over it goes with it. They are
+  // browsers of their own, so nothing else would close them — and a
+  // surviving panel browser keeps the whole process alive after the last
+  // window is gone (the Mac's teardown*ForWindowClose, for BOTH kinds).
   std::vector<int64_t> orphaned;
-  for (const auto& [panel_id, panel] : readers_) {
-    if (panel->origin_window_id() == window_id) {
-      orphaned.push_back(panel_id);
-    }
+  for (PhiSurfacePanel* panel : surfaces_.OverWindow(window_id)) {
+    orphaned.push_back(panel->window_id());
   }
   for (int64_t panel_id : orphaned) {
-    readers_.erase(panel_id);
+    surfaces_.Detach(panel_id);
     if (framework_) {
       framework_->CloseBrowserWindow(panel_id);
     }
-  }
-
-  // A reader panel's browser holds only the surface tab, so it closes when
-  // the extension removes that tab (reader.close, or the reading page's own
-  // X) — which is the whole teardown. Hand the strip back to the origin, the
-  // way the Mac reveals the page the overlay was covering.
-  auto reader = readers_.find(window_id);
-  if (reader != readers_.end()) {
-    const int64_t origin_window = reader->second->origin_window_id();
-    const int origin_tab = static_cast<int>(reader->second->origin_tab_id());
-    readers_.erase(reader);
-    ActivateTabById(origin_window, origin_tab);
-    if (PhiWindowController* window = WindowShowingTab(origin_tab)) {
-      window->ScheduleRefresh();
-    }
-    return;
   }
   // A shadow window closing (shadow.close, the keep-alive sweep, a crash)
   // drops its record; it had no presence to take down.
@@ -8396,6 +8776,7 @@ bool PhiCoordinator::HandleSkillDialectVerb(const std::string& type,
       }
       base::DictValue row;
       row.Set("tabId", tab->FindInt("id").value_or(-1));
+      row.Set("index", tab->FindInt("index").value_or(-1));
       if (const std::string* url = tab->FindString("url")) {
         row.Set("url", *url);
       }
@@ -8403,6 +8784,14 @@ bool PhiCoordinator::HandleSkillDialectVerb(const std::string& type,
         row.Set("title", *title);
       }
       row.Set("active", tab->FindBool("active").value_or(false));
+      // Present only when set: the stored-cell binding tag (TagFor) and the
+      // live split, so a probe can assert bindings without pixels.
+      if (const std::string* tag = tab->FindString("tag")) {
+        row.Set("tag", *tag);
+      }
+      if (const std::string* split = tab->FindString("splitId")) {
+        row.Set("splitId", *split);
+      }
       rows.Append(std::move(row));
     }
     out->Set("tabs", std::move(rows));

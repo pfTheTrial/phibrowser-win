@@ -88,6 +88,9 @@ void PhiTabStore::Load(const std::wstring& path) {
       pin_scope_ = parsed;
     }
   }
+  // Absent = schema 1, the pre-2026-09-07 file.
+  const int schema = root->FindInt("schema").value_or(1);
+  std::map<std::string, std::string> legacy_partner;  // guid -> partner guid
   const base::ListValue* rows = root->FindList("rows");
   if (!rows) {
     return;
@@ -103,7 +106,14 @@ void PhiTabStore::Load(const std::wstring& path) {
     }
     PhiRow row;
     row.guid = *guid;
-    row.type = static_cast<PhiRowType>(dict.FindInt("type").value_or(0));
+    const int type = dict.FindInt("type").value_or(0);
+    if (type < static_cast<int>(PhiRowType::kPinnedTab) ||
+        type > static_cast<int>(PhiRowType::kBookmarkFolder)) {
+      LOG(WARNING) << "[PhiClient] tab store: dropping row of unknown type "
+                   << type;
+      continue;
+    }
+    row.type = static_cast<PhiRowType>(type);
     if (const std::string* title = dict.FindString("title")) {
       row.title = *title;
     }
@@ -134,27 +144,120 @@ void PhiTabStore::Load(const std::wstring& path) {
     if (const std::string* title_b = dict.FindString("secondaryTitle")) {
       row.title_b = *title_b;
     }
+    if (const std::string* favicon_b = dict.FindString("secondaryFavicon")) {
+      row.favicon_b_base64 = *favicon_b;
+    }
+    row.favicon_b_width = dict.FindInt("secondaryFaviconWidth").value_or(0);
+    row.favicon_b_height = dict.FindInt("secondaryFaviconHeight").value_or(0);
     if (const std::string* icon = dict.FindString("icon")) {
       row.icon = *icon;
     }
     if (const std::string* layout = dict.FindString("layout")) {
       row.layout = *layout;
     }
-    if (const std::string* partner = dict.FindString("splitPartnerGuid")) {
-      row.split_partner_guid = *partner;
+    if (schema < 2) {
+      if (const std::string* partner = dict.FindString("splitPartnerGuid")) {
+        legacy_partner[row.guid] = *partner;
+      }
     }
     rows_.push_back(std::move(row));
   }
-  // A partner link whose target row is gone (a crash between the pair's two
-  // writes, an old-build edit) must not survive as a dangling guid.
-  for (PhiRow& row : rows_) {
-    if (!row.split_partner_guid.empty() &&
-        !Contains(row.split_partner_guid)) {
-      row.split_partner_guid.clear();
+  if (const base::DictValue* aliases = root->FindDict("legacyTagAliases")) {
+    for (const auto [old_guid, tag] : *aliases) {
+      if (tag.is_string() && !tag.GetString().empty()) {
+        legacy_tag_aliases_[old_guid] = tag.GetString();
+      }
     }
+  }
+  if (schema < 2) {
+    FoldLegacySplitPairs(legacy_partner);
+    Save();  // Rewrite at the current schema at once.
   }
   LOG(INFO) << "[PhiClient] tab store: " << rows_.size() << " rows, pin scope "
             << PhiPinScopeName(pin_scope_);
+}
+
+// Schema 1 -> 2: a pinned split was two pinned rows cross-linked by
+// splitPartnerGuid (either direction may be missing — the Mac's two writes
+// were async and one could be lost on quit). Fold each pair into ONE cell:
+// the lower-index row keeps its place and gains pane B from the partner,
+// which is deleted; the survivors are renumbered densely. A link whose
+// target is gone is simply dropped.
+void PhiTabStore::FoldLegacySplitPairs(
+    const std::map<std::string, std::string>& partner_of) {
+  // Mirror every link so a half-persisted pair still folds.
+  std::map<std::string, std::string> links = partner_of;
+  for (const auto& [guid, partner] : partner_of) {
+    if (!partner.empty() && !links.count(partner)) {
+      links[partner] = guid;
+    }
+  }
+  std::vector<std::string> doomed;
+  int folded = 0;
+  for (const auto& [guid, partner] : links) {
+    if (partner.empty() || guid == partner ||
+        std::find(doomed.begin(), doomed.end(), guid) != doomed.end() ||
+        std::find(doomed.begin(), doomed.end(), partner) != doomed.end()) {
+      continue;
+    }
+    PhiRow* a = nullptr;
+    PhiRow* b = nullptr;
+    for (PhiRow& row : rows_) {
+      if (row.guid == guid) {
+        a = &row;
+      } else if (row.guid == partner) {
+        b = &row;
+      }
+    }
+    if (!a || !b || a->type != PhiRowType::kPinnedTab ||
+        b->type != PhiRowType::kPinnedTab || !a->url_b.empty() ||
+        !b->url_b.empty()) {
+      continue;  // Dangling or already folded from the other side.
+    }
+    if (b->index < a->index) {
+      std::swap(a, b);
+    }
+    a->url_b = b->url;
+    a->title_b = b->title;
+    a->favicon_b_base64 = b->favicon_base64;
+    a->favicon_b_width = b->favicon_width;
+    a->favicon_b_height = b->favicon_height;
+    if (a->layout.empty()) {
+      a->layout = b->layout;
+    }
+    legacy_tag_aliases_[b->guid] = a->guid + "#b";  // TagFor(a, true)
+    doomed.push_back(b->guid);
+    ++folded;
+  }
+  if (doomed.empty()) {
+    return;
+  }
+  std::erase_if(rows_, [&](const PhiRow& row) {
+    return std::find(doomed.begin(), doomed.end(), row.guid) != doomed.end();
+  });
+  // Renumber every pinned sibling set densely.
+  std::map<std::pair<std::string, std::string>, std::vector<PhiRow*>> groups;
+  for (PhiRow& row : rows_) {
+    if (row.type == PhiRowType::kPinnedTab) {
+      groups[{row.profile_id, row.space_id}].push_back(&row);
+    }
+  }
+  for (auto& [owner, rows] : groups) {
+    std::sort(rows.begin(), rows.end(), [](const PhiRow* x, const PhiRow* y) {
+      return x->index != y->index ? x->index < y->index : x->guid < y->guid;
+    });
+    for (size_t i = 0; i < rows.size(); ++i) {
+      rows[i]->index = static_cast<int>(i);
+    }
+  }
+  LOG(INFO) << "[PhiClient] tab store: folded " << folded
+            << " legacy pinned split pair(s) into single cells";
+}
+
+void PhiTabStore::DropLegacyTagAlias(const std::string& old_guid) {
+  if (legacy_tag_aliases_.erase(old_guid)) {
+    Save();
+  }
 }
 
 void PhiTabStore::Save() const {
@@ -178,12 +281,22 @@ void PhiTabStore::Save() const {
     dict.Set("faviconHeight", row.favicon_height);
     dict.Set("secondaryUrl", row.url_b);
     dict.Set("secondaryTitle", row.title_b);
-    dict.Set("splitPartnerGuid", row.split_partner_guid);
+    dict.Set("secondaryFavicon", row.favicon_b_base64);
+    dict.Set("secondaryFaviconWidth", row.favicon_b_width);
+    dict.Set("secondaryFaviconHeight", row.favicon_b_height);
     dict.Set("icon", row.icon);
     dict.Set("layout", row.layout);
     rows.Append(std::move(dict));
   }
   base::DictValue root;
+  root.Set("schema", kPhiTabStoreSchema);
+  if (!legacy_tag_aliases_.empty()) {
+    base::DictValue aliases;
+    for (const auto& [old_guid, tag] : legacy_tag_aliases_) {
+      aliases.Set(old_guid, tag);
+    }
+    root.Set("legacyTagAliases", std::move(aliases));
+  }
   root.Set("pinScope", PhiPinScopeName(pin_scope_));
   root.Set("rows", std::move(rows));
   std::string json;
@@ -362,13 +475,8 @@ bool PhiTabStore::Contains(const std::string& guid) const {
 
 bool PhiTabStore::Remove(const std::string& guid) {
   const size_t before = rows_.size();
-  // A folder takes its subtree; a pinned-split member takes its partner —
-  // the pair is one unit (the Mac's unpinClosedPinnedSplit removes both).
+  // A folder takes its subtree.
   std::vector<std::string> doomed{guid};
-  const std::string partner = SplitPartner(guid);
-  if (!partner.empty()) {
-    doomed.push_back(partner);
-  }
   for (size_t i = 0; i < doomed.size(); ++i) {
     for (const PhiRow& row : rows_) {
       if (row.parent_guid == doomed[i]) {
@@ -382,50 +490,33 @@ bool PhiTabStore::Remove(const std::string& guid) {
   if (rows_.size() == before) {
     return false;
   }
-  // No dangling reverse pointer may survive a removal.
-  for (PhiRow& row : rows_) {
-    if (!row.split_partner_guid.empty() &&
-        !Contains(row.split_partner_guid)) {
-      row.split_partner_guid.clear();
-    }
-  }
   Save();
   return true;
 }
 
 bool PhiTabStore::SetRowSecondary(const std::string& guid,
                                   const std::string& url_b,
-                                  const std::string& title_b) {
+                                  const std::string& title_b,
+                                  const std::string& favicon_b_base64,
+                                  int favicon_b_width,
+                                  int favicon_b_height) {
   for (PhiRow& row : rows_) {
     if (row.guid == guid) {
       row.url_b = url_b;
-      // Clearing the second pane also drops its title, as on Mac.
-      row.title_b = url_b.empty() ? std::string() : title_b;
+      // Clearing the second pane drops everything that described it.
+      const bool split = !url_b.empty();
+      row.title_b = split ? title_b : std::string();
+      row.favicon_b_base64 = split ? favicon_b_base64 : std::string();
+      row.favicon_b_width = split ? favicon_b_width : 0;
+      row.favicon_b_height = split ? favicon_b_height : 0;
+      if (!split) {
+        row.layout.clear();
+      }
       Save();
       return true;
     }
   }
   return false;
-}
-
-bool PhiTabStore::LinkSplitPair(const std::string& guid_a,
-                                const std::string& guid_b) {
-  PhiRow* a = nullptr;
-  PhiRow* b = nullptr;
-  for (PhiRow& row : rows_) {
-    if (row.guid == guid_a) {
-      a = &row;
-    } else if (row.guid == guid_b) {
-      b = &row;
-    }
-  }
-  if (!a || !b) {
-    return false;
-  }
-  a->split_partner_guid = guid_b;
-  b->split_partner_guid = guid_a;
-  Save();
-  return true;
 }
 
 bool PhiTabStore::RenameRow(const std::string& guid,
@@ -457,35 +548,33 @@ bool PhiTabStore::SetRowIcon(const std::string& guid,
 
 bool PhiTabStore::SetRowLayout(const std::string& guid,
                                const std::string& layout) {
-  bool changed = false;
   for (PhiRow& row : rows_) {
-    // A pinned PAIR is two rows; both carry the layout so either one can
-    // reopen the split with it.
-    const bool mine = row.guid == guid || row.split_partner_guid == guid;
-    if (mine && row.layout != layout) {
+    if (row.guid == guid) {
+      if (row.layout == layout) {
+        return false;
+      }
       row.layout = layout;
-      changed = true;
+      Save();
+      return true;
     }
   }
-  if (changed) {
-    Save();
-  }
-  return changed;
+  return false;
 }
 
-std::string PhiTabStore::SplitPartner(const std::string& guid) const {
-  for (const PhiRow& row : rows_) {
-    if (row.guid == guid) {
-      return row.split_partner_guid;
+bool PhiTabStore::SwapPanes(const std::string& guid) {
+  for (PhiRow& row : rows_) {
+    if (row.guid != guid || row.url_b.empty()) {
+      continue;
     }
+    std::swap(row.title, row.title_b);
+    std::swap(row.url, row.url_b);
+    std::swap(row.favicon_base64, row.favicon_b_base64);
+    std::swap(row.favicon_width, row.favicon_b_width);
+    std::swap(row.favicon_height, row.favicon_b_height);
+    Save();
+    return true;
   }
-  // The Mac's reverse scan: tolerate a half-persisted link.
-  for (const PhiRow& row : rows_) {
-    if (row.split_partner_guid == guid) {
-      return row.guid;
-    }
-  }
-  return std::string();
+  return false;
 }
 
 int PhiTabStore::RemoveForSpace(const std::string& space_id) {
