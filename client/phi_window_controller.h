@@ -22,6 +22,7 @@
 #include "chrome/browser/phinomenon/phi_framework/phi_framework_api.h"
 #include "phibrowser-win/client/phi_drag_image.h"
 #include "phibrowser-win/client/phi_feedback_window.h"
+#include "phibrowser-win/client/phi_ids.h"
 #include "phibrowser-win/client/phi_split_drop.h"
 #include "phibrowser-win/client/phi_sidebar_actions.h"
 #include "phibrowser-win/client/phi_sidebar_drop.h"
@@ -97,6 +98,9 @@ struct PhiAgentPipView {
 // What a slot needs from its owner (the coordinator): the full Space list to
 // draw, and requests that only the owner can service (switching to a Space
 // that has no browser yet must create one in that Space's profile).
+// Every `int64_t slot` parameter carries SlotId::value (the controller's
+// slot()) and becomes SlotId in phase 2; a `browser` parameter carries
+// BrowserId::value.
 class PhiTabPreview;
 class PhiBookmarkManager;
 class PhiNewTabPage;
@@ -108,6 +112,10 @@ class PhiSlotHost {
   // Every Space, in display order.
   virtual std::vector<PhiSpaceView> Spaces() const = 0;
   virtual void RequestSwitchSpace(int64_t slot, const std::string& space_id) = 0;
+  // File > New Window: a user window in the profile the slot is showing.
+  // Goes through the coordinator so the request is token-matched like every
+  // other creation (contract rule 3) instead of the legacy NewWindow.
+  virtual void RequestNewWindow(int64_t slot) = 0;
   // Live agent Spaces to show as pips (empty when none). The user watches one
   // by clicking its pip, which toggles its hidden window on/off screen.
   virtual std::vector<PhiAgentPipView> AgentSpaces() const = 0;
@@ -379,7 +387,12 @@ class PhiWindowController {
   // `incognito` hosts an off-the-record browser: fixed-dark chrome, no
   // Spaces strip / pinned grid / bookmarks (nothing persists), and the
   // window stays OUT of the Space registry so URL routing never lands here.
-  PhiWindowController(int64_t window_id,
+  // `slot` is this shell's identity; `browser` is the first browser it
+  // adopts (the one it was opened with, which backs the default Space).
+  // Today the two carry the same number — the types are what keep the slot
+  // from ever being handed to the framework as a browser (phi_ids.h).
+  PhiWindowController(SlotId slot,
+                      BrowserId browser,
                       HWND browser_hwnd,
                       phi_framework::PhiFramework* framework,
                       PhiSlotHost* host,
@@ -390,7 +403,9 @@ class PhiWindowController {
   PhiWindowController(const PhiWindowController&) = delete;
   PhiWindowController& operator=(const PhiWindowController&) = delete;
 
-  int64_t window_id() const { return window_id_; }
+  // The slot's identity — what every PhiSlotHost `slot` parameter takes.
+  // Never a browser: see active_browser_id() for the one the slot shows.
+  SlotId slot() const { return slot_; }
   // Upstream's distillability verdict for one of this window's tabs.
   void NoteTabDistillable(int tab_id, bool distillable);
   // True when `tab_id` is in the strip this window is currently drawing.
@@ -485,21 +500,21 @@ class PhiWindowController {
   // The pointered link target changed in `browser_id`'s page (empty url =
   // pointer left the link). Shows/hides the status bubble when that browser
   // is the one this shell displays.
-  void OnTargetURLChanged(int64_t browser_id, const std::wstring& url);
+  void OnTargetURLChanged(BrowserId browser_id, const std::wstring& url);
 
   // Autocomplete results for `browser_id`'s running omnibox query — feeds
   // the address field's suggestion dropdown (the Mac OmniBox panel).
-  void OnOmniboxResults(int64_t browser_id, const std::string& json);
+  void OnOmniboxResults(BrowserId browser_id, const std::string& json);
 
   // `browser_id`'s last tab closed but the browser SURVIVES in placeholder
   // mode (entered) or a new tab ended that mode. The content child hides
   // while placeholding — the dead tab's final frame would linger otherwise
   // — and a field commit births the first tab.
-  void OnPlaceholderModeChanged(int64_t browser_id, bool entered);
+  void OnPlaceholderModeChanged(BrowserId browser_id, bool entered);
   // A tab's content (video/element) entered or left fullscreen: the hosted
   // child resizes itself to the MONITOR, so the shell must go borderless
   // fullscreen for the duration or the render is clipped to the window.
-  void OnContentFullscreenChanged(int64_t browser_id, bool fullscreen);
+  void OnContentFullscreenChanged(BrowserId browser_id, bool fullscreen);
   // Paints the dropdown (called by its window proc).
   void PaintOmniboxPopup(HWND popup, HDC dc);
   // Popup mouse plumbing (client-y within the popup).
@@ -530,7 +545,7 @@ class PhiWindowController {
   // shows it (hiding the previous). Called when the framework reports a
   // browser created for this slot.
   void AttachSpaceBrowser(const std::string& space_id,
-                          int64_t browser_window_id,
+                          BrowserId browser,
                           HWND browser_hwnd);
   // Shows the Space's browser, hiding the current one. False if unknown.
   bool ShowSpace(const std::string& space_id);
@@ -543,7 +558,7 @@ class PhiWindowController {
   // The Space whose browser is `browser_id` in this slot, or empty — the
   // reverse of BrowserIdForSpace, for a skill payload that names a WINDOW
   // and wants the Space it shows.
-  std::string SpaceForBrowser(int64_t browser_id) const {
+  std::string SpaceForBrowser(BrowserId browser_id) const {
     for (const auto& [space, browser] : space_browsers_) {
       if (browser == browser_id) {
         return space;
@@ -552,18 +567,37 @@ class PhiWindowController {
     return std::string();
   }
   const std::string& active_space() const { return active_space_; }
-  // The browser window id currently displayed (for tab/nav commands).
-  int64_t active_browser() const { return active_browser_; }
-  // The browser this slot holds for `space_id`, or 0 — feeds the page
+  // The browser this slot is SHOWING (for tab/nav commands): the active one,
+  // else the first Space browser still attached, else invalid — a slot
+  // between its last browser going and its own teardown, or one whose
+  // adoption failed. NEVER the slot number: that names the browser the slot
+  // was OPENED with, which may be long closed (docs/architecture-review.md
+  // §3.5). Callers skip the framework call when this is invalid.
+  BrowserId active_browser_id() const {
+    if (active_browser_.valid()) {
+      return active_browser_;
+    }
+    for (const std::string& space : space_order_) {
+      auto it = space_browsers_.find(space);
+      if (it != space_browsers_.end() && it->second.valid()) {
+        return it->second;
+      }
+    }
+    return BrowserId();
+  }
+  // Legacy spelling of active_browser_id() for the coordinator's int64_t
+  // paths; 0 when no browser is attached. Goes with the phase 2 signatures.
+  int64_t active_browser() const { return active_browser_id().value; }
+  // The browser this slot holds for `space_id`, or invalid — feeds the page
   // context menu's Space list (its current-Space exclusion).
-  int64_t BrowserIdForSpace(const std::string& space_id) const {
+  BrowserId BrowserIdForSpace(const std::string& space_id) const {
     auto it = space_browsers_.find(space_id);
-    return it != space_browsers_.end() ? it->second : 0;
+    return it != space_browsers_.end() ? it->second : BrowserId();
   }
   // Spaces this slot has a browser for, in creation order.
   const std::vector<std::string>& space_order() const { return space_order_; }
   // Drops a browser that went away; returns true if the slot still has one.
-  bool ForgetBrowser(int64_t browser_window_id);
+  bool ForgetBrowser(BrowserId browser);
   // Closes the browser this slot holds for `space_id` (a Space being
   // deleted), switching to another open Space first so the window never
   // shows a dead one. No-op when the Space is not open here. If it was the
@@ -1485,14 +1519,17 @@ class PhiWindowController {
   // Slot `i` of the in-field icon strip, or an empty rect without one.
   RECT FieldExtRect(const Layout& layout, size_t i) const;
 
-  const int64_t window_id_;
+  // The slot's identity. Not a browser: the browsers this slot holds live
+  // in space_browsers_ / browser_hwnds_, and "the original browser" is
+  // simply whichever of them is still attached.
+  const SlotId slot_;
   HWND browser_hwnd_;  // The VISIBLE Chromium window, reparented as our child.
-  // Space id -> its browser window id / HWND, plus creation order.
-  std::map<std::string, int64_t> space_browsers_;
-  std::map<int64_t, HWND> browser_hwnds_;
+  // Space id -> its browser / HWND, plus creation order.
+  std::map<std::string, BrowserId> space_browsers_;
+  std::map<BrowserId, HWND> browser_hwnds_;
   std::vector<std::string> space_order_;
   std::string active_space_;
-  int64_t active_browser_ = 0;
+  BrowserId active_browser_;
   HWND shell_hwnd_ = nullptr;  // Our client-owned top-level.
   // Set at the top of the destructor: the shell's DestroyWindow still
   // delivers WM_ACTIVATE / WM_SIZE / WM_CAPTURECHANGED to ShellWndProc on
@@ -1536,12 +1573,12 @@ class PhiWindowController {
   // Set by StartNewTab in omnibox mode: the next commit opens a NEW tab.
   bool omnibox_new_tab_pending_ = false;
   // Browsers currently in placeholder mode (empty strip, window alive).
-  std::set<int64_t> placeholder_browsers_;
+  std::set<BrowserId> placeholder_browsers_;
   // Content-fullscreen state: the shell parks its chrome and covers the
   // monitor while a tab's content is fullscreen; placement and style are
   // restored on exit.
   bool content_fullscreen_ = false;
-  int64_t fullscreen_browser_ = 0;
+  BrowserId fullscreen_browser_;
   WINDOWPLACEMENT pre_fullscreen_placement_ = {};
   LONG_PTR pre_fullscreen_style_ = 0;
   // Tab ids of the ACTIVE browser, most-recently-used first.

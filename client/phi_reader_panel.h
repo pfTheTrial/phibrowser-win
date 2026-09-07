@@ -11,6 +11,7 @@
 #include <string>
 
 #include "base/memory/raw_ptr_exclusion.h"
+#include "phibrowser-win/client/phi_ids.h"
 #include "phibrowser-win/client/phi_surface_registry.h"
 
 namespace phi_framework {
@@ -96,10 +97,10 @@ class PhiReaderPanel : public PhiSurfacePanel {
   void ApplyCardShape();
   void PositionContent();
 
-  int64_t window_id_ = 0;
+  BrowserId window_id_;  // The surface's own browser.
   HWND hwnd_ = nullptr;
   HWND browser_hwnd_ = nullptr;
-  int64_t origin_window_id_ = 0;
+  BrowserId origin_window_id_;  // The browser whose tab the reader covers.
   int64_t origin_tab_id_ = 0;
   RAW_PTR_EXCLUSION PhiWindowController* origin_ = nullptr;
   RAW_PTR_EXCLUSION phi_framework::PhiFramework* framework_ = nullptr;

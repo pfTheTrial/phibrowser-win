@@ -822,6 +822,32 @@ fork posting `OnTabsChanged` after commit; `WindowCreation` +
 against the reader sweep and drag paths that today assume mid-mutation
 delivery.
 
+**Phase 1 status (2026-09-07, uncommitted).** Landed: `phi_ids.h` on both
+sides (`WindowId`, `TabId`, `RequestToken`; client `SlotId`/`BrowserId`);
+the threading contract written into the header (rules 1 to 5) with the
+fork delivering `OnTabsChanged` after commit from a posted task, coalesced
+per window; `WindowKind`/`WindowCreation`/`CreateRequest` and
+`RequestBrowser(…) → token`, never announcing before it returns; the client
+`OnBrowserWindowCreated` is a switch on kind, every creation goes through
+`RequestBrowser` with a token-keyed `PendingCreation` (no legacy creator has
+a caller left), and `OnProfileCreated` replaces the 500 ms poll;
+`PhiWindowRegistry` (`phi_window_registry.{h,cc}`, host-tested) owns
+slots, browser bindings, kiosks and pending creations, with one `Resolve`
+for wire `windowId`s (slot id, bound browser id, or 0 = first user slot) and
+one `FirstUserSlot`; `PhiWindowController` takes `SlotId` + `BrowserId`,
+`window_id()` is gone and `active_browser_id()` never falls back to the
+slot number (32 controller sites, the menu bar and four satellites);
+the shell is registered before its first rebuild (D12). Verb timing changes:
+`agentSpace.create`, `shadow.create` and `profiles.create` answer through
+the deferred-reply path; cold `spaces.switch`/`activate`/`newWindow` are
+always `pending:true`. Verified on the box: sweep identical to the phase-0
+baseline (13 of 18 pass, the same pre-existing failures), `sv-surface`
+(reader and peek lifecycle under the posted `OnTabsChanged`) and `sv-drag`
+(T1 to T3) pass; `sv-splitcell` needs a stored split cell seeded first.
+Left for phase 2: the legacy `int64_t`/`int` signatures, the
+`WM_PHI_READER_*` deferrals (now coalescing only), and `PhiSlotHost`'s
+`int64_t slot` parameters.
+
 ### Phase 2 — refresh discipline and the snapshot model (~2 to 3 weeks)
 
 `Snapshot()`/`OnWindowChanged` in the fork; `PhiWindowModel` in the client;

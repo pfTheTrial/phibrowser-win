@@ -9,6 +9,8 @@
 #include <string>
 #include <vector>
 
+#include "phibrowser-win/client/phi_ids.h"
+
 namespace phi_client {
 
 // Which Spaces currently exist only as a PARKED window (a "ghost") rather
@@ -39,7 +41,9 @@ class PhiGhostSpaces {
   // What the client remembers about a Space's window between runs.
   struct Remembered {
     std::string profile;  // On-disk basename, the ghost store's key.
-    int window_id = 0;    // The window's SessionID in the previous session.
+    // The window's SessionID in the PREVIOUS session — a browser id that
+    // names nothing live until the ghost materializes under it.
+    BrowserId window_id;
   };
 
   PhiGhostSpaces();
@@ -53,10 +57,11 @@ class PhiGhostSpaces {
   // and clear any ghost record (it is not parked any more).
   void NoteLiveWindow(const std::string& space_id,
                       const std::string& profile,
-                      int window_id);
+                      BrowserId window_id);
 
   // What the client should ARM as the eager set: the window ids it wants
   // rebuilt immediately (everything else parks). Empty means "park all".
+  // Plain ints: this feeds OnColdStartRestorePlan's std::vector<int>.
   std::vector<int> EagerWindowIds(const std::string& active_space_id) const;
 
   // Takes the framework's settlement receipt and REPLACES the park set from
@@ -86,7 +91,7 @@ class PhiGhostSpaces {
   // Which Space remembers `window_id` as its window, or nullptr. This is how
   // a materialized window — announced with the PREVIOUS session's id — finds
   // the Space it belongs to.
-  const std::string* SpaceForWindowId(int window_id) const;
+  const std::string* SpaceForWindowId(BrowserId window_id) const;
 
   // Every parked window that no Space claims — dropped rather than left to
   // be replayed as a loose window by the next unfiltered restore.

@@ -179,10 +179,8 @@ class Panel {
     recently_closed_.clear();
     PhiSlotHost* host = controller_->host();
     phi_framework::PhiFramework* framework = controller_->framework();
-    const int64_t browser = controller_->active_browser()
-                                ? controller_->active_browser()
-                                : controller_->window_id();
-    if (framework) {
+    const int64_t browser = controller_->active_browser_id().value;
+    if (framework && browser) {
       std::optional<base::DictValue> data = base::JSONReader::ReadDict(
           framework->SearchTabsDataJson(browser), base::JSON_PARSE_RFC);
       if (data) {
@@ -237,7 +235,7 @@ class Panel {
     }
     if (host) {
       for (const PhiStoredRowView& pin :
-           host->PinnedRows(controller_->window_id())) {
+           host->PinnedRows(controller_->slot().value)) {
         Row row;
         row.kind = Row::Kind::kPinned;
         row.title =
@@ -252,7 +250,7 @@ class Panel {
       const auto descend = [&](const auto& self,
                                const std::string& parent) -> void {
         for (const PhiStoredRowView& view :
-             host->BookmarkRows(controller_->window_id(), parent)) {
+             host->BookmarkRows(controller_->slot().value, parent)) {
           if (view.folder) {
             self(self, view.guid);
             continue;
@@ -403,9 +401,7 @@ class Panel {
     ::DestroyWindow(hwnd_);  // First — the action may refocus other windows.
     PhiSlotHost* host = controller->host();
     phi_framework::PhiFramework* framework = controller->framework();
-    const int64_t browser = controller->active_browser()
-                                ? controller->active_browser()
-                                : controller->window_id();
+    const int64_t browser = controller->active_browser_id().value;
     switch (row.kind) {
       case Row::Kind::kOpenTab:
         if (framework && framework->ActivateSearchTab(row.tab_id) && host) {
@@ -419,11 +415,11 @@ class Panel {
         break;
       case Row::Kind::kBookmark:
         if (host) {
-          host->RequestOpen(controller->window_id(), row.url_utf8);
+          host->RequestOpen(controller->slot().value, row.url_utf8);
         }
         break;
       case Row::Kind::kRecentlyClosed:
-        if (framework) {
+        if (framework && browser) {
           framework->OpenRecentlyClosedEntry(browser, row.session_id);
         }
         break;

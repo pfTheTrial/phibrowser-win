@@ -146,11 +146,12 @@ constexpr UINT WM_PHI_CONTROL = WM_APP + 1;
 constexpr UINT WM_PHI_AUTHORIZE = WM_APP + 2;
 // A worker thread finished changing the Auth0 session state.
 constexpr UINT WM_PHI_AUTH_CHANGED = WM_APP + 3;
-// Reader View: settle the reader panels of one browser window. DEFERRED,
-// because OnTabsChanged fires from INSIDE the tab-strip change it reports —
-// a tab being removed is still in the strip — and this pass both reads the
-// strip and closes tabs in it. Doing that inline recursed until the stack
-// gave out. wparam carries the browser window id.
+// Reader View: settle the reader panels of one browser window. Still
+// DEFERRED although OnTabsChanged now arrives after its change committed
+// (contract rule 1): this pass both reads the strip and closes tabs in it,
+// and a burst of notifications for one window settles once, from one strip
+// read, on the posted turn. Phase 2 folds it into the snapshot model.
+// wparam carries the browser window id.
 constexpr UINT WM_PHI_READER_SWEEP = WM_APP + 4;
 // Reader View: hand a reader panel's page back to its origin window as a tab.
 // DEFERRED for a harder reason than the sweep — the navigation that triggers
@@ -266,9 +267,7 @@ void PhiCoordinator::OnFrameworkReady(phi_framework::PhiFramework* framework,
   // aimed at those tabs (the refusal is the browser's, so a driver cannot
   // decline to honour the takeover).
   agent_drives_.set_changed_callback([this](int tab_id) {
-    for (const auto& [slot, controller] : windows_) {
-      controller->RefreshTabs();
-    }
+    RefreshAllWindows();
   });
   agent_drives_.set_reclaimed_callback([this](const std::vector<int>& tabs) {
     if (framework_) {
@@ -387,11 +386,6 @@ LRESULT CALLBACK PhiCoordinator::MsgWndProc(HWND hwnd,
         self->cold_start_armed_ = false;
         self->OpenDefaultShellIfNoUserWindow("cold start parked everything");
         return 0;
-      case kProfileSpaceTimer:
-        if (self->TryFinishProfileSpace()) {
-          ::KillTimer(hwnd, kProfileSpaceTimer);
-        }
-        return 0;
       default:
         return 0;
     }
@@ -431,9 +425,9 @@ LRESULT CALLBACK PhiCoordinator::MsgWndProc(HWND hwnd,
   if (msg == WM_PHI_READER_RETIRE) {
     auto* self = reinterpret_cast<PhiCoordinator*>(
         ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
-    const auto panel = static_cast<int64_t>(wparam);
+    const BrowserId panel{static_cast<int64_t>(wparam)};
     if (self && self->surfaces_.Find(panel) && self->framework_) {
-      self->framework_->CloseBrowserWindow(panel);
+      self->framework_->CloseBrowserWindow(panel.value);
     }
     return 0;
   }
@@ -441,7 +435,7 @@ LRESULT CALLBACK PhiCoordinator::MsgWndProc(HWND hwnd,
     auto* self = reinterpret_cast<PhiCoordinator*>(
         ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
     if (self) {
-      self->FinishReaderPanelExpand(static_cast<int64_t>(wparam));
+      self->FinishReaderPanelExpand(BrowserId{static_cast<int64_t>(wparam)});
     }
     return 0;
   }
@@ -449,8 +443,9 @@ LRESULT CALLBACK PhiCoordinator::MsgWndProc(HWND hwnd,
     auto* self = reinterpret_cast<PhiCoordinator*>(
         ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
     if (self) {
-      self->ApplyLegacyTagAliases(static_cast<int64_t>(wparam));
-      self->UpdateReaderPanelsForWindow(static_cast<int64_t>(wparam));
+      const BrowserId window{static_cast<int64_t>(wparam)};
+      self->ApplyLegacyTagAliases(window);
+      self->UpdateReaderPanelsForWindow(window);
     }
     return 0;
   }
@@ -477,7 +472,8 @@ void PhiCoordinator::RunOrDeferUiCall(PhiUiCall* call) {
       !deferred_ui_calls_.empty()) {
     deferred_ui_calls_.push_back(call);
     if (msg_hwnd_) {
-      ::SetTimer(msg_hwnd_, kDeferredUiCallTimer, 50, nullptr);
+      ::SetTimer(msg_hwnd_, kDeferredUiCallTimer, kDeferredUiCallPollMs,
+                 nullptr);
     }
     return;
   }
@@ -560,26 +556,11 @@ std::string PhiCoordinator::HandleControlCommand(
   }
   std::string result = std::move(call->result);
   call->Release();
-  if (type == "agentSpace.profiles.create" && profile_create_pending_) {
-    // Creation is under way on the UI thread; wait for the basename HERE (an
-    // I/O thread) and fold it into the reply, so the skill's
-    // `const {profileId} = await createProfile(...)` holds.
-    const DWORD waited =
-        ::WaitForSingleObject(profile_create_done_, 15000);
-    profile_create_pending_ = false;
-    if (waited == WAIT_OBJECT_0 && !created_profile_id_.empty()) {
-      std::optional<base::DictValue> body =
-          base::JSONReader::ReadDict(result, base::JSON_PARSE_RFC);
-      if (body) {
-        body->Set("profileId", created_profile_id_);
-        std::string patched;
-        base::JSONWriter::Write(*body, &patched);
-        return patched;
-      }
-    }
-  }
-  // A deferred reply: the UI side registered a slot and started the work;
-  // wait for it HERE, on the I/O thread, and hand back what it stored.
+  // A deferred reply: the UI side registered a slot and started the work
+  // (a reader extraction, a window or profile creation the framework will
+  // announce later); wait for it HERE, on the I/O thread, and hand back
+  // what it stored. The wait outlasts kCreateTimeoutMs plus a sweep tick,
+  // so a lost creation answers create_timeout rather than timeout.
   if (result.find("\"pendingReply\"") != std::string::npos) {
     std::optional<base::DictValue> body =
         base::JSONReader::ReadDict(result, base::JSON_PARSE_RFC);
@@ -593,9 +574,134 @@ std::string PhiCoordinator::HandleControlCommand(
 }
 
 void PhiCoordinator::OnProfileCreated(const char* profile_id) {
-  created_profile_id_ = profile_id ? profile_id : "";
-  if (profile_create_done_) {
-    ::SetEvent(profile_create_done_);  // Releases the waiting I/O thread.
+  const std::string id = profile_id ? profile_id : "";
+  LOG(INFO) << "[PhiClient] OnProfileCreated " << (id.empty() ? "(failed)" : id);
+  if (pending_profiles_.empty()) {
+    return;  // Settings' "New Profile" (CreateProfileNamed) asks for nothing.
+  }
+  // The request this profile answers: by the display name it was asked
+  // under, else the oldest — the framework reports the name only once the
+  // attributes entry exists, which a failed creation never reaches.
+  auto pending = pending_profiles_.end();
+  const std::string name = id.empty() ? std::string() : ProfileDisplayName(id);
+  if (!name.empty()) {
+    for (auto it = pending_profiles_.begin(); it != pending_profiles_.end();
+         ++it) {
+      if (it->display_name == name) {
+        pending = it;
+        break;
+      }
+    }
+  }
+  if (pending == pending_profiles_.end()) {
+    pending = pending_profiles_.begin();
+  }
+  const PendingProfile request = std::move(*pending);
+  pending_profiles_.erase(pending);
+  UpdateSweepTimer();
+  if (id.empty()) {
+    LOG(ERROR) << "[PhiClient] profile creation failed for '"
+               << request.display_name << "'";
+    if (request.pending_reply_id) {
+      CompletePendingReply(request.pending_reply_id,
+                           "{\"ok\":false,\"error\":\"create_failed\"}");
+    }
+    return;
+  }
+  switch (request.then) {
+    case PendingProfile::Then::kReplyOnly: {
+      base::DictValue out;
+      out.Set("ok", true);
+      out.Set("profileId", id);
+      std::string json;
+      base::JSONWriter::Write(out, &json);
+      CompletePendingReply(request.pending_reply_id, std::move(json));
+      return;
+    }
+    case PendingProfile::Then::kFillForm:
+      // The create-Space form asked for it: the form's picker selects it,
+      // and the Space follows when the form is submitted.
+      if (PhiWindowController* controller = ControllerForSlot(request.slot)) {
+        controller->OnSpaceFormProfileCreated(id);
+      }
+      return;
+    case PendingProfile::Then::kOpenSpace: {
+      // "+ Space & profile": the Space binds the new profile — bindings are
+      // immutable, which is why the Space waited for the basename — and the
+      // slot enters it (a RequestBrowser, since the profile has no window).
+      base::DictValue payload;
+      payload.Set("name", "Space " + std::to_string(next_space_id_));
+      payload.Set("profileId", id);
+      std::string json;
+      base::JSONWriter::Write(payload, &json);
+      const std::string created = ExecuteControlOnUi(
+          "agentSpace.spaces.create", json, ControlCaller::kInternal);
+      std::optional<base::DictValue> r =
+          base::JSONReader::ReadDict(created, base::JSON_PARSE_RFC);
+      const std::string* space_id = r ? r->FindString("id") : nullptr;
+      if (space_id) {
+        RequestSwitchSpace(request.slot.value, *space_id);
+      }
+      return;
+    }
+  }
+}
+
+void PhiCoordinator::RequestProfile(PendingProfile pending) {
+  if (!framework_ || pending.display_name.empty()) {
+    if (pending.pending_reply_id) {
+      CompletePendingReply(pending.pending_reply_id,
+                           "{\"ok\":false,\"error\":\"create_failed\"}");
+    }
+    return;
+  }
+  pending.deadline_tick = ::GetTickCount64() + kCreateTimeoutMs;
+  const std::string name = pending.display_name;
+  pending_profiles_.push_back(std::move(pending));
+  UpdateSweepTimer();
+  framework_->CreateProfile(name.c_str());
+}
+
+std::string PhiCoordinator::ProfileDisplayName(
+    const std::string& profile_id) const {
+  if (!framework_ || profile_id.empty()) {
+    return std::string();
+  }
+  std::optional<base::Value> profiles = base::JSONReader::Read(
+      framework_->ListProfilesJson(), base::JSON_PARSE_RFC);
+  if (!profiles || !profiles->is_list()) {
+    return std::string();
+  }
+  for (const base::Value& v : profiles->GetList()) {
+    const base::DictValue* d = v.GetIfDict();
+    const std::string* id = d ? d->FindString("id") : nullptr;
+    const std::string* name = d ? d->FindString("name") : nullptr;
+    if (id && *id == profile_id) {
+      return name ? *name : std::string();
+    }
+  }
+  return std::string();
+}
+
+void PhiCoordinator::UpdateSweepTimer() {
+  if (!msg_hwnd_) {
+    return;
+  }
+  const bool needed = !agent_spaces_.empty() || !shadow_windows_.empty() ||
+                      registry_.HasPending() || !pending_profiles_.empty();
+  if (needed) {
+    // Re-arming a running timer only restarts its interval; a sweep delayed
+    // by one tick is harmless, a sweep that never runs is not.
+    ::SetTimer(msg_hwnd_, kAgentSpaceSweepTimer, kAgentSpaceSweepIntervalMs,
+               nullptr);
+  } else {
+    ::KillTimer(msg_hwnd_, kAgentSpaceSweepTimer);
+  }
+}
+
+void PhiCoordinator::RefreshAllWindows() {
+  for (PhiWindowController* controller : registry_.Controllers()) {
+    controller->RefreshTabs();
   }
 }
 
@@ -855,7 +961,7 @@ bool PhiCoordinator::AuthorizeAgentPeerOnUi(const PhiAgentPeer& peer) {
     message += L"\nIt can also read and change your own Spaces.";
   }
   HWND owner = nullptr;
-  for (const auto& [slot, controller] : windows_) {
+  for (PhiWindowController* controller : registry_.Controllers()) {
     if (controller->shell_hwnd()) {
       owner = controller->shell_hwnd();
       break;
@@ -1075,14 +1181,14 @@ void PhiCoordinator::PushSpaceMenu() const {
     d.Set("name", space.name);
     // The session id of the Space's open browser (any slot), so the menu
     // can exclude the Space the user is already looking at.
-    int64_t browser_id = 0;
-    for (const auto& [slot, controller] : windows_) {
+    BrowserId browser_id;
+    for (PhiWindowController* controller : registry_.Controllers()) {
       browser_id = controller->BrowserIdForSpace(space.id);
-      if (browser_id) {
+      if (browser_id.valid()) {
         break;
       }
     }
-    d.Set("windowId", static_cast<double>(browser_id));
+    d.Set("windowId", static_cast<double>(browser_id.value));
     list.Append(std::move(d));
   }
   std::string json;
@@ -1123,13 +1229,13 @@ void PhiCoordinator::PushRoutingTable() const {
   // OnRouteURLToSpace (which re-enters ShowSpace) instead of a direct open
   // into an off-screen browser.
   base::DictValue map;
-  for (const auto& [slot, controller] : windows_) {
+  for (PhiWindowController* controller : registry_.Controllers()) {
     const std::string& space_id = controller->active_space();
-    const int64_t browser_id = controller->active_browser();
-    if (space_id.empty() || !browser_id || map.Find(space_id)) {
+    const BrowserId browser_id = controller->active_browser_id();
+    if (space_id.empty() || !browser_id.valid() || map.Find(space_id)) {
       continue;
     }
-    map.Set(space_id, static_cast<double>(browser_id));
+    map.Set(space_id, static_cast<double>(browser_id.value));
   }
   root.Set("spaceWindows", std::move(map));
   std::string json;
@@ -1206,7 +1312,7 @@ void PhiCoordinator::OnOpenLinkInSpace(int64_t source_window_id,
   if (space_id.empty() || url.empty() || !framework_) {
     return;
   }
-  RouteUrlToSpace(space_id, url, source_window_id);
+  RouteUrlToSpace(space_id, url, BrowserId{source_window_id});
 }
 
 void PhiCoordinator::OnRouteURLToSpace(const char* space_id_c,
@@ -1220,7 +1326,7 @@ void PhiCoordinator::OnRouteURLToSpace(const char* space_id_c,
   if (space_id.empty() || url.empty() || !framework_) {
     return;
   }
-  RouteUrlToSpace(space_id, url, source_window_id);
+  RouteUrlToSpace(space_id, url, BrowserId{source_window_id});
 }
 
 void PhiCoordinator::OnAskSpaceForURL(const char* url_c,
@@ -1235,11 +1341,8 @@ void PhiCoordinator::OnAskSpaceForURL(const char* url_c,
   }
   // The source slot's shell owns the (modal) chooser; its active Space is
   // the "keep here" target.
-  auto slot_it = browser_to_slot_.find(source_window_id);
-  const int64_t slot = slot_it != browser_to_slot_.end() ? slot_it->second : 0;
-  auto window_it = windows_.find(slot);
-  PhiWindowController* controller =
-      window_it != windows_.end() ? window_it->second.get() : nullptr;
+  const BrowserId source{source_window_id};
+  PhiWindowController* controller = registry_.ControllerForBrowser(source);
   const std::string current_space_id =
       controller ? controller->active_space() : std::string();
 
@@ -1278,23 +1381,23 @@ void PhiCoordinator::OnAskSpaceForURL(const char* url_c,
     }
     return;
   }
-  RouteUrlToSpace(chosen_space, url, source_window_id);
+  RouteUrlToSpace(chosen_space, url, source);
 }
 
 void PhiCoordinator::RouteUrlToSpace(const std::string& space_id,
                                      const std::string& url,
-                                     int64_t source_window_id) {
+                                     BrowserId source_window) {
   // A slot that already holds the Space: switch to it there and open the
   // link (the Mac activates the Space's window and opens the tab). The open
   // bypasses URL routing — the URL may be the very navigation a rule just
   // re-homed, and re-matching it would loop.
-  for (const auto& [slot, controller] : windows_) {
+  for (PhiWindowController* controller : registry_.Controllers()) {
     if (!controller->HasSpace(space_id)) {
       continue;
     }
     controller->ShowSpace(space_id);
-    framework_->OpenTabBypassingSpaceRouting(controller->active_browser(),
-                                             url.c_str());
+    framework_->OpenTabBypassingSpaceRouting(
+        controller->active_browser_id().value, url.c_str());
     if (controller->shell_hwnd()) {
       ::SetForegroundWindow(controller->shell_hwnd());
     }
@@ -1302,26 +1405,30 @@ void PhiCoordinator::RouteUrlToSpace(const std::string& space_id,
     PushSpaceMenu();  // The visible-Space routing map changed.
     return;
   }
-  // Cold Space: create its browser in its profile; the pending attach opens
-  // the link once the browser arrives (the spaces.switch machinery).
+  // Cold Space: ask for its browser in its profile; the link opens once the
+  // browser attaches (the spaces.switch machinery), so a request already in
+  // flight for this slot and Space just gains the url.
   auto space_it =
       std::find_if(spaces_.begin(), spaces_.end(),
                    [&](const Space& s) { return s.id == space_id; });
   if (space_it == spaces_.end()) {
     return;
   }
-  auto slot_it = browser_to_slot_.find(source_window_id);
-  int64_t slot = slot_it != browser_to_slot_.end() ? slot_it->second : 0;
-  if (!slot && !windows_.empty()) {
-    slot = windows_.begin()->first;
-  }
-  if (!slot) {
+  const SlotId slot =
+      registry_.SlotFor(source_window).value_or(registry_.FirstUserSlot());
+  if (!slot.valid()) {
     return;
   }
-  pending_slot_ = slot;
-  pending_space_ = space_id;
-  pending_open_url_ = url;
-  framework_->CreateSpaceBrowserInProfile(space_it->profile_id.c_str());
+  if (PendingCreation* in_flight = registry_.FindPendingSpace(slot, space_id)) {
+    in_flight->open_urls.push_back(url);
+    return;
+  }
+  PendingCreation pending;
+  pending.slot = slot;
+  pending.space_id = space_id;
+  pending.open_urls.push_back(url);
+  RequestCreation(phi_framework::WindowKind::kSpace, space_it->profile_id,
+                  /*incognito=*/false, BrowserId(), std::move(pending));
 }
 
 void PhiCoordinator::LoadLayoutMode() {
@@ -1349,13 +1456,13 @@ void PhiCoordinator::SaveLayoutMode() const {
   PhiWriteJsonFile(layout_path_, std::move(root), /*schema=*/1);
 }
 
-bool PhiCoordinator::OwnerForSlot(int64_t slot, std::string* profile_id,
+bool PhiCoordinator::OwnerForSlot(SlotId slot, std::string* profile_id,
                                   std::string* space_id) const {
-  auto it = windows_.find(slot);
-  if (it == windows_.end()) {
+  PhiWindowController* controller = registry_.Get(slot);
+  if (!controller) {
     return false;
   }
-  *space_id = it->second->active_space();
+  *space_id = controller->active_space();
   *profile_id = "Default";
   for (const Space& space : spaces_) {
     if (space.id == *space_id) {
@@ -1366,12 +1473,13 @@ bool PhiCoordinator::OwnerForSlot(int64_t slot, std::string* profile_id,
   return true;
 }
 
-std::string PhiCoordinator::LiveUrl(int64_t slot) {
+std::string PhiCoordinator::LiveUrl(SlotId slot) {
   if (!framework_) {
     return std::string();
   }
   std::optional<base::DictValue> state = base::JSONReader::ReadDict(
-      framework_->NavStateJson(ResolveBrowser(slot)), base::JSON_PARSE_RFC);
+      framework_->NavStateJson(ResolveBrowser(slot).value),
+      base::JSON_PARSE_RFC);
   if (!state) {
     return std::string();
   }
@@ -1379,16 +1487,16 @@ std::string PhiCoordinator::LiveUrl(int64_t slot) {
   return url ? *url : std::string();
 }
 
-std::string PhiCoordinator::CaptureFavicon(int64_t slot, int* width,
+std::string PhiCoordinator::CaptureFavicon(SlotId slot, int* width,
                                            int* height) {
   *width = 0;
   *height = 0;
   if (!framework_) {
     return std::string();
   }
-  const int64_t browser = ResolveBrowser(slot);
+  const BrowserId browser = ResolveBrowser(slot);
   std::optional<base::Value> tabs = base::JSONReader::Read(
-      framework_->ListTabsJson(browser), base::JSON_PARSE_RFC);
+      framework_->ListTabsJson(browser.value), base::JSON_PARSE_RFC);
   int active_index = -1;
   if (tabs && tabs->is_list()) {
     for (const base::Value& v : tabs->GetList()) {
@@ -1402,7 +1510,7 @@ std::string PhiCoordinator::CaptureFavicon(int64_t slot, int* width,
     return std::string();
   }
   const unsigned char* pixels =
-      framework_->TabFaviconBgra(browser, active_index, width, height);
+      framework_->TabFaviconBgra(browser.value, active_index, width, height);
   if (!pixels || *width <= 0 || *height <= 0) {
     return std::string();
   }
@@ -1451,10 +1559,10 @@ PhiStoredRowView StoredRowView(const PhiRow& row) {
 std::vector<PhiStoredRowView> PhiCoordinator::PinnedRows(int64_t slot) const {
   std::vector<PhiStoredRowView> out;
   std::string profile_id, space_id;
-  if (OwnerForSlot(slot, &profile_id, &space_id)) {
+  if (OwnerForSlot(SlotId{slot}, &profile_id, &space_id)) {
     for (const PhiRow& row : tab_store_.PinnedFor(profile_id, space_id)) {
       out.push_back(StoredRowView(row));
-      UpgradeFavicon(slot, row.url, &out.back());
+      UpgradeFavicon(SlotId{slot}, row.url, &out.back());
     }
   }
   return out;
@@ -1465,11 +1573,11 @@ std::vector<PhiStoredRowView> PhiCoordinator::BookmarkRows(
     const std::string& parent_guid) const {
   std::vector<PhiStoredRowView> out;
   std::string profile_id, space_id;
-  if (OwnerForSlot(slot, &profile_id, &space_id)) {
+  if (OwnerForSlot(SlotId{slot}, &profile_id, &space_id)) {
     for (const PhiRow& row :
          tab_store_.BookmarksFor(profile_id, space_id, parent_guid)) {
       out.push_back(StoredRowView(row));
-      UpgradeFavicon(slot, row.url, &out.back());
+      UpgradeFavicon(SlotId{slot}, row.url, &out.back());
     }
   }
   return out;
@@ -1479,7 +1587,7 @@ std::vector<SidebarStoredItem> PhiCoordinator::SidebarStoredItems(
     int64_t slot) const {
   std::vector<SidebarStoredItem> items;
   std::string profile_id, space_id;
-  if (!OwnerForSlot(slot, &profile_id, &space_id)) return items;
+  if (!OwnerForSlot(SlotId{slot}, &profile_id, &space_id)) return items;
   for (const PhiRow& row : tab_store_.PinnedFor(profile_id, space_id)) {
     items.push_back({row.guid, SidebarStoredKind::kPin, {}, row.index,
                      !row.url_b.empty()});
@@ -1502,7 +1610,7 @@ std::vector<SidebarStoredItem> PhiCoordinator::SidebarStoredItems(
 
 std::map<int, SidebarSurface> PhiCoordinator::AttachedSurfaces(
     int64_t browser) const {
-  return surfaces_.Surfaces(browser);
+  return surfaces_.Surfaces(BrowserId{browser});
 }
 
 // ---- The sidebar's one mutator (docs/sidebar-architecture.md §5) ---------
@@ -1519,14 +1627,14 @@ std::string IdsJson(int a, int b) {
 
 }  // namespace
 
-bool PhiCoordinator::LiveTab(int64_t browser,
+bool PhiCoordinator::LiveTab(BrowserId browser,
                              int tab_id,
                              LiveTabInfo* out) const {
   if (!framework_ || tab_id == 0) {
     return false;
   }
   std::optional<base::Value> tabs = base::JSONReader::Read(
-      framework_->ListTabsJson(browser), base::JSON_PARSE_RFC);
+      framework_->ListTabsJson(browser.value), base::JSON_PARSE_RFC);
   if (!tabs || !tabs->is_list()) {
     return false;
   }
@@ -1550,7 +1658,7 @@ bool PhiCoordinator::LiveTab(int64_t browser,
   return false;
 }
 
-std::string PhiCoordinator::StoreTabsById(int64_t slot,
+std::string PhiCoordinator::StoreTabsById(SlotId slot,
                                           int tab_a,
                                           int tab_b,
                                           bool as_bookmark,
@@ -1561,7 +1669,7 @@ std::string PhiCoordinator::StoreTabsById(int64_t slot,
   if (!framework_ || !OwnerForSlot(slot, &profile_id, &space_id)) {
     return std::string();
   }
-  const int64_t browser = ResolveBrowser(slot);
+  const BrowserId browser = ResolveBrowser(slot);
   LiveTabInfo a, b;
   if (!LiveTab(browser, tab_a, &a) || a.url.empty()) {
     return std::string();
@@ -1577,7 +1685,7 @@ std::string PhiCoordinator::StoreTabsById(int64_t slot,
   const auto favicon = [&](int tab_id) {
     Icon icon;
     const unsigned char* pixels = framework_->TabFaviconBgraById(
-        browser, tab_id, &icon.width, &icon.height);
+        browser.value, tab_id, &icon.width, &icon.height);
     if (pixels && icon.width > 0 && icon.height > 0) {
       const size_t bytes = static_cast<size_t>(icon.width) *
                            static_cast<size_t>(icon.height) * 4;
@@ -1619,18 +1727,18 @@ std::string PhiCoordinator::StoreTabsById(int64_t slot,
   if (bind) {
     // The Mac's updateTabCustomValue: the live tab(s) carry the cell's
     // guid and move into it.
-    framework_->SetTabTagById(browser, tab_a, TagFor(guid, false).c_str());
+    framework_->SetTabTagById(browser.value, tab_a,
+                              TagFor(guid, false).c_str());
     if (split) {
-      framework_->SetTabTagById(browser, tab_b, TagFor(guid, true).c_str());
+      framework_->SetTabTagById(browser.value, tab_b,
+                                TagFor(guid, true).c_str());
     }
   }
-  for (const auto& [s2, controller] : windows_) {
-    controller->RefreshTabs();
-  }
+  RefreshAllWindows();
   return guid;
 }
 
-int PhiCoordinator::OpenCell(int64_t browser, const std::string& guid) {
+int PhiCoordinator::OpenCell(BrowserId browser, const std::string& guid) {
   const PhiRow* row = tab_store_.Find(guid);
   if (!framework_ || !row || row->url.empty() ||
       row->type == PhiRowType::kBookmarkFolder) {
@@ -1639,12 +1747,12 @@ int PhiCoordinator::OpenCell(int64_t browser, const std::string& guid) {
   // NewTab answers with an index; the id is read back before anything else
   // can shift the strip.
   const auto open = [&](const std::string& url) {
-    const int index = framework_->NewTab(browser, url.c_str());
+    const int index = framework_->NewTab(browser.value, url.c_str());
     if (index < 0) {
       return 0;
     }
     std::optional<base::Value> tabs = base::JSONReader::Read(
-        framework_->ListTabsJson(browser), base::JSON_PARSE_RFC);
+        framework_->ListTabsJson(browser.value), base::JSON_PARSE_RFC);
     if (tabs && tabs->is_list()) {
       for (const base::Value& v : tabs->GetList()) {
         const base::DictValue* d = v.GetIfDict();
@@ -1661,19 +1769,19 @@ int PhiCoordinator::OpenCell(int64_t browser, const std::string& guid) {
   if (a == 0) {
     return 0;
   }
-  framework_->SetTabTagById(browser, a, TagFor(guid, false).c_str());
+  framework_->SetTabTagById(browser.value, a, TagFor(guid, false).c_str());
   if (!url_b.empty()) {
     const int b = open(url_b);
     if (b != 0) {
-      framework_->SetTabTagById(browser, b, TagFor(guid, true).c_str());
+      framework_->SetTabTagById(browser.value, b, TagFor(guid, true).c_str());
       framework_->CreateSplitViewForTabs(
-          browser, a, b, layout.empty() ? "vertical" : layout.c_str());
+          browser.value, a, b, layout.empty() ? "vertical" : layout.c_str());
     }
   }
   return a;
 }
 
-bool PhiCoordinator::ApplyMove(int64_t slot,
+bool PhiCoordinator::ApplyMove(SlotId slot,
                                const SidebarMove& move,
                                const SidebarTree& tree) {
   const SidebarKey& key = move.key;
@@ -1681,7 +1789,7 @@ bool PhiCoordinator::ApplyMove(int64_t slot,
   if (!framework_ || key.empty() || MoveIsNoop(tree, key, place)) {
     return false;
   }
-  const int64_t browser = ResolveBrowser(slot);
+  const BrowserId browser = ResolveBrowser(slot);
   const bool live = key.kind == SidebarKey::Kind::kTab ||
                     key.kind == SidebarKey::Kind::kSplit;
   const bool stored = key.kind == SidebarKey::Kind::kCell ||
@@ -1690,11 +1798,7 @@ bool PhiCoordinator::ApplyMove(int64_t slot,
   if (stored && !cell) {
     return false;
   }
-  const auto refresh = [&] {
-    for (const auto& [s2, controller] : windows_) {
-      controller->RefreshTabs();
-    }
-  };
+  const auto refresh = [&] { RefreshAllWindows(); };
   if (place.section == SidebarPlace::Section::kTabs) {
     const int anchor = PlaceAnchorTab(tree, place);
     const char* group = place.group_explicit ? place.group_id.c_str() : nullptr;
@@ -1702,7 +1806,7 @@ bool PhiCoordinator::ApplyMove(int64_t slot,
       // A reorder (the pair moves as a unit inside the framework), possibly
       // joining or leaving a group on the way.
       const bool ok = framework_->MoveTabBefore(
-          browser, TabOfKey(tree, key, 0), anchor, group);
+          browser.value, TabOfKey(tree, key, 0), anchor, group);
       refresh();
       return ok;
     }
@@ -1719,7 +1823,7 @@ bool PhiCoordinator::ApplyMove(int64_t slot,
     }
     RemoveStoredRow(key.id);  // Clears the tags; the tabs stay plain.
     if (tab != 0 && (anchor != 0 || group)) {
-      framework_->MoveTabBefore(browser, tab, anchor, group);
+      framework_->MoveTabBefore(browser.value, tab, anchor, group);
     }
     refresh();
     return true;
@@ -1760,18 +1864,15 @@ bool PhiCoordinator::ApplyMove(int64_t slot,
                           PlaceSiblingIndex(tree, place, ""));
 }
 
-bool PhiCoordinator::Apply(int64_t slot,
+bool PhiCoordinator::Apply(int64_t slot_number,
                            const SidebarCommand& command,
                            const SidebarTree& tree) {
   if (!framework_) {
     return false;
   }
-  const int64_t browser = ResolveBrowser(slot);
-  const auto refresh = [&] {
-    for (const auto& [s2, controller] : windows_) {
-      controller->RefreshTabs();
-    }
-  };
+  const SlotId slot{slot_number};
+  const BrowserId browser = ResolveBrowser(slot);
+  const auto refresh = [&] { RefreshAllWindows(); };
   // The live split a key stands for: a split row's token, or a split cell's
   // live split when both panes are open.
   const auto split_of = [&](const SidebarKey& key) -> std::string {
@@ -1807,7 +1908,7 @@ bool PhiCoordinator::Apply(int64_t slot,
             if (tab == 0) {
               return false;  // A closed cell: the controller opens it.
             }
-            const bool ok = framework_->ActivateTabById(browser, tab);
+            const bool ok = framework_->ActivateTabById(browser.value, tab);
             refresh();
             return ok;
           },
@@ -1819,7 +1920,7 @@ bool PhiCoordinator::Apply(int64_t slot,
               }
               const int tab = TabOfKey(tree, cmd.key, pane);
               if (tab != 0) {
-                ok = framework_->CloseTabById(browser, tab) || ok;
+                ok = framework_->CloseTabById(browser.value, tab) || ok;
               }
             }
             refresh();
@@ -1841,10 +1942,10 @@ bool PhiCoordinator::Apply(int64_t slot,
             }
             // A split never lives in a stored cell by accident: both panes
             // become plain first (their cells stay as closed placeholders).
-            framework_->SetTabTagById(browser, a, "");
-            framework_->SetTabTagById(browser, b, "");
+            framework_->SetTabTagById(browser.value, a, "");
+            framework_->SetTabTagById(browser.value, b, "");
             const char* created = framework_->CreateSplitViewForTabs(
-                browser, a, b,
+                browser.value, a, b,
                 cmd.layout.empty() ? "vertical" : cmd.layout.c_str());
             refresh();
             return created && *created;
@@ -1858,11 +1959,11 @@ bool PhiCoordinator::Apply(int64_t slot,
               // The cell stays as a closed split placeholder.
               for (int pane : {0, 1}) {
                 if (const int tab = TabOfKey(tree, cmd.key, pane)) {
-                  framework_->SetTabTagById(browser, tab, "");
+                  framework_->SetTabTagById(browser.value, tab, "");
                 }
               }
             }
-            const bool ok = framework_->RemoveSplitById(browser, split_id.c_str());
+            const bool ok = framework_->RemoveSplitById(browser.value, split_id.c_str());
             refresh();
             return ok;
           },
@@ -1870,15 +1971,15 @@ bool PhiCoordinator::Apply(int64_t slot,
             const std::string split_id = split_of(cmd.key);
             bool ok = false;
             if (!split_id.empty()) {
-              ok = framework_->SwapSplitView(browser, split_id.c_str());
+              ok = framework_->SwapSplitView(browser.value, split_id.c_str());
             }
             if (cmd.key.kind == SidebarKey::Kind::kCell) {
               // The stored panes and their tags follow the live order.
               const int a = TabOfKey(tree, cmd.key, 0);
               const int b = TabOfKey(tree, cmd.key, 1);
               ok = tab_store_.SwapPanes(cmd.key.id) || ok;
-              if (a) framework_->SetTabTagById(browser, a, TagFor(cmd.key.id, true).c_str());
-              if (b) framework_->SetTabTagById(browser, b, TagFor(cmd.key.id, false).c_str());
+              if (a) framework_->SetTabTagById(browser.value, a, TagFor(cmd.key.id, true).c_str());
+              if (b) framework_->SetTabTagById(browser.value, b, TagFor(cmd.key.id, false).c_str());
             }
             refresh();
             return ok;
@@ -1887,7 +1988,7 @@ bool PhiCoordinator::Apply(int64_t slot,
             bool ok = false;
             const std::string split_id = split_of(cmd.key);
             if (!split_id.empty()) {
-              ok = framework_->UpdateSplitView(browser, split_id.c_str(),
+              ok = framework_->UpdateSplitView(browser.value, split_id.c_str(),
                                                cmd.layout.c_str(), -1.0);
             }
             // The stored cell remembers the axis so the split reopens with
@@ -1917,10 +2018,10 @@ bool PhiCoordinator::Apply(int64_t slot,
             bool ok;
             if (cmd.group_id.empty()) {
               const char* created =
-                  framework_->CreateTabGroupForTabs(browser, ids.c_str());
+                  framework_->CreateTabGroupForTabs(browser.value, ids.c_str());
               ok = created && *created;
             } else {
-              ok = framework_->AddTabsToGroup(browser, cmd.group_id.c_str(),
+              ok = framework_->AddTabsToGroup(browser.value, cmd.group_id.c_str(),
                                               ids.c_str());
             }
             refresh();
@@ -1932,7 +2033,7 @@ bool PhiCoordinator::Apply(int64_t slot,
               return false;
             }
             const std::string ids = IdsJson(a, TabOfKey(tree, cmd.key, 1));
-            const bool ok = framework_->RemoveTabsFromGroupByIds(browser, ids.c_str());
+            const bool ok = framework_->RemoveTabsFromGroupByIds(browser.value, ids.c_str());
             refresh();
             return ok;
           },
@@ -1941,7 +2042,7 @@ bool PhiCoordinator::Apply(int64_t slot,
               return false;
             }
             const bool ok = framework_->SetTabGroupCollapsed(
-                browser, cmd.key.id.c_str(), cmd.collapsed);
+                browser.value, cmd.key.id.c_str(), cmd.collapsed);
             refresh();
             return ok;
           },
@@ -1980,7 +2081,7 @@ bool PhiCoordinator::Apply(int64_t slot,
       command);
 }
 
-void PhiCoordinator::UpgradeFavicon(int64_t slot,
+void PhiCoordinator::UpgradeFavicon(SlotId slot,
                                     const std::string& url,
                                     PhiStoredRowView* view) const {
   if (!framework_ || url.empty()) {
@@ -1991,7 +2092,7 @@ void PhiCoordinator::UpgradeFavicon(int64_t slot,
   int width = 0;
   int height = 0;
   const unsigned char* pixels = framework_->FaviconForUrlBgra(
-      ResolveBrowser(slot), url.c_str(), &width, &height);
+      ResolveBrowser(slot).value, url.c_str(), &width, &height);
   if (!pixels || width <= view->favicon_width) {
     return;
   }
@@ -2007,21 +2108,21 @@ void PhiCoordinator::UpgradeFavicon(int64_t slot,
 
 void PhiCoordinator::RequestOpen(int64_t slot, const std::string& url) {
   if (framework_ && !url.empty()) {
-    framework_->NewTab(ResolveBrowser(slot), url.c_str());
+    framework_->NewTab(ResolveBrowser(slot).value, url.c_str());
   }
 }
 
-void PhiCoordinator::StoreTabInternal(int64_t slot, int index,
+void PhiCoordinator::StoreTabInternal(SlotId slot, int index,
                                       bool as_bookmark, int insert_index,
                                       bool bind) {
   std::string profile_id, space_id;
   if (!framework_ || !OwnerForSlot(slot, &profile_id, &space_id)) {
     return;
   }
-  const int64_t browser = ResolveBrowser(slot);
+  const BrowserId browser = ResolveBrowser(slot);
   std::string title, url;
   std::optional<base::Value> tabs = base::JSONReader::Read(
-      framework_->ListTabsJson(browser), base::JSON_PARSE_RFC);
+      framework_->ListTabsJson(browser.value), base::JSON_PARSE_RFC);
   if (tabs && tabs->is_list()) {
     for (const base::Value& v : tabs->GetList()) {
       if (v.is_dict() && v.GetDict().FindInt("index").value_or(-1) == index) {
@@ -2041,7 +2142,7 @@ void PhiCoordinator::StoreTabInternal(int64_t slot, int index,
   int favicon_width = 0, favicon_height = 0;
   std::string favicon;
   const unsigned char* pixels = framework_->TabFaviconBgra(
-      browser, index, &favicon_width, &favicon_height);
+      browser.value, index, &favicon_width, &favicon_height);
   if (pixels && favicon_width > 0 && favicon_height > 0) {
     const size_t bytes = static_cast<size_t>(favicon_width) *
                          static_cast<size_t>(favicon_height) * 4;
@@ -2063,23 +2164,21 @@ void PhiCoordinator::StoreTabInternal(int64_t slot, int index,
     if (bind) {
       // The Mac's updateTabCustomValue: the live tab carries the row's
       // guid and moves into its cell.
-      framework_->SetTabTag(browser, index, guid.c_str());
+      framework_->SetTabTag(browser.value, index, guid.c_str());
     }
-    for (const auto& [s2, controller] : windows_) {
-      controller->RefreshTabs();
-    }
+    RefreshAllWindows();
   }
 }
 
 // The divider axis of the split holding the tab at `index`, or empty when
 // that tab is in no split.
-std::string PhiCoordinator::LiveSplitLayout(int64_t browser, int index) {
+std::string PhiCoordinator::LiveSplitLayout(BrowserId browser, int index) {
   if (!framework_ || index < 0) {
     return std::string();
   }
   std::string split_id;
   std::optional<base::Value> tabs = base::JSONReader::Read(
-      framework_->ListTabsJson(browser), base::JSON_PARSE_RFC);
+      framework_->ListTabsJson(browser.value), base::JSON_PARSE_RFC);
   if (tabs && tabs->is_list()) {
     for (const base::Value& v : tabs->GetList()) {
       const base::DictValue* d = v.GetIfDict();
@@ -2095,7 +2194,7 @@ std::string PhiCoordinator::LiveSplitLayout(int64_t browser, int index) {
     return std::string();
   }
   std::optional<base::Value> splits = base::JSONReader::Read(
-      framework_->SplitViewsJson(browser), base::JSON_PARSE_RFC);
+      framework_->SplitViewsJson(browser.value), base::JSON_PARSE_RFC);
   if (splits && splits->is_list()) {
     for (const base::Value& v : splits->GetList()) {
       const base::DictValue* d = v.GetIfDict();
@@ -2109,7 +2208,7 @@ std::string PhiCoordinator::LiveSplitLayout(int64_t browser, int index) {
   return std::string();
 }
 
-void PhiCoordinator::StoreSplitInternal(int64_t slot, int index_a,
+void PhiCoordinator::StoreSplitInternal(SlotId slot, int index_a,
                                         int index_b, bool as_bookmark,
                                         int insert_index,
                                         bool bind_bookmark) {
@@ -2117,14 +2216,14 @@ void PhiCoordinator::StoreSplitInternal(int64_t slot, int index_a,
   if (!framework_ || !OwnerForSlot(slot, &profile_id, &space_id)) {
     return;
   }
-  const int64_t browser = ResolveBrowser(slot);
+  const BrowserId browser = ResolveBrowser(slot);
   struct Pane {
     std::string title, url, favicon;
     int favicon_width = 0, favicon_height = 0;
   };
   const auto capture = [&](int index, Pane* pane) {
     std::optional<base::Value> tabs = base::JSONReader::Read(
-        framework_->ListTabsJson(browser), base::JSON_PARSE_RFC);
+        framework_->ListTabsJson(browser.value), base::JSON_PARSE_RFC);
     if (tabs && tabs->is_list()) {
       for (const base::Value& v : tabs->GetList()) {
         if (v.is_dict() &&
@@ -2141,7 +2240,7 @@ void PhiCoordinator::StoreSplitInternal(int64_t slot, int index_a,
     }
     int width = 0, height = 0;
     const unsigned char* pixels =
-        framework_->TabFaviconBgra(browser, index, &width, &height);
+        framework_->TabFaviconBgra(browser.value, index, &width, &height);
     if (pixels && width > 0 && height > 0) {
       const size_t bytes =
           static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
@@ -2187,13 +2286,11 @@ void PhiCoordinator::StoreSplitInternal(int64_t slot, int index_a,
       tab_store_.SetRowLayout(guid, layout);
     }
     if (!as_bookmark || bind_bookmark) {
-      framework_->SetTabTag(browser, index_a, TagFor(guid, false).c_str());
-      framework_->SetTabTag(browser, index_b, TagFor(guid, true).c_str());
+      framework_->SetTabTag(browser.value, index_a, TagFor(guid, false).c_str());
+      framework_->SetTabTag(browser.value, index_b, TagFor(guid, true).c_str());
     }
   }
-  for (const auto& [s2, controller] : windows_) {
-    controller->RefreshTabs();
-  }
+  RefreshAllWindows();
 }
 
 void PhiCoordinator::RemoveStoredRow(const std::string& guid) {
@@ -2202,9 +2299,9 @@ void PhiCoordinator::RemoveStoredRow(const std::string& guid) {
     // pane) — it returns to the tab list as a normal tab, and a stale tag
     // would keep it excluded from tab groups (the Phi-managed rule).
     if (framework_) {
-      for (const auto& [browser_id, slot] : browser_to_slot_) {
+      for (const BrowserId browser_id : registry_.Browsers()) {
         std::optional<base::Value> parsed = base::JSONReader::Read(
-            framework_->ListTabsJson(browser_id), base::JSON_PARSE_RFC);
+            framework_->ListTabsJson(browser_id.value), base::JSON_PARSE_RFC);
         if (!parsed || !parsed->is_list()) {
           continue;
         }
@@ -2213,15 +2310,13 @@ void PhiCoordinator::RemoveStoredRow(const std::string& guid) {
           const std::string* tag = d ? d->FindString("tag") : nullptr;
           SidebarTag parsed_tag;
           if (tag && ParseTag(*tag, &parsed_tag) && parsed_tag.guid == guid) {
-            framework_->SetTabTag(browser_id,
+            framework_->SetTabTag(browser_id.value,
                                   d->FindInt("index").value_or(-1), "");
           }
         }
       }
     }
-    for (const auto& [s2, controller] : windows_) {
-      controller->RefreshTabs();
-    }
+    RefreshAllWindows();
     PhiSettingsWindow::Refresh();
   }
 }
@@ -2231,9 +2326,7 @@ bool PhiCoordinator::SetStoredRowIcon(const std::string& guid,
   if (!tab_store_.SetRowIcon(guid, icon)) {
     return false;
   }
-  for (const auto& [slot, controller] : windows_) {
-    controller->RefreshTabs();
-  }
+  RefreshAllWindows();
   PhiSettingsWindow::Refresh();
   return true;
 }
@@ -2243,9 +2336,7 @@ bool PhiCoordinator::SetStoredRowUrl(const std::string& guid,
   if (!tab_store_.SetRowUrl(guid, url)) {
     return false;
   }
-  for (const auto& [slot, controller] : windows_) {
-    controller->RefreshTabs();
-  }
+  RefreshAllWindows();
   PhiSettingsWindow::Refresh();
   return true;
 }
@@ -2271,7 +2362,7 @@ std::string PhiCoordinator::LastActiveSpaceId() const {
   // at cold start there is no window yet, so answer what PhiPrefs.json
   // remembers from the last run — falling back to the default Space when
   // that id was deleted since.
-  for (const auto& [slot, controller] : windows_) {
+  for (PhiWindowController* controller : registry_.Controllers()) {
     if (controller->is_agent()) {
       continue;
     }
@@ -2298,23 +2389,20 @@ void PhiCoordinator::NoteActiveSpace(const std::string& space_id) {
   }
   last_active_space_id_ = space_id;
   if (msg_hwnd_) {
-    ::SetTimer(msg_hwnd_, kLastActiveSaveTimer, 1000, nullptr);
+    ::SetTimer(msg_hwnd_, kLastActiveSaveTimer, kLastActiveSaveDelayMs,
+               nullptr);
   }
 }
 
 void PhiCoordinator::OpenDefaultShellIfNoUserWindow(const char* reason) {
-  for (const auto& [slot, controller] : windows_) {
-    if (!controller->is_agent() && !controller->is_incognito()) {
-      return;  // The user has a window; nothing to rescue.
-    }
-  }
-  if (!framework_) {
-    return;
+  if (registry_.FirstUserSlot().valid() || !framework_) {
+    return;  // The user has a window; nothing to rescue.
   }
   // A restore that produced no window would leave the process alive with
-  // nothing on screen (lane 4 §6 item 6). Open a fresh shell on the default
-  // Space; with no pending attach, OnBrowserWindowCreated hosts it as a new
-  // slot.
+  // nothing on screen (lane 4 §6 item 6). Ask for a browser in the default
+  // Space's profile with NO slot to attach to, which is how a request says
+  // "host it as a new shell" (AttachRequestedSpaceBrowser). One at a time:
+  // a second call before the first arrives would open two.
   std::string profile = "Default";
   const std::string default_space = DefaultSpaceId();
   for (const Space& space : spaces_) {
@@ -2323,11 +2411,15 @@ void PhiCoordinator::OpenDefaultShellIfNoUserWindow(const char* reason) {
       break;
     }
   }
+  if (registry_.FindPendingSpace(SlotId(), default_space)) {
+    return;
+  }
   LOG(WARNING) << "[PhiClient] no user window after restore (" << reason
                << "); opening a default shell in " << profile;
-  pending_slot_ = 0;
-  pending_space_.clear();
-  framework_->CreateSpaceBrowserInProfile(profile.c_str());
+  PendingCreation pending;
+  pending.space_id = default_space;
+  RequestCreation(phi_framework::WindowKind::kSpace, profile,
+                  /*incognito=*/false, BrowserId(), std::move(pending));
 }
 
 void PhiCoordinator::OnColdStartRestorePlan(
@@ -2355,7 +2447,8 @@ void PhiCoordinator::OnColdStartRestorePlan(
   // shell. A user window arriving disarms it (OnBrowserWindowCreated).
   cold_start_armed_ = true;
   if (msg_hwnd_) {
-    ::SetTimer(msg_hwnd_, kColdStartFallbackTimer, 4000, nullptr);
+    ::SetTimer(msg_hwnd_, kColdStartFallbackTimer, kColdStartFallbackMs,
+               nullptr);
   }
 }
 
@@ -2384,14 +2477,16 @@ void PhiCoordinator::OnColdStartParkedWindows(const char* parked_json,
   if (cold_start_armed_ && msg_hwnd_) {
     // The diversion landed; give the eager window (if any) a moment to be
     // built before deciding nothing came.
-    ::SetTimer(msg_hwnd_, kColdStartFallbackTimer, 2000, nullptr);
+    ::SetTimer(msg_hwnd_, kColdStartFallbackTimer, kColdStartSettleMs,
+               nullptr);
   }
 }
 
 void PhiCoordinator::DropOrphanGhosts() {
   for (const PhiGhostSpaces::Remembered& orphan : ghost_spaces_.Orphans()) {
     if (framework_) {
-      framework_->DropGhostWindow(orphan.profile.c_str(), orphan.window_id);
+      framework_->DropGhostWindow(orphan.profile.c_str(),
+                                  static_cast<int>(orphan.window_id.value));
     }
   }
   ghost_spaces_.ClearOrphans();
@@ -2399,19 +2494,14 @@ void PhiCoordinator::DropOrphanGhosts() {
 
 void PhiCoordinator::OnTabDistillable(int64_t window_id, int tab_id,
                                      bool distillable) {
-  // Route to the shell hosting this browser. A SPACE browser is mapped
-  // through browser_to_slot_; the slot's ORIGINAL window has no such entry
-  // (it is the slot), so fall back to looking it up directly — otherwise the
-  // primary window, which is most of the time, never hears a verdict.
-  auto slot = browser_to_slot_.find(window_id);
-  const int64_t target =
-      slot != browser_to_slot_.end() ? slot->second : window_id;
-  auto it = windows_.find(target);
+  // Route to the shell hosting this browser (every browser a slot shows,
+  // its original included, is bound in the registry).
+  PhiWindowController* controller =
+      registry_.ControllerForBrowser(BrowserId{window_id});
   LOG(INFO) << "[PhiClient] Distillable win=" << window_id << " tab=" << tab_id
-            << " d=" << distillable << " target=" << target
-            << " routed=" << (it != windows_.end());
-  if (it != windows_.end()) {
-    it->second->NoteTabDistillable(tab_id, distillable);
+            << " d=" << distillable << " routed=" << (controller != nullptr);
+  if (controller) {
+    controller->NoteTabDistillable(tab_id, distillable);
   }
 }
 
@@ -2469,9 +2559,9 @@ bool PhiCoordinator::BroadcastToExtensions(const std::string& type,
 }
 
 PhiWindowController* PhiCoordinator::WindowShowingTab(int tab_id) {
-  for (const auto& [id, window] : windows_) {
-    if (window && window->ShowsTab(tab_id)) {
-      return window.get();
+  for (PhiWindowController* window : registry_.Controllers()) {
+    if (window->ShowsTab(tab_id)) {
+      return window;
     }
   }
   return nullptr;
@@ -2485,13 +2575,13 @@ void PhiCoordinator::OnReaderStyleChanged() {
 // ARRAY here, not an object.
 namespace {
 std::vector<base::DictValue> TabRowsOf(phi_framework::PhiFramework* framework,
-                                       int64_t browser) {
+                                       BrowserId browser) {
   std::vector<base::DictValue> rows;
   if (!framework) {
     return rows;
   }
   std::optional<base::Value> tabs = base::JSONReader::Read(
-      framework->ListTabsJson(browser), base::JSON_PARSE_RFC);
+      framework->ListTabsJson(browser.value), base::JSON_PARSE_RFC);
   if (!tabs || !tabs->is_list()) {
     return rows;
   }
@@ -2504,13 +2594,13 @@ std::vector<base::DictValue> TabRowsOf(phi_framework::PhiFramework* framework,
 }
 }  // namespace
 
-void PhiCoordinator::ActivateTabById(int64_t browser, int tab_id) {
+void PhiCoordinator::ActivateTabById(BrowserId browser, int tab_id) {
   for (const base::DictValue& row : TabRowsOf(framework_, browser)) {
     if (row.FindInt("id").value_or(0) == tab_id) {
       // A row without an index is a row we cannot address; activating tab
       // 0 in its place would be a different tab.
       if (std::optional<int> index = row.FindInt("index")) {
-        framework_->ActivateTab(browser, *index);
+        framework_->ActivateTab(browser.value, *index);
       }
       return;
     }
@@ -2525,8 +2615,7 @@ bool PhiCoordinator::PanelizeReaderSurface(int origin_tab_id) {
   if (!window) {
     return false;
   }
-  const int64_t browser =
-      window->active_browser() ? window->active_browser() : window->window_id();
+  const BrowserId browser = ResolveBrowser(window->slot());
   int surface_tab_id = 0;
   for (const base::DictValue& row : TabRowsOf(framework_, browser)) {
     const std::string* surface = row.FindString("surface");
@@ -2542,9 +2631,9 @@ bool PhiCoordinator::PanelizeReaderSurface(int origin_tab_id) {
     // the open, the tab is usually already out of this strip.
     return false;
   }
-  const int64_t panel = framework_->MoveTabToReaderPanel(
-      browser, surface_tab_id, origin_tab_id);
-  if (!panel) {
+  const BrowserId panel{framework_->MoveTabToReaderPanel(
+      browser.value, surface_tab_id, origin_tab_id)};
+  if (!panel.valid()) {
     LOG(WARNING) << "[PhiClient] could not panel reader surface "
                  << surface_tab_id;
     return false;
@@ -2576,40 +2665,41 @@ void PhiCoordinator::CloseSurfacesForOrigin(int origin_tab_id,
   }
   // Snapshot first: closing a browser runs OnBrowserWindowClosing, which
   // detaches the record from the registry.
-  std::vector<int64_t> doomed;
+  std::vector<BrowserId> doomed;
   surfaces_.ForEach([&](PhiSurfacePanel& panel) {
     if (panel.origin_tab_id() == origin_tab_id &&
         (kind == SidebarSurface::kContent || panel.kind() == kind)) {
-      doomed.push_back(panel.window_id());
+      doomed.push_back(BrowserId{panel.window_id()});
     }
   });
-  for (int64_t window : doomed) {
+  for (const BrowserId window : doomed) {
     // Closing the window closes the surface tab with it; the reader
     // extension drops its cache on tabs.onRemoved, so both sides agree.
-    framework_->CloseBrowserWindow(window);
+    framework_->CloseBrowserWindow(window.value);
   }
 }
 
 void PhiCoordinator::ExpandReaderPanelIntoTab(int64_t panel_window_id,
                                               const std::string& url) {
-  if (!surfaces_.Find(panel_window_id)) {
+  const BrowserId panel{panel_window_id};
+  if (!surfaces_.Find(panel)) {
     return;
   }
-  pending_reader_expands_[panel_window_id] = url;
+  pending_reader_expands_[panel] = url;
   if (msg_hwnd_) {
     ::PostMessageW(msg_hwnd_, WM_PHI_READER_EXPAND,
-                   static_cast<WPARAM>(panel_window_id), 0);
+                   static_cast<WPARAM>(panel.value), 0);
   }
 }
 
-void PhiCoordinator::FinishReaderPanelExpand(int64_t panel_window_id) {
-  auto pending = pending_reader_expands_.find(panel_window_id);
+void PhiCoordinator::FinishReaderPanelExpand(BrowserId panel_window) {
+  auto pending = pending_reader_expands_.find(panel_window);
   if (pending == pending_reader_expands_.end()) {
     return;
   }
   const std::string url = pending->second;
   pending_reader_expands_.erase(pending);
-  PhiSurfacePanel* reader = surfaces_.Find(panel_window_id);
+  PhiSurfacePanel* reader = surfaces_.Find(panel_window);
   if (!reader || !framework_) {
     return;
   }
@@ -2618,16 +2708,16 @@ void PhiCoordinator::FinishReaderPanelExpand(int64_t panel_window_id) {
   // across: the destination has only just started loading, and moving the tab
   // out would empty the panel browser mid-move.
   framework_->NewTab(origin_window, url.c_str());
-  framework_->CloseBrowserWindow(panel_window_id);
+  framework_->CloseBrowserWindow(panel_window.value);
 }
 
-void PhiCoordinator::ApplyLegacyTagAliases(int64_t window_id) {
+void PhiCoordinator::ApplyLegacyTagAliases(BrowserId window_id) {
   const auto& aliases = tab_store_.legacy_tag_aliases();
   if (aliases.empty() || !framework_) {
     return;
   }
   std::optional<base::Value> parsed = base::JSONReader::Read(
-      framework_->ListTabsJson(window_id), base::JSON_PARSE_RFC);
+      framework_->ListTabsJson(window_id.value), base::JSON_PARSE_RFC);
   if (!parsed || !parsed->is_list()) {
     return;
   }
@@ -2642,7 +2732,7 @@ void PhiCoordinator::ApplyLegacyTagAliases(int64_t window_id) {
     if (alias == aliases.end()) {
       continue;
     }
-    framework_->SetTabTag(window_id, d->FindInt("index").value_or(-1),
+    framework_->SetTabTag(window_id.value, d->FindInt("index").value_or(-1),
                           alias->second.c_str());
     applied.push_back(alias->first);
   }
@@ -2651,13 +2741,11 @@ void PhiCoordinator::ApplyLegacyTagAliases(int64_t window_id) {
     tab_store_.DropLegacyTagAlias(old_guid);
   }
   if (changed) {
-    for (const auto& [slot, controller] : windows_) {
-      controller->RefreshTabs();
-    }
+    RefreshAllWindows();
   }
 }
 
-void PhiCoordinator::UpdateReaderPanelsForWindow(int64_t window_id) {
+void PhiCoordinator::UpdateReaderPanelsForWindow(BrowserId window_id) {
   if (!framework_) {
     return;
   }
@@ -2690,10 +2778,10 @@ void PhiCoordinator::UpdateReaderPanelsForWindow(int64_t window_id) {
       return;  // The strip moved under us either way.
     }
     LOG(INFO) << "[PhiClient] closing orphaned reader surface tab in window "
-              << window_id;
+              << window_id.value;
     // Never close tab 0 for a row that carries no index.
     if (std::optional<int> index = row.FindInt("index")) {
-      framework_->CloseTab(window_id, *index);
+      framework_->CloseTab(window_id.value, *index);
     }
     return;  // Indices shifted; the next change re-runs this.
   }
@@ -2701,30 +2789,30 @@ void PhiCoordinator::UpdateReaderPanelsForWindow(int64_t window_id) {
   // strip — closed, torn off, moved to another Space — takes its surface
   // with it (the Mac's origin watch); the rest re-fit and show only over
   // the active tab.
-  std::vector<int64_t> orphaned;
+  std::vector<BrowserId> orphaned;
   for (PhiSurfacePanel* panel : surfaces_.OverWindow(window_id)) {
     if (!live.count(static_cast<int>(panel->origin_tab_id()))) {
-      orphaned.push_back(panel->window_id());
+      orphaned.push_back(BrowserId{panel->window_id()});
       continue;
     }
     panel->Reposition();
     panel->SetVisibleForActiveTab(active_tab);
   }
-  for (int64_t panel_id : orphaned) {
-    LOG(INFO) << "[PhiClient] surface " << panel_id
+  for (const BrowserId panel_id : orphaned) {
+    LOG(INFO) << "[PhiClient] surface " << panel_id.value
               << " origin left the strip — closing";
     if (framework_) {
-      framework_->CloseBrowserWindow(panel_id);
+      framework_->CloseBrowserWindow(panel_id.value);
     }
   }
 }
 
-int PhiCoordinator::ActiveTabId(int64_t browser) {
+int PhiCoordinator::ActiveTabId(BrowserId browser) {
   if (!framework_) {
     return 0;
   }
   std::optional<base::Value> tabs = base::JSONReader::Read(
-      framework_->ListTabsJson(browser), base::JSON_PARSE_RFC);
+      framework_->ListTabsJson(browser.value), base::JSON_PARSE_RFC);
   if (!tabs || !tabs->is_list()) {
     return 0;
   }
@@ -2766,11 +2854,8 @@ void PhiCoordinator::RequestCloseSurfaces(int tab_id) {
 
 void PhiCoordinator::RaiseReaderPanels(int64_t slot) {
   surfaces_.ForEach([&](PhiSurfacePanel& panel) {
-    auto mapped = browser_to_slot_.find(panel.origin_window_id());
-    const int64_t panel_slot = mapped != browser_to_slot_.end()
-                                   ? mapped->second
-                                   : panel.origin_window_id();
-    if (panel_slot == slot) {
+    if (registry_.SlotFor(BrowserId{panel.origin_window_id()}) ==
+        SlotId{slot}) {
       panel.Raise();
     }
   });
@@ -2778,11 +2863,8 @@ void PhiCoordinator::RaiseReaderPanels(int64_t slot) {
 
 void PhiCoordinator::NoteContentLayoutChanged(int64_t slot) {
   surfaces_.ForEach([&](PhiSurfacePanel& panel) {
-    auto mapped = browser_to_slot_.find(panel.origin_window_id());
-    const int64_t panel_slot = mapped != browser_to_slot_.end()
-                                   ? mapped->second
-                                   : panel.origin_window_id();
-    if (panel_slot == slot) {
+    if (registry_.SlotFor(BrowserId{panel.origin_window_id()}) ==
+        SlotId{slot}) {
       panel.Reposition();
     }
   });
@@ -2801,8 +2883,7 @@ void PhiCoordinator::NoteSpaceWindow(const std::string& space_id,
       break;
     }
   }
-  ghost_spaces_.NoteLiveWindow(space_id, profile,
-                               static_cast<int>(browser_window_id));
+  ghost_spaces_.NoteLiveWindow(space_id, profile, BrowserId{browser_window_id});
 }
 
 void PhiCoordinator::OnAnalyticsEventCaptured(const char* module,
@@ -2878,9 +2959,7 @@ bool PhiCoordinator::SetStoredRowLayout(const std::string& guid,
   if (!tab_store_.SetRowLayout(guid, layout)) {
     return false;
   }
-  for (const auto& [slot, controller] : windows_) {
-    controller->RefreshTabs();
-  }
+  RefreshAllWindows();
   return true;
 }
 
@@ -2889,9 +2968,7 @@ bool PhiCoordinator::RenameStoredRow(const std::string& guid,
   if (!tab_store_.RenameRow(guid, name)) {
     return false;
   }
-  for (const auto& [slot, controller] : windows_) {
-    controller->RefreshTabs();
-  }
+  RefreshAllWindows();
   PhiSettingsWindow::Refresh();
   return true;
 }
@@ -2900,16 +2977,14 @@ std::string PhiCoordinator::AddBookmarkFolder(int64_t slot,
                                               const std::string& parent_guid,
                                               const std::string& title) {
   std::string profile_id, space_id;
-  if (title.empty() || !OwnerForSlot(slot, &profile_id, &space_id)) {
+  if (title.empty() || !OwnerForSlot(SlotId{slot}, &profile_id, &space_id)) {
     return std::string();
   }
   const std::string guid = tab_store_.AddBookmark(
       profile_id, space_id, parent_guid, title, std::string(),
       /*folder=*/true, std::string(), 0, 0);
   if (!guid.empty()) {
-    for (const auto& [s2, controller] : windows_) {
-      controller->RefreshTabs();
-    }
+    RefreshAllWindows();
     PhiSettingsWindow::Refresh();
   }
   return guid;
@@ -2920,16 +2995,14 @@ std::string PhiCoordinator::AddBookmarkRow(int64_t slot,
                                            const std::string& title,
                                            const std::string& url) {
   std::string profile_id, space_id;
-  if (url.empty() || !OwnerForSlot(slot, &profile_id, &space_id)) {
+  if (url.empty() || !OwnerForSlot(SlotId{slot}, &profile_id, &space_id)) {
     return std::string();
   }
   const std::string guid = tab_store_.AddBookmark(
       profile_id, space_id, parent_guid, !title.empty() ? title : url, url,
       /*folder=*/false, std::string(), 0, 0);
   if (!guid.empty()) {
-    for (const auto& [s2, controller] : windows_) {
-      controller->RefreshTabs();
-    }
+    RefreshAllWindows();
     PhiSettingsWindow::Refresh();
   }
   return guid;
@@ -2978,9 +3051,7 @@ bool PhiCoordinator::MoveStoredRowToSpace(const std::string& guid,
   if (!clone) {
     RemoveStoredRow(guid);
   }
-  for (const auto& [slot, controller] : windows_) {
-    controller->RefreshTabs();
-  }
+  RefreshAllWindows();
   PhiSettingsWindow::Refresh();
   return true;
 }
@@ -2997,7 +3068,7 @@ void PhiCoordinator::RequestSidebarWidth(int dip) {
   }
   sidebar_width_ = clamped;
   SaveLayoutMode();  // The layout file carries the width too.
-  for (const auto& [slot, controller] : windows_) {
+  for (PhiWindowController* controller : registry_.Controllers()) {
     controller->LayoutContents();
     controller->RefreshTabs();
   }
@@ -3015,19 +3086,19 @@ void PhiCoordinator::ReorderSpace(const std::string& space_id, int new_index) {
       std::max(0, std::min(new_index, static_cast<int>(spaces_.size())));
   spaces_.insert(spaces_.begin() + clamped, std::move(moved));
   SaveSpaces();
-  for (const auto& [slot, controller] : windows_) {
-    controller->RefreshTabs();
-  }
+  RefreshAllWindows();
 }
 
-void PhiCoordinator::RequestBookmarkActiveTab(int64_t slot) {
+void PhiCoordinator::RequestBookmarkActiveTab(int64_t slot_number) {
+  const SlotId slot{slot_number};
   std::string profile_id, space_id;
   if (!framework_ || !OwnerForSlot(slot, &profile_id, &space_id)) {
     return;
   }
   std::string title, url;
   std::optional<base::DictValue> state = base::JSONReader::ReadDict(
-      framework_->NavStateJson(ResolveBrowser(slot)), base::JSON_PARSE_RFC);
+      framework_->NavStateJson(ResolveBrowser(slot).value),
+      base::JSON_PARSE_RFC);
   if (state) {
     if (const std::string* u = state->FindString("url")) {
       url = *u;
@@ -3045,9 +3116,7 @@ void PhiCoordinator::RequestBookmarkActiveTab(int64_t slot) {
       tab_store_.AddBookmark(profile_id, space_id, std::string(), title, url,
                              /*folder=*/false, favicon, fw, fh);
   if (!guid.empty()) {
-    for (const auto& [s, controller] : windows_) {
-      controller->RefreshTabs();
-    }
+    RefreshAllWindows();
   }
 }
 
@@ -3187,7 +3256,7 @@ void PhiCoordinator::SetLanguagePreference(const std::string& tag) {
   // the ACTIVE locale moved — picking Japanese on a Japanese machine changes
   // the preference without changing a single string.
   if (active_changed) {
-    for (const auto& [slot, controller] : windows_) {
+    for (PhiWindowController* controller : registry_.Controllers()) {
       controller->RebuildMenuBar();
       controller->RefreshTabs();
       if (HWND shell = controller->shell_hwnd()) {
@@ -3340,19 +3409,15 @@ bool PhiCoordinator::AnyShortcutCustomized() const {
 }
 
 void PhiCoordinator::FocusWindowForBrowser(int64_t browser_window_id) {
-  auto slot_it = browser_to_slot_.find(browser_window_id);
-  if (slot_it == browser_to_slot_.end()) {
+  const BrowserId browser{browser_window_id};
+  PhiWindowController* controller = registry_.ControllerForBrowser(browser);
+  if (!controller) {
     return;
   }
-  auto it = windows_.find(slot_it->second);
-  if (it == windows_.end()) {
-    return;
-  }
-  PhiWindowController* controller = it->second.get();
-  if (controller->active_browser() != browser_window_id) {
+  if (controller->active_browser_id() != browser) {
     // The browser backs a HIDDEN Space of that slot — surface it first.
     for (const std::string& space : controller->space_order()) {
-      if (controller->BrowserIdForSpace(space) == browser_window_id) {
+      if (controller->BrowserIdForSpace(space) == browser) {
         controller->ShowSpace(space);
         break;
       }
@@ -3364,24 +3429,22 @@ void PhiCoordinator::FocusWindowForBrowser(int64_t browser_window_id) {
   controller->RefreshTabs();
 }
 
-void PhiCoordinator::RequestTabToSpace(int64_t slot,
+void PhiCoordinator::RequestTabToSpace(SlotId slot,
                                        int index,
                                        const std::string& space_id,
                                        bool move) {
-  auto it = windows_.find(slot);
-  if (it == windows_.end() || !framework_) {
+  PhiWindowController* source = registry_.Get(slot);
+  if (!source || !framework_) {
     return;
   }
-  PhiWindowController* source = it->second.get();
   if (source->active_space() == space_id) {
     return;
   }
-  const int64_t source_browser =
-      source->active_browser() ? source->active_browser() : slot;
+  const BrowserId source_browser = ResolveBrowser(slot);
   // The tab's URL — the clone and cold-Space paths re-open it.
   std::string url;
   std::optional<base::Value> tabs = base::JSONReader::Read(
-      framework_->ListTabsJson(source_browser), base::JSON_PARSE_RFC);
+      framework_->ListTabsJson(source_browser.value), base::JSON_PARSE_RFC);
   if (tabs && tabs->is_list()) {
     for (const base::Value& v : tabs->GetList()) {
       const base::DictValue* d = v.GetIfDict();
@@ -3394,19 +3457,17 @@ void PhiCoordinator::RequestTabToSpace(int64_t slot,
     }
   }
   // An open target Space (any slot) gets the real move.
-  int64_t target_browser = 0;
-  for (const auto& [other_slot, controller] : windows_) {
-    if (controller->is_agent() || controller->is_incognito()) {
-      continue;
-    }
-    if (const int64_t id = controller->BrowserIdForSpace(space_id)) {
-      target_browser = id;
+  BrowserId target_browser;
+  for (PhiWindowController* controller : registry_.UserControllers()) {
+    target_browser = controller->BrowserIdForSpace(space_id);
+    if (target_browser.valid()) {
       break;
     }
   }
-  if (move && target_browser) {
-    if (framework_->MoveTabToWindow(source_browser, index, target_browser)) {
-      FocusWindowForBrowser(target_browser);
+  if (move && target_browser.valid()) {
+    if (framework_->MoveTabToWindow(source_browser.value, index,
+                                    target_browser.value)) {
+      FocusWindowForBrowser(target_browser.value);
       source->RefreshTabs();
     }
     return;
@@ -3414,15 +3475,16 @@ void PhiCoordinator::RequestTabToSpace(int64_t slot,
   if (url.empty()) {
     return;
   }
-  if (target_browser) {
-    framework_->OpenTabBypassingSpaceRouting(target_browser, url.c_str());
-    FocusWindowForBrowser(target_browser);
+  if (target_browser.valid()) {
+    framework_->OpenTabBypassingSpaceRouting(target_browser.value,
+                                             url.c_str());
+    FocusWindowForBrowser(target_browser.value);
   } else {
     // Cold Space: surface it and open there (the routed-URL tail).
     RouteUrlToSpace(space_id, url, source_browser);
   }
   if (move) {
-    framework_->CloseTab(source_browser, index);
+    framework_->CloseTab(source_browser.value, index);
   }
   source->RefreshTabs();
 }
@@ -3473,9 +3535,7 @@ void PhiCoordinator::SetAlwaysShowFullUrl(bool enabled) {
   }
   always_show_full_url_ = enabled;
   SavePrefs();
-  for (const auto& [slot, controller] : windows_) {
-    controller->RefreshTabs();
-  }
+  RefreshAllWindows();
   PhiSettingsWindow::Refresh();
 }
 
@@ -3535,9 +3595,7 @@ void PhiCoordinator::SetPinScope(PhiPinScope scope) {
   if (!tab_store_.SetPinScope(scope)) {
     return;
   }
-  for (const auto& [slot, controller] : windows_) {
-    controller->RefreshTabs();
-  }
+  RefreshAllWindows();
   PhiSettingsWindow::Refresh();
 }
 
@@ -3562,9 +3620,7 @@ void PhiCoordinator::SetSpaceIcon(const std::string& space_id,
     }
     space.icon = icon;
     SaveSpaces();
-    for (const auto& [slot, controller] : windows_) {
-      controller->RefreshTabs();
-    }
+    RefreshAllWindows();
     PhiSettingsWindow::Refresh();
     return;
   }
@@ -3589,7 +3645,7 @@ void PhiCoordinator::SetSpaceSaturation(const std::string& space_id,
     space.saturation = value < 0 ? -1 : (value > 100 ? 100 : value);
     SaveSpaces();
     RebuildSpacePalettes();
-    for (const auto& [slot, controller] : windows_) {
+    for (PhiWindowController* controller : registry_.Controllers()) {
       controller->ApplyPalette();
     }
     PhiSettingsWindow::Refresh();
@@ -3608,9 +3664,7 @@ bool PhiCoordinator::RenameSpace(const std::string& space_id,
     }
     space.name = name;
     SaveSpaces();
-    for (const auto& [slot, controller] : windows_) {
-      controller->RefreshTabs();
-    }
+    RefreshAllWindows();
     PhiSettingsWindow::Refresh();
     return true;
   }
@@ -3648,7 +3702,7 @@ bool PhiCoordinator::DeleteSpace(const std::string& space_id) {
   // Now reachable for the default Space itself, whose browser is usually the
   // slot's original one.
   const std::string retreat = DefaultSpaceId();
-  for (const auto& [slot, controller] : windows_) {
+  for (PhiWindowController* controller : registry_.Controllers()) {
     if (controller->is_agent() || !controller->HasSpace(space_id) ||
         retreat == space_id) {
       continue;
@@ -3662,12 +3716,12 @@ bool PhiCoordinator::DeleteSpace(const std::string& space_id) {
     }
     if (!has_other) {
       bool pending = false, cold = false;
-      SwitchSlotToSpace(slot, retreat, &pending, &cold);
+      SwitchSlotToSpace(controller->slot(), retreat, &pending, &cold);
     }
   }
   // Close the Space's browser wherever it is open; each controller switches
   // away first so a live window never keeps showing a deleted Space.
-  for (const auto& [slot, controller] : windows_) {
+  for (PhiWindowController* controller : registry_.Controllers()) {
     controller->CloseSpaceBrowser(space_id);
   }
   // The Space's bookmarks and space-scoped pins go with it (the Mac's
@@ -3684,15 +3738,14 @@ bool PhiCoordinator::DeleteSpace(const std::string& space_id) {
   // loose window of a Space that no longer exists.
   const bool was_parked = ghost_spaces_.Parked(space_id) != nullptr;
   const PhiGhostSpaces::Remembered ghost = ghost_spaces_.Forget(space_id);
-  if (was_parked && ghost.window_id && framework_) {
-    framework_->DropGhostWindow(ghost.profile.c_str(), ghost.window_id);
+  if (was_parked && ghost.window_id.valid() && framework_) {
+    framework_->DropGhostWindow(ghost.profile.c_str(),
+                                static_cast<int>(ghost.window_id.value));
   }
   spaces_.erase(it);
   SaveSpaces();
   RebuildSpacePalettes();
-  for (const auto& [slot, controller] : windows_) {
-    controller->RefreshTabs();
-  }
+  RefreshAllWindows();
   PhiSettingsWindow::Refresh();
   return true;
 }
@@ -3734,15 +3787,16 @@ bool PhiCoordinator::SetSpaceProfile(const std::string& space_id,
   // be re-pointed: it is closed and respawned in the new profile with its
   // open tabs reopened there (the Mac's changeProfile promise).
   std::vector<std::string> urls;
-  int64_t respawn_slot = 0;
-  for (const auto& [slot, controller] : windows_) {
+  SlotId respawn_slot;
+  for (PhiWindowController* controller : registry_.Controllers()) {
     if (controller->is_agent() || !controller->HasSpace(space_id)) {
       continue;
     }
-    if (!respawn_slot) {
-      respawn_slot = slot;
+    if (!respawn_slot.valid()) {
+      respawn_slot = controller->slot();
       std::optional<base::Value> tabs = base::JSONReader::Read(
-          framework_->ListTabsJson(controller->BrowserIdForSpace(space_id)),
+          framework_->ListTabsJson(
+              controller->BrowserIdForSpace(space_id).value),
           base::JSON_PARSE_RFC);
       if (tabs && tabs->is_list()) {
         for (const base::Value& v : tabs->GetList()) {
@@ -3766,10 +3820,10 @@ bool PhiCoordinator::SetSpaceProfile(const std::string& space_id,
     }
     if (!has_other) {
       bool pending = false, cold = false;
-      SwitchSlotToSpace(slot, retreat, &pending, &cold);
+      SwitchSlotToSpace(controller->slot(), retreat, &pending, &cold);
     }
   }
-  for (const auto& [slot, controller] : windows_) {
+  for (PhiWindowController* controller : registry_.Controllers()) {
     controller->CloseSpaceBrowser(space_id);
   }
   it->profile_id = profile_id;
@@ -3781,17 +3835,14 @@ bool PhiCoordinator::SetSpaceProfile(const std::string& space_id,
   // Any parked window from the previous session belongs to the OLD profile;
   // materializing it now would reopen the Space where it no longer lives.
   ghost_spaces_.ClearParked(space_id);
-  for (const auto& [slot, controller] : windows_) {
-    controller->RefreshTabs();
-  }
+  RefreshAllWindows();
   PhiSettingsWindow::Refresh();
   PushSpaceMenu();  // The wire's Space list carries the binding.
-  if (respawn_slot) {
-    pending_open_urls_ = urls;
+  if (respawn_slot.valid()) {
+    // The Space has no browser any more, so this is a request; the tabs
+    // ride on it and reopen once the replacement attaches.
     bool pending = false, cold = false;
-    if (!SwitchSlotToSpace(respawn_slot, space_id, &pending, &cold)) {
-      pending_open_urls_.clear();
-    }
+    SwitchSlotToSpace(respawn_slot, space_id, &pending, &cold, &urls);
   }
   LOG(INFO) << "[PhiClient] Space " << space_id << " re-bound to profile "
             << profile_id;
@@ -3874,14 +3925,12 @@ void PhiCoordinator::SetAllowAgentUserSpaces(bool enabled) {
 }
 
 void PhiCoordinator::OpenBrowserSettings() {
-  if (!windows_.empty()) {
-    RequestOpen(windows_.begin()->first, "chrome://settings");
-  }
+  OpenBrowserPage("chrome://settings");
 }
 
 void PhiCoordinator::OpenBrowserPage(const std::string& url) {
-  if (!windows_.empty()) {
-    RequestOpen(windows_.begin()->first, url);
+  if (const SlotId slot = registry_.FirstUserSlot(); slot.valid()) {
+    RequestOpen(slot.value, url);
   }
 }
 
@@ -4070,7 +4119,7 @@ void PhiCoordinator::ApplyTheme() {
   palette_ = PhiResolvePalette(PhiThemeById(theme_id_), appearance_, saturation_);
   RebuildSpacePalettes();
   SaveTheme();
-  for (const auto& [slot, controller] : windows_) {
+  for (PhiWindowController* controller : registry_.Controllers()) {
     controller->ApplyPalette();
   }
   PhiSettingsWindow::Refresh();
@@ -4106,26 +4155,25 @@ void PhiCoordinator::RebuildSpacePalettes() {
 }
 
 void PhiCoordinator::OpenUrlInMainWindow(const std::string& url) {
-  if (!framework_ || url.empty() || windows_.empty()) {
+  if (!framework_ || url.empty()) {
     return;
   }
-  // The focused user window (else the first shell); a Kiosk has no Space of
-  // its own to prefer, so the page lands wherever the user's browsing
-  // already lives. The slot's key is its ORIGINAL browser, which may be gone
-  // or hidden behind another Space — resolve to the browser on screen.
+  // The focused user window; a Kiosk has no Space of its own to prefer, so
+  // the page lands wherever the user's browsing already lives — in the
+  // browser that slot is SHOWING, never its original.
   PhiWindowController* main = FocusedUserController();
   if (!main) {
-    main = windows_.begin()->second.get();
+    return;
   }
-  framework_->NewTab(ResolveBrowser(main->window_id()), url.c_str());
+  framework_->NewTab(ResolveBrowser(main->slot()).value, url.c_str());
   if (HWND shell = main->shell_hwnd()) {
     ::SetForegroundWindow(shell);
   }
 }
 
 std::string PhiCoordinator::KioskTargetSpaceId() const {
-  if (!windows_.empty()) {
-    const std::string& active = windows_.begin()->second->active_space();
+  if (PhiWindowController* main = registry_.FirstUserController()) {
+    const std::string& active = main->active_space();
     if (!active.empty()) {
       return active;
     }
@@ -4136,9 +4184,8 @@ std::string PhiCoordinator::KioskTargetSpaceId() const {
 }
 
 const PhiPalette& PhiCoordinator::PaletteForSlot(int64_t slot) const {
-  auto window = windows_.find(slot);
-  if (window != windows_.end()) {
-    auto found = palette_by_space_.find(window->second->active_space());
+  if (PhiWindowController* window = registry_.Resolve(slot)) {
+    auto found = palette_by_space_.find(window->active_space());
     if (found != palette_by_space_.end()) {
       return found->second;
     }
@@ -4166,7 +4213,7 @@ void PhiCoordinator::SetSpaceTheme(const std::string& space_id,
     space.theme_id = theme_id.empty() ? std::string() : PhiThemeById(theme_id).id;
     SaveSpaces();
     RebuildSpacePalettes();
-    for (const auto& [slot, controller] : windows_) {
+    for (PhiWindowController* controller : registry_.Controllers()) {
       controller->ApplyPalette();
     }
     PhiSettingsWindow::Refresh();
@@ -4209,10 +4256,9 @@ void PhiCoordinator::RequestSettings() {
 
 void PhiCoordinator::RequestFeedback(int64_t slot,
                                      const PhiFeedbackContext& context) {
-  const auto it = windows_.find(slot);
+  PhiWindowController* controller = registry_.Resolve(slot);
   PhiFeedbackWindow::Open(this, context,
-                          it != windows_.end() ? it->second->shell_hwnd()
-                                               : nullptr);
+                          controller ? controller->shell_hwnd() : nullptr);
 }
 
 void PhiCoordinator::OnShowFeedbackRequested() {
@@ -4305,9 +4351,10 @@ int64_t PhiCoordinator::SlotAtScreenPoint(POINT screen,
   if (!at) {
     return 0;
   }
-  for (const auto& [slot, controller] : windows_) {
-    if (slot != exclude_slot && controller->shell_hwnd() == at) {
-      return slot;
+  for (PhiWindowController* controller : registry_.Controllers()) {
+    if (controller->slot() != SlotId{exclude_slot} &&
+        controller->shell_hwnd() == at) {
+      return controller->slot().value;
     }
   }
   return 0;
@@ -4335,7 +4382,7 @@ bool PhiCoordinator::TakeTearOffDrop(POINT* screen) {
   return true;
 }
 
-bool PhiCoordinator::ConvertStoredRow(int64_t slot,
+bool PhiCoordinator::ConvertStoredRow(SlotId slot,
                                       const std::string& guid,
                                       bool to_bookmark,
                                       const std::string& parent_guid,
@@ -4360,15 +4407,15 @@ bool PhiCoordinator::ConvertStoredRow(int64_t slot,
   // Every live tab bound to the row — either pane — by tag, across every
   // browser since a profile- or app-scoped pin can be open in any of them.
   struct Bound {
-    int64_t browser = 0;
+    BrowserId browser;
     int index = -1;
     bool pane_b = false;
   };
   std::vector<Bound> bound;
   if (framework_) {
-    for (const auto& [browser_id, s] : browser_to_slot_) {
+    for (const BrowserId browser_id : registry_.Browsers()) {
       std::optional<base::Value> parsed = base::JSONReader::Read(
-          framework_->ListTabsJson(browser_id), base::JSON_PARSE_RFC);
+          framework_->ListTabsJson(browser_id.value), base::JSON_PARSE_RFC);
       if (!parsed || !parsed->is_list()) {
         continue;
       }
@@ -4411,14 +4458,12 @@ bool PhiCoordinator::ConvertStoredRow(int64_t slot,
   // — BEFORE the old row goes, so nothing reads as closed in between.
   if (framework_) {
     for (const Bound& b : bound) {
-      framework_->SetTabTag(b.browser, b.index,
+      framework_->SetTabTag(b.browser.value, b.index,
                             TagFor(new_guid, b.pane_b).c_str());
     }
   }
   tab_store_.Remove(guid);
-  for (const auto& [s2, controller] : windows_) {
-    controller->RefreshTabs();
-  }
+  RefreshAllWindows();
   PhiSettingsWindow::Refresh();
   return true;
 }
@@ -4427,21 +4472,17 @@ bool PhiCoordinator::RequestDropTabOnWindow(int64_t source_slot,
                                             int tab_a,
                                             int tab_b,
                                             int64_t target_slot) {
-  auto source = windows_.find(source_slot);
-  auto target = windows_.find(target_slot);
-  if (source == windows_.end() || target == windows_.end() || !framework_) {
+  PhiWindowController* source = registry_.Resolve(source_slot);
+  PhiWindowController* target = registry_.Resolve(target_slot);
+  if (!source || !target || !framework_) {
     return false;
   }
   // Never across the off-the-record boundary.
-  if (source->second->is_incognito() != target->second->is_incognito()) {
+  if (source->is_incognito() != target->is_incognito()) {
     return false;
   }
-  const int64_t source_browser = source->second->active_browser()
-                                     ? source->second->active_browser()
-                                     : source_slot;
-  const int64_t target_browser = target->second->active_browser()
-                                     ? target->second->active_browser()
-                                     : target_slot;
+  const BrowserId source_browser = ResolveBrowser(SlotId{source_slot});
+  const BrowserId target_browser = ResolveBrowser(SlotId{target_slot});
   // Ids in, indices resolved fresh per move: a split pair moves both members,
   // each looked up after the previous move shifted the strip.
   bool ok = true;
@@ -4454,13 +4495,13 @@ bool PhiCoordinator::RequestDropTabOnWindow(int64_t source_slot,
       ok = false;
       continue;
     }
-    ok = framework_->MoveTabToWindow(source_browser, info.index,
-                                     target_browser) &&
+    ok = framework_->MoveTabToWindow(source_browser.value, info.index,
+                                     target_browser.value) &&
          ok;
   }
   if (ok) {
-    source->second->RefreshTabs();
-    target->second->RefreshTabs();
+    source->RefreshTabs();
+    target->RefreshTabs();
   }
   return ok;
 }
@@ -4476,7 +4517,7 @@ void PhiCoordinator::SetAlwaysShowBookmarkBar(bool enabled) {
   always_show_bookmark_bar_ = enabled;
   SavePrefs();
   // The bar takes/releases a band of the content rect in every window.
-  for (const auto& [slot, controller] : windows_) {
+  for (PhiWindowController* controller : registry_.Controllers()) {
     controller->LayoutContents();
     controller->RefreshTabs();
   }
@@ -4492,7 +4533,7 @@ void PhiCoordinator::SetBookmarkBarOnNewTab(bool enabled) {
   }
   bookmark_bar_on_new_tab_ = enabled;
   SavePrefs();
-  for (const auto& [slot, controller] : windows_) {
+  for (PhiWindowController* controller : registry_.Controllers()) {
     controller->LayoutContents();
     controller->RefreshTabs();
   }
@@ -4520,8 +4561,8 @@ void PhiCoordinator::RequestSignIn() {
   auth_.BeginSignIn([this](const std::string& url) {
     // The hosted login opens as an ordinary Phi tab — Phi IS the browser
     // RFC 8252 wants the flow to ride in.
-    if (!windows_.empty()) {
-      RequestOpen(windows_.begin()->first, url);
+    if (const SlotId slot = registry_.FirstUserSlot(); slot.valid()) {
+      RequestOpen(slot.value, url);
     }
   });
 }
@@ -4549,65 +4590,9 @@ void PhiCoordinator::RequestLayoutMode(PhiLayoutMode mode) {
   SaveLayoutMode();
   // Every slot re-lays out: the layout is a client-wide setting, so two
   // windows side by side must never disagree.
-  for (const auto& [slot, controller] : windows_) {
+  for (PhiWindowController* controller : registry_.Controllers()) {
     controller->ApplyLayoutMode(mode);
   }
-}
-
-bool PhiCoordinator::TryFinishProfileSpace() {
-  if (pending_profile_slot_ == 0 || !framework_) {
-    return true;
-  }
-  if (++pending_profile_ticks_ > 40) {  // ~20s
-    LOG(ERROR) << "[PhiClient] profile creation timed out";
-    pending_profile_slot_ = 0;
-    pending_profile_for_form_ = false;
-    return true;
-  }
-  std::optional<base::Value> now = base::JSONReader::Read(
-      framework_->ListProfilesJson(), base::JSON_PARSE_RFC);
-  if (!now || !now->is_list()) {
-    return false;
-  }
-  for (const base::Value& v : now->GetList()) {
-    if (!v.is_dict()) {
-      continue;
-    }
-    const std::string* id = v.GetDict().FindString("id");
-    if (!id || known_profiles_before_.count(*id)) {
-      continue;
-    }
-    if (pending_profile_for_form_) {
-      // The create-Space form asked for it: the form's picker selects it,
-      // and the Space follows when the form is submitted.
-      pending_profile_for_form_ = false;
-      const int64_t form_slot = pending_profile_slot_;
-      pending_profile_slot_ = 0;
-      if (PhiWindowController* controller = ControllerForSlot(form_slot)) {
-        controller->OnSpaceFormProfileCreated(*id);
-      }
-      return true;
-    }
-    // The new profile: create its Space and enter it.
-    base::DictValue payload;
-    payload.Set("name", "Space " + std::to_string(next_space_id_));
-    payload.Set("profileId", *id);
-    std::string json;
-    base::JSONWriter::Write(payload, &json);
-    const std::string created = ExecuteControlOnUi(
-        "agentSpace.spaces.create", json, ControlCaller::kInternal);
-    std::optional<base::DictValue> r =
-        base::JSONReader::ReadDict(created, base::JSON_PARSE_RFC);
-    const int64_t slot = pending_profile_slot_;
-    pending_profile_slot_ = 0;
-    if (r) {
-      if (const std::string* sid = r->FindString("id")) {
-        RequestSwitchSpace(slot, *sid);
-      }
-    }
-    return true;
-  }
-  return false;
 }
 
 std::vector<PhiSpaceView> PhiCoordinator::Spaces() const {
@@ -4644,11 +4629,7 @@ void PhiCoordinator::RequestWatchAgentSpace(const std::string& task_id) {
   }
   auto controller_for = [&](const std::string& id) -> PhiWindowController* {
     PhiAgentSpaces::Space* s = agent_spaces_.Find(id);
-    if (!s) {
-      return nullptr;
-    }
-    auto it = windows_.find(s->window_id);
-    return it != windows_.end() ? it->second.get() : nullptr;
+    return s ? registry_.Resolve(s->window_id.value) : nullptr;
   };
   // Clicking the watched pip again parks it; clicking a different one swaps.
   if (watched_agent_task_ == task_id) {
@@ -4681,8 +4662,9 @@ void PhiCoordinator::RefreshAgentOverlay() {
     PhiAgentOverlay::Hide();
     return;
   }
-  auto it = windows_.find(space->window_id);
-  if (it == windows_.end()) {
+  PhiWindowController* controller =
+      registry_.Resolve(space->window_id.value);
+  if (!controller) {
     PhiAgentOverlay::Hide();
     return;
   }
@@ -4698,7 +4680,7 @@ void PhiCoordinator::RefreshAgentOverlay() {
   if (space->status == "failed") {
     caption = L"\u26A0 " + caption;
   }
-  PhiAgentOverlay::Show(it->second.get(), watched_agent_task_, label, caption,
+  PhiAgentOverlay::Show(controller, watched_agent_task_, label, caption,
                         agent_owns);
 }
 
@@ -4733,7 +4715,7 @@ void PhiCoordinator::RequestAgentFinish(const std::string& task_id) {
 }
 
 void PhiCoordinator::RefreshUserWindows() {
-  for (const auto& [slot, controller] : windows_) {
+  for (PhiWindowController* controller : registry_.Controllers()) {
     if (!controller->is_agent()) {
       controller->RefreshTabs();
     }
@@ -4746,10 +4728,11 @@ void PhiCoordinator::RequestShowTranscript(const std::string& task_id) {
   }
   // Own the panel from the first USER window's shell — the panel floats, so
   // any live shell serves as its owner.
-  for (const auto& [slot, controller] : windows_) {
+  for (PhiWindowController* controller : registry_.Controllers()) {
     if (!controller->is_agent() && controller->shell_hwnd()) {
       PhiTranscriptPanel::Toggle(controller->shell_hwnd(),
-                                 PaletteForSlot(slot), task_id, this);
+                                 PaletteForSlot(controller->slot().value),
+                                 task_id, this);
       return;
     }
   }
@@ -4781,6 +4764,21 @@ bool PhiCoordinator::PushTranscriptMessage(const std::string& task_id,
   return true;
 }
 
+void PhiCoordinator::RequestNewWindow(int64_t slot) {
+  // Same request the agentSpace.newWindow verb makes: a kUser window whose
+  // source is the LIVE browser the slot shows.
+  const SlotId source = SlotId{slot};
+  const BrowserId browser = ResolveBrowser(source);
+  if (!browser.valid()) {
+    OpenDefaultShellIfNoUserWindow("New Window from a slot with no browser");
+    return;
+  }
+  PendingCreation pending;
+  pending.kind = phi_framework::WindowKind::kUser;
+  RequestCreation(phi_framework::WindowKind::kUser, std::string(),
+                  /*incognito=*/false, browser, std::move(pending));
+}
+
 void PhiCoordinator::RequestSwitchSpace(int64_t slot,
                                         const std::string& space_id) {
   base::DictValue payload;
@@ -4795,9 +4793,8 @@ void PhiCoordinator::RequestSwitchSpace(int64_t slot,
 void PhiCoordinator::RequestCreateSpace(int64_t slot, bool new_profile) {
   // Same profile as the slot's current Space unless a new one was asked for.
   std::string profile_id = "Default";
-  auto it = windows_.find(slot);
-  if (it != windows_.end()) {
-    const std::string& active = it->second->active_space();
+  if (PhiWindowController* controller = registry_.Resolve(slot)) {
+    const std::string& active = controller->active_space();
     for (const Space& s : spaces_) {
       if (s.id == active) {
         profile_id = s.profile_id;
@@ -4806,30 +4803,15 @@ void PhiCoordinator::RequestCreateSpace(int64_t slot, bool new_profile) {
     }
   }
   if (new_profile && framework_) {
-    // Profile creation is asynchronous and the new basename is not known up
-    // front. Snapshot the current profiles, ask for a new one, and finish the
-    // Space (bound to that profile) when it appears — bindings are immutable,
-    // so the Space must not be created against the wrong profile first.
-    known_profiles_before_.clear();
-    std::optional<base::Value> before = base::JSONReader::Read(
-        framework_->ListProfilesJson(), base::JSON_PARSE_RFC);
-    if (before && before->is_list()) {
-      for (const base::Value& v : before->GetList()) {
-        if (v.is_dict()) {
-          if (const std::string* id = v.GetDict().FindString("id")) {
-            known_profiles_before_.insert(*id);
-          }
-        }
-      }
-    }
-    pending_profile_slot_ = slot;
-    pending_profile_ticks_ = 0;
-    pending_profile_for_form_ = false;
-    framework_->CreateProfile(
-        ("Phi Space " + std::to_string(next_space_id_)).c_str());
-    if (msg_hwnd_) {
-      ::SetTimer(msg_hwnd_, kProfileSpaceTimer, 500, nullptr);
-    }
+    // Profile creation is asynchronous and the basename is only known once
+    // OnProfileCreated reports it; the Space (bound to that profile —
+    // bindings are immutable, so it must not be created against the wrong
+    // one first) follows there.
+    PendingProfile pending;
+    pending.display_name = "Phi Space " + std::to_string(next_space_id_);
+    pending.slot = SlotId{slot};
+    pending.then = PendingProfile::Then::kOpenSpace;
+    RequestProfile(std::move(pending));
     return;
   }
   base::DictValue payload;
@@ -4853,28 +4835,13 @@ void PhiCoordinator::RequestCreateProfileForSpaceForm(int64_t slot,
   if (!framework_ || name.empty()) {
     return;
   }
-  // Same asynchronous flow as "New Space with New Profile": snapshot the
-  // profiles, ask for one, and poll until a new id shows up — except the
-  // form gets the id instead of a ready-made Space.
-  known_profiles_before_.clear();
-  std::optional<base::Value> before = base::JSONReader::Read(
-      framework_->ListProfilesJson(), base::JSON_PARSE_RFC);
-  if (before && before->is_list()) {
-    for (const base::Value& v : before->GetList()) {
-      if (v.is_dict()) {
-        if (const std::string* id = v.GetDict().FindString("id")) {
-          known_profiles_before_.insert(*id);
-        }
-      }
-    }
-  }
-  pending_profile_slot_ = slot;
-  pending_profile_ticks_ = 0;
-  pending_profile_for_form_ = true;
-  framework_->CreateProfile(name.c_str());
-  if (msg_hwnd_) {
-    ::SetTimer(msg_hwnd_, kProfileSpaceTimer, 500, nullptr);
-  }
+  // Same asynchronous flow as "New Space with New Profile" — except the
+  // form gets the id (OnProfileCreated) instead of a ready-made Space.
+  PendingProfile pending;
+  pending.display_name = name;
+  pending.slot = SlotId{slot};
+  pending.then = PendingProfile::Then::kFillForm;
+  RequestProfile(std::move(pending));
 }
 
 std::string PhiCoordinator::RequestCreateSpaceWithOptions(
@@ -4917,7 +4884,7 @@ std::string PhiCoordinator::RequestCreateSpaceWithOptions(
     }
     SaveSpaces();
     RebuildSpacePalettes();
-    for (const auto& [window_slot, controller] : windows_) {
+    for (PhiWindowController* controller : registry_.Controllers()) {
       controller->ApplyPalette();
     }
     PhiSettingsWindow::Refresh();
@@ -4926,26 +4893,27 @@ std::string PhiCoordinator::RequestCreateSpaceWithOptions(
   return new_id;
 }
 
-PhiWindowController* PhiCoordinator::ControllerForSlot(int64_t slot) {
-  auto it = windows_.find(slot);
-  if (it == windows_.end() && slot == 0 && !windows_.empty()) {
-    it = windows_.begin();  // No windowId: the first window.
+PhiWindowController* PhiCoordinator::ControllerForSlot(SlotId slot) {
+  if (!slot.valid()) {
+    return registry_.FirstUserController();  // No windowId: "the window".
   }
-  return it != windows_.end() ? it->second.get() : nullptr;
+  return registry_.Get(slot);
 }
 
-int64_t PhiCoordinator::ResolveBrowser(int64_t slot_or_browser) const {
-  auto it = windows_.find(slot_or_browser);
-  if (it != windows_.end() && it->second->active_browser() != 0) {
-    return it->second->active_browser();
-  }
-  return slot_or_browser;
+BrowserId PhiCoordinator::ResolveBrowser(int64_t slot_or_browser) const {
+  const BrowserId shown = ResolveBrowser(SlotId{slot_or_browser});
+  return shown.valid() ? shown : BrowserId{slot_or_browser};
+}
+
+BrowserId PhiCoordinator::ResolveBrowser(SlotId slot) const {
+  PhiWindowController* controller = registry_.Get(slot);
+  return controller ? controller->active_browser_id() : BrowserId();
 }
 
 std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
                                                const std::string& payload_json,
                                                ControlCaller caller) {
-  // Runs on the UI thread — safe to touch windows_ and call framework_.
+  // Runs on the UI thread — safe to touch registry_ and call framework_.
   base::DictValue out;
   // The phi-browser skill's agent-space lifecycle (create/ping/complete/
   // ownership/log/messages/…) is served first; it owns the taskId-keyed
@@ -5010,8 +4978,8 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
     out.Set("ok", true);
   } else if (type == "agentSpace.list") {
     base::ListValue list;
-    for (const auto& [window_id, controller] : windows_) {
-      list.Append(static_cast<double>(window_id));
+    for (PhiWindowController* controller : registry_.Controllers()) {
+      list.Append(static_cast<double>(controller->slot().value));
     }
     out.Set("windows", std::move(list));
     // The skill reads `tasks`; the box probes read `windows`. Ship both.
@@ -5022,16 +4990,22 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
     // closed nobody is watching a mirror, and completion is immediate.
     out.Set("transcriptMirror", PhiTranscriptPanel::IsOpen());
   } else if (type == "agentSpace.newWindow") {
-    // The framework wants a LIVE browser as the source: a slot's key is its
-    // ORIGINAL browser's id, which can be long gone (the Space it backed was
-    // deleted and the slot survived on another Space's browser), so resolve
-    // the slot to its active browser — a dead source created nothing.
-    const int64_t source =
-        windows_.empty() ? 0 : ResolveBrowser(windows_.begin()->first);
-    if (framework_) {
-      framework_->NewWindow(source);
+    // A kUser request in the first user window's profile — the framework
+    // wants a LIVE browser as the source, so the slot resolves to the
+    // browser it is showing, never its (possibly long gone) original. With
+    // no user window at all, the default-shell rescue does the same job.
+    const SlotId first = registry_.FirstUserSlot();
+    if (!first.valid()) {
+      OpenDefaultShellIfNoUserWindow("newWindow without a user window");
+      out.Set("ok", registry_.HasPending());
+    } else {
+      PendingCreation pending;
+      pending.kind = phi_framework::WindowKind::kUser;
+      const RequestToken token = RequestCreation(
+          phi_framework::WindowKind::kUser, std::string(),
+          /*incognito=*/false, ResolveBrowser(first), std::move(pending));
+      out.Set("ok", token.valid());
     }
-    out.Set("ok", true);
   } else if (type == "agentSpace.close") {
     std::optional<base::DictValue> p =
         base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
@@ -5041,11 +5015,9 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
     }
     // Closing a SLOT means closing every Space browser it hosts, not just the
     // browser its id names — same reason the shell window's close box does.
-    auto it = windows_.find(window_id);
     bool ok = false;
-    if (it != windows_.end()) {
-      PhiWindowController* controller = it->second.get();
-      ok = true;  // Set first: the call below may erase `it`.
+    if (PhiWindowController* controller = registry_.Resolve(window_id)) {
+      ok = true;  // Set first: the call below may destroy the controller.
       controller->RequestClose();
     } else if (framework_ && window_id) {
       framework_->CloseBrowserWindow(window_id);
@@ -5065,15 +5037,15 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
     }
     bool ok = framework_ && window_id && !url.empty();
     if (ok) {
-      framework_->Navigate(ResolveBrowser(window_id), url.c_str());
+      framework_->Navigate(ResolveBrowser(window_id).value, url.c_str());
     }
     out.Set("ok", ok);
   } else if (type == "agentSpace.spaces.list") {
     std::optional<base::DictValue> p =
         base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
-    int64_t slot =
-        p ? static_cast<int64_t>(p->FindDouble("windowId").value_or(0)) : 0;
-    auto it = windows_.find(slot);
+    const SlotId slot{
+        p ? static_cast<int64_t>(p->FindDouble("windowId").value_or(0)) : 0};
+    PhiWindowController* shell = registry_.Get(slot);
     base::ListValue list;
     int sort_order = 0;
     for (const Space& space : spaces_) {
@@ -5092,21 +5064,21 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
       s.Set("iconText", PhiIconDisplayText(space.icon));
       s.Set("sortOrder", sort_order++);
       s.Set("isDefault", space.id == DefaultSpaceId());
-      const bool active =
-          it != windows_.end() && it->second->active_space() == space.id;
+      const bool active = shell && shell->active_space() == space.id;
       s.Set("active", active);
       s.Set("isActive", active);
-      s.Set("open", it != windows_.end() && it->second->HasSpace(space.id));
+      s.Set("open", shell && shell->HasSpace(space.id));
       // Every user window showing the Space, as CDP windowIds (the Space's
       // browser in each slot) — what the skill pins a binding to
       // (enterContext({kind:'user', window})); empty when it is not open.
       base::ListValue window_ids;
-      for (const auto& [other_slot, other] : windows_) {
+      for (PhiWindowController* other : registry_.Controllers()) {
         if (other->is_agent()) {
           continue;
         }
-        if (const int64_t browser = other->BrowserIdForSpace(space.id)) {
-          window_ids.Append(static_cast<double>(browser));
+        const BrowserId browser = other->BrowserIdForSpace(space.id);
+        if (browser.valid()) {
+          window_ids.Append(static_cast<double>(browser.value));
         }
       }
       s.Set("windowIds", std::move(window_ids));
@@ -5159,7 +5131,7 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
       // skill's default create never yanks the user's window).
       PhiWindowController* focused = FocusedUserController();
       bool pending = false, cold = false;
-      SwitchSlotToSpace(focused ? focused->window_id() : 0, id, &pending,
+      SwitchSlotToSpace(focused ? focused->slot() : SlotId(), id, &pending,
                         &cold);
     }
     out.Set("id", id);
@@ -5179,7 +5151,7 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
       }
     }
     bool pending = false, cold = false;
-    const bool ok = SwitchSlotToSpace(slot, space_id, &pending, &cold);
+    const bool ok = SwitchSlotToSpace(SlotId{slot}, space_id, &pending, &cold);
     if (cold) {
       out.Set("pending", pending);  // Attaching when the browser arrives.
     }
@@ -5286,20 +5258,26 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
         }
       }
     }
-    if (ok && profile_create_pending_) {
-      ok = false;  // One at a time: the completion has a single slot.
-      out.Set("error", "busy");
+    for (const PendingProfile& pending : pending_profiles_) {
+      if (ok && pending.display_name == name) {
+        ok = false;  // Asked for already; the answer is on its way.
+        out.Set("error", "duplicate_name");
+      }
     }
     if (ok) {
-      if (!profile_create_done_) {
-        profile_create_done_ = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
-      }
-      ::ResetEvent(profile_create_done_);
-      created_profile_id_.clear();
-      profile_create_pending_ = true;
-      framework_->CreateProfile(name.c_str());
+      // Deferred: the basename exists only once OnProfileCreated names it,
+      // and the skill's `const {profileId} = await createProfile(...)`
+      // needs it in the reply.
+      PendingProfile pending;
+      pending.display_name = name;
+      pending.then = PendingProfile::Then::kReplyOnly;
+      pending.pending_reply_id =
+          RegisterPendingReply(/*document=*/false, /*include_html=*/false);
+      out.Set("pendingReply", pending.pending_reply_id);
+      RequestProfile(std::move(pending));
+    } else {
+      out.Set("ok", false);
     }
-    out.Set("ok", ok);
   } else if (type == "agentSpace.window.profile") {
     std::optional<base::DictValue> p =
         base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
@@ -5307,7 +5285,7 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
         p ? static_cast<int64_t>(p->FindDouble("windowId").value_or(0)) : 0;
     if (framework_) {
       std::optional<base::DictValue> v = base::JSONReader::ReadDict(
-          framework_->WindowProfileJson(ResolveBrowser(slot)),
+          framework_->WindowProfileJson(ResolveBrowser(slot).value),
           base::JSON_PARSE_RFC);
       if (v) {
         out = std::move(*v);
@@ -5352,9 +5330,7 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
     }
     if (ok) {
       tab_store_.SetPinScope(scope);
-      for (const auto& [slot, controller] : windows_) {
-        controller->RefreshTabs();
-      }
+      RefreshAllWindows();
     }
     out.Set("scope", PhiPinScopeName(tab_store_.pin_scope()));
     out.Set("ok", ok);
@@ -5365,7 +5341,7 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
         p ? static_cast<int64_t>(p->FindDouble("windowId").value_or(0)) : 0;
     std::string profile_id, space_id;
     base::ListValue list;
-    if (OwnerForSlot(slot, &profile_id, &space_id)) {
+    if (OwnerForSlot(SlotId{slot}, &profile_id, &space_id)) {
       for (const PhiRow& row : tab_store_.PinnedFor(profile_id, space_id)) {
         base::DictValue entry;
         entry.Set("guid", row.guid);
@@ -5397,11 +5373,11 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
         guid = *g;
       }
     }
-    PhiWindowController* controller = ControllerForSlot(slot);
+    PhiWindowController* controller = ControllerForSlot(SlotId{slot});
     std::string profile_id, space_id, url;
     bool known = false;
     if (controller &&
-        OwnerForSlot(controller->window_id(), &profile_id, &space_id)) {
+        OwnerForSlot(controller->slot(), &profile_id, &space_id)) {
       // Pins and sidebar bookmarks both bind (bookmarkGuidBacking) — resolve
       // the guid against either kind of stored row.
       for (const PhiRow& row : tab_store_.rows()) {
@@ -5434,11 +5410,12 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
       }
     }
     std::string profile_id, space_id, guid;
-    if (OwnerForSlot(slot, &profile_id, &space_id)) {
+    if (OwnerForSlot(SlotId{slot}, &profile_id, &space_id)) {
       // No url given: pin what the slot is showing.
       if (url.empty() && framework_) {
         std::optional<base::DictValue> st = base::JSONReader::ReadDict(
-            framework_->NavStateJson(ResolveBrowser(slot)), base::JSON_PARSE_RFC);
+            framework_->NavStateJson(ResolveBrowser(slot).value),
+            base::JSON_PARSE_RFC);
         if (st) {
           if (const std::string* u = st->FindString("url")) {
             url = *u;
@@ -5453,20 +5430,19 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
       int fw = 0, fh = 0;
       // Only when we are pinning what the slot is SHOWING: the live favicon
       // belongs to the active tab, not to some other url the caller named.
-      const std::string favicon =
-          url == LiveUrl(slot) ? CaptureFavicon(slot, &fw, &fh) : std::string();
+      const std::string favicon = url == LiveUrl(SlotId{slot})
+                                      ? CaptureFavicon(SlotId{slot}, &fw, &fh)
+                                      : std::string();
       guid = tab_store_.AddPinned(profile_id, space_id, title, url, favicon, fw,
                                   fh);
       // Report what was captured: a caller (or a test) can then tell "no icon
       // yet" apart from "the pin failed".
       out.Set("faviconWidth", fw);
       out.Set("faviconHeight", fh);
-      out.Set("liveUrl", LiveUrl(slot));
+      out.Set("liveUrl", LiveUrl(SlotId{slot}));
     }
     if (!guid.empty()) {
-      for (const auto& [s, controller] : windows_) {
-        controller->RefreshTabs();
-      }
+      RefreshAllWindows();
     }
     out.Set("guid", guid);
     out.Set("ok", !guid.empty());
@@ -5483,7 +5459,7 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
     }
     std::string profile_id, space_id;
     base::ListValue list;
-    if (OwnerForSlot(slot, &profile_id, &space_id)) {
+    if (OwnerForSlot(SlotId{slot}, &profile_id, &space_id)) {
       for (const PhiRow& row :
            tab_store_.BookmarksFor(profile_id, space_id, parent)) {
         base::DictValue entry;
@@ -5522,10 +5498,11 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
       folder = p->FindBool("folder").value_or(false);
     }
     std::string profile_id, space_id, guid;
-    if (OwnerForSlot(slot, &profile_id, &space_id)) {
+    if (OwnerForSlot(SlotId{slot}, &profile_id, &space_id)) {
       if (!folder && url.empty() && framework_) {
         std::optional<base::DictValue> st = base::JSONReader::ReadDict(
-            framework_->NavStateJson(ResolveBrowser(slot)), base::JSON_PARSE_RFC);
+            framework_->NavStateJson(ResolveBrowser(slot).value),
+            base::JSON_PARSE_RFC);
         if (st) {
           if (const std::string* u = st->FindString("url")) {
             url = *u;
@@ -5538,16 +5515,14 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
         }
       }
       int fw = 0, fh = 0;
-      const std::string favicon =
-          (!folder && url == LiveUrl(slot)) ? CaptureFavicon(slot, &fw, &fh)
-                                            : std::string();
+      const std::string favicon = (!folder && url == LiveUrl(SlotId{slot}))
+                                      ? CaptureFavicon(SlotId{slot}, &fw, &fh)
+                                      : std::string();
       guid = tab_store_.AddBookmark(profile_id, space_id, parent, title, url,
                                     folder, favicon, fw, fh);
     }
     if (!guid.empty()) {
-      for (const auto& [s, controller] : windows_) {
-        controller->RefreshTabs();
-      }
+      RefreshAllWindows();
     }
     out.Set("guid", guid);
     out.Set("ok", !guid.empty());
@@ -5660,9 +5635,7 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
         space.icon = icon;
         SaveSpaces();
         ok = true;
-        for (const auto& [slot, controller] : windows_) {
-          controller->RefreshTabs();
-        }
+        RefreshAllWindows();
         break;
       }
     }
@@ -5850,11 +5823,10 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
     // without going through pixels.
     std::optional<base::DictValue> p =
         base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
-    int64_t slot =
-        p ? static_cast<int64_t>(p->FindDouble("windowId").value_or(0)) : 0;
-    auto it = windows_.find(slot);
-    if (it != windows_.end()) {
-      const RECT content = it->second->content_rect();
+    const SlotId slot{
+        p ? static_cast<int64_t>(p->FindDouble("windowId").value_or(0)) : 0};
+    if (PhiWindowController* shell = registry_.Get(slot)) {
+      const RECT content = shell->content_rect();
       base::DictValue rect;
       rect.Set("x", static_cast<int>(content.left));
       rect.Set("y", static_cast<int>(content.top));
@@ -5863,8 +5835,8 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
       out.Set("content", std::move(rect));
       // Geometry is in PHYSICAL pixels; a caller comparing against design
       // constants has to scale them by this.
-      out.Set("dpi", static_cast<int>(it->second->dpi()));
-      const RECT url = it->second->url_field_rect();
+      out.Set("dpi", static_cast<int>(shell->dpi()));
+      const RECT url = shell->url_field_rect();
       base::DictValue field;
       field.Set("x", static_cast<int>(url.left));
       field.Set("y", static_cast<int>(url.top));
@@ -5874,34 +5846,32 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
       // Reader View's button, and the two verdicts behind it. An empty rect
       // means the reader is not being offered for the active tab; the two
       // flags say which signal (if either) would have offered it.
-      const RECT reader = it->second->reader_button_rect();
+      const RECT reader = shell->reader_button_rect();
       base::DictValue reader_rect;
       reader_rect.Set("x", static_cast<int>(reader.left));
       reader_rect.Set("y", static_cast<int>(reader.top));
       reader_rect.Set("width", static_cast<int>(reader.right - reader.left));
       reader_rect.Set("height", static_cast<int>(reader.bottom - reader.top));
       out.Set("reader", std::move(reader_rect));
-      out.Set("readerProbe", it->second->ActiveTabExtensionOfferable());
-      out.Set("readerDistillable", it->second->ActiveTabDistillable());
-      out.Set("readerActive", it->second->ActiveTabShowsReader());
-      out.Set("tabsTop", it->second->tabs_top());
-      out.Set("rowHeight", it->second->tab_row_height());
-      out.Set("rowGap", it->second->tab_row_gap());
-      out.Set("titleBar", it->second->title_bar_height());
-      out.Set("sidebarWidth", it->second->sidebar_width());
-      out.Set("contentMargin", it->second->content_margin());
-      const POINT frame = it->second->frame_offset();
+      out.Set("readerProbe", shell->ActiveTabExtensionOfferable());
+      out.Set("readerDistillable", shell->ActiveTabDistillable());
+      out.Set("readerActive", shell->ActiveTabShowsReader());
+      out.Set("tabsTop", shell->tabs_top());
+      out.Set("rowHeight", shell->tab_row_height());
+      out.Set("rowGap", shell->tab_row_gap());
+      out.Set("titleBar", shell->title_bar_height());
+      out.Set("sidebarWidth", shell->sidebar_width());
+      out.Set("contentMargin", shell->content_margin());
+      const POINT frame = shell->frame_offset();
       out.Set("frameLeft", static_cast<int>(frame.x));
       out.Set("frameTop", static_cast<int>(frame.y));
       out.Set("mode", PhiLayoutModeName(layout_mode_));
-      out.Set("rows", it->second->LayoutRowsJson());
+      out.Set("rows", shell->LayoutRowsJson());
       {
         // The surface registry's view of this window: origin tab -> kind.
         base::DictValue surfaces;
-        const int64_t browser = it->second->active_browser()
-                                    ? it->second->active_browser()
-                                    : slot;
-        for (const auto& [tab, kind] : surfaces_.Surfaces(browser)) {
+        for (const auto& [tab, kind] :
+             surfaces_.Surfaces(ResolveBrowser(slot))) {
           surfaces.Set(std::to_string(tab),
                        kind == SidebarSurface::kPeek ? "peek" : "reader");
         }
@@ -5933,8 +5903,7 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
     PhiWindowController* controller = nullptr;
     if (p) {
       if (std::optional<double> window_id = p->FindDouble("windowId")) {
-        const auto it = windows_.find(static_cast<int64_t>(*window_id));
-        controller = it != windows_.end() ? it->second.get() : nullptr;
+        controller = registry_.Resolve(static_cast<int64_t>(*window_id));
       }
     }
     if (!controller) {
@@ -6028,7 +5997,7 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
         base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
     int64_t slot =
         p ? static_cast<int64_t>(p->FindDouble("windowId").value_or(0)) : 0;
-    PhiWindowController* controller = ControllerForSlot(slot);
+    PhiWindowController* controller = ControllerForSlot(SlotId{slot});
     if (controller && controller->menu_bar()) {
       std::optional<base::Value> menus = base::JSONReader::Read(
           controller->menu_bar()->ListJson(), base::JSON_PARSE_RFC);
@@ -6059,12 +6028,7 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
         }
       }
     }
-    auto it = windows_.find(slot);
-    if (it == windows_.end() && slot == 0 && !windows_.empty()) {
-      it = windows_.begin();
-    }
-    PhiWindowController* controller =
-        it != windows_.end() ? it->second.get() : nullptr;
+    PhiWindowController* controller = ControllerForSlot(SlotId{slot});
     out.Set("ok", controller && controller->menu_bar() && !path.empty() &&
                       controller->menu_bar()->InvokePath(path));
   } else if (type == "agentSpace.window.handle") {
@@ -6074,10 +6038,10 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
         base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
     int64_t slot =
         p ? static_cast<int64_t>(p->FindDouble("windowId").value_or(0)) : 0;
-    auto it = windows_.find(slot);
-    if (it != windows_.end() && it->second->shell_hwnd()) {
+    PhiWindowController* shell = registry_.Resolve(slot);
+    if (shell && shell->shell_hwnd()) {
       out.Set("hwnd", static_cast<double>(
-                          reinterpret_cast<intptr_t>(it->second->shell_hwnd())));
+                          reinterpret_cast<intptr_t>(shell->shell_hwnd())));
       out.Set("ok", true);
     } else {
       out.Set("ok", false);
@@ -6087,9 +6051,9 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
         base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
     int64_t window_id =
         p ? static_cast<int64_t>(p->FindDouble("windowId").value_or(0)) : 0;
-    auto it = windows_.find(window_id);
+    PhiWindowController* shell = registry_.Resolve(window_id);
     int x = 0, y = 0, w = 0, h = 0;
-    if (it != windows_.end() && it->second->GetBounds(&x, &y, &w, &h)) {
+    if (shell && shell->GetBounds(&x, &y, &w, &h)) {
       out.Set("x", x);
       out.Set("y", y);
       out.Set("width", w);
@@ -6110,9 +6074,8 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
       w = static_cast<int>(p->FindDouble("width").value_or(0));
       h = static_cast<int>(p->FindDouble("height").value_or(0));
     }
-    auto it = windows_.find(window_id);
-    bool ok = it != windows_.end() && w > 0 && h > 0 &&
-              it->second->SetBounds(x, y, w, h);
+    PhiWindowController* shell = registry_.Resolve(window_id);
+    bool ok = shell && w > 0 && h > 0 && shell->SetBounds(x, y, w, h);
     out.Set("ok", ok);
   } else if (type == "agentSpace.tabs.list") {
     std::optional<base::DictValue> p =
@@ -6121,7 +6084,8 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
         p ? static_cast<int64_t>(p->FindDouble("windowId").value_or(0)) : 0;
     if (framework_ && window_id) {
       std::optional<base::Value> tabs = base::JSONReader::Read(
-          framework_->ListTabsJson(ResolveBrowser(window_id)), base::JSON_PARSE_RFC);
+          framework_->ListTabsJson(ResolveBrowser(window_id).value),
+          base::JSON_PARSE_RFC);
       if (tabs && tabs->is_list()) {
         out.Set("tabs", std::move(*tabs));
       }
@@ -6141,7 +6105,7 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
       }
     }
     int index = (framework_ && window_id)
-                    ? framework_->NewTab(ResolveBrowser(window_id), url.c_str())
+                    ? framework_->NewTab(ResolveBrowser(window_id).value, url.c_str())
                     : -1;
     out.Set("index", index);
     out.Set("ok", index >= 0);
@@ -6152,7 +6116,8 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
         p ? static_cast<int64_t>(p->FindDouble("windowId").value_or(0)) : 0;
     if (framework_ && window_id) {
       std::optional<base::DictValue> st = base::JSONReader::ReadDict(
-          framework_->NavStateJson(ResolveBrowser(window_id)), base::JSON_PARSE_RFC);
+          framework_->NavStateJson(ResolveBrowser(window_id).value),
+          base::JSON_PARSE_RFC);
       if (st) {
         out = std::move(*st);
       }
@@ -6170,13 +6135,13 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
     bool ok = false;
     if (framework_ && window_id) {
       if (type == "agentSpace.nav.back") {
-        ok = framework_->GoBack(ResolveBrowser(window_id));
+        ok = framework_->GoBack(ResolveBrowser(window_id).value);
       } else if (type == "agentSpace.nav.forward") {
-        ok = framework_->GoForward(ResolveBrowser(window_id));
+        ok = framework_->GoForward(ResolveBrowser(window_id).value);
       } else if (type == "agentSpace.nav.reload") {
-        ok = framework_->Reload(ResolveBrowser(window_id), bypass_cache);
+        ok = framework_->Reload(ResolveBrowser(window_id).value, bypass_cache);
       } else {
-        ok = framework_->StopLoading(ResolveBrowser(window_id));
+        ok = framework_->StopLoading(ResolveBrowser(window_id).value);
       }
     }
     out.Set("ok", ok);
@@ -6194,7 +6159,7 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
       const int index_b = static_cast<int>(
           p->FindDouble("indexB").value_or(-1));
       if (window_id && index_a >= 0 && index_b >= 0) {
-        StoreSplitInternal(window_id, index_a, index_b,
+        StoreSplitInternal(SlotId{window_id}, index_a, index_b,
                            p->FindBool("asBookmark").value_or(false),
                            /*insert_index=*/-1, /*bind_bookmark=*/false);
         ok = true;
@@ -6215,17 +6180,17 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
     }
     bool ok = false;
     if (framework_ && window_id && index >= 0) {
-      const int64_t browser = ResolveBrowser(window_id);
+      const BrowserId browser = ResolveBrowser(window_id);
       if (type == "agentSpace.tabs.activate") {
-        ok = framework_->ActivateTab(browser, index);
+        ok = framework_->ActivateTab(browser.value, index);
       } else if (type == "agentSpace.tabs.close") {
-        ok = framework_->CloseTab(browser, index);
+        ok = framework_->CloseTab(browser.value, index);
       } else if (type == "agentSpace.tabs.split") {
         // Splits the ACTIVE tab with the tab at `index` (native
         // side-by-side; the sidebar shows one merged row).
-        ok = framework_->SplitActiveWith(browser, index);
+        ok = framework_->SplitActiveWith(browser.value, index);
       } else {
-        ok = framework_->Unsplit(browser, index);
+        ok = framework_->Unsplit(browser.value, index);
       }
     }
     out.Set("ok", ok);
@@ -6240,7 +6205,7 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
       to = static_cast<int>(p->FindDouble("to").value_or(-1));
     }
     out.Set("ok", framework_ && window_id && from >= 0 && to >= 0 &&
-                      framework_->MoveTab(ResolveBrowser(window_id), from, to));
+                      framework_->MoveTab(ResolveBrowser(window_id).value, from, to));
   } else if (type == "agentSpace.rows.reorder") {
     std::optional<base::DictValue> p =
         base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
@@ -6255,9 +6220,7 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
     const bool ok = !guid.empty() && index >= 0 && tab_store_.Contains(guid);
     if (ok) {
       if (tab_store_.Reorder(guid, index)) {
-        for (const auto& [s2, controller] : windows_) {
-          controller->RefreshTabs();
-        }
+        RefreshAllWindows();
       }
     }
     out.Set("ok", ok);
@@ -6293,10 +6256,10 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
     }
     bool ok = false;
     if (framework_ && window_id && index >= 0) {
-      const int64_t browser = ResolveBrowser(window_id);
+      const BrowserId browser = ResolveBrowser(window_id);
       ok = (type == "agentSpace.tabs.group")
-               ? framework_->AddTabToNewGroup(browser, index)
-               : framework_->RemoveTabFromGroup(browser, index);
+               ? framework_->AddTabToNewGroup(browser.value, index)
+               : framework_->RemoveTabFromGroup(browser.value, index);
     }
     out.Set("ok", ok);
   } else if (type == "agentSpace.groups.list") {
@@ -6306,7 +6269,7 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
         p ? static_cast<int64_t>(p->FindDouble("windowId").value_or(0)) : 0;
     if (framework_ && window_id) {
       if (std::optional<base::Value> groups = base::JSONReader::Read(
-              framework_->TabGroupsJson(ResolveBrowser(window_id)),
+              framework_->TabGroupsJson(ResolveBrowser(window_id).value),
               base::JSON_PARSE_RFC)) {
         out.Set("groups", std::move(*groups));
       }
@@ -6339,20 +6302,20 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
     }
     bool ok = false;
     if (framework_ && window_id && !group_id.empty()) {
-      const int64_t browser = ResolveBrowser(window_id);
+      const BrowserId browser = ResolveBrowser(window_id);
       if (type == "agentSpace.groups.rename") {
-        ok = framework_->RenameTabGroup(browser, group_id.c_str(),
+        ok = framework_->RenameTabGroup(browser.value, group_id.c_str(),
                                         text.c_str());
       } else if (type == "agentSpace.groups.color") {
-        ok = framework_->SetTabGroupColor(browser, group_id.c_str(),
+        ok = framework_->SetTabGroupColor(browser.value, group_id.c_str(),
                                           text.c_str());
       } else if (type == "agentSpace.groups.collapse") {
-        ok = framework_->SetTabGroupCollapsed(browser, group_id.c_str(),
+        ok = framework_->SetTabGroupCollapsed(browser.value, group_id.c_str(),
                                               collapsed);
       } else if (type == "agentSpace.groups.ungroup") {
-        ok = framework_->UngroupTabGroup(browser, group_id.c_str());
+        ok = framework_->UngroupTabGroup(browser.value, group_id.c_str());
       } else {
-        ok = framework_->CloseTabGroup(browser, group_id.c_str());
+        ok = framework_->CloseTabGroup(browser.value, group_id.c_str());
       }
     }
     out.Set("ok", ok);
@@ -6388,8 +6351,8 @@ bool PhiCoordinator::HandleAgentSpaceVerb(const std::string& type,
       type == "agentSpace.readerDocument") {
     const std::string task_id = task_id_of();
     std::string error;
-    const int64_t browser = ResolveScopeBrowser(payload, &error);
-    if (!browser || !framework_) {
+    const BrowserId browser = ResolveScopeBrowser(payload, &error);
+    if (!browser.valid() || !framework_) {
       out->Set("ok", false);
       out->Set("error", error.empty() ? "unknown_task" : error);
       return true;
@@ -6414,7 +6377,7 @@ bool PhiCoordinator::HandleAgentSpaceVerb(const std::string& type,
       }
     }
     if (!framework_->StartReaderExtraction(
-            browser, target ? target->c_str() : "", id)) {
+            browser.value, target ? target->c_str() : "", id)) {
       CompletePendingReply(id, "{\"ok\":false,\"error\":\"unknown_target\"}");
     }
     out->Set("pendingReply", id);
@@ -6436,10 +6399,11 @@ bool PhiCoordinator::HandleAgentSpaceVerb(const std::string& type,
     // re-ensure". The Windows shell keeps a tabless browser alive, so the
     // same contract is kept by closing it here and recreating below.
     if (PhiAgentSpaces::Space* existing = agent_spaces_.Find(task_id)) {
+      const bool live = registry_.IsBound(existing->window_id);
       bool zombie = false;
-      if (windows_.count(existing->window_id) && framework_) {
+      if (live && framework_) {
         std::optional<base::Value> tabs = base::JSONReader::Read(
-            framework_->ListTabsJson(ResolveBrowser(existing->window_id)),
+            framework_->ListTabsJson(existing->window_id.value),
             base::JSON_PARSE_RFC);
         zombie = !tabs || !tabs->is_list() || tabs->GetList().empty();
       }
@@ -6448,13 +6412,13 @@ bool PhiCoordinator::HandleAgentSpaceVerb(const std::string& type,
                   << " is tabless — healing with a fresh window";
         CloseAgentSpace(task_id);
       }
-      if (!zombie && windows_.count(existing->window_id)) {
+      if (!zombie && live) {
         agent_spaces_.Create(task_id, existing->window_id,
                              existing->profile_id, existing->persistent,
                              now_ms);
         out->Set("ok", true);
         out->Set("spaceId", existing->space_id);
-        out->Set("windowId", static_cast<double>(existing->window_id));
+        out->Set("windowId", static_cast<double>(existing->window_id.value));
         out->Set("ownership",
                  existing->ownership == PhiAgentSpaces::Ownership::kUser
                      ? "user"
@@ -6478,37 +6442,34 @@ bool PhiCoordinator::HandleAgentSpaceVerb(const std::string& type,
       out->Set("error", "create_failed");
       return true;
     }
-    // Create the hidden agent browser; OnBrowserWindowCreated fires
-    // re-entrantly and stamps last_agent_window_id_.
-    last_agent_window_id_ = 0;
-    pending_agent_task_ = task_id;
-    const int64_t window_id =
-        framework_->CreateAgentBrowser(profile_id.c_str());
-    pending_agent_task_.clear();
-    const int64_t adopted = window_id ? window_id : last_agent_window_id_;
-    if (!adopted) {
+    if (registry_.HasPendingTask(task_id)) {
       out->Set("ok", false);
-      out->Set("error", "create_failed");
+      out->Set("error", "busy");  // Its window is already on its way.
       return true;
     }
-    PhiAgentSpaces::Space& space = agent_spaces_.Create(
-        task_id, adopted, profile_id, persistent, now_ms);
+    // Ask for the hidden agent browser. It arrives later (contract rule 3)
+    // in OnBrowserWindowCreated -> HostAgentWindow, which builds the record
+    // and answers the deferred reply with the same shape as the re-bind
+    // above; the pipe thread waits on it meanwhile.
+    PendingCreation pending;
+    pending.task_id = task_id;
+    pending.persistent = persistent;
     // The driving agent's name rides the create call; the watch-mode pill
     // shows it so a watching user sees WHO holds the Space, not just "an
     // agent" (the Mac's AgentDriverBadge).
     if (const std::string* agent_name =
             payload ? payload->FindString("agentName") : nullptr) {
-      space.agent_name = *agent_name;
+      pending.agent_name = *agent_name;
     }
-    // Start the keep-alive sweep once (id 2, every 10s — the Mac sweep tick).
-    if (msg_hwnd_) {
-      ::SetTimer(msg_hwnd_, kAgentSpaceSweepTimer, 10000, nullptr);
-    }
-    RefreshUserWindows();  // A new agent pip appears in the switcher.
-    out->Set("ok", true);
-    out->Set("spaceId", space.space_id);
-    out->Set("windowId", static_cast<double>(space.window_id));
-    out->Set("ownership", "agent");
+    // The reply slot is handed to the waiter whatever happens: a refused
+    // request answers it create_failed inside RequestCreation, and the
+    // pipe thread collects that the same way it collects a success.
+    pending.pending_reply_id =
+        RegisterPendingReply(/*document=*/false, /*include_html=*/false);
+    const int reply_id = pending.pending_reply_id;
+    RequestCreation(phi_framework::WindowKind::kAgent, profile_id,
+                    /*incognito=*/false, BrowserId(), std::move(pending));
+    out->Set("pendingReply", reply_id);
     return true;
   }
 
@@ -6746,7 +6707,7 @@ bool PhiCoordinator::HandleAgentSpaceVerb(const std::string& type,
       out->Set("error", "unknown_task");
       return true;
     }
-    framework_->NewTab(space->window_id, url->c_str());
+    framework_->NewTab(space->window_id.value, url->c_str());
     out->Set("ok", true);
     return true;
   }
@@ -6840,21 +6801,21 @@ bool PhiCoordinator::HandleAgentSpaceVerb(const std::string& type,
       return true;
     }
     PhiAgentSpaces::Space* space = agent_spaces_.Find(task_id);
-    if (!space || !space->window_id) {
+    if (!space || !space->window_id.valid()) {
       out->Set("ok", false);
       out->Set("error", "unknown_task");
       return true;
     }
-    auto it = windows_.find(space->window_id);
-    if (it == windows_.end() || !it->second->shell_hwnd()) {
+    PhiWindowController* shell =
+        registry_.Resolve(space->window_id.value);
+    if (!shell || !shell->shell_hwnd()) {
       out->Set("ok", false);
       out->Set("error", "no_window");
       return true;
     }
     const std::string* web_path =
         payload ? payload->FindString("webPath") : nullptr;
-    if (!PhiCaptureWindowToPng(it->second->shell_hwnd(),
-                               it->second->content_rect(),
+    if (!PhiCaptureWindowToPng(shell->shell_hwnd(), shell->content_rect(),
                                web_path ? base::UTF8ToWide(*web_path)
                                         : std::wstring(),
                                base::UTF8ToWide(*out_path))) {
@@ -6995,21 +6956,18 @@ void PhiCoordinator::CloseAgentSpace(const std::string& task_id) {
   if (!space) {
     return;
   }
-  const int64_t window_id = space->window_id;
+  const BrowserId window_id = space->window_id;
   agent_spaces_.Remove(task_id);
   PhiTranscriptPanel::CloseFor(task_id);
   if (watched_agent_task_ == task_id) {
     watched_agent_task_.clear();
   }
-  auto it = windows_.find(window_id);
-  if (it != windows_.end()) {
-    it->second->RequestClose();  // Fires OnBrowserWindowClosing → cleanup.
-  } else if (framework_ && window_id) {
-    framework_->CloseBrowserWindow(window_id);
+  if (PhiWindowController* shell = registry_.Resolve(window_id.value)) {
+    shell->RequestClose();  // Fires OnBrowserWindowClosing → cleanup.
+  } else if (framework_ && window_id.valid()) {
+    framework_->CloseBrowserWindow(window_id.value);
   }
-  if (agent_spaces_.empty() && shadow_windows_.empty() && msg_hwnd_) {
-    ::KillTimer(msg_hwnd_, kAgentSpaceSweepTimer);
-  }
+  UpdateSweepTimer();
   RefreshUserWindows();  // The agent pip disappears.
 }
 
@@ -7028,7 +6986,7 @@ int64_t EpochMsNow() {
 }  // namespace
 
 PhiCoordinator::ShadowWindow* PhiCoordinator::FindShadowByWindow(
-    int64_t window_id) {
+    BrowserId window_id) {
   for (auto& [task_id, shadow] : shadow_windows_) {
     if (shadow.window_id == window_id) {
       return &shadow;
@@ -7043,19 +7001,28 @@ void PhiCoordinator::CloseShadowWindow(const std::string& task_id,
   if (it == shadow_windows_.end()) {
     return;
   }
-  const int64_t window_id = it->second.window_id;
+  const BrowserId window_id = it->second.window_id;
   shadow_windows_.erase(it);
   LOG(INFO) << "[PhiClient] shadow window closed (" << reason
             << "): " << task_id;
-  auto window = windows_.find(window_id);
-  if (window != windows_.end()) {
-    window->second->RequestClose();  // Fires OnBrowserWindowClosing.
-  } else if (framework_ && window_id) {
-    framework_->CloseBrowserWindow(window_id);
+  if (PhiWindowController* shell = registry_.Resolve(window_id.value)) {
+    shell->RequestClose();  // Fires OnBrowserWindowClosing.
+  } else if (framework_ && window_id.valid()) {
+    framework_->CloseBrowserWindow(window_id.value);
   }
-  if (agent_spaces_.empty() && shadow_windows_.empty() && msg_hwnd_) {
-    ::KillTimer(msg_hwnd_, kAgentSpaceSweepTimer);
+  UpdateSweepTimer();
+}
+
+void PhiCoordinator::TouchShadow(ShadowWindow* shadow,
+                                 int ttl_seconds,
+                                 uint64_t now_ms) {
+  if (ttl_seconds <= 0) {
+    ttl_seconds = PhiAgentSpaces::kDefaultTtlSeconds;
   }
+  ttl_seconds = std::clamp(ttl_seconds, 1, PhiAgentSpaces::kMaxTtlSeconds);
+  shadow->keepalive_deadline_ms =
+      std::max(shadow->keepalive_deadline_ms,
+               now_ms + static_cast<uint64_t>(ttl_seconds) * 1000);
 }
 
 bool PhiCoordinator::HandleShadowVerb(const std::string& type,
@@ -7068,17 +7035,8 @@ bool PhiCoordinator::HandleShadowVerb(const std::string& type,
     return true;
   };
   const std::string op = type.substr(strlen("agentSpace.shadow."));
-  // The Mac's keep-alive contract, shared with agent Spaces: a touch extends
-  // the deadline to max(existing, now + ttl); ttl <= 0 means the default
-  // round TTL, and the ceiling is the ping ceiling.
   const auto touch = [&](ShadowWindow* shadow, int ttl_seconds) {
-    if (ttl_seconds <= 0) {
-      ttl_seconds = PhiAgentSpaces::kDefaultTtlSeconds;
-    }
-    ttl_seconds = std::clamp(ttl_seconds, 1, PhiAgentSpaces::kMaxTtlSeconds);
-    shadow->keepalive_deadline_ms =
-        std::max(shadow->keepalive_deadline_ms,
-                 now_ms + static_cast<uint64_t>(ttl_seconds) * 1000);
+    TouchShadow(shadow, ttl_seconds, now_ms);
   };
 
   if (op == "list") {
@@ -7087,12 +7045,12 @@ bool PhiCoordinator::HandleShadowVerb(const std::string& type,
     // the whole registry is that caller's.
     base::ListValue rows;
     for (const auto& [task_id, shadow] : shadow_windows_) {
-      if (!windows_.count(shadow.window_id)) {
+      if (!registry_.IsBound(shadow.window_id)) {
         continue;
       }
       base::DictValue row;
       row.Set("taskId", task_id);
-      row.Set("windowId", static_cast<double>(shadow.window_id));
+      row.Set("windowId", static_cast<double>(shadow.window_id.value));
       row.Set("profileId", shadow.profile_id);
       row.Set("incognito", shadow.incognito);
       row.Set("createdAt", static_cast<double>(shadow.created_ms));
@@ -7122,14 +7080,14 @@ bool PhiCoordinator::HandleShadowVerb(const std::string& type,
     // is fixed at creation.
     auto existing = shadow_windows_.find(*task);
     if (existing != shadow_windows_.end()) {
-      if (windows_.count(existing->second.window_id)) {
+      if (registry_.IsBound(existing->second.window_id)) {
         if (existing->second.incognito != incognito) {
           return fail("shadow_incognito_mismatch");
         }
         touch(&existing->second, 0);
         out->Set("ok", true);
         out->Set("windowId",
-                 static_cast<double>(existing->second.window_id));
+                 static_cast<double>(existing->second.window_id.value));
         out->Set("incognito", existing->second.incognito);
         return true;
       }
@@ -7138,39 +7096,25 @@ bool PhiCoordinator::HandleShadowVerb(const std::string& type,
     if (!framework_) {
       return fail("create_failed");
     }
-    // Create the hidden browser; OnBrowserWindowCreated fires re-entrantly,
-    // adopts it off-screen and stamps last_agent_window_id_.
-    last_agent_window_id_ = 0;
-    pending_shadow_task_ = *task;
-    const int64_t window_id =
-        framework_->CreateShadowBrowser(profile_id.c_str(), incognito);
-    pending_shadow_task_.clear();
-    const int64_t adopted = window_id ? window_id : last_agent_window_id_;
-    if (!adopted) {
-      return fail("create_failed");
+    if (registry_.HasPendingTask(*task)) {
+      return fail("busy");  // Its window is already on its way.
     }
-    ShadowWindow& shadow = shadow_windows_[*task];
-    shadow.task_id = *task;
-    shadow.window_id = adopted;
-    shadow.profile_id = profile_id;
-    shadow.incognito = incognito;
-    shadow.created_ms = EpochMsNow();
-    touch(&shadow, 0);
-    if (msg_hwnd_) {
-      ::SetTimer(msg_hwnd_, kAgentSpaceSweepTimer, 10000, nullptr);  // The keep-alive sweep.
-    }
-    LOG(INFO) << "[PhiClient] shadow window created: " << *task
-              << " window=" << adopted << (incognito ? " (incognito)" : "");
-    out->Set("ok", true);
-    out->Set("windowId", static_cast<double>(adopted));
-    // Echoed on purpose: a driver that asked for incognito checks this flag
-    // and refuses to proceed if it is missing (an older build).
-    out->Set("incognito", incognito);
+    // Ask for the hidden browser; HostAgentWindow files the record when it
+    // arrives and answers the deferred reply ({ok, windowId, incognito}).
+    PendingCreation pending;
+    pending.task_id = *task;
+    pending.pending_reply_id =
+        RegisterPendingReply(/*document=*/false, /*include_html=*/false);
+    const int reply_id = pending.pending_reply_id;
+    RequestCreation(phi_framework::WindowKind::kShadow, profile_id, incognito,
+                    BrowserId(), std::move(pending));  // Answers if refused.
+    out->Set("pendingReply", reply_id);
     return true;
   }
 
   auto it = shadow_windows_.find(*task);
-  if (it == shadow_windows_.end() || !windows_.count(it->second.window_id)) {
+  if (it == shadow_windows_.end() ||
+      !registry_.IsBound(it->second.window_id)) {
     return fail("unknown_task");
   }
   ShadowWindow& shadow = it->second;
@@ -7182,7 +7126,7 @@ bool PhiCoordinator::HandleShadowVerb(const std::string& type,
     if (!framework_) {
       return fail("unknown_task");
     }
-    framework_->NewTab(shadow.window_id, url->c_str());
+    framework_->NewTab(shadow.window_id.value, url->c_str());
     touch(&shadow, 0);
     out->Set("ok", true);
     return true;
@@ -7218,9 +7162,31 @@ void PhiCoordinator::SweepAgentSpaces() {
   for (const std::string& task_id : expired_shadows) {
     CloseShadowWindow(task_id, "keep-alive expired");
   }
-  if (agent_spaces_.empty() && shadow_windows_.empty() && msg_hwnd_) {
-    ::KillTimer(msg_hwnd_, kAgentSpaceSweepTimer);
+  // Creations the framework never announced: it has no failure callback,
+  // so the deadline is the only way a waiting verb learns its window (or
+  // profile) is not coming.
+  for (const PendingCreation& lost : registry_.ExpirePending(now_ms)) {
+    LOG(ERROR) << "[PhiClient] window request timed out (kind "
+               << static_cast<int>(lost.kind) << ", profile '"
+               << lost.profile_id << "', space '" << lost.space_id
+               << "', task '" << lost.task_id << "')";
+    if (lost.pending_reply_id) {
+      CompletePendingReply(lost.pending_reply_id, kCreateTimeoutReply);
+    }
   }
+  for (auto it = pending_profiles_.begin(); it != pending_profiles_.end();) {
+    if (it->deadline_tick && it->deadline_tick <= now_ms) {
+      LOG(ERROR) << "[PhiClient] profile creation timed out: '"
+                 << it->display_name << "'";
+      if (it->pending_reply_id) {
+        CompletePendingReply(it->pending_reply_id, kCreateTimeoutReply);
+      }
+      it = pending_profiles_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+  UpdateSweepTimer();
 }
 
 namespace {
@@ -7474,7 +7440,7 @@ bool PhiCoordinator::PromptCredentialApproval(const std::wstring& detail,
                L"to that page can read it.";
   const std::wstring text = detail + L"\n\n" + exposure;
   HWND owner = nullptr;
-  for (const auto& [slot, controller] : windows_) {
+  for (PhiWindowController* controller : registry_.Controllers()) {
     if (controller->shell_hwnd()) {
       owner = controller->shell_hwnd();
       break;
@@ -7863,181 +7829,294 @@ bool PhiCoordinator::HandleCredentialsVerb(const std::string& type,
   return false;
 }
 
-void PhiCoordinator::OnBrowserWindowCreated(int64_t window_id, void* hwnd) {
-  LOG(INFO) << "[PhiClient] OnBrowserWindowCreated windowId=" << window_id
-            << " hwnd=" << hwnd;
-  // A Kiosk: ephemeral, single-tab, no Space and no slot. Readable only here,
-  // while Browser::Create is still on the stack (same push-not-query contract
-  // as RestoredFromWindowId below).
-  if (framework_ && framework_->CreatedWindowIsKiosk()) {
-    auto kiosk = std::make_unique<PhiKioskWindow>(
-        window_id, static_cast<HWND>(hwnd), framework_, this);
-    kiosks_[window_id] = std::move(kiosk);
-    return;
-  }
-  // A Peek: floats inside its opener window's content card rather than
-  // taking a window of its own. Same push-not-query marker contract.
-  int64_t peek_opener_window = 0;
-  int64_t peek_opener_tab = 0;
-  if (framework_) {
-    framework_->CreatedWindowPeekOpener(&peek_opener_window, &peek_opener_tab);
-  }
-  // A Reader View surface: the extension's reading page, moved out of its
-  // origin window's strip into a browser of its own so it can be hosted over
-  // that origin's live page. Same push-not-query marker contract as the peek
-  // above.
-  int64_t reader_origin_window = 0;
-  int64_t reader_origin_tab = 0;
-  if (framework_) {
-    framework_->CreatedWindowReaderOrigin(&reader_origin_window,
-                                          &reader_origin_tab);
-  }
-  if (reader_origin_window != 0) {
-    auto slot = browser_to_slot_.find(reader_origin_window);
-    const int64_t target = slot != browser_to_slot_.end() ? slot->second
-                                                          : reader_origin_window;
-    auto origin = windows_.find(target);
-    if (origin != windows_.end()) {
-      LOG(INFO) << "[PhiClient] reader panel " << window_id << " over tab "
-                << reader_origin_tab << " in window " << reader_origin_window;
-      surfaces_.Attach(std::make_unique<PhiReaderPanel>(
-          window_id, static_cast<HWND>(hwnd), reader_origin_window,
-          reader_origin_tab, origin->second.get(), framework_, this));
-      return;
+RequestToken PhiCoordinator::RequestCreation(phi_framework::WindowKind kind,
+                                             const std::string& profile_id,
+                                             bool incognito,
+                                             BrowserId source_window,
+                                             PendingCreation pending) {
+  phi_framework::CreateRequest request;
+  request.kind = kind;
+  request.profile_id = profile_id.c_str();
+  request.incognito = incognito;
+  request.source_window = source_window;
+  const RequestToken token =
+      framework_ ? framework_->RequestBrowser(request) : RequestToken();
+  if (!token.valid()) {
+    LOG(ERROR) << "[PhiClient] RequestBrowser refused (kind "
+               << static_cast<int>(kind) << ", profile '" << profile_id
+               << "')";
+    if (pending.pending_reply_id) {
+      CompletePendingReply(pending.pending_reply_id,
+                           "{\"ok\":false,\"error\":\"create_failed\"}");
     }
-    LOG(WARNING) << "[PhiClient] reader panel without an origin window "
-                 << reader_origin_window;
+    return token;
   }
-  if (peek_opener_window != 0) {
-    // The opener is named by BROWSER id; the controller is filed under its
-    // slot, and the two only coincide until that slot switches Space. Map it
-    // the way the reader branch above does, or an auto-peek from a window
-    // that has switched Space finds no opener and falls through into a shell.
-    auto peek_slot = browser_to_slot_.find(peek_opener_window);
-    auto opener = windows_.find(peek_slot != browser_to_slot_.end()
-                                    ? peek_slot->second
-                                    : peek_opener_window);
-    if (opener != windows_.end()) {
-      LOG(INFO) << "[PhiClient] peek " << window_id << " over tab "
-                << peek_opener_tab << " in window " << peek_opener_window;
-      // One peek per opener: a second replaces the first (the Mac's
-      // presentPeek `.replaced`).
-      CloseSurfacesForOrigin(static_cast<int>(peek_opener_tab),
-                             SidebarSurface::kPeek);
-      surfaces_.Attach(std::make_unique<PhiPeekPanel>(
-          window_id, static_cast<HWND>(hwnd), peek_opener_window,
-          peek_opener_tab, opener->second.get(), framework_, this));
-      return;
+  pending.kind = kind;
+  pending.profile_id = profile_id;
+  pending.deadline_tick = ::GetTickCount64() + kCreateTimeoutMs;
+  LOG(INFO) << "[PhiClient] RequestBrowser token=" << token.value << " kind="
+            << static_cast<int>(kind) << " profile='" << profile_id
+            << "' slot=" << pending.slot.value << " space='"
+            << pending.space_id << "' task='" << pending.task_id << "'";
+  registry_.AddPending(token, std::move(pending));
+  UpdateSweepTimer();
+  return token;
+}
+
+void PhiCoordinator::OnBrowserWindowCreated(
+    const phi_framework::WindowCreation& creation) {
+  using phi_framework::WindowKind;
+  const BrowserId browser = creation.window;
+  const HWND hwnd = reinterpret_cast<HWND>(creation.hwnd);
+  LOG(INFO) << "[PhiClient] OnBrowserWindowCreated windowId=" << browser.value
+            << " kind=" << static_cast<int>(creation.kind)
+            << " token=" << creation.request_token.value
+            << " opener=" << creation.opener_window.value
+            << " restoredFrom=" << creation.restored_from
+            << " incognito=" << creation.incognito;
+  // A requested kind is matched to what RequestCreation filed by TOKEN — the
+  // whole point of the contract (lane 1 F5): two cold switches in flight
+  // can no longer take each other's browser. A token nothing waits for
+  // (expired by the sweep, or unknown) has no instructions to follow, so
+  // the window is hosted as the user's.
+  WindowKind kind = creation.kind;
+  std::optional<PendingCreation> pending;
+  if (creation.request_token.valid()) {
+    pending = registry_.TakePending(creation.request_token);
+    if (!pending) {
+      LOG(WARNING) << "[PhiClient] window " << browser.value
+                   << " carries token " << creation.request_token.value
+                   << " that is not pending; hosting as a user window";
+      kind = WindowKind::kUser;
     }
-    // No opener to float over — close it rather than leave a stray window.
-    LOG(WARNING) << "[PhiClient] peek without an opener window "
-                 << peek_opener_window;
+    UpdateSweepTimer();
+  } else if (kind == WindowKind::kSpace || kind == WindowKind::kAgent ||
+             kind == WindowKind::kShadow) {
+    LOG(WARNING) << "[PhiClient] window " << browser.value
+                 << " announced as requested kind "
+                 << static_cast<int>(kind) << " without a token";
+    kind = WindowKind::kUser;
   }
-  // Option B: the client owns a shell window and reparents Chromium's content
-  // in. The shell routes activation back through the framework.
-  if (!pending_agent_task_.empty() || !pending_shadow_task_.empty()) {
-    // An agent Space (or a shadow window, which is the same hidden surface
-    // without a presence): host the browser OFF-SCREEN. This runs
-    // re-entrantly inside framework_->CreateAgentBrowser /
-    // CreateShadowBrowser, so the control handler sees
-    // `last_agent_window_id_` set on return.
-    auto controller = std::make_unique<PhiWindowController>(
-        window_id, static_cast<HWND>(hwnd), framework_, this, /*agent=*/true);
-    controller->RefreshTabs();
-    windows_[window_id] = std::move(controller);
-    browser_to_slot_[window_id] = window_id;
-    last_agent_window_id_ = window_id;
-    return;
+  switch (kind) {
+    case WindowKind::kKiosk:
+      // Ephemeral, single-tab, no Space and no slot.
+      registry_.AddKiosk(browser, std::make_unique<PhiKioskWindow>(
+                                      browser.value, hwnd, framework_, this));
+      return;
+    case WindowKind::kPeek:
+    case WindowKind::kReaderPanel:
+      if (HostSurfacePanel(creation)) {
+        return;
+      }
+      break;  // No opener to float over: a plain shell beats a stray window.
+    case WindowKind::kAgent:
+    case WindowKind::kShadow:
+      if (pending->profile_id.empty() && creation.profile_id) {
+        pending->profile_id = creation.profile_id;  // "" = first profile.
+      }
+      HostAgentWindow(browser, hwnd, creation.incognito, *pending);
+      return;
+    case WindowKind::kSpace:
+      if (AttachRequestedSpaceBrowser(browser, hwnd, *pending)) {
+        return;
+      }
+      break;  // Its slot closed meanwhile: host it as a shell of its own.
+    case WindowKind::kUser:
+      break;
   }
   // LAZY RESTORE: a materialized ghost carries the PREVIOUS session's window
   // id, which is how it is matched back to the Space that owned it — this
-  // run's session_id() is freshly allocated and never matches what the client
-  // persisted. Readable only here, while Browser::Create is still on the
-  // stack.
-  const int restored_from =
-      framework_ ? framework_->RestoredFromWindowId() : 0;
-  if (restored_from > 0 && pending_slot_ == 0) {
-    if (const std::string* space =
-            ghost_spaces_.SpaceForWindowId(restored_from)) {
-      const std::string space_id = *space;
-      // Attach it to whichever slot is showing that Space's neighbourhood;
-      // with one shell that is simply the first.
-      if (!windows_.empty()) {
-        auto slot = windows_.begin();
-        slot->second->AttachSpaceBrowser(space_id, window_id,
-                                         static_cast<HWND>(hwnd));
-        browser_to_slot_[window_id] = slot->first;
-        ghost_spaces_.ClearParked(space_id);
-        NoteActiveSpace(slot->second->active_space());
-        PushSpaceMenu();
-        return;
-      }
-    }
+  // run's session_id() is freshly allocated and never matches what the
+  // client persisted.
+  if (creation.restored_from > 0 &&
+      AttachRestoredGhost(browser, hwnd, BrowserId{creation.restored_from})) {
+    return;
   }
-  if (pending_slot_ != 0) {
-    // A Space browser for an existing slot: attach, don't open a new shell.
-    auto it = windows_.find(pending_slot_);
-    if (it != windows_.end()) {
-      it->second->AttachSpaceBrowser(pending_space_, window_id,
-                                     static_cast<HWND>(hwnd));
-      browser_to_slot_[window_id] = pending_slot_;
-      // "Open Link in Space" / a routed URL into a cold Space: the link
-      // opens once the Space's browser exists. Bypassing URL routing — the
-      // URL may be the navigation a rule just re-homed HERE, and the table
-      // rebuilt below races the open, so exempt it outright.
-      if (!pending_open_url_.empty()) {
-        if (framework_) {
-          framework_->OpenTabBypassingSpaceRouting(window_id,
-                                                   pending_open_url_.c_str());
-        }
-        pending_open_url_.clear();
-      }
-      // A re-profiled Space (SetSpaceProfile): the tabs its old browser was
-      // showing reopen here, routing exempt for the same reason.
-      for (const std::string& url : pending_open_urls_) {
-        if (framework_) {
-          framework_->OpenTabBypassingSpaceRouting(window_id, url.c_str());
-        }
-      }
-      pending_open_urls_.clear();
-      pending_slot_ = 0;
-      pending_space_.clear();
-      if (!it->second->is_agent()) {
-        NoteActiveSpace(it->second->active_space());
-      }
-      PushSpaceMenu();  // The Space gained a window id.
-      return;
-    }
-    pending_slot_ = 0;
-    pending_space_.clear();
-    pending_open_url_.clear();
-    pending_open_urls_.clear();
+  HostUserShell(browser, hwnd, creation.incognito);
+}
+
+bool PhiCoordinator::HostSurfacePanel(
+    const phi_framework::WindowCreation& creation) {
+  const BrowserId browser = creation.window;
+  const HWND hwnd = reinterpret_cast<HWND>(creation.hwnd);
+  // The opener is named by BROWSER id; the controller is filed under its
+  // slot, and the two only coincide until that slot switches Space.
+  PhiWindowController* opener =
+      registry_.ControllerForBrowser(creation.opener_window);
+  if (!opener) {
+    LOG(WARNING) << "[PhiClient] surface " << browser.value
+                 << " without an opener window "
+                 << creation.opener_window.value;
+    return false;
   }
-  // An off-the-record browser (IDC_NEW_INCOGNITO_WINDOW) becomes an
-  // INCOGNITO shell: fixed-dark, no Spaces/pins/bookmarks, unrouted.
-  bool incognito = false;
-  if (framework_) {
-    std::optional<base::DictValue> profile = base::JSONReader::ReadDict(
-        framework_->WindowProfileJson(window_id), base::JSON_PARSE_RFC);
-    incognito = profile && profile->FindBool("incognito").value_or(false);
+  if (creation.kind == phi_framework::WindowKind::kReaderPanel) {
+    // A Reader View surface: the extension's reading page, moved out of its
+    // origin window's strip into a browser of its own so it can be hosted
+    // over that origin's live page.
+    LOG(INFO) << "[PhiClient] reader panel " << browser.value << " over tab "
+              << creation.opener_tab.value << " in window "
+              << creation.opener_window.value;
+    surfaces_.Attach(std::make_unique<PhiReaderPanel>(
+        browser.value, hwnd, creation.opener_window.value,
+        creation.opener_tab.value, opener, framework_, this));
+    return true;
   }
-  auto controller = std::make_unique<PhiWindowController>(
-      window_id, static_cast<HWND>(hwnd), framework_, this, /*agent=*/false,
-      incognito);
+  // A Peek: floats inside its opener window's content card rather than
+  // taking a window of its own. One peek per opener: a second replaces the
+  // first (the Mac's presentPeek `.replaced`).
+  LOG(INFO) << "[PhiClient] peek " << browser.value << " over tab "
+            << creation.opener_tab.value << " in window "
+            << creation.opener_window.value;
+  CloseSurfacesForOrigin(creation.opener_tab.value, SidebarSurface::kPeek);
+  surfaces_.Attach(std::make_unique<PhiPeekPanel>(
+      browser.value, hwnd, creation.opener_window.value,
+      creation.opener_tab.value, opener, framework_, this));
+  return true;
+}
+
+void PhiCoordinator::HostAgentWindow(BrowserId browser,
+                                     HWND hwnd,
+                                     bool incognito,
+                                     const PendingCreation& pending) {
+  // An agent Space (or a shadow window, which is the same hidden surface
+  // without a presence): host the browser OFF-SCREEN in a slot of its own.
+  const SlotId slot = SlotId::OpenedBy(browser);
+  // Hosted with the agent chrome whether or not the session is off the
+  // record: nobody sees it, and the incognito shell's registry opt-out is
+  // the agent path's already. The flag lives on the shadow record.
+  PhiWindowController* controller = registry_.Add(
+      slot,
+      std::make_unique<PhiWindowController>(slot, browser, hwnd, framework_,
+                                            this, /*agent=*/true),
+      /*agent=*/true, incognito);
+  registry_.Bind(browser, slot);
+  // Registered BEFORE the first rebuild, so every host lookup the rebuild
+  // makes (OwnerForSlot, PaletteForSlot) already finds the slot (lane 1 D12).
   controller->RefreshTabs();
-  windows_[window_id] = std::move(controller);
-  browser_to_slot_[window_id] = window_id;
-  if (!incognito) {
-    // A user window exists: the cold-start fallback has nothing to rescue.
-    if (cold_start_armed_) {
-      cold_start_armed_ = false;
-      if (msg_hwnd_) {
-        ::KillTimer(msg_hwnd_, kColdStartFallbackTimer);
-      }
-    }
-    NoteActiveSpace(windows_[window_id]->active_space());
-    PushSpaceMenu();  // The slot's Space gained a window id.
+  const uint64_t now_ms = ::GetTickCount64();
+  base::DictValue reply;
+  reply.Set("ok", true);
+  reply.Set("windowId", static_cast<double>(browser.value));
+  if (pending.kind == phi_framework::WindowKind::kAgent) {
+    PhiAgentSpaces::Space& space = agent_spaces_.Create(
+        pending.task_id, browser, pending.profile_id, pending.persistent,
+        now_ms);
+    space.agent_name = pending.agent_name;
+    RefreshUserWindows();  // A new agent pip appears in the switcher.
+    reply.Set("spaceId", space.space_id);
+    reply.Set("ownership", "agent");
+  } else {
+    ShadowWindow& shadow = shadow_windows_[pending.task_id];
+    shadow.task_id = pending.task_id;
+    shadow.window_id = browser;
+    shadow.profile_id = pending.profile_id;
+    shadow.incognito = incognito;
+    shadow.created_ms = EpochMsNow();
+    TouchShadow(&shadow, 0, now_ms);
+    LOG(INFO) << "[PhiClient] shadow window created: " << pending.task_id
+              << " window=" << browser.value
+              << (incognito ? " (incognito)" : "");
+    // Echoed on purpose: a driver that asked for incognito checks this flag
+    // and refuses to proceed if it is missing (an older build).
+    reply.Set("incognito", incognito);
   }
+  UpdateSweepTimer();  // The keep-alive sweep, while anything needs it.
+  if (pending.pending_reply_id) {
+    std::string json;
+    base::JSONWriter::Write(reply, &json);
+    CompletePendingReply(pending.pending_reply_id, std::move(json));
+  }
+}
+
+bool PhiCoordinator::AttachRequestedSpaceBrowser(
+    BrowserId browser,
+    HWND hwnd,
+    const PendingCreation& pending) {
+  PhiWindowController* target = registry_.Get(pending.slot);
+  if (!target) {
+    if (pending.slot.valid()) {
+      LOG(WARNING) << "[PhiClient] Space browser " << browser.value
+                   << " arrived for slot " << pending.slot.value
+                   << ", which is gone";
+    }
+    return false;
+  }
+  // A Space browser for an existing slot: attach, don't open a new shell.
+  target->AttachSpaceBrowser(pending.space_id, browser, hwnd);
+  registry_.Bind(browser, pending.slot);
+  // "Open Link in Space" / a routed URL into a cold Space / a re-profiled
+  // Space's tabs: they open once the Space's browser exists. Bypassing URL
+  // routing — the URL may be the navigation a rule just re-homed HERE, and
+  // the table rebuilt below races the open, so exempt it outright.
+  for (const std::string& url : pending.open_urls) {
+    if (framework_) {
+      framework_->OpenTabBypassingSpaceRouting(browser.value, url.c_str());
+    }
+  }
+  if (!target->is_agent()) {
+    NoteActiveSpace(target->active_space());
+  }
+  PushSpaceMenu();  // The Space gained a window id.
+  return true;
+}
+
+bool PhiCoordinator::AttachRestoredGhost(BrowserId browser,
+                                         HWND hwnd,
+                                         BrowserId restored_from) {
+  // The slot that asked for the materialization when one did
+  // (SwitchSlotToSpace); the first user slot for a window the cold start
+  // rebuilt on its own.
+  std::optional<PendingCreation> pending =
+      registry_.TakePendingGhost(restored_from);
+  UpdateSweepTimer();
+  std::string space_id;
+  SlotId slot;
+  if (pending) {
+    space_id = pending->space_id;
+    slot = pending->slot;
+  } else if (const std::string* space =
+                 ghost_spaces_.SpaceForWindowId(restored_from)) {
+    space_id = *space;
+    slot = registry_.FirstUserSlot();
+  }
+  PhiWindowController* target = registry_.Get(slot);
+  if (space_id.empty() || !target) {
+    return false;
+  }
+  target->AttachSpaceBrowser(space_id, browser, hwnd);
+  registry_.Bind(browser, slot);
+  ghost_spaces_.ClearParked(space_id);
+  NoteActiveSpace(target->active_space());
+  PushSpaceMenu();
+  return true;
+}
+
+void PhiCoordinator::HostUserShell(BrowserId browser, HWND hwnd,
+                                   bool incognito) {
+  // Option B: the client owns a shell window and reparents Chromium's
+  // content in. The shell routes activation back through the framework. An
+  // off-the-record browser (IDC_NEW_INCOGNITO_WINDOW) becomes an INCOGNITO
+  // shell: fixed-dark, no Spaces/pins/bookmarks, unrouted.
+  const SlotId slot = SlotId::OpenedBy(browser);
+  PhiWindowController* controller = registry_.Add(
+      slot,
+      std::make_unique<PhiWindowController>(slot, browser, hwnd, framework_,
+                                            this, /*agent=*/false, incognito),
+      /*agent=*/false, incognito);
+  registry_.Bind(browser, slot);
+  controller->RefreshTabs();  // After registration (lane 1 D12).
+  if (incognito) {
+    return;
+  }
+  // A user window exists: the cold-start fallback has nothing to rescue.
+  if (cold_start_armed_) {
+    cold_start_armed_ = false;
+    if (msg_hwnd_) {
+      ::KillTimer(msg_hwnd_, kColdStartFallbackTimer);
+    }
+  }
+  NoteActiveSpace(controller->active_space());
+  PushSpaceMenu();  // The slot's Space gained a window id.
 }
 
 // static
@@ -8062,7 +8141,7 @@ bool PhiCoordinator::DismissPeeksForShell(HWND shell, HWND inside) {
   if (!shell) {
     return false;
   }
-  std::vector<int64_t> to_dismiss;
+  std::vector<BrowserId> to_dismiss;
   surfaces_.ForEach([&](PhiSurfacePanel& panel) {
     if (panel.kind() != SidebarSurface::kPeek) {
       return;
@@ -8074,14 +8153,14 @@ bool PhiCoordinator::DismissPeeksForShell(HWND shell, HWND inside) {
     if (inside && (inside == card || ::IsChild(card, inside))) {
       return;  // A click INSIDE the card is the card's own business.
     }
-    to_dismiss.push_back(panel.window_id());
+    to_dismiss.push_back(BrowserId{panel.window_id()});
   });
   // Closing the peek's browser is the dismissal (the card's own close chip
   // does the same); OnBrowserWindowClosing then detaches the record — so
   // iterate a snapshot, never the registry.
-  for (int64_t window : to_dismiss) {
+  for (const BrowserId window : to_dismiss) {
     if (framework_) {
-      framework_->CloseBrowserWindow(window);
+      framework_->CloseBrowserWindow(window.value);
     }
   }
   return !to_dismiss.empty();
@@ -8093,7 +8172,7 @@ HWND PhiCoordinator::ShellForFocus() const {
     return nullptr;
   }
   HWND root = ::GetAncestor(focus, GA_ROOT);
-  for (const auto& [slot, controller] : windows_) {
+  for (PhiWindowController* controller : registry_.Controllers()) {
     if (controller->shell_hwnd() == root) {
       return root;
     }
@@ -8231,40 +8310,30 @@ void PhiCoordinator::OnExtensionsChanged(int64_t window_id) {
   PhiExtensionsPopover::RefreshOpen();
   // The address capsule's pinned-extension icons follow the same change
   // notification (a pin toggle, an install, an icon decode).
-  for (auto& [slot, controller] : windows_) {
+  for (PhiWindowController* controller : registry_.Controllers()) {
     controller->RefreshFieldExtensions();
   }
 }
 
 void PhiCoordinator::OnContentFullscreenChanged(int64_t window_id,
                                                 bool fullscreen) {
-  auto slot_it = browser_to_slot_.find(window_id);
-  const int64_t slot = slot_it != browser_to_slot_.end() ? slot_it->second
-                                                         : window_id;
-  auto it = windows_.find(slot);
-  if (it != windows_.end()) {
-    it->second->OnContentFullscreenChanged(window_id, fullscreen);
+  const BrowserId browser{window_id};
+  if (PhiWindowController* shell = registry_.ControllerForBrowser(browser)) {
+    shell->OnContentFullscreenChanged(browser, fullscreen);
   }
 }
 
 void PhiCoordinator::OnTargetURLChanged(int64_t window_id, const char* url) {
-  auto slot_it = browser_to_slot_.find(window_id);
-  const int64_t slot = slot_it != browser_to_slot_.end() ? slot_it->second
-                                                         : window_id;
-  auto it = windows_.find(slot);
-  if (it != windows_.end()) {
-    it->second->OnTargetURLChanged(window_id,
-                                   base::UTF8ToWide(url ? url : ""));
+  const BrowserId browser{window_id};
+  if (PhiWindowController* shell = registry_.ControllerForBrowser(browser)) {
+    shell->OnTargetURLChanged(browser, base::UTF8ToWide(url ? url : ""));
   }
 }
 
 void PhiCoordinator::OnOmniboxResults(int64_t window_id, const char* json) {
-  auto slot_it = browser_to_slot_.find(window_id);
-  const int64_t slot = slot_it != browser_to_slot_.end() ? slot_it->second
-                                                         : window_id;
-  auto it = windows_.find(slot);
-  if (it != windows_.end()) {
-    it->second->OnOmniboxResults(window_id, json ? json : "");
+  const BrowserId browser{window_id};
+  if (PhiWindowController* shell = registry_.ControllerForBrowser(browser)) {
+    shell->OnOmniboxResults(browser, json ? json : "");
   }
 }
 
@@ -8284,12 +8353,10 @@ void PhiCoordinator::OnImportCompleted(const char* source, bool success) {
   int copied = 0;
   std::string profile_id, space_id;
   if (focused && framework_ &&
-      OwnerForSlot(focused->window_id(), &profile_id, &space_id)) {
-    const int64_t browser = focused->active_browser()
-                                ? focused->active_browser()
-                                : focused->window_id();
+      OwnerForSlot(focused->slot(), &profile_id, &space_id)) {
     std::optional<base::Value> tree = base::JSONReader::Read(
-        framework_->AllBookmarksJson(browser), base::JSON_PARSE_RFC);
+        framework_->AllBookmarksJson(ResolveBrowser(focused->slot()).value),
+        base::JSON_PARSE_RFC);
     if (tree && tree->is_list() && !tree->GetList().empty()) {
       const std::string root = tab_store_.AddBookmark(
           profile_id, space_id, std::string(), "Imported from Chrome",
@@ -8328,9 +8395,7 @@ void PhiCoordinator::OnImportCompleted(const char* source, bool success) {
       }
     }
   }
-  for (const auto& [slot, controller] : windows_) {
-    controller->RefreshTabs();
-  }
+  RefreshAllWindows();
   PhiSettingsWindow::Refresh();
   std::wstring message = L"Import finished.";
   if (copied > 0) {
@@ -8349,17 +8414,14 @@ void PhiCoordinator::OnPlaceholderModeChanged(int64_t window_id,
   // Retire it. Deferred: this arrives from inside the tab removal that
   // caused it, and closing a browser from there trips
   // `!observers_.is_notifying_observers()`.
-  if (entered && surfaces_.Find(window_id) && msg_hwnd_) {
+  const BrowserId browser{window_id};
+  if (entered && surfaces_.Find(browser) && msg_hwnd_) {
     ::PostMessageW(msg_hwnd_, WM_PHI_READER_RETIRE,
                    static_cast<WPARAM>(window_id), 0);
     return;
   }
-  auto slot_it = browser_to_slot_.find(window_id);
-  const int64_t slot = slot_it != browser_to_slot_.end() ? slot_it->second
-                                                         : window_id;
-  auto it = windows_.find(slot);
-  if (it != windows_.end()) {
-    it->second->OnPlaceholderModeChanged(window_id, entered);
+  if (PhiWindowController* shell = registry_.ControllerForBrowser(browser)) {
+    shell->OnPlaceholderModeChanged(browser, entered);
   }
 }
 
@@ -8367,22 +8429,19 @@ void PhiCoordinator::OnRefreshNewTab(int64_t window_id) {
   // A Space URL rule re-homed a navigation that began on this window's new
   // tab: the tab is a new tab again, so its native page goes back to its
   // clean state (the Mac's resetToInitialState).
-  auto slot_it = browser_to_slot_.find(window_id);
-  const int64_t slot = slot_it != browser_to_slot_.end() ? slot_it->second
-                                                         : window_id;
-  auto it = windows_.find(slot);
-  if (it != windows_.end()) {
-    it->second->ResetNativeNtp();
+  if (PhiWindowController* shell =
+          registry_.ControllerForBrowser(BrowserId{window_id})) {
+    shell->ResetNativeNtp();
   }
 }
 
 void PhiCoordinator::OnTabsChanged(int64_t window_id) {
-  auto kiosk = kiosks_.find(window_id);
-  if (kiosk != kiosks_.end()) {
-    kiosk->second->RefreshState();
+  const BrowserId browser{window_id};
+  if (PhiKioskWindow* kiosk = registry_.Kiosk(browser)) {
+    kiosk->RefreshState();
     return;
   }
-  if (PhiSurfacePanel* panel = surfaces_.Find(window_id)) {
+  if (PhiSurfacePanel* panel = surfaces_.Find(browser)) {
     // A surface's own browser: the only thing that can change in it is the
     // page (a reader's only page change that matters is leaving reader.html).
     panel->RefreshState();
@@ -8396,28 +8455,24 @@ void PhiCoordinator::OnTabsChanged(int64_t window_id) {
     ::PostMessageW(msg_hwnd_, WM_PHI_READER_SWEEP,
                    static_cast<WPARAM>(window_id), 0);
   }
-  auto slot_it = browser_to_slot_.find(window_id);
-  const int64_t slot = slot_it != browser_to_slot_.end() ? slot_it->second
-                                                         : window_id;
-  auto it = windows_.find(slot);
-  if (it != windows_.end()) {
-    // Deferred: this fires from inside the tab-strip change it reports (a tab
-    // "will be removed" is still in the strip), so the sidebar is repainted
-    // once the browser state has settled.
-    it->second->ScheduleRefresh();
+  if (PhiWindowController* shell = registry_.ControllerForBrowser(browser)) {
+    // Coalesced: the notification arrives after the change committed
+    // (contract rule 1), and the sidebar repaints once per turn.
+    shell->ScheduleRefresh();
     // The shell switches Spaces on its own (ShowSpace) without telling the
     // owner; strip activity in the browser on screen is the next best
     // signal for which Space the user is in.
-    if (!it->second->is_agent() && !it->second->is_incognito() &&
-        it->second->active_browser() == window_id) {
-      NoteActiveSpace(it->second->active_space());
+    if (!shell->is_agent() && !shell->is_incognito() &&
+        shell->active_browser_id() == browser) {
+      NoteActiveSpace(shell->active_space());
     }
   }
 }
 
 void PhiCoordinator::OnBrowserWindowClosing(int64_t window_id) {
   LOG(INFO) << "[PhiClient] OnBrowserWindowClosing windowId=" << window_id;
-  if (kiosks_.erase(window_id) > 0) {
+  const BrowserId browser{window_id};
+  if (registry_.RemoveKiosk(browser)) {
     return;  // A Kiosk owns nothing else — no slot, no Space, no bookkeeping.
   }
   // A surface's own browser closing (its close chip, Esc, the reader's
@@ -8425,17 +8480,14 @@ void PhiCoordinator::OnBrowserWindowClosing(int64_t window_id) {
   // strip back to the origin, the way the Mac reveals the page the overlay
   // was covering, and repaint the row that carried the indicator.
   if (const std::optional<PhiSurfaceRegistry::Origin> gone =
-          surfaces_.Detach(window_id)) {
+          surfaces_.Detach(browser)) {
     ActivateTabById(gone->origin_window_id, gone->origin_tab_id);
     // Repaint by the origin WINDOW: the origin tab may be hidden in a pin or
     // bookmark cell, which no visible-row lookup would find — and when it
     // was already active, re-activating it raises no tab notification.
-    auto slot = browser_to_slot_.find(gone->origin_window_id);
-    auto window = windows_.find(slot != browser_to_slot_.end()
-                                    ? slot->second
-                                    : gone->origin_window_id);
-    if (window != windows_.end()) {
-      window->second->ScheduleRefresh();
+    if (PhiWindowController* origin =
+            registry_.ControllerForBrowser(gone->origin_window_id)) {
+      origin->ScheduleRefresh();
     } else if (PhiWindowController* shown =
                    WindowShowingTab(gone->origin_tab_id)) {
       shown->ScheduleRefresh();
@@ -8446,95 +8498,85 @@ void PhiCoordinator::OnBrowserWindowClosing(int64_t window_id) {
   // browsers of their own, so nothing else would close them — and a
   // surviving panel browser keeps the whole process alive after the last
   // window is gone (the Mac's teardown*ForWindowClose, for BOTH kinds).
-  std::vector<int64_t> orphaned;
-  for (PhiSurfacePanel* panel : surfaces_.OverWindow(window_id)) {
-    orphaned.push_back(panel->window_id());
+  std::vector<BrowserId> orphaned;
+  for (PhiSurfacePanel* panel : surfaces_.OverWindow(browser)) {
+    orphaned.push_back(BrowserId{panel->window_id()});
   }
-  for (int64_t panel_id : orphaned) {
+  for (const BrowserId panel_id : orphaned) {
     surfaces_.Detach(panel_id);
     if (framework_) {
-      framework_->CloseBrowserWindow(panel_id);
+      framework_->CloseBrowserWindow(panel_id.value);
     }
   }
   // A shadow window closing (shadow.close, the keep-alive sweep, a crash)
-  // drops its record; it had no presence to take down.
-  if (ShadowWindow* shadow = FindShadowByWindow(window_id)) {
-    const std::string task_id = shadow->task_id;
+  // drops its record; it had no presence to take down. An agent Space's
+  // hidden window closing (via complete(), the user closing the surfaced
+  // window, or a crash) drops its record — the skill learns the task ended
+  // from its absence in the list. Both live in a slot of their own.
+  const SlotId agent_slot = SlotId::OpenedBy(browser);
+  bool hidden_window = false;
+  if (ShadowWindow* shadow = FindShadowByWindow(browser)) {
+    const std::string task_id = shadow->task_id;  // Copied: erase frees it.
     shadow_windows_.erase(task_id);
-    if (auto win = windows_.find(window_id); win != windows_.end()) {
-      PhiAgentOverlay::HideIfBoundTo(win->second.get());
-    }
-    windows_.erase(window_id);
-    browser_to_slot_.erase(window_id);
-    if (agent_spaces_.empty() && shadow_windows_.empty() && msg_hwnd_) {
-      ::KillTimer(msg_hwnd_, kAgentSpaceSweepTimer);
-    }
-    return;
-  }
-  // An agent Space's hidden window closing (via complete(), the user closing
-  // the surfaced window, or a crash) drops its record — the skill learns the
-  // task ended from its absence in the list.
-  if (PhiAgentSpaces::Space* space = agent_spaces_.FindByWindow(window_id)) {
+    hidden_window = true;
+  } else if (PhiAgentSpaces::Space* space = agent_spaces_.FindByWindow(browser)) {
     const std::string task_id = space->task_id;
     agent_spaces_.Remove(task_id);
     PhiTranscriptPanel::CloseFor(task_id);
     if (watched_agent_task_ == task_id) {
       watched_agent_task_.clear();
     }
+    hidden_window = true;
+  }
+  if (hidden_window) {
     // The watch overlay may be bound to this shell: unhook it BEFORE the
     // controller (and its HWND) goes, or it keeps a dangling binding.
-    if (auto win = windows_.find(window_id); win != windows_.end()) {
-      PhiAgentOverlay::HideIfBoundTo(win->second.get());
+    if (PhiWindowController* shell = registry_.Get(agent_slot)) {
+      PhiAgentOverlay::HideIfBoundTo(shell);
     }
-    windows_.erase(window_id);
-    browser_to_slot_.erase(window_id);
-    if (agent_spaces_.empty() && shadow_windows_.empty() && msg_hwnd_) {
-      ::KillTimer(msg_hwnd_, kAgentSpaceSweepTimer);
-    }
+    registry_.Remove(agent_slot);  // Drops the browser's binding with it.
+    UpdateSweepTimer();
     RefreshUserWindows();
     return;
   }
-  auto slot_it = browser_to_slot_.find(window_id);
-  if (slot_it == browser_to_slot_.end()) {
-    windows_.erase(window_id);
-    return;
+  const std::optional<SlotId> slot = registry_.SlotFor(browser);
+  if (!slot) {
+    return;  // A browser no slot ever hosted (an unrequested stray).
   }
-  const int64_t slot = slot_it->second;
-  browser_to_slot_.erase(slot_it);
-  auto it = windows_.find(slot);
-  if (it == windows_.end()) {
+  registry_.Unbind(browser);
+  PhiWindowController* shell = registry_.Get(*slot);
+  if (!shell) {
     return;
   }
   // The Space on screen as the window goes is what the next cold start
   // should rebuild first — noted before the controller can vanish.
-  if (!it->second->is_incognito()) {
-    NoteActiveSpace(it->second->active_space());
+  if (!shell->is_incognito()) {
+    NoteActiveSpace(shell->active_space());
   }
   // The slot survives while any Space browser remains.
-  if (!it->second->ForgetBrowser(window_id)) {
-    windows_.erase(it);
+  if (!shell->ForgetBrowser(browser)) {
+    registry_.Remove(*slot);
   }
   PushSpaceMenu();  // A Space lost its window id.
 }
 
-bool PhiCoordinator::SwitchSlotToSpace(int64_t slot,
-                                       const std::string& space_id,
-                                       bool* pending,
-                                       bool* cold) {
-  auto it = windows_.find(slot);
-  if (it == windows_.end() && slot == 0 && !windows_.empty()) {
-    it = windows_.begin();  // The verb convention: 0 means "the window".
-  }
+bool PhiCoordinator::SwitchSlotToSpace(
+    SlotId slot,
+    const std::string& space_id,
+    bool* pending,
+    bool* cold,
+    const std::vector<std::string>* reopen_urls) {
+  PhiWindowController* shell = ControllerForSlot(slot);
   auto space_it =
       std::find_if(spaces_.begin(), spaces_.end(),
                    [&](const Space& s) { return s.id == space_id; });
-  if (it == windows_.end() || space_it == spaces_.end()) {
+  if (!shell || space_it == spaces_.end()) {
     return false;
   }
-  if (it->second->HasSpace(space_id)) {
-    const bool ok = it->second->ShowSpace(space_id);
+  if (shell->HasSpace(space_id)) {
+    const bool ok = shell->ShowSpace(space_id);
     if (ok) {
-      if (!it->second->is_agent()) {
+      if (!shell->is_agent()) {
         NoteActiveSpace(space_id);
       }
       PushSpaceMenu();  // The visible-Space routing map changed.
@@ -8544,101 +8586,118 @@ bool PhiCoordinator::SwitchSlotToSpace(int64_t slot,
   if (!framework_) {
     return false;
   }
+  // What OnBrowserWindowCreated does with the browser when it arrives.
+  PendingCreation creation;
+  creation.slot = shell->slot();
+  creation.space_id = space_id;
+  if (reopen_urls) {
+    creation.open_urls = *reopen_urls;
+  }
+  if (cold) {
+    *cold = true;
+  }
+  if (pending) {
+    *pending = true;
+  }
+  // Already asked for: a second switch before the browser arrives must not
+  // ask for a second browser (the doubled-Space bug of the single-flight
+  // globals). Anything new to open rides on the request in flight.
+  if (PendingCreation* in_flight =
+          registry_.FindPendingSpace(creation.slot, space_id)) {
+    in_flight->open_urls.insert(in_flight->open_urls.end(),
+                                creation.open_urls.begin(),
+                                creation.open_urls.end());
+    return true;
+  }
   // LAZY RESTORE: this Space may exist only as a PARKED window from the
   // previous session. Rebuild that window rather than spawning a fresh one —
   // the session file still describes the parked one, so a fresh window would
-  // stand beside it as a doubled Space.
+  // stand beside it as a doubled Space. A materialized window is announced
+  // with the PREVIOUS session's id rather than a token, so that id keys the
+  // pending record — filed BEFORE the call, which may announce inside it.
   if (const PhiGhostSpaces::Remembered* ghost = ghost_spaces_.Parked(space_id)) {
     const std::string profile = ghost->profile;
-    const int window_id = ghost->window_id;
-    if (cold) {
-      *cold = true;
-    }
-    pending_slot_ = it->first;
-    pending_space_ = space_id;
-    const int outcome =
-        framework_->MaterializeGhostWindow(profile.c_str(), window_id);
+    const BrowserId window_id = ghost->window_id;
+    creation.profile_id = profile;
+    creation.deadline_tick = ::GetTickCount64() + kCreateTimeoutMs;
+    registry_.AddPendingGhost(window_id, creation);
+    UpdateSweepTimer();
+    const int outcome = framework_->MaterializeGhostWindow(
+        profile.c_str(), static_cast<int>(window_id.value));
     switch (outcome) {
       case 0:  // Materialized: the window arrives via OnBrowserWindowCreated.
         ghost_spaces_.ClearParked(space_id);
-        if (pending) {
-          *pending = true;
-        }
         return true;
       case 2:
         // No such ghost — nothing will ever satisfy this. DROP the record,
         // or the Space stays pinned on a materialization that cannot
         // succeed, and fall through to spawning it fresh.
+        registry_.TakePendingGhost(window_id);
         ghost_spaces_.ClearParked(space_id);
         break;
       default:
         // Refused FOR NOW (profile still loading, a replay in flight). KEEP
         // the record so the next switch retries; spawning instead would
         // double the Space.
-        pending_slot_ = 0;
-        pending_space_.clear();
+        registry_.TakePendingGhost(window_id);
+        UpdateSweepTimer();
         if (pending) {
           *pending = false;
         }
         return false;
     }
   }
-  // First visit: create this Space's browser IN ITS PROFILE and attach it to
-  // the slot. A cold profile loads asynchronously, so the pending attach
-  // stays armed until OnBrowserWindowCreated consumes it.
-  if (cold) {
-    *cold = true;
+  // First visit: ask for this Space's browser IN ITS PROFILE; the request
+  // attaches it to the slot when it arrives (a cold profile loads first).
+  const RequestToken token = RequestCreation(
+      phi_framework::WindowKind::kSpace, space_it->profile_id,
+      /*incognito=*/false, BrowserId(), std::move(creation));
+  if (!token.valid() && pending) {
+    *pending = false;
   }
-  pending_slot_ = it->first;
-  pending_space_ = space_id;
-  const bool ok =
-      framework_->CreateSpaceBrowserInProfile(space_it->profile_id.c_str());
-  if (pending) {
-    *pending = !it->second->HasSpace(space_id);
-  }
-  return ok;
+  return token.valid();
 }
 
-int64_t PhiCoordinator::BrowserForSpace(const std::string& space_id) const {
+BrowserId PhiCoordinator::BrowserForSpace(const std::string& space_id) const {
   if (space_id.empty()) {
-    return 0;
+    return BrowserId();
   }
-  for (const auto& [slot, controller] : windows_) {
-    const int64_t browser = controller->BrowserIdForSpace(space_id);
-    if (browser) {
+  for (PhiWindowController* controller : registry_.Controllers()) {
+    const BrowserId browser = controller->BrowserIdForSpace(space_id);
+    if (browser.valid()) {
       return browser;
     }
   }
-  return 0;
+  return BrowserId();
 }
 
-int64_t PhiCoordinator::ResolveScopeBrowser(const base::DictValue* payload,
-                                            std::string* error) {
+BrowserId PhiCoordinator::ResolveScopeBrowser(const base::DictValue* payload,
+                                              std::string* error) {
   if (const std::string* task =
           payload ? payload->FindString("taskId") : nullptr) {
     if (PhiAgentSpaces::Space* space = agent_spaces_.Find(*task)) {
-      return ResolveBrowser(space->window_id);
+      return ResolveBrowser(space->window_id.value);
     }
     // A shadow window is a task too (the skill's kind:'shadow' context), so
     // the tab-management verbs reach its window under the same scope.
     auto shadow = shadow_windows_.find(*task);
     if (shadow != shadow_windows_.end() &&
-        windows_.count(shadow->second.window_id)) {
-      return ResolveBrowser(shadow->second.window_id);
+        registry_.IsBound(shadow->second.window_id)) {
+      return ResolveBrowser(shadow->second.window_id.value);
     }
     *error = "unknown_task";
-    return 0;
+    return BrowserId();
   }
   if (const std::string* space_id =
           payload ? payload->FindString("spaceId") : nullptr) {
-    const int64_t browser = BrowserForSpace(*space_id);
-    if (!browser) {
+    const BrowserId browser = BrowserForSpace(*space_id);
+    if (!browser.valid()) {
       *error = "space_not_open";
     }
     return browser;
   }
   *error = "invalid_payload";
-  return 0;
+  return BrowserId();
 }
 
 bool PhiCoordinator::IsUserSpaceRequest(const std::string& type,
@@ -8696,17 +8755,16 @@ bool PhiCoordinator::IsUserSpaceRequest(const std::string& type,
                                          .value_or(0))
               : 0;
   if (window_id) {
-    auto slot_it = browser_to_slot_.find(window_id);
-    const int64_t slot =
-        slot_it != browser_to_slot_.end() ? slot_it->second : window_id;
-    auto it = windows_.find(slot);
-    if (it != windows_.end() && it->second->is_agent()) {
+    const BrowserId browser{window_id};
+    PhiWindowController* shell = registry_.ControllerForBrowser(browser);
+    if (!shell) {
+      shell = registry_.Resolve(window_id);
+    }
+    if (shell && shell->is_agent()) {
       return false;
     }
-    for (const auto& [task_id, shadow] : shadow_windows_) {
-      if (shadow.window_id == window_id) {
-        return false;
-      }
+    if (FindShadowByWindow(browser)) {
+      return false;
     }
   }
   return true;
@@ -8715,15 +8773,15 @@ bool PhiCoordinator::IsUserSpaceRequest(const std::string& type,
 PhiWindowController* PhiCoordinator::FocusedUserController() {
   const HWND foreground = ::GetForegroundWindow();
   PhiWindowController* first_user = nullptr;
-  for (const auto& [slot, controller] : windows_) {
+  for (PhiWindowController* controller : registry_.Controllers()) {
     if (controller->is_agent()) {
       continue;
     }
     if (foreground && controller->shell_hwnd() == foreground) {
-      return controller.get();
+      return controller;
     }
     if (!first_user) {
-      first_user = controller.get();
+      first_user = controller;
     }
   }
   return first_user;
@@ -8737,12 +8795,12 @@ bool PhiCoordinator::DialectOwner(const std::string& profile_id_or_empty,
     // Prefer a window whose active Space runs this profile (its space is the
     // natural owner under space scope); fall back to the profile's first
     // Space, then to no Space (profile/app-scoped pins still resolve).
-    for (const auto& [slot, controller] : windows_) {
+    for (PhiWindowController* controller : registry_.Controllers()) {
       if (controller->is_agent()) {
         continue;
       }
       std::string p, s;
-      if (OwnerForSlot(slot, &p, &s) && p == *profile_id) {
+      if (OwnerForSlot(controller->slot(), &p, &s) && p == *profile_id) {
         *space_id = s;
         return true;
       }
@@ -8757,8 +8815,7 @@ bool PhiCoordinator::DialectOwner(const std::string& profile_id_or_empty,
     return true;
   }
   PhiWindowController* focused = FocusedUserController();
-  return focused &&
-         OwnerForSlot(focused->window_id(), profile_id, space_id);
+  return focused && OwnerForSlot(focused->slot(), profile_id, space_id);
 }
 
 bool PhiCoordinator::HandleSkillDialectVerb(const std::string& type,
@@ -8770,22 +8827,18 @@ bool PhiCoordinator::HandleSkillDialectVerb(const std::string& type,
     return true;
   };
   // The window's tab rows (ListTabsJson parsed), or an empty list.
-  auto tabs_of = [&](int64_t browser) {
+  auto tabs_of = [&](BrowserId browser) {
     base::ListValue tabs;
-    if (framework_ && browser) {
+    if (framework_ && browser.valid()) {
       std::optional<base::Value> parsed = base::JSONReader::Read(
-          framework_->ListTabsJson(browser), base::JSON_PARSE_RFC);
+          framework_->ListTabsJson(browser.value), base::JSON_PARSE_RFC);
       if (parsed && parsed->is_list()) {
         tabs = std::move(*parsed).TakeList();
       }
     }
     return tabs;
   };
-  auto refresh_all = [&]() {
-    for (const auto& [slot, controller] : windows_) {
-      controller->RefreshTabs();
-    }
-  };
+  auto refresh_all = [&]() { RefreshAllWindows(); };
 
   if (type == "agentSpace.resolveTabIds") {
     base::ListValue ids;
@@ -8846,8 +8899,8 @@ bool PhiCoordinator::HandleSkillDialectVerb(const std::string& type,
   if (type.rfind("agentSpace.tabGroups.", 0) == 0) {
     const std::string op = type.substr(21);
     std::string error;
-    const int64_t browser = ResolveScopeBrowser(payload, &error);
-    if (!browser || !framework_) {
+    const BrowserId browser = ResolveScopeBrowser(payload, &error);
+    if (!browser.valid() || !framework_) {
       return fail(error.empty() ? "space_not_open" : error);
     }
     const std::string* token = payload ? payload->FindString("token")
@@ -8861,7 +8914,7 @@ bool PhiCoordinator::HandleSkillDialectVerb(const std::string& type,
     if (op == "list") {
       base::ListValue groups;
       std::optional<base::Value> parsed = base::JSONReader::Read(
-          framework_->TabGroupsJson(browser), base::JSON_PARSE_RFC);
+          framework_->TabGroupsJson(browser.value), base::JSON_PARSE_RFC);
       const base::ListValue tabs = tabs_of(browser);
       if (parsed && parsed->is_list()) {
         for (const base::Value& v : parsed->GetList()) {
@@ -8898,17 +8951,17 @@ bool PhiCoordinator::HandleSkillDialectVerb(const std::string& type,
     }
     if (op == "create") {
       const std::string created =
-          framework_->CreateTabGroupForTabs(browser, tab_ids_json.c_str());
+          framework_->CreateTabGroupForTabs(browser.value, tab_ids_json.c_str());
       if (created.empty()) {
         return fail("create_failed");
       }
       if (const std::string* title =
               payload ? payload->FindString("title") : nullptr) {
-        framework_->RenameTabGroup(browser, created.c_str(), title->c_str());
+        framework_->RenameTabGroup(browser.value, created.c_str(), title->c_str());
       }
       if (const std::string* color =
               payload ? payload->FindString("color") : nullptr) {
-        framework_->SetTabGroupColor(browser, created.c_str(),
+        framework_->SetTabGroupColor(browser.value, created.c_str(),
                                      color->c_str());
       }
       out->Set("token", created);
@@ -8922,17 +8975,17 @@ bool PhiCoordinator::HandleSkillDialectVerb(const std::string& type,
       bool ok = true;
       if (const std::string* title =
               payload ? payload->FindString("title") : nullptr) {
-        ok &= framework_->RenameTabGroup(browser, token->c_str(),
+        ok &= framework_->RenameTabGroup(browser.value, token->c_str(),
                                          title->c_str());
       }
       if (const std::string* color =
               payload ? payload->FindString("color") : nullptr) {
-        ok &= framework_->SetTabGroupColor(browser, token->c_str(),
+        ok &= framework_->SetTabGroupColor(browser.value, token->c_str(),
                                            color->c_str());
       }
       if (std::optional<bool> collapsed =
               payload ? payload->FindBool("collapsed") : std::nullopt) {
-        ok &= framework_->SetTabGroupCollapsed(browser, token->c_str(),
+        ok &= framework_->SetTabGroupCollapsed(browser.value, token->c_str(),
                                                *collapsed);
       }
       out->Set("ok", ok);
@@ -8942,13 +8995,13 @@ bool PhiCoordinator::HandleSkillDialectVerb(const std::string& type,
       if (!token) {
         return fail("invalid_payload");
       }
-      out->Set("ok", framework_->AddTabsToGroup(browser, token->c_str(),
+      out->Set("ok", framework_->AddTabsToGroup(browser.value, token->c_str(),
                                                 tab_ids_json.c_str()));
       return true;
     }
     if (op == "removeTabs") {
       out->Set("ok", framework_->RemoveTabsFromGroupByIds(
-                         browser, tab_ids_json.c_str()));
+                         browser.value, tab_ids_json.c_str()));
       return true;
     }
     if (op == "ungroup" || op == "close") {
@@ -8956,9 +9009,9 @@ bool PhiCoordinator::HandleSkillDialectVerb(const std::string& type,
         return fail("invalid_payload");
       }
       out->Set("ok", op == "ungroup"
-                         ? framework_->UngroupTabGroup(browser,
+                         ? framework_->UngroupTabGroup(browser.value,
                                                        token->c_str())
-                         : framework_->CloseTabGroup(browser,
+                         : framework_->CloseTabGroup(browser.value,
                                                      token->c_str()));
       return true;
     }
@@ -9039,8 +9092,8 @@ bool PhiCoordinator::HandleSkillDialectVerb(const std::string& type,
   if (type.rfind("agentSpace.splitView.", 0) == 0) {
     const std::string op = type.substr(21);
     std::string error;
-    const int64_t browser = ResolveScopeBrowser(payload, &error);
-    if (!browser || !framework_) {
+    const BrowserId browser = ResolveScopeBrowser(payload, &error);
+    if (!browser.valid() || !framework_) {
       return fail(error.empty() ? "space_not_open" : error);
     }
     const std::string* split_id = payload ? payload->FindString("splitId")
@@ -9048,7 +9101,7 @@ bool PhiCoordinator::HandleSkillDialectVerb(const std::string& type,
     if (op == "list") {
       base::ListValue splits;
       std::optional<base::Value> parsed = base::JSONReader::Read(
-          framework_->SplitViewsJson(browser), base::JSON_PARSE_RFC);
+          framework_->SplitViewsJson(browser.value), base::JSON_PARSE_RFC);
       if (parsed && parsed->is_list()) {
         for (const base::Value& v : parsed->GetList()) {
           const base::DictValue* s = v.GetIfDict();
@@ -9080,7 +9133,7 @@ bool PhiCoordinator::HandleSkillDialectVerb(const std::string& type,
       const std::string* layout = payload ? payload->FindString("layout")
                                           : nullptr;
       const std::string created = framework_->CreateSplitViewForTabs(
-          browser, primary, secondary, layout ? layout->c_str() : "");
+          browser.value, primary, secondary, layout ? layout->c_str() : "");
       if (created.empty()) {
         return fail("create_failed");
       }
@@ -9097,17 +9150,17 @@ bool PhiCoordinator::HandleSkillDialectVerb(const std::string& type,
       const double ratio =
           payload ? payload->FindDouble("ratio").value_or(-1.0) : -1.0;
       out->Set("ok", framework_->UpdateSplitView(
-                         browser, split_id->c_str(),
+                         browser.value, split_id->c_str(),
                          layout ? layout->c_str() : "", ratio));
       return true;
     }
     if (op == "swap") {
-      out->Set("ok", framework_->SwapSplitView(browser, split_id->c_str()));
+      out->Set("ok", framework_->SwapSplitView(browser.value, split_id->c_str()));
       return true;
     }
     if (op == "remove") {
       out->Set("ok",
-               framework_->RemoveSplitById(browser, split_id->c_str()));
+               framework_->RemoveSplitById(browser.value, split_id->c_str()));
       return true;
     }
     return fail("invalid_payload");
@@ -9117,13 +9170,14 @@ bool PhiCoordinator::HandleSkillDialectVerb(const std::string& type,
   if (type.rfind("agentSpace.downloads.", 0) == 0) {
     const std::string op = type.substr(21);
     std::string error;
-    const int64_t browser = ResolveScopeBrowser(payload, &error);
-    if (!browser || !framework_) {
+    const BrowserId browser = ResolveScopeBrowser(payload, &error);
+    if (!browser.valid() || !framework_) {
       return fail(error.empty() ? "space_not_open" : error);
     }
     if (op == "list") {
       std::optional<base::Value> parsed = base::JSONReader::Read(
-          framework_->DownloadsJsonForAgent(browser), base::JSON_PARSE_RFC);
+          framework_->DownloadsJsonForAgent(browser.value),
+          base::JSON_PARSE_RFC);
       out->Set("downloads", parsed && parsed->is_list()
                                 ? std::move(*parsed)
                                 : base::Value(base::ListValue()));
@@ -9136,7 +9190,8 @@ bool PhiCoordinator::HandleSkillDialectVerb(const std::string& type,
     }
     if (op == "get") {
       std::optional<base::Value> parsed = base::JSONReader::Read(
-          framework_->DownloadsJsonForAgent(browser), base::JSON_PARSE_RFC);
+          framework_->DownloadsJsonForAgent(browser.value),
+          base::JSON_PARSE_RFC);
       if (parsed && parsed->is_list()) {
         for (const base::Value& v : parsed->GetList()) {
           const base::DictValue* d = v.GetIfDict();
@@ -9151,7 +9206,7 @@ bool PhiCoordinator::HandleSkillDialectVerb(const std::string& type,
       return fail("unknown_download");
     }
     if (op == "pause" || op == "resume" || op == "cancel" || op == "remove") {
-      if (!framework_->DownloadActionByGuid(browser, guid->c_str(),
+      if (!framework_->DownloadActionByGuid(browser.value, guid->c_str(),
                                             op.c_str())) {
         return fail("unknown_download");
       }
@@ -9168,15 +9223,15 @@ bool PhiCoordinator::HandleSkillDialectVerb(const std::string& type,
   // Space is window_not_open — never a cue to fall back elsewhere, the
   // skill's contract for a `{window}` binding.
   const auto resolve_user_window = [&](std::string* space_out,
-                                       std::string* error) -> int64_t {
+                                       std::string* error) -> BrowserId {
     const std::string* space_id =
         payload ? payload->FindString("spaceId") : nullptr;
-    const int64_t pinned =
+    const BrowserId pinned{
         payload ? static_cast<int64_t>(
                       payload->FindDouble("windowId").value_or(0))
-                : 0;
-    if (pinned) {
-      for (const auto& [slot, controller] : windows_) {
+                : 0};
+    if (pinned.valid()) {
+      for (PhiWindowController* controller : registry_.Controllers()) {
         if (controller->is_agent()) {
           continue;
         }
@@ -9191,15 +9246,15 @@ bool PhiCoordinator::HandleSkillDialectVerb(const std::string& type,
         return pinned;
       }
       *error = "window_not_open";
-      return 0;
+      return BrowserId();
     }
     if (!space_id || space_id->empty()) {
       *error = "invalid_payload";
-      return 0;
+      return BrowserId();
     }
     *space_out = *space_id;
-    const int64_t browser = BrowserForSpace(*space_id);
-    if (!browser) {
+    const BrowserId browser = BrowserForSpace(*space_id);
+    if (!browser.valid()) {
       *error = "space_not_open";
     }
     return browser;
@@ -9207,8 +9262,8 @@ bool PhiCoordinator::HandleSkillDialectVerb(const std::string& type,
 
   if (type == "agentSpace.spaces.listTabs") {
     std::string space_id, error;
-    const int64_t browser = resolve_user_window(&space_id, &error);
-    if (!browser || !framework_) {
+    const BrowserId browser = resolve_user_window(&space_id, &error);
+    if (!browser.valid() || !framework_) {
       return fail(error.empty() ? "space_not_open" : error);
     }
     base::ListValue rows;
@@ -9239,7 +9294,7 @@ bool PhiCoordinator::HandleSkillDialectVerb(const std::string& type,
     }
     out->Set("tabs", std::move(rows));
     out->Set("spaceId", space_id);  // A window-only bind learns its Space.
-    out->Set("windowId", static_cast<double>(browser));
+    out->Set("windowId", static_cast<double>(browser.value));
     out->Set("ok", true);
     return true;
   }
@@ -9250,8 +9305,8 @@ bool PhiCoordinator::HandleSkillDialectVerb(const std::string& type,
       return fail("invalid_payload");
     }
     std::string space_id, error;
-    const int64_t browser = resolve_user_window(&space_id, &error);
-    if (!browser || !framework_) {
+    const BrowserId browser = resolve_user_window(&space_id, &error);
+    if (!browser.valid() || !framework_) {
       return fail(error.empty() ? "space_not_open" : error);
     }
     const bool activate =
@@ -9268,13 +9323,13 @@ bool PhiCoordinator::HandleSkillDialectVerb(const std::string& type,
     }
     // Bypassed like every client-side deliberate open: a URL rule pointing
     // at another Space must not bounce a tab the skill placed HERE.
-    framework_->OpenTabBypassingSpaceRouting(browser, url->c_str());
+    framework_->OpenTabBypassingSpaceRouting(browser.value, url->c_str());
     if (!activate && previous_active >= 0) {
       // The new tab opened foreground; hand the selection back. The old
       // active tab's index is unchanged by an append/adjacent insert.
-      framework_->ActivateTab(browser, previous_active);
+      framework_->ActivateTab(browser.value, previous_active);
     }
-    out->Set("windowId", static_cast<double>(browser));
+    out->Set("windowId", static_cast<double>(browser.value));
     out->Set("ok", true);
     return true;
   }
@@ -9282,12 +9337,15 @@ bool PhiCoordinator::HandleSkillDialectVerb(const std::string& type,
   if (type == "agentSpace.spaces.focus") {
     // A surfaced agent window in the foreground answers as the agent Space.
     const HWND foreground = ::GetForegroundWindow();
-    for (const auto& [slot, controller] : windows_) {
+    for (PhiWindowController* controller : registry_.Controllers()) {
       if (!controller->is_agent() || !foreground ||
           controller->shell_hwnd() != foreground) {
         continue;
       }
-      PhiAgentSpaces::Space* agent = agent_spaces_.FindByWindow(slot);
+      // An agent window's slot is the browser it opened with (it never
+      // switches Space), so the slot number names its window.
+      PhiAgentSpaces::Space* agent =
+          agent_spaces_.FindByWindow(BrowserId{controller->slot().value});
       if (!agent) {
         break;
       }
@@ -9295,7 +9353,8 @@ bool PhiCoordinator::HandleSkillDialectVerb(const std::string& type,
       out->Set("spaceName", "Agent Space");
       out->Set("isAgentSpace", true);
       out->Set("isIncognito", false);
-      out->Set("windowId", static_cast<double>(ResolveBrowser(slot)));
+      out->Set("windowId",
+               static_cast<double>(ResolveBrowser(controller->slot()).value));
       out->Set("ok", true);
       return true;
     }
@@ -9315,9 +9374,9 @@ bool PhiCoordinator::HandleSkillDialectVerb(const std::string& type,
     out->Set("spaceName", name);
     out->Set("isAgentSpace", false);
     out->Set("isIncognito", controller->is_incognito());
-    const int64_t browser = controller->active_browser();
-    if (browser) {
-      out->Set("windowId", static_cast<double>(browser));
+    const BrowserId browser = controller->active_browser_id();
+    if (browser.valid()) {
+      out->Set("windowId", static_cast<double>(browser.value));
       for (const base::Value& v : tabs_of(browser)) {
         const base::DictValue* tab = v.GetIfDict();
         if (!tab || !tab->FindBool("active").value_or(false)) {
@@ -9347,7 +9406,7 @@ bool PhiCoordinator::HandleSkillDialectVerb(const std::string& type,
     }
     // A slot already hosting the Space surfaces it there; otherwise the
     // user's focused window takes it (cold-spawning the browser).
-    for (const auto& [slot, controller] : windows_) {
+    for (PhiWindowController* controller : registry_.Controllers()) {
       if (controller->is_agent() || !controller->HasSpace(*space_id)) {
         continue;
       }
@@ -9368,7 +9427,7 @@ bool PhiCoordinator::HandleSkillDialectVerb(const std::string& type,
     }
     bool pending = false, cold = false;
     const bool ok =
-        SwitchSlotToSpace(focused->window_id(), *space_id, &pending, &cold);
+        SwitchSlotToSpace(focused->slot(), *space_id, &pending, &cold);
     if (!ok) {
       return fail("unknown_space");
     }
@@ -9410,7 +9469,7 @@ bool PhiCoordinator::HandleSkillDialectVerb(const std::string& type,
       SaveSpaces();
       // The hex drives the Space's tint when no theme is pinned.
       RebuildSpacePalettes();
-      for (const auto& [slot, controller] : windows_) {
+      for (PhiWindowController* controller : registry_.Controllers()) {
         controller->ApplyPalette();
       }
     }

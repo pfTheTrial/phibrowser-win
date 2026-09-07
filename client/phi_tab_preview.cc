@@ -298,15 +298,17 @@ bool PhiTabPreview::Resolve() {
     compact_ = true;
     return true;
   }
-  const int64_t browser = controller_->active_browser()
-                              ? controller_->active_browser()
-                              : controller_->window_id();
+  const BrowserId browser = controller_->active_browser_id();
+  if (!browser.valid()) {
+    compact_ = true;  // No browser attached: no page to snapshot.
+    return true;
+  }
   const auto pull = [&](int tab_id, std::vector<unsigned char>* out,
                         int* out_width, int* out_height) {
     int width = 0;
     int height = 0;
     const unsigned char* pixels =
-        framework->TabThumbnailBgra(browser, tab_id, &width, &height);
+        framework->TabThumbnailBgra(browser.value, tab_id, &width, &height);
     if (!pixels || width <= 0 || height <= 0) {
       return;
     }

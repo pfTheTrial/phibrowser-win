@@ -14,6 +14,7 @@
 #include <optional>
 #include <vector>
 
+#include "phibrowser-win/client/phi_ids.h"
 #include "phibrowser-win/client/phi_sidebar_model.h"
 
 // Attached surfaces — docs/sidebar-architecture.md §4.6. A Peek or a Reader
@@ -38,7 +39,9 @@ class PhiSurfacePanel {
   virtual ~PhiSurfacePanel() = default;
 
   virtual SidebarSurface kind() const = 0;
-  // The panel's own browser window id.
+  // The panel's own browser window id. Spelt int64_t here because the two
+  // panels are implemented outside this model; the registry types them as
+  // BrowserId at its own boundary.
   virtual int64_t window_id() const = 0;
   // The browser window and tab the surface is attached to.
   virtual int64_t origin_window_id() const = 0;
@@ -62,8 +65,8 @@ class PhiSurfaceRegistry {
  public:
   struct Origin {
     SidebarSurface kind = SidebarSurface::kContent;
-    int64_t window_id = 0;         // The panel browser.
-    int64_t origin_window_id = 0;
+    BrowserId window_id;  // The panel browser.
+    BrowserId origin_window_id;
     int origin_tab_id = 0;
   };
 
@@ -78,23 +81,23 @@ class PhiSurfaceRegistry {
   // Forgets the panel whose browser `window_id` is closing; what it was
   // attached to, for the caller to hand the strip back to. Nullopt when
   // `window_id` was no surface.
-  std::optional<Origin> Detach(int64_t window_id);
+  std::optional<Origin> Detach(BrowserId window_id);
 
-  PhiSurfacePanel* Find(int64_t window_id) const;
+  PhiSurfacePanel* Find(BrowserId window_id) const;
   // The surface of `kind` (kContent = any) attached to `origin_tab_id`.
   PhiSurfacePanel* ForOrigin(int origin_tab_id,
                              SidebarSurface kind = SidebarSurface::kContent) const;
   // Every surface attached to a tab of `origin_window_id`.
-  std::vector<PhiSurfacePanel*> OverWindow(int64_t origin_window_id) const;
+  std::vector<PhiSurfacePanel*> OverWindow(BrowserId origin_window_id) const;
   // The sidebar's view: origin tab -> attached kind, for one browser.
-  std::map<int, SidebarSurface> Surfaces(int64_t origin_window_id) const;
+  std::map<int, SidebarSurface> Surfaces(BrowserId origin_window_id) const;
 
   bool empty() const { return panels_.empty(); }
   bool HasKind(SidebarSurface kind) const;
   void ForEach(const std::function<void(PhiSurfacePanel&)>& fn) const;
 
  private:
-  std::map<int64_t, std::unique_ptr<PhiSurfacePanel>> panels_;
+  std::map<BrowserId, std::unique_ptr<PhiSurfacePanel>> panels_;
 };
 
 }  // namespace phi_client

@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "base/values.h"
+#include "phibrowser-win/client/phi_ids.h"
 
 namespace phi_client {
 
@@ -45,7 +46,9 @@ class PhiAgentSpaces {
   struct Space {
     std::string task_id;
     std::string space_id;
-    int64_t window_id = 0;  // == Browser::session_id().id() == CDP windowId
+    // The hidden browser; its value is what CDP's Browser.getWindowForTarget
+    // reports, so the skill correlates tabs to it unchanged.
+    BrowserId window_id;
     std::string profile_id;
     std::string agent_name;
     Ownership ownership = Ownership::kAgent;
@@ -67,15 +70,15 @@ class PhiAgentSpaces {
   PhiAgentSpaces& operator=(const PhiAgentSpaces&) = delete;
 
   Space* Find(const std::string& task_id);
-  Space* FindByWindow(int64_t window_id);
+  Space* FindByWindow(BrowserId window_id);
   bool empty() const { return spaces_.empty(); }
   // Read-only view of every record (for the switcher's agent pips).
   const std::map<std::string, Space>& entries() const { return spaces_; }
 
   // Creates the record (or returns the existing one for a re-bind). The
-  // caller supplies the already-created window's id.
+  // caller supplies the id of the window the framework announced for it.
   Space& Create(const std::string& task_id,
-                int64_t window_id,
+                BrowserId window_id,
                 const std::string& profile_id,
                 bool persistent,
                 uint64_t now_ms);

@@ -13,12 +13,12 @@ void PhiSurfaceRegistry::Attach(std::unique_ptr<PhiSurfacePanel> panel) {
   if (!panel) {
     return;
   }
-  const int64_t id = panel->window_id();
+  const BrowserId id{panel->window_id()};
   panels_[id] = std::move(panel);
 }
 
 std::optional<PhiSurfaceRegistry::Origin> PhiSurfaceRegistry::Detach(
-    int64_t window_id) {
+    BrowserId window_id) {
   const auto it = panels_.find(window_id);
   if (it == panels_.end()) {
     return std::nullopt;
@@ -26,13 +26,13 @@ std::optional<PhiSurfaceRegistry::Origin> PhiSurfaceRegistry::Detach(
   Origin origin;
   origin.kind = it->second->kind();
   origin.window_id = window_id;
-  origin.origin_window_id = it->second->origin_window_id();
+  origin.origin_window_id = BrowserId{it->second->origin_window_id()};
   origin.origin_tab_id = static_cast<int>(it->second->origin_tab_id());
   panels_.erase(it);
   return origin;
 }
 
-PhiSurfacePanel* PhiSurfaceRegistry::Find(int64_t window_id) const {
+PhiSurfacePanel* PhiSurfaceRegistry::Find(BrowserId window_id) const {
   const auto it = panels_.find(window_id);
   return it == panels_.end() ? nullptr : it->second.get();
 }
@@ -52,10 +52,10 @@ PhiSurfacePanel* PhiSurfaceRegistry::ForOrigin(int origin_tab_id,
 }
 
 std::vector<PhiSurfacePanel*> PhiSurfaceRegistry::OverWindow(
-    int64_t origin_window_id) const {
+    BrowserId origin_window_id) const {
   std::vector<PhiSurfacePanel*> over;
   for (const auto& [id, panel] : panels_) {
-    if (panel->origin_window_id() == origin_window_id) {
+    if (panel->origin_window_id() == origin_window_id.value) {
       over.push_back(panel.get());
     }
   }
@@ -63,13 +63,13 @@ std::vector<PhiSurfacePanel*> PhiSurfaceRegistry::OverWindow(
 }
 
 std::map<int, SidebarSurface> PhiSurfaceRegistry::Surfaces(
-    int64_t origin_window_id) const {
+    BrowserId origin_window_id) const {
   std::map<int, SidebarSurface> surfaces;
   // A reader covers the page; a peek floats over it. When both are attached
   // to one origin the reader is what the user sees, so it is what the row
   // shows.
   for (const auto& [id, panel] : panels_) {
-    if (panel->origin_window_id() != origin_window_id ||
+    if (panel->origin_window_id() != origin_window_id.value ||
         panel->origin_tab_id() == 0) {
       continue;
     }

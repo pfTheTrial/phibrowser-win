@@ -95,11 +95,9 @@ class Hud {
     if (selected_ >= 0 && selected_ < static_cast<int>(cards_.size())) {
       const Card& card = cards_[static_cast<size_t>(selected_)];
       phi_framework::PhiFramework* framework = controller_->framework();
-      if (framework && card.index >= 0) {
-        framework->ActivateTab(controller_->active_browser()
-                                   ? controller_->active_browser()
-                                   : controller_->window_id(),
-                               card.index);
+      const BrowserId browser = controller_->active_browser_id();
+      if (framework && browser.valid() && card.index >= 0) {
+        framework->ActivateTab(browser.value, card.index);
         controller_->RefreshTabs();
       }
     }
@@ -131,9 +129,10 @@ class Hud {
     if (!framework) {
       return;
     }
-    const int64_t browser = controller_->active_browser()
-                                ? controller_->active_browser()
-                                : controller_->window_id();
+    const int64_t browser = controller_->active_browser_id().value;
+    if (!browser) {
+      return;  // No browser attached: an empty switcher.
+    }
     struct Entry {
       int id;
       int index;

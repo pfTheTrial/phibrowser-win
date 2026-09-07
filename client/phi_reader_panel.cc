@@ -51,9 +51,9 @@ PhiReaderPanel::PhiReaderPanel(int64_t window_id,
                                PhiWindowController* origin,
                                phi_framework::PhiFramework* framework,
                                PhiCoordinator* coordinator)
-    : window_id_(window_id),
+    : window_id_(BrowserId{window_id}),
       browser_hwnd_(browser_hwnd),
-      origin_window_id_(origin_window_id),
+      origin_window_id_(BrowserId{origin_window_id}),
       origin_tab_id_(origin_tab_id),
       origin_(origin),
       framework_(framework),
@@ -111,10 +111,10 @@ SidebarSurface PhiReaderPanel::kind() const {
   return SidebarSurface::kReader;
 }
 int64_t PhiReaderPanel::window_id() const {
-  return window_id_;
+  return window_id_.value;
 }
 int64_t PhiReaderPanel::origin_window_id() const {
-  return origin_window_id_;
+  return origin_window_id_.value;
 }
 int64_t PhiReaderPanel::origin_tab_id() const {
   return origin_tab_id_;
@@ -228,7 +228,7 @@ void PhiReaderPanel::RefreshState() {
   // and reports a placeholder page, which is not a navigation and must not
   // be mistaken for one — the browser is about to close on its own.
   std::optional<base::Value> tabs = base::JSONReader::Read(
-      framework_->ListTabsJson(window_id_), base::JSON_PARSE_RFC);
+      framework_->ListTabsJson(window_id_.value), base::JSON_PARSE_RFC);
   if (!tabs || !tabs->is_list() || tabs->GetList().size() != 1) {
     return;
   }
@@ -264,10 +264,10 @@ void PhiReaderPanel::RefreshState() {
   // browse from, so the destination becomes a normal tab in the origin
   // window and the panel goes away. Guarded so the teardown runs once.
   expanded_ = true;
-  LOG(INFO) << "[PhiClient] reader panel " << window_id_
+  LOG(INFO) << "[PhiClient] reader panel " << window_id_.value
             << " navigated away — expanding into a tab";
   if (coordinator_) {
-    coordinator_->ExpandReaderPanelIntoTab(window_id_, *url);
+    coordinator_->ExpandReaderPanelIntoTab(window_id_.value, *url);
   }
 }
 
@@ -291,9 +291,12 @@ void PhiReaderPanel::Paint() {
   // the window's own ground stops that instant reading as a white flash.
   static const PhiPalette kFallback =
       PhiResolvePalette(PhiThemeById("pure"), PhiAppearance::kLight);
-  const PhiPalette palette = coordinator_
-                                 ? coordinator_->PaletteForSlot(origin_window_id_)
-                                 : kFallback;
+  // The ORIGIN SLOT's palette, not its browser's: the two numbers only
+  // coincide until that slot switches Space.
+  const PhiPalette palette =
+      coordinator_ && origin_
+          ? coordinator_->PaletteForSlot(origin_->slot().value)
+          : kFallback;
   RECT client = {};
   ::GetClientRect(hwnd_, &client);
   HBRUSH ground = ::CreateSolidBrush(palette.ground_top);

@@ -266,7 +266,7 @@ void PhiBookmarkManager::AppendSubtree(const std::string& parent_guid,
     return;
   }
   for (PhiStoredRowView& view :
-       controller_->host()->BookmarkRows(controller_->window_id(),
+       controller_->host()->BookmarkRows(controller_->slot().value,
                                          parent_guid)) {
     Row row;
     row.guid = view.guid;
@@ -287,7 +287,7 @@ void PhiBookmarkManager::AppendSubtree(const std::string& parent_guid,
     if (row.folder) {
       row.child_count = static_cast<int>(
           controller_->host()
-              ->BookmarkRows(controller_->window_id(), row.guid)
+              ->BookmarkRows(controller_->slot().value, row.guid)
               .size());
       row.expanded = expanded_.count(row.guid) > 0;
     }
@@ -306,7 +306,7 @@ void PhiBookmarkManager::AppendMatches(const std::string& parent_guid) {
   }
   const std::wstring needle = Fold(Trim(query_));
   for (PhiStoredRowView& view :
-       controller_->host()->BookmarkRows(controller_->window_id(),
+       controller_->host()->BookmarkRows(controller_->slot().value,
                                          parent_guid)) {
     const std::wstring title = base::UTF8ToWide(view.title);
     const std::wstring url = base::UTF8ToWide(view.url);
@@ -341,7 +341,7 @@ void PhiBookmarkManager::AppendMatches(const std::string& parent_guid) {
       if (folder) {
         row.child_count = static_cast<int>(
             controller_->host()
-                ->BookmarkRows(controller_->window_id(), guid)
+                ->BookmarkRows(controller_->slot().value, guid)
                 .size());
       }
       rows_.push_back(std::move(row));
@@ -624,9 +624,9 @@ void PhiBookmarkManager::OpenRow(const Row& row) {
   if (row.folder || row.url.empty() || !controller_ || !controller_->host()) {
     return;
   }
-  controller_->host()->RequestOpen(controller_->window_id(), row.url);
+  controller_->host()->RequestOpen(controller_->slot().value, row.url);
   if (!row.url_b.empty()) {
-    controller_->host()->RequestOpen(controller_->window_id(), row.url_b);
+    controller_->host()->RequestOpen(controller_->slot().value, row.url_b);
   }
 }
 
@@ -662,7 +662,7 @@ void PhiBookmarkManager::NewFolder(const std::string& parent_guid) {
   if (!parent_guid.empty()) {
     expanded_.insert(parent_guid);
   }
-  controller_->host()->AddBookmarkFolder(controller_->window_id(), parent_guid,
+  controller_->host()->AddBookmarkFolder(controller_->slot().value, parent_guid,
                                          base::WideToUTF8(name));
   Refresh();
 }

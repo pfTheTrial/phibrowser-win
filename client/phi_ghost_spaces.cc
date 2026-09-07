@@ -47,7 +47,7 @@ void PhiGhostSpaces::Load(const std::wstring& path) {
       if (!space || !profile || !window_id) {
         continue;
       }
-      remembered_[*space] = Remembered{*profile, *window_id};
+      remembered_[*space] = Remembered{*profile, BrowserId{*window_id}};
     }
   }
 }
@@ -61,7 +61,7 @@ void PhiGhostSpaces::Save() const {
     base::DictValue d;
     d.Set("spaceId", space_id);
     d.Set("profile", remembered.profile);
-    d.Set("windowId", remembered.window_id);
+    d.Set("windowId", static_cast<int>(remembered.window_id.value));
     rows.Append(std::move(d));
   }
   base::DictValue root;
@@ -71,8 +71,8 @@ void PhiGhostSpaces::Save() const {
 
 void PhiGhostSpaces::NoteLiveWindow(const std::string& space_id,
                                     const std::string& profile,
-                                    int window_id) {
-  if (space_id.empty() || window_id == 0) {
+                                    BrowserId window_id) {
+  if (space_id.empty() || !window_id.valid()) {
     return;
   }
   Remembered& remembered = remembered_[space_id];
@@ -91,8 +91,8 @@ std::vector<int> PhiGhostSpaces::EagerWindowIds(
     const std::string& active_space_id) const {
   std::vector<int> eager;
   auto it = remembered_.find(active_space_id);
-  if (it != remembered_.end() && it->second.window_id != 0) {
-    eager.push_back(it->second.window_id);
+  if (it != remembered_.end() && it->second.window_id.valid()) {
+    eager.push_back(static_cast<int>(it->second.window_id.value));
   }
   return eager;
 }
@@ -123,7 +123,7 @@ void PhiGhostSpaces::ReplaceFromReceipt(const std::string& receipt_json) {
       if (!id_value.is_int()) {
         continue;
       }
-      const int window_id = id_value.GetInt();
+      const BrowserId window_id{id_value.GetInt()};
       // Map back to whichever Space remembers this window.
       bool claimed = false;
       for (const auto& [space_id, remembered] : remembered_) {
@@ -151,8 +151,8 @@ const PhiGhostSpaces::Remembered* PhiGhostSpaces::Parked(
   return it == parked_.end() ? nullptr : &it->second;
 }
 
-const std::string* PhiGhostSpaces::SpaceForWindowId(int window_id) const {
-  if (window_id == 0) {
+const std::string* PhiGhostSpaces::SpaceForWindowId(BrowserId window_id) const {
+  if (!window_id.valid()) {
     return nullptr;
   }
   for (const auto& [space_id, remembered] : remembered_) {
@@ -176,7 +176,7 @@ PhiGhostSpaces::Remembered PhiGhostSpaces::Forget(const std::string& space_id) {
   }
   auto remembered = remembered_.find(space_id);
   if (remembered != remembered_.end()) {
-    if (gone.window_id == 0) {
+    if (!gone.window_id.valid()) {
       gone = remembered->second;
     }
     remembered_.erase(remembered);

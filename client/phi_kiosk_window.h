@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "base/memory/raw_ptr_exclusion.h"
+#include "phibrowser-win/client/phi_ids.h"
 #include "phibrowser-win/client/phi_theme.h"
 
 namespace phi_framework {
@@ -61,7 +62,7 @@ class PhiKioskWindow {
   PhiKioskWindow(const PhiKioskWindow&) = delete;
   PhiKioskWindow& operator=(const PhiKioskWindow&) = delete;
 
-  int64_t window_id() const { return window_id_; }
+  int64_t window_id() const { return window_id_.value; }
   HWND hwnd() const { return hwnd_; }
 
   // The framework says this window's tab or navigation state moved: re-read
@@ -125,7 +126,7 @@ class PhiKioskWindow {
 
   int Scaled(int design) const { return ::MulDiv(design, dpi_, 96); }
 
-  int64_t window_id_ = 0;
+  BrowserId window_id_;  // The Kiosk's browser; a Kiosk has no slot.
   HWND hwnd_ = nullptr;
   HWND browser_hwnd_ = nullptr;
   RAW_PTR_EXCLUSION phi_framework::PhiFramework* framework_ = nullptr;

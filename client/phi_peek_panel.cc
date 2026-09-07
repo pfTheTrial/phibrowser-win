@@ -143,9 +143,9 @@ PhiPeekPanel::PhiPeekPanel(int64_t window_id,
                            PhiWindowController* opener,
                            phi_framework::PhiFramework* framework,
                            PhiCoordinator* coordinator)
-    : window_id_(window_id),
+    : window_id_(BrowserId{window_id}),
       browser_hwnd_(browser_hwnd),
-      opener_window_id_(opener_window_id),
+      opener_window_id_(BrowserId{opener_window_id}),
       opener_tab_id_(opener_tab_id),
       opener_(opener),
       framework_(framework),
@@ -230,10 +230,10 @@ SidebarSurface PhiPeekPanel::kind() const {
   return SidebarSurface::kPeek;
 }
 int64_t PhiPeekPanel::window_id() const {
-  return window_id_;
+  return window_id_.value;
 }
 int64_t PhiPeekPanel::origin_window_id() const {
-  return opener_window_id_;
+  return opener_window_id_.value;
 }
 int64_t PhiPeekPanel::origin_tab_id() const {
   return opener_tab_id_;
@@ -351,8 +351,9 @@ void PhiPeekPanel::UpdateShadow() {
   static const PhiPalette kFallback =
       PhiResolvePalette(PhiThemeById("pure"), PhiAppearance::kLight);
   const PhiPalette palette =
-      coordinator_ ? coordinator_->PaletteForSlot(opener_window_id_)
-                   : kFallback;
+      coordinator_ && opener_
+          ? coordinator_->PaletteForSlot(opener_->slot().value)
+          : kFallback;
   const double base = palette.dark ? kShadowAlphaDark : kShadowAlphaLight;
   const double radius = Scaled(kCardRadius);
   const double blur = std::max(1, Scaled(kShadowBlur));
@@ -418,7 +419,7 @@ void PhiPeekPanel::RefreshState() {
   if (!framework_) {
     return;
   }
-  const char* json = framework_->NavStateJson(window_id_);
+  const char* json = framework_->NavStateJson(window_id_.value);
   std::optional<base::DictValue> nav =
       json ? base::JSONReader::ReadDict(json, base::JSON_PARSE_RFC)
            : std::nullopt;
@@ -516,8 +517,9 @@ void PhiPeekPanel::Paint() {
   static const PhiPalette kFallback =
       PhiResolvePalette(PhiThemeById("pure"), PhiAppearance::kLight);
   const PhiPalette palette =
-      coordinator_ ? coordinator_->PaletteForSlot(opener_window_id_)
-                   : kFallback;
+      coordinator_ && opener_
+          ? coordinator_->PaletteForSlot(opener_->slot().value)
+          : kFallback;
   HBRUSH ground = ::CreateSolidBrush(palette.card);
   ::FillRect(dc, &client, ground);
   ::DeleteObject(ground);
@@ -533,8 +535,9 @@ void PhiPeekPanel::PaintControls() {
   static const PhiPalette kFallback =
       PhiResolvePalette(PhiThemeById("pure"), PhiAppearance::kLight);
   const PhiPalette palette =
-      coordinator_ ? coordinator_->PaletteForSlot(opener_window_id_)
-                   : kFallback;
+      coordinator_ && opener_
+          ? coordinator_->PaletteForSlot(opener_->slot().value)
+          : kFallback;
   const Layout layout = ComputeLayout();
   const POINT origin = {layout.gutter.left, layout.gutter.top};
 
@@ -618,7 +621,7 @@ void PhiPeekPanel::OnMouseMove(POINT pt) {
 
 void PhiPeekPanel::Dismiss() {
   if (framework_) {
-    framework_->CloseBrowserWindow(window_id_);
+    framework_->CloseBrowserWindow(window_id_.value);
   }
 }
 
@@ -631,7 +634,7 @@ void PhiPeekPanel::OnClick(POINT pt) {
     // the live tab across; here the peek is its own browser, so the URL is
     // re-opened and the preview closed (see phi_peek_window.h).
     if (framework_ && !url_.empty()) {
-      framework_->NewTab(opener_window_id_, Narrow(url_).c_str());
+      framework_->NewTab(opener_window_id_.value, Narrow(url_).c_str());
     }
     Dismiss();
   } else if (::PtInRect(&layout.split, pt)) {
@@ -641,9 +644,10 @@ void PhiPeekPanel::OnClick(POINT pt) {
     // opener is the partner to name.
     if (framework_ && !url_.empty()) {
       const int partner = OpenerTabIndex();
-      if (framework_->NewTab(opener_window_id_, Narrow(url_).c_str()) >= 0 &&
+      if (framework_->NewTab(opener_window_id_.value, Narrow(url_).c_str()) >=
+              0 &&
           partner >= 0) {
-        framework_->SplitActiveWith(opener_window_id_, partner);
+        framework_->SplitActiveWith(opener_window_id_.value, partner);
       }
     }
     Dismiss();
@@ -655,7 +659,7 @@ int PhiPeekPanel::OpenerTabIndex() const {
     return -1;
   }
   std::optional<base::Value> tabs = base::JSONReader::Read(
-      framework_->ListTabsJson(opener_window_id_), base::JSON_PARSE_RFC);
+      framework_->ListTabsJson(opener_window_id_.value), base::JSON_PARSE_RFC);
   if (!tabs || !tabs->is_list()) {
     return -1;
   }

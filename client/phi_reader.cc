@@ -423,9 +423,12 @@ std::string PhiReaderBridge::TabPayload(int tab_id, const std::string& extra) {
   // Unresolvable (a tab in no visible strip) falls back to the active window,
   // which is the Mac's only routing.
   if (PhiWindowController* window = coordinator_->WindowShowingTab(tab_id)) {
-    const int64_t browser = window->active_browser() ? window->active_browser()
-                                                     : window->window_id();
-    payload += ",\"windowId\":" + base::NumberToString(browser);
+    // The browser, never the slot: a slot whose opening browser has closed
+    // would name a window the extension cannot find.
+    const BrowserId browser = window->active_browser_id();
+    if (browser.valid()) {
+      payload += ",\"windowId\":" + base::NumberToString(browser.value);
+    }
   }
   return payload + extra + "}";
 }

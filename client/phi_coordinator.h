@@ -39,6 +39,7 @@
 #include "phibrowser-win/client/phi_tab_store.h"
 #include "phibrowser-win/client/phi_theme.h"
 #include "phibrowser-win/client/phi_window_controller.h"
+#include "phibrowser-win/client/phi_window_registry.h"
 
 namespace phi_client {
 
@@ -68,7 +69,11 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // phi_framework::PhiFrameworkDelegate:
   void OnFrameworkReady(phi_framework::PhiFramework* framework,
                         const char* user_data_dir_utf8) override;
-  void OnBrowserWindowCreated(int64_t window_id, void* hwnd) override;
+  // Delivered INSIDE Browser::Create (contract rule 2): adopts the HWND by
+  // `creation.kind`, matching a requested window to what RequestCreation
+  // filed under its token. Creates and closes no browsers.
+  void OnBrowserWindowCreated(
+      const phi_framework::WindowCreation& creation) override;
   void OnBrowserWindowClosing(int64_t window_id) override;
   void OnTabsChanged(int64_t window_id) override;
   void OnOpenLinkInSpace(int64_t source_window_id,
@@ -148,7 +153,7 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   void ExpandReaderPanelIntoTab(int64_t panel_window_id,
                                 const std::string& url);
   // The deferred half of the above (WM_PHI_READER_EXPAND).
-  void FinishReaderPanelExpand(int64_t panel_window_id);
+  void FinishReaderPanelExpand(BrowserId panel_window);
   // A reader style axis moved: persist it.
   void OnReaderStyleChanged();
   // The reader affordance for `tab_id` may have changed — repaint the window
@@ -163,6 +168,7 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // PhiSlotHost (called on the UI thread by a slot's sidebar):
   std::vector<PhiSpaceView> Spaces() const override;
   void RequestSwitchSpace(int64_t slot, const std::string& space_id) override;
+  void RequestNewWindow(int64_t slot) override;
   std::vector<PhiAgentPipView> AgentSpaces() const override;
   void RequestWatchAgentSpace(const std::string& task_id) override;
   void RequestAgentTakeControl(const std::string& task_id) override;
@@ -244,7 +250,7 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   bool SetStoredRowLayout(const std::string& guid,
                           const std::string& layout) override;
   // The divider axis of the live split holding a tab, for stored rows.
-  std::string LiveSplitLayout(int64_t browser, int index);
+  std::string LiveSplitLayout(BrowserId browser, int index);
   bool RenameStoredRow(const std::string& guid,
                        const std::string& name) override;
   void ReorderSpace(const std::string& space_id, int new_index) override;
@@ -425,30 +431,36 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // Everything that must reach disk before the session ends: pending
   // coalesced saves, the telemetry spool and the feedback outbox worker.
   void FlushForShutdown();
-  // Maps a slot id (what callers pass as windowId) to the browser currently
-  // shown in it — the Space's browser, not necessarily the slot's original.
-  int64_t ResolveBrowser(int64_t slot_or_browser) const;
+  // The browser a wire `windowId` means: a slot number resolves to the
+  // browser that slot is SHOWING (the Space's browser, never the slot's
+  // original), anything else names a browser itself (an agent window, a
+  // Space browser the caller learned from spaces.list).
+  BrowserId ResolveBrowser(int64_t slot_or_browser) const;
+  BrowserId ResolveBrowser(SlotId slot) const;
   // The session id of `browser`'s active tab (what ListTabsJson emits as
   // "id", and what the extensions API calls a tab id), or 0.
-  int ActiveTabId(int64_t browser);
+  int ActiveTabId(BrowserId browser);
   // Activates the tab with this session id in `browser` (indices shift; ids
   // do not).
-  void ActivateTabById(int64_t browser, int tab_id);
+  void ActivateTabById(BrowserId browser, int tab_id);
   // A window's tab strip changed: re-fit, re-hide and retire the reader
   // panels bound to it.
-  void UpdateReaderPanelsForWindow(int64_t window_id);
+  void UpdateReaderPanelsForWindow(BrowserId window_id);
   // Finishes the store's schema 1 -> 2 fold on LIVE tabs: a tab still tagged
   // with a folded-away pin guid (session restore brings them back) is retagged
   // to the survivor's pane-B tag. No-op once the store has no aliases.
-  void ApplyLegacyTagAliases(int64_t window_id);
+  void ApplyLegacyTagAliases(BrowserId window_id);
   // Swaps in the url-favicon service's larger icon when it beats the row's
   // stored 16px capture.
-  void UpgradeFavicon(int64_t slot,
+  void UpgradeFavicon(SlotId slot,
                       const std::string& url,
                       PhiStoredRowView* view) const;
-  // The slot's controller; slot 0 falls back to the first window (the verb
-  // convention for "the window"). Null when none exists.
-  PhiWindowController* ControllerForSlot(int64_t slot);
+  // The slot's controller; an invalid slot (the wire's 0 / no windowId)
+  // falls back to the first USER window — the verb convention for "the
+  // window". Null when none exists.
+  PhiWindowController* ControllerForSlot(SlotId slot);
+  // RefreshTabs on every slot (agent windows included).
+  void RefreshAllWindows();
   static LRESULT CALLBACK MsgWndProc(HWND hwnd,
                                      UINT msg,
                                      WPARAM wparam,
@@ -498,20 +510,17 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // Checked by the hook before the fixed table, so a custom chord wins.
   UINT MatchRebindableChord(UINT vk, bool ctrl, bool shift, bool alt) const;
 
-  // One controller per SLOT, keyed by the slot's primary windowId.
-  std::map<int64_t, std::unique_ptr<PhiWindowController>> windows_;
-  // Kiosk windows, keyed like windows_ but held apart: they are not shell
-  // slots, take no Space, and never appear in the slot/space bookkeeping.
-  std::map<int64_t, std::unique_ptr<PhiKioskWindow>> kiosks_;
+  // The shell slots, the browser -> slot map, the kiosks and the creations
+  // in flight (docs/architecture-review.md §3.4). Every "which window"
+  // question goes through here.
+  PhiWindowRegistry registry_;
   // Peek and Reader View panels — browsers of their own, hosted over an
   // origin tab's page, one lifecycle for both kinds (see the registry).
   PhiSurfaceRegistry surfaces_;
   // Panels whose page left reader.html, with the url to re-open, until the
   // deferred expand runs.
-  std::map<int64_t, std::string> pending_reader_expands_;
+  std::map<BrowserId, std::string> pending_reader_expands_;
   int sidebar_width_ = kSidebarWidthDefault;
-  // Every browser window -> the slot hosting it (a slot has one per Space).
-  std::map<int64_t, int64_t> browser_to_slot_;
   // Spaces are a client concept. Each binds EXACTLY ONE profile; several
   // Spaces may share a profile (the fork's model). The binding is fixed for
   // the life of a browser window — changing it goes through SetSpaceProfile,
@@ -566,14 +575,14 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // hidden/cold Space, and the "ask first" prompt's pick.
   void RouteUrlToSpace(const std::string& space_id,
                        const std::string& url,
-                       int64_t source_window_id);
+                       BrowserId source_window);
   // The shared store-tab/split bodies behind the menu (append, bookmark
   // unbound) and drag (placed + bound) entry points.
   // One cell from live tab(s), by STABLE id: a single (tab_b 0) or a split
   // (both panes), as a pin or a bookmark under `parent_guid`, at
   // `insert_index` among its siblings (INT_MAX = end), bound when `bind`.
   // Returns the new guid, empty on refusal.
-  std::string StoreTabsById(int64_t slot,
+  std::string StoreTabsById(SlotId slot,
                             int tab_a,
                             int tab_b,
                             bool as_bookmark,
@@ -585,13 +594,13 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
     int index = -1;
     std::string title, url, split_id;
   };
-  bool LiveTab(int64_t browser, int tab_id, LiveTabInfo* out) const;
+  bool LiveTab(BrowserId browser, int tab_id, LiveTabInfo* out) const;
   // The Move transition table (SidebarMove).
-  bool ApplyMove(int64_t slot, const SidebarMove& move, const SidebarTree& tree);
+  bool ApplyMove(SlotId slot, const SidebarMove& move, const SidebarTree& tree);
   // Opens a closed cell's pane(s) as live tab(s) bound to it; returns pane A.
-  int OpenCell(int64_t browser, const std::string& guid);
+  int OpenCell(BrowserId browser, const std::string& guid);
   // Former host verbs, now internal to Apply and the agent dialect.
-  bool ConvertStoredRow(int64_t slot,
+  bool ConvertStoredRow(SlotId slot,
                         const std::string& guid,
                         bool to_bookmark,
                         const std::string& parent_guid,
@@ -599,13 +608,13 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   bool MoveStoredRowToSpace(const std::string& guid,
                             const std::string& space_id,
                             bool clone);
-  void RequestTabToSpace(int64_t slot,
+  void RequestTabToSpace(SlotId slot,
                          int index,
                          const std::string& space_id,
                          bool move);
-  void StoreTabInternal(int64_t slot, int index, bool as_bookmark,
+  void StoreTabInternal(SlotId slot, int index, bool as_bookmark,
                         int insert_index, bool bind);
-  void StoreSplitInternal(int64_t slot, int index_a, int index_b,
+  void StoreSplitInternal(SlotId slot, int index_a, int index_b,
                           bool as_bookmark, int insert_index,
                           bool bind_bookmark);
 
@@ -654,20 +663,33 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // Which Space the cold start should rebuild eagerly: the one that was
   // active when the last run ended.
   std::string LastActiveSpaceId() const;
-  // Message-window (msg_hwnd_) timer ids.
-  // Polls for the profile a "+ Space & profile" request asked for.
-  static constexpr UINT_PTR kProfileSpaceTimer = 1;
-  // Agent-space / shadow-window keep-alive sweep (the Mac's 10 s tick).
+  // Message-window (msg_hwnd_) timer ids. (Id 1 was the profile-creation
+  // poll; OnProfileCreated made it redundant.)
+  // Agent-space / shadow-window keep-alive sweep (the Mac's 10 s tick) —
+  // also sweeps the creations in flight (registry_ pending, pending_profiles_).
   static constexpr UINT_PTR kAgentSpaceSweepTimer = 2;
+  static constexpr UINT kAgentSpaceSweepIntervalMs = 10 * 1000;
   // The operating mask's idle/takeover sweep.
   static constexpr UINT_PTR kAgentDriveSweepTimer = 3;
-  // Drains deferred_ui_calls_ once no modal loop is up (50 ms).
+  // Drains deferred_ui_calls_ once no modal loop is up.
   static constexpr UINT_PTR kDeferredUiCallTimer = 4;
+  static constexpr UINT kDeferredUiCallPollMs = 50;
   // Coalesces the last-active-Space write into one SavePrefs.
   static constexpr UINT_PTR kLastActiveSaveTimer = 5;
+  static constexpr UINT kLastActiveSaveDelayMs = 1000;
   // Cold start armed an eager set: if no user window is up once the replay
-  // settles, open a default shell (lane 4 §6 item 6).
+  // settles, open a default shell (lane 4 §6 item 6). Armed for the replay
+  // to have its say, re-armed shorter once the park list has landed.
   static constexpr UINT_PTR kColdStartFallbackTimer = 6;
+  static constexpr UINT kColdStartFallbackMs = 4000;
+  static constexpr UINT kColdStartSettleMs = 2000;
+  // How long a RequestBrowser / CreateProfile request may stay unanswered
+  // before the sweep presumes it lost and fails any waiting reply with
+  // create_timeout. The framework has no failure callback for either.
+  static constexpr uint64_t kCreateTimeoutMs = 20 * 1000;
+  // Arms the sweep while anything needs sweeping (agent Spaces, shadow
+  // windows, creations in flight) and stops it once nothing does.
+  void UpdateSweepTimer();
   // Verbs and consent decisions that arrived while a modal loop was on the
   // UI thread, in arrival order (see RunOrDeferUiCall).
   std::deque<PhiUiCall*> deferred_ui_calls_;
@@ -709,21 +731,12 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   std::map<std::string, ULONGLONG> credential_denials_;
   std::vector<std::string> credential_audit_;
   std::wstring credential_grants_path_;
-  // profiles.create is ASYNC in Chromium (the basename exists only once the
-  // profile is initialised), but the wire call is synchronous. The UI thread
-  // arms this event before kicking creation and OnProfileCreated signals it;
-  // the I/O thread waits on it AFTER its SendMessage returns, so the UI
-  // thread stays free to actually finish the work. The SetEvent/Wait pair is
-  // the happens-before for `created_profile_id_`.
-  HANDLE profile_create_done_ = nullptr;
-  std::string created_profile_id_;
-
   // --- Deferred control replies -------------------------------------------
-  // A verb whose answer arrives asynchronously (reader extraction) returns
-  // {"pendingReply":<id>} from the UI thread; HandleControlCommand (the pipe
-  // I/O thread) then waits on the id's event and returns the JSON the UI
-  // thread stored for it — the profiles.create pattern, generalised. The
-  // map is the only coordinator state touched from two threads.
+  // A verb whose answer arrives asynchronously (reader extraction, a window
+  // or profile creation) returns {"pendingReply":<id>} from the UI thread;
+  // HandleControlCommand (the pipe I/O thread) then waits on the id's event
+  // and returns the JSON the UI thread stored for it. The map is the only
+  // coordinator state touched from two threads.
   struct PendingReply {
     HANDLE event = nullptr;  // Manual-reset; owned by the I/O waiter.
     std::string json;
@@ -740,7 +753,9 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // I/O thread: waits up to `timeout_ms` and returns the stored JSON (or a
   // timeout error), releasing the slot either way.
   std::string WaitPendingReply(int id, DWORD timeout_ms);
-  volatile bool profile_create_pending_ = false;
+  // The JSON error a waiter gets when its creation never arrived.
+  static constexpr char kCreateTimeoutReply[] =
+      "{\"ok\":false,\"error\":\"create_timeout\"}";
   // The bookmark bar's two visibility switches (the Mac View menu's pair).
   bool always_show_bookmark_bar_ = false;
   bool bookmark_bar_on_new_tab_ = false;
@@ -774,40 +789,68 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // Pinned tabs and bookmarks, the Mac's LocalStore equivalent.
   PhiTabStore tab_store_;
   // The (profile, space) a slot's pinned/bookmark rows belong to.
-  bool OwnerForSlot(int64_t slot, std::string* profile_id,
+  bool OwnerForSlot(SlotId slot, std::string* profile_id,
                     std::string* space_id) const;
   // The active tab's favicon as base64 BGRA, for storing on a pinned/bookmark
   // row. A pinned tab has no live tab to ask later.
-  std::string CaptureFavicon(int64_t slot, int* width, int* height);
+  std::string CaptureFavicon(SlotId slot, int* width, int* height);
   // The url the slot is showing right now.
-  std::string LiveUrl(int64_t slot);
+  std::string LiveUrl(SlotId slot);
   // Recomputes `palette_` and repaints every slot.
   void ApplyTheme();
-  // Set while a Space browser is being created, so the next
-  // OnBrowserWindowCreated attaches to that slot instead of opening a shell.
-  int64_t pending_slot_ = 0;
-  std::string pending_space_;
-  // "Open Link in Space" into a cold Space: opened when its browser attaches.
-  std::string pending_open_url_;
-  // The tabs a re-profiled Space is carrying across (SetSpaceProfile): its
-  // browser is closed and respawned in the new profile, and these reopen
-  // there when the replacement attaches.
-  std::vector<std::string> pending_open_urls_;
+  // Asks the framework for a browser (PhiFramework::RequestBrowser) and files
+  // `pending` under the token it returns, so OnBrowserWindowCreated can
+  // finish the job when the window arrives — `kind`, the profile and the
+  // deadline are stamped here. Invalid when the framework refused; then
+  // nothing was filed and a waiting reply (pending.pending_reply_id) is
+  // already answered create_failed.
+  RequestToken RequestCreation(phi_framework::WindowKind kind,
+                               const std::string& profile_id,
+                               bool incognito,
+                               BrowserId source_window,
+                               PendingCreation pending);
+  // The OnBrowserWindowCreated branches. Each adopts `hwnd` for `browser`.
+  // A requested kind whose pending record names a slot that is gone, and a
+  // peek/reader whose opener is gone, fall back to HostUserShell.
+  void HostUserShell(BrowserId browser, HWND hwnd, bool incognito);
+  bool AttachRequestedSpaceBrowser(BrowserId browser,
+                                   HWND hwnd,
+                                   const PendingCreation& pending);
+  void HostAgentWindow(BrowserId browser,
+                       HWND hwnd,
+                       bool incognito,
+                       const PendingCreation& pending);
+  bool AttachRestoredGhost(BrowserId browser,
+                           HWND hwnd,
+                           BrowserId restored_from);
+  bool HostSurfacePanel(const phi_framework::WindowCreation& creation);
   // A tear-off's drop point, waiting for the new window it asked for (the
   // Mac's pendingTearOffWindowPlacement): the next shell opens around it.
   // `tear_off_drop_at_` is the tick it was noted at; 0 = none pending.
   POINT tear_off_drop_{};
   ULONGLONG tear_off_drop_at_ = 0;
-  // A "+ Space & profile" request waiting for its profile to appear (profile
-  // creation is asynchronous). Polled from a WM_TIMER on msg_hwnd_.
-  int64_t pending_profile_slot_ = 0;
-  // True when the pending profile is for the create-Space form: the form
-  // selects it (no Space is created for it here).
-  bool pending_profile_for_form_ = false;
-  std::set<std::string> known_profiles_before_;
-  int pending_profile_ticks_ = 0;
-  // Returns true when finished (created the Space, or gave up).
-  bool TryFinishProfileSpace();
+  // A CreateProfile in flight and what to do with the profile once
+  // OnProfileCreated names it. Keyed by the DISPLAY NAME asked for — the
+  // only thing the client knows about the profile before the framework
+  // reports its basename; the oldest request is the fallback when the
+  // name cannot be read back. Swept with kCreateTimeoutMs.
+  struct PendingProfile {
+    enum class Then {
+      kOpenSpace,   // "+ Space & profile": create a Space on it, switch.
+      kFillForm,    // The create-Space form's picker selects it.
+      kReplyOnly,   // profiles.create: answer the waiting verb.
+    };
+    std::string display_name;
+    SlotId slot;
+    Then then = Then::kReplyOnly;
+    int pending_reply_id = 0;
+    uint64_t deadline_tick = 0;
+  };
+  std::deque<PendingProfile> pending_profiles_;
+  // Files a CreateProfile and asks the framework for it.
+  void RequestProfile(PendingProfile pending);
+  // The display name the framework reports for `profile_id`, or empty.
+  std::string ProfileDisplayName(const std::string& profile_id) const;
 
   // --- Agent Spaces (the phi-browser skill's hidden windows) ---------------
   PhiAgentSpaces agent_spaces_;
@@ -817,11 +860,6 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // Repaints every USER window's sidebar so agent pips appear/disappear and
   // reflect the watched state.
   void RefreshUserWindows();
-  // Set for the duration of an agentSpace.create so the re-entrant
-  // OnBrowserWindowCreated adopts the new browser as a hidden agent window
-  // (rather than a normal visible slot) and records its id here.
-  std::string pending_agent_task_;
-  int64_t last_agent_window_id_ = 0;
 
   // --- Shadow windows (the skill's invisible background windows) ----------
   // A shadow window is an agent-style off-screen window WITHOUT a presence:
@@ -832,18 +870,17 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // controller, parked off-screen, composited for CDP).
   struct ShadowWindow {
     std::string task_id;
-    int64_t window_id = 0;  // == Browser::session_id().id() == CDP windowId
+    BrowserId window_id;  // Its value is the CDP windowId.
     std::string profile_id;
     bool incognito = false;
     int64_t created_ms = 0;              // epoch ms (the list's createdAt)
     uint64_t keepalive_deadline_ms = 0;  // GetTickCount64 ms; swept when past
   };
   std::map<std::string, ShadowWindow> shadow_windows_;
-  // Set for the duration of an agentSpace.shadow.create so the re-entrant
-  // OnBrowserWindowCreated adopts the browser off-screen (the agent path,
-  // which stamps last_agent_window_id_).
-  std::string pending_shadow_task_;
-  ShadowWindow* FindShadowByWindow(int64_t window_id);
+  ShadowWindow* FindShadowByWindow(BrowserId window_id);
+  // The Mac's keep-alive contract, shared with agent Spaces: extends the
+  // deadline to max(existing, now + ttl); ttl <= 0 is the default round TTL.
+  void TouchShadow(ShadowWindow* shadow, int ttl_seconds, uint64_t now_ms);
   void CloseShadowWindow(const std::string& task_id, const char* reason);
   // agentSpace.shadow.* (create / list / openTab / ping / close).
   bool HandleShadowVerb(const std::string& type,
@@ -868,29 +905,34 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
                               base::DictValue* out);
   // Resolves the skill's layout scope — {taskId}: the agent window,
   // {spaceId}: a user Space's open window — to the browser bound to it.
-  // 0 with `error` set (unknown_task / space_not_open / invalid_payload)
-  // when the scope names nothing live.
-  int64_t ResolveScopeBrowser(const base::DictValue* payload,
-                              std::string* error);
+  // Invalid with `error` set (unknown_task / space_not_open /
+  // invalid_payload) when the scope names nothing live.
+  BrowserId ResolveScopeBrowser(const base::DictValue* payload,
+                                std::string* error);
   // The browser hosting `space_id`'s tabs (possibly hidden behind a sibling
-  // Space), or 0 when the Space has no open window.
-  int64_t BrowserForSpace(const std::string& space_id) const;
+  // Space), or invalid when the Space has no open window.
+  BrowserId BrowserForSpace(const std::string& space_id) const;
   // The USER window the user is looking at: the foreground shell when it is
   // one of ours, the first user window otherwise. Null without windows.
   PhiWindowController* FocusedUserController();
-  // Surfaces `space_id` in `slot` (slot 0: the first window), cold-spawning
-  // its browser in the Space's profile when the slot has none — the
-  // spaces.switch body, shared with the skill's spaces.activate. `cold`
-  // reports the cold-create path; `pending` that the attach is still armed.
-  bool SwitchSlotToSpace(int64_t slot, const std::string& space_id,
-                         bool* pending, bool* cold);
+  // Surfaces `space_id` in `slot` (invalid: the first user window),
+  // requesting its browser in the Space's profile when the slot has none —
+  // the spaces.switch body, shared with the skill's spaces.activate.
+  // `cold` reports the request path; `pending` that the browser is still
+  // to arrive (a request never attaches before it returns). `reopen_urls`
+  // are opened in the new browser once it attaches (a re-profiled Space's
+  // tabs).
+  bool SwitchSlotToSpace(SlotId slot, const std::string& space_id,
+                         bool* pending, bool* cold,
+                         const std::vector<std::string>* reopen_urls = nullptr);
   // The (profile, space) the skill's pinned/bookmark dialect verbs target:
   // an explicit profile id wins, else the focused window's active Space.
   bool DialectOwner(const std::string& profile_id_or_empty,
                     std::string* profile_id, std::string* space_id);
   // Tears down an agent Space: closes its hidden window and drops the record.
   void CloseAgentSpace(const std::string& task_id);
-  // Keep-alive sweep (WM_TIMER id 2): completes and closes expired spaces.
+  // Keep-alive sweep (kAgentSpaceSweepTimer): completes and closes expired
+  // spaces and shadows, and fails the creations that never arrived.
   void SweepAgentSpaces();
 
   // --- Credentials (the skill's agent password surface) --------------------

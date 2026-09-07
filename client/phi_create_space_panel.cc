@@ -801,7 +801,7 @@ void PhiCreateSpacePanel::ShowProfileMenu(const Geometry& g) {
                       PhiStr("settings.profiles.createDialog.message"),
                       &name)) {
       controller_->host()->RequestCreateProfileForSpaceForm(
-          controller_->window_id(), base::WideToUTF8(name));
+          controller_->slot().value, base::WideToUTF8(name));
     }
   } else if (chosen >= 1 && chosen <= profiles_.size()) {
     profile_id_ = profiles_[chosen - 1].first;

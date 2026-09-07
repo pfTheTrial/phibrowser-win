@@ -11,6 +11,7 @@
 #include <string>
 
 #include "base/memory/raw_ptr_exclusion.h"
+#include "phibrowser-win/client/phi_ids.h"
 #include "phibrowser-win/client/phi_surface_registry.h"
 
 namespace phi_framework {
@@ -59,7 +60,7 @@ class PhiPeekPanel : public PhiSurfacePanel {
   int64_t window_id() const override;
   int64_t origin_window_id() const override;
   int64_t origin_tab_id() const override;
-  int64_t opener_window_id() const { return opener_window_id_; }
+  int64_t opener_window_id() const { return opener_window_id_.value; }
   int64_t opener_tab_id() const { return opener_tab_id_; }
   // The card's own window (the peek's browser is reparented inside it) —
   // what the click-outside test compares against.
@@ -122,7 +123,7 @@ class PhiPeekPanel : public PhiSurfacePanel {
 
   int Scaled(int design) const { return ::MulDiv(design, dpi_, 96); }
 
-  int64_t window_id_ = 0;
+  BrowserId window_id_;  // The peek's own browser.
   HWND hwnd_ = nullptr;
   HWND browser_hwnd_ = nullptr;
   // The card's drop shadow: a LAYERED sibling beneath the panel. A plain
@@ -132,7 +133,7 @@ class PhiPeekPanel : public PhiSurfacePanel {
   // The close / new-tab / split chips, a child of this window stacked above
   // the hosted browser.
   HWND controls_ = nullptr;
-  int64_t opener_window_id_ = 0;
+  BrowserId opener_window_id_;  // The browser the peek was opened FROM.
   int64_t opener_tab_id_ = 0;
   RAW_PTR_EXCLUSION PhiWindowController* opener_ = nullptr;
   RAW_PTR_EXCLUSION phi_framework::PhiFramework* framework_ = nullptr;

@@ -187,7 +187,7 @@ PhiKioskWindow::PhiKioskWindow(int64_t window_id,
                                HWND browser_hwnd,
                                phi_framework::PhiFramework* framework,
                                PhiCoordinator* coordinator)
-    : window_id_(window_id),
+    : window_id_(BrowserId{window_id}),
       browser_hwnd_(browser_hwnd),
       framework_(framework),
       coordinator_(coordinator) {
@@ -271,7 +271,7 @@ void PhiKioskWindow::RefreshState() {
   if (!framework_) {
     return;
   }
-  const char* json = framework_->NavStateJson(window_id_);
+  const char* json = framework_->NavStateJson(window_id_.value);
   std::optional<base::DictValue> nav =
       json ? base::JSONReader::ReadDict(json, base::JSON_PARSE_RFC)
            : std::nullopt;
@@ -298,7 +298,7 @@ void PhiKioskWindow::RefreshProfile() {
     return;
   }
   // The framework hands back a pointer into its own buffer: parse it now.
-  const char* json = framework_->WindowProfileJson(window_id_);
+  const char* json = framework_->WindowProfileJson(window_id_.value);
   std::optional<base::DictValue> profile =
       json ? base::JSONReader::ReadDict(json, base::JSON_PARSE_RFC)
            : std::nullopt;
@@ -341,7 +341,8 @@ const PhiPalette& PhiKioskWindow::Palette() const {
   // app-wide palette — which is what this window should follow.
   static const PhiPalette kFallback =
       PhiResolvePalette(PhiThemeById("pure"), PhiAppearance::kLight);
-  return coordinator_ ? coordinator_->PaletteForSlot(window_id_) : kFallback;
+  return coordinator_ ? coordinator_->PaletteForSlot(window_id_.value)
+                      : kFallback;
 }
 
 void PhiKioskWindow::EnsureFonts() {
@@ -803,10 +804,11 @@ void PhiKioskWindow::OpenInSpace(const std::string& space_id) {
   if (url.empty()) {
     return;
   }
-  coordinator_->OnOpenLinkInSpace(window_id_, space_id.c_str(), url.c_str());
+  coordinator_->OnOpenLinkInSpace(window_id_.value, space_id.c_str(),
+                                  url.c_str());
   // Closing tears this object down through OnBrowserWindowClosing: touch
   // nothing after it.
-  framework_->CloseBrowserWindow(window_id_);
+  framework_->CloseBrowserWindow(window_id_.value);
 }
 
 void PhiKioskWindow::ShowSpaceList(const RECT& anchor) {
@@ -852,7 +854,7 @@ void PhiKioskWindow::OnClick(POINT pt) {
   }
   const Layout layout = ComputeLayout();
   if (can_go_back_ && ::PtInRect(&layout.back, pt)) {
-    framework_->GoBack(window_id_);
+    framework_->GoBack(window_id_.value);
   } else if (::PtInRect(&layout.extensions, pt)) {
     RECT anchor = layout.extensions;
     ::MapWindowPoints(hwnd_, nullptr, reinterpret_cast<POINT*>(&anchor), 2);
@@ -1056,7 +1058,7 @@ LRESULT PhiKioskWindow::Handle(UINT msg, WPARAM wparam, LPARAM lparam) {
       // Route through the framework so the Browser tears down properly; the
       // coordinator drops this window when OnBrowserWindowClosing arrives.
       if (framework_) {
-        framework_->CloseBrowserWindow(window_id_);
+        framework_->CloseBrowserWindow(window_id_.value);
         return 0;
       }
       break;

@@ -9,6 +9,7 @@
 
 #include <cstdint>
 
+#include "phibrowser-win/client/phi_ids.h"
 #include "phibrowser-win/client/phi_theme.h"
 
 namespace phi_framework {
@@ -28,7 +29,7 @@ class PhiExtensionsPopover {
                      const RECT& anchor_screen,
                      const PhiPalette& palette,
                      phi_framework::PhiFramework* framework,
-                     int64_t browser_id);
+                     BrowserId browser);
   // Re-reads the list (the delegate's OnExtensionsChanged — the async
   // refresh completed or the set changed). No-op when closed.
   static void RefreshOpen();

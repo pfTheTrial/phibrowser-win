@@ -443,15 +443,13 @@ void PhiMenuBar::OnMenuOpening(HMENU menu) {
 }
 
 void PhiMenuBar::RefreshChromiumCommands() {
-  const int64_t target = controller_->active_browser_
-                             ? controller_->active_browser_
-                             : controller_->window_id_;
+  const BrowserId target = controller_->active_browser_id();
   for (const IdcRoute& route : kIdcRoutes) {
     // MF_BYCOMMAND searches submenus, so one call from the bar reaches items
-    // inside Find / Developer.
-    const bool on =
-        controller_->framework_ &&
-        controller_->framework_->IsChromiumCommandEnabled(target, route.idc);
+    // inside Find / Developer. No browser attached: everything is off.
+    const bool on = controller_->framework_ && target.valid() &&
+                    controller_->framework_->IsChromiumCommandEnabled(
+                        target.value, route.idc);
     ::EnableMenuItem(
         bar_, route.cmd,
         MF_BYCOMMAND | (on ? MF_ENABLED : MF_DISABLED | MF_GRAYED));
@@ -692,7 +690,7 @@ void PhiMenuBar::AppendBookmarkRows(HMENU menu, const std::string& parent_guid,
     return;
   }
   for (const PhiStoredRowView& row :
-       controller_->host_->BookmarkRows(controller_->window_id_,
+       controller_->host_->BookmarkRows(controller_->slot().value,
                                         parent_guid)) {
     const std::wstring shown =
         base::UTF8ToWide(!row.title.empty() ? row.title : row.url);
@@ -775,8 +773,9 @@ void PhiMenuBar::RefreshTab() {
 
 bool PhiMenuBar::OnCommand(UINT id) {
   PhiWindowController* c = controller_;
-  const int64_t target =
-      c->active_browser_ ? c->active_browser_ : c->window_id_;
+  // The browser the slot SHOWS — 0 when none is attached, and NEVER the
+  // slot's own number. Every framework branch below tests it first.
+  const int64_t target = c->active_browser_id().value;
 
   // Dynamic ranges first.
   if (id >= kSpaceFirst && id <= kSpaceLast) {
@@ -786,7 +785,7 @@ bool PhiMenuBar::OnCommand(UINT id) {
       if (c->HasSpace(space_id)) {
         c->ShowSpace(space_id);
       } else if (c->host_) {
-        c->host_->RequestSwitchSpace(c->window_id_, space_id);
+        c->host_->RequestSwitchSpace(c->slot().value, space_id);
       }
       c->RefreshTabs();
     }
@@ -802,7 +801,7 @@ bool PhiMenuBar::OnCommand(UINT id) {
       if (c->HasSpace(space_id)) {
         c->ShowSpace(space_id);
       } else if (c->host_) {
-        c->host_->RequestSwitchSpace(c->window_id_, space_id);
+        c->host_->RequestSwitchSpace(c->slot().value, space_id);
       }
       c->RefreshTabs();
     }
@@ -810,7 +809,7 @@ bool PhiMenuBar::OnCommand(UINT id) {
   }
   if (id >= kTabFirst && id <= kTabLast) {
     const size_t i = id - kTabFirst;
-    if (c->framework_ && i < tab_indices_.size()) {
+    if (c->framework_ && target && i < tab_indices_.size()) {
       c->framework_->ActivateTab(target, tab_indices_[i]);
       c->RefreshTabs();
     }
@@ -819,7 +818,7 @@ bool PhiMenuBar::OnCommand(UINT id) {
   if (id >= kBookmarkFirst && id <= kBookmarkLast) {
     const size_t i = id - kBookmarkFirst;
     if (c->host_ && i < bookmark_urls_.size()) {
-      c->host_->RequestOpen(c->window_id_, bookmark_urls_[i]);
+      c->host_->RequestOpen(c->slot().value, bookmark_urls_[i]);
     }
     return true;
   }
@@ -853,7 +852,7 @@ bool PhiMenuBar::OnCommand(UINT id) {
   }
 
   if (const int idc = IdcForCommand(id)) {
-    if (c->framework_) {
+    if (c->framework_ && target) {
       c->framework_->ExecuteChromiumCommand(target, idc);
       c->RefreshTabs();
     }
@@ -888,8 +887,8 @@ bool PhiMenuBar::OnCommand(UINT id) {
       c->StartNewTab();  // Honors the "New tab behavior" setting.
       return true;
     case kCmdNewWindow:
-      if (c->framework_) {
-        c->framework_->NewWindow(c->window_id_);
+      if (c->host_) {
+        c->host_->RequestNewWindow(c->slot().value);  // Shown profile.
       }
       return true;
     case kCmdOpenLocation:
@@ -900,7 +899,7 @@ bool PhiMenuBar::OnCommand(UINT id) {
       return true;
     case kCmdCloseTab: {
       for (const auto& row : c->tabs_) {
-        if (row.active && c->framework_) {
+        if (row.active && c->framework_ && target) {
           c->framework_->CloseTab(target, row.index);
           c->RefreshTabs();
           break;
@@ -964,7 +963,7 @@ bool PhiMenuBar::OnCommand(UINT id) {
       return true;
     }
     case kCmdStop:
-      if (c->framework_) {
+      if (c->framework_ && target) {
         c->framework_->StopLoading(target);
         c->RefreshTabs();
       }
@@ -987,7 +986,7 @@ bool PhiMenuBar::OnCommand(UINT id) {
       return true;
     case kCmdReload:
     case kCmdForceReload:
-      if (c->framework_) {
+      if (c->framework_ && target) {
         c->framework_->Reload(target, id == kCmdForceReload);
         c->RefreshTabs();
       }
@@ -1079,7 +1078,7 @@ bool PhiMenuBar::OnCommand(UINT id) {
       if (c->HasSpace(space_id)) {
         c->ShowSpace(space_id);
       } else if (c->host_) {
-        c->host_->RequestSwitchSpace(c->window_id_, space_id);
+        c->host_->RequestSwitchSpace(c->slot().value, space_id);
       }
       c->RefreshTabs();
       return true;
@@ -1090,7 +1089,7 @@ bool PhiMenuBar::OnCommand(UINT id) {
       if (c->LeaveReaderViewForNavigation()) {
         return true;
       }
-      if (c->framework_) {
+      if (c->framework_ && target) {
         c->framework_->GoBack(target);
         c->RefreshTabs();
       }
@@ -1099,14 +1098,14 @@ bool PhiMenuBar::OnCommand(UINT id) {
       if (c->LeaveReaderViewForNavigation()) {
         return true;
       }
-      if (c->framework_) {
+      if (c->framework_ && target) {
         c->framework_->GoForward(target);
         c->RefreshTabs();
       }
       return true;
     case kCmdBookmarkThisTab:
       if (c->host_) {
-        c->host_->RequestBookmarkActiveTab(c->window_id_);
+        c->host_->RequestBookmarkActiveTab(c->slot().value);
       }
       return true;
     case kCmdBookmarkAllTabs: {
@@ -1122,8 +1121,8 @@ bool PhiMenuBar::OnCommand(UINT id) {
         return true;
       }
       const std::string folder = c->host_->AddBookmarkFolder(
-          c->window_id_, std::string(), base::WideToUTF8(name));
-      if (folder.empty() || !c->framework_) {
+          c->slot().value, std::string(), base::WideToUTF8(name));
+      if (folder.empty() || !c->framework_ || !target) {
         return true;
       }
       int added = 0;
@@ -1139,7 +1138,7 @@ bool PhiMenuBar::OnCommand(UINT id) {
           const std::string* title = d->FindString("title");
           if (url && !url->empty() &&
               !c->host_
-                   ->AddBookmarkRow(c->window_id_, folder,
+                   ->AddBookmarkRow(c->slot().value, folder,
                                     title ? *title : std::string(), *url)
                    .empty()) {
             ++added;
@@ -1154,10 +1153,8 @@ bool PhiMenuBar::OnCommand(UINT id) {
     case kCmdBookmarkManager:
       // URL-driven, as on Mac: the manager IS a tab on the bookmark route,
       // and the client mounts its native page over that tab's content.
-      if (c->framework_) {
-        c->framework_->NewTab(c->active_browser_ ? c->active_browser_
-                                                 : c->window_id_,
-                              PhiBookmarkManager::ManagerUrl());
+      if (c->framework_ && target) {
+        c->framework_->NewTab(target, PhiBookmarkManager::ManagerUrl());
         c->RefreshTabs();
       }
       return true;
@@ -1299,7 +1296,7 @@ std::string PhiMenuBar::BuildBookmarksHtml() const {
       "<DL><p>\n";
   if (controller_->host_) {
     const std::vector<PhiStoredRowView> pins =
-        controller_->host_->PinnedRows(controller_->window_id_);
+        controller_->host_->PinnedRows(controller_->slot().value);
     if (!pins.empty()) {
       html += "    <DT><H3>Favorites</H3>\n    <DL><p>\n";
       for (const PhiStoredRowView& pin : pins) {
@@ -1315,7 +1312,7 @@ std::string PhiMenuBar::BuildBookmarksHtml() const {
     const auto descend = [&](const auto& self, const std::string& parent,
                              const std::string& indent) -> void {
       for (const PhiStoredRowView& row :
-           controller_->host_->BookmarkRows(controller_->window_id_,
+           controller_->host_->BookmarkRows(controller_->slot().value,
                                             parent)) {
         if (row.folder) {
           html += indent + "<DT><H3>" + escaped(row.title) + "</H3>\n" +

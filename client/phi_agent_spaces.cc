@@ -35,7 +35,7 @@ PhiAgentSpaces::Space* PhiAgentSpaces::Find(const std::string& task_id) {
   return it == spaces_.end() ? nullptr : &it->second;
 }
 
-PhiAgentSpaces::Space* PhiAgentSpaces::FindByWindow(int64_t window_id) {
+PhiAgentSpaces::Space* PhiAgentSpaces::FindByWindow(BrowserId window_id) {
   for (auto& [task_id, space] : spaces_) {
     if (space.window_id == window_id) {
       return &space;
@@ -45,7 +45,7 @@ PhiAgentSpaces::Space* PhiAgentSpaces::FindByWindow(int64_t window_id) {
 }
 
 PhiAgentSpaces::Space& PhiAgentSpaces::Create(const std::string& task_id,
-                                              int64_t window_id,
+                                              BrowserId window_id,
                                               const std::string& profile_id,
                                               bool persistent,
                                               uint64_t now_ms) {
@@ -187,7 +187,7 @@ base::ListValue PhiAgentSpaces::TasksJson(uint64_t now_ms) const {
     base::DictValue t;
     t.Set("taskId", space.task_id);
     t.Set("spaceId", space.space_id);
-    t.Set("windowId", static_cast<double>(space.window_id));
+    t.Set("windowId", static_cast<double>(space.window_id.value));
     t.Set("ownership", OwnershipWire(space.ownership));
     t.Set("status", space.status);
     t.Set("caption", space.caption);

@@ -114,9 +114,10 @@ class Overview {
     if (!framework) {
       return;
     }
-    const int64_t browser = controller_->active_browser()
-                                ? controller_->active_browser()
-                                : controller_->window_id();
+    const int64_t browser = controller_->active_browser_id().value;
+    if (!browser) {
+      return;  // No browser attached: no cards.
+    }
     std::optional<base::Value> tabs = base::JSONReader::Read(
         framework->ListTabsJson(browser), base::JSON_PARSE_RFC);
     if (tabs && tabs->is_list()) {
@@ -253,9 +254,10 @@ class Overview {
 
   void Click(POINT pt) {
     phi_framework::PhiFramework* framework = controller_->framework();
-    const int64_t browser = controller_->active_browser()
-                                ? controller_->active_browser()
-                                : controller_->window_id();
+    const int64_t browser = controller_->active_browser_id().value;
+    if (!browser) {
+      return;  // No browser attached: nothing to activate or close.
+    }
     for (const Card& card : cards_) {
       if (!::PtInRect(&card.bounds, pt)) {
         continue;

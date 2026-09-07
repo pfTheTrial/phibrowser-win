@@ -107,9 +107,9 @@ class Popover {
   static ULONGLONG closed_tick;
 
   Popover(HWND owner, const RECT& anchor, const PhiPalette& palette,
-          phi_framework::PhiFramework* framework, int64_t browser_id)
+          phi_framework::PhiFramework* framework, BrowserId browser)
       : owner_(owner), palette_(palette), framework_(framework),
-        browser_id_(browser_id) {
+        browser_id_(browser.value) {
     dpi_ = ::GetDpiForWindow(owner);
     Register();
     Refresh();
@@ -455,6 +455,8 @@ class Popover {
   // Not rewritten to raw_ptr: the popover lives strictly inside the
   // framework's lifetime (owned popup of the shell window).
   RAW_PTR_EXCLUSION phi_framework::PhiFramework* framework_;
+  // The browser the popover was opened for (BrowserId::value; the
+  // framework calls below are still int64_t until phase 2).
   int64_t browser_id_;
   UINT dpi_ = 96;
   std::vector<ExtensionRow> rows_;
@@ -477,7 +479,7 @@ void PhiExtensionsPopover::Toggle(HWND owner,
                                   const RECT& anchor_screen,
                                   const PhiPalette& palette,
                                   phi_framework::PhiFramework* framework,
-                                  int64_t browser_id) {
+                                  BrowserId browser) {
   if (Popover::instance) {
     ::DestroyWindow(Popover::instance->hwnd());
     return;
@@ -487,7 +489,7 @@ void PhiExtensionsPopover::Toggle(HWND owner,
     return;
   }
   Popover::instance =
-      new Popover(owner, anchor_screen, palette, framework, browser_id);
+      new Popover(owner, anchor_screen, palette, framework, browser);
 }
 
 void PhiExtensionsPopover::RefreshOpen() {
