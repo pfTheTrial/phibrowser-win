@@ -78,6 +78,14 @@ don't retry or work around it; tell the user to flip the toggle if they want
 the operation, and continue inside the agent Space otherwise. Agent-Space
 work is never affected.
 
+Two more refusals are final for the same reason: `pref_not_agent_settable`
+(the toggle itself, developer mode and the test-rig switch can only be
+changed by the user) and `test_rig_only` (verbs that exist for Phi's own test
+harness — deleting a profile, capturing a window to a file, feedback account
+overrides). On Windows a verb sent while the user has a menu or dialog open
+is held until it closes rather than lost; a verb that waits longer than
+three minutes fails `timeout`.
+
 ## Working in a user Space
 
 `enterContext({kind:'user', space, profile, create, activate})` binds the round to a

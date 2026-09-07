@@ -22,6 +22,9 @@ class PhiGroupOverview {
   static void Open(PhiWindowController* controller,
                    const std::string& group_id);
   static void Close();
+  // Close() only if the open overview belongs to `controller` (its shell is
+  // being destroyed; called from ~PhiWindowController).
+  static void CloseIfBoundTo(const PhiWindowController* controller);
 };
 
 }  // namespace phi_client

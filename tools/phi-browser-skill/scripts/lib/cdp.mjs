@@ -3,16 +3,25 @@
 // Minimal dependency-free CDP client for Phi Browser (Node >= 22). WINDOWS
 // TRANSPORT: the Phi client (phi_client.exe) owns a NAMED PIPE and speaks
 // HTTP/1.1 over it; agent-Space management/lifecycle is served on the same
-// pipe (/phi-agent → a WebSocket control channel), and everything else is
-// byte-relayed to Chromium's own loopback DevTools endpoint. This client
-// discovers the pipe from a pointer file (CDPAgentSocket) the client writes
-// into the user-data dir, matching the same discovery contract as macOS —
-// only the transport (a `\\.\pipe\…` path instead of a Unix socket) and the
-// launch mechanism differ, so the classes below are shared verbatim with the
-// macOS skill.
+// pipe (/phi-agent → a WebSocket control channel), the /json/* discovery
+// documents are answered by the client, and every /devtools/<kind>/<id>
+// WebSocket is a CDP session the client pumps through the browser's
+// IN-PROCESS DevTools transport. This client discovers the pipe from a
+// pointer file (CDPAgentSocket) the client writes into the user-data dir,
+// matching the same discovery contract as macOS — only the transport (a
+// `\\.\pipe\…` path instead of a Unix socket) and the launch mechanism
+// differ, so the classes below are shared verbatim with the macOS skill.
 //
-// That pipe is Phi's ONLY CDP surface on Windows. `--remote-debugging-port`
-// stays on loopback purely as the relay target; the pipe is the door.
+// That pipe is Phi's ONLY CDP surface on Windows. There is no
+// `--remote-debugging-port` any more — no loopback TCP listener, no
+// DevToolsActivePort — so nothing reaches the protocol without passing the
+// pipe's three gates: its ACL, the per-launch token, and the user's consent.
+//
+// THE TOKEN: line 2 of the pointer file (line 1 is the pipe name). Every
+// request over the pipe — the /json/version probe, the CDP upgrade, the
+// /phi-agent upgrade — carries it as `X-Phi-Token`; without it the client
+// answers 403 before it consults anything else, so a process that cannot
+// read the user-data dir cannot even raise the consent prompt.
 
 import crypto from 'node:crypto'
 import http from 'node:http'
@@ -105,6 +114,17 @@ export function isPhiDenied(err) {
   return Boolean(err && err.phiDenied)
 }
 
+// socketPath → launch token, filled by discoverEndpoints. A pipe with no
+// known token gets no header and is refused by the client with 403 (the
+// pointer file predates the token, or was not readable past line 1).
+const PIPE_TOKENS = new Map()
+
+/** The `X-Phi-Token` header for a pipe, or nothing when none is known. */
+function phiTokenHeader(socketPath) {
+  const token = PIPE_TOKENS.get(socketPath)
+  return token ? { 'X-Phi-Token': token } : {}
+}
+
 /**
  * All plausible socket endpoints in precedence order — the PHI_USER_DATA_DIR
  * override, then canary, then stable. A pointer or socket FILE can outlive a
@@ -123,13 +143,17 @@ export function discoverEndpoints() {
   for (const dir of CANDIDATE_DIRS) {
     const pointer = join(dir, 'CDPAgentSocket')
     if (!existsSync(pointer)) continue
-    const socketPath = readFileSync(pointer, 'utf8')
-      .split('\n').map((l) => l.trim()).filter(Boolean)[0]
+    const [socketPath, token] = readFileSync(pointer, 'utf8')
+      .split('\n').map((l) => l.trim()).filter(Boolean)
     // A named pipe (`\\.\pipe\…`) is NOT visible to fs.existsSync the way a
     // Unix socket file is, so existence is proven by the connect probe alone
     // (a stale pipe name refuses fast — see isDeadSocketError).
     if (socketPath) {
-      out.push({ socketPath })
+      // Remembered by pipe name so every later request over that pipe —
+      // including channels other modules open with just the socketPath —
+      // carries the token without threading it through every constructor.
+      if (token) PIPE_TOKENS.set(socketPath, token)
+      out.push({ socketPath, token: token || null })
     }
   }
   return out
@@ -225,6 +249,7 @@ function httpGetJson(endpoint, path, timeoutMs, agentPid = null,
     const req = http.request(
       { socketPath: endpoint.socketPath, path,
         headers: { Host: 'localhost',
+                   ...phiTokenHeader(endpoint.socketPath),
                    ...agentCapabilityHeader(agentCapability),
                    ...agentPidHeader(agentPid) } },
       (res) => {
@@ -347,10 +372,13 @@ export class UnixWebSocket {
     const [claimName, claimValue] = Object.entries(agentPidHeader(this._agentPid))[0] ?? []
     const [capabilityName, capabilityValue] =
       Object.entries(agentCapabilityHeader(this._agentCapability))[0] ?? []
+    const [tokenName, tokenValue] =
+      Object.entries(phiTokenHeader(socketPath))[0] ?? []
     this._sock.on('connect', () => {
       this._sock.write(
         `GET ${path} HTTP/1.1\r\n` +
         `Host: ${host}\r\n` +
+        (tokenName ? `${tokenName}: ${tokenValue}\r\n` : '') +
         (capabilityName ? `${capabilityName}: ${capabilityValue}\r\n` : '') +
         (claimName ? `${claimName}: ${claimValue}\r\n` : '') +
         `Upgrade: websocket\r\n` +

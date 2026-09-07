@@ -14,6 +14,7 @@
 #include "base/memory/raw_ptr_exclusion.h"
 #include "phibrowser-win/client/phi_dwrite.h"
 #include "phibrowser-win/client/phi_i18n.h"
+#include "phibrowser-win/client/phi_modal_scope.h"
 #include "phibrowser-win/client/phi_theme.h"
 #include "phibrowser-win/client/phi_window_controller.h"
 
@@ -302,6 +303,26 @@ void ApplySaturationAt(PanelState& state, int x) {
   host->SetSpaceSaturation(state.space_id, value);
 }
 
+// The knob is let go — by the user (button up) or by the system taking the
+// capture away (Alt+Tab, a system menu, another window's SetCapture).
+// Without the capture-loss path the knob stayed "dragging" forever: every
+// later mouse move kept driving the slider and the WM_ACTIVATE dismissal
+// stayed suppressed. If focus already went elsewhere while the knob was
+// held, that deferred dismissal happens now.
+void EndDrag(HWND hwnd, PanelState& state) {
+  if (!state.dragging) {
+    return;
+  }
+  state.dragging = false;
+  if (::GetCapture() == hwnd) {
+    ::ReleaseCapture();
+  }
+  if (::GetActiveWindow() != hwnd) {
+    state.done = true;
+    ::PostMessageW(hwnd, WM_NULL, 0, 0);  // Wake the modal loop.
+  }
+}
+
 LRESULT CALLBACK PanelProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
   auto* state = reinterpret_cast<PanelState*>(
       ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
@@ -379,11 +400,22 @@ LRESULT CALLBACK PanelProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
       return 0;
     }
     case WM_LBUTTONUP:
-      if (state && state->dragging) {
-        state->dragging = false;
-        ::ReleaseCapture();
+      if (state) {
+        EndDrag(hwnd, *state);
       }
       return 0;
+    case WM_CAPTURECHANGED:
+      // lParam names the window taking the capture; our own SetCapture is
+      // not a loss.
+      if (state && reinterpret_cast<HWND>(l) != hwnd) {
+        EndDrag(hwnd, *state);
+      }
+      return 0;
+    case WM_CANCELMODE:
+      if (state) {
+        EndDrag(hwnd, *state);
+      }
+      break;  // DefWindowProc does its own capture release.
     case WM_KEYDOWN:
       if (state && w == VK_ESCAPE) {
         state->done = true;
@@ -468,10 +500,16 @@ void PhiShowSpaceThemePanel(PhiWindowController* controller,
   ::ShowWindow(panel, SW_SHOW);
   ::SetForegroundWindow(panel);
 
-  MSG msg;
-  while (!state.done && ::GetMessageW(&msg, nullptr, 0, 0)) {
-    ::TranslateMessage(&msg);
-    ::DispatchMessageW(&msg);
+  {
+    // A pipe verb that tears the controller down mid-loop would leave
+    // `controller` dangling under us; the coordinator defers them while a
+    // modal scope is open.
+    PhiModalScope modal;
+    MSG msg;
+    while (!state.done && ::GetMessageW(&msg, nullptr, 0, 0)) {
+      ::TranslateMessage(&msg);
+      ::DispatchMessageW(&msg);
+    }
   }
 
   ::SetWindowLongPtrW(panel, GWLP_USERDATA, 0);

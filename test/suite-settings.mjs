@@ -13,34 +13,32 @@ const MAC_PANES = ['account', 'general', 'profiles', 'spaces', 'navigation',
 test('settings: every Mac pane is offered, in order', async () => {
   const ctl = await openControl()
   try {
-    // Developer is gated behind developer mode, exactly as on Mac — switch
-    // it on to see the full list.
-    await ctl.send('agentSpace.settings.set', { developerMode: true })
+    // Developer is gated behind developer mode, exactly as on Mac. Since
+    // phase 0 an agent cannot flip that pref; the box runner seeds
+    // developerMode:true into PhiPrefs.json (seed-fx-prefs.sh), so the
+    // full list is expected here.
     const r = await ctl.send('agentSpace.settings.get')
     assertEq(r.ok, true, 'settings.get ok')
     assertEq(r.sections.join(','), MAC_PANES.join(','),
              'same panes, same order as the Mac')
-    await ctl.send('agentSpace.settings.set', { developerMode: false })
   } finally { ctl.close() }
 })
 
-test('settings: developer mode gates the Developer pane', async () => {
+test('settings: the security prefs are not agent-settable', async () => {
   const ctl = await openControl()
   try {
-    let r = await ctl.send('agentSpace.settings.set', { developerMode: false })
-    assertEq(r.developerMode, false, 'developer mode off')
-    r = await ctl.send('agentSpace.settings.get')
-    assertEq(r.sections.includes('developer'), false,
-             'the pane is gone while off')
-    const refused = await ctl.send('agentSpace.settings.set',
-                                   { section: 'developer' })
-    assertEq(refused.ok, false, 'and cannot be selected')
-
-    r = await ctl.send('agentSpace.settings.set', { developerMode: true })
-    assertEq(r.developerMode, true, 'developer mode on')
-    r = await ctl.send('agentSpace.settings.get')
-    assertEq(r.sections.includes('developer'), true, 'the pane is back')
-    await ctl.send('agentSpace.settings.set', { developerMode: false })
+    // docs/architecture-review.md §3.7: developerMode, allowAgentUserSpaces
+    // and testRig can only be changed by the user (Settings) or by editing
+    // PhiPrefs.json — never over the pipe.
+    for (const key of ['developerMode', 'allowAgentUserSpaces', 'testRig']) {
+      const r = await ctl.send('agentSpace.settings.set', { [key]: false })
+      assertEq(r.ok, false, `${key} refused`)
+      assertEq(r.error, 'pref_not_agent_settable', `${key} error code`)
+    }
+    const r = await ctl.send('agentSpace.settings.get')
+    assertEq(r.developerMode, true, 'developer mode untouched')
+    assertEq(r.allowAgentUserSpaces, true, 'user-space toggle untouched')
+    assertEq(r.sections.includes('developer'), true, 'the pane is still there')
   } finally { ctl.close() }
 })
 

@@ -241,7 +241,12 @@ class Popover {
         }
         DownloadRow row;
         row.id = dict->FindInt("id").value_or(0);
-        row.name = base::UTF8ToWide(*dict->FindString("name"));
+        // A row can arrive before the framework has a name for it (an
+        // in-flight download whose target is still being chosen); the row
+        // shape is the framework's, not ours, so never assume the key.
+        if (const std::string* name = dict->FindString("name")) {
+          row.name = base::UTF8ToWide(*name);
+        }
         if (const std::string* host = dict->FindString("host")) {
           row.host = base::UTF8ToWide(*host);
         }

@@ -57,8 +57,8 @@ Section "Install"
   File /r "${PHI_STAGE}\*.*"
 
   ; Shortcuts to the STABLE path - pins survive every update.
-  CreateShortCut "$SMPROGRAMS\Phi Browser.lnk" "$INSTDIR\phi_client.exe"
-  CreateShortCut "$DESKTOP\Phi Browser.lnk" "$INSTDIR\phi_client.exe"
+  CreateShortCut "$SMPROGRAMS\Phi Browser.lnk" "$INSTDIR\Phi.exe"
+  CreateShortCut "$DESKTOP\Phi Browser.lnk" "$INSTDIR\Phi.exe"
 
   WriteUninstaller "$LOCALAPPDATA\PhiBrowser\Uninstall.exe"
 
@@ -67,7 +67,7 @@ Section "Install"
   WriteRegStr HKCU "${UNINST_KEY}" "DisplayVersion" "${PHI_VERSION}"
   WriteRegStr HKCU "${UNINST_KEY}" "Publisher" "Fyde Innovations"
   WriteRegStr HKCU "${UNINST_KEY}" "InstallLocation" "$INSTDIR"
-  WriteRegStr HKCU "${UNINST_KEY}" "DisplayIcon" "$INSTDIR\phi_client.exe"
+  WriteRegStr HKCU "${UNINST_KEY}" "DisplayIcon" "$INSTDIR\Phi.exe"
   WriteRegStr HKCU "${UNINST_KEY}" "UninstallString" \
     "$LOCALAPPDATA\PhiBrowser\Uninstall.exe"
   WriteRegDWORD HKCU "${UNINST_KEY}" "NoModify" 1

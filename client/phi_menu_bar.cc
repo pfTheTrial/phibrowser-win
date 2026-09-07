@@ -23,6 +23,7 @@
 #include "phibrowser-win/client/phi_glyph_bitmap.h"
 #include "phibrowser-win/client/phi_i18n.h"
 #include "phibrowser-win/client/phi_icons.h"
+#include "phibrowser-win/client/phi_modal_scope.h"
 #include "phibrowser-win/client/phi_prompt.h"
 #include "phibrowser-win/client/phi_updater.h"
 #include "phibrowser-win/client/phi_version.h"
@@ -235,7 +236,9 @@ void PhiMenuBar::ShowAt(size_t index, int screen_x, int screen_y) {
   }
   // WM_INITMENUPOPUP fires for this popup exactly as it would for an
   // attached bar, so the dynamic rows refresh on the way down. Commands
-  // arrive as WM_COMMAND on the shell.
+  // arrive as WM_COMMAND on the shell. The scope makes the coordinator defer
+  // pipe verbs for as long as the menu loop runs (phi_modal_scope.h).
+  PhiModalScope modal;
   ::TrackPopupMenu(info.hSubMenu, TPM_LEFTALIGN | TPM_TOPALIGN, screen_x,
                    screen_y, 0, shell_, nullptr);
 }
@@ -279,6 +282,7 @@ void PhiMenuBar::ShowOverflow(int screen_x, int screen_y) {
   }
   // Right-aligned: the button trails the toolbar, so a left-aligned popup
   // would run off the window.
+  PhiModalScope modal;
   ::TrackPopupMenu(overflow_, TPM_RIGHTALIGN | TPM_TOPALIGN, screen_x,
                    screen_y, 0, shell_, nullptr);
 }

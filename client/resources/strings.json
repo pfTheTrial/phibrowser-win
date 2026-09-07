@@ -4370,6 +4370,17 @@
    "zh-Hans": "黄色",
    "zh-Hant": "黃色"
   },
+  "tabs.tabGroup.summaryWithTabCount": {
+   "de": "{0} · {1} Tabs",
+   "en": "{0} · {1} tabs",
+   "es": "{0} · {1} pestañas",
+   "fr": "{0} · {1} onglets",
+   "ja": "{0}・{1}個のタブ",
+   "ko": "{0} · 탭 {1}개",
+   "nl": "{0} · {1} tabbladen",
+   "zh-Hans": "{0} · {1} 个标签页",
+   "zh-Hant": "{0} · {1} 個分頁"
+  },
   "themes.appearance.darkOption": {
    "de": "Dunkel",
    "en": "Dark",

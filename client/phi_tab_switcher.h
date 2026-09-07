@@ -20,6 +20,9 @@ class PhiTabSwitcher {
   // Activates the selection and closes.
   static void Commit();
   static void Cancel();
+  // Cancel() only if the HUD is cycling `controller`'s tabs (its shell is
+  // being destroyed; called from ~PhiWindowController).
+  static void CancelIfBoundTo(const PhiWindowController* controller);
 };
 
 }  // namespace phi_client

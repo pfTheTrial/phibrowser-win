@@ -72,6 +72,13 @@ class PhiGhostSpaces {
   // The Space stopped being a ghost: it materialized, or it was deleted.
   void ClearParked(const std::string& space_id);
 
+  // The Space is gone (DeleteSpace): drop everything remembered about it,
+  // so its old window id can neither match a materialized window nor be
+  // named eager by the next cold start. Persists. Returns the record it
+  // held (window id 0 when none), so the caller can drop the parked window
+  // on the framework side too.
+  Remembered Forget(const std::string& space_id);
+
   // True when nothing has been remembered yet — the client has no basis to
   // gate a replay on, so it must not try.
   bool Empty() const { return remembered_.empty(); }

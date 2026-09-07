@@ -162,6 +162,12 @@ class PhiSlotHost {
   // the framework to park or rebuild it (lazy Space restore).
   virtual void NoteSpaceWindow(const std::string& space_id,
                                int64_t browser_window_id) = 0;
+  // The user is now looking at `space_id` in this slot — every switch, not
+  // only the ones the coordinator drove: a chip click on a Space whose
+  // browser is already attached never leaves the controller. The
+  // coordinator persists it as the Space a cold start should reopen
+  // (docs/architecture-review.md §4 item 21). Agent shells never call it.
+  virtual void NoteSlotActiveSpace(const std::string& space_id) = 0;
   // --- Agent operating mask (the user's own Spaces) -----------------------
   // True while an agent holds `tab_id`; the row wears the mask badge.
   virtual bool IsTabAgentDriven(int tab_id) const = 0;
@@ -356,6 +362,11 @@ enum : UINT {
   // menu titles (and hide them again on a second Alt), the keyboard route
   // to the bar the pointer reveals by hovering.
   kMsgPhiToggleMenuReveal,
+  // A close that arrived while a nested message loop of this window was on
+  // the stack (PhiModalDepth() > 0): the handler retries on this posted
+  // turn, and keeps retrying by timer until the loop has unwound. See
+  // RequestClose.
+  kMsgPhiDeferredClose,
 };
 
 class PhiWindowController {
@@ -561,6 +572,15 @@ class PhiWindowController {
   // Starts closing the whole slot (its Space browsers, one per Space). MAY
   // DESTROY `this` before returning — the last browser going away tears the
   // slot down — so touch nothing on this object afterwards.
+  //
+  // INVARIANT: the controller is never destroyed while one of its own nested
+  // message loops (a context menu, a prompt, the icon picker — anything
+  // under a PhiModalScope) is on the stack. Both close entry points check
+  // PhiModalDepth() and, while it is non-zero, park the request and post
+  // kMsgPhiDeferredClose to the shell instead; the handler re-arms itself
+  // (kDeferredCloseTimer) until the loop has unwound and only then runs the
+  // close for real. Callers therefore may not assume the close happened
+  // synchronously — only that it will.
   void RequestClose();
   // Gives the currently shown browser Win32 focus and Chromium activation.
   void FocusActiveBrowser();
@@ -694,6 +714,9 @@ class PhiWindowController {
     RECT spaces_strip{};   // The band the Space chips live in.
     RECT url_field{};
     RECT favorites{};      // Pinned-tab band; empty until the feature lands.
+    // The 16pt separator row between the bookmark outline and "+ New Tab"
+    // (the Mac's SeparatorItem); empty without bookmarks.
+    RECT bookmark_separator{};
     RECT new_tab_row{};    // The sidebar's "+ New Tab" row.
     RECT bottom_bar{};
     // Bottom-bar buttons, the Mac's order: downloads and memory leading, the
@@ -858,6 +881,14 @@ class PhiWindowController {
   HFONT pip_text_font_ = nullptr;
   // 11pt labels — the bottom bar's Feedback/Chat capsules (the Mac's 11pt).
   HFONT small_font_ = nullptr;
+  // The row face at semibold — bookmark folder titles (the Mac's .medium)
+  // and tab-group headers (.semibold). Built with ui_font_.
+  HFONT ui_semibold_font_ = nullptr;
+  // The caption band's Phi mark when the ICO's 256px entry cannot be read
+  // (see PhiLogoBgra256): loaded from the ICO at the pixel size it draws,
+  // reloaded when a DPI change moves that size, destroyed with the shell.
+  HICON logo_icon_ = nullptr;
+  int logo_icon_size_ = 0;
   UINT dpi_ = 96;
 
   // Caption-band state: which caption button is hot / pressed (an HT* code,
@@ -944,7 +975,8 @@ class PhiWindowController {
   // title on the group's 18% color tint, clicking collapses/expands.
   struct GroupHeader {
     std::string id;
-    std::wstring title;
+    std::wstring name;   // The stored title; empty for an unnamed group.
+    std::wstring title;  // What the row shows: the name, or "Grey · 2 tabs".
     COLORREF color = 0;
     bool collapsed = false;
     RECT bounds{};     // The header row (the collapse toggle).
@@ -1462,6 +1494,18 @@ class PhiWindowController {
   std::string active_space_;
   int64_t active_browser_ = 0;
   HWND shell_hwnd_ = nullptr;  // Our client-owned top-level.
+  // Set at the top of the destructor: the shell's DestroyWindow still
+  // delivers WM_ACTIVATE / WM_SIZE / WM_CAPTURECHANGED to ShellWndProc on
+  // the way down, and those handlers must not lay out, refresh or call the
+  // host for an object whose destructor body is executing.
+  bool destroying_ = false;
+  // Close requests parked by RequestClose / CloseSpaceBrowser while a nested
+  // loop was up (see the RequestClose invariant); drained by
+  // RunDeferredClose on the posted kMsgPhiDeferredClose turn.
+  bool deferred_slot_close_ = false;
+  std::vector<std::string> deferred_space_closes_;
+  void PostDeferredClose();
+  void RunDeferredClose();
   std::unique_ptr<PhiMenuBar> menu_bar_;  // Attached to shell_hwnd_.
   // The four content-corner caps (TL, TR, BL, BR), siblings above the
   // browser child — the only rounding DComp content respects.

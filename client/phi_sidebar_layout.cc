@@ -68,8 +68,8 @@ ListPlacement LayoutList(const std::vector<ListItem>& items,
                                                        : m.row_height;
     SidebarRect rect = {m.left, y, m.right, y + h};
     out.unclipped.push_back(rect);
-    y += h + m.row_gap;
-    out.content_height += h + m.row_gap;
+    y += h + item.pad_below + m.row_gap;
+    out.content_height += h + item.pad_below + m.row_gap;
     if (m.clip &&
         (rect.bottom <= m.viewport_top || rect.top >= m.viewport_bottom)) {
       rect = {};  // Scrolled out of the viewport.

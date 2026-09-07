@@ -20,6 +20,7 @@
 #include <limits>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "base/base64.h"
@@ -50,6 +51,7 @@
 #include "phibrowser-win/client/phi_icons.h"
 #include "phibrowser-win/client/phi_mac_icons.h"
 #include "phibrowser-win/client/phi_menu_bar.h"
+#include "phibrowser-win/client/phi_modal_scope.h"
 #include "phibrowser-win/client/phi_i18n.h"
 #include "phibrowser-win/client/phi_new_tab_page.h"
 #include "phibrowser-win/client/phi_reader.h"
@@ -167,7 +169,10 @@ constexpr int kContentRadius = 14;  // webContentContainerCornerRadius (macOS 26
 constexpr int kContentTopGap = 4;
 constexpr int kFaviconSlot = 16;    // The 16pt slot in the row…
 constexpr int kFaviconSize = 14;    // …holding a 14pt icon (radius 3).
-constexpr int kBookmarkIndent = 16;
+constexpr int kBookmarkIndent = 10;   // SideBarOutlineView.indentation.
+constexpr int kFolderIconSize = 20;   // BookmarkFaviconView.folderSize.
+// The Mac's SeparatorItem row between the bookmark outline and the tab list.
+constexpr int kBookmarkSeparatorHeight = 16;
 // Omnibox suggestion dropdown metrics (DIP). The popup class itself is
 // registered further down (same anonymous namespace) — declared here because
 // the field methods above it need the registration.
@@ -214,28 +219,37 @@ constexpr UINT_PTR kCopyLinkRevertTimer = 0x523;
 // (SpacesStripView.addButton: .animation(.easeInOut(duration: 0.15))).
 constexpr int kAddSpaceFadeMs = 150;
 constexpr UINT_PTR kAddSpaceFadeTimer = 0x524;
+// Re-arms a kMsgPhiDeferredClose that found a nested loop still on the
+// stack (see PhiWindowController::RequestClose).
+constexpr UINT_PTR kDeferredCloseTimer = 0x525;
+constexpr UINT kDeferredCloseRetryMs = 50;
 
-// Tab groups: the Mac's 32pt TabGroupHeaderView; the group cell sits on an
-// 18% tint of the group color (~46/255).
+// Tab groups: the Mac's 32pt TabGroupHeaderView on TabGroupCellView's card —
+// the hover wash under a 1pt border hairline, radius 8; the group colour
+// lives only in the header's dot. Members sit 4pt in from the header and
+// the card's bottom (innerTableTop/BottomInset), 8pt in from its leading
+// edge (the member cell's own edgesSpacing) and 4pt from its trailing one.
 constexpr int kGroupHeaderHeight = 32;
-constexpr int kGroupTintAlpha = 46;
+constexpr int kGroupInnerInset = 4;
+constexpr int kGroupMemberLeadInset = 8;
+constexpr int kGroupMemberTrailInset = 4;
 struct PhiGroupColor {
   const char* name;
-  const wchar_t* label;
   COLORREF color;
 };
 // Chromium's TabGroupColorId palette (the Mac's GroupColor set is the same
-// nine); the label doubles as the auto-title for unnamed groups.
+// nine); the name keys the localized colour label (tabs.tabGroup.colorName.*)
+// that titles an unnamed group.
 constexpr std::array<PhiGroupColor, 9> kGroupColors = {{
-    {"grey", L"Grey", RGB(0x80, 0x86, 0x8B)},
-    {"blue", L"Blue", RGB(0x1A, 0x73, 0xE8)},
-    {"red", L"Red", RGB(0xD9, 0x30, 0x25)},
-    {"yellow", L"Yellow", RGB(0xF9, 0xAB, 0x00)},
-    {"green", L"Green", RGB(0x18, 0x80, 0x38)},
-    {"pink", L"Pink", RGB(0xD0, 0x18, 0x84)},
-    {"purple", L"Purple", RGB(0xA1, 0x42, 0xF4)},
-    {"cyan", L"Cyan", RGB(0x00, 0x7B, 0x83)},
-    {"orange", L"Orange", RGB(0xFA, 0x90, 0x3E)},
+    {"grey", RGB(0x80, 0x86, 0x8B)},
+    {"blue", RGB(0x1A, 0x73, 0xE8)},
+    {"red", RGB(0xD9, 0x30, 0x25)},
+    {"yellow", RGB(0xF9, 0xAB, 0x00)},
+    {"green", RGB(0x18, 0x80, 0x38)},
+    {"pink", RGB(0xD0, 0x18, 0x84)},
+    {"purple", RGB(0xA1, 0x42, 0xF4)},
+    {"cyan", RGB(0x00, 0x7B, 0x83)},
+    {"orange", RGB(0xFA, 0x90, 0x3E)},
 }};
 const PhiGroupColor& GroupColorByName(const std::string& name) {
   for (const PhiGroupColor& c : kGroupColors) {
@@ -327,6 +341,16 @@ LRESULT CALLBACK BrowserSubclassProc(HWND hwnd, UINT msg, WPARAM wparam,
   }
   return base ? ::CallWindowProcW(base, hwnd, msg, wparam, lparam)
               : ::DefWindowProcW(hwnd, msg, wparam, lparam);
+}
+
+// Every popup menu the controller tracks goes through here: the menu's
+// nested loop is a PhiModalScope, so the coordinator defers pipe verbs and
+// the controller defers its own close until the menu is down. Always
+// TPM_RETURNCMD with no exclusion rect — the caller reads the chosen id.
+UINT TrackPopupMenuModal(HMENU menu, UINT flags, int x, int y, HWND owner) {
+  PhiModalScope modal;
+  return static_cast<UINT>(
+      ::TrackPopupMenu(menu, flags, x, y, 0, owner, nullptr));
 }
 
 ATOM EnsureShellClass() {
@@ -483,6 +507,29 @@ void PhiWindowController::EnsureFont() {
   }
   if (previous) {
     ::DeleteObject(previous);  // Replaced only after nothing else refers to it.
+  }
+  // The same face one weight up, for folder titles and group headers. GDI
+  // keeps Segoe UI's semibold as a family of its own: asking "Segoe UI" for
+  // weight 600 rounds up to Bold, so name the face when that is the system
+  // font. Other faces (the CJK UI fonts) synthesize it.
+  {
+    LOGFONTW semibold = metrics.lfMessageFont;
+    semibold.lfHeight = -Scaled(13);
+    semibold.lfWeight = FW_SEMIBOLD;
+    if (std::wstring_view(semibold.lfFaceName) == L"Segoe UI") {
+      const std::wstring face = L"Segoe UI Semibold";
+      std::fill(std::begin(semibold.lfFaceName),
+                std::end(semibold.lfFaceName), L'\0');
+      std::copy_n(face.begin(),
+                  std::min(face.size(), std::size(semibold.lfFaceName) - 1),
+                  std::begin(semibold.lfFaceName));
+    }
+    if (HFONT semibold_built = ::CreateFontIndirectW(&semibold)) {
+      if (ui_semibold_font_) {
+        ::DeleteObject(ui_semibold_font_);
+      }
+      ui_semibold_font_ = semibold_built;
+    }
   }
 
   if (emoji_font_ && emoji_font_dpi_ == dpi_) {
@@ -948,9 +995,17 @@ PhiWindowController::Layout PhiWindowController::ComputeLayout() {
                             (pinned_height > 0 ? Scaled(kFavoritesSpacer) : 0);
   const int bookmarks_height =
       bookmark_row_count_ * Scaled(kTabRowHeight + kTabRowGap);
-  out.new_tab_row = {inset, bookmarks_top + bookmarks_height, sidebar - inset,
-                     bookmarks_top + bookmarks_height +
-                         Scaled(kNewTabRowHeight)};
+  // A non-empty outline is parted from the tab list by the Mac's 16pt
+  // separator row (makeAllItems).
+  const int separator_h =
+      bookmark_row_count_ > 0 ? Scaled(kBookmarkSeparatorHeight) : 0;
+  const int separator_top = bookmarks_top + bookmarks_height;
+  out.bookmark_separator =
+      separator_h > 0 ? RECT{inset, separator_top, sidebar - inset,
+                             separator_top + separator_h}
+                      : RECT{};
+  out.new_tab_row = {inset, separator_top + separator_h, sidebar - inset,
+                     separator_top + separator_h + Scaled(kNewTabRowHeight)};
   out.tabs_top = out.new_tab_row.bottom + Scaled(kTabRowGap);
 
   // The bottom bar: downloads and memory leading (spacing 4), the Feedback
@@ -992,6 +1047,7 @@ PhiWindowController::Layout PhiWindowController::ComputeLayout() {
   if (hide_sidebar) {
     const RECT zero = {};
     out.favorites = zero;
+    out.bookmark_separator = zero;
     out.new_tab_row = zero;
     out.bottom_bar = zero;
     out.downloads = zero;
@@ -1357,18 +1413,55 @@ PhiWindowController::PhiWindowController(int64_t window_id,
 }
 
 PhiWindowController::~PhiWindowController() {
+  // From here on the shell's own messages (DestroyWindow below still
+  // delivers WM_ACTIVATE / WM_SIZE / WM_CAPTURECHANGED) find a controller
+  // that must do nothing but die.
+  destroying_ = true;
   // A window closing under a live drag would leave the split-drop cards
   // holding this controller. Only one drag runs at a time (it owns the
   // mouse capture), so taking them down unconditionally is safe.
   PhiSplitDropOverlay::Hide();
   PhiDragImage::OwnerGone(shell_hwnd_);
+  // The process-wide satellites bound to this window: each keeps a bare
+  // PhiWindowController* and outlives its shell otherwise (the agent
+  // overlay's Reposition runs from EVERY shell's LayoutContents, the
+  // overview and the switcher answer keys, the search panel a click).
+  PhiAgentOverlay::HideIfBoundTo(this);
+  PhiGroupOverview::CloseIfBoundTo(this);
+  PhiTabSwitcher::CancelIfBoundTo(this);
+  PhiSearchTabsPanel::CloseIfBoundTo(this);
+  // Owned components and popups go BEFORE the shell: their teardown calls
+  // back into a controller that is still whole, rather than running as a
+  // side effect of the shell's DestroyWindow on one that is half gone.
+  tab_preview_.reset();
+  bookmark_manager_.reset();
+  new_tab_page_.reset();
+  create_space_panel_.reset();
+  menu_bar_.reset();
+  for (HWND* popup : {&hover_card_popup_, &omnibox_popup_, &floating_sidebar_,
+                      &status_bubble_}) {
+    if (*popup && ::IsWindow(*popup)) {
+      ::DestroyWindow(*popup);
+    }
+    *popup = nullptr;
+  }
+  for (HWND& cap : corner_caps_) {
+    if (cap && ::IsWindow(cap)) {
+      ::DestroyWindow(cap);
+    }
+    cap = nullptr;
+  }
   // Detach the browser child before tearing down our window, so its teardown
   // is not entangled with ours. Full close plumbing is a later slice.
   if (browser_hwnd_ && ::IsWindow(browser_hwnd_)) {
     ::SetParent(browser_hwnd_, nullptr);
   }
   if (shell_hwnd_ && ::IsWindow(shell_hwnd_)) {
+    ::KillTimer(shell_hwnd_, kDeferredCloseTimer);
     ::DestroyWindow(shell_hwnd_);  // Takes the address field child with it.
+  }
+  if (logo_icon_) {
+    ::DestroyIcon(logo_icon_);
   }
   if (ui_font_) {
     ::DeleteObject(ui_font_);
@@ -1393,6 +1486,9 @@ PhiWindowController::~PhiWindowController() {
   }
   if (small_font_) {
     ::DeleteObject(small_font_);
+  }
+  if (ui_semibold_font_) {
+    ::DeleteObject(ui_semibold_font_);
   }
   if (back_buffer_) {
     ::DeleteObject(back_buffer_);
@@ -1957,8 +2053,17 @@ LRESULT CALLBACK PhiWindowController::UrlFieldProc(HWND hwnd,
                                                    UINT msg,
                                                    WPARAM wparam,
                                                    LPARAM lparam) {
+  if (msg == WM_NCDESTROY) {
+    ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);  // See ShellWndProc.
+    return ::CallWindowProcW(g_edit_base_proc, hwnd, msg, wparam, lparam);
+  }
   auto* self = reinterpret_cast<PhiWindowController*>(
       ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+  if (self && self->destroying_) {
+    // The field dies with the shell; its WM_KILLFOCUS would still reach the
+    // framework for a window that is going.
+    return ::CallWindowProcW(g_edit_base_proc, hwnd, msg, wparam, lparam);
+  }
   switch (msg) {
     case WM_KEYDOWN:
       if (wparam == VK_RETURN) {
@@ -2084,6 +2189,10 @@ LRESULT CALLBACK CornerCapProc(HWND hwnd, UINT msg, WPARAM wparam,
                         reinterpret_cast<LONG_PTR>(cs->lpCreateParams));
     return ::DefWindowProcW(hwnd, msg, wparam, lparam);
   }
+  if (msg == WM_NCDESTROY) {
+    ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);  // See ShellWndProc.
+    return ::DefWindowProcW(hwnd, msg, wparam, lparam);
+  }
   if (msg == WM_PAINT) {
     auto* self = reinterpret_cast<PhiWindowController*>(
         ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
@@ -2124,6 +2233,10 @@ LRESULT CALLBACK StatusBubbleProc(HWND hwnd, UINT msg, WPARAM wparam,
                         reinterpret_cast<LONG_PTR>(cs->lpCreateParams));
     return ::DefWindowProcW(hwnd, msg, wparam, lparam);
   }
+  if (msg == WM_NCDESTROY) {
+    ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);  // See ShellWndProc.
+    return ::DefWindowProcW(hwnd, msg, wparam, lparam);
+  }
   if (msg == WM_PAINT) {
     auto* self = reinterpret_cast<PhiWindowController*>(
         ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
@@ -2162,6 +2275,10 @@ LRESULT CALLBACK OmniboxPopupProc(HWND hwnd, UINT msg, WPARAM wparam,
     auto* cs = reinterpret_cast<CREATESTRUCTW*>(lparam);
     ::SetWindowLongPtrW(hwnd, GWLP_USERDATA,
                         reinterpret_cast<LONG_PTR>(cs->lpCreateParams));
+    return ::DefWindowProcW(hwnd, msg, wparam, lparam);
+  }
+  if (msg == WM_NCDESTROY) {
+    ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);  // See ShellWndProc.
     return ::DefWindowProcW(hwnd, msg, wparam, lparam);
   }
   auto* self = reinterpret_cast<PhiWindowController*>(
@@ -2555,6 +2672,9 @@ void PhiWindowController::ToggleDownloadsPopover() {
 }
 
 void PhiWindowController::LayoutContents() {
+  if (destroying_) {
+    return;  // The shell's own DestroyWindow sends WM_SIZE on the way down.
+  }
   if (bookmark_manager_ && bookmark_manager_->visible()) {
     bookmark_manager_->Reposition();
   }
@@ -5636,12 +5756,22 @@ bool PhiWindowController::ShowSpace(const std::string& space_id) {
   }
   RefreshTabs();
   RepaintUrlField();  // Comfortable switches with no ramp: retint now.
+  if (host_ && !agent_) {
+    host_->NoteSlotActiveSpace(space_id);
+  }
   return true;
 }
 
 void PhiWindowController::CloseSpaceBrowser(const std::string& space_id) {
   auto it = space_browsers_.find(space_id);
   if (it == space_browsers_.end()) {
+    return;
+  }
+  if (PhiModalDepth() > 0) {
+    // Closing the slot's last browser destroys `this`; never from under a
+    // nested loop of our own (the RequestClose invariant).
+    deferred_space_closes_.push_back(space_id);
+    PostDeferredClose();
     return;
   }
   if (active_space_ == space_id) {
@@ -5691,6 +5821,14 @@ void PhiWindowController::RequestClose() {
   // Snapshot before closing: each close can fire OnBrowserWindowClosing
   // synchronously, which mutates space_browsers_ — and destroys `this` when
   // the last browser goes. Everything below is local for that reason.
+  if (PhiModalDepth() > 0) {
+    // A context menu, prompt or picker of this window is pumping messages
+    // (a pipe verb or a WM_CLOSE reached us through its loop): destroying
+    // the controller now would return into a freed frame. Park it.
+    deferred_slot_close_ = true;
+    PostDeferredClose();
+    return;
+  }
   phi_framework::PhiFramework* framework = framework_;
   HWND shell = shell_hwnd_;
   std::vector<int64_t> browsers;
@@ -5705,6 +5843,37 @@ void PhiWindowController::RequestClose() {
   }
   for (int64_t browser_id : browsers) {
     framework->CloseBrowserWindow(browser_id);
+  }
+}
+
+void PhiWindowController::PostDeferredClose() {
+  if (shell_hwnd_ && ::IsWindow(shell_hwnd_)) {
+    ::PostMessageW(shell_hwnd_, kMsgPhiDeferredClose, 0, 0);
+  }
+}
+
+void PhiWindowController::RunDeferredClose() {
+  if (PhiModalDepth() > 0) {
+    // Still inside the loop (a posted message is dispatched by it, and so
+    // is this timer): try again once it has had a chance to unwind.
+    ::SetTimer(shell_hwnd_, kDeferredCloseTimer, kDeferredCloseRetryMs,
+               nullptr);
+    return;
+  }
+  // ONE parked close per turn: any of them can destroy `this`, so the next
+  // is re-posted BEFORE it runs — to a window that is then simply gone.
+  if (!deferred_space_closes_.empty()) {
+    const std::string space_id = deferred_space_closes_.front();
+    deferred_space_closes_.erase(deferred_space_closes_.begin());
+    if (!deferred_space_closes_.empty() || deferred_slot_close_) {
+      PostDeferredClose();
+    }
+    CloseSpaceBrowser(space_id);
+    return;
+  }
+  if (deferred_slot_close_) {
+    deferred_slot_close_ = false;
+    RequestClose();  // May destroy `this`; nothing follows.
   }
 }
 
@@ -6323,6 +6492,7 @@ void PhiWindowController::RebuildTabs() {
 
   // Group visuals for the header rows (title/color/collapsed by id).
   std::map<std::string, GroupHeader> group_info;
+  std::map<std::string, std::wstring> group_color_labels;
   if (std::optional<base::Value> gparsed = base::JSONReader::Read(
           framework_->TabGroupsJson(browser), base::JSON_PARSE_RFC);
       gparsed && gparsed->is_list()) {
@@ -6340,8 +6510,14 @@ void PhiWindowController::RebuildTabs() {
           GroupColorByName(color ? *color : "grey");
       info.color = palette_entry.color;
       const std::string* title = d->FindString("title");
-      info.title = title && !title->empty() ? base::UTF8ToWide(*title)
-                                            : palette_entry.label;
+      info.name = title ? base::UTF8ToWide(*title) : std::wstring();
+      // An unnamed group is titled by its colour and member count
+      // ("Grey · 2 tabs", displayTitle(memberCount:)); the count is filled
+      // in once the strip has been walked.
+      info.title = info.name;
+      group_color_labels[info.id] =
+          PhiStr((std::string("tabs.tabGroup.colorName.") +
+                  palette_entry.name).c_str());
       info.collapsed = d->FindBool("collapsed").value_or(false);
       group_info[info.id] = std::move(info);
     }
@@ -6569,6 +6745,7 @@ void PhiWindowController::RebuildTabs() {
     // tab-list viewport (LayoutList).
     std::vector<ListItem> items;
     std::vector<const SidebarContentNode*> placed;
+    std::map<std::string, int> member_counts;
     for (const SidebarContentNode& node : sidebar_tree_.content) {
       if (node.kind == SidebarNodeKind::kGroup) {
         if (!group_info.count(node.group_id)) {
@@ -6577,8 +6754,34 @@ void PhiWindowController::RebuildTabs() {
         items.push_back({ListItem::Kind::kHeader, false});
       } else {
         items.push_back({ListItem::Kind::kRow, node.hidden});
+        if (!node.group_id.empty()) {
+          ++member_counts[node.group_id];
+        }
       }
       placed.push_back(&node);
+    }
+    // The card's inner insets: an expanded header opens the top inset
+    // (less the row gap already there) below itself, the group's last
+    // visible member the bottom one. A collapsed card is its header.
+    for (size_t i = 0; i < placed.size(); ++i) {
+      const SidebarContentNode& node = *placed[i];
+      if (node.kind == SidebarNodeKind::kGroup) {
+        if (!node.collapsed) {
+          items[i].pad_below =
+              std::max(0, Scaled(kGroupInnerInset) - Scaled(kTabRowGap));
+        }
+        continue;
+      }
+      if (node.group_id.empty() || node.hidden) {
+        continue;
+      }
+      const bool last_member =
+          i + 1 == placed.size() ||
+          placed[i + 1]->kind == SidebarNodeKind::kGroup ||
+          placed[i + 1]->group_id != node.group_id;
+      if (last_member) {
+        items[i].pad_below = Scaled(kGroupInnerInset);
+      }
     }
     ListMetrics m;
     m.left = layout.tabs_left;
@@ -6597,6 +6800,12 @@ void PhiWindowController::RebuildTabs() {
       const SidebarContentNode& node = *placed[i];
       if (node.kind == SidebarNodeKind::kGroup) {
         GroupHeader header = group_info.at(node.group_id);
+        if (header.name.empty()) {
+          header.title = PhiStrF(
+              "tabs.tabGroup.summaryWithTabCount",
+              {group_color_labels[node.group_id],
+               std::to_wstring(member_counts[node.group_id])});
+        }
         header.bounds = ToRect(list.rects[i]);
         // The tinted card starts at the header's placed edge even when the
         // header itself is scrolled out; member rows extend it below.
@@ -6612,11 +6821,18 @@ void PhiWindowController::RebuildTabs() {
         continue;
       }
       row.bounds = ToRect(list.rects[i]);
+      const bool in_card = !row.group_id.empty() && !group_headers_.empty() &&
+                           group_headers_.back().id == row.group_id;
+      if (in_card && row.bounds.right > row.bounds.left) {
+        // A member row sits inside the card: its own edgesSpacing from the
+        // card's leading edge, the inner table's inset from the trailing.
+        row.bounds.left += Scaled(kGroupMemberLeadInset);
+        row.bounds.right -= Scaled(kGroupMemberTrailInset);
+      }
       finish_row(&row);
-      if (!row.group_id.empty() && !group_headers_.empty() &&
-          group_headers_.back().id == row.group_id &&
-          row.bounds.right > row.bounds.left) {
-        group_headers_.back().container.bottom = row.bounds.bottom;
+      if (in_card && row.bounds.right > row.bounds.left) {
+        group_headers_.back().container.bottom =
+            row.bounds.bottom + items[i].pad_below;
       }
       tabs_.push_back(std::move(row));
     }
@@ -6666,7 +6882,7 @@ void PhiWindowController::RebuildTabs() {
     }
     std::erase_if(tab_mru_, [&](int id) {
       return std::none_of(tabs_.begin(), tabs_.end(), [&](const TabRow& row) {
-        return row.id == id || (row.b_index >= 0 && row.id == id);
+        return row.id == id || (row.b_index >= 0 && row.b_id == id);
       });
     });
     if (active_id) {
@@ -7185,7 +7401,10 @@ void PhiWindowController::OnChromeClick(int x, int y) {
     POINT anchor = {layout.overflow.right, layout.top_bar.bottom};
     ::ClientToScreen(shell_hwnd_, &anchor);
     menu_open_ = true;
-    menu_bar_->ShowOverflow(anchor.x, anchor.y);
+    {
+      PhiModalScope modal;  // The bar's TrackPopupMenu loop.
+      menu_bar_->ShowOverflow(anchor.x, anchor.y);
+    }
     menu_open_ = false;
     return;
   }
@@ -7253,9 +7472,9 @@ void PhiWindowController::OnChromeClick(int x, int y) {
       }
       POINT screen = pt;
       ::ClientToScreen(shell_hwnd_, &screen);
-      const UINT chosen = static_cast<UINT>(::TrackPopupMenu(
-          menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, screen.x,
-          screen.y, 0, shell_hwnd_, nullptr));
+      const UINT chosen = TrackPopupMenuModal(
+          menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN,
+          screen.x, screen.y, shell_hwnd_);
       ::DestroyMenu(menu);
       for (HBITMAP bitmap : bitmaps) {
         ::DeleteObject(bitmap);
@@ -7339,9 +7558,9 @@ void PhiWindowController::OnChromeClick(int x, int y) {
                   L"New Space with New Profile...");
     POINT screen = {layout.add_space.left, layout.add_space.bottom};
     ::ClientToScreen(shell_hwnd_, &screen);
-    const UINT chosen = static_cast<UINT>(::TrackPopupMenu(
+    const UINT chosen = TrackPopupMenuModal(
         menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, screen.x,
-        screen.y, 0, shell_hwnd_, nullptr));
+        screen.y, shell_hwnd_);
     ::DestroyMenu(menu);
     for (HBITMAP bitmap : bitmaps) {
       ::DeleteObject(bitmap);
@@ -7622,24 +7841,32 @@ void PhiWindowController::DrawFolderIcon(HDC dc,
                                          COLORREF ink,
                                          bool expanded) {
   const std::string resolved = PhiResolveFolderIcon(icon_id);
-  // "default" wears the plain folder, open or closed like the Mac's
-  // fallback art; anything else is its catalog symbol.
-  const PhiMacIcon* mask = resolved == PhiFolderIconDefaultId()
-                               ? PhiPlainFolderMask(expanded)
-                               : PhiFolderIconMask(resolved);
-  if (mask) {
-    const int px = std::min(slot.right - slot.left, slot.bottom - slot.top);
-    if (px > 0) {
-      RECT art = {slot.left + ((slot.right - slot.left) - px) / 2,
-                  slot.top + ((slot.bottom - slot.top) - px) / 2, 0, 0};
-      art.right = art.left + px;
-      art.bottom = art.top + px;
-      const std::vector<unsigned char> bgra =
-          PhiTintedIconBgra(*mask, ink, px);
-      if (!bgra.empty()) {
-        PhiBlendBgra(dc, art, bgra.data(), px, px);
-        return;
+  const bool plain = resolved == PhiFolderIconDefaultId();
+  const int px = std::min(slot.right - slot.left, slot.bottom - slot.top);
+  if (px > 0) {
+    RECT art = {slot.left + ((slot.right - slot.left) - px) / 2,
+                slot.top + ((slot.bottom - slot.top) - px) / 2, 0, 0};
+    art.right = art.left + px;
+    art.bottom = art.top + px;
+    // "default" wears the plain folder, open or closed, in the Mac's
+    // two-tone accent-derived palette; anything else is its catalog symbol
+    // in the row's ink.
+    std::vector<unsigned char> bgra;
+    if (plain) {
+      const PhiPalette palette = CurrentPalette();
+      bgra = PhiPlainFolderBgra(expanded, px, palette.accent, palette.dark,
+                                palette.window_bg);
+    }
+    if (bgra.empty()) {
+      const PhiMacIcon* mask = plain ? PhiPlainFolderMask(expanded)
+                                     : PhiFolderIconMask(resolved);
+      if (mask) {
+        bgra = PhiTintedIconBgra(*mask, ink, px);
       }
+    }
+    if (!bgra.empty()) {
+      PhiBlendBgra(dc, art, bgra.data(), px, px);
+      return;
     }
   }
   HGDIOBJ previous = caption_font_ ? ::SelectObject(dc, caption_font_)
@@ -7686,7 +7913,9 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
         ::AppendMenuW(colors, MF_STRING | (kGroupColors[i].color == gh.color
                                                ? MF_CHECKED
                                                : 0),
-                      kColorFirst + i, kGroupColors[i].label);
+                      kColorFirst + i,
+                      PhiStr((std::string("tabs.tabGroup.colorName.") +
+                              kGroupColors[i].name).c_str()));
       }
       ::AppendMenuW(menu, MF_STRING, kRename, L"Rename Group...");
       ::AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(colors),
@@ -7696,12 +7925,14 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
       ::AppendMenuW(menu, MF_STRING, kCloseGroup, L"Close Group");
       POINT screen = pt;
       ::ClientToScreen(shell_hwnd_, &screen);
-      const UINT chosen = static_cast<UINT>(::TrackPopupMenu(
-          menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN |
-                    TPM_RIGHTBUTTON,
-          screen.x, screen.y, 0, shell_hwnd_, nullptr));
+      // Everything the handlers need is copied out BEFORE the menu's loop:
+      // a kMsgPhiRebuildRows dispatched inside it clears group_headers_,
+      // and `gh` dangles from then on. Same rule for every branch below.
       const std::string group_id = gh.id;
-      const std::wstring title = gh.title;
+      const std::wstring title = gh.name;
+      const UINT chosen = TrackPopupMenuModal(
+          menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RIGHTBUTTON,
+          screen.x, screen.y, shell_hwnd_);
       ::DestroyMenu(menu);  // Owns the submenu.
       const int64_t browser = active_browser_ ? active_browser_ : window_id_;
       if (!framework_) {
@@ -7757,7 +7988,7 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
             ++members;
           }
         }
-        return (gh.title.empty() ? std::wstring(L"Untitled") : gh.title) +
+        return (gh.name.empty() ? std::wstring(L"Untitled") : gh.name) +
                L" (" + std::to_wstring(members) + L")";
       };
       HMENU menu = ::CreatePopupMenu();
@@ -7947,25 +8178,32 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
       ::AppendMenuW(menu, MF_STRING, kCloseOther, L"Close Other Tabs");
       POINT screen = pt;
       ::ClientToScreen(shell_hwnd_, &screen);
-      const UINT chosen = static_cast<UINT>(::TrackPopupMenu(
-          menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN |
-                    TPM_RIGHTBUTTON,
-          screen.x, screen.y, 0, shell_hwnd_, nullptr));
+      // The row's identity, copied out before the menu loop (see the group
+      // header above): `row` is a reference into tabs_, which the rebuild
+      // a title/favicon notification posts can clear under the menu.
+      const SidebarKey row_key = row.key;
+      const int row_id = row.id;
+      const int row_index = row.index;
+      const int row_b_index = row.b_index;
+      const std::wstring row_title = row.title;
+      const UINT chosen = TrackPopupMenuModal(
+          menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RIGHTBUTTON,
+          screen.x, screen.y, shell_hwnd_);
       ::DestroyMenu(menu);
       if (chosen >= kMoveSpaceFirst &&
           chosen < kMoveSpaceFirst + space_targets.size()) {
-        Apply(SidebarMoveToSpace{row.key,
+        Apply(SidebarMoveToSpace{row_key,
                                  space_targets[chosen - kMoveSpaceFirst],
                                  /*clone=*/false});
       } else if (chosen >= kCloneSpaceFirst &&
                  chosen < kCloneSpaceFirst + space_targets.size()) {
-        Apply(SidebarMoveToSpace{row.key,
+        Apply(SidebarMoveToSpace{row_key,
                                  space_targets[chosen - kCloneSpaceFirst],
                                  /*clone=*/true});
       } else if (chosen >= kFolderFirst &&
                  chosen < kFolderFirst + folder_targets.size()) {
         host_->AddBookmarkRow(window_id_, folder_targets[chosen - kFolderFirst],
-                              base::WideToUTF8(row.title), url_a);
+                              base::WideToUTF8(row_title), url_a);
       } else if (chosen == kFolderNew && host_) {
         std::wstring name = L"Untitled";
         if (PhiPromptText(shell_hwnd_, L"New Folder", L"Folder name:",
@@ -7974,30 +8212,30 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
               window_id_, std::string(), base::WideToUTF8(name));
           if (!folder.empty()) {
             host_->AddBookmarkRow(window_id_, folder,
-                                  base::WideToUTF8(row.title), url_a);
+                                  base::WideToUTF8(row_title), url_a);
           }
         }
       } else if (chosen >= kGroupFirst &&
                  chosen < kGroupFirst + group_targets.size() && framework_) {
         // Joining (or moving to) an existing group: the model takes the tab
         // out of its current group atomically, so one call covers both.
-        Apply(SidebarJoinGroup{row.key, group_targets[chosen - kGroupFirst]});
+        Apply(SidebarJoinGroup{row_key, group_targets[chosen - kGroupFirst]});
       } else if (chosen == kMoveNewGroup) {
-        Apply(SidebarJoinGroup{row.key, std::string()});
+        Apply(SidebarJoinGroup{row_key, std::string()});
       } else if (chosen == kReversePanes) {
-        Apply(SidebarSwapPanes{row.key});
+        Apply(SidebarSwapPanes{row_key});
       } else if (chosen == kPin || chosen == kPinSplit) {
         // Pinning MOVES the tab (or the pair) into a cell at the grid's end.
         SidebarPlace grid;
         grid.section = SidebarPlace::Section::kPinned;
-        Apply(SidebarMove{row.key, grid});
+        Apply(SidebarMove{row_key, grid});
       } else if (chosen == kBookmark || chosen == kBookmarkSplit) {
         // The menu's bookmark is an unbound copy (the drag path binds).
-        Apply(SidebarBookmarkCopy{row.key});
+        Apply(SidebarBookmarkCopy{row_key});
       } else if (chosen == kDuplicate && framework_) {
         // A split duplicates as a fresh split (both panes), as on Mac —
         // in the same arrangement as the one it came from.
-        const bool stacked = merged && SplitIsStacked(row.id);
+        const bool stacked = merged && SplitIsStacked(row_id);
         const int fresh_a =
             url_a.empty() ? -1 : framework_->NewTab(browser, url_a.c_str());
         if (merged && fresh_a >= 0 && !url_b.empty()) {
@@ -8019,40 +8257,39 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
         CopyTextToClipboard(shell_hwnd_, base::UTF8ToWide(url_b));
       } else if (chosen == kSplitCurrent) {
         Apply(SidebarFormSplit{SidebarKey::Tab(sidebar_tree_.active_tab),
-                               row.key, "vertical"});
+                               row_key, "vertical"});
       } else if (chosen == kOpenAsSplit && framework_) {
         // A fresh blank pane beside this tab, the Mac's openAsSplit. The row
         // becomes the active pane first; ids carry across the new tab, whose
         // insertion can shift every index after it.
-        const int row_id = row.id;
         const int fresh = framework_->NewTab(browser, "");
         if (fresh >= 0) {
           const std::vector<StripTab> strip = ReadStrip(framework_, browser);
           const int fresh_id = StripIdAtIndex(strip, fresh);
-          const int row_index = StripIndexOfId(strip, row_id);
-          if (row_index >= 0) {
-            framework_->ActivateTab(browser, row_index);
+          const int strip_index = StripIndexOfId(strip, row_id);
+          if (strip_index >= 0) {
+            framework_->ActivateTab(browser, strip_index);
             SplitActiveWithNormalized(browser, fresh_id);
           }
         }
         RefreshTabs();
       } else if (chosen == kTakeControl && host_) {
-        host_->RequestReclaimTab(row.id);
+        host_->RequestReclaimTab(row_id);
       } else if (chosen == kHandBack && host_) {
-        host_->RequestReleaseTab(row.id);
+        host_->RequestReleaseTab(row_id);
       } else if (chosen == kConvertSplit) {
         // Toggle the divider axis; the stored cell a pane is bound to
         // remembers it so the split reopens the same way.
         Apply(SidebarSetLayout{
-            row.key, SplitIsStacked(row.id) ? "vertical" : "horizontal"});
+            row_key, SplitIsStacked(row_id) ? "vertical" : "horizontal"});
       } else if (chosen == kRemoveSplit) {
-        Apply(SidebarBreakSplit{row.key});
+        Apply(SidebarBreakSplit{row_key});
       } else if (chosen == kGroup) {
-        Apply(SidebarJoinGroup{row.key, std::string()});
+        Apply(SidebarJoinGroup{row_key, std::string()});
       } else if (chosen == kUngroupTab) {
-        Apply(SidebarLeaveGroup{row.key});
+        Apply(SidebarLeaveGroup{row_key});
       } else if (chosen == kClose) {
-        Apply(SidebarClose{row.key, -1});
+        Apply(SidebarClose{row_key, -1});
       } else if (chosen == kCloseOther && framework_) {
         // Every UNBOUND tab except this row (both panes of a merged one);
         // pin/bookmark-bound tabs live in their cells and stay.
@@ -8067,8 +8304,8 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
             }
             const int index = d->FindInt("index").value_or(-1);
             const std::string* tag = d->FindString("tag");
-            if (index < 0 || index == row.index ||
-                (merged && index == row.b_index) ||
+            if (index < 0 || index == row_index ||
+                (merged && index == row_b_index) ||
                 (tag && !tag->empty())) {
               continue;
             }
@@ -8126,15 +8363,15 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
                     kClose, L"Close");
       POINT screen = pt;
       ::ClientToScreen(shell_hwnd_, &screen);
-      const UINT chosen = static_cast<UINT>(::TrackPopupMenu(
-          menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN |
-                    TPM_RIGHTBUTTON,
-          screen.x, screen.y, 0, shell_hwnd_, nullptr));
+      // Copied before the loop: pinned_ can be cleared under the menu.
       const std::string guid = pin.guid;
       const std::string url = pin.url;
       const std::string url_b = pin.url_b;
       const std::wstring pin_title = pin.title;
       const std::string pin_layout = pin.layout;
+      const UINT chosen = TrackPopupMenuModal(
+          menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RIGHTBUTTON,
+          screen.x, screen.y, shell_hwnd_);
       ::DestroyMenu(menu);
       const int64_t browser = active_browser_ ? active_browser_ : window_id_;
       if (chosen == kOpen && !url.empty()) {
@@ -8266,10 +8503,7 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
                     bookmark.folder ? L"Delete Folder" : L"Delete");
       POINT screen = pt;
       ::ClientToScreen(shell_hwnd_, &screen);
-      const UINT chosen = static_cast<UINT>(::TrackPopupMenu(
-          menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN |
-                    TPM_RIGHTBUTTON,
-          screen.x, screen.y, 0, shell_hwnd_, nullptr));
+      // Copied before the loop: bookmarks_ can be cleared under the menu.
       const std::string guid = bookmark.guid;
       const std::string url = bookmark.url;
       const std::string url_b = bookmark.url_b;
@@ -8278,6 +8512,9 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
       const std::string row_icon = bookmark.icon;
       const std::string row_layout = bookmark.layout;
       const RECT row_bounds = bookmark.bounds;
+      const UINT chosen = TrackPopupMenuModal(
+          menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RIGHTBUTTON,
+          screen.x, screen.y, shell_hwnd_);
       ::DestroyMenu(menu);
       const int64_t browser = active_browser_ ? active_browser_ : window_id_;
       if (chosen >= kMoveSpaceFirst &&
@@ -8355,8 +8592,11 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
         ::ClientToScreen(shell_hwnd_, &bottom_right);
         const RECT anchor = {top_left.x, top_left.y, bottom_right.x,
                              bottom_right.y};
-        const std::string picked =
-            PhiPickFolderIcon(this, anchor, row_icon);
+        std::string picked;
+        {
+          PhiModalScope modal;  // The picker pumps its own loop.
+          picked = PhiPickFolderIcon(this, anchor, row_icon);
+        }
         if (!picked.empty()) {
           host_->SetStoredRowIcon(guid, picked);
         }
@@ -8494,10 +8734,9 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
       }
       POINT screen = pt;
       ::ClientToScreen(shell_hwnd_, &screen);
-      const UINT chosen = static_cast<UINT>(::TrackPopupMenu(
-          menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN |
-                    TPM_RIGHTBUTTON,
-          screen.x, screen.y, 0, shell_hwnd_, nullptr));
+      const UINT chosen = TrackPopupMenuModal(
+          menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RIGHTBUTTON,
+          screen.x, screen.y, shell_hwnd_);
       ::DestroyMenu(menu);  // Owns every submenu it was given.
       if (chosen == kSetTheme) {
         // Anchored on the click, like the Mac's .nearTrigger placement.
@@ -8584,11 +8823,13 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
     ::AppendMenuW(agent_menu, MF_STRING, kFinish, L"Finish Task");
     POINT screen = pt;
     ::ClientToScreen(shell_hwnd_, &screen);
-    const UINT chosen = static_cast<UINT>(::TrackPopupMenu(
+    // Copied BEFORE the menu: a rebuild dispatched inside its loop clears
+    // chips_, and the handlers below can rebuild them too.
+    const std::string task = target->id;
+    const UINT chosen = TrackPopupMenuModal(
         agent_menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, screen.x,
-        screen.y, 0, shell_hwnd_, nullptr));
+        screen.y, shell_hwnd_);
     ::DestroyMenu(agent_menu);
-    const std::string task = target->id;  // The handlers can rebuild chips_.
     if (chosen == kTranscript) {
       host_->RequestShowTranscript(task);
     } else if (chosen == kFinish) {
@@ -8753,8 +8994,15 @@ LRESULT CALLBACK PhiWindowController::FloatingSidebarProc(HWND hwnd,
                                                           UINT msg,
                                                           WPARAM wparam,
                                                           LPARAM lparam) {
+  if (msg == WM_NCDESTROY) {
+    ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);  // See ShellWndProc.
+    return ::DefWindowProcW(hwnd, msg, wparam, lparam);
+  }
   auto* self = reinterpret_cast<PhiWindowController*>(
       ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+  if (!self || self->destroying_) {
+    return ::DefWindowProcW(hwnd, msg, wparam, lparam);
+  }
   // Events forward through the docked sidebar's handlers under the
   // expanded-layout override, shifted by the panel's band offset.
   const auto forward = [&](auto&& call) {
@@ -8996,9 +9244,9 @@ void PhiWindowController::ShowBookmarkBarMenu(const RECT& anchor,
   build(build, menu, parent_guid, skip_first, 0);
   POINT at = {anchor.left, anchor.bottom};
   ::ClientToScreen(shell_hwnd_, &at);
-  const UINT chosen = static_cast<UINT>(::TrackPopupMenu(
-      menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, at.x, at.y, 0,
-      shell_hwnd_, nullptr));
+  const UINT chosen = TrackPopupMenuModal(
+      menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, at.x, at.y,
+      shell_hwnd_);
   ::DestroyMenu(menu);
   if (chosen >= 1 && chosen <= targets.size()) {
     OpenOrFocusPinned(targets[chosen - 1].first, targets[chosen - 1].second);
@@ -9106,10 +9354,20 @@ void PhiWindowController::PaintChrome(HDC dc,
     const int logo_size = Scaled(18);
     const std::vector<unsigned char>& logo_bgra = PhiLogoBgra256();
     const int logo_native = 256;
-    static HICON logo = nullptr;
-    if (logo_bgra.empty() && !logo) {
-      logo = PhiAppIcon(logo_size);  // Fallback: the nearest ICO entry.
+    if (logo_bgra.empty()) {
+      // Fallback: the nearest ICO entry, held per window at the size this
+      // DPI draws — a process static loaded at the first window's DPI drew
+      // blurred (and leaked) on every other display.
+      if (logo_icon_ && logo_icon_size_ != logo_size) {
+        ::DestroyIcon(logo_icon_);
+        logo_icon_ = nullptr;
+      }
+      if (!logo_icon_) {
+        logo_icon_ = PhiAppIcon(logo_size);
+        logo_icon_size_ = logo_size;
+      }
     }
+    const HICON logo = logo_icon_;
     // One draw for both callers: the Phi title's icon, and comfortable's
     // standalone Phi button.
     const auto draw_logo = [&](int logo_x, int logo_y) {
@@ -10060,6 +10318,10 @@ LRESULT CALLBACK PhiWindowController::HoverCardPopupProc(HWND hwnd,
                         reinterpret_cast<LONG_PTR>(cs->lpCreateParams));
     return ::DefWindowProcW(hwnd, msg, wparam, lparam);
   }
+  if (msg == WM_NCDESTROY) {
+    ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);  // See ShellWndProc.
+    return ::DefWindowProcW(hwnd, msg, wparam, lparam);
+  }
   auto* self = reinterpret_cast<PhiWindowController*>(
       ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
   switch (msg) {
@@ -10298,11 +10560,19 @@ void PhiWindowController::PaintSidebarBand(HDC dc,
     }
     RECT text = pill;
     const int mid = (pill.top + pill.bottom) / 2;
+    // A 14pt favicon centred in its 16pt slot 6pt in; a folder's 20pt art
+    // 4pt in — both leave the title at 30pt (BookmarkCellView's leading
+    // padding and spacing differ by exactly the slot difference).
     RECT icon = {pill.left + Scaled(6) +
                      (Scaled(kFaviconSlot) - Scaled(kFaviconSize)) / 2,
                  mid - Scaled(kFaviconSize) / 2, 0, 0};
     icon.right = icon.left + Scaled(kFaviconSize);
     icon.bottom = icon.top + Scaled(kFaviconSize);
+    if (bookmark.folder) {
+      icon = {pill.left + Scaled(4), mid - Scaled(kFolderIconSize) / 2,
+              pill.left + Scaled(4) + Scaled(kFolderIconSize),
+              mid - Scaled(kFolderIconSize) / 2 + Scaled(kFolderIconSize)};
+    }
     if (bookmark.folder) {
       // The Mac paints a Lottie folder carrying the chosen symbol on its
       // face; with no Lottie runtime here the symbol itself IS the row icon,
@@ -10343,11 +10613,10 @@ void PhiWindowController::PaintSidebarBand(HDC dc,
       text.left += Scaled(24);
     }
     ::SetTextColor(dc, kLabel);
-    std::wstring label =
-        bookmark.folder
-            ? (std::wstring(bookmark.expanded ? L"\u25BE  " : L"\u25B8  ") +
-               bookmark.title)
-            : bookmark.title;
+    // No disclosure glyph: the outline hides its triangles
+    // (frameOfOutlineCell is zero) and the folder art alone says open or
+    // closed. Folder titles are one weight up (.medium).
+    std::wstring label = bookmark.title;
     if (split_row) {
       // "primary \u2022 secondary" \u2014 the secondary title, or its www.-stripped
       // host when the title duplicates the primary's (the Mac's fallback).
@@ -10383,8 +10652,15 @@ void PhiWindowController::PaintSidebarBand(HDC dc,
                    static_cast<int>(offset.dy));
       text.right = bookmark_badge.left - Scaled(4);
     }
+    HGDIOBJ folder_font_previous =
+        bookmark.folder && ui_semibold_font_
+            ? ::SelectObject(dc, ui_semibold_font_)
+            : nullptr;
     PhiDrawTextAA(dc, label.c_str(), -1, &text,
                 DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    if (folder_font_previous) {
+      ::SelectObject(dc, folder_font_previous);
+    }
     if (bookmark_attached) {
       DrawSurfaceBadge(dc, bookmark_badge, bookmark.attached_surface,
                        bookmark_hovered && !bookmark_dragged,
@@ -10400,6 +10676,17 @@ void PhiWindowController::PaintSidebarBand(HDC dc,
   const int band_shift = drag_active_ && !layout.horizontal_tabs
                              ? static_cast<int>(RowSlideOffset(kBandShiftKey).dy)
                              : 0;
+  // The separator row: a 1pt `separator` hairline centred in its 16pt row,
+  // spanning the rows' width (SeparatorCellView).
+  if (layout.bookmark_separator.right > layout.bookmark_separator.left) {
+    RECT sep = layout.bookmark_separator;
+    ::OffsetRect(&sep, 0, band_shift);
+    const int line_y = (sep.top + sep.bottom) / 2;
+    const RECT line = {sep.left, line_y, sep.right, line_y + Scaled(1)};
+    HBRUSH sep_brush = ::CreateSolidBrush(palette.separator);
+    ::FillRect(dc, &line, sep_brush);
+    ::DeleteObject(sep_brush);
+  }
   if (layout.new_tab_row.right > layout.new_tab_row.left) {
     RECT row = layout.new_tab_row;
     ::OffsetRect(&row, 0, band_shift);
@@ -10439,42 +10726,49 @@ void PhiWindowController::PaintSidebarBand(HDC dc,
   ::OffsetViewportOrgEx(dc, 0, band_shift, &viewport_before);
   for (const GroupHeader& gh : group_headers_) {
     if (gh.container.right > gh.container.left) {
-      FillRounded(dc, gh.container,
-                  BlendOver(gh.color, kTintTop, kGroupTintAlpha),
-                  Scaled(kCornerRadius));
+      // The card: the hover wash under the 1pt `border` hairline.
+      StrokeRounded(dc, gh.container, palette.hover, palette.border,
+                    Scaled(kCornerRadius));
     }
     if (gh.bounds.right <= gh.bounds.left) {
       continue;  // Header scrolled out of the viewport.
     }
     if (hover_kind_ == HoverKind::kGroupHeader &&
         hover_index_ == static_cast<int>(&gh - group_headers_.data())) {
-      FillRounded(dc, gh.bounds, BlendOver(gh.color, kTintTop, 71),
-                  Scaled(kCornerRadius));
+      FillRounded(dc, gh.bounds, palette.hover_strong, Scaled(kCornerRadius));
     }
+    // TabGroupHeaderView: 4pt leading, the 10pt chevron in a 20pt frame, the
+    // 10pt dot, a 6pt gap, the semibold title.
     const int mid = (gh.bounds.top + gh.bounds.bottom) / 2;
-    RECT chevron = {gh.bounds.left + Scaled(8), mid - Scaled(8),
-                    gh.bounds.left + Scaled(8) + Scaled(16), mid + Scaled(8)};
+    RECT chevron = {gh.bounds.left + Scaled(4), mid - Scaled(10),
+                    gh.bounds.left + Scaled(4) + Scaled(20), mid + Scaled(10)};
     HGDIOBJ previous_glyph_font =
         caption_font_ ? ::SelectObject(dc, caption_font_) : nullptr;
     DrawGlyph(dc, chevron, gh.collapsed ? L"\uE76C" : L"\uE70D", kLabelDim);
     if (previous_glyph_font) {
       ::SelectObject(dc, previous_glyph_font);
     }
-    // The dot: colored centre in a white ring (TabGroupHeaderColorIndicator).
-    const int cx = chevron.right + Scaled(4) + Scaled(6);
-    PhiFillEllipseAA(dc,
-                     {cx - Scaled(6), mid - Scaled(6), cx + Scaled(6),
-                      mid + Scaled(6)},
-                     RGB(0xFF, 0xFF, 0xFF));
+    // The dot: colored centre in a 1pt white ring, 10pt over all
+    // (TabGroupHeaderColorIndicator).
+    const int cx = chevron.right + Scaled(5);
     PhiFillEllipseAA(dc,
                      {cx - Scaled(5), mid - Scaled(5), cx + Scaled(5),
                       mid + Scaled(5)},
+                     RGB(0xFF, 0xFF, 0xFF));
+    PhiFillEllipseAA(dc,
+                     {cx - Scaled(4), mid - Scaled(4), cx + Scaled(4),
+                      mid + Scaled(4)},
                      gh.color);
     ::SetTextColor(dc, kLabel);
-    RECT title_rc = {cx + Scaled(6) + Scaled(6), gh.bounds.top,
+    RECT title_rc = {cx + Scaled(5) + Scaled(6), gh.bounds.top,
                      gh.bounds.right - Scaled(6), gh.bounds.bottom};
+    HGDIOBJ previous_title_font =
+        ui_semibold_font_ ? ::SelectObject(dc, ui_semibold_font_) : nullptr;
     PhiDrawTextAA(dc, gh.title.c_str(), -1, &title_rc,
                 DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    if (previous_title_font) {
+      ::SelectObject(dc, previous_title_font);
+    }
   }
   ::SetViewportOrgEx(dc, viewport_before.x, viewport_before.y, nullptr);
 
@@ -10567,15 +10861,8 @@ void PhiWindowController::PaintSidebarBand(HDC dc,
     // merged split row draws the same shape once per pane around a hairline
     // divider (the Mac's single merged row with two panes).
     const int mid = (pill.top + pill.bottom) / 2;
-    COLORREF ground = kTintTop;
-    if (!row.group_id.empty()) {
-      for (const GroupHeader& gh : group_headers_) {
-        if (gh.id == row.group_id) {
-          ground = BlendOver(gh.color, kTintTop, kGroupTintAlpha);
-          break;
-        }
-      }
-    }
+    // Inside a group card the row rests on the card's wash, not the tint.
+    const COLORREF ground = row.group_id.empty() ? kTintTop : palette.hover;
     const COLORREF row_bg =
         layout.horizontal_tabs
             ? (row.active ? palette.window_bg : ground)
@@ -10727,8 +11014,20 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
                         reinterpret_cast<LONG_PTR>(cs->lpCreateParams));
     return ::DefWindowProcW(hwnd, msg, wparam, lparam);
   }
+  if (msg == WM_NCDESTROY) {
+    // Final message: unhook the controller so nothing delivered to a
+    // recycled HWND value can reach it (every popup and child proc below
+    // does the same).
+    ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+    return ::DefWindowProcW(hwnd, msg, wparam, lparam);
+  }
   auto* self = reinterpret_cast<PhiWindowController*>(
       ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+  if (self && self->destroying_) {
+    // The destructor's DestroyWindow: the object is going, its members are
+    // half torn down — every handler below would do work on it.
+    return ::DefWindowProcW(hwnd, msg, wparam, lparam);
+  }
   switch (msg) {
     case WM_MOUSEACTIVATE: {
       // Let clicks activate without being eaten, and drive Chromium's own
@@ -10754,7 +11053,11 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
           self->browser_hwnd_ && ::IsWindow(self->browser_hwnd_)) {
         ::SetFocus(self->browser_hwnd_);
         if (self->framework_) {
-          self->framework_->FocusBrowserWindow(self->window_id_);
+          // The ACTIVE browser, not the slot's: after a Space switch the
+          // slot's own id names a browser that may already be closed.
+          self->framework_->FocusBrowserWindow(self->active_browser_
+                                                   ? self->active_browser_
+                                                   : self->window_id_);
         }
       }
       return MA_ACTIVATE;
@@ -10782,7 +11085,9 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
         }
         ::SetFocus(self->browser_hwnd_);
         if (self->framework_) {
-          self->framework_->FocusBrowserWindow(self->window_id_);
+          self->framework_->FocusBrowserWindow(self->active_browser_
+                                                   ? self->active_browser_
+                                                   : self->window_id_);
         }
       }
       return 0;
@@ -11051,6 +11356,11 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
         ::InvalidateRect(hwnd, nullptr, FALSE);
       }
       return 0;
+    case kMsgPhiDeferredClose:
+      if (self) {
+        self->RunDeferredClose();  // May destroy `self`.
+      }
+      return 0;
     case kMsgPhiToggleMenuReveal:
       if (self) {
         self->menu_alt_revealed_ = !self->menu_alt_revealed_;
@@ -11204,6 +11514,13 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
       return ::DefWindowProcW(hwnd, msg, wparam, lparam);
     case WM_TIMER:
       if (self && self->tab_preview_ && self->tab_preview_->OnTimer(wparam)) {
+        return 0;
+      }
+      if (wparam == kDeferredCloseTimer) {
+        ::KillTimer(hwnd, kDeferredCloseTimer);
+        if (self) {
+          self->RunDeferredClose();  // May destroy `self`.
+        }
         return 0;
       }
       if (self && wparam == kHoverCardTimer) {

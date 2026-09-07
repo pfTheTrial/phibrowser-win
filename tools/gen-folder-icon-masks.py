@@ -62,6 +62,15 @@ FOLDERS = [
     ("folder-closed", "side-tab/folder-close.imageset/folder-close-regions.svg"),
     ("folder-open", "side-tab/folder-open.imageset/folder-regions.svg"),
 ]
+# The same two files split into the layers the sidebar tints separately —
+# the Mac's BookmarkFolderIconPalette gives the back body, the front panel
+# and the 1pt stroke each their own accent-derived colour. Per state:
+# <id>-back, <id>-back-stroke, <id>-front, <id>-front-stroke, in draw order.
+FOLDER_LAYERS = [
+    ("back", "folder-back-body"),
+    ("front", "folder-front-panel"),
+]
+STROKE_WIDTH = 1.0  # User units — the SVGs' stroke="#657CAA" default width.
 
 NUM = re.compile(r'[-+]?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?')
 CMD = re.compile(r'[MmZzLlHhVvCcSsQqTtAa]')
@@ -286,7 +295,9 @@ def fill(subpaths, even_odd, size, cover):
                         cover[row + px] = 1
 
 
-def rasterize(path):
+def parse_paths(path):
+    """(vw, [(element, subpaths scaled to the supersampled grid)]) — every
+    drawable <path> outside defs/clipPath/mask, in document order."""
     tree = ET.parse(path)
     root = tree.getroot()
     vb = root.get('viewBox')
@@ -301,7 +312,6 @@ def rasterize(path):
     big = MASK * SS
     sx = big / vw
     sy = big / vh
-    cover = bytearray(big * big)
 
     ns = '{http://www.w3.org/2000/svg}'
     skip = set()
@@ -309,20 +319,26 @@ def rasterize(path):
         for group in root.iter(container):
             for el in group.iter(f'{ns}path'):
                 skip.add(id(el))
+    out = []
     for el in root.iter(f'{ns}path'):
         if id(el) in skip:
             continue
         d = el.get('d')
         if not d:
             continue
-        if (el.get('fill') or '').lower() == 'none':
-            continue
-        even_odd = (el.get('fill-rule') or el.get('clip-rule') or '') == 'evenodd'
         subpaths = [[((px - vx) * sx, (py - vy) * sy) for px, py in sp]
                     for sp in flatten(d)]
-        fill(subpaths, even_odd, big, cover)
+        out.append((el, subpaths))
+    return vw, out
 
-    # Box-average the supersampled coverage down to the 48px alpha mask.
+
+def even_odd_of(el):
+    return (el.get('fill-rule') or el.get('clip-rule') or '') == 'evenodd'
+
+
+def downsample(cover):
+    """Box-average the supersampled coverage down to the 48px alpha mask."""
+    big = MASK * SS
     mask = bytearray(MASK * MASK)
     area = SS * SS
     for my in range(MASK):
@@ -334,6 +350,60 @@ def rasterize(path):
                     total += cover[base + ox]
             mask[my * MASK + mx] = (total * 255) // area
     return mask
+
+
+def rasterize(path):
+    big = MASK * SS
+    cover = bytearray(big * big)
+    for el, subpaths in parse_paths(path)[1]:
+        if (el.get('fill') or '').lower() == 'none':
+            continue
+        fill(subpaths, even_odd_of(el), big, cover)
+    return downsample(cover)
+
+
+def ring(cover, radius):
+    """The stroke of a filled shape: every supersampled pixel within `radius`
+    of the fill's boundary, on either side — a stroke centred on the path,
+    which is how the SVG paints it."""
+    big = MASK * SS
+    disk = [(dx, dy) for dy in range(-int(radius) - 1, int(radius) + 2)
+            for dx in range(-int(radius) - 1, int(radius) + 2)
+            if dx * dx + dy * dy <= radius * radius]
+    out = bytearray(big * big)
+    for y in range(big):
+        row = y * big
+        for x in range(big):
+            if not cover[row + x]:
+                continue
+            edge = (x == 0 or y == 0 or x == big - 1 or y == big - 1 or
+                    not cover[row + x - 1] or not cover[row + x + 1] or
+                    not cover[row - big + x] or not cover[row + big + x])
+            if not edge:
+                continue
+            for dx, dy in disk:
+                px, py = x + dx, y + dy
+                if 0 <= px < big and 0 <= py < big:
+                    out[py * big + px] = 1
+    return out
+
+
+def rasterize_layers(path, prefix):
+    """[(id, mask)] for the plain folder's tintable layers, in draw order."""
+    big = MASK * SS
+    vw, paths = parse_paths(path)
+    by_id = {el.get('id'): (el, subpaths) for el, subpaths in paths}
+    radius = STROKE_WIDTH / 2 * big / vw
+    out = []
+    for layer, path_id in FOLDER_LAYERS:
+        if path_id not in by_id:
+            sys.exit(f'{path}: no <path id="{path_id}">')
+        el, subpaths = by_id[path_id]
+        cover = bytearray(big * big)
+        fill(subpaths, even_odd_of(el), big, cover)
+        out.append((f'{prefix}-{layer}', downsample(cover)))
+        out.append((f'{prefix}-{layer}-stroke', downsample(ring(cover, radius))))
+    return out
 
 
 def rle(mask):
@@ -363,10 +433,15 @@ def main():
                for i, a in ICONS]
     sources += [(i, os.path.join(assets, rel)) for i, rel in FOLDERS]
     blob, entries = [], []
+    masks = []
     for icon_id, svg in sources:
         if not os.path.exists(svg):
             sys.exit(f'missing {svg}')
-        pairs = rle(rasterize(svg))
+        masks.append((icon_id, rasterize(svg)))
+    for icon_id, rel in FOLDERS:
+        masks += rasterize_layers(os.path.join(assets, rel), icon_id)
+    for icon_id, mask in masks:
+        pairs = rle(mask)
         offset = len(blob)
         for run, value in pairs:
             blob.append(run)

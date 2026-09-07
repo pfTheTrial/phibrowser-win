@@ -9,6 +9,7 @@
 #include <string>
 
 #include "base/logging.h"
+#include "phibrowser-win/client/phi_features.h"
 #include "phibrowser-win/client/phi_version.h"
 
 namespace phi_client {
@@ -16,8 +17,9 @@ namespace phi_client {
 namespace {
 
 // The Windows twin of the Mac's SUFEED_URL
-// (ota.phibrowser.com/mac-public/appcast/PhiBrowserMacUpdate.xml). Dev/test
-// rings override with the PHI_APPCAST_URL environment variable.
+// (ota.phibrowser.com/mac-public/appcast/PhiBrowserMacUpdate.xml). A
+// --dev-hooks build may override it with the PHI_APPCAST_URL environment
+// variable; a release build has no such door (kPhiDevHooks).
 constexpr char kDefaultAppcastUrl[] =
     "https://ota.phibrowser.com/win-nightly/appcast/PhiBrowserWinUpdate.xml";
 
@@ -110,25 +112,35 @@ bool Load() {
   return true;
 }
 
+// The PHI_APPCAST_URL / PHI_APPCAST_ED25519 overrides exist ONLY in a
+// --dev-hooks build. Together they replace the update feed and the key that
+// signs it, so in a release exe any process that can set an environment
+// variable for us could hand us its own "update"; there the built-in values
+// are the only values (docs/architecture-review/lane7-cross-cutting.md §6).
 std::string AppcastUrl() {
-  char value[1024] = {};
-  const DWORD length =
-      ::GetEnvironmentVariableA("PHI_APPCAST_URL", value, sizeof(value));
-  if (length > 0 && length < sizeof(value)) {
-    LOG(INFO) << "[PhiUpdater] appcast override: " << value;
-    return std::string(value, length);
+  if constexpr (kPhiDevHooks) {
+    char value[1024] = {};
+    const DWORD length =
+        ::GetEnvironmentVariableA("PHI_APPCAST_URL", value, sizeof(value));
+    if (length > 0 && length < sizeof(value)) {
+      LOG(INFO) << "[PhiUpdater] appcast override: " << value;
+      return std::string(value, length);
+    }
   }
   return kDefaultAppcastUrl;
 }
 
-// The built-in key, or the PHI_APPCAST_ED25519 override (signature testing
-// against a dev feed).
+// The built-in key, or in a --dev-hooks build the PHI_APPCAST_ED25519
+// override (signature testing against a dev feed).
 std::string EdDsaPublicKey() {
-  char value[128] = {};
-  const DWORD length =
-      ::GetEnvironmentVariableA("PHI_APPCAST_ED25519", value, sizeof(value));
-  if (length > 0 && length < sizeof(value)) {
-    return std::string(value, length);
+  if constexpr (kPhiDevHooks) {
+    char value[128] = {};
+    const DWORD length =
+        ::GetEnvironmentVariableA("PHI_APPCAST_ED25519", value, sizeof(value));
+    if (length > 0 && length < sizeof(value)) {
+      LOG(INFO) << "[PhiUpdater] appcast signing key override in effect";
+      return std::string(value, length);
+    }
   }
   return kEdDsaPublicKey;
 }

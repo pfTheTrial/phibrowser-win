@@ -4,14 +4,13 @@
 
 #include "phibrowser-win/client/phi_ghost_spaces.h"
 
-#include <windows.h>
-
 #include <optional>
 #include <utility>
 
 #include "base/json/json_reader.h"
-#include "base/json/json_writer.h"
+#include "base/logging.h"
 #include "base/values.h"
+#include "phibrowser-win/client/phi_file_io.h"
 
 namespace phi_client {
 
@@ -23,25 +22,20 @@ void PhiGhostSpaces::Load(const std::wstring& path) {
   remembered_.clear();
   parked_.clear();
   orphans_.clear();
-  HANDLE f = ::CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ,
-                           nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
-                           nullptr);
-  if (f == INVALID_HANDLE_VALUE) {
-    return;  // No file yet is the ordinary first-run case.
+  base::DictValue root;
+  switch (PhiReadJsonFile(path, &root)) {
+    case PhiJsonFileStatus::kMissing:
+      return;  // No file yet is the ordinary first-run case.
+    case PhiJsonFileStatus::kCorrupt:
+      // Quarantined by the reader; an empty store means "do not gate the
+      // replay" (Empty()), which is the safe answer for a file we could not
+      // read.
+      LOG(ERROR) << "[PhiGhost] ghost store unreadable; replaying unfiltered";
+      return;
+    case PhiJsonFileStatus::kOk:
+      break;
   }
-  std::string json;
-  char buf[4096];
-  DWORD read = 0;
-  while (::ReadFile(f, buf, sizeof(buf), &read, nullptr) && read > 0) {
-    json.append(buf, read);
-  }
-  ::CloseHandle(f);
-  std::optional<base::DictValue> root =
-      base::JSONReader::ReadDict(json, base::JSON_PARSE_RFC);
-  if (!root) {
-    return;
-  }
-  if (const base::ListValue* rows = root->FindList("spaces")) {
+  if (const base::ListValue* rows = root.FindList("spaces")) {
     for (const base::Value& v : *rows) {
       const base::DictValue* d = v.GetIfDict();
       if (!d) {
@@ -72,17 +66,7 @@ void PhiGhostSpaces::Save() const {
   }
   base::DictValue root;
   root.Set("spaces", std::move(rows));
-  std::string json;
-  base::JSONWriter::Write(root, &json);
-  HANDLE f = ::CreateFileW(path_.c_str(), GENERIC_WRITE, 0, nullptr,
-                           CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-  if (f == INVALID_HANDLE_VALUE) {
-    return;
-  }
-  DWORD written = 0;
-  ::WriteFile(f, json.data(), static_cast<DWORD>(json.size()), &written,
-              nullptr);
-  ::CloseHandle(f);
+  PhiWriteJsonFile(path_, std::move(root), /*schema=*/1);
 }
 
 void PhiGhostSpaces::NoteLiveWindow(const std::string& space_id,
@@ -181,6 +165,24 @@ const std::string* PhiGhostSpaces::SpaceForWindowId(int window_id) const {
 
 void PhiGhostSpaces::ClearParked(const std::string& space_id) {
   parked_.erase(space_id);
+}
+
+PhiGhostSpaces::Remembered PhiGhostSpaces::Forget(const std::string& space_id) {
+  Remembered gone;
+  auto parked = parked_.find(space_id);
+  if (parked != parked_.end()) {
+    gone = parked->second;  // Still a ghost: the caller drops the window.
+    parked_.erase(parked);
+  }
+  auto remembered = remembered_.find(space_id);
+  if (remembered != remembered_.end()) {
+    if (gone.window_id == 0) {
+      gone = remembered->second;
+    }
+    remembered_.erase(remembered);
+    Save();
+  }
+  return gone;
 }
 
 std::vector<PhiGhostSpaces::Remembered> PhiGhostSpaces::Orphans() const {

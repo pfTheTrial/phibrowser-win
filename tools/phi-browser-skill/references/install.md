@@ -20,18 +20,27 @@ Requires Node >= 22. No npm dependencies.
 
 ## 2. How it connects
 
-Phi's client (`phi_client.exe`) owns a **named pipe** and publishes its name
-in a pointer file, `CDPAgentSocket`, inside the browser's user-data directory.
-The skill discovers the pipe from that file, speaks HTTP/1.1 over it, and
-multiplexes two channels the same way macOS does over its Unix socket:
+Phi's client (`phi_client.exe`) owns a **named pipe** and publishes it in a
+pointer file, `CDPAgentSocket`, inside the browser's user-data directory:
+line 1 is the pipe name, line 2 a **per-launch token**. The skill discovers
+the pipe from that file, speaks HTTP/1.1 over it, and multiplexes two
+channels the same way macOS does over its Unix socket:
 
 - `/phi-agent` → a WebSocket control channel for the agent-Space lifecycle and
   browser management (`agentSpace.*`, `credentials.*`).
-- everything else → transparently relayed to Chromium's own DevTools endpoint,
-  so page automation (CDP) rides the same pipe.
+- `/json/version`, `/json/list` → the DevTools discovery documents, and
+  `/devtools/<kind>/<id>` → a CDP WebSocket session, both served by the
+  client through the browser's in-process DevTools transport — so page
+  automation (CDP) rides the same pipe.
 
-Because it is a local named pipe (not a TCP port), only this machine's
-processes can reach it, and it is created with an owner-only ACL.
+That pipe is the only way to reach the protocol: Phi does not open a
+loopback DevTools port. Three gates sit in front of it — the pipe's ACL
+(owner + SYSTEM + administrators, medium integrity, no remote clients), the
+token, which every request must carry as `X-Phi-Token` (a missing or wrong
+token is answered `403` before anything else happens), and the user's consent
+prompt for the connecting process. The skill reads the token from the pointer
+file and sends it on every request automatically; the pointer file itself is
+readable only by the user Phi runs as.
 
 **Discovery.** The skill searches these user-data directories, first hit wins:
 

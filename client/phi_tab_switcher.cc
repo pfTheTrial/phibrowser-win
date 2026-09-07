@@ -107,6 +107,8 @@ class Hud {
 
   static Hud* instance;
 
+  PhiWindowController* controller() const { return controller_; }
+
  private:
   int Scaled(int design) const { return ::MulDiv(design, dpi_, 96); }
 
@@ -317,6 +319,13 @@ void PhiTabSwitcher::Commit() {
 void PhiTabSwitcher::Cancel() {
   delete Hud::instance;
   Hud::instance = nullptr;
+}
+
+// static
+void PhiTabSwitcher::CancelIfBoundTo(const PhiWindowController* controller) {
+  if (Hud::instance && Hud::instance->controller() == controller) {
+    Cancel();
+  }
 }
 
 }  // namespace phi_client

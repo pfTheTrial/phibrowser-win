@@ -34,7 +34,7 @@ public class C {
   $want = [Environment]::GetEnvironmentVariable("PHI_UICAP_HWND", "User")
   if ($want -and $want -ne "0") { $h = [IntPtr][int64]$want }
   if ($h -eq [IntPtr]::Zero) {
-    $p = Get-Process phi_client -ErrorAction SilentlyContinue | Where-Object MainWindowHandle -ne 0 | Select-Object -First 1
+    $p = Get-Process Phi -ErrorAction SilentlyContinue | Where-Object MainWindowHandle -ne 0 | Select-Object -First 1
     if ($p) { $h = $p.MainWindowHandle }
   }
   if ($h -eq [IntPtr]::Zero) {

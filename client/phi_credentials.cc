@@ -12,8 +12,10 @@
 #include <optional>
 
 #include "base/json/json_reader.h"
+#include "base/logging.h"
 #include "base/strings/string_util.h"
 #include "base/values.h"
+#include "phibrowser-win/client/phi_features.h"
 
 #pragma comment(lib, "crypt32.lib")
 
@@ -46,7 +48,7 @@ bool ReadFileBytes(const std::wstring& path, std::string* out) {
 }
 
 // DPAPI-decrypts `blob` (current user). Returns nullopt when it is not a DPAPI
-// blob, so the caller can fall back to treating the bytes as plaintext.
+// blob (or was wrapped by another user); the caller decides what that means.
 std::optional<std::string> DpapiDecrypt(const std::string& blob) {
   DATA_BLOB in = {static_cast<DWORD>(blob.size()),
                   reinterpret_cast<BYTE*>(const_cast<char*>(blob.data()))};
@@ -73,12 +75,20 @@ void PhiCredentialVault::Load(const std::wstring& user_data_dir) {
     return;
   }
   present_ = true;
-  // Try DPAPI first; a plaintext dev seed (a JSON array) is accepted as-is.
   std::string json;
   if (std::optional<std::string> decrypted = DpapiDecrypt(blob)) {
     json = std::move(*decrypted);
-  } else {
+  } else if constexpr (kPhiDevHooks) {
+    // A plaintext dev seed (a JSON array) is accepted as-is in a --dev-hooks
+    // build only; the box rigs write one instead of driving DPAPI.
     json = blob;
+  } else {
+    // Release: a file DPAPI cannot unwrap is not our vault, whoever wrote it.
+    // Refuse it rather than parse it — the plaintext path would let any file
+    // dropped into the profile dir masquerade as the user's passwords.
+    LOG(ERROR) << "[PhiCredentials] PhiCredentials.dat is not a DPAPI blob "
+                  "for this user; vault left empty";
+    return;
   }
   std::optional<base::Value> root =
       base::JSONReader::Read(json, base::JSON_PARSE_RFC);

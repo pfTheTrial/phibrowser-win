@@ -46,6 +46,19 @@ const PhiMacIcon* PhiFolderIconMask(const std::string& id);
 // font glyph (Segoe MDL2's folder codepoint does not render here).
 const PhiMacIcon* PhiPlainFolderMask(bool expanded);
 
+// The plain folder as the SIDEBAR draws it: the Mac's two-tone art (back
+// body, front panel, 1pt stroke) tinted from the Space accent the way
+// BookmarkFolderIconPalette tints the Lottie shell — light: back at 65%
+// saturation and 15% darker than the accent, front a 20% wash at full
+// brightness, stroke 65% saturation at 30% brightness; dark: back is the
+// window background, front the accent a touch deeper, stroke white.
+// Premultiplied BGRA `px` square, ready for PhiBlendBgra.
+std::vector<unsigned char> PhiPlainFolderBgra(bool expanded,
+                                              int px,
+                                              COLORREF accent,
+                                              bool dark,
+                                              COLORREF window_bg);
+
 }  // namespace phi_client
 
 #endif  // PHIBROWSER_WIN_CLIENT_PHI_FOLDER_ICONS_H_

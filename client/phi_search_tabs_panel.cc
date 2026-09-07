@@ -139,6 +139,7 @@ class Panel {
   }
 
   HWND hwnd() const { return hwnd_; }
+  PhiWindowController* controller() const { return controller_; }
 
   static Panel* instance;
 
@@ -656,6 +657,14 @@ void PhiSearchTabsPanel::Toggle(PhiWindowController* controller) {
     return;
   }
   Panel::instance = new Panel(controller);
+}
+
+// static
+void PhiSearchTabsPanel::CloseIfBoundTo(const PhiWindowController* controller) {
+  if (Panel::instance && Panel::instance->controller() == controller) {
+    // WM_DESTROY deletes the panel and clears the singleton.
+    ::DestroyWindow(Panel::instance->hwnd());
+  }
 }
 
 }  // namespace phi_client

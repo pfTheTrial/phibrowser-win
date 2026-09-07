@@ -12,6 +12,7 @@
 
 #include "phibrowser-win/client/phi_dwrite.h"
 #include "phibrowser-win/client/phi_icons.h"
+#include "phibrowser-win/client/phi_modal_scope.h"
 #include "phibrowser-win/client/phi_popup_chrome.h"
 
 namespace phi_client {
@@ -59,6 +60,10 @@ struct Spec {
   std::vector<Action> actions;
   int default_index = -1;
   int cancel_index = -1;
+  // The action a list double-click fires. Normally the default action; the
+  // security prompts make Cancel the default (Return denies) while a
+  // double-click on a row still means "that row, confirmed".
+  int list_activate_index = -1;
   Accessory accessory = Accessory::kNone;
   std::wstring field_text;      // kField's initial text.
   std::wstring placeholder;     // kRecorder's resting line.
@@ -165,14 +170,21 @@ class Alert {
       ::SendMessageW(control_, EM_SETSEL, 0, -1);
     }
 
-    MSG msg;
-    while (!done_ && ::GetMessageW(&msg, nullptr, 0, 0)) {
-      if (filter && filter(msg)) {
-        continue;
-      }
-      if (!::IsDialogMessageW(hwnd_, &msg)) {
-        ::TranslateMessage(&msg);
-        ::DispatchMessageW(&msg);
+    {
+      // Every PhiPrompt*/PhiAlert*/PhiNotice/PhiConfirm caller runs its
+      // nested loop here, so this ONE scope is what keeps a pipe verb from
+      // destroying the controller (or rebuilding the rows) whose handler is
+      // waiting on the answer.
+      PhiModalScope modal;
+      MSG msg;
+      while (!done_ && ::GetMessageW(&msg, nullptr, 0, 0)) {
+        if (filter && filter(msg)) {
+          continue;
+        }
+        if (!::IsDialogMessageW(hwnd_, &msg)) {
+          ::TranslateMessage(&msg);
+          ::DispatchMessageW(&msg);
+        }
       }
     }
     if (owner_) {
@@ -461,9 +473,13 @@ class Alert {
           Finish(spec_.cancel_index);
           return 0;
         }
-        if (id == kControlId && code == LBN_DBLCLK &&
-            spec_.default_index >= 0) {
-          Finish(spec_.default_index);  // A double-click is the default.
+        if (id == kControlId && code == LBN_DBLCLK) {
+          const int activate = spec_.list_activate_index >= 0
+                                   ? spec_.list_activate_index
+                                   : spec_.default_index;
+          if (activate >= 0) {
+            Finish(activate);  // A double-click confirms the row.
+          }
           return 0;
         }
         break;
@@ -756,7 +772,8 @@ int PhiPromptChoose(HWND owner,
                     const std::vector<std::wstring>& options,
                     int default_index,
                     const wchar_t* confirm_label,
-                    const wchar_t* cancel_label) {
+                    const wchar_t* cancel_label,
+                    bool cancel_is_default) {
   Spec spec;
   spec.title = title ? title : L"";
   spec.message = message ? message : L"";
@@ -767,8 +784,9 @@ int PhiPromptChoose(HWND owner,
                    PhiPopupButtonRole::kSecondary},
                   {confirm_label ? confirm_label : L"Open",
                    PhiPopupButtonRole::kPrimary}};
-  spec.default_index = 1;
+  spec.default_index = cancel_is_default ? 0 : 1;
   spec.cancel_index = 0;
+  spec.list_activate_index = 1;
   Alert alert(owner, std::move(spec));
   if (!alert.valid()) {
     return -1;

@@ -26,6 +26,7 @@
 #include "base/logging.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
+#include "phibrowser-win/client/phi_file_io.h"
 
 #pragma comment(lib, "winhttp.lib")
 #pragma comment(lib, "ws2_32.lib")
@@ -151,36 +152,6 @@ std::string UrlEncode(const std::string& in) {
 
 // --- DPAPI store (the PhiCredentials.dat pattern) ---------------------------
 
-bool ReadFileBytes(const std::wstring& path, std::string* out) {
-  HANDLE f = ::CreateFileW(path.c_str(), GENERIC_READ,
-                           FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
-                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-  if (f == INVALID_HANDLE_VALUE) {
-    return false;
-  }
-  char buf[8192];
-  DWORD read = 0;
-  while (::ReadFile(f, buf, sizeof(buf), &read, nullptr) && read > 0) {
-    out->append(buf, read);
-  }
-  ::CloseHandle(f);
-  return true;
-}
-
-bool WriteFileBytes(const std::wstring& path, const std::string& bytes) {
-  HANDLE f = ::CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr,
-                           CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-  if (f == INVALID_HANDLE_VALUE) {
-    return false;
-  }
-  DWORD written = 0;
-  const BOOL ok = ::WriteFile(f, bytes.data(),
-                              static_cast<DWORD>(bytes.size()), &written,
-                              nullptr);
-  ::CloseHandle(f);
-  return ok && written == bytes.size();
-}
-
 std::optional<std::string> DpapiDecrypt(const std::string& blob) {
   DATA_BLOB in = {static_cast<DWORD>(blob.size()),
                   reinterpret_cast<BYTE*>(const_cast<char*>(blob.data()))};
@@ -301,6 +272,10 @@ std::optional<PhiAuthUser> UserFromIdToken(const std::string& id_token) {
   return user;
 }
 
+// PhiAuth's message-only window: one private message, lparam = Outcome*.
+constexpr wchar_t kOutcomeClassName[] = L"PhiAuthOutcome";
+constexpr UINT kOutcomeMsg = WM_APP + 1;
+
 }  // namespace
 
 // The sign-in attempt's cross-thread bag: everything the listener thread
@@ -314,31 +289,69 @@ struct PhiAuth::SignInJob {
   std::string redirect_uri;
 };
 
+// What a worker computed, for the UI thread to apply. Tokens and identity
+// travel here rather than being written from the worker, so the session has
+// exactly one writer.
+struct PhiAuth::Outcome {
+  enum class Kind {
+    kSignedIn,      // Code exchange succeeded: user + tokens are filled.
+    kSignInFailed,  // Abandoned, refused or incomplete; nothing changes.
+    kRefreshed,     // Refresh succeeded: tokens (and maybe user) are filled.
+    kSessionDead,   // invalid_grant: the stored session must go.
+  };
+  Kind kind = Kind::kSignInFailed;
+  // The session the worker was working from; ApplyOutcome drops a stale one.
+  uint32_t generation = 0;
+  std::optional<PhiAuthUser> user;
+  std::string refresh_token;
+  std::string access_token;
+};
+
 PhiAuth::PhiAuth() {
+  ::InitializeCriticalSection(&token_lock_);
   ::InitializeCriticalSection(&refresh_lock_);
 }
 
 PhiAuth::~PhiAuth() {
+  if (outcome_hwnd_) {
+    ::SetWindowLongPtrW(outcome_hwnd_, GWLP_USERDATA, 0);
+    ::DestroyWindow(outcome_hwnd_);
+  }
   ::DeleteCriticalSection(&refresh_lock_);
+  ::DeleteCriticalSection(&token_lock_);
 }
 
 std::string PhiAuth::AccessTokenBlocking() {
-  if (!signed_in_) {
+  std::string token;
+  ::EnterCriticalSection(&token_lock_);
+  const bool signed_in = worker_signed_in_;
+  token = worker_access_token_;
+  ::LeaveCriticalSection(&token_lock_);
+  if (!signed_in) {
     return std::string();
   }
-  ::EnterCriticalSection(&refresh_lock_);
-  if (access_token_.empty() && !RefreshSession()) {
-    access_token_.clear();
+  if (!token.empty()) {
+    return token;
   }
-  std::string token = access_token_;
+  ::EnterCriticalSection(&refresh_lock_);
+  // Another worker may have refreshed while we waited for the lock.
+  ::EnterCriticalSection(&token_lock_);
+  token = worker_access_token_;
+  ::LeaveCriticalSection(&token_lock_);
+  if (token.empty()) {
+    RefreshSession();
+    ::EnterCriticalSection(&token_lock_);
+    token = worker_access_token_;
+    ::LeaveCriticalSection(&token_lock_);
+  }
   ::LeaveCriticalSection(&refresh_lock_);
   return token;
 }
 
 void PhiAuth::InvalidateAccessToken() {
-  ::EnterCriticalSection(&refresh_lock_);
-  access_token_.clear();
-  ::LeaveCriticalSection(&refresh_lock_);
+  ::EnterCriticalSection(&token_lock_);
+  worker_access_token_.clear();
+  ::LeaveCriticalSection(&token_lock_);
 }
 
 // static
@@ -359,8 +372,30 @@ void PhiAuth::Load(const std::wstring& user_data_dir,
   notify_hwnd_ = notify_hwnd;
   notify_msg_ = notify_msg;
 
+  if (!outcome_hwnd_) {
+    static const bool registered = [] {
+      WNDCLASSW cls = {};
+      cls.lpfnWndProc = &PhiAuth::OutcomeWndProc;
+      cls.hInstance = ::GetModuleHandleW(nullptr);
+      cls.lpszClassName = kOutcomeClassName;
+      return ::RegisterClassW(&cls) != 0;
+    }();
+    if (registered) {
+      outcome_hwnd_ = ::CreateWindowExW(0, kOutcomeClassName, L"", 0, 0, 0, 0,
+                                        0, HWND_MESSAGE, nullptr,
+                                        ::GetModuleHandleW(nullptr), nullptr);
+    }
+    if (outcome_hwnd_) {
+      ::SetWindowLongPtrW(outcome_hwnd_, GWLP_USERDATA,
+                          reinterpret_cast<LONG_PTR>(this));
+    } else {
+      LOG(ERROR) << "[PhiAuth] no outcome window; sign-in disabled";
+      return;
+    }
+  }
+
   std::string blob;
-  if (!ReadFileBytes(store_path_, &blob) || blob.empty()) {
+  if (!PhiReadFileBytes(store_path_, &blob) || blob.empty()) {
     return;
   }
   const std::optional<std::string> plain = DpapiDecrypt(blob);
@@ -391,14 +426,25 @@ void PhiAuth::Load(const std::wstring& user_data_dir,
     return;
   }
   signed_in_ = true;
+  ++generation_;
+  ::EnterCriticalSection(&token_lock_);
+  worker_generation_ = generation_;
+  worker_signed_in_ = true;
+  worker_refresh_token_ = refresh_token_;
+  worker_access_token_.clear();
+  ::LeaveCriticalSection(&token_lock_);
   LOG(INFO) << "[PhiAuth] session restored for " << user_.sub;
   // Validate in the background (the Mac's refreshAuthStatus at launch): a
   // revoked session signs out and notifies.
-  ::CreateThread(nullptr, 0, &PhiAuth::RefreshThread, this, 0, nullptr);
+  HANDLE thread =
+      ::CreateThread(nullptr, 0, &PhiAuth::RefreshThread, this, 0, nullptr);
+  if (thread) {
+    ::CloseHandle(thread);
+  }
 }
 
 void PhiAuth::BeginSignIn(std::function<void(const std::string&)> open_url) {
-  if (signing_in_) {
+  if (signing_in_ || !outcome_hwnd_) {
     return;
   }
 
@@ -458,12 +504,10 @@ void PhiAuth::BeginSignIn(std::function<void(const std::string&)> open_url) {
       "&state=" + state;
 
   signing_in_ = true;
-  job_ = job;
   HANDLE thread =
       ::CreateThread(nullptr, 0, &PhiAuth::ListenerThread, job, 0, nullptr);
   if (!thread) {
     signing_in_ = false;
-    job_ = nullptr;
     ::closesocket(listener);
     delete job;
     return;
@@ -535,16 +579,17 @@ DWORD WINAPI PhiAuth::ListenerThread(void* param) {
     auth->CompleteSignIn(code, job->verifier, job->redirect_uri);
   } else {
     LOG(INFO) << "[PhiAuth] sign-in abandoned (timeout or bad callback)";
+    auth->PostOutcome(std::make_unique<Outcome>());
   }
-  auth->job_ = nullptr;
-  auth->signing_in_ = false;
-  auth->NotifyChanged();
   return 0;
 }
 
 void PhiAuth::CompleteSignIn(const std::string& code,
                              const std::string& verifier,
                              const std::string& redirect_uri) {
+  // Every early return is a failed sign-in; the UI thread must hear about
+  // it to clear signing_in_.
+  auto outcome = std::make_unique<Outcome>();
   const std::string body =
       "grant_type=authorization_code&client_id=" + UrlEncode(ClientId()) +
       "&code_verifier=" + verifier + "&code=" + UrlEncode(code) +
@@ -552,15 +597,18 @@ void PhiAuth::CompleteSignIn(const std::string& code,
   std::string response;
   if (!HttpsPostForm(Domain(), L"/oauth/token", body, &response)) {
     LOG(ERROR) << "[PhiAuth] token exchange transport failure";
+    PostOutcome(std::move(outcome));
     return;
   }
   std::optional<base::DictValue> json =
       base::JSONReader::ReadDict(response, base::JSON_PARSE_RFC);
   if (!json) {
+    PostOutcome(std::move(outcome));
     return;
   }
   if (const std::string* error = json->FindString("error")) {
     LOG(ERROR) << "[PhiAuth] token exchange refused: " << *error;
+    PostOutcome(std::move(outcome));
     return;
   }
   const std::string* id_token = json->FindString("id_token");
@@ -570,37 +618,37 @@ void PhiAuth::CompleteSignIn(const std::string& code,
       id_token ? UserFromIdToken(*id_token) : std::nullopt;
   if (!user || !refresh) {
     LOG(ERROR) << "[PhiAuth] token exchange incomplete";
+    PostOutcome(std::move(outcome));
     return;
   }
-  user_ = *user;
-  refresh_token_ = *refresh;
-  access_token_ = access ? *access : std::string();
-  signed_in_ = true;
-  Persist();
-  LOG(INFO) << "[PhiAuth] signed in as " << user_.sub;
+  outcome->kind = Outcome::Kind::kSignedIn;
+  outcome->user = std::move(user);
+  outcome->refresh_token = *refresh;
+  outcome->access_token = access ? *access : std::string();
+  PostOutcome(std::move(outcome));
 }
 
 // static
 DWORD WINAPI PhiAuth::RefreshThread(void* param) {
   auto* auth = static_cast<PhiAuth*>(param);
   ::EnterCriticalSection(&auth->refresh_lock_);
-  const bool alive = auth->RefreshSession();
+  auth->RefreshSession();  // A dead session posts its own sign-out.
   ::LeaveCriticalSection(&auth->refresh_lock_);
-  if (!alive) {
-    LOG(INFO) << "[PhiAuth] stored session no longer valid; signing out";
-    auth->SignOut();
-  }
-  auth->NotifyChanged();
   return 0;
 }
 
 bool PhiAuth::RefreshSession() {
-  if (refresh_token_.empty()) {
+  ::EnterCriticalSection(&token_lock_);
+  const uint32_t generation = worker_generation_;
+  const bool signed_in = worker_signed_in_;
+  const std::string refresh_token = worker_refresh_token_;
+  ::LeaveCriticalSection(&token_lock_);
+  if (!signed_in || refresh_token.empty()) {
     return false;
   }
   const std::string body =
       "grant_type=refresh_token&client_id=" + UrlEncode(ClientId()) +
-      "&refresh_token=" + UrlEncode(refresh_token_);
+      "&refresh_token=" + UrlEncode(refresh_token);
   std::string response;
   if (!HttpsPostForm(Domain(), L"/oauth/token", body, &response)) {
     // Transport failure (offline) keeps the cached session — the Mac's
@@ -612,35 +660,135 @@ bool PhiAuth::RefreshSession() {
   if (!json) {
     return true;
   }
+  auto outcome = std::make_unique<Outcome>();
+  outcome->generation = generation;
   if (json->FindString("error")) {
-    return false;  // invalid_grant etc: the session is dead.
+    // invalid_grant etc: the session is dead. The UI thread signs out; the
+    // workers stop handing out the stale bearer now.
+    ::EnterCriticalSection(&token_lock_);
+    if (worker_generation_ == generation) {
+      worker_access_token_.clear();
+    }
+    ::LeaveCriticalSection(&token_lock_);
+    outcome->kind = Outcome::Kind::kSessionDead;
+    PostOutcome(std::move(outcome));
+    return false;
   }
+  outcome->kind = Outcome::Kind::kRefreshed;
+  outcome->refresh_token = refresh_token;
   if (const std::string* access = json->FindString("access_token")) {
-    access_token_ = *access;
+    outcome->access_token = *access;
   }
   if (const std::string* rotated = json->FindString("refresh_token")) {
-    if (!rotated->empty() && *rotated != refresh_token_) {
-      refresh_token_ = *rotated;  // Rotation-enabled tenants.
-      Persist();
+    if (!rotated->empty()) {
+      outcome->refresh_token = *rotated;  // Rotation-enabled tenants.
     }
   }
   if (const std::string* id_token = json->FindString("id_token")) {
-    if (std::optional<PhiAuthUser> user = UserFromIdToken(*id_token)) {
-      user_ = *user;
-      Persist();
-    }
+    outcome->user = UserFromIdToken(*id_token);
   }
+  // The workers' copy first: the old refresh token may already be revoked,
+  // and the next round trip must not wait on the UI thread to learn that.
+  ::EnterCriticalSection(&token_lock_);
+  if (worker_generation_ == generation && worker_signed_in_) {
+    worker_refresh_token_ = outcome->refresh_token;
+    worker_access_token_ = outcome->access_token;
+  }
+  ::LeaveCriticalSection(&token_lock_);
+  PostOutcome(std::move(outcome));
   return true;
+}
+
+void PhiAuth::PostOutcome(std::unique_ptr<Outcome> outcome) {
+  if (outcome_hwnd_ &&
+      ::PostMessageW(outcome_hwnd_, kOutcomeMsg, 0,
+                     reinterpret_cast<LPARAM>(outcome.get()))) {
+    outcome.release();  // The WndProc owns it now.
+  }
+  // Else the window is gone (shutdown): the result has nobody to apply it.
+}
+
+// static
+LRESULT CALLBACK PhiAuth::OutcomeWndProc(HWND hwnd,
+                                         UINT msg,
+                                         WPARAM wparam,
+                                         LPARAM lparam) {
+  if (msg == kOutcomeMsg) {
+    std::unique_ptr<Outcome> outcome(reinterpret_cast<Outcome*>(lparam));
+    auto* self =
+        reinterpret_cast<PhiAuth*>(::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    if (self && outcome) {
+      self->ApplyOutcome(*outcome);
+    }
+    return 0;
+  }
+  return ::DefWindowProcW(hwnd, msg, wparam, lparam);
+}
+
+void PhiAuth::ApplyOutcome(const Outcome& outcome) {
+  switch (outcome.kind) {
+    case Outcome::Kind::kSignedIn:
+      signing_in_ = false;
+      signed_in_ = true;
+      user_ = *outcome.user;
+      refresh_token_ = outcome.refresh_token;
+      ++generation_;
+      ::EnterCriticalSection(&token_lock_);
+      worker_generation_ = generation_;
+      worker_signed_in_ = true;
+      worker_refresh_token_ = refresh_token_;
+      worker_access_token_ = outcome.access_token;
+      ::LeaveCriticalSection(&token_lock_);
+      Persist();
+      LOG(INFO) << "[PhiAuth] signed in as " << user_.sub;
+      break;
+    case Outcome::Kind::kSignInFailed:
+      signing_in_ = false;
+      break;
+    case Outcome::Kind::kRefreshed: {
+      if (!signed_in_ || outcome.generation != generation_) {
+        return;  // A round trip for a session that is no longer this one.
+      }
+      bool changed = false;
+      if (outcome.refresh_token != refresh_token_) {
+        refresh_token_ = outcome.refresh_token;
+        changed = true;
+      }
+      if (outcome.user) {
+        user_ = *outcome.user;
+        changed = true;
+      }
+      if (changed) {
+        Persist();
+      }
+      break;
+    }
+    case Outcome::Kind::kSessionDead:
+      if (!signed_in_ || outcome.generation != generation_) {
+        return;
+      }
+      LOG(INFO) << "[PhiAuth] stored session no longer valid; signing out";
+      SignOut();
+      return;  // SignOut notified.
+  }
+  NotifyChanged();
 }
 
 void PhiAuth::SignOut() {
   signed_in_ = false;
   user_ = PhiAuthUser();
   refresh_token_.clear();
-  access_token_.clear();
+  ++generation_;
+  ::EnterCriticalSection(&token_lock_);
+  worker_generation_ = generation_;
+  worker_signed_in_ = false;
+  worker_refresh_token_.clear();
+  worker_access_token_.clear();
+  ::LeaveCriticalSection(&token_lock_);
   if (!store_path_.empty()) {
     ::DeleteFileW(store_path_.c_str());
   }
+  NotifyChanged();
 }
 
 void PhiAuth::Persist() {
@@ -655,7 +803,7 @@ void PhiAuth::Persist() {
   std::string json;
   base::JSONWriter::Write(root, &json);
   const std::optional<std::string> blob = DpapiEncrypt(json);
-  if (!blob || !WriteFileBytes(store_path_, *blob)) {
+  if (!blob || !PhiWriteFileAtomic(store_path_, *blob)) {
     LOG(ERROR) << "[PhiAuth] failed to persist the session";
   }
 }

@@ -62,8 +62,10 @@ class Overlay {
   static Overlay* instance;
 
   Overlay(PhiWindowController* controller, const std::string& task_id)
-      : controller_(controller), task_id_(task_id) {
-    dpi_ = ::GetDpiForWindow(controller_->shell_hwnd());
+      : controller_(controller),
+        shell_(controller->shell_hwnd()),
+        task_id_(task_id) {
+    dpi_ = ::GetDpiForWindow(shell_);
     Register();
     fog_ = ::CreateWindowExW(WS_EX_LAYERED | WS_EX_NOPARENTNOTIFY, kFogClass,
                              L"", WS_CHILD, 0, 0, 0, 0,
@@ -121,7 +123,10 @@ class Overlay {
   }
 
   void Reposition() {
-    if (!controller_ || !::IsWindow(controller_->shell_hwnd())) {
+    // Reached from EVERY shell's LayoutContents. The HWND is tested rather
+    // than the controller: an HWND value is safe to ask about after its
+    // window died, a freed controller is not.
+    if (!controller_ || !shell_ || !::IsWindow(shell_)) {
       return;
     }
     const RECT content = controller_->ContentRect();
@@ -755,6 +760,7 @@ class Overlay {
   }
 
   RAW_PTR_EXCLUSION PhiWindowController* controller_;
+  const HWND shell_;  // controller_'s shell at construction.
   std::string task_id_;
   std::wstring agent_label_;
   std::wstring caption_;
@@ -806,6 +812,13 @@ void PhiAgentOverlay::Hide() {
   Overlay* overlay = Overlay::instance;
   Overlay::instance = nullptr;
   delete overlay;
+}
+
+// static
+void PhiAgentOverlay::HideIfBoundTo(const PhiWindowController* controller) {
+  if (Overlay::instance && Overlay::instance->controller() == controller) {
+    Hide();
+  }
 }
 
 // static

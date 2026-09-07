@@ -9,7 +9,9 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <optional>
+#include <string_view>
 #include <utility>
 
 #include "base/base64.h"
@@ -33,7 +35,10 @@
 #include "phibrowser-win/client/phi_i18n.h"
 #include "phibrowser-win/client/phi_icons.h"
 #include "phibrowser-win/client/phi_extensions_popover.h"
+#include "phibrowser-win/client/phi_features.h"
+#include "phibrowser-win/client/phi_file_io.h"
 #include "phibrowser-win/client/phi_menu_bar.h"
+#include "phibrowser-win/client/phi_modal_scope.h"
 #include "phibrowser-win/client/phi_popup_chrome.h"
 #include "phibrowser-win/client/phi_prompt.h"
 #include "phibrowser-win/client/phi_tab_switcher.h"
@@ -157,19 +162,68 @@ constexpr UINT WM_PHI_READER_EXPAND = WM_APP + 5;
 // deferral reason as the expand above. wparam carries the panel window id.
 constexpr UINT WM_PHI_READER_RETIRE = WM_APP + 6;
 
-// A connection-consent decision marshaled the same way as ControlCall.
-struct AuthorizeCall {
-  RAW_PTR_EXCLUSION const PhiAgentPeer* peer = nullptr;
+// How long the I/O thread waits for the UI thread to run a marshalled call.
+// Generous on purpose: a consent or credential prompt can sit for minutes,
+// and the skill itself waits up to 180 s for consent.
+constexpr DWORD kUiCallTimeoutMs = 180 * 1000;
+}  // namespace
+
+// The request marshalled from the control server's I/O thread to the UI
+// thread. POSTED, never sent: a cross-thread SendMessage is serviced by
+// whatever message loop the UI thread happens to be pumping — a context
+// menu's, a prompt's — so a verb could run, and destroy a controller, under
+// that controller's own stack frame (docs/architecture-review.md §4 item
+// 11). A posted message is only dispatched from the main loop, and
+// RunOrDeferUiCall parks it when a nested loop is up.
+//
+// Heap-owned by TWO references, the I/O waiter's and the UI thread's, so
+// whichever finishes last frees it: a waiter that gave up (timeout) must
+// not pull the call from under a UI thread still about to run it, and the
+// UI thread must not free a result the waiter is about to read.
+struct PhiUiCall {
+  enum class Kind { kControl, kAuthorize };
+  Kind kind = Kind::kControl;
+  // kControl: the verb and its stringified payload / reply.
+  std::string type;
+  std::string payload;
+  std::string result;
+  // kAuthorize: the peer asking for consent and the answer.
+  PhiAgentPeer peer;
   bool allowed = false;
+  // Manual-reset; signalled once the UI thread has run the call.
+  HANDLE done = nullptr;
+  std::atomic<int> refs{2};
+
+  void Release() {
+    if (refs.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+      if (done) {
+        ::CloseHandle(done);
+      }
+      delete this;
+    }
+  }
 };
 
-// The command marshaled from the I/O thread to the UI thread by SendMessage.
-// The pointers reference stack strings that outlive the blocking SendMessage.
-struct ControlCall {
-  RAW_PTR_EXCLUSION const std::string* type;
-  RAW_PTR_EXCLUSION const std::string* payload;
-  std::string result;
-};
+namespace {
+// Allocates a call with its event; null when the event could not be made.
+PhiUiCall* NewUiCall(PhiUiCall::Kind kind) {
+  PhiUiCall* call = new PhiUiCall;
+  call->kind = kind;
+  call->done = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+  if (!call->done) {
+    delete call;
+    return nullptr;
+  }
+  return call;
+}
+
+// Waits for the UI thread to run `call` (I/O thread). True when it did;
+// false on timeout, in which case the UI side still owns its reference and
+// will run and free the call on its own later — the waiter must not touch
+// the call after this returns false beyond releasing its own reference.
+bool WaitUiCall(PhiUiCall* call) {
+  return ::WaitForSingleObject(call->done, kUiCallTimeoutMs) == WAIT_OBJECT_0;
+}
 }  // namespace
 
 void PhiCoordinator::OnFrameworkReady(phi_framework::PhiFramework* framework,
@@ -238,15 +292,16 @@ void PhiCoordinator::OnFrameworkReady(phi_framework::PhiFramework* framework,
   credential_grants_path_ = user_data_dir + L"\\PhiCredentialGrants.json";
   url_rules_path_ = user_data_dir + L"\\PhiUrlRules.json";
   credentials_dir_ = user_data_dir;
-  // Prefer the real vault: the out-of-process Bitwarden helper, which owns the
-  // user's actual vault (and links the GPL SDK on its own side of the process
-  // boundary). The local DPAPI store is loaded only as the dev/test fallback
-  // for machines with no helper installed.
-  // PHI_VAULT_HELPER overrides the helper binary (dev/test only — the shipped
-  // path is PhiBitwardenHelper.exe beside our own exe). It names a PATH TO AN
-  // EXE, never arguments, so the no-arguments spawn contract is intact.
+  // The ONLY credential provider a release build knows is the real vault:
+  // the out-of-process Bitwarden helper, which owns the user's actual vault
+  // (and links the GPL SDK on its own side of the process boundary). With
+  // no helper installed every credentials verb answers not_installed.
+  // A --dev-hooks build (phi_features.h) adds two doors: PHI_VAULT_HELPER
+  // replaces the helper binary (a PATH TO AN EXE, never arguments, so the
+  // no-arguments spawn contract is intact), and the local DPAPI dev vault
+  // stands in when no helper is installed.
   std::wstring helper_override;
-  {
+  if constexpr (kPhiDevHooks) {
     wchar_t buffer[MAX_PATH] = {};
     const DWORD length =
         ::GetEnvironmentVariableW(L"PHI_VAULT_HELPER", buffer, MAX_PATH);
@@ -255,8 +310,13 @@ void PhiCoordinator::OnFrameworkReady(phi_framework::PhiFramework* framework,
     }
   }
   if (!vault_helper_.Start(helper_override)) {
-    LOG(INFO) << "[PhiVault] no helper installed — using the local dev vault";
-    credentials_.Load(user_data_dir);
+    if constexpr (kPhiDevHooks) {
+      LOG(INFO) << "[PhiVault] no helper installed — using the local dev "
+                   "vault (dev hooks build)";
+      credentials_.Load(user_data_dir);
+    } else {
+      LOG(INFO) << "[PhiVault] no helper installed — credentials unavailable";
+    }
   }
   LoadSpaces();
   LoadUrlRules();
@@ -275,7 +335,7 @@ void PhiCoordinator::OnFrameworkReady(phi_framework::PhiFramework* framework,
   tab_store_.Load(user_data_dir + L"\\PhiTabData.json");
   PushSpaceMenu();  // The page context menu's "Open Link in Space" list.
 
-  control_server_.Start(user_data_dir, this);
+  control_server_.Start(user_data_dir, this, framework_);
 
   // Background update checks (WinSparkle over the Mac's appcast pipeline).
   // A no-op when WinSparkle.dll is not deployed beside the client.
@@ -304,28 +364,69 @@ LRESULT CALLBACK PhiCoordinator::MsgWndProc(HWND hwnd,
   if (msg == WM_TIMER) {
     auto* self = reinterpret_cast<PhiCoordinator*>(
         ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
-    if (self && wparam == 2) {
-      self->SweepAgentSpaces();  // Agent-space keep-alive sweep (10s).
+    if (!self) {
       return 0;
     }
-    if (self && wparam == kAgentDriveSweepTimer) {
-      // Retires holds whose driver went quiet and takeovers that aged out.
-      self->agent_drives_.Sweep();
+    switch (wparam) {
+      case kAgentSpaceSweepTimer:
+        self->SweepAgentSpaces();  // Agent-space keep-alive sweep (10s).
+        return 0;
+      case kAgentDriveSweepTimer:
+        // Retires holds whose driver went quiet and takeovers that aged out.
+        self->agent_drives_.Sweep();
+        return 0;
+      case kDeferredUiCallTimer:
+        self->DrainDeferredUiCalls();
+        return 0;
+      case kLastActiveSaveTimer:
+        ::KillTimer(hwnd, kLastActiveSaveTimer);
+        self->SavePrefs();
+        return 0;
+      case kColdStartFallbackTimer:
+        ::KillTimer(hwnd, kColdStartFallbackTimer);
+        self->cold_start_armed_ = false;
+        self->OpenDefaultShellIfNoUserWindow("cold start parked everything");
+        return 0;
+      case kProfileSpaceTimer:
+        if (self->TryFinishProfileSpace()) {
+          ::KillTimer(hwnd, kProfileSpaceTimer);
+        }
+        return 0;
+      default:
+        return 0;
+    }
+  }
+  if (msg == WM_PHI_CONTROL || msg == WM_PHI_AUTHORIZE) {
+    auto* self = reinterpret_cast<PhiCoordinator*>(
+        ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    auto* call = reinterpret_cast<PhiUiCall*>(lparam);
+    if (!call) {
       return 0;
     }
-    if (self && self->TryFinishProfileSpace()) {
-      ::KillTimer(hwnd, 1);
+    if (self) {
+      self->RunOrDeferUiCall(call);
+    } else {
+      // No coordinator behind the window any more: answer "refused" so the
+      // waiter does not sit out the whole timeout, and drop our reference.
+      call->result = "{\"ok\":false,\"error\":\"not_ready\"}";
+      ::SetEvent(call->done);
+      call->Release();
     }
     return 0;
   }
-  if (msg == WM_PHI_CONTROL) {
+  if (msg == WM_QUERYENDSESSION || msg == WM_ENDSESSION) {
+    // Logoff / shutdown: Windows gives no second chance after WM_ENDSESSION,
+    // so flush on the query already (idempotent; the session may still be
+    // cancelled, and a flushed store is never wrong). Message-only windows
+    // do get these — they are broadcast to every top-level window of the
+    // session, HWND_MESSAGE children included on modern Windows — and the
+    // shells do not handle them themselves.
     auto* self = reinterpret_cast<PhiCoordinator*>(
         ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
-    auto* call = reinterpret_cast<ControlCall*>(lparam);
-    if (self && call) {
-      call->result = self->ExecuteControlOnUi(*call->type, *call->payload);
+    if (self && (msg == WM_QUERYENDSESSION || wparam)) {
+      self->FlushForShutdown();
     }
-    return 0;
+    return msg == WM_QUERYENDSESSION ? TRUE : 0;
   }
   if (msg == WM_PHI_READER_RETIRE) {
     auto* self = reinterpret_cast<PhiCoordinator*>(
@@ -364,29 +465,101 @@ LRESULT CALLBACK PhiCoordinator::MsgWndProc(HWND hwnd,
     }
     return 0;
   }
-  if (msg == WM_PHI_AUTHORIZE) {
-    auto* self = reinterpret_cast<PhiCoordinator*>(
-        ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
-    auto* call = reinterpret_cast<AuthorizeCall*>(lparam);
-    if (self && call && call->peer) {
-      call->allowed = self->AuthorizeAgentPeerOnUi(*call->peer);
-    }
-    return 0;
-  }
   return ::DefWindowProcW(hwnd, msg, wparam, lparam);
+}
+
+void PhiCoordinator::RunOrDeferUiCall(PhiUiCall* call) {
+  // A nested modal loop is pumping (a context menu, a prompt, a MessageBox
+  // — every one wrapped in PhiModalScope): do NOT run the verb inside it.
+  // Park it and poll for the loop to unwind. A non-empty queue also parks
+  // newcomers, so calls run in arrival order.
+  if (PhiModalDepth() > 0 || draining_ui_calls_ ||
+      !deferred_ui_calls_.empty()) {
+    deferred_ui_calls_.push_back(call);
+    if (msg_hwnd_) {
+      ::SetTimer(msg_hwnd_, kDeferredUiCallTimer, 50, nullptr);
+    }
+    return;
+  }
+  RunUiCall(call);
+}
+
+void PhiCoordinator::RunUiCall(PhiUiCall* call) {
+  switch (call->kind) {
+    case PhiUiCall::Kind::kControl:
+      call->result = ExecuteControlOnUi(call->type, call->payload,
+                                        ControlCaller::kPipe);
+      break;
+    case PhiUiCall::Kind::kAuthorize:
+      call->allowed = AuthorizeAgentPeerOnUi(call->peer);
+      break;
+  }
+  ::SetEvent(call->done);
+  call->Release();  // The UI side's reference; the waiter holds the other.
+}
+
+void PhiCoordinator::DrainDeferredUiCalls() {
+  // The timer also ticks INSIDE the modal loop it is waiting out (a nested
+  // loop pumps every message); the depth check is what keeps the calls
+  // parked until it has unwound. A drained call may itself open a prompt
+  // (credentials, consent): the loop re-checks after each one and leaves
+  // the rest for the next tick.
+  if (PhiModalDepth() > 0 || draining_ui_calls_) {
+    return;
+  }
+  draining_ui_calls_ = true;
+  while (!deferred_ui_calls_.empty() && PhiModalDepth() == 0) {
+    PhiUiCall* call = deferred_ui_calls_.front();
+    deferred_ui_calls_.pop_front();
+    RunUiCall(call);
+  }
+  draining_ui_calls_ = false;
+  if (deferred_ui_calls_.empty() && msg_hwnd_) {
+    ::KillTimer(msg_hwnd_, kDeferredUiCallTimer);
+  }
+}
+
+void PhiCoordinator::FlushForShutdown() {
+  // Coalesced saves land now rather than on a timer that will never fire.
+  if (msg_hwnd_) {
+    ::KillTimer(msg_hwnd_, kLastActiveSaveTimer);
+  }
+  last_active_space_id_ = LastActiveSpaceId();  // A live window's answer.
+  SavePrefs();
+  ghost_spaces_.Save();
+  // The spool and the outbox worker: both are best-effort and idempotent.
+  PhiTelemetry::Get().Stop();
+  PhiFeedbackOutbox::Get().Stop();
+  PhiUpdater::Shutdown();
 }
 
 std::string PhiCoordinator::HandleControlCommand(
     const std::string& type,
     const std::string& payload_json) {
-  // Called on the control server's I/O thread. Marshal to the UI thread; the
-  // blocking SendMessage runs ExecuteControlOnUi there and returns its result.
+  // Called on the control server's I/O thread. Marshal to the UI thread by
+  // POSTING (see PhiUiCall) and wait for its event; the UI side runs
+  // ExecuteControlOnUi from the main loop only.
   if (!msg_hwnd_) {
     return "{\"error\":\"not ready\"}";
   }
-  ControlCall call{&type, &payload_json, {}};
-  ::SendMessageW(msg_hwnd_, WM_PHI_CONTROL, 0,
-                 reinterpret_cast<LPARAM>(&call));
+  PhiUiCall* call = NewUiCall(PhiUiCall::Kind::kControl);
+  if (!call) {
+    return "{\"ok\":false,\"error\":\"internal\"}";
+  }
+  call->type = type;
+  call->payload = payload_json;
+  if (!::PostMessageW(msg_hwnd_, WM_PHI_CONTROL, 0,
+                      reinterpret_cast<LPARAM>(call))) {
+    call->Release();  // The UI side's reference: it will never take it.
+    call->Release();
+    return "{\"ok\":false,\"error\":\"not_ready\"}";
+  }
+  if (!WaitUiCall(call)) {
+    call->Release();
+    return "{\"ok\":false,\"error\":\"timeout\"}";
+  }
+  std::string result = std::move(call->result);
+  call->Release();
   if (type == "agentSpace.profiles.create" && profile_create_pending_) {
     // Creation is under way on the UI thread; wait for the basename HERE (an
     // I/O thread) and fold it into the reply, so the skill's
@@ -396,7 +569,7 @@ std::string PhiCoordinator::HandleControlCommand(
     profile_create_pending_ = false;
     if (waited == WAIT_OBJECT_0 && !created_profile_id_.empty()) {
       std::optional<base::DictValue> body =
-          base::JSONReader::ReadDict(call.result, base::JSON_PARSE_RFC);
+          base::JSONReader::ReadDict(result, base::JSON_PARSE_RFC);
       if (body) {
         body->Set("profileId", created_profile_id_);
         std::string patched;
@@ -407,16 +580,16 @@ std::string PhiCoordinator::HandleControlCommand(
   }
   // A deferred reply: the UI side registered a slot and started the work;
   // wait for it HERE, on the I/O thread, and hand back what it stored.
-  if (call.result.find("\"pendingReply\"") != std::string::npos) {
+  if (result.find("\"pendingReply\"") != std::string::npos) {
     std::optional<base::DictValue> body =
-        base::JSONReader::ReadDict(call.result, base::JSON_PARSE_RFC);
+        base::JSONReader::ReadDict(result, base::JSON_PARSE_RFC);
     const std::optional<int> id = body ? body->FindInt("pendingReply")
                                        : std::nullopt;
     if (id) {
       return WaitPendingReply(*id, 40000);
     }
   }
-  return call.result;
+  return result;
 }
 
 void PhiCoordinator::OnProfileCreated(const char* profile_id) {
@@ -598,16 +771,58 @@ void PhiCoordinator::OnReaderArticleExtracted(int request_id,
 }
 
 bool PhiCoordinator::AuthorizeAgentPeer(const PhiAgentPeer& peer) {
-  // I/O thread; the decision (and any consent dialog) runs on the UI thread.
+  // I/O thread; the decision (and any consent dialog) runs on the UI thread,
+  // posted like a verb so it never lands inside a nested loop. While one
+  // consent dialog is up every later request waits in the deferred queue,
+  // and a request for the same image path then finds that dialog's answer
+  // in the session memory (AuthorizeAgentPeerOnUi) instead of raising a
+  // second dialog — one prompt per program, however many connections it
+  // opens at once.
   if (!msg_hwnd_) {
     return false;
   }
-  AuthorizeCall call;
-  call.peer = &peer;
-  ::SendMessageW(msg_hwnd_, WM_PHI_AUTHORIZE, 0,
-                 reinterpret_cast<LPARAM>(&call));
-  return call.allowed;
+  PhiUiCall* call = NewUiCall(PhiUiCall::Kind::kAuthorize);
+  if (!call) {
+    return false;
+  }
+  call->peer = peer;
+  if (!::PostMessageW(msg_hwnd_, WM_PHI_AUTHORIZE, 0,
+                      reinterpret_cast<LPARAM>(call))) {
+    call->Release();
+    call->Release();
+    return false;
+  }
+  if (!WaitUiCall(call)) {
+    call->Release();
+    return false;  // Nobody answered in time: no consent.
+  }
+  const bool allowed = call->allowed;
+  call->Release();
+  return allowed;
 }
+
+namespace {
+// Programs whose image path names an INTERPRETER, not a program: a grant on
+// node.exe would pre-approve every Node script that ever runs, including
+// one dropped by a bad package. Those get Allow Once / Deny only.
+bool IsInterpreterImage(const std::wstring& lowercased_path) {
+  static constexpr std::wstring_view kInterpreters[] = {
+      L"node.exe",   L"python.exe",     L"python3.exe", L"pwsh.exe",
+      L"powershell.exe", L"cmd.exe",    L"bun.exe",     L"deno.exe",
+  };
+  const size_t cut = lowercased_path.find_last_of(L"\\/");
+  const std::wstring_view base =
+      cut == std::wstring::npos
+          ? std::wstring_view(lowercased_path)
+          : std::wstring_view(lowercased_path).substr(cut + 1);
+  for (std::wstring_view name : kInterpreters) {
+    if (base == name) {
+      return true;
+    }
+  }
+  return false;
+}
+}  // namespace
 
 bool PhiCoordinator::AuthorizeAgentPeerOnUi(const PhiAgentPeer& peer) {
   // An unidentifiable peer (no pid, or the process died before it could be
@@ -629,10 +844,16 @@ bool PhiCoordinator::AuthorizeAgentPeerOnUi(const PhiAgentPeer& peer) {
   }
   // The consent dialog — the Mac's AgentAccessApprovalAlert. Owned by a
   // shell window when one exists; a MessageBox fallback (allow-once only)
-  // covers the pre-window startup connection.
-  const std::wstring message =
+  // covers the pre-window startup connection. The text says what the
+  // grant actually covers: the agent's own Spaces always, the user's own
+  // ONLY while the Developer-pane toggle is on.
+  std::wstring message =
       peer.image_path + L"\n(process " + std::to_wstring(peer.pid) +
-      L") wants to control Phi — tabs, navigation, and page content.";
+      L") wants to connect to Phi as an agent. It can open its own agent "
+      L"Spaces and drive them.";
+  if (allow_agent_user_spaces_) {
+    message += L"\nIt can also read and change your own Spaces.";
+  }
   HWND owner = nullptr;
   for (const auto& [slot, controller] : windows_) {
     if (controller->shell_hwnd()) {
@@ -640,25 +861,37 @@ bool PhiCoordinator::AuthorizeAgentPeerOnUi(const PhiAgentPeer& peer) {
       break;
     }
   }
+  // An interpreter never gets "Always Allow" (see IsInterpreterImage).
+  // Deny is the default action either way, so a stray Enter refuses.
+  const bool interpreter = IsInterpreterImage(key);
+  std::vector<std::wstring> options = {L"Allow Once"};
+  if (!interpreter) {
+    options.push_back(L"Always Allow");
+  }
+  options.push_back(L"Deny");
+  const int deny_index = static_cast<int>(options.size()) - 1;
   int chosen = -1;
   if (owner) {
+    // Deny preselected AND Cancel holding Return: Enter refuses; only a
+    // deliberate click on Continue (or a row double-click) approves.
     chosen = PhiPromptChoose(owner, L"Agent access request", message.c_str(),
-                             {L"Allow Once", L"Always Allow", L"Deny"}, 0,
-                             L"Continue", L"Cancel");
+                             options, deny_index, L"Continue", L"Cancel",
+                             /*cancel_is_default=*/true);
   } else {
+    PhiModalScope modal;
     chosen = ::MessageBoxW(nullptr,
                            (message + L"\n\nAllow this connection?").c_str(),
                            L"Phi — Agent access request",
                            MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2 |
                                MB_SETFOREGROUND) == IDYES
                  ? 0
-                 : 2;
+                 : deny_index;
   }
   if (chosen == 0) {
     session_allowed_peers_.insert(key);
     return true;
   }
-  if (chosen == 1) {
+  if (chosen == 1 && !interpreter) {
     agent_grants_.insert(key);
     SaveAgentGrants();
     PhiSettingsWindow::Refresh();
@@ -701,9 +934,14 @@ void PhiCoordinator::RemoveCredentialGrant(int index) {
   }
   auto it = credential_grants_.begin();
   std::advance(it, index);
-  // Drop any live timed grant for the same scope too — revoking must not
-  // leave a ten-minute window standing behind the removed row.
-  credential_timed_grants_.erase(it->first);
+  // Drop any live timed grant under the same scope too (their keys are
+  // "<scope>|<page host>") — revoking must not leave a ten-minute window
+  // standing behind the removed row.
+  const std::string scope = it->first;
+  std::erase_if(credential_timed_grants_, [&](const auto& entry) {
+    return entry.first == scope ||
+           entry.first.compare(0, scope.size() + 1, scope + "|") == 0;
+  });
   credential_grants_.erase(it);
   SaveCredentialGrants();
 }
@@ -713,25 +951,11 @@ std::vector<std::string> PhiCoordinator::CredentialAuditRows() const {
 }
 
 void PhiCoordinator::LoadAgentGrants() {
-  HANDLE f = ::CreateFileW(agent_grants_path_.c_str(), GENERIC_READ,
-                           FILE_SHARE_READ, nullptr, OPEN_EXISTING,
-                           FILE_ATTRIBUTE_NORMAL, nullptr);
-  if (f == INVALID_HANDLE_VALUE) {
-    return;
+  base::DictValue root;
+  if (PhiReadJsonFile(agent_grants_path_, &root) != PhiJsonFileStatus::kOk) {
+    return;  // Missing (first run) or quarantined: no standing grants.
   }
-  std::string json;
-  char buf[4096];
-  DWORD read = 0;
-  while (::ReadFile(f, buf, sizeof(buf), &read, nullptr) && read > 0) {
-    json.append(buf, read);
-  }
-  ::CloseHandle(f);
-  std::optional<base::DictValue> root =
-      base::JSONReader::ReadDict(json, base::JSON_PARSE_RFC);
-  if (!root) {
-    return;
-  }
-  if (const base::ListValue* always = root->FindList("always")) {
+  if (const base::ListValue* always = root.FindList("always")) {
     for (const base::Value& v : *always) {
       if (v.is_string()) {
         std::wstring key = base::UTF8ToWide(v.GetString());
@@ -751,41 +975,23 @@ void PhiCoordinator::SaveAgentGrants() const {
     always.Append(base::WideToUTF8(path));
   }
   root.Set("always", std::move(always));
-  std::string json;
-  base::JSONWriter::Write(root, &json);
-  HANDLE f = ::CreateFileW(agent_grants_path_.c_str(), GENERIC_WRITE, 0,
-                           nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL,
-                           nullptr);
-  if (f == INVALID_HANDLE_VALUE) {
-    return;
-  }
-  DWORD wrote = 0;
-  ::WriteFile(f, json.data(), static_cast<DWORD>(json.size()), &wrote,
-              nullptr);
-  ::CloseHandle(f);
+  PhiWriteJsonFile(agent_grants_path_, std::move(root), /*schema=*/1);
 }
 
 void PhiCoordinator::LoadSpaces() {
-  HANDLE f = ::CreateFileW(spaces_path_.c_str(), GENERIC_READ, FILE_SHARE_READ,
-                           nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
-                           nullptr);
-  if (f == INVALID_HANDLE_VALUE) {
-    return;  // First run: keep the built-in default Space.
+  base::DictValue root;
+  switch (PhiReadJsonFile(spaces_path_, &root)) {
+    case PhiJsonFileStatus::kMissing:
+      return;  // First run: keep the built-in default Space.
+    case PhiJsonFileStatus::kCorrupt:
+      // Quarantined, so the built-in default below cannot overwrite it on
+      // the next save; the user's list is recoverable from the .corrupt file.
+      LOG(ERROR) << "[PhiClient] Space list unreadable; using the default";
+      return;
+    case PhiJsonFileStatus::kOk:
+      break;
   }
-  std::string json;
-  char buf[4096];
-  DWORD read = 0;
-  while (::ReadFile(f, buf, sizeof(buf), &read, nullptr) && read > 0) {
-    json.append(buf, read);
-  }
-  ::CloseHandle(f);
-
-  std::optional<base::DictValue> root =
-      base::JSONReader::ReadDict(json, base::JSON_PARSE_RFC);
-  if (!root) {
-    return;
-  }
-  const base::ListValue* list = root->FindList("spaces");
+  const base::ListValue* list = root.FindList("spaces");
   if (!list || list->empty()) {
     return;
   }
@@ -826,7 +1032,7 @@ void PhiCoordinator::LoadSpaces() {
     return std::any_of(spaces_.begin(), spaces_.end(),
                        [&](const Space& s) { return s.id == id; });
   };
-  const std::string* persisted = root->FindString("defaultSpaceId");
+  const std::string* persisted = root.FindString("defaultSpaceId");
   if (persisted && exists(*persisted)) {
     default_space_id_ = *persisted;
   } else if (exists("1")) {
@@ -852,17 +1058,7 @@ void PhiCoordinator::SaveSpaces() const {
   base::DictValue root;
   root.Set("spaces", std::move(list));
   root.Set("defaultSpaceId", default_space_id_);
-  std::string json;
-  base::JSONWriter::Write(root, &json);
-
-  HANDLE f = ::CreateFileW(spaces_path_.c_str(), GENERIC_WRITE, 0, nullptr,
-                           CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-  if (f != INVALID_HANDLE_VALUE) {
-    DWORD wrote = 0;
-    ::WriteFile(f, json.data(), static_cast<DWORD>(json.size()), &wrote,
-                nullptr);
-    ::CloseHandle(f);
-  }
+  PhiWriteJsonFile(spaces_path_, std::move(root), /*schema=*/1);
   // Every Space-list change reaches here; keep the page context menu's
   // "Open Link in Space" list in step.
   PushSpaceMenu();
@@ -942,26 +1138,29 @@ void PhiCoordinator::PushRoutingTable() const {
 }
 
 void PhiCoordinator::LoadUrlRules() {
-  HANDLE f = ::CreateFileW(url_rules_path_.c_str(), GENERIC_READ,
-                           FILE_SHARE_READ, nullptr, OPEN_EXISTING,
-                           FILE_ATTRIBUTE_NORMAL, nullptr);
-  if (f == INVALID_HANDLE_VALUE) {
+  // Schema 1 is {"schema":1,"rules":[...]}. The file used to be a bare
+  // list; that shape is still read (and rewritten in the new one on the
+  // next save), and anything else is quarantined rather than defaulted
+  // over.
+  std::string json;
+  if (!PhiReadFileBytes(url_rules_path_, &json)) {
     return;  // First run: no rules.
   }
-  std::string json;
-  char buf[4096];
-  DWORD read = 0;
-  while (::ReadFile(f, buf, sizeof(buf), &read, nullptr) && read > 0) {
-    json.append(buf, read);
-  }
-  ::CloseHandle(f);
   std::optional<base::Value> root =
       base::JSONReader::Read(json, base::JSON_PARSE_RFC);
-  if (!root || !root->is_list()) {
+  const base::ListValue* rules = nullptr;
+  if (root && root->is_list()) {
+    rules = &root->GetList();
+  } else if (root && root->is_dict()) {
+    rules = root->GetDict().FindList("rules");
+  }
+  if (!rules) {
+    PhiQuarantineFile(url_rules_path_, "not a rule list");
+    LOG(ERROR) << "[PhiClient] URL rules unreadable; starting with none";
     return;
   }
   url_rules_.clear();
-  for (const base::Value& v : root->GetList()) {
+  for (const base::Value& v : *rules) {
     const base::DictValue* d = v.GetIfDict();
     if (!d) {
       continue;
@@ -994,16 +1193,9 @@ void PhiCoordinator::SaveUrlRules() const {
     d.Set("ask", rule.ask);
     list.Append(std::move(d));
   }
-  std::string json;
-  base::JSONWriter::Write(list, &json);
-  HANDLE f = ::CreateFileW(url_rules_path_.c_str(), GENERIC_WRITE, 0, nullptr,
-                           CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-  if (f != INVALID_HANDLE_VALUE) {
-    DWORD wrote = 0;
-    ::WriteFile(f, json.data(), static_cast<DWORD>(json.size()), &wrote,
-                nullptr);
-    ::CloseHandle(f);
-  }
+  base::DictValue root;
+  root.Set("rules", std::move(list));
+  PhiWriteJsonFile(url_rules_path_, std::move(root), /*schema=*/1);
 }
 
 void PhiCoordinator::OnOpenLinkInSpace(int64_t source_window_id,
@@ -1133,32 +1325,18 @@ void PhiCoordinator::RouteUrlToSpace(const std::string& space_id,
 }
 
 void PhiCoordinator::LoadLayoutMode() {
-  HANDLE f = ::CreateFileW(layout_path_.c_str(), GENERIC_READ, FILE_SHARE_READ,
-                           nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
-                           nullptr);
-  if (f == INVALID_HANDLE_VALUE) {
-    return;  // First run: the Mac default, Performance.
+  base::DictValue root;
+  if (PhiReadJsonFile(layout_path_, &root) != PhiJsonFileStatus::kOk) {
+    return;  // First run (or quarantined): the Mac default, Performance.
   }
-  std::string json;
-  char buf[512];
-  DWORD read = 0;
-  while (::ReadFile(f, buf, sizeof(buf), &read, nullptr) && read > 0) {
-    json.append(buf, read);
-  }
-  ::CloseHandle(f);
-  std::optional<base::DictValue> root =
-      base::JSONReader::ReadDict(json, base::JSON_PARSE_RFC);
-  if (!root) {
-    return;
-  }
-  if (const std::string* name = root->FindString("layoutMode")) {
+  if (const std::string* name = root.FindString("layoutMode")) {
     PhiLayoutMode parsed = PhiLayoutMode::kPerformance;
     if (PhiLayoutModeFromName(*name, &parsed)) {
       layout_mode_ = parsed;
       LOG(INFO) << "[PhiClient] layout mode: " << *name;
     }
   }
-  if (std::optional<int> width = root->FindInt("sidebarWidth")) {
+  if (std::optional<int> width = root.FindInt("sidebarWidth")) {
     sidebar_width_ =
         std::max(kSidebarWidthMin, std::min(*width, kSidebarWidthMax));
   }
@@ -1168,16 +1346,7 @@ void PhiCoordinator::SaveLayoutMode() const {
   base::DictValue root;
   root.Set("layoutMode", PhiLayoutModeName(layout_mode_));
   root.Set("sidebarWidth", sidebar_width_);
-  std::string json;
-  base::JSONWriter::Write(root, &json);
-  HANDLE f = ::CreateFileW(layout_path_.c_str(), GENERIC_WRITE, 0, nullptr,
-                           CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-  if (f == INVALID_HANDLE_VALUE) {
-    return;
-  }
-  DWORD wrote = 0;
-  ::WriteFile(f, json.data(), static_cast<DWORD>(json.size()), &wrote, nullptr);
-  ::CloseHandle(f);
+  PhiWriteJsonFile(layout_path_, std::move(root), /*schema=*/1);
 }
 
 bool PhiCoordinator::OwnerForSlot(int64_t slot, std::string* profile_id,
@@ -2099,15 +2268,66 @@ void PhiCoordinator::RequestReleaseTab(int tab_id) {
 
 std::string PhiCoordinator::LastActiveSpaceId() const {
   // A live slot's current Space wins when there is one (a reopen mid-run);
-  // at cold start there is no window yet, so fall back to the first Space,
-  // which is the default one the shell opens with.
+  // at cold start there is no window yet, so answer what PhiPrefs.json
+  // remembers from the last run — falling back to the default Space when
+  // that id was deleted since.
   for (const auto& [slot, controller] : windows_) {
+    if (controller->is_agent()) {
+      continue;
+    }
     const std::string& active = controller->active_space();
     if (!active.empty()) {
       return active;
     }
   }
+  if (!last_active_space_id_.empty() &&
+      std::any_of(spaces_.begin(), spaces_.end(), [&](const Space& s) {
+        return s.id == last_active_space_id_;
+      })) {
+    return last_active_space_id_;
+  }
   return DefaultSpaceId();  // What a fresh shell opens with.
+}
+
+void PhiCoordinator::NoteActiveSpace(const std::string& space_id) {
+  // Coalesced: a switch is one keypress, and SavePrefs rewrites the whole
+  // file. The timer folds a burst into one write a second later; a
+  // shutdown flushes it early (FlushForShutdown).
+  if (space_id.empty() || space_id == last_active_space_id_) {
+    return;
+  }
+  last_active_space_id_ = space_id;
+  if (msg_hwnd_) {
+    ::SetTimer(msg_hwnd_, kLastActiveSaveTimer, 1000, nullptr);
+  }
+}
+
+void PhiCoordinator::OpenDefaultShellIfNoUserWindow(const char* reason) {
+  for (const auto& [slot, controller] : windows_) {
+    if (!controller->is_agent() && !controller->is_incognito()) {
+      return;  // The user has a window; nothing to rescue.
+    }
+  }
+  if (!framework_) {
+    return;
+  }
+  // A restore that produced no window would leave the process alive with
+  // nothing on screen (lane 4 §6 item 6). Open a fresh shell on the default
+  // Space; with no pending attach, OnBrowserWindowCreated hosts it as a new
+  // slot.
+  std::string profile = "Default";
+  const std::string default_space = DefaultSpaceId();
+  for (const Space& space : spaces_) {
+    if (space.id == default_space) {
+      profile = space.profile_id;
+      break;
+    }
+  }
+  LOG(WARNING) << "[PhiClient] no user window after restore (" << reason
+               << "); opening a default shell in " << profile;
+  pending_slot_ = 0;
+  pending_space_.clear();
+  framework_->CreateSpaceBrowserInProfile(profile.c_str());
 }
 
 void PhiCoordinator::OnColdStartRestorePlan(
@@ -2128,6 +2348,15 @@ void PhiCoordinator::OnColdStartRestorePlan(
   LOG(INFO) << "[PhiClient] ColdStartRestorePlan: armed space="
             << LastActiveSpaceId() << " eager="
             << (eager_window_ids->empty() ? 0 : eager_window_ids->front());
+  // A cold start has no settlement callback, so the "eager set matched
+  // nothing" case (the ids named windows the session file no longer holds:
+  // every window parks, none appears) is caught by a timer: once the
+  // replay has had its say and no user window exists, open a default
+  // shell. A user window arriving disarms it (OnBrowserWindowCreated).
+  cold_start_armed_ = true;
+  if (msg_hwnd_) {
+    ::SetTimer(msg_hwnd_, kColdStartFallbackTimer, 4000, nullptr);
+  }
 }
 
 void PhiCoordinator::OnColdStartParkedWindows(const char* parked_json,
@@ -2147,7 +2376,25 @@ void PhiCoordinator::OnColdStartParkedWindows(const char* parked_json,
   LOG(INFO) << "[PhiClient] ColdStartParked profile=" << reporting_profile
             << " parked=" << (parked_json ? parked_json : "(null)");
   ghost_spaces_.ReplaceFromReceipt(json);
+  // Parked windows no Space claims (the Space was deleted while its window
+  // sat parked) would be replayed as loose windows by the next unfiltered
+  // restore; drop them now, same as the reopen path.
+  DropOrphanGhosts();
   PushSpaceMenu();
+  if (cold_start_armed_ && msg_hwnd_) {
+    // The diversion landed; give the eager window (if any) a moment to be
+    // built before deciding nothing came.
+    ::SetTimer(msg_hwnd_, kColdStartFallbackTimer, 2000, nullptr);
+  }
+}
+
+void PhiCoordinator::DropOrphanGhosts() {
+  for (const PhiGhostSpaces::Remembered& orphan : ghost_spaces_.Orphans()) {
+    if (framework_) {
+      framework_->DropGhostWindow(orphan.profile.c_str(), orphan.window_id);
+    }
+  }
+  ghost_spaces_.ClearOrphans();
 }
 
 void PhiCoordinator::OnTabDistillable(int64_t window_id, int tab_id,
@@ -2260,7 +2507,11 @@ std::vector<base::DictValue> TabRowsOf(phi_framework::PhiFramework* framework,
 void PhiCoordinator::ActivateTabById(int64_t browser, int tab_id) {
   for (const base::DictValue& row : TabRowsOf(framework_, browser)) {
     if (row.FindInt("id").value_or(0) == tab_id) {
-      framework_->ActivateTab(browser, row.FindInt("index").value_or(0));
+      // A row without an index is a row we cannot address; activating tab
+      // 0 in its place would be a different tab.
+      if (std::optional<int> index = row.FindInt("index")) {
+        framework_->ActivateTab(browser, *index);
+      }
       return;
     }
   }
@@ -2440,7 +2691,10 @@ void PhiCoordinator::UpdateReaderPanelsForWindow(int64_t window_id) {
     }
     LOG(INFO) << "[PhiClient] closing orphaned reader surface tab in window "
               << window_id;
-    framework_->CloseTab(window_id, row.FindInt("index").value_or(0));
+    // Never close tab 0 for a row that carries no index.
+    if (std::optional<int> index = row.FindInt("index")) {
+      framework_->CloseTab(window_id, *index);
+    }
     return;  // Indices shifted; the next change re-runs this.
   }
   // Every surface over this window, both kinds: an origin that left the
@@ -2534,6 +2788,10 @@ void PhiCoordinator::NoteContentLayoutChanged(int64_t slot) {
   });
 }
 
+void PhiCoordinator::NoteSlotActiveSpace(const std::string& space_id) {
+  NoteActiveSpace(space_id);
+}
+
 void PhiCoordinator::NoteSpaceWindow(const std::string& space_id,
                                      int64_t browser_window_id) {
   std::string profile = "Default";
@@ -2577,13 +2835,21 @@ void PhiCoordinator::OnSessionRestoreSettled(const char* receipt_json) {
   ghost_spaces_.ReplaceFromReceipt(last_restore_receipt_);
   // Parked windows no Space claims would otherwise be replayed as loose
   // windows by the next unfiltered restore; drop them now.
-  for (const PhiGhostSpaces::Remembered& orphan : ghost_spaces_.Orphans()) {
-    if (framework_) {
-      framework_->DropGhostWindow(orphan.profile.c_str(), orphan.window_id);
-    }
-  }
-  ghost_spaces_.ClearOrphans();
+  DropOrphanGhosts();
   PushSpaceMenu();
+  // The receipt's verdict: an armed eager set that matched nothing parks
+  // the whole session with no window up, and a replay that never started
+  // restores nothing either. Either way the user must get a window.
+  std::optional<base::DictValue> receipt =
+      base::JSONReader::ReadDict(last_restore_receipt_, base::JSON_PARSE_RFC);
+  const bool matched_nothing =
+      receipt && receipt->FindBool("eagerFilterMatchedNothing").value_or(false);
+  const bool restored_any =
+      receipt && receipt->FindBool("restoredAny").value_or(true);
+  if (matched_nothing || !restored_any) {
+    OpenDefaultShellIfNoUserWindow(matched_nothing ? "eager set matched nothing"
+                                                   : "nothing restored");
+  }
 }
 
 // --- Agent operating mask for the user's own Spaces ------------------------
@@ -2786,19 +3052,18 @@ void PhiCoordinator::RequestBookmarkActiveTab(int64_t slot) {
 }
 
 void PhiCoordinator::LoadPrefs() {
-  HANDLE f = ::CreateFileW(prefs_path_.c_str(), GENERIC_READ, FILE_SHARE_READ,
-                           nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
-                           nullptr);
-  if (f != INVALID_HANDLE_VALUE) {
-    std::string json;
-    char buf[1024];
-    DWORD read = 0;
-    while (::ReadFile(f, buf, sizeof(buf), &read, nullptr) && read > 0) {
-      json.append(buf, read);
+  {
+    // A quarantined file (kCorrupt) keeps every default below; the reader
+    // has already moved it aside so the next SavePrefs cannot bury it.
+    base::DictValue dict;
+    const PhiJsonFileStatus status = PhiReadJsonFile(prefs_path_, &dict);
+    if (status == PhiJsonFileStatus::kCorrupt) {
+      LOG(ERROR) << "[PhiClient] prefs unreadable; using defaults";
     }
-    ::CloseHandle(f);
-    std::optional<base::DictValue> root =
-        base::JSONReader::ReadDict(json, base::JSON_PARSE_RFC);
+    std::optional<base::DictValue> root;
+    if (status == PhiJsonFileStatus::kOk) {
+      root = std::move(dict);
+    }
     if (root) {
       saturation_ = root->FindInt("saturation").value_or(saturation_);
       always_show_full_url_ =
@@ -2817,6 +3082,15 @@ void PhiCoordinator::LoadPrefs() {
                                      .value_or(bookmark_bar_on_new_tab_);
       developer_mode_ =
           root->FindBool("developerMode").value_or(developer_mode_);
+      // The two runtime gates. Neither is reachable over the control
+      // channel (agentSpace.settings.set refuses them): this file, written
+      // by the user's own hand or the box runner, is their only source.
+      allow_agent_user_spaces_ = root->FindBool("allowAgentUserSpaces")
+                                     .value_or(allow_agent_user_spaces_);
+      test_rig_ = root->FindBool("testRig").value_or(test_rig_);
+      if (const std::string* last = root->FindString("lastActiveSpaceId")) {
+        last_active_space_id_ = *last;
+      }
       // Applied before any chrome is built, so the first window comes up in
       // the chosen language rather than flashing English first. An absent
       // key leaves the preference empty, which follows the system.
@@ -2864,6 +3138,9 @@ void PhiCoordinator::SavePrefs() const {
   root.Set("alwaysShowBookmarkBar", always_show_bookmark_bar_);
   root.Set("bookmarkBarOnNewTab", bookmark_bar_on_new_tab_);
   root.Set("developerMode", developer_mode_);
+  root.Set("allowAgentUserSpaces", allow_agent_user_spaces_);
+  root.Set("testRig", test_rig_);
+  root.Set("lastActiveSpaceId", last_active_space_id_);
   root.Set("language", PhiLanguagePreference());
   root.Set("newTabBehavior", new_tab_behavior_ == PhiNewTabBehavior::kOmnibox
                                  ? "omnibox"
@@ -2881,16 +3158,7 @@ void PhiCoordinator::SavePrefs() const {
     }
     root.Set("shortcuts", std::move(shortcuts));
   }
-  std::string json;
-  base::JSONWriter::Write(root, &json);
-  HANDLE f = ::CreateFileW(prefs_path_.c_str(), GENERIC_WRITE, 0, nullptr,
-                           CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-  if (f == INVALID_HANDLE_VALUE) {
-    return;
-  }
-  DWORD wrote = 0;
-  ::WriteFile(f, json.data(), static_cast<DWORD>(json.size()), &wrote, nullptr);
-  ::CloseHandle(f);
+  PhiWriteJsonFile(prefs_path_, std::move(root), /*schema=*/1);
 }
 
 std::string PhiCoordinator::LanguagePreference() const {
@@ -3410,6 +3678,15 @@ bool PhiCoordinator::DeleteSpace(const std::string& space_id) {
                 [&](const UrlRule& r) { return r.space_id == space_id; });
   ++url_rules_generation_;  // Wire rule ids regenerate on every write.
   SaveUrlRules();
+  // Its ghost record goes too — and, when the Space existed only as a
+  // PARKED window from the last session, that window is dropped on the
+  // session side, or the next unfiltered restore would replay it as a
+  // loose window of a Space that no longer exists.
+  const bool was_parked = ghost_spaces_.Parked(space_id) != nullptr;
+  const PhiGhostSpaces::Remembered ghost = ghost_spaces_.Forget(space_id);
+  if (was_parked && ghost.window_id && framework_) {
+    framework_->DropGhostWindow(ghost.profile.c_str(), ghost.window_id);
+  }
   spaces_.erase(it);
   SaveSpaces();
   RebuildSpacePalettes();
@@ -3578,6 +3855,24 @@ void PhiCoordinator::SetDeveloperMode(bool enabled) {
   PhiSettingsWindow::Refresh();
 }
 
+bool PhiCoordinator::AllowAgentUserSpaces() const {
+  return allow_agent_user_spaces_;
+}
+
+void PhiCoordinator::SetAllowAgentUserSpaces(bool enabled) {
+  // Only the Settings window reaches here — never a verb (see
+  // agentSpace.settings.set), so a connected agent cannot widen its own
+  // reach.
+  if (allow_agent_user_spaces_ == enabled) {
+    return;
+  }
+  allow_agent_user_spaces_ = enabled;
+  LOG(INFO) << "[PhiAgent] agent access to user Spaces "
+            << (enabled ? "enabled" : "disabled");
+  SavePrefs();
+  PhiSettingsWindow::Refresh();
+}
+
 void PhiCoordinator::OpenBrowserSettings() {
   if (!windows_.empty()) {
     RequestOpen(windows_.begin()->first, "chrome://settings");
@@ -3678,7 +3973,8 @@ void PhiCoordinator::CreateSpaceNamed(const std::string& name) {
   std::string json;
   base::JSONWriter::Write(payload, &json);
   // The same path the control verb takes — one creation flow.
-  ExecuteControlOnUi("agentSpace.spaces.create", json);
+  ExecuteControlOnUi("agentSpace.spaces.create", json,
+                     ControlCaller::kInternal);
 }
 
 std::vector<std::string> PhiCoordinator::URLRuleRows() const {
@@ -3744,29 +4040,15 @@ void PhiCoordinator::RemoveURLRule(int index) {
 
 void PhiCoordinator::LoadTheme() {
   palette_ = PhiResolvePalette(PhiThemeById(theme_id_), appearance_, saturation_);
-  HANDLE f = ::CreateFileW(theme_path_.c_str(), GENERIC_READ, FILE_SHARE_READ,
-                           nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
-                           nullptr);
-  if (f == INVALID_HANDLE_VALUE) {
-    return;  // First run: Pure, following the system appearance (the Mac
-             // defaults).
+  base::DictValue root;
+  if (PhiReadJsonFile(theme_path_, &root) != PhiJsonFileStatus::kOk) {
+    return;  // First run (or quarantined): Pure, following the system
+             // appearance (the Mac defaults).
   }
-  std::string json;
-  char buf[512];
-  DWORD read = 0;
-  while (::ReadFile(f, buf, sizeof(buf), &read, nullptr) && read > 0) {
-    json.append(buf, read);
-  }
-  ::CloseHandle(f);
-  std::optional<base::DictValue> root =
-      base::JSONReader::ReadDict(json, base::JSON_PARSE_RFC);
-  if (!root) {
-    return;
-  }
-  if (const std::string* id = root->FindString("themeId")) {
+  if (const std::string* id = root.FindString("themeId")) {
     theme_id_ = PhiThemeById(*id).id;  // Normalises an unknown id to Pure.
   }
-  if (const std::string* name = root->FindString("appearance")) {
+  if (const std::string* name = root.FindString("appearance")) {
     PhiAppearance parsed = PhiAppearance::kSystem;
     if (PhiAppearanceFromName(*name, &parsed)) {
       appearance_ = parsed;
@@ -3781,16 +4063,7 @@ void PhiCoordinator::SaveTheme() const {
   base::DictValue root;
   root.Set("themeId", theme_id_);
   root.Set("appearance", PhiAppearanceName(appearance_));
-  std::string json;
-  base::JSONWriter::Write(root, &json);
-  HANDLE f = ::CreateFileW(theme_path_.c_str(), GENERIC_WRITE, 0, nullptr,
-                           CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-  if (f == INVALID_HANDLE_VALUE) {
-    return;
-  }
-  DWORD wrote = 0;
-  ::WriteFile(f, json.data(), static_cast<DWORD>(json.size()), &wrote, nullptr);
-  ::CloseHandle(f);
+  PhiWriteJsonFile(theme_path_, std::move(root), /*schema=*/1);
 }
 
 void PhiCoordinator::ApplyTheme() {
@@ -3836,10 +4109,15 @@ void PhiCoordinator::OpenUrlInMainWindow(const std::string& url) {
   if (!framework_ || url.empty() || windows_.empty()) {
     return;
   }
-  // The first shell window is the main one; a Kiosk has no Space of its own to
-  // prefer, so the page lands wherever the user's browsing already lives.
-  PhiWindowController* main = windows_.begin()->second.get();
-  framework_->NewTab(main->window_id(), url.c_str());
+  // The focused user window (else the first shell); a Kiosk has no Space of
+  // its own to prefer, so the page lands wherever the user's browsing
+  // already lives. The slot's key is its ORIGINAL browser, which may be gone
+  // or hidden behind another Space — resolve to the browser on screen.
+  PhiWindowController* main = FocusedUserController();
+  if (!main) {
+    main = windows_.begin()->second.get();
+  }
+  framework_->NewTab(ResolveBrowser(main->window_id()), url.c_str());
   if (HWND shell = main->shell_hwnd()) {
     ::SetForegroundWindow(shell);
   }
@@ -4316,8 +4594,8 @@ bool PhiCoordinator::TryFinishProfileSpace() {
     payload.Set("profileId", *id);
     std::string json;
     base::JSONWriter::Write(payload, &json);
-    const std::string created =
-        ExecuteControlOnUi("agentSpace.spaces.create", json);
+    const std::string created = ExecuteControlOnUi(
+        "agentSpace.spaces.create", json, ControlCaller::kInternal);
     std::optional<base::DictValue> r =
         base::JSONReader::ReadDict(created, base::JSON_PARSE_RFC);
     const int64_t slot = pending_profile_slot_;
@@ -4510,7 +4788,8 @@ void PhiCoordinator::RequestSwitchSpace(int64_t slot,
   payload.Set("spaceId", space_id);
   std::string json;
   base::JSONWriter::Write(payload, &json);
-  ExecuteControlOnUi("agentSpace.spaces.switch", json);
+  ExecuteControlOnUi("agentSpace.spaces.switch", json,
+                     ControlCaller::kInternal);
 }
 
 void PhiCoordinator::RequestCreateSpace(int64_t slot, bool new_profile) {
@@ -4549,7 +4828,7 @@ void PhiCoordinator::RequestCreateSpace(int64_t slot, bool new_profile) {
     framework_->CreateProfile(
         ("Phi Space " + std::to_string(next_space_id_)).c_str());
     if (msg_hwnd_) {
-      ::SetTimer(msg_hwnd_, 1, 500, nullptr);
+      ::SetTimer(msg_hwnd_, kProfileSpaceTimer, 500, nullptr);
     }
     return;
   }
@@ -4558,7 +4837,8 @@ void PhiCoordinator::RequestCreateSpace(int64_t slot, bool new_profile) {
   payload.Set("profileId", profile_id);
   std::string json;
   base::JSONWriter::Write(payload, &json);
-  const std::string created = ExecuteControlOnUi("agentSpace.spaces.create", json);
+  const std::string created = ExecuteControlOnUi(
+      "agentSpace.spaces.create", json, ControlCaller::kInternal);
   std::optional<base::DictValue> r =
       base::JSONReader::ReadDict(created, base::JSON_PARSE_RFC);
   if (r) {
@@ -4593,7 +4873,7 @@ void PhiCoordinator::RequestCreateProfileForSpaceForm(int64_t slot,
   pending_profile_for_form_ = true;
   framework_->CreateProfile(name.c_str());
   if (msg_hwnd_) {
-    ::SetTimer(msg_hwnd_, 1, 500, nullptr);
+    ::SetTimer(msg_hwnd_, kProfileSpaceTimer, 500, nullptr);
   }
 }
 
@@ -4617,7 +4897,8 @@ std::string PhiCoordinator::RequestCreateSpaceWithOptions(
   }
   std::string json;
   base::JSONWriter::Write(payload, &json);
-  const std::string created = ExecuteControlOnUi("agentSpace.spaces.create", json);
+  const std::string created = ExecuteControlOnUi(
+      "agentSpace.spaces.create", json, ControlCaller::kInternal);
   std::optional<base::DictValue> r =
       base::JSONReader::ReadDict(created, base::JSON_PARSE_RFC);
   const std::string* id = r ? r->FindString("id") : nullptr;
@@ -4662,7 +4943,8 @@ int64_t PhiCoordinator::ResolveBrowser(int64_t slot_or_browser) const {
 }
 
 std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
-                                               const std::string& payload_json) {
+                                               const std::string& payload_json,
+                                               ControlCaller caller) {
   // Runs on the UI thread — safe to touch windows_ and call framework_.
   base::DictValue out;
   // The phi-browser skill's agent-space lifecycle (create/ping/complete/
@@ -4672,6 +4954,36 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
   {
     std::optional<base::DictValue> payload =
         base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
+    if (caller == ControlCaller::kPipe) {
+      // The two runtime gates, BEFORE any ladder sees the verb (lane 5 F3).
+      // An agent works inside its own agent Spaces by default; the user's
+      // Spaces open up only through the Developer-pane toggle. The internal
+      // callers (the client's own UI) are never gated — they ARE the user.
+      if (!allow_agent_user_spaces_ &&
+          IsUserSpaceRequest(type, payload ? &*payload : nullptr)) {
+        out.Set("ok", false);
+        out.Set("error", "user_space_operations_disabled");
+        std::string s;
+        base::JSONWriter::Write(out, &s);
+        return s;
+      }
+      // Harness-only verbs: what the box runner needs (a shell HWND, a PNG
+      // on disk, the analytics ring, a fake signed-in account) and nothing
+      // a shipped agent should have. PhiPrefs.json testRig unlocks them.
+      const bool harness_only =
+          type == "agentSpace.feedback.setAccount" ||
+          type == "agentSpace.analytics.list" ||
+          type == "agentSpace.window.handle" ||
+          (type == "agentSpace.captureWindow" && payload &&
+           payload->FindString("outPath"));
+      if (harness_only && !test_rig_) {
+        out.Set("ok", false);
+        out.Set("error", "test_rig_only");
+        std::string s;
+        base::JSONWriter::Write(out, &s);
+        return s;
+      }
+    }
     if (HandleAgentSpaceVerb(type, payload ? &*payload : nullptr,
                              ::GetTickCount64(), &out)) {
       std::string s;
@@ -4907,6 +5219,27 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
       } else if (const std::string* n2 = p->FindString("displayName")) {
         name = *n2;
       }
+    }
+    // Deleting a profile erases its data on disk. The skill contract
+    // (references/management.md) promises agents can create and rename
+    // profiles but never delete them, so from the pipe this is a test-rig
+    // verb only; and even the rig has to say `confirm:true`, the nod the
+    // Settings pane asks the user for.
+    if (type == "agentSpace.profiles.delete" && caller == ControlCaller::kPipe &&
+        !test_rig_) {
+      out.Set("ok", false);
+      out.Set("error", "test_rig_only");
+      std::string s;
+      base::JSONWriter::Write(out, &s);
+      return s;
+    }
+    if (type == "agentSpace.profiles.delete" &&
+        !(p && p->FindBool("confirm").value_or(false))) {
+      out.Set("ok", false);
+      out.Set("error", "confirm_required");
+      std::string s;
+      base::JSONWriter::Write(out, &s);
+      return s;
     }
     const bool ok = type == "agentSpace.profiles.rename"
                         ? RenameProfileById(id, name)
@@ -5388,6 +5721,7 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
     }
     out.Set("sections", std::move(sections));
     out.Set("developerMode", developer_mode_);
+    out.Set("allowAgentUserSpaces", allow_agent_user_spaces_);
     out.Set("themeId", theme_id_);
     out.Set("appearance", PhiAppearanceName(appearance_));
     out.Set("saturation", saturation_);
@@ -5418,6 +5752,19 @@ std::string PhiCoordinator::ExecuteControlOnUi(const std::string& type,
   } else if (type == "agentSpace.settings.set") {
     std::optional<base::DictValue> p =
         base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
+    // The three keys that decide what an agent may reach are never the
+    // agent's to set: developerMode unlocks the pane that holds the toggle,
+    // allowAgentUserSpaces IS the toggle, testRig unlocks the harness verbs.
+    // Refused whole — a payload that carries one gets none of its keys.
+    if (caller == ControlCaller::kPipe && p &&
+        (p->contains("developerMode") || p->contains("allowAgentUserSpaces") ||
+         p->contains("testRig"))) {
+      out.Set("ok", false);
+      out.Set("error", "pref_not_agent_settable");
+      std::string s;
+      base::JSONWriter::Write(out, &s);
+      return s;
+    }
     bool ok = false;
     if (p) {
       if (std::optional<int> saturation = p->FindInt("saturation")) {
@@ -6155,7 +6502,7 @@ bool PhiCoordinator::HandleAgentSpaceVerb(const std::string& type,
     }
     // Start the keep-alive sweep once (id 2, every 10s — the Mac sweep tick).
     if (msg_hwnd_) {
-      ::SetTimer(msg_hwnd_, 2, 10000, nullptr);
+      ::SetTimer(msg_hwnd_, kAgentSpaceSweepTimer, 10000, nullptr);
     }
     RefreshUserWindows();  // A new agent pip appears in the switcher.
     out->Set("ok", true);
@@ -6420,7 +6767,10 @@ bool PhiCoordinator::HandleAgentSpaceVerb(const std::string& type,
           const std::string* name = d->FindString("name");
           e.Set("profileId", id ? *id : "");
           e.Set("displayName", name ? *name : (id ? *id : ""));
-          e.Set("agentSpacesAllowed", true);
+          // Whether an agent may reach the USER's Spaces in this profile —
+          // the Developer-pane toggle, app-wide (agent Spaces are always
+          // allowed).
+          e.Set("agentSpacesAllowed", allow_agent_user_spaces_);
           profiles.Append(std::move(e));
         }
       }
@@ -6658,7 +7008,7 @@ void PhiCoordinator::CloseAgentSpace(const std::string& task_id) {
     framework_->CloseBrowserWindow(window_id);
   }
   if (agent_spaces_.empty() && shadow_windows_.empty() && msg_hwnd_) {
-    ::KillTimer(msg_hwnd_, 2);
+    ::KillTimer(msg_hwnd_, kAgentSpaceSweepTimer);
   }
   RefreshUserWindows();  // The agent pip disappears.
 }
@@ -6704,7 +7054,7 @@ void PhiCoordinator::CloseShadowWindow(const std::string& task_id,
     framework_->CloseBrowserWindow(window_id);
   }
   if (agent_spaces_.empty() && shadow_windows_.empty() && msg_hwnd_) {
-    ::KillTimer(msg_hwnd_, 2);
+    ::KillTimer(msg_hwnd_, kAgentSpaceSweepTimer);
   }
 }
 
@@ -6807,7 +7157,7 @@ bool PhiCoordinator::HandleShadowVerb(const std::string& type,
     shadow.created_ms = EpochMsNow();
     touch(&shadow, 0);
     if (msg_hwnd_) {
-      ::SetTimer(msg_hwnd_, 2, 10000, nullptr);  // The keep-alive sweep.
+      ::SetTimer(msg_hwnd_, kAgentSpaceSweepTimer, 10000, nullptr);  // The keep-alive sweep.
     }
     LOG(INFO) << "[PhiClient] shadow window created: " << *task
               << " window=" << adopted << (incognito ? " (incognito)" : "");
@@ -6869,7 +7219,7 @@ void PhiCoordinator::SweepAgentSpaces() {
     CloseShadowWindow(task_id, "keep-alive expired");
   }
   if (agent_spaces_.empty() && shadow_windows_.empty() && msg_hwnd_) {
-    ::KillTimer(msg_hwnd_, 2);
+    ::KillTimer(msg_hwnd_, kAgentSpaceSweepTimer);
   }
 }
 
@@ -7021,6 +7371,12 @@ bool PhiCoordinator::ResolveCredentialItem(const std::string& domain,
     return true;
   }
 
+  if constexpr (!kPhiDevHooks) {
+    // No helper, no fallback: the dev store is a --dev-hooks door only.
+    out->Set("ok", false);
+    out->Set("error", "not_installed");
+    return false;
+  }
   // Dev/test fallback: the local DPAPI store.
   if (!credentials_.present()) {
     out->Set("ok", false);
@@ -7081,39 +7437,41 @@ void PhiCoordinator::PushOwnershipChanged(const std::string& task_id) {
   control_server_.BroadcastEvent("agentSpace.ownershipChanged", payload_json);
 }
 
-bool PhiCoordinator::CredentialGrantCovers(const std::string& scope,
-                                           CredentialAccessKind kind) const {
-  // A REVEAL grant covers everything; anything else must match the kind
-  // exactly — a fill approval must never satisfy a reveal request.
-  const auto covers = [kind](CredentialAccessKind granted) {
-    return granted == CredentialAccessKind::kReveal || granted == kind;
-  };
-  auto always = credential_grants_.find(scope);
-  if (always != credential_grants_.end() && covers(always->second)) {
-    return true;
-  }
-  auto timed = credential_timed_grants_.find(scope);
-  if (timed != credential_timed_grants_.end() &&
-      ::GetTickCount64() < timed->second.expires_tick &&
-      covers(timed->second.kind)) {
-    return true;
-  }
-  return false;
+bool PhiCoordinator::CredentialGrantCovers(const std::string& grant_key) const {
+  // Only a live TIMED grant counts. The persisted "always" rows are display
+  // only (LoadCredentialGrants), and the kind is not consulted: a fill is a
+  // reveal (CredentialAccessKind), so one exposure, one grant.
+  auto timed = credential_timed_grants_.find(grant_key);
+  return timed != credential_timed_grants_.end() &&
+         ::GetTickCount64() < timed->second.expires_tick;
 }
 
 bool PhiCoordinator::PromptCredentialApproval(const std::wstring& detail,
                                               CredentialAccessKind kind,
-                                              const std::string& scope) {
+                                              const std::string& grant_key,
+                                              bool once_only) {
   const bool reveal = kind == CredentialAccessKind::kReveal;
-  if (CredentialGrantCovers(scope, kind)) {
-    AppendCredentialAudit(scope, kind, "allowed (standing approval)");
+  const ULONGLONG now = ::GetTickCount64();
+  // Denial memory first: a refused ask stays refused for five minutes, so
+  // an agent cannot re-raise the same dialog until the user gives in.
+  auto denied = credential_denials_.find(grant_key);
+  if (denied != credential_denials_.end()) {
+    if (now < denied->second) {
+      AppendCredentialAudit(grant_key, kind, "denied (remembered)");
+      return false;
+    }
+    credential_denials_.erase(denied);
+  }
+  if (!once_only && CredentialGrantCovers(grant_key)) {
+    AppendCredentialAudit(grant_key, kind, "allowed (10-minute grant)");
     return true;
   }
-  // The exposure banner is the load-bearing line, as on Mac: say plainly
-  // whether the secret stays inside Phi or crosses to the agent.
+  // The exposure banner is the load-bearing line, as on Mac — and it says
+  // what is TRUE: a filled page is a page the agent holds a CDP session on.
   const std::wstring exposure =
       reveal ? L"The secret will be GIVEN TO THE AGENT."
-             : L"Phi types the secret into the page. The agent never sees it.";
+             : L"Phi types the secret into the page. Any automation attached "
+               L"to that page can read it.";
   const std::wstring text = detail + L"\n\n" + exposure;
   HWND owner = nullptr;
   for (const auto& [slot, controller] : windows_) {
@@ -7122,47 +7480,49 @@ bool PhiCoordinator::PromptCredentialApproval(const std::wstring& detail,
       break;
     }
   }
+  // No "Always allow": a standing grant plus an agent-chosen page was the
+  // exfil path. A once-only ask (cross-origin) offers no timed grant either.
+  std::vector<std::wstring> options = {L"Allow once"};
+  if (!once_only) {
+    options.push_back(L"Allow for 10 minutes");
+  }
+  options.push_back(L"Deny");
+  const int deny_index = static_cast<int>(options.size()) - 1;
+  const int timed_index = once_only ? -1 : 1;
   int chosen = -1;
   if (owner) {
-    chosen = PhiPromptChoose(
-        owner, L"Credential request", text.c_str(),
-        {L"Allow once", L"Allow for 10 minutes", L"Always allow", L"Deny"},
-        0, L"Continue", L"Cancel");
+    // Deny preselected AND Cancel holding Return: Enter refuses; only a
+    // deliberate click on Continue (or a row double-click) approves.
+    chosen = PhiPromptChoose(owner, L"Credential request", text.c_str(),
+                             options, deny_index, L"Continue", L"Cancel",
+                             /*cancel_is_default=*/true);
   } else {
     // No window yet: the MessageBox fallback offers allow-ONCE only — a
-    // standing grant must never be given through a degraded dialog.
+    // timed grant must never be given through a degraded dialog.
+    PhiModalScope modal;
     chosen = ::MessageBoxW(nullptr, (text + L"\n\nAllow this once?").c_str(),
                            L"Phi — Credential request",
                            MB_YESNO | MB_ICONQUESTION | MB_SETFOREGROUND |
                                MB_TOPMOST | MB_DEFBUTTON2) == IDYES
                  ? 0
-                 : 3;
+                 : deny_index;
   }
-  if (chosen == 1) {
+  if (chosen == timed_index) {
     TimedCredentialGrant grant;
     grant.kind = kind;
-    grant.expires_tick = ::GetTickCount64() + 10 * 60 * 1000;
-    credential_timed_grants_[scope] = grant;
-    AppendCredentialAudit(scope, kind, "allowed (10 minutes)");
-    return true;
-  }
-  if (chosen == 2) {
-    // A stronger kind never downgrades an existing grant.
-    auto existing = credential_grants_.find(scope);
-    if (existing == credential_grants_.end() ||
-        kind == CredentialAccessKind::kReveal) {
-      credential_grants_[scope] = kind;
-    }
-    SaveCredentialGrants();
-    PhiSettingsWindow::Refresh();
-    AppendCredentialAudit(scope, kind, "allowed (always)");
+    grant.expires_tick = now + 10 * 60 * 1000;
+    credential_timed_grants_[grant_key] = grant;
+    AppendCredentialAudit(grant_key, kind, "allowed (10 minutes)");
     return true;
   }
   if (chosen == 0) {
-    AppendCredentialAudit(scope, kind, "allowed (once)");
+    AppendCredentialAudit(grant_key, kind,
+                          once_only ? "allowed (once, cross-origin)"
+                                    : "allowed (once)");
     return true;
   }
-  AppendCredentialAudit(scope, kind, "denied");
+  credential_denials_[grant_key] = now + 5 * 60 * 1000;
+  AppendCredentialAudit(grant_key, kind, "denied");
   return false;
 }
 
@@ -7188,25 +7548,16 @@ void PhiCoordinator::AppendCredentialAudit(const std::string& scope,
 }
 
 void PhiCoordinator::LoadCredentialGrants() {
-  HANDLE f = ::CreateFileW(credential_grants_path_.c_str(), GENERIC_READ,
-                           FILE_SHARE_READ, nullptr, OPEN_EXISTING,
-                           FILE_ATTRIBUTE_NORMAL, nullptr);
-  if (f == INVALID_HANDLE_VALUE) {
-    return;
+  base::DictValue root;
+  if (PhiReadJsonFile(credential_grants_path_, &root) !=
+      PhiJsonFileStatus::kOk) {
+    return;  // Missing (first run) or quarantined: no rows, no audit.
   }
-  std::string json;
-  char buf[4096];
-  DWORD read = 0;
-  while (::ReadFile(f, buf, sizeof(buf), &read, nullptr) && read > 0) {
-    json.append(buf, read);
-  }
-  ::CloseHandle(f);
-  std::optional<base::DictValue> root =
-      base::JSONReader::ReadDict(json, base::JSON_PARSE_RFC);
-  if (!root) {
-    return;
-  }
-  if (const base::DictValue* grants = root->FindDict("grants")) {
+  // The "always" rows are kept ONLY so Settings can show and remove them;
+  // CredentialGrantCovers no longer reads them (a standing password grant
+  // plus an agent-chosen page was the exfil path). They stop being written
+  // the moment the user removes the last one.
+  if (const base::DictValue* grants = root.FindDict("grants")) {
     for (const auto [scope, value] : *grants) {
       if (value.is_string()) {
         credential_grants_[scope] = value.GetString() == "reveal"
@@ -7215,7 +7566,7 @@ void PhiCoordinator::LoadCredentialGrants() {
       }
     }
   }
-  if (const base::ListValue* audit = root->FindList("audit")) {
+  if (const base::ListValue* audit = root.FindList("audit")) {
     for (const base::Value& v : *audit) {
       if (v.is_string()) {
         credential_audit_.push_back(v.GetString());
@@ -7237,23 +7588,28 @@ void PhiCoordinator::SaveCredentialGrants() const {
     audit.Append(line);
   }
   root.Set("audit", std::move(audit));
-  std::string json;
-  base::JSONWriter::Write(root, &json);
-  HANDLE f = ::CreateFileW(credential_grants_path_.c_str(), GENERIC_WRITE, 0,
-                           nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL,
-                           nullptr);
-  if (f == INVALID_HANDLE_VALUE) {
-    return;
-  }
-  DWORD wrote = 0;
-  ::WriteFile(f, json.data(), static_cast<DWORD>(json.size()), &wrote,
-              nullptr);
-  ::CloseHandle(f);
+  PhiWriteJsonFile(credential_grants_path_, std::move(root), /*schema=*/1);
 }
 
 bool PhiCoordinator::HandleCredentialsVerb(const std::string& type,
                                            const base::DictValue* payload,
                                            base::DictValue* out) {
+  if constexpr (!kPhiDevHooks) {
+    // A release build knows one provider, the vault helper. Without it
+    // there is nothing to ask — not the dev store, which only a --dev-hooks
+    // build ever loads.
+    if (!vault_helper_.running()) {
+      if (type == "credentials.status") {
+        out->Set("ok", true);
+        out->Set("status", "not_installed");
+        out->Set("ready", false);
+      } else {
+        out->Set("ok", false);
+        out->Set("error", "not_installed");
+      }
+      return true;
+    }
+  }
   if (type == "credentials.status") {
     // The helper (the user's real vault) answers when it is running; the dev
     // store only speaks for itself.
@@ -7276,6 +7632,14 @@ bool PhiCoordinator::HandleCredentialsVerb(const std::string& type,
       out->Set("ready", wire == "ready");
       return true;
     }
+    if constexpr (!kPhiDevHooks) {
+      // The helper started but is not answering: unavailable, not the dev
+      // store's "logged_out".
+      out->Set("ok", true);
+      out->Set("status", "unavailable");
+      out->Set("ready", false);
+      return true;
+    }
     out->Set("ok", true);
     out->Set("status", credentials_.present() ? "ready" : "logged_out");
     out->Set("ready", credentials_.ready());
@@ -7283,65 +7647,12 @@ bool PhiCoordinator::HandleCredentialsVerb(const std::string& type,
   }
 
   if (type == "credentials.getTotp") {
-    // A TOTP code is a SECOND FACTOR handed to the agent — a reveal
-    // exposure, approved like any other, and only the real vault helper can
-    // generate one (the dev store holds no seed, and the helper never
-    // encodes the seed itself — it returns a generated code).
-    if (!vault_helper_.running()) {
-      out->Set("ok", false);
-      out->Set("error", "totp_not_supported");
-      return true;
-    }
-    CredentialQuery q = ParseCredentialQuery(payload);
-    if (!q.valid) {
-      out->Set("ok", false);
-      out->Set("error", "invalid_payload");
-      return true;
-    }
-    // Resolve first, so the approval names the item the code belongs to.
-    base::DictValue item;
-    if (!ResolveCredentialItem(q.domain, q.id, q.search, q.username, &item,
-                               out)) {
-      return true;  // `out` already carries the wire error body.
-    }
-    const std::string* name = item.FindString("name");
-    const std::string* item_domain = item.FindString("domain");
-    const std::string scope =
-        name && !name->empty()
-            ? *name
-            : (item_domain ? *item_domain : q.domain);
-    const std::wstring detail = base::UTF8ToWide(
-        "An agent is requesting a one-time code (2FA) for:\n\n" + scope);
-    if (!PromptCredentialApproval(detail, CredentialAccessKind::kReveal,
-                                  scope)) {
-      out->Set("ok", false);
-      out->Set("error", "user_denied");
-      return true;
-    }
-    base::DictValue query;
-    if (!q.domain.empty()) {
-      query.Set("domain", q.domain);
-      if (!q.username.empty()) {
-        query.Set("username", q.username);
-      }
-    } else if (!q.id.empty()) {
-      query.Set("id", q.id);
-    } else {
-      query.Set("search", q.search);
-    }
-    base::DictValue params;
-    params.Set("query", std::move(query));
-    std::string error;
-    std::optional<base::DictValue> result =
-        vault_helper_.Call("getTotp", params, &error);
-    const std::string* code = result ? result->FindString("totp") : nullptr;
-    if (!code || code->empty()) {
-      out->Set("ok", false);
-      out->Set("error", result ? "totp_unavailable" : "vault_error");
-      return true;
-    }
-    out->Set("ok", true);
-    out->Set("totp", *code);
+    // A TOTP code is a SECOND FACTOR handed to the agent, which makes the
+    // second factor worth nothing against an agent that already holds the
+    // first. Withdrawn from the agent-callable set (docs/architecture-
+    // review.md §3.7 item 5); the helper's getTotp stays unused.
+    out->Set("ok", false);
+    out->Set("error", "totp_not_supported");
     return true;
   }
 
@@ -7382,9 +7693,11 @@ bool PhiCoordinator::HandleCredentialsVerb(const std::string& type,
         detail += L"\n" + base::UTF8ToWide(*purpose);
       }
     }
-    // A read hands the secret TO the agent — the reveal exposure.
+    // A read hands the secret TO the agent — the reveal exposure. No page
+    // is involved, so the grant key is the item scope alone; it never
+    // covers a fill (those are keyed by page host).
     if (!PromptCredentialApproval(detail, CredentialAccessKind::kReveal,
-                                  scope)) {
+                                  scope, /*once_only=*/false)) {
       out->Set("ok", false);
       out->Set("error", "user_denied");
       return true;
@@ -7499,17 +7812,41 @@ bool PhiCoordinator::HandleCredentialsVerb(const std::string& type,
     }
     const std::string scope =
         field_of("name").empty() ? cred_host : field_of("name");
-    const std::wstring detail = base::UTF8ToWide(
-        "An agent is requesting a credential fill:\n\n" + scope +
-        "  → " + field + " on " + page_host);
+    // A cross-origin fill (the item's site is not the page's) ALWAYS
+    // prompts, says so in capitals, and is approved once only — never
+    // through a timed grant, never into one.
+    const bool cross_origin =
+        !PhiCredentialVault::HostMatches(page_host, cred_host);
+    std::string detail_utf8 =
+        "An agent is requesting a credential fill:\n\n" + scope + "  → " +
+        field + " on " + page_host;
+    if (cross_origin) {
+      detail_utf8 += "\n\nCROSS-ORIGIN: " + cred_host + " → " + page_host;
+    }
+    const std::wstring detail = base::UTF8ToWide(detail_utf8);
+    // Grants are per page host: an approval for site A's password on host
+    // A never carries to a page the agent navigated to afterwards.
+    const std::string grant_key = scope + "|" + page_host;
     if (!PromptCredentialApproval(detail, CredentialAccessKind::kFill,
-                                  scope)) {
+                                  grant_key, /*once_only=*/cross_origin)) {
       out->Set("ok", false);
       out->Set("error", "user_denied");
       return true;
     }
-    // The secret goes client vault -> framework -> page DOM, never to the
-    // agent. FillTaggedField returns false only when the tab is gone.
+    // The dialog sat open for a while; the page may have navigated under
+    // it. Fill only the host the user approved.
+    const std::string host_now = PhiCredentialVault::HostOfUri(
+        framework_->TargetUrlForCdpTarget(target_id->c_str()));
+    if (host_now != page_host) {
+      AppendCredentialAudit(grant_key, CredentialAccessKind::kFill,
+                            "refused (page moved after approval)");
+      out->Set("ok", false);
+      out->Set("error", "origin_changed");
+      out->Set("pageHost", host_now);
+      return true;
+    }
+    // The secret goes client vault -> framework -> page DOM. FillTaggedField
+    // returns false only when the tab is gone.
     if (!framework_->FillTaggedField(target_id->c_str(), token->c_str(),
                                      field.c_str(), value.c_str())) {
       out->Set("ok", false);
@@ -7631,6 +7968,7 @@ void PhiCoordinator::OnBrowserWindowCreated(int64_t window_id, void* hwnd) {
                                          static_cast<HWND>(hwnd));
         browser_to_slot_[window_id] = slot->first;
         ghost_spaces_.ClearParked(space_id);
+        NoteActiveSpace(slot->second->active_space());
         PushSpaceMenu();
         return;
       }
@@ -7664,6 +8002,9 @@ void PhiCoordinator::OnBrowserWindowCreated(int64_t window_id, void* hwnd) {
       pending_open_urls_.clear();
       pending_slot_ = 0;
       pending_space_.clear();
+      if (!it->second->is_agent()) {
+        NoteActiveSpace(it->second->active_space());
+      }
       PushSpaceMenu();  // The Space gained a window id.
       return;
     }
@@ -7687,6 +8028,14 @@ void PhiCoordinator::OnBrowserWindowCreated(int64_t window_id, void* hwnd) {
   windows_[window_id] = std::move(controller);
   browser_to_slot_[window_id] = window_id;
   if (!incognito) {
+    // A user window exists: the cold-start fallback has nothing to rescue.
+    if (cold_start_armed_) {
+      cold_start_armed_ = false;
+      if (msg_hwnd_) {
+        ::KillTimer(msg_hwnd_, kColdStartFallbackTimer);
+      }
+    }
+    NoteActiveSpace(windows_[window_id]->active_space());
     PushSpaceMenu();  // The slot's Space gained a window id.
   }
 }
@@ -8056,6 +8405,13 @@ void PhiCoordinator::OnTabsChanged(int64_t window_id) {
     // "will be removed" is still in the strip), so the sidebar is repainted
     // once the browser state has settled.
     it->second->ScheduleRefresh();
+    // The shell switches Spaces on its own (ShowSpace) without telling the
+    // owner; strip activity in the browser on screen is the next best
+    // signal for which Space the user is in.
+    if (!it->second->is_agent() && !it->second->is_incognito() &&
+        it->second->active_browser() == window_id) {
+      NoteActiveSpace(it->second->active_space());
+    }
   }
 }
 
@@ -8105,10 +8461,13 @@ void PhiCoordinator::OnBrowserWindowClosing(int64_t window_id) {
   if (ShadowWindow* shadow = FindShadowByWindow(window_id)) {
     const std::string task_id = shadow->task_id;
     shadow_windows_.erase(task_id);
+    if (auto win = windows_.find(window_id); win != windows_.end()) {
+      PhiAgentOverlay::HideIfBoundTo(win->second.get());
+    }
     windows_.erase(window_id);
     browser_to_slot_.erase(window_id);
     if (agent_spaces_.empty() && shadow_windows_.empty() && msg_hwnd_) {
-      ::KillTimer(msg_hwnd_, 2);
+      ::KillTimer(msg_hwnd_, kAgentSpaceSweepTimer);
     }
     return;
   }
@@ -8122,10 +8481,15 @@ void PhiCoordinator::OnBrowserWindowClosing(int64_t window_id) {
     if (watched_agent_task_ == task_id) {
       watched_agent_task_.clear();
     }
+    // The watch overlay may be bound to this shell: unhook it BEFORE the
+    // controller (and its HWND) goes, or it keeps a dangling binding.
+    if (auto win = windows_.find(window_id); win != windows_.end()) {
+      PhiAgentOverlay::HideIfBoundTo(win->second.get());
+    }
     windows_.erase(window_id);
     browser_to_slot_.erase(window_id);
     if (agent_spaces_.empty() && shadow_windows_.empty() && msg_hwnd_) {
-      ::KillTimer(msg_hwnd_, 2);
+      ::KillTimer(msg_hwnd_, kAgentSpaceSweepTimer);
     }
     RefreshUserWindows();
     return;
@@ -8140,6 +8504,11 @@ void PhiCoordinator::OnBrowserWindowClosing(int64_t window_id) {
   auto it = windows_.find(slot);
   if (it == windows_.end()) {
     return;
+  }
+  // The Space on screen as the window goes is what the next cold start
+  // should rebuild first — noted before the controller can vanish.
+  if (!it->second->is_incognito()) {
+    NoteActiveSpace(it->second->active_space());
   }
   // The slot survives while any Space browser remains.
   if (!it->second->ForgetBrowser(window_id)) {
@@ -8165,6 +8534,9 @@ bool PhiCoordinator::SwitchSlotToSpace(int64_t slot,
   if (it->second->HasSpace(space_id)) {
     const bool ok = it->second->ShowSpace(space_id);
     if (ok) {
+      if (!it->second->is_agent()) {
+        NoteActiveSpace(space_id);
+      }
       PushSpaceMenu();  // The visible-Space routing map changed.
     }
     return ok;
@@ -8267,6 +8639,77 @@ int64_t PhiCoordinator::ResolveScopeBrowser(const base::DictValue* payload,
   }
   *error = "invalid_payload";
   return 0;
+}
+
+bool PhiCoordinator::IsUserSpaceRequest(const std::string& type,
+                                        const base::DictValue* payload) {
+  // The verb families that read or change the user's OWN state. Not here,
+  // and so always allowed: the agent-Space lifecycle (create/ping/complete/
+  // ownership/…), shadow.*, spaces.list, profiles.list/listProfiles,
+  // downloads.*, lazyRestore.*, credentials.* (their own consent), the
+  // dialog and reader verbs, and the diagnostics (telemetry.status).
+  static constexpr std::string_view kUserSpaceFamilies[] = {
+      "agentSpace.spaces.",   "agentSpace.urlRules.", "agentSpace.pinnedTabs.",
+      "agentSpace.pinned.",   "agentSpace.bookmarks.", "agentSpace.tabGroups.",
+      "agentSpace.splitView.", "agentSpace.tabs.",    "agentSpace.nav.",
+      "agentSpace.groups.",   "agentSpace.rows.",     "agentSpace.layout.",
+      "agentSpace.theme.",    "agentSpace.settings.", "agentSpace.window.",
+      "agentSpace.menu.",     "agentSpace.emoji.",    "agentSpace.feedback.",
+  };
+  static constexpr std::string_view kUserSpaceVerbs[] = {
+      "agentSpace.navigate",        "agentSpace.close",
+      "agentSpace.profiles.create", "agentSpace.profiles.rename",
+      "agentSpace.profiles.delete",
+  };
+  if (type == "agentSpace.spaces.list") {
+    return false;  // Read-only, and the skill lists at every bind.
+  }
+  bool user_verb = false;
+  for (std::string_view family : kUserSpaceFamilies) {
+    if (type.compare(0, family.size(), family) == 0) {
+      user_verb = true;
+      break;
+    }
+  }
+  for (std::string_view verb : kUserSpaceVerbs) {
+    if (type == verb) {
+      user_verb = true;
+      break;
+    }
+  }
+  if (!user_verb) {
+    return false;
+  }
+  // Scope, in the handlers' own precedence (ResolveScopeBrowser: taskId,
+  // then the window/Space): a task — an agent Space or a shadow — is agent
+  // territory whatever the verb; an unknown task fails as unknown_task in
+  // the handler, which is the better answer than a gate error.
+  if (payload && payload->FindString("taskId")) {
+    return false;
+  }
+  // A windowId naming an agent/shadow window (its slot, or a browser it
+  // hosts) stays allowed. Anything else — a user slot, a Space id, or no
+  // scope at all (the handlers default to the FIRST window, a user's) — is
+  // the user's.
+  const int64_t window_id =
+      payload ? static_cast<int64_t>(payload->FindDouble("windowId")
+                                         .value_or(0))
+              : 0;
+  if (window_id) {
+    auto slot_it = browser_to_slot_.find(window_id);
+    const int64_t slot =
+        slot_it != browser_to_slot_.end() ? slot_it->second : window_id;
+    auto it = windows_.find(slot);
+    if (it != windows_.end() && it->second->is_agent()) {
+      return false;
+    }
+    for (const auto& [task_id, shadow] : shadow_windows_) {
+      if (shadow.window_id == window_id) {
+        return false;
+      }
+    }
+  }
+  return true;
 }
 
 PhiWindowController* PhiCoordinator::FocusedUserController() {

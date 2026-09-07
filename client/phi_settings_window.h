@@ -168,6 +168,12 @@ class PhiSettingsHost {
   // Developer mode gates the Developer pane, as on Mac (default off).
   virtual bool DeveloperMode() const = 0;
   virtual void SetDeveloperMode(bool enabled) = 0;
+  // Developer ▸ "Allow agents to operate your Spaces": lets a connected
+  // agent read and change the user's OWN Spaces, tabs, bookmarks, URL rules
+  // and profiles. Default off; agent Spaces are never affected, and the
+  // agent cannot flip it over the control channel.
+  virtual bool AllowAgentUserSpaces() const = 0;
+  virtual void SetAllowAgentUserSpaces(bool enabled) = 0;
   // "Additional browser settings" — opens chrome://settings in a tab.
   virtual void OpenBrowserSettings() = 0;
   // Opens any browser page in a tab — the Mac profile pane's data links

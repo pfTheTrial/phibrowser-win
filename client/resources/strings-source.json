@@ -2737,6 +2737,10 @@
    "comment": "sidebar — used at phi_window_controller.cc:166",
    "en": "Yellow"
   },
+  "tabs.tabGroup.summaryWithTabCount": {
+   "comment": "sidebar — auto-generated title of an unnamed tab group, e.g. \"Blue · 3 tabs\". {0} is the colour name, {1} the member count",
+   "en": "{0} · {1} tabs"
+  },
   "themes.appearance.darkOption": {
    "comment": "settings — used at phi_settings_window.cc:700",
    "en": "Dark"

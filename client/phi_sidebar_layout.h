@@ -60,6 +60,10 @@ struct ListItem {
   enum class Kind { kHeader, kRow };
   Kind kind = Kind::kRow;
   bool hidden = false;  // Takes no room (collapsed group member).
+  // Extra room below this item, before the gap: the group card's inner
+  // insets (TabGroupCellView.innerTableTop/BottomInset) ride the header and
+  // the group's last visible member.
+  int pad_below = 0;
 };
 struct ListMetrics {
   int left = 0, right = 0;

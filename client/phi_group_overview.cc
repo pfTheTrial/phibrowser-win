@@ -82,6 +82,8 @@ class Overview {
 
   static Overview* instance;
 
+  PhiWindowController* controller() const { return controller_; }
+
  private:
   int Scaled(int design) const { return ::MulDiv(design, dpi_, 96); }
 
@@ -366,6 +368,13 @@ void PhiGroupOverview::Open(PhiWindowController* controller,
   Close();
   if (controller) {
     Overview::instance = new Overview(controller, group_id);
+  }
+}
+
+// static
+void PhiGroupOverview::CloseIfBoundTo(const PhiWindowController* controller) {
+  if (Overview::instance && Overview::instance->controller() == controller) {
+    Close();
   }
 }
 

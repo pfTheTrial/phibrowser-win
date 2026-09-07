@@ -17,6 +17,9 @@ class PhiSearchTabsPanel {
  public:
   // Opens the palette for `controller`'s shell (or closes it if open).
   static void Toggle(PhiWindowController* controller);
+  // Closes the panel if it is `controller`'s (its shell is being destroyed;
+  // called from ~PhiWindowController). No-op otherwise.
+  static void CloseIfBoundTo(const PhiWindowController* controller);
 };
 
 }  // namespace phi_client

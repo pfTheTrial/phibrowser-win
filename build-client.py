@@ -99,6 +99,17 @@ def main():
                         help="MSVC/Windows-SDK vs_files/<hash> directory")
     parser.add_argument("-f", "--force", action="store_true",
                         help="recompile everything")
+    parser.add_argument("--dev-hooks", action="store_true",
+                        help="define PHI_DEV_HOOKS: compile in the "
+                             "developer-only hooks (env overrides for the "
+                             "appcast and vault helper, plaintext dev vault)."
+                             " Never for a release build.")
+    parser.add_argument("--only", action="append", default=[],
+                        metavar="STEM",
+                        help="compile only these client sources (stem, e.g. "
+                             "phi_coordinator); repeatable")
+    parser.add_argument("--no-link", action="store_true",
+                        help="stop after compiling (syntax/type check)")
     args = parser.parse_args()
     out_dir = os.path.abspath(
         os.path.join(args.sdk, "out/PhiFxWin") if args.sdk else args.out)
@@ -110,6 +121,16 @@ def main():
     sources = sorted(
         os.path.join(CLIENT_DIR, f) for f in os.listdir(CLIENT_DIR)
         if f.endswith(".cc"))
+    if args.only:
+        wanted = {stem_of(s) for s in args.only}
+        unknown = wanted - {stem_of(s) for s in sources}
+        if unknown:
+            sys.exit(f"--only: no such client source: {sorted(unknown)}")
+        sources = [s for s in sources if stem_of(s) in wanted]
+    compile_template = kit["compile_template"]
+    if args.dev_hooks:
+        compile_template = compile_template.replace(
+            " /c ", " /DPHI_DEV_HOOKS=1 /c ", 1)
     headers_mtime = max(
         (os.path.getmtime(os.path.join(CLIENT_DIR, f))
          for f in os.listdir(CLIENT_DIR) if f.endswith(".h")), default=0)
@@ -122,7 +143,7 @@ def main():
         stem = stem_of(source)
         obj = f"{OBJ_DIR}/{stem}.obj"
         client_objs.append(obj)
-        cmd = retarget(kit["compile_template"], kit["template_source"],
+        cmd = retarget(compile_template, kit["template_source"],
                        kit["template_obj"],
                        f"../../phibrowser-win/client/{stem}.cc", obj)
         obj_path = os.path.join(out_dir, obj)
@@ -166,11 +187,18 @@ def main():
                     print(f"{name}: {output}")
     if failed:
         sys.exit(1)
+    if args.no_link or args.only:
+        print("compile OK (no link)")
+        return
 
     # Link: the recipe's inputs with the scaffold stub swapped for the real
     # client objects, and the output renamed to Phi.exe.
+    # The scaffold links Chromium's version resource; Phi.exe carries its
+    # own VERSIONINFO (phi_client.rc), and two resources of the same id are
+    # a link error, so the Chromium one is dropped here.
     inputs = [i for i in kit["link_inputs"]
-              if i not in kit["scaffold_objs"]] + client_objs
+              if i not in kit["scaffold_objs"]
+              and not i.endswith("chrome_exe_version.res")] + client_objs
     rsp_path = os.path.join(out_dir, "phi_clientkit/Phi.exe.rsp")
     with open(rsp_path, "w") as f:
         f.write("\n".join(inputs) + "\n")

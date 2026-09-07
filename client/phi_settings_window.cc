@@ -2271,6 +2271,16 @@ void PhiSettingsWindow::BuildDeveloper(int* y) {
   AddDividerRow(y);
   AddSubHint(y, L"Agent tools drive Phi over the DevTools Protocol through "
                 L"a private socket only this machine's processes can reach.");
+  AddDividerRow(y);
+  // The user-space gate: off, a connected agent works only inside its own
+  // agent Spaces; on, the management verbs reach the user's Spaces too.
+  AddToggleRow(y, L"Allow agents to operate your Spaces",
+               host_->AllowAgentUserSpaces(), /*enabled=*/true,
+               "agentuserspaces");
+  AddDividerRow(y);
+  AddSubHint(y, L"Lets connected agents read and change your own Spaces, "
+                L"tabs, bookmarks, URL rules and profiles. Off, they can "
+                L"only work in their own agent Spaces.");
   *y += Scaled(kRowPadding);
   EndSection(y);
   BeginSection(y, L"Approved agents");
@@ -3132,6 +3142,8 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
     host_->SetAutoPeekViewEnabled(!item.on);
   } else if (item.action == "devmode") {
     host_->SetDeveloperMode(!item.on);
+  } else if (item.action == "agentuserspaces") {
+    host_->SetAllowAgentUserSpaces(!item.on);
   } else if (item.action == "gospaces") {
     section_ = "spaces";
     scroll_ = 0;

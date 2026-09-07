@@ -3,17 +3,16 @@
 // found in the LICENSE file.
 
 #ifdef UNSAFE_BUFFERS_BUILD
-// Raw socket/pipe byte-buffer relay code; pointer arithmetic is inherent.
+// Raw pipe byte-buffer and WebSocket framing code; pointer arithmetic is
+// inherent.
 #pragma allow_unsafe_buffers
 #endif
 
-#include <winsock2.h>  // Must precede windows.h (via the header) for Winsock 2.
-#include <ws2tcpip.h>
+#include "phibrowser-win/client/phi_control_server.h"
 
+#include <bcrypt.h>
 #include <sddl.h>
 #include <tlhelp32.h>
-
-#include "phibrowser-win/client/phi_control_server.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -23,15 +22,17 @@
 #include <vector>
 
 #include "base/base64.h"
+#include "base/hash/sha1.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
 #include "base/logging.h"
-#include "base/hash/sha1.h"
 #include "base/memory/raw_ptr_exclusion.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/synchronization/lock.h"
 #include "base/values.h"
+#include "chrome/browser/phinomenon/phi_framework/phi_framework_api.h"
 
-#pragma comment(lib, "ws2_32.lib")
+#pragma comment(lib, "bcrypt.lib")
 
 namespace phi_client {
 
@@ -39,18 +40,166 @@ namespace {
 
 constexpr int kBufSize = 32 * 1024;
 constexpr char kControlPathPrefix[] = "/phi-agent";
+constexpr char kDevToolsPathPrefix[] = "/devtools/";
+constexpr char kTokenHeader[] = "x-phi-token";
+// Concurrent connections beyond this get 429 without touching the delegate:
+// every un-decided connection is a potential consent dialog, and a local
+// process must not be able to stack fifty of them.
+constexpr int kMaxConnections = 16;
+// One WebSocket message (control or CDP) — a screenshot rides in one frame.
+constexpr size_t kMaxWsMessage = 16u << 20;
+// Bytes of DevTools output allowed to pile up for a peer that has stopped
+// reading before the session is dropped instead of the browser's memory.
+constexpr size_t kMaxQueuedDevToolsBytes = 64u << 20;
+// How long the connection thread waits on a write before deciding the peer
+// is wedged. Only that connection's own thread ever waits this long.
+constexpr DWORD kPeerWriteTimeoutMs = 30000;
+// Pipe: owner + SYSTEM + admins only, never remote, and an explicit medium
+// integrity label with no-write-up so a sandboxed (low-IL / AppContainer)
+// process cannot open it for write even if a future edit drops the DACL.
+constexpr wchar_t kPipeSddl[] =
+    L"D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;OW)S:(ML;;NW;;;ME)";
+// Pointer file: owner + SYSTEM, nothing inherited. Being able to read it is
+// what "may talk to Phi" means; the token inside is the proof.
+constexpr wchar_t kPointerSddl[] = L"D:P(A;;GA;;;SY)(A;;GA;;;OW)";
 
-void EnsureWinsock() {
-  static bool once = [] {
-    WSADATA wsa;
-    return ::WSAStartup(MAKEWORD(2, 2), &wsa) == 0;
-  }();
-  (void)once;
+// --- Small string helpers ---------------------------------------------------
+
+std::string ToLowerAscii(std::string s) {
+  for (char& c : s) {
+    if (c >= 'A' && c <= 'Z') {
+      c = static_cast<char>(c - 'A' + 'a');
+    }
+  }
+  return s;
 }
 
-// The pipe is opened FILE_FLAG_OVERLAPPED so read and write can proceed
-// CONCURRENTLY from different threads (a synchronous handle serializes I/O,
-// which deadlocks a bidirectional relay). Each call supplies a reusable event.
+std::string TrimSpaces(const std::string& s) {
+  size_t b = 0;
+  size_t e = s.size();
+  while (b < e && (s[b] == ' ' || s[b] == '\t')) {
+    ++b;
+  }
+  while (e > b && (s[e - 1] == ' ' || s[e - 1] == '\t' || s[e - 1] == '\r')) {
+    --e;
+  }
+  return s.substr(b, e - b);
+}
+
+// The value of header `lower_name` (already lower-case) in an HTTP head, or
+// nullopt when absent. Header names are case-insensitive (RFC 7230); Node's
+// http module lower-cases them, the harness does not.
+std::optional<std::string> HeaderValue(const std::string& head,
+                                       const std::string& lower_name) {
+  size_t pos = head.find("\r\n");  // Skip the request line.
+  while (pos != std::string::npos) {
+    pos += 2;
+    size_t eol = head.find("\r\n", pos);
+    if (eol == std::string::npos) {
+      eol = head.size();
+    }
+    if (eol == pos) {
+      break;  // Blank line: end of head.
+    }
+    size_t colon = head.find(':', pos);
+    if (colon != std::string::npos && colon < eol) {
+      std::string name = ToLowerAscii(TrimSpaces(head.substr(pos, colon - pos)));
+      if (name == lower_name) {
+        return TrimSpaces(head.substr(colon + 1, eol - colon - 1));
+      }
+    }
+    pos = eol;
+  }
+  return std::nullopt;
+}
+
+std::string RequestMethod(const std::string& head) {
+  size_t sp = head.find(' ');
+  return sp == std::string::npos ? std::string() : head.substr(0, sp);
+}
+
+std::string RequestPath(const std::string& head) {
+  // "METHOD /path HTTP/1.1\r\n..."
+  size_t sp1 = head.find(' ');
+  if (sp1 == std::string::npos) {
+    return {};
+  }
+  size_t sp2 = head.find(' ', sp1 + 1);
+  size_t eol = head.find("\r\n", sp1 + 1);
+  size_t end = std::min(sp2, eol);
+  if (end == std::string::npos) {
+    return {};
+  }
+  return head.substr(sp1 + 1, end - (sp1 + 1));
+}
+
+// `/json/list/?x=1` -> `/json/list`: the framework keys its discovery
+// documents by the bare path.
+std::string NormalizePath(std::string path) {
+  size_t q = path.find_first_of("?#");
+  if (q != std::string::npos) {
+    path.resize(q);
+  }
+  while (path.size() > 1 && path.back() == '/') {
+    path.pop_back();
+  }
+  return path;
+}
+
+bool IsWebSocketUpgrade(const std::string& head) {
+  std::optional<std::string> upgrade = HeaderValue(head, "upgrade");
+  return upgrade && ToLowerAscii(*upgrade).find("websocket") !=
+                        std::string::npos;
+}
+
+// Length-independent-ish equality: the loop always walks the whole expected
+// token so a wrong guess costs the same as a near miss.
+bool TokenMatches(const std::string& expected, const std::string& presented) {
+  const std::string given = ToLowerAscii(presented);
+  unsigned diff = given.size() == expected.size() ? 0u : 1u;
+  for (size_t i = 0; i < expected.size(); ++i) {
+    const char g = i < given.size() ? given[i] : '\0';
+    diff |= static_cast<unsigned>(static_cast<unsigned char>(g) ^
+                                  static_cast<unsigned char>(expected[i]));
+  }
+  return diff == 0;
+}
+
+bool RandomHex(size_t bytes, std::string* out) {
+  std::vector<uint8_t> raw(bytes);
+  if (::BCryptGenRandom(nullptr, raw.data(), static_cast<ULONG>(raw.size()),
+                        BCRYPT_USE_SYSTEM_PREFERRED_RNG) != 0) {
+    return false;
+  }
+  static const char kDigits[] = "0123456789abcdef";
+  out->clear();
+  out->reserve(bytes * 2);
+  for (uint8_t b : raw) {
+    out->push_back(kDigits[b >> 4]);
+    out->push_back(kDigits[b & 0x0f]);
+  }
+  return true;
+}
+
+// --- HTTP responses ---------------------------------------------------------
+
+std::string HttpResponse(const char* status,
+                         const char* content_type,
+                         const std::string& body) {
+  return std::string("HTTP/1.1 ") + status + "\r\nContent-Type: " +
+         content_type + "\r\nContent-Length: " + std::to_string(body.size()) +
+         "\r\nConnection: close\r\n\r\n" + body;
+}
+
+std::string HttpText(const char* status, const std::string& body) {
+  return HttpResponse(status, "text/plain; charset=UTF-8", body);
+}
+
+// --- Overlapped pipe I/O ----------------------------------------------------
+// The pipe is opened FILE_FLAG_OVERLAPPED so a read can be pending while the
+// same thread (or another one) writes — a synchronous handle serializes I/O,
+// which deadlocks a bidirectional pump. Each call supplies a reusable
+// manual-reset event.
 
 bool OvRead(HANDLE pipe, HANDLE ev, void* buf, DWORD len, DWORD* read) {
   OVERLAPPED ov = {};
@@ -63,29 +212,11 @@ bool OvRead(HANDLE pipe, HANDLE ev, void* buf, DWORD len, DWORD* read) {
   return ::GetOverlappedResult(pipe, &ov, read, TRUE) && *read > 0;
 }
 
-bool OvWrite(HANDLE pipe, HANDLE ev, const char* data, size_t len) {
-  size_t off = 0;
-  while (off < len) {
-    OVERLAPPED ov = {};
-    ov.hEvent = ev;
-    ::ResetEvent(ev);
-    DWORD wrote = 0;
-    BOOL ok = ::WriteFile(pipe, data + off, static_cast<DWORD>(len - off),
-                          nullptr, &ov);
-    if (!ok && ::GetLastError() != ERROR_IO_PENDING) {
-      return false;
-    }
-    if (!::GetOverlappedResult(pipe, &ov, &wrote, TRUE) || wrote == 0) {
-      return false;
-    }
-    off += wrote;
-  }
-  return true;
-}
-
-// Like OvWrite, but gives up after `timeout_ms` instead of waiting forever —
-// a pushed event must never stall the thread that raised it (the UI thread)
-// on a peer that has stopped reading.
+// Writes all of `data`, giving up after `timeout_ms` per chunk. A pushed
+// event must never stall the thread that raised it (the UI thread) on a peer
+// that has stopped reading; a connection thread uses a long timeout for the
+// same reason in the other direction. On timeout the write is cancelled AND
+// waited for, because the OVERLAPPED lives on this stack frame.
 bool OvWriteTimeout(HANDLE pipe, HANDLE ev, const char* data, size_t len,
                     DWORD timeout_ms) {
   size_t off = 0;
@@ -101,6 +232,7 @@ bool OvWriteTimeout(HANDLE pipe, HANDLE ev, const char* data, size_t len,
     }
     if (::WaitForSingleObject(ev, timeout_ms) != WAIT_OBJECT_0) {
       ::CancelIoEx(pipe, &ov);
+      ::GetOverlappedResult(pipe, &ov, &wrote, TRUE);
       return false;
     }
     if (!::GetOverlappedResult(pipe, &ov, &wrote, FALSE) || wrote == 0) {
@@ -111,175 +243,325 @@ bool OvWriteTimeout(HANDLE pipe, HANDLE ev, const char* data, size_t len,
   return true;
 }
 
-// Frames `text` as a single unmasked WebSocket text message.
-std::string WsTextFrame(const std::string& text) {
-  std::string frame;
-  frame.push_back(static_cast<char>(0x81));
-  const size_t len = text.size();
-  if (len < 126) {
-    frame.push_back(static_cast<char>(len));
-  } else if (len < 65536) {
-    frame.push_back(126);
-    frame.push_back(static_cast<char>((len >> 8) & 0xff));
-    frame.push_back(static_cast<char>(len & 0xff));
-  } else {
-    frame.push_back(127);
-    for (int shift = 56; shift >= 0; shift -= 8) {
-      frame.push_back(static_cast<char>((len >> shift) & 0xff));
-    }
-  }
-  return frame + text;
+bool OvWrite(HANDLE pipe, HANDLE ev, const char* data, size_t len) {
+  return OvWriteTimeout(pipe, ev, data, len, kPeerWriteTimeoutMs);
 }
 
-// Reads the HTTP request head (through the blank line) from the pipe.
-bool ReadHttpHead(HANDLE pipe, HANDLE ev, std::string* head) {
-  char buf[4096];
-  while (head->find("\r\n\r\n") == std::string::npos) {
-    DWORD read = 0;
-    if (!OvRead(pipe, ev, buf, sizeof(buf), &read)) {
-      return false;
-    }
-    head->append(buf, read);
-    if (head->size() > 1 << 20) {
-      return false;  // Runaway head.
-    }
-  }
-  return true;
+bool OvWriteString(HANDLE pipe, HANDLE ev, const std::string& s) {
+  return OvWrite(pipe, ev, s.data(), s.size());
 }
 
-std::string RequestPath(const std::string& head) {
-  // "METHOD /path HTTP/1.1\r\n..."
-  size_t sp1 = head.find(' ');
-  if (sp1 == std::string::npos) {
-    return {};
-  }
-  size_t sp2 = head.find(' ', sp1 + 1);
-  if (sp2 == std::string::npos) {
-    return {};
-  }
-  return head.substr(sp1 + 1, sp2 - (sp1 + 1));
-}
+// --- WebSocket framing ------------------------------------------------------
 
-// Reads exactly `n` bytes from the pipe into `out`. False on disconnect.
-bool ReadExact(HANDLE pipe, HANDLE ev, size_t n, std::string* out) {
-  out->clear();
-  char buf[4096];
-  while (out->size() < n) {
-    DWORD want = static_cast<DWORD>(
-        std::min<size_t>(sizeof(buf), n - out->size()));
-    DWORD read = 0;
-    if (!OvRead(pipe, ev, buf, want, &read)) {
-      return false;
-    }
-    out->append(buf, read);
-  }
-  return true;
-}
-
-// Server -> client WebSocket text frame (unmasked, single frame).
-bool WsSendText(HANDLE pipe, HANDLE ev, const std::string& text) {
-  std::string frame;
-  frame.push_back(static_cast<char>(0x81));  // FIN + text opcode.
-  const size_t len = text.size();
-  if (len < 126) {
-    frame.push_back(static_cast<char>(len));
-  } else if (len < 65536) {
-    frame.push_back(126);
-    frame.push_back(static_cast<char>((len >> 8) & 0xff));
-    frame.push_back(static_cast<char>(len & 0xff));
-  } else {
-    frame.push_back(127);
-    for (int shift = 56; shift >= 0; shift -= 8) {
-      frame.push_back(static_cast<char>((len >> shift) & 0xff));
-    }
-  }
-  frame += text;
-  return OvWrite(pipe, ev, frame.data(), frame.size());
-}
-
-// Reads one WebSocket message. Returns the opcode (1 text, 8 close, 9 ping,
-// 10 pong) and unmasked payload; accumulates continuation frames. False on
-// disconnect.
-bool WsReadMessage(HANDLE pipe, HANDLE ev, int* opcode, std::string* payload) {
-  payload->clear();
-  int first_opcode = -1;
-  for (;;) {
-    std::string hdr;
-    if (!ReadExact(pipe, ev, 2, &hdr)) {
-      return false;
-    }
-    const uint8_t b0 = static_cast<uint8_t>(hdr[0]);
-    const uint8_t b1 = static_cast<uint8_t>(hdr[1]);
-    const bool fin = (b0 & 0x80) != 0;
-    const int op = b0 & 0x0f;
-    const bool masked = (b1 & 0x80) != 0;
-    uint64_t len = b1 & 0x7f;
-    if (len == 126) {
-      std::string ext;
-      if (!ReadExact(pipe, ev, 2, &ext)) {
-        return false;
-      }
-      len = (static_cast<uint8_t>(ext[0]) << 8) | static_cast<uint8_t>(ext[1]);
-    } else if (len == 127) {
-      std::string ext;
-      if (!ReadExact(pipe, ev, 8, &ext)) {
-        return false;
-      }
-      len = 0;
-      for (int i = 0; i < 8; ++i) {
-        len = (len << 8) | static_cast<uint8_t>(ext[i]);
-      }
-    }
-    std::string mask;
-    if (masked && !ReadExact(pipe, ev, 4, &mask)) {
-      return false;
-    }
-    std::string data;
-    if (len > (16u << 20) || !ReadExact(pipe, ev, len, &data)) {
-      return false;  // Oversized or short.
-    }
-    if (masked) {
-      for (size_t i = 0; i < data.size(); ++i) {
-        data[i] ^= mask[i % 4];
-      }
-    }
-    if (first_opcode < 0) {
-      first_opcode = (op == 0) ? 1 : op;  // Continuation inherits.
-    }
-    payload->append(data);
-    if (fin) {
-      *opcode = first_opcode;
-      return true;
-    }
-  }
-}
-
-// Relay thread context: pumps the DevTools TCP socket back into the pipe.
-struct SockToPipe {
-  SOCKET sock;
-  HANDLE pipe;
+enum WsOpcode : int {
+  kWsContinuation = 0,
+  kWsText = 1,
+  kWsBinary = 2,
+  kWsClose = 8,
+  kWsPing = 9,
+  kWsPong = 10,
 };
 
-DWORD WINAPI SockToPipeThread(void* arg) {
-  auto* ctx = static_cast<SockToPipe*>(arg);
-  HANDLE ev = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
-  std::vector<char> buf(kBufSize);
-  for (;;) {
-    int n = ::recv(ctx->sock, buf.data(), kBufSize, 0);
-    if (n <= 0) {
-      break;
-    }
-    if (!OvWrite(ctx->pipe, ev, buf.data(), static_cast<size_t>(n))) {
-      break;
+// Frames `payload` as a single unmasked server->client frame.
+std::string WsFrame(int opcode, const std::string& payload) {
+  std::string frame;
+  frame.push_back(static_cast<char>(0x80 | (opcode & 0x0f)));
+  const size_t len = payload.size();
+  if (len < 126) {
+    frame.push_back(static_cast<char>(len));
+  } else if (len < 65536) {
+    frame.push_back(126);
+    frame.push_back(static_cast<char>((len >> 8) & 0xff));
+    frame.push_back(static_cast<char>(len & 0xff));
+  } else {
+    frame.push_back(127);
+    for (int shift = 56; shift >= 0; shift -= 8) {
+      frame.push_back(static_cast<char>((len >> shift) & 0xff));
     }
   }
-  ::CloseHandle(ev);
-  // Unblock the pipe->sock direction blocked on the pipe read.
-  ::CancelIoEx(ctx->pipe, nullptr);
-  return 0;
+  return frame + payload;
 }
 
+std::string WsCloseFrame(uint16_t code) {
+  std::string body;
+  body.push_back(static_cast<char>(code >> 8));
+  body.push_back(static_cast<char>(code & 0xff));
+  return WsFrame(kWsClose, body);
+}
+
+// Incremental RFC 6455 decoder over a byte buffer. Data frames are
+// reassembled across continuations; control frames (close/ping/pong) are
+// delivered the moment they arrive, even in the middle of a fragmented
+// message — the spec allows them there, and the old decoder glued them into
+// the message body.
+class WsDecoder {
+ public:
+  enum Result { kNeedMore, kMessage, kProtocolError };
+
+  // Consumes complete frames from the front of `buf`. kMessage fills
+  // `opcode` (text/binary/close/ping/pong) and `payload`.
+  Result Next(std::string* buf, int* opcode, std::string* payload) {
+    for (;;) {
+      if (buf->size() < 2) {
+        return kNeedMore;
+      }
+      const uint8_t b0 = static_cast<uint8_t>((*buf)[0]);
+      const uint8_t b1 = static_cast<uint8_t>((*buf)[1]);
+      const bool fin = (b0 & 0x80) != 0;
+      const int op = b0 & 0x0f;
+      const bool masked = (b1 & 0x80) != 0;
+      uint64_t len = b1 & 0x7f;
+      size_t off = 2;
+      if (len == 126) {
+        if (buf->size() < 4) {
+          return kNeedMore;
+        }
+        len = (static_cast<uint64_t>(static_cast<uint8_t>((*buf)[2])) << 8) |
+              static_cast<uint8_t>((*buf)[3]);
+        off = 4;
+      } else if (len == 127) {
+        if (buf->size() < 10) {
+          return kNeedMore;
+        }
+        len = 0;
+        for (size_t i = 2; i < 10; ++i) {
+          len = (len << 8) | static_cast<uint8_t>((*buf)[i]);
+        }
+        off = 10;
+      }
+      if (len > kMaxWsMessage) {
+        return kProtocolError;
+      }
+      const size_t mask_off = off;
+      if (masked) {
+        off += 4;
+      }
+      if (buf->size() < off + len) {
+        return kNeedMore;
+      }
+      std::string data = buf->substr(off, static_cast<size_t>(len));
+      if (masked) {
+        for (size_t i = 0; i < data.size(); ++i) {
+          data[i] ^= (*buf)[mask_off + (i % 4)];
+        }
+      }
+      buf->erase(0, off + static_cast<size_t>(len));
+
+      if (op >= kWsClose) {
+        // Control frame: never fragmented, at most 125 bytes.
+        if (!fin || len > 125) {
+          return kProtocolError;
+        }
+        *opcode = op;
+        *payload = std::move(data);
+        return kMessage;
+      }
+      if (op == kWsContinuation) {
+        if (frag_opcode_ == 0) {
+          return kProtocolError;  // Continuation of nothing.
+        }
+        frag_payload_ += data;
+      } else if (op == kWsText || op == kWsBinary) {
+        if (frag_opcode_ != 0) {
+          return kProtocolError;  // New message inside a fragmented one.
+        }
+        frag_opcode_ = op;
+        frag_payload_ = std::move(data);
+      } else {
+        return kProtocolError;  // Reserved opcode.
+      }
+      if (frag_payload_.size() > kMaxWsMessage) {
+        return kProtocolError;
+      }
+      if (fin) {
+        *opcode = frag_opcode_;
+        *payload = std::move(frag_payload_);
+        frag_opcode_ = 0;
+        frag_payload_.clear();
+        return kMessage;
+      }
+      // Fragment stored; loop for the next frame already in the buffer.
+    }
+  }
+
+ private:
+  int frag_opcode_ = 0;
+  std::string frag_payload_;
+};
+
+// Validates the upgrade and builds the 101 (true) or a 400 with a body
+// (false). The old server answered a bad handshake with silence, which left
+// the peer hanging until its own timeout.
+bool BuildWsHandshake(const std::string& head, std::string* response) {
+  std::optional<std::string> key = HeaderValue(head, "sec-websocket-key");
+  if (!IsWebSocketUpgrade(head) || !key || key->empty()) {
+    *response = HttpText(
+        "400 Bad Request",
+        "WebSocket upgrade required: send Upgrade: websocket and "
+        "Sec-WebSocket-Key.\n");
+    return false;
+  }
+  std::string accept = base::Base64Encode(
+      base::SHA1HashString(*key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"));
+  *response =
+      "HTTP/1.1 101 Switching Protocols\r\n"
+      "Upgrade: websocket\r\n"
+      "Connection: Upgrade\r\n"
+      "Sec-WebSocket-Accept: " +
+      accept + "\r\n\r\n";
+  return true;
+}
+
+// --- Peer identity ----------------------------------------------------------
+
+// Who is on the other end of the pipe. The pid is the kernel's answer; the
+// image path comes from the (still-running) process.
+PhiAgentPeer ResolvePeer(HANDLE pipe) {
+  PhiAgentPeer peer;
+  if (!::GetNamedPipeClientProcessId(pipe, &peer.pid) || !peer.pid) {
+    LOG(WARNING) << "[PhiAgent] GetNamedPipeClientProcessId failed: "
+                 << ::GetLastError();
+    return peer;
+  }
+  HANDLE process =
+      ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, peer.pid);
+  if (process) {
+    wchar_t path[MAX_PATH * 2] = {};
+    DWORD length = static_cast<DWORD>(std::size(path));
+    if (::QueryFullProcessImageNameW(process, 0, path, &length)) {
+      peer.image_path.assign(path, length);
+    } else {
+      LOG(WARNING) << "[PhiAgent] QueryFullProcessImageName failed for pid "
+                   << peer.pid << ": " << ::GetLastError();
+    }
+    ::CloseHandle(process);
+    return peer;
+  }
+  // A peer whose process cannot be opened (e.g. an ELEVATED client — its
+  // default owner is Administrators, which denies even QUERY_LIMITED to the
+  // non-elevated browser): fall back to the Toolhelp snapshot, which serves
+  // NAMES without per-process rights. The "name:" prefix keeps this weaker
+  // identity from ever matching a full-path grant (or the reverse).
+  LOG(WARNING) << "[PhiAgent] OpenProcess failed for pid " << peer.pid << ": "
+               << ::GetLastError() << " — name-only identity";
+  HANDLE snapshot = ::CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+  if (snapshot != INVALID_HANDLE_VALUE) {
+    PROCESSENTRY32W entry = {};
+    entry.dwSize = sizeof(entry);
+    if (::Process32FirstW(snapshot, &entry)) {
+      do {
+        if (entry.th32ProcessID == peer.pid) {
+          peer.image_path = std::wstring(L"name:") + entry.szExeFile;
+          break;
+        }
+      } while (::Process32NextW(snapshot, &entry));
+    }
+    ::CloseHandle(snapshot);
+  }
+  return peer;
+}
+
+// --- DevTools session pump --------------------------------------------------
+
+// The PhiDevToolsClient half of one CDP session. Callbacks land on the UI
+// thread and must return at once, so they only append to a queue and signal
+// `wake`; the connection thread drains the queue and does the pipe writes,
+// where a wedged peer can only ever stall itself.
+class DevToolsPump : public phi_framework::PhiDevToolsClient {
+ public:
+  explicit DevToolsPump(HANDLE wake) : wake_(wake) {}
+  ~DevToolsPump() override = default;
+
+  void OnDevToolsMessage(uint64_t /*session_id*/,
+                         const char* json,
+                         size_t length) override {
+    {
+      base::AutoLock lock(lock_);
+      if (closed_) {
+        return;
+      }
+      if (queued_bytes_ + length > kMaxQueuedDevToolsBytes) {
+        overflow_ = true;
+      } else {
+        queue_.emplace_back(json, length);
+        queued_bytes_ += length;
+      }
+    }
+    ::SetEvent(wake_);
+  }
+
+  void OnDevToolsSessionClosed(uint64_t /*session_id*/) override {
+    {
+      base::AutoLock lock(lock_);
+      closed_ = true;
+    }
+    ::SetEvent(wake_);
+  }
+
+  // Moves everything queued so far out. `closed` / `overflow` are sticky.
+  void Take(std::vector<std::string>* out, bool* closed, bool* overflow) {
+    base::AutoLock lock(lock_);
+    out->swap(queue_);
+    queue_.clear();
+    queued_bytes_ = 0;
+    *closed = closed_;
+    *overflow = overflow_;
+  }
+
+ private:
+  base::Lock lock_;
+  std::vector<std::string> queue_;
+  size_t queued_bytes_ = 0;
+  bool closed_ = false;
+  bool overflow_ = false;
+  HANDLE wake_;
+};
+
 }  // namespace
+
+// One accepted pipe. `inbuf` holds bytes read past what the caller has
+// consumed (the tail of the chunk that completed the HTTP head is the first
+// WebSocket frame when a client pipelines).
+struct PhiControlServer::Connection {
+  HANDLE pipe = nullptr;
+  HANDLE read_event = nullptr;
+  HANDLE write_event = nullptr;
+  std::string inbuf;
+
+  // Blocking read of the next chunk into `inbuf`. False on disconnect.
+  bool ReadMore() {
+    char buf[kBufSize];
+    DWORD read = 0;
+    if (!OvRead(pipe, read_event, buf, sizeof(buf), &read)) {
+      return false;
+    }
+    inbuf.append(buf, read);
+    return true;
+  }
+
+  bool Write(const std::string& bytes) {
+    return OvWriteString(pipe, write_event, bytes);
+  }
+
+  // Reads the HTTP request head (through the blank line) into `head`,
+  // leaving whatever followed it in `inbuf`.
+  bool ReadHttpHead(std::string* head) {
+    for (;;) {
+      size_t end = inbuf.find("\r\n\r\n");
+      if (end != std::string::npos) {
+        head->assign(inbuf, 0, end + 4);
+        inbuf.erase(0, end + 4);
+        return true;
+      }
+      if (inbuf.size() > (1u << 20)) {
+        return false;  // Runaway head.
+      }
+      if (!ReadMore()) {
+        return false;
+      }
+    }
+  }
+};
 
 PhiControlServer::PhiControlServer() = default;
 
@@ -287,32 +569,38 @@ PhiControlServer::~PhiControlServer() {
   if (listen_thread_) {
     ::CloseHandle(listen_thread_);
   }
+  // Best effort: a stale pointer file only costs the skill one refused
+  // connect, but the token in it is dead and should not linger on disk.
+  if (!user_data_dir_.empty()) {
+    ::DeleteFileW((user_data_dir_ + L"\\CDPAgentSocket").c_str());
+  }
 }
 
 void PhiControlServer::Start(const std::wstring& user_data_dir,
-                             PhiControlDelegate* delegate) {
+                             PhiControlDelegate* delegate,
+                             phi_framework::PhiFramework* framework) {
   if (started_) {
     return;
   }
   started_ = true;
   user_data_dir_ = user_data_dir;
   delegate_ = delegate;
-  EnsureWinsock();
+  framework_ = framework;
 
-  pipe_name_ =
-      L"\\\\.\\pipe\\phi-cdp." + std::to_wstring(::GetCurrentProcessId());
-
-  // Advertise the pipe name via the pointer file (Mac discovery contract).
-  std::wstring pointer = user_data_dir_ + L"\\CDPAgentSocket";
-  HANDLE f = ::CreateFileW(pointer.c_str(), GENERIC_WRITE, 0, nullptr,
-                           CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-  if (f != INVALID_HANDLE_VALUE) {
-    std::string line = base::WideToUTF8(pipe_name_) + "\n";
-    DWORD wrote = 0;
-    ::WriteFile(f, line.data(), static_cast<DWORD>(line.size()), &wrote,
-                nullptr);
-    ::CloseHandle(f);
+  // The token is the second gate (see the class comment); the random pipe
+  // suffix makes the name unguessable so nobody can pre-create it. Without
+  // a working RNG neither holds, so serve nothing rather than something
+  // weaker.
+  std::string suffix;
+  if (!RandomHex(32, &token_hex_) || !RandomHex(8, &suffix)) {
+    LOG(ERROR) << "[PhiControl] BCryptGenRandom failed; control socket "
+                  "NOT started";
+    token_hex_.clear();
+    return;
   }
+  pipe_name_ = L"\\\\.\\pipe\\phi-cdp." +
+               std::to_wstring(::GetCurrentProcessId()) + L"." +
+               base::UTF8ToWide(suffix);
 
   listen_thread_ = ::CreateThread(
       nullptr, 0,
@@ -321,31 +609,101 @@ void PhiControlServer::Start(const std::wstring& user_data_dir,
         return 0;
       },
       this, 0, nullptr);
-
+  if (!listen_thread_) {
+    LOG(ERROR) << "[PhiControl] listener thread failed err="
+               << ::GetLastError();
+    return;
+  }
   LOG(INFO) << "[PhiControl] serving " << base::WideToUTF8(pipe_name_);
 }
 
+bool PhiControlServer::WritePointerFile() {
+  PSECURITY_DESCRIPTOR sd = nullptr;
+  if (!::ConvertStringSecurityDescriptorToSecurityDescriptorW(
+          kPointerSddl, SDDL_REVISION_1, &sd, nullptr)) {
+    LOG(ERROR) << "[PhiControl] pointer-file SDDL failed err="
+               << ::GetLastError();
+    return false;
+  }
+  SECURITY_ATTRIBUTES sa = {sizeof(sa), sd, FALSE};
+  const std::wstring path = user_data_dir_ + L"\\CDPAgentSocket";
+  // CREATE_NEW, not CREATE_ALWAYS: opening an EXISTING file ignores the
+  // security descriptor, so a leftover (crash, older build) would keep its
+  // default DACL. Delete first; a reader holding the old file open defers
+  // the delete for a moment, hence the short retry.
+  HANDLE f = INVALID_HANDLE_VALUE;
+  for (int attempt = 0; attempt < 20 && f == INVALID_HANDLE_VALUE; ++attempt) {
+    ::DeleteFileW(path.c_str());
+    f = ::CreateFileW(path.c_str(), GENERIC_WRITE, 0, &sa, CREATE_NEW,
+                      FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f == INVALID_HANDLE_VALUE) {
+      ::Sleep(50);
+    }
+  }
+  ::LocalFree(sd);
+  if (f == INVALID_HANDLE_VALUE) {
+    LOG(ERROR) << "[PhiControl] pointer file create failed err="
+               << ::GetLastError();
+    return false;
+  }
+  // Line 1: pipe name (the Mac discovery contract). Line 2: the launch token.
+  const std::string body =
+      base::WideToUTF8(pipe_name_) + "\n" + token_hex_ + "\n";
+  DWORD wrote = 0;
+  const BOOL ok = ::WriteFile(f, body.data(), static_cast<DWORD>(body.size()),
+                              &wrote, nullptr);
+  ::FlushFileBuffers(f);
+  ::CloseHandle(f);
+  if (!ok || wrote != body.size()) {
+    LOG(ERROR) << "[PhiControl] pointer file write failed err="
+               << ::GetLastError();
+    ::DeleteFileW(path.c_str());
+    return false;
+  }
+  return true;
+}
+
 void PhiControlServer::ListenLoop() {
+  PSECURITY_DESCRIPTOR sd = nullptr;
+  if (!::ConvertStringSecurityDescriptorToSecurityDescriptorW(
+          kPipeSddl, SDDL_REVISION_1, &sd, nullptr)) {
+    // The default DACL would let every local user at an unauthenticated
+    // control surface; a silent fallback to it is worse than no socket.
+    LOG(ERROR) << "[PhiControl] pipe SDDL failed err=" << ::GetLastError()
+               << "; control socket NOT served";
+    return;
+  }
+  SECURITY_ATTRIBUTES sa = {sizeof(sa), sd, FALSE};
+
+  bool first_instance = true;
+  DWORD backoff_ms = 250;
   for (;;) {
-    // Owner + SYSTEM + admins only, and never remote: the default pipe DACL
-    // lets other local users connect to an unauthenticated control surface.
-    PSECURITY_DESCRIPTOR sd = nullptr;
-    ::ConvertStringSecurityDescriptorToSecurityDescriptorW(
-        L"D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;OW)", SDDL_REVISION_1, &sd,
-        nullptr);
-    SECURITY_ATTRIBUTES sa = {sizeof(sa), sd, FALSE};
+    // FIRST_PIPE_INSTANCE only on the first: it makes the create fail if the
+    // name already exists (a squatter), and would make every LATER instance
+    // of our own pipe fail for the same reason.
+    const DWORD open_mode =
+        PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED |
+        (first_instance ? FILE_FLAG_FIRST_PIPE_INSTANCE : 0u);
     HANDLE pipe = ::CreateNamedPipeW(
-        pipe_name_.c_str(), PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
+        pipe_name_.c_str(), open_mode,
         PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT |
             PIPE_REJECT_REMOTE_CLIENTS,
-        PIPE_UNLIMITED_INSTANCES, kBufSize, kBufSize, 0, sd ? &sa : nullptr);
-    if (sd) {
-      ::LocalFree(sd);
-    }
+        PIPE_UNLIMITED_INSTANCES, kBufSize, kBufSize, 0, &sa);
     if (pipe == INVALID_HANDLE_VALUE) {
+      // Keep trying: a transient failure (or a squatter that goes away) must
+      // not leave the browser without its control socket for the whole
+      // session, which is what the old `return` did.
       LOG(ERROR) << "[PhiControl] CreateNamedPipe failed err="
-                 << ::GetLastError();
-      return;
+                 << ::GetLastError() << "; retry in " << backoff_ms << " ms";
+      ::Sleep(backoff_ms);
+      backoff_ms = std::min<DWORD>(backoff_ms * 2, 5000);
+      continue;
+    }
+    if (first_instance) {
+      first_instance = false;
+      // Only now is the name ours, so only now may the pointer file promise
+      // it to the skill.
+      WritePointerFile();
     }
     // Overlapped connect: wait for a client.
     OVERLAPPED ov = {};
@@ -365,19 +723,28 @@ void PhiControlServer::ListenLoop() {
     }
     ::CloseHandle(ov.hEvent);
     if (!connected) {
+      LOG(ERROR) << "[PhiControl] ConnectNamedPipe failed err="
+                 << ::GetLastError() << "; retry in " << backoff_ms << " ms";
       ::CloseHandle(pipe);
+      ::Sleep(backoff_ms);
+      backoff_ms = std::min<DWORD>(backoff_ms * 2, 5000);
       continue;
     }
+    backoff_ms = 250;
     struct Conn {
       RAW_PTR_EXCLUSION PhiControlServer* self;  // Owns this; outlives the loop.
       HANDLE pipe;
     };
     auto* conn = new Conn{this, pipe};
+    // Counted here, not in the thread, so the cap cannot be raced by a
+    // burst of accepts whose threads have not started yet.
+    active_connections_.fetch_add(1);
     HANDLE t = ::CreateThread(
         nullptr, 0,
         [](void* arg) -> DWORD {
           auto* c = static_cast<Conn*>(arg);
           c->self->HandleConnection(c->pipe);
+          c->self->active_connections_.fetch_sub(1);
           delete c;
           return 0;
         },
@@ -385,6 +752,7 @@ void PhiControlServer::ListenLoop() {
     if (t) {
       ::CloseHandle(t);
     } else {
+      active_connections_.fetch_sub(1);
       ::CloseHandle(pipe);
       delete conn;
     }
@@ -392,111 +760,69 @@ void PhiControlServer::ListenLoop() {
 }
 
 void PhiControlServer::HandleConnection(HANDLE pipe) {
-  // Peer identity first: who is on the other end of the pipe. The pid is
-  // the kernel's answer; the image path comes from the (still-running)
-  // process. Consent gates BOTH families below — CDP is full control.
-  PhiAgentPeer peer;
-  if (::GetNamedPipeClientProcessId(pipe, &peer.pid) && peer.pid) {
-    HANDLE process = ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE,
-                                   peer.pid);
-    if (process) {
-      wchar_t path[MAX_PATH * 2] = {};
-      DWORD length = static_cast<DWORD>(std::size(path));
-      if (::QueryFullProcessImageNameW(process, 0, path, &length)) {
-        peer.image_path.assign(path, length);
-      } else {
-        LOG(WARNING) << "[PhiAgent] QueryFullProcessImageName failed for pid "
-                     << peer.pid << ": " << ::GetLastError();
-      }
-      ::CloseHandle(process);
-    } else {
-      // A peer whose process cannot be opened (e.g. an ELEVATED client —
-      // its default owner is Administrators, which denies even
-      // QUERY_LIMITED to the non-elevated browser): fall back to the
-      // Toolhelp snapshot, which serves NAMES without per-process rights.
-      // The "name:" prefix keeps this weaker identity from ever matching a
-      // full-path grant (or the reverse).
-      LOG(WARNING) << "[PhiAgent] OpenProcess failed for pid " << peer.pid
-                   << ": " << ::GetLastError() << " — name-only identity";
-      HANDLE snapshot = ::CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-      if (snapshot != INVALID_HANDLE_VALUE) {
-        PROCESSENTRY32W entry = {};
-        entry.dwSize = sizeof(entry);
-        if (::Process32FirstW(snapshot, &entry)) {
-          do {
-            if (entry.th32ProcessID == peer.pid) {
-              peer.image_path =
-                  std::wstring(L"name:") + entry.szExeFile;
-              break;
-            }
-          } while (::Process32NextW(snapshot, &entry));
-        }
-        ::CloseHandle(snapshot);
-      }
-    }
-  } else {
-    LOG(WARNING) << "[PhiAgent] GetNamedPipeClientProcessId failed: "
-                 << ::GetLastError();
-  }
-  if (!delegate_ || !delegate_->AuthorizeAgentPeer(peer)) {
-    HANDLE deny_ev = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
-    static const char kDenied[] =
-        "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n";
-    OvWrite(pipe, deny_ev, kDenied, sizeof(kDenied) - 1);
-    ::CloseHandle(deny_ev);
-    ::FlushFileBuffers(pipe);
-    ::DisconnectNamedPipe(pipe);
-    ::CloseHandle(pipe);
-    return;
-  }
-  HANDLE ev = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+  Connection conn;
+  conn.pipe = pipe;
+  conn.read_event = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+  conn.write_event = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+
+  // Gates in order: cap, token, consent. Each one refuses without touching
+  // the next, and the delegate (the consent dialog) is the LAST.
   std::string head;
-  if (ReadHttpHead(pipe, ev, &head)) {
-    const std::string path = RequestPath(head);
-    if (path.rfind(kControlPathPrefix, 0) == 0) {
-      ServeControlChannel(pipe, ev, head);
-    } else {
-      int port = ResolveDevToolsPort();
-      if (port > 0) {
-        ProxyToDevTools(pipe, head, port);
+  if (active_connections_.load() > kMaxConnections) {
+    conn.Write(HttpText("429 Too Many Requests",
+                        "Too many concurrent connections to Phi.\n"));
+  } else if (!conn.ReadHttpHead(&head)) {
+    // Disconnected or runaway head: nothing to answer.
+  } else if (std::optional<std::string> token = HeaderValue(head, kTokenHeader);
+             !token || !TokenMatches(token_hex_, *token)) {
+    // No UI, no log spam: this is the case a process that cannot read the
+    // profile directory hits, and it must learn nothing from it.
+    conn.Write(HttpText("403 Forbidden", "Missing or invalid X-Phi-Token.\n"));
+  } else if (!delegate_ || !delegate_->AuthorizeAgentPeer(ResolvePeer(pipe))) {
+    conn.Write(HttpText("403 Forbidden", "Phi denied this agent.\n"));
+  } else {
+    const std::string raw_path = RequestPath(head);
+    const std::string path = NormalizePath(raw_path);
+    if (raw_path.rfind(kControlPathPrefix, 0) == 0) {
+      ServeControlChannel(&conn, head);
+    } else if (IsWebSocketUpgrade(head)) {
+      // /devtools/<kind>/<id> — <id> may be empty for the browser target.
+      if (path.rfind(kDevToolsPathPrefix, 0) != 0) {
+        conn.Write(HttpText("404 Not Found", "No such WebSocket path.\n"));
       } else {
-        static const char kResp[] =
-            "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n";
-        OvWrite(pipe, ev, kResp, sizeof(kResp) - 1);
+        size_t id_start = path.find('/', sizeof(kDevToolsPathPrefix) - 1);
+        const std::string target_id =
+            id_start == std::string::npos ? std::string()
+                                          : path.substr(id_start + 1);
+        ServeDevToolsSession(&conn, head, target_id);
       }
+    } else if (RequestMethod(head) == "GET" &&
+               (path == "/json" || path == "/json/version" ||
+                path == "/json/list")) {
+      std::string doc;
+      if (framework_ && framework_->DevToolsDiscoveryJson(path.c_str(), &doc)) {
+        conn.Write(HttpResponse("200 OK", "application/json; charset=UTF-8",
+                                doc));
+      } else {
+        conn.Write(HttpText("503 Service Unavailable",
+                            "DevTools discovery unavailable.\n"));
+      }
+    } else {
+      conn.Write(HttpText("404 Not Found", "No such path.\n"));
     }
   }
-  ::CloseHandle(ev);
   ::FlushFileBuffers(pipe);
   ::DisconnectNamedPipe(pipe);
   ::CloseHandle(pipe);
+  ::CloseHandle(conn.read_event);
+  ::CloseHandle(conn.write_event);
 }
 
-void PhiControlServer::ServeControlChannel(HANDLE pipe,
-                                           HANDLE ev,
+void PhiControlServer::ServeControlChannel(Connection* conn,
                                            const std::string& head) {
-  // WebSocket handshake: echo the accept key. (Header names are
-  // case-insensitive; the skill sends this exact casing.)
-  const std::string kKeyHeader = "Sec-WebSocket-Key:";
-  size_t k = head.find(kKeyHeader);
-  if (k == std::string::npos) {
-    return;
-  }
-  size_t vstart = k + kKeyHeader.size();
-  while (vstart < head.size() && head[vstart] == ' ') {
-    ++vstart;
-  }
-  size_t vend = head.find("\r\n", vstart);
-  std::string key = head.substr(vstart, vend - vstart);
-  std::string accept = base::Base64Encode(base::SHA1HashString(
-      key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"));
-  std::string resp =
-      "HTTP/1.1 101 Switching Protocols\r\n"
-      "Upgrade: websocket\r\n"
-      "Connection: Upgrade\r\n"
-      "Sec-WebSocket-Accept: " +
-      accept + "\r\n\r\n";
-  if (!OvWrite(pipe, ev, resp.data(), resp.size())) {
+  std::string handshake;
+  const bool ok = BuildWsHandshake(head, &handshake);
+  if (!conn->Write(handshake) || !ok) {
     return;
   }
 
@@ -505,24 +831,49 @@ void PhiControlServer::ServeControlChannel(HANDLE pipe,
   // the loop is blocked reading, and one event handle cannot back two
   // overlapped operations.
   auto channel = std::make_shared<ControlChannel>();
-  channel->pipe = pipe;
+  channel->pipe = conn->pipe;
   channel->write_event = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
   RegisterChannel(channel);
 
+  auto send_frame = [&](const std::string& frame) {
+    // Shares the pipe with BroadcastEvent — never interleave two frames.
+    base::AutoLock lock(channel->write_lock);
+    return conn->Write(frame);
+  };
+
   // Message loop: {id, type, payloadJson} -> {id, responseJson|error}.
+  WsDecoder decoder;
+  bool close_sent = false;
   for (;;) {
     int opcode = 0;
     std::string msg;
-    if (!WsReadMessage(pipe, ev, &opcode, &msg)) {
+    const WsDecoder::Result r = decoder.Next(&conn->inbuf, &opcode, &msg);
+    if (r == WsDecoder::kProtocolError) {
+      close_sent = send_frame(WsCloseFrame(1002));
       break;
     }
-    if (opcode == 8) {  // Close.
-      break;
-    }
-    if (opcode != 1) {  // Ping/pong/other: ignore.
+    if (r == WsDecoder::kNeedMore) {
+      if (!conn->ReadMore()) {
+        break;
+      }
       continue;
     }
-    std::optional<base::DictValue> parsed = base::JSONReader::ReadDict(msg, base::JSON_PARSE_RFC);
+    if (opcode == kWsClose) {
+      // Echo the close so the peer's own close handshake completes.
+      close_sent = send_frame(WsFrame(kWsClose, msg.substr(0, 2)));
+      break;
+    }
+    if (opcode == kWsPing) {
+      if (!send_frame(WsFrame(kWsPong, msg))) {
+        break;
+      }
+      continue;
+    }
+    if (opcode != kWsText) {
+      continue;  // Pong / binary: nothing to do.
+    }
+    std::optional<base::DictValue> parsed =
+        base::JSONReader::ReadDict(msg, base::JSON_PARSE_RFC);
     base::DictValue resp_dict;
     if (parsed) {
       const base::DictValue& req = *parsed;
@@ -544,20 +895,146 @@ void PhiControlServer::ServeControlChannel(HANDLE pipe,
     }
     std::string out;
     base::JSONWriter::Write(resp_dict, &out);
-    bool sent = false;
-    {
-      // Shares the pipe with BroadcastEvent — never interleave two frames.
-      base::AutoLock lock(channel->write_lock);
-      sent = WsSendText(pipe, ev, out);
-    }
-    if (!sent) {
+    if (!send_frame(WsFrame(kWsText, out))) {
       break;
     }
+  }
+  if (!close_sent) {
+    send_frame(WsCloseFrame(1001));  // Going away; best effort.
   }
   UnregisterChannel(channel);
   if (channel->write_event) {
     ::CloseHandle(channel->write_event);
   }
+}
+
+void PhiControlServer::ServeDevToolsSession(Connection* conn,
+                                            const std::string& head,
+                                            const std::string& target_id) {
+  std::string handshake;
+  if (!BuildWsHandshake(head, &handshake)) {
+    conn->Write(handshake);
+    return;
+  }
+  if (!framework_) {
+    conn->Write(HttpText("503 Service Unavailable", "No DevTools.\n"));
+    return;
+  }
+  // Auto-reset: one wake drains the whole queue, and a message queued
+  // between drain and wait leaves it signalled for the next wait.
+  HANDLE wake = ::CreateEventW(nullptr, FALSE, FALSE, nullptr);
+  DevToolsPump pump(wake);
+  const uint64_t session = framework_->OpenDevToolsSession(
+      target_id.c_str(), &pump);
+  if (session == 0) {
+    ::CloseHandle(wake);
+    conn->Write(HttpText("503 Service Unavailable",
+                         "DevTools is shutting down.\n"));
+    return;
+  }
+  if (!conn->Write(handshake)) {
+    framework_->CloseDevToolsSession(session);
+    ::CloseHandle(wake);
+    return;
+  }
+
+  // One thread, two sources: a pending overlapped read on the pipe and the
+  // pump's wake event. Whichever fires is serviced, then we wait again.
+  WsDecoder decoder;
+  std::vector<char> buf(kBufSize);
+  OVERLAPPED read_ov = {};
+  read_ov.hEvent = conn->read_event;
+  bool read_pending = false;
+  bool close_sent = false;
+  uint16_t close_code = 1001;
+  for (;;) {
+    if (!read_pending) {
+      ::ResetEvent(conn->read_event);
+      BOOL ok = ::ReadFile(conn->pipe, buf.data(), kBufSize, nullptr, &read_ov);
+      if (!ok && ::GetLastError() != ERROR_IO_PENDING) {
+        break;  // Peer gone.
+      }
+      read_pending = true;
+    }
+    HANDLE waits[2] = {conn->read_event, wake};
+    const DWORD w = ::WaitForMultipleObjects(2, waits, FALSE, INFINITE);
+    if (w == WAIT_OBJECT_0) {
+      DWORD read = 0;
+      read_pending = false;
+      if (!::GetOverlappedResult(conn->pipe, &read_ov, &read, FALSE) ||
+          read == 0) {
+        break;  // Peer gone.
+      }
+      conn->inbuf.append(buf.data(), read);
+      bool done = false;
+      for (;;) {
+        int opcode = 0;
+        std::string msg;
+        const WsDecoder::Result r = decoder.Next(&conn->inbuf, &opcode, &msg);
+        if (r == WsDecoder::kNeedMore) {
+          break;
+        }
+        if (r == WsDecoder::kProtocolError) {
+          close_code = 1002;
+          done = true;
+          break;
+        }
+        if (opcode == kWsClose) {
+          close_sent = conn->Write(WsFrame(kWsClose, msg.substr(0, 2)));
+          done = true;
+          break;
+        }
+        if (opcode == kWsPing) {
+          if (!conn->Write(WsFrame(kWsPong, msg))) {
+            done = true;
+            break;
+          }
+          continue;
+        }
+        if (opcode == kWsText) {
+          framework_->SendDevToolsMessage(session, msg.data(), msg.size());
+        }
+      }
+      if (done) {
+        break;
+      }
+    } else if (w == WAIT_OBJECT_0 + 1) {
+      std::vector<std::string> out;
+      bool closed = false;
+      bool overflow = false;
+      pump.Take(&out, &closed, &overflow);
+      bool write_ok = true;
+      for (const std::string& json : out) {
+        if (!conn->Write(WsFrame(kWsText, json))) {
+          write_ok = false;
+          break;
+        }
+      }
+      if (!write_ok || overflow) {
+        break;  // Peer wedged or not reading: drop it.
+      }
+      if (closed) {
+        close_code = 1001;  // Target went away.
+        break;
+      }
+    } else {
+      break;
+    }
+  }
+
+  // Order matters: Close blocks until in-flight callbacks return, so the
+  // pump (on this stack) is safe to destroy afterwards; and the pending
+  // read must be cancelled AND reaped before read_ov goes out of scope.
+  framework_->CloseDevToolsSession(session);
+  if (read_pending) {
+    ::CancelIoEx(conn->pipe, &read_ov);
+    DWORD ignored = 0;
+    ::GetOverlappedResult(conn->pipe, &read_ov, &ignored, TRUE);
+  }
+  if (!close_sent) {
+    conn->Write(WsCloseFrame(close_code));
+  }
+  ::CloseHandle(wake);
 }
 
 void PhiControlServer::RegisterChannel(
@@ -580,7 +1057,7 @@ void PhiControlServer::BroadcastEvent(const std::string& type,
   frame.Set("payloadJson", payload_json);
   std::string text;
   base::JSONWriter::Write(frame, &text);
-  const std::string bytes = WsTextFrame(text);
+  const std::string bytes = WsFrame(kWsText, text);
   // Snapshot under the registry lock, then write outside it: a slow peer must
   // not block another connection from arriving or leaving.
   std::vector<std::shared_ptr<ControlChannel>> targets;
@@ -592,112 +1069,6 @@ void PhiControlServer::BroadcastEvent(const std::string& type,
     base::AutoLock lock(channel->write_lock);
     OvWriteTimeout(channel->pipe, channel->write_event, bytes.data(),
                    bytes.size(), 1000);
-  }
-}
-
-int PhiControlServer::ResolveDevToolsPort() {
-  static int cached = 0;
-  if (cached > 0) {
-    return cached;
-  }
-  std::wstring file = user_data_dir_ + L"\\DevToolsActivePort";
-  // The port appears shortly after the DevTools server starts; wait briefly.
-  for (int attempt = 0; attempt < 100; ++attempt) {
-    HANDLE h = ::CreateFileW(file.c_str(), GENERIC_READ,
-                             FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
-                             OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (h != INVALID_HANDLE_VALUE) {
-      char buf[64] = {};
-      DWORD read = 0;
-      ::ReadFile(h, buf, sizeof(buf) - 1, &read, nullptr);
-      ::CloseHandle(h);
-      int port = atoi(buf);  // First line is the port.
-      if (port > 0) {
-        cached = port;
-        return port;
-      }
-    }
-    ::Sleep(100);
-  }
-  return 0;
-}
-
-void PhiControlServer::ProxyToDevTools(HANDLE pipe,
-                                       const std::string& head,
-                                       int port) {
-  SOCKET sock = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-  if (sock == INVALID_SOCKET) {
-    return;
-  }
-  sockaddr_in addr = {};
-  addr.sin_family = AF_INET;
-  addr.sin_port = htons(static_cast<u_short>(port));
-  ::inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
-  if (::connect(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
-    ::closesocket(sock);
-    return;
-  }
-  // Chromium's DevTools server rejects requests whose Host is not localhost or
-  // an IP ("Host header is specified and is not an IP address or localhost"),
-  // so rewrite whatever the pipe client sent to the loopback endpoint we are
-  // proxying to. Callers over a named pipe have no meaningful host anyway.
-  // Rebuild the head line-by-line: drop any Host header (case-insensitively)
-  // and inject the loopback one right after the request line.
-  std::string fwd;
-  {
-    const std::string host_value = "Host: 127.0.0.1:" + std::to_string(port);
-    size_t pos = 0;
-    bool first_line = true;
-    while (pos < head.size()) {
-      size_t eol = head.find("\r\n", pos);
-      if (eol == std::string::npos) {
-        eol = head.size();
-      }
-      std::string line = head.substr(pos, eol - pos);
-      pos = eol + 2;
-      std::string lower;
-      lower.reserve(line.size());
-      for (char c : line) {
-        lower.push_back(static_cast<char>(::tolower(c)));
-      }
-      if (first_line) {
-        fwd += line + "\r\n" + host_value + "\r\n";
-        first_line = false;
-        continue;
-      }
-      if (lower.rfind("host:", 0) == 0) {
-        continue;  // Drop the client's Host.
-      }
-      fwd += line + "\r\n";
-    }
-    if (fwd.size() < 2 || fwd.compare(fwd.size() - 4, 4, "\r\n\r\n") != 0) {
-      fwd += "\r\n";
-    }
-  }
-  // Forward the (rewritten) request head, then relay both directions.
-  ::send(sock, fwd.data(), static_cast<int>(fwd.size()), 0);
-
-  SockToPipe ctx{sock, pipe};
-  HANDLE back = ::CreateThread(nullptr, 0, &SockToPipeThread, &ctx, 0, nullptr);
-
-  HANDLE ev = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
-  std::vector<char> buf(kBufSize);
-  for (;;) {
-    DWORD read = 0;
-    if (!OvRead(pipe, ev, buf.data(), kBufSize, &read)) {
-      break;
-    }
-    if (::send(sock, buf.data(), static_cast<int>(read), 0) <= 0) {
-      break;
-    }
-  }
-  ::CloseHandle(ev);
-  // Unblock and join the back-relay.
-  ::shutdown(sock, SD_BOTH);
-  ::closesocket(sock);
-  if (back) {
-    ::WaitForSingleObject(back, 2000);
-    ::CloseHandle(back);
   }
 }
 

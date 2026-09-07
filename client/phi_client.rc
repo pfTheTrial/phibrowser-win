@@ -4,9 +4,51 @@
 
 #include <windows.h>
 
+#include "phi_version.h"
+
 // The application icon: the lowest ID, placed first, so every shell surface
 // (Explorer, pinned taskbar shortcuts, the installer) picks it as THE icon.
 // 101 is chrome_exe_resource.h's IDR_MAINFRAME — same slot Chromium uses, so
 // anything addressing the exe's first icon keeps working. The artwork is the
 // Mac client's own (resources\phi.ico, multi-size).
 101 ICON "resources\\phi.ico"
+
+// The exe's identity as Explorer's Details tab, the installer's DisplayIcon
+// lookup, crash-dump triage and WinSparkle's "current version" all read it.
+// Numbers come from phi_version.h; the strings are the Mac bundle's
+// CFBundle* twins.
+#define PHI_RC_STR_(x) #x
+#define PHI_RC_STR(x) PHI_RC_STR_(x)
+#define PHI_RC_VERSION_DOTTED \
+  PHI_RC_STR(PHI_WIN_VERSION_MAJOR) "." PHI_RC_STR(PHI_WIN_VERSION_MINOR) \
+  "." PHI_RC_STR(PHI_WIN_VERSION_PATCH) "." PHI_RC_STR(PHI_WIN_VERSION_BUILD)
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION PHI_WIN_VERSION_MAJOR,PHI_WIN_VERSION_MINOR,PHI_WIN_VERSION_PATCH,PHI_WIN_VERSION_BUILD
+ PRODUCTVERSION PHI_WIN_VERSION_MAJOR,PHI_WIN_VERSION_MINOR,PHI_WIN_VERSION_PATCH,PHI_WIN_VERSION_BUILD
+ FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
+ FILEFLAGS 0x0L
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_APP
+ FILESUBTYPE VFT2_UNKNOWN
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    // 0409 = en-US, 04B0 = Unicode.
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "CompanyName", "Fyde Innovations Limited"
+      VALUE "FileDescription", "Phi Browser"
+      VALUE "FileVersion", PHI_RC_VERSION_DOTTED
+      VALUE "InternalName", "Phi"
+      VALUE "LegalCopyright", "Copyright 2026 Fyde Innovations Limited. All rights reserved."
+      VALUE "OriginalFilename", "Phi.exe"
+      VALUE "ProductName", "Phi Browser"
+      VALUE "ProductVersion", PHI_RC_VERSION_DOTTED
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END

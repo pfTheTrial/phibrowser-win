@@ -14,6 +14,7 @@
 #include "phibrowser-win/client/phi_dwrite.h"
 #include "phibrowser-win/client/phi_folder_icons.h"
 #include "phibrowser-win/client/phi_mac_icons.h"
+#include "phibrowser-win/client/phi_modal_scope.h"
 #include "phibrowser-win/client/phi_theme.h"
 #include "phibrowser-win/client/phi_window_controller.h"
 
@@ -248,10 +249,15 @@ std::string PhiPickFolderIcon(PhiWindowController* controller,
   ::ShowWindow(picker, SW_SHOW);
   ::SetForegroundWindow(picker);
 
-  MSG msg;
-  while (!state.done && ::GetMessageW(&msg, nullptr, 0, 0)) {
-    ::TranslateMessage(&msg);
-    ::DispatchMessageW(&msg);
+  {
+    // Control verbs from the pipe are deferred while the picker's loop is on
+    // the stack, so nothing can destroy the owning controller under it.
+    PhiModalScope modal;
+    MSG msg;
+    while (!state.done && ::GetMessageW(&msg, nullptr, 0, 0)) {
+      ::TranslateMessage(&msg);
+      ::DispatchMessageW(&msg);
+    }
   }
 
   ::SetWindowLongPtrW(picker, GWLP_USERDATA, 0);

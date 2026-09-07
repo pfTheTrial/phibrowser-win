@@ -3,9 +3,12 @@
 // Speaks BOTH halves of the client's unified named pipe (see
 // client/phi_control_server.cc):
 //   /phi-agent  -> WebSocket client control ({id,type,payloadJson} envelope)
-//   otherwise   -> CDP (proxied to Chromium's DevTools)
+//   otherwise   -> CDP (/json/* discovery, /devtools/<kind>/<id> sessions
+//                  pumped through the framework's in-process transport)
 // Discovery matches the Mac contract: the CDPAgentSocket pointer file in the
-// user data dir holds the pipe name.
+// user data dir holds the pipe name on line 1. Line 2 is the per-launch
+// token every request must carry as X-Phi-Token, or the client answers 403
+// before it consults anything else.
 //
 // Usage:  node phi-test.mjs [--user-data-dir DIR] [suite ...]
 // Exit code 0 = all pass, 1 = any failure (so a runner can gate on it).
@@ -22,10 +25,26 @@ function argValue(flag) {
   return i > 0 ? process.argv[i + 1] : null
 }
 
-export function pipePath() {
+function pointerLines() {
   const ptr = `${USER_DATA_DIR}\\CDPAgentSocket`
   if (!existsSync(ptr)) throw new Error(`no pointer file: ${ptr}`)
-  return readFileSync(ptr, 'utf8').split('\n')[0].trim()
+  return readFileSync(ptr, 'utf8').split('\n').map((l) => l.trim())
+}
+
+export function pipePath() {
+  return pointerLines()[0]
+}
+
+/** The launch token (line 2 of the pointer file). */
+export function pipeToken() {
+  const token = pointerLines()[1] || ''
+  if (!token) throw new Error('pointer file has no token line')
+  return token
+}
+
+/** The header block every request over the pipe must carry. */
+function tokenHeader() {
+  return `X-Phi-Token: ${pipeToken()}\r\n`
 }
 
 /** Raw connect to the client's pipe. */
@@ -108,7 +127,8 @@ export async function openControl() {
   const sock = await connect()
   const key = crypto.randomBytes(16).toString('base64')
   sock.write(
-    `GET /phi-agent HTTP/1.1\r\nHost: phi\r\nUpgrade: websocket\r\n` +
+    `GET /phi-agent HTTP/1.1\r\nHost: phi\r\n${tokenHeader()}` +
+    `Upgrade: websocket\r\n` +
     `Connection: Upgrade\r\nSec-WebSocket-Key: ${key}\r\n` +
     `Sec-WebSocket-Version: 13\r\n\r\n`)
   await new Promise((resolve, reject) => {
@@ -171,7 +191,7 @@ export async function openControl() {
 /** One HTTP GET over the pipe (CDP's /json endpoints). */
 export async function cdpHttp(path) {
   const sock = await connect()
-  sock.write(`GET ${path} HTTP/1.1\r\nHost: phi\r\n\r\n`)
+  sock.write(`GET ${path} HTTP/1.1\r\nHost: phi\r\n${tokenHeader()}\r\n`)
   const body = await new Promise((resolve, reject) => {
     // Accumulate BYTES: Content-Length counts bytes, and a decoded string's
     // length counts code units — a single non-ASCII tab title (the box's
@@ -199,7 +219,8 @@ export async function openCdp(wsPath) {
   const sock = await connect()
   const key = crypto.randomBytes(16).toString('base64')
   sock.write(
-    `GET ${wsPath} HTTP/1.1\r\nHost: phi\r\nUpgrade: websocket\r\n` +
+    `GET ${wsPath} HTTP/1.1\r\nHost: phi\r\n${tokenHeader()}` +
+    `Upgrade: websocket\r\n` +
     `Connection: Upgrade\r\nSec-WebSocket-Key: ${key}\r\n` +
     `Sec-WebSocket-Version: 13\r\n\r\n`)
   await new Promise((resolve, reject) => {

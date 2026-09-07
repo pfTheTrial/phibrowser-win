@@ -26,8 +26,11 @@ struct PhiCredentialItem {
 // The client-side password vault backing the phi-browser skill's
 // `credentials.*` surface — the Windows stand-in for the Mac's Bitwarden
 // provider. The vault file (`PhiCredentials.dat` in the user-data dir) is
-// DPAPI-encrypted for the current user; for dev/test a plaintext JSON array
-// with the same shape is also accepted (and re-read as-is).
+// DPAPI-encrypted for the current user. ONLY a --dev-hooks build
+// (kPhiDevHooks) also accepts a plaintext JSON array with the same shape as
+// a test seed; a release build refuses anything DPAPI cannot unwrap and
+// leaves the vault empty, so a file dropped next to the profile can never
+// become "the user's passwords".
 //
 // Pure data + matching — no UI. The coordinator owns the per-request
 // approve/deny prompt and the origin binding; this class only stores items

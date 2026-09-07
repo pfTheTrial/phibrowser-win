@@ -98,6 +98,17 @@ void ListBasics() {
   CHECK(p.bottom == 406);
   CHECK(p.content_height == 30 + 38 + 38);
   CHECK(p.scroll_max == 0);  // Not clipping.
+
+  // pad_below opens room after an item, before its gap: the group card's
+  // inner insets. The item's own rect does not grow.
+  items[0].pad_below = 2;
+  items[3].pad_below = 4;
+  const ListPlacement q = LayoutList(items, m);
+  CHECK(((q.rects[0]) == SidebarRect{8, 300, 232, 328}));
+  CHECK(((q.rects[1]) == SidebarRect{8, 332, 232, 368}));
+  CHECK(((q.rects[3]) == SidebarRect{8, 370, 232, 406}));
+  CHECK(q.bottom == 412);
+  CHECK(q.content_height == 32 + 38 + 42);
 }
 
 void ListScrollAndClip() {

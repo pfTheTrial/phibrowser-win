@@ -41,6 +41,10 @@ class PhiAgentOverlay {
                    bool agent_owns);
   // Tears the overlay down (watch mode ended, or the task is gone).
   static void Hide();
+  // Hide() only if the overlay is bound to `controller` — its shell is being
+  // destroyed (called from ~PhiWindowController; a different window's
+  // overlay is left alone).
+  static void HideIfBoundTo(const PhiWindowController* controller);
   // The agent's virtual cursor (agentSpace.cursor): `x`/`y` in page CSS px.
   // The overlay converts to device px and GLIDES to the point — the Mac
   // AgentSpaceOverlayView's distance-scaled travel — teleporting only on

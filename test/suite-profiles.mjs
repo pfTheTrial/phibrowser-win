@@ -135,8 +135,11 @@ test('profiles: Default and in-use profiles refuse deletion', async () => {
   const ctl = await openControl()
   try {
     assertEq((await ctl.send('agentSpace.profiles.delete',
-                             { id: 'Default' })).ok, false,
+                             { id: 'Default', confirm: true })).ok, false,
              'Default is permanent')
+    assertEq((await ctl.send('agentSpace.profiles.delete',
+                             { id: 'Default' })).error, 'confirm_required',
+             'deletion is refused outright without confirm:true')
     // Bind a space to the second profile, then try to delete the profile.
     const { profiles } = await ctl.send('agentSpace.profiles.list')
     const other = profiles.find((p) => p.id !== 'Default')
@@ -145,7 +148,7 @@ test('profiles: Default and in-use profiles refuse deletion', async () => {
                                  { name: 'Binder', profileId: other.id })
     try {
       assertEq((await ctl.send('agentSpace.profiles.delete',
-                               { id: other.id })).ok, false,
+                               { id: other.id, confirm: true })).ok, false,
                'an in-use profile refuses (bindings are immutable)')
     } finally {
       await ctl.send('agentSpace.spaces.delete', { spaceId: space.id })
@@ -166,7 +169,8 @@ test('profiles: an unused profile can be deleted', async () => {
     }
     assert(created, 'the profile appeared')
     assertEq((await ctl.send('agentSpace.profiles.delete',
-                             { id: created.id })).ok, true, 'delete accepted')
+                             { id: created.id, confirm: true })).ok, true,
+             'delete accepted')
     let present = true
     for (let i = 0; i < 40 && present; i++) {
       await sleep(500)

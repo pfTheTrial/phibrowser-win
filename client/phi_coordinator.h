@@ -42,6 +42,11 @@
 
 namespace phi_client {
 
+// One request marshalled from the control server's I/O thread to the UI
+// thread (a control verb or a peer-consent decision). Defined in the .cc;
+// the coordinator only queues pointers to it.
+struct PhiUiCall;
+
 // The client's implementation of the framework delegate — the Windows twin of
 // the Mac PhiChromiumCoordinator. Registered with the framework before
 // ChromeMain; the framework calls it back on the browser UI thread. F2 slice 1
@@ -258,6 +263,7 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   bool AlwaysShowFullUrl() const override;
   void SetAlwaysShowFullUrl(bool enabled) override;
   bool ShowTabPreviews() const override;
+  void NoteSlotActiveSpace(const std::string& space_id) override;
   void NoteSpaceWindow(const std::string& space_id,
                        int64_t browser_window_id) override;
   void NoteTabDistillable(int64_t window_id, int tab_id,
@@ -338,6 +344,8 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   std::vector<std::string> CredentialAuditRows() const override;
   bool DeveloperMode() const override;
   void SetDeveloperMode(bool enabled) override;
+  bool AllowAgentUserSpaces() const override;
+  void SetAllowAgentUserSpaces(bool enabled) override;
   void OpenBrowserSettings() override;
   void OpenBrowserPage(const std::string& url) override;
   void SetSpaceTheme(const std::string& space_id,
@@ -380,18 +388,43 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   static constexpr size_t kAnalyticsRingSize = 256;
   std::deque<AnalyticsEvent> analytics_events_;
 
-  // Agent credential approval (C2) — the Mac's CredentialGrantStore model.
-  // `kind` is the EXPOSURE the user is consenting to: kFill keeps the secret
-  // inside Phi (vault -> framework -> page DOM, never to the agent); kReveal
-  // hands it to the agent outright. A REVEAL grant covers a fill request; a
-  // fill grant NEVER covers a reveal (the Mac's CredentialAccessKind.covers)
-  // — they are different capabilities, not degrees of one.
+  // Agent credential approval (C2). `kind` names the ROUTE the secret takes
+  // — kFill: Phi types it into the page; kReveal: it is handed to the agent
+  // — for the audit line and the prompt wording ONLY. For grant purposes
+  // the two are the same exposure: the agent holds a CDP session on the
+  // page it asked Phi to fill and can read the field back, so a fill is a
+  // reveal with extra steps (docs/architecture-review.md §4 item 2).
   enum class CredentialAccessKind { kFill, kReveal };
 
-  // Runs a control command on the UI thread; returns the JSON response. Called
-  // via SendMessage to msg_hwnd_ from HandleControlCommand.
+  // Runs a control command on the UI thread; returns the JSON response.
+  // Reached from HandleControlCommand through the posted WM_PHI_CONTROL and
+  // the deferred-call queue, so it only ever runs from the main loop, never
+  // inside a nested modal one.
+  // Who is asking: the pipe (an agent — gated by IsUserSpaceRequest and the
+  // test-rig switch) or the client's own UI, which calls the verb ladder as
+  // its internal API and is never gated.
+  enum class ControlCaller { kInternal, kPipe };
   std::string ExecuteControlOnUi(const std::string& type,
-                                 const std::string& payload_json);
+                                 const std::string& payload_json,
+                                 ControlCaller caller);
+  // The user-space gate (lane 5 F3). True when `type` is a verb that reads
+  // or changes the USER's own Spaces/state AND the request's scope resolves
+  // to a user window/Space — a {taskId} scope, or a windowId naming an
+  // agent/shadow window, is agent territory and stays ungated. Resolves the
+  // scope the way the handlers do (ResolveScopeBrowser / ControllerForSlot /
+  // DialectOwner), so the answer matches what the verb would touch.
+  bool IsUserSpaceRequest(const std::string& type,
+                          const base::DictValue* payload);
+  // Runs `call` now, or queues it while a nested modal loop is on the UI
+  // thread (PhiModalDepth() > 0) and arms kDeferredUiCallTimer to drain
+  // the queue once the loop unwinds. The UI side owns its reference to the
+  // call and releases it after running it.
+  void RunOrDeferUiCall(PhiUiCall* call);
+  void RunUiCall(PhiUiCall* call);
+  void DrainDeferredUiCalls();
+  // Everything that must reach disk before the session ends: pending
+  // coalesced saves, the telemetry spool and the feedback outbox worker.
+  void FlushForShutdown();
   // Maps a slot id (what callers pass as windowId) to the browser currently
   // shown in it — the Space's browser, not necessarily the slot's original.
   int64_t ResolveBrowser(int64_t slot_or_browser) const;
@@ -621,9 +654,36 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // Which Space the cold start should rebuild eagerly: the one that was
   // active when the last run ended.
   std::string LastActiveSpaceId() const;
-  // Message-window timer ids: 1 profile-space finish, 2 agent-space
-  // keep-alive, this one the operating mask's idle/takeover sweep.
+  // Message-window (msg_hwnd_) timer ids.
+  // Polls for the profile a "+ Space & profile" request asked for.
+  static constexpr UINT_PTR kProfileSpaceTimer = 1;
+  // Agent-space / shadow-window keep-alive sweep (the Mac's 10 s tick).
+  static constexpr UINT_PTR kAgentSpaceSweepTimer = 2;
+  // The operating mask's idle/takeover sweep.
   static constexpr UINT_PTR kAgentDriveSweepTimer = 3;
+  // Drains deferred_ui_calls_ once no modal loop is up (50 ms).
+  static constexpr UINT_PTR kDeferredUiCallTimer = 4;
+  // Coalesces the last-active-Space write into one SavePrefs.
+  static constexpr UINT_PTR kLastActiveSaveTimer = 5;
+  // Cold start armed an eager set: if no user window is up once the replay
+  // settles, open a default shell (lane 4 §6 item 6).
+  static constexpr UINT_PTR kColdStartFallbackTimer = 6;
+  // Verbs and consent decisions that arrived while a modal loop was on the
+  // UI thread, in arrival order (see RunOrDeferUiCall).
+  std::deque<PhiUiCall*> deferred_ui_calls_;
+  bool draining_ui_calls_ = false;
+  // The Space the user was in when the run ended (PhiPrefs.json
+  // lastActiveSpaceId): what LastActiveSpaceId() answers before any window
+  // is live. Noted on every switch; written by kLastActiveSaveTimer.
+  std::string last_active_space_id_;
+  void NoteActiveSpace(const std::string& space_id);
+  // True from OnColdStartRestorePlan arming a filter until a user window
+  // exists — the window the fallback timer checks for.
+  bool cold_start_armed_ = false;
+  // Opens a shell on the default Space when a restore left no user window.
+  void OpenDefaultShellIfNoUserWindow(const char* reason);
+  // Drops (framework side) and forgets the parked windows no Space claims.
+  void DropOrphanGhosts();
   // "Restore last session" — persisted app-wide, mirrored into each loaded
   // profile's SessionStartupPref (LAST/DEFAULT).
   bool restore_last_session_ = false;
@@ -633,15 +693,20 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   std::set<std::wstring> session_allowed_peers_;
   std::set<std::wstring> session_denied_peers_;
   std::wstring agent_grants_path_;
-  // Credential approvals. Only NEVER-EXPIRING grants persist; the timed ones
-  // are session-scoped by design (the Mac's in-memory 10-minute cache), so
-  // a restart is always a clean slate for them.
+  // Credential approvals. The persisted "always" grants are LOADED FOR THE
+  // SETTINGS DISPLAY ONLY — they no longer cover anything (a standing
+  // password grant plus an agent-chosen page was the exfil path, lane 5
+  // F2); the timed ones are session-scoped by design (the Mac's in-memory
+  // 10-minute cache), so a restart is always a clean slate for them.
   std::map<std::string, CredentialAccessKind> credential_grants_;
   struct TimedCredentialGrant {
     CredentialAccessKind kind = CredentialAccessKind::kFill;
     ULONGLONG expires_tick = 0;
   };
   std::map<std::string, TimedCredentialGrant> credential_timed_grants_;
+  // Denial memory: grant key -> tick until which the request is refused
+  // without a prompt (5 minutes), so a denied ask cannot re-prompt at once.
+  std::map<std::string, ULONGLONG> credential_denials_;
   std::vector<std::string> credential_audit_;
   std::wstring credential_grants_path_;
   // profiles.create is ASYNC in Chromium (the basename exists only once the
@@ -684,6 +749,15 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   std::map<std::string, PhiShortcutChord> shortcut_overrides_;
   // Gates the Developer settings pane, as on Mac (default off).
   bool developer_mode_ = false;
+  // Settings ▸ Developer ▸ "Allow agents to operate your Spaces"
+  // (PhiPrefs.json allowAgentUserSpaces). Off: every user-space verb fails
+  // user_space_operations_disabled (IsUserSpaceRequest). NEVER settable
+  // over the control channel.
+  bool allow_agent_user_spaces_ = false;
+  // PhiPrefs.json testRig: the box runner seeds it; unlocks the
+  // harness-only verbs (feedback.setAccount, analytics.list, window.handle,
+  // captureWindow to a path). No UI, never agent-settable.
+  bool test_rig_ = false;
   // Reader View's app half. Holds the reading style (one store for every
   // reader surface, persisted in PhiPrefs.json) and the per-tab offer/state
   // the extension reports.
@@ -864,12 +938,15 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
                              base::DictValue* out);
   // The native approve/deny prompt for a credential request. `detail` names
   // the item and purpose. Returns true when the user approves.
-  // Consults live grants first; prompts only when none covers the request.
-  // `scope` identifies the credential (its site/name), not the agent: grants
-  // are all-agents, as on Mac.
+  // Consults the timed grants and the denial memory first; prompts only
+  // when neither answers. `grant_key` is "<item scope>|<page host>" for a
+  // fill and the item scope for a reveal: grants are all-agents, as on Mac,
+  // but never wider than one page host. `once_only` (a cross-origin fill)
+  // offers no timed grant and consumes none.
   bool PromptCredentialApproval(const std::wstring& detail,
                                 CredentialAccessKind kind,
-                                const std::string& scope);
+                                const std::string& grant_key,
+                                bool once_only);
   // Pushes agentSpace.ownershipChanged to connected drivers — the Mac's
   // broadcastToTaskDriver. Called after every ownership transition; a task
   // whose record is already gone is deliberately NOT announced (drivers
@@ -877,8 +954,9 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   void PushOwnershipChanged(const std::string& task_id);
   // Mounts/updates/tears down the watch-mode overlay for the watched task.
   void RefreshAgentOverlay();
-  bool CredentialGrantCovers(const std::string& scope,
-                             CredentialAccessKind kind) const;
+  // True while a live TIMED grant covers `grant_key`. The kind is not
+  // consulted: fill and reveal are one exposure (see CredentialAccessKind).
+  bool CredentialGrantCovers(const std::string& grant_key) const;
   void LoadCredentialGrants();
   void SaveCredentialGrants() const;
   // Appends one line to the credential audit trail (newest first, capped)

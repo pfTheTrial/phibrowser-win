@@ -90,13 +90,20 @@ bool PhiPromptShortcut(HWND owner,
 // a list with `default_index` preselected; the confirming button (or a
 // double-click) returns the selected index, the cancelling button / close
 // returns -1. The labels default to "Open" / "Keep Here".
+//
+// `cancel_is_default`: the security prompts (agent consent, credential
+// approval) must not be approvable by a reflex Enter — with it set, the
+// cancelling button takes the focus and Return, so Enter returns -1 and
+// only a deliberate click on the confirming button (or a double-click on a
+// row) approves. The preselected row still says what "Continue" would do.
 int PhiPromptChoose(HWND owner,
                     const wchar_t* title,
                     const wchar_t* message,
                     const std::vector<std::wstring>& options,
                     int default_index,
                     const wchar_t* confirm_label = nullptr,
-                    const wchar_t* cancel_label = nullptr);
+                    const wchar_t* cancel_label = nullptr,
+                    bool cancel_is_default = false);
 
 }  // namespace phi_client
 

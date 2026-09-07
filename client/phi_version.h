@@ -5,9 +5,16 @@
 #ifndef PHIBROWSER_WIN_CLIENT_PHI_VERSION_H_
 #define PHIBROWSER_WIN_CLIENT_PHI_VERSION_H_
 
-// The client's own version — what the updater reports to the appcast and
-// what About shows. The release pipeline (installer/make-installer.sh)
-// stamps the installer from this same value, so bump it here and only here.
+// The client's own version — what the updater reports to the appcast, what
+// About shows, and what the exe's VERSIONINFO (phi_client.rc) carries. The
+// release pipeline (installer/make-installer.sh) greps the string literal
+// below, so it stays a literal; the numeric parts feed FILEVERSION, which
+// needs four integers. Bump BOTH together — the static_assert at the bottom
+// refuses a build where they disagree.
+#define PHI_WIN_VERSION_MAJOR 0
+#define PHI_WIN_VERSION_MINOR 1
+#define PHI_WIN_VERSION_PATCH 0
+#define PHI_WIN_VERSION_BUILD 0
 #define PHI_WIN_VERSION_STRING "0.1.0"
 #define PHI_WIN_VERSION_WIDE L"0.1.0"
 
@@ -16,5 +23,19 @@
 // a DCHECK build reports "debug" regardless). Set alongside the version
 // when a ring changes.
 #define PHI_WIN_CHANNEL "canary"
+
+// The resource compiler includes this header too (RC_INVOKED); only the C++
+// side can check that the literal and the numerics still agree.
+#ifndef RC_INVOKED
+#include <string_view>
+#define PHI_WIN_VERSION_STRINGIFY_(x) #x
+#define PHI_WIN_VERSION_STRINGIFY(x) PHI_WIN_VERSION_STRINGIFY_(x)
+static_assert(std::string_view(PHI_WIN_VERSION_STRING) ==
+                  PHI_WIN_VERSION_STRINGIFY(PHI_WIN_VERSION_MAJOR) "."
+                  PHI_WIN_VERSION_STRINGIFY(PHI_WIN_VERSION_MINOR) "."
+                  PHI_WIN_VERSION_STRINGIFY(PHI_WIN_VERSION_PATCH),
+              "PHI_WIN_VERSION_STRING must match PHI_WIN_VERSION_MAJOR/"
+              "MINOR/PATCH");
+#endif  // RC_INVOKED
 
 #endif  // PHIBROWSER_WIN_CLIENT_PHI_VERSION_H_
