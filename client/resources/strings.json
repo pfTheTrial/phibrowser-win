@@ -2809,6 +2809,12 @@
    "zh-Hans": "始终显示完整网址",
    "zh-Hant": "一律顯示完整網址"
   },
+  "settings.general.analytics.hint": {
+   "en": "Send anonymous usage statistics to help improve Phi. Never your pages, searches or account."
+  },
+  "settings.general.analytics.toggle": {
+   "en": "Share anonymous usage analytics"
+  },
   "settings.general.appearance.sectionTitle": {
    "de": "Erscheinungsbild",
    "en": "Appearance",

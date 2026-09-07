@@ -2,7 +2,7 @@
 // LocalStore (Sources/LocalStorage). Same model: ONE row kind told apart by
 // type, and the Mac's THREE pinned-tab scopes (PinnedTabScope: space, profile,
 // app), which decide who owns a pinned row.
-import { test, run, assert, assertEq, sleep, openControl } from './phi-test.mjs'
+import { test, run, assert, assertEq, sleep, openControl, waitForSaves } from './phi-test.mjs'
 
 async function firstWindow(ctl) {
   const { windows } = await ctl.send('agentSpace.list')
@@ -186,6 +186,7 @@ test('pinned: pins and bookmarks survive a restart', async () => {
   } finally { ctl.close() }
 
   const { execFileSync } = await import('node:child_process')
+  await waitForSaves()  // Coalesced writes land before the kill.
   execFileSync('powershell.exe', ['-NoProfile', '-Command', `
 Get-Process Phi -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 $deadline = (Get-Date).AddSeconds(20)

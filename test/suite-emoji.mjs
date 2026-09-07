@@ -2,7 +2,7 @@
 // file is the SAME artifact the Mac bundles (Resources/Emoji/emoji-catalog.json,
 // Unicode 17.0), and Space icons use the Mac's storage form so a Space means
 // the same thing on both clients.
-import { test, run, assert, assertEq, sleep, openControl } from './phi-test.mjs'
+import { test, run, assert, assertEq, sleep, openControl, waitForSaves } from './phi-test.mjs'
 
 // EmojiCatalog's nine groups, in the catalog's own order.
 const MAC_GROUPS = [
@@ -99,6 +99,7 @@ test('emoji: a Space icon survives a restart', async () => {
   } finally { ctl.close() }
 
   const { execFileSync } = await import('node:child_process')
+  await waitForSaves()  // Coalesced writes land before the kill.
   execFileSync('powershell.exe', ['-NoProfile', '-Command', `
 Get-Process Phi -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 $deadline = (Get-Date).AddSeconds(20)

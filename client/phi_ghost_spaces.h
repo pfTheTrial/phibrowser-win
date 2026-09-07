@@ -5,10 +5,13 @@
 #ifndef PHIBROWSER_WIN_CLIENT_PHI_GHOST_SPACES_H_
 #define PHIBROWSER_WIN_CLIENT_PHI_GHOST_SPACES_H_
 
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
 
+#include "base/memory/raw_ptr_exclusion.h"
+#include "phibrowser-win/client/phi_app_model.h"
 #include "phibrowser-win/client/phi_ids.h"
 
 namespace phi_client {
@@ -22,6 +25,13 @@ namespace phi_client {
 // Materializing hands that id back to the framework, which rebuilds the
 // window inside a ScopedRestoredFromWindowId scope so it can be re-attached
 // to its Space.
+//
+// A VIEW, not a store: the remembered Space -> window rows live in the
+// coordinator's model::PhiRestoreModel (PhiRestore.json, written by its
+// PhiStore alongside the last-active Space), and this class is the query
+// and mutation API over them. The parked set and the orphans are session
+// state derived from the framework's receipt; only the advisory copy of the
+// parked ids is mirrored into the model.
 //
 // TWO RULES FROM THE FRAMEWORK CONTRACT ARE LOAD-BEARING HERE:
 //
@@ -46,12 +56,20 @@ class PhiGhostSpaces {
     BrowserId window_id;
   };
 
-  PhiGhostSpaces();
+  // `model` is the coordinator's restore model, which outlives this view.
+  explicit PhiGhostSpaces(model::PhiRestoreModel* model);
   ~PhiGhostSpaces();
 
-  // Persistence, alongside the other client stores.
-  void Load(const std::wstring& path);
-  void Save() const;
+  PhiGhostSpaces(const PhiGhostSpaces&) = delete;
+  PhiGhostSpaces& operator=(const PhiGhostSpaces&) = delete;
+
+  // A mutation of the remembered rows does not write anything itself: it
+  // calls this, and the owner (the coordinator's ScheduleSave(kRestore))
+  // folds the write into its coalesced-save timer.
+  using DirtyCallback = std::function<void()>;
+  void set_dirty_callback(DirtyCallback callback) {
+    dirty_callback_ = std::move(callback);
+  }
 
   // A Space's browser is live: remember the pair so a later run can name it,
   // and clear any ghost record (it is not parked any more).
@@ -79,14 +97,14 @@ class PhiGhostSpaces {
 
   // The Space is gone (DeleteSpace): drop everything remembered about it,
   // so its old window id can neither match a materialized window nor be
-  // named eager by the next cold start. Persists. Returns the record it
-  // held (window id 0 when none), so the caller can drop the parked window
-  // on the framework side too.
+  // named eager by the next cold start. Marks the model dirty. Returns the
+  // record it held (window id 0 when none), so the caller can drop the
+  // parked window on the framework side too.
   Remembered Forget(const std::string& space_id);
 
   // True when nothing has been remembered yet — the client has no basis to
   // gate a replay on, so it must not try.
-  bool Empty() const { return remembered_.empty(); }
+  bool Empty() const { return model_->remembered.empty(); }
 
   // Which Space remembers `window_id` as its window, or nullptr. This is how
   // a materialized window — announced with the PREVIOUS session's id — finds
@@ -99,9 +117,19 @@ class PhiGhostSpaces {
   void ClearOrphans();
 
  private:
-  std::wstring path_;
-  // Space -> the window it had, whether or not it is currently parked.
-  std::map<std::string, Remembered> remembered_;
+  // The model row for `space_id`, or nullptr.
+  model::RememberedWindow* FindRemembered(const std::string& space_id);
+  const model::RememberedWindow* FindRemembered(
+      const std::string& space_id) const;
+  // The remembered set (or the advisory parked copy) changed: schedule the
+  // write.
+  void MarkDirty() const;
+
+  // The persisted rows: Space -> the window it had, whether or not it is
+  // currently parked. Non-owning; a plain pointer across a client-only
+  // boundary, like the controller's host pointers.
+  RAW_PTR_EXCLUSION model::PhiRestoreModel* const model_;
+  DirtyCallback dirty_callback_;
   // The subset that the last receipt says is parked right now.
   std::map<std::string, Remembered> parked_;
   std::vector<Remembered> orphans_;

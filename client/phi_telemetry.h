@@ -45,9 +45,17 @@ class PhiTelemetry {
   // Idempotent; called once the framework hands over the user data dir.
   void Start(const std::wstring& user_data_dir);
 
+  // The user's consent (Settings ▸ General ▸ "Share anonymous usage
+  // analytics", PhiPrefs.json analyticsEnabled). Off until set: an event
+  // recorded while disabled is DROPPED, not spooled — nothing the user did
+  // not agree to share ever reaches disk, let alone the collector. The
+  // uploader thread may run regardless; it simply has nothing to send.
+  void SetEnabled(bool enabled);
+
   // Queues one event. Safe from any thread, never blocks on the network: the
   // caller is the UI thread delivering a framework callback. A no-op while
-  // unconfigured, so an unconfigured build writes no behavioural data to disk.
+  // unconfigured or while the user has not consented (SetEnabled), so
+  // neither state writes behavioural data to disk.
   void RecordEvent(const std::string& module,
                    const std::string& name,
                    const std::string& properties_json);
@@ -96,6 +104,8 @@ class PhiTelemetry {
   HANDLE thread_ = nullptr;
   bool stopping_ = false;
   bool started_ = false;
+  // The consent switch (SetEnabled). Defaults to no consent.
+  bool enabled_ = false;
 
   std::string endpoint_;   // Empty == unconfigured == the whole thing is off.
   std::string api_key_;

@@ -106,6 +106,13 @@ def check_sources():
             if "kPhiDevHooks" not in window:
                 rc |= fail(f"{name}: {env} is read without a kPhiDevHooks "
                            "gate nearby (review §4 items 3, 4)")
+    # Analytics ship opt-in: the model's default must be off (review §3.9).
+    model_h = os.path.join(CLIENT, "phi_app_model.h")
+    if os.path.isfile(model_h):
+        with open(model_h, errors="replace") as f:
+            if not re.search(r"analytics_enabled\s*=\s*false", f.read()):
+                rc |= fail("phi_app_model.h: analytics_enabled must default "
+                           "to false (review §4 item 32)")
     rc_path = os.path.join(CLIENT, "phi_client.rc")
     with open(rc_path, errors="replace") as f:
         if "VS_VERSION_INFO" not in f.read():

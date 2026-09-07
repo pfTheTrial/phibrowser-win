@@ -285,3 +285,21 @@ export async function run() {
   console.log(`\n${pass} passed, ${fail} failed`)
   process.exitCode = fail === 0 ? 0 : 1
 }
+
+/**
+ * Waits until the client has flushed its coalesced store writes (phase 3:
+ * saves land on a 250 ms timer; agentSpace.ping reports pendingSaves). Call
+ * before killing the process, or the last change is lost.
+ */
+export async function waitForSaves(timeoutMs = 3000) {
+  const started = Date.now()
+  const ctl = await openControl()
+  try {
+    for (;;) {
+      const r = await ctl.send('agentSpace.ping')
+      if (!r || r.pendingSaves === undefined || r.pendingSaves === 0) return
+      if (Date.now() - started > timeoutMs) return
+      await sleep(100)
+    }
+  } finally { ctl.close() }
+}

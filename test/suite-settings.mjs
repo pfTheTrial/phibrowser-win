@@ -1,7 +1,7 @@
 // Settings suite: the full settings surface — the Mac's Preferences panes
 // (Settings.swift) and its General rows (GeneralSettingView.swift), as far as
 // this client has state to back them.
-import { test, run, assert, assertEq, sleep, openControl } from './phi-test.mjs'
+import { test, run, assert, assertEq, sleep, openControl, waitForSaves } from './phi-test.mjs'
 
 // The Mac's panes() list, in its order (AppController+Settings.swift):
 // Account, General, Profiles, Spaces, Navigation, AI, Shortcuts, Developer.
@@ -174,6 +174,7 @@ test('settings: the settings surface survives a restart', async () => {
   } finally { ctl.close() }
 
   const { execFileSync } = await import('node:child_process')
+  await waitForSaves()  // Coalesced writes land before the kill.
   execFileSync('powershell.exe', ['-NoProfile', '-Command', `
 Get-Process Phi -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 $deadline = (Get-Date).AddSeconds(20)

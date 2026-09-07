@@ -68,6 +68,10 @@ class PhiSettingsHost {
   // profile's Chromium startup pref (SessionStartupPref LAST).
   virtual bool RestoreLastSession() const = 0;
   virtual void SetRestoreLastSession(bool enabled) = 0;
+  // "Share anonymous usage analytics": the telemetry consent. Off by
+  // default; only this pane can turn it on (never the control channel).
+  virtual bool AnalyticsEnabled() const = 0;
+  virtual void SetAnalyticsEnabled(bool enabled) = 0;
 
   // Spaces / Profiles
   virtual PhiPinScope PinScope() const = 0;

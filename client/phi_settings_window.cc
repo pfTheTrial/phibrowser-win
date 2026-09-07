@@ -805,6 +805,15 @@ void PhiSettingsWindow::BuildGeneral(int* y) {
   }
   AddDividerRow(y);
   {
+    // Telemetry consent (docs/architecture-review.md §3.9): the ONLY switch
+    // for the analytics pipeline. Off by default, and deliberately out of
+    // reach of agentSpace.settings.set.
+    AddToggleRow(y, PhiStr("settings.general.analytics.toggle"),
+                 host_->AnalyticsEnabled(), /*enabled=*/true, "analytics");
+    AddSubHint(y, PhiStr("settings.general.analytics.hint"));
+  }
+  AddDividerRow(y);
+  {
     // Chevron.right, 12pt semibold textSecondary on Mac — a kIcon glyph.
     const RECT area = AddRow(y, L"Additional browser settings",
                              kRowLabelHeight, 20);
@@ -3131,6 +3140,8 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
     host_->SetAlwaysShowFullUrl(!item.on);
   } else if (item.action == "restoresession") {
     host_->SetRestoreLastSession(!item.on);
+  } else if (item.action == "analytics") {
+    host_->SetAnalyticsEnabled(!item.on);
   } else if (item.action == "peekview") {
     const bool on = !item.on;
     host_->SetPeekViewEnabled(on);

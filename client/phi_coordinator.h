@@ -35,7 +35,9 @@
 #include "phibrowser-win/client/phi_settings_window.h"
 #include "phibrowser-win/client/phi_transcript_panel.h"
 #include "phibrowser-win/client/phi_agent_drive_registry.h"
+#include "phibrowser-win/client/phi_app_model.h"
 #include "phibrowser-win/client/phi_ghost_spaces.h"
+#include "phibrowser-win/client/phi_store.h"
 #include "phibrowser-win/client/phi_tab_store.h"
 #include "phibrowser-win/client/phi_theme.h"
 #include "phibrowser-win/client/phi_window_controller.h"
@@ -67,9 +69,40 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   PhiCoordinator(const PhiCoordinator&) = delete;
   PhiCoordinator& operator=(const PhiCoordinator&) = delete;
 
+  // The app's lifecycle (docs/architecture-review.md §3.4), strictly
+  // forward. Each phase names what the coordinator may rely on:
+  //   kBooting        OnFrameworkReady is running; no store is loaded.
+  //   kStoresLoaded   every client store is in memory; safe to answer the
+  //                   cold-start restore plan.
+  //   kRestorePlanned OnColdStartRestorePlan answered (armed or not).
+  //   kRestoring      the first window or the first park receipt landed.
+  //   kSettled        the restore's verdict is in: orphan ghosts dropped,
+  //                   the no-window rescue decided.
+  //   kRunning        steady state (folded onto kSettled immediately).
+  //   kClosing        the session is ending or the last window went.
+  //   kFlushed        FlushForShutdown ran; every store is on disk.
+  // The value order IS the allowed order: Transition refuses to move back.
+  enum class AppPhase {
+    kBooting,
+    kStoresLoaded,
+    kRestorePlanned,
+    kRestoring,
+    kSettled,
+    kRunning,
+    kClosing,
+    kFlushed,
+  };
+  AppPhase phase() const { return phase_; }
+  static const char* AppPhaseName(AppPhase phase);
+
   // phi_framework::PhiFrameworkDelegate:
   void OnFrameworkReady(phi_framework::PhiFramework* framework,
                         const char* user_data_dir_utf8) override;
+  // Pushes the client's per-profile mirrors (restore-on-startup) into the
+  // profile that just loaded, and the global ones (peek, display language)
+  // once, on the first load — the ONE place the framework learns them, so
+  // no path that happens to load a profile has to remember to.
+  void OnProfileLoaded(const char* profile_id) override;
   // Delivered INSIDE Browser::Create (contract rule 2): adopts the HWND by
   // `creation.kind`, matching a requested window to what RequestCreation
   // filed under its token. Creates and closes no browsers.
@@ -305,8 +338,8 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
                              const std::string& parent_guid,
                              const std::string& title,
                              const std::string& url) override;
-  // Pushes the persisted restore choice into every loaded profile — run
-  // when the framework comes up and after a profile loads.
+  // Pushes the persisted restore choice into every loaded profile — the
+  // ON-CHANGE push. A profile that loads later gets it from OnProfileLoaded.
   void PushRestorePreference();
   bool PeekViewEnabled() const override;
   void SetPeekViewEnabled(bool enabled) override;
@@ -314,8 +347,10 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   void SetAutoPeekViewEnabled(bool enabled) override;
   // Pushes both Peek switches into the framework, which owns the two
   // decisions they gate (the context-menu item and the cross-domain
-  // throttle's diversion). Run once the framework is up and on every change.
+  // throttle's diversion). Run on the first profile load and on every change.
   void PushPeekPreferences();
+  bool AnalyticsEnabled() const override;
+  void SetAnalyticsEnabled(bool enabled) override;
   PhiPinScope PinScope() const override;
   void SetPinScope(PhiPinScope scope) override;
   std::vector<std::string> SpaceSummaries() const override;
@@ -404,13 +439,17 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   static constexpr size_t kAnalyticsRingSize = 256;
   std::deque<AnalyticsEvent> analytics_events_;
 
+  // The model's value types under the names this file has always used
+  // (docs/architecture-review.md §3.4: one definition, in phi_app_model.h).
+  using Space = model::Space;
+  using UrlRule = model::UrlRule;
   // Agent credential approval (C2). `kind` names the ROUTE the secret takes
   // — kFill: Phi types it into the page; kReveal: it is handed to the agent
   // — for the audit line and the prompt wording ONLY. For grant purposes
   // the two are the same exposure: the agent holds a CDP session on the
   // page it asked Phi to fill and can read the field back, so a fill is a
   // reveal with extra steps (docs/architecture-review.md §4 item 2).
-  enum class CredentialAccessKind { kFill, kReveal };
+  using CredentialAccessKind = model::CredentialAccessKind;
 
   // Runs a control command on the UI thread; returns the JSON response.
   // Reached from HandleControlCommand through the posted WM_PHI_CONTROL and
@@ -438,9 +477,85 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   void RunOrDeferUiCall(PhiUiCall* call);
   void RunUiCall(PhiUiCall* call);
   void DrainDeferredUiCalls();
+
+  // --- Lifecycle -----------------------------------------------------------
+  AppPhase phase_ = AppPhase::kBooting;
+  // Moves to `next`, logging the move at INFO with `reason` (one word). A
+  // move backwards is refused with a WARNING and the phase kept: the phases
+  // are promises the rest of the coordinator relies on, and a promise once
+  // made is not taken back. Same-phase calls are silent no-ops. Returns
+  // whether the phase changed.
+  bool Transition(AppPhase next, const char* reason);
+  // The kSettled work, reached from BOTH restore paths — the reopen
+  // receipt (OnSessionRestoreSettled), the cold start's fallback timer, or,
+  // when neither will fire, the first user shell's first OnWindowChanged:
+  // drops the parked windows no Space claims, rescues a session left with
+  // no user window, then folds kSettled onto kRunning. A later settlement
+  // (a reopen while running) does the work without moving the phase.
+  void SettleRestore(const char* reason);
+  // The process's last browser is gone and nothing is on its way: Chromium
+  // is exiting through its own path (no WM_ENDSESSION comes), so this is
+  // the last chance to flush. Enters kClosing and runs FlushForShutdown.
+  void MaybeEnterClosing();
+  // The OnBrowserWindowClosing body proper (per-kind bookkeeping), split
+  // out so MaybeEnterClosing runs after every exit of it.
+  void RetireClosingBrowser(BrowserId browser);
   // Everything that must reach disk before the session ends: pending
   // coalesced saves, the telemetry spool and the feedback outbox worker.
+  // Idempotent: WM_QUERYENDSESSION and WM_ENDSESSION both call it.
   void FlushForShutdown();
+
+  // --- The application model and its stores --------------------------------
+  // The four persisted domains (docs/architecture-review.md §3.4 store
+  // mapping), each a plain value the rest of the coordinator reads and
+  // writes directly, and the PhiStore that owns its file. Every former
+  // pref/list/grant member lives in one of these; nothing else is truth.
+  // The tab store keeps its own rows and writer.
+  model::PhiSettings settings_;         // PhiSettings.json
+  model::PhiSpacesModel spaces_model_;  // PhiSpaces.json (Spaces + rules)
+  model::PhiRestoreModel restore_;      // PhiRestore.json
+  model::PhiConsentModel consent_;      // PhiConsent.json (sealed)
+  PhiStore<model::PhiSettings> settings_store_;
+  PhiStore<model::PhiSpacesModel> spaces_store_;
+  PhiStore<model::PhiRestoreModel> restore_store_;
+  PhiStore<model::PhiConsentModel> consent_store_;
+  // Binds and loads the four stores (a missing file imports the pre-phase-3
+  // files it replaces; a corrupt one is quarantined and defaults stand),
+  // then applies what the loaded settings drive outside the model: the
+  // reader style, the display language, the palettes, telemetry consent.
+  void LoadStores(const std::wstring& user_data_dir);
+  // The reader's live style is PhiReaderBridge's; it is copied into
+  // settings_.reader whenever it changes (OnReaderStyleChanged) and out of
+  // it after a load, so the model is what the store writes.
+  void SyncReaderStyleToModel();
+  // The pin scope's truth is the tab store (its rows re-own themselves on a
+  // change); settings_.pin_scope is a write-through mirror so the two
+  // files never disagree — called after every tab-store change and load.
+  void MirrorPinScope();
+
+  // --- Coalesced saves -----------------------------------------------------
+  // Every client store the coordinator writes. A mutation marks its domain
+  // dirty (ScheduleSave); ONE timer writes every dirty domain ~250 ms later,
+  // so a burst of edits (a rename typed letter by letter, three pins from
+  // one split) costs one disk round-trip per file instead of one per
+  // keystroke — every write here is synchronous on the UI thread. The tab
+  // store keeps its own atomic writer (docs/architecture-review.md §3.4).
+  enum class StoreDomain : uint32_t {
+    kSettings,  // settings_: layout, theme, prefs, shortcuts, reader...
+    kSpaces,    // spaces_model_: the Space list, default role, URL rules
+    kRestore,   // restore_: remembered windows, parked, last-active Space
+    kConsent,   // consent_: agent "always" grants, credential grants/audit
+  };
+  void ScheduleSave(StoreDomain domain);
+  // Writes every dirty domain now and disarms the timer. The shutdown path
+  // and the timer are its only callers.
+  void FlushDirtyStores();
+  // The bit set of dirty StoreDomains (1u << domain).
+  uint32_t dirty_stores_ = 0;
+  // Which domain a StoreDomain bit is, for the flush loop.
+  static constexpr uint32_t StoreBit(StoreDomain domain) {
+    return 1u << static_cast<uint32_t>(domain);
+  }
   // The browser a wire `windowId` means: a slot number resolves to the
   // browser that slot is SHOWING (the Space's browser, never the slot's
   // original), anything else names a browser itself (an agent window, a
@@ -504,11 +619,9 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   HWND ShellForFocus() const;
   // Agent-peer consent (C1): the UI-thread half of AuthorizeAgentPeer —
   // grant store first, then the session's remembered choices, then the
-  // consent dialog. Grants persist in PhiAgentGrants.json by IMAGE PATH
-  // (lowercased for comparison).
+  // consent dialog. Grants persist in the sealed consent file by IMAGE
+  // PATH (lowercased for comparison).
   bool AuthorizeAgentPeerOnUi(const PhiAgentPeer& peer);
-  void LoadAgentGrants();
-  void SaveAgentGrants() const;
   // The chord a rebindable shortcut currently answers to: its override when
   // one exists, its default otherwise.
   PhiShortcutChord EffectiveChord(const std::string& name) const;
@@ -533,52 +646,12 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // Panels whose page left reader.html, with the url to re-open, until the
   // deferred expand runs.
   std::map<BrowserId, std::string> pending_reader_expands_;
-  int sidebar_width_ = kSidebarWidthDefault;
-  // Spaces are a client concept. Each binds EXACTLY ONE profile; several
-  // Spaces may share a profile (the fork's model). The binding is fixed for
-  // the life of a browser window — changing it goes through SetSpaceProfile,
-  // which respawns the Space's window.
-  struct Space {
-    std::string id;
-    std::string name;
-    std::string profile_id;  // On-disk basename, e.g. "Default".
-    // Icon in the Mac's storage form ("emoji:<id>" / "phi:<id>"), so a Space
-    // means the same thing on both clients.
-    std::string icon = kPhiDefaultSpaceIcon;
-    // Per-Space THEME OVERRIDE, the Mac's spaceThemeIds / spaceThemeSaturations
-    // maps. Empty id and -1 saturation mean "follow the app-wide choice".
-    std::string theme_id;
-    int saturation = -1;
-    // The Mac wire's per-Space accent ("#RRGGBB"). Cosmetic data the Windows
-    // chrome does not paint yet — stored and echoed so the skill's
-    // create/update/list round-trip agrees across clients.
-    std::string color_hex;
-  };
-  std::vector<Space> spaces_{{"1", "Space 1", "Default", kPhiDefaultSpaceIcon}};
-  int next_space_id_ = 2;
-  // The default role's holder (see DefaultSpaceId); validated on load.
-  std::string default_space_id_ = "1";
-  // Where the Space list is persisted (user data dir).
-  std::wstring spaces_path_;
-  // A Space URL routing rule, the Mac's SpaceURLRule. `host` is stored in
-  // the wire form ("github.com" exact, "*.foo.com" suffix, "*needle*"
-  // contains); `path_prefix` empty means any path; `ask` prompts instead of
-  // routing silently. Order in the vector is the sortOrder tiebreak.
-  struct UrlRule {
-    std::string space_id;
-    std::string host;
-    std::string path_prefix;
-    bool ask = false;
-  };
-  std::vector<UrlRule> url_rules_;
-  // Bumped on every rule write; the wire rule ids ("g<gen>-<index>") carry
-  // it, so ids from before a write stop resolving — the Mac contract that
-  // callers re-list before update/delete.
-  int url_rules_generation_ = 1;
-  std::wstring url_rules_path_;
-  void LoadUrlRules();
-  void SaveUrlRules() const;
-  // Compiles url_rules_ plus the Space -> VISIBLE browser map into the
+  // Spaces are a client concept (model::Space): each binds EXACTLY ONE
+  // profile; several Spaces may share a profile (the fork's model). The
+  // binding is fixed for the life of a browser window — changing it goes
+  // through SetSpaceProfile, which respawns the Space's window. The list,
+  // the default role and the URL rules are spaces_model_.
+  // Compiles the rules plus the Space -> VISIBLE browser map into the
   // framework's PhiURLRouter table. Called (via PushSpaceMenu) on every
   // rules edit, browser attach/close and Space switch.
   void PushRoutingTable() const;
@@ -636,38 +709,16 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
                           bool as_bookmark, int insert_index,
                           bool bind_bookmark);
 
-  void LoadSpaces();
-  void SaveSpaces() const;
   // Publishes the Space list (with each Space's open browser id) into the
   // framework for the page context menu's "Open Link in Space" submenu.
   void PushSpaceMenu() const;
-  // Where the chrome lives — one setting for every slot, as on Mac. Persisted
-  // beside the Space list so a restart comes back in the same layout.
-  PhiLayoutMode layout_mode_ = PhiLayoutMode::kPerformance;
-  std::wstring layout_path_;
-  void LoadLayoutMode();
-  void SaveLayoutMode() const;
-  // Theme + appearance, the Mac's ThemeSettings. Persisted beside the layout.
-  std::string theme_id_ = "pure";
-  PhiAppearance appearance_ = PhiAppearance::kSystem;
+  // The app-wide palette, resolved from settings_ (theme id, appearance,
+  // saturation) — derived, never persisted.
   PhiPalette palette_;
   // One resolved palette per Space that overrides the app-wide theme; a Space
   // with no override is not in here and uses `palette_`.
   std::map<std::string, PhiPalette> palette_by_space_;
   void RebuildSpacePalettes();
-  std::wstring theme_path_;
-  void LoadTheme();
-  void SaveTheme() const;
-  // The rest of the settings surface (the Mac's General pane).
-  int saturation_ = 50;
-  PhiNewTabBehavior new_tab_behavior_ = PhiNewTabBehavior::kNewTabPage;
-  bool always_show_full_url_ = false;
-  bool show_tab_previews_ = true;  // The Mac's defaultValue.
-  // Peek View: master gate and the automatic bound-opener diversion under
-  // it. Both the Mac's defaultValue, and what the framework did before it
-  // was asked.
-  bool peek_view_enabled_ = true;
-  bool auto_peek_view_enabled_ = true;
   // Which of the user's own tabs an agent currently holds (the operating
   // mask). Fed by the three delegate reports above.
   PhiAgentDriveRegistry agent_drives_;
@@ -676,8 +727,9 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // will REPLACE its records from this, never merge.
   std::string last_restore_receipt_;
   // Which Spaces exist only as a parked window, and the window each Space
-  // had last run (the key the ghost store names them by).
-  PhiGhostSpaces ghost_spaces_;
+  // had last run — a view over restore_ (declared above, so it outlives
+  // this).
+  PhiGhostSpaces ghost_spaces_{&restore_};
   // Which Space the cold start should rebuild eagerly: the one that was
   // active when the last run ended.
   std::string LastActiveSpaceId() const;
@@ -692,9 +744,11 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // Drains deferred_ui_calls_ once no modal loop is up.
   static constexpr UINT_PTR kDeferredUiCallTimer = 4;
   static constexpr UINT kDeferredUiCallPollMs = 50;
-  // Coalesces the last-active-Space write into one SavePrefs.
-  static constexpr UINT_PTR kLastActiveSaveTimer = 5;
-  static constexpr UINT kLastActiveSaveDelayMs = 1000;
+  // The one coalesced-save timer (ScheduleSave / FlushDirtyStores). Armed
+  // when the first domain goes dirty, never re-armed by later marks, so a
+  // steady stream of edits still lands on disk every kSaveDelayMs.
+  static constexpr UINT_PTR kSaveTimer = 5;
+  static constexpr UINT kSaveDelayMs = 250;
   // Cold start armed an eager set: if no user window is up once the replay
   // settles, open a default shell (lane 4 §6 item 6). Armed for the replay
   // to have its say, re-armed shorter once the park list has landed.
@@ -712,10 +766,9 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // UI thread, in arrival order (see RunOrDeferUiCall).
   std::deque<PhiUiCall*> deferred_ui_calls_;
   bool draining_ui_calls_ = false;
-  // The Space the user was in when the run ended (PhiPrefs.json
-  // lastActiveSpaceId): what LastActiveSpaceId() answers before any window
-  // is live. Noted on every switch; written by kLastActiveSaveTimer.
-  std::string last_active_space_id_;
+  // Notes the Space the user is in (restore_.last_active_space_id, what
+  // LastActiveSpaceId() answers before any window is live) — on every
+  // switch; written by the coalesced restore save.
   void NoteActiveSpace(const std::string& space_id);
   // True from OnColdStartRestorePlan arming a filter until a user window
   // exists — the window the fallback timer checks for.
@@ -724,21 +777,21 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   void OpenDefaultShellIfNoUserWindow(const char* reason);
   // Drops (framework side) and forgets the parked windows no Space claims.
   void DropOrphanGhosts();
-  // "Restore last session" — persisted app-wide, mirrored into each loaded
-  // profile's SessionStartupPref (LAST/DEFAULT).
-  bool restore_last_session_ = false;
-  // Persistent "Always Allow" agent grants (lowercased image paths) and the
-  // session-scoped consent memory (allow-once / deny-for-now per path).
-  std::set<std::wstring> agent_grants_;
+  // The global framework mirrors (peek switches, display language) are
+  // pushed once, on the first OnProfileLoaded; later loads push only the
+  // per-profile restore choice.
+  bool global_mirrors_pushed_ = false;
+  // The session-scoped agent consent memory (allow-once / deny-for-now per
+  // lowercased image path); the standing "Always Allow" set is
+  // consent_.agent_always_paths.
   std::set<std::wstring> session_allowed_peers_;
   std::set<std::wstring> session_denied_peers_;
-  std::wstring agent_grants_path_;
-  // Credential approvals. The persisted "always" grants are LOADED FOR THE
-  // SETTINGS DISPLAY ONLY — they no longer cover anything (a standing
-  // password grant plus an agent-chosen page was the exfil path, lane 5
-  // F2); the timed ones are session-scoped by design (the Mac's in-memory
-  // 10-minute cache), so a restart is always a clean slate for them.
-  std::map<std::string, CredentialAccessKind> credential_grants_;
+  // Credential approvals. The persisted "always" grants
+  // (consent_.credential_grants) are LOADED FOR THE SETTINGS DISPLAY ONLY —
+  // they no longer cover anything (a standing password grant plus an
+  // agent-chosen page was the exfil path, lane 5 F2); the timed ones are
+  // session-scoped by design (the Mac's in-memory 10-minute cache), so a
+  // restart is always a clean slate for them.
   struct TimedCredentialGrant {
     CredentialAccessKind kind = CredentialAccessKind::kFill;
     ULONGLONG expires_tick = 0;
@@ -747,8 +800,6 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // Denial memory: grant key -> tick until which the request is refused
   // without a prompt (5 minutes), so a denied ask cannot re-prompt at once.
   std::map<std::string, ULONGLONG> credential_denials_;
-  std::vector<std::string> credential_audit_;
-  std::wstring credential_grants_path_;
   // --- Deferred control replies -------------------------------------------
   // A verb whose answer arrives asynchronously (reader extraction, a window
   // or profile creation) returns {"pendingReply":<id>} from the UI thread;
@@ -774,30 +825,10 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // The JSON error a waiter gets when its creation never arrived.
   static constexpr char kCreateTimeoutReply[] =
       "{\"ok\":false,\"error\":\"create_timeout\"}";
-  // The bookmark bar's two visibility switches (the Mac View menu's pair).
-  bool always_show_bookmark_bar_ = false;
-  bool bookmark_bar_on_new_tab_ = false;
-  // Shortcut overrides, keyed by the shortcut's STABLE NAME (never the
-  // command int, which is free to be renumbered). vk 0 = explicitly unbound.
-  std::map<std::string, PhiShortcutChord> shortcut_overrides_;
-  // Gates the Developer settings pane, as on Mac (default off).
-  bool developer_mode_ = false;
-  // Settings ▸ Developer ▸ "Allow agents to operate your Spaces"
-  // (PhiPrefs.json allowAgentUserSpaces). Off: every user-space verb fails
-  // user_space_operations_disabled (IsUserSpaceRequest). NEVER settable
-  // over the control channel.
-  bool allow_agent_user_spaces_ = false;
-  // PhiPrefs.json testRig: the box runner seeds it; unlocks the
-  // harness-only verbs (feedback.setAccount, analytics.list, window.handle,
-  // captureWindow to a path). No UI, never agent-settable.
-  bool test_rig_ = false;
-  // Reader View's app half. Holds the reading style (one store for every
-  // reader surface, persisted in PhiPrefs.json) and the per-tab offer/state
-  // the extension reports.
+  // Reader View's app half. Holds the live reading style (one store for
+  // every reader surface; persisted as settings_.reader) and the per-tab
+  // offer/state the extension reports.
   PhiReaderBridge reader_{this};
-  std::wstring prefs_path_;
-  void LoadPrefs();
-  void SavePrefs() const;
   // Hands the display language to the framework, which owns Chromium's own
   // locale (context menus, error pages, Accept-Language). The client catalog
   // and Chromium keep separate copies of the choice, so this runs both when
@@ -1014,8 +1045,6 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // True while a live TIMED grant covers `grant_key`. The kind is not
   // consulted: fill and reveal are one exposure (see CredentialAccessKind).
   bool CredentialGrantCovers(const std::string& grant_key) const;
-  void LoadCredentialGrants();
-  void SaveCredentialGrants() const;
   // Appends one line to the credential audit trail (newest first, capped)
   // and persists it — every approval decision is recorded, allowed or not.
   void AppendCredentialAudit(const std::string& scope,

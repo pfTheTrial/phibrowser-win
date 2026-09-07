@@ -296,11 +296,25 @@ void PhiTelemetry::Start(const std::wstring& user_data_dir) {
   LOG(INFO) << "[telemetry] uploader started for " << endpoint;
 }
 
+void PhiTelemetry::SetEnabled(bool enabled) {
+  ::EnterCriticalSection(&lock_);
+  const bool changed = enabled_ != enabled;
+  enabled_ = enabled;
+  ::LeaveCriticalSection(&lock_);
+  if (changed) {
+    LOG(INFO) << "[telemetry] analytics " << (enabled ? "enabled" : "disabled")
+              << " by the user";
+  }
+}
+
 void PhiTelemetry::RecordEvent(const std::string& module,
                                const std::string& name,
                                const std::string& properties_json) {
   ::EnterCriticalSection(&lock_);
-  const bool configured = !endpoint_.empty();
+  // Two gates, both required: a collector is configured AND the user
+  // consented. Without consent the event is dropped here — never queued, so
+  // it cannot reach the spool file either.
+  const bool configured = !endpoint_.empty() && enabled_;
   if (configured) {
     Event event;
     event.module = module;
@@ -342,6 +356,7 @@ std::string PhiTelemetry::StatusJson() {
   base::DictValue out;
   ::EnterCriticalSection(&lock_);
   out.Set("configured", !endpoint_.empty());
+  out.Set("enabled", enabled_);  // The user's consent switch.
   out.Set("endpoint", endpoint_);  // The key is deliberately not reported.
   out.Set("queued", static_cast<int>(queue_.size()));
   out.Set("sent", static_cast<double>(sent_));

@@ -899,6 +899,36 @@ parameters, `RefreshFieldExtensions`' extension-list JSON (no typed twin).
 `WM_QUERYENDSESSION`/`WM_ENDSESSION`; orphan-ghost drop and receipt flags on
 `Settled`; telemetry consent pref and `Stop()` wiring.
 
+**Phase 3 status (2026-09-07, uncommitted).** Landed: `phi_store.h`
+(`PhiStore<T>` over `phi_file_io`: load with quarantine, one-shot import of
+the legacy files, schema migration, atomic save; sealed mode = DPAPI +
+HMAC-SHA256 keyed by a DPAPI-protected `PhiConsent.key`, any seal failure
+fails closed); `phi_app_model.{h,cc}` (`PhiSettings`, `PhiSpacesModel` with
+the URL rules inside, `PhiRestoreModel` with the last-active Space,
+`PhiConsentModel`; truth owner stated on each; host-tested); the
+coordinator owns the four models and stores and nothing else persists —
+the fourteen `Load*/Save*` bodies and ~30 scattered members are gone, saves
+are coalesced (250 ms, one write per dirty domain, flushed on close);
+`PhiGhostSpaces` is a view over the restore model; the lifecycle machine
+(`booting → storesLoaded → restorePlanned → restoring → settled → running →
+closing → flushed`, logged, one `SettleRestore` for both restore paths,
+`agentSpace.ping` reports `phase` and `pendingSaves`); `OnProfileLoaded`
+(fork: after `OnFrameworkReady`, before the restore decision and the first
+window) carries the per-profile mirror pushes; telemetry is opt-in
+(`analyticsEnabled`, default off, Settings › General, never agent-settable);
+and a real bug from the fork read: the Windows "restore last session"
+setting wrote a per-profile pref that Phi's startup never reads — the
+setter now flips the app-wide Local State switch too. Verified on the box:
+first launch over the old profile imported all seven legacy files
+(renamed `.imported`), migrated the Spaces file to schema 2 and created the
+four stores plus the seal key; the lifecycle log shows the transitions; the
+sweep is identical to the baseline; `sv-surface` and `sv-drag` ALL PASS.
+The harness gained `waitForSaves()` and the four restarting suites call it
+before killing the process. Rig note: a wire `windowId` may be a slot id, a
+bound browser id or 0 — every verb resolves through `PhiWindowRegistry::
+Resolve`; a strict slot lookup crept back into two verbs during phase 2 and
+was caught by the rigs.
+
 ### Phase 4 — coordinator split and control plane (~3 to 4 weeks)
 
 Extract the services in §3.4 as file moves plus interfaces, no behaviour

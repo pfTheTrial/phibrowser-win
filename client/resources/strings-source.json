@@ -2033,6 +2033,14 @@
    "comment": "settings — used at phi_settings_window.cc:753",
    "en": "Always show full URL"
   },
+  "settings.general.analytics.hint": {
+   "comment": "settings — hint under the analytics toggle",
+   "en": "Send anonymous usage statistics to help improve Phi. Never your pages, searches or account."
+  },
+  "settings.general.analytics.toggle": {
+   "comment": "settings — General pane, the telemetry consent switch",
+   "en": "Share anonymous usage analytics"
+  },
   "settings.general.appearance.sectionTitle": {
    "comment": "settings — used at phi_settings_window.cc:658",
    "en": "Appearance"

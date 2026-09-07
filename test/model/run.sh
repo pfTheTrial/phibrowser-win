@@ -29,3 +29,7 @@ $CXX ../../client/phi_shell_layout.cc shell_layout_test.cc \
 /tmp/phi_window_registry_test
 /tmp/phi_window_model_test
 /tmp/phi_shell_layout_test
+# The app model (docs/architecture-review.md §3.4, phase 3): defaults and
+# the pure id helpers; the codecs need base::Value and stay on the target.
+$CXX app_model_test.cc -o /tmp/phi_app_model_test
+/tmp/phi_app_model_test

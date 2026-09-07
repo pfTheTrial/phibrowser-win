@@ -4,10 +4,11 @@
 // sorts before suite-profiles/spaces — the runner tolerates any order because
 // each suite is self-contained).
 import { execFileSync } from 'node:child_process'
-import { test, run, assert, assertEq, sleep, openControl } from './phi-test.mjs'
+import { test, run, assert, assertEq, sleep, openControl, waitForSaves } from './phi-test.mjs'
 
 /** Restarts Phi and waits for its control socket to answer again. */
 async function restartApp() {
+  await waitForSaves()  // Coalesced writes land before the kill.
   execFileSync('powershell.exe', ['-NoProfile', '-Command', `
 Get-Process Phi -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 $deadline = (Get-Date).AddSeconds(20)
