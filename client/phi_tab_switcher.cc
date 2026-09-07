@@ -8,20 +8,19 @@
 #include <windowsx.h>
 
 #include <algorithm>
-#include <optional>
 #include <string>
 #include <vector>
 
 #include "base/compiler_specific.h"
 #include "base/containers/span.h"
-#include "base/json/json_reader.h"
 #include "base/memory/raw_ptr_exclusion.h"
 #include "base/strings/utf_string_conversions.h"
-#include "base/values.h"
 #include "chrome/browser/phinomenon/phi_framework/phi_framework_api.h"
 #include "phibrowser-win/client/phi_dwrite.h"
+#include "phibrowser-win/client/phi_ids.h"
 #include "phibrowser-win/client/phi_theme.h"
 #include "phibrowser-win/client/phi_window_controller.h"
+#include "phibrowser-win/client/phi_window_model.h"
 
 namespace phi_client {
 
@@ -36,8 +35,7 @@ constexpr int kFooterHeight = 28;
 constexpr size_t kMaxCards = 7;
 
 struct Card {
-  int tab_id = 0;
-  int index = -1;
+  TabId tab_id;
   std::wstring title;
   std::vector<unsigned char> thumbnail;
   int thumb_w = 0;
@@ -96,9 +94,9 @@ class Hud {
       const Card& card = cards_[static_cast<size_t>(selected_)];
       phi_framework::PhiFramework* framework = controller_->framework();
       const BrowserId browser = controller_->active_browser_id();
-      if (framework && browser.valid() && card.index >= 0) {
-        framework->ActivateTab(browser.value, card.index);
-        controller_->RefreshTabs();
+      if (framework && browser.valid() && card.tab_id.valid()) {
+        framework->ActivateTabById(browser.value, card.tab_id.value);
+        // The framework's push refreshes the sidebar; nothing to do here.
       }
     }
   }
@@ -123,41 +121,27 @@ class Hud {
   }
 
   // MRU-ordered cards: the controller's MRU list first, then any tabs it
-  // has not seen active yet, in strip order.
+  // has not seen active yet, in strip order — the strip from the window
+  // model, never a parse of the framework's JSON.
   void BuildCards() {
     phi_framework::PhiFramework* framework = controller_->framework();
-    if (!framework) {
-      return;
-    }
-    const int64_t browser = controller_->active_browser_id().value;
-    if (!browser) {
+    const PhiWindowModel* model = controller_->model();
+    const BrowserId browser = controller_->active_browser_id();
+    if (!framework || !model || !browser.valid()) {
       return;  // No browser attached: an empty switcher.
     }
     struct Entry {
-      int id;
-      int index;
+      TabId id;
       std::wstring title;
     };
     std::vector<Entry> entries;
-    std::optional<base::Value> tabs = base::JSONReader::Read(
-        framework->ListTabsJson(browser), base::JSON_PARSE_RFC);
-    if (tabs && tabs->is_list()) {
-      for (const base::Value& v : tabs->GetList()) {
-        const base::DictValue* d = v.GetIfDict();
-        if (!d) {
-          continue;
-        }
-        Entry entry;
-        entry.id = d->FindInt("id").value_or(0);
-        entry.index = d->FindInt("index").value_or(-1);
-        if (const std::string* s = d->FindString("title")) {
-          entry.title = base::UTF8ToWide(*s);
-        }
-        entries.push_back(std::move(entry));
+    if (const phi_framework::WindowSnapshot* snapshot = model->Get(browser)) {
+      for (const phi_framework::TabSnapshot& tab : snapshot->tabs) {
+        entries.push_back({tab.id, base::UTF8ToWide(tab.title)});
       }
     }
     std::vector<Entry> ordered;
-    for (const int id : controller_->TabMruOrder()) {
+    for (const TabId id : controller_->TabMruOrder()) {
       for (const Entry& entry : entries) {
         if (entry.id == id) {
           ordered.push_back(entry);
@@ -179,19 +163,18 @@ class Hud {
       }
       Card card;
       card.tab_id = entry.id;
-      card.index = entry.index;
       card.title = entry.title;
       int w = 0, h = 0;
-      if (const unsigned char* pixels =
-              framework->TabThumbnailBgra(browser, entry.id, &w, &h)) {
+      if (const unsigned char* pixels = framework->TabThumbnailBgra(
+              browser.value, entry.id.value, &w, &h)) {
         const auto copy = UNSAFE_BUFFERS(base::span<const unsigned char>(
             pixels, static_cast<size_t>(w) * h * 4));
         card.thumbnail.assign(copy.begin(), copy.end());
         card.thumb_w = w;
         card.thumb_h = h;
       }
-      if (const unsigned char* pixels =
-              framework->TabFaviconBgra(browser, entry.index, &w, &h)) {
+      if (const unsigned char* pixels = framework->TabFaviconBgraById(
+              browser.value, entry.id.value, &w, &h)) {
         const auto copy = UNSAFE_BUFFERS(base::span<const unsigned char>(
             pixels, static_cast<size_t>(w) * h * 4));
         card.favicon.assign(copy.begin(), copy.end());

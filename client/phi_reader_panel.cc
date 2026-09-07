@@ -4,17 +4,14 @@
 
 #include "phibrowser-win/client/phi_reader_panel.h"
 
-#include <optional>
-
-#include "base/json/json_reader.h"
 #include "base/logging.h"
 #include "base/strings/utf_string_conversions.h"
-#include "base/values.h"
 #include "chrome/browser/phinomenon/phi_framework/phi_framework_api.h"
 #include "phibrowser-win/client/phi_coordinator.h"
 #include "phibrowser-win/client/phi_reader.h"
 #include "phibrowser-win/client/phi_theme.h"
 #include "phibrowser-win/client/phi_window_controller.h"
+#include "phibrowser-win/client/phi_window_model.h"
 
 namespace phi_client {
 
@@ -50,6 +47,7 @@ PhiReaderPanel::PhiReaderPanel(int64_t window_id,
                                int64_t origin_tab_id,
                                PhiWindowController* origin,
                                phi_framework::PhiFramework* framework,
+                               const PhiWindowModel* model,
                                PhiCoordinator* coordinator)
     : window_id_(BrowserId{window_id}),
       browser_hwnd_(browser_hwnd),
@@ -57,6 +55,7 @@ PhiReaderPanel::PhiReaderPanel(int64_t window_id,
       origin_tab_id_(origin_tab_id),
       origin_(origin),
       framework_(framework),
+      model_(model),
       coordinator_(coordinator) {
   EnsureClass();
   HWND shell = origin_ ? origin_->shell_hwnd() : nullptr;
@@ -226,38 +225,39 @@ void PhiReaderPanel::RefreshState() {
   // Read the STRIP, not the nav state: a panel whose surface tab is being
   // removed (reader.close, or the reading page's own X) has an empty strip
   // and reports a placeholder page, which is not a navigation and must not
-  // be mistaken for one — the browser is about to close on its own.
-  std::optional<base::Value> tabs = base::JSONReader::Read(
-      framework_->ListTabsJson(window_id_.value), base::JSON_PARSE_RFC);
-  if (!tabs || !tabs->is_list() || tabs->GetList().size() != 1) {
+  // be mistaken for one — the browser is about to close on its own. The
+  // strip is the model's snapshot of this browser, pulled typed when the
+  // model has not been pushed it yet (the panel is built inside its
+  // Browser::Create).
+  const phi_framework::WindowSnapshot* snapshot =
+      model_ ? model_->Get(window_id_) : nullptr;
+  phi_framework::WindowSnapshot pulled;
+  if (!snapshot && framework_->Snapshot(window_id_, &pulled)) {
+    snapshot = &pulled;
+  }
+  if (!snapshot || snapshot->tabs.size() != 1) {
     return;
   }
-  const base::DictValue* row = tabs->GetList().front().GetIfDict();
-  if (!row) {
-    return;
-  }
-  const std::string* surface = row->FindString("surface");
-  const bool is_surface = surface && *surface == "reader";
+  const phi_framework::TabSnapshot& row = snapshot->tabs.front();
+  const bool is_surface = row.surface == phi_framework::TabSurface::kReader;
   if (!surface_tab_id_) {
     // The framework panelled the surface itself (the insertion divert), so
     // nobody bound it here: adopt the reader page standing for our origin.
-    if (is_surface &&
-        row->FindInt("originTabId").value_or(0) == origin_tab_id_) {
-      surface_tab_id_ = row->FindInt("id").value_or(0);
+    if (is_surface && row.origin.value == origin_tab_id_) {
+      surface_tab_id_ = row.id.value;
     }
     return;
   }
-  if (row->FindInt("id").value_or(0) != surface_tab_id_) {
+  if (row.id.value != surface_tab_id_) {
     // Not the tab that was moved in: the surface has gone and this browser
     // is on its way out with a placeholder page. Nothing to hand back.
     return;
   }
-  const std::string* url = row->FindString("url");
-  if (!url || url->empty()) {
+  if (row.url.empty()) {
     return;
   }
-  url_ = base::UTF8ToWide(*url);
-  if (is_surface || *url == "about:blank") {
+  url_ = base::UTF8ToWide(row.url);
+  if (is_surface || row.url == "about:blank") {
     return;
   }
   // A link clicked inside the reader. The reading surface is not a place to
@@ -267,7 +267,7 @@ void PhiReaderPanel::RefreshState() {
   LOG(INFO) << "[PhiClient] reader panel " << window_id_.value
             << " navigated away — expanding into a tab";
   if (coordinator_) {
-    coordinator_->ExpandReaderPanelIntoTab(window_id_.value, *url);
+    coordinator_->ExpandReaderPanelIntoTab(window_id_.value, row.url);
   }
 }
 

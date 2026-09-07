@@ -39,6 +39,7 @@
 #include "phibrowser-win/client/phi_tab_store.h"
 #include "phibrowser-win/client/phi_theme.h"
 #include "phibrowser-win/client/phi_window_controller.h"
+#include "phibrowser-win/client/phi_window_model.h"
 #include "phibrowser-win/client/phi_window_registry.h"
 
 namespace phi_client {
@@ -75,7 +76,13 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   void OnBrowserWindowCreated(
       const phi_framework::WindowCreation& creation) override;
   void OnBrowserWindowClosing(int64_t window_id) override;
-  void OnTabsChanged(int64_t window_id) override;
+  // The ONE strip/nav/split/group notification the client consumes (the
+  // legacy OnTabsChanged that follows it is left unimplemented): stores the
+  // snapshot in window_model_, settles the surfaces over the window and
+  // posts the slot's rebuild. Delivered under contract rule 1, so the
+  // framework may be called from inside it.
+  void OnWindowChanged(const phi_framework::WindowSnapshot& snapshot,
+                       phi_framework::WindowChangeReason reason) override;
   void OnOpenLinkInSpace(int64_t source_window_id,
                          const char* space_id,
                          const char* url) override;
@@ -131,23 +138,25 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // App -> extensions. False when the broadcast reached nobody.
   bool BroadcastToExtensions(const std::string& type,
                              const std::string& payload_json);
-  // The window whose visible strip holds `tab_id`, or null when the tab is
-  // not on screen anywhere (a background Space, or a tab already gone).
-  PhiWindowController* WindowShowingTab(int tab_id);
+  // The window whose ON-SCREEN browser holds `tab_id` (by the model, so a
+  // tab hidden in a pin or bookmark cell still counts), or null when the
+  // tab is not on screen anywhere (a background Space, or a tab already
+  // gone).
+  PhiWindowController* WindowShowingTab(TabId tab_id);
   // The reader extension's surface tab has appeared in the origin's strip:
   // move it into a browser of its own and host that in a panel over the
   // origin's page. False when there is no such tab to move.
-  bool PanelizeReaderSurface(int origin_tab_id);
+  bool PanelizeReaderSurface(TabId origin_tab_id);
   // Closes the reader panel covering `origin_tab_id`, if any. The panel's
   // browser holds only the surface tab, so closing the window is the whole
   // teardown.
-  void CloseReaderPanelForOrigin(int origin_tab_id);
+  void CloseReaderPanelForOrigin(TabId origin_tab_id);
   // Closes every surface of `kind` (kContent = all kinds) attached to the
   // tab: the panel browsers close, and OnBrowserWindowClosing forgets them.
-  void CloseSurfacesForOrigin(int origin_tab_id,
+  void CloseSurfacesForOrigin(TabId origin_tab_id,
                               SidebarSurface kind = SidebarSurface::kContent);
   // Whether a reader panel is currently up for this origin tab.
-  bool HasReaderPanelForOrigin(int origin_tab_id) const;
+  bool HasReaderPanelForOrigin(TabId origin_tab_id) const;
   // A link inside the reading surface navigated it away from reader.html:
   // hand `url` back to the origin window as a normal tab and drop the panel.
   void ExpandReaderPanelIntoTab(int64_t panel_window_id,
@@ -158,7 +167,7 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   void OnReaderStyleChanged();
   // The reader affordance for `tab_id` may have changed — repaint the window
   // showing it.
-  void OnReaderOfferabilityChanged(int tab_id);
+  void OnReaderOfferabilityChanged(TabId tab_id);
 
   // PhiControlDelegate (called on the control server's I/O thread):
   std::string HandleControlCommand(const std::string& type,
@@ -249,8 +258,9 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
                        const std::string& url) override;
   bool SetStoredRowLayout(const std::string& guid,
                           const std::string& layout) override;
-  // The divider axis of the live split holding a tab, for stored rows.
-  std::string LiveSplitLayout(BrowserId browser, int index);
+  // The divider axis ("vertical" / "horizontal") of the live split holding
+  // `tab`, for stored rows; empty when the tab is in no split.
+  std::string LiveSplitLayout(BrowserId browser, TabId tab) const;
   bool RenameStoredRow(const std::string& guid,
                        const std::string& name) override;
   void ReorderSpace(const std::string& space_id, int new_index) override;
@@ -437,14 +447,12 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // Space browser the caller learned from spaces.list).
   BrowserId ResolveBrowser(int64_t slot_or_browser) const;
   BrowserId ResolveBrowser(SlotId slot) const;
-  // The session id of `browser`'s active tab (what ListTabsJson emits as
-  // "id", and what the extensions API calls a tab id), or 0.
-  int ActiveTabId(BrowserId browser);
-  // Activates the tab with this session id in `browser` (indices shift; ids
-  // do not).
-  void ActivateTabById(BrowserId browser, int tab_id);
+  // The session id of `browser`'s active tab (what the extensions API calls
+  // a tab id), or invalid — from the model.
+  TabId ActiveTabId(BrowserId browser) const;
   // A window's tab strip changed: re-fit, re-hide and retire the reader
-  // panels bound to it.
+  // panels bound to it. Reads the model, so it runs AFTER the snapshot that
+  // reports the change has been stored.
   void UpdateReaderPanelsForWindow(BrowserId window_id);
   // Finishes the store's schema 1 -> 2 fold on LIVE tabs: a tab still tagged
   // with a folded-away pin guid (session restore brings them back) is retagged
@@ -459,8 +467,6 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // falls back to the first USER window — the verb convention for "the
   // window". Null when none exists.
   PhiWindowController* ControllerForSlot(SlotId slot);
-  // RefreshTabs on every slot (agent windows included).
-  void RefreshAllWindows();
   static LRESULT CALLBACK MsgWndProc(HWND hwnd,
                                      UINT msg,
                                      WPARAM wparam,
@@ -510,6 +516,13 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // Checked by the hook before the fixed table, so a custom chord wins.
   UINT MatchRebindableChord(UINT vk, bool ctrl, bool shift, bool alt) const;
 
+  // The client's one copy of framework window state (docs/architecture-
+  // review.md §3.3 "client side"): every controller reads it through a
+  // const pointer, so it is declared BEFORE the registry that owns them and
+  // outlives them. Fed by OnWindowChanged; pulled (Refresh) for a browser
+  // adopted before its first push and after a mutation whose result is
+  // needed on the spot.
+  PhiWindowModel window_model_;
   // The shell slots, the browser -> slot map, the kiosks and the creations
   // in flight (docs/architecture-review.md §3.4). Every "which window"
   // question goes through here.
@@ -583,22 +596,29 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // `insert_index` among its siblings (INT_MAX = end), bound when `bind`.
   // Returns the new guid, empty on refusal.
   std::string StoreTabsById(SlotId slot,
-                            int tab_a,
-                            int tab_b,
+                            TabId tab_a,
+                            TabId tab_b,
                             bool as_bookmark,
                             const std::string& parent_guid,
                             int insert_index,
                             bool bind);
-  // A live tab's strip facts by id, or false when it is not in `browser`.
-  struct LiveTabInfo {
-    int index = -1;
-    std::string title, url, split_id;
+  // A live tab bound by tag to a stored row: which browser holds it, its
+  // id, and whether it is the row's pane B.
+  struct BoundTab {
+    BrowserId browser;
+    TabId tab;
+    bool pane_b = false;
   };
-  bool LiveTab(BrowserId browser, int tab_id, LiveTabInfo* out) const;
+  // Every live tab (any browser the model knows) bound to the row `guid`.
+  std::vector<BoundTab> TabsBoundTo(const std::string& guid) const;
   // The Move transition table (SidebarMove).
   bool ApplyMove(SlotId slot, const SidebarMove& move, const SidebarTree& tree);
-  // Opens a closed cell's pane(s) as live tab(s) bound to it; returns pane A.
-  int OpenCell(BrowserId browser, const std::string& guid);
+  // Opens a closed cell's pane(s) as live tab(s) bound to it; returns pane
+  // A, invalid on refusal.
+  TabId OpenCell(BrowserId browser, const std::string& guid);
+  // SetTabTagById + a model pull, so the row rebuild this gesture posts
+  // already sees the tag (see the definition for why the push is not enough).
+  void TagTab(BrowserId browser, int tab_id, const char* tag);
   // Former host verbs, now internal to Apply and the agent dialect.
   bool ConvertStoredRow(SlotId slot,
                         const std::string& guid,
@@ -609,12 +629,10 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
                             const std::string& space_id,
                             bool clone);
   void RequestTabToSpace(SlotId slot,
-                         int index,
+                         TabId tab,
                          const std::string& space_id,
                          bool move);
-  void StoreTabInternal(SlotId slot, int index, bool as_bookmark,
-                        int insert_index, bool bind);
-  void StoreSplitInternal(SlotId slot, int index_a, int index_b,
+  void StoreSplitInternal(SlotId slot, TabId tab_a, TabId tab_b,
                           bool as_bookmark, int insert_index,
                           bool bind_bookmark);
 
@@ -794,8 +812,8 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // The active tab's favicon as base64 BGRA, for storing on a pinned/bookmark
   // row. A pinned tab has no live tab to ask later.
   std::string CaptureFavicon(SlotId slot, int* width, int* height);
-  // The url the slot is showing right now.
-  std::string LiveUrl(SlotId slot);
+  // The url the slot is showing right now (the model's nav state).
+  std::string LiveUrl(SlotId slot) const;
   // Recomputes `palette_` and repaints every slot.
   void ApplyTheme();
   // Asks the framework for a browser (PhiFramework::RequestBrowser) and files
@@ -857,9 +875,6 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // The agent Space whose window is currently surfaced for the user to watch
   // (empty = none). At most one is watched at a time.
   std::string watched_agent_task_;
-  // Repaints every USER window's sidebar so agent pips appear/disappear and
-  // reflect the watched state.
-  void RefreshUserWindows();
 
   // --- Shadow windows (the skill's invisible background windows) ----------
   // A shadow window is an agent-style off-screen window WITHOUT a presence:

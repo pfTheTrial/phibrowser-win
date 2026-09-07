@@ -15,7 +15,6 @@
 
 #pragma comment(lib, "comdlg32.lib")
 
-#include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
@@ -464,8 +463,9 @@ void PhiMenuBar::RefreshPhi() {
 }
 
 void PhiMenuBar::RefreshFile() {
-  controller_->RebuildTabs();
-  SetEnabled(file_, kCmdCloseTab, !controller_->tabs_.empty());
+  // The rows as they are: the menu reads what the last rebuild placed
+  // (docs/architecture-review.md §3.1 principle 7), it never rebuilds.
+  SetEnabled(file_, kCmdCloseTab, controller_->active_tab_id_.valid());
   SetEnabled(file_, kCmdOpenLocation, controller_->url_field_ != nullptr);
 }
 
@@ -586,44 +586,39 @@ void PhiMenuBar::RefreshSpaces() {
   const bool can_reprofile = controller_->host_ && !active.empty() &&
                              active != controller_->host_->DefaultSpaceId();
   int profile_count = 0;
-  if (controller_->framework_) {
-    std::optional<base::Value> list = base::JSONReader::Read(
-        controller_->framework_->ListProfilesJson(), base::JSON_PARSE_RFC);
-    if (list && list->is_list()) {
-      for (const base::Value& v : list->GetList()) {
-        if (!v.is_dict()) {
-          continue;
-        }
-        const std::string* id = v.GetDict().FindString("id");
-        const std::string* name = v.GetDict().FindString("name");
-        if (!id || profile_count >= static_cast<int>(kProfileLast -
-                                                     kProfileFirst)) {
-          continue;
-        }
-        const std::wstring title =
-            base::UTF8ToWide(name && !name->empty() ? *name : *id);
-        ::AppendMenuW(profiles,
-                      MF_STRING |
-                          (can_reprofile ? 0u : MF_DISABLED | MF_GRAYED) |
-                          (*id == active_profile ? MF_CHECKED : 0),
-                      kProfileFirst + static_cast<UINT>(profile_count),
-                      title.c_str());
-        profile_names_.push_back(title);
-        const bool in_use =
-            std::find(bound_profiles.begin(), bound_profiles.end(), *id) !=
-            bound_profiles.end();
-        const bool deletable = *id != "Default" && !in_use;
-        // The Mac marks in-use rows "<name> — in use by a Space".
-        const std::wstring delete_title =
-            in_use ? PhiStrF("menuBar.profileInUse", {title}) : title;
-        ::AppendMenuW(delete_profiles,
-                      MF_STRING |
-                          (deletable ? 0u : MF_DISABLED | MF_GRAYED),
-                      kDeleteProfileFirst + static_cast<UINT>(profile_count),
-                      delete_title.c_str());
-        profile_ids_.push_back(*id);
-        ++profile_count;
+  if (controller_->host_) {
+    // The host's "id\tname" summaries — the one profile list every menu
+    // and form reads, so none of them parses the framework's JSON.
+    for (const std::string& summary : controller_->host_->ProfileSummaries()) {
+      const size_t tab = summary.find('\t');
+      const std::string id = summary.substr(0, tab);
+      const std::string name =
+          tab == std::string::npos ? std::string() : summary.substr(tab + 1);
+      if (id.empty() ||
+          profile_count >= static_cast<int>(kProfileLast - kProfileFirst)) {
+        continue;
       }
+      const std::wstring title = base::UTF8ToWide(!name.empty() ? name : id);
+      ::AppendMenuW(profiles,
+                    MF_STRING |
+                        (can_reprofile ? 0u : MF_DISABLED | MF_GRAYED) |
+                        (id == active_profile ? MF_CHECKED : 0),
+                    kProfileFirst + static_cast<UINT>(profile_count),
+                    title.c_str());
+      profile_names_.push_back(title);
+      const bool in_use =
+          std::find(bound_profiles.begin(), bound_profiles.end(), id) !=
+          bound_profiles.end();
+      const bool deletable = id != "Default" && !in_use;
+      // The Mac marks in-use rows "<name> — in use by a Space".
+      const std::wstring delete_title =
+          in_use ? PhiStrF("menuBar.profileInUse", {title}) : title;
+      ::AppendMenuW(delete_profiles,
+                    MF_STRING | (deletable ? 0u : MF_DISABLED | MF_GRAYED),
+                    kDeleteProfileFirst + static_cast<UINT>(profile_count),
+                    delete_title.c_str());
+      profile_ids_.push_back(id);
+      ++profile_count;
     }
   }
   if (profile_count == 0) {
@@ -745,8 +740,8 @@ void PhiMenuBar::RefreshBookmarks() {
 
 void PhiMenuBar::RefreshTab() {
   ClearMenu(tab_);
-  tab_indices_.clear();
-  controller_->RebuildTabs();
+  tab_ids_.clear();
+  // The rows as the last rebuild placed them — never rebuilt from a menu.
   const bool several = controller_->tabs_.size() > 1;
   Append(tab_, kCmdNewTabToRight, PhiStr("menuBar.newTabToTheRight"),
          controller_->framework_ != nullptr);
@@ -767,15 +762,18 @@ void PhiMenuBar::RefreshTab() {
     ::AppendMenuW(tab_, MF_STRING | (row.active ? MF_CHECKED : 0),
                   kTabFirst + static_cast<UINT>(i),
                   row.title.empty() ? PhiStr("common.bookmarkFolder.defaultName") : row.title.c_str());
-    tab_indices_.push_back(row.index);
+    tab_ids_.push_back(row.id);
   }
 }
 
 bool PhiMenuBar::OnCommand(UINT id) {
   PhiWindowController* c = controller_;
-  // The browser the slot SHOWS — 0 when none is attached, and NEVER the
-  // slot's own number. Every framework branch below tests it first.
-  const int64_t target = c->active_browser_id().value;
+  // The browser the slot SHOWS — invalid when none is attached, and NEVER
+  // the slot's own number. Every framework branch below tests it first.
+  // Nothing here refreshes by hand after a framework mutation: the model's
+  // push schedules the rebuild (docs/architecture-review.md §3.1
+  // principle 3).
+  const BrowserId target = c->active_browser_id();
 
   // Dynamic ranges first.
   if (id >= kSpaceFirst && id <= kSpaceLast) {
@@ -787,7 +785,6 @@ bool PhiMenuBar::OnCommand(UINT id) {
       } else if (c->host_) {
         c->host_->RequestSwitchSpace(c->slot().value, space_id);
       }
-      c->RefreshTabs();
     }
     return true;
   }
@@ -803,15 +800,13 @@ bool PhiMenuBar::OnCommand(UINT id) {
       } else if (c->host_) {
         c->host_->RequestSwitchSpace(c->slot().value, space_id);
       }
-      c->RefreshTabs();
     }
     return true;
   }
   if (id >= kTabFirst && id <= kTabLast) {
     const size_t i = id - kTabFirst;
-    if (c->framework_ && target && i < tab_indices_.size()) {
-      c->framework_->ActivateTab(target, tab_indices_[i]);
-      c->RefreshTabs();
+    if (c->framework_ && target.valid() && i < tab_ids_.size()) {
+      c->framework_->ActivateTabById(target.value, tab_ids_[i].value);
     }
     return true;
   }
@@ -852,9 +847,8 @@ bool PhiMenuBar::OnCommand(UINT id) {
   }
 
   if (const int idc = IdcForCommand(id)) {
-    if (c->framework_ && target) {
-      c->framework_->ExecuteChromiumCommand(target, idc);
-      c->RefreshTabs();
+    if (c->framework_ && target.valid()) {
+      c->framework_->ExecuteChromiumCommand(target.value, idc);
     }
     return true;
   }
@@ -897,16 +891,14 @@ bool PhiMenuBar::OnCommand(UINT id) {
         ::SendMessageW(c->url_field_, EM_SETSEL, 0, -1);
       }
       return true;
-    case kCmdCloseTab: {
-      for (const auto& row : c->tabs_) {
-        if (row.active && c->framework_ && target) {
-          c->framework_->CloseTab(target, row.index);
-          c->RefreshTabs();
-          break;
-        }
+    case kCmdCloseTab:
+      // The TREE's active tab, not the active ROW: a tab bound to a pinned
+      // cell or a bookmark is no row in the list, and Ctrl+W must still
+      // close it (lane 1 D2).
+      if (c->framework_ && target.valid() && c->active_tab_id_.valid()) {
+        c->framework_->CloseTabById(target.value, c->active_tab_id_.value);
       }
       return true;
-    }
     case kCmdUndo:
     case kCmdCut:
     case kCmdCopy:
@@ -963,9 +955,8 @@ bool PhiMenuBar::OnCommand(UINT id) {
       return true;
     }
     case kCmdStop:
-      if (c->framework_ && target) {
-        c->framework_->StopLoading(target);
-        c->RefreshTabs();
+      if (c->framework_ && target.valid()) {
+        c->framework_->StopLoading(target.value);
       }
       return true;
     case kCmdAlwaysShowBookmarkBar:
@@ -986,9 +977,8 @@ bool PhiMenuBar::OnCommand(UINT id) {
       return true;
     case kCmdReload:
     case kCmdForceReload:
-      if (c->framework_ && target) {
-        c->framework_->Reload(target, id == kCmdForceReload);
-        c->RefreshTabs();
+      if (c->framework_ && target.valid()) {
+        c->framework_->Reload(target.value, id == kCmdForceReload);
       }
       return true;
     case kCmdLayoutBalanced:
@@ -1080,7 +1070,6 @@ bool PhiMenuBar::OnCommand(UINT id) {
       } else if (c->host_) {
         c->host_->RequestSwitchSpace(c->slot().value, space_id);
       }
-      c->RefreshTabs();
       return true;
     }
     case kCmdBack:
@@ -1089,18 +1078,16 @@ bool PhiMenuBar::OnCommand(UINT id) {
       if (c->LeaveReaderViewForNavigation()) {
         return true;
       }
-      if (c->framework_ && target) {
-        c->framework_->GoBack(target);
-        c->RefreshTabs();
+      if (c->framework_ && target.valid()) {
+        c->framework_->GoBack(target.value);
       }
       return true;
     case kCmdForward:
       if (c->LeaveReaderViewForNavigation()) {
         return true;
       }
-      if (c->framework_ && target) {
-        c->framework_->GoForward(target);
-        c->RefreshTabs();
+      if (c->framework_ && target.valid()) {
+        c->framework_->GoForward(target.value);
       }
       return true;
     case kCmdBookmarkThisTab:
@@ -1122,24 +1109,17 @@ bool PhiMenuBar::OnCommand(UINT id) {
       }
       const std::string folder = c->host_->AddBookmarkFolder(
           c->slot().value, std::string(), base::WideToUTF8(name));
-      if (folder.empty() || !c->framework_ || !target) {
+      if (folder.empty() || !c->model_ || !target.valid()) {
         return true;
       }
       int added = 0;
-      std::optional<base::Value> tabs = base::JSONReader::Read(
-          c->framework_->ListTabsJson(target), base::JSON_PARSE_RFC);
-      if (tabs && tabs->is_list()) {
-        for (const base::Value& v : tabs->GetList()) {
-          const base::DictValue* d = v.GetIfDict();
-          if (!d) {
-            continue;
-          }
-          const std::string* url = d->FindString("url");
-          const std::string* title = d->FindString("title");
-          if (url && !url->empty() &&
+      if (const phi_framework::WindowSnapshot* snapshot =
+              c->model_->Get(target)) {
+        for (const phi_framework::TabSnapshot& tab : snapshot->tabs) {
+          if (!tab.url.empty() &&
               !c->host_
-                   ->AddBookmarkRow(c->slot().value, folder,
-                                    title ? *title : std::string(), *url)
+                   ->AddBookmarkRow(c->slot().value, folder, tab.title,
+                                    tab.url)
                    .empty()) {
             ++added;
           }
@@ -1153,9 +1133,8 @@ bool PhiMenuBar::OnCommand(UINT id) {
     case kCmdBookmarkManager:
       // URL-driven, as on Mac: the manager IS a tab on the bookmark route,
       // and the client mounts its native page over that tab's content.
-      if (c->framework_ && target) {
-        c->framework_->NewTab(target, PhiBookmarkManager::ManagerUrl());
-        c->RefreshTabs();
+      if (c->framework_ && target.valid()) {
+        c->framework_->NewTab(target.value, PhiBookmarkManager::ManagerUrl());
       }
       return true;
     case kCmdExportBookmarks: {
@@ -1189,9 +1168,8 @@ bool PhiMenuBar::OnCommand(UINT id) {
     }
     case kCmdNextTab:
     case kCmdPreviousTab: {
-      c->RebuildTabs();
-      const auto& tabs = c->tabs_;
-      if (tabs.size() < 2 || !c->framework_) {
+      const auto& tabs = c->tabs_;  // As the last rebuild placed them.
+      if (tabs.size() < 2 || !c->framework_ || !target.valid()) {
         return true;
       }
       size_t at = 0;
@@ -1204,8 +1182,7 @@ bool PhiMenuBar::OnCommand(UINT id) {
       const size_t next = id == kCmdNextTab
                               ? (at + 1) % tabs.size()
                               : (at + tabs.size() - 1) % tabs.size();
-      c->framework_->ActivateTab(target, tabs[next].index);
-      c->RefreshTabs();
+      c->framework_->ActivateTabById(target.value, tabs[next].id.value);
       return true;
     }
     case kCmdImportBrowser:
@@ -1213,7 +1190,7 @@ bool PhiMenuBar::OnCommand(UINT id) {
           PhiConfirm(c->shell_hwnd_, PhiStr("menuBar.importFromGoogleChrome"),
                      PhiStr("menuBar.importChromePromptBody"),
                      PhiStr("app.import"), /*destructive=*/false)) {
-        if (!c->framework_->StartChromeImport(target)) {
+        if (!c->framework_->StartChromeImport(target.value)) {
           PhiNotice(c->shell_hwnd_, PhiStr("app.import"),
                     PhiStr("menuBar.importChromeFailedBody"));
         }
@@ -1222,22 +1199,18 @@ bool PhiMenuBar::OnCommand(UINT id) {
     case kCmdNewTabToRight: {
       // Composed from the primitives: IDC_NEW_TAB_TO_RIGHT stays disabled in
       // the hollowed chrome (it keys off FEATURE_TABSTRIP).
-      if (!c->framework_) {
+      if (!c->framework_ || !target.valid()) {
         return true;
       }
-      c->RebuildTabs();
-      int active_index = -1;
-      for (const auto& row : c->tabs_) {
-        if (row.active) {
-          active_index = row.index;
-          break;
-        }
+      // By stable ids: the new tab's own id from OpenTab, the anchor the
+      // tree's active tab, and an anchored move that survives whatever the
+      // insertion did to the indices.
+      const TabId anchor = c->active_tab_id_;
+      const TabId created = c->framework_->OpenTab(target, "");
+      if (created.valid() && anchor.valid()) {
+        c->framework_->MoveTabAfter(target.value, created.value, anchor.value,
+                                    nullptr);
       }
-      const int created = c->framework_->NewTab(target, "");
-      if (created >= 0 && active_index >= 0 && created != active_index + 1) {
-        c->framework_->MoveTab(target, created, active_index + 1);
-      }
-      c->RefreshTabs();
       return true;
     }
     case kCmdSearchTabs:

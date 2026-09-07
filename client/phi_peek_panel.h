@@ -22,6 +22,7 @@ namespace phi_client {
 
 class PhiCoordinator;
 class PhiWindowController;
+class PhiWindowModel;
 
 // The Mac's floating Peek panel (UserInterface/Peek/PeekPanelController): a
 // link opened from a bound tab previews in a card floating over the page
@@ -43,12 +44,15 @@ class PhiWindowController;
 // clips into the content card and travels with the window.
 class PhiPeekPanel : public PhiSurfacePanel {
  public:
+  // `model` is the coordinator's window model: the peek's own url is read
+  // from its browser's snapshot there (docs/architecture-review.md §3.3).
   PhiPeekPanel(int64_t window_id,
                HWND browser_hwnd,
                int64_t opener_window_id,
                int64_t opener_tab_id,
                PhiWindowController* opener,
                phi_framework::PhiFramework* framework,
+               const PhiWindowModel* model,
                PhiCoordinator* coordinator);
   ~PhiPeekPanel() override;
 
@@ -112,9 +116,6 @@ class PhiPeekPanel : public PhiSurfacePanel {
   void PositionControls();
   void PaintControls();
   LRESULT HandleControls(UINT msg, WPARAM wparam, LPARAM lparam);
-  // Strip index of the tab this peek was opened from, or -1. Split needs it
-  // because opening the preview as a tab makes THAT tab the active one.
-  int OpenerTabIndex() const;
   // Rounds the card. The hosted browser is a child of this window, so the
   // region that clips it is this one's.
   void ApplyCardShape();
@@ -137,6 +138,7 @@ class PhiPeekPanel : public PhiSurfacePanel {
   int64_t opener_tab_id_ = 0;
   RAW_PTR_EXCLUSION PhiWindowController* opener_ = nullptr;
   RAW_PTR_EXCLUSION phi_framework::PhiFramework* framework_ = nullptr;
+  RAW_PTR_EXCLUSION const PhiWindowModel* model_ = nullptr;
   RAW_PTR_EXCLUSION PhiCoordinator* coordinator_ = nullptr;
   int dpi_ = 96;
 

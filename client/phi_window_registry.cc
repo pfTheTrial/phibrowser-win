@@ -11,15 +11,18 @@ namespace phi_client {
 PhiWindowRegistry::PhiWindowRegistry() = default;
 PhiWindowRegistry::~PhiWindowRegistry() = default;
 
-PhiWindowController* PhiWindowRegistry::AddOwned(SlotId slot,
-                                                 ControllerPtr controller,
-                                                 bool agent,
-                                                 bool incognito) {
+PhiWindowController* PhiWindowRegistry::AddOwned(
+    SlotId slot,
+    ControllerPtr controller,
+    void (*invalidate)(PhiWindowController*),
+    bool agent,
+    bool incognito) {
   PhiWindowController* raw = controller.get();
   // insert_or_assign rather than operator[]: a Slot cannot be default
   // constructed (its deleter is a function pointer), and a repeated Add for
   // one slot id — which should not happen — replaces rather than leaks.
-  slots_.insert_or_assign(slot, Slot{std::move(controller), agent, incognito});
+  slots_.insert_or_assign(
+      slot, Slot{std::move(controller), invalidate, agent, incognito});
   return raw;
 }
 
@@ -87,6 +90,29 @@ bool PhiWindowRegistry::IsAgentSlot(SlotId slot) const {
 bool PhiWindowRegistry::IsIncognitoSlot(SlotId slot) const {
   const Slot* found = Find(slot);
   return found && found->incognito;
+}
+
+void PhiWindowRegistry::Invalidate(SlotId slot) const {
+  const Slot* found = Find(slot);
+  if (found && found->invalidate) {
+    found->invalidate(found->controller.get());
+  }
+}
+
+void PhiWindowRegistry::InvalidateAll() const {
+  for (const auto& [slot, entry] : slots_) {
+    if (entry.invalidate) {
+      entry.invalidate(entry.controller.get());
+    }
+  }
+}
+
+void PhiWindowRegistry::InvalidateUserSlots() const {
+  for (const auto& [slot, entry] : slots_) {
+    if (!entry.agent && !entry.incognito && entry.invalidate) {
+      entry.invalidate(entry.controller.get());
+    }
+  }
 }
 
 std::optional<SlotId> PhiWindowRegistry::SlotFor(BrowserId browser) const {

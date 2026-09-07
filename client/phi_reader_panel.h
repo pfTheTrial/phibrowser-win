@@ -22,6 +22,7 @@ namespace phi_client {
 
 class PhiCoordinator;
 class PhiWindowController;
+class PhiWindowModel;
 
 // The Mac's Reader View overlay (UserInterface/Reader/ReaderPanelController):
 // the reading surface covers the WHOLE page pane — the sidebar stays usable —
@@ -43,12 +44,15 @@ class PhiWindowController;
 // its origin tab is the active one, exactly like a peek.
 class PhiReaderPanel : public PhiSurfacePanel {
  public:
+  // `model` is the coordinator's window model: the surface browser's strip
+  // is read from its snapshot there (docs/architecture-review.md §3.3).
   PhiReaderPanel(int64_t window_id,
                  HWND browser_hwnd,
                  int64_t origin_window_id,
                  int64_t origin_tab_id,
                  PhiWindowController* origin,
                  phi_framework::PhiFramework* framework,
+                 const PhiWindowModel* model,
                  PhiCoordinator* coordinator);
   ~PhiReaderPanel() override;
 
@@ -104,6 +108,7 @@ class PhiReaderPanel : public PhiSurfacePanel {
   int64_t origin_tab_id_ = 0;
   RAW_PTR_EXCLUSION PhiWindowController* origin_ = nullptr;
   RAW_PTR_EXCLUSION phi_framework::PhiFramework* framework_ = nullptr;
+  RAW_PTR_EXCLUSION const PhiWindowModel* model_ = nullptr;
   RAW_PTR_EXCLUSION PhiCoordinator* coordinator_ = nullptr;
   int dpi_ = 96;
   // The last URL seen on the hosted page, so the navigate-away test fires

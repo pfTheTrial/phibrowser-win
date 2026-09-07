@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "base/memory/raw_ptr_exclusion.h"
+#include "phibrowser-win/client/phi_ids.h"
 
 namespace phi_client {
 
@@ -241,7 +242,7 @@ class PhiMenuBar {
   std::vector<std::string> profile_ids_;   // kProfileFirst / kDeleteProfileFirst + i
   std::vector<std::wstring> profile_names_;  // Their display names, in step.
   std::vector<std::string> bookmark_urls_; // kBookmarkFirst + i
-  std::vector<int> tab_indices_;           // kTabFirst + i
+  std::vector<TabId> tab_ids_;             // kTabFirst + i
 };
 
 }  // namespace phi_client

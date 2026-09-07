@@ -27,7 +27,7 @@ std::optional<PhiSurfaceRegistry::Origin> PhiSurfaceRegistry::Detach(
   origin.kind = it->second->kind();
   origin.window_id = window_id;
   origin.origin_window_id = BrowserId{it->second->origin_window_id()};
-  origin.origin_tab_id = static_cast<int>(it->second->origin_tab_id());
+  origin.origin_tab_id = TabId{static_cast<int32_t>(it->second->origin_tab_id())};
   panels_.erase(it);
   return origin;
 }
@@ -37,13 +37,13 @@ PhiSurfacePanel* PhiSurfaceRegistry::Find(BrowserId window_id) const {
   return it == panels_.end() ? nullptr : it->second.get();
 }
 
-PhiSurfacePanel* PhiSurfaceRegistry::ForOrigin(int origin_tab_id,
+PhiSurfacePanel* PhiSurfaceRegistry::ForOrigin(TabId origin_tab_id,
                                                SidebarSurface kind) const {
-  if (origin_tab_id == 0) {
+  if (!origin_tab_id.valid()) {
     return nullptr;
   }
   for (const auto& [id, panel] : panels_) {
-    if (panel->origin_tab_id() == origin_tab_id &&
+    if (panel->origin_tab_id() == origin_tab_id.value &&
         (kind == SidebarSurface::kContent || panel->kind() == kind)) {
       return panel.get();
     }

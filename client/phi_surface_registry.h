@@ -67,7 +67,7 @@ class PhiSurfaceRegistry {
     SidebarSurface kind = SidebarSurface::kContent;
     BrowserId window_id;  // The panel browser.
     BrowserId origin_window_id;
-    int origin_tab_id = 0;
+    TabId origin_tab_id;
   };
 
   PhiSurfaceRegistry();
@@ -85,11 +85,12 @@ class PhiSurfaceRegistry {
 
   PhiSurfacePanel* Find(BrowserId window_id) const;
   // The surface of `kind` (kContent = any) attached to `origin_tab_id`.
-  PhiSurfacePanel* ForOrigin(int origin_tab_id,
+  PhiSurfacePanel* ForOrigin(TabId origin_tab_id,
                              SidebarSurface kind = SidebarSurface::kContent) const;
   // Every surface attached to a tab of `origin_window_id`.
   std::vector<PhiSurfacePanel*> OverWindow(BrowserId origin_window_id) const;
-  // The sidebar's view: origin tab -> attached kind, for one browser.
+  // The sidebar's view: origin tab -> attached kind, for one browser. Keyed
+  // by the raw id because it IS the PhiSlotHost::AttachedSurfaces reply.
   std::map<int, SidebarSurface> Surfaces(BrowserId origin_window_id) const;
 
   bool empty() const { return panels_.empty(); }

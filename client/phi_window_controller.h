@@ -27,24 +27,15 @@
 #include "phibrowser-win/client/phi_sidebar_actions.h"
 #include "phibrowser-win/client/phi_sidebar_drop.h"
 #include "phibrowser-win/client/phi_sidebar_layout.h"
+#include "phibrowser-win/client/phi_shell_layout.h"
 #include "phibrowser-win/client/phi_sidebar_model.h"
 #include "phibrowser-win/client/phi_theme.h"
+#include "phibrowser-win/client/phi_window_model.h"
 
 namespace phi_client {
 
-// Where the browser's chrome lives. The Mac client's LayoutMode, same names
-// and same meanings (PhiPreferences.swift), so a user moving between platforms
-// gets the same three choices:
-//
-//   kPerformance  vertical tabs, address bar IN the sidebar (the default)
-//   kBalanced     vertical tabs, address bar across the TOP of the web content
-//   kComfortable  horizontal tabs — the traditional stacked layout, no sidebar
-enum class PhiLayoutMode { kPerformance, kBalanced, kComfortable };
-
-// Wire names, matching the Mac enum's raw values so the two clients can share
-// a stored setting: "performance", "balanced", "comfortable".
-const char* PhiLayoutModeName(PhiLayoutMode mode);
-bool PhiLayoutModeFromName(const std::string& name, PhiLayoutMode* out);
+// PhiLayoutMode and its wire names live in phi_shell_layout.h (the pure
+// layout needs them on the host); every includer of this header sees them.
 
 // A stored row (pinned tab or bookmark) as the chrome consumes it — the
 // favicon already decoded to raw premultiplied BGRA.
@@ -362,9 +353,9 @@ enum : UINT {
   // NATIVE-PAGE route (the bookmark manager, the new-tab page), so the
   // mount happens on its own turn rather than inside the rebuild.
   kMsgPhiSyncNativePages,
-  // The coalesced row rebuild (ScheduleRefresh): framework notifications
-  // arrive DURING the change they describe and WM_PAINT must never rebuild,
-  // so the model rebuilds on this posted turn and the paint recomposes.
+  // The coalesced row rebuild (ScheduleRefresh): WM_PAINT and input never
+  // rebuild, so the rows rebuild from the window model on this posted turn,
+  // the bands whose rows changed are invalidated, and the paint recomposes.
   kMsgPhiRebuildRows,
   // Alt pressed and released on its own: summon the caption band's hidden
   // menu titles (and hide them again on a second Alt), the keyboard route
@@ -391,11 +382,16 @@ class PhiWindowController {
   // adopts (the one it was opened with, which backs the default Space).
   // Today the two carry the same number — the types are what keep the slot
   // from ever being handed to the framework as a browser (phi_ids.h).
+  // `model` is the coordinator's window model (docs/architecture-review.md
+  // §3.3): every row, nav state and split this shell shows is read from
+  // it, never parsed from the framework's JSON. Owned by the coordinator,
+  // which outlives every controller.
   PhiWindowController(SlotId slot,
                       BrowserId browser,
                       HWND browser_hwnd,
                       phi_framework::PhiFramework* framework,
                       PhiSlotHost* host,
+                      const PhiWindowModel* model,
                       bool agent = false,
                       bool incognito = false);
   ~PhiWindowController();
@@ -407,9 +403,9 @@ class PhiWindowController {
   // Never a browser: see active_browser_id() for the one the slot shows.
   SlotId slot() const { return slot_; }
   // Upstream's distillability verdict for one of this window's tabs.
-  void NoteTabDistillable(int tab_id, bool distillable);
+  void NoteTabDistillable(TabId tab_id, bool distillable);
   // True when `tab_id` is in the strip this window is currently drawing.
-  bool ShowsTab(int tab_id) const;
+  bool ShowsTab(TabId tab_id) const;
   // Which corners of the content card are rounded right now. The reader panel
   // covers that card and has to wear the same shape: the TOP corners belong
   // to the bar band in the layouts that have one (only performance rounds
@@ -448,12 +444,15 @@ class PhiWindowController {
   // same seams the controller does.
   PhiSlotHost* host() const { return host_; }
   phi_framework::PhiFramework* framework() const { return framework_; }
+  // The window model the rows are built from — what a satellite reads
+  // instead of parsing the framework's tab JSON.
+  const PhiWindowModel* model() const { return model_; }
   // The feedback form about this window's focused tab (the Mac's
   // showFeedbackWindow).
   void OpenFeedback();
   PhiPalette CurrentPalette() const;  // Ramped while a switch is in flight.
   // Tab ids most-recently-used first — the Ctrl+Tab switcher's order.
-  const std::vector<int>& TabMruOrder() const { return tab_mru_; }
+  const std::vector<TabId>& TabMruOrder() const { return tab_mru_; }
   // The content card's client-coordinate rect (the group overview covers it).
   RECT ContentRect();
   // The create-Space form — the Mac's CreateSpacePanel hosted in the
@@ -478,10 +477,6 @@ class PhiWindowController {
   // window so the user can watch it live. No-op on a non-agent window.
   void SetAgentVisible(bool visible);
 
-  // Re-reads tab/nav state from the framework and repaints the sidebar NOW.
-  // For changes the client itself just made, where the browser state has
-  // already settled.
-  void RefreshTabs();
   // Click on a pin or a sidebar bookmark row (cell click, context-menu
   // Open, or the pinned.open verb): focus the bound live tab if it still
   // exists, otherwise open the row's url as a new bound tab — the Mac's
@@ -521,15 +516,17 @@ class PhiWindowController {
   void OmniboxHover(int y);
   void OmniboxClick(int y);
 
-  // Marks the sidebar dirty and lets the paint happen at the next idle. Used
-  // for framework-driven notifications, which arrive DURING the change they
-  // describe (a tab being removed is still in the strip) — painting inline
-  // would render the pre-change state and then never correct it.
+  // THE refresh entry point (docs/architecture-review.md §3.1 principle 3):
+  // marks the rows dirty and posts ONE coalesced rebuild (kMsgPhiRebuildRows)
+  // for this turn's burst of changes — the model's push, a pref, a Space
+  // switch. The rebuild runs on that posted turn, invalidates the bands whose
+  // rows changed, and the paint recomposes. Nothing rebuilds inline.
   void ScheduleRefresh();
-
-  // Rebuilds `tabs_` from framework state WITHOUT invalidating (paint-time
-  // use; RefreshTabs() would recurse through InvalidateRect).
-  void RebuildTabs();
+  // A verb that READS rows (the agent dialect's window.layout, a capture)
+  // right after a change: runs the pending rebuild now, on the caller's
+  // turn, so it sees the rows the next paint will. A no-op when nothing is
+  // pending.
+  void FlushPendingRebuild();
   // Rebuilds the Space chips row from the owner's full Space list.
   void RebuildChips();
   // Re-derives the geometry and repositions the browser child + corner caps
@@ -714,9 +711,11 @@ class PhiWindowController {
   // Rebuilds `ui_font_` for `dpi_`. Idempotent for an unchanged DPI.
   void EnsureFont();
 
-  // Every rect the chrome needs, for one layout mode. Derived from the client
-  // rect on demand rather than stored, so a resize or a mode switch needs no
-  // invalidation of its own.
+  // Every rect the chrome needs, for one layout mode — ShellLayout
+  // (phi_shell_layout.h) converted to RECTs. ComputeLayout() answers from a
+  // cache keyed by ShellLayoutInputs, so the eight reads per pointer move
+  // cost a struct compare; the geometry itself is the pure, host-tested
+  // ComputeShellLayout.
   struct Layout {
     PhiLayoutMode mode = PhiLayoutMode::kPerformance;
     RECT client{};
@@ -796,6 +795,22 @@ class PhiWindowController {
     bool horizontal_tabs = false;
   };
   Layout ComputeLayout();
+  // The cache behind ComputeLayout: the inputs the last layout was derived
+  // from and that layout. Re-derived whenever the inputs differ — a resize,
+  // a DPI move, a mode/pref change, a count from the rebuild, the floating
+  // panel's override — so no explicit invalidation can be forgotten.
+  ShellLayoutInputs CurrentLayoutInputs() const;
+  static Layout ToLayout(const ShellLayout& shell);
+  ShellLayoutInputs layout_inputs_;
+  Layout layout_cache_;
+  bool layout_cache_valid_ = false;
+  // The two inputs that cost host round-trips (BookmarkBarVisible reads
+  // two prefs; ActiveTabReaderOfferable asks the reader bridge), captured
+  // by RefreshLayoutInputs at the points they can change — the rebuild,
+  // LayoutContents, a distillability report — rather than per layout read.
+  bool layout_bookmark_bar_ = false;
+  bool layout_reader_ = false;
+  void RefreshLayoutInputs();
 
   void AdoptBrowserAsChild();
   // Moves the address field's EDIT child into `layout`'s slot for it.
@@ -950,7 +965,7 @@ class PhiWindowController {
   struct TabRow {
     SidebarKey key;  // The tree node this row paints (kTab or kSplit).
     int index = 0;
-    int id = 0;  // Session id — stable while indices shift; pins bind to it.
+    TabId id;  // Session id — stable while indices shift; pins bind to it.
     // The tab's favicon, copied out of the framework's scratch buffer (which
     // only survives until its next call).
     std::vector<unsigned char> favicon;
@@ -977,7 +992,7 @@ class PhiWindowController {
     // so this is a steady state for most of them — the row is drawn dimmed.
     bool unloaded = false;
     int b_index = -1;  // -1: not a merged row.
-    int b_id = 0;      // Pane B's session id, for its hover snapshot.
+    TabId b_id;        // Pane B's session id, for its hover snapshot.
     bool b_active = false;
     std::wstring b_title;
     std::wstring b_url;
@@ -1018,9 +1033,9 @@ class PhiWindowController {
   };
   std::vector<GroupHeader> group_headers_;
 
-  // Model freshness: rebuilds happen on notifications and intents
-  // (ScheduleRefresh/RefreshTabs/LayoutContents mark this), not per paint.
-  // WM_PRINTCLIENT still forces a rebuild — captures must be current.
+  // Model freshness: rebuilds happen on the posted turn ScheduleRefresh
+  // asks for, never per paint, never from input. A capture verb that needs
+  // current rows calls FlushPendingRebuild first.
   bool rows_dirty_ = true;
   bool rebuild_posted_ = false;  // A kMsgPhiRebuildRows is in the queue.
   // Cached paint resources, recreated on resize / palette change instead of
@@ -1093,7 +1108,7 @@ class PhiWindowController {
   // because CommitDrag clears the drag state before acting.
   void CommitSplitDrop(DragKind kind,
                        const SidebarKey& source,
-                       int focused_id,
+                       TabId focused_id,
                        PhiSplitDropZone zone,
                        bool replace,
                        const std::string& split_id);
@@ -1107,36 +1122,42 @@ class PhiWindowController {
   // may not know yet.
   bool SplitDragSource(DragKind kind,
                        const SidebarKey& key,
-                       int* tab_id,
+                       TabId* tab_id,
                        std::string* url,
                        std::string* guid) const;
   // Pairs two live tabs into a split with `primary_id` in the leading (left
   // or top) pane. Chromium normalizes the primary to the lower-indexed tab,
   // so this reverses the pair afterwards when that is not the one asked for —
   // the Mac's pendingSplitPrimaryByCreateId follow-up. Returns the split id.
-  std::string FormSplitOrdered(int64_t browser,
-                               int primary_id,
-                               int secondary_id,
+  std::string FormSplitOrdered(BrowserId browser,
+                               TabId primary_id,
+                               TabId secondary_id,
                                const char* layout);
   // Drops a tab's pin/bookmark binding (the Mac's makeTabNormalOpened): the
   // stored row stays put as an unopened one, the tab joins the plain list.
-  // No-op for an untagged tab.
-  void UnbindStoredTab(int64_t browser, int tab_id);
-  // Splits the ACTIVE tab with `tab_id`, after dropping any pin or bookmark
+  // Harmless on an untagged tab.
+  void UnbindStoredTab(BrowserId browser, TabId tab_id);
+  // Splits `primary` with `secondary`, after dropping any pin or bookmark
   // binding on EITHER pane. A SPLIT NEVER LIVES IN A STORED CELL: the Mac
   // runs makeTabNormalOpened over both panes in every split-formation path
   // (openNewTabAsSplit, formSplitFromBookmark, the page drop), leaving the
   // stored row behind as an unopened placeholder, so the pair always shows
   // as one merged row in the NORMAL tab list. Reopening a STORED split is
   // the other direction and stays bound — see OpenStoredSplit.
-  bool SplitActiveWithNormalized(int64_t browser, int tab_id);
+  bool SplitTabsNormalized(BrowserId browser, TabId primary, TabId secondary);
+  // The framework's CURRENT state for `browser`, pulled typed — for the few
+  // gesture paths that just mutated the strip and act on the result inside
+  // the same turn, before the coordinator's model has heard the push. Never
+  // for rows or paint: those read model_.
+  bool PullSnapshot(BrowserId browser,
+                    phi_framework::WindowSnapshot* out) const;
 
   // Drag-reorder animation, Chrome's vertical-tab model
   // (TabCollectionAnimatingLayoutManager): the dragged row FLOATS with the
   // cursor while its siblings glide to open the insertion gap — each leg
   // eases current → target over 200ms, retargeting when the gap moves.
-  std::map<int, double> drag_slide_from_;  // Tab id -> leg start offset px.
-  std::map<int, double> drag_slide_to_;    // Tab id -> leg target offset px.
+  std::map<TabId, double> drag_slide_from_;  // Tab id -> leg start px.
+  std::map<TabId, double> drag_slide_to_;    // Tab id -> leg target px.
   // Pinned cells glide in BOTH axes (a grid gap wraps rows); bookmark rows
   // glide vertically. Keyed by the stored row's guid.
   struct SlideVec {
@@ -1153,11 +1174,11 @@ class PhiWindowController {
   // tab or bookmark it grabbed), so by the time the pointer reaches the page
   // active_tab_id_ is the dragged row itself and the page the user was
   // looking at is gone.
-  int drag_focus_tab_id_ = 0;
+  TabId drag_focus_tab_id_;
   // The tab row a press armed WITHOUT activating it: a plain click
   // activates on release, a drag never does (the Mac's click-to-select).
-  int drag_click_tab_id_ = 0;
-  double DragSlideOffset(int tab_id) const;
+  TabId drag_click_tab_id_;
+  double DragSlideOffset(TabId tab_id) const;
   SlideVec RowSlideOffset(const std::string& guid) const;
   void RetargetDragSlide();  // New targets for the current gap slot.
 
@@ -1238,6 +1259,13 @@ class PhiWindowController {
   int hover_index_ = -1;
   void OnChromeMouseMove(POINT client_pt);
   void ClearHover();
+  // The client rect a hovered element's wash covers, empty for none — so a
+  // hover change invalidates the old and new element, not the whole shell
+  // (lane 3 §7 item 3).
+  RECT HoverRect(HoverKind kind, int index);
+  void SetHover(HoverKind kind, int index);
+  // The chrome buttons a kNav hover indexes, in PaintChrome's order.
+  std::array<RECT, 14> NavHoverTable(const Layout& layout) const;
 
   // The Space pips' hover card (the Mac SpacesStripView's delayed tooltip):
   // the dim wash is immediate (the hover state above); the info card — the
@@ -1318,12 +1346,7 @@ class PhiWindowController {
                       bool expanded);
   // True when the split holding `tab_id` stacks its panes (the wire's
   // "horizontal"); false for side-by-side and for a tab in no split.
-  bool SplitIsStacked(int tab_id) const;
-  // The split id holding `tab_id`, or empty when it is in none.
-  std::string SplitIdForTab(int tab_id) const;
-  // Re-orients the split holding the tab at `index` (a no-op for the
-  // default side-by-side), used right after a stored split is recreated.
-  void ApplySplitLayout(int index, const std::string& layout);
+  bool SplitIsStacked(TabId tab_id) const;
   // Pinned tabs (the band under the header) and bookmarks (the section above
   // the open tabs) — both come from the client's own store, as on Mac.
   struct ShortcutRow {
@@ -1354,8 +1377,8 @@ class PhiWindowController {
     // The bound tab's session id while `open` — what the hover preview asks
     // the framework for a snapshot of. A pinned PAIR binds both: `tab_id` is
     // this row's own tab, `tab_id_b` its partner's.
-    int tab_id = 0;
-    int tab_id_b = 0;
+    TabId tab_id;
+    TabId tab_id_b;
     RECT bounds{};
     // The favicon stored with the row (a pinned tab has no live tab to ask).
     std::vector<unsigned char> favicon;
@@ -1393,10 +1416,10 @@ class PhiWindowController {
   // The active tab's URL (captured by RebuildTabs) — "show on new tab"
   // needs to know whether the page IS the new-tab page.
   std::string active_tab_url_;
-  int active_tab_id_ = 0;  // Its session id; 0 with no active tab.
+  TabId active_tab_id_;  // Its session id; invalid with no active tab.
   // The tab whose native new-tab page blanked on an omnibox commit; the
   // controls return once another tab is active or that load has ended.
-  int ntp_commit_tab_id_ = 0;
+  TabId ntp_commit_tab_id_;
   // Counted before the layout is derived, because the bands they occupy push
   // everything below them down.
   int pinned_row_count_ = 0;
@@ -1471,9 +1494,7 @@ class PhiWindowController {
   // customGuid model). Tags ride PhiTabData through session restore, so
   // bindings survive a restart. Bookmark bindings hide their tab from the
   // list only in vertical layouts.
-  // The current index of the tab tagged `tag`, or -1 when none is.
   void CloseStoredContent(const std::string& guid);
-  int IndexOfTagged(int64_t browser, const std::string& tag) const;
   // Reopens or refocuses a STORED split (a pinned pair or a split
   // bookmark): missing panes are created, tags applied, and the pair
   // married — the Mac's openPinnedSplit / openTwoURLsAsSplit.
@@ -1489,7 +1510,7 @@ class PhiWindowController {
   bool copy_link_flash_ = false;
   // Tabs upstream's distiller says carry an article. Positive-only reports,
   // so entries are added and cleared when the tab navigates away.
-  std::set<int> distillable_tabs_;
+  std::set<TabId> distillable_tabs_;
   // The address capsule's hover brighten (SideAddressBar hoveredColor:
   // resting 4% wash → emphasized 8%). Fed from BOTH sides — the shell's
   // mouse moves for the capsule's rim, the EDIT subclass for the text area
@@ -1582,7 +1603,7 @@ class PhiWindowController {
   WINDOWPLACEMENT pre_fullscreen_placement_ = {};
   LONG_PTR pre_fullscreen_style_ = 0;
   // Tab ids of the ACTIVE browser, most-recently-used first.
-  std::vector<int> tab_mru_;
+  std::vector<TabId> tab_mru_;
   void ShowOmniboxPopup();   // Creates/positions the popup under the field.
   void CloseOmniboxPopup(bool stop_query);
   void MoveOmniboxSelection(int delta);
@@ -1595,6 +1616,35 @@ class PhiWindowController {
   // a module boundary, so not a raw_ptr.
   RAW_PTR_EXCLUSION phi_framework::PhiFramework* const framework_;
   RAW_PTR_EXCLUSION PhiSlotHost* const host_;  // Owns this controller.
+  // The coordinator's window model (it owns the instance and outlives every
+  // controller): the one source for rows, nav state, splits and groups.
+  RAW_PTR_EXCLUSION const PhiWindowModel* const model_;
+  // Rebuilds the paint caches (tabs_/pinned_/bookmarks_/group_headers_,
+  // the nav state, the chips) from model_ and the host's stores WITHOUT
+  // invalidating. Runs on the posted rebuild turn; a few structural view
+  // changes (a Space switch, a layout mode change, the floating panel
+  // opening) run it directly through RefreshTabs so the next frame is not a
+  // frame of the old geometry.
+  void RebuildTabs();
+  // RebuildTabs + an invalidation of the whole shell. For the structural
+  // view changes above only — a framework mutation never needs it, the
+  // model's push schedules the rebuild.
+  void RefreshTabs();
+  // What the rebuild turn compares to invalidate only the bands whose rows
+  // changed: a cheap signature of each band's rows.
+  struct BandSignature {
+    std::vector<std::pair<std::string, RECT>> rows;  // key + bounds.
+    std::vector<std::pair<std::string, RECT>> chips;
+    std::wstring nav_url;
+    bool can_go_back = false;
+    bool can_go_forward = false;
+    bool nav_loading = false;
+    ShellLayoutInputs layout;
+  };
+  BandSignature CurrentBandSignature() const;
+  // Invalidates what changed between two signatures (everything when the
+  // layout itself moved).
+  void InvalidateChangedBands(const BandSignature& before);
   // The Space list as drawn (id + whether this slot has it open).
   struct SpaceChip {
     std::string id;

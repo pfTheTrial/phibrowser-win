@@ -859,6 +859,39 @@ pure `phi_shell_layout` value cached per turn (host-tested); the menu bar
 reads the tree. The `WM_PHI_READER_*` deferrals become direct calls once
 rule 2 holds.
 
+**Phase 2 status (2026-09-07, uncommitted).** Landed: the typed
+`WindowSnapshot` (tabs, splits, groups, nav, profile, incognito, version)
+built by ONE builder in the fork that also serialises the legacy JSON
+getters, pushed as `OnWindowChanged(snapshot, reason)` after commit with a
+per-window version and a change reason (tabs / navigation / groups /
+splits / favicon-ready / bulk), pullable via `Snapshot()`; id-addressed
+twins for every remaining index operation (`OpenTab → TabId`,
+`MoveTabToWindowById`, `MoveTabsToNewWindowByIds`, `UnsplitById`,
+`AddTabToNewGroupById`, `RemoveTabFromGroupById`, `SwapTabIntoSplitById`);
+the client's `PhiWindowModel` (`phi_window_model.{h,cc}`, host-tested)
+owned by the coordinator and read by every controller and panel — all 29
+tab-list parsers are gone (two wire pass-throughs remain by design) and
+zero index-addressed framework calls remain; every refresh is a posted
+`ScheduleRefresh` (the coordinator's 46 synchronous loops and the
+controller's ~35 are gone, rebuilds never run from paint, input or menus,
+the rebuild invalidates only changed bands, hover invalidates old∪new
+rects); `ComputeLayout` is a pure `phi_shell_layout.{h,cc}` value cached
+per turn and host-tested, `dpi_` written only at construction and
+`WM_DPICHANGED`; `WM_PHI_READER_SWEEP` removed (`EXPAND`/`RETIRE` stay for
+rule-2 reasons). Two contract details found on the box: a tag write is
+snapshot state, so the fork's `SetTabTag` now marks the window dirty and
+the coordinator pulls the model after every tag write (the gesture's own
+posted rebuild can precede the push); and the `tabs.move` verb keeps its
+"split member refused" contract on top of the anchored move. Verified:
+sweep identical to the baseline (13 of 18, same pre-existing failures),
+`sv-surface` and `sv-drag` ALL PASS, `sv-splitcell` needs a stored split
+seeded. Decision §6 item 2 is settled: the snapshot crosses the exe/dll
+boundary with `std::string`/`std::vector`, same toolchain, and the Chromium
+style plugin accepts the aggregates. Left for later phases: the legacy
+`int64_t`/`int` signatures and JSON getters themselves (remove when the
+agent dialect is rebuilt in phase 4), `PhiSlotHost`'s `int64_t`
+parameters, `RefreshFieldExtensions`' extension-list JSON (no typed twin).
+
 ### Phase 3 — persistence layer, app model, lifecycle (~1 week)
 
 `PhiStore<T>` with schema numbers and migrations; the store consolidation in

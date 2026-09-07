@@ -257,7 +257,7 @@ bool PhiReaderBridge::HandleExtensionMessage(const std::string& request_id,
       offerable_[*tab_id] = url ? *url : std::string();
       LOG(INFO) << "[Reader] offerable granted tab=" << *tab_id << " url="
                 << (url ? *url : std::string("(unnamed)"));
-      coordinator_->OnReaderOfferabilityChanged(*tab_id);
+      coordinator_->OnReaderOfferabilityChanged(TabId{*tab_id});
     }
     coordinator_->RespondToExtension(request_id, "{}");
     return true;
@@ -278,7 +278,7 @@ bool PhiReaderBridge::HandleExtensionMessage(const std::string& request_id,
         // page — the Mac's overlay, by the only means this client has. Done
         // BEFORE the pending flag is dropped, so the restored-husk sweep
         // cannot mistake the surface for a leftover in the gap.
-        coordinator_->PanelizeReaderSurface(*tab_id);
+        coordinator_->PanelizeReaderSurface(TabId{*tab_id});
       }
       pending_opens_.erase(*tab_id);
       if (!active) {
@@ -288,7 +288,7 @@ bool PhiReaderBridge::HandleExtensionMessage(const std::string& request_id,
         // address bar, an agent, a redirect), the surface was removed, the
         // tab went away — so this one report retires the panel rather than
         // every navigation site having to remember to.
-        coordinator_->CloseReaderPanelForOrigin(*tab_id);
+        coordinator_->CloseReaderPanelForOrigin(TabId{*tab_id});
         // A refused open never creates a surface — say so where the Mac does,
         // with the same two messages.
         if (error) {
@@ -297,7 +297,7 @@ bool PhiReaderBridge::HandleExtensionMessage(const std::string& request_id,
           ShowRefusalToast(*tab_id, *error);
         }
       }
-      coordinator_->OnReaderOfferabilityChanged(*tab_id);
+      coordinator_->OnReaderOfferabilityChanged(TabId{*tab_id});
     }
     coordinator_->RespondToExtension(request_id, "{}");
     return true;
@@ -422,7 +422,7 @@ std::string PhiReaderBridge::TabPayload(int tab_id, const std::string& extra) {
   // background Space from being handed to the wrong profile's extension.
   // Unresolvable (a tab in no visible strip) falls back to the active window,
   // which is the Mac's only routing.
-  if (PhiWindowController* window = coordinator_->WindowShowingTab(tab_id)) {
+  if (PhiWindowController* window = coordinator_->WindowShowingTab(TabId{tab_id})) {
     // The browser, never the slot: a slot whose opening browser has closed
     // would name a window the extension cannot find.
     const BrowserId browser = window->active_browser_id();
@@ -458,7 +458,7 @@ bool PhiReaderBridge::Broadcast(const std::string& type,
 }
 
 void PhiReaderBridge::ShowRefusalToast(int tab_id, const std::string& error) {
-  PhiWindowController* window = coordinator_->WindowShowingTab(tab_id);
+  PhiWindowController* window = coordinator_->WindowShowingTab(TabId{tab_id});
   if (!window) {
     return;
   }

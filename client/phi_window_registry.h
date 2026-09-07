@@ -64,8 +64,12 @@ class PhiWindowRegistry {
 
   // One slot. `agent` / `incognito` are fixed at construction, so they are
   // recorded here rather than read back through the (incomplete) controller.
+  // `invalidate` is the controller's ScheduleRefresh, captured — like the
+  // deleter — where the type is complete, so the registry can post a rebuild
+  // without knowing the controller.
   struct Slot {
     ControllerPtr controller;
+    void (*invalidate)(PhiWindowController*) = nullptr;
     bool agent = false;
     bool incognito = false;
   };
@@ -89,6 +93,15 @@ class PhiWindowRegistry {
                                   [](PhiWindowController* c) {
                                     delete static_cast<Controller*>(c);
                                   }),
+                    [](PhiWindowController* c) {
+                      // A test stand-in has no ScheduleRefresh; the real
+                      // controller's is the ONLY refresh the registry posts.
+                      if constexpr (requires(Controller* r) {
+                                      r->ScheduleRefresh();
+                                    }) {
+                        static_cast<Controller*>(c)->ScheduleRefresh();
+                      }
+                    },
                     agent, incognito);
   }
   // Destroys the slot's controller and drops every browser bound to it.
@@ -112,6 +125,15 @@ class PhiWindowRegistry {
   PhiWindowController* FirstUserController() const;
   bool IsAgentSlot(SlotId slot) const;
   bool IsIncognitoSlot(SlotId slot) const;
+  // Posts a coalesced row rebuild (PhiWindowController::ScheduleRefresh) —
+  // the one way anything outside a controller asks it to repaint
+  // (docs/architecture-review.md §3.1 principle 3). Nothing here rebuilds
+  // synchronously.
+  void Invalidate(SlotId slot) const;
+  // Every slot, agent windows included.
+  void InvalidateAll() const;
+  // The user's shells only (neither agent nor incognito).
+  void InvalidateUserSlots() const;
 
   // --- Browsers ----------------------------------------------------------
   // The slot hosting `browser` right now, or nullopt: the browser closed,
@@ -168,6 +190,7 @@ class PhiWindowRegistry {
  private:
   PhiWindowController* AddOwned(SlotId slot,
                                 ControllerPtr controller,
+                                void (*invalidate)(PhiWindowController*),
                                 bool agent,
                                 bool incognito);
   PhiKioskWindow* AddKioskOwned(BrowserId browser, KioskPtr kiosk);

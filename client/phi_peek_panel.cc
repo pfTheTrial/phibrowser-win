@@ -11,17 +11,15 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
-#include <optional>
 
 #include "base/compiler_specific.h"
 #include "base/containers/span.h"
-#include "base/json/json_reader.h"
 #include "base/logging.h"
-#include "base/values.h"
 #include "chrome/browser/phinomenon/phi_framework/phi_framework_api.h"
 #include "phibrowser-win/client/phi_coordinator.h"
 #include "phibrowser-win/client/phi_theme.h"
 #include "phibrowser-win/client/phi_window_controller.h"
+#include "phibrowser-win/client/phi_window_model.h"
 
 namespace phi_client {
 
@@ -142,6 +140,7 @@ PhiPeekPanel::PhiPeekPanel(int64_t window_id,
                            int64_t opener_tab_id,
                            PhiWindowController* opener,
                            phi_framework::PhiFramework* framework,
+                           const PhiWindowModel* model,
                            PhiCoordinator* coordinator)
     : window_id_(BrowserId{window_id}),
       browser_hwnd_(browser_hwnd),
@@ -149,6 +148,7 @@ PhiPeekPanel::PhiPeekPanel(int64_t window_id,
       opener_tab_id_(opener_tab_id),
       opener_(opener),
       framework_(framework),
+      model_(model),
       coordinator_(coordinator) {
   EnsureClass();
   HWND shell = opener_ ? opener_->shell_hwnd() : nullptr;
@@ -416,17 +416,17 @@ void PhiPeekPanel::SetVisibleForActiveTab(int64_t active_tab_id) {
 }
 
 void PhiPeekPanel::RefreshState() {
-  if (!framework_) {
-    return;
+  // The peek's own browser's snapshot: the model's copy, or — for a browser
+  // the model has not been pushed yet (this panel is built inside its
+  // Browser::Create) — pulled typed from the framework.
+  const phi_framework::WindowSnapshot* snapshot =
+      model_ ? model_->Get(window_id_) : nullptr;
+  phi_framework::WindowSnapshot pulled;
+  if (!snapshot && framework_ && framework_->Snapshot(window_id_, &pulled)) {
+    snapshot = &pulled;
   }
-  const char* json = framework_->NavStateJson(window_id_.value);
-  std::optional<base::DictValue> nav =
-      json ? base::JSONReader::ReadDict(json, base::JSON_PARSE_RFC)
-           : std::nullopt;
-  if (nav) {
-    if (const std::string* url = nav->FindString("url")) {
-      url_ = Widen(*url);
-    }
+  if (snapshot) {
+    url_ = Widen(snapshot->nav.url);
   }
   if (hwnd_ && ::IsWindow(hwnd_)) {
     ::InvalidateRect(hwnd_, nullptr, FALSE);
@@ -638,39 +638,20 @@ void PhiPeekPanel::OnClick(POINT pt) {
     }
     Dismiss();
   } else if (::PtInRect(&layout.split, pt)) {
-    // Split: the same tab, then put beside the one that opened the peek —
-    // which is what the reader is comparing it against. NewTab foregrounds
-    // what it opens, so the ACTIVE tab is already the new one and the
-    // opener is the partner to name.
+    // Split: the same page as a fresh tab, put beside the one that opened
+    // the peek — which is what the reader is comparing it against. Both by
+    // stable id: OpenTab answers with the new tab's, the opener's is known.
     if (framework_ && !url_.empty()) {
-      const int partner = OpenerTabIndex();
-      if (framework_->NewTab(opener_window_id_.value, Narrow(url_).c_str()) >=
-              0 &&
-          partner >= 0) {
-        framework_->SplitActiveWith(opener_window_id_.value, partner);
+      const TabId fresh =
+          framework_->OpenTab(opener_window_id_, Narrow(url_).c_str());
+      if (fresh.valid() && opener_tab_id_ > 0) {
+        framework_->CreateSplitViewForTabs(
+            opener_window_id_.value, fresh.value,
+            static_cast<int>(opener_tab_id_), "vertical");
       }
     }
     Dismiss();
   }
-}
-
-int PhiPeekPanel::OpenerTabIndex() const {
-  if (!framework_ || !opener_tab_id_) {
-    return -1;
-  }
-  std::optional<base::Value> tabs = base::JSONReader::Read(
-      framework_->ListTabsJson(opener_window_id_.value), base::JSON_PARSE_RFC);
-  if (!tabs || !tabs->is_list()) {
-    return -1;
-  }
-  for (const base::Value& row : tabs->GetList()) {
-    const base::DictValue* tab = row.GetIfDict();
-    if (tab && static_cast<int64_t>(tab->FindDouble("id").value_or(0)) ==
-                   opener_tab_id_) {
-      return tab->FindInt("index").value_or(-1);
-    }
-  }
-  return -1;
 }
 
 LRESULT PhiPeekPanel::Handle(UINT msg, WPARAM wparam, LPARAM lparam) {

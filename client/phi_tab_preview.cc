@@ -176,7 +176,7 @@ void PhiTabPreview::CancelDismiss() {
 }
 
 void PhiTabPreview::PointerEntered(const Target& target) {
-  if (!controller_ || target.tab_id == 0) {
+  if (!controller_ || !target.tab_id.valid()) {
     PointerExited();
     return;
   }
@@ -282,10 +282,10 @@ bool PhiTabPreview::Resolve() {
   snapshot_b_width_ = 0;
   snapshot_b_height_ = 0;
   compact_ = false;
-  if (!controller_ || pending_.tab_id == 0) {
+  if (!controller_ || !pending_.tab_id.valid()) {
     return false;
   }
-  const bool split = pending_.tab_id_b != 0;
+  const bool split = pending_.tab_id_b.valid();
   // The Mac's previewMode: a pane the user is already looking at, or a page
   // the snapshot policy refuses, drops the card to text only.
   compact_ = pending_.foreground || !pending_.allow_snapshot ||
@@ -303,12 +303,13 @@ bool PhiTabPreview::Resolve() {
     compact_ = true;  // No browser attached: no page to snapshot.
     return true;
   }
-  const auto pull = [&](int tab_id, std::vector<unsigned char>* out,
+  const auto pull = [&](TabId tab_id, std::vector<unsigned char>* out,
                         int* out_width, int* out_height) {
     int width = 0;
     int height = 0;
     const unsigned char* pixels =
-        framework->TabThumbnailBgra(browser.value, tab_id, &width, &height);
+        framework->TabThumbnailBgra(browser.value, tab_id.value, &width,
+                                    &height);
     if (!pixels || width <= 0 || height <= 0) {
       return;
     }
@@ -445,7 +446,7 @@ POINT PhiTabPreview::CardOrigin(const SIZE& size) const {
 }
 
 void PhiTabPreview::Present() {
-  if (!controller_ || pending_.tab_id == 0) {
+  if (!controller_ || !pending_.tab_id.valid()) {
     return;
   }
   if (!Resolve()) {

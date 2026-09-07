@@ -8,20 +8,19 @@
 #include <windowsx.h>
 
 #include <algorithm>
-#include <optional>
 #include <vector>
 
 #include "base/compiler_specific.h"
 #include "base/containers/span.h"
-#include "base/json/json_reader.h"
 #include "base/memory/raw_ptr_exclusion.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
-#include "base/values.h"
 #include "chrome/browser/phinomenon/phi_framework/phi_framework_api.h"
 #include "phibrowser-win/client/phi_dwrite.h"
+#include "phibrowser-win/client/phi_ids.h"
 #include "phibrowser-win/client/phi_theme.h"
 #include "phibrowser-win/client/phi_window_controller.h"
+#include "phibrowser-win/client/phi_window_model.h"
 
 namespace phi_client {
 
@@ -36,8 +35,7 @@ constexpr int kCloseBox = 18;
 
 struct Card {
   bool add_card = false;  // The trailing "+" card.
-  int tab_id = 0;
-  int index = -1;
+  TabId tab_id;
   std::wstring title;
   std::vector<unsigned char> thumbnail;
   int thumb_w = 0;
@@ -108,45 +106,34 @@ class Overview {
     LayoutCards();
   }
 
+  // The group's members from the window model — the same snapshot the
+  // sidebar's rows come from, never a parse of the framework's JSON.
   void BuildCards() {
     cards_.clear();
     phi_framework::PhiFramework* framework = controller_->framework();
-    if (!framework) {
-      return;
-    }
-    const int64_t browser = controller_->active_browser_id().value;
-    if (!browser) {
-      return;  // No browser attached: no cards.
-    }
-    std::optional<base::Value> tabs = base::JSONReader::Read(
-        framework->ListTabsJson(browser), base::JSON_PARSE_RFC);
-    if (tabs && tabs->is_list()) {
-      for (const base::Value& v : tabs->GetList()) {
-        const base::DictValue* d = v.GetIfDict();
-        if (!d) {
-          continue;
-        }
-        const std::string* group = d->FindString("groupId");
-        if (!group || *group != group_id_) {
+    const PhiWindowModel* model = controller_->model();
+    const BrowserId browser = controller_->active_browser_id();
+    const phi_framework::WindowSnapshot* snapshot =
+        framework && model && browser.valid() ? model->Get(browser) : nullptr;
+    if (snapshot) {
+      for (const phi_framework::TabSnapshot& tab : snapshot->tabs) {
+        if (tab.group_id != group_id_) {
           continue;
         }
         Card card;
-        card.tab_id = d->FindInt("id").value_or(0);
-        card.index = d->FindInt("index").value_or(-1);
-        if (const std::string* s = d->FindString("title")) {
-          card.title = base::UTF8ToWide(*s);
-        }
+        card.tab_id = tab.id;
+        card.title = base::UTF8ToWide(tab.title);
         int w = 0, h = 0;
-        if (const unsigned char* pixels =
-                framework->TabThumbnailBgra(browser, card.tab_id, &w, &h)) {
+        if (const unsigned char* pixels = framework->TabThumbnailBgra(
+                browser.value, tab.id.value, &w, &h)) {
           const auto copy = UNSAFE_BUFFERS(base::span<const unsigned char>(
               pixels, static_cast<size_t>(w) * h * 4));
           card.thumbnail.assign(copy.begin(), copy.end());
           card.thumb_w = w;
           card.thumb_h = h;
         }
-        if (const unsigned char* pixels =
-                framework->TabFaviconBgra(browser, card.index, &w, &h)) {
+        if (const unsigned char* pixels = framework->TabFaviconBgraById(
+                browser.value, tab.id.value, &w, &h)) {
           const auto copy = UNSAFE_BUFFERS(base::span<const unsigned char>(
               pixels, static_cast<size_t>(w) * h * 4));
           card.favicon.assign(copy.begin(), copy.end());
@@ -254,24 +241,23 @@ class Overview {
 
   void Click(POINT pt) {
     phi_framework::PhiFramework* framework = controller_->framework();
-    const int64_t browser = controller_->active_browser_id().value;
-    if (!browser) {
+    const BrowserId browser = controller_->active_browser_id();
+    if (!browser.valid()) {
       return;  // No browser attached: nothing to activate or close.
     }
-    for (const Card& card : cards_) {
+    for (size_t i = 0; i < cards_.size(); ++i) {
+      const Card& card = cards_[i];
       if (!::PtInRect(&card.bounds, pt)) {
         continue;
       }
       if (card.add_card) {
         if (framework) {
-          const int fresh = framework->NewTab(browser, "");
-          if (fresh >= 0) {
+          // OpenTab answers with the stable id the group call wants.
+          const TabId fresh = framework->OpenTab(browser, "");
+          if (fresh.valid()) {
             const std::string ids =
-                "[" +
-                base::NumberToString(TabIdAtIndex(framework, browser,
-                                                  fresh)) +
-                "]";
-            framework->AddTabsToGroup(browser, group_id_.c_str(),
+                "[" + base::NumberToString(fresh.value) + "]";
+            framework->AddTabsToGroup(browser.value, group_id_.c_str(),
                                       ids.c_str());
           }
         }
@@ -279,38 +265,22 @@ class Overview {
         return;
       }
       if (::PtInRect(&card.close_box, pt)) {
-        if (framework && card.index >= 0) {
-          framework->CloseTab(browser, card.index);
+        if (framework && card.tab_id.valid()) {
+          framework->CloseTabById(browser.value, card.tab_id.value);
         }
-        // Rebuild in place: indices shifted and a card left.
-        BuildCards();
+        // The card leaves in place: the model hears of the close on its
+        // push, but the overview is the user's view of it right now.
+        cards_.erase(cards_.begin() + static_cast<std::ptrdiff_t>(i));
         LayoutCards();
         ::InvalidateRect(hwnd_, nullptr, TRUE);
-        controller_->RefreshTabs();
         return;
       }
-      if (framework && card.index >= 0) {
-        framework->ActivateTab(browser, card.index);
+      if (framework && card.tab_id.valid()) {
+        framework->ActivateTabById(browser.value, card.tab_id.value);
       }
       PhiGroupOverview::Close();
       return;
     }
-  }
-
-  static int TabIdAtIndex(phi_framework::PhiFramework* framework,
-                          int64_t browser,
-                          int index) {
-    std::optional<base::Value> tabs = base::JSONReader::Read(
-        framework->ListTabsJson(browser), base::JSON_PARSE_RFC);
-    if (tabs && tabs->is_list()) {
-      for (const base::Value& v : tabs->GetList()) {
-        const base::DictValue* d = v.GetIfDict();
-        if (d && d->FindInt("index").value_or(-1) == index) {
-          return d->FindInt("id").value_or(0);
-        }
-      }
-    }
-    return 0;
   }
 
   static LRESULT CALLBACK OverviewProc(HWND hwnd, UINT msg, WPARAM w,

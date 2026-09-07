@@ -12,9 +12,7 @@
 #include <string>
 #include <vector>
 
-#include "base/json/json_reader.h"
 #include "base/logging.h"
-#include "base/values.h"
 #include "chrome/browser/phinomenon/phi_framework/phi_framework_api.h"
 #include "phibrowser-win/client/phi_coordinator.h"
 #include "phibrowser-win/client/phi_dwrite.h"
@@ -186,10 +184,12 @@ ATOM EnsureClass() {
 PhiKioskWindow::PhiKioskWindow(int64_t window_id,
                                HWND browser_hwnd,
                                phi_framework::PhiFramework* framework,
+                               const PhiWindowModel* model,
                                PhiCoordinator* coordinator)
     : window_id_(BrowserId{window_id}),
       browser_hwnd_(browser_hwnd),
       framework_(framework),
+      model_(model),
       coordinator_(coordinator) {
   EnsureClass();
 
@@ -267,22 +267,26 @@ PhiKioskWindow::~PhiKioskWindow() {
   }
 }
 
+const phi_framework::WindowSnapshot* PhiKioskWindow::CurrentSnapshot(
+    phi_framework::WindowSnapshot* pulled) const {
+  if (const phi_framework::WindowSnapshot* known =
+          model_ ? model_->Get(window_id_) : nullptr) {
+    return known;
+  }
+  return framework_ && framework_->Snapshot(window_id_, pulled) ? pulled
+                                                                : nullptr;
+}
+
 void PhiKioskWindow::RefreshState() {
   if (!framework_) {
     return;
   }
-  const char* json = framework_->NavStateJson(window_id_.value);
-  std::optional<base::DictValue> nav =
-      json ? base::JSONReader::ReadDict(json, base::JSON_PARSE_RFC)
-           : std::nullopt;
-  if (nav) {
-    if (const std::string* url = nav->FindString("url")) {
-      url_ = Widen(*url);
-    }
-    if (const std::string* title = nav->FindString("title")) {
-      title_ = Widen(*title);
-    }
-    can_go_back_ = nav->FindBool("canGoBack").value_or(false);
+  phi_framework::WindowSnapshot pulled;
+  if (const phi_framework::WindowSnapshot* snapshot =
+          CurrentSnapshot(&pulled)) {
+    url_ = Widen(snapshot->nav.url);
+    title_ = Widen(snapshot->nav.title);
+    can_go_back_ = snapshot->nav.can_go_back;
   }
   RefreshSpaces();
   MeasureLabels();
@@ -294,20 +298,26 @@ void PhiKioskWindow::RefreshState() {
 }
 
 void PhiKioskWindow::RefreshProfile() {
-  if (!framework_) {
+  if (!framework_ || !coordinator_) {
     return;
   }
-  // The framework hands back a pointer into its own buffer: parse it now.
-  const char* json = framework_->WindowProfileJson(window_id_.value);
-  std::optional<base::DictValue> profile =
-      json ? base::JSONReader::ReadDict(json, base::JSON_PARSE_RFC)
-           : std::nullopt;
-  if (!profile) {
+  // The snapshot names the profile by its on-disk id; the display name is
+  // the owner's "id\tname" summary for it — the one profile list every
+  // surface reads.
+  phi_framework::WindowSnapshot pulled;
+  const phi_framework::WindowSnapshot* snapshot = CurrentSnapshot(&pulled);
+  if (!snapshot || snapshot->profile_id.empty()) {
     return;
   }
-  if (const std::string* name = profile->FindString("name")) {
-    profile_name_ = Widen(*name);
+  for (const std::string& summary : coordinator_->ProfileSummaries()) {
+    const size_t tab = summary.find('\t');
+    if (summary.substr(0, tab) != snapshot->profile_id) {
+      continue;
+    }
+    profile_name_ = Widen(tab == std::string::npos ? snapshot->profile_id
+                                                   : summary.substr(tab + 1));
     MeasureLabels();
+    break;
   }
 }
 

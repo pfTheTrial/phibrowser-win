@@ -17,11 +17,13 @@
 
 namespace phi_framework {
 class PhiFramework;
+struct WindowSnapshot;
 }
 
 namespace phi_client {
 
 class PhiCoordinator;
+class PhiWindowModel;
 
 // The Mac's Kiosk browser window (UserInterface/Kiosk): an ephemeral,
 // single-tab window for a link opened outside the user's Spaces — an external
@@ -53,9 +55,13 @@ class PhiCoordinator;
 // profile without offering the menu). See windows-framework-status.md.
 class PhiKioskWindow {
  public:
+  // `model` is the coordinator's window model: the toolbar's url, title
+  // and back state are read from this browser's snapshot there
+  // (docs/architecture-review.md §3.3).
   PhiKioskWindow(int64_t window_id,
                  HWND browser_hwnd,
                  phi_framework::PhiFramework* framework,
+                 const PhiWindowModel* model,
                  PhiCoordinator* coordinator);
   ~PhiKioskWindow();
 
@@ -130,8 +136,14 @@ class PhiKioskWindow {
   HWND hwnd_ = nullptr;
   HWND browser_hwnd_ = nullptr;
   RAW_PTR_EXCLUSION phi_framework::PhiFramework* framework_ = nullptr;
+  RAW_PTR_EXCLUSION const PhiWindowModel* model_ = nullptr;
   RAW_PTR_EXCLUSION PhiCoordinator* coordinator_ = nullptr;
   int dpi_ = 96;
+  // This browser's snapshot: the model's copy, or pulled typed for a
+  // browser the model has not been pushed yet (the window is built inside
+  // its Browser::Create). `pulled` is the pull's storage.
+  const phi_framework::WindowSnapshot* CurrentSnapshot(
+      phi_framework::WindowSnapshot* pulled) const;
 
   std::wstring title_;
   std::wstring url_;

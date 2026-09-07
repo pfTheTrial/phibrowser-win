@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "base/memory/raw_ptr_exclusion.h"
+#include "phibrowser-win/client/phi_ids.h"
 
 namespace phi_client {
 
@@ -48,9 +49,9 @@ class PhiTabPreview {
   // is a no-op, so a repaint or a tab-list rebuild never restarts the delay.
   struct Target {
     std::string key;
-    // Framework session id (ListTabsJson "id"), for the snapshot. Rows with
-    // no live tab are ineligible and never reach here.
-    int tab_id = 0;
+    // The tab's stable session id, for the snapshot. Rows with no live tab
+    // are ineligible and never reach here.
+    TabId tab_id;
     std::wstring title;
     std::wstring url;
     // The active tab: the Mac shows title and URL only — its snapshot is
@@ -61,7 +62,7 @@ class PhiTabPreview {
     bool allow_snapshot = true;
     // A split row previews BOTH panes in one card (the Mac's
     // SplitTabPreviewController). Pane B is set only for a split.
-    int tab_id_b = 0;
+    TabId tab_id_b;
     std::wstring title_b;
     std::wstring url_b;
     bool foreground_b = false;
@@ -130,7 +131,7 @@ class PhiTabPreview {
   bool IsWarm() const;
   void ArmDismiss();
   void CancelDismiss();
-  bool IsSplit() const { return shown_.tab_id_b != 0; }
+  bool IsSplit() const { return shown_.tab_id_b.valid(); }
   // A title (capped at two lines) plus its URL line, at `width`.
   int TextBlockHeight(const std::wstring& title,
                       const std::wstring& url,
