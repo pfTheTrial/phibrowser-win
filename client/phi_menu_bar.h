@@ -13,8 +13,16 @@
 
 #include "base/memory/raw_ptr_exclusion.h"
 #include "phibrowser-win/client/phi_ids.h"
+#include "phibrowser-win/client/phi_theme.h"
+
+namespace phi_framework {
+class PhiFramework;
+}  // namespace phi_framework
 
 namespace phi_client {
+
+class PhiSlotHost;
+class PhiWindowModel;
 
 // Menu command ids (WM_COMMAND). In the header so the keyboard-accelerator
 // hook can post the same commands the menus fire.
@@ -133,7 +141,91 @@ enum : UINT {
   kCmdToggleReader,  // View — Reader View for the active tab.
 };
 
-class PhiWindowController;
+// One finished sidebar row, as the Tab menu lists it. A SNAPSHOT of what the
+// last rebuild placed: a menu opening is not a reason to rebuild
+// (docs/architecture-review.md §3.1 principle 3; phase 2 made rebuilds
+// posted).
+struct PhiMenuBarTab {
+  TabId id;
+  std::wstring title;
+  bool active = false;
+};
+
+// The navigation state the View, History and Bookmarks menus enable from.
+struct PhiMenuBarNavState {
+  std::wstring url;
+  bool can_go_back = false;
+  bool can_go_forward = false;
+  bool loading = false;
+};
+
+// WHAT THE BAR ASKS OF ITS SHELL (docs/architecture-review.md §3.5, lane 1
+// §2.1 item 3). Until phase 6 the bar was a `friend` of PhiWindowController
+// and read seventeen private members by name — `host_`, `framework_`,
+// `tabs_`, `url_field_`, `nav_url_`, `active_space_`, `active_tab_id_` and
+// the rest — which is why the shell had to keep const reference VIEWS onto
+// its own components just to stay compilable. This interface replaced all of
+// it: nav state, the finished rows, the active Space, the address field, and
+// command dispatch. No `friend`, and nothing here reaches back into a cache
+// the bar could outlive.
+class PhiMenuBarShell {
+ public:
+  // --- Identity and services ----------------------------------------------
+  virtual HWND MenuShellWindow() const = 0;
+  virtual SlotId MenuSlot() const = 0;
+  virtual bool MenuIncognito() const = 0;
+  // The host and the framework stay whole for now: the bar genuinely spans
+  // bookmarks, Spaces, profiles and prefs, and §4.3 splits PhiSlotHost into
+  // ShellServices as its own step.
+  virtual PhiSlotHost* MenuHost() const = 0;
+  virtual phi_framework::PhiFramework* MenuFramework() const = 0;
+  virtual const PhiWindowModel* MenuModel() const = 0;
+  // The browser the slot SHOWS — invalid when none is attached, and NEVER
+  // the slot's own number.
+  virtual BrowserId MenuActiveBrowser() const = 0;
+  // The TREE's active tab, not the active ROW: a tab bound to a pinned cell
+  // or a bookmark is no row in the list, and Ctrl+W must still close it.
+  virtual TabId MenuActiveTab() const = 0;
+  virtual std::string MenuActiveSpace() const = 0;
+  virtual PhiPalette MenuPalette() const = 0;
+  virtual int MenuScaled(int design_units) const = 0;
+
+  // --- The omnibox --------------------------------------------------------
+  // The address field's EDIT (null before the shell has one): Open Location
+  // and the Edit menu's text commands operate on it.
+  virtual HWND MenuAddressField() const = 0;
+  // Re-reads navigation state from the window model. NOT a row rebuild —
+  // the rows a menu shows are always the finished ones.
+  virtual void MenuRefreshNavState() = 0;
+  virtual PhiMenuBarNavState MenuNavState() const = 0;
+
+  // --- The finished rows --------------------------------------------------
+  virtual std::vector<PhiMenuBarTab> MenuTabRows() const = 0;
+
+  // --- Reader View --------------------------------------------------------
+  virtual bool MenuReaderActive() const = 0;
+  virtual bool MenuReaderOfferable() const = 0;
+  // Back/Forward over a tab the reader covers means "leave the reader".
+  virtual bool MenuLeaveReaderForNavigation() = 0;
+
+  // --- Commands the bar hands back ----------------------------------------
+  virtual bool MenuHasSpace(const std::string& space_id) const = 0;
+  virtual bool MenuShowSpace(const std::string& space_id) = 0;
+  virtual void MenuNewTab() = 0;
+  virtual void MenuToggleSidebar() = 0;
+  virtual void MenuToggleReader() = 0;
+  virtual void MenuToggleDownloads() = 0;
+  virtual void MenuToggleSearchTabs() = 0;
+  virtual void MenuOpenFeedback() = 0;
+  virtual void MenuCreateSpace() = 0;
+  // The Mac's Edit Theme: the panel drops under the caption, centred on the
+  // window (the menu bar has no trigger point to hang it off).
+  virtual void MenuEditSpaceTheme() = 0;
+
+ protected:
+  // The shell owns the bar, never the reverse.
+  ~PhiMenuBarShell() = default;
+};
 
 // The Mac menu bar (AppController+Menu.swift over Chromium's
 // main_menu_builder.mm), ported as a native Win32 menu on the shell window:
@@ -148,7 +240,7 @@ class PhiWindowController;
 // equivalent of the Mac's menuWillOpen rebuilds.
 class PhiMenuBar {
  public:
-  explicit PhiMenuBar(PhiWindowController* controller);
+  explicit PhiMenuBar(PhiMenuBarShell* shell);
   ~PhiMenuBar();
 
   PhiMenuBar(const PhiMenuBar&) = delete;
@@ -217,7 +309,7 @@ class PhiMenuBar {
   std::vector<SpaceEntry> SpaceList() const;
   void ReleaseSpaceBitmaps();
 
-  RAW_PTR_EXCLUSION PhiWindowController* const controller_;  // Owns this.
+  RAW_PTR_EXCLUSION PhiMenuBarShell* const services_;  // Owns this.
   HMENU bar_ = nullptr;
   // The overflow popup. It borrows the SAME submenu handles `bar_` holds, so
   // its items are detached before it is destroyed — destroying it outright

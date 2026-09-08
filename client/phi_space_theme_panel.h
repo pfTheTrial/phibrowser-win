@@ -7,6 +7,7 @@
 
 #include <windows.h>
 
+#include <functional>
 #include <string>
 
 namespace phi_client {
@@ -19,8 +20,19 @@ class PhiWindowController;
 // change applies LIVE — the Mac panel has no confirm button — so the
 // window behind it recolors as the pointer moves.
 //
-// Modal like the other client pickers: it runs its own message loop and
-// returns once dismissed (Escape, or focus leaving the panel).
+// The panel is a PhiPopover (docs/architecture-review.md §3.6): it does
+// NOT run a message loop. `on_closed` runs once, after the window is gone
+// (Escape, or focus leaving the panel).
+void PhiOpenSpaceThemePanel(PhiWindowController* controller,
+                            const RECT& anchor_screen,
+                            const std::string& space_id,
+                            std::function<void()> on_closed);
+
+// TRANSITIONAL synchronous wrapper, exactly as for the folder icon picker:
+// it drives the asynchronous panel through a short local message loop so
+// the existing call site (in phi_window_controller.cc, a file phase 5 does
+// not own) keeps compiling. Phase 6 moves that call site onto
+// PhiOpenSpaceThemePanel and deletes this.
 void PhiShowSpaceThemePanel(PhiWindowController* controller,
                             const RECT& anchor_screen,
                             const std::string& space_id);

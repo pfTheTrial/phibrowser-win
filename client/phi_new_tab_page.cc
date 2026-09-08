@@ -22,6 +22,12 @@ namespace {
 
 constexpr wchar_t kClassName[] = L"PhiNewTabPage";
 constexpr UINT_PTR kFieldId = 1;
+// The three faces, in DESIGN units — the base's PhiFontSet scales them and
+// drops them all on a dpi change, which is what retires the file's own
+// fonts_dpi_ bookkeeping (lane 3 §3.5).
+constexpr wchar_t kBrandFace[] = L"Segoe UI Light";
+constexpr wchar_t kBodyFace[] = L"Segoe UI";
+constexpr wchar_t kGlyphFace[] = L"Segoe MDL2 Assets";
 
 // NewTabViewController's metrics (DIP).
 constexpr int kIconSize = 64;          // iconSize
@@ -59,14 +65,7 @@ PhiNewTabPage::PhiNewTabPage(PhiWindowController* controller)
     : controller_(controller) {}
 
 PhiNewTabPage::~PhiNewTabPage() {
-  if (hwnd_ && ::IsWindow(hwnd_)) {
-    ::DestroyWindow(hwnd_);  // Takes the field with it.
-  }
-  for (HFONT font : {label_font_, field_font_, glyph_font_}) {
-    if (font) {
-      ::DeleteObject(font);
-    }
-  }
+  Destroy();  // Takes the field with it; the base clears its own state.
   if (field_brush_) {
     ::DeleteObject(field_brush_);
   }
@@ -79,12 +78,45 @@ bool PhiNewTabPage::IsNewTabUrl(const std::string& url) {
          url.rfind("phi://newtab", 0) == 0;
 }
 
-int PhiNewTabPage::Scaled(int design) const {
-  return ::MulDiv(design, static_cast<int>(dpi_), 96);
+bool PhiNewTabPage::visible() const {
+  return IsPanelVisible();
 }
 
-bool PhiNewTabPage::visible() const {
-  return hwnd_ && ::IsWindow(hwnd_) && ::IsWindowVisible(hwnd_);
+PhiPalette PhiNewTabPage::QueryPalette() const {
+  // The slot's live palette, so a theme ramp (and now an OS appearance
+  // switch, through the theme bus) repaints the page with the chrome.
+  return controller_ ? controller_->CurrentPalette() : PhiPalette();
+}
+
+HFONT PhiNewTabPage::LabelFont() const {
+  // The Mac's brand display face (IvyPresto Headline Light) is not shipped
+  // here; Segoe's light cut is the system's equivalent weight.
+  PhiFontDesc desc;
+  desc.size = kLabelFontSize;
+  desc.weight = FW_LIGHT;
+  desc.face = kBrandFace;
+  return const_cast<PhiNewTabPage*>(this)->fonts().Get(desc);
+}
+
+HFONT PhiNewTabPage::FieldFont() const {
+  PhiFontDesc desc;
+  desc.size = kFieldFontSize;
+  desc.face = kBodyFace;
+  return const_cast<PhiNewTabPage*>(this)->fonts().Get(desc);
+}
+
+HFONT PhiNewTabPage::GlyphFont() const {
+  PhiFontDesc desc;
+  desc.size = kGlyphSize;
+  desc.face = kGlyphFace;
+  return const_cast<PhiNewTabPage*>(this)->fonts().Get(desc);
+}
+
+void PhiNewTabPage::PushFieldFont() {
+  if (field_) {
+    ::SendMessageW(field_, WM_SETFONT,
+                   reinterpret_cast<WPARAM>(FieldFont()), TRUE);
+  }
 }
 
 bool PhiNewTabPage::WantsFocus() const {
@@ -92,84 +124,39 @@ bool PhiNewTabPage::WantsFocus() const {
 }
 
 void PhiNewTabPage::EnsureWindow() {
-  if (hwnd_ && ::IsWindow(hwnd_)) {
+  if (alive()) {
     return;
   }
   HWND owner = controller_ ? controller_->shell_hwnd() : nullptr;
   if (!owner) {
     return;
   }
-  static const bool registered = [] {
-    WNDCLASSW cls = {};
-    cls.lpfnWndProc = &PhiNewTabPage::PageProc;
-    cls.hInstance = ::GetModuleHandleW(nullptr);
-    cls.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
-    cls.lpszClassName = kClassName;
-    return ::RegisterClassW(&cls) != 0;
-  }();
-  (void)registered;
-  dpi_ = ::GetDpiForWindow(owner);
-  if (!dpi_) {
-    dpi_ = 96;
-  }
-  hwnd_ = ::CreateWindowExW(
-      0, kClassName, L"",
-      // WS_CLIPSIBLINGS: this covers the content card, and without it the
-      // page paints straight over the corner caps stacked above it —
-      // squaring off the card's rounded corners.
-      WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS, 0,
-                            0, 0, 0, owner, nullptr,
-                            ::GetModuleHandleW(nullptr), nullptr);
-  if (!hwnd_) {
+  ClassSpec spec;
+  spec.name = kClassName;
+  Options options;
+  // WS_CLIPCHILDREN for the omnibox EDIT; WS_CLIPSIBLINGS is PhiPanel's,
+  // and it is what keeps the corner caps stacked above this page visible
+  // instead of squaring off the card's rounded corners.
+  options.style = WS_CLIPCHILDREN;
+  const RECT nothing = {0, 0, 0, 0};
+  if (!CreatePanel(spec, owner, nothing, options)) {
     return;
   }
-  ::SetWindowLongPtrW(hwnd_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
-  EnsureFonts();
   EnsureField();
 }
 
-void PhiNewTabPage::EnsureFonts() {
-  if (label_font_ && fonts_dpi_ == dpi_) {
-    return;
-  }
-  for (HFONT font : {label_font_, field_font_, glyph_font_}) {
-    if (font) {
-      ::DeleteObject(font);
-    }
-  }
-  const auto make = [&](int size, int weight, const wchar_t* face) {
-    return ::CreateFontW(-Scaled(size), 0, 0, 0, weight, FALSE, FALSE, FALSE,
-                         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
-                         CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-                         DEFAULT_PITCH, face);
-  };
-  // The Mac's brand display face (IvyPresto Headline Light) is not shipped
-  // here; Segoe's light cut is the system's equivalent weight.
-  label_font_ = make(kLabelFontSize, FW_LIGHT, L"Segoe UI Light");
-  field_font_ = make(kFieldFontSize, FW_NORMAL, L"Segoe UI");
-  glyph_font_ = make(kGlyphSize, FW_NORMAL, L"Segoe MDL2 Assets");
-  fonts_dpi_ = dpi_;
-  if (field_ && field_font_) {
-    ::SendMessageW(field_, WM_SETFONT, reinterpret_cast<WPARAM>(field_font_),
-                   TRUE);
-  }
-}
-
 void PhiNewTabPage::EnsureField() {
-  if (field_ || !hwnd_ || !controller_) {
+  if (field_ || !alive() || !controller_) {
     return;
   }
   field_ = ::CreateWindowExW(
       0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_LEFT | ES_AUTOHSCROLL, 0, 0,
-      10, 10, hwnd_, reinterpret_cast<HMENU>(kFieldId),
+      10, 10, hwnd(), reinterpret_cast<HMENU>(kFieldId),
       ::GetModuleHandleW(nullptr), nullptr);
   if (!field_) {
     return;
   }
-  if (field_font_) {
-    ::SendMessageW(field_, WM_SETFONT, reinterpret_cast<WPARAM>(field_font_),
-                   TRUE);
-  }
+  PushFieldFont();
   // The Mac omnibox's placeholder, drawn by the EDIT itself while empty.
   ::SendMessageW(field_, EM_SETCUEBANNER, TRUE,
                  reinterpret_cast<LPARAM>(
@@ -182,7 +169,7 @@ void PhiNewTabPage::EnsureField() {
 
 void PhiNewTabPage::Show() {
   EnsureWindow();
-  if (!hwnd_) {
+  if (!alive()) {
     return;
   }
   controls_hidden_ = false;
@@ -190,38 +177,39 @@ void PhiNewTabPage::Show() {
     ::SetWindowTextW(field_, L"");
   }
   Reposition();
-  ::ShowWindow(hwnd_, SW_SHOWNA);
-  ::SetWindowPos(hwnd_, HWND_TOP, 0, 0, 0, 0,
-                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+  ShowPanel();
 }
 
 void PhiNewTabPage::Hide() {
-  if (hwnd_ && ::IsWindow(hwnd_)) {
-    ::ShowWindow(hwnd_, SW_HIDE);
-  }
+  HidePanel();
 }
 
 void PhiNewTabPage::Reposition() {
-  if (!hwnd_ || !controller_) {
+  if (!alive() || !controller_) {
     return;
   }
-  const UINT dpi = ::GetDpiForWindow(controller_->shell_hwnd());
-  if (dpi && dpi != dpi_) {
-    dpi_ = dpi;
-    EnsureFonts();
-  }
-  const RECT content = controller_->ContentRect();
-  ::SetWindowPos(hwnd_, HWND_TOP, content.left, content.top,
-                 content.right - content.left, content.bottom - content.top,
-                 SWP_NOACTIVATE);
+  SyncDpiFromParent();
+  SetPanelBounds(controller_->ContentRect());
+  RaisePanel();
   LayoutField();
-  ::InvalidateRect(hwnd_, nullptr, FALSE);
+  Invalidate();
 }
 
 void PhiNewTabPage::Refresh() {
-  if (hwnd_ && ::IsWindow(hwnd_)) {
-    ::InvalidateRect(hwnd_, nullptr, FALSE);
+  if (alive()) {
+    // Re-reads QueryPalette() and repaints: a palette ramp moves the page
+    // with the chrome.
+    NotifyThemeChanged();
   }
+}
+
+void PhiNewTabPage::OnDpiChanged(UINT) {
+  PushFieldFont();  // The base dropped the old HFONT with the font set.
+  LayoutField();
+}
+
+void PhiNewTabPage::OnSize(int, int) {
+  LayoutField();
 }
 
 void PhiNewTabPage::HideControls() {
@@ -253,19 +241,19 @@ void PhiNewTabPage::FocusField() {
 
 RECT PhiNewTabPage::BoxScreenRect() const {
   RECT box = ComputeGeometry().box;
-  if (hwnd_) {
-    ::MapWindowPoints(hwnd_, nullptr, reinterpret_cast<POINT*>(&box), 2);
+  if (alive()) {
+    ::MapWindowPoints(hwnd(), nullptr, reinterpret_cast<POINT*>(&box), 2);
   }
   return box;
 }
 
 PhiNewTabPage::Geometry PhiNewTabPage::ComputeGeometry() const {
   Geometry g;
-  if (!hwnd_ || !controller_) {
+  if (!alive() || !controller_) {
     return g;
   }
   RECT rc = {};
-  ::GetClientRect(hwnd_, &rc);
+  ::GetClientRect(hwnd(), &rc);
   const int clip_w = rc.right - rc.left;
   const int clip_h = rc.bottom - rc.top;
   const bool incognito = controller_->is_incognito();
@@ -274,15 +262,15 @@ PhiNewTabPage::Geometry PhiNewTabPage::ComputeGeometry() const {
   // overflows a narrow card (a split pane) — and the column stays centred.
   const int icon = Scaled(kIconSize);
   int label_w = 0, label_h = 0;
-  if (incognito && label_font_) {
-    HDC dc = ::GetDC(hwnd_);
+  if (incognito) {
+    HDC dc = ::GetDC(hwnd());
     if (dc) {
-      HGDIOBJ prev = ::SelectObject(dc, label_font_);
+      HGDIOBJ prev = ::SelectObject(dc, LabelFont());
       RECT measure = {0, 0, 0, 0};
       PhiDrawTextAA(dc, PhiStr("browser.newTabPage.incognitoLabel"), -1,
                   &measure, DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX);
       ::SelectObject(dc, prev);
-      ::ReleaseDC(hwnd_, dc);
+      ::ReleaseDC(hwnd(), dc);
       label_w = measure.right - measure.left + 2;  // The Mac's clip guard.
       label_h = measure.bottom - measure.top;
     }
@@ -326,13 +314,16 @@ void PhiNewTabPage::LayoutField() {
   ::ShowWindow(field_, controls_hidden_ ? SW_HIDE : SW_SHOW);
 }
 
-void PhiNewTabPage::Paint(HDC dc) {
+void PhiNewTabPage::Paint(HDC dc, const RECT&) {
   if (!controller_) {
     return;
   }
   RECT rc = {};
-  ::GetClientRect(hwnd_, &rc);
-  const PhiPalette palette = controller_->CurrentPalette();
+  ::GetClientRect(hwnd(), &rc);
+  // QueryPalette(), not the base's cached palette(): the slot's colours
+  // ramp between frames and this page follows them live. The cached one is
+  // what the theme bus compares against to know it must repaint at all.
+  const PhiPalette palette = QueryPalette();
   // contentOverlayBackground: the card's own ground, white in light mode.
   HBRUSH ground = ::CreateSolidBrush(palette.card);
   ::FillRect(dc, &rc, ground);
@@ -357,8 +348,8 @@ void PhiNewTabPage::Paint(HDC dc) {
     PhiBlendBgra(dc, g.icon, bgra.data(), icon_px, icon_px);
   }
 
-  if (controller_->is_incognito() && label_font_) {
-    HGDIOBJ prev = ::SelectObject(dc, label_font_);
+  if (controller_->is_incognito()) {
+    HGDIOBJ prev = ::SelectObject(dc, LabelFont());
     ::SetTextColor(dc, palette.label);
     RECT label = g.label;
     PhiDrawTextAA(dc, PhiStr("browser.newTabPage.incognitoLabel"), -1, &label,
@@ -373,11 +364,11 @@ void PhiNewTabPage::Paint(HDC dc) {
       palette.card, 51);
   PhiFillRoundRectAA(dc, g.box, Scaled(kBoxRadius), palette.card);
   PhiStrokeRoundRectAA(dc, g.box, Scaled(kBoxRadius), border, 1);
-  if (glyph_font_) {
+  {
     RECT glyph = {g.box.left + Scaled(kGlyphLead), g.box.top,
                   g.box.left + Scaled(kGlyphLead) + Scaled(kGlyphSize),
                   g.box.bottom};
-    HGDIOBJ prev = ::SelectObject(dc, glyph_font_);
+    HGDIOBJ prev = ::SelectObject(dc, GlyphFont());
     ::SetTextColor(dc, palette.label_dim);  // secondaryLabelColor
     PhiDrawTextAA(dc, kSearchGlyph, -1, &glyph,
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
@@ -385,103 +376,53 @@ void PhiNewTabPage::Paint(HDC dc) {
   }
 }
 
-// static
-LRESULT CALLBACK PhiNewTabPage::PageProc(HWND hwnd,
-                                         UINT msg,
-                                         WPARAM w,
-                                         LPARAM l) {
-  auto* self = reinterpret_cast<PhiNewTabPage*>(
-      ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
-  switch (msg) {
-    case WM_ERASEBKGND:
-      return 1;
-    case WM_PAINT: {
-      PAINTSTRUCT ps = {};
-      HDC dc = ::BeginPaint(hwnd, &ps);
-      if (self) {
-        // Back-buffered: the whole card repaints on every palette ramp tick.
-        RECT rc = {};
-        ::GetClientRect(hwnd, &rc);
-        const int page_w = rc.right - rc.left;
-        const int page_h = rc.bottom - rc.top;
-        HDC mem = ::CreateCompatibleDC(dc);
-        HBITMAP buffer =
-            mem ? ::CreateCompatibleBitmap(dc, page_w, page_h) : nullptr;
-        if (mem && buffer) {
-          HGDIOBJ prev = ::SelectObject(mem, buffer);
-          self->Paint(mem);
-          ::BitBlt(dc, 0, 0, page_w, page_h, mem, 0, 0, SRCCOPY);
-          ::SelectObject(mem, prev);
-        } else {
-          self->Paint(dc);
-        }
-        if (buffer) {
-          ::DeleteObject(buffer);
-        }
-        if (mem) {
-          ::DeleteDC(mem);
-        }
-      }
-      ::EndPaint(hwnd, &ps);
-      return 0;
-    }
-    case WM_PRINTCLIENT:
-      // PrintWindow captures (the box's screenshot rig) render children
-      // through this; without it the page would capture blank.
-      if (self) {
-        self->Paint(reinterpret_cast<HDC>(w));
-      }
-      return 0;
-    case WM_SIZE:
-      if (self) {
-        self->LayoutField();
-      }
-      return 0;
-    case WM_LBUTTONDOWN:
-      if (self) {
-        // The box's padding focuses the field like the Mac's box does; the
-        // ground takes focus itself, which blurs the field and drops its
-        // suggestion list.
-        const POINT pt = {GET_X_LPARAM(l), GET_Y_LPARAM(l)};
-        const RECT box = self->ComputeGeometry().box;
-        if (self->WantsFocus() && ::PtInRect(&box, pt)) {
-          ::SetFocus(self->field_);
-          ::SendMessageW(self->field_, EM_SETSEL, 0, -1);
-        } else {
-          ::SetFocus(hwnd);
-        }
-      }
-      return 0;
+void PhiNewTabPage::OnMouseDown(int, POINT pt) {
+  // The box's padding focuses the field like the Mac's box does; the
+  // ground takes focus itself, which blurs the field and drops its
+  // suggestion list.
+  const RECT box = ComputeGeometry().box;
+  if (WantsFocus() && ::PtInRect(&box, pt)) {
+    ::SetFocus(field_);
+    ::SendMessageW(field_, EM_SETSEL, 0, -1);
+  } else {
+    ::SetFocus(hwnd());
+  }
+}
+
+LRESULT PhiNewTabPage::OnMessage(UINT message,
+                                 WPARAM wparam,
+                                 LPARAM lparam,
+                                 bool* handled) {
+  switch (message) {
     case WM_COMMAND:
-      if (self && self->controller_ && self->field_ &&
-          reinterpret_cast<HWND>(l) == self->field_ &&
-          HIWORD(w) == EN_CHANGE) {
-        self->controller_->OnOmniboxFieldChanged(self->field_);
+      if (controller_ && field_ && reinterpret_cast<HWND>(lparam) == field_ &&
+          HIWORD(wparam) == EN_CHANGE) {
+        *handled = true;
+        controller_->OnOmniboxFieldChanged(field_);
         return 0;
       }
       break;
     case WM_CTLCOLOREDIT:
-      if (self && self->controller_ &&
-          reinterpret_cast<HWND>(l) == self->field_) {
-        const PhiPalette palette = self->controller_->CurrentPalette();
-        HDC edit_dc = reinterpret_cast<HDC>(w);
-        ::SetTextColor(edit_dc, palette.label);
-        ::SetBkColor(edit_dc, palette.card);  // Seamless with the box fill.
-        if (!self->field_brush_ ||
-            self->field_brush_color_ != palette.card) {
-          if (self->field_brush_) {
-            ::DeleteObject(self->field_brush_);
+      if (controller_ && reinterpret_cast<HWND>(lparam) == field_) {
+        const PhiPalette colors = QueryPalette();
+        HDC edit_dc = reinterpret_cast<HDC>(wparam);
+        ::SetTextColor(edit_dc, colors.label);
+        ::SetBkColor(edit_dc, colors.card);  // Seamless with the box fill.
+        if (!field_brush_ || field_brush_color_ != colors.card) {
+          if (field_brush_) {
+            ::DeleteObject(field_brush_);
           }
-          self->field_brush_ = ::CreateSolidBrush(palette.card);
-          self->field_brush_color_ = palette.card;
+          field_brush_ = ::CreateSolidBrush(colors.card);
+          field_brush_color_ = colors.card;
         }
-        return reinterpret_cast<LRESULT>(self->field_brush_);
+        *handled = true;
+        return reinterpret_cast<LRESULT>(field_brush_);
       }
       break;
     default:
       break;
   }
-  return ::DefWindowProcW(hwnd, msg, w, l);
+  return PhiPanel::OnMessage(message, wparam, lparam, handled);
 }
 
 }  // namespace phi_client

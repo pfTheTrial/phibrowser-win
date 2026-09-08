@@ -1,0 +1,32 @@
+// Copyright 2026 The Fyde Innovations Limited. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#include "phibrowser-win/client/phi_gdiplus.h"
+
+#include <windows.h>
+
+#include <objbase.h>
+// gdiplus.h needs min/max and the ole headers above it.
+#include <algorithm>
+
+#include <gdiplus.h>
+
+#pragma comment(lib, "gdiplus.lib")
+
+namespace phi_client {
+
+bool PhiEnsureGdiPlus() {
+  // A function-local static: the initialisation is guaranteed to run once
+  // even if two call sites race, and a bool has no exit-time destructor.
+  // The token is intentionally dropped — see the header for why nothing
+  // shuts GDI+ down.
+  static const bool started = [] {
+    Gdiplus::GdiplusStartupInput input;
+    ULONG_PTR token = 0;
+    return Gdiplus::GdiplusStartup(&token, &input, nullptr) == Gdiplus::Ok;
+  }();
+  return started;
+}
+
+}  // namespace phi_client

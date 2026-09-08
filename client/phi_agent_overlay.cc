@@ -19,7 +19,10 @@
 #include <vector>
 
 #include "base/memory/raw_ptr_exclusion.h"
+#include "phibrowser-win/client/phi_animator.h"
 #include "phibrowser-win/client/phi_dwrite.h"
+#include "phibrowser-win/client/phi_gdiplus.h"
+#include "phibrowser-win/client/phi_panel.h"
 #include "phibrowser-win/client/phi_window_controller.h"
 
 namespace phi_client {
@@ -38,26 +41,165 @@ constexpr int kPillHeight = 44;
 constexpr int kPillMaxWidth = 560;
 constexpr int kPillBottomGap = 24;
 constexpr int kButtonHeight = 26;
-// The animation clock (~30fps) and the sprite timer id.
-constexpr UINT kSpriteTickMs = 33;
-constexpr UINT_PTR kSpriteTimer = 0x531;
-
-// GDI+ is started once for the process and never shut down (the capture
-// path's reasoning applies here too).
-bool EnsureGdiPlus() {
-  static const bool ok = [] {
-    Gdiplus::GdiplusStartupInput input;
-    ULONG_PTR token = 0;
-    return Gdiplus::GdiplusStartup(&token, &input, nullptr) == Gdiplus::Ok;
-  }();
-  return ok;
-}
-
 void FillRounded(HDC dc, const RECT& r, COLORREF color, int radius) {
   PhiFillRoundRectAA(dc, r, radius, color);
 }
 
-class Overlay {
+// What the three windows need from the overlay that owns them. A plain
+// interface rather than a back-pointer plus friendship: the house style
+// bans `friend`, and the three surfaces are PhiPanels of their own now.
+class OverlayHost {
+ public:
+  virtual ~OverlayHost() = default;
+  virtual void PaintPill(HDC dc) = 0;
+  virtual void PillClicked(int x, int y) = 0;
+  virtual void ComposeSprite() = 0;
+};
+
+// The FOG: a constant-alpha layered barrier over the whole content area. It
+// keeps WS_EX_LAYERED with SetLayeredWindowAttributes (a flat wash, not
+// per-pixel alpha), so it paints through the ordinary back-buffered path.
+class Fog : public PhiPanel {
+ public:
+  Fog() = default;
+  ~Fog() override { Destroy(); }
+
+  bool Open(HWND shell) {
+    ClassSpec spec;
+    spec.name = kFogClass;
+    spec.cursor = IDC_NO;
+    Options options;
+    options.ex_style = WS_EX_LAYERED | WS_EX_NOPARENTNOTIFY;
+    const RECT nothing = {0, 0, 0, 0};
+    return CreatePanel(spec, shell, nothing, options);
+  }
+
+ protected:
+  void Paint(HDC dc, const RECT&) override {
+    RECT client = {};
+    ::GetClientRect(hwnd(), &client);
+    // A flat wash; WS_EX_LAYERED turns it into the fog.
+    HBRUSH brush = ::CreateSolidBrush(RGB(0x10, 0x12, 0x18));
+    ::FillRect(dc, &client, brush);
+    ::DeleteObject(brush);
+  }
+
+  LRESULT OnMessage(UINT message,
+                    WPARAM wparam,
+                    LPARAM lparam,
+                    bool* handled) override {
+    switch (message) {
+      // The barrier itself: content input dies here. MOUSEACTIVATE keeps the
+      // click from even activating the browser child beneath.
+      case WM_MOUSEACTIVATE:
+        *handled = true;
+        return MA_NOACTIVATEANDEAT;
+      case WM_LBUTTONDOWN:
+      case WM_LBUTTONUP:
+      case WM_RBUTTONDOWN:
+      case WM_RBUTTONUP:
+      case WM_MBUTTONDOWN:
+      case WM_MBUTTONUP:
+      case WM_MOUSEWHEEL:
+      case WM_MOUSEMOVE:
+        *handled = true;
+        return 0;
+      case WM_SETCURSOR:
+        ::SetCursor(::LoadCursorW(nullptr, IDC_NO));
+        *handled = true;
+        return TRUE;
+      default:
+        break;
+    }
+    return PhiPanel::OnMessage(message, wparam, lparam, handled);
+  }
+};
+
+// The SPRITE: the agent cursor and the input-mirror effects, per-pixel
+// alpha out of GDI+ and committed through UpdateLayeredWindow.
+class Sprite : public PhiPanel {
+ public:
+  explicit Sprite(OverlayHost* host) : host_(host) {}
+  ~Sprite() override { Destroy(); }
+
+  bool Open(HWND shell) {
+    ClassSpec spec;
+    spec.name = kSpriteClass;
+    spec.cursor = nullptr;
+    Options options;
+    options.layered = true;
+    // The sprite is pure output — hit tests fall through to the fog
+    // barrier beneath it.
+    options.click_through = true;
+    options.ex_style = WS_EX_NOPARENTNOTIFY;
+    const RECT nothing = {0, 0, 0, 0};
+    return CreatePanel(spec, shell, nothing, options);
+  }
+
+ protected:
+  void ComposeLayer() override { host_->ComposeSprite(); }
+
+ private:
+  RAW_PTR_EXCLUSION OverlayHost* const host_;
+};
+
+// The PILL: a SHAPED LAYER, not a window region.
+//
+// Lane 3 §3.6 finding 2: this window was cut to a capsule with
+// SetWindowRgn although it hosts no child controls (its two buttons are
+// RECTs painted by hand), so every one of its four corners was a
+// staircase. The silhouette is now per-pixel alpha out of phi_dwrite, and
+// WM_NCHITTEST answers HTTRANSPARENT off the capsule — which is what the
+// region said by simply not being there.
+class Pill : public PhiPanel {
+ public:
+  explicit Pill(OverlayHost* host) : host_(host) {}
+  ~Pill() override { Destroy(); }
+
+  bool Open(HWND shell) {
+    ClassSpec spec;
+    spec.name = kPillClass;
+    Options options;
+    options.shaped_layer = true;
+    options.ex_style = WS_EX_NOPARENTNOTIFY;
+    const RECT nothing = {0, 0, 0, 0};
+    return CreatePanel(spec, shell, nothing, options);
+  }
+
+ protected:
+  void Paint(HDC dc, const RECT&) override { host_->PaintPill(dc); }
+
+  void LayerShapes(int width,
+                   int height,
+                   std::vector<PhiLayerShape>* out) const override {
+    PhiLayerShape capsule;
+    capsule.bounds = {0, 0, width, height};
+    capsule.radius = height / 2;  // A capsule, as the region was.
+    out->push_back(capsule);
+  }
+
+  bool HitTestShape() const override { return true; }
+
+  void OnClick(int, POINT pt) override {
+    host_->PillClicked(static_cast<int>(pt.x), static_cast<int>(pt.y));
+  }
+
+  LRESULT OnMessage(UINT message,
+                    WPARAM wparam,
+                    LPARAM lparam,
+                    bool* handled) override {
+    if (message == WM_MOUSEACTIVATE) {
+      *handled = true;
+      return MA_NOACTIVATE;  // Clickable without stealing page focus.
+    }
+    return PhiPanel::OnMessage(message, wparam, lparam, handled);
+  }
+
+ private:
+  RAW_PTR_EXCLUSION OverlayHost* const host_;
+};
+
+class Overlay : public OverlayHost {
  public:
   static Overlay* instance;
 
@@ -66,34 +208,21 @@ class Overlay {
         shell_(controller->shell_hwnd()),
         task_id_(task_id) {
     dpi_ = ::GetDpiForWindow(shell_);
-    Register();
-    fog_ = ::CreateWindowExW(WS_EX_LAYERED | WS_EX_NOPARENTNOTIFY, kFogClass,
-                             L"", WS_CHILD, 0, 0, 0, 0,
-                             controller_->shell_hwnd(), nullptr,
-                             ::GetModuleHandleW(nullptr), this);
-    // WS_EX_TRANSPARENT: the sprite is pure output — hit tests fall through
-    // to the fog barrier beneath it.
-    sprite_ = ::CreateWindowExW(
-        WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOPARENTNOTIFY,
-        kSpriteClass, L"", WS_CHILD, 0, 0, 0, 0, controller_->shell_hwnd(),
-        nullptr, ::GetModuleHandleW(nullptr), this);
-    pill_ = ::CreateWindowExW(WS_EX_NOPARENTNOTIFY, kPillClass, L"", WS_CHILD,
-                              0, 0, 0, 0, controller_->shell_hwnd(), nullptr,
-                              ::GetModuleHandleW(nullptr), this);
+    fog_.Open(shell_);
+    sprite_.Open(shell_);
+    pill_.Open(shell_);
     EnsureFonts();
   }
 
-  ~Overlay() {
+  ~Overlay() override {
     for (HFONT font : {label_font_, caption_font_}) {
       if (font) {
         ::DeleteObject(font);
       }
     }
-    for (HWND window : {pill_, sprite_, fog_}) {
-      if (window && ::IsWindow(window)) {
-        ::DestroyWindow(window);
-      }
-    }
+    // Each destructor destroys its own HWND; the base clears
+    // GWLP_USERDATA at WM_NCDESTROY, so nothing delivered during the
+    // teardown reaches a half-destroyed object.
   }
 
   const std::string& task_id() const { return task_id_; }
@@ -114,12 +243,14 @@ class Overlay {
     }
     // The fog only exists while the AGENT owns the Space; once the user takes
     // control the page must be usable, so the barrier comes down entirely.
-    ::ShowWindow(fog_, agent_owns_ ? SW_SHOWNOACTIVATE : SW_HIDE);
     if (agent_owns_) {
-      ::SetLayeredWindowAttributes(fog_, 0, kFogAlpha, LWA_ALPHA);
+      fog_.ShowPanel();
+      ::SetLayeredWindowAttributes(fog_.hwnd(), 0, kFogAlpha, LWA_ALPHA);
+    } else {
+      fog_.HidePanel();
     }
-    ::ShowWindow(pill_, SW_SHOWNOACTIVATE);
-    ::InvalidateRect(pill_, nullptr, TRUE);
+    pill_.ShowPanel();
+    pill_.Invalidate();
   }
 
   void Reposition() {
@@ -131,27 +262,26 @@ class Overlay {
     }
     const RECT content = controller_->ContentRect();
     const int width = content.right - content.left;
-    const int height = content.bottom - content.top;
-    ::SetWindowPos(fog_, HWND_TOP, content.left, content.top, width, height,
-                   SWP_NOACTIVATE);
-    // The sprite tracks the content rect exactly, stacked over the fog (the
-    // later HWND_TOP wins the z race between the two).
-    ::SetWindowPos(sprite_, HWND_TOP, content.left, content.top, width,
-                   height, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    fog_.SetPanelBounds(content);
+    fog_.RaisePanel();
+    // The sprite tracks the content rect exactly, stacked over the fog —
+    // the card stack keeps that order (it is the "last raised" list the two
+    // HWND_TOP calls used to race for).
+    sprite_.SetPanelBounds(content);
+    sprite_.ShowPanel();
     ComposeSprite();
     const int pill_w = std::min(Scaled(kPillMaxWidth), width - Scaled(32));
     const int pill_h = Scaled(kPillHeight);
-    ::SetWindowPos(pill_, HWND_TOP,
-                   content.left + (width - pill_w) / 2,
-                   content.bottom - pill_h - Scaled(kPillBottomGap), pill_w,
-                   pill_h, SWP_NOACTIVATE);
-    // Shape the WINDOW to the pill: painting a rounded rect inside a square
-    // window would leave its corners showing the unpainted background.
-    if (HRGN region = ::CreateRoundRectRgn(0, 0, pill_w + 1, pill_h + 1,
-                                           pill_h, pill_h)) {
-      ::SetWindowRgn(pill_, region, TRUE);  // The window owns it now.
-    }
+    const int pill_x = content.left + (width - pill_w) / 2;
+    const int pill_y = content.bottom - pill_h - Scaled(kPillBottomGap);
+    const RECT pill_rect = {pill_x, pill_y, pill_x + pill_w, pill_y + pill_h};
+    pill_.SetPanelBounds(pill_rect);
+    pill_.RaisePanel();
     LayoutButtons(pill_w, pill_h);
+    // The capsule is the LAYER's silhouette now (Pill::LayerShapes), not a
+    // SetWindowRgn: a region cuts on the pixel grid and stair-steps every
+    // corner (lane 3 §3.6 finding 2).
+    pill_.Invalidate();
   }
 
   bool agent_owns() const { return agent_owns_; }
@@ -229,12 +359,6 @@ class Overlay {
                                   }),
                    effects_.end());
     ComposeSprite();
-    const bool gliding =
-        glide_start_ && now - glide_start_ < glide_ms_;
-    if (!gliding && effects_.empty()) {
-      ::KillTimer(sprite_, kSpriteTimer);
-      ticking_ = false;
-    }
   }
 
  private:
@@ -284,48 +408,59 @@ class Overlay {
                            (cursor_to_.Y - cursor_from_.Y) * eased));
   }
 
+  // The sprite's clock. It was a 33 ms SetTimer of its own; it is now one
+  // animation on the shared 16 ms coalescable animator (lane 3 §6.3),
+  // running for exactly as long as something is still moving — the glide's
+  // remaining span or the longest live effect, whichever ends last. The
+  // GLIDE's own curve is untouched: CursorNow() still interpolates the
+  // Mac's decel-heavy bezier off the wall clock, so only the frame rate
+  // changes.
   void StartTicking() {
-    if (!ticking_ && sprite_) {
-      ticking_ = true;
-      ::SetTimer(sprite_, kSpriteTimer, kSpriteTickMs, nullptr);
+    if (!sprite_.alive()) {
+      return;
     }
+    const ULONGLONG now = ::GetTickCount64();
+    long long remaining = 0;
+    if (glide_start_ && now - glide_start_ < glide_ms_) {
+      remaining = static_cast<long long>(glide_ms_) -
+                  static_cast<long long>(now - glide_start_);
+    }
+    for (const Effect& effect : effects_) {
+      const long long left = static_cast<long long>(effect.LifetimeMs()) -
+                             static_cast<long long>(now - effect.start);
+      remaining = std::max(remaining, left);
+    }
+    PhiAnimator& animator = PhiAnimator::ForThread();
+    animator.CancelForWindow(sprite_.hwnd());
+    if (remaining <= 0) {
+      return;
+    }
+    animator.Animate(
+        sprite_.hwnd(), static_cast<int>(remaining), PhiEasing::kLinear,
+        // The tick only recomposes the layer, which is committed straight
+        // through UpdateLayeredWindow: nothing to invalidate.
+        [this](double, RECT*) { OnSpriteTick(); },
+        [this] { OnSpriteTick(); });
   }
 
   // Renders the sprite layer — cursor + live effects — into a premultiplied
   // ARGB surface and hands it to UpdateLayeredWindow.
-  void ComposeSprite() {
-    if (!sprite_ || !::IsWindow(sprite_) || !EnsureGdiPlus()) {
+  void ComposeSprite() override {
+    if (!sprite_.alive() || !PhiEnsureGdiPlus()) {
       return;
     }
     RECT rc = {};
-    ::GetClientRect(sprite_, &rc);
+    ::GetClientRect(sprite_.hwnd(), &rc);
     const int width = rc.right;
     const int height = rc.bottom;
-    if (width <= 0 || height <= 0) {
+    PhiLayerSurface layer(width, height);
+    if (!layer.valid()) {
       return;
     }
-    BITMAPINFO info = {};
-    info.bmiHeader.biSize = sizeof(info.bmiHeader);
-    info.bmiHeader.biWidth = width;
-    info.bmiHeader.biHeight = -height;  // Top-down.
-    info.bmiHeader.biPlanes = 1;
-    info.bmiHeader.biBitCount = 32;
-    info.bmiHeader.biCompression = BI_RGB;
-    void* bits = nullptr;
-    HDC screen = ::GetDC(nullptr);
-    HDC mem = ::CreateCompatibleDC(screen);
-    HBITMAP dib =
-        ::CreateDIBSection(mem, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
-    ::ReleaseDC(nullptr, screen);
-    if (!dib) {
-      ::DeleteDC(mem);
-      return;
-    }
-    HGDIOBJ old = ::SelectObject(mem, dib);
     {
       Gdiplus::Bitmap surface(width, height, width * 4,
                               PixelFormat32bppPARGB,
-                              static_cast<BYTE*>(bits));
+                              static_cast<BYTE*>(layer.bits()));
       Gdiplus::Graphics graphics(&surface);
       graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
       graphics.Clear(Gdiplus::Color(0, 0, 0, 0));
@@ -342,14 +477,7 @@ class Overlay {
         DrawCursor(&graphics, CursorNow(now));
       }
     }
-    POINT src = {0, 0};
-    SIZE size = {width, height};
-    BLENDFUNCTION blend = {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
-    ::UpdateLayeredWindow(sprite_, nullptr, nullptr, &size, mem, &src, 0,
-                          &blend, ULW_ALPHA);
-    ::SelectObject(mem, old);
-    ::DeleteObject(dib);
-    ::DeleteDC(mem);
+    layer.Commit(sprite_.hwnd(), nullptr);
   }
 
   Gdiplus::Color AccentColor(BYTE alpha) const {
@@ -558,33 +686,6 @@ class Overlay {
     }
   }
 
-  void Register() {
-    static bool registered = [] {
-      WNDCLASSEXW fog = {};
-      fog.cbSize = sizeof(fog);
-      fog.lpfnWndProc = &FogProc;
-      fog.hInstance = ::GetModuleHandleW(nullptr);
-      fog.hCursor = ::LoadCursorW(nullptr, IDC_NO);
-      fog.lpszClassName = kFogClass;
-      ::RegisterClassExW(&fog);
-      WNDCLASSEXW pill = {};
-      pill.cbSize = sizeof(pill);
-      pill.lpfnWndProc = &PillProc;
-      pill.hInstance = ::GetModuleHandleW(nullptr);
-      pill.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
-      pill.lpszClassName = kPillClass;
-      ::RegisterClassExW(&pill);
-      WNDCLASSEXW sprite = {};
-      sprite.cbSize = sizeof(sprite);
-      sprite.lpfnWndProc = &SpriteProc;
-      sprite.hInstance = ::GetModuleHandleW(nullptr);
-      sprite.lpszClassName = kSpriteClass;
-      ::RegisterClassExW(&sprite);
-      return true;
-    }();
-    (void)registered;
-  }
-
   void EnsureFonts() {
     auto make = [&](int size, int weight) {
       return ::CreateFontW(-Scaled(size), 0, 0, 0, weight, FALSE, FALSE, FALSE,
@@ -612,9 +713,9 @@ class Overlay {
     primary_ = {right - primary_w, mid - bh / 2, right, mid + bh / 2};
   }
 
-  void Paint(HDC dc) {
+  void PaintPill(HDC dc) override {
     RECT client = {};
-    ::GetClientRect(pill_, &client);
+    ::GetClientRect(pill_.hwnd(), &client);
     const PhiPalette& palette = controller_->CurrentPalette();
     const COLORREF ground = palette.dark ? RGB(0x2A, 0x2A, 0x2E)
                                          : RGB(0xFF, 0xFF, 0xFF);
@@ -622,7 +723,12 @@ class Overlay {
                                       : RGB(0x1A, 0x1A, 0x1C);
     const COLORREF dim = palette.dark ? RGB(0xA0, 0xA0, 0xA8)
                                       : RGB(0x6A, 0x6A, 0x72);
-    FillRounded(dc, client, ground, (client.bottom - client.top) / 2);
+    // SQUARE fill: the capsule is the LAYER's alpha (Pill::LayerShapes), so
+    // an antialiased fill here would blend its own edge against an empty
+    // buffer and leave a dark fringe once the mask ramps over it.
+    HBRUSH plate = ::CreateSolidBrush(ground);
+    ::FillRect(dc, &client, plate);
+    ::DeleteObject(plate);
     ::SetBkMode(dc, TRANSPARENT);
 
     // Leading: who is driving, then the status caption.
@@ -660,7 +766,7 @@ class Overlay {
     }
   }
 
-  void OnPillClick(int x, int y) {
+  void PillClicked(int x, int y) override {
     const POINT pt = {x, y};
     PhiSlotHost* host = controller_ ? controller_->host() : nullptr;
     if (!host) {
@@ -681,93 +787,15 @@ class Overlay {
     }
   }
 
-  static LRESULT CALLBACK FogProc(HWND hwnd, UINT message, WPARAM w,
-                                  LPARAM l) {
-    switch (message) {
-      case WM_ERASEBKGND: {
-        RECT client = {};
-        ::GetClientRect(hwnd, &client);
-        // A flat wash; WS_EX_LAYERED turns it into the fog.
-        HBRUSH brush = ::CreateSolidBrush(RGB(0x10, 0x12, 0x18));
-        ::FillRect(reinterpret_cast<HDC>(w), &client, brush);
-        ::DeleteObject(brush);
-        return 1;
-      }
-      // The barrier itself: content input dies here. MOUSEACTIVATE keeps the
-      // click from even activating the browser child beneath.
-      case WM_MOUSEACTIVATE:
-        return MA_NOACTIVATEANDEAT;
-      case WM_LBUTTONDOWN:
-      case WM_LBUTTONUP:
-      case WM_RBUTTONDOWN:
-      case WM_RBUTTONUP:
-      case WM_MBUTTONDOWN:
-      case WM_MBUTTONUP:
-      case WM_MOUSEWHEEL:
-      case WM_MOUSEMOVE:
-        return 0;
-      case WM_SETCURSOR:
-        ::SetCursor(::LoadCursorW(nullptr, IDC_NO));
-        return TRUE;
-    }
-    return ::DefWindowProcW(hwnd, message, w, l);
-  }
-
-  static LRESULT CALLBACK SpriteProc(HWND hwnd, UINT message, WPARAM w,
-                                     LPARAM l) {
-    if (message == WM_TIMER && w == kSpriteTimer) {
-      if (Overlay::instance) {
-        Overlay::instance->OnSpriteTick();
-      } else {
-        ::KillTimer(hwnd, kSpriteTimer);
-      }
-      return 0;
-    }
-    return ::DefWindowProcW(hwnd, message, w, l);
-  }
-
-  static LRESULT CALLBACK PillProc(HWND hwnd, UINT message, WPARAM w,
-                                   LPARAM l) {
-    switch (message) {
-      case WM_MOUSEACTIVATE:
-        return MA_NOACTIVATE;  // Clickable without stealing page focus.
-      case WM_PAINT: {
-        PAINTSTRUCT paint;
-        HDC dc = ::BeginPaint(hwnd, &paint);
-        RECT client = {};
-        ::GetClientRect(hwnd, &client);
-        HDC mem = ::CreateCompatibleDC(dc);
-        HBITMAP bitmap =
-            ::CreateCompatibleBitmap(dc, client.right, client.bottom);
-        HGDIOBJ old = ::SelectObject(mem, bitmap);
-        if (Overlay::instance) {
-          Overlay::instance->Paint(mem);
-        }
-        ::BitBlt(dc, 0, 0, client.right, client.bottom, mem, 0, 0, SRCCOPY);
-        ::SelectObject(mem, old);
-        ::DeleteObject(bitmap);
-        ::DeleteDC(mem);
-        ::EndPaint(hwnd, &paint);
-        return 0;
-      }
-      case WM_LBUTTONUP:
-        if (Overlay::instance) {
-          Overlay::instance->OnPillClick(GET_X_LPARAM(l), GET_Y_LPARAM(l));
-        }
-        return 0;
-    }
-    return ::DefWindowProcW(hwnd, message, w, l);
-  }
-
   RAW_PTR_EXCLUSION PhiWindowController* controller_;
   const HWND shell_;  // controller_'s shell at construction.
   std::string task_id_;
   std::wstring agent_label_;
   std::wstring caption_;
   bool agent_owns_ = true;
-  HWND fog_ = nullptr;
-  HWND sprite_ = nullptr;
-  HWND pill_ = nullptr;
+  Fog fog_;
+  Sprite sprite_{this};
+  Pill pill_{this};
   UINT dpi_ = 96;
   // The agent cursor: target/source in sprite-local device px; a zero
   // glide_start_ means "sitting at cursor_to_".
@@ -777,7 +805,6 @@ class Overlay {
   ULONGLONG glide_start_ = 0;
   DWORD glide_ms_ = 0;
   std::vector<Effect> effects_;
-  bool ticking_ = false;
   RECT primary_{};
   RECT secondary_{};
   HFONT label_font_ = nullptr;

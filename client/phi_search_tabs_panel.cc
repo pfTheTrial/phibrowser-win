@@ -22,6 +22,7 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
 #include "chrome/browser/phinomenon/phi_framework/phi_framework_api.h"
+#include "phibrowser-win/client/phi_popover.h"
 #include "phibrowser-win/client/phi_theme.h"
 #include "phibrowser-win/client/phi_window_controller.h"
 
@@ -39,8 +40,6 @@ constexpr int kPad = 10;
 // Section caps: a browse-y handful unfiltered, more once the user types.
 constexpr size_t kUnfilteredCap = 6;
 constexpr size_t kFilteredCap = 20;
-
-WNDPROC g_search_edit_base_proc = nullptr;
 
 // One visible line of the palette: either a section header or an openable
 // result.
@@ -83,24 +82,52 @@ bool Matches(const std::wstring& haystack_lower, const std::wstring& query) {
   return true;
 }
 
-class Panel {
+// The palette keeps its sources, its row model, its Paint() and its EDIT
+// child. The window, the placement, the back buffer, hover, dismissal and
+// lifetime belong to PhiPopover (lane 3 §6.2).
+class Panel : public PhiPopover {
  public:
-  explicit Panel(PhiWindowController* controller) : controller_(controller) {
-    dpi_ = ::GetDpiForWindow(controller_->shell_hwnd());
-    Register();
-    const int w = Scaled(kPanelWidth);
-    const int h = Scaled(kPanelHeight);
+  explicit Panel(PhiWindowController* controller) : controller_(controller) {}
+
+  ~Panel() override {
+    if (field_brush_) {
+      ::DeleteObject(field_brush_);
+    }
+  }
+
+  bool Open() {
+    HWND owner = controller_ ? controller_->shell_hwnd() : nullptr;
+    if (!owner) {
+      return false;
+    }
+    ClassSpec spec;
+    spec.name = L"PhiSearchTabsPanel";
+    spec.cursor = nullptr;
+
+    Options options;  // Activating, dismiss on inactive, 500 ms grace.
+    options.dwm_round = false;  // The panel draws its own square rim.
+
+    // Centred over the shell's upper fifth. The palette is placed on its
+    // owner, not on an anchor, and is deliberately NOT clamped — exactly
+    // where it sat before the substrate landed.
     RECT owner_rect = {};
-    ::GetWindowRect(controller_->shell_hwnd(), &owner_rect);
-    const int x =
-        (owner_rect.left + owner_rect.right) / 2 - w / 2;
-    const int y = owner_rect.top +
-                  (owner_rect.bottom - owner_rect.top) / 5;
-    hwnd_ = ::CreateWindowExW(WS_EX_TOOLWINDOW, L"PhiSearchTabsPanel", L"",
-                              WS_POPUP, x, y, w, h,
-                              controller_->shell_hwnd(), nullptr,
-                              ::GetModuleHandleW(nullptr), this);
-    EnsureFonts();
+    ::GetWindowRect(owner, &owner_rect);
+    Placement placement;
+    placement.side = PhiPopoverSide::kExplicit;
+    placement.clamp = false;
+
+    SIZE probe = {1, 1};
+    if (!CreatePopover(spec, owner, probe, placement, options)) {
+      return false;
+    }
+    instance = this;  // Before Show(): activation churn can destroy us.
+    SIZE size = {Scaled(kPanelWidth), Scaled(kPanelHeight)};
+    const LONG x = (owner_rect.left + owner_rect.right) / 2 - size.cx / 2;
+    const LONG y =
+        owner_rect.top + (owner_rect.bottom - owner_rect.top) / 5;
+    placement.anchor = {x, y, x, y};
+    Reposition(placement, size);
+
     FetchSources();
     BuildRows(std::wstring());
     // The search field: a real EDIT so IME/caret/clipboard just work.
@@ -108,68 +135,33 @@ class Panel {
         0, L"EDIT", L"",
         WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | ES_LEFT, Scaled(kPad) * 2,
         Scaled(kPad) + (Scaled(kFieldHeight) - Scaled(20)) / 2,
-        w - Scaled(kPad) * 4, Scaled(20), hwnd_, nullptr,
+        size.cx - Scaled(kPad) * 4, Scaled(20), hwnd(), nullptr,
         ::GetModuleHandleW(nullptr), nullptr);
     ::SendMessageW(field_, WM_SETFONT,
-                   reinterpret_cast<WPARAM>(field_font_), TRUE);
+                   reinterpret_cast<WPARAM>(FieldFont()), TRUE);
     ::SetWindowLongPtrW(field_, GWLP_USERDATA,
                         reinterpret_cast<LONG_PTR>(this));
-    WNDPROC previous = reinterpret_cast<WNDPROC>(::SetWindowLongPtrW(
+    // The base WNDPROC is kept PER PANEL, not in a process global the way
+    // the two EDIT subclass chains in the tree do it (lane 3 §13): one
+    // more subclass on any EDIT would break a shared chain.
+    field_base_proc_ = reinterpret_cast<WNDPROC>(::SetWindowLongPtrW(
         field_, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&FieldProc)));
-    if (!g_search_edit_base_proc) {
-      g_search_edit_base_proc = previous;
-    }
     ::SendMessageW(field_, EM_SETCUEBANNER, TRUE,
                    reinterpret_cast<LPARAM>(L"Search tabs, bookmarks..."));
-    created_tick_ = ::GetTickCount64();
-    ::ShowWindow(hwnd_, SW_SHOW);
-    ::SetForegroundWindow(hwnd_);
+    Show();
     ::SetFocus(field_);
+    return true;
   }
 
-  ~Panel() {
-    for (HFONT font : {field_font_, row_font_, dim_font_, header_font_}) {
-      if (font) {
-        ::DeleteObject(font);
-      }
-    }
-    if (field_brush_) {
-      ::DeleteObject(field_brush_);
-    }
-  }
-
-  HWND hwnd() const { return hwnd_; }
   PhiWindowController* controller() const { return controller_; }
 
   static Panel* instance;
 
  private:
-  int Scaled(int design) const { return ::MulDiv(design, dpi_, 96); }
-
-  void Register() {
-    static bool registered = [] {
-      WNDCLASSEXW wc = {};
-      wc.cbSize = sizeof(wc);
-      wc.lpfnWndProc = &PanelProc;
-      wc.hInstance = ::GetModuleHandleW(nullptr);
-      wc.lpszClassName = L"PhiSearchTabsPanel";
-      return ::RegisterClassExW(&wc) != 0;
-    }();
-    (void)registered;
-  }
-
-  void EnsureFonts() {
-    const auto make = [&](int size, int weight) {
-      return ::CreateFontW(-Scaled(size), 0, 0, 0, weight, FALSE, FALSE,
-                           FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
-                           CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-                           DEFAULT_PITCH, L"Segoe UI");
-    };
-    field_font_ = make(15, FW_NORMAL);
-    row_font_ = make(13, FW_NORMAL);
-    dim_font_ = make(13, FW_NORMAL);
-    header_font_ = make(11, FW_SEMIBOLD);
-  }
+  HFONT FieldFont() { return fonts().Get(15, FW_NORMAL); }
+  HFONT RowFont() { return fonts().Get(13, FW_NORMAL); }
+  HFONT DimFont() { return fonts().Get(13, FW_NORMAL); }
+  HFONT HeaderFont() { return fonts().Get(11, FW_SEMIBOLD); }
 
   // Reads every source ONCE at open; typing only re-filters.
   void FetchSources() {
@@ -310,6 +302,33 @@ class Panel {
       }
     }
     scroll_ = 0;
+    BuildHits();
+  }
+
+  // THE layout pass: one hit per OPENABLE row (headers are painted, never
+  // hit). Rebuilt whenever the rows or the scroll offset move.
+  void BuildHits() {
+    ClearHits();
+    if (!alive()) {
+      return;
+    }
+    const RECT list = ListRect();
+    int y = list.top - scroll_;
+    for (size_t i = 0; i < rows_.size(); ++i) {
+      const int height = rows_[i].kind == Row::Kind::kHeader
+                             ? Scaled(kHeaderHeight)
+                             : Scaled(kRowHeight);
+      if (rows_[i].kind != Row::Kind::kHeader) {
+        RECT bounds = {list.left, std::max<LONG>(y, list.top), list.right,
+                       std::min<LONG>(y + height, list.bottom)};
+        if (bounds.bottom > bounds.top) {
+          AddHit(bounds, static_cast<int>(i), rows_[i].title,
+                 PhiHitRole::kListItem,
+                 static_cast<int>(i) == selected_);
+        }
+      }
+      y += height;
+    }
   }
 
   void Requery() {
@@ -319,12 +338,12 @@ class Panel {
       ::GetWindowTextW(field_, buffer.data(), len + 1);
     }
     BuildRows(buffer.data());
-    ::InvalidateRect(hwnd_, nullptr, TRUE);
+    Invalidate();
   }
 
   RECT ListRect() const {
     RECT rc;
-    ::GetClientRect(hwnd_, &rc);
+    ::GetClientRect(hwnd(), &rc);
     rc.top += Scaled(kPad) + Scaled(kFieldHeight);
     rc.left += Scaled(kPad);
     rc.right -= Scaled(kPad);
@@ -373,7 +392,8 @@ class Panel {
       if (rows_[static_cast<size_t>(i)].kind != Row::Kind::kHeader) {
         selected_ = i;
         EnsureVisible(static_cast<size_t>(i));
-        ::InvalidateRect(hwnd_, nullptr, TRUE);
+        BuildHits();
+        Invalidate();
         return;
       }
     }
@@ -398,7 +418,9 @@ class Panel {
     }
     const Row row = rows_[static_cast<size_t>(selected_)];
     PhiWindowController* controller = controller_;
-    ::DestroyWindow(hwnd_);  // First — the action may refocus other windows.
+    // First — the action may refocus other windows. Everything below runs
+    // on locals: `this` is gone once the window is.
+    Destroy();
     PhiSlotHost* host = controller->host();
     phi_framework::PhiFramework* framework = controller->framework();
     const int64_t browser = controller->active_browser_id().value;
@@ -428,10 +450,10 @@ class Panel {
     }
   }
 
-  void Paint(HDC dc) {
+  void PaintPanel(HDC dc) {
     RECT rc = {};
-    ::GetClientRect(hwnd_, &rc);
-    const PhiPalette palette = controller_->CurrentPalette();
+    ::GetClientRect(hwnd(), &rc);
+    const PhiPalette& palette = PhiWindow::palette();
     HBRUSH bg = ::CreateSolidBrush(palette.card);
     ::FillRect(dc, &rc, bg);
     ::DeleteObject(bg);
@@ -458,7 +480,7 @@ class Panel {
       if (row.kind == Row::Kind::kHeader) {
         RECT r = {list.left + Scaled(6), y, list.right - Scaled(6),
                   y + Scaled(kHeaderHeight)};
-        ::SelectObject(dc, header_font_);
+        ::SelectObject(dc, HeaderFont());
         ::SetTextColor(dc, palette.label_dim);
         ::DrawTextW(dc, row.title.c_str(), -1, &r,
                     DT_LEFT | DT_BOTTOM | DT_SINGLELINE | DT_NOPREFIX);
@@ -473,14 +495,14 @@ class Panel {
       RECT detail_rc = {r.right - Scaled(150), r.top, r.right - Scaled(10),
                         r.bottom};
       if (!row.detail.empty()) {
-        ::SelectObject(dc, dim_font_);
+        ::SelectObject(dc, DimFont());
         ::SetTextColor(dc, palette.label_tertiary);
         ::DrawTextW(dc, row.detail.c_str(), -1, &detail_rc,
                     DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
       }
       RECT text_rc = {r.left + Scaled(10), r.top,
                       detail_rc.left - Scaled(8), r.bottom};
-      ::SelectObject(dc, row_font_);
+      ::SelectObject(dc, RowFont());
       ::SetTextColor(dc, palette.label);
       RECT measure = text_rc;
       ::DrawTextW(dc, row.title.c_str(), -1, &measure,
@@ -524,7 +546,7 @@ class Panel {
           return 0;
         }
         if (wparam == VK_ESCAPE) {
-          ::DestroyWindow(self->hwnd_);
+          self->Destroy();
           return 0;
         }
         break;
@@ -534,102 +556,110 @@ class Panel {
         }
         break;
     }
-    return ::CallWindowProcW(g_search_edit_base_proc, hwnd, msg, wparam,
+    if (!self || !self->field_base_proc_) {
+      return ::DefWindowProcW(hwnd, msg, wparam, lparam);
+    }
+    return ::CallWindowProcW(self->field_base_proc_, hwnd, msg, wparam,
                              lparam);
   }
 
-  static LRESULT CALLBACK PanelProc(HWND hwnd, UINT msg, WPARAM w,
-                                    LPARAM l) {
-    Panel* self = instance && instance->hwnd_ == hwnd ? instance : nullptr;
-    switch (msg) {
-      case WM_NCCREATE: {
-        auto* cs = reinterpret_cast<CREATESTRUCTW*>(l);
-        ::SetWindowLongPtrW(hwnd, GWLP_USERDATA,
-                            reinterpret_cast<LONG_PTR>(cs->lpCreateParams));
-        break;
-      }
-      case WM_ACTIVATE:
-        if (self && LOWORD(w) == WA_INACTIVE) {
-          // Opening grace absorbs the invoker's activation churn.
-          if (::GetTickCount64() - self->created_tick_ >= 500) {
-            ::DestroyWindow(hwnd);
-            return 0;
-          }
-        }
-        break;
+  // The EDIT is a real child control, so WM_COMMAND / WM_CTLCOLOREDIT
+  // still come through the parent proc; everything else the panel used to
+  // hand-roll (paint framing, hover, dismissal, Escape) is the base's.
+  LRESULT OnMessage(UINT message, WPARAM w, LPARAM l,
+                    bool* handled) override {
+    switch (message) {
       case WM_COMMAND:
-        if (self && reinterpret_cast<HWND>(l) == self->field_ &&
-            HIWORD(w) == EN_CHANGE) {
-          self->Requery();
+        if (reinterpret_cast<HWND>(l) == field_ && HIWORD(w) == EN_CHANGE) {
+          *handled = true;
+          Requery();
           return 0;
         }
         break;
-      case WM_CTLCOLOREDIT:
-        if (self) {
-          const PhiPalette palette = self->controller_->CurrentPalette();
-          HDC edit_dc = reinterpret_cast<HDC>(w);
-          ::SetTextColor(edit_dc, palette.label);
-          ::SetBkColor(edit_dc, palette.card);
-          if (!self->field_brush_) {
-            self->field_brush_ = ::CreateSolidBrush(palette.card);
+      case WM_CTLCOLOREDIT: {
+        *handled = true;
+        const PhiPalette& colors = palette();
+        HDC edit_dc = reinterpret_cast<HDC>(w);
+        ::SetTextColor(edit_dc, colors.label);
+        ::SetBkColor(edit_dc, colors.card);
+        // The brush is cached BY COLOUR: the old code created it once and
+        // never compared it again, so a theme switch left the field
+        // painted in the previous palette (lane 3 §3.5, the one wrong copy
+        // of the four "cached brush by colour" idioms).
+        if (!field_brush_ || field_brush_color_ != colors.card) {
+          if (field_brush_) {
+            ::DeleteObject(field_brush_);
           }
-          return reinterpret_cast<LRESULT>(self->field_brush_);
+          field_brush_ = ::CreateSolidBrush(colors.card);
+          field_brush_color_ = colors.card;
         }
-        break;
-      case WM_MOUSEMOVE:
-        if (self) {
-          const int row = self->RowAtY(GET_Y_LPARAM(l));
-          if (row >= 0 && row != self->selected_) {
-            self->selected_ = row;
-            ::InvalidateRect(hwnd, nullptr, TRUE);
-          }
-        }
-        return 0;
-      case WM_LBUTTONDOWN:
-        if (self) {
-          const int row = self->RowAtY(GET_Y_LPARAM(l));
-          if (row >= 0) {
-            self->selected_ = row;
-            self->Commit();  // Destroys the panel.
-          }
-        }
-        return 0;
-      case WM_MOUSEWHEEL:
-        if (self) {
-          self->scroll_ = std::max(
-              0, self->scroll_ - GET_WHEEL_DELTA_WPARAM(w) / 2);
-          ::InvalidateRect(hwnd, nullptr, TRUE);
-        }
-        return 0;
-      case WM_PAINT: {
-        PAINTSTRUCT ps = {};
-        HDC dc = ::BeginPaint(hwnd, &ps);
-        if (self) {
-          self->Paint(dc);
-        }
-        ::EndPaint(hwnd, &ps);
-        return 0;
+        return reinterpret_cast<LRESULT>(field_brush_);
       }
-      case WM_DESTROY:
-        if (self) {
-          Panel::instance = nullptr;
-          delete self;
-        }
-        return 0;
+      default:
+        break;
     }
-    return ::DefWindowProcW(hwnd, msg, w, l);
+    return PhiPopover::OnMessage(message, w, l, handled);
   }
 
+  PhiPalette QueryPalette() const override {
+    return controller_->CurrentPalette();
+  }
+
+  void Paint(HDC dc, const RECT&) override { PaintPanel(dc); }
+
+  void OnHover(int hit, int) override {
+    if (hit < 0) {
+      return;  // A header or the gutter keeps the current selection.
+    }
+    const int row = hits_[static_cast<size_t>(hit)].key;
+    if (row != selected_) {
+      selected_ = row;
+      Invalidate();
+    }
+  }
+
+  void OnMouseDown(int hit, POINT) override {
+    if (hit < 0) {
+      return;
+    }
+    selected_ = hits_[static_cast<size_t>(hit)].key;
+    Commit();  // Destroys the panel.
+  }
+
+  void OnWheel(int delta, POINT) override {
+    scroll_ = std::max(0, scroll_ - delta / 2);
+    BuildHits();
+    Invalidate();
+  }
+
+  void OnDpiChanged(UINT) override {
+    SIZE size = {Scaled(kPanelWidth), Scaled(kPanelHeight)};
+    ::SetWindowPos(hwnd(), nullptr, 0, 0, size.cx, size.cy,
+                   SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    if (field_) {
+      // fonts() dropped every HFONT; the EDIT is holding a dead handle.
+      ::SendMessageW(field_, WM_SETFONT,
+                     reinterpret_cast<WPARAM>(FieldFont()), TRUE);
+      ::SetWindowPos(field_, nullptr, Scaled(kPad) * 2,
+                     Scaled(kPad) + (Scaled(kFieldHeight) - Scaled(20)) / 2,
+                     size.cx - Scaled(kPad) * 4, Scaled(20),
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+    BuildHits();
+  }
+
+  void OnNcDestroy() override {
+    if (instance == this) {
+      instance = nullptr;
+    }
+  }
+
+  // The controller owns the shell that owns this popup.
   RAW_PTR_EXCLUSION PhiWindowController* const controller_;
-  UINT dpi_ = 96;
-  HWND hwnd_ = nullptr;
   HWND field_ = nullptr;
-  HFONT field_font_ = nullptr;
-  HFONT row_font_ = nullptr;
-  HFONT dim_font_ = nullptr;
-  HFONT header_font_ = nullptr;
+  WNDPROC field_base_proc_ = nullptr;
   HBRUSH field_brush_ = nullptr;
-  ULONGLONG created_tick_ = 0;
+  COLORREF field_brush_color_ = 0;
   std::vector<Row> open_tabs_;
   std::vector<Row> pinned_;
   std::vector<Row> bookmarks_;
@@ -646,20 +676,24 @@ Panel* Panel::instance = nullptr;
 // static
 void PhiSearchTabsPanel::Toggle(PhiWindowController* controller) {
   if (Panel::instance) {
-    ::DestroyWindow(Panel::instance->hwnd());
+    Panel::instance->Dismiss();
     return;
   }
   if (!controller) {
     return;
   }
-  Panel::instance = new Panel(controller);
+  Panel* panel = new Panel(controller);
+  panel->DeleteWhenDestroyed();
+  if (!panel->Open()) {
+    delete panel;
+  }
 }
 
 // static
 void PhiSearchTabsPanel::CloseIfBoundTo(const PhiWindowController* controller) {
   if (Panel::instance && Panel::instance->controller() == controller) {
-    // WM_DESTROY deletes the panel and clears the singleton.
-    ::DestroyWindow(Panel::instance->hwnd());
+    // WM_NCDESTROY clears the singleton and deletes the panel.
+    Panel::instance->Dismiss();
   }
 }
 

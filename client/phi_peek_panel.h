@@ -8,11 +8,14 @@
 #include <windows.h>
 
 #include <cstdint>
+#include <memory>
 #include <string>
 
 #include "base/memory/raw_ptr_exclusion.h"
 #include "phibrowser-win/client/phi_ids.h"
+#include "phibrowser-win/client/phi_panel.h"
 #include "phibrowser-win/client/phi_surface_registry.h"
+#include "phibrowser-win/client/phi_theme.h"
 
 namespace phi_framework {
 class PhiFramework;
@@ -23,6 +26,12 @@ namespace phi_client {
 class PhiCoordinator;
 class PhiWindowController;
 class PhiWindowModel;
+
+// The peek's two helper surfaces, both PhiPanels of their own (defined in
+// phi_peek_panel.cc): the drop shadow under the card, and the chip layer
+// over the hosted page.
+class PhiPeekShadow;
+class PhiPeekControls;
 
 // The Mac's floating Peek panel (UserInterface/Peek/PeekPanelController): a
 // link opened from a bound tab previews in a card floating over the page
@@ -42,7 +51,7 @@ class PhiWindowModel;
 // phi_peek_window.h) whose window is parented into this panel. The panel is a
 // WS_CHILD of the opener's shell — the bookmark manager's trick — so it
 // clips into the content card and travels with the window.
-class PhiPeekPanel : public PhiSurfacePanel {
+class PhiPeekPanel : public PhiSurfacePanel, public PhiPanel {
  public:
   // `model` is the coordinator's window model: the peek's own url is read
   // from its browser's snapshot there (docs/architecture-review.md §3.3).
@@ -84,18 +93,13 @@ class PhiPeekPanel : public PhiSurfacePanel {
   // Shadow first, then the card over it — both above the opener's page.
   void Raise() override;
 
-  static LRESULT CALLBACK WndProc(HWND hwnd,
-                                  UINT msg,
-                                  WPARAM wparam,
-                                  LPARAM lparam);
-  static LRESULT CALLBACK ControlsWndProc(HWND hwnd,
-                                          UINT msg,
-                                          WPARAM wparam,
-                                          LPARAM lparam);
+ protected:
+  // PhiPanel: the peek keeps its layout, its ground fill and its commands.
+  void Paint(HDC dc, const RECT& dirty) override;
+  void OnSize(int width, int height) override;
+  PhiPalette QueryPalette() const override;
 
  private:
-  LRESULT Handle(UINT msg, WPARAM wparam, LPARAM lparam);
-
   struct Layout {
     RECT card;     // The page, edge to edge.
     RECT gutter;   // The control column floating over the page's top-right.
@@ -105,42 +109,37 @@ class PhiPeekPanel : public PhiSurfacePanel {
   };
   Layout ComputeLayout() const;
 
-  void Paint();
-  void OnMouseMove(POINT pt);
-  void OnClick(POINT pt);
+  void HoverControl(int index);
+  void ClickControl(int index);
   void PositionContent();
   void Dismiss();
   // The control chips live in a window of their OWN, above the hosted page:
   // a child window always paints over its parent, so chips drawn by the panel
   // would be buried under the page they belong to.
   void PositionControls();
-  void PaintControls();
-  LRESULT HandleControls(UINT msg, WPARAM wparam, LPARAM lparam);
-  // Rounds the card. The hosted browser is a child of this window, so the
-  // region that clips it is this one's.
+  void PaintControls(HDC dc);
+  // Rounds the card. THE sanctioned SetWindowRgn (lane 3 §3.6): the hosted
+  // browser is a child of this window, so the region that clips it is this
+  // one's. The CHIPS, which host nothing, are a shaped layer instead.
   void ApplyCardShape();
   // Re-renders and repositions the drop shadow under the card.
   void UpdateShadow();
 
-  int Scaled(int design) const { return ::MulDiv(design, dpi_, 96); }
-
   BrowserId window_id_;  // The peek's own browser.
-  HWND hwnd_ = nullptr;
   HWND browser_hwnd_ = nullptr;
   // The card's drop shadow: a LAYERED sibling beneath the panel. A plain
   // child window is opaque and could only shade its own background, so the
   // blur would never reach the opener's page.
-  HWND shadow_ = nullptr;
-  // The close / new-tab / split chips, a child of this window stacked above
-  // the hosted browser.
-  HWND controls_ = nullptr;
+  std::unique_ptr<PhiPeekShadow> shadow_;
+  // The close / new-tab / split chips, a shaped-layer child of this window
+  // stacked above the hosted browser.
+  std::unique_ptr<PhiPeekControls> controls_;
   BrowserId opener_window_id_;  // The browser the peek was opened FROM.
   int64_t opener_tab_id_ = 0;
   RAW_PTR_EXCLUSION PhiWindowController* opener_ = nullptr;
   RAW_PTR_EXCLUSION phi_framework::PhiFramework* framework_ = nullptr;
   RAW_PTR_EXCLUSION const PhiWindowModel* model_ = nullptr;
   RAW_PTR_EXCLUSION PhiCoordinator* coordinator_ = nullptr;
-  int dpi_ = 96;
 
   std::wstring url_;
   int hot_ = -1;

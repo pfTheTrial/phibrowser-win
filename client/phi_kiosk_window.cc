@@ -30,8 +30,8 @@ namespace {
 constexpr wchar_t kKioskClassName[] = L"PhiKioskShell";
 
 // Toolbar controls, in the order they are drawn and hit-tested. The window
-// controls are NOT here: they arrive as non-client messages and ride
-// `hot_caption_` instead.
+// controls are NOT here: they arrive as non-client messages and their hot
+// and pressed state belongs to PhiPopupChrome.
 enum HotControl {
   kHotBack = 0,
   kHotExtensions,
@@ -81,13 +81,8 @@ constexpr wchar_t kGlyphExtensions[] = L"\uEA86";  // Puzzle.
 constexpr wchar_t kGlyphCopy[] = L"\uE71B";  // Link.
 constexpr wchar_t kGlyphCopied[] = L"\uE73E";  // Checkmark.
 constexpr wchar_t kGlyphChevron[] = L"\uE70D";
-constexpr wchar_t kGlyphMinimize[] = L"\uE921";
-constexpr wchar_t kGlyphMaximize[] = L"\uE922";
-constexpr wchar_t kGlyphRestore[] = L"\uE923";
-constexpr wchar_t kGlyphClose[] = L"\uE8BB";
-
-// Reverts the copy button's checkmark, a second after the copy.
-constexpr UINT_PTR kCopyFlashTimer = 1;
+// The window controls' glyphs are the frame's (phi_popup_chrome.cc), not
+// this file's, since the caption consolidation.
 
 std::wstring Widen(const std::string& utf8) {
   if (utf8.empty()) {
@@ -161,24 +156,6 @@ void DrawSpaceIcon(HDC dc,
   }
 }
 
-ATOM EnsureClass() {
-  static const ATOM atom = [] {
-    WNDCLASSEXW wc = {};
-    wc.cbSize = sizeof(wc);
-    wc.style = CS_HREDRAW | CS_VREDRAW;
-    wc.lpfnWndProc = &PhiKioskWindow::WndProc;
-    wc.hInstance = ::GetModuleHandleW(nullptr);
-    wc.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
-    wc.hIcon = PhiAppIcon(32);
-    wc.hIconSm = PhiAppIcon(16);
-    // As in the shell: no erase, the paint covers everything.
-    wc.hbrBackground = nullptr;
-    wc.lpszClassName = kKioskClassName;
-    return ::RegisterClassExW(&wc);
-  }();
-  return atom;
-}
-
 }  // namespace
 
 PhiKioskWindow::PhiKioskWindow(int64_t window_id,
@@ -191,8 +168,6 @@ PhiKioskWindow::PhiKioskWindow(int64_t window_id,
       framework_(framework),
       model_(model),
       coordinator_(coordinator) {
-  EnsureClass();
-
   RECT work = {0, 0, kInitialWidth, kInitialHeight};
   ::SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
   const int dpi = ::GetDpiForSystem();
@@ -201,28 +176,31 @@ PhiKioskWindow::PhiKioskWindow(int64_t window_id,
   const int x = work.left + ((work.right - work.left) - width) / 2;
   const int y = work.top + ((work.bottom - work.top) - height) / 2;
 
-  hwnd_ = ::CreateWindowExW(0, kKioskClassName, L"Phi",
-                            WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, x, y, width,
-                            height, nullptr, nullptr,
-                            ::GetModuleHandleW(nullptr), this);
-  if (!hwnd_) {
+  ClassSpec spec;
+  spec.name = kKioskClassName;
+  spec.style = CS_HREDRAW | CS_VREDRAW;
+  spec.icon = PhiAppIcon(32);
+  spec.icon_small = PhiAppIcon(16);
+
+  Options options;
+  // The band IS the title bar: one 52dip row carrying the toolbar and the
+  // full window-control cluster. PhiPopupChrome's WM_NCCALCSIZE retires
+  // the OS caption exactly as this file used to do by hand.
+  options.caption_buttons =
+      kPhiCaptionClose | kPhiCaptionMinimize | kPhiCaptionMaximize;
+  options.caption_height_dip = kBandHeight;
+  options.show_mark = false;         // The toolbar draws the whole band.
+  options.dim_when_inactive = false; // The Kiosk never dimmed its glyphs.
+  options.dialog_keys = kPhiDialogNone;  // No native controls at all.
+
+  const RECT bounds = {x, y, x + width, y + height};
+  if (!CreateSecondary(spec, 0, WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, bounds,
+                       nullptr, L"Phi", options)) {
     LOG(ERROR) << "[PhiClient] kiosk CreateWindowEx failed err="
                << ::GetLastError();
     return;
   }
-  dpi_ = ::GetDpiForWindow(hwnd_);
-
-  // One frame recalculation now that the proc can see `this`: whatever
-  // non-client layout the creation pass produced, this pass runs through OUR
-  // WM_NCCALCSIZE and retires the OS caption, so the band below is the only
-  // title bar this window has (the shell does the same).
-  ::SetWindowPos(hwnd_, nullptr, 0, 0, 0, 0,
-                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE |
-                     SWP_FRAMECHANGED);
-
-  const DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_ROUND;
-  ::DwmSetWindowAttribute(hwnd_, DWMWA_WINDOW_CORNER_PREFERENCE, &corner,
-                          sizeof(corner));
+  copy_flash_timer_ = NewTimer();
 
   // Same adoption the shell performs: strip Chromium's top-level chrome and
   // clip its HWND into our content rect, so it stops being its own taskbar
@@ -237,7 +215,7 @@ PhiKioskWindow::PhiKioskWindow(int64_t window_id,
     ex &= ~(WS_EX_WINDOWEDGE | WS_EX_CLIENTEDGE | WS_EX_DLGMODALFRAME |
             WS_EX_STATICEDGE | WS_EX_APPWINDOW);
     ::SetWindowLongPtrW(browser_hwnd_, GWL_EXSTYLE, ex);
-    ::SetParent(browser_hwnd_, hwnd_);
+    ::SetParent(browser_hwnd_, hwnd());
     ::SetWindowPos(browser_hwnd_, nullptr, 0, 0, 0, 0,
                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE |
                        SWP_FRAMECHANGED);
@@ -246,8 +224,8 @@ PhiKioskWindow::PhiKioskWindow(int64_t window_id,
   RefreshProfile();
   RefreshState();
   PositionContent();
-  ::ShowWindow(hwnd_, SW_SHOW);
-  ::SetForegroundWindow(hwnd_);
+  ::ShowWindow(hwnd(), SW_SHOW);
+  ::SetForegroundWindow(hwnd());
 }
 
 PhiKioskWindow::~PhiKioskWindow() {
@@ -256,10 +234,7 @@ PhiKioskWindow::~PhiKioskWindow() {
   if (browser_hwnd_ && ::IsWindow(browser_hwnd_)) {
     ::SetParent(browser_hwnd_, nullptr);
   }
-  if (hwnd_ && ::IsWindow(hwnd_)) {
-    ::SetWindowLongPtrW(hwnd_, GWLP_USERDATA, 0);
-    ::DestroyWindow(hwnd_);
-  }
+  Destroy();  // The base clears GWLP_USERDATA at WM_NCDESTROY.
   for (HFONT font : {ui_font_, ui_strong_font_, glyph_font_, caption_font_}) {
     if (font) {
       ::DeleteObject(font);
@@ -290,10 +265,10 @@ void PhiKioskWindow::RefreshState() {
   }
   RefreshSpaces();
   MeasureLabels();
-  if (hwnd_ && ::IsWindow(hwnd_)) {
+  if (alive()) {
     // The page title names the window in the taskbar, as on the Mac.
-    ::SetWindowTextW(hwnd_, title_.empty() ? L"Phi" : title_.c_str());
-    ::InvalidateRect(hwnd_, nullptr, FALSE);
+    ::SetWindowTextW(hwnd(), title_.empty() ? L"Phi" : title_.c_str());
+    Invalidate();
   }
 }
 
@@ -356,13 +331,13 @@ const PhiPalette& PhiKioskWindow::Palette() const {
 }
 
 void PhiKioskWindow::EnsureFonts() {
-  if (font_dpi_ == dpi_ && ui_font_) {
+  if (font_dpi_ == dpi() && ui_font_) {
     return;
   }
   NONCLIENTMETRICSW metrics = {};
   metrics.cbSize = sizeof(metrics);
   if (!::SystemParametersInfoForDpi(SPI_GETNONCLIENTMETRICS, sizeof(metrics),
-                                    &metrics, 0, static_cast<UINT>(dpi_))) {
+                                    &metrics, 0, dpi())) {
     return;  // Keep whatever we had rather than falling back to no font.
   }
   // The face tracks the system (Segoe UI); the sizes are the Mac's — 13pt
@@ -403,14 +378,14 @@ void PhiKioskWindow::EnsureFonts() {
   ui_strong_font_ = strong_built;
   glyph_font_ = glyph_built;
   caption_font_ = caption_built;
-  font_dpi_ = dpi_;
+  font_dpi_ = dpi();
 }
 
 int PhiKioskWindow::TextWidth(HFONT font, const std::wstring& text) {
-  if (!hwnd_ || text.empty()) {
+  if (!alive() || text.empty()) {
     return 0;
   }
-  HDC dc = ::GetDC(hwnd_);
+  HDC dc = ::GetDC(hwnd());
   if (!dc) {
     return 0;
   }
@@ -421,7 +396,7 @@ int PhiKioskWindow::TextWidth(HFONT font, const std::wstring& text) {
   if (previous) {
     ::SelectObject(dc, previous);
   }
-  ::ReleaseDC(hwnd_, dc);
+  ::ReleaseDC(hwnd(), dc);
   return size.cx;
 }
 
@@ -460,10 +435,10 @@ std::wstring PhiKioskWindow::DisplayUrl() const {
 PhiKioskWindow::Layout PhiKioskWindow::ComputeLayout() {
   Layout out = {};
   RECT client = {};
-  if (hwnd_) {
-    ::GetClientRect(hwnd_, &client);
+  if (alive()) {
+    ::GetClientRect(hwnd(), &client);
   }
-  if (font_dpi_ != dpi_) {
+  if (font_dpi_ != dpi()) {
     MeasureLabels();  // Builds this DPI's fonts, then re-measures on them.
   }
 
@@ -476,11 +451,21 @@ PhiKioskWindow::Layout PhiKioskWindow::ComputeLayout() {
   out.content = {0, bar, client.right, client.bottom};
 
   // The window controls close the band, minimize / maximize / close in the
-  // system's own order.
-  out.caption_close = {client.right - cap, 0, client.right, bar};
-  out.caption_max = {out.caption_close.left - cap, 0, out.caption_close.left,
-                     bar};
-  out.caption_min = {out.caption_max.left - cap, 0, out.caption_max.left, bar};
+  // system's own order — the ONE implementation, shared with the frame
+  // that hit-tests and paints them (phi_secondary_window.h).
+  PhiCaptionMetrics band = {};
+  band.width = static_cast<int>(client.right);
+  band.height = bar;
+  band.button_width = cap;
+  band.close = true;
+  band.maximize = true;
+  band.minimize = true;
+  out.caption_close =
+      PhiToRect(PhiCaptionButtonBounds(band, PhiCaptionPart::kClose));
+  out.caption_max =
+      PhiToRect(PhiCaptionButtonBounds(band, PhiCaptionPart::kMaximize));
+  out.caption_min =
+      PhiToRect(PhiCaptionButtonBounds(band, PhiCaptionPart::kMinimize));
 
   // "Open in <Space>" leads them: prefix, the Space's icon, its name, then
   // the chevron half that lists the others.
@@ -550,26 +535,22 @@ void PhiKioskWindow::PositionContent() {
                  SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
-void PhiKioskWindow::Paint() {
-  PAINTSTRUCT ps = {};
-  HDC dc = ::BeginPaint(hwnd_, &ps);
-  if (!dc) {
-    return;
-  }
+void PhiKioskWindow::Paint(HDC mem, const RECT&) {
   RECT client = {};
-  ::GetClientRect(hwnd_, &client);
+  ::GetClientRect(hwnd(), &client);
 
   const PhiPalette palette = Palette();
 
-  // Back-buffer: the toolbar sits directly against the accelerated web
-  // surface, and painting it straight to the window tears while resizing.
-  HDC mem = ::CreateCompatibleDC(dc);
-  HBITMAP bmp = ::CreateCompatibleBitmap(dc, client.right, client.bottom);
-  HGDIOBJ old_bmp = ::SelectObject(mem, bmp);
-
+  // The back buffer is the base's cached one: the toolbar sits directly
+  // against the accelerated web surface, and painting it straight to the
+  // window tears while resizing (lane 3 §3.4 retired ten copies of the
+  // per-paint compatible bitmap this used to be).
   const Layout layout = ComputeLayout();
+  // The band, and the ground under it: the browser child covers the
+  // content region, but a resize can outrun it for a frame and the base's
+  // cached back buffer must not show through there.
   HBRUSH bar_brush = ::CreateSolidBrush(palette.window_bg);
-  ::FillRect(mem, &layout.band, bar_brush);
+  ::FillRect(mem, &client, bar_brush);
   ::DeleteObject(bar_brush);
 
   // Hairline under the band, separating chrome from page.
@@ -588,30 +569,9 @@ void PhiKioskWindow::Paint() {
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
   };
 
-  // The window controls: the hot fill first (close turns the Win11 red),
-  // then the OS buttons' own glyphs.
-  if (hot_caption_ == HTMINBUTTON || hot_caption_ == HTMAXBUTTON) {
-    const RECT& hot_rc =
-        hot_caption_ == HTMINBUTTON ? layout.caption_min : layout.caption_max;
-    HBRUSH hover_brush = ::CreateSolidBrush(palette.hover);
-    ::FillRect(mem, &hot_rc, hover_brush);
-    ::DeleteObject(hover_brush);
-  } else if (hot_caption_ == HTCLOSE) {
-    HBRUSH close_brush = ::CreateSolidBrush(RGB(0xC4, 0x2B, 0x1C));
-    ::FillRect(mem, &layout.caption_close, close_brush);
-    ::DeleteObject(close_brush);
-  }
-  HGDIOBJ previous_font =
-      caption_font_ ? ::SelectObject(mem, caption_font_) : nullptr;
-  const bool zoomed = hwnd_ && ::IsZoomed(hwnd_);
-  draw_glyph(layout.caption_min, kGlyphMinimize, palette.label);
-  draw_glyph(layout.caption_max, zoomed ? kGlyphRestore : kGlyphMaximize,
-             palette.label);
-  draw_glyph(layout.caption_close, kGlyphClose,
-             hot_caption_ == HTCLOSE ? RGB(0xFF, 0xFF, 0xFF) : palette.label);
-  if (previous_font) {
-    ::SelectObject(mem, previous_font);
-  }
+  // The window controls: the frame owns their hot state, their fill and
+  // their glyphs (lane 3 §2 — this was the fourth copy of that code).
+  PaintCaptionButtons(mem);
 
   // The address capsule: the Mac's bordered field, holding the profile chip,
   // the domain and the two actions.
@@ -750,12 +710,6 @@ void PhiKioskWindow::Paint() {
     }
   }
 
-  ::BitBlt(dc, 0, 0, client.right, layout.band.bottom, mem, 0, 0, SRCCOPY);
-
-  ::SelectObject(mem, old_bmp);
-  ::DeleteObject(bmp);
-  ::DeleteDC(mem);
-  ::EndPaint(hwnd_, &ps);
 }
 
 void PhiKioskWindow::OnMouseMove(POINT pt) {
@@ -774,16 +728,16 @@ void PhiKioskWindow::OnMouseMove(POINT pt) {
   }
   if (hot != hot_) {
     hot_ = hot;
-    ::InvalidateRect(hwnd_, &layout.band, FALSE);
+    Invalidate(layout.band);
   }
   if (hot >= 0) {
-    TRACKMOUSEEVENT track = {sizeof(track), TME_LEAVE, hwnd_, 0};
+    TRACKMOUSEEVENT track = {sizeof(track), TME_LEAVE, hwnd(), 0};
     ::TrackMouseEvent(&track);
   }
 }
 
 void PhiKioskWindow::CopyUrl() {
-  if (url_.empty() || !::OpenClipboard(hwnd_)) {
+  if (url_.empty() || !::OpenClipboard(hwnd())) {
     return;
   }
   ::EmptyClipboard();
@@ -802,8 +756,8 @@ void PhiKioskWindow::CopyUrl() {
   ::CloseClipboard();
   // The glyph swaps to a checkmark for a second (the Mac's copyURLButton).
   copy_flash_ = true;
-  ::SetTimer(hwnd_, kCopyFlashTimer, 1000, nullptr);
-  ::InvalidateRect(hwnd_, nullptr, FALSE);
+  copy_flash_timer_.Start(1000);
+  Invalidate();
 }
 
 void PhiKioskWindow::OpenInSpace(const std::string& space_id) {
@@ -845,10 +799,10 @@ void PhiKioskWindow::ShowSpaceList(const RECT& anchor) {
     }
   }
   POINT screen = {anchor.left, anchor.bottom};
-  ::ClientToScreen(hwnd_, &screen);
+  ::ClientToScreen(hwnd(), &screen);
   const UINT chosen = static_cast<UINT>(::TrackPopupMenu(
       menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, screen.x, screen.y, 0,
-      hwnd_, nullptr));
+      hwnd(), nullptr));
   ::DestroyMenu(menu);
   for (HBITMAP bitmap : bitmaps) {
     ::DeleteObject(bitmap);
@@ -858,7 +812,7 @@ void PhiKioskWindow::ShowSpaceList(const RECT& anchor) {
   }
 }
 
-void PhiKioskWindow::OnClick(POINT pt) {
+void PhiKioskWindow::OnToolbarClick(POINT pt) {
   if (!framework_) {
     return;
   }
@@ -867,8 +821,8 @@ void PhiKioskWindow::OnClick(POINT pt) {
     framework_->GoBack(window_id_.value);
   } else if (::PtInRect(&layout.extensions, pt)) {
     RECT anchor = layout.extensions;
-    ::MapWindowPoints(hwnd_, nullptr, reinterpret_cast<POINT*>(&anchor), 2);
-    PhiExtensionsPopover::Toggle(hwnd_, anchor, Palette(), framework_,
+    ::MapWindowPoints(hwnd(), nullptr, reinterpret_cast<POINT*>(&anchor), 2);
+    PhiExtensionsPopover::Toggle(hwnd(), anchor, Palette(), framework_,
                                  window_id_);
   } else if (::PtInRect(&layout.copy, pt)) {
     CopyUrl();
@@ -879,174 +833,84 @@ void PhiKioskWindow::OnClick(POINT pt) {
   }
 }
 
-int PhiKioskWindow::CaptionHitTest(POINT client_pt) {
-  const Layout layout = ComputeLayout();
-  if (!::PtInRect(&layout.band, client_pt)) {
-    return 0;
-  }
-  if (::PtInRect(&layout.caption_close, client_pt)) {
-    return HTCLOSE;
-  }
-  if (::PtInRect(&layout.caption_max, client_pt)) {
-    return HTMAXBUTTON;
-  }
-  if (::PtInRect(&layout.caption_min, client_pt)) {
-    return HTMINBUTTON;
-  }
+bool PhiKioskWindow::CaptionClaimsClient(POINT client_pt) const {
   // The band's own controls take their own clicks; without this the band
-  // would drag the window out from under the pointer instead. The capsule's
-  // bare run is deliberately NOT one of them — it takes no clicks, so it
-  // drags, which is the Mac's isMovableByWindowBackground.
-  if ((can_go_back_ && ::PtInRect(&layout.back, client_pt)) ||
-      ::PtInRect(&layout.extensions, client_pt) ||
-      ::PtInRect(&layout.copy, client_pt) ||
-      ::PtInRect(&layout.space_menu, client_pt)) {
-    return HTCLIENT;
-  }
-  return HTCAPTION;
+  // would drag the window out from under the pointer instead. The
+  // capsule's bare run is deliberately NOT one of them — it takes no
+  // clicks, so it drags, which is the Mac's isMovableByWindowBackground.
+  const Layout layout = const_cast<PhiKioskWindow*>(this)->ComputeLayout();
+  return (can_go_back_ && ::PtInRect(&layout.back, client_pt)) ||
+         ::PtInRect(&layout.extensions, client_pt) ||
+         ::PtInRect(&layout.copy, client_pt) ||
+         ::PtInRect(&layout.space_menu, client_pt);
 }
 
-void PhiKioskWindow::SetCaptionHot(int code) {
-  if (hot_caption_ == code) {
+void PhiKioskWindow::OnFramePointer() {
+  // Most of the band hit-tests as HTCAPTION, so a pointer crossing it
+  // arrives as a NON-client move and not as WM_MOUSEMOVE: nothing the
+  // band's own controls were washing is under it any more.
+  if (hot_ != -1) {
+    hot_ = -1;
+    Invalidate();
+  }
+}
+
+PhiPopupColors PhiKioskWindow::QueryColors() const {
+  const PhiPalette& palette = Palette();
+  PhiPopupColors colors = PhiPopupColorsFor(palette.dark, palette.accent);
+  // The band is the toolbar, so the frame's window controls must stand on
+  // the toolbar's own ground and wear its own ink — and never dim, which
+  // Options::dim_when_inactive already says.
+  colors.bg = palette.window_bg;
+  colors.hover = palette.hover;
+  colors.label = palette.label;
+  colors.tertiary = palette.label;
+  return colors;
+}
+
+void PhiKioskWindow::OnSize(int, int) {
+  PositionContent();
+  Invalidate();
+}
+
+void PhiKioskWindow::OnDpiChanged(UINT old_dpi) {
+  PhiSecondaryWindow::OnDpiChanged(old_dpi);
+  MeasureLabels();  // Rebuilds this DPI's fonts, then re-measures on them.
+  PositionContent();
+  Invalidate();
+}
+
+void PhiKioskWindow::OnTimerFired(UINT_PTR id) {
+  if (id != copy_flash_timer_.id()) {
     return;
   }
-  hot_caption_ = code;
-  if (hwnd_) {
-    const RECT band = ComputeLayout().band;
-    ::InvalidateRect(hwnd_, &band, FALSE);
-  }
+  copy_flash_timer_.Stop();
+  copy_flash_ = false;
+  Invalidate();
 }
 
-LRESULT PhiKioskWindow::Handle(UINT msg, WPARAM wparam, LPARAM lparam) {
+LRESULT PhiKioskWindow::OnWindowMessage(UINT msg,
+                                        WPARAM wparam,
+                                        LPARAM lparam,
+                                        bool* handled) {
   switch (msg) {
-    case WM_ERASEBKGND:
-      return 1;
-    case WM_PAINT:
-      Paint();
-      return 0;
-    case WM_SIZE:
-      PositionContent();
-      ::InvalidateRect(hwnd_, nullptr, FALSE);
-      return 0;
-    case WM_NCCALCSIZE: {
-      // Claim the caption for the client area: only the resize borders stay
-      // non-client. The top edge keeps NO border — the band goes flush to it
-      // (WM_NCHITTEST serves HTTOP from its first pixels). BOTH wparam forms
-      // must be handled: the first calc at creation comes with wparam FALSE
-      // (a bare RECT), and skipping it leaves the OS caption alive — its
-      // buttons then sit doubled above the band's.
-      RECT* rect = wparam == TRUE
-                       ? &reinterpret_cast<NCCALCSIZE_PARAMS*>(lparam)->rgrc[0]
-                       : reinterpret_cast<RECT*>(lparam);
-      const UINT dpi = ::GetDpiForWindow(hwnd_);
-      const int border_x = ::GetSystemMetricsForDpi(SM_CXSIZEFRAME, dpi) +
-                           ::GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
-      const int border_y = ::GetSystemMetricsForDpi(SM_CYSIZEFRAME, dpi) +
-                           ::GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
-      rect->left += border_x;
-      rect->right -= border_x;
-      rect->bottom -= border_y;
-      if (::IsZoomed(hwnd_)) {
-        rect->top += border_y;  // Maximized frames overhang the monitor.
-      }
-      return 0;
-    }
-    case WM_NCHITTEST: {
-      const LRESULT hit = ::DefWindowProcW(hwnd_, msg, wparam, lparam);
-      if (hit != HTCLIENT) {
-        return hit;  // The real resize borders.
-      }
-      POINT pt = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
-      ::ScreenToClient(hwnd_, &pt);
-      const UINT dpi = ::GetDpiForWindow(hwnd_);
-      const int border_y = ::GetSystemMetricsForDpi(SM_CYSIZEFRAME, dpi) +
-                           ::GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
-      if (!::IsZoomed(hwnd_) && pt.y < border_y) {
-        return HTTOP;  // The band's first pixels still resize.
-      }
-      const int band_hit = CaptionHitTest(pt);
-      return band_hit ? band_hit : HTCLIENT;
-    }
-    case WM_NCLBUTTONDOWN:
-      // Swallow presses on our drawn window controls; the action fires on
-      // release over the same button, like the OS ones.
-      if (wparam == HTMINBUTTON || wparam == HTMAXBUTTON || wparam == HTCLOSE) {
-        pressed_caption_ = static_cast<int>(wparam);
-        return 0;
-      }
-      break;
-    case WM_NCLBUTTONUP:
-      if (pressed_caption_ && static_cast<int>(wparam) == pressed_caption_) {
-        const int pressed = pressed_caption_;
-        pressed_caption_ = 0;
-        if (pressed == HTMINBUTTON) {
-          ::ShowWindow(hwnd_, SW_MINIMIZE);
-        } else if (pressed == HTMAXBUTTON) {
-          ::ShowWindow(hwnd_, ::IsZoomed(hwnd_) ? SW_RESTORE : SW_MAXIMIZE);
-        } else {
-          ::PostMessageW(hwnd_, WM_CLOSE, 0, 0);
-        }
-        return 0;
-      }
-      pressed_caption_ = 0;
-      break;
-    case WM_NCMOUSEMOVE:
-      SetCaptionHot(wparam == HTMINBUTTON || wparam == HTMAXBUTTON ||
-                            wparam == HTCLOSE
-                        ? static_cast<int>(wparam)
-                        : 0);
-      // Most of the band hit-tests as HTCAPTION, so a pointer crossing it
-      // arrives here and not as WM_MOUSEMOVE: nothing the band's own
-      // controls were washing is under it any more.
-      if (hot_ != -1) {
-        hot_ = -1;
-        ::InvalidateRect(hwnd_, nullptr, FALSE);
-      }
-      {
-        TRACKMOUSEEVENT track = {sizeof(track), TME_LEAVE | TME_NONCLIENT,
-                                 hwnd_, 0};
-        ::TrackMouseEvent(&track);
-      }
-      return 0;
-    case WM_NCMOUSELEAVE:
-      SetCaptionHot(0);
-      return 0;
-    case WM_DPICHANGED: {
-      dpi_ = HIWORD(wparam);
-      const RECT* suggested = reinterpret_cast<const RECT*>(lparam);
-      if (suggested) {
-        ::SetWindowPos(hwnd_, nullptr, suggested->left, suggested->top,
-                       suggested->right - suggested->left,
-                       suggested->bottom - suggested->top,
-                       SWP_NOZORDER | SWP_NOACTIVATE);
-      }
-      PositionContent();
-      ::InvalidateRect(hwnd_, nullptr, FALSE);
-      return 0;
-    }
     case WM_MOUSEMOVE: {
-      SetCaptionHot(0);  // Client moves mean we left the window controls.
       POINT pt = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
       OnMouseMove(pt);
+      *handled = true;
       return 0;
     }
     case WM_MOUSELEAVE:
       if (hot_ != -1) {
         hot_ = -1;
-        ::InvalidateRect(hwnd_, nullptr, FALSE);
+        Invalidate();
       }
+      *handled = true;
       return 0;
-    case WM_TIMER:
-      if (wparam == kCopyFlashTimer) {
-        ::KillTimer(hwnd_, kCopyFlashTimer);
-        copy_flash_ = false;
-        ::InvalidateRect(hwnd_, nullptr, FALSE);
-        return 0;
-      }
-      break;
     case WM_LBUTTONUP: {
       POINT pt = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
-      OnClick(pt);
+      OnToolbarClick(pt);
+      *handled = true;
       return 0;
     }
     case WM_ACTIVATE:
@@ -1055,49 +919,29 @@ LRESULT PhiKioskWindow::Handle(UINT msg, WPARAM wparam, LPARAM lparam) {
         // was away, and the menu must name where the page will really go.
         RefreshSpaces();
         MeasureLabels();
-        ::InvalidateRect(hwnd_, nullptr, FALSE);
+        Invalidate();
       }
-      break;  // Activation is still the system's to finish.
+      break;  // Activation is still the frame's and the system's to finish.
     case WM_SETFOCUS:
       // Keystrokes belong to the page, never to this bare chrome.
       if (browser_hwnd_ && ::IsWindow(browser_hwnd_)) {
         ::SetFocus(browser_hwnd_);
       }
+      *handled = true;
       return 0;
     case WM_CLOSE:
       // Route through the framework so the Browser tears down properly; the
       // coordinator drops this window when OnBrowserWindowClosing arrives.
       if (framework_) {
         framework_->CloseBrowserWindow(window_id_.value);
+        *handled = true;
         return 0;
       }
       break;
+    default:
+      break;
   }
-  return ::DefWindowProcW(hwnd_, msg, wparam, lparam);
-}
-
-// static
-LRESULT CALLBACK PhiKioskWindow::WndProc(HWND hwnd,
-                                         UINT msg,
-                                         WPARAM wparam,
-                                         LPARAM lparam) {
-  if (msg == WM_NCCREATE) {
-    auto* create = reinterpret_cast<CREATESTRUCTW*>(lparam);
-    ::SetWindowLongPtrW(hwnd, GWLP_USERDATA,
-                        reinterpret_cast<LONG_PTR>(create->lpCreateParams));
-    auto* self =
-        static_cast<PhiKioskWindow*>(create->lpCreateParams);
-    if (self) {
-      self->hwnd_ = hwnd;
-    }
-    return ::DefWindowProcW(hwnd, msg, wparam, lparam);
-  }
-  auto* self = reinterpret_cast<PhiKioskWindow*>(
-      ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
-  if (!self) {
-    return ::DefWindowProcW(hwnd, msg, wparam, lparam);
-  }
-  return self->Handle(msg, wparam, lparam);
+  return PhiSecondaryWindow::OnWindowMessage(msg, wparam, lparam, handled);
 }
 
 }  // namespace phi_client

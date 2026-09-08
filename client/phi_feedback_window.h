@@ -15,6 +15,7 @@
 #include "base/memory/raw_ptr_exclusion.h"
 #include "phibrowser-win/client/phi_feedback_outbox.h"
 #include "phibrowser-win/client/phi_popup_chrome.h"
+#include "phibrowser-win/client/phi_secondary_window.h"
 
 namespace phi_client {
 
@@ -57,8 +58,10 @@ class PhiFeedbackHost {
 // description well, the "Additional info" card with its divided rows, the
 // legal notice with inline links, and the footer's Send. Modeless, like the
 // Mac's — the user can go back to the page to check a detail while
-// composing.
-class PhiFeedbackWindow {
+// composing: it is a PhiSecondaryWindow that registers kPhiDialogTab, so
+// its control set gets tab navigation from the MAIN message loop and no
+// nested loop exists here (phi_secondary_window.h).
+class PhiFeedbackWindow : public PhiSecondaryWindow {
  public:
   static void Open(PhiFeedbackHost* host,
                    const PhiFeedbackContext& context,
@@ -83,7 +86,7 @@ class PhiFeedbackWindow {
                     const std::vector<std::wstring>& attach_files,
                     bool send);
 
-  ~PhiFeedbackWindow();
+  ~PhiFeedbackWindow() override;
 
  private:
   struct Attachment {
@@ -92,10 +95,7 @@ class PhiFeedbackWindow {
   };
 
   PhiFeedbackWindow(PhiFeedbackHost* host, const PhiFeedbackContext& context);
-  static LRESULT CALLBACK WndProc(HWND hwnd,
-                                  UINT msg,
-                                  WPARAM wparam,
-                                  LPARAM lparam);
+  bool OpenWindow();
   static LRESULT CALLBACK ControlProc(HWND hwnd,
                                       UINT msg,
                                       WPARAM wparam,
@@ -104,8 +104,9 @@ class PhiFeedbackWindow {
                                       DWORD_PTR data);
 
   void Build();
+  void EnsureFonts();
+  void ApplyFonts();
   void Layout();
-  void Paint();
   void Rebind(const PhiFeedbackContext& context);
   void RefreshAttachmentList();
   void RefreshSendState();
@@ -122,21 +123,28 @@ class PhiFeedbackWindow {
   void CompleteSend(const char* logs);
   std::string DescriptionText() const;
   std::string UrlText() const;
-  int Scaled(int design) const;
   HWND Child(const wchar_t* cls,
              const wchar_t* text,
              DWORD style,
              UINT_PTR id,
              DWORD ex_style = 0);
 
+  // PhiSecondaryWindow.
+  void Paint(HDC dc, const RECT& dirty) override;
+  LRESULT OnWindowMessage(UINT msg,
+                          WPARAM wparam,
+                          LPARAM lparam,
+                          bool* handled) override;
+  void OnColorsChanged() override;
+  void OnDpiChanged(UINT old_dpi) override;
+  void OnNcDestroy() override;
+  void OnTimerFired(UINT_PTR id) override;
+
   RAW_PTR_EXCLUSION PhiFeedbackHost* const host_;
   PhiFeedbackContext context_;
-  HWND hwnd_ = nullptr;
-  UINT dpi_ = 96;
-  PhiPopupChrome chrome_;
-  PhiPopupColors colors_;
   HBRUSH bg_brush_ = nullptr;
   HBRUSH card_brush_ = nullptr;
+  HBRUSH divider_brush_ = nullptr;
   HFONT font_ = nullptr;
   HFONT headline_font_ = nullptr;
   HFONT small_font_ = nullptr;
@@ -148,6 +156,10 @@ class PhiFeedbackWindow {
   HWND preview_ = nullptr;
   HWND remove_ = nullptr;
   HWND send_ = nullptr;
+  // How long Send waits for Chromium's system logs before filing without
+  // them; an id out of the window's own pool, not the literal 1 the file
+  // used to pick (lane 3 §4.1).
+  Timer logs_timer_;
   std::vector<Attachment> attachments_;
   bool submitting_ = false;
   int pending_request_ = 0;

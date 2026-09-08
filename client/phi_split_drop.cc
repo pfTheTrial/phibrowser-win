@@ -17,7 +17,9 @@
 #include <memory>
 
 #include "base/memory/raw_ptr_exclusion.h"
+#include "phibrowser-win/client/phi_gdiplus.h"
 #include "phibrowser-win/client/phi_i18n.h"
+#include "phibrowser-win/client/phi_panel.h"
 #include "phibrowser-win/client/phi_window_controller.h"
 
 namespace phi_client {
@@ -54,15 +56,6 @@ constexpr double kEdgeZoneFraction = 1.0 / 3.0;
 constexpr int kZoneExitTolerance = 12;
 // Chromium's split divider, so the replace cards line up with the real panes.
 constexpr int kSplitDividerThickness = 2;
-
-bool EnsureGdiPlus() {
-  static const bool ok = [] {
-    Gdiplus::GdiplusStartupInput input;
-    ULONG_PTR token = 0;
-    return Gdiplus::GdiplusStartup(&token, &input, nullptr) == Gdiplus::Ok;
-  }();
-  return ok;
-}
 
 int Width(const RECT& r) {
   return r.right - r.left;
@@ -120,26 +113,29 @@ void AddRoundedPath(Gdiplus::GraphicsPath* path,
   path->CloseFigure();
 }
 
-class Cards {
+// The hint cards are a LAYERED, click-through child of the shell over the
+// page area: their pixels come from UpdateLayeredWindow (per-pixel alpha
+// over live page content), never from a WM_PAINT blit, so the panel runs
+// in PhiPanel's `layered` mode and composes in ComposeLayer().
+class Cards : public PhiPanel {
  public:
   static Cards* instance;
 
   explicit Cards(PhiWindowController* controller) : controller_(controller) {
-    dpi_ = ::GetDpiForWindow(controller_->shell_hwnd());
-    Register();
-    // WS_EX_TRANSPARENT: the cards are pure output. Hit tests fall through,
-    // and the shell keeps the mouse capture the drag runs on.
-    window_ = ::CreateWindowExW(
-        WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOPARENTNOTIFY, kCardsClass,
-        L"", WS_CHILD, 0, 0, 0, 0, controller_->shell_hwnd(), nullptr,
-        ::GetModuleHandleW(nullptr), nullptr);
+    ClassSpec spec;
+    spec.name = kCardsClass;
+    spec.cursor = nullptr;
+    Options options;
+    options.layered = true;
+    // The cards are pure output. Hit tests fall through, and the shell
+    // keeps the mouse capture the drag runs on.
+    options.click_through = true;
+    options.ex_style = WS_EX_NOPARENTNOTIFY;
+    const RECT nothing = {0, 0, 0, 0};
+    CreatePanel(spec, controller_->shell_hwnd(), nothing, options);
   }
 
-  ~Cards() {
-    if (window_ && ::IsWindow(window_)) {
-      ::DestroyWindow(window_);
-    }
-  }
+  ~Cards() override { Destroy(); }
 
   PhiWindowController* controller() const { return controller_; }
 
@@ -155,31 +151,19 @@ class Cards {
     if (same) {
       return;  // Nothing the cards draw has moved.
     }
-    ::SetWindowPos(window_, HWND_TOP, hints_.area.left, hints_.area.top,
-                   Width(hints_.area), Height(hints_.area),
-                   SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    SetPanelBounds(hints_.area);
+    ShowPanel();
     shown_ = true;
-    Compose();
+    ComposeLayer();
   }
+
+ protected:
+  void ComposeLayer() override { Compose(); }
+
+  // The page area moved under the drag; the cards re-fit to it.
+  void OnDpiChanged(UINT) override { Compose(); }
 
  private:
-  void Register() {
-    static bool registered = false;
-    if (registered) {
-      return;
-    }
-    WNDCLASSEXW wc = {sizeof(wc)};
-    wc.lpfnWndProc = ::DefWindowProcW;
-    wc.hInstance = ::GetModuleHandleW(nullptr);
-    wc.lpszClassName = kCardsClass;
-    ::RegisterClassExW(&wc);
-    registered = true;
-  }
-
-  int Scaled(int value) const {
-    return ::MulDiv(value, static_cast<int>(dpi_), 96);
-  }
-
   // The card rect for each visible zone, in the overlay's own coordinates
   // (the page area's origin is 0,0 here).
   void CardRects(std::array<Gdiplus::RectF, 4>* out,
@@ -262,36 +246,19 @@ class Cards {
   }
 
   void Compose() {
-    if (!window_ || !::IsWindow(window_) || !EnsureGdiPlus()) {
+    if (!alive() || !PhiEnsureGdiPlus()) {
       return;
     }
     const int width = Width(hints_.area);
     const int height = Height(hints_.area);
-    if (width <= 0 || height <= 0) {
+    PhiLayerSurface surface(width, height);
+    if (!surface.valid()) {
       return;
     }
-    BITMAPINFO info = {};
-    info.bmiHeader.biSize = sizeof(info.bmiHeader);
-    info.bmiHeader.biWidth = width;
-    info.bmiHeader.biHeight = -height;  // Top-down.
-    info.bmiHeader.biPlanes = 1;
-    info.bmiHeader.biBitCount = 32;
-    info.bmiHeader.biCompression = BI_RGB;
-    void* bits = nullptr;
-    HDC screen = ::GetDC(nullptr);
-    HDC mem = ::CreateCompatibleDC(screen);
-    HBITMAP dib =
-        ::CreateDIBSection(mem, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
-    ::ReleaseDC(nullptr, screen);
-    if (!dib) {
-      ::DeleteDC(mem);
-      return;
-    }
-    HGDIOBJ old = ::SelectObject(mem, dib);
     {
-      Gdiplus::Bitmap surface(width, height, width * 4, PixelFormat32bppPARGB,
-                              static_cast<BYTE*>(bits));
-      Gdiplus::Graphics graphics(&surface);
+      Gdiplus::Bitmap bitmap(width, height, width * 4, PixelFormat32bppPARGB,
+                             static_cast<BYTE*>(surface.bits()));
+      Gdiplus::Graphics graphics(&bitmap);
       graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
       graphics.SetTextRenderingHint(Gdiplus::TextRenderingHintAntiAlias);
       graphics.Clear(Gdiplus::Color(0, 0, 0, 0));
@@ -306,14 +273,7 @@ class Cards {
         }
       }
     }
-    POINT src = {0, 0};
-    SIZE size = {width, height};
-    BLENDFUNCTION blend = {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
-    ::UpdateLayeredWindow(window_, nullptr, nullptr, &size, mem, &src, 0,
-                          &blend, ULW_ALPHA);
-    ::SelectObject(mem, old);
-    ::DeleteObject(dib);
-    ::DeleteDC(mem);
+    surface.Commit(hwnd(), nullptr);
   }
 
   void DrawCard(Gdiplus::Graphics* graphics,
@@ -399,8 +359,6 @@ class Cards {
   }
 
   RAW_PTR_EXCLUSION PhiWindowController* controller_ = nullptr;
-  HWND window_ = nullptr;
-  UINT dpi_ = 96;
   bool shown_ = false;
   PhiSplitDropHints hints_;
 };

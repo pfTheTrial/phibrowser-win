@@ -15,6 +15,7 @@
 
 #include "phibrowser-win/client/phi_dwrite.h"
 #include "phibrowser-win/client/phi_icons.h"
+#include "phibrowser-win/client/phi_secondary_window.h"
 
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "dwmapi.lib")
@@ -24,9 +25,11 @@ namespace phi_client {
 
 namespace {
 
-// The band and the Win11 caption-button metric, in design units.
-constexpr int kCaptionHeight = 32;
-constexpr int kCaptionButtonWidth = 46;
+// The band and the Win11 caption-button metric, in design units. The
+// geometry itself lives in phi_secondary_window.h, where the host tests
+// can reach it; these are the defaults it is fed.
+constexpr int kCaptionHeight = kPhiCaptionHeightDip;
+constexpr int kCaptionButtonWidth = kPhiCaptionButtonWidthDip;
 constexpr int kMarkSize = 16;
 constexpr int kMarkInset = 12;
 // PhiAlertButton: radius 8, 13pt label; disabled at 0.55, pressed at 0.78.
@@ -102,6 +105,60 @@ void SetFace(LOGFONTW* lf, const wchar_t* face) {
   std::copy_n(name.begin(),
               std::min(name.size(), std::size(lf->lfFaceName) - 1),
               std::begin(lf->lfFaceName));
+}
+
+// The Win32 spelling of the pure caption parts.
+int HitCodeFor(PhiCaptionPart part) {
+  switch (part) {
+    case PhiCaptionPart::kMinimize:
+      return HTMINBUTTON;
+    case PhiCaptionPart::kMaximize:
+      return HTMAXBUTTON;
+    case PhiCaptionPart::kClose:
+      return HTCLOSE;
+    case PhiCaptionPart::kCaption:
+      return HTCAPTION;
+    case PhiCaptionPart::kOutside:
+      break;
+  }
+  return HTCLIENT;
+}
+
+// This window's band, for the pure geometry in phi_secondary_window.h.
+// A free function so phi_popup_chrome.h need not include that header
+// (which includes this one back).
+PhiCaptionMetrics BandMetrics(HWND hwnd,
+                              int height_px,
+                              int button_px,
+                              unsigned buttons) {
+  RECT client = {};
+  if (hwnd) {
+    ::GetClientRect(hwnd, &client);
+  }
+  PhiCaptionMetrics metrics;
+  metrics.width = static_cast<int>(client.right);
+  metrics.height = height_px;
+  metrics.button_width = button_px;
+  metrics.close = (buttons & kPhiCaptionClose) != 0;
+  metrics.maximize = (buttons & kPhiCaptionMaximize) != 0;
+  metrics.minimize = (buttons & kPhiCaptionMinimize) != 0;
+  return metrics;
+}
+
+PhiCaptionPart PartFor(int hit_code) {
+  switch (hit_code) {
+    case HTMINBUTTON:
+      return PhiCaptionPart::kMinimize;
+    case HTMAXBUTTON:
+      return PhiCaptionPart::kMaximize;
+    case HTCLOSE:
+      return PhiCaptionPart::kClose;
+    case HTCAPTION:
+      return PhiCaptionPart::kCaption;
+    default:
+      break;
+  }
+  return PhiCaptionPart::kOutside;
 }
 
 int Border(UINT dpi, bool vertical) {
@@ -338,6 +395,46 @@ PhiPopupChrome::~PhiPopupChrome() {
       ::DeleteObject(font);
     }
   }
+  for (HBRUSH brush : {ground_brush_, hot_brush_}) {
+    if (brush) {
+      ::DeleteObject(brush);
+    }
+  }
+}
+
+void PhiPopupChrome::SetCaptionHeight(int design_units) {
+  caption_height_ = design_units > 0 ? design_units : kCaptionHeight;
+}
+
+void PhiPopupChrome::SetDimWhenInactive(bool dim) {
+  dim_when_inactive_ = dim;
+}
+
+void PhiPopupChrome::SetClientProbe(ClientProbe probe, void* context) {
+  client_probe_ = probe;
+  client_probe_context_ = context;
+}
+
+HBRUSH PhiPopupChrome::GroundBrush(COLORREF color) {
+  if (!ground_brush_ || ground_color_ != color) {
+    if (ground_brush_) {
+      ::DeleteObject(ground_brush_);
+    }
+    ground_brush_ = ::CreateSolidBrush(color);
+    ground_color_ = color;
+  }
+  return ground_brush_;
+}
+
+HBRUSH PhiPopupChrome::HotBrush(COLORREF color) {
+  if (!hot_brush_ || hot_color_ != color) {
+    if (hot_brush_) {
+      ::DeleteObject(hot_brush_);
+    }
+    hot_brush_ = ::CreateSolidBrush(color);
+    hot_color_ = color;
+  }
+  return hot_brush_;
 }
 
 void PhiPopupChrome::Attach(HWND hwnd,
@@ -383,12 +480,12 @@ int PhiPopupChrome::Scaled(int design) const {
 }
 
 int PhiPopupChrome::CaptionHeight() const {
-  return Scaled(kCaptionHeight);
+  return Scaled(caption_height_);
 }
 
 SIZE PhiPopupChrome::OuterSize(int content_w, int content_h) const {
   SIZE size = {Scaled(content_w) + 2 * Border(dpi_, false),
-               Scaled(content_h + kCaptionHeight) + Border(dpi_, true)};
+               Scaled(content_h + caption_height_) + Border(dpi_, true)};
   return size;
 }
 
@@ -426,40 +523,24 @@ void PhiPopupChrome::EnsureFonts() {
 }
 
 RECT PhiPopupChrome::ButtonRect(int hit_code) const {
-  RECT client = {};
-  if (hwnd_) {
-    ::GetClientRect(hwnd_, &client);
-  }
-  const int w = Scaled(kCaptionButtonWidth);
-  const int h = CaptionHeight();
-  int right = client.right;
-  // Trailing to leading: close, maximize, minimize.
-  for (const auto [flag, code] :
-       {std::pair{kPhiCaptionClose, HTCLOSE},
-        std::pair{kPhiCaptionMaximize, HTMAXBUTTON},
-        std::pair{kPhiCaptionMinimize, HTMINBUTTON}}) {
-    if (!(buttons_ & flag)) {
-      continue;
-    }
-    if (code == hit_code) {
-      return RECT{right - w, 0, right, h};
-    }
-    right -= w;
-  }
-  return RECT{0, 0, 0, 0};
+  return PhiToRect(
+      PhiCaptionButtonBounds(BandMetrics(hwnd_, CaptionHeight(),
+                                         Scaled(kCaptionButtonWidth), buttons_),
+                             PartFor(hit_code)));
 }
 
 int PhiPopupChrome::HitTestCaption(POINT pt) const {
-  if (pt.y < 0 || pt.y >= CaptionHeight()) {
+  const PhiCaptionPart part = PhiCaptionHitTest(
+      BandMetrics(hwnd_, CaptionHeight(), Scaled(kCaptionButtonWidth),
+                  buttons_),
+      static_cast<int>(pt.x), static_cast<int>(pt.y));
+  if (part == PhiCaptionPart::kCaption && client_probe_ &&
+      client_probe_(client_probe_context_, pt)) {
+    // The owner's own band control takes the click; without this the
+    // band would drag the window out from under the pointer.
     return HTCLIENT;
   }
-  for (const int code : {HTCLOSE, HTMAXBUTTON, HTMINBUTTON}) {
-    const RECT rc = ButtonRect(code);
-    if (rc.right > rc.left && ::PtInRect(&rc, pt)) {
-      return code;
-    }
-  }
-  return HTCAPTION;
+  return HitCodeFor(part);
 }
 
 void PhiPopupChrome::SetHot(int hit_code) {
@@ -605,12 +686,10 @@ void PhiPopupChrome::PaintCaption(HDC dc,
   ::GetClientRect(hwnd_, &client);
   const int h = CaptionHeight();
   RECT band = {0, 0, client.right, h};
-  HBRUSH ground = ::CreateSolidBrush(colors.bg);
-  ::FillRect(dc, &band, ground);
-  ::DeleteObject(ground);
+  ::FillRect(dc, &band, GroundBrush(colors.bg));
   ::SetBkMode(dc, TRANSPARENT);
 
-  const bool active = ::GetActiveWindow() == hwnd_;
+  const bool active = !dim_when_inactive_ || ::GetActiveWindow() == hwnd_;
   if (show_mark) {
     const std::vector<unsigned char>& logo = PhiLogoBgra256();
     if (!logo.empty()) {
@@ -628,15 +707,10 @@ void PhiPopupChrome::PaintCaption(HDC dc,
   }
   if (*title) {
     // Centred between the mark and the button cluster, never under either.
-    int left = show_mark ? Scaled(kMarkInset * 2 + kMarkSize) : Scaled(12);
-    int right = client.right;
-    for (const int code : {HTCLOSE, HTMAXBUTTON, HTMINBUTTON}) {
-      const RECT rc = ButtonRect(code);
-      if (rc.right > rc.left) {
-        right = std::min<int>(right, rc.left);
-      }
-    }
-    const int reserve = std::max(left, static_cast<int>(client.right) - right);
+    const int leading = show_mark ? Scaled(kMarkInset * 2 + kMarkSize)
+                                  : Scaled(12);
+    const int reserve = PhiCaptionTitleInset(
+        BandMetrics(hwnd_, h, Scaled(kCaptionButtonWidth), buttons_), leading);
     RECT title_rc = {reserve, 0, client.right - reserve, h};
     HGDIOBJ previous = title_font_ ? ::SelectObject(dc, title_font_) : nullptr;
     ::SetTextColor(dc, active ? colors.label : colors.tertiary);
@@ -648,8 +722,18 @@ void PhiPopupChrome::PaintCaption(HDC dc,
     }
   }
 
-  // The window controls: the hot fill first (close turns the Win11 red),
-  // then the OS buttons' own glyphs.
+  PaintCaptionButtons(dc, colors);
+}
+
+void PhiPopupChrome::PaintCaptionButtons(HDC dc, const PhiPopupColors& colors) {
+  if (!hwnd_) {
+    return;
+  }
+  EnsureFonts();
+  ::SetBkMode(dc, TRANSPARENT);
+  // The hot fill first (close turns the Win11 red), then the OS buttons'
+  // own glyphs.
+  const bool active = !dim_when_inactive_ || ::GetActiveWindow() == hwnd_;
   HGDIOBJ previous = glyph_font_ ? ::SelectObject(dc, glyph_font_) : nullptr;
   const bool zoomed = ::IsZoomed(hwnd_);
   for (const auto [code, glyph] :
@@ -663,9 +747,7 @@ void PhiPopupChrome::PaintCaption(HDC dc,
     COLORREF ink = active ? colors.label : colors.tertiary;
     if (hot_ == code) {
       const bool close = code == HTCLOSE;
-      HBRUSH fill = ::CreateSolidBrush(close ? kCloseHot : colors.hover);
-      ::FillRect(dc, &rc, fill);
-      ::DeleteObject(fill);
+      ::FillRect(dc, &rc, HotBrush(close ? kCloseHot : colors.hover));
       ink = close ? RGB(0xFF, 0xFF, 0xFF) : colors.label;
     }
     ::SetTextColor(dc, ink);

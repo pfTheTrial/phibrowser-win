@@ -74,9 +74,10 @@ constexpr int kWidth = 680;
 constexpr int kHeight = 561;
 // The custom caption strip: the OS caption is retired (WM_NCCALCSIZE) so
 // the pane title can sit CENTERED with the Phi mark leading — the Mac
-// window's look. The close button uses the Win11 caption metric.
-constexpr int kCaptionHeight = 32;
-constexpr int kCaptionButtonWidth = 46;
+// window's look. Both the strip and its close button (Win11's 46dip
+// metric) are PhiPopupChrome's now; kCaptionHeight is what this file
+// still needs to know for kChromeTop.
+constexpr int kCaptionHeight = kPhiCaptionHeightDip;
 constexpr int kToolbarHeight = 68;
 // Everything below the caption strip and the pane toolbar.
 constexpr int kChromeTop = kCaptionHeight + kToolbarHeight;
@@ -244,10 +245,6 @@ COLORREF HsvToRgb(double h, double s, double v) {
              static_cast<int>((b + m) * 255 + 0.5));
 }
 
-// Re-reads a selected profile whose data is still loading (see
-// BuildProfileDetail); one-shot, re-armed per rebuild while pending.
-constexpr UINT_PTR kProfilePollTimer = 0x517;
-
 // The Mac's NSOpenPanel (directories only): the modern IFileOpenDialog in
 // folder-picking mode. Empty when cancelled. The browser UI thread is
 // already a COM STA, so no CoInitialize here.
@@ -297,26 +294,16 @@ std::vector<std::string> SplitTabs(const std::string& value) {
 
 PhiSettingsWindow::~PhiSettingsWindow() {
   host_->RemoveSettingsObserver(this);
-  if (font_) {
-    ::DeleteObject(font_);
+  Destroy();  // The base clears GWLP_USERDATA at WM_NCDESTROY.
+  for (HFONT font :
+       {font_, title_font_, small_font_, hint_font_, emoji_font_, mdl2_font_}) {
+    if (font) {
+      ::DeleteObject(font);
+    }
   }
-  if (title_font_) {
-    ::DeleteObject(title_font_);
-  }
-  if (small_font_) {
-    ::DeleteObject(small_font_);
-  }
-  if (hint_font_) {
-    ::DeleteObject(hint_font_);
-  }
-  if (emoji_font_) {
-    ::DeleteObject(emoji_font_);
-  }
-  if (mdl2_font_) {
-    ::DeleteObject(mdl2_font_);
-  }
-  if (caption_font_) {
-    ::DeleteObject(caption_font_);
+  for (const auto& [size, font] : icon_fonts_) {
+    (void)size;
+    ::DeleteObject(font);
   }
 }
 
@@ -324,66 +311,53 @@ PhiSettingsWindow::PhiSettingsWindow(PhiSettingsHost* host) : host_(host) {
   // Subscribed for the life of the object (the destructor unsubscribes),
   // whether or not the window below comes up.
   host_->AddSettingsObserver(this);
-  static const ATOM atom = [] {
-    WNDCLASSEXW wc = {};
-    wc.cbSize = sizeof(wc);
-    wc.style = CS_HREDRAW | CS_VREDRAW;
-    wc.lpfnWndProc = &PhiSettingsWindow::WndProc;
-    wc.hInstance = ::GetModuleHandleW(nullptr);
-    wc.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
-    wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
-    wc.lpszClassName = kClassName;
-    return ::RegisterClassExW(&wc);
-  }();
-  (void)atom;
+}
 
-  hwnd_ = ::CreateWindowExW(0, kClassName, L"General",
-                            WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
-                            CW_USEDEFAULT, CW_USEDEFAULT, 100, 100, nullptr,
-                            nullptr, ::GetModuleHandleW(nullptr), this);
-  if (!hwnd_) {
+bool PhiSettingsWindow::OpenWindow() {
+  ClassSpec spec;
+  spec.name = kClassName;
+  spec.style = CS_HREDRAW | CS_VREDRAW;
+  // Phi's own icon in the taskbar and alt-tab — not the stock one.
+  spec.icon = PhiAppIcon(32);
+  spec.icon_small = PhiAppIcon(16);
+
+  Options options;
+  options.caption_buttons = kPhiCaptionClose;
+  options.dim_when_inactive = false;  // The strip never dimmed its title.
+  options.dialog_keys = kPhiDialogNone;  // Every control here is drawn.
+
+  const RECT bounds = {CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT + 100,
+                       CW_USEDEFAULT + 100};
+  if (!CreateSecondary(spec, 0, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
+                       bounds, nullptr, L"General", options)) {
     LOG(ERROR) << "[PhiClient] settings CreateWindowEx failed err="
                << ::GetLastError();
-    return;
+    return false;
   }
-  if (const UINT dpi = ::GetDpiForWindow(hwnd_)) {
-    dpi_ = dpi;
-  }
+  profile_poll_ = NewTimer();
   // Content 680x561 under the caption strip and toolbar band — fixed,
   // non-resizable. WM_NCCALCSIZE keeps only the thin side/bottom borders,
   // so the window size is the content plus exactly those.
-  const int border_x = ::GetSystemMetricsForDpi(SM_CXSIZEFRAME, dpi_) +
-                       ::GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi_);
-  const int border_y = ::GetSystemMetricsForDpi(SM_CYSIZEFRAME, dpi_) +
-                       ::GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi_);
-  ::SetWindowPos(hwnd_, nullptr, 0, 0, Scaled(kWidth) + 2 * border_x,
+  const int border_x = ::GetSystemMetricsForDpi(SM_CXSIZEFRAME, dpi()) +
+                       ::GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi());
+  const int border_y = ::GetSystemMetricsForDpi(SM_CYSIZEFRAME, dpi()) +
+                       ::GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi());
+  ::SetWindowPos(hwnd(), nullptr, 0, 0, Scaled(kWidth) + 2 * border_x,
                  Scaled(kChromeTop + kHeight) + border_y,
                  SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
-  // Phi's own icon in the taskbar and alt-tab — not the stock one.
-  if (HICON big = PhiAppIcon(32)) {
-    ::SendMessageW(hwnd_, WM_SETICON, ICON_BIG,
-                   reinterpret_cast<LPARAM>(big));
-  }
-  if (HICON small_icon = PhiAppIcon(16)) {
-    ::SendMessageW(hwnd_, WM_SETICON, ICON_SMALL,
-                   reinterpret_cast<LPARAM>(small_icon));
-  }
   EnsureFont();
   SyncTitle();
-}
-
-int PhiSettingsWindow::Scaled(int design_units) const {
-  return ::MulDiv(design_units, static_cast<int>(dpi_), 96);
+  return true;
 }
 
 void PhiSettingsWindow::EnsureFont() {
-  if (font_ && font_dpi_ == dpi_) {
+  if (font_ && font_dpi_ == dpi()) {
     return;
   }
   NONCLIENTMETRICSW metrics = {};
   metrics.cbSize = sizeof(metrics);
   if (!::SystemParametersInfoForDpi(SPI_GETNONCLIENTMETRICS, sizeof(metrics),
-                                    &metrics, 0, dpi_)) {
+                                    &metrics, 0, dpi())) {
     return;
   }
   // The Mac's ladder: 13pt rows, 12pt section titles, 11pt hints.
@@ -422,21 +396,43 @@ void PhiSettingsWindow::EnsureFont() {
               std::begin(mdl2.lfFaceName));
   mdl2.lfHeight = -Scaled(14);
   swap(&mdl2_font_, ::CreateFontIndirectW(&mdl2));
-  LOGFONTW caption = mdl2;
-  caption.lfHeight = -Scaled(10);  // The OS caption glyph size.
-  swap(&caption_font_, ::CreateFontIndirectW(&caption));
-  font_dpi_ = dpi_;
+  // The caption glyph font is the frame's now (PhiPopupGlyphFont).
+  for (const auto& [size, cached] : icon_fonts_) {
+    (void)size;
+    ::DeleteObject(cached);
+  }
+  icon_fonts_.clear();
+  font_dpi_ = dpi();
+}
+
+HFONT PhiSettingsWindow::IconFont(int size) {
+  for (const auto& [cached_size, font] : icon_fonts_) {
+    if (cached_size == size) {
+      return font;
+    }
+  }
+  LOGFONTW lf = {};
+  if (!mdl2_font_ || !::GetObjectW(mdl2_font_, sizeof(lf), &lf)) {
+    return mdl2_font_;
+  }
+  lf.lfHeight = -Scaled(size);
+  HFONT built = ::CreateFontIndirectW(&lf);
+  if (!built) {
+    return mdl2_font_;
+  }
+  icon_fonts_.emplace_back(size, built);
+  return built;
 }
 
 void PhiSettingsWindow::SyncTitle() {
   if (section_ == "urlrules") {
-    ::SetWindowTextW(hwnd_, L"URL Rules");
+    ::SetWindowTextW(hwnd(), L"URL Rules");
     return;
   }
   // The Mac library titles the window with the selected pane's title.
   for (const SectionDef& section : kSections) {
     if (section_ == section.id) {
-      ::SetWindowTextW(hwnd_, section.label);
+      ::SetWindowTextW(hwnd(), section.label);
       return;
     }
   }
@@ -444,38 +440,49 @@ void PhiSettingsWindow::SyncTitle() {
 
 // static
 void PhiSettingsWindow::Open(PhiSettingsHost* host) {
-  if (!g_instance || !g_instance->hwnd_ || !::IsWindow(g_instance->hwnd_)) {
+  if (!g_instance || !g_instance->alive()) {
     delete g_instance;
     g_instance = new PhiSettingsWindow(host);
+    if (!g_instance->OpenWindow()) {
+      delete g_instance;
+      g_instance = nullptr;
+    }
   }
-  if (g_instance && g_instance->hwnd_) {
-    ::ShowWindow(g_instance->hwnd_, SW_SHOW);
-    ::SetForegroundWindow(g_instance->hwnd_);
-    ::InvalidateRect(g_instance->hwnd_, nullptr, TRUE);
+  if (g_instance) {
+    ::ShowWindow(g_instance->hwnd(), SW_SHOW);
+    ::SetForegroundWindow(g_instance->hwnd());
+    g_instance->ScheduleRebuild();
   }
 }
 
 // static
 HWND PhiSettingsWindow::Handle() {
-  if (g_instance && g_instance->hwnd_ && ::IsWindow(g_instance->hwnd_)) {
-    return g_instance->hwnd_;
-  }
-  return nullptr;
+  return g_instance && g_instance->alive() ? g_instance->hwnd() : nullptr;
 }
 
 // static
 void PhiSettingsWindow::Refresh() {
   if (Handle()) {
-    ::InvalidateRect(g_instance->hwnd_, nullptr, TRUE);
+    g_instance->ScheduleRebuild();
   }
 }
 
 void PhiSettingsWindow::OnSettingsChanged(PhiSettingsChange /*what*/) {
-  // Every pane rebuilds from the host on paint, so one invalidate covers
-  // any domain.
-  if (hwnd_ && ::IsWindow(hwnd_)) {
-    ::InvalidateRect(hwnd_, nullptr, TRUE);
+  // Every pane reads the whole host, so one rebuild covers any domain.
+  // This is THE reason the rebuild could come off the paint path: phase
+  // 4 gave the window a real change signal, so WM_PAINT no longer has to
+  // assume the model moved under it.
+  if (alive()) {
+    ScheduleRebuild();
   }
+}
+
+void PhiSettingsWindow::ScheduleRebuild() {
+  if (!alive()) {
+    return;
+  }
+  Rebuild();
+  Invalidate();
 }
 
 // static
@@ -1862,8 +1869,8 @@ void PhiSettingsWindow::BuildProfileDetail(int* y, int left, int right,
     // and its keyword service). While either read is still pending, poll:
     // one short timer per rebuild, re-armed only while data is missing, so
     // the pane fills in by itself once the loads land.
-    if ((engines.empty() || download_dir.empty()) && hwnd_) {
-      ::SetTimer(hwnd_, kProfilePollTimer, 700, nullptr);
+    if ((engines.empty() || download_dir.empty()) && alive()) {
+      profile_poll_.Start(700);
     }
     // The Mac pill shows only the folder's last path component.
     std::wstring download_leaf = L"Choose…";
@@ -2463,7 +2470,7 @@ void PhiSettingsWindow::Rebuild() {
   content_height_ = y - top + Scaled(kMargin);
 }
 
-void PhiSettingsWindow::Paint(HDC dc) {
+void PhiSettingsWindow::Paint(HDC dc, const RECT&) {
   if (!host_) {
     return;
   }
@@ -2482,7 +2489,7 @@ void PhiSettingsWindow::Paint(HDC dc) {
   const COLORREF accent = host_->Palette().accent;
 
   RECT client = {};
-  ::GetClientRect(hwnd_, &client);
+  ::GetClientRect(hwnd(), &client);
   HBRUSH page = ::CreateSolidBrush(bg);
   ::FillRect(dc, &client, page);
   ::DeleteObject(page);
@@ -2493,46 +2500,13 @@ void PhiSettingsWindow::Paint(HDC dc) {
   ::FillRect(dc, &bar_sep, sep_brush);
   ::DeleteObject(sep_brush);
 
+  // The caption strip: Phi mark leading, the pane title CENTERED, the
+  // close button trailing (Win11's metric, red when hot) — the shared
+  // frame's band, at the same metrics the strip used to draw by hand.
+  PaintBand(dc);
+
   ::SetBkMode(dc, TRANSPARENT);
   HGDIOBJ previous_font = font_ ? ::SelectObject(dc, font_) : nullptr;
-
-  // The caption strip: Phi mark leading, the pane title CENTERED, the
-  // close button trailing (Win11's metric, red when hot).
-  {
-    const std::vector<unsigned char>& logo = PhiLogoBgra256();
-    if (!logo.empty()) {
-      const int mark = Scaled(16);
-      RECT mark_rc = {Scaled(12), (Scaled(kCaptionHeight) - mark) / 2,
-                      Scaled(12) + mark,
-                      (Scaled(kCaptionHeight) + mark) / 2};
-      PhiDrawBgra(dc, mark_rc, logo.data(), 256, 256);
-    }
-    wchar_t title[128] = {};
-    ::GetWindowTextW(hwnd_, title, 127);
-    if (title_font_) {
-      ::SelectObject(dc, title_font_);
-    }
-    ::SetTextColor(dc, label);
-    RECT title_rc = {0, 0, client.right, Scaled(kCaptionHeight)};
-    PhiDrawTextAA(dc, title, -1, &title_rc,
-                DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-    RECT close_rc = {client.right - Scaled(kCaptionButtonWidth), 0,
-                     client.right, Scaled(kCaptionHeight)};
-    if (close_hot_) {
-      HBRUSH hot = ::CreateSolidBrush(RGB(0xC4, 0x2B, 0x1C));
-      ::FillRect(dc, &close_rc, hot);
-      ::DeleteObject(hot);
-    }
-    if (caption_font_) {
-      ::SelectObject(dc, caption_font_);
-    }
-    ::SetTextColor(dc, close_hot_ ? RGB(0xFF, 0xFF, 0xFF) : label);
-    PhiDrawTextAA(dc, L"", -1, &close_rc,
-                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-    if (font_) {
-      ::SelectObject(dc, font_);
-    }
-  }
   bool clipped = false;
 
   for (const Item& item : items_) {
@@ -2991,18 +2965,11 @@ void PhiSettingsWindow::Paint(HDC dc) {
         // A lone MDL2 glyph: secondary at rest, accent when `selected`
         // (the data links' arrow), tertiary when disabled; `value`
         // overrides the 16pt size (the Account avatar).
-        HFONT icon_font = mdl2_font_;
-        HFONT sized = nullptr;
-        if (item.value > 0) {
-          LOGFONTW lf = {};
-          if (mdl2_font_ && ::GetObjectW(mdl2_font_, sizeof(lf), &lf)) {
-            lf.lfHeight = -Scaled(item.value);
-            sized = ::CreateFontIndirectW(&lf);
-            if (sized) {
-              icon_font = sized;
-            }
-          }
-        }
+        // The sized glyph comes from the cache; it used to be a
+        // CreateFontIndirectW / DeleteObject pair PER ITEM PER PAINT
+        // (lane 3 ranked finding 12).
+        HFONT icon_font =
+            item.value > 0 ? IconFont(item.value) : mdl2_font_;
         if (icon_font) {
           ::SelectObject(dc, icon_font);
         }
@@ -3013,9 +2980,6 @@ void PhiSettingsWindow::Paint(HDC dc) {
                     DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         if (font_) {
           ::SelectObject(dc, font_);
-        }
-        if (sized) {
-          ::DeleteObject(sized);
         }
         break;
       }
@@ -3183,7 +3147,7 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
     PhiShortcutChord chord;
     const std::wstring message =
         L"Press the new keys for \u201C" + item.detail + L"\u201D.";
-    if (PhiPromptShortcut(hwnd_, L"Change Shortcut", message.c_str(),
+    if (PhiPromptShortcut(hwnd(), L"Change Shortcut", message.c_str(),
                           &chord)) {
       host_->RebindShortcut(item.payload, chord.vk, chord.ctrl, chord.shift,
                             chord.alt);
@@ -3200,7 +3164,7 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
     host_->RemoveCredentialGrant(index);
   } else if (item.action == "addrule") {
     std::wstring value;
-    if (PhiPromptText(hwnd_, L"Add URL Rule",
+    if (PhiPromptText(hwnd(), L"Add URL Rule",
                       L"Enter a domain or URL (e.g. example.com or "
                       L"example.com/path).",
                       &value)) {
@@ -3232,7 +3196,7 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
           parts.size() > 2 ? parts[2] : std::string();
       std::wstring value =
           base::UTF8ToWide(RuleDisplayValue(old_host, old_prefix));
-      if (PhiPromptText(hwnd_, L"Edit URL Rule",
+      if (PhiPromptText(hwnd(), L"Edit URL Rule",
                         L"Enter a domain or URL for this rule.", &value)) {
         const std::string typed = base::WideToUTF8(value);
         // A typed path or explicit sigils re-derive the match type; a bare
@@ -3275,10 +3239,10 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
                       static_cast<UINT>(i) + 1, RuleTypeLabel(kTypes[i]));
       }
       POINT anchor = {item.bounds.left, item.bounds.bottom};
-      ::ClientToScreen(hwnd_, &anchor);
+      ::ClientToScreen(hwnd(), &anchor);
       const UINT chosen = static_cast<UINT>(::TrackPopupMenu(
           menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, anchor.x,
-          anchor.y, 0, hwnd_, nullptr));
+          anchor.y, 0, hwnd(), nullptr));
       ::DestroyMenu(menu);
       if (chosen >= 1 && chosen <= kTypes.size()) {
         // Re-encode the current display value into the new type's form.
@@ -3323,10 +3287,10 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
                     static_cast<UINT>(space_ids.size()) + 1,
                     L"Ask every time");
       POINT anchor = {item.bounds.left, item.bounds.bottom};
-      ::ClientToScreen(hwnd_, &anchor);
+      ::ClientToScreen(hwnd(), &anchor);
       const UINT chosen = static_cast<UINT>(::TrackPopupMenu(
           menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, anchor.x,
-          anchor.y, 0, hwnd_, nullptr));
+          anchor.y, 0, hwnd(), nullptr));
       ::DestroyMenu(menu);
       if (chosen >= 1 && chosen <= space_ids.size()) {
         host_->SetURLRuleTarget(index, space_ids[chosen - 1], false);
@@ -3370,17 +3334,17 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
                         .c_str());
     }
     POINT anchor = {item.bounds.left, item.bounds.bottom};
-    ::ClientToScreen(hwnd_, &anchor);
+    ::ClientToScreen(hwnd(), &anchor);
     const UINT chosen = static_cast<UINT>(::TrackPopupMenu(
         menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, anchor.x,
-        anchor.y, 0, hwnd_, nullptr));
+        anchor.y, 0, hwnd(), nullptr));
     ::DestroyMenu(menu);
     if (chosen >= 1 && chosen <= keywords.size()) {
       host_->SetSearchEngine(item.payload, keywords[chosen - 1]);
     }
   } else if (item.action == "downloadfolder") {
     const std::wstring folder = PickFolder(
-        hwnd_, L"Choose a download location for this profile.");
+        hwnd(), L"Choose a download location for this profile.");
     if (!folder.empty()) {
       host_->SetDownloadDirectory(item.payload, base::WideToUTF8(folder));
     }
@@ -3396,14 +3360,14 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
                       nullptr, SW_SHOWNORMAL);
     }
   } else if (item.action == "signin") {
+    // No Rebuild() here (or in any other action): OnItemClick calls
+    // ScheduleRebuild() once, after Apply, and that is the only path.
     if (host_) {
       host_->RequestSignIn();
-      Rebuild();  // The hint flips to "finish signing in…".
     }
   } else if (item.action == "signout") {
     if (host_) {
       host_->RequestSignOut();
-      Rebuild();
     }
   } else if (item.action == "language") {
     // System default, then every locale the catalog carries, each named in
@@ -3424,10 +3388,10 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
                     PhiLocaleDisplayName(locales[i]));
     }
     POINT anchor = {item.bounds.left, item.bounds.bottom};
-    ::ClientToScreen(hwnd_, &anchor);
+    ::ClientToScreen(hwnd(), &anchor);
     const UINT chosen = static_cast<UINT>(::TrackPopupMenu(
         menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, anchor.x,
-        anchor.y, 0, hwnd_, nullptr));
+        anchor.y, 0, hwnd(), nullptr));
     ::DestroyMenu(menu);
     if (chosen == 1) {
       host_->SetLanguagePreference(std::string());
@@ -3453,10 +3417,10 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
                   MF_STRING | (current == PhiPinScope::kApp ? MF_CHECKED : 0),
                   3, L"App");
     POINT anchor = {item.bounds.left, item.bounds.bottom};
-    ::ClientToScreen(hwnd_, &anchor);
+    ::ClientToScreen(hwnd(), &anchor);
     const UINT chosen = static_cast<UINT>(::TrackPopupMenu(
         menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, anchor.x,
-        anchor.y, 0, hwnd_, nullptr));
+        anchor.y, 0, hwnd(), nullptr));
     ::DestroyMenu(menu);
     if (chosen >= 1 && chosen <= 3) {
       host_->SetPinScope(chosen == 1   ? PhiPinScope::kSpace
@@ -3496,7 +3460,7 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
     picker_scroll_ = 0;
   } else if (item.action == "newspace") {
     std::wstring name;
-    if (PhiPromptText(hwnd_, L"New Space", L"Enter a name for the new Space.",
+    if (PhiPromptText(hwnd(), L"New Space", L"Enter a name for the new Space.",
                       &name)) {
       host_->CreateSpaceNamed(base::WideToUTF8(name));
     }
@@ -3509,12 +3473,12 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
         break;
       }
     }
-    if (PhiPromptText(hwnd_, L"Rename Space",
+    if (PhiPromptText(hwnd(), L"Rename Space",
                       L"Enter a new name for this Space.", &name)) {
       host_->RenameSpace(selected_space_, base::WideToUTF8(name));
     }
   } else if (item.action == "delspace") {
-    if (PhiConfirm(hwnd_, L"Delete Space",
+    if (PhiConfirm(hwnd(), L"Delete Space",
                    L"Bookmarks and pinned tabs belonging to this Space will "
                    L"also be removed. This action cannot be undone.",
                    L"Delete") &&
@@ -3530,12 +3494,12 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
         break;
       }
     }
-    if (PhiPromptText(hwnd_, L"Rename Profile",
+    if (PhiPromptText(hwnd(), L"Rename Profile",
                       L"Enter a new name for this profile.", &name)) {
       host_->RenameProfileById(selected_profile_, base::WideToUTF8(name));
     }
   } else if (item.action == "delprofile") {
-    if (PhiConfirm(hwnd_, L"Delete Profile",
+    if (PhiConfirm(hwnd(), L"Delete Profile",
                    L"All cookies, history, extensions, and saved data on "
                    L"this profile will be permanently removed. This cannot "
                    L"be undone.",
@@ -3545,7 +3509,7 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
     }
   } else if (item.action == "addprofile") {
     std::wstring name;
-    if (PhiPromptText(hwnd_, L"New Profile",
+    if (PhiPromptText(hwnd(), L"New Profile",
                       L"Enter a name for the new profile. Each profile has "
                       L"its own cookies, history, and extensions.",
                       &name)) {
@@ -3554,254 +3518,132 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
   }
 }
 
-void PhiSettingsWindow::OnClick(int x, int y) {
+void PhiSettingsWindow::OnItemClick(int x, int y) {
   if (!host_) {
     return;
   }
   POINT pt = {x, y};
-  for (const Item& item : items_) {
+  // The list is walked by value where it can be: Apply() may open a modal
+  // prompt whose nested loop repaints (and therefore could rebuild)
+  // items_ underneath the iteration.
+  for (size_t i = 0; i < items_.size(); ++i) {
+    const Item item = items_[i];
     if (item.action.empty() || !item.enabled ||
         !::PtInRect(&item.bounds, pt)) {
       continue;
     }
     Apply(item, x);
-    ::InvalidateRect(hwnd_, nullptr, TRUE);
+    ScheduleRebuild();
     return;
   }
 }
 
-// static
-LRESULT CALLBACK PhiSettingsWindow::WndProc(HWND hwnd,
-                                            UINT msg,
-                                            WPARAM wparam,
-                                            LPARAM lparam) {
-  if (msg == WM_NCCREATE) {
-    auto* cs = reinterpret_cast<CREATESTRUCTW*>(lparam);
-    ::SetWindowLongPtrW(hwnd, GWLP_USERDATA,
-                        reinterpret_cast<LONG_PTR>(cs->lpCreateParams));
-    return ::DefWindowProcW(hwnd, msg, wparam, lparam);
-  }
-  auto* self = reinterpret_cast<PhiSettingsWindow*>(
-      ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+LRESULT PhiSettingsWindow::OnWindowMessage(UINT msg,
+                                        WPARAM wparam,
+                                        LPARAM lparam,
+                                        bool* handled) {
   switch (msg) {
-    case WM_NCCALCSIZE:
-      // Claim the OS caption for the client (the strip is drawn there);
-      // only the thin side/bottom borders stay non-client. Both wparam
-      // forms matter — the first calc at creation is the FALSE one.
-      if (self) {
-        RECT* rect =
-            wparam == TRUE
-                ? &reinterpret_cast<NCCALCSIZE_PARAMS*>(lparam)->rgrc[0]
-                : reinterpret_cast<RECT*>(lparam);
-        const UINT dpi = ::GetDpiForWindow(hwnd);
-        const int border_x =
-            ::GetSystemMetricsForDpi(SM_CXSIZEFRAME, dpi) +
-            ::GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
-        const int border_y =
-            ::GetSystemMetricsForDpi(SM_CYSIZEFRAME, dpi) +
-            ::GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
-        rect->left += border_x;
-        rect->right -= border_x;
-        rect->bottom -= border_y;
-        return 0;
-      }
-      break;
-    case WM_NCHITTEST: {
-      if (!self) {
-        break;
-      }
-      const LRESULT hit = ::DefWindowProcW(hwnd, msg, wparam, lparam);
-      if (hit != HTCLIENT) {
-        return hit;  // The real (non-resizable) frame.
-      }
-      POINT pt = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
-      ::ScreenToClient(hwnd, &pt);
-      if (pt.y >= self->Scaled(kCaptionHeight)) {
-        return HTCLIENT;
-      }
-      RECT client = {};
-      ::GetClientRect(hwnd, &client);
-      return pt.x >= client.right - self->Scaled(kCaptionButtonWidth)
-                 ? HTCLOSE
-                 : HTCAPTION;
-    }
-    case WM_NCMOUSEMOVE:
-      if (self) {
-        const bool hot = wparam == HTCLOSE;
-        if (hot != self->close_hot_) {
-          self->close_hot_ = hot;
-          ::InvalidateRect(hwnd, nullptr, FALSE);
-        }
-        TRACKMOUSEEVENT track = {sizeof(track), TME_LEAVE | TME_NONCLIENT,
-                                 hwnd, 0};
-        ::TrackMouseEvent(&track);
-      }
-      break;
-    case WM_NCMOUSELEAVE:
-      if (self && self->close_hot_) {
-        self->close_hot_ = false;
-        ::InvalidateRect(hwnd, nullptr, FALSE);
-      }
-      break;
-    case WM_NCLBUTTONDOWN:
-      // Swallow presses on the drawn close button; the action fires on
-      // release over it, like the OS one.
-      if (self && wparam == HTCLOSE) {
-        self->pressed_caption_ = HTCLOSE;
-        return 0;
-      }
-      break;
-    case WM_NCLBUTTONUP:
-      if (self && self->pressed_caption_ == HTCLOSE) {
-        self->pressed_caption_ = 0;
-        if (wparam == HTCLOSE) {
-          ::PostMessageW(hwnd, WM_CLOSE, 0, 0);
-        }
-        return 0;
-      }
-      break;
-    case WM_ERASEBKGND:
-      // Nothing erases: the pane below paints every pixel of the client area
-      // itself. Letting the class brush blank it first is what made scrolling
-      // and switching panes flash white.
-      return 1;
-    case WM_PAINT: {
-      PAINTSTRUCT ps = {};
-      HDC dc = ::BeginPaint(hwnd, &ps);
-      if (self) {
-        // Back-buffered, like the bookmark manager: a pane repaints wholesale
-        // on every scroll notch and hover, and drawing that straight to the
-        // window shows the ground between the fill and the content.
-        RECT rc = {};
-        ::GetClientRect(hwnd, &rc);
-        const int page_w = rc.right - rc.left;
-        const int page_h = rc.bottom - rc.top;
-        HDC mem = ::CreateCompatibleDC(dc);
-        HBITMAP buffer =
-            mem ? ::CreateCompatibleBitmap(dc, page_w, page_h) : nullptr;
-        self->Rebuild();
-        if (mem && buffer) {
-          HGDIOBJ prev = ::SelectObject(mem, buffer);
-          self->Paint(mem);
-          ::BitBlt(dc, 0, 0, page_w, page_h, mem, 0, 0, SRCCOPY);
-          ::SelectObject(mem, prev);
-        } else {
-          self->Paint(dc);
-        }
-        if (buffer) {
-          ::DeleteObject(buffer);
-        }
-        if (mem) {
-          ::DeleteDC(mem);
-        }
-      }
-      ::EndPaint(hwnd, &ps);
-      return 0;
-    }
     case WM_LBUTTONDOWN:
-      if (self) {
-        self->OnClick(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
-      }
+      OnItemClick(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
+      *handled = true;
       return 0;
     case WM_MOUSEMOVE:
-      if (self) {
-        if (self->close_hot_) {
-          self->close_hot_ = false;  // The cursor moved into the client.
-          ::InvalidateRect(hwnd, nullptr, FALSE);
-        }
-        // Dragging a saturation slider.
-        if (wparam & MK_LBUTTON) {
-          self->OnClick(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
-        }
+      // Dragging a saturation slider. (The frame has already dropped its
+      // own hot window control for this move.)
+      if (wparam & MK_LBUTTON) {
+        OnItemClick(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
       }
-      return 0;
-    case WM_TIMER:
-      if (self && wparam == kProfilePollTimer) {
-        // Re-read the pending profile; the rebuild re-arms while pending.
-        ::KillTimer(hwnd, kProfilePollTimer);
-        ::InvalidateRect(hwnd, nullptr, TRUE);
-        return 0;
-      }
+      *handled = true;
       return 0;
     case WM_CHAR:
       // The Shortcuts filter: typing anywhere while the pane is up feeds
       // the search field — Esc clears, Backspace deletes.
-      if (self && self->section_ == "shortcuts") {
+      if (section_ == "shortcuts") {
         const wchar_t c = static_cast<wchar_t>(wparam);
         if (c == VK_ESCAPE) {
-          self->shortcut_search_.clear();
+          shortcut_search_.clear();
         } else if (c == VK_BACK) {
-          if (!self->shortcut_search_.empty()) {
-            self->shortcut_search_.pop_back();
+          if (!shortcut_search_.empty()) {
+            shortcut_search_.pop_back();
           }
         } else if (c >= L' ') {
-          self->shortcut_search_.push_back(c);
+          shortcut_search_.push_back(c);
         } else {
+          *handled = true;
           return 0;
         }
-        self->scroll_ = 0;
-        ::InvalidateRect(hwnd, nullptr, TRUE);
+        scroll_ = 0;
+        ScheduleRebuild();
+      }
+      *handled = true;
+      return 0;
+    case WM_MOUSEWHEEL: {
+      // Pane content can outgrow the fixed window; the Mac scrolls, so do
+      // we. The offset feeds Rebuild(), so the scroll is a rebuild — not
+      // something WM_PAINT discovers.
+      const int delta = GET_WHEEL_DELTA_WPARAM(wparam);
+      POINT pt = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+      ::ScreenToClient(hwnd(), &pt);
+      if (picker_max_line_ > 0 && ::PtInRect(&picker_grid_, pt)) {
+        // Over the icon picker: three cell rows per notch, in place.
+        const int rows = std::max(1, 3 * std::abs(delta) / WHEEL_DELTA);
+        picker_scroll_ = std::max(
+            0, std::min(picker_max_line_,
+                        picker_scroll_ + (delta > 0 ? -rows : rows)));
+        ScheduleRebuild();
+        *handled = true;
         return 0;
       }
+      RECT client = {};
+      ::GetClientRect(hwnd(), &client);
+      const int visible = client.bottom - Scaled(kChromeTop);
+      const int max_scroll = std::max(0, content_height_ - visible);
+      scroll_ = std::max(0, std::min(max_scroll, scroll_ - delta / 2));
+      ScheduleRebuild();
+      *handled = true;
       return 0;
-    case WM_MOUSEWHEEL:
-      // Pane content can outgrow the fixed window; the Mac scrolls, so do we.
-      if (self) {
-        const int delta = GET_WHEEL_DELTA_WPARAM(wparam);
-        POINT pt = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
-        ::ScreenToClient(hwnd, &pt);
-        if (self->picker_max_line_ > 0 &&
-            ::PtInRect(&self->picker_grid_, pt)) {
-          // Over the icon picker: three cell rows per notch, in place.
-          const int rows = std::max(1, 3 * std::abs(delta) / WHEEL_DELTA);
-          self->picker_scroll_ = std::max(
-              0, std::min(self->picker_max_line_,
-                          self->picker_scroll_ + (delta > 0 ? -rows : rows)));
-          ::InvalidateRect(hwnd, nullptr, TRUE);
-          return 0;
-        }
-        RECT client = {};
-        ::GetClientRect(hwnd, &client);
-        const int visible = client.bottom - self->Scaled(kChromeTop);
-        const int max_scroll =
-            std::max(0, self->content_height_ - visible);
-        self->scroll_ = std::max(
-            0, std::min(max_scroll, self->scroll_ - delta / 2));
-        ::InvalidateRect(hwnd, nullptr, TRUE);
-      }
-      return 0;
-    case WM_DPICHANGED:
-      if (self) {
-        if (const UINT dpi = ::GetDpiForWindow(hwnd)) {
-          self->dpi_ = dpi;
-        }
-        self->EnsureFont();
-        const RECT* suggested = reinterpret_cast<const RECT*>(lparam);
-        if (suggested) {
-          ::SetWindowPos(hwnd, nullptr, suggested->left, suggested->top,
-                         suggested->right - suggested->left,
-                         suggested->bottom - suggested->top,
-                         SWP_NOZORDER | SWP_NOACTIVATE);
-        }
-        ::InvalidateRect(hwnd, nullptr, TRUE);
-      }
-      return 0;
+    }
     case WM_ACTIVATE:
-      // The "Set as default" button hands the choice to the Windows Settings
-      // app, so the answer changes while this window is in the background.
-      // Coming back to the front is the cue to ask again — the Mac re-checks
-      // in viewWillAppear for the same reason. Falls through to
-      // DefWindowProc, which the custom caption still needs.
-      if (self && LOWORD(wparam) != WA_INACTIVE) {
-        self->is_default_browser_.reset();
-        ::InvalidateRect(hwnd, nullptr, TRUE);
+      // The "Set as default" button hands the choice to the Windows
+      // Settings app, so the answer changes while this window is in the
+      // background. Coming back to the front is the cue to ask again —
+      // the Mac re-checks in viewWillAppear for the same reason. This is
+      // the ONLY place the registry probe is dropped; everywhere else it
+      // is served from the cache. Falls through so the frame and
+      // DefWindowProc still see the activation.
+      if (LOWORD(wparam) != WA_INACTIVE) {
+        is_default_browser_.reset();
+        ScheduleRebuild();
       }
       break;
     case WM_CLOSE:
-      ::ShowWindow(hwnd, SW_HIDE);  // Keep it around; reopening is instant.
+      ::ShowWindow(hwnd(), SW_HIDE);  // Keep it around; reopening is instant.
+      *handled = true;
       return 0;
+    default:
+      break;
   }
-  return ::DefWindowProcW(hwnd, msg, wparam, lparam);
+  return PhiSecondaryWindow::OnWindowMessage(msg, wparam, lparam, handled);
+}
+
+void PhiSettingsWindow::OnDpiChanged(UINT old_dpi) {
+  PhiSecondaryWindow::OnDpiChanged(old_dpi);
+  EnsureFont();
+  ScheduleRebuild();
+}
+
+void PhiSettingsWindow::OnTimerFired(UINT_PTR id) {
+  if (id != profile_poll_.id()) {
+    return;
+  }
+  // Re-read the pending profile; the rebuild re-arms while pending.
+  profile_poll_.Stop();
+  ScheduleRebuild();
+}
+
+void PhiSettingsWindow::OnNcDestroy() {
+  profile_poll_.Stop();
+  PhiSecondaryWindow::OnNcDestroy();
 }
 
 }  // namespace phi_client

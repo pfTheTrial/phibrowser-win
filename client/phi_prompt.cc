@@ -14,6 +14,7 @@
 #include "phibrowser-win/client/phi_icons.h"
 #include "phibrowser-win/client/phi_modal_scope.h"
 #include "phibrowser-win/client/phi_popup_chrome.h"
+#include "phibrowser-win/client/phi_secondary_window.h"
 
 namespace phi_client {
 
@@ -72,54 +73,60 @@ struct Spec {
 };
 
 // One alert window: built from a Spec, run modally, read back.
-class Alert {
+//
+// THE ONE SECONDARY WINDOW THAT MAY BLOCK. Every other surface in the
+// client is asynchronous; this one keeps a nested GetMessage loop because
+// PhiAlert / PhiConfirm / PhiPromptText / PhiPromptChoose /
+// PhiPromptShortcut are called from a dozen places that need the answer on
+// the same stack (see the note at the top of phi_prompt.h). It therefore
+// registers NO dialog keys with the thread's active-dialog list
+// (phi_secondary_window.h): its own loop calls IsDialogMessageW, and the
+// chord recorder's `filter` must see raw key messages BEFORE the dialog
+// manager does.
+class Alert : public PhiSecondaryWindow {
  public:
-  Alert(HWND owner, Spec spec) : owner_(owner), spec_(std::move(spec)) {
-    static const ATOM atom = [] {
-      WNDCLASSEXW wc = {};
-      wc.cbSize = sizeof(wc);
-      wc.lpfnWndProc = &Alert::WndProc;
-      wc.hInstance = ::GetModuleHandleW(nullptr);
-      wc.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
-      wc.lpszClassName = kPromptClass;
-      return ::RegisterClassExW(&wc);
-    }();
-    (void)atom;
-    colors_ = PhiPopupColorsNow();
-    // Created hidden at a placeholder size; Build measures the copy and
-    // sizes the window to fit, then Run centres it on the owner.
-    hwnd_ = ::CreateWindowExW(
-        WS_EX_DLGMODALFRAME, kPromptClass, spec_.title.c_str(),
-        WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN, 0, 0, 100, 100,
-        owner, nullptr, ::GetModuleHandleW(nullptr), this);
-    if (!hwnd_) {
-      return;
-    }
-    chrome_.Attach(hwnd_, kPhiCaptionClose, colors_);
-    dpi_ = chrome_.dpi();
-    title_font_ = PhiPopupFont(dpi_, 18, FW_SEMIBOLD);
-    body_font_ = PhiPopupFont(dpi_, 14);
-    button_font_ = PhiPopupFont(dpi_, 13);
-    card_brush_ = ::CreateSolidBrush(colors_.card);
-    Build();
-  }
+  Alert(HWND owner, Spec spec) : owner_(owner), spec_(std::move(spec)) {}
 
-  ~Alert() {
-    if (hwnd_ && ::IsWindow(hwnd_)) {
-      ::SetWindowLongPtrW(hwnd_, GWLP_USERDATA, 0);
-      ::DestroyWindow(hwnd_);
-    }
+  ~Alert() override {
+    // A stack object, so the HWND has to go before the members do; the
+    // base clears GWLP_USERDATA at WM_NCDESTROY, so nothing can reach us
+    // afterwards.
+    Destroy();
     for (HFONT font : {title_font_, body_font_, button_font_}) {
       if (font) {
         ::DeleteObject(font);
       }
     }
-    if (card_brush_) {
-      ::DeleteObject(card_brush_);
+    for (HBRUSH brush : {card_brush_, ground_brush_}) {
+      if (brush) {
+        ::DeleteObject(brush);
+      }
     }
   }
 
-  bool valid() const { return hwnd_ != nullptr; }
+  // Created hidden at a placeholder size; Build measures the copy and
+  // sizes the window to fit, then Run centres it on the owner.
+  bool Open() {
+    ClassSpec spec;
+    spec.name = kPromptClass;
+    Options options;
+    options.caption_buttons = kPhiCaptionClose;
+    options.show_mark = false;  // PhiAlert carries its mark in the body.
+    options.dialog_keys = kPhiDialogNone;  // See the note above.
+    const RECT bounds = {0, 0, 100, 100};
+    if (!CreateSecondary(spec, WS_EX_DLGMODALFRAME,
+                         WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN,
+                         bounds, owner_, spec_.title.c_str(), options)) {
+      return false;
+    }
+    title_font_ = PhiPopupFont(dpi(), 18, FW_SEMIBOLD);
+    body_font_ = PhiPopupFont(dpi(), 14);
+    button_font_ = PhiPopupFont(dpi(), 13);
+    OnColorsChanged();  // The two cached brushes.
+    Build();
+    return true;
+  }
+
   HWND control() const { return control_; }
   bool done() const { return done_; }
   int chosen() const { return chosen_; }
@@ -130,33 +137,22 @@ class Alert {
     // outside the thread is processed INSIDE GetMessageW without making it
     // return, so `done` alone would leave the loop parked until unrelated
     // input.
-    ::PostMessageW(hwnd_, WM_NULL, 0, 0);
+    ::PostMessageW(hwnd(), WM_NULL, 0, 0);
   }
 
   // Shows the alert modally over its owner and pumps messages until an
   // action, Escape or the close button ends it. `filter` sees every message
   // first and returns true to swallow it (the chord recorder).
   int Run(const std::function<bool(const MSG&)>& filter = nullptr) {
-    if (!hwnd_) {
+    if (!alive()) {
       return -1;
     }
-    RECT anchor = {};
-    if (!owner_ || !::GetWindowRect(owner_, &anchor)) {
-      ::SystemParametersInfoW(SPI_GETWORKAREA, 0, &anchor, 0);
-    }
-    RECT frame = {};
-    ::GetWindowRect(hwnd_, &frame);
-    const int w = frame.right - frame.left;
-    const int h = frame.bottom - frame.top;
-    const int x = anchor.left + ((anchor.right - anchor.left) - w) / 2;
-    const int y = anchor.top + ((anchor.bottom - anchor.top) - h) / 3;
-    ::SetWindowPos(hwnd_, nullptr, std::max(x, 0), std::max(y, 0), 0, 0,
-                   SWP_NOSIZE | SWP_NOZORDER);
+    CenterOn(owner_);
     if (owner_) {
       ::EnableWindow(owner_, FALSE);  // Modal against its owner, as NSAlert.
     }
-    ::ShowWindow(hwnd_, SW_SHOW);
-    ::SetForegroundWindow(hwnd_);
+    ::ShowWindow(hwnd(), SW_SHOW);
+    ::SetForegroundWindow(hwnd());
     HWND focus = control_;
     if (!focus && spec_.default_index >= 0 &&
         static_cast<size_t>(spec_.default_index) < buttons_.size()) {
@@ -165,7 +161,7 @@ class Alert {
     if (!focus && !buttons_.empty()) {
       focus = buttons_.back();
     }
-    ::SetFocus(focus ? focus : hwnd_);
+    ::SetFocus(focus ? focus : hwnd());
     if (control_ && spec_.accessory == Accessory::kField) {
       ::SendMessageW(control_, EM_SETSEL, 0, -1);
     }
@@ -181,7 +177,7 @@ class Alert {
         if (filter && filter(msg)) {
           continue;
         }
-        if (!::IsDialogMessageW(hwnd_, &msg)) {
+        if (!::IsDialogMessageW(hwnd(), &msg)) {
           ::TranslateMessage(&msg);
           ::DispatchMessageW(&msg);
         }
@@ -217,10 +213,6 @@ class Alert {
   }
 
  private:
-  int Scaled(int design) const {
-    return ::MulDiv(design, static_cast<int>(dpi_), 96);
-  }
-
   HWND Child(const wchar_t* cls,
              const wchar_t* text,
              DWORD style,
@@ -229,7 +221,7 @@ class Alert {
              HFONT font) {
     HWND control = ::CreateWindowExW(
         0, cls, text, WS_CHILD | WS_VISIBLE | style, rc.left, rc.top,
-        rc.right - rc.left, rc.bottom - rc.top, hwnd_,
+        rc.right - rc.left, rc.bottom - rc.top, hwnd(),
         reinterpret_cast<HMENU>(id), ::GetModuleHandleW(nullptr), nullptr);
     if (control && font) {
       ::SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(font),
@@ -242,7 +234,7 @@ class Alert {
   void Build() {
     const int x0 = Scaled(kPadding);
     const int content_w = Scaled(kContentWidth);
-    int y = chrome_.CaptionHeight() + Scaled(kPadding);
+    int y = CaptionHeight() + Scaled(kPadding);
 
     mark_ = {x0, y, x0 + Scaled(kMark), y + Scaled(kMark)};
     y += Scaled(kMark + kMarkToTitle);
@@ -252,7 +244,7 @@ class Alert {
     // The copy wraps at the content width; its height is the text's.
     int message_h = 0;
     if (!spec_.message.empty()) {
-      HDC dc = ::GetDC(hwnd_);
+      HDC dc = ::GetDC(hwnd());
       HGDIOBJ previous = body_font_ ? ::SelectObject(dc, body_font_) : nullptr;
       RECT measure = {0, 0, content_w, 0};
       ::DrawTextW(dc, spec_.message.c_str(), -1, &measure,
@@ -261,7 +253,7 @@ class Alert {
       if (previous) {
         ::SelectObject(dc, previous);
       }
-      ::ReleaseDC(hwnd_, dc);
+      ::ReleaseDC(hwnd(), dc);
       y += Scaled(kCopySpacing);
       message_ = {x0, y, x0 + content_w, y + message_h};
       y += message_h;
@@ -295,10 +287,10 @@ class Alert {
     y += Scaled(kActionHeight) + Scaled(kPadding);
 
     // Size the window: the content plus the band and the thin borders.
-    const int content_h = ::MulDiv(y - chrome_.CaptionHeight(), 96,
-                                   static_cast<int>(dpi_));
-    const SIZE outer = chrome_.OuterSize(kWidth, content_h);
-    ::SetWindowPos(hwnd_, nullptr, 0, 0, outer.cx, outer.cy,
+    const int content_h = ::MulDiv(y - CaptionHeight(), 96,
+                                   static_cast<int>(dpi()));
+    const SIZE outer = chrome().OuterSize(kWidth, content_h);
+    ::SetWindowPos(hwnd(), nullptr, 0, 0, outer.cx, outer.cy,
                    SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
 
     BuildAccessory();
@@ -354,7 +346,7 @@ class Alert {
         break;
       }
     }
-    PhiPopupThemeControl(control_, colors_.dark);
+    PhiPopupThemeControl(control_, colors().dark);
   }
 
   void BuildActions() {
@@ -391,19 +383,12 @@ class Alert {
     }
   }
 
-  void Paint() {
-    PAINTSTRUCT ps = {};
-    HDC dc = ::BeginPaint(hwnd_, &ps);
-    if (!dc) {
-      return;
-    }
+  void Paint(HDC dc, const RECT&) override {
     RECT client = {};
-    ::GetClientRect(hwnd_, &client);
-    HBRUSH ground = ::CreateSolidBrush(colors_.bg);
-    ::FillRect(dc, &client, ground);
-    ::DeleteObject(ground);
+    ::GetClientRect(hwnd(), &client);
+    ::FillRect(dc, &client, ground_brush_);
     // No title in the band — PhiAlert carries its title in the body.
-    chrome_.PaintCaption(dc, colors_, /*show_mark=*/false, L"");
+    PaintBand(dc, L"");
 
     const std::vector<unsigned char>& logo = PhiLogoBgra256();
     if (!logo.empty()) {
@@ -411,7 +396,7 @@ class Alert {
     }
     ::SetBkMode(dc, TRANSPARENT);
     HGDIOBJ previous = title_font_ ? ::SelectObject(dc, title_font_) : nullptr;
-    ::SetTextColor(dc, colors_.label_strong);
+    ::SetTextColor(dc, colors().label_strong);
     RECT title = title_;
     ::DrawTextW(dc, spec_.title.c_str(), -1, &title,
                 DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX |
@@ -420,33 +405,32 @@ class Alert {
       if (body_font_) {
         ::SelectObject(dc, body_font_);
       }
-      ::SetTextColor(dc, colors_.label);
+      ::SetTextColor(dc, colors().label);
       RECT message = message_;
       ::DrawTextW(dc, spec_.message.c_str(), -1, &message,
                   DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
     }
     if (spec_.accessory != Accessory::kNone) {
-      PhiPopupPaintWell(dc, well_, colors_, dpi_);
+      PhiPopupPaintWell(dc, well_, colors(), dpi());
     }
     if (previous) {
       ::SelectObject(dc, previous);
     }
-    ::EndPaint(hwnd_, &ps);
   }
 
-  LRESULT Handle(UINT msg, WPARAM wparam, LPARAM lparam) {
-    LRESULT result = 0;
-    if (chrome_.HandleMessage(msg, wparam, lparam, &result)) {
-      return result;
-    }
+  // The alert never lets the base's Escape / Return defaults fire: its
+  // modal loop hands both to IsDialogMessageW, which turns them into
+  // IDCANCEL / the default action below.
+  UINT DlgCode() const override { return 0; }
+
+  LRESULT OnWindowMessage(UINT msg,
+                          WPARAM wparam,
+                          LPARAM lparam,
+                          bool* handled) override {
     switch (msg) {
-      case WM_ERASEBKGND:
-        return 1;
-      case WM_PAINT:
-        Paint();
-        return 0;
       case DM_GETDEFID:
         // IsDialogMessage's Return: the default action, or none.
+        *handled = true;
         if (spec_.default_index >= 0) {
           return MAKELRESULT(kActionIdFirst + spec_.default_index,
                              DC_HASDEFID);
@@ -459,6 +443,7 @@ class Alert {
             id < kActionIdFirst + spec_.actions.size() &&
             (code == BN_CLICKED || code == 0)) {
           Finish(static_cast<int>(id - kActionIdFirst));
+          *handled = true;
           return 0;
         }
         if (id == IDOK) {
@@ -467,10 +452,12 @@ class Alert {
           if (spec_.default_index >= 0) {
             Finish(spec_.default_index);
           }
+          *handled = true;
           return 0;
         }
         if (id == IDCANCEL) {
           Finish(spec_.cancel_index);
+          *handled = true;
           return 0;
         }
         if (id == kControlId && code == LBN_DBLCLK) {
@@ -480,13 +467,15 @@ class Alert {
           if (activate >= 0) {
             Finish(activate);  // A double-click confirms the row.
           }
+          *handled = true;
           return 0;
         }
         break;
       }
       case WM_DRAWITEM:
         if (PhiPopupDrawButton(*reinterpret_cast<DRAWITEMSTRUCT*>(lparam),
-                               colors_, button_font_)) {
+                               colors(), button_font_)) {
+          *handled = true;
           return TRUE;
         }
         break;
@@ -495,49 +484,41 @@ class Alert {
       case WM_CTLCOLORSTATIC: {
         // The accessory paints on the well's card colour.
         HDC dc = reinterpret_cast<HDC>(wparam);
-        ::SetTextColor(dc, colors_.label);
-        ::SetBkColor(dc, colors_.card);
+        ::SetTextColor(dc, colors().label);
+        ::SetBkColor(dc, colors().card);
+        *handled = true;
         return reinterpret_cast<LRESULT>(card_brush_);
       }
       case WM_CLOSE:
         Finish(spec_.cancel_index);
+        *handled = true;
         return 0;
       default:
         break;
     }
-    return ::DefWindowProcW(hwnd_, msg, wparam, lparam);
+    return PhiSecondaryWindow::OnWindowMessage(msg, wparam, lparam, handled);
   }
 
-  static LRESULT CALLBACK WndProc(HWND hwnd,
-                                  UINT msg,
-                                  WPARAM wparam,
-                                  LPARAM lparam) {
-    if (msg == WM_NCCREATE) {
-      auto* cs = reinterpret_cast<CREATESTRUCTW*>(lparam);
-      ::SetWindowLongPtrW(hwnd, GWLP_USERDATA,
-                          reinterpret_cast<LONG_PTR>(cs->lpCreateParams));
-      auto* self = reinterpret_cast<Alert*>(cs->lpCreateParams);
-      self->hwnd_ = hwnd;  // The chrome needs it before CreateWindow returns.
-      return ::DefWindowProcW(hwnd, msg, wparam, lparam);
+  void OnColorsChanged() override {
+    for (HBRUSH* slot : {&card_brush_, &ground_brush_}) {
+      if (*slot) {
+        ::DeleteObject(*slot);
+        *slot = nullptr;
+      }
     }
-    auto* self =
-        reinterpret_cast<Alert*>(::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
-    if (!self || self->hwnd_ != hwnd) {
-      return ::DefWindowProcW(hwnd, msg, wparam, lparam);
-    }
-    return self->Handle(msg, wparam, lparam);
+    card_brush_ = ::CreateSolidBrush(colors().card);
+    ground_brush_ = ::CreateSolidBrush(colors().bg);
   }
 
   HWND owner_ = nullptr;
   Spec spec_;
-  HWND hwnd_ = nullptr;
-  PhiPopupChrome chrome_;
-  PhiPopupColors colors_;
-  UINT dpi_ = 96;
   HFONT title_font_ = nullptr;
   HFONT body_font_ = nullptr;
   HFONT button_font_ = nullptr;
+  // The alert's ground was a CreateSolidBrush / DeleteObject pair on
+  // every paint (lane 3 ranked finding 12).
   HBRUSH card_brush_ = nullptr;
+  HBRUSH ground_brush_ = nullptr;
   HWND control_ = nullptr;
   std::vector<HWND> buttons_;
   RECT mark_ = {};
@@ -580,7 +561,7 @@ int PhiAlert(HWND owner,
   spec.cancel_index =
       cancel_index < static_cast<int>(actions.size()) ? cancel_index : -1;
   Alert alert(owner, std::move(spec));
-  return alert.valid() ? alert.Run() : -1;
+  return alert.Open() ? alert.Run() : -1;
 }
 
 void PhiNotice(HWND owner, const wchar_t* title, const wchar_t* message) {
@@ -603,7 +584,7 @@ bool PhiPromptText(HWND owner,
   spec.default_index = 1;
   spec.cancel_index = 0;
   Alert alert(owner, std::move(spec));
-  if (!alert.valid()) {
+  if (!alert.Open()) {
     return false;
   }
   const bool accepted = alert.Run() == 1;
@@ -694,7 +675,7 @@ bool PhiPromptShortcut(HWND owner,
   spec.actions = {{L"Cancel", PhiPopupButtonRole::kSecondary}};
   spec.cancel_index = 0;
   Alert alert(owner, std::move(spec));
-  if (!alert.valid()) {
+  if (!alert.Open()) {
     return false;
   }
   HWND preview = alert.control();
@@ -788,7 +769,7 @@ int PhiPromptChoose(HWND owner,
   spec.cancel_index = 0;
   spec.list_activate_index = 1;
   Alert alert(owner, std::move(spec));
-  if (!alert.valid()) {
+  if (!alert.Open()) {
     return -1;
   }
   const bool accepted = alert.Run() == 1;

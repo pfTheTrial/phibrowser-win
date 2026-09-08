@@ -9,9 +9,12 @@
 
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "base/memory/raw_ptr_exclusion.h"
+#include "phibrowser-win/client/phi_popup_chrome.h"
+#include "phibrowser-win/client/phi_secondary_window.h"
 #include "phibrowser-win/client/phi_tab_store.h"
 #include "phibrowser-win/client/phi_theme.h"
 #include "phibrowser-win/client/phi_window_controller.h"
@@ -218,7 +221,8 @@ class PhiSettingsHost {
 // top-level window, NOT an overlay inside a shell: the content region belongs
 // to Chromium's DirectComposition surface, which composites above anything GDI
 // draws there (windows-framework-design.md — the falsified overlay approach).
-class PhiSettingsWindow : public PhiSettingsObserver {
+class PhiSettingsWindow : public PhiSecondaryWindow,
+                          public PhiSettingsObserver {
  public:
   static void Open(PhiSettingsHost* host);
   // Repaints the open window. The coordinator no longer calls this (it
@@ -237,16 +241,25 @@ class PhiSettingsWindow : public PhiSettingsObserver {
 
   ~PhiSettingsWindow() override;
 
-  // PhiSettingsObserver: whatever changed, the pane re-reads on paint.
+  // PhiSettingsObserver: whatever changed behind the host, the pane
+  // rebuilds NOW and repaints — never from inside WM_PAINT (lane 3 §3.1
+  // and ranked finding 1; docs/sidebar-architecture.md §2.7).
   void OnSettingsChanged(PhiSettingsChange what) override;
-
-  static LRESULT CALLBACK WndProc(HWND hwnd,
-                                  UINT msg,
-                                  WPARAM wparam,
-                                  LPARAM lparam);
 
  private:
   explicit PhiSettingsWindow(PhiSettingsHost* host);
+  bool OpenWindow();
+
+  // PhiSecondaryWindow. Paint() only paints: the item list it draws was
+  // built by the last ScheduleRebuild().
+  void Paint(HDC dc, const RECT& dirty) override;
+  LRESULT OnWindowMessage(UINT msg,
+                          WPARAM wparam,
+                          LPARAM lparam,
+                          bool* handled) override;
+  void OnDpiChanged(UINT old_dpi) override;
+  void OnTimerFired(UINT_PTR id) override;
+  void OnNcDestroy() override;
 
   // One drawn thing. Rows are built per section and hit-tested from the same
   // list, so what is drawn and what is clickable cannot drift apart.
@@ -290,6 +303,10 @@ class PhiSettingsWindow : public PhiSettingsObserver {
   };
 
   void Rebuild();
+  // THE way the pane changes: rebuild the item list from the host, then
+  // ask for a repaint. Everything that used to InvalidateRect(TRUE) and
+  // let WM_PAINT rebuild calls this instead.
+  void ScheduleRebuild();
   void BuildAccount(int* y);
   void BuildGeneral(int* y);
   void BuildSpaces(int* y);
@@ -334,28 +351,30 @@ class PhiSettingsWindow : public PhiSettingsObserver {
                 int selected_index,
                 const std::string& action);
 
-  void Paint(HDC dc);
-  void OnClick(int x, int y);
+  void OnItemClick(int x, int y);
   void Apply(const Item& item, int x);
-  int Scaled(int design_units) const;
   void EnsureFont();
+  // A lone MDL2 glyph at a size the ladder does not carry (the Account
+  // avatar). Cached by size and dropped with the rest on a DPI move; it
+  // used to be a CreateFontIndirectW / DeleteObject pair per item PER
+  // PAINT (lane 3 ranked finding 12).
+  HFONT IconFont(int size);
   // The window title follows the selected pane, as the Mac library does.
   void SyncTitle();
 
   RAW_PTR_EXCLUSION PhiSettingsHost* host_;
-  HWND hwnd_ = nullptr;
   HFONT font_ = nullptr;
   HFONT title_font_ = nullptr;
   HFONT small_font_ = nullptr;  // Section titles and toolbar labels.
   HFONT hint_font_ = nullptr;   // 11pt hints and captions.
   HFONT emoji_font_ = nullptr;  // The icon-picker grid's emoji.
   HFONT mdl2_font_ = nullptr;   // The grid's Phi-icon MDL2 stand-ins.
-  HFONT caption_font_ = nullptr;  // MDL2 at 10pt — the close glyph.
-  // The custom caption strip (the OS caption is retired via WM_NCCALCSIZE
-  // so the title can sit CENTERED, with the Phi mark leading): hover and
-  // press state for its close button.
-  bool close_hot_ = false;
-  int pressed_caption_ = 0;
+  // The caption strip is PhiPopupChrome's now, through
+  // PhiSecondaryWindow: the OS caption is retired so the title can sit
+  // CENTERED with the Phi mark leading, and the close button's hover,
+  // press and red-when-hot live in the frame. Lane 3 §2 counted four
+  // copies of that code; this was the third.
+  std::vector<std::pair<int, HFONT>> icon_fonts_;
   // The icon picker's segment ("icon" | "emoji", Icon default as on Mac)
   // and its scroll position: the first visible cell row, clamped by the
   // Spaces build to `picker_max_line_`. `picker_grid_` is the grid's
@@ -366,7 +385,6 @@ class PhiSettingsWindow : public PhiSettingsObserver {
   int picker_max_line_ = 0;
   RECT picker_grid_{};
   UINT font_dpi_ = 0;
-  UINT dpi_ = 96;
   std::string section_ = "general";
   std::vector<Item> items_;
   // Index of the card being filled, so EndSection can size it.
@@ -381,12 +399,18 @@ class PhiSettingsWindow : public PhiSettingsObserver {
   // The Shortcuts pane's filter text ("Find shortcut keys"), fed by WM_CHAR
   // while that pane is up.
   std::wstring shortcut_search_;
-  // Whether this exe is the system's http handler. Resolved on demand — the
-  // Account pane rebuilds on every paint — and dropped when the window is
-  // activated, which is when the user comes back from the Windows Settings
-  // page that the "Set as default" button opens. The Mac's twin re-checks in
-  // viewWillAppear for the same reason.
+  // Whether this exe is the system's http handler — a registry walk
+  // (AssocQueryStringW). Resolved on demand, CACHED for the life of the
+  // answer, and dropped only when the window is activated, which is when
+  // the user comes back from the Windows Settings page that the "Set as
+  // default" button opens. The Mac's twin re-checks in viewWillAppear for
+  // the same reason. Before phase 5 this probe sat behind a Rebuild()
+  // that ran inside WM_PAINT (lane 3 §3.1).
   std::optional<bool> is_default_browser_;
+  // A profile whose data is still loading re-arms one short poll per
+  // rebuild; the id comes from the window's own pool, not the hand-picked
+  // 0x517 (lane 3 §4.1).
+  Timer profile_poll_;
 };
 
 }  // namespace phi_client

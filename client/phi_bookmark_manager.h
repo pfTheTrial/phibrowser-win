@@ -12,11 +12,12 @@
 #include <vector>
 
 #include "base/memory/raw_ptr_exclusion.h"
+#include "phibrowser-win/client/phi_panel.h"
+#include "phibrowser-win/client/phi_theme.h"
 
 namespace phi_client {
 
 class PhiWindowController;
-struct PhiPalette;
 
 // The Mac's native bookmark manager (UserInterface/WebContent/BookmarkManager,
 // docs/plans/2026-08-12-native-bookmark-manager.md): the Space's bookmark tree
@@ -32,10 +33,10 @@ struct PhiPalette;
 // Columns follow the spec: Website carries the disclosure, the folder symbol
 // or the favicon(s) and the title; Address carries a folder's child count, a
 // bookmark's URL, or "primary | secondary" for a split.
-class PhiBookmarkManager {
+class PhiBookmarkManager : public PhiPanel {
  public:
   explicit PhiBookmarkManager(PhiWindowController* controller);
-  ~PhiBookmarkManager();
+  ~PhiBookmarkManager() override;
 
   PhiBookmarkManager(const PhiBookmarkManager&) = delete;
   PhiBookmarkManager& operator=(const PhiBookmarkManager&) = delete;
@@ -56,6 +57,23 @@ class PhiBookmarkManager {
   void Reposition();
   // Re-reads the tree (a store mutation happened elsewhere).
   void Refresh();
+
+ protected:
+  // PhiPanel: the outline model, Paint and the hit handling. Registration,
+  // the `this` binding, the cached back buffer (this file held one of the
+  // ten copies of the block), the fonts, the dpi and hover all come from
+  // the base.
+  void Paint(HDC dc, const RECT& dirty) override;
+  void OnSize(int width, int height) override;
+  void OnDpiChanged(UINT old_dpi) override;
+  void OnMouseDown(int hit, POINT client_pt) override;
+  void OnWheel(int delta, POINT client_pt) override;
+  bool OnKey(WPARAM virtual_key) override;
+  PhiPalette QueryPalette() const override;
+  LRESULT OnMessage(UINT message,
+                    WPARAM wparam,
+                    LPARAM lparam,
+                    bool* handled) override;
 
  private:
   // One visible outline row — the flattened projection the Mac builds in
@@ -82,11 +100,14 @@ class PhiBookmarkManager {
     RECT disclosure{};  // The folder's twisty.
   };
 
-  int Scaled(int design) const;
   void EnsureWindow();
-  void EnsureFonts();
   void EnsureSearchField();
   void LayoutChrome();
+  // THE rect list (phi_window.h contract rule 6): every row, then the New
+  // Folder button on top of them, so a row scrolled under the header
+  // cannot take the button's pointer.
+  void RebuildHits();
+  bool NewFolderHot() const;
 
   // Rebuilds `rows_` from the store: the outline in normal mode, or the flat
   // depth-first match list while a search is active.
@@ -94,16 +115,14 @@ class PhiBookmarkManager {
   void AppendSubtree(const std::string& parent_guid, int depth);
   void AppendMatches(const std::string& parent_guid);
 
-  void Paint(HDC dc);
   void PaintRow(HDC dc, const Row& row, const PhiPalette& palette);
   int RowAt(POINT pt) const;  // -1 when the point is on no row.
   int ContentHeight() const;
   void ClampScroll();
 
-  void OnClick(POINT pt, bool ctrl, bool shift);
+  void ClickAt(POINT pt, bool ctrl, bool shift);
   void OnDoubleClick(POINT pt);
   void OnContextMenu(POINT pt);
-  void OnKey(WPARAM key);
   void OpenRow(const Row& row);
   void DeleteSelection();
   void NewFolder(const std::string& parent_guid);
@@ -112,20 +131,12 @@ class PhiBookmarkManager {
   // derive them at invocation time.
   std::vector<std::string> SelectedGuids() const;
 
-  static LRESULT CALLBACK PageProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l);
-
   RAW_PTR_EXCLUSION PhiWindowController* const controller_;
-  HWND hwnd_ = nullptr;
   HWND search_ = nullptr;
-  HFONT title_font_ = nullptr;
-  HFONT row_font_ = nullptr;
-  HFONT dim_font_ = nullptr;
-  HFONT button_font_ = nullptr;
   // Cached background for the search EDIT: WM_CTLCOLOREDIT must hand back a
   // REAL brush — a null one leaves the field unpainted (it renders black).
   HBRUSH field_brush_ = nullptr;
   COLORREF field_brush_color_ = 0;
-  UINT dpi_ = 96;
 
   std::vector<Row> rows_;
   std::set<std::string> expanded_;
@@ -133,9 +144,7 @@ class PhiBookmarkManager {
   std::string anchor_guid_;  // Shift-range origin.
   std::wstring query_;
   int scroll_ = 0;
-  int hover_ = -1;
   RECT new_folder_button_{};
-  bool new_folder_hot_ = false;
 };
 
 }  // namespace phi_client

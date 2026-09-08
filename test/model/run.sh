@@ -48,3 +48,65 @@ $CXX url_router_test.cc -o /tmp/phi_url_router_test
 # on the target.
 $CXX session_restore_test.cc -o /tmp/phi_session_restore_test
 /tmp/phi_session_restore_test
+# Phase 5's UI substrate (docs/architecture-review.md §3.6): the PURE half
+# of phi_window.cc — popover placement with monitor clamping, hit-rect
+# resolution, timer id allocation, easing. The Win32 half of the same file
+# is behind #if defined(_WIN32) and compiles away on the host.
+$CXX ../../client/phi_window.cc ui_substrate_test.cc \
+     -o /tmp/phi_ui_substrate_test
+/tmp/phi_ui_substrate_test
+# Phase 5's secondary-window family (§3.6, lane 3 §6.2): the ONE caption
+# frame's button geometry and hit-test (four copies before), and the
+# active-dialog list's two decisions — which keys a window hands to the
+# dialog manager, and which registered window owns a message. Both are
+# pure; the hook and IsDialogMessage stay on the target.
+$CXX ../../client/phi_window.cc ../../client/phi_secondary_window.cc \
+     secondary_window_test.cc -o /tmp/phi_secondary_window_test
+/tmp/phi_secondary_window_test
+# Phase 5's rasteriser swap (§3.6): the geometry phi_dwrite hands Direct2D —
+# the stroke inset that reproduces the software field's band, the dash fit
+# that closes a ring — and how far a pixel can move when the rasteriser
+# changes. Pure math (the drawing itself needs Direct2D and stays on the
+# target); the field's own functions are copied into the test as a frozen
+# reference, so a change to one that is not made in the other fails here.
+$CXX dwrite_geometry_test.cc -o /tmp/phi_dwrite_geometry_test
+/tmp/phi_dwrite_geometry_test
+# Phase 5's accessibility provider (§3.6, §4 item 31): the PURE half of
+# phi_uia.cc — the role -> UIA control-type table, the patterns each role
+# genuinely has, the client->screen rect transform, identity across a hit
+# list rebuild, the point a UIA Invoke clicks at, and the version/event
+# decision table. The COM plumbing that carries those answers needs a
+# message loop and is checked on the box (test/uia-probe.ps1, Inspect.exe).
+$CXX ../../client/phi_window.cc ../../client/phi_uia.cc uia_test.cc \
+     -o /tmp/phi_uia_test
+/tmp/phi_uia_test
+# Phase 6's first component (§3.5): the pure half of the omnibox session —
+# where the EDIT sits inside the address capsule, and the dropdown's row and
+# selection arithmetic. Header-only, so the test needs no client .cc; the
+# session's Win32 half (the EDIT, its subclass, the popup window) stays on
+# the target and the test defines PHI_OMNIBOX_SESSION_MODEL_ONLY to skip it.
+$CXX omnibox_session_test.cc -o /tmp/phi_omnibox_session_test
+/tmp/phi_omnibox_session_test
+# Phase 5's PANEL family (§3.6, lane 3 §6.2): the pure half of
+# phi_panel.cc — the card stack's z-order rules (which replace nine
+# scattered SetWindowPos(HWND_TOP) calls) and the shaped-layer geometry
+# that replaces the two SetWindowRgn surfaces. The Win32 half is behind
+# #if defined(_WIN32) and compiles away on the host.
+$CXX ../../client/phi_window.cc ../../client/phi_panel.cc panel_test.cc \
+     -o /tmp/phi_panel_test
+/tmp/phi_panel_test
+# Phase 6's second component (§3.5): the pure half of the content host — the
+# table of which browser backs each Space in one slot, which of them the slot
+# shows, and the no-fallback rule for the active BrowserId. Header-only for
+# the same reason as the omnibox model; the adoption, caps and bubble stay on
+# the target.
+$CXX browser_host_test.cc -o /tmp/phi_browser_host_test
+/tmp/phi_browser_host_test
+# Phase 6's menu data (§3.5, §3.1 principle 4, lane 1 §3.2): every context
+# menu the shell drops, built by a PURE function of a snapshot — contents,
+# order, the enable/check states and the targets each row carries. The HMENU
+# tree and the TrackPopupMenu loop are behind #if defined(_WIN32) and compile
+# away here; the string catalog is stubbed inside the test.
+$CXX ../../client/phi_shell_menus.cc shell_menus_test.cc \
+     -o /tmp/phi_shell_menus_test
+/tmp/phi_shell_menus_test

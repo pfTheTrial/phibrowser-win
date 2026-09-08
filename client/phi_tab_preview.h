@@ -12,6 +12,7 @@
 
 #include "base/memory/raw_ptr_exclusion.h"
 #include "phibrowser-win/client/phi_ids.h"
+#include "phibrowser-win/client/phi_popover.h"
 
 namespace phi_client {
 
@@ -31,7 +32,7 @@ struct PhiPalette;
 // group: a cold hover waits 500ms, but while a card is already up the next row
 // takes it over after 150ms and the panel SLIDES to the new anchor over 180ms
 // (ease-in-out) instead of blinking out and back.
-class PhiTabPreview {
+class PhiTabPreview : public PhiPopover {
  public:
   // Where the card hangs off its row. The Mac's CustomTooltipPlacement cases
   // that the preview call sites actually use, in Y-down terms.
@@ -74,7 +75,7 @@ class PhiTabPreview {
   };
 
   explicit PhiTabPreview(PhiWindowController* controller);
-  ~PhiTabPreview();
+  ~PhiTabPreview() override;
 
   PhiTabPreview(const PhiTabPreview&) = delete;
   PhiTabPreview& operator=(const PhiTabPreview&) = delete;
@@ -89,19 +90,21 @@ class PhiTabPreview {
   // to a different row re-arms normally.
   void Cancel();
 
-  // The shell owns the message loop, so its WM_TIMER hands ours back here.
-  // True when `id` was one of the card's.
+  // DEAD SEAM, kept only so the shell's WM_TIMER branch
+  // (phi_window_controller.cc) keeps compiling: the card used to arm its
+  // three timers on the SHELL's HWND — a window it does not own — and the
+  // shell dispatched them here first (lane 3 §4.1, ranked finding 9). It
+  // owns its own window and its own timer ids now, so this always returns
+  // false. Phase 6 deletes the call site and this method with it.
   bool OnTimer(UINT_PTR id);
 
   bool visible() const { return visible_; }
 
-  // Timers live on the shell window, beside the Space card's — ids clear of
-  // the swap/hover-card/drag-slide/copy-link ones already on it.
-  static constexpr UINT_PTR kShowTimer = 0x540;
-  static constexpr UINT_PTR kSlideTimer = 0x541;
-  static constexpr UINT_PTR kDismissTimer = 0x542;
-
-  static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l);
+ protected:
+  void Paint(HDC dc, const RECT& dirty) override;
+  void OnTimerFired(UINT_PTR id) override;
+  void OnDpiChanged(UINT old_dpi) override;
+  PhiPalette QueryPalette() const override;
 
  private:
   // CustomTooltipController's timings. `kHandoffDelayMs` is a LEAVE grace,
@@ -113,12 +116,8 @@ class PhiTabPreview {
   static constexpr int kHandoffDelayMs = 150;
   static constexpr int kWarmGraceMs = 300;
   static constexpr int kSlideDurationMs = 180;
-  static constexpr int kSlideTickMs = 8;
-
-  int Scaled(int design) const { return ::MulDiv(design, dpi_, 96); }
 
   void EnsureWindow();
-  void EnsureFonts();
   // Pulls the snapshot for `pending_` and lays the card out; false when the
   // target stopped being previewable while the delay ran.
   bool Resolve();
@@ -135,7 +134,7 @@ class PhiTabPreview {
   // A title (capped at two lines) plus its URL line, at `width`.
   int TextBlockHeight(const std::wstring& title,
                       const std::wstring& url,
-                      int width) const;
+                      int width);
   // One pane of the card: its snapshot band (or a placeholder) over the
   // title and URL. `image_height` of 0 draws text only.
   void DrawPane(HDC dc,
@@ -147,19 +146,18 @@ class PhiTabPreview {
                 const std::wstring& title,
                 const std::wstring& url,
                 const PhiPalette& palette);
-  // The card's size for the resolved content, and its origin off the anchor —
-  // the Mac's CustomTooltipGeometry, flipping to the other side and clamping
-  // into the work area with the same 4pt margin.
-  SIZE CardSize() const;
-  POINT CardOrigin(const SIZE& size) const;
-  void StepSlide();
-  void Paint(HDC dc);
+  // The card's size for the resolved content, and where it lands off the
+  // anchor — the Mac's CustomTooltipGeometry, flipping to the other side
+  // and clamping into the work area with the same 4pt margin. The flip and
+  // the clamp are PhiPlacePopover's now (phi_window.h); this only names
+  // the side.
+  SIZE CardSize();
+  PhiPopover::Placement CardPlacement() const;
+  void PaintCard(HDC dc);
+  HFONT TitleFont();
+  HFONT UrlFont();
 
   RAW_PTR_EXCLUSION PhiWindowController* const controller_;
-  UINT dpi_ = 96;
-  HWND hwnd_ = nullptr;
-  HFONT title_font_ = nullptr;
-  HFONT url_font_ = nullptr;
 
   // The card on screen, and the one the armed timer will promote to.
   Target shown_;
@@ -185,11 +183,12 @@ class PhiTabPreview {
   // refuses) drops the whole card to text only.
   bool compact_ = false;
 
+  // The card's own timers, out of PhiWindow's per-window pool.
+  Timer show_timer_;
+  Timer dismiss_timer_;
   // Handoff slide (the Mac's animator().setFrame over handoffFrameAnimation-
-  // Duration): where the panel started, where it is going, and how far in.
-  RECT slide_from_{};
-  RECT slide_to_{};
-  int slide_elapsed_ms_ = 0;
+  // Duration), on the shared PhiAnimator's one 16 ms clock.
+  int slide_ = 0;
 };
 
 }  // namespace phi_client

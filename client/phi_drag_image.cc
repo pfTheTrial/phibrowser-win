@@ -18,17 +18,23 @@
 
 #include "base/compiler_specific.h"
 #include "base/containers/span.h"
+#include "phibrowser-win/client/phi_animator.h"
+#include "phibrowser-win/client/phi_gdiplus.h"
+#include "phibrowser-win/client/phi_panel.h"
 #include "phibrowser-win/client/phi_theme.h"
+#include "phibrowser-win/client/phi_window.h"
 
 namespace phi_client {
 
 namespace {
 
 constexpr wchar_t kImageClass[] = L"PhiDragImage";
-constexpr UINT_PTR kSlideTimer = 1;
-// AppKit's slide-back: a short ease-out to the starting position.
+// AppKit's slide-back: a short ease-out to the starting position. The
+// 8 ms SetTimer this ran on is gone — PhiAnimator's one coalescable clock
+// drives it (lane 3 §6.3) — but the CURVE is kept exactly: a cubic
+// ease-out, applied inside the tick over a linear animation, because
+// PhiEasing::kEaseOut is quadratic and would land differently.
 constexpr int kSlideBackMs = 250;
-constexpr int kSlideTickMs = 8;
 
 // The Mac placeholder's layout (makeTabPlaceholderSnapshot), in DIPs.
 constexpr int kPlaceholderIcon = 28;
@@ -37,15 +43,6 @@ constexpr int kPlaceholderInset = 12;
 constexpr int kPlaceholderTextSize = 12;
 constexpr int kPlaceholderMaxLines = 2;
 constexpr int kSplitDivider = 2;
-
-bool EnsureGdiPlus() {
-  static const bool ok = [] {
-    Gdiplus::GdiplusStartupInput input;
-    ULONG_PTR token = 0;
-    return Gdiplus::GdiplusStartup(&token, &input, nullptr) == Gdiplus::Ok;
-  }();
-  return ok;
-}
 
 Gdiplus::Color Blend(COLORREF color, double alpha) {
   return Gdiplus::Color(static_cast<BYTE>(std::lround(alpha * 255.0)),
@@ -324,30 +321,32 @@ Surface ComposeCard(const PhiDragCard& card,
                  palette.border);
 }
 
-class Image {
+// The drag image is the one surface in the panel set that is NOT a child:
+// it has to travel past its shell's edge and across the desktop, so it is
+// an owned topmost popup. It takes PhiWindow directly — registration, the
+// `this` binding at WM_NCCREATE and the clearing at WM_NCDESTROY — and
+// PhiPanel's layer surface for its pixels.
+class Image : public PhiWindow {
  public:
   static Image* instance;
 
-  Image(HWND owner, UINT dpi) : owner_(owner), dpi_(dpi) {
-    Register();
+  Image(HWND owner, UINT dpi) : owner_(owner), image_dpi_(dpi) {
+    ClassSpec spec;
+    spec.name = kImageClass;
+    spec.cursor = nullptr;
+    const RECT nothing = {0, 0, 0, 0};
     // Topmost so it rides above every shell window and the Chromium child;
     // WS_EX_TRANSPARENT so hit tests fall through to whatever is under it
     // (the shell keeps the capture the drag runs on, and WindowFromPoint
     // finds the window BELOW for the cross-window drop); tool window and
     // no-activate so it never takes focus or a taskbar slot.
-    window_ = ::CreateWindowExW(
-        WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST |
-            WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
-        kImageClass, L"", WS_POPUP, 0, 0, 0, 0, owner, nullptr,
-        ::GetModuleHandleW(nullptr), nullptr);
+    Create(spec,
+           WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST |
+               WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+           WS_POPUP, nothing, owner);
   }
 
-  ~Image() {
-    if (window_ && ::IsWindow(window_)) {
-      ::KillTimer(window_, kSlideTimer);
-      ::DestroyWindow(window_);
-    }
-  }
+  ~Image() override { Destroy(); }
 
   HWND owner() const { return owner_; }
   bool sliding() const { return sliding_; }
@@ -366,7 +365,7 @@ class Image {
                 const PhiPalette& palette,
                 POINT cursor) {
     if (card_.empty()) {
-      card_ = ComposeCard(card, palette, dpi_);
+      card_ = ComposeCard(card, palette, image_dpi_);
     }
     if (card_.empty()) {
       ShowRow(cursor);  // Nothing to show instead; the row stays.
@@ -377,95 +376,67 @@ class Image {
   }
 
   void MoveTo(POINT cursor) {
-    if (sliding_ || !window_) {
+    if (sliding_ || !alive()) {
       return;
     }
     const POINT origin = Origin(cursor);
-    ::SetWindowPos(window_, HWND_TOPMOST, origin.x, origin.y, 0, 0,
+    ::SetWindowPos(hwnd(), HWND_TOPMOST, origin.x, origin.y, 0, 0,
                    SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
   }
 
   void Conceal() {
-    if (window_) {
-      ::ShowWindow(window_, SW_HIDE);
+    if (alive()) {
+      ::ShowWindow(hwnd(), SW_HIDE);
     }
   }
 
   void SlideBack(const RECT& home) {
-    if (!window_ || row_.empty()) {
+    if (!alive() || row_.empty()) {
       return;
     }
     if (mode_ != Mode::kRow) {
       // Slide the ROW home: it is the row's place the image returns to.
       RECT now = {};
-      ::GetWindowRect(window_, &now);
+      ::GetWindowRect(hwnd(), &now);
       mode_ = Mode::kRow;
       Present(row_, POINT{now.left, now.top});
     }
     RECT now = {};
-    ::GetWindowRect(window_, &now);
-    slide_from_ = {now.left, now.top};
-    slide_to_ = {home.left, home.top};
-    slide_start_ = ::GetTickCount64();
+    ::GetWindowRect(hwnd(), &now);
+    const POINT from = {now.left, now.top};
+    const POINT to = {home.left, home.top};
     sliding_ = true;
-    ::ShowWindow(window_, SW_SHOWNOACTIVATE);
-    ::SetTimer(window_, kSlideTimer, kSlideTickMs, nullptr);
+    ::ShowWindow(hwnd(), SW_SHOWNOACTIVATE);
+    // The tick only moves the window, which repaints itself, so nothing is
+    // invalidated; on_done runs AFTER the animation has left the list, so
+    // dropping the image there is legal where deleting from inside the old
+    // WM_TIMER was the landmine lane 3 §5 named.
+    PhiAnimator::ForThread().Animate(
+        hwnd(), kSlideBackMs, PhiEasing::kLinear,
+        [this, from, to](double t, RECT*) {
+          const double eased = 1.0 - std::pow(1.0 - t, 3.0);
+          const int x = static_cast<int>(
+              std::lround(from.x + (to.x - from.x) * eased));
+          const int y = static_cast<int>(
+              std::lround(from.y + (to.y - from.y) * eased));
+          ::SetWindowPos(hwnd(), HWND_TOPMOST, x, y, 0, 0,
+                         SWP_NOSIZE | SWP_NOACTIVATE);
+        },
+        [] { PhiDragImage::Hide(); });
   }
 
-  // One slide tick; true once the image has arrived.
-  bool Tick() {
-    const double linear = std::min(
-        1.0, static_cast<double>(::GetTickCount64() - slide_start_) /
-                 kSlideBackMs);
-    const double eased = 1.0 - std::pow(1.0 - linear, 3.0);
-    const int x = static_cast<int>(
-        std::lround(slide_from_.x + (slide_to_.x - slide_from_.x) * eased));
-    const int y = static_cast<int>(
-        std::lround(slide_from_.y + (slide_to_.y - slide_from_.y) * eased));
-    ::SetWindowPos(window_, HWND_TOPMOST, x, y, 0, 0,
-                   SWP_NOSIZE | SWP_NOACTIVATE);
-    return linear >= 1.0;
-  }
+ protected:
+  // The pixels come from UpdateLayeredWindow; this window never paints.
+  void Paint(HDC, const RECT&) override {}
 
-  static LRESULT CALLBACK WndProc(HWND hwnd,
-                                  UINT msg,
-                                  WPARAM wparam,
-                                  LPARAM lparam) {
-    if (msg == WM_TIMER && wparam == kSlideTimer) {
-      if (instance && instance->window_ == hwnd && instance->sliding_) {
-        if (instance->Tick()) {
-          Image* done = instance;
-          instance = nullptr;
-          delete done;  // Destroys hwnd; nothing below touches it.
-        }
-      } else {
-        ::KillTimer(hwnd, kSlideTimer);
-      }
-      return 0;
+  void OnNcDestroy() override {
+    if (instance == this) {
+      instance = nullptr;  // Torn down from outside: the owner went away.
     }
-    if (msg == WM_NCDESTROY && instance && instance->window_ == hwnd) {
-      // Torn down from outside (the owner went away): forget the handle so
-      // the destructor does not destroy it twice.
-      instance->window_ = nullptr;
-    }
-    return ::DefWindowProcW(hwnd, msg, wparam, lparam);
   }
 
  private:
   enum class Mode { kRow, kCard };
-
-  void Register() {
-    static bool registered = false;
-    if (registered) {
-      return;
-    }
-    WNDCLASSEXW wc = {sizeof(wc)};
-    wc.lpfnWndProc = &Image::WndProc;
-    wc.hInstance = ::GetModuleHandleW(nullptr);
-    wc.lpszClassName = kImageClass;
-    ::RegisterClassExW(&wc);
-    registered = true;
-  }
 
   // Where the image's top-left goes for `cursor`: the row keeps the grip
   // the cursor lifted it by; the card hangs mostly ABOVE the cursor — the
@@ -479,59 +450,32 @@ class Image {
   }
 
   void Present(const Surface& surface, POINT origin) {
-    if (!window_ || surface.empty()) {
+    if (!alive() || surface.empty()) {
       return;
     }
-    BITMAPINFO info = {};
-    info.bmiHeader.biSize = sizeof(info.bmiHeader);
-    info.bmiHeader.biWidth = surface.width;
-    info.bmiHeader.biHeight = -surface.height;  // Top-down.
-    info.bmiHeader.biPlanes = 1;
-    info.bmiHeader.biBitCount = 32;
-    info.bmiHeader.biCompression = BI_RGB;
-    void* bits = nullptr;
-    HDC screen = ::GetDC(nullptr);
-    HDC mem = ::CreateCompatibleDC(screen);
-    HBITMAP dib =
-        ::CreateDIBSection(mem, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
-    ::ReleaseDC(nullptr, screen);
-    if (!dib || !bits) {
-      if (dib) {
-        ::DeleteObject(dib);
-      }
-      ::DeleteDC(mem);
+    PhiLayerSurface layer(surface.width, surface.height);
+    if (!layer.valid()) {
       return;
     }
-    // SAFETY: the DIB was just created with exactly the surface's byte count
-    // (width * height * 4, top-down, no stride padding at 32bpp).
-    UNSAFE_BUFFERS(base::span<unsigned char>(static_cast<unsigned char*>(bits),
-                                             surface.pargb.size()))
+    // SAFETY: the layer was just created with exactly the surface's byte
+    // count (width * height * 4, top-down, no stride padding at 32bpp).
+    UNSAFE_BUFFERS(base::span<unsigned char>(
+                       static_cast<unsigned char*>(layer.bits()),
+                       layer.byte_size()))
         .copy_from(base::span<const unsigned char>(surface.pargb));
-    HGDIOBJ old = ::SelectObject(mem, dib);
-    POINT src = {0, 0};
-    SIZE size = {surface.width, surface.height};
-    BLENDFUNCTION blend = {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
-    ::UpdateLayeredWindow(window_, nullptr, &origin, &size, mem, &src, 0,
-                          &blend, ULW_ALPHA);
-    ::SelectObject(mem, old);
-    ::DeleteObject(dib);
-    ::DeleteDC(mem);
-    ::SetWindowPos(window_, HWND_TOPMOST, 0, 0, 0, 0,
+    layer.Commit(hwnd(), &origin);
+    ::SetWindowPos(hwnd(), HWND_TOPMOST, 0, 0, 0, 0,
                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE |
                        SWP_SHOWWINDOW);
   }
 
   HWND owner_ = nullptr;
-  UINT dpi_ = 96;
-  HWND window_ = nullptr;
+  UINT image_dpi_ = 96;
   Mode mode_ = Mode::kRow;
   Surface row_;
   Surface card_;  // Composed on first use, then cached for the drag.
   POINT grip_{};
   bool sliding_ = false;
-  POINT slide_from_{};
-  POINT slide_to_{};
-  ULONGLONG slide_start_ = 0;
 };
 
 Image* Image::instance = nullptr;
@@ -545,7 +489,7 @@ void PhiDragImage::Begin(HWND owner,
                          int radius,
                          POINT grip,
                          POINT cursor) {
-  if (!owner || row.empty() || !EnsureGdiPlus()) {
+  if (!owner || row.empty() || !PhiEnsureGdiPlus()) {
     return;
   }
   Hide();

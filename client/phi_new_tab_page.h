@@ -10,6 +10,8 @@
 #include <string>
 
 #include "base/memory/raw_ptr_exclusion.h"
+#include "phibrowser-win/client/phi_panel.h"
+#include "phibrowser-win/client/phi_theme.h"
 
 namespace phi_client {
 
@@ -31,10 +33,10 @@ class PhiWindowController;
 // The omnibox is a real EDIT owned by this page but driven by the window
 // controller's ONE omnibox session (query, suggestion dropdown, commit) —
 // the controller subclasses the field exactly like its own address field.
-class PhiNewTabPage {
+class PhiNewTabPage : public PhiPanel {
  public:
   explicit PhiNewTabPage(PhiWindowController* controller);
-  ~PhiNewTabPage();
+  ~PhiNewTabPage() override;
 
   PhiNewTabPage(const PhiNewTabPage&) = delete;
   PhiNewTabPage& operator=(const PhiNewTabPage&) = delete;
@@ -48,7 +50,6 @@ class PhiNewTabPage {
   void Show();
   void Hide();
   bool visible() const;
-  HWND hwnd() const { return hwnd_; }
   HWND field() const { return field_; }
   // True while the page is up WITH its omnibox showing — the field is then
   // where keyboard focus belongs (the Mac focuses it in viewDidAppear).
@@ -72,6 +73,20 @@ class PhiNewTabPage {
   // flush under it, as wide as it is.
   RECT BoxScreenRect() const;
 
+ protected:
+  // PhiPanel: model, paint and hit handling only — the registration, the
+  // `this` binding, the cached back buffer, the fonts and the dpi all come
+  // from the base (phi_window.h).
+  void Paint(HDC dc, const RECT& dirty) override;
+  void OnSize(int width, int height) override;
+  void OnDpiChanged(UINT old_dpi) override;
+  void OnMouseDown(int hit, POINT client_pt) override;
+  PhiPalette QueryPalette() const override;
+  LRESULT OnMessage(UINT message,
+                    WPARAM wparam,
+                    LPARAM lparam,
+                    bool* handled) override;
+
  private:
   struct Geometry {
     RECT icon{};
@@ -79,27 +94,22 @@ class PhiNewTabPage {
     RECT box{};
   };
 
-  int Scaled(int design) const;
   void EnsureWindow();
-  void EnsureFonts();
   void EnsureField();
+  // The three faces, out of the base's per-dpi font set. const because
+  // ComputeGeometry() measures with them and BoxScreenRect() is const.
+  HFONT LabelFont() const;
+  HFONT FieldFont() const;
+  HFONT GlyphFont() const;
+  void PushFieldFont();
   Geometry ComputeGeometry() const;
   void LayoutField();
-  void Paint(HDC dc);
-
-  static LRESULT CALLBACK PageProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l);
 
   RAW_PTR_EXCLUSION PhiWindowController* const controller_;
-  HWND hwnd_ = nullptr;
   HWND field_ = nullptr;
-  HFONT label_font_ = nullptr;
-  HFONT field_font_ = nullptr;
-  HFONT glyph_font_ = nullptr;
-  UINT fonts_dpi_ = 0;
   // The EDIT's ground (WM_CTLCOLOREDIT must return a REAL brush).
   HBRUSH field_brush_ = nullptr;
   COLORREF field_brush_color_ = CLR_INVALID;
-  UINT dpi_ = 96;
   bool controls_hidden_ = false;
 };
 

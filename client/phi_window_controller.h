@@ -22,11 +22,16 @@
 #include "chrome/browser/phinomenon/phi_framework/phi_framework_api.h"
 #include "phibrowser-win/client/phi_drag_image.h"
 #include "phibrowser-win/client/phi_feedback_window.h"
+#include "phibrowser-win/client/phi_browser_host.h"
+#include "phibrowser-win/client/phi_caption_band.h"
+#include "phibrowser-win/client/phi_menu_bar.h"
 #include "phibrowser-win/client/phi_ids.h"
+#include "phibrowser-win/client/phi_omnibox_session.h"
 #include "phibrowser-win/client/phi_split_drop.h"
 #include "phibrowser-win/client/phi_sidebar_actions.h"
 #include "phibrowser-win/client/phi_sidebar_drop.h"
 #include "phibrowser-win/client/phi_sidebar_layout.h"
+#include "phibrowser-win/client/phi_shell_menus.h"
 #include "phibrowser-win/client/phi_shell_layout.h"
 #include "phibrowser-win/client/phi_sidebar_model.h"
 #include "phibrowser-win/client/phi_theme.h"
@@ -426,7 +431,18 @@ enum : UINT {
   kMsgPhiDeferredClose,
 };
 
-class PhiWindowController {
+// The shell window (docs/architecture-review.md §3.5): a window procedure,
+// the layout cache, the DPI and fonts, focus routing, and dispatch to the
+// components that own the rest. It keeps the name PhiWindowController while
+// the components are extracted one at a time — the rename to PhiShellWindow
+// would touch every other file and lands with the last of them.
+//
+// Each component's needs reach it through a narrow interface implemented
+// PRIVATELY here, so none of them widen the shell's public surface.
+class PhiWindowController : private PhiOmniboxShell,
+                            private PhiBrowserHostShell,
+                            private PhiCaptionShell,
+                            private PhiMenuBarShell {
  public:
   // `agent` hosts the window as a HIDDEN agent Space: the shell is created
   // off-screen and off the taskbar (WS_EX_TOOLWINDOW), shown without
@@ -452,7 +468,10 @@ class PhiWindowController {
                       const PhiWindowModel* model,
                       bool agent = false,
                       bool incognito = false);
-  ~PhiWindowController();
+  // Virtual because the shell now implements its components' interfaces:
+  // the class has virtual functions, and PhiWindowRegistry deletes it
+  // through a PhiWindowController* (its test stand-ins subclass it).
+  virtual ~PhiWindowController();
 
   PhiWindowController(const PhiWindowController&) = delete;
   PhiWindowController& operator=(const PhiWindowController&) = delete;
@@ -541,15 +560,6 @@ class PhiWindowController {
   // BrowserState.openOrFocusPinnedTab / bookmarkGuidBacking model.
   void OpenOrFocusPinned(const std::string& guid, const std::string& url);
 
-  // Paints one rounded-corner cap (called by its window proc).
-  void PaintCornerCap(HWND cap, HDC dc);
-  // Commits cap `index` as a per-pixel-alpha layer (an antialiased arc);
-  // false when the layer cannot be built, and the cap keeps its region cut.
-  bool CommitCornerCap(int index);
-  void RefreshCornerCaps();  // Re-commits (or repaints) all four.
-
-  // Paints the bottom-left link-target bubble (called by its window proc).
-  void PaintStatusBubble(HWND bubble, HDC dc);
   // The pointered link target changed in `browser_id`'s page (empty url =
   // pointer left the link). Shows/hides the status bubble when that browser
   // is the one this shell displays.
@@ -568,11 +578,6 @@ class PhiWindowController {
   // child resizes itself to the MONITOR, so the shell must go borderless
   // fullscreen for the duration or the render is clipped to the window.
   void OnContentFullscreenChanged(BrowserId browser_id, bool fullscreen);
-  // Paints the dropdown (called by its window proc).
-  void PaintOmniboxPopup(HWND popup, HDC dc);
-  // Popup mouse plumbing (client-y within the popup).
-  void OmniboxHover(int y);
-  void OmniboxClick(int y);
 
   // THE refresh entry point (docs/architecture-review.md §3.1 principle 3):
   // marks the rows dirty and posts ONE coalesced rebuild (kMsgPhiRebuildRows)
@@ -614,43 +619,30 @@ class PhiWindowController {
   // reverse of BrowserIdForSpace, for a skill payload that names a WINDOW
   // and wants the Space it shows.
   std::string SpaceForBrowser(BrowserId browser_id) const {
-    for (const auto& [space, browser] : space_browsers_) {
-      if (browser == browser_id) {
-        return space;
-      }
-    }
-    return std::string();
+    return browsers_->spaces().SpaceOf(browser_id);
   }
-  const std::string& active_space() const { return active_space_; }
+  const std::string& active_space() const {
+    return browsers_->spaces().active_space();
+  }
   // The browser this slot is SHOWING (for tab/nav commands): the active one,
   // else the first Space browser still attached, else invalid — a slot
   // between its last browser going and its own teardown, or one whose
   // adoption failed. NEVER the slot number: that names the browser the slot
   // was OPENED with, which may be long closed (docs/architecture-review.md
   // §3.5). Callers skip the framework call when this is invalid.
-  BrowserId active_browser_id() const {
-    if (active_browser_.valid()) {
-      return active_browser_;
-    }
-    for (const std::string& space : space_order_) {
-      auto it = space_browsers_.find(space);
-      if (it != space_browsers_.end() && it->second.valid()) {
-        return it->second;
-      }
-    }
-    return BrowserId();
-  }
+  BrowserId active_browser_id() const { return browsers_->spaces().active(); }
   // Legacy spelling of active_browser_id() for the coordinator's int64_t
   // paths; 0 when no browser is attached. Goes with the phase 2 signatures.
   int64_t active_browser() const { return active_browser_id().value; }
   // The browser this slot holds for `space_id`, or invalid — feeds the page
   // context menu's Space list (its current-Space exclusion).
   BrowserId BrowserIdForSpace(const std::string& space_id) const {
-    auto it = space_browsers_.find(space_id);
-    return it != space_browsers_.end() ? it->second : BrowserId();
+    return browsers_->spaces().ForSpace(space_id);
   }
   // Spaces this slot has a browser for, in creation order.
-  const std::vector<std::string>& space_order() const { return space_order_; }
+  const std::vector<std::string>& space_order() const {
+    return browsers_->spaces().order();
+  }
   // Drops a browser that went away; returns true if the slot still has one.
   bool ForgetBrowser(BrowserId browser);
   // Closes the browser this slot holds for `space_id` (a Space being
@@ -686,7 +678,9 @@ class PhiWindowController {
 
   // The shell window's menu bar (null before the shell exists). The control
   // socket reads and clicks it through here.
-  PhiMenuBar* menu_bar() { return menu_bar_.get(); }
+  PhiMenuBar* menu_bar() {
+    return caption_band_ ? caption_band_->menu_bar() : nullptr;
+  }
 
   // Re-lays the chrome for `mode` and repaints. Cheap: all geometry is derived
   // from the client rect on demand, so nothing is cached across the switch.
@@ -754,10 +748,6 @@ class PhiWindowController {
                                        LPARAM lparam);
 
  private:
-  // The menu bar drives navigation, tabs and Spaces through the controller's
-  // own internals — it is this class's UI, split into its own file for size.
-  friend class PhiMenuBar;
-
   // Every constant in this class is a DESIGN UNIT — a pixel at 100% scaling.
   // Win32 places windows and paints in PHYSICAL pixels, and the client is
   // per-monitor DPI aware (it inherits Chrome's manifest), so nothing reaches
@@ -870,40 +860,10 @@ class PhiWindowController {
   bool layout_reader_ = false;
   void RefreshLayoutInputs();
 
-  void AdoptBrowserAsChild();
-  // Moves the address field's EDIT child into `layout`'s slot for it.
-  void PositionUrlField(const Layout& layout);
   // `include_child_controls` draws what child windows would draw themselves —
   // set only on the WM_PRINTCLIENT (PrintWindow) path, which renders the
   // parent alone. In WM_PAINT the URL field's EDIT child paints that region.
   void PaintChrome(HDC dc, const Layout& layout, bool include_child_controls);
-  // The caption band's menu titles, measured for the current DPI: one rect
-  // per top-level menu, in bar order. Rebuilt when the DPI changes.
-  void EnsureMenuTitleRects();
-  // How many of `menu_titles_` are live right now, from the leading edge.
-  // The vertical layouts hide every title but the Phi button at rest and
-  // show the whole bar once the band is revealed; the count is then clipped
-  // to `layout.band_limit` so a narrow window drops the titles that would
-  // run under the trailing controls rather than painting them there.
-  size_t VisibleMenuTitles(const Layout& layout);
-  // Pointer-driven reveal of the hidden titles. Repaints the band on a
-  // change; Alt's own sticky reveal (menu_alt_revealed_) is untouched.
-  void SetMenuRevealed(bool revealed);
-  // Re-derives the reveal from where the cursor ACTUALLY is. The two leave
-  // messages do not mean "the pointer left the band" — see the WM_MOUSELEAVE
-  // handler — so they ask this instead of hiding outright.
-  void UpdateMenuRevealFromCursor();
-  // Same idea for the hot title: after a dropped menu closes, the pointer may
-  // be somewhere the shell never saw it move to, so the highlight is re-read
-  // from the cursor rather than left where the last WM_MOUSEMOVE put it.
-  void UpdateMenuHotFromCursor();
-  // What a point in the caption band hits: HTCLOSE / HTMAXBUTTON /
-  // HTMINBUTTON, HTCLIENT over a menu title, HTCAPTION anywhere else in the
-  // band, 0 below it.
-  int CaptionHitTest(POINT client_pt);
-  // Hot-state setters; each repaints the band when the state changes.
-  void SetCaptionHot(int code);
-  void SetMenuHot(int index);
   // Handles a click in the chrome (tab rows, close boxes, buttons, toolbar).
   void OnChromeClick(int x, int y);
   // Middle-click in the chrome: closes the tab row under the pointer (the
@@ -913,6 +873,59 @@ class PhiWindowController {
   // menu (activate / rename / change icon / set theme / delete); elsewhere it
   // does nothing, as on Mac.
   void OnChromeContextMenu(int x, int y);
+
+  // --- Context menus (phi_shell_menus.h) ----------------------------------
+  // A menu's nested loop dispatches whatever is queued, kMsgPhiRebuildRows
+  // included, so tabs_ / pinned_ / bookmarks_ / group_headers_ / chips_ can
+  // be cleared and refilled while one is up. Nothing below takes a reference
+  // into them: the hit-test copies the row into a MenuRow, a pure builder
+  // turns that into a spec, and the action comes back by key
+  // (docs/architecture-review.md §3.1 principle 4, lane 1 §3.2).
+  struct MenuRow {
+    SidebarKey key;
+    TabId id;
+    TabId b_id;
+    std::string guid;      // Store rows (pins, bookmarks).
+    std::string split_id;  // Tab rows: the split this row already belongs to.
+    std::string group_id;
+    std::wstring title;
+    std::string url;    // UTF-8, as the framework and the store want it.
+    std::string url_b;  // Pane B of a split row / cell.
+    std::string layout;  // A split's remembered divider axis.
+    std::string icon;    // A bookmark folder's catalog symbol.
+    bool merged = false;
+    bool folder = false;
+    bool open = false;  // A pinned cell with a live bound tab.
+    RECT bounds{};      // Where a popover the action opens hangs off.
+  };
+  // Screen placement for a popup, resolved from a CLIENT point.
+  PhiPopupMenuRequest PopupAt(POINT client_pt, UINT align) const;
+  // The dynamic rows the builders take: every Space but this slot's (for the
+  // transfer submenus), the full list (for the switchers), this Space's
+  // bookmark folders in outline order, and the tab groups other than one.
+  std::vector<PhiMenuChoice> SpaceMenuChoices() const;
+  std::vector<PhiMenuChoice> SpaceSwitcherChoices() const;
+  std::vector<PhiMenuChoice> BookmarkFolderChoices() const;
+  std::vector<PhiMenuChoice> GroupMenuChoices(const std::string& exclude) const;
+  // The store's bookmark outline as a value, for the bar's dropdown.
+  std::vector<PhiMenuBookmarkNode> BookmarkTreeSnapshot(
+      const std::string& parent_guid,
+      int depth) const;
+  // One menu each, from a snapshot. The by-value parameters are the point:
+  // the copy happens at the call, before the loop.
+  void ShowGroupHeaderMenu(POINT pt,
+                           std::string group_id,
+                           std::wstring title,
+                           COLORREF color);
+  void ShowTabRowMenu(POINT pt, const MenuRow& row);
+  void ShowPinnedCellMenu(POINT pt, const MenuRow& row);
+  void ShowBookmarkRowMenu(POINT pt, const MenuRow& row);
+  void ShowTabAreaMenu(POINT pt);
+  void ShowAgentChipMenu(POINT pt, std::string task);
+  // The compact pip's switcher (with_new_space false) and the overflow "…"
+  // button's (true, which adds the two creation rows).
+  void ShowSpaceSwitcherMenu(POINT pt, bool with_new_space);
+
   // Collapses/restores the sidebar (View > Toggle Sidebar, Ctrl+S). The
   // content card widens to the left margin; the margin becomes the hover
   // trigger for the floating sidebar. No-op in the comfortable layout.
@@ -927,22 +940,6 @@ class PhiWindowController {
   // Re-reads navigation state (url/title/canGoBack/…) for the toolbar.
   void RebuildNavState();
 
-  // --- Address field --------------------------------------------------------
-  // A real Win32 EDIT child, so typing, selection, clipboard, IME and the
-  // caret all behave natively (Chromium's own omnibox is hollowed away under
-  // IS_WIN_PHI_CLIENT, and hand-rolling text editing would reproduce it badly).
-  void EnsureUrlField();
-  // Pushes the current page's URL into the field. Skipped while the user is
-  // typing unless `force` (the Escape-reverts path).
-  void SyncUrlField(bool force);
-  // Navigates to whatever is typed in `field` — the address field or the
-  // native new-tab page's omnibox — then hands focus back to the page.
-  void CommitOmniboxField(HWND field);
-  void CommitUrlField();  // CommitOmniboxField(url_field_).
-  // The omnibox field holding keyboard focus (the address field or the
-  // new-tab page's), or null: the session's query, dropdown and arrow fills
-  // all act on this one.
-  HWND FocusedOmniboxField() const;
   // Draws a favicon's BGRA pixels into `dest`, composited over `background`.
   // GDI has no alpha blit without msimg32 (AlphaBlend), and we always know what
   // is behind the icon, so the blend is done in software and the result blitted
@@ -953,17 +950,6 @@ class PhiWindowController {
                    int width,
                    int height,
                    COLORREF background);
-  // Subclass proc: Enter commits, Escape reverts, focus selects all.
-  static LRESULT CALLBACK UrlFieldProc(HWND hwnd,
-                                       UINT msg,
-                                       WPARAM wparam,
-                                       LPARAM lparam);
-  HWND url_field_ = nullptr;
-  // The EDIT paints itself in SYSTEM colours, which clash under a dark theme.
-  // WM_CTLCOLOREDIT hands it the palette instead; the brush must outlive the
-  // message, so it is cached and rebuilt only when the colour changes.
-  HBRUSH url_brush_ = nullptr;
-  COLORREF url_brush_color_ = CLR_INVALID;
   // The shell's UI font at `ui_font_dpi_`, used both for the address field and
   // for every label PaintChrome draws, so text and boxes scale together.
   HFONT ui_font_ = nullptr;
@@ -997,27 +983,6 @@ class PhiWindowController {
   HICON logo_icon_ = nullptr;
   int logo_icon_size_ = 0;
   UINT dpi_ = 96;
-
-  // Caption-band state: which caption button is hot / pressed (an HT* code,
-  // 0 = none) and which menu title is hot (-1 = none). Purely visual except
-  // pressed_caption_, which arms the button-up action.
-  int hot_caption_ = 0;
-  int pressed_caption_ = 0;
-  // The vertical layouts keep the menu titles hidden at rest — the band's
-  // left run is drag space — and slide them in when the pointer enters the
-  // band or Alt asks for them. The Alt reveal is sticky: it survives the
-  // pointer leaving, and drops on Escape, on a menu opening, or when the
-  // window loses focus, the way Windows' own Alt-summoned menu bar does.
-  bool menu_revealed_ = false;
-  bool menu_alt_revealed_ = false;
-  // A menu is dropped from the band right now. The popup takes the pointer
-  // with it, so the leave messages that follow must not collapse the bar out
-  // from under the menu the user is reading.
-  bool menu_open_ = false;
-  int hot_menu_ = -1;
-  // Menu titles with their band rects, measured for menu_titles_dpi_.
-  std::vector<std::pair<std::wstring, RECT>> menu_titles_;
-  UINT menu_titles_dpi_ = 0;
 
   // One rendered tab row: what to draw and what a click at that row does.
   struct TabRow {
@@ -1468,8 +1433,8 @@ class PhiWindowController {
                         const PhiPalette& palette);
   // A dropdown of bookmark rows under `anchor`: a bar folder's children
   // (parent_guid set) or the root's overflow (skip_first shown pills).
-  void ShowBookmarkBarMenu(const RECT& anchor,
-                           const std::string& parent_guid,
+  void ShowBookmarkBarMenu(RECT anchor,
+                           std::string parent_guid,
                            size_t skip_first);
   // The active tab's URL (captured by RebuildTabs) — "show on new tab"
   // needs to know whether the page IS the new-tab page.
@@ -1558,23 +1523,9 @@ class PhiWindowController {
   // married — the Mac's openPinnedSplit / openTwoURLsAsSplit.
   void OpenStoredSplit(const ShortcutRow& row);
 
-  // Navigation state for the client toolbar, refreshed with the tab list.
-  std::wstring nav_url_;
-  bool can_go_back_ = false;
-  bool can_go_forward_ = false;
-  bool nav_loading_ = false;
-  // Copy-link acknowledgement: the glyph swaps to a checkmark for a second
-  // after a copy (the Mac's triggeredSystemName/triggeredRevertDelay).
-  bool copy_link_flash_ = false;
   // Tabs upstream's distiller says carry an article. Positive-only reports,
   // so entries are added and cleared when the tab navigates away.
   std::set<TabId> distillable_tabs_;
-  // The address capsule's hover brighten (SideAddressBar hoveredColor:
-  // resting 4% wash → emphasized 8%). Fed from BOTH sides — the shell's
-  // mouse moves for the capsule's rim, the EDIT subclass for the text area
-  // the child covers.
-  bool url_field_hover_ = false;
-  void SetUrlFieldHover(bool hovered);
   // Pinned-extension icons inside the address capsule (SideAddressBar's
   // right-stack lead): the pinned set with resolved 16px icons, refreshed
   // with the tab list and on OnExtensionsChanged.
@@ -1602,13 +1553,13 @@ class PhiWindowController {
   // in space_browsers_ / browser_hwnds_, and "the original browser" is
   // simply whichever of them is still attached.
   const SlotId slot_;
-  HWND browser_hwnd_;  // The VISIBLE Chromium window, reparented as our child.
-  // Space id -> its browser / HWND, plus creation order.
-  std::map<std::string, BrowserId> space_browsers_;
-  std::map<BrowserId, HWND> browser_hwnds_;
-  std::vector<std::string> space_order_;
-  std::string active_space_;
-  BrowserId active_browser_;
+  // --- The content area, as a component (phi_browser_host.h) ---------------
+  // Chromium's HWND adopted as a child, the browser this slot holds for each
+  // Space, placeholder and content-fullscreen mode, and the overlays that
+  // ride above the page (docs/architecture-review.md §3.5, lane 1 clusters E
+  // and G). It owns BrowserId -> HWND; SetParent and subclassing happen
+  // there and nowhere else.
+  std::unique_ptr<PhiBrowserHost> browsers_;
   HWND shell_hwnd_ = nullptr;  // Our client-owned top-level.
   // Set at the top of the destructor: the shell's DestroyWindow still
   // delivers WM_ACTIVATE / WM_SIZE / WM_CAPTURECHANGED to ShellWndProc on
@@ -1622,54 +1573,115 @@ class PhiWindowController {
   std::vector<std::string> deferred_space_closes_;
   void PostDeferredClose();
   void RunDeferredClose();
-  std::unique_ptr<PhiMenuBar> menu_bar_;  // Attached to shell_hwnd_.
-  // The four content-corner caps (TL, TR, BL, BR), siblings above the
-  // browser child — the only rounding DComp content respects.
-  std::array<HWND, 4> corner_caps_ = {};
-  // The Chrome-style link-target bubble at the content's bottom-left (the
-  // Mac StatusURLView): a shell-child sibling raised over the browser child,
-  // like the corner caps. Created on first use; text empty = hidden.
-  HWND status_bubble_ = nullptr;
-  std::wstring status_url_;
-  void SetStatusUrl(const std::wstring& url);
-
-  // --- Omnibox suggestion dropdown (the Mac OmniBox panel) -----------------
-  // Rows mirror the framework's OnOmniboxResults json; the popup is a
-  // non-activating WS_POPUP under the address field, so the EDIT keeps
-  // focus and its caret while the list is up.
-  struct OmniboxRow {
-    int line = 0;
-    std::string type;
-    std::wstring contents;
-    std::wstring description;
-    std::wstring fill;  // fillIntoEdit — what arrowing onto the row types.
-    bool has_tab_match = false;
-  };
-  std::vector<OmniboxRow> omnibox_rows_;
-  int omnibox_selected_ = -1;  // -1 = nothing armed; Enter commits the text.
-  HWND omnibox_popup_ = nullptr;
-  bool url_field_programmatic_ = false;  // Suppresses EN_CHANGE feedback.
-  // Set by StartNewTab in omnibox mode: the next commit opens a NEW tab.
-  bool omnibox_new_tab_pending_ = false;
-  // Browsers currently in placeholder mode (empty strip, window alive).
-  std::set<BrowserId> placeholder_browsers_;
-  // Content-fullscreen state: the shell parks its chrome and covers the
-  // monitor while a tab's content is fullscreen; placement and style are
-  // restored on exit.
-  bool content_fullscreen_ = false;
-  BrowserId fullscreen_browser_;
-  WINDOWPLACEMENT pre_fullscreen_placement_ = {};
-  LONG_PTR pre_fullscreen_style_ = 0;
+  // The caption band (phi_caption_band.h): the row that replaced the OS
+  // caption. It owns the menu-bar host, the measured title rects, the
+  // reveal state machine, the caption buttons and the WM_NC* frame; the
+  // shell forwards it messages and asks it to paint its rect.
+  std::unique_ptr<PhiCaptionBand> caption_band_;
   // Tab ids of the ACTIVE browser, most-recently-used first.
   std::vector<TabId> tab_mru_;
-  void ShowOmniboxPopup();   // Creates/positions the popup under the field.
-  void CloseOmniboxPopup(bool stop_query);
-  void MoveOmniboxSelection(int delta);
-  void CommitOmniboxSelection();
-  int OmniboxRowAtY(int y) const;
-  // The EDIT only repaints on its own events, so a palette change (Space
-  // swap ramp, instant switch) must invalidate it or it keeps the old wash.
-  void RepaintUrlField();
+  // --- The address field, as a component (phi_omnibox_session.h) -----------
+  // The single owner of the EDIT, its subclass, the suggestion dropdown, the
+  // results and the navigation state (docs/architecture-review.md §3.5,
+  // lane 1 cluster F). The shell forwards the field's messages here and
+  // reads back what it paints; nothing else touches any of it.
+  //
+  // NOT reset in the destructor body: the EDIT dies with the shell window a
+  // few lines further down and its last messages must still find a live
+  // session (they take the OmniboxShellDestroying path).
+  std::unique_ptr<PhiOmniboxSession> omnibox_;
+  // --- PhiCaptionShell: what the caption band asks of its shell ------------
+  HWND CaptionShellWindow() const override;
+  int CaptionScaled(int design_units) const override;
+  UINT CaptionDpi() const override;
+  HFONT CaptionTextFont() override;
+  HFONT CaptionGlyphFont() const override;
+  PhiPalette CaptionPalette() const override;
+  PhiCaptionRects CaptionRects() override;
+  bool CaptionStripTakesPoint(POINT client_pt) override;
+  bool CaptionPhiMenuHovered() const override;
+  void CaptionDrawLogo(HDC dc, int x, int y, int size) override;
+  void CaptionClearShellHover() override;
+  bool CaptionContentFullscreen() const override;
+  PhiMenuBarShell* CaptionMenuServices() override;
+
+  // --- PhiMenuBarShell: what the menu bar asks of its shell ----------------
+  // This interface RETIRED `friend class PhiMenuBar` and the six const
+  // reference views the shell used to publish so the bar's by-name reaches
+  // kept compiling (lane 1 §2.1 item 3).
+  HWND MenuShellWindow() const override;
+  SlotId MenuSlot() const override;
+  bool MenuIncognito() const override;
+  PhiSlotHost* MenuHost() const override;
+  phi_framework::PhiFramework* MenuFramework() const override;
+  const PhiWindowModel* MenuModel() const override;
+  BrowserId MenuActiveBrowser() const override;
+  TabId MenuActiveTab() const override;
+  std::string MenuActiveSpace() const override;
+  PhiPalette MenuPalette() const override;
+  int MenuScaled(int design_units) const override;
+  HWND MenuAddressField() const override;
+  void MenuRefreshNavState() override;
+  PhiMenuBarNavState MenuNavState() const override;
+  std::vector<PhiMenuBarTab> MenuTabRows() const override;
+  bool MenuReaderActive() const override;
+  bool MenuReaderOfferable() const override;
+  bool MenuLeaveReaderForNavigation() override;
+  bool MenuHasSpace(const std::string& space_id) const override;
+  bool MenuShowSpace(const std::string& space_id) override;
+  void MenuNewTab() override;
+  void MenuToggleSidebar() override;
+  void MenuToggleReader() override;
+  void MenuToggleDownloads() override;
+  void MenuToggleSearchTabs() override;
+  void MenuOpenFeedback() override;
+  void MenuCreateSpace() override;
+  void MenuEditSpaceTheme() override;
+
+  // --- PhiBrowserHostShell: what the content host asks of its shell --------
+  HWND BrowserHostShellWindow() const override;
+  int BrowserHostScaled(int design_units) const override;
+  PhiPalette BrowserHostPalette() const override;
+  RECT BrowserHostContentRect() override;
+  RECT BrowserHostClientRect() override;
+  HFONT BrowserHostStatusFont() const override;
+  phi_framework::PhiFramework* BrowserHostFramework() const override;
+  bool BrowserHostIsAgent() const override;
+  void BrowserHostRelayout() override;
+  void BrowserHostRefreshTabs() override;
+  void BrowserHostScheduleRefresh() override;
+  void BrowserHostBeginSpaceSwap(const std::string& space_id) override;
+  bool BrowserHostSwapRunning() const override;
+  void BrowserHostNoteSwapChildren(HWND reveal, HWND conceal) override;
+  void BrowserHostEndSpacePreview() override;
+  void BrowserHostNoteSpaceWindow(const std::string& space_id,
+                                  BrowserId browser) override;
+  void BrowserHostNoteActiveSpace(const std::string& space_id) override;
+  void BrowserHostAbandonTyping() override;
+  void BrowserHostRetintChrome() override;
+  void BrowserHostFocusAddressField() override;
+  bool BrowserHostFocusNativePage() override;
+  bool BrowserHostDeferSpaceClose(const std::string& space_id) override;
+
+  // --- PhiOmniboxShell: what the session asks of its shell ------------------
+  HWND OmniboxShellWindow() const override;
+  bool OmniboxShellDestroying() const override;
+  int OmniboxScaled(int design_units) const override;
+  HFONT OmniboxTextFont() const override;
+  HFONT OmniboxIconFont() const override;
+  PhiPalette OmniboxPalette() const override;
+  PhiLayoutMode OmniboxLayoutMode() const override;
+  PhiOmniboxCapsule OmniboxCapsule() override;
+  phi_framework::PhiFramework* OmniboxFramework() const override;
+  BrowserId OmniboxBrowser() const override;
+  bool OmniboxBrowserPlaceholding() const override;
+  bool OmniboxNewTabFocusesField() const override;
+  void OmniboxFocusContent() override;
+  void OmniboxLeaveReader() override;
+  HWND OmniboxNativePageField() const override;
+  bool OmniboxNativePageBox(RECT* out) const override;
+  void OmniboxNativePageCommitting() override;
+
   // Owned by the framework (a singleton in chrome.dll); non-owning, and across
   // a module boundary, so not a raw_ptr.
   RAW_PTR_EXCLUSION phi_framework::PhiFramework* const framework_;

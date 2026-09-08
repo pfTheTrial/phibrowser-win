@@ -4,138 +4,193 @@
 
 #include "phibrowser-win/client/phi_toast.h"
 
-#include "phibrowser-win/client/phi_dwrite.h"
-
 #include <algorithm>
+#include <string>
+
+#include "phibrowser-win/client/phi_animator.h"
+#include "phibrowser-win/client/phi_dwrite.h"
+#include "phibrowser-win/client/phi_popover.h"
 
 namespace phi_client {
 
 namespace {
 
-constexpr UINT_PTR kDismissTimer = 1;
-constexpr UINT_PTR kFadeTimer = 2;
-constexpr int kFadeStepMs = 30;
-constexpr BYTE kFadeStep = 32;
+// The fade the toast used to hand-roll with a 30 ms SetTimer and a
+// 32-per-step alpha ramp; the same total durations, now on the shared
+// animator's one coalescable 16 ms clock (lane 3 §6.3).
+constexpr int kFadeInMs = 240;
+constexpr int kFadeOutMs = 210;
 
-struct Toast {
-  HWND hwnd = nullptr;
-  HFONT title_font = nullptr;
-  HFONT message_font = nullptr;
-  std::wstring title;
-  std::wstring message;
-  PhiPalette palette;
-  BYTE alpha = 0;
-  bool fading_out = false;
-  UINT dpi = 96;
+// OverlayToastCenter's metrics, in DIP.
+constexpr int kCornerRadius = 12;
+constexpr int kTextInset = 16;
+constexpr int kSideInset = 48;
+constexpr int kHeightOneLine = 40;
+constexpr int kHeightTwoLine = 56;
+constexpr int kTopOffset = 56;
+constexpr int kTitleSize = 13;
+constexpr int kMessageSize = 12;
 
-  int Scaled(int design) const { return ::MulDiv(design, dpi, 96); }
-};
-
+// The Mac queues toasts; replacement is still the simpler v1, so exactly
+// one lives at a time.
+class Toast;
 Toast* g_toast = nullptr;
 
-void DestroyToast() {
-  if (g_toast && ::IsWindow(g_toast->hwnd)) {
-    ::DestroyWindow(g_toast->hwnd);
-  }
-}
+class Toast : public PhiPopover {
+ public:
+  Toast(std::wstring title, std::wstring message, const PhiPalette& palette)
+      : title_(std::move(title)),
+        message_(std::move(message)),
+        pending_palette_(palette) {}
 
-LRESULT CALLBACK ToastProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
-  Toast* self = g_toast && g_toast->hwnd == hwnd ? g_toast : nullptr;
-  switch (msg) {
-    case WM_NCHITTEST:
-      return HTTRANSPARENT;  // Clicks belong to whatever is under it.
-    case WM_TIMER:
-      if (!self) {
-        break;
-      }
-      if (w == kDismissTimer) {
-        ::KillTimer(hwnd, kDismissTimer);
-        self->fading_out = true;
-        ::SetTimer(hwnd, kFadeTimer, kFadeStepMs, nullptr);
-        return 0;
-      }
-      if (w == kFadeTimer) {
-        if (self->fading_out) {
-          if (self->alpha <= kFadeStep) {
-            ::KillTimer(hwnd, kFadeTimer);
-            ::DestroyWindow(hwnd);
-            return 0;
-          }
-          self->alpha = static_cast<BYTE>(self->alpha - kFadeStep);
-        } else if (self->alpha >= 255 - kFadeStep) {
-          self->alpha = 255;
-          ::KillTimer(hwnd, kFadeTimer);
-        } else {
-          self->alpha = static_cast<BYTE>(self->alpha + kFadeStep);
-        }
-        ::SetLayeredWindowAttributes(hwnd, 0, self->alpha, LWA_ALPHA);
-        return 0;
-      }
-      break;
-    case WM_PAINT: {
-      PAINTSTRUCT ps = {};
-      HDC dc = ::BeginPaint(hwnd, &ps);
-      if (self) {
-        RECT rc = {};
-        ::GetClientRect(hwnd, &rc);
-        PhiFillRoundRectAA(dc, rc, self->Scaled(12), self->palette.card);
-        PhiStrokeRoundRectAA(dc, rc, self->Scaled(12), self->palette.border,
-                             1);
-        ::SetBkMode(dc, TRANSPARENT);
-        RECT text = rc;
-        text.left += self->Scaled(16);
-        text.right -= self->Scaled(16);
-        if (self->message.empty()) {
-          ::SelectObject(dc, self->title_font);
-          ::SetTextColor(dc, self->palette.label);
-          ::DrawTextW(dc, self->title.c_str(), -1, &text,
-                      DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-        } else {
-          RECT top = text;
-          top.bottom = (rc.top + rc.bottom) / 2;
-          ::SelectObject(dc, self->title_font);
-          ::SetTextColor(dc, self->palette.label);
-          ::DrawTextW(dc, self->title.c_str(), -1, &top,
-                      DT_CENTER | DT_BOTTOM | DT_SINGLELINE | DT_NOPREFIX);
-          RECT bottom = text;
-          bottom.top = top.bottom + self->Scaled(2);
-          ::SelectObject(dc, self->message_font);
-          ::SetTextColor(dc, self->palette.label_dim);
-          ::DrawTextW(dc, self->message.c_str(), -1, &bottom,
-                      DT_CENTER | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS |
-                          DT_NOPREFIX);
-        }
-      }
-      ::EndPaint(hwnd, &ps);
-      return 0;
+  ~Toast() override = default;
+
+  bool Open(HWND owner, int duration_ms) {
+    ClassSpec spec;
+    spec.name = L"PhiToast";
+    spec.cursor = nullptr;
+
+    Options options;
+    options.activate = false;
+    options.foreground = false;
+    options.topmost = true;
+    options.layered = true;
+    options.dwm_round = false;  // PhiFillRoundRectAA draws the corners.
+    options.dismiss_on_inactive = false;
+    options.dismiss_on_escape = false;
+    options.click_through = true;  // Clicks belong to whatever is under it.
+
+    // Created off-screen at a provisional size: the text has to be
+    // measured with fonts() at the window's own dpi, which only exists
+    // once the window does. Nothing is visible until Show().
+    Placement placement;
+    placement.side = PhiPopoverSide::kExplicit;
+    placement.clamp = false;
+    SIZE probe = {1, 1};
+    if (!CreatePopover(spec, owner, probe, placement, options)) {
+      return false;
     }
-    case WM_DESTROY:
-      if (self) {
-        if (self->title_font) {
-          ::DeleteObject(self->title_font);
-        }
-        if (self->message_font) {
-          ::DeleteObject(self->message_font);
-        }
-        delete self;
-        g_toast = nullptr;
-      }
-      return 0;
-  }
-  return ::DefWindowProcW(hwnd, msg, w, l);
-}
+    g_toast = this;  // Before Show(), so a teardown cannot leave us stale.
+    SetPalette(pending_palette_);
+    ::SetLayeredWindowAttributes(hwnd(), 0, 0, LWA_ALPHA);
 
-ATOM EnsureToastClass() {
-  static const ATOM atom = [] {
-    WNDCLASSEXW wc = {};
-    wc.cbSize = sizeof(wc);
-    wc.lpfnWndProc = &ToastProc;
-    wc.hInstance = ::GetModuleHandleW(nullptr);
-    wc.lpszClassName = L"PhiToast";
-    return ::RegisterClassExW(&wc);
-  }();
-  return atom;
-}
+    const SIZE size = Measure();
+    RECT owner_rect = {};
+    ::GetWindowRect(owner, &owner_rect);
+    const LONG x = (owner_rect.left + owner_rect.right) / 2 - size.cx / 2;
+    const LONG y = owner_rect.top + Scaled(kTopOffset);
+    placement.anchor = {x, y, x, y};
+    Reposition(placement, size);
+    Show();
+
+    PhiAnimator::ForThread().Animate(
+        hwnd(), kFadeInMs, PhiEasing::kLinear,
+        [this](double t, RECT*) { SetAlpha(static_cast<BYTE>(t * 255.0)); });
+    dismiss_ = NewTimer();
+    dismiss_.Start(static_cast<UINT>(std::max(500, duration_ms)));
+    return true;
+  }
+
+ protected:
+  void Paint(HDC dc, const RECT&) override {
+    RECT rc = {};
+    ::GetClientRect(hwnd(), &rc);
+    const PhiPalette& colors = palette();
+    PhiFillRoundRectAA(dc, rc, Scaled(kCornerRadius), colors.card);
+    PhiStrokeRoundRectAA(dc, rc, Scaled(kCornerRadius), colors.border, 1);
+    ::SetBkMode(dc, TRANSPARENT);
+    RECT text = rc;
+    text.left += Scaled(kTextInset);
+    text.right -= Scaled(kTextInset);
+    if (message_.empty()) {
+      ::SelectObject(dc, TitleFont());
+      ::SetTextColor(dc, colors.label);
+      ::DrawTextW(dc, title_.c_str(), -1, &text,
+                  DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+      return;
+    }
+    RECT top = text;
+    top.bottom = (rc.top + rc.bottom) / 2;
+    ::SelectObject(dc, TitleFont());
+    ::SetTextColor(dc, colors.label);
+    ::DrawTextW(dc, title_.c_str(), -1, &top,
+                DT_CENTER | DT_BOTTOM | DT_SINGLELINE | DT_NOPREFIX);
+    RECT bottom = text;
+    bottom.top = top.bottom + Scaled(2);
+    ::SelectObject(dc, MessageFont());
+    ::SetTextColor(dc, colors.label_dim);
+    ::DrawTextW(dc, message_.c_str(), -1, &bottom,
+                DT_CENTER | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS |
+                    DT_NOPREFIX);
+  }
+
+  void OnTimerFired(UINT_PTR id) override {
+    if (id != dismiss_.id() || fading_out_) {
+      return;
+    }
+    fading_out_ = true;
+    dismiss_.Stop();
+    PhiAnimator::ForThread().Animate(
+        hwnd(), kFadeOutMs, PhiEasing::kLinear,
+        [this](double t, RECT*) {
+          SetAlpha(static_cast<BYTE>((1.0 - t) * 255.0));
+        },
+        [this] { Destroy(); });
+  }
+
+  void OnDpiChanged(UINT) override {
+    const SIZE size = Measure();
+    ::SetWindowPos(hwnd(), nullptr, 0, 0, size.cx, size.cy,
+                   SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+  }
+
+  void OnNcDestroy() override {
+    if (g_toast == this) {
+      g_toast = nullptr;
+    }
+  }
+
+ private:
+  HFONT TitleFont() { return fonts().Get(kTitleSize, FW_SEMIBOLD); }
+  HFONT MessageFont() { return fonts().Get(kMessageSize, FW_NORMAL); }
+
+  void SetAlpha(BYTE alpha) {
+    if (alive()) {
+      ::SetLayeredWindowAttributes(hwnd(), 0, alpha, LWA_ALPHA);
+    }
+  }
+
+  // Size to the text, the Mac's topCenter slot.
+  SIZE Measure() {
+    HDC probe = ::GetDC(nullptr);
+    SIZE title_size = {};
+    SIZE message_size = {};
+    if (probe) {
+      HGDIOBJ prev = ::SelectObject(probe, TitleFont());
+      ::GetTextExtentPoint32W(probe, title_.c_str(),
+                              static_cast<int>(title_.size()), &title_size);
+      if (!message_.empty()) {
+        ::SelectObject(probe, MessageFont());
+        ::GetTextExtentPoint32W(probe, message_.c_str(),
+                                static_cast<int>(message_.size()),
+                                &message_size);
+      }
+      ::SelectObject(probe, prev);
+      ::ReleaseDC(nullptr, probe);
+    }
+    SIZE size = {};
+    size.cx = std::max<LONG>(std::max(title_size.cx, message_size.cx), 1) +
+              Scaled(kSideInset);
+    size.cy = Scaled(message_.empty() ? kHeightOneLine : kHeightTwoLine);
+    return size;
+  }
+
+  std::wstring title_;
+  std::wstring message_;
+  PhiPalette pending_palette_;
+  Timer dismiss_;
+  bool fading_out_ = false;
+};
 
 }  // namespace
 
@@ -147,60 +202,15 @@ void PhiShowToast(HWND owner,
   if (!owner || !::IsWindow(owner)) {
     return;
   }
-  DestroyToast();  // Replacement, not queueing (v1).
-  EnsureToastClass();
-  Toast* toast = new Toast();
-  toast->title = title;
-  toast->message = message;
-  toast->palette = palette;
-  toast->dpi = ::GetDpiForWindow(owner);
-  const auto make_font = [&](int size, int weight) {
-    return ::CreateFontW(-toast->Scaled(size), 0, 0, 0, weight, FALSE, FALSE,
-                         FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
-                         CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-                         DEFAULT_PITCH, L"Segoe UI");
-  };
-  toast->title_font = make_font(13, FW_SEMIBOLD);
-  toast->message_font = make_font(12, FW_NORMAL);
-
-  // Size to the text, top-center of the owner (the Mac's topCenter slot).
-  HDC probe = ::GetDC(nullptr);
-  HGDIOBJ prev = ::SelectObject(probe, toast->title_font);
-  SIZE title_size = {};
-  ::GetTextExtentPoint32W(probe, title.c_str(),
-                          static_cast<int>(title.size()), &title_size);
-  SIZE message_size = {};
-  if (!message.empty()) {
-    ::SelectObject(probe, toast->message_font);
-    ::GetTextExtentPoint32W(probe, message.c_str(),
-                            static_cast<int>(message.size()), &message_size);
+  if (g_toast) {
+    g_toast->Destroy();  // Replacement, not queueing (v1).
+    g_toast = nullptr;
   }
-  ::SelectObject(probe, prev);
-  ::ReleaseDC(nullptr, probe);
-
-  RECT owner_rect = {};
-  ::GetWindowRect(owner, &owner_rect);
-  const int width =
-      std::max<int>(std::max(title_size.cx, message_size.cx), 1) +
-      toast->Scaled(48);
-  const int height =
-      toast->Scaled(message.empty() ? 40 : 56);
-  const int x = (owner_rect.left + owner_rect.right) / 2 - width / 2;
-  const int y = owner_rect.top + toast->Scaled(56);
-  toast->hwnd = ::CreateWindowExW(
-      WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED | WS_EX_TOPMOST,
-      L"PhiToast", L"", WS_POPUP, x, y, width, height, owner, nullptr,
-      ::GetModuleHandleW(nullptr), nullptr);
-  if (!toast->hwnd) {
+  Toast* toast = new Toast(title, message, palette);
+  toast->DeleteWhenDestroyed();
+  if (!toast->Open(owner, duration_ms)) {
     delete toast;
-    return;
   }
-  g_toast = toast;
-  ::SetLayeredWindowAttributes(toast->hwnd, 0, 0, LWA_ALPHA);
-  ::ShowWindow(toast->hwnd, SW_SHOWNOACTIVATE);
-  ::SetTimer(toast->hwnd, kFadeTimer, kFadeStepMs, nullptr);  // Fade in.
-  ::SetTimer(toast->hwnd, kDismissTimer, std::max(500, duration_ms),
-             nullptr);
 }
 
 }  // namespace phi_client

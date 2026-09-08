@@ -27,6 +27,7 @@
 #include "base/values.h"
 #include "chrome/browser/phinomenon/phi_framework/phi_framework_api.h"
 #include "phibrowser-win/client/phi_dwrite.h"
+#include "phibrowser-win/client/phi_popover.h"
 
 namespace phi_client {
 
@@ -42,7 +43,12 @@ constexpr int kIconGap = 12;
 constexpr int kActionButton = 24;
 constexpr int kBottomBar = 33;
 
-constexpr UINT_PTR kPollTimer = 0x521;  // 500ms live refresh while open.
+constexpr UINT kPollIntervalMs = 500;  // Live refresh while open.
+// hits_ keys: row i is i * kKeyStride, its action `a` is + 1 + a. The
+// footer button has its own key. The base resolves hover and clicks over
+// the list; nothing here hit-tests by hand any more.
+constexpr int kKeyStride = 8;
+constexpr int kAllDownloadsKey = -1;
 
 COLORREF BlendOver(COLORREF base_color, COLORREF over, int alpha) {
   const int r = (GetRValue(over) * alpha + GetRValue(base_color) *
@@ -137,90 +143,168 @@ struct RowAction {
   bool enabled = true;
 };
 
-class Popover {
+// The popover keeps its download rows, its Paint() and its per-row
+// actions. The window, the placement, the back buffer, hover, the poll
+// timer, dismissal and lifetime belong to PhiPopover (lane 3 §6.2).
+class Popover : public PhiPopover {
  public:
   static Popover* instance;
-  static HWND last_owner;
-  static ULONGLONG closed_tick;
 
-  Popover(HWND owner, const RECT& anchor, const PhiPalette& palette,
-          phi_framework::PhiFramework* framework, BrowserId browser)
-      : owner_(owner), palette_(palette), framework_(framework),
-        browser_id_(browser.value) {
-    dpi_ = ::GetDpiForWindow(owner);
-    Register();
-    const int w = Scaled(kPanelWidth);
-    const int h = Scaled(kPanelHeight);
-    int x = anchor.left;
-    int y = anchor.top - h - Scaled(8);
-    HMONITOR monitor = ::MonitorFromWindow(owner, MONITOR_DEFAULTTONEAREST);
-    MONITORINFO info = {sizeof(info)};
-    if (::GetMonitorInfoW(monitor, &info)) {
-      x = std::max(static_cast<int>(info.rcWork.left),
-                   std::min(x, static_cast<int>(info.rcWork.right) - w));
-      y = std::max(static_cast<int>(info.rcWork.top), y);
-    }
-    hwnd_ = ::CreateWindowExW(
-        WS_EX_TOOLWINDOW, L"PhiDownloadsPopover", L"", WS_POPUP, x, y, w, h,
-        owner, nullptr, ::GetModuleHandleW(nullptr), this);
-    ::DwmSetWindowAttribute(hwnd_, DWMWA_WINDOW_CORNER_PREFERENCE,
-                            &kCorner, sizeof(kCorner));
-    EnsureFonts();
-    Refresh();
-    created_tick_ = ::GetTickCount64();
-    ::ShowWindow(hwnd_, SW_SHOW);
-    ::SetForegroundWindow(hwnd_);
-    ::SetTimer(hwnd_, kPollTimer, 500, nullptr);
-  }
+  Popover(phi_framework::PhiFramework* framework, BrowserId browser)
+      : framework_(framework), browser_id_(browser.value) {}
 
-  ~Popover() {
+  ~Popover() override {
     for (auto& [ext, icon] : icons_) {
       if (icon) {
         ::DestroyIcon(icon);
       }
     }
-    for (HFONT font : {name_font_, name_strike_font_, small_font_,
-                       small_bold_font_, glyph_font_, empty_font_}) {
-      if (font) {
-        ::DeleteObject(font);
-      }
+  }
+
+  bool Open(HWND owner, const RECT& anchor, const PhiPalette& colors) {
+    ClassSpec spec;
+    spec.name = L"PhiDownloadsPopover";
+
+    Options options;  // Activating, DWM-rounded, 500 ms opening grace.
+
+    Placement placement;
+    placement.anchor = anchor;
+    placement.side = PhiPopoverSide::kAbove;
+    placement.gap_dip = 8;
+    placement.flip = false;  // The bottom-bar button always drops upward.
+    placement.monitor_from_owner = true;
+
+    SIZE probe = {1, 1};
+    if (!CreatePopover(spec, owner, probe, placement, options)) {
+      return false;
+    }
+    instance = this;  // Before Show(): activation churn can destroy us.
+    SetPalette(colors);
+    SIZE size = {Scaled(kPanelWidth), Scaled(kPanelHeight)};
+    Reposition(placement, size);
+    Refresh();
+    Show();
+    poll_ = NewTimer();
+    poll_.Start(kPollIntervalMs);
+    return true;
+  }
+
+ protected:
+  void Paint(HDC dc, const RECT&) override {
+    RECT client = {};
+    ::GetClientRect(hwnd(), &client);
+    PaintPanel(dc, client);
+  }
+
+  void OnTimerFired(UINT_PTR id) override {
+    if (id == poll_.id()) {
+      Refresh();
     }
   }
 
-  HWND hwnd() const { return hwnd_; }
-
- private:
-  static inline const DWM_WINDOW_CORNER_PREFERENCE kCorner = DWMWCP_ROUND;
-
-  int Scaled(int design) const { return ::MulDiv(design, dpi_, 96); }
-
-  static void Register() {
-    static bool done = false;
-    if (done) {
+  void OnHover(int hit, int) override {
+    hover_row_ = -1;
+    hover_action_ = -1;
+    hover_all_ = false;
+    if (hit < 0) {
       return;
     }
-    done = true;
-    WNDCLASSW cls = {};
-    cls.lpfnWndProc = &Popover::WndProc;
-    cls.hInstance = ::GetModuleHandleW(nullptr);
-    cls.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
-    cls.lpszClassName = L"PhiDownloadsPopover";
-    ::RegisterClassW(&cls);
+    const int key = hits_[static_cast<size_t>(hit)].key;
+    if (key == kAllDownloadsKey) {
+      hover_all_ = true;
+      return;
+    }
+    hover_row_ = key / kKeyStride;
+    const int sub = key % kKeyStride;
+    if (sub > 0) {
+      hover_action_ = sub - 1;
+    }
   }
 
-  void EnsureFonts() {
-    auto make = [&](int size, int weight, bool strike, const wchar_t* face) {
-      return ::CreateFontW(-Scaled(size), 0, 0, 0, weight, FALSE, FALSE,
-                           strike, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
-                           CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-                           DEFAULT_PITCH, face);
-    };
-    name_font_ = make(13, FW_NORMAL, false, L"Segoe UI");
-    name_strike_font_ = make(13, FW_NORMAL, true, L"Segoe UI");
-    small_font_ = make(11, FW_NORMAL, false, L"Segoe UI");
-    small_bold_font_ = make(11, FW_BOLD, false, L"Segoe UI");
-    glyph_font_ = make(12, FW_NORMAL, false, L"Segoe MDL2 Assets");
-    empty_font_ = make(32, FW_NORMAL, false, L"Segoe MDL2 Assets");
+  void OnWheel(int delta, POINT) override {
+    scroll_ = std::max(
+        0, std::min(max_scroll_, scroll_ - delta * Scaled(kRowHeight) /
+                                               WHEEL_DELTA));
+    BuildHits();
+    Invalidate();
+  }
+
+  void OnClick(int hit, POINT) override {
+    OnHover(hit, -1);
+    RunHoveredAction();
+  }
+
+  void OnDpiChanged(UINT) override {
+    ::SetWindowPos(hwnd(), nullptr, 0, 0, Scaled(kPanelWidth),
+                   Scaled(kPanelHeight),
+                   SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    BuildHits();
+  }
+
+  void OnNcDestroy() override {
+    poll_.Stop();
+    PhiPopover::RecordClose(owner());
+    if (instance == this) {
+      instance = nullptr;
+    }
+  }
+
+ private:
+  HFONT NameFont() { return fonts().Get(13, FW_NORMAL); }
+  HFONT NameStrikeFont() {
+    PhiFontDesc desc;
+    desc.size = 13;
+    desc.strikeout = true;
+    return fonts().Get(desc);
+  }
+  HFONT SmallFont() { return fonts().Get(11, FW_NORMAL); }
+  HFONT SmallBoldFont() { return fonts().Get(11, FW_BOLD); }
+  HFONT GlyphFont() {
+    PhiFontDesc desc;
+    desc.size = 12;
+    desc.face = L"Segoe MDL2 Assets";
+    return fonts().Get(desc);
+  }
+  HFONT EmptyFont() {
+    PhiFontDesc desc;
+    desc.size = 32;
+    desc.face = L"Segoe MDL2 Assets";
+    return fonts().Get(desc);
+  }
+
+  // THE layout pass: every visible row, its action buttons and the footer
+  // link, into the base's hit list. Re-run whenever the rows or the scroll
+  // offset move — never from Paint().
+  void BuildHits() {
+    ClearHits();
+    const RECT list = ListRect();
+    for (size_t i = 0; i < rows_.size(); ++i) {
+      RECT row = RowRect(static_cast<int>(i));
+      RECT visible = row;
+      visible.top = std::max(row.top, list.top);
+      visible.bottom = std::min(row.bottom, list.bottom);
+      if (visible.bottom <= visible.top) {
+        continue;
+      }
+      AddHit(visible, static_cast<int>(i) * kKeyStride, rows_[i].name,
+             PhiHitRole::kListItem);
+      const std::vector<RowAction> actions = ActionsFor(rows_[i]);
+      for (size_t a = 0; a < actions.size(); ++a) {
+        RECT button = ActionRect(row, static_cast<int>(a),
+                                 static_cast<int>(actions.size()));
+        button.top = std::max(button.top, list.top);
+        button.bottom = std::min(button.bottom, list.bottom);
+        if (button.bottom <= button.top) {
+          continue;
+        }
+        AddHit(button,
+               static_cast<int>(i) * kKeyStride + 1 + static_cast<int>(a),
+               base::UTF8ToWide(actions[a].verb), PhiHitRole::kButton, false,
+               actions[a].enabled);
+      }
+    }
+    AddHit(AllDownloadsRect(), kAllDownloadsKey, L"All Downloads",
+           PhiHitRole::kButton);
   }
 
   void Refresh() {
@@ -275,7 +359,8 @@ class Popover {
     max_scroll_ = std::max(
         0, static_cast<int>(rows_.size()) * Scaled(kRowHeight) - list_h);
     scroll_ = std::min(scroll_, max_scroll_);
-    ::InvalidateRect(hwnd_, nullptr, FALSE);
+    BuildHits();
+    Invalidate();
   }
 
   // The per-state action set (DownloadItemRow's normalActionButtons).
@@ -321,7 +406,7 @@ class Popover {
 
   RECT ListRect() const {
     RECT rc;
-    ::GetClientRect(hwnd_, &rc);
+    ::GetClientRect(hwnd(), &rc);
     rc.bottom -= Scaled(kBottomBar);
     return rc;
   }
@@ -341,16 +426,16 @@ class Popover {
     return {right - btn, mid - btn / 2, right, mid + btn / 2};
   }
 
-  RECT AllDownloadsRect() const {
+  RECT AllDownloadsRect() {
     RECT rc;
-    ::GetClientRect(hwnd_, &rc);
+    ::GetClientRect(hwnd(), &rc);
     RECT measure = {0, 0, 0, 0};
-    HDC dc = ::GetDC(hwnd_);
-    HGDIOBJ old = ::SelectObject(dc, small_font_);
+    HDC dc = ::GetDC(hwnd());
+    HGDIOBJ old = ::SelectObject(dc, SmallFont());
     PhiDrawTextAA(dc, L"All Downloads", -1, &measure,
                 DT_CALCRECT | DT_SINGLELINE);
     ::SelectObject(dc, old);
-    ::ReleaseDC(hwnd_, dc);
+    ::ReleaseDC(hwnd(), dc);
     const int w = measure.right + Scaled(8 + 4 + 10 + 8);
     const int h = measure.bottom + Scaled(8);
     const int mid = rc.bottom - Scaled(kBottomBar) / 2;
@@ -358,21 +443,21 @@ class Popover {
             mid + h / 2};
   }
 
-  void Paint(HDC dc, const RECT& client) {
-    const PhiPalette& p = palette_;
+  void PaintPanel(HDC dc, const RECT& client) {
+    const PhiPalette& p = palette();
     FillRect(dc, client, p.window_bg);
     ::SetBkMode(dc, TRANSPARENT);
     const COLORREF dim = BlendOver(p.window_bg, p.label, 128);
 
     if (rows_.empty()) {
       RECT list = ListRect();
-      HGDIOBJ old = ::SelectObject(dc, empty_font_);
+      HGDIOBJ old = ::SelectObject(dc, EmptyFont());
       ::SetTextColor(dc, p.label_dim);
       RECT glyph = list;
       glyph.bottom = (list.top + list.bottom) / 2 + Scaled(6);
       PhiDrawTextAA(dc, L"", -1, &glyph,
                   DT_CENTER | DT_BOTTOM | DT_SINGLELINE);
-      ::SelectObject(dc, small_font_);
+      ::SelectObject(dc, SmallFont());
       RECT text = list;
       text.top = glyph.bottom + Scaled(8);
       PhiDrawTextAA(dc, L"No Downloads", -1, &text,
@@ -409,7 +494,7 @@ class Popover {
       // Name line (13pt, struck through for failed/cancelled/deleted), with
       // the Mac's "· Canceled/Failed/Deleted" bold suffix.
       HGDIOBJ old = ::SelectObject(
-          dc, failed ? name_strike_font_ : name_font_);
+          dc, failed ? NameStrikeFont() : NameFont());
       ::SetTextColor(dc, p.label);
       RECT name_rc = {info.left, mid - Scaled(18), info.right,
                       mid - Scaled(1)};
@@ -429,7 +514,7 @@ class Popover {
       RECT name_draw = name_rc;
       if (status) {
         RECT tag_measure = {0, 0, 0, 0};
-        ::SelectObject(dc, small_bold_font_);
+        ::SelectObject(dc, SmallBoldFont());
         std::wstring tag = std::wstring(L"· ") + status;
         PhiDrawTextAA(dc, tag.c_str(), -1, &tag_measure,
                     DT_CALCRECT | DT_SINGLELINE);
@@ -437,7 +522,7 @@ class Popover {
             std::min(static_cast<int>(name_rc.right - tag_measure.right) -
                          Scaled(4),
                      static_cast<int>(name_rc.left + name_measure.right));
-        ::SelectObject(dc, failed ? name_strike_font_ : name_font_);
+        ::SelectObject(dc, failed ? NameStrikeFont() : NameFont());
         PhiDrawTextAA(dc, item.name.c_str(), -1, &name_draw,
                     DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
                         DT_NOPREFIX);
@@ -445,7 +530,7 @@ class Popover {
                                 name_draw.left + name_measure.right) +
                            Scaled(4),
                        name_rc.top, name_rc.right, name_rc.bottom};
-        ::SelectObject(dc, small_bold_font_);
+        ::SelectObject(dc, SmallBoldFont());
         ::SetTextColor(dc, dim);
         PhiDrawTextAA(dc, tag.c_str(), -1, &tag_rc,
                     DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
@@ -458,7 +543,7 @@ class Popover {
       // Second line: progress (bar, or figures while hovered) for live
       // downloads, relative date or "From host" otherwise.
       RECT sub = {info.left, mid + Scaled(2), info.right, mid + Scaled(17)};
-      ::SelectObject(dc, small_font_);
+      ::SelectObject(dc, SmallFont());
       ::SetTextColor(dc, dim);
       if (item.state == "in_progress") {
         if (hover_row_ == static_cast<int>(i)) {
@@ -494,7 +579,7 @@ class Popover {
       }
 
       // Action buttons.
-      ::SelectObject(dc, glyph_font_);
+      ::SelectObject(dc, GlyphFont());
       for (size_t a = 0; a < actions.size(); ++a) {
         const RECT button = ActionRect(row, static_cast<int>(a),
                                        static_cast<int>(actions.size()));
@@ -527,13 +612,13 @@ class Popover {
       FillRounded(dc, button, BlendOver(p.window_bg, p.accent, 15),
                   Scaled(6));
     }
-    HGDIOBJ old = ::SelectObject(dc, small_font_);
+    HGDIOBJ old = ::SelectObject(dc, SmallFont());
     ::SetTextColor(dc, p.accent);
     RECT text = {button.left + Scaled(8), button.top,
                  button.right - Scaled(18), button.bottom};
     PhiDrawTextAA(dc, L"All Downloads", -1, &text,
                 DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-    ::SelectObject(dc, glyph_font_);
+    ::SelectObject(dc, GlyphFont());
     RECT chevron = {text.right, button.top, button.right, button.bottom};
     PhiDrawTextAA(dc, L"", 1, &chevron,
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE);
@@ -549,49 +634,12 @@ class Popover {
     ::DeleteObject(pen);
   }
 
-  void OnMouseMove(int x, int y) {
-    const POINT pt = {x, y};
-    int row = -1;
-    int action = -1;
-    bool all = false;
-    const RECT list = ListRect();
-    if (::PtInRect(&list, pt)) {
-      for (size_t i = 0; i < rows_.size(); ++i) {
-        RECT rc = RowRect(static_cast<int>(i));
-        if (!::PtInRect(&rc, pt)) {
-          continue;
-        }
-        row = static_cast<int>(i);
-        const std::vector<RowAction> actions = ActionsFor(rows_[i]);
-        for (size_t a = 0; a < actions.size(); ++a) {
-          RECT button = ActionRect(rc, static_cast<int>(a),
-                                   static_cast<int>(actions.size()));
-          if (::PtInRect(&button, pt)) {
-            action = static_cast<int>(a);
-          }
-        }
-        break;
-      }
-    } else {
-      RECT button = AllDownloadsRect();
-      all = ::PtInRect(&button, pt) != FALSE;
-    }
-    if (row != hover_row_ || action != hover_action_ || all != hover_all_) {
-      hover_row_ = row;
-      hover_action_ = action;
-      hover_all_ = all;
-      ::InvalidateRect(hwnd_, nullptr, FALSE);
-    }
-    TRACKMOUSEEVENT track = {sizeof(track), TME_LEAVE, hwnd_, 0};
-    ::TrackMouseEvent(&track);
-  }
-
-  void OnClick() {
+  void RunHoveredAction() {
     if (hover_all_) {
       if (framework_) {
         framework_->Navigate(browser_id_, "chrome://downloads/");
       }
-      ::DestroyWindow(hwnd_);
+      Dismiss();
       return;
     }
     if (hover_row_ < 0 || hover_action_ < 0 ||
@@ -618,7 +666,7 @@ class Popover {
   }
 
   void CopyToClipboard(const std::wstring& text) {
-    if (!::OpenClipboard(hwnd_)) {
+    if (!::OpenClipboard(hwnd())) {
       return;
     }
     ::EmptyClipboard();
@@ -636,114 +684,13 @@ class Popover {
     ::CloseClipboard();
   }
 
-  static LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM w,
-                                  LPARAM l) {
-    Popover* self = reinterpret_cast<Popover*>(
-        ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
-    switch (message) {
-      case WM_NCCREATE: {
-        auto* create = reinterpret_cast<CREATESTRUCTW*>(l);
-        self = static_cast<Popover*>(create->lpCreateParams);
-        self->hwnd_ = hwnd;
-        ::SetWindowLongPtrW(hwnd, GWLP_USERDATA,
-                            reinterpret_cast<LONG_PTR>(self));
-        break;
-      }
-      case WM_ACTIVATE:
-        if (self && LOWORD(w) == WA_INACTIVE) {
-          // Opening grace: a menu teardown or the browser's async focus can
-          // deactivate the popover the instant it opens; a real click-away
-          // cannot happen this soon. Dismissal resumes after the grace.
-          if (::GetTickCount64() - self->created_tick_ < 500) {
-            break;
-          }
-          ::DestroyWindow(hwnd);
-          return 0;
-        }
-        break;
-      case WM_TIMER:
-        if (self && w == kPollTimer) {
-          self->Refresh();
-          return 0;
-        }
-        break;
-      case WM_MOUSEWHEEL:
-        if (self) {
-          self->scroll_ = std::max(
-              0, std::min(self->max_scroll_,
-                          self->scroll_ -
-                              GET_WHEEL_DELTA_WPARAM(w) *
-                                  self->Scaled(kRowHeight) / WHEEL_DELTA));
-          ::InvalidateRect(hwnd, nullptr, FALSE);
-          return 0;
-        }
-        break;
-      case WM_MOUSEMOVE:
-        if (self) {
-          self->OnMouseMove(GET_X_LPARAM(l), GET_Y_LPARAM(l));
-          return 0;
-        }
-        break;
-      case WM_MOUSELEAVE:
-        if (self) {
-          self->hover_row_ = -1;
-          self->hover_action_ = -1;
-          self->hover_all_ = false;
-          ::InvalidateRect(hwnd, nullptr, FALSE);
-          return 0;
-        }
-        break;
-      case WM_LBUTTONUP:
-        if (self) {
-          self->OnClick();
-          return 0;
-        }
-        break;
-      case WM_PAINT: {
-        PAINTSTRUCT paint;
-        HDC dc = ::BeginPaint(hwnd, &paint);
-        RECT client;
-        ::GetClientRect(hwnd, &client);
-        HDC mem = ::CreateCompatibleDC(dc);
-        HBITMAP bitmap =
-            ::CreateCompatibleBitmap(dc, client.right, client.bottom);
-        HGDIOBJ old = ::SelectObject(mem, bitmap);
-        if (self) {
-          self->Paint(mem, client);
-        }
-        ::BitBlt(dc, 0, 0, client.right, client.bottom, mem, 0, 0, SRCCOPY);
-        ::SelectObject(mem, old);
-        ::DeleteObject(bitmap);
-        ::DeleteDC(mem);
-        ::EndPaint(hwnd, &paint);
-        return 0;
-      }
-      case WM_DESTROY:
-        if (self) {
-          ::KillTimer(hwnd, kPollTimer);
-          Popover::closed_tick = ::GetTickCount64();
-          Popover::last_owner = self->owner_;
-          Popover::instance = nullptr;
-          ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
-          delete self;
-        }
-        return 0;
-    }
-    return ::DefWindowProcW(hwnd, message, w, l);
-  }
-
-  HWND owner_;
-  HWND hwnd_ = nullptr;
-  // When the popover was shown — the opening grace against activation churn.
-  ULONGLONG created_tick_ = 0;
-  PhiPalette palette_;
   // Not rewritten to raw_ptr: the popover lives strictly inside the
   // framework's lifetime (owned popup of the shell window).
   RAW_PTR_EXCLUSION phi_framework::PhiFramework* framework_;
   // The browser the popover was opened for (BrowserId::value; the
   // framework calls below are still int64_t until phase 2).
   int64_t browser_id_;
-  UINT dpi_ = 96;
+  Timer poll_;
   std::vector<DownloadRow> rows_;
   std::string last_json_;
   std::map<std::wstring, HICON> icons_;
@@ -752,17 +699,9 @@ class Popover {
   int hover_row_ = -1;
   int hover_action_ = -1;
   bool hover_all_ = false;
-  HFONT name_font_ = nullptr;
-  HFONT name_strike_font_ = nullptr;
-  HFONT small_font_ = nullptr;
-  HFONT small_bold_font_ = nullptr;
-  HFONT glyph_font_ = nullptr;
-  HFONT empty_font_ = nullptr;
 };
 
 Popover* Popover::instance = nullptr;
-HWND Popover::last_owner = nullptr;
-ULONGLONG Popover::closed_tick = 0;
 
 }  // namespace
 
@@ -772,17 +711,19 @@ void PhiDownloadsPopover::Toggle(HWND owner,
                                  phi_framework::PhiFramework* framework,
                                  BrowserId browser) {
   if (Popover::instance) {
-    ::DestroyWindow(Popover::instance->hwnd());
+    Popover::instance->Dismiss();
     return;
   }
   // The click that dismissed the popover (deactivating it) must not
-  // immediately reopen it — the flyout toggle race.
-  if (Popover::last_owner == owner &&
-      ::GetTickCount64() - Popover::closed_tick < 300) {
+  // immediately reopen it — the flyout toggle race, now the family's.
+  if (PhiPopover::ShouldSuppressReopen(owner)) {
     return;
   }
-  Popover::instance =
-      new Popover(owner, anchor_screen, palette, framework, browser);
+  Popover* popover = new Popover(framework, browser);
+  popover->DeleteWhenDestroyed();
+  if (!popover->Open(owner, anchor_screen, palette)) {
+    delete popover;
+  }
 }
 
 }  // namespace phi_client

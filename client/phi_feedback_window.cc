@@ -59,8 +59,7 @@ constexpr int kFooterY = kHeight - 14 - 30;           // 536
 constexpr int kMaxDescriptionLength = 4096;
 constexpr int kCounterThreshold = 3000;
 // How long Send waits for Chromium's system logs before filing the report
-// without them.
-constexpr UINT_PTR kLogsTimer = 1;
+// without them. The id comes from the window's own pool (logs_timer_).
 constexpr UINT kLogsTimeoutMs = 15 * 1000;
 
 enum : UINT_PTR {
@@ -172,36 +171,26 @@ std::wstring WritePreviewFile(const std::wstring& filename,
 void PhiFeedbackWindow::Open(PhiFeedbackHost* host,
                              const PhiFeedbackContext& context,
                              HWND anchor) {
-  if (g_window && g_window->hwnd_) {
+  if (g_window && g_window->alive()) {
     // App-global, like the Mac's: rebind to the window reopening it so the
     // report's context follows the current window.
     g_window->Rebind(context);
-    ::ShowWindow(g_window->hwnd_, SW_SHOWNORMAL);
-    ::SetForegroundWindow(g_window->hwnd_);
+    ::ShowWindow(g_window->hwnd(), SW_SHOWNORMAL);
+    ::SetForegroundWindow(g_window->hwnd());
     ::SetFocus(g_window->description_);
     return;
   }
   auto* window = new PhiFeedbackWindow(host, context);
-  if (!window->hwnd_) {
+  window->DeleteWhenDestroyed();
+  if (!window->OpenWindow()) {
     delete window;
     return;
   }
   g_window = window;
   // Centered on the invoking shell, as the Mac centers its panel.
-  RECT frame = {};
-  ::GetWindowRect(window->hwnd_, &frame);
-  RECT around = {};
-  if (!anchor || !::GetWindowRect(anchor, &around)) {
-    ::SystemParametersInfoW(SPI_GETWORKAREA, 0, &around, 0);
-  }
-  const int x = around.left + ((around.right - around.left) -
-                               (frame.right - frame.left)) / 2;
-  const int y = around.top + ((around.bottom - around.top) -
-                              (frame.bottom - frame.top)) / 3;
-  ::SetWindowPos(window->hwnd_, nullptr, std::max(x, 0), std::max(y, 0), 0, 0,
-                 SWP_NOSIZE | SWP_NOZORDER);
-  ::ShowWindow(window->hwnd_, SW_SHOW);
-  ::SetForegroundWindow(window->hwnd_);
+  window->CenterOn(anchor);
+  ::ShowWindow(window->hwnd(), SW_SHOW);
+  ::SetForegroundWindow(window->hwnd());
   ::SetFocus(window->description_);
 }
 
@@ -211,7 +200,7 @@ void PhiFeedbackWindow::OnSystemLogs(int request_id, const char* text) {
       g_window->pending_request_ != request_id) {
     return;
   }
-  ::KillTimer(g_window->hwnd_, kLogsTimer);
+  g_window->logs_timer_.Stop();
   if (!text) {
     LOG(WARNING) << "[Feedback] Chromium system logs skipped because the "
                  << "framework returned no text";
@@ -221,7 +210,7 @@ void PhiFeedbackWindow::OnSystemLogs(int request_id, const char* text) {
 
 // static
 HWND PhiFeedbackWindow::Handle() {
-  return g_window ? g_window->hwnd_ : nullptr;
+  return g_window ? g_window->hwnd() : nullptr;
 }
 
 // static
@@ -288,38 +277,40 @@ std::string PhiFeedbackWindow::Drive(const std::string& description,
 
 PhiFeedbackWindow::PhiFeedbackWindow(PhiFeedbackHost* host,
                                      const PhiFeedbackContext& context)
-    : host_(host), context_(context) {
-  static const ATOM atom = [] {
-    WNDCLASSEXW wc = {};
-    wc.cbSize = sizeof(wc);
-    wc.lpfnWndProc = &PhiFeedbackWindow::WndProc;
-    wc.hInstance = ::GetModuleHandleW(nullptr);
-    wc.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
-    wc.lpszClassName = kClassName;
-    return ::RegisterClassExW(&wc);
-  }();
-  (void)atom;
-  colors_ = PhiPopupColorsNow();
-  bg_brush_ = ::CreateSolidBrush(colors_.bg);
-  card_brush_ = ::CreateSolidBrush(colors_.card);
-  const DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU |
-                      WS_MINIMIZEBOX | WS_CLIPCHILDREN;
-  hwnd_ = ::CreateWindowExW(0, kClassName, PhiStr("app.feedback.windowTitle"),
-                            style, CW_USEDEFAULT, CW_USEDEFAULT, 100, 100,
-                            nullptr, nullptr, ::GetModuleHandleW(nullptr),
-                            this);
-  if (!hwnd_) {
-    LOG(ERROR) << "[Feedback] CreateWindowEx failed err=" << ::GetLastError();
-    return;
-  }
+    : host_(host), context_(context) {}
+
+bool PhiFeedbackWindow::OpenWindow() {
+  ClassSpec spec;
+  spec.name = kClassName;
+
+  Options options;
   // The Mac window is closable only; Windows keeps the minimize it had.
-  chrome_.Attach(hwnd_, kPhiCaptionClose | kPhiCaptionMinimize, colors_);
-  dpi_ = chrome_.dpi();
-  const SIZE outer = chrome_.OuterSize(kWidth, kHeight);
-  ::SetWindowPos(hwnd_, nullptr, 0, 0, outer.cx, outer.cy,
+  options.caption_buttons = kPhiCaptionClose | kPhiCaptionMinimize;
+  // Tab walks the control set from the MAIN loop. Escape, Return and
+  // Ctrl+Return mean something specific here and stay in ControlProc.
+  options.dialog_keys = kPhiDialogTab;
+
+  const RECT bounds = {CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT + 100,
+                       CW_USEDEFAULT + 100};
+  if (!CreateSecondary(spec, 0,
+                       WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU |
+                           WS_MINIMIZEBOX | WS_CLIPCHILDREN,
+                       bounds, nullptr, PhiStr("app.feedback.windowTitle"),
+                       options)) {
+    LOG(ERROR) << "[Feedback] CreateWindowEx failed err=" << ::GetLastError();
+    return false;
+  }
+  // The three cached brushes; the card dividers used to be a
+  // CreateSolidBrush / DeleteObject pair on every paint (lane 3 ranked
+  // finding 12).
+  OnColorsChanged();
+  const SIZE outer = chrome().OuterSize(kWidth, kHeight);
+  ::SetWindowPos(hwnd(), nullptr, 0, 0, outer.cx, outer.cy,
                  SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+  logs_timer_ = NewTimer();
   Build();
-  Rebind(context);
+  Rebind(context_);
+  return true;
 }
 
 PhiFeedbackWindow::~PhiFeedbackWindow() {
@@ -328,7 +319,7 @@ PhiFeedbackWindow::~PhiFeedbackWindow() {
       ::DeleteObject(font);
     }
   }
-  for (HBRUSH brush : {bg_brush_, card_brush_}) {
+  for (HBRUSH brush : {bg_brush_, card_brush_, divider_brush_}) {
     if (brush) {
       ::DeleteObject(brush);
     }
@@ -340,10 +331,6 @@ PhiFeedbackWindow::~PhiFeedbackWindow() {
   }
 }
 
-int PhiFeedbackWindow::Scaled(int design) const {
-  return ::MulDiv(design, static_cast<int>(dpi_), 96);
-}
-
 HWND PhiFeedbackWindow::Child(const wchar_t* cls,
                               const wchar_t* text,
                               DWORD style,
@@ -351,7 +338,7 @@ HWND PhiFeedbackWindow::Child(const wchar_t* cls,
                               DWORD ex_style) {
   HWND control = ::CreateWindowExW(
       ex_style, cls, text, WS_CHILD | WS_VISIBLE | style, 0, 0, 10, 10,
-      hwnd_, reinterpret_cast<HMENU>(id), ::GetModuleHandleW(nullptr),
+      hwnd(), reinterpret_cast<HMENU>(id), ::GetModuleHandleW(nullptr),
       nullptr);
   if (control) {
     // Keyboard: Tab cycles, Escape closes, Ctrl+Enter sends, Ctrl+V in the
@@ -363,11 +350,42 @@ HWND PhiFeedbackWindow::Child(const wchar_t* cls,
   return control;
 }
 
-void PhiFeedbackWindow::Build() {
+void PhiFeedbackWindow::EnsureFonts() {
   // The Mac's ladder: 13pt body, .headline (13pt semibold), 11pt captions.
-  font_ = PhiPopupFont(dpi_, 13);
-  headline_font_ = PhiPopupFont(dpi_, 13, FW_SEMIBOLD);
-  small_font_ = PhiPopupFont(dpi_, 11);
+  // Rebuilt on every DPI move — keeping the creation-time fonts is lane 3
+  // ranked finding 10.
+  for (HFONT* slot : {&font_, &headline_font_, &small_font_}) {
+    if (*slot) {
+      ::DeleteObject(*slot);
+      *slot = nullptr;
+    }
+  }
+  font_ = PhiPopupFont(dpi(), 13);
+  headline_font_ = PhiPopupFont(dpi(), 13, FW_SEMIBOLD);
+  small_font_ = PhiPopupFont(dpi(), 11);
+}
+
+// Gives every child the font its role calls for; re-run after a DPI move.
+void PhiFeedbackWindow::ApplyFonts() {
+  for (HWND child = ::GetWindow(hwnd(), GW_CHILD); child;
+       child = ::GetWindow(child, GW_HWNDNEXT)) {
+    const UINT_PTR id = static_cast<UINT_PTR>(::GetDlgCtrlID(child));
+    HFONT font = font_;
+    if (id == kIdHeadlineDescription || id == kIdHeadlineInfo) {
+      font = headline_font_;
+    } else if (id == kIdAttachHint || id == kIdNotice || id == kIdCounter ||
+               id == kIdPreview || id == kIdRemove || id == kIdPrivacy ||
+               id == kIdTerms) {
+      font = small_font_;
+    }
+    if (font) {
+      ::SendMessageW(child, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+    }
+  }
+}
+
+void PhiFeedbackWindow::Build() {
+  EnsureFonts();
 
   Child(L"STATIC", PhiStr("feedback.form.descriptionSection.title"), 0,
         kIdHeadlineDescription);
@@ -403,33 +421,19 @@ void PhiFeedbackWindow::Build() {
   send_ = Child(L"BUTTON", PhiStr("feedback.form.sendButton"),
                 WS_TABSTOP | BS_DEFPUSHBUTTON, kIdSend);
 
-  for (HWND child = ::GetWindow(hwnd_, GW_CHILD); child;
-       child = ::GetWindow(child, GW_HWNDNEXT)) {
-    const UINT_PTR id = static_cast<UINT_PTR>(::GetDlgCtrlID(child));
-    HFONT font = font_;
-    if (id == kIdHeadlineDescription || id == kIdHeadlineInfo) {
-      font = headline_font_;
-    } else if (id == kIdAttachHint || id == kIdNotice || id == kIdCounter ||
-               id == kIdPreview || id == kIdRemove || id == kIdPrivacy ||
-               id == kIdTerms) {
-      font = small_font_;
-    }
-    if (font) {
-      ::SendMessageW(child, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
-    }
-  }
+  ApplyFonts();
   // The Mac's button roles: Send is the prominent one, Choose Files and
   // the attachment actions are bordered, the legal links are inline text.
   PhiPopupStyleButton(send_, PhiPopupButtonRole::kPrimary);
   PhiPopupStyleButton(choose_, PhiPopupButtonRole::kSecondary);
   PhiPopupStyleButton(preview_, PhiPopupButtonRole::kSecondary);
   PhiPopupStyleButton(remove_, PhiPopupButtonRole::kSecondary);
-  PhiPopupStyleButton(::GetDlgItem(hwnd_, kIdPrivacy),
+  PhiPopupStyleButton(::GetDlgItem(hwnd(), kIdPrivacy),
                       PhiPopupButtonRole::kLink);
-  PhiPopupStyleButton(::GetDlgItem(hwnd_, kIdTerms),
+  PhiPopupStyleButton(::GetDlgItem(hwnd(), kIdTerms),
                       PhiPopupButtonRole::kLink);
-  PhiPopupThemeControl(description_, colors_.dark);
-  PhiPopupThemeControl(list_, colors_.dark);
+  PhiPopupThemeControl(description_, colors().dark);
+  PhiPopupThemeControl(list_, colors().dark);
   Layout();
   RefreshAttachmentList();
   RefreshCounter();
@@ -437,9 +441,9 @@ void PhiFeedbackWindow::Build() {
 }
 
 void PhiFeedbackWindow::Layout() {
-  const int band = chrome_.CaptionHeight();
+  const int band = CaptionHeight();
   const auto place = [&](UINT_PTR id, int x, int y, int w, int h) {
-    if (HWND control = ::GetDlgItem(hwnd_, static_cast<int>(id))) {
+    if (HWND control = ::GetDlgItem(hwnd(), static_cast<int>(id))) {
       ::SetWindowPos(control, nullptr, Scaled(x), band + Scaled(y),
                      Scaled(w), Scaled(h), SWP_NOZORDER | SWP_NOACTIVATE);
     }
@@ -464,37 +468,30 @@ void PhiFeedbackWindow::Layout() {
   place(kIdPrivacy, kMargin - 4, kLinksY, 110, 20);
   place(kIdTerms, kMargin + 112, kLinksY, 130, 20);
   place(kIdSend, kMargin + kInner - 96, kFooterY, 96, 30);
-  ::InvalidateRect(hwnd_, nullptr, FALSE);
+  Invalidate();
 }
 
-void PhiFeedbackWindow::Paint() {
-  PAINTSTRUCT ps = {};
-  HDC dc = ::BeginPaint(hwnd_, &ps);
-  if (!dc) {
-    return;
-  }
+void PhiFeedbackWindow::Paint(HDC dc, const RECT&) {
   RECT client = {};
-  ::GetClientRect(hwnd_, &client);
+  ::GetClientRect(hwnd(), &client);
   ::FillRect(dc, &client, bg_brush_);
-  chrome_.PaintCaption(dc, colors_, /*show_mark=*/true);
+  PaintBand(dc);
 
-  const int band = chrome_.CaptionHeight();
+  const int band = CaptionHeight();
   const auto rect = [&](int x, int y, int w, int h) {
     return RECT{Scaled(x), band + Scaled(y), Scaled(x + w),
                 band + Scaled(y + h)};
   };
   // The description well and the "Additional info" card.
   PhiPopupPaintWell(dc, rect(kMargin, kDescriptionY, kInner, kDescriptionH),
-                    colors_, dpi_);
-  PhiPopupPaintWell(dc, rect(kMargin, kCardY, kInner, kCardH), colors_, dpi_);
+                    colors(), dpi());
+  PhiPopupPaintWell(dc, rect(kMargin, kCardY, kInner, kCardH), colors(),
+                    dpi());
   // The card's dividers between its rows.
-  HBRUSH divider = ::CreateSolidBrush(colors_.separator);
   for (const int y : {kDivider1Y, kDivider2Y}) {
     RECT line = rect(kMargin + kCardPad, y, kInner - 2 * kCardPad, 1);
-    ::FillRect(dc, &line, divider);
+    ::FillRect(dc, &line, divider_brush_);
   }
-  ::DeleteObject(divider);
-  ::EndPaint(hwnd_, &ps);
 }
 
 void PhiFeedbackWindow::Rebind(const PhiFeedbackContext& context) {
@@ -585,7 +582,7 @@ bool PhiFeedbackWindow::AddFiles(const std::vector<std::wstring>& paths) {
     if (errors.size() > 3) {
       shown += "\n+" + std::to_string(errors.size() - 3) + " more";
     }
-    PhiNotice(hwnd_, PhiStr("feedback.form.attachmentFailure.title"),
+    PhiNotice(hwnd(), PhiStr("feedback.form.attachmentFailure.title"),
               Widen(shown).c_str());
     return false;
   }
@@ -606,7 +603,7 @@ void PhiFeedbackWindow::ChooseFiles() {
                      FOS_FILEMUSTEXIST);
   dialog->SetTitle(
       PhiStr("feedback.form.attachmentsSection.chooseFilesButton"));
-  if (FAILED(dialog->Show(hwnd_))) {
+  if (FAILED(dialog->Show(hwnd()))) {
     return;  // Cancelled.
   }
   ComPtr<IShellItemArray> items;
@@ -679,14 +676,14 @@ void PhiFeedbackWindow::PreviewSelected() {
       path = a.preview_path;
     }
     if (!path.empty()) {
-      ::ShellExecuteW(hwnd_, L"open", path.c_str(), nullptr, nullptr,
+      ::ShellExecuteW(hwnd(), L"open", path.c_str(), nullptr, nullptr,
                       SW_SHOWNORMAL);
     }
     return;
   }
   // Other files: reveal in Explorer (the Mac's "Show in Finder").
   const std::wstring args = L"/select,\"" + a.draft.file_path + L"\"";
-  ::ShellExecuteW(hwnd_, L"open", L"explorer.exe", args.c_str(), nullptr,
+  ::ShellExecuteW(hwnd(), L"open", L"explorer.exe", args.c_str(), nullptr,
                   SW_SHOWNORMAL);
 }
 
@@ -701,7 +698,7 @@ bool PhiFeedbackWindow::Send(bool interactive) {
     }
     // The Mac fails the enqueue with "No account is available"; here the
     // sign-in is one click away, so offer it.
-    if (PhiAlert(hwnd_, PhiStr("app.feedback.windowTitle"),
+    if (PhiAlert(hwnd(), PhiStr("app.feedback.windowTitle"),
                  PhiStr("feedback.form.signInPrompt"),
                  {{L"Cancel", PhiAlertRole::kSecondary},
                   {L"Sign In", PhiAlertRole::kPrimary}},
@@ -719,7 +716,7 @@ bool PhiFeedbackWindow::Send(bool interactive) {
     CompleteSend(nullptr);
     return true;
   }
-  ::SetTimer(hwnd_, kLogsTimer, kLogsTimeoutMs, nullptr);
+  logs_timer_.Start(kLogsTimeoutMs);
   return true;
 }
 
@@ -738,13 +735,13 @@ void PhiFeedbackWindow::CompleteSend(const char* logs) {
   }
   std::string error;
   if (PhiFeedbackOutbox::Get().Enqueue(draft, &error)) {
-    ::DestroyWindow(hwnd_);
+    Destroy();
     return;
   }
   LOG(ERROR) << "[Feedback] enqueue failed: " << error;
   submitting_ = false;
   RefreshSendState();
-  PhiNotice(hwnd_, PhiStr("feedback.form.localSaveFailure.title"),
+  PhiNotice(hwnd(), PhiStr("feedback.form.localSaveFailure.title"),
             Widen(error).c_str());
 }
 
@@ -764,16 +761,13 @@ LRESULT CALLBACK PhiFeedbackWindow::ControlProc(HWND hwnd,
     return ::DefSubclassProc(hwnd, msg, wparam, lparam);
   }
   const bool ctrl = ::GetKeyState(VK_CONTROL) < 0;
-  const bool shift = ::GetKeyState(VK_SHIFT) < 0;
   if (msg == WM_KEYDOWN) {
     switch (wparam) {
-      case VK_TAB:
-        if (HWND next = ::GetNextDlgTabItem(self->hwnd_, hwnd, shift)) {
-          ::SetFocus(next);
-        }
-        return 0;
+      // VK_TAB is not here any more: the window registers kPhiDialogTab
+      // and the thread's dialog hook runs IsDialogMessageW for it from
+      // the main loop (phi_secondary_window.h).
       case VK_ESCAPE:
-        ::PostMessageW(self->hwnd_, WM_CLOSE, 0, 0);
+        ::PostMessageW(self->hwnd(), WM_CLOSE, 0, 0);
         return 0;
       case VK_RETURN: {
         wchar_t cls[16] = {};
@@ -810,7 +804,7 @@ LRESULT CALLBACK PhiFeedbackWindow::ControlProc(HWND hwnd,
         break;
     }
   }
-  if (msg == WM_CHAR && (wparam == VK_TAB || wparam == VK_ESCAPE)) {
+  if (msg == WM_CHAR && wparam == VK_ESCAPE) {
     return 0;  // Swallow the beep the edit would emit.
   }
   if (msg == WM_CHAR && wparam == VK_RETURN && hwnd != self->description_) {
@@ -824,35 +818,15 @@ LRESULT CALLBACK PhiFeedbackWindow::ControlProc(HWND hwnd,
   return ::DefSubclassProc(hwnd, msg, wparam, lparam);
 }
 
-// static
-LRESULT CALLBACK PhiFeedbackWindow::WndProc(HWND hwnd,
-                                            UINT msg,
-                                            WPARAM wparam,
-                                            LPARAM lparam) {
-  if (msg == WM_NCCREATE) {
-    auto* cs = reinterpret_cast<CREATESTRUCTW*>(lparam);
-    ::SetWindowLongPtrW(hwnd, GWLP_USERDATA,
-                        reinterpret_cast<LONG_PTR>(cs->lpCreateParams));
-    return ::DefWindowProcW(hwnd, msg, wparam, lparam);
-  }
-  auto* self = reinterpret_cast<PhiFeedbackWindow*>(
-      ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
-  if (!self) {
-    return ::DefWindowProcW(hwnd, msg, wparam, lparam);
-  }
-  LRESULT chrome_result = 0;
-  if (self->chrome_.HandleMessage(msg, wparam, lparam, &chrome_result)) {
-    return chrome_result;
-  }
+LRESULT PhiFeedbackWindow::OnWindowMessage(UINT msg,
+                                        WPARAM wparam,
+                                        LPARAM lparam,
+                                        bool* handled) {
   switch (msg) {
-    case WM_ERASEBKGND:
-      return 1;
-    case WM_PAINT:
-      self->Paint();
-      return 0;
     case WM_DRAWITEM:
       if (PhiPopupDrawButton(*reinterpret_cast<DRAWITEMSTRUCT*>(lparam),
-                             self->colors_, nullptr)) {
+                             colors(), nullptr)) {
+        *handled = true;
         return TRUE;
       }
       break;
@@ -860,27 +834,31 @@ LRESULT CALLBACK PhiFeedbackWindow::WndProc(HWND hwnd,
     case WM_CTLCOLORLISTBOX: {
       // The fields paint on their wells' card colour.
       HDC dc = reinterpret_cast<HDC>(wparam);
-      ::SetTextColor(dc, self->colors_.label);
-      ::SetBkColor(dc, self->colors_.card);
-      return reinterpret_cast<LRESULT>(self->card_brush_);
+      ::SetTextColor(dc, colors().label);
+      ::SetBkColor(dc, colors().card);
+      *handled = true;
+      return reinterpret_cast<LRESULT>(card_brush_);
     }
     case WM_COMMAND: {
       const UINT_PTR id = LOWORD(wparam);
       const UINT code = HIWORD(wparam);
       if (id == kIdDescription && code == EN_CHANGE) {
-        self->RefreshCounter();
-        self->RefreshSendState();
+        RefreshCounter();
+        RefreshSendState();
+        *handled = true;
         return 0;
       }
       if (id == kIdList && code == LBN_SELCHANGE) {
-        const bool any = ::SendMessageW(self->list_, LB_GETCURSEL, 0, 0) !=
-                         LB_ERR;
-        ::EnableWindow(self->preview_, any);
-        ::EnableWindow(self->remove_, any);
+        const bool any =
+            ::SendMessageW(list_, LB_GETCURSEL, 0, 0) != LB_ERR;
+        ::EnableWindow(preview_, any);
+        ::EnableWindow(remove_, any);
+        *handled = true;
         return 0;
       }
       if (id == kIdList && code == LBN_DBLCLK) {
-        self->PreviewSelected();
+        PreviewSelected();
+        *handled = true;
         return 0;
       }
       if (code != BN_CLICKED) {
@@ -888,22 +866,28 @@ LRESULT CALLBACK PhiFeedbackWindow::WndProc(HWND hwnd,
       }
       switch (id) {
         case kIdChoose:
-          self->ChooseFiles();
+          ChooseFiles();
+          *handled = true;
           return 0;
         case kIdPreview:
-          self->PreviewSelected();
+          PreviewSelected();
+          *handled = true;
           return 0;
         case kIdRemove:
-          self->RemoveSelected();
+          RemoveSelected();
+          *handled = true;
           return 0;
         case kIdPrivacy:
-          self->host_->OpenFeedbackLink(self->context_.window_id, kPrivacyUrl);
+          host_->OpenFeedbackLink(context_.window_id, kPrivacyUrl);
+          *handled = true;
           return 0;
         case kIdTerms:
-          self->host_->OpenFeedbackLink(self->context_.window_id, kTermsUrl);
+          host_->OpenFeedbackLink(context_.window_id, kTermsUrl);
+          *handled = true;
           return 0;
         case kIdSend:
-          self->Send(/*interactive=*/true);
+          Send(/*interactive=*/true);
+          *handled = true;
           return 0;
         default:
           break;
@@ -918,56 +902,68 @@ LRESULT CALLBACK PhiFeedbackWindow::WndProc(HWND hwnd,
       // window ground.
       const bool in_card = id == kIdUrlLabel || id == kIdAttachLabel ||
                            id == kIdAttachHint;
-      const PhiPopupColors& c = self->colors_;
+      const PhiPopupColors& c = colors();
       ::SetBkColor(dc, in_card ? c.card : c.bg);
       ::SetTextColor(dc, c.label);
       if (id == kIdCounter) {
-        const int length = ::GetWindowTextLengthW(self->description_);
+        const int length = ::GetWindowTextLengthW(description_);
         ::SetTextColor(dc, length >= kMaxDescriptionLength ? c.error
                                                            : c.warning);
       } else if (id == kIdAttachHint || id == kIdNotice) {
         ::SetTextColor(dc, c.secondary);
       }
-      return reinterpret_cast<LRESULT>(in_card ? self->card_brush_
-                                               : self->bg_brush_);
-    }
-    case WM_TIMER:
-      if (wparam == kLogsTimer) {
-        ::KillTimer(hwnd, kLogsTimer);
-        if (self->pending_request_) {
-          LOG(WARNING) << "[Feedback] Chromium system logs skipped: the "
-                       << "framework did not answer in time";
-          self->CompleteSend(nullptr);
-        }
-        return 0;
-      }
-      break;
-    case WM_DPICHANGED: {
-      self->dpi_ = HIWORD(wparam);
-      const RECT* suggested = reinterpret_cast<const RECT*>(lparam);
-      ::SetWindowPos(hwnd, nullptr, suggested->left, suggested->top,
-                     suggested->right - suggested->left,
-                     suggested->bottom - suggested->top,
-                     SWP_NOZORDER | SWP_NOACTIVATE);
-      self->Layout();
-      return 0;
+      *handled = true;
+      return reinterpret_cast<LRESULT>(in_card ? card_brush_ : bg_brush_);
     }
     case WM_CLOSE:
-      ::DestroyWindow(hwnd);
-      return 0;
-    case WM_DESTROY:
-      ::KillTimer(hwnd, kLogsTimer);
-      if (g_window == self) {
-        g_window = nullptr;
-      }
-      self->hwnd_ = nullptr;
-      delete self;
-      ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+      Destroy();
+      *handled = true;
       return 0;
     default:
       break;
   }
-  return ::DefWindowProcW(hwnd, msg, wparam, lparam);
+  return PhiSecondaryWindow::OnWindowMessage(msg, wparam, lparam, handled);
+}
+
+void PhiFeedbackWindow::OnTimerFired(UINT_PTR id) {
+  if (id != logs_timer_.id()) {
+    return;
+  }
+  logs_timer_.Stop();
+  if (pending_request_) {
+    LOG(WARNING) << "[Feedback] Chromium system logs skipped: the "
+                 << "framework did not answer in time";
+    CompleteSend(nullptr);
+  }
+}
+
+void PhiFeedbackWindow::OnColorsChanged() {
+  for (HBRUSH* slot : {&bg_brush_, &card_brush_, &divider_brush_}) {
+    if (*slot) {
+      ::DeleteObject(*slot);
+      *slot = nullptr;
+    }
+  }
+  bg_brush_ = ::CreateSolidBrush(colors().bg);
+  card_brush_ = ::CreateSolidBrush(colors().card);
+  divider_brush_ = ::CreateSolidBrush(colors().separator);
+  PhiPopupThemeControl(description_, colors().dark);
+  PhiPopupThemeControl(list_, colors().dark);
+}
+
+void PhiFeedbackWindow::OnDpiChanged(UINT old_dpi) {
+  PhiSecondaryWindow::OnDpiChanged(old_dpi);
+  EnsureFonts();
+  ApplyFonts();
+  Layout();
+}
+
+void PhiFeedbackWindow::OnNcDestroy() {
+  logs_timer_.Stop();
+  if (g_window == this) {
+    g_window = nullptr;
+  }
+  PhiSecondaryWindow::OnNcDestroy();
 }
 
 }  // namespace phi_client

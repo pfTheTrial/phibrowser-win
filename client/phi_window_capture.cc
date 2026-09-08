@@ -13,23 +13,13 @@
 #include <memory>
 
 #include "base/compiler_specific.h"
+#include "phibrowser-win/client/phi_gdiplus.h"
 
 #pragma comment(lib, "gdiplus.lib")
 
 namespace phi_client {
 
 namespace {
-
-// GDI+ is started once for the process and never shut down: the token would
-// have to outlive every capture, and the process exits with it anyway.
-bool EnsureGdiPlus() {
-  static const bool ok = [] {
-    Gdiplus::GdiplusStartupInput input;
-    ULONG_PTR token = 0;
-    return Gdiplus::GdiplusStartup(&token, &input, nullptr) == Gdiplus::Ok;
-  }();
-  return ok;
-}
 
 // CLSID of the built-in PNG encoder, resolved from the installed codec list.
 bool PngEncoderClsid(CLSID* clsid) {
@@ -62,7 +52,7 @@ bool PhiCaptureWindowToPng(HWND shell,
                            const RECT& content_client,
                            const std::wstring& web_path,
                            const std::wstring& out_path) {
-  if (!shell || !::IsWindow(shell) || out_path.empty() || !EnsureGdiPlus()) {
+  if (!shell || !::IsWindow(shell) || out_path.empty() || !PhiEnsureGdiPlus()) {
     return false;
   }
   RECT client = {};

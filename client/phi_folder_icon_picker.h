@@ -7,6 +7,7 @@
 
 #include <windows.h>
 
+#include <functional>
 #include <string>
 
 namespace phi_client {
@@ -17,8 +18,23 @@ class PhiWindowController;
 // "Change Icon..." menu item: the 24 catalog symbols in a 6-column grid,
 // the current one marked, a click choosing.
 //
-// Modal like the other client pickers — it runs its own message loop and
-// returns the chosen id, or an empty string when dismissed.
+// The picker is a PhiPopover (docs/architecture-review.md §3.6): it does
+// NOT run a message loop. `on_chosen` runs exactly once, after the window
+// is gone, with the chosen id or an empty string when the picker was
+// dismissed (Escape, or focus leaving it).
+using PhiFolderIconChosen = std::function<void(const std::string& icon_id)>;
+
+void PhiOpenFolderIconPicker(PhiWindowController* controller,
+                             const RECT& anchor_screen,
+                             const std::string& selected,
+                             PhiFolderIconChosen on_chosen);
+
+// TRANSITIONAL synchronous wrapper. It drives the asynchronous picker
+// above through a short local message loop so the existing call site (in
+// phi_window_controller.cc, a file phase 5 does not own) keeps compiling.
+// Phase 6 moves that call site onto PhiOpenFolderIconPicker and deletes
+// this — it is the last nested GetMessage loop the picker has, and the
+// only reason one survives here at all.
 std::string PhiPickFolderIcon(PhiWindowController* controller,
                               const RECT& anchor_screen,
                               const std::string& selected);

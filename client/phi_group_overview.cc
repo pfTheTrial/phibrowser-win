@@ -18,6 +18,7 @@
 #include "chrome/browser/phinomenon/phi_framework/phi_framework_api.h"
 #include "phibrowser-win/client/phi_dwrite.h"
 #include "phibrowser-win/client/phi_ids.h"
+#include "phibrowser-win/client/phi_panel.h"
 #include "phibrowser-win/client/phi_theme.h"
 #include "phibrowser-win/client/phi_window_controller.h"
 #include "phibrowser-win/client/phi_window_model.h"
@@ -47,62 +48,85 @@ struct Card {
   RECT close_box{};
 };
 
-class Overview {
+// SELF-OWNED, through the base: PhiGroupOverview::Close() destroys the
+// window and DeleteWhenDestroyed() frees the object at WM_NCDESTROY. The
+// old shape — Close() deleting the object, whose destructor destroyed the
+// window, whose WM_KILLFOCUS called Close() again — needed the singleton
+// nulled first as a documented landmine (lane 3 §5). It is now the base's
+// ordinary teardown: the object outlives every teardown message and
+// nothing can reach it after the HWND is gone.
+class Overview : public PhiPanel {
  public:
   Overview(PhiWindowController* controller, const std::string& group_id)
       : controller_(controller), group_id_(group_id) {
-    dpi_ = ::GetDpiForWindow(controller_->shell_hwnd());
-    Register();
+    ClassSpec spec;
+    spec.name = L"PhiGroupOverview";
+    // No class cursor, as before: the overview does not change the pointer.
+    spec.cursor = nullptr;
+    Options options;
+    // Keeps the card's corner caps visible (PhiPanel adds WS_CLIPSIBLINGS).
+    const RECT nothing = {0, 0, 0, 0};
+    if (!CreatePanel(spec, controller_->shell_hwnd(), nothing, options)) {
+      return;
+    }
+    DeleteWhenDestroyed();
     BuildCards();
-    hwnd_ = ::CreateWindowExW(0, L"PhiGroupOverview", L"",
-                              // Keeps the card's corner caps visible.
-                              WS_CHILD | WS_CLIPSIBLINGS, 0, 0, 0,
-                              0, controller_->shell_hwnd(), nullptr,
-                              ::GetModuleHandleW(nullptr), nullptr);
-    font_ = ::CreateFontW(-Scaled(12), 0, 0, 0, FW_NORMAL, FALSE, FALSE,
-                          FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
-                          CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-                          DEFAULT_PITCH, L"Segoe UI");
     Reposition();
-    ::SetWindowPos(hwnd_, HWND_TOP, 0, 0, 0, 0,
-                   SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
-    ::SetFocus(hwnd_);
+    ShowPanel();
+    ::SetFocus(hwnd());
   }
 
-  ~Overview() {
-    if (font_) {
-      ::DeleteObject(font_);
-    }
-    if (hwnd_ && ::IsWindow(hwnd_)) {
-      ::DestroyWindow(hwnd_);
-    }
-  }
+  // No Destroy() here: this object is SELF-OWNED through the base, so it
+  // is only ever freed after its window's WM_NCDESTROY (see Close()).
+  // Destroying the window from the destructor is exactly the re-entrancy
+  // this migration removes.
+  ~Overview() override = default;
 
   static Overview* instance;
 
   PhiWindowController* controller() const { return controller_; }
 
- private:
-  int Scaled(int design) const { return ::MulDiv(design, dpi_, 96); }
+ protected:
+  void Paint(HDC dc, const RECT& dirty) override;
 
-  void Register() {
-    static bool registered = [] {
-      WNDCLASSEXW wc = {};
-      wc.cbSize = sizeof(wc);
-      wc.lpfnWndProc = &OverviewProc;
-      wc.hInstance = ::GetModuleHandleW(nullptr);
-      wc.lpszClassName = L"PhiGroupOverview";
-      return ::RegisterClassExW(&wc) != 0;
-    }();
-    (void)registered;
+  void OnMouseDown(int, POINT pt) override {
+    ::SetFocus(hwnd());  // Keep Escape working after a click.
+    Click(pt);
+  }
+
+  void OnEscape() override { PhiGroupOverview::Close(); }
+
+  LRESULT OnMessage(UINT message,
+                    WPARAM wparam,
+                    LPARAM lparam,
+                    bool* handled) override {
+    if (message == WM_KILLFOCUS) {
+      // Focus moved elsewhere (page click, another window): leave the
+      // overview — matching the Mac's dismissal.
+      *handled = true;
+      PhiGroupOverview::Close();
+      return 0;
+    }
+    return PhiPanel::OnMessage(message, wparam, lparam, handled);
+  }
+
+  void OnNcDestroy() override {
+    if (instance == this) {
+      instance = nullptr;
+    }
+    PhiPanel::OnNcDestroy();
+  }
+
+ private:
+  HFONT font() { return fonts().Get(12, FW_NORMAL); }
+
+  PhiPalette QueryPalette() const override {
+    return controller_ ? controller_->CurrentPalette() : PhiPalette();
   }
 
   void Reposition() {
     // The overlay covers the CONTENT card (the page area).
-    RECT content = controller_->ContentRect();
-    ::SetWindowPos(hwnd_, HWND_TOP, content.left, content.top,
-                   content.right - content.left, content.bottom - content.top,
-                   SWP_NOACTIVATE);
+    SetPanelBounds(controller_->ContentRect());
     LayoutCards();
   }
 
@@ -150,7 +174,7 @@ class Overview {
 
   void LayoutCards() {
     RECT rc = {};
-    ::GetClientRect(hwnd_, &rc);
+    ::GetClientRect(hwnd(), &rc);
     const int usable = rc.right - rc.left - Scaled(kGridPad) * 2;
     const int per_row = std::max(
         1, (usable + Scaled(kCardGap)) /
@@ -174,10 +198,10 @@ class Overview {
     }
   }
 
-  void Paint(HDC dc) {
+  void PaintCards(HDC dc) {
     RECT rc = {};
-    ::GetClientRect(hwnd_, &rc);
-    const PhiPalette palette = controller_->CurrentPalette();
+    ::GetClientRect(hwnd(), &rc);
+    const PhiPalette palette = QueryPalette();
     HBRUSH bg = ::CreateSolidBrush(palette.window_bg);
     ::FillRect(dc, &rc, bg);
     ::DeleteObject(bg);
@@ -186,7 +210,7 @@ class Overview {
       if (card.add_card) {
         PhiFillRoundRectAA(dc, card.bounds, Scaled(10), palette.hover);
         RECT plus = card.bounds;
-        HGDIOBJ prev_font = font_ ? ::SelectObject(dc, font_) : nullptr;
+        HGDIOBJ prev_font = ::SelectObject(dc, font());
         ::SetTextColor(dc, palette.label_dim);
         ::DrawTextW(dc, L"+", -1, &plus,
                     DT_CENTER | DT_VCENTER | DT_SINGLELINE);
@@ -214,7 +238,7 @@ class Overview {
       ::SelectObject(dc, prev_pen);
       ::DeleteObject(pen);
       // Close box.
-      HGDIOBJ prev_font = font_ ? ::SelectObject(dc, font_) : nullptr;
+      HGDIOBJ prev_font = ::SelectObject(dc, font());
       ::SetTextColor(dc, palette.label_dim);
       RECT close_rc = card.close_box;
       ::DrawTextW(dc, L"✕", -1, &close_rc,
@@ -272,7 +296,7 @@ class Overview {
         // push, but the overview is the user's view of it right now.
         cards_.erase(cards_.begin() + static_cast<std::ptrdiff_t>(i));
         LayoutCards();
-        ::InvalidateRect(hwnd_, nullptr, TRUE);
+        Invalidate();
         return;
       }
       if (framework && card.tab_id.valid()) {
@@ -283,49 +307,16 @@ class Overview {
     }
   }
 
-  static LRESULT CALLBACK OverviewProc(HWND hwnd, UINT msg, WPARAM w,
-                                       LPARAM l) {
-    Overview* self = instance && instance->hwnd_ == hwnd ? instance : nullptr;
-    switch (msg) {
-      case WM_PAINT: {
-        PAINTSTRUCT ps = {};
-        HDC dc = ::BeginPaint(hwnd, &ps);
-        if (self) {
-          self->Paint(dc);
-        }
-        ::EndPaint(hwnd, &ps);
-        return 0;
-      }
-      case WM_LBUTTONDOWN:
-        if (self) {
-          ::SetFocus(hwnd);  // Keep Escape working after a click.
-          self->Click({GET_X_LPARAM(l), GET_Y_LPARAM(l)});
-        }
-        return 0;
-      case WM_KEYDOWN:
-        if (w == VK_ESCAPE) {
-          PhiGroupOverview::Close();
-          return 0;
-        }
-        break;
-      case WM_KILLFOCUS:
-        // Focus moved elsewhere (page click, another window): leave the
-        // overview — matching the Mac's dismissal.
-        PhiGroupOverview::Close();
-        return 0;
-    }
-    return ::DefWindowProcW(hwnd, msg, w, l);
-  }
-
   RAW_PTR_EXCLUSION PhiWindowController* const controller_;
   const std::string group_id_;
-  UINT dpi_ = 96;
-  HWND hwnd_ = nullptr;
-  HFONT font_ = nullptr;
   std::vector<Card> cards_;
 };
 
 Overview* Overview::instance = nullptr;
+
+void Overview::Paint(HDC dc, const RECT&) {
+  PaintCards(dc);
+}
 
 }  // namespace
 
@@ -353,8 +344,16 @@ void PhiGroupOverview::CloseIfBoundTo(const PhiWindowController* controller) {
 // static
 void PhiGroupOverview::Close() {
   if (Overview* gone = Overview::instance) {
-    Overview::instance = nullptr;  // Cleared FIRST: ~Overview refires focus.
-    delete gone;
+    // The singleton is released BEFORE the teardown starts, so the
+    // WM_KILLFOCUS that DestroyWindow delivers finds no overview to close
+    // and simply returns. The object itself is freed by the base at
+    // WM_NCDESTROY (DeleteWhenDestroyed), not from inside a message.
+    Overview::instance = nullptr;
+    if (gone->alive()) {
+      gone->Destroy();  // DeleteWhenDestroyed frees it at WM_NCDESTROY.
+    } else {
+      delete gone;  // It never got a window to be destroyed with.
+    }
   }
 }
 

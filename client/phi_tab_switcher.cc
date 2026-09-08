@@ -18,6 +18,7 @@
 #include "chrome/browser/phinomenon/phi_framework/phi_framework_api.h"
 #include "phibrowser-win/client/phi_dwrite.h"
 #include "phibrowser-win/client/phi_ids.h"
+#include "phibrowser-win/client/phi_popover.h"
 #include "phibrowser-win/client/phi_theme.h"
 #include "phibrowser-win/client/phi_window_controller.h"
 #include "phibrowser-win/client/phi_window_model.h"
@@ -45,40 +46,49 @@ struct Card {
   int fav_h = 0;
 };
 
-class Hud {
+// The HUD keeps its MRU model and its Paint(); the window itself — class
+// registration, `this` binding, the back buffer, the dpi and the fonts —
+// belongs to PhiPopover now (lane 3 §6.2).
+class Hud : public PhiPopover {
  public:
   explicit Hud(PhiWindowController* controller) : controller_(controller) {
-    dpi_ = ::GetDpiForWindow(controller_->shell_hwnd());
-    Register();
+    ClassSpec spec;
+    spec.name = L"PhiTabSwitch";
+    spec.cursor = nullptr;
+
+    Options options;
+    options.activate = false;
+    options.foreground = false;
+    options.topmost = true;
+    options.dwm_round = false;  // PhiFillRoundRectAA draws the card.
+    options.dismiss_on_inactive = false;  // Releasing Ctrl commits it.
+    options.dismiss_on_escape = false;
+    options.click_through = true;
+
+    Placement placement;
+    placement.side = PhiPopoverSide::kExplicit;
+    placement.clamp = false;
+    SIZE probe = {1, 1};
+    if (!CreatePopover(spec, controller_->shell_hwnd(), probe, placement,
+                       options)) {
+      return;
+    }
     BuildCards();
-    const int count =
-        static_cast<int>(std::min(cards_.size(), kMaxCards));
-    const int w = Scaled(kPanelPad) * 2 + count * Scaled(kCardWidth) +
-                  std::max(0, count - 1) * Scaled(kCardGap);
-    const int h = Scaled(kPanelPad) * 2 + Scaled(kCardHeight);
+    const int count = static_cast<int>(std::min(cards_.size(), kMaxCards));
+    SIZE size = {};
+    size.cx = Scaled(kPanelPad) * 2 + count * Scaled(kCardWidth) +
+              std::max(0, count - 1) * Scaled(kCardGap);
+    size.cy = Scaled(kPanelPad) * 2 + Scaled(kCardHeight);
     RECT owner_rect = {};
     ::GetWindowRect(controller_->shell_hwnd(), &owner_rect);
-    const int x = (owner_rect.left + owner_rect.right) / 2 - w / 2;
-    const int y = (owner_rect.top + owner_rect.bottom) / 2 - h / 2;
-    hwnd_ = ::CreateWindowExW(
-        WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST, L"PhiTabSwitch",
-        L"", WS_POPUP, x, y, w, h, controller_->shell_hwnd(), nullptr,
-        ::GetModuleHandleW(nullptr), nullptr);
-    font_ = ::CreateFontW(-Scaled(12), 0, 0, 0, FW_NORMAL, FALSE, FALSE,
-                          FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
-                          CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-                          DEFAULT_PITCH, L"Segoe UI");
-    ::ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
+    const LONG x = (owner_rect.left + owner_rect.right) / 2 - size.cx / 2;
+    const LONG y = (owner_rect.top + owner_rect.bottom) / 2 - size.cy / 2;
+    placement.anchor = {x, y, x, y};
+    Reposition(placement, size);
+    Show();
   }
 
-  ~Hud() {
-    if (font_) {
-      ::DeleteObject(font_);
-    }
-    if (hwnd_ && ::IsWindow(hwnd_)) {
-      ::DestroyWindow(hwnd_);
-    }
-  }
+  ~Hud() override { Destroy(); }
 
   void Advance(int direction) {
     if (cards_.empty()) {
@@ -86,7 +96,7 @@ class Hud {
     }
     const int count = static_cast<int>(cards_.size());
     selected_ = ((selected_ + direction) % count + count) % count;
-    ::InvalidateRect(hwnd_, nullptr, TRUE);
+    Invalidate();
   }
 
   void Commit() {
@@ -105,21 +115,16 @@ class Hud {
 
   PhiWindowController* controller() const { return controller_; }
 
- private:
-  int Scaled(int design) const { return ::MulDiv(design, dpi_, 96); }
-
-  void Register() {
-    static bool registered = [] {
-      WNDCLASSEXW wc = {};
-      wc.cbSize = sizeof(wc);
-      wc.lpfnWndProc = &HudProc;
-      wc.hInstance = ::GetModuleHandleW(nullptr);
-      wc.lpszClassName = L"PhiTabSwitch";
-      return ::RegisterClassExW(&wc) != 0;
-    }();
-    (void)registered;
+ protected:
+  // The HUD follows the shell's live palette, so a theme switch (or an OS
+  // dark/light toggle through PhiThemeBus) repaints it.
+  PhiPalette QueryPalette() const override {
+    return controller_->CurrentPalette();
   }
 
+  void Paint(HDC dc, const RECT&) override { PaintCards(dc); }
+
+ private:
   // MRU-ordered cards: the controller's MRU list first, then any tabs it
   // has not seen active yet, in strip order — the strip from the window
   // model, never a parse of the framework's JSON.
@@ -187,10 +192,10 @@ class Hud {
     selected_ = cards_.size() > 1 ? 1 : 0;
   }
 
-  void Paint(HDC dc) {
+  void PaintCards(HDC dc) {
     RECT rc = {};
-    ::GetClientRect(hwnd_, &rc);
-    const PhiPalette palette = controller_->CurrentPalette();
+    ::GetClientRect(hwnd(), &rc);
+    const PhiPalette& palette = PhiWindow::palette();
     PhiFillRoundRectAA(dc, rc, Scaled(16), palette.card);
     PhiStrokeRoundRectAA(dc, rc, Scaled(16), palette.border, 1);
     ::SetBkMode(dc, TRANSPARENT);
@@ -228,7 +233,8 @@ class Hud {
       }
       RECT title_rc = {icon_rc.right + Scaled(6), footer.top,
                        footer.right - Scaled(6), footer.bottom};
-      HGDIOBJ prev_font = font_ ? ::SelectObject(dc, font_) : nullptr;
+      HFONT font = fonts().Get(12, FW_NORMAL);
+      HGDIOBJ prev_font = font ? ::SelectObject(dc, font) : nullptr;
       ::SetTextColor(dc, palette.label);
       ::DrawTextW(dc, card.title.c_str(), -1, &title_rc,
                   DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
@@ -240,28 +246,7 @@ class Hud {
     }
   }
 
-  static LRESULT CALLBACK HudProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
-    Hud* self = instance && instance->hwnd_ == hwnd ? instance : nullptr;
-    switch (msg) {
-      case WM_NCHITTEST:
-        return HTTRANSPARENT;
-      case WM_PAINT: {
-        PAINTSTRUCT ps = {};
-        HDC dc = ::BeginPaint(hwnd, &ps);
-        if (self) {
-          self->Paint(dc);
-        }
-        ::EndPaint(hwnd, &ps);
-        return 0;
-      }
-    }
-    return ::DefWindowProcW(hwnd, msg, w, l);
-  }
-
   RAW_PTR_EXCLUSION PhiWindowController* const controller_;
-  UINT dpi_ = 96;
-  HWND hwnd_ = nullptr;
-  HFONT font_ = nullptr;
   std::vector<Card> cards_;
   int selected_ = 0;
 };

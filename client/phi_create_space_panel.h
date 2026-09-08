@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "base/memory/raw_ptr_exclusion.h"
+#include "phibrowser-win/client/phi_panel.h"
 #include "phibrowser-win/client/phi_theme.h"
 
 namespace phi_client {
@@ -31,10 +32,10 @@ class PhiWindowController;
 // Phi icon and a random theme distinct from the source Space's — previewed
 // live: the theme on the whole chrome (the controller's palette override),
 // the icon on the strip's dashed placeholder pip.
-class PhiCreateSpacePanel {
+class PhiCreateSpacePanel : public PhiPanel {
  public:
   explicit PhiCreateSpacePanel(PhiWindowController* controller);
-  ~PhiCreateSpacePanel();
+  ~PhiCreateSpacePanel() override;
 
   PhiCreateSpacePanel(const PhiCreateSpacePanel&) = delete;
   PhiCreateSpacePanel& operator=(const PhiCreateSpacePanel&) = delete;
@@ -52,7 +53,6 @@ class PhiCreateSpacePanel {
   // window.
   void Hide(bool animated);
   bool visible() const;
-  HWND hwnd() const { return hwnd_; }
 
   // Follows the sidebar (and the monitor's DPI) on relayout.
   void Reposition(const RECT& bounds);
@@ -62,6 +62,23 @@ class PhiCreateSpacePanel {
   // A profile created from the form's "New Profile…" row has appeared: the
   // picker selects it (the Mac's promptCreateProfile completion).
   void OnProfileCreated(const std::string& profile_id);
+
+ protected:
+  // PhiPanel: the form's state, its paint and its hit handling. Everything
+  // else — registration, the `this` binding, the cached back buffer, the
+  // fonts, the dpi and the capture — comes from the base (phi_window.h).
+  void Paint(HDC dc, const RECT& dirty) override;
+  void OnSize(int width, int height) override;
+  void OnDpiChanged(UINT old_dpi) override;
+  void OnMouseDown(int hit, POINT client_pt) override;
+  void OnWheel(int delta, POINT client_pt) override;
+  void OnCaptureLost() override;
+  bool OnKey(WPARAM virtual_key) override;
+  PhiPalette QueryPalette() const override;
+  LRESULT OnMessage(UINT message,
+                    WPARAM wparam,
+                    LPARAM lparam,
+                    bool* handled) override;
 
  private:
   enum class Tab { kIcon, kEmoji };
@@ -78,10 +95,17 @@ class PhiCreateSpacePanel {
   };
   struct Geometry;
 
-  int Scaled(int design) const;
   void EnsureWindow();
-  void EnsureFonts();
   void EnsureField();
+  // The seven faces, out of the base's per-dpi font set. const because the
+  // measuring passes run from const geometry code.
+  HFONT TitleFont() const;
+  HFONT SubtitleFont() const;
+  HFONT BodyFont() const;
+  HFONT BodyMediumFont() const;
+  HFONT PillFont() const;
+  HFONT EmojiFont() const;
+  HFONT Mdl2Font() const;
   void LayoutField();
   void ReloadProfiles();
   std::wstring SelectedProfileName() const;
@@ -97,26 +121,15 @@ class PhiCreateSpacePanel {
   void ShowProfileMenu(const Geometry& g);
   void Create();
   void Cancel();
-  void Paint(HDC dc);
+  void PaintForm(HDC dc);
   void PaintCells(HDC dc, const Geometry& g, const PhiPalette& palette);
   void PaintSlider(HDC dc, const RECT& bounds, const PhiPalette& palette);
 
-  static LRESULT CALLBACK PanelProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l);
   static LRESULT CALLBACK FieldProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l);
 
   RAW_PTR_EXCLUSION PhiWindowController* const controller_;
-  HWND hwnd_ = nullptr;
   HWND field_ = nullptr;
   WNDPROC field_base_proc_ = nullptr;
-  UINT dpi_ = 96;
-  UINT fonts_dpi_ = 0;
-  HFONT title_font_ = nullptr;
-  HFONT subtitle_font_ = nullptr;
-  HFONT body_font_ = nullptr;
-  HFONT body_medium_font_ = nullptr;
-  HFONT pill_font_ = nullptr;
-  HFONT emoji_font_ = nullptr;
-  HFONT mdl2_font_ = nullptr;
   HBRUSH field_brush_ = nullptr;
   COLORREF field_brush_color_ = 0;
 
@@ -133,7 +146,9 @@ class PhiCreateSpacePanel {
   Hit hover_ = Hit::kNone;
   int hover_index_ = -1;
   bool dragging_slider_ = false;
-  bool tracking_leave_ = false;
+  // Held while the saturation slider is being dragged; the base ends it on
+  // WM_CAPTURECHANGED and WM_CANCELMODE alike (lane 3 §4.2).
+  Capture slider_capture_;
 };
 
 }  // namespace phi_client

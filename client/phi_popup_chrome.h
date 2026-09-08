@@ -9,6 +9,7 @@
 
 #include <string>
 
+#include "base/memory/raw_ptr_exclusion.h"
 #include "phibrowser-win/client/phi_theme.h"
 
 namespace phi_client {
@@ -125,6 +126,22 @@ class PhiPopupChrome {
   // Re-applies the DWM border / dark-mode attributes after a theme flip.
   void ApplyColors(const PhiPopupColors& colors);
 
+  // The band's height in DESIGN units. 32 is the Mac secondary-window
+  // look; the Kiosk's band is its 52dip toolbar and title bar at once.
+  // Set before Attach().
+  void SetCaptionHeight(int design_units);
+  // Whether the title and the window-control glyphs dim to `tertiary`
+  // while the window is inactive. Settings and the Kiosk never dimmed
+  // theirs, and the migration to this frame must not start.
+  void SetDimWhenInactive(bool dim);
+  // A band pixel the OWNER claims: WM_NCHITTEST answers HTCLIENT for it
+  // instead of HTCAPTION, so the owner's own band controls take their
+  // clicks rather than dragging the window. A plain function pointer,
+  // not a std::function: the frame stores no state it must destroy, and
+  // the house rules allow no friend.
+  using ClientProbe = bool (*)(void* context, POINT client_pt);
+  void SetClientProbe(ClientProbe probe, void* context);
+
   UINT dpi() const { return dpi_; }
   int Scaled(int design) const;
   int CaptionHeight() const;  // Pixels.
@@ -145,6 +162,9 @@ class PhiPopupChrome {
                     const PhiPopupColors& colors,
                     bool show_mark,
                     const wchar_t* title = nullptr);
+  // The window controls ONLY, over a band the owner already painted (the
+  // Kiosk's toolbar band is title bar and toolbar at once).
+  void PaintCaptionButtons(HDC dc, const PhiPopupColors& colors);
 
  private:
   void EnsureFonts();
@@ -152,13 +172,26 @@ class PhiPopupChrome {
   int HitTestCaption(POINT client_pt) const;
   void SetHot(int hit_code);
   void InvalidateBand();
+  // The two per-paint brushes PaintCaption used to create and delete on
+  // every frame (lane 3 ranked finding 12), cached by colour.
+  HBRUSH GroundBrush(COLORREF color);
+  HBRUSH HotBrush(COLORREF color);
 
   HWND hwnd_ = nullptr;
   unsigned buttons_ = kPhiCaptionClose;
   UINT dpi_ = 96;
   UINT font_dpi_ = 0;
+  int caption_height_ = 32;  // Design units.
+  bool dim_when_inactive_ = true;
+  ClientProbe client_probe_ = nullptr;
+  // The probe's owner, which creates the chrome and outlives it.
+  RAW_PTR_EXCLUSION void* client_probe_context_ = nullptr;
   HFONT title_font_ = nullptr;
   HFONT glyph_font_ = nullptr;
+  HBRUSH ground_brush_ = nullptr;
+  COLORREF ground_color_ = 0;
+  HBRUSH hot_brush_ = nullptr;
+  COLORREF hot_color_ = 0;
   int hot_ = 0;      // HTMINBUTTON / HTMAXBUTTON / HTCLOSE, or 0.
   int pressed_ = 0;
 };

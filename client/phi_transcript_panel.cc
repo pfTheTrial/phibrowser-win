@@ -5,20 +5,18 @@
 #include "phibrowser-win/client/phi_transcript_panel.h"
 
 #include <commctrl.h>
-#include <windowsx.h>
 
 #include <algorithm>
-#include <memory>
 
 #include "base/memory/raw_ptr_exclusion.h"
 #include "base/strings/utf_string_conversions.h"
 #include "phibrowser-win/client/phi_popup_chrome.h"
+#include "phibrowser-win/client/phi_secondary_window.h"
 
 namespace phi_client {
 
 namespace {
 
-constexpr wchar_t kPanelClass[] = L"PhiTranscriptPanel";
 // The Mac floating panel's shape: 460×560, no smaller than 320×300.
 constexpr int kPanelWidth = 460;
 constexpr int kPanelHeight = 560;
@@ -51,27 +49,42 @@ ConsolePalette ConsoleFor(bool dark) {
           RGB(173, 173, 173)};
 }
 
-class Panel {
+class Panel : public PhiSecondaryWindow {
  public:
   static Panel* instance;
 
-  Panel(HWND owner,
-        const PhiPalette& palette,
+  Panel(const PhiPalette& palette,
         const std::string& task_id,
         PhiTranscriptHost* host)
-      : task_id_(task_id), host_(host) {
-    // The window chrome follows the app appearance; the feed keeps the
-    // console's own ground.
-    colors_ = PhiPopupColorsFor(palette.dark, palette.accent);
-    console_ = ConsoleFor(palette.dark);
-    dpi_ = ::GetDpiForWindow(owner);
-    Register();
+      : task_id_(task_id),
+        host_(host),
+        open_dark_(palette.dark),
+        open_accent_(palette.accent) {}
+
+  ~Panel() override {
+    if (ui_font_) {
+      ::DeleteObject(ui_font_);
+    }
+    DropBrushes();
+  }
+
+  bool Open(HWND owner) {
+    ClassSpec spec;
+    spec.name = L"PhiTranscriptPanel";
+
     // Park beside the owner's top-right corner, clamped to the work area.
+    // The dpi the base takes from the owner is the one this arithmetic
+    // needs, so the window is created at a provisional origin and moved
+    // by the same numbers the old code used.
+    const UINT dpi = ::GetDpiForWindow(owner);
+    const auto scaled = [dpi](int design) {
+      return ::MulDiv(design, static_cast<int>(dpi ? dpi : 96), 96);
+    };
     RECT owner_rect = {};
     ::GetWindowRect(owner, &owner_rect);
-    const int w = Scaled(kPanelWidth);
-    const int h = Scaled(kPanelHeight);
-    int x = owner_rect.right + Scaled(8);
+    const int w = scaled(kPanelWidth);
+    const int h = scaled(kPanelHeight);
+    int x = owner_rect.right + scaled(8);
     int y = owner_rect.top;
     HMONITOR monitor = ::MonitorFromWindow(owner, MONITOR_DEFAULTTONEAREST);
     MONITORINFO info = {sizeof(info)};
@@ -79,49 +92,35 @@ class Panel {
       if (x + w > info.rcWork.right) {
         x = std::max(static_cast<int>(info.rcWork.left),
                      static_cast<int>(owner_rect.right) - w);
-        y = owner_rect.top + Scaled(40);
+        y = owner_rect.top + scaled(40);
       }
       y = std::max(static_cast<int>(info.rcWork.top),
                    std::min(y, static_cast<int>(info.rcWork.bottom) - h));
     }
     const std::wstring title =
-        L"Agent Transcript \u2014 " +
+        L"Agent Transcript — " +
         base::UTF8ToWide(host_->TranscriptAgentName(task_id_));
-    hwnd_ = ::CreateWindowExW(
-        WS_EX_TOOLWINDOW, kPanelClass, title.c_str(),
-        WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_MINIMIZEBOX |
-            WS_MAXIMIZEBOX | WS_CLIPCHILDREN,
-        x, y, w, h, owner, nullptr, ::GetModuleHandleW(nullptr), this);
-    if (!hwnd_) {
-      return;
-    }
+
+    Options options;
     // The Mac window is closable, miniaturizable and resizable: the full
     // Windows cluster.
-    chrome_.Attach(hwnd_,
-                   kPhiCaptionClose | kPhiCaptionMinimize |
-                       kPhiCaptionMaximize,
-                   colors_);
+    options.caption_buttons =
+        kPhiCaptionClose | kPhiCaptionMinimize | kPhiCaptionMaximize;
+    options.dialog_keys = kPhiDialogTab;
+
+    const RECT bounds = {x, y, x + w, y + h};
+    if (!CreateSecondary(spec, WS_EX_TOOLWINDOW,
+                         WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME |
+                             WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_CLIPCHILDREN,
+                         bounds, owner, title.c_str(), options)) {
+      return false;
+    }
+    OnColorsChanged();  // The console palette and the cached brushes.
     EnsureFonts();
     CreateChildren();
     Refresh();
-    ::ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
-  }
-
-  ~Panel() {
-    for (HFONT font : {feed_font_, ui_font_}) {
-      if (font) {
-        ::DeleteObject(font);
-      }
-    }
-    for (HBRUSH brush : {bg_brush_, feed_brush_, card_brush_}) {
-      if (brush) {
-        ::DeleteObject(brush);
-      }
-    }
-    if (hwnd_ && ::IsWindow(hwnd_)) {
-      ::SetWindowLongPtrW(hwnd_, GWLP_USERDATA, 0);
-      ::DestroyWindow(hwnd_);
-    }
+    ::ShowWindow(hwnd(), SW_SHOWNOACTIVATE);
+    return true;
   }
 
   const std::string& task_id() const { return task_id_; }
@@ -164,34 +163,143 @@ class Panel {
     }
   }
 
- private:
-  int Scaled(int design) const { return ::MulDiv(design, dpi_, 96); }
+ protected:
+  // The panel opened on the shell's palette; once the OS or the app
+  // theme actually moves, the app-wide answer is the only live one it
+  // has (lane 3 ranked finding 7).
+  PhiPopupColors QueryColors() const override {
+    return followed_theme_ ? PhiPopupColorsNow()
+                           : PhiPopupColorsFor(open_dark_, open_accent_);
+  }
 
-  void Register() {
-    static bool registered = [] {
-      WNDCLASSEXW panel = {};
-      panel.cbSize = sizeof(panel);
-      panel.lpfnWndProc = &PanelProc;
-      panel.hInstance = ::GetModuleHandleW(nullptr);
-      panel.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
-      panel.lpszClassName = kPanelClass;
-      ::RegisterClassExW(&panel);
-      return true;
-    }();
-    (void)registered;
+  void OnThemeChanged() override {
+    followed_theme_ = true;
+    PhiSecondaryWindow::OnThemeChanged();
+  }
+
+  void OnColorsChanged() override {
+    console_ = ConsoleFor(colors().dark);
+    DropBrushes();
+    bg_brush_ = ::CreateSolidBrush(colors().bg);
+    feed_brush_ = ::CreateSolidBrush(console_.background);
+    card_brush_ = ::CreateSolidBrush(colors().card);
+    rule_brush_ = ::CreateSolidBrush(console_.faint);
+    PhiPopupThemeControl(feed_, colors().dark);
+  }
+
+  void OnDpiChanged(UINT old_dpi) override {
+    PhiSecondaryWindow::OnDpiChanged(old_dpi);
+    // fonts() was rebuilt by the base; the one font this panel owns
+    // outright has to follow (lane 3 ranked finding 10 — the transcript
+    // and the feedback form kept their pre-move fonts).
+    EnsureFonts();
+    ::SendMessageW(feed_, WM_SETFONT, reinterpret_cast<WPARAM>(FeedFont()),
+                   TRUE);
+    for (HWND child : {input_, send_}) {
+      ::SendMessageW(child, WM_SETFONT, reinterpret_cast<WPARAM>(ui_font_),
+                     TRUE);
+    }
+    Layout();
+  }
+
+  void OnSize(int, int) override { Layout(); }
+
+  void Paint(HDC dc, const RECT&) override {
+    RECT client = {};
+    ::GetClientRect(hwnd(), &client);
+    ::FillRect(dc, &client, bg_brush_);
+    PaintBand(dc);
+    // The feed's ground reaches the window edges; the divider (the Mac's
+    // faint rule) closes it above the prompt row.
+    const int row = Scaled(kInputRowHeight);
+    RECT feed = {0, CaptionHeight(), client.right, client.bottom - row - 1};
+    ::FillRect(dc, &feed, feed_brush_);
+    RECT rule = {0, client.bottom - row - 1, client.right, client.bottom - row};
+    ::FillRect(dc, &rule, rule_brush_);
+    PhiPopupPaintWell(dc, InputWell(), colors(), dpi());
+  }
+
+  LRESULT OnWindowMessage(UINT message,
+                          WPARAM wparam,
+                          LPARAM lparam,
+                          bool* handled) override {
+    switch (message) {
+      case WM_GETMINMAXINFO: {
+        auto* mmi = reinterpret_cast<MINMAXINFO*>(lparam);
+        mmi->ptMinTrackSize.x = Scaled(kPanelMinWidth);
+        mmi->ptMinTrackSize.y = Scaled(kPanelMinHeight);
+        *handled = true;
+        return 0;
+      }
+      case WM_COMMAND:
+        if (LOWORD(wparam) == kSendId) {
+          Send();
+          *handled = true;
+          return 0;
+        }
+        break;
+      case WM_DRAWITEM:
+        if (PhiPopupDrawButton(*reinterpret_cast<DRAWITEMSTRUCT*>(lparam),
+                               colors(), nullptr)) {
+          *handled = true;
+          return TRUE;
+        }
+        break;
+      case WM_CTLCOLORSTATIC: {  // The read-only feed EDIT arrives here.
+        HDC dc = reinterpret_cast<HDC>(wparam);
+        ::SetTextColor(dc, console_.text);
+        ::SetBkColor(dc, console_.background);
+        *handled = true;
+        return reinterpret_cast<LRESULT>(feed_brush_);
+      }
+      case WM_CTLCOLOREDIT: {
+        HDC dc = reinterpret_cast<HDC>(wparam);
+        ::SetTextColor(dc, colors().label);
+        ::SetBkColor(dc, colors().card);
+        *handled = true;
+        return reinterpret_cast<LRESULT>(card_brush_);
+      }
+      case WM_CLOSE:
+        Destroy();  // DeleteWhenDestroyed() frees us after WM_NCDESTROY.
+        *handled = true;
+        return 0;
+      default:
+        break;
+    }
+    return PhiSecondaryWindow::OnWindowMessage(message, wparam, lparam, handled);
+  }
+
+  void OnNcDestroy() override {
+    if (instance == this) {
+      instance = nullptr;
+    }
+    PhiSecondaryWindow::OnNcDestroy();
+  }
+
+ private:
+  // The feed reads best in a console face (the Mac's monospaced 11.5).
+  HFONT FeedFont() {
+    PhiFontDesc desc;
+    desc.size = 12;
+    desc.face = L"Cascadia Mono";
+    return fonts().Get(desc);
   }
 
   void EnsureFonts() {
-    // The feed reads best in a console face (the Mac's monospaced 11.5);
-    // the input row takes the UI one.
-    feed_font_ = ::CreateFontW(-Scaled(12), 0, 0, 0, FW_NORMAL, FALSE, FALSE,
-                               FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
-                               CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-                               DEFAULT_PITCH, L"Cascadia Mono");
-    ui_font_ = PhiPopupFont(dpi_, 13);
-    bg_brush_ = ::CreateSolidBrush(colors_.bg);
-    feed_brush_ = ::CreateSolidBrush(console_.background);
-    card_brush_ = ::CreateSolidBrush(colors_.card);
+    if (ui_font_) {
+      ::DeleteObject(ui_font_);
+    }
+    ui_font_ = PhiPopupFont(dpi(), 13);
+  }
+
+  void DropBrushes() {
+    for (HBRUSH* slot :
+         {&bg_brush_, &feed_brush_, &card_brush_, &rule_brush_}) {
+      if (*slot) {
+        ::DeleteObject(*slot);
+        *slot = nullptr;
+      }
+    }
   }
 
   void CreateChildren() {
@@ -199,28 +307,28 @@ class Panel {
         0, L"EDIT", L"",
         WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_READONLY |
             ES_AUTOVSCROLL,
-        0, 0, 10, 10, hwnd_, reinterpret_cast<HMENU>(kFeedId),
+        0, 0, 10, 10, hwnd(), reinterpret_cast<HMENU>(kFeedId),
         ::GetModuleHandleW(nullptr), nullptr);
     input_ = ::CreateWindowExW(
-        0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_LEFT | ES_AUTOHSCROLL,
-        0, 0, 10, 10, hwnd_, reinterpret_cast<HMENU>(kInputId),
+        0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_LEFT |
+                             ES_AUTOHSCROLL,
+        0, 0, 10, 10, hwnd(), reinterpret_cast<HMENU>(kInputId),
         ::GetModuleHandleW(nullptr), nullptr);
     send_ = ::CreateWindowExW(
-        0, L"BUTTON", L"Send", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0,
-        10, 10, hwnd_, reinterpret_cast<HMENU>(kSendId),
-        ::GetModuleHandleW(nullptr), nullptr);
-    for (HWND child : {feed_, input_}) {
-      ::SendMessageW(child, WM_SETFONT,
-                     reinterpret_cast<WPARAM>(
-                         child == feed_ ? feed_font_ : ui_font_),
+        0, L"BUTTON", L"Send",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 0, 0, 10, 10,
+        hwnd(), reinterpret_cast<HMENU>(kSendId), ::GetModuleHandleW(nullptr),
+        nullptr);
+    ::SendMessageW(feed_, WM_SETFONT, reinterpret_cast<WPARAM>(FeedFont()),
+                   TRUE);
+    for (HWND child : {input_, send_}) {
+      ::SendMessageW(child, WM_SETFONT, reinterpret_cast<WPARAM>(ui_font_),
                      TRUE);
     }
-    ::SendMessageW(send_, WM_SETFONT, reinterpret_cast<WPARAM>(ui_font_),
-                   TRUE);
     ::SendMessageW(input_, EM_SETCUEBANNER, TRUE,
-                   reinterpret_cast<LPARAM>(L"Message the agent\u2026"));
+                   reinterpret_cast<LPARAM>(L"Message the agent…"));
     PhiPopupStyleButton(send_, PhiPopupButtonRole::kPrimary);
-    PhiPopupThemeControl(feed_, colors_.dark);
+    PhiPopupThemeControl(feed_, colors().dark);
     // Enter sends; the subclass forwards everything else to the EDIT.
     ::SetWindowLongPtrW(input_, GWLP_USERDATA,
                         reinterpret_cast<LONG_PTR>(this));
@@ -233,18 +341,22 @@ class Panel {
   // it, in client pixels.
   RECT InputWell() const {
     RECT client = {};
-    ::GetClientRect(hwnd_, &client);
+    ::GetClientRect(hwnd(), &client);
     const int pad = Scaled(kPad);
     const int row = Scaled(kInputRowHeight);
     const int send_w = Scaled(kSendWidth);
     const int top = client.bottom - row + Scaled(8);
-    return {pad, top, client.right - 2 * pad - send_w, client.bottom - Scaled(8)};
+    return {pad, top, client.right - 2 * pad - send_w,
+            client.bottom - Scaled(8)};
   }
 
   void Layout() {
+    if (!feed_) {
+      return;
+    }
     RECT client = {};
-    ::GetClientRect(hwnd_, &client);
-    const int band = chrome_.CaptionHeight();
+    ::GetClientRect(hwnd(), &client);
+    const int band = CaptionHeight();
     const int pad = Scaled(kPad);
     const int row = Scaled(kInputRowHeight);
     const int send_w = Scaled(kSendWidth);
@@ -259,31 +371,7 @@ class Panel {
                  TRUE);
     ::MoveWindow(send_, client.right - pad - send_w, well.top, send_w,
                  well.bottom - well.top, TRUE);
-    ::InvalidateRect(hwnd_, nullptr, FALSE);
-  }
-
-  void Paint() {
-    PAINTSTRUCT ps = {};
-    HDC dc = ::BeginPaint(hwnd_, &ps);
-    if (!dc) {
-      return;
-    }
-    RECT client = {};
-    ::GetClientRect(hwnd_, &client);
-    ::FillRect(dc, &client, bg_brush_);
-    chrome_.PaintCaption(dc, colors_, /*show_mark=*/true);
-    // The feed's ground reaches the window edges; the divider (the Mac's
-    // faint rule) closes it above the prompt row.
-    const int row = Scaled(kInputRowHeight);
-    RECT feed = {0, chrome_.CaptionHeight(), client.right,
-                 client.bottom - row - 1};
-    ::FillRect(dc, &feed, feed_brush_);
-    RECT rule = {0, client.bottom - row - 1, client.right, client.bottom - row};
-    HBRUSH rule_brush = ::CreateSolidBrush(console_.faint);
-    ::FillRect(dc, &rule, rule_brush);
-    ::DeleteObject(rule_brush);
-    PhiPopupPaintWell(dc, InputWell(), colors_, dpi_);
-    ::EndPaint(hwnd_, &ps);
+    Invalidate();
   }
 
   static LRESULT CALLBACK InputProc(HWND hwnd, UINT message, WPARAM w,
@@ -303,113 +391,22 @@ class Panel {
     return ::DefWindowProcW(hwnd, message, w, l);
   }
 
-  static LRESULT CALLBACK PanelProc(HWND hwnd, UINT message, WPARAM w,
-                                    LPARAM l) {
-    if (message == WM_NCCREATE) {
-      auto* cs = reinterpret_cast<CREATESTRUCTW*>(l);
-      ::SetWindowLongPtrW(hwnd, GWLP_USERDATA,
-                          reinterpret_cast<LONG_PTR>(cs->lpCreateParams));
-      return ::DefWindowProcW(hwnd, message, w, l);
-    }
-    auto* self =
-        reinterpret_cast<Panel*>(::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
-    LRESULT chrome_result = 0;
-    if (self && self->chrome_.HandleMessage(message, w, l, &chrome_result)) {
-      return chrome_result;
-    }
-    switch (message) {
-      case WM_SIZE:
-        if (self) {
-          self->Layout();
-        }
-        return 0;
-      case WM_DPICHANGED:
-        if (self) {
-          self->dpi_ = HIWORD(w);
-          const RECT* suggested = reinterpret_cast<const RECT*>(l);
-          if (suggested) {
-            ::SetWindowPos(hwnd, nullptr, suggested->left, suggested->top,
-                           suggested->right - suggested->left,
-                           suggested->bottom - suggested->top,
-                           SWP_NOZORDER | SWP_NOACTIVATE);
-          }
-          self->Layout();
-          return 0;
-        }
-        break;
-      case WM_GETMINMAXINFO:
-        if (self) {
-          auto* mmi = reinterpret_cast<MINMAXINFO*>(l);
-          mmi->ptMinTrackSize.x = self->Scaled(kPanelMinWidth);
-          mmi->ptMinTrackSize.y = self->Scaled(kPanelMinHeight);
-          return 0;
-        }
-        break;
-      case WM_COMMAND:
-        if (self && LOWORD(w) == kSendId) {
-          self->Send();
-          return 0;
-        }
-        break;
-      case WM_DRAWITEM:
-        if (self &&
-            PhiPopupDrawButton(*reinterpret_cast<DRAWITEMSTRUCT*>(l),
-                               self->colors_, nullptr)) {
-          return TRUE;
-        }
-        break;
-      case WM_CTLCOLORSTATIC:  // The read-only feed EDIT arrives here.
-        if (self) {
-          HDC dc = reinterpret_cast<HDC>(w);
-          ::SetTextColor(dc, self->console_.text);
-          ::SetBkColor(dc, self->console_.background);
-          return reinterpret_cast<LRESULT>(self->feed_brush_);
-        }
-        break;
-      case WM_CTLCOLOREDIT:
-        if (self) {
-          HDC dc = reinterpret_cast<HDC>(w);
-          ::SetTextColor(dc, self->colors_.label);
-          ::SetBkColor(dc, self->colors_.card);
-          return reinterpret_cast<LRESULT>(self->card_brush_);
-        }
-        break;
-      case WM_ERASEBKGND:
-        return 1;
-      case WM_PAINT:
-        if (self) {
-          self->Paint();
-          return 0;
-        }
-        break;
-      case WM_CLOSE:
-        if (self && Panel::instance == self) {
-          Panel::instance = nullptr;
-          delete self;
-          return 0;
-        }
-        break;
-    }
-    return ::DefWindowProcW(hwnd, message, w, l);
-  }
-
-  PhiPopupColors colors_;
   ConsolePalette console_ = ConsoleFor(false);
   std::string task_id_;
   RAW_PTR_EXCLUSION PhiTranscriptHost* host_ = nullptr;
-  HWND hwnd_ = nullptr;
-  PhiPopupChrome chrome_;
   HWND feed_ = nullptr;
   HWND input_ = nullptr;
   HWND send_ = nullptr;
   WNDPROC input_base_proc_ = nullptr;
-  HFONT feed_font_ = nullptr;
   HFONT ui_font_ = nullptr;
   HBRUSH bg_brush_ = nullptr;
   HBRUSH feed_brush_ = nullptr;
   HBRUSH card_brush_ = nullptr;
+  HBRUSH rule_brush_ = nullptr;
   size_t last_line_count_ = static_cast<size_t>(-1);
-  UINT dpi_ = 96;
+  bool open_dark_ = false;
+  COLORREF open_accent_ = 0;
+  bool followed_theme_ = false;
 };
 
 Panel* Panel::instance = nullptr;
@@ -423,15 +420,21 @@ void PhiTranscriptPanel::Toggle(HWND owner,
                                 PhiTranscriptHost* host) {
   if (Panel::instance) {
     const bool same = Panel::instance->task_id() == task_id;
-    Panel* panel = Panel::instance;
+    Panel::instance->Destroy();  // Clears the singleton at WM_NCDESTROY.
     Panel::instance = nullptr;
-    delete panel;
     if (same) {
       return;  // The Mac toggle: reopening the shown task closes it.
     }
   }
-  if (owner && host) {
-    Panel::instance = new Panel(owner, palette, task_id, host);
+  if (!owner || !host) {
+    return;
+  }
+  auto* panel = new Panel(palette, task_id, host);
+  panel->DeleteWhenDestroyed();
+  Panel::instance = panel;
+  if (!panel->Open(owner)) {
+    Panel::instance = nullptr;
+    delete panel;
   }
 }
 
@@ -450,9 +453,8 @@ bool PhiTranscriptPanel::IsOpen() {
 // static
 void PhiTranscriptPanel::CloseFor(const std::string& task_id) {
   if (Panel::instance && Panel::instance->task_id() == task_id) {
-    Panel* panel = Panel::instance;
+    Panel::instance->Destroy();
     Panel::instance = nullptr;
-    delete panel;
   }
 }
 

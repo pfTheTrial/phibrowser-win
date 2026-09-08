@@ -44,6 +44,15 @@ constexpr int kRowRadius = 6;
 
 const wchar_t kClassName[] = L"PhiBookmarkManager";
 constexpr int kSearchId = 4101;
+// The New Folder button rides in hits_ with the rows; its key is out of
+// the rows' index space.
+constexpr int kNewFolderKey = -1;
+
+// The four faces, in DESIGN units — the base's PhiFontSet scales them.
+constexpr int kTitleSize = 20;
+constexpr int kRowSize = 13;
+constexpr int kDimSize = 12;
+constexpr int kButtonSize = 12;
 
 // Case-insensitive, whitespace-trimmed containment — the Mac matches
 // localized/case/diacritic-insensitively; this keeps the case and whitespace
@@ -93,21 +102,10 @@ void CopyToClipboard(HWND owner, const std::wstring& text) {
 }  // namespace
 
 PhiBookmarkManager::PhiBookmarkManager(PhiWindowController* controller)
-    : controller_(controller) {
-  if (controller_ && controller_->shell_hwnd()) {
-    dpi_ = ::GetDpiForWindow(controller_->shell_hwnd());
-  }
-}
+    : controller_(controller) {}
 
 PhiBookmarkManager::~PhiBookmarkManager() {
-  if (hwnd_ && ::IsWindow(hwnd_)) {
-    ::DestroyWindow(hwnd_);
-  }
-  for (HFONT font : {title_font_, row_font_, dim_font_, button_font_}) {
-    if (font) {
-      ::DeleteObject(font);
-    }
-  }
+  Destroy();  // Takes the search field with it.
   if (field_brush_) {
     ::DeleteObject(field_brush_);
   }
@@ -124,73 +122,53 @@ bool PhiBookmarkManager::IsManagerUrl(const std::string& url) {
          url.rfind("phi://bookmarks", 0) == 0;
 }
 
-int PhiBookmarkManager::Scaled(int design) const {
-  return ::MulDiv(design, static_cast<int>(dpi_), 96);
-}
-
 bool PhiBookmarkManager::visible() const {
-  return hwnd_ && ::IsWindow(hwnd_) && ::IsWindowVisible(hwnd_);
+  return IsPanelVisible();
 }
 
-void PhiBookmarkManager::EnsureFonts() {
-  if (title_font_) {
-    return;
-  }
-  auto make = [&](int size, int weight) {
-    return ::CreateFontW(-Scaled(size), 0, 0, 0, weight, FALSE, FALSE, FALSE,
-                         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
-                         CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-                         DEFAULT_PITCH, L"Segoe UI");
-  };
-  title_font_ = make(20, FW_SEMIBOLD);
-  row_font_ = make(13, FW_NORMAL);
-  dim_font_ = make(12, FW_NORMAL);
-  button_font_ = make(12, FW_NORMAL);
+PhiPalette PhiBookmarkManager::QueryPalette() const {
+  return controller_ ? controller_->CurrentPalette() : PhiPalette();
+}
+
+bool PhiBookmarkManager::NewFolderHot() const {
+  const int hit = hovered();
+  return hit >= 0 && hits()[static_cast<size_t>(hit)].key == kNewFolderKey;
 }
 
 void PhiBookmarkManager::EnsureWindow() {
-  if (hwnd_ && ::IsWindow(hwnd_)) {
+  if (alive()) {
     return;
   }
   HWND owner = controller_ ? controller_->shell_hwnd() : nullptr;
   if (!owner) {
     return;
   }
-  static const bool registered = [] {
-    WNDCLASSW cls = {};
-    cls.style = CS_DBLCLKS;  // The outline opens rows on double-click.
-    cls.lpfnWndProc = &PhiBookmarkManager::PageProc;
-    cls.hInstance = ::GetModuleHandleW(nullptr);
-    cls.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
-    cls.lpszClassName = kClassName;
-    return ::RegisterClassW(&cls) != 0;
-  }();
-  (void)registered;
-  hwnd_ = ::CreateWindowExW(
-      0, kClassName, L"",
-      // WS_CLIPSIBLINGS keeps the content card's corner caps visible.
-      WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS, 0,
-                            0, 0, 0, owner, nullptr,
-                            ::GetModuleHandleW(nullptr), nullptr);
-  if (!hwnd_) {
+  ClassSpec spec;
+  spec.name = kClassName;
+  spec.style = CS_DBLCLKS;  // The outline opens rows on double-click.
+  Options options;
+  // WS_CLIPCHILDREN for the search EDIT; WS_CLIPSIBLINGS is PhiPanel's and
+  // keeps the content card's corner caps visible.
+  options.style = WS_CLIPCHILDREN;
+  const RECT nothing = {0, 0, 0, 0};
+  if (!CreatePanel(spec, owner, nothing, options)) {
     return;
   }
-  ::SetWindowLongPtrW(hwnd_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
-  EnsureFonts();
   EnsureSearchField();
 }
 
 void PhiBookmarkManager::EnsureSearchField() {
-  if (search_ || !hwnd_) {
+  if (search_ || !alive()) {
     return;
   }
   search_ = ::CreateWindowExW(
       WS_EX_CLIENTEDGE, L"EDIT", L"",
-      WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | ES_LEFT, 0, 0, 0, 0, hwnd_,
+      WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | ES_LEFT, 0, 0, 0, 0, hwnd(),
       reinterpret_cast<HMENU>(static_cast<UINT_PTR>(kSearchId)),
       ::GetModuleHandleW(nullptr), nullptr);
-  if (search_ && row_font_) {
-    ::SendMessageW(search_, WM_SETFONT, reinterpret_cast<WPARAM>(row_font_),
+  if (search_) {
+    ::SendMessageW(search_, WM_SETFONT,
+                   reinterpret_cast<WPARAM>(fonts().Get(kRowSize, FW_NORMAL)),
                    TRUE);
   }
   if (search_) {
@@ -200,11 +178,11 @@ void PhiBookmarkManager::EnsureSearchField() {
 }
 
 void PhiBookmarkManager::LayoutChrome() {
-  if (!hwnd_) {
+  if (!alive()) {
     return;
   }
   RECT rc = {};
-  ::GetClientRect(hwnd_, &rc);
+  ::GetClientRect(hwnd(), &rc);
   const int pad = Scaled(kPagePad);
   const int header_mid = rc.top + Scaled(kHeaderHeight) / 2;
   const int search_w = Scaled(kSearchWidth);
@@ -224,40 +202,53 @@ void PhiBookmarkManager::LayoutChrome() {
 
 void PhiBookmarkManager::Show() {
   EnsureWindow();
-  if (!hwnd_) {
+  if (!alive()) {
     return;
   }
   Reposition();
   Refresh();
-  ::ShowWindow(hwnd_, SW_SHOWNA);
-  ::SetWindowPos(hwnd_, HWND_TOP, 0, 0, 0, 0,
-                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+  ShowPanel();
 }
 
 void PhiBookmarkManager::Hide() {
-  if (hwnd_ && ::IsWindow(hwnd_)) {
-    ::ShowWindow(hwnd_, SW_HIDE);
-  }
+  HidePanel();
 }
 
 void PhiBookmarkManager::Reposition() {
-  if (!hwnd_ || !controller_) {
+  if (!alive() || !controller_) {
     return;
   }
-  const RECT content = controller_->ContentRect();
-  ::SetWindowPos(hwnd_, HWND_TOP, content.left, content.top,
-                 content.right - content.left, content.bottom - content.top,
-                 SWP_NOACTIVATE);
+  SyncDpiFromParent();
+  SetPanelBounds(controller_->ContentRect());
+  RaisePanel();
   LayoutChrome();
   Rebuild();
 }
 
 void PhiBookmarkManager::Refresh() {
-  if (!hwnd_) {
+  if (!alive()) {
     return;
   }
   Rebuild();
-  ::InvalidateRect(hwnd_, nullptr, TRUE);
+  // Re-reads QueryPalette() and repaints: a palette ramp moves the page
+  // with the chrome.
+  NotifyThemeChanged();
+}
+
+void PhiBookmarkManager::OnDpiChanged(UINT) {
+  if (search_) {
+    ::SendMessageW(search_, WM_SETFONT,
+                   reinterpret_cast<WPARAM>(fonts().Get(kRowSize, FW_NORMAL)),
+                   TRUE);
+  }
+  LayoutChrome();
+  Rebuild();
+}
+
+void PhiBookmarkManager::OnSize(int, int) {
+  LayoutChrome();
+  Rebuild();
+  Invalidate();
 }
 
 void PhiBookmarkManager::AppendSubtree(const std::string& parent_guid,
@@ -354,7 +345,8 @@ void PhiBookmarkManager::AppendMatches(const std::string& parent_guid) {
 
 void PhiBookmarkManager::Rebuild() {
   rows_.clear();
-  if (!hwnd_) {
+  if (!alive()) {
+    ClearHits();
     return;
   }
   if (Trim(query_).empty()) {
@@ -364,7 +356,7 @@ void PhiBookmarkManager::Rebuild() {
   }
 
   RECT rc = {};
-  ::GetClientRect(hwnd_, &rc);
+  ::GetClientRect(hwnd(), &rc);
   const int pad = Scaled(kPagePad);
   int y = rc.top + Scaled(kHeaderHeight) - scroll_;
   for (Row& row : rows_) {
@@ -377,6 +369,21 @@ void PhiBookmarkManager::Rebuild() {
     y += Scaled(kRowHeight);
   }
   ClampScroll();
+  RebuildHits();
+}
+
+void PhiBookmarkManager::RebuildHits() {
+  ClearHits();
+  for (size_t i = 0; i < rows_.size(); ++i) {
+    const Row& row = rows_[i];
+    AddHit(row.bounds, static_cast<int>(i), row.title,
+           row.folder ? PhiHitRole::kGroup : PhiHitRole::kListItem,
+           selected_.count(row.guid) > 0);
+  }
+  // LAST, so it wins the pointer over a row scrolled under the header —
+  // the two independent PtInRect tests this replaces could both answer yes.
+  AddHit(new_folder_button_, kNewFolderKey, L"New Folder",
+         PhiHitRole::kButton);
 }
 
 int PhiBookmarkManager::ContentHeight() const {
@@ -384,11 +391,11 @@ int PhiBookmarkManager::ContentHeight() const {
 }
 
 void PhiBookmarkManager::ClampScroll() {
-  if (!hwnd_) {
+  if (!alive()) {
     return;
   }
   RECT rc = {};
-  ::GetClientRect(hwnd_, &rc);
+  ::GetClientRect(hwnd(), &rc);
   const int visible = rc.bottom - rc.top - Scaled(kHeaderHeight);
   const int limit = std::max(0, ContentHeight() - visible);
   scroll_ = std::max(0, std::min(limit, scroll_));
@@ -431,7 +438,7 @@ void PhiBookmarkManager::PaintRow(HDC dc,
   if (row.folder && Trim(query_).empty()) {
     RECT twisty = row.disclosure;
     ::SetTextColor(dc, palette.label_dim);
-    HGDIOBJ prev = ::SelectObject(dc, row_font_);
+    HGDIOBJ prev = ::SelectObject(dc, fonts().Get(kRowSize, FW_NORMAL));
     ::DrawTextW(dc, row.expanded ? L"▾" : L"▸", -1, &twisty,
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
     ::SelectObject(dc, prev);
@@ -465,14 +472,12 @@ void PhiBookmarkManager::PaintRow(HDC dc,
     x = icon_b.right + Scaled(8);
   }
 
-  RECT rc = {};
-  ::GetClientRect(hwnd_, &rc);
   const int body_width = row.bounds.right - row.bounds.left;
   const int address_left =
       row.bounds.right - body_width * kAddressPercent / 100;
   RECT title_rc = {x, row.bounds.top, address_left - Scaled(kColumnGap),
                    row.bounds.bottom};
-  HGDIOBJ prev_font = ::SelectObject(dc, row_font_);
+  HGDIOBJ prev_font = ::SelectObject(dc, fonts().Get(kRowSize, FW_NORMAL));
   ::SetTextColor(dc, palette.label);
   ::DrawTextW(dc, row.title.c_str(), -1, &title_rc,
               DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
@@ -491,7 +496,7 @@ void PhiBookmarkManager::PaintRow(HDC dc,
   }
   RECT address_rc = {address_left, row.bounds.top, row.bounds.right,
                      row.bounds.bottom};
-  ::SelectObject(dc, dim_font_);
+  ::SelectObject(dc, fonts().Get(kDimSize, FW_NORMAL));
   ::SetTextColor(dc, palette.label_dim);
   ::DrawTextW(dc, address.c_str(), -1, &address_rc,
               DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
@@ -499,13 +504,15 @@ void PhiBookmarkManager::PaintRow(HDC dc,
   ::SelectObject(dc, prev_font);
 }
 
-void PhiBookmarkManager::Paint(HDC dc) {
+void PhiBookmarkManager::Paint(HDC dc, const RECT&) {
   if (!controller_) {
     return;
   }
   RECT rc = {};
-  ::GetClientRect(hwnd_, &rc);
-  const PhiPalette palette = controller_->CurrentPalette();
+  ::GetClientRect(hwnd(), &rc);
+  // Live, as before: the slot's palette ramps between frames. The base's
+  // cached palette() is what the theme bus repaints against.
+  const PhiPalette palette = QueryPalette();
   HBRUSH ground = ::CreateSolidBrush(palette.window_bg);
   ::FillRect(dc, &rc, ground);
   ::DeleteObject(ground);
@@ -514,16 +521,16 @@ void PhiBookmarkManager::Paint(HDC dc) {
   const int pad = Scaled(kPagePad);
   RECT title_rc = {rc.left + pad, rc.top, rc.left + pad + Scaled(300),
                    rc.top + Scaled(kHeaderHeight)};
-  HGDIOBJ prev_font = ::SelectObject(dc, title_font_);
+  HGDIOBJ prev_font = ::SelectObject(dc, fonts().Get(kTitleSize, FW_SEMIBOLD));
   ::SetTextColor(dc, palette.label);
   ::DrawTextW(dc, L"Bookmarks", -1, &title_rc,
               DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
 
   // "New Folder" button.
   PhiFillRoundRectAA(dc, new_folder_button_, Scaled(6),
-                     new_folder_hot_ ? palette.hover_strong : palette.hover);
+                     NewFolderHot() ? palette.hover_strong : palette.hover);
   PhiStrokeRoundRectAA(dc, new_folder_button_, Scaled(6), palette.border, 1);
-  ::SelectObject(dc, button_font_);
+  ::SelectObject(dc, fonts().Get(kButtonSize, FW_NORMAL));
   ::SetTextColor(dc, palette.label);
   RECT button_text = new_folder_button_;
   ::DrawTextW(dc, L"New Folder", -1, &button_text,
@@ -541,7 +548,7 @@ void PhiBookmarkManager::Paint(HDC dc) {
     // The Mac's centred empty state; no synthetic node is added to the tree.
     RECT empty = {rc.left, rc.top + Scaled(kHeaderHeight), rc.right,
                   rc.bottom};
-    HGDIOBJ prev = ::SelectObject(dc, row_font_);
+    HGDIOBJ prev = ::SelectObject(dc, fonts().Get(kRowSize, FW_NORMAL));
     ::SetTextColor(dc, palette.label_tertiary);
     ::DrawTextW(dc,
                 Trim(query_).empty() ? L"No bookmarks yet"
@@ -567,7 +574,7 @@ void PhiBookmarkManager::Paint(HDC dc) {
   ::DeleteObject(clip);
 }
 
-void PhiBookmarkManager::OnClick(POINT pt, bool ctrl, bool shift) {
+void PhiBookmarkManager::ClickAt(POINT pt, bool ctrl, bool shift) {
   if (::PtInRect(&new_folder_button_, pt)) {
     NewFolder(std::string());
     return;
@@ -575,7 +582,7 @@ void PhiBookmarkManager::OnClick(POINT pt, bool ctrl, bool shift) {
   const int index = RowAt(pt);
   if (index < 0) {
     selected_.clear();
-    ::InvalidateRect(hwnd_, nullptr, TRUE);
+    Invalidate();
     return;
   }
   const Row& row = rows_[static_cast<size_t>(index)];
@@ -617,7 +624,8 @@ void PhiBookmarkManager::OnClick(POINT pt, bool ctrl, bool shift) {
     selected_.insert(row.guid);
     anchor_guid_ = row.guid;
   }
-  ::InvalidateRect(hwnd_, nullptr, TRUE);
+  RebuildHits();  // hits_ carries the selection for assistive tech.
+  Invalidate();
 }
 
 void PhiBookmarkManager::OpenRow(const Row& row) {
@@ -729,7 +737,7 @@ void PhiBookmarkManager::OnContextMenu(POINT pt) {
     selected_.clear();
     selected_.insert(row.guid);
     anchor_guid_ = row.guid;
-    ::InvalidateRect(hwnd_, nullptr, TRUE);
+    Invalidate();
   }
   const bool batch = selected_.size() > 1;
   const bool split = !row.url_b.empty();
@@ -759,10 +767,10 @@ void PhiBookmarkManager::OnContextMenu(POINT pt) {
   ::AppendMenuW(menu, MF_STRING, kDelete, L"Delete");
 
   POINT screen = pt;
-  ::ClientToScreen(hwnd_, &screen);
+  ::ClientToScreen(hwnd(), &screen);
   const UINT chosen = static_cast<UINT>(::TrackPopupMenu(
       menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RIGHTBUTTON,
-      screen.x, screen.y, 0, hwnd_, nullptr));
+      screen.x, screen.y, 0, hwnd(), nullptr));
   ::DestroyMenu(menu);
 
   switch (chosen) {
@@ -771,10 +779,10 @@ void PhiBookmarkManager::OnContextMenu(POINT pt) {
       break;
     case kCopy:
     case kCopyLeft:
-      CopyToClipboard(hwnd_, base::UTF8ToWide(row.url));
+      CopyToClipboard(hwnd(), base::UTF8ToWide(row.url));
       break;
     case kCopyRight:
-      CopyToClipboard(hwnd_, base::UTF8ToWide(row.url_b));
+      CopyToClipboard(hwnd(), base::UTF8ToWide(row.url_b));
       break;
     case kEdit:
       EditRow(row);
@@ -790,140 +798,78 @@ void PhiBookmarkManager::OnContextMenu(POINT pt) {
   }
 }
 
-void PhiBookmarkManager::OnKey(WPARAM key) {
+bool PhiBookmarkManager::OnKey(WPARAM key) {
   if (key == VK_DELETE) {
     DeleteSelection();
+    return true;
   }
+  return PhiPanel::OnKey(key);
 }
 
-// static
-LRESULT CALLBACK PhiBookmarkManager::PageProc(HWND hwnd,
-                                              UINT msg,
-                                              WPARAM w,
-                                              LPARAM l) {
-  auto* self = reinterpret_cast<PhiBookmarkManager*>(
-      ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
-  switch (msg) {
-    case WM_ERASEBKGND:
-      return 1;
-    case WM_PAINT: {
-      PAINTSTRUCT ps = {};
-      HDC dc = ::BeginPaint(hwnd, &ps);
-      if (self) {
-        // Back-buffered: the list repaints wholesale on hover and scroll.
-        RECT rc = {};
-        ::GetClientRect(hwnd, &rc);
-        const int page_w = rc.right - rc.left;
-        const int page_h = rc.bottom - rc.top;
-        HDC mem = ::CreateCompatibleDC(dc);
-        HBITMAP buffer =
-            mem ? ::CreateCompatibleBitmap(dc, page_w, page_h) : nullptr;
-        if (mem && buffer) {
-          HGDIOBJ prev = ::SelectObject(mem, buffer);
-          self->Paint(mem);
-          ::BitBlt(dc, 0, 0, page_w, page_h, mem, 0, 0, SRCCOPY);
-          ::SelectObject(mem, prev);
-        } else {
-          self->Paint(dc);
-        }
-        if (buffer) {
-          ::DeleteObject(buffer);
-        }
-        if (mem) {
-          ::DeleteDC(mem);
-        }
-      }
-      ::EndPaint(hwnd, &ps);
-      return 0;
-    }
-    case WM_LBUTTONDOWN:
-      if (self) {
-        ::SetFocus(hwnd);
-        self->OnClick({GET_X_LPARAM(l), GET_Y_LPARAM(l)},
-                      (::GetKeyState(VK_CONTROL) & 0x8000) != 0,
-                      (::GetKeyState(VK_SHIFT) & 0x8000) != 0);
-      }
-      return 0;
+void PhiBookmarkManager::OnMouseDown(int, POINT pt) {
+  ::SetFocus(hwnd());
+  ClickAt(pt, (::GetKeyState(VK_CONTROL) & 0x8000) != 0,
+          (::GetKeyState(VK_SHIFT) & 0x8000) != 0);
+}
+
+void PhiBookmarkManager::OnWheel(int delta, POINT) {
+  scroll_ -= delta / 2;
+  ClampScroll();
+  Rebuild();
+  Invalidate();
+}
+
+LRESULT PhiBookmarkManager::OnMessage(UINT message,
+                                      WPARAM wparam,
+                                      LPARAM lparam,
+                                      bool* handled) {
+  switch (message) {
     case WM_LBUTTONDBLCLK:
-      if (self) {
-        self->OnDoubleClick({GET_X_LPARAM(l), GET_Y_LPARAM(l)});
-      }
+      *handled = true;
+      OnDoubleClick({GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)});
       return 0;
     case WM_RBUTTONUP:
-      if (self) {
-        self->OnContextMenu({GET_X_LPARAM(l), GET_Y_LPARAM(l)});
-      }
-      return 0;
-    case WM_MOUSEMOVE:
-      if (self) {
-        const POINT pt = {GET_X_LPARAM(l), GET_Y_LPARAM(l)};
-        const bool hot = ::PtInRect(&self->new_folder_button_, pt) != FALSE;
-        const int row = self->RowAt(pt);
-        if (hot != self->new_folder_hot_ || row != self->hover_) {
-          self->new_folder_hot_ = hot;
-          self->hover_ = row;
-          ::InvalidateRect(hwnd, nullptr, FALSE);
-        }
-      }
-      return 0;
-    case WM_MOUSEWHEEL:
-      if (self) {
-        const int delta = GET_WHEEL_DELTA_WPARAM(w);
-        self->scroll_ -= delta / 2;
-        self->ClampScroll();
-        self->Rebuild();
-        ::InvalidateRect(hwnd, nullptr, TRUE);
-      }
-      return 0;
-    case WM_KEYDOWN:
-      if (self) {
-        self->OnKey(w);
-      }
-      return 0;
-    case WM_SIZE:
-      if (self) {
-        self->LayoutChrome();
-        self->Rebuild();
-        ::InvalidateRect(hwnd, nullptr, TRUE);
-      }
+      *handled = true;
+      OnContextMenu({GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)});
       return 0;
     case WM_COMMAND:
-      if (self && HIWORD(w) == EN_CHANGE &&
-          LOWORD(w) == static_cast<WORD>(kSearchId)) {
-        const int length = ::GetWindowTextLengthW(self->search_);
+      if (HIWORD(wparam) == EN_CHANGE &&
+          LOWORD(wparam) == static_cast<WORD>(kSearchId)) {
+        const int length = ::GetWindowTextLengthW(search_);
         std::wstring text;
         if (length > 0) {
           text.resize(static_cast<size_t>(length) + 1, L'\0');
-          const int copied = ::GetWindowTextW(self->search_, text.data(),
-                                              length + 1);
+          const int copied =
+              ::GetWindowTextW(search_, text.data(), length + 1);
           text.resize(copied > 0 ? static_cast<size_t>(copied) : 0);
         }
-        self->query_ = text;
-        self->scroll_ = 0;
-        self->Refresh();
+        query_ = text;
+        scroll_ = 0;
+        *handled = true;
+        Refresh();
         return 0;
       }
       break;
     case WM_CTLCOLOREDIT:
-      if (self && self->controller_) {
-        const PhiPalette palette = self->controller_->CurrentPalette();
-        ::SetTextColor(reinterpret_cast<HDC>(w), palette.label);
-        ::SetBkColor(reinterpret_cast<HDC>(w), palette.hover_strong);
-        if (!self->field_brush_ ||
-            self->field_brush_color_ != palette.hover_strong) {
-          if (self->field_brush_) {
-            ::DeleteObject(self->field_brush_);
+      if (controller_) {
+        const PhiPalette colors = QueryPalette();
+        ::SetTextColor(reinterpret_cast<HDC>(wparam), colors.label);
+        ::SetBkColor(reinterpret_cast<HDC>(wparam), colors.hover_strong);
+        if (!field_brush_ || field_brush_color_ != colors.hover_strong) {
+          if (field_brush_) {
+            ::DeleteObject(field_brush_);
           }
-          self->field_brush_ = ::CreateSolidBrush(palette.hover_strong);
-          self->field_brush_color_ = palette.hover_strong;
+          field_brush_ = ::CreateSolidBrush(colors.hover_strong);
+          field_brush_color_ = colors.hover_strong;
         }
-        return reinterpret_cast<LRESULT>(self->field_brush_);
+        *handled = true;
+        return reinterpret_cast<LRESULT>(field_brush_);
       }
       break;
     default:
       break;
   }
-  return ::DefWindowProcW(hwnd, msg, w, l);
+  return PhiPanel::OnMessage(message, wparam, lparam, handled);
 }
 
 }  // namespace phi_client

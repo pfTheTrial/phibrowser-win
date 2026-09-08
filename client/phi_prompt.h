@@ -17,6 +17,36 @@ namespace phi_client {
 // rightmost) on the shared popup chrome — a caption band with the Windows
 // close button in the right corner, no OS title bar. Each is modal against
 // its owner, as NSAlert.runModal is, and returns once dismissed.
+//
+// WHY THIS ONE MAY BLOCK, AND NOTHING ELSE MAY.
+//
+// Every other surface in the client is asynchronous: the popovers take a
+// completion callback, the secondary windows get their dialog keys from
+// the thread's active-dialog list inside the MAIN message loop
+// (phi_secondary_window.h), and lane 3 §4.4's three nested GetMessage
+// loops are down to the ONE inside PhiPrompt's Alert::Run. It survives
+// because the functions below are called from a dozen places — Settings'
+// rename / delete rows, the feedback form's sign-in offer, the URL
+// router's "ask first" chooser, the shortcut recorder — that need the
+// answer on the same stack and cannot be turned inside out from files
+// this substrate does not own.
+//
+// What that loop is required to do, and does (it is the one audited
+// implementation; do not grow a second):
+//   * PhiModalScope for its whole duration, so a control-pipe verb
+//     arriving on the socket cannot destroy the controller whose handler
+//     is parked waiting for the answer;
+//   * EnableWindow(owner, FALSE) on the way in and TRUE on the way out,
+//     so the alert is modal against its owner the way NSAlert.runModal
+//     is;
+//   * IsDialogMessageW for its own control set, so Tab, Escape and
+//     Return behave, plus an optional raw-message `filter` the chord
+//     recorder needs BEFORE the dialog manager sees the key;
+//   * a WM_NULL kick from Finish(), because `done` is only checked
+//     between GetMessage returns.
+// The alert therefore registers NO keys with the active-dialog list: its
+// own loop already translates them, and doing both would hide the raw
+// keys from the recorder.
 
 // One action button. Actions are listed in display order; `leading` pins
 // one to the left edge (the Mac's tertiary "Skip This Version" slot), the

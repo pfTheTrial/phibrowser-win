@@ -24,21 +24,6 @@ constexpr wchar_t kReaderPanelClassName[] = L"PhiReaderPanel";
 // the same corners as the page it covers.
 constexpr int kContentRadius = 14;
 
-ATOM EnsureClass() {
-  static const ATOM atom = [] {
-    WNDCLASSEXW wc = {};
-    wc.cbSize = sizeof(wc);
-    wc.style = CS_HREDRAW | CS_VREDRAW;
-    wc.lpfnWndProc = &PhiReaderPanel::WndProc;
-    wc.hInstance = ::GetModuleHandleW(nullptr);
-    wc.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
-    wc.hbrBackground = nullptr;
-    wc.lpszClassName = kReaderPanelClassName;
-    return ::RegisterClassExW(&wc);
-  }();
-  return atom;
-}
-
 }  // namespace
 
 PhiReaderPanel::PhiReaderPanel(int64_t window_id,
@@ -57,21 +42,22 @@ PhiReaderPanel::PhiReaderPanel(int64_t window_id,
       framework_(framework),
       model_(model),
       coordinator_(coordinator) {
-  EnsureClass();
   HWND shell = origin_ ? origin_->shell_hwnd() : nullptr;
   if (!shell) {
     LOG(ERROR) << "[PhiClient] reader panel has no origin shell";
     return;
   }
-  dpi_ = ::GetDpiForWindow(shell);
 
   // A child of the origin's shell, above the hosted browser — the peek
   // panel's trick, so the reader clips into the content card and travels
   // with the window.
-  hwnd_ = ::CreateWindowExW(0, kReaderPanelClassName, L"",
-                            WS_CHILD | WS_CLIPCHILDREN, 0, 0, 0, 0, shell,
-                            nullptr, ::GetModuleHandleW(nullptr), this);
-  if (!hwnd_) {
+  ClassSpec spec;
+  spec.name = kReaderPanelClassName;
+  spec.style = CS_HREDRAW | CS_VREDRAW;
+  Options options;
+  options.style = WS_CLIPCHILDREN;
+  const RECT nothing = {0, 0, 0, 0};
+  if (!CreatePanel(spec, shell, nothing, options)) {
     LOG(ERROR) << "[PhiClient] reader panel CreateWindowEx failed err="
                << ::GetLastError();
     return;
@@ -87,7 +73,7 @@ PhiReaderPanel::PhiReaderPanel(int64_t window_id,
     ex &= ~(WS_EX_WINDOWEDGE | WS_EX_CLIENTEDGE | WS_EX_DLGMODALFRAME |
             WS_EX_STATICEDGE | WS_EX_APPWINDOW);
     ::SetWindowLongPtrW(browser_hwnd_, GWL_EXSTYLE, ex);
-    ::SetParent(browser_hwnd_, hwnd_);
+    ::SetParent(browser_hwnd_, hwnd());
     ::SetWindowPos(browser_hwnd_, nullptr, 0, 0, 0, 0,
                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE |
                        SWP_FRAMECHANGED);
@@ -96,8 +82,7 @@ PhiReaderPanel::PhiReaderPanel(int64_t window_id,
   Reposition();
   RefreshState();
   // Above the shell's hosted browser child, or the page would occlude it.
-  ::SetWindowPos(hwnd_, HWND_TOP, 0, 0, 0, 0,
-                 SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW | SWP_NOACTIVATE);
+  ShowPanel();
   if (origin_) {
     origin_->RaiseCornerCaps();
   }
@@ -119,7 +104,17 @@ int64_t PhiReaderPanel::origin_tab_id() const {
   return origin_tab_id_;
 }
 HWND PhiReaderPanel::hwnd() const {
-  return hwnd_;
+  // PhiSurfacePanel's spelling of the base's HWND; the two names meet here.
+  return PhiWindow::hwnd();
+}
+
+PhiPalette PhiReaderPanel::QueryPalette() const {
+  // The ORIGIN SLOT's palette, not its browser's: the two numbers only
+  // coincide until that slot switches Space.
+  if (coordinator_ && origin_) {
+    return coordinator_->PaletteForSlot(origin_->slot().value);
+  }
+  return PhiResolvePalette(PhiThemeById("pure"), PhiAppearance::kLight);
 }
 void PhiReaderPanel::BindSurfaceTab(int64_t surface_tab_id) {
   surface_tab_id_ = surface_tab_id;
@@ -129,16 +124,16 @@ PhiReaderPanel::~PhiReaderPanel() {
   if (browser_hwnd_ && ::IsWindow(browser_hwnd_)) {
     ::SetParent(browser_hwnd_, nullptr);
   }
-  if (hwnd_ && ::IsWindow(hwnd_)) {
-    ::SetWindowLongPtrW(hwnd_, GWLP_USERDATA, 0);
-    ::DestroyWindow(hwnd_);
-  }
+  // The base clears GWLP_USERDATA at WM_NCDESTROY, so nothing delivered
+  // during the teardown can reach a half-destroyed object.
+  Destroy();
 }
 
 void PhiReaderPanel::Reposition() {
-  if (!hwnd_ || !::IsWindow(hwnd_) || !origin_) {
+  if (!alive() || !origin_) {
     return;
   }
+  SyncDpiFromParent();
   // The whole CARD, not just the page below the bar — on the Mac the reader
   // covers `pageCardView`, which is the container the navigation bar lives
   // INSIDE (see WebContentViewController's hierarchy). Covering only the page
@@ -150,11 +145,10 @@ void PhiReaderPanel::Reposition() {
   if (width <= 0 || height <= 0) {
     return;
   }
-  ::SetWindowPos(hwnd_, nullptr, content.left, content.top, width, height,
-                 SWP_NOZORDER | SWP_NOACTIVATE);
+  SetPanelBounds(content);
   PositionContent();
   ApplyCardShape();
-  ::InvalidateRect(hwnd_, nullptr, FALSE);
+  Invalidate();
   // The caps were placed for the card this panel now covers; re-assert them
   // over it so the reading surface wears the same rounded corners.
   if (origin_) {
@@ -163,11 +157,11 @@ void PhiReaderPanel::Reposition() {
 }
 
 void PhiReaderPanel::ApplyCardShape() {
-  if (!hwnd_ || !::IsWindow(hwnd_)) {
+  if (!alive()) {
     return;
   }
   RECT client = {};
-  ::GetClientRect(hwnd_, &client);
+  ::GetClientRect(hwnd(), &client);
   if (client.right <= 0 || client.bottom <= 0) {
     return;
   }
@@ -182,39 +176,38 @@ void PhiReaderPanel::ApplyCardShape() {
     origin_->CardRoundedCorners(&round_top, &round_bottom);
   }
   if (!round_top && !round_bottom) {
-    ::SetWindowRgn(hwnd_, nullptr, TRUE);  // Square, as the card is.
+    ::SetWindowRgn(hwnd(), nullptr, TRUE);  // Square, as the card is.
     return;
   }
   // CreateRoundRectRgn takes the ELLIPSE size, so it is twice the radius.
-  const int ellipse = ::MulDiv(kContentRadius, dpi_, 96) * 2;
+  const int ellipse = Scaled(kContentRadius) * 2;
   // Rounding only the bottom pair is the status bubble's trick: oversize the
   // rect past the top edge so those corners' curves fall outside the window.
   const int top = round_top ? 0 : -ellipse;
   HRGN shape = ::CreateRoundRectRgn(0, top, client.right + 1,
                                     client.bottom + 1, ellipse, ellipse);
-  ::SetWindowRgn(hwnd_, shape, TRUE);  // The window owns it now.
+  ::SetWindowRgn(hwnd(), shape, TRUE);  // The window owns it now.
 }
 
 void PhiReaderPanel::Raise() {
-  if (!hwnd_ || !::IsWindow(hwnd_) || !::IsWindowVisible(hwnd_)) {
+  if (!IsPanelVisible()) {
     return;
   }
-  ::SetWindowPos(hwnd_, HWND_TOP, 0, 0, 0, 0,
-                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+  RaisePanel();
 }
 
 void PhiReaderPanel::SetVisibleForActiveTab(int64_t active_tab_id) {
-  if (!hwnd_ || !::IsWindow(hwnd_)) {
+  if (!alive()) {
     return;
   }
   const bool mine = active_tab_id == origin_tab_id_;
-  ::ShowWindow(hwnd_, mine ? SW_SHOWNA : SW_HIDE);
   if (mine) {
-    ::SetWindowPos(hwnd_, HWND_TOP, 0, 0, 0, 0,
-                   SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    ShowPanel();
     if (origin_) {
       origin_->RaiseCornerCaps();
     }
+  } else {
+    HidePanel();
   }
 }
 
@@ -276,71 +269,24 @@ void PhiReaderPanel::PositionContent() {
     return;
   }
   RECT client = {};
-  ::GetClientRect(hwnd_, &client);
+  ::GetClientRect(hwnd(), &client);
   ::SetWindowPos(browser_hwnd_, nullptr, 0, 0, client.right, client.bottom,
                  SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
-void PhiReaderPanel::Paint() {
-  PAINTSTRUCT ps = {};
-  HDC dc = ::BeginPaint(hwnd_, &ps);
-  if (!dc) {
-    return;
-  }
+void PhiReaderPanel::Paint(HDC dc, const RECT&) {
   // Only ever seen in the instant before the hosted page covers it; painting
   // the window's own ground stops that instant reading as a white flash.
-  static const PhiPalette kFallback =
-      PhiResolvePalette(PhiThemeById("pure"), PhiAppearance::kLight);
-  // The ORIGIN SLOT's palette, not its browser's: the two numbers only
-  // coincide until that slot switches Space.
-  const PhiPalette palette =
-      coordinator_ && origin_
-          ? coordinator_->PaletteForSlot(origin_->slot().value)
-          : kFallback;
   RECT client = {};
-  ::GetClientRect(hwnd_, &client);
-  HBRUSH ground = ::CreateSolidBrush(palette.ground_top);
+  ::GetClientRect(hwnd(), &client);
+  // Live, as before: the origin slot's palette ramps between frames.
+  HBRUSH ground = ::CreateSolidBrush(QueryPalette().ground_top);
   ::FillRect(dc, &client, ground);
   ::DeleteObject(ground);
-  ::EndPaint(hwnd_, &ps);
 }
 
-LRESULT PhiReaderPanel::Handle(UINT msg, WPARAM wparam, LPARAM lparam) {
-  switch (msg) {
-    case WM_PAINT:
-      Paint();
-      return 0;
-    case WM_ERASEBKGND:
-      return 1;
-    case WM_SIZE:
-      PositionContent();
-      return 0;
-    default:
-      break;
-  }
-  return ::DefWindowProcW(hwnd_, msg, wparam, lparam);
-}
-
-LRESULT CALLBACK PhiReaderPanel::WndProc(HWND hwnd,
-                                         UINT msg,
-                                         WPARAM wparam,
-                                         LPARAM lparam) {
-  if (msg == WM_NCCREATE) {
-    auto* create = reinterpret_cast<CREATESTRUCTW*>(lparam);
-    ::SetWindowLongPtrW(hwnd, GWLP_USERDATA,
-                        reinterpret_cast<LONG_PTR>(create->lpCreateParams));
-    auto* self = static_cast<PhiReaderPanel*>(create->lpCreateParams);
-    if (self) {
-      self->hwnd_ = hwnd;
-    }
-    return ::DefWindowProcW(hwnd, msg, wparam, lparam);
-  }
-  auto* self = reinterpret_cast<PhiReaderPanel*>(
-      ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
-  if (!self) {
-    return ::DefWindowProcW(hwnd, msg, wparam, lparam);
-  }
-  return self->Handle(msg, wparam, lparam);
+void PhiReaderPanel::OnSize(int, int) {
+  PositionContent();
 }
 
 }  // namespace phi_client

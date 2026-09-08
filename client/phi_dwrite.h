@@ -84,15 +84,17 @@ bool PhiBlendBgra(HDC dc,
 
 // ---------------------------------------------------------------------------
 // Anti-aliased shapes. Every GDI shape primitive (RoundRect, Ellipse, a pen
-// around either) lands on the pixel grid stair-stepped; these software-
-// render the shape's exact coverage and alpha-blend it over the DC, so a
-// pill, a card corner or a dot reads as a curve at any DPI. All of them
-// take TRUE geometry: `radius` is the corner radius (GDI's RoundRect takes
-// the corner ellipse's DIAMETER — half the values here), and a fill covers
-// exactly `rect` (GDI's NULL_PEN fill stops a pixel short on the right and
-// bottom). Strokes hug the INSIDE of the boundary. They never fail for a
-// drawable rect: when the blend surface cannot be built they draw the same
-// shape with GDI, so call sites carry no fallback of their own.
+// around either) lands on the pixel grid stair-stepped; these rasterise the
+// shape's coverage — through Direct2D, or the software distance field
+// behind it — and alpha-blend it over the DC, so a pill, a card corner or a
+// dot reads as a curve at any DPI, over whatever was already painted there.
+// All of them take TRUE geometry: `radius` is the corner radius (GDI's
+// RoundRect takes the corner ellipse's DIAMETER — half the values here),
+// and a fill covers exactly `rect` (GDI's NULL_PEN fill stops a pixel short
+// on the right and bottom). Strokes hug the INSIDE of the boundary. They
+// never fail for a drawable rect: when no blend surface can be built at all
+// they draw the same shape with GDI, so call sites carry no fallback of
+// their own.
 
 // A rounded rectangle of corner `radius`; a radius of half the height is a
 // capsule (pill). Large rects cost little: the straight runs fill through

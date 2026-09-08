@@ -4,17 +4,17 @@
 
 #include "phibrowser-win/client/phi_folder_icon_picker.h"
 
-#include <dwmapi.h>
-#include <windowsx.h>
-
 #include <algorithm>
+#include <utility>
 #include <vector>
 
 #include "base/memory/raw_ptr_exclusion.h"
+#include "base/strings/utf_string_conversions.h"
 #include "phibrowser-win/client/phi_dwrite.h"
 #include "phibrowser-win/client/phi_folder_icons.h"
 #include "phibrowser-win/client/phi_mac_icons.h"
 #include "phibrowser-win/client/phi_modal_scope.h"
+#include "phibrowser-win/client/phi_popover.h"
 #include "phibrowser-win/client/phi_theme.h"
 #include "phibrowser-win/client/phi_window_controller.h"
 
@@ -33,236 +33,200 @@ constexpr int kPickerWidth = 264;
 constexpr int kVerticalPad = 12;
 constexpr int kItemRadius = 10;
 
-const wchar_t kClassName[] = L"PhiFolderIconPicker";
+// The picker keeps its catalog grid, its Paint() and its click handling.
+// Placement, hover, the back buffer, dismissal and lifetime are
+// PhiPopover's; the modal GetMessage loop the file used to run is gone
+// (lane 3 §4.4 — one of the two this phase deletes).
+class Picker : public PhiPopover {
+ public:
+  Picker(PhiWindowController* controller,
+         std::string selected,
+         PhiFolderIconChosen on_chosen)
+      : controller_(controller),
+        selected_(std::move(selected)),
+        on_chosen_(std::move(on_chosen)) {}
 
-struct PickerState {
-  // Stack-scoped for one modal run; the controller outlives it.
-  RAW_PTR_EXCLUSION PhiWindowController* controller = nullptr;
-  std::string selected;
-  std::string chosen;
-  bool done = false;
-  int hover = -1;
-  UINT dpi = 96;
-  std::vector<RECT> cells;  // Client coords, index-aligned with the catalog.
+  ~Picker() override = default;
+
+  bool Open(const RECT& anchor_screen) {
+    HWND owner = controller_ ? controller_->shell_hwnd() : nullptr;
+    if (!owner) {
+      return false;
+    }
+    ClassSpec spec;
+    spec.name = L"PhiFolderIconPicker";
+
+    Options options;  // Activating, dismiss on inactive or Escape.
+
+    Placement placement;
+    placement.anchor = anchor_screen;
+    placement.side = PhiPopoverSide::kBelow;
+    placement.align = PhiPopoverAlign::kLeading;
+    placement.gap_dip = 4;
+
+    SIZE probe = {1, 1};
+    if (!CreatePopover(spec, owner, probe, placement, options)) {
+      return false;
+    }
+    BuildCells();
+    SIZE size = {Scaled(kPickerWidth), PickerHeight()};
+    Reposition(placement, size);
+    Show();
+    return true;
+  }
+
+ protected:
+  PhiPalette QueryPalette() const override {
+    return controller_ ? controller_->CurrentPalette()
+                       : PhiResolvePalette(PhiThemeById("pure"),
+                                           PhiAppearance::kSystem);
+  }
+
+  void OnDpiChanged(UINT) override {
+    BuildCells();
+    ::SetWindowPos(hwnd(), nullptr, 0, 0, Scaled(kPickerWidth), PickerHeight(),
+                   SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+  }
+
+  void OnClick(int hit, POINT) override {
+    if (hit >= 0) {
+      const std::vector<PhiFolderIcon>& all = PhiFolderIconsAll();
+      const size_t index = static_cast<size_t>(hits_[static_cast<size_t>(hit)].key);
+      if (index < all.size()) {
+        chosen_ = all[index].id;
+      }
+    }
+    Dismiss();
+  }
+
+  void OnNcDestroy() override {
+    // Exactly once, after the window is gone: the callback may open
+    // another popover, or destroy the controller's menu frame.
+    if (on_chosen_) {
+      PhiFolderIconChosen callback = std::move(on_chosen_);
+      on_chosen_ = PhiFolderIconChosen();
+      callback(chosen_);
+    }
+  }
+
+  void Paint(HDC dc, const RECT&) override {
+    RECT rc = {};
+    ::GetClientRect(hwnd(), &rc);
+    const PhiPalette& colors = palette();
+    HBRUSH ground = ::CreateSolidBrush(colors.window_bg);
+    ::FillRect(dc, &rc, ground);
+    ::DeleteObject(ground);
+
+    const std::vector<PhiFolderIcon>& all = PhiFolderIconsAll();
+    for (size_t i = 0; i < hits_.size() && i < all.size(); ++i) {
+      const RECT cell = PhiToRect(hits_[i].bounds);
+      const bool is_selected = selected_ == all[i].id;
+      const bool is_hover = hovered() == static_cast<int>(i);
+      if (is_selected || is_hover) {
+        const int r = Scaled(kItemRadius);
+        PhiFillRoundRectAA(dc, cell, r,
+                           is_selected ? colors.hover_strong : colors.hover);
+        PhiStrokeRoundRectAA(dc, cell, r,
+                             is_selected ? colors.accent : colors.border, 1);
+      }
+      const PhiMacIcon* mask = PhiFolderIconMask(all[i].id);
+      if (!mask) {
+        continue;
+      }
+      const int px = Scaled(kIconSize);
+      RECT art = {cell.left + ((cell.right - cell.left) - px) / 2,
+                  cell.top + ((cell.bottom - cell.top) - px) / 2, 0, 0};
+      art.right = art.left + px;
+      art.bottom = art.top + px;
+      const std::vector<unsigned char> bgra =
+          PhiTintedIconBgra(*mask, colors.label, px);
+      if (!bgra.empty()) {
+        PhiBlendBgra(dc, art, bgra.data(), px, px);
+      }
+    }
+  }
+
+ private:
+  int PickerHeight() const {
+    const size_t count = PhiFolderIconsAll().size();
+    const int rows = static_cast<int>((count + kColumns - 1) / kColumns);
+    return 2 * Scaled(kVerticalPad) + rows * Scaled(kItemSize) +
+           std::max(0, rows - 1) * Scaled(kRowSpacing);
+  }
+
+  // THE layout pass. One cell per catalog icon, into the base's hit list:
+  // hover, click routing and (later) the UIA grid all read it.
+  void BuildCells() {
+    ClearHits();
+    const std::vector<PhiFolderIcon>& all = PhiFolderIconsAll();
+    const int item = Scaled(kItemSize);
+    const int gap = Scaled(kColumnSpacing);
+    const int row_gap = Scaled(kRowSpacing);
+    const int grid_left = (Scaled(kPickerWidth) - Scaled(kGridWidth)) / 2;
+    for (size_t i = 0; i < all.size(); ++i) {
+      const int column = static_cast<int>(i) % kColumns;
+      const int row = static_cast<int>(i) / kColumns;
+      const int x = grid_left + column * (item + gap);
+      const int y = Scaled(kVerticalPad) + row * (item + row_gap);
+      RECT cell = {x, y, x + item, y + item};
+      AddHit(cell, static_cast<int>(i), base::UTF8ToWide(all[i].name),
+             PhiHitRole::kListItem, selected_ == all[i].id);
+    }
+  }
+
+  // The controller outlives the picker (it owns the shell that owns it).
+  RAW_PTR_EXCLUSION PhiWindowController* const controller_;
+  std::string selected_;
+  std::string chosen_;
+  PhiFolderIconChosen on_chosen_;
 };
 
-int Scaled(const PickerState& state, int design) {
-  return ::MulDiv(design, static_cast<int>(state.dpi), 96);
-}
-
-void BuildCells(PickerState& state) {
-  state.cells.clear();
-  const size_t count = PhiFolderIconsAll().size();
-  const int item = Scaled(state, kItemSize);
-  const int gap = Scaled(state, kColumnSpacing);
-  const int row_gap = Scaled(state, kRowSpacing);
-  const int grid_left = (Scaled(state, kPickerWidth) -
-                         Scaled(state, kGridWidth)) / 2;
-  for (size_t i = 0; i < count; ++i) {
-    const int column = static_cast<int>(i) % kColumns;
-    const int row = static_cast<int>(i) / kColumns;
-    const int x = grid_left + column * (item + gap);
-    const int y = Scaled(state, kVerticalPad) + row * (item + row_gap);
-    state.cells.push_back({x, y, x + item, y + item});
-  }
-}
-
-int PickerHeight(const PickerState& state) {
-  const size_t count = PhiFolderIconsAll().size();
-  const int rows = static_cast<int>((count + kColumns - 1) / kColumns);
-  return 2 * Scaled(state, kVerticalPad) + rows * Scaled(state, kItemSize) +
-         std::max(0, rows - 1) * Scaled(state, kRowSpacing);
-}
-
-void Paint(HWND hwnd, PickerState& state, HDC dc) {
-  RECT rc = {};
-  ::GetClientRect(hwnd, &rc);
-  const PhiPalette palette = state.controller
-                                 ? state.controller->CurrentPalette()
-                                 : PhiResolvePalette(PhiThemeById("pure"),
-                                                     PhiAppearance::kSystem);
-  HBRUSH ground = ::CreateSolidBrush(palette.window_bg);
-  ::FillRect(dc, &rc, ground);
-  ::DeleteObject(ground);
-
-  const std::vector<PhiFolderIcon>& all = PhiFolderIconsAll();
-  for (size_t i = 0; i < all.size() && i < state.cells.size(); ++i) {
-    const RECT& cell = state.cells[i];
-    const bool is_selected = state.selected == all[i].id;
-    const bool is_hover = state.hover == static_cast<int>(i);
-    if (is_selected || is_hover) {
-      const int r = Scaled(state, kItemRadius);
-      PhiFillRoundRectAA(dc, cell, r,
-                         is_selected ? palette.hover_strong : palette.hover);
-      PhiStrokeRoundRectAA(dc, cell, r,
-                           is_selected ? palette.accent : palette.border, 1);
-    }
-    const PhiMacIcon* mask = PhiFolderIconMask(all[i].id);
-    if (!mask) {
-      continue;
-    }
-    const int px = Scaled(state, kIconSize);
-    RECT art = {cell.left + ((cell.right - cell.left) - px) / 2,
-                cell.top + ((cell.bottom - cell.top) - px) / 2, 0, 0};
-    art.right = art.left + px;
-    art.bottom = art.top + px;
-    const std::vector<unsigned char> bgra =
-        PhiTintedIconBgra(*mask, palette.label, px);
-    if (!bgra.empty()) {
-      PhiBlendBgra(dc, art, bgra.data(), px, px);
-    }
-  }
-}
-
-LRESULT CALLBACK PickerProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
-  auto* state = reinterpret_cast<PickerState*>(
-      ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
-  switch (msg) {
-    case WM_ERASEBKGND:
-      return 1;
-    case WM_PAINT: {
-      PAINTSTRUCT ps = {};
-      HDC dc = ::BeginPaint(hwnd, &ps);
-      if (state) {
-        Paint(hwnd, *state, dc);
-      }
-      ::EndPaint(hwnd, &ps);
-      return 0;
-    }
-    case WM_MOUSEMOVE: {
-      if (!state) {
-        break;
-      }
-      const POINT pt = {GET_X_LPARAM(l), GET_Y_LPARAM(l)};
-      int hover = -1;
-      for (size_t i = 0; i < state->cells.size(); ++i) {
-        if (::PtInRect(&state->cells[i], pt)) {
-          hover = static_cast<int>(i);
-          break;
-        }
-      }
-      if (hover != state->hover) {
-        state->hover = hover;
-        ::InvalidateRect(hwnd, nullptr, FALSE);
-        TRACKMOUSEEVENT track = {sizeof(track), TME_LEAVE, hwnd, 0};
-        ::TrackMouseEvent(&track);
-      }
-      return 0;
-    }
-    case WM_MOUSELEAVE:
-      if (state && state->hover != -1) {
-        state->hover = -1;
-        ::InvalidateRect(hwnd, nullptr, FALSE);
-      }
-      return 0;
-    case WM_LBUTTONUP: {
-      if (!state) {
-        break;
-      }
-      const POINT pt = {GET_X_LPARAM(l), GET_Y_LPARAM(l)};
-      const std::vector<PhiFolderIcon>& all = PhiFolderIconsAll();
-      for (size_t i = 0; i < state->cells.size() && i < all.size(); ++i) {
-        if (::PtInRect(&state->cells[i], pt)) {
-          state->chosen = all[i].id;
-          break;
-        }
-      }
-      state->done = true;
-      ::PostMessageW(hwnd, WM_NULL, 0, 0);  // Wake the modal loop.
-      return 0;
-    }
-    case WM_KEYDOWN:
-      if (state && w == VK_ESCAPE) {
-        state->done = true;
-        ::PostMessageW(hwnd, WM_NULL, 0, 0);
-      }
-      return 0;
-    case WM_ACTIVATE:
-      // Dismiss like a popover the moment focus goes elsewhere.
-      if (state && LOWORD(w) == WA_INACTIVE) {
-        state->done = true;
-        ::PostMessageW(hwnd, WM_NULL, 0, 0);
-      }
-      return 0;
-    default:
-      break;
-  }
-  return ::DefWindowProcW(hwnd, msg, w, l);
-}
-
-void RegisterPickerClass() {
-  static const bool registered = [] {
-    WNDCLASSW cls = {};
-    cls.lpfnWndProc = &PickerProc;
-    cls.hInstance = ::GetModuleHandleW(nullptr);
-    cls.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
-    cls.lpszClassName = kClassName;
-    return ::RegisterClassW(&cls) != 0;
-  }();
-  (void)registered;
-}
-
 }  // namespace
+
+void PhiOpenFolderIconPicker(PhiWindowController* controller,
+                             const RECT& anchor_screen,
+                             const std::string& selected,
+                             PhiFolderIconChosen on_chosen) {
+  if (!controller || !controller->shell_hwnd()) {
+    if (on_chosen) {
+      on_chosen(std::string());
+    }
+    return;
+  }
+  Picker* picker = new Picker(controller, PhiResolveFolderIcon(selected),
+                              std::move(on_chosen));
+  picker->DeleteWhenDestroyed();
+  if (!picker->Open(anchor_screen)) {
+    // Open() never showed a window, so OnNcDestroy will not run: answer
+    // here and drop the object.
+    delete picker;
+  }
+}
 
 std::string PhiPickFolderIcon(PhiWindowController* controller,
                               const RECT& anchor_screen,
                               const std::string& selected) {
-  HWND owner = controller ? controller->shell_hwnd() : nullptr;
-  if (!owner) {
-    return std::string();
+  std::string chosen;
+  bool done = false;
+  PhiOpenFolderIconPicker(controller, anchor_screen, selected,
+                          [&chosen, &done](const std::string& icon_id) {
+                            chosen = icon_id;
+                            done = true;
+                          });
+  if (done) {
+    return chosen;  // The picker never opened.
   }
-  RegisterPickerClass();
-
-  PickerState state;
-  state.controller = controller;
-  state.selected = PhiResolveFolderIcon(selected);
-  state.dpi = ::GetDpiForWindow(owner);
-  BuildCells(state);
-
-  const int w = Scaled(state, kPickerWidth);
-  const int h = PickerHeight(state);
-  int x = anchor_screen.left;
-  int y = anchor_screen.bottom + Scaled(state, 4);
-  HMONITOR monitor = ::MonitorFromRect(&anchor_screen, MONITOR_DEFAULTTONEAREST);
-  MONITORINFO info = {sizeof(info)};
-  if (::GetMonitorInfoW(monitor, &info)) {
-    x = std::max(static_cast<int>(info.rcWork.left),
-                 std::min(x, static_cast<int>(info.rcWork.right) - w));
-    if (y + h > info.rcWork.bottom) {
-      y = std::max(static_cast<int>(info.rcWork.top),
-                   static_cast<int>(anchor_screen.top) - h -
-                       Scaled(state, 4));
-    }
+  // Control verbs from the pipe are deferred while this loop is on the
+  // stack, so nothing can destroy the owning controller under it. Unlike
+  // the loop this replaced, no state lives on this frame beyond two
+  // locals the callback writes — the picker owns itself.
+  PhiModalScope modal;
+  MSG msg;
+  while (!done && ::GetMessageW(&msg, nullptr, 0, 0)) {
+    ::TranslateMessage(&msg);
+    ::DispatchMessageW(&msg);
   }
-
-  HWND picker = ::CreateWindowExW(WS_EX_TOOLWINDOW, kClassName, L"", WS_POPUP,
-                                  x, y, w, h, owner, nullptr,
-                                  ::GetModuleHandleW(nullptr), nullptr);
-  if (!picker) {
-    return std::string();
-  }
-  ::SetWindowLongPtrW(picker, GWLP_USERDATA,
-                      reinterpret_cast<LONG_PTR>(&state));
-  const DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_ROUND;
-  ::DwmSetWindowAttribute(picker, DWMWA_WINDOW_CORNER_PREFERENCE, &corner,
-                          sizeof(corner));
-  ::ShowWindow(picker, SW_SHOW);
-  ::SetForegroundWindow(picker);
-
-  {
-    // Control verbs from the pipe are deferred while the picker's loop is on
-    // the stack, so nothing can destroy the owning controller under it.
-    PhiModalScope modal;
-    MSG msg;
-    while (!state.done && ::GetMessageW(&msg, nullptr, 0, 0)) {
-      ::TranslateMessage(&msg);
-      ::DispatchMessageW(&msg);
-    }
-  }
-
-  ::SetWindowLongPtrW(picker, GWLP_USERDATA, 0);
-  ::DestroyWindow(picker);
-  return state.chosen;
+  return chosen;
 }
 
 }  // namespace phi_client

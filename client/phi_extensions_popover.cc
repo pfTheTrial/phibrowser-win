@@ -22,6 +22,7 @@
 #include "base/values.h"
 #include "chrome/browser/phinomenon/phi_framework/phi_framework_api.h"
 #include "phibrowser-win/client/phi_dwrite.h"
+#include "phibrowser-win/client/phi_popover.h"
 
 #pragma comment(lib, "dwmapi.lib")
 
@@ -34,7 +35,10 @@ constexpr int kPanelMaxHeight = 380;
 constexpr int kHeaderHeight = 40;
 constexpr int kRowHeight = 40;
 constexpr int kIconSlot = 20;
-constexpr UINT kPollTimer = 1;
+constexpr UINT kPollIntervalMs = 700;
+// hits_ keys: row i is i * kKeyStride, its pin toggle is + 1. The base
+// resolves hover and clicks over the list.
+constexpr int kKeyStride = 2;
 
 void FillRect(HDC dc, const RECT& r, COLORREF color) {
   HBRUSH brush = ::CreateSolidBrush(color);
@@ -100,21 +104,24 @@ struct ExtensionRow {
   RECT pin_box{};
 };
 
-class Popover {
+// The popover keeps its extension rows, its Paint() and its pin/action
+// handling. The window, the placement, the back buffer, hover, the poll
+// timer, dismissal and lifetime belong to PhiPopover (lane 3 §6.2).
+class Popover : public PhiPopover {
  public:
   static Popover* instance;
-  static HWND last_owner;
-  static ULONGLONG closed_tick;
 
-  Popover(HWND owner, const RECT& anchor, const PhiPalette& palette,
-          phi_framework::PhiFramework* framework, BrowserId browser)
-      : owner_(owner), palette_(palette), framework_(framework),
-        browser_id_(browser.value) {
-    dpi_ = ::GetDpiForWindow(owner);
-    Register();
-    Refresh();
-    const int w = Scaled(kPanelWidth);
-    const int h = PanelHeight();
+  Popover(phi_framework::PhiFramework* framework, BrowserId browser)
+      : framework_(framework), browser_id_(browser.value) {}
+
+  ~Popover() override = default;
+
+  bool Open(HWND owner, const RECT& anchor, const PhiPalette& colors) {
+    ClassSpec spec;
+    spec.name = L"PhiExtensionsPopover";
+
+    Options options;  // Activating, DWM-rounded, 500 ms opening grace.
+
     // Below the anchor when it sits in the owner's top half (the address
     // capsule's in-field button — the Mac popover drops downward there);
     // above it for the bottom bar. Clamped to the work area either way.
@@ -122,43 +129,29 @@ class Popover {
     ::GetWindowRect(owner, &owner_rect);
     const bool anchored_high =
         anchor.top < (owner_rect.top + owner_rect.bottom) / 2;
-    int x = anchor.left;
-    int y = anchored_high ? anchor.bottom + Scaled(8)
-                          : anchor.top - h - Scaled(8);
-    HMONITOR monitor = ::MonitorFromWindow(owner, MONITOR_DEFAULTTONEAREST);
-    MONITORINFO info = {sizeof(info)};
-    if (::GetMonitorInfoW(monitor, &info)) {
-      x = std::max(static_cast<int>(info.rcWork.left),
-                   std::min(x, static_cast<int>(info.rcWork.right) - w));
-      if (y < info.rcWork.top) {
-        y = anchor.bottom + Scaled(8);
-      } else if (y + h > info.rcWork.bottom) {
-        y = anchor.top - h - Scaled(8);
-      }
-    }
-    hwnd_ = ::CreateWindowExW(
-        WS_EX_TOOLWINDOW, L"PhiExtensionsPopover", L"", WS_POPUP, x, y, w, h,
-        owner, nullptr, ::GetModuleHandleW(nullptr), this);
-    ::DwmSetWindowAttribute(hwnd_, DWMWA_WINDOW_CORNER_PREFERENCE, &kCorner,
-                            sizeof(kCorner));
-    EnsureFonts();
-    created_tick_ = ::GetTickCount64();
-    ::ShowWindow(hwnd_, SW_SHOW);
-    ::SetForegroundWindow(hwnd_);
-    // The list loads asynchronously on first use; poll cheaply while open so
-    // the panel fills even if the delegate event races the open.
-    ::SetTimer(hwnd_, kPollTimer, 700, nullptr);
-  }
+    placement_.anchor = anchor;
+    placement_.side = anchored_high ? PhiPopoverSide::kBelow
+                                    : PhiPopoverSide::kAbove;
+    placement_.gap_dip = 8;
+    placement_.monitor_from_owner = true;
 
-  ~Popover() {
-    for (HFONT font : {name_font_, title_font_, glyph_font_, empty_font_}) {
-      if (font) {
-        ::DeleteObject(font);
-      }
+    SIZE probe = {1, 1};
+    if (!CreatePopover(spec, owner, probe, placement_, options)) {
+      return false;
     }
+    instance = this;  // Before Show(): activation churn can destroy us.
+    SetPalette(colors);
+    Refresh();
+    SIZE size = {Scaled(kPanelWidth), PanelHeight()};
+    Reposition(placement_, size);
+    BuildHits();  // Refresh laid out against the pre-placement size.
+    Show();
+    // The list loads asynchronously on first use; poll cheaply while open
+    // so the panel fills even if the delegate event races the open.
+    poll_ = NewTimer();
+    poll_.Start(kPollIntervalMs);
+    return true;
   }
-
-  HWND hwnd() const { return hwnd_; }
 
   void Refresh() {
     const char* json =
@@ -187,22 +180,104 @@ class Popover {
         rows_.push_back(std::move(row));
       }
     }
-    if (hwnd_) {
+    if (alive()) {
       // The row count changes the panel height (grown downward is wrong for
       // a bottom-bar popover — keep the BOTTOM edge pinned).
       RECT rect = {};
-      ::GetWindowRect(hwnd_, &rect);
+      ::GetWindowRect(hwnd(), &rect);
       const int h = PanelHeight();
-      ::SetWindowPos(hwnd_, nullptr, rect.left, rect.bottom - h,
+      ::SetWindowPos(hwnd(), nullptr, rect.left, rect.bottom - h,
                      Scaled(kPanelWidth), h, SWP_NOZORDER | SWP_NOACTIVATE);
-      ::InvalidateRect(hwnd_, nullptr, FALSE);
+      BuildHits();
+      Invalidate();
+    }
+  }
+
+ protected:
+  void Paint(HDC dc, const RECT&) override {
+    RECT client = {};
+    ::GetClientRect(hwnd(), &client);
+    PaintPanel(dc, client);
+  }
+
+  void OnTimerFired(UINT_PTR id) override {
+    if (id == poll_.id()) {
+      Refresh();
+    }
+  }
+
+  void OnHover(int hit, int) override {
+    hover_row_ = -1;
+    hover_pin_ = false;
+    if (hit < 0) {
+      return;
+    }
+    const int key = hits_[static_cast<size_t>(hit)].key;
+    hover_row_ = key / kKeyStride;
+    hover_pin_ = (key % kKeyStride) != 0;
+  }
+
+  void OnClick(int hit, POINT) override {
+    OnHover(hit, -1);
+    RunHoveredAction();
+  }
+
+  void OnDpiChanged(UINT) override {
+    RECT rect = {};
+    ::GetWindowRect(hwnd(), &rect);
+    const int h = PanelHeight();
+    ::SetWindowPos(hwnd(), nullptr, rect.left, rect.bottom - h,
+                   Scaled(kPanelWidth), h, SWP_NOZORDER | SWP_NOACTIVATE);
+    BuildHits();
+  }
+
+  void OnNcDestroy() override {
+    poll_.Stop();
+    PhiPopover::RecordClose(owner());
+    if (instance == this) {
+      instance = nullptr;
     }
   }
 
  private:
-  static inline const DWM_WINDOW_CORNER_PREFERENCE kCorner = DWMWCP_ROUND;
+  HFONT NameFont() { return fonts().Get(13, FW_NORMAL); }
+  HFONT TitleFont() { return fonts().Get(13, FW_SEMIBOLD); }
+  HFONT GlyphFont() {
+    PhiFontDesc desc;
+    desc.size = 12;
+    desc.face = L"Segoe MDL2 Assets";
+    return fonts().Get(desc);
+  }
+  HFONT EmptyFont() {
+    PhiFontDesc desc;
+    desc.size = 28;
+    desc.face = L"Segoe MDL2 Assets";
+    return fonts().Get(desc);
+  }
 
-  int Scaled(int design) const { return ::MulDiv(design, dpi_, 96); }
+  // THE layout pass: one hit per row plus one for its pin toggle, in
+  // paint order so the toggle (added second) takes the pointer.
+  void BuildHits() {
+    ClearHits();
+    RECT client = {};
+    ::GetClientRect(hwnd(), &client);
+    int y = Scaled(kHeaderHeight);
+    for (size_t i = 0; i < rows_.size(); ++i) {
+      RECT bounds = {Scaled(6), y, client.right - Scaled(6),
+                     y + Scaled(kRowHeight)};
+      rows_[i].bounds = bounds;
+      const int mid = (bounds.top + bounds.bottom) / 2;
+      const int pin_px = Scaled(22);
+      rows_[i].pin_box = {bounds.right - Scaled(10) - pin_px, mid - pin_px / 2,
+                          bounds.right - Scaled(10), mid + pin_px / 2};
+      AddHit(bounds, static_cast<int>(i) * kKeyStride, rows_[i].name,
+             PhiHitRole::kListItem);
+      AddHit(rows_[i].pin_box, static_cast<int>(i) * kKeyStride + 1,
+             rows_[i].pinned ? L"Unpin" : L"Pin", PhiHitRole::kToggle,
+             rows_[i].pinned);
+      y += Scaled(kRowHeight);
+    }
+  }
 
   int PanelHeight() const {
     const int rows = std::max(1, static_cast<int>(rows_.size()));
@@ -211,43 +286,17 @@ class Popover {
                         Scaled(8));
   }
 
-  static void Register() {
-    static bool done = false;
-    if (done) {
-      return;
-    }
-    done = true;
-    WNDCLASSW cls = {};
-    cls.lpfnWndProc = &Popover::WndProc;
-    cls.hInstance = ::GetModuleHandleW(nullptr);
-    cls.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
-    cls.lpszClassName = L"PhiExtensionsPopover";
-    ::RegisterClassW(&cls);
-  }
-
-  void EnsureFonts() {
-    auto make = [&](int size, int weight, const wchar_t* face) {
-      return ::CreateFontW(-Scaled(size), 0, 0, 0, weight, FALSE, FALSE,
-                           FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
-                           CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-                           DEFAULT_PITCH, face);
-    };
-    name_font_ = make(13, FW_NORMAL, L"Segoe UI");
-    title_font_ = make(13, FW_SEMIBOLD, L"Segoe UI");
-    glyph_font_ = make(12, FW_NORMAL, L"Segoe MDL2 Assets");
-    empty_font_ = make(28, FW_NORMAL, L"Segoe MDL2 Assets");
-  }
-
-  void Paint(HDC dc, const RECT& client) {
-    const COLORREF bg = palette_.ground_bottom;
-    const COLORREF label = palette_.label;
-    const COLORREF dim = palette_.label_dim;
+  void PaintPanel(HDC dc, const RECT& client) {
+    const PhiPalette& p = palette();
+    const COLORREF bg = p.ground_bottom;
+    const COLORREF label = p.label;
+    const COLORREF dim = p.label_dim;
     FillRect(dc, client, bg);
     ::SetBkMode(dc, TRANSPARENT);
 
     RECT title = {Scaled(16), 0, client.right - Scaled(16),
                   Scaled(kHeaderHeight)};
-    ::SelectObject(dc, title_font_);
+    ::SelectObject(dc, TitleFont());
     ::SetTextColor(dc, label);
     PhiDrawTextAA(dc, L"Extensions", -1, &title,
                 DT_LEFT | DT_VCENTER | DT_SINGLELINE);
@@ -255,26 +304,24 @@ class Popover {
     if (rows_.empty()) {
       RECT glyph = {0, Scaled(kHeaderHeight), client.right,
                     Scaled(kHeaderHeight + 48)};
-      ::SelectObject(dc, empty_font_);
+      ::SelectObject(dc, EmptyFont());
       ::SetTextColor(dc, dim);
       PhiDrawTextAA(dc, L"", -1, &glyph,
                   DT_CENTER | DT_VCENTER | DT_SINGLELINE);
       RECT hint = {0, glyph.bottom, client.right,
                    glyph.bottom + Scaled(20)};
-      ::SelectObject(dc, name_font_);
+      ::SelectObject(dc, NameFont());
       PhiDrawTextAA(dc, L"No extensions installed", -1, &hint,
                   DT_CENTER | DT_VCENTER | DT_SINGLELINE);
       return;
     }
 
-    int y = Scaled(kHeaderHeight);
     for (ExtensionRow& row : rows_) {
-      row.bounds = {Scaled(6), y, client.right - Scaled(6),
-                    y + Scaled(kRowHeight)};
+      const int index = static_cast<int>(&row - rows_.data());
       const int mid = (row.bounds.top + row.bounds.bottom) / 2;
-      const bool hot = hover_row_ == static_cast<int>(&row - rows_.data());
+      const bool hot = hover_row_ == index;
       if (hot) {
-        FillRounded(dc, row.bounds, palette_.hover, Scaled(6));
+        FillRounded(dc, row.bounds, p.hover, Scaled(6));
       }
       // Icon.
       const int icon_px = Scaled(kIconSlot);
@@ -290,58 +337,32 @@ class Popover {
             ScaleBgra(bgra, iw, ih, icon_px);
         PhiBlendBgra(dc, icon, scaled.data(), icon_px, icon_px);
       } else {
-        ::SelectObject(dc, glyph_font_);
+        ::SelectObject(dc, GlyphFont());
         ::SetTextColor(dc, dim);
         PhiDrawTextAA(dc, L"", -1, &icon,
                     DT_CENTER | DT_VCENTER | DT_SINGLELINE);
       }
       // Pin toggle, trailing (the Mac popover's pin column).
-      const int pin_px = Scaled(22);
-      row.pin_box = {row.bounds.right - Scaled(10) - pin_px, mid - pin_px / 2,
-                     row.bounds.right - Scaled(10), mid + pin_px / 2};
-      const bool pin_hot =
-          hot && hover_pin_ &&
-          hover_row_ == static_cast<int>(&row - rows_.data());
+      const bool pin_hot = hot && hover_pin_;
       if (pin_hot) {
-        FillRounded(dc, row.pin_box, palette_.selected, Scaled(4));
+        FillRounded(dc, row.pin_box, p.selected, Scaled(4));
       }
-      ::SelectObject(dc, glyph_font_);
-      ::SetTextColor(dc, row.pinned ? palette_.accent : dim);
+      ::SelectObject(dc, GlyphFont());
+      ::SetTextColor(dc, row.pinned ? p.accent : dim);
       PhiDrawTextAA(dc, row.pinned ? L"" : L"", -1, &row.pin_box,
                   DT_CENTER | DT_VCENTER | DT_SINGLELINE);
       // Name.
       RECT text = {icon.right + Scaled(10), row.bounds.top,
                    row.pin_box.left - Scaled(8), row.bounds.bottom};
-      ::SelectObject(dc, name_font_);
+      ::SelectObject(dc, NameFont());
       ::SetTextColor(dc, label);
       PhiDrawTextAA(dc, row.name.c_str(), -1, &text,
                   DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
                       DT_NOPREFIX);
-      y += Scaled(kRowHeight);
     }
   }
 
-  void OnMouseMove(int x, int y) {
-    int row = -1;
-    bool pin = false;
-    const POINT pt = {x, y};
-    for (const ExtensionRow& candidate : rows_) {
-      if (::PtInRect(&candidate.bounds, pt)) {
-        row = static_cast<int>(&candidate - rows_.data());
-        pin = ::PtInRect(&candidate.pin_box, pt);
-        break;
-      }
-    }
-    if (row != hover_row_ || pin != hover_pin_) {
-      hover_row_ = row;
-      hover_pin_ = pin;
-      ::InvalidateRect(hwnd_, nullptr, FALSE);
-    }
-    TRACKMOUSEEVENT track = {sizeof(track), TME_LEAVE, hwnd_, 0};
-    ::TrackMouseEvent(&track);
-  }
-
-  void OnClick() {
+  void RunHoveredAction() {
     if (hover_row_ < 0 || hover_row_ >= static_cast<int>(rows_.size()) ||
         !framework_) {
       return;
@@ -353,125 +374,34 @@ class Popover {
       // The change notification refreshes the list; flip optimistically so
       // the toggle reads instant.
       rows_[static_cast<size_t>(hover_row_)].pinned = !row.pinned;
-      ::InvalidateRect(hwnd_, nullptr, FALSE);
+      Invalidate();
       return;
     }
     // Run the action anchored to the ROW (screen coords) and leave — the
     // extension's own popup takes the stage.
     RECT anchor = row.bounds;
-    ::MapWindowPoints(hwnd_, nullptr, reinterpret_cast<POINT*>(&anchor), 2);
+    ::MapWindowPoints(hwnd(), nullptr, reinterpret_cast<POINT*>(&anchor), 2);
     framework_->TriggerExtensionAction(
         browser_id_, row.id.c_str(), anchor.left, anchor.top,
         anchor.right - anchor.left, anchor.bottom - anchor.top);
-    ::DestroyWindow(hwnd_);
+    Dismiss();
   }
 
-  static LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM w,
-                                  LPARAM l) {
-    Popover* self = reinterpret_cast<Popover*>(
-        ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
-    switch (message) {
-      case WM_NCCREATE: {
-        auto* create = reinterpret_cast<CREATESTRUCTW*>(l);
-        self = static_cast<Popover*>(create->lpCreateParams);
-        self->hwnd_ = hwnd;
-        ::SetWindowLongPtrW(hwnd, GWLP_USERDATA,
-                            reinterpret_cast<LONG_PTR>(self));
-        break;
-      }
-      case WM_ACTIVATE:
-        if (self && LOWORD(w) == WA_INACTIVE) {
-          // The downloads popover's opening grace against activation churn.
-          if (::GetTickCount64() - self->created_tick_ < 500) {
-            break;
-          }
-          ::DestroyWindow(hwnd);
-          return 0;
-        }
-        break;
-      case WM_TIMER:
-        if (self && w == kPollTimer) {
-          self->Refresh();
-          return 0;
-        }
-        break;
-      case WM_MOUSEMOVE:
-        if (self) {
-          self->OnMouseMove(GET_X_LPARAM(l), GET_Y_LPARAM(l));
-          return 0;
-        }
-        break;
-      case WM_MOUSELEAVE:
-        if (self) {
-          self->hover_row_ = -1;
-          self->hover_pin_ = false;
-          ::InvalidateRect(hwnd, nullptr, FALSE);
-          return 0;
-        }
-        break;
-      case WM_LBUTTONUP:
-        if (self) {
-          self->OnClick();
-          return 0;
-        }
-        break;
-      case WM_PAINT: {
-        PAINTSTRUCT paint;
-        HDC dc = ::BeginPaint(hwnd, &paint);
-        RECT client;
-        ::GetClientRect(hwnd, &client);
-        HDC mem = ::CreateCompatibleDC(dc);
-        HBITMAP bitmap =
-            ::CreateCompatibleBitmap(dc, client.right, client.bottom);
-        HGDIOBJ old = ::SelectObject(mem, bitmap);
-        if (self) {
-          self->Paint(mem, client);
-        }
-        ::BitBlt(dc, 0, 0, client.right, client.bottom, mem, 0, 0, SRCCOPY);
-        ::SelectObject(mem, old);
-        ::DeleteObject(bitmap);
-        ::DeleteDC(mem);
-        ::EndPaint(hwnd, &paint);
-        return 0;
-      }
-      case WM_DESTROY:
-        if (self) {
-          ::KillTimer(hwnd, kPollTimer);
-          Popover::closed_tick = ::GetTickCount64();
-          Popover::last_owner = self->owner_;
-          Popover::instance = nullptr;
-          ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
-          delete self;
-        }
-        return 0;
-    }
-    return ::DefWindowProcW(hwnd, message, w, l);
-  }
-
-  HWND owner_;
-  HWND hwnd_ = nullptr;
-  ULONGLONG created_tick_ = 0;
-  PhiPalette palette_;
   // Not rewritten to raw_ptr: the popover lives strictly inside the
   // framework's lifetime (owned popup of the shell window).
   RAW_PTR_EXCLUSION phi_framework::PhiFramework* framework_;
   // The browser the popover was opened for (BrowserId::value; the
   // framework calls below are still int64_t until phase 2).
   int64_t browser_id_;
-  UINT dpi_ = 96;
+  Placement placement_;
+  Timer poll_;
   std::vector<ExtensionRow> rows_;
   std::string last_json_;
   int hover_row_ = -1;
   bool hover_pin_ = false;
-  HFONT name_font_ = nullptr;
-  HFONT title_font_ = nullptr;
-  HFONT glyph_font_ = nullptr;
-  HFONT empty_font_ = nullptr;
 };
 
 Popover* Popover::instance = nullptr;
-HWND Popover::last_owner = nullptr;
-ULONGLONG Popover::closed_tick = 0;
 
 }  // namespace
 
@@ -481,15 +411,17 @@ void PhiExtensionsPopover::Toggle(HWND owner,
                                   phi_framework::PhiFramework* framework,
                                   BrowserId browser) {
   if (Popover::instance) {
-    ::DestroyWindow(Popover::instance->hwnd());
+    Popover::instance->Dismiss();
     return;
   }
-  if (Popover::last_owner == owner &&
-      ::GetTickCount64() - Popover::closed_tick < 300) {
+  if (PhiPopover::ShouldSuppressReopen(owner)) {
     return;
   }
-  Popover::instance =
-      new Popover(owner, anchor_screen, palette, framework, browser);
+  Popover* popover = new Popover(framework, browser);
+  popover->DeleteWhenDestroyed();
+  if (!popover->Open(owner, anchor_screen, palette)) {
+    delete popover;
+  }
 }
 
 void PhiExtensionsPopover::RefreshOpen() {

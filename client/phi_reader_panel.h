@@ -12,7 +12,9 @@
 
 #include "base/memory/raw_ptr_exclusion.h"
 #include "phibrowser-win/client/phi_ids.h"
+#include "phibrowser-win/client/phi_panel.h"
 #include "phibrowser-win/client/phi_surface_registry.h"
+#include "phibrowser-win/client/phi_theme.h"
 
 namespace phi_framework {
 class PhiFramework;
@@ -42,7 +44,7 @@ class PhiWindowModel;
 //
 // One reader per origin tab, any number of origins: a panel shows only while
 // its origin tab is the active one, exactly like a peek.
-class PhiReaderPanel : public PhiSurfacePanel {
+class PhiReaderPanel : public PhiSurfacePanel, public PhiPanel {
  public:
   // `model` is the coordinator's window model: the surface browser's strip
   // is read from its snapshot there (docs/architecture-review.md §3.3).
@@ -89,20 +91,23 @@ class PhiReaderPanel : public PhiSurfacePanel {
   // instead of moving the live tab across).
   void RefreshState() override;
 
-  static LRESULT CALLBACK WndProc(HWND hwnd,
-                                  UINT msg,
-                                  WPARAM wparam,
-                                  LPARAM lparam);
+ protected:
+  // PhiPanel: the reader keeps its model, its ground fill and its card
+  // shape; registration, the `this` binding, the back buffer, the dpi and
+  // the teardown come from the base (phi_window.h).
+  void Paint(HDC dc, const RECT& dirty) override;
+  void OnSize(int width, int height) override;
+  PhiPalette QueryPalette() const override;
 
  private:
-  LRESULT Handle(UINT msg, WPARAM wparam, LPARAM lparam);
-  void Paint();
-  // Rounds the panel to the page card's radius.
+  // Rounds the panel to the page card's radius. THE sanctioned SetWindowRgn
+  // (lane 3 §3.6): this window hosts the reader's reparented browser child
+  // and the region is what clips IT — a shaped layer cannot, because a
+  // child window paints over its layered parent's alpha.
   void ApplyCardShape();
   void PositionContent();
 
   BrowserId window_id_;  // The surface's own browser.
-  HWND hwnd_ = nullptr;
   HWND browser_hwnd_ = nullptr;
   BrowserId origin_window_id_;  // The browser whose tab the reader covers.
   int64_t origin_tab_id_ = 0;
@@ -110,7 +115,6 @@ class PhiReaderPanel : public PhiSurfacePanel {
   RAW_PTR_EXCLUSION phi_framework::PhiFramework* framework_ = nullptr;
   RAW_PTR_EXCLUSION const PhiWindowModel* model_ = nullptr;
   RAW_PTR_EXCLUSION PhiCoordinator* coordinator_ = nullptr;
-  int dpi_ = 96;
   // The last URL seen on the hosted page, so the navigate-away test fires
   // once rather than on every state refresh.
   std::wstring url_;

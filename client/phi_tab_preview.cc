@@ -13,6 +13,7 @@
 #include "base/containers/span.h"
 #include "base/memory/raw_ptr_exclusion.h"
 #include "chrome/browser/phinomenon/phi_framework/phi_framework_api.h"
+#include "phibrowser-win/client/phi_animator.h"
 #include "phibrowser-win/client/phi_dwrite.h"
 #include "phibrowser-win/client/phi_theme.h"
 #include "phibrowser-win/client/phi_window_controller.h"
@@ -34,17 +35,6 @@ constexpr int kUrlSize = 12;
 constexpr int kScreenMargin = 4;
 
 const wchar_t kClassName[] = L"PhiTabPreview";
-
-void RegisterPreviewClass() {
-  static const bool registered = [] {
-    WNDCLASSW cls = {};
-    cls.lpfnWndProc = &PhiTabPreview::WndProc;
-    cls.hInstance = ::GetModuleHandleW(nullptr);
-    cls.lpszClassName = kClassName;
-    return ::RegisterClassW(&cls) != 0;
-  }();
-  (void)registered;
-}
 
 // SwiftUI's .truncationMode(.middle). GDI has DT_PATH_ELLIPSIS, but that is
 // BACKSLASH-path logic — handed a URL it collapses the line to nothing — and
@@ -82,74 +72,70 @@ std::wstring MiddleElide(HDC dc, const std::wstring& text, int width) {
   return best;
 }
 
-// NSAnimationContext's .easeInEaseOut, near enough for a 180ms slide.
-double EaseInOut(double t) {
-  t = std::clamp(t, 0.0, 1.0);
-  return t < 0.5 ? 2.0 * t * t : 1.0 - 2.0 * (1.0 - t) * (1.0 - t);
-}
-
-int Lerp(int from, int to, double t) {
-  return from + static_cast<int>((to - from) * t + (to >= from ? 0.5 : -0.5));
-}
-
 }  // namespace
 
 PhiTabPreview::PhiTabPreview(PhiWindowController* controller)
-    : controller_(controller) {
-  if (controller_ && controller_->shell_hwnd()) {
-    dpi_ = ::GetDpiForWindow(controller_->shell_hwnd());
-  }
-}
+    : controller_(controller) {}
 
 PhiTabPreview::~PhiTabPreview() {
   Hide(/*preserve_warmth=*/false);
-  if (hwnd_ && ::IsWindow(hwnd_)) {
-    ::DestroyWindow(hwnd_);
-  }
-  for (HFONT font : {title_font_, url_font_}) {
-    if (font) {
-      ::DeleteObject(font);
-    }
-  }
+  Destroy();
 }
 
-void PhiTabPreview::EnsureFonts() {
-  if (title_font_) {
-    return;
-  }
-  auto make = [&](int size, int weight) {
-    return ::CreateFontW(-Scaled(size), 0, 0, 0, weight, FALSE, FALSE, FALSE,
-                         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
-                         CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-                         DEFAULT_PITCH, L"Segoe UI");
-  };
-  title_font_ = make(kTitleSize, FW_SEMIBOLD);
-  url_font_ = make(kUrlSize, FW_NORMAL);
+HFONT PhiTabPreview::TitleFont() {
+  return fonts().Get(kTitleSize, FW_SEMIBOLD);
+}
+
+HFONT PhiTabPreview::UrlFont() {
+  return fonts().Get(kUrlSize, FW_NORMAL);
+}
+
+PhiPalette PhiTabPreview::QueryPalette() const {
+  return controller_ ? controller_->CurrentPalette()
+                     : PhiResolvePalette(PhiThemeById("pure"),
+                                         PhiAppearance::kSystem);
 }
 
 void PhiTabPreview::EnsureWindow() {
-  if (hwnd_ && ::IsWindow(hwnd_)) {
+  if (alive()) {
     return;
   }
   HWND owner = controller_ ? controller_->shell_hwnd() : nullptr;
   if (!owner) {
     return;
   }
-  RegisterPreviewClass();
+  ClassSpec spec;
+  spec.name = kClassName;
+  spec.cursor = nullptr;
+
+  Options options;
   // Owned by the shell, so Windows keeps it above the shell AND above the
-  // Chromium child inside it — without WS_EX_TOPMOST, which would leave the
-  // card floating over other applications.
-  hwnd_ = ::CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, kClassName,
-                            L"", WS_POPUP, 0, 0, 0, 0, owner, nullptr,
-                            ::GetModuleHandleW(nullptr), this);
-  if (!hwnd_) {
+  // Chromium child inside it — without WS_EX_TOPMOST, which would leave
+  // the card floating over other applications.
+  options.activate = false;
+  options.foreground = false;
+  options.dismiss_on_inactive = false;
+  options.dismiss_on_escape = false;
+  // Never take the pointer: the card lives entirely off the hover it is
+  // showing for.
+  options.click_through = true;
+
+  PhiPopover::Placement placement;
+  placement.side = PhiPopoverSide::kExplicit;
+  placement.clamp = false;
+  SIZE probe = {1, 1};
+  // Created hidden and zero-sized; Present() sizes, places and shows it.
+  CreatePopover(spec, owner, probe, placement, options);
+}
+
+void PhiTabPreview::OnDpiChanged(UINT) {
+  // Re-measure the card that is UP (shown_), not the one a delay is armed
+  // for: the fonts the base just rebuilt change every text block's height.
+  if (!visible_) {
     return;
   }
-  ::SetWindowLongPtrW(hwnd_, GWLP_USERDATA,
-                      reinterpret_cast<LONG_PTR>(this));
-  const DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_ROUND;
-  ::DwmSetWindowAttribute(hwnd_, DWMWA_WINDOW_CORNER_PREFERENCE, &corner,
-                          sizeof(corner));
+  MoveTo(PlacementRect(CardPlacement(), CardSize()));
+  Invalidate();
 }
 
 bool PhiTabPreview::IsWarm() const {
@@ -157,12 +143,14 @@ bool PhiTabPreview::IsWarm() const {
 }
 
 void PhiTabPreview::ArmDismiss() {
-  if (!controller_ || !controller_->shell_hwnd() || dismiss_armed_) {
+  if (!alive() || dismiss_armed_) {
     return;
   }
+  if (!dismiss_timer_.valid()) {
+    dismiss_timer_ = NewTimer();
+  }
   dismiss_armed_ = true;
-  ::SetTimer(controller_->shell_hwnd(), kDismissTimer, kHandoffDelayMs,
-             nullptr);
+  dismiss_timer_.Start(kHandoffDelayMs);
 }
 
 void PhiTabPreview::CancelDismiss() {
@@ -170,14 +158,16 @@ void PhiTabPreview::CancelDismiss() {
     return;
   }
   dismiss_armed_ = false;
-  if (controller_ && controller_->shell_hwnd()) {
-    ::KillTimer(controller_->shell_hwnd(), kDismissTimer);
-  }
+  dismiss_timer_.Stop();
 }
 
 void PhiTabPreview::PointerEntered(const Target& target) {
   if (!controller_ || !target.tab_id.valid()) {
     PointerExited();
+    return;
+  }
+  EnsureWindow();  // The card owns the HWND its timers live on.
+  if (!alive()) {
     return;
   }
   // Re-entering the row the card already belongs to must not restart
@@ -208,26 +198,23 @@ void PhiTabPreview::PointerEntered(const Target& target) {
     // The Mac's hasActiveRequestInGroup / isWarm path: straight to screen,
     // with only the frame animating.
     armed_ = false;
-    if (controller_->shell_hwnd()) {
-      ::KillTimer(controller_->shell_hwnd(), kShowTimer);
-    }
+    show_timer_.Stop();
     Present();
     return;
   }
 
   armed_ = true;
-  if (HWND owner = controller_->shell_hwnd()) {
-    ::SetTimer(owner, kShowTimer, kShowDelayMs, nullptr);
+  if (!show_timer_.valid()) {
+    show_timer_ = NewTimer();
   }
+  show_timer_.Start(kShowDelayMs);
 }
 
 void PhiTabPreview::PointerExited() {
   suppressed_key_.clear();
   armed_ = false;
   pending_ = Target();
-  if (controller_ && controller_->shell_hwnd()) {
-    ::KillTimer(controller_->shell_hwnd(), kShowTimer);
-  }
+  show_timer_.Stop();
   // A visible card does NOT go down on the spot: the gap between two rows is
   // a leave, and dropping the card there would make every row-to-row move
   // pay the cold delay again. Give the next row the Mac's handoff grace.
@@ -243,35 +230,29 @@ void PhiTabPreview::Cancel() {
   std::string key = visible_ ? shown_.key : pending_.key;
   armed_ = false;
   pending_ = Target();
-  if (controller_ && controller_->shell_hwnd()) {
-    ::KillTimer(controller_->shell_hwnd(), kShowTimer);
-  }
+  show_timer_.Stop();
   CancelDismiss();
   Hide(/*preserve_warmth=*/false);
   suppressed_key_ = std::move(key);
 }
 
-bool PhiTabPreview::OnTimer(UINT_PTR id) {
-  if (id == kShowTimer) {
+bool PhiTabPreview::OnTimer(UINT_PTR) {
+  return false;  // See the header: the shell no longer owns our timers.
+}
+
+void PhiTabPreview::OnTimerFired(UINT_PTR id) {
+  if (id == show_timer_.id()) {
+    show_timer_.Stop();
     if (armed_) {
       armed_ = false;
-      if (controller_ && controller_->shell_hwnd()) {
-        ::KillTimer(controller_->shell_hwnd(), kShowTimer);
-      }
       Present();
     }
-    return true;
+    return;
   }
-  if (id == kDismissTimer) {
+  if (id == dismiss_timer_.id()) {
     CancelDismiss();
     Hide(/*preserve_warmth=*/true);
-    return true;
   }
-  if (id == kSlideTimer) {
-    StepSlide();
-    return true;
-  }
-  return false;
 }
 
 bool PhiTabPreview::Resolve() {
@@ -335,12 +316,12 @@ bool PhiTabPreview::Resolve() {
 
 int PhiTabPreview::TextBlockHeight(const std::wstring& title,
                                    const std::wstring& url,
-                                   int width) const {
+                                   int width) {
   HDC screen = ::GetDC(nullptr);
   if (!screen) {
     return 0;
   }
-  HGDIOBJ prev = ::SelectObject(screen, title_font_);
+  HGDIOBJ prev = ::SelectObject(screen, TitleFont());
   RECT measure = {0, 0, std::max(1, width), 0};
   ::DrawTextW(screen, title.c_str(), -1, &measure,
               DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX);
@@ -350,7 +331,7 @@ int PhiTabPreview::TextBlockHeight(const std::wstring& title,
   int height = std::min<int>(measure.bottom - measure.top, 2 * line);
   height = std::max(height, line);
   if (!url.empty()) {
-    ::SelectObject(screen, url_font_);
+    ::SelectObject(screen, UrlFont());
     ::GetTextMetricsW(screen, &metrics);
     height += Scaled(kTextGap) + metrics.tmHeight;
   }
@@ -359,7 +340,7 @@ int PhiTabPreview::TextBlockHeight(const std::wstring& title,
   return height;
 }
 
-SIZE PhiTabPreview::CardSize() const {
+SIZE PhiTabPreview::CardSize() {
   const int width = Scaled(kCardWidth);
   const int pad_x = Scaled(kPadX);
   const int pad_y = Scaled(kPadY);
@@ -398,51 +379,28 @@ SIZE PhiTabPreview::CardSize() const {
   return size;
 }
 
-POINT PhiTabPreview::CardOrigin(const SIZE& size) const {
-  const RECT& anchor = shown_.anchor;
-  POINT origin = {};
+PhiPopover::Placement PhiTabPreview::CardPlacement() const {
+  PhiPopover::Placement placement;
+  placement.anchor = shown_.anchor;
+  placement.gap_dip = 0;
+  placement.margin_px = kScreenMargin;
+  placement.flip = true;
+  // CustomTooltipGeometry flips only when the OTHER side actually fits,
+  // then clamps — which is what PhiPlacePopover does with this flag.
+  placement.flip_only_if_fits = true;
+  placement.clamp = true;
   switch (shown_.placement) {
     case Placement::kRightTopAttached:
-      origin = {anchor.right, anchor.top};
+      // Flush to the row's right edge, card top aligned with the row's top.
+      placement.side = PhiPopoverSide::kRightTop;
       break;
     case Placement::kBelowAttached:
-      origin = {(anchor.left + anchor.right) / 2 - size.cx / 2, anchor.bottom};
+      // Centred under the cell, flush to its bottom.
+      placement.side = PhiPopoverSide::kBelow;
+      placement.align = PhiPopoverAlign::kCenter;
       break;
   }
-
-  RECT work = {};
-  HMONITOR monitor = ::MonitorFromRect(&anchor, MONITOR_DEFAULTTONEAREST);
-  MONITORINFO info = {sizeof(info)};
-  if (::GetMonitorInfoW(monitor, &info)) {
-    work = info.rcWork;
-  } else {
-    return origin;
-  }
-
-  // Flip to the other side when the preferred one does not fit, exactly as
-  // CustomTooltipGeometry does, before clamping.
-  const LONG margin = kScreenMargin;
-  if (shown_.placement == Placement::kRightTopAttached) {
-    const LONG left_x = anchor.left - size.cx;
-    if (origin.x + size.cx > work.right - margin &&
-        left_x >= work.left + margin) {
-      origin.x = left_x;
-    }
-  } else {
-    const LONG above_y = anchor.top - size.cy;
-    if (origin.y + size.cy > work.bottom - margin &&
-        above_y >= work.top + margin) {
-      origin.y = above_y;
-    }
-  }
-
-  const LONG min_x = work.left + margin;
-  const LONG min_y = work.top + margin;
-  const LONG max_x = std::max(min_x, work.right - size.cx - margin);
-  const LONG max_y = std::max(min_y, work.bottom - size.cy - margin);
-  origin.x = std::min(std::max(origin.x, min_x), max_x);
-  origin.y = std::min(std::max(origin.y, min_y), max_y);
-  return origin;
+  return placement;
 }
 
 void PhiTabPreview::Present() {
@@ -454,67 +412,53 @@ void PhiTabPreview::Present() {
     return;
   }
   EnsureWindow();
-  EnsureFonts();
-  if (!hwnd_) {
+  if (!alive()) {
     return;
   }
   const bool handoff = visible_;
   shown_ = pending_;
   const SIZE size = CardSize();
-  const POINT origin = CardOrigin(size);
-  const RECT target = {origin.x, origin.y, origin.x + size.cx,
-                       origin.y + size.cy};
+  const RECT target = PlacementRect(CardPlacement(), size);
 
   if (handoff) {
-    // Slide the panel to its new row instead of blinking it out and back.
-    ::GetWindowRect(hwnd_, &slide_from_);
-    slide_to_ = target;
-    slide_elapsed_ms_ = 0;
-    ::InvalidateRect(hwnd_, nullptr, TRUE);
-    if (HWND owner = controller_->shell_hwnd()) {
-      ::SetTimer(owner, kSlideTimer, kSlideTickMs, nullptr);
-    }
+    // Slide the panel to its new row instead of blinking it out and back
+    // (the Mac's handoffFrameAnimationDuration), on the shared animator.
+    RECT from = {};
+    ::GetWindowRect(hwnd(), &from);
+    PhiAnimator& animator = PhiAnimator::ForThread();
+    animator.Cancel(slide_);
+    Invalidate();
+    slide_ = animator.Animate(
+        hwnd(), kSlideDurationMs, PhiEasing::kEaseInOut,
+        [this, from, target](double t, RECT* dirty) {
+          const int x = PhiLerpInt(from.left, target.left, t);
+          const int y = PhiLerpInt(from.top, target.top, t);
+          const int w = PhiLerpInt(from.right - from.left,
+                                   target.right - target.left, t);
+          const int h = PhiLerpInt(from.bottom - from.top,
+                                   target.bottom - target.top, t);
+          ::SetWindowPos(hwnd(), nullptr, x, y, w, h,
+                         SWP_NOACTIVATE | SWP_NOZORDER);
+          // The card resizes every frame; repaint all of it.
+          *dirty = {0, 0, w, h};
+        },
+        [this] { slide_ = 0; });
     return;
   }
 
-  ::SetWindowPos(hwnd_, nullptr, target.left, target.top, size.cx, size.cy,
-                 SWP_NOACTIVATE | SWP_NOZORDER);
-  ::InvalidateRect(hwnd_, nullptr, TRUE);
-  ::ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
+  MoveTo(target);
+  Invalidate();
+  Show();
   visible_ = true;
   warm_until_ = 0;
 }
 
-void PhiTabPreview::StepSlide() {
-  if (!hwnd_ || !::IsWindow(hwnd_)) {
-    return;
-  }
-  slide_elapsed_ms_ += kSlideTickMs;
-  const double t = EaseInOut(static_cast<double>(slide_elapsed_ms_) /
-                             kSlideDurationMs);
-  const int x = Lerp(slide_from_.left, slide_to_.left, t);
-  const int y = Lerp(slide_from_.top, slide_to_.top, t);
-  const int w = Lerp(slide_from_.right - slide_from_.left,
-                     slide_to_.right - slide_to_.left, t);
-  const int h = Lerp(slide_from_.bottom - slide_from_.top,
-                     slide_to_.bottom - slide_to_.top, t);
-  ::SetWindowPos(hwnd_, nullptr, x, y, w, h,
-                 SWP_NOACTIVATE | SWP_NOZORDER);
-  ::InvalidateRect(hwnd_, nullptr, TRUE);
-  if (slide_elapsed_ms_ >= kSlideDurationMs && controller_) {
-    if (HWND owner = controller_->shell_hwnd()) {
-      ::KillTimer(owner, kSlideTimer);
-    }
-  }
-}
-
 void PhiTabPreview::Hide(bool preserve_warmth) {
-  if (controller_ && controller_->shell_hwnd()) {
-    ::KillTimer(controller_->shell_hwnd(), kSlideTimer);
-  }
+  PhiAnimator::ForThread().Cancel(slide_);
+  slide_ = 0;
   const bool was_visible = visible_;
-  if (hwnd_ && ::IsWindow(hwnd_)) {
-    ::ShowWindow(hwnd_, SW_HIDE);
+  if (alive()) {
+    ::ShowWindow(hwnd(), SW_HIDE);
   }
   visible_ = false;
   shown_ = Target();
@@ -585,7 +529,7 @@ void PhiTabPreview::DrawPane(HDC dc,
   if (text.right <= text.left || text.bottom <= text.top) {
     return;
   }
-  HGDIOBJ prev = ::SelectObject(dc, title_font_);
+  HGDIOBJ prev = ::SelectObject(dc, TitleFont());
   ::SetTextColor(dc, palette.label);
   TEXTMETRICW metrics = {};
   ::GetTextMetricsW(dc, &metrics);
@@ -605,7 +549,7 @@ void PhiTabPreview::DrawPane(HDC dc,
               DT_LEFT | DT_TOP | DT_WORDBREAK | DT_END_ELLIPSIS |
                   DT_NOPREFIX);
   if (!url.empty()) {
-    ::SelectObject(dc, url_font_);
+    ::SelectObject(dc, UrlFont());
     ::SetTextColor(dc, palette.label_dim);
     RECT url_rc = text;
     url_rc.top = title_rc.bottom + Scaled(kTextGap);
@@ -619,13 +563,17 @@ void PhiTabPreview::DrawPane(HDC dc,
   ::SelectObject(dc, prev);
 }
 
-void PhiTabPreview::Paint(HDC dc) {
-  if (!controller_) {
+void PhiTabPreview::Paint(HDC dc, const RECT&) {
+  PaintCard(dc);
+}
+
+void PhiTabPreview::PaintCard(HDC dc) {
+  if (!controller_ || !alive()) {
     return;
   }
   RECT rc = {};
-  ::GetClientRect(hwnd_, &rc);
-  const PhiPalette palette = controller_->CurrentPalette();
+  ::GetClientRect(hwnd(), &rc);
+  const PhiPalette& palette = PhiWindow::palette();
 
   // The Mac card is .themedBackground(.windowBackground) — DWM rounds the
   // corners, so the fill is a plain rect.
@@ -678,58 +626,6 @@ void PhiTabPreview::Paint(HDC dc) {
   ::SelectObject(dc, old_brush);
   ::SelectObject(dc, old_pen);
   ::DeleteObject(pen);
-}
-
-// static
-LRESULT CALLBACK PhiTabPreview::WndProc(HWND hwnd,
-                                        UINT msg,
-                                        WPARAM w,
-                                        LPARAM l) {
-  auto* self = reinterpret_cast<PhiTabPreview*>(
-      ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
-  switch (msg) {
-    case WM_NCHITTEST:
-      // Never take the pointer: the card lives entirely off the hover it is
-      // showing for.
-      return HTTRANSPARENT;
-    case WM_ERASEBKGND:
-      return 1;  // Paint() covers the whole client rect.
-    case WM_PAINT: {
-      PAINTSTRUCT ps = {};
-      HDC dc = ::BeginPaint(hwnd, &ps);
-      if (self) {
-        // Through a back buffer: the handoff slide resizes the panel every
-        // frame, and painting straight to the window tears the card apart
-        // between the band fill and the text.
-        RECT rc = {};
-        ::GetClientRect(hwnd, &rc);
-        const int card_w = rc.right - rc.left;
-        const int card_h = rc.bottom - rc.top;
-        HDC mem = ::CreateCompatibleDC(dc);
-        HBITMAP buffer =
-            mem ? ::CreateCompatibleBitmap(dc, card_w, card_h) : nullptr;
-        if (mem && buffer) {
-          HGDIOBJ prev = ::SelectObject(mem, buffer);
-          self->Paint(mem);
-          ::BitBlt(dc, 0, 0, card_w, card_h, mem, 0, 0, SRCCOPY);
-          ::SelectObject(mem, prev);
-        } else {
-          self->Paint(dc);
-        }
-        if (buffer) {
-          ::DeleteObject(buffer);
-        }
-        if (mem) {
-          ::DeleteDC(mem);
-        }
-      }
-      ::EndPaint(hwnd, &ps);
-      return 0;
-    }
-    default:
-      break;
-  }
-  return ::DefWindowProcW(hwnd, msg, w, l);
 }
 
 }  // namespace phi_client

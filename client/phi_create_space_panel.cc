@@ -202,105 +202,96 @@ PhiCreateSpacePanel::PhiCreateSpacePanel(PhiWindowController* controller)
     : controller_(controller) {}
 
 PhiCreateSpacePanel::~PhiCreateSpacePanel() {
-  if (hwnd_ && ::IsWindow(hwnd_)) {
-    ::DestroyWindow(hwnd_);  // Takes the field with it.
-  }
-  for (HFONT font : {title_font_, subtitle_font_, body_font_,
-                     body_medium_font_, pill_font_, emoji_font_, mdl2_font_}) {
-    if (font) {
-      ::DeleteObject(font);
-    }
-  }
+  Destroy();  // Takes the field with it; the base drops its fonts.
   if (field_brush_) {
     ::DeleteObject(field_brush_);
   }
 }
 
-int PhiCreateSpacePanel::Scaled(int design) const {
-  return ::MulDiv(design, static_cast<int>(dpi_), 96);
-}
-
 bool PhiCreateSpacePanel::visible() const {
-  return hwnd_ && ::IsWindow(hwnd_) && ::IsWindowVisible(hwnd_);
+  return IsPanelVisible();
 }
 
 void PhiCreateSpacePanel::EnsureWindow() {
-  if (hwnd_ && ::IsWindow(hwnd_)) {
+  if (hwnd() && ::IsWindow(hwnd())) {
     return;
   }
   HWND owner = controller_ ? controller_->shell_hwnd() : nullptr;
   if (!owner) {
     return;
   }
-  static const bool registered = [] {
-    WNDCLASSW cls = {};
-    cls.lpfnWndProc = &PhiCreateSpacePanel::PanelProc;
-    cls.hInstance = ::GetModuleHandleW(nullptr);
-    cls.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
-    cls.lpszClassName = kClassName;
-    return ::RegisterClassW(&cls) != 0;
-  }();
-  (void)registered;
-  dpi_ = ::GetDpiForWindow(owner);
-  if (!dpi_) {
-    dpi_ = 96;
-  }
-  hwnd_ = ::CreateWindowExW(0, kClassName, L"", WS_CHILD | WS_CLIPCHILDREN, 0,
-                            0, 0, 0, owner, nullptr,
-                            ::GetModuleHandleW(nullptr), nullptr);
-  if (!hwnd_) {
+  ClassSpec spec;
+  spec.name = kClassName;
+  Options options;
+  options.style = WS_CLIPCHILDREN;  // The name field.
+  const RECT nothing = {0, 0, 0, 0};
+  if (!CreatePanel(spec, owner, nothing, options)) {
     return;
   }
-  ::SetWindowLongPtrW(hwnd_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
-  EnsureFonts();
   EnsureField();
 }
 
-void PhiCreateSpacePanel::EnsureFonts() {
-  if (title_font_ && fonts_dpi_ == dpi_) {
-    return;
-  }
-  for (HFONT font : {title_font_, subtitle_font_, body_font_,
-                     body_medium_font_, pill_font_, emoji_font_, mdl2_font_}) {
-    if (font) {
-      ::DeleteObject(font);
-    }
-  }
-  const auto make = [&](int size, int weight, const wchar_t* face) {
-    return ::CreateFontW(-Scaled(size), 0, 0, 0, weight, FALSE, FALSE, FALSE,
-                         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
-                         CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-                         DEFAULT_PITCH, face);
-  };
-  title_font_ = make(kTitleSize, FW_MEDIUM, L"Segoe UI");
-  subtitle_font_ = make(kSubtitleSize, FW_NORMAL, L"Segoe UI");
-  body_font_ = make(kBodySize, FW_NORMAL, L"Segoe UI");
-  body_medium_font_ = make(kBodySize, FW_MEDIUM, L"Segoe UI");
-  pill_font_ = make(kPillSize, FW_NORMAL, L"Segoe UI");
-  emoji_font_ = make(kEmojiFont, FW_NORMAL, L"Segoe UI Emoji");
-  mdl2_font_ = make(kEmojiFont, FW_NORMAL, L"Segoe MDL2 Assets");
-  fonts_dpi_ = dpi_;
-  if (field_ && body_font_) {
-    ::SendMessageW(field_, WM_SETFONT, reinterpret_cast<WPARAM>(body_font_),
-                   TRUE);
-  }
+PhiPalette PhiCreateSpacePanel::QueryPalette() const {
+  return controller_ ? controller_->CurrentPalette() : PhiPalette();
+}
+
+namespace {
+
+HFONT FaceFont(PhiFontSet* fonts, int size, int weight, const wchar_t* face) {
+  PhiFontDesc desc;
+  desc.size = size;
+  desc.weight = weight;
+  desc.face = face;
+  return fonts->Get(desc);
+}
+
+}  // namespace
+
+HFONT PhiCreateSpacePanel::TitleFont() const {
+  return FaceFont(&const_cast<PhiCreateSpacePanel*>(this)->fonts(), kTitleSize,
+                  FW_MEDIUM, L"Segoe UI");
+}
+HFONT PhiCreateSpacePanel::SubtitleFont() const {
+  return FaceFont(&const_cast<PhiCreateSpacePanel*>(this)->fonts(),
+                  kSubtitleSize, FW_NORMAL, L"Segoe UI");
+}
+HFONT PhiCreateSpacePanel::BodyFont() const {
+  return FaceFont(&const_cast<PhiCreateSpacePanel*>(this)->fonts(), kBodySize,
+                  FW_NORMAL, L"Segoe UI");
+}
+HFONT PhiCreateSpacePanel::BodyMediumFont() const {
+  return FaceFont(&const_cast<PhiCreateSpacePanel*>(this)->fonts(), kBodySize,
+                  FW_MEDIUM, L"Segoe UI");
+}
+HFONT PhiCreateSpacePanel::PillFont() const {
+  return FaceFont(&const_cast<PhiCreateSpacePanel*>(this)->fonts(), kPillSize,
+                  FW_NORMAL, L"Segoe UI");
+}
+HFONT PhiCreateSpacePanel::EmojiFont() const {
+  return FaceFont(&const_cast<PhiCreateSpacePanel*>(this)->fonts(), kEmojiFont,
+                  FW_NORMAL, L"Segoe UI Emoji");
+}
+HFONT PhiCreateSpacePanel::Mdl2Font() const {
+  return FaceFont(&const_cast<PhiCreateSpacePanel*>(this)->fonts(), kEmojiFont,
+                  FW_NORMAL, L"Segoe MDL2 Assets");
 }
 
 void PhiCreateSpacePanel::EnsureField() {
-  if (field_ || !hwnd_) {
+  if (field_ || !alive()) {
     return;
   }
   field_ = ::CreateWindowExW(
       0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_LEFT | ES_AUTOHSCROLL, 0, 0,
-      10, 10, hwnd_, reinterpret_cast<HMENU>(kFieldId),
+      10, 10, hwnd(), reinterpret_cast<HMENU>(kFieldId),
       ::GetModuleHandleW(nullptr), nullptr);
   if (!field_) {
     return;
   }
-  if (body_font_) {
-    ::SendMessageW(field_, WM_SETFONT, reinterpret_cast<WPARAM>(body_font_),
-                   TRUE);
-  }
+  ::SendMessageW(field_, WM_SETFONT, reinterpret_cast<WPARAM>(BodyFont()),
+                 TRUE);
+  // The subclass finds the panel through the FIELD's own USERDATA: the
+  // parent's now holds the PhiWindow the base bound at WM_NCCREATE.
+  ::SetWindowLongPtrW(field_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
   ::SendMessageW(field_, EM_SETCUEBANNER, TRUE,
                  reinterpret_cast<LPARAM>(
                      PhiStr("sidebar.createSpace.nameField.placeholder")));
@@ -363,7 +354,7 @@ void PhiCreateSpacePanel::Show(const RECT& bounds,
                                const std::string& source_theme_id,
                                int saturation) {
   EnsureWindow();
-  if (!hwnd_) {
+  if (!hwnd()) {
     return;
   }
   // CreateSpacePanel.onAppear: the profile the strip's "+" was pressed
@@ -413,53 +404,61 @@ void PhiCreateSpacePanel::Show(const RECT& bounds,
     controller_->SetCreateSpaceIcon(icon_);
   }
   PushPreview();
-  ::SetWindowPos(hwnd_, HWND_TOP, 0, 0, 0, 0,
-                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+  RaisePanel();
   // The Space-switch push-in: the form arrives from the right.
-  if (!::AnimateWindow(hwnd_, kSlideMs, AW_SLIDE | AW_HOR_NEGATIVE)) {
-    ::ShowWindow(hwnd_, SW_SHOWNA);
+  if (!::AnimateWindow(hwnd(), kSlideMs, AW_SLIDE | AW_HOR_NEGATIVE)) {
+    ::ShowWindow(hwnd(), SW_SHOWNA);
   }
-  ::InvalidateRect(hwnd_, nullptr, FALSE);
+  Invalidate();
 }
 
 void PhiCreateSpacePanel::Hide(bool animated) {
-  if (!hwnd_ || !::IsWindow(hwnd_)) {
+  if (!alive()) {
     return;
   }
   if (dragging_slider_) {
     dragging_slider_ = false;
-    ::ReleaseCapture();
+    slider_capture_.Release();
   }
-  if (::IsWindowVisible(hwnd_)) {
+  if (IsPanelVisible()) {
     if (!animated ||
-        !::AnimateWindow(hwnd_, kSlideMs,
+        !::AnimateWindow(hwnd(), kSlideMs,
                          AW_HIDE | AW_SLIDE | AW_HOR_POSITIVE)) {
-      ::ShowWindow(hwnd_, SW_HIDE);
+      HidePanel();
     }
   }
 }
 
 void PhiCreateSpacePanel::Reposition(const RECT& bounds) {
-  if (!hwnd_ || !controller_) {
+  if (!alive() || !controller_) {
     return;
   }
-  const UINT dpi = ::GetDpiForWindow(controller_->shell_hwnd());
-  if (dpi && dpi != dpi_) {
-    dpi_ = dpi;
-    EnsureFonts();
-  }
-  ::SetWindowPos(hwnd_, HWND_TOP, bounds.left, bounds.top,
-                 std::max<LONG>(1, bounds.right - bounds.left),
-                 std::max<LONG>(1, bounds.bottom - bounds.top),
-                 SWP_NOACTIVATE);
+  SyncDpiFromParent();
+  const RECT fitted = {bounds.left, bounds.top,
+                       bounds.left + std::max<LONG>(1, bounds.right -
+                                                           bounds.left),
+                       bounds.top + std::max<LONG>(1, bounds.bottom -
+                                                          bounds.top)};
+  SetPanelBounds(fitted);
+  RaisePanel();
   LayoutField();
-  ::InvalidateRect(hwnd_, nullptr, FALSE);
+  Invalidate();
 }
 
 void PhiCreateSpacePanel::Refresh() {
-  if (hwnd_ && ::IsWindow(hwnd_)) {
-    ::InvalidateRect(hwnd_, nullptr, FALSE);
+  if (alive()) {
+    NotifyThemeChanged();  // Re-reads QueryPalette() and repaints.
   }
+}
+
+void PhiCreateSpacePanel::OnDpiChanged(UINT) {
+  ::SendMessageW(field_, WM_SETFONT, reinterpret_cast<WPARAM>(BodyFont()),
+                 TRUE);
+  LayoutField();
+}
+
+void PhiCreateSpacePanel::OnSize(int, int) {
+  LayoutField();
 }
 
 void PhiCreateSpacePanel::FocusField() {
@@ -481,11 +480,11 @@ void PhiCreateSpacePanel::OnProfileCreated(const std::string& profile_id) {
 
 PhiCreateSpacePanel::Geometry PhiCreateSpacePanel::ComputeGeometry() const {
   Geometry g;
-  if (!hwnd_) {
+  if (!hwnd()) {
     return g;
   }
   RECT rc = {};
-  ::GetClientRect(hwnd_, &rc);
+  ::GetClientRect(hwnd(), &rc);
   const int w = rc.right - rc.left;
   const int h = rc.bottom - rc.top;
   // One bounded, centred column: the sidebar's width minus the slim
@@ -495,32 +494,32 @@ PhiCreateSpacePanel::Geometry PhiCreateSpacePanel::ComputeGeometry() const {
   const int left = (w - column_w) / 2;
   const int right = left + column_w;
 
-  HDC dc = ::GetDC(hwnd_);
+  HDC dc = ::GetDC(hwnd());
   int title_h = Scaled(24), subtitle_h = Scaled(18);
   int pill_w = Scaled(80), create_w = Scaled(110), cancel_w = Scaled(48);
   if (dc) {
-    HGDIOBJ prev = ::SelectObject(dc, title_font_);
+    HGDIOBJ prev = ::SelectObject(dc, TitleFont());
     RECT m = {0, 0, column_w, 0};
     PhiDrawTextAA(dc, PhiStr("sidebar.createSpace.title"), -1, &m,
                 DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX);
     title_h = m.bottom - m.top;
-    ::SelectObject(dc, subtitle_font_);
+    ::SelectObject(dc, SubtitleFont());
     m = {0, 0, column_w, 0};
     PhiDrawTextAA(dc, PhiStr("sidebar.createSpace.subtitle"), -1, &m,
                 DT_CALCRECT | DT_WORDBREAK | DT_CENTER | DT_NOPREFIX);
     subtitle_h = m.bottom - m.top;
     ::SelectObject(dc, prev);
     pill_w = Scaled(kPillLead) +
-             MeasureTextWidth(dc, pill_font_, SelectedProfileName()) +
+             MeasureTextWidth(dc, PillFont(), SelectedProfileName()) +
              Scaled(kPillChevronGap) + Scaled(kPillChevron) +
              Scaled(kPillTrail);
-    create_w = MeasureTextWidth(dc, body_medium_font_,
+    create_w = MeasureTextWidth(dc, BodyMediumFont(),
                                 PhiStr("sidebar.createSpace.createButton")) +
                2 * Scaled(kButtonHPad);
-    cancel_w = MeasureTextWidth(dc, body_medium_font_,
+    cancel_w = MeasureTextWidth(dc, BodyMediumFont(),
                                 PhiStr("sidebar.createSpace.cancelButton")) +
                Scaled(8);
-    ::ReleaseDC(hwnd_, dc);
+    ::ReleaseDC(hwnd(), dc);
   }
 
   int y = Scaled(kColumnVPad);
@@ -651,8 +650,8 @@ void PhiCreateSpacePanel::ClampScroll(const Geometry& g) {
   grid_scroll_ = std::max(0, std::min(grid_scroll_,
                                       g.grid_content_height - grid_h));
   RECT rc = {};
-  if (hwnd_) {
-    ::GetClientRect(hwnd_, &rc);
+  if (hwnd()) {
+    ::GetClientRect(hwnd(), &rc);
   }
   form_scroll_ = std::max(
       0, std::min(form_scroll_,
@@ -787,10 +786,10 @@ void PhiCreateSpacePanel::ShowProfileMenu(const Geometry& g) {
   ::AppendMenuW(menu, MF_STRING, kNewProfile,
                 PhiStr("sidebar.createSpace.profilePicker.newProfileAction"));
   POINT screen = {g.pill.left, g.pill.bottom};
-  ::ClientToScreen(hwnd_, &screen);
+  ::ClientToScreen(hwnd(), &screen);
   const UINT chosen = static_cast<UINT>(::TrackPopupMenu(
       menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, screen.x, screen.y,
-      0, hwnd_, nullptr));
+      0, hwnd(), nullptr));
   ::DestroyMenu(menu);
   if (chosen == kNewProfile) {
     // The Mac's promptCreateProfile: a name, then the profile; the picker
@@ -855,12 +854,16 @@ void PhiCreateSpacePanel::Cancel() {
   }
 }
 
-void PhiCreateSpacePanel::Paint(HDC dc) {
+void PhiCreateSpacePanel::Paint(HDC dc, const RECT&) {
+  PaintForm(dc);
+}
+
+void PhiCreateSpacePanel::PaintForm(HDC dc) {
   if (!controller_) {
     return;
   }
   RECT rc = {};
-  ::GetClientRect(hwnd_, &rc);
+  ::GetClientRect(hwnd(), &rc);
   const PhiPalette palette = controller_->CurrentPalette();
   // The sidebar's own tint under the form (the Mac's themed backdrop): the
   // same top-to-bottom ramp the shell paints, continued at this window's
@@ -870,7 +873,7 @@ void PhiCreateSpacePanel::Paint(HDC dc) {
     POINT origin = {0, 0};
     if (HWND owner = controller_->shell_hwnd()) {
       ::GetClientRect(owner, &shell);
-      ::MapWindowPoints(hwnd_, owner, &origin, 1);
+      ::MapWindowPoints(hwnd(), owner, &origin, 1);
     }
     const int total = std::max(1, static_cast<int>(shell.bottom));
     const int bands = 24;
@@ -899,12 +902,12 @@ void PhiCreateSpacePanel::Paint(HDC dc) {
   const COLORREF divider = Blend(ink, ground, 31);
 
   // Header.
-  HGDIOBJ prev = ::SelectObject(dc, title_font_);
+  HGDIOBJ prev = ::SelectObject(dc, TitleFont());
   ::SetTextColor(dc, label);
   RECT title = g.title;
   PhiDrawTextAA(dc, PhiStr("sidebar.createSpace.title"), -1, &title,
               DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-  ::SelectObject(dc, subtitle_font_);
+  ::SelectObject(dc, SubtitleFont());
   ::SetTextColor(dc, label50);
   RECT subtitle = g.subtitle;
   PhiDrawTextAA(dc, PhiStr("sidebar.createSpace.subtitle"), -1, &subtitle,
@@ -915,7 +918,7 @@ void PhiCreateSpacePanel::Paint(HDC dc) {
 
   // Profile row: label left, the picker pill right.
   FillRound(dc, g.profile_row, Scaled(kRowRadius), fill4);
-  ::SelectObject(dc, body_font_);
+  ::SelectObject(dc, BodyFont());
   ::SetTextColor(dc, label);
   RECT profile_label = {g.profile_row.left + Scaled(kRowLead),
                         g.profile_row.top, g.pill.left - Scaled(8),
@@ -928,7 +931,7 @@ void PhiCreateSpacePanel::Paint(HDC dc) {
     FillRound(dc, g.pill, (g.pill.bottom - g.pill.top) / 2,
               hover_ == Hit::kProfilePill ? fill10 : fill6);
   }
-  ::SelectObject(dc, pill_font_);
+  ::SelectObject(dc, PillFont());
   ::SetTextColor(dc, label);
   RECT pill_text = {g.pill.left + Scaled(kPillLead), g.pill.top,
                     g.pill.right - Scaled(kPillTrail) - Scaled(kPillChevron) -
@@ -952,7 +955,7 @@ void PhiCreateSpacePanel::Paint(HDC dc) {
     RECT knob = selected;
     ::InflateRect(&knob, -Scaled(2), -Scaled(2));
     FillRound(dc, knob, Scaled(5), palette.selected);
-    ::SelectObject(dc, body_font_);
+    ::SelectObject(dc, BodyFont());
     ::SetTextColor(dc, tab_ == Tab::kIcon ? label : label50);
     RECT seg = g.seg_icon;
     PhiDrawTextAA(dc, PhiStr("common.iconPicker.iconTabTitle"), -1, &seg,
@@ -1008,7 +1011,7 @@ void PhiCreateSpacePanel::Paint(HDC dc) {
       FillRound(dc, g.create_button,
                 (g.create_button.bottom - g.create_button.top) / 2, accent);
     }
-    ::SelectObject(dc, body_medium_font_);
+    ::SelectObject(dc, BodyMediumFont());
     ::SetTextColor(dc, RGB(0xF7, 0xF7, 0xF7));  // white 95%
     RECT create = g.create_button;
     PhiDrawTextAA(dc, PhiStr("sidebar.createSpace.createButton"), -1, &create,
@@ -1058,7 +1061,7 @@ void PhiCreateSpacePanel::PaintCells(HDC dc,
         PhiDrawColorText(dc, glyph, text, Scaled(kEmojiFont), palette.label)) {
       continue;
     }
-    HFONT font = PhiIsPrivateGlyph(text) ? mdl2_font_ : emoji_font_;
+    HFONT font = PhiIsPrivateGlyph(text) ? Mdl2Font() : EmojiFont();
     HGDIOBJ prev = font ? ::SelectObject(dc, font) : nullptr;
     ::SetTextColor(dc, palette.label);
     RECT text_rc = cell;
@@ -1114,203 +1117,150 @@ void PhiCreateSpacePanel::PaintSlider(HDC dc,
   StrokeCircle(dc, dot, palette.border, 1);
 }
 
-// static
-LRESULT CALLBACK PhiCreateSpacePanel::PanelProc(HWND hwnd,
-                                                UINT msg,
-                                                WPARAM w,
-                                                LPARAM l) {
-  auto* self = reinterpret_cast<PhiCreateSpacePanel*>(
-      ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
-  switch (msg) {
-    case WM_ERASEBKGND:
-      return 1;
-    case WM_PAINT: {
-      PAINTSTRUCT ps = {};
-      HDC dc = ::BeginPaint(hwnd, &ps);
-      if (self) {
-        RECT rc = {};
-        ::GetClientRect(hwnd, &rc);
-        const int page_w = rc.right - rc.left;
-        const int page_h = rc.bottom - rc.top;
-        HDC mem = ::CreateCompatibleDC(dc);
-        HBITMAP buffer =
-            mem ? ::CreateCompatibleBitmap(dc, page_w, page_h) : nullptr;
-        if (mem && buffer) {
-          HGDIOBJ prev = ::SelectObject(mem, buffer);
-          self->Paint(mem);
-          ::BitBlt(dc, 0, 0, page_w, page_h, mem, 0, 0, SRCCOPY);
-          ::SelectObject(mem, prev);
-        } else {
-          self->Paint(dc);
-        }
-        if (buffer) {
-          ::DeleteObject(buffer);
-        }
-        if (mem) {
-          ::DeleteDC(mem);
-        }
+void PhiCreateSpacePanel::OnMouseDown(int, POINT pt) {
+  const Geometry g = ComputeGeometry();
+  int index = -1;
+  switch (HitTest(g, pt, &index)) {
+    case Hit::kProfilePill:
+      ShowProfileMenu(g);
+      break;
+    case Hit::kTabIcon:
+    case Hit::kTabEmoji: {
+      const Tab tab = ::PtInRect(&g.seg_emoji, pt) ? Tab::kEmoji : Tab::kIcon;
+      if (tab != tab_) {
+        tab_ = tab;
+        grid_scroll_ = 0;
+        Invalidate();
       }
-      ::EndPaint(hwnd, &ps);
-      return 0;
+      break;
     }
-    case WM_PRINTCLIENT:
-      // AnimateWindow's slide and PrintWindow captures render through this.
-      if (self) {
-        self->Paint(reinterpret_cast<HDC>(w));
-      }
-      return 0;
-    case WM_SIZE:
-      if (self) {
-        self->LayoutField();
-      }
-      return 0;
+    case Hit::kCell:
+      SelectIcon(static_cast<size_t>(index));
+      break;
+    case Hit::kDot:
+      SelectTheme(static_cast<size_t>(index));
+      break;
+    case Hit::kSlider:
+      dragging_slider_ = true;
+      // RAII capture: WM_CAPTURECHANGED and WM_CANCELMODE both end the
+      // drag through OnCaptureLost(), so a stolen capture cannot leave the
+      // slider stuck (lane 3 §4.2).
+      slider_capture_ = BeginCapture();
+      SetSliderFromPoint(g, pt.x);
+      break;
+    case Hit::kCreate:
+      Create();
+      return;
+    case Hit::kCancel:
+      Cancel();
+      return;
+    case Hit::kNone:
+      break;
+  }
+  // The ground takes focus, so Escape / Enter still reach the form.
+  if (!dragging_slider_ && ::PtInRect(&g.name_row, pt) && field_) {
+    ::SetFocus(field_);
+  } else {
+    ::SetFocus(hwnd());
+  }
+}
+
+void PhiCreateSpacePanel::OnWheel(int delta, POINT pt) {
+  Geometry g = ComputeGeometry();
+  const int notches = delta / WHEEL_DELTA;
+  const int step = Scaled(kItem + kRowSpacing) * kWheelStep * notches;
+  if (::PtInRect(&g.grid, pt) &&
+      g.grid_content_height > g.grid.bottom - g.grid.top) {
+    grid_scroll_ -= step;
+  } else {
+    form_scroll_ -= step;
+  }
+  ClampScroll(g);
+  LayoutField();
+  Invalidate();
+}
+
+void PhiCreateSpacePanel::OnCaptureLost() {
+  dragging_slider_ = false;
+}
+
+bool PhiCreateSpacePanel::OnKey(WPARAM virtual_key) {
+  if (virtual_key == VK_ESCAPE) {
+    Cancel();
+    return true;
+  }
+  if (virtual_key == VK_RETURN) {
+    Create();
+    return true;
+  }
+  return PhiPanel::OnKey(virtual_key);
+}
+
+LRESULT PhiCreateSpacePanel::OnMessage(UINT message,
+                                       WPARAM wparam,
+                                       LPARAM lparam,
+                                       bool* handled) {
+  switch (message) {
     case WM_MOUSEMOVE:
-      if (self) {
-        const POINT pt = {GET_X_LPARAM(l), GET_Y_LPARAM(l)};
-        const Geometry g = self->ComputeGeometry();
-        if (self->dragging_slider_) {
-          self->SetSliderFromPoint(g, pt.x);
-          return 0;
-        }
+      // The slider drag owns the pointer while it runs; hover is the base's
+      // otherwise, over the hits the form's own HitTest resolves.
+      if (dragging_slider_) {
+        const POINT pt = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+        SetSliderFromPoint(ComputeGeometry(), pt.x);
+        *handled = true;
+        return 0;
+      }
+      {
+        const POINT pt = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+        const Geometry g = ComputeGeometry();
         int index = -1;
-        const Hit hit = self->HitTest(g, pt, &index);
-        if (hit != self->hover_ || index != self->hover_index_) {
-          self->hover_ = hit;
-          self->hover_index_ = index;
-          ::InvalidateRect(hwnd, nullptr, FALSE);
-        }
-        if (!self->tracking_leave_) {
-          TRACKMOUSEEVENT track = {sizeof(track), TME_LEAVE, hwnd, 0};
-          ::TrackMouseEvent(&track);
-          self->tracking_leave_ = true;
+        const Hit hit = HitTest(g, pt, &index);
+        if (hit != hover_ || index != hover_index_) {
+          hover_ = hit;
+          hover_index_ = index;
+          Invalidate();
         }
       }
-      return 0;
+      break;  // The base still arms TrackMouseEvent for WM_MOUSELEAVE.
     case WM_MOUSELEAVE:
-      if (self) {
-        self->tracking_leave_ = false;
-        if (self->hover_ != Hit::kNone) {
-          self->hover_ = Hit::kNone;
-          self->hover_index_ = -1;
-          ::InvalidateRect(hwnd, nullptr, FALSE);
-        }
+      if (hover_ != Hit::kNone) {
+        hover_ = Hit::kNone;
+        hover_index_ = -1;
+        Invalidate();
       }
-      return 0;
-    case WM_LBUTTONDOWN:
-      if (self) {
-        const POINT pt = {GET_X_LPARAM(l), GET_Y_LPARAM(l)};
-        const Geometry g = self->ComputeGeometry();
-        int index = -1;
-        switch (self->HitTest(g, pt, &index)) {
-          case Hit::kProfilePill:
-            self->ShowProfileMenu(g);
-            break;
-          case Hit::kTabIcon:
-          case Hit::kTabEmoji: {
-            const Tab tab =
-                ::PtInRect(&g.seg_emoji, pt) ? Tab::kEmoji : Tab::kIcon;
-            if (tab != self->tab_) {
-              self->tab_ = tab;
-              self->grid_scroll_ = 0;
-              ::InvalidateRect(hwnd, nullptr, FALSE);
-            }
-            break;
-          }
-          case Hit::kCell:
-            self->SelectIcon(static_cast<size_t>(index));
-            break;
-          case Hit::kDot:
-            self->SelectTheme(static_cast<size_t>(index));
-            break;
-          case Hit::kSlider:
-            self->dragging_slider_ = true;
-            ::SetCapture(hwnd);
-            self->SetSliderFromPoint(g, pt.x);
-            break;
-          case Hit::kCreate:
-            self->Create();
-            return 0;
-          case Hit::kCancel:
-            self->Cancel();
-            return 0;
-          case Hit::kNone:
-            break;
-        }
-        // The ground takes focus, so Escape / Enter still reach the form.
-        if (!self->dragging_slider_ && ::PtInRect(&g.name_row, pt) &&
-            self->field_) {
-          ::SetFocus(self->field_);
-        } else {
-          ::SetFocus(hwnd);
-        }
-      }
-      return 0;
+      break;  // The base clears its own leave tracking.
     case WM_LBUTTONUP:
-      if (self && self->dragging_slider_) {
-        self->dragging_slider_ = false;
-        ::ReleaseCapture();
-      }
-      return 0;
-    case WM_CAPTURECHANGED:
-      if (self) {
-        self->dragging_slider_ = false;
-      }
-      return 0;
-    case WM_MOUSEWHEEL:
-      if (self) {
-        POINT pt = {GET_X_LPARAM(l), GET_Y_LPARAM(l)};
-        ::ScreenToClient(hwnd, &pt);
-        Geometry g = self->ComputeGeometry();
-        const int notches = GET_WHEEL_DELTA_WPARAM(w) / WHEEL_DELTA;
-        const int step =
-            self->Scaled(kItem + kRowSpacing) * kWheelStep * notches;
-        if (::PtInRect(&g.grid, pt) &&
-            g.grid_content_height > g.grid.bottom - g.grid.top) {
-          self->grid_scroll_ -= step;
-        } else {
-          self->form_scroll_ -= step;
-        }
-        self->ClampScroll(g);
-        self->LayoutField();
-        ::InvalidateRect(hwnd, nullptr, FALSE);
-      }
-      return 0;
-    case WM_KEYDOWN:
-      if (self) {
-        if (w == VK_ESCAPE) {
-          self->Cancel();
-          return 0;
-        }
-        if (w == VK_RETURN) {
-          self->Create();
-          return 0;
-        }
+      if (dragging_slider_) {
+        dragging_slider_ = false;
+        slider_capture_.Release();
+        *handled = true;
+        return 0;
       }
       break;
     case WM_CTLCOLOREDIT:
-      if (self && self->controller_ &&
-          reinterpret_cast<HWND>(l) == self->field_) {
-        const PhiPalette palette = self->controller_->CurrentPalette();
+      if (controller_ && reinterpret_cast<HWND>(lparam) == field_) {
+        const PhiPalette colors = QueryPalette();
         const COLORREF ink =
-            palette.dark ? RGB(0xFF, 0xFF, 0xFF) : RGB(0, 0, 0);
-        const COLORREF fill = Blend(ink, palette.ground_top, 10);
-        HDC edit_dc = reinterpret_cast<HDC>(w);
-        ::SetTextColor(edit_dc, palette.label);
+            colors.dark ? RGB(0xFF, 0xFF, 0xFF) : RGB(0, 0, 0);
+        const COLORREF fill = Blend(ink, colors.ground_top, 10);
+        HDC edit_dc = reinterpret_cast<HDC>(wparam);
+        ::SetTextColor(edit_dc, colors.label);
         ::SetBkColor(edit_dc, fill);  // Seamless with the row's wash.
-        if (!self->field_brush_ || self->field_brush_color_ != fill) {
-          if (self->field_brush_) {
-            ::DeleteObject(self->field_brush_);
+        if (!field_brush_ || field_brush_color_ != fill) {
+          if (field_brush_) {
+            ::DeleteObject(field_brush_);
           }
-          self->field_brush_ = ::CreateSolidBrush(fill);
-          self->field_brush_color_ = fill;
+          field_brush_ = ::CreateSolidBrush(fill);
+          field_brush_color_ = fill;
         }
-        return reinterpret_cast<LRESULT>(self->field_brush_);
+        *handled = true;
+        return reinterpret_cast<LRESULT>(field_brush_);
       }
       break;
     default:
       break;
   }
-  return ::DefWindowProcW(hwnd, msg, w, l);
+  return PhiPanel::OnMessage(message, wparam, lparam, handled);
 }
 
 // static
@@ -1319,7 +1269,7 @@ LRESULT CALLBACK PhiCreateSpacePanel::FieldProc(HWND hwnd,
                                                 WPARAM w,
                                                 LPARAM l) {
   auto* self = reinterpret_cast<PhiCreateSpacePanel*>(
-      ::GetWindowLongPtrW(::GetParent(hwnd), GWLP_USERDATA));
+      ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
   const WNDPROC base = self && self->field_base_proc_
                            ? self->field_base_proc_
                            : ::DefWindowProcW;

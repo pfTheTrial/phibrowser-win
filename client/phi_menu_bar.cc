@@ -26,10 +26,11 @@
 #include "phibrowser-win/client/phi_prompt.h"
 #include "phibrowser-win/client/phi_updater.h"
 #include "phibrowser-win/client/phi_version.h"
-#include "phibrowser-win/client/phi_search_tabs_panel.h"
-#include "phibrowser-win/client/phi_space_theme_panel.h"
 #include "phibrowser-win/client/phi_toast.h"
 #include "phibrowser-win/client/phi_theme.h"
+// PhiSlotHost and PhiWindowModel still live in the shell's header; §4.3
+// splits them out. The bar reaches nothing else in it — no `friend`, no
+// private member: everything else comes through PhiMenuBarShell.
 #include "phibrowser-win/client/phi_window_controller.h"
 
 namespace phi_client {
@@ -152,8 +153,8 @@ std::wstring ItemTitle(HMENU menu, int position) {
 
 }  // namespace
 
-PhiMenuBar::PhiMenuBar(PhiWindowController* controller)
-    : controller_(controller) {}
+PhiMenuBar::PhiMenuBar(PhiMenuBarShell* shell)
+    : services_(shell) {}
 
 PhiMenuBar::~PhiMenuBar() {
   ReleaseSpaceBitmaps();
@@ -442,12 +443,12 @@ void PhiMenuBar::OnMenuOpening(HMENU menu) {
 }
 
 void PhiMenuBar::RefreshChromiumCommands() {
-  const BrowserId target = controller_->active_browser_id();
+  const BrowserId target = services_->MenuActiveBrowser();
   for (const IdcRoute& route : kIdcRoutes) {
     // MF_BYCOMMAND searches submenus, so one call from the bar reaches items
     // inside Find / Developer. No browser attached: everything is off.
-    const bool on = controller_->framework_ && target.valid() &&
-                    controller_->framework_->IsChromiumCommandEnabled(
+    const bool on = services_->MenuFramework() && target.valid() &&
+                    services_->MenuFramework()->IsChromiumCommandEnabled(
                         target.value, route.idc);
     ::EnableMenuItem(
         bar_, route.cmd,
@@ -456,49 +457,49 @@ void PhiMenuBar::RefreshChromiumCommands() {
 }
 
 void PhiMenuBar::RefreshPhi() {
-  SetEnabled(phi_, kCmdPreferences, controller_->host_ != nullptr);
+  SetEnabled(phi_, kCmdPreferences, services_->MenuHost() != nullptr);
   SetEnabled(phi_, kCmdImportBrowser,
-             controller_->framework_ != nullptr &&
-                 !controller_->is_incognito());
+             services_->MenuFramework() != nullptr &&
+                 !services_->MenuIncognito());
 }
 
 void PhiMenuBar::RefreshFile() {
   // The rows as they are: the menu reads what the last rebuild placed
   // (docs/architecture-review.md §3.1 principle 7), it never rebuilds.
-  SetEnabled(file_, kCmdCloseTab, controller_->active_tab_id_.valid());
-  SetEnabled(file_, kCmdOpenLocation, controller_->url_field_ != nullptr);
+  SetEnabled(file_, kCmdCloseTab, services_->MenuActiveTab().valid());
+  SetEnabled(file_, kCmdOpenLocation, services_->MenuAddressField() != nullptr);
 }
 
 void PhiMenuBar::RefreshEdit() {
   // The text commands act on the address field; they sleep while the page has
   // the keyboard (Chromium runs its own edit commands there).
-  const bool field = controller_->url_field_ &&
-                     ::GetFocus() == controller_->url_field_;
+  const bool field = services_->MenuAddressField() &&
+                     ::GetFocus() == services_->MenuAddressField();
   SetEnabled(edit_, kCmdUndo,
-             field && ::SendMessageW(controller_->url_field_, EM_CANUNDO, 0,
+             field && ::SendMessageW(services_->MenuAddressField(), EM_CANUNDO, 0,
                                      0) != 0);
   SetEnabled(edit_, kCmdCut, field);
   SetEnabled(edit_, kCmdCopy, field);
   SetEnabled(edit_, kCmdPaste, field);
   SetEnabled(edit_, kCmdDelete, field);
   SetEnabled(edit_, kCmdSelectAll, field);
-  SetEnabled(edit_, kCmdCopyUrl, !controller_->nav_url_.empty());
+  SetEnabled(edit_, kCmdCopyUrl, !services_->MenuNavState().url.empty());
 }
 
 void PhiMenuBar::RefreshView() {
-  controller_->RebuildNavState();
-  SetEnabled(view_, kCmdStop, controller_->nav_loading_);
+  services_->MenuRefreshNavState();
+  SetEnabled(view_, kCmdStop, services_->MenuNavState().loading);
   // Reader View is offered where it has something to show, and ticked while
   // its surface is up — which is also the state that makes the item mean
   // "leave" rather than "enter".
-  const bool reader_active = controller_->ActiveTabShowsReader();
+  const bool reader_active = services_->MenuReaderActive();
   SetEnabled(view_, kCmdToggleReader,
-             reader_active || controller_->ActiveTabCanUseReader());
+             reader_active || services_->MenuReaderOfferable());
   ::CheckMenuItem(view_, kCmdToggleReader,
                   MF_BYCOMMAND | (reader_active ? MF_CHECKED : MF_UNCHECKED));
   PhiLayoutMode mode = PhiLayoutMode::kPerformance;
-  if (controller_->host_) {
-    mode = controller_->host_->LayoutMode();
+  if (services_->MenuHost()) {
+    mode = services_->MenuHost()->LayoutMode();
   }
   const UINT chosen = mode == PhiLayoutMode::kBalanced ? kCmdLayoutBalanced
                       : mode == PhiLayoutMode::kComfortable
@@ -506,14 +507,14 @@ void PhiMenuBar::RefreshView() {
                           : kCmdLayoutPerformance;
   ::CheckMenuRadioItem(view_, kCmdLayoutBalanced, kCmdLayoutComfortable,
                        chosen, MF_BYCOMMAND);
-  if (controller_->host_) {
+  if (services_->MenuHost()) {
     ::CheckMenuItem(view_, kCmdAlwaysShowBookmarkBar,
                     MF_BYCOMMAND |
-                        (controller_->host_->AlwaysShowBookmarkBar()
+                        (services_->MenuHost()->AlwaysShowBookmarkBar()
                              ? MF_CHECKED
                              : MF_UNCHECKED));
     ::CheckMenuItem(view_, kCmdBookmarkBarOnNewTab,
-                    MF_BYCOMMAND | (controller_->host_->BookmarkBarOnNewTab()
+                    MF_BYCOMMAND | (services_->MenuHost()->BookmarkBarOnNewTab()
                                         ? MF_CHECKED
                                         : MF_UNCHECKED));
   }
@@ -521,10 +522,10 @@ void PhiMenuBar::RefreshView() {
 
 std::vector<PhiMenuBar::SpaceEntry> PhiMenuBar::SpaceList() const {
   std::vector<SpaceEntry> spaces;
-  if (!controller_->host_) {
+  if (!services_->MenuHost()) {
     return spaces;
   }
-  for (const PhiSpaceView& space : controller_->host_->Spaces()) {
+  for (const PhiSpaceView& space : services_->MenuHost()->Spaces()) {
     spaces.push_back(
         {space.id,
          base::UTF8ToWide(!space.name.empty() ? space.name
@@ -549,22 +550,22 @@ void PhiMenuBar::RefreshSpaces() {
   profile_names_.clear();
 
   Append(spaces_, kCmdNewSpace, PhiStr("app.activeSpaceContextMenu.newSpaceAction"),
-         controller_->host_ != nullptr);
+         services_->MenuHost() != nullptr);
   Append(spaces_, kCmdRenameSpace, PhiStr("app.activeSpaceContextMenu.renameSpaceAction"),
-         controller_->host_ != nullptr);
+         services_->MenuHost() != nullptr);
   // Lands on Settings > Spaces with the active Space selected — the
   // detail column there is the icon picker.
   Append(spaces_, kCmdChangeIcon, PhiStr("menuBar.changeIcon"),
-         controller_->host_ != nullptr);
+         services_->MenuHost() != nullptr);
 
   // Edit Theme — the Mac's item of the same name: it presents the Space
   // theme editor (swatch row + saturation slider) on the ACTIVE Space
   // rather than listing theme names, so color and saturation are one
   // control and a Space always wears a concrete theme.
-  const std::string active = controller_->active_space_;
+  const std::string active = services_->MenuActiveSpace();
   Append(spaces_, kCmdEditSpaceTheme,
          PhiStr("app.activeSpaceContextMenu.themeSubmenuTitle"),
-         controller_->host_ != nullptr && !active.empty());
+         services_->MenuHost() != nullptr && !active.empty());
 
   // Change Profile — the Mac's radio list: picking a row re-binds the ACTIVE
   // Space, respawning its window in the new profile. The default Space's
@@ -573,8 +574,8 @@ void PhiMenuBar::RefreshSpaces() {
   // profile still bound to a Space refuse.
   std::string active_profile;
   std::vector<std::string> bound_profiles;
-  if (controller_->host_) {
-    for (const PhiSpaceView& space : controller_->host_->Spaces()) {
+  if (services_->MenuHost()) {
+    for (const PhiSpaceView& space : services_->MenuHost()->Spaces()) {
       bound_profiles.push_back(space.profile_id);
       if (space.id == active) {
         active_profile = space.profile_id;
@@ -583,13 +584,13 @@ void PhiMenuBar::RefreshSpaces() {
   }
   HMENU profiles = ::CreatePopupMenu();
   HMENU delete_profiles = ::CreatePopupMenu();
-  const bool can_reprofile = controller_->host_ && !active.empty() &&
-                             active != controller_->host_->DefaultSpaceId();
+  const bool can_reprofile = services_->MenuHost() && !active.empty() &&
+                             active != services_->MenuHost()->DefaultSpaceId();
   int profile_count = 0;
-  if (controller_->host_) {
+  if (services_->MenuHost()) {
     // The host's "id\tname" summaries — the one profile list every menu
     // and form reads, so none of them parses the framework's JSON.
-    for (const std::string& summary : controller_->host_->ProfileSummaries()) {
+    for (const std::string& summary : services_->MenuHost()->ProfileSummaries()) {
       const size_t tab = summary.find('\t');
       const std::string id = summary.substr(0, tab);
       const std::string name =
@@ -630,7 +631,7 @@ void PhiMenuBar::RefreshSpaces() {
   ::AppendMenuW(spaces_, MF_POPUP | MF_STRING,
                 reinterpret_cast<UINT_PTR>(profiles), PhiStr("app.activeSpaceContextMenu.profileSubmenuTitle"));
   Append(spaces_, kCmdDeleteSpace, PhiStr("app.activeSpaceContextMenu.deleteSpaceAction"),
-         controller_->host_ && active != "1");
+         services_->MenuHost() && active != "1");
   Separator(spaces_);
   const std::vector<SpaceEntry> spaces = SpaceList();
   const bool several = spaces.size() > 1;
@@ -656,7 +657,7 @@ void PhiMenuBar::RefreshSpaces() {
     // The Space's icon as the row's picture: catalog artwork or colour
     // emoji, which menu TEXT could show as neither.
     if (HBITMAP bitmap = PhiSpaceGlyphBitmap(
-            spaces[i].glyph, controller_->Scaled(16),
+            spaces[i].glyph, services_->MenuScaled(16),
             ::GetSysColor(COLOR_MENUTEXT))) {
       space_bitmaps_.push_back(bitmap);
       PhiSetMenuItemBitmap(spaces_, kSpaceFirst + static_cast<UINT>(i),
@@ -667,25 +668,26 @@ void PhiMenuBar::RefreshSpaces() {
   Append(spaces_, kCmdUrlRules, PhiStr("menuBar.urlRules"), false);
   Separator(spaces_);
   Append(spaces_, kCmdNewProfile, PhiStr("app.spacesMenu.newProfile"),
-         controller_->framework_ != nullptr);
+         services_->MenuFramework() != nullptr);
   ::AppendMenuW(spaces_, MF_POPUP | MF_STRING,
                 reinterpret_cast<UINT_PTR>(delete_profiles),
                 PhiStr("app.spacesMenu.deleteProfile.submenuTitle"));
 }
 
 void PhiMenuBar::RefreshHistory() {
-  controller_->RebuildNavState();
-  SetEnabled(history_, kCmdBack, controller_->can_go_back_);
-  SetEnabled(history_, kCmdForward, controller_->can_go_forward_);
+  services_->MenuRefreshNavState();
+  const PhiMenuBarNavState nav = services_->MenuNavState();
+  SetEnabled(history_, kCmdBack, nav.can_go_back);
+  SetEnabled(history_, kCmdForward, nav.can_go_forward);
 }
 
 void PhiMenuBar::AppendBookmarkRows(HMENU menu, const std::string& parent_guid,
                                     int depth) {
-  if (!controller_->host_ || depth > 5) {
+  if (!services_->MenuHost() || depth > 5) {
     return;
   }
   for (const PhiStoredRowView& row :
-       controller_->host_->BookmarkRows(controller_->slot().value,
+       services_->MenuHost()->BookmarkRows(services_->MenuSlot().value,
                                         parent_guid)) {
     const std::wstring shown =
         base::UTF8ToWide(!row.title.empty() ? row.title : row.url);
@@ -711,23 +713,25 @@ void PhiMenuBar::AppendBookmarkRows(HMENU menu, const std::string& parent_guid,
 void PhiMenuBar::RefreshBookmarks() {
   ClearMenu(bookmarks_);
   bookmark_urls_.clear();
-  controller_->RebuildNavState();
+  services_->MenuRefreshNavState();
+  // The rows as the last rebuild placed them; a menu opening never asks for
+  // a fresh one (docs/architecture-review.md §3.1 principle 3).
+  const bool has_rows = !services_->MenuTabRows().empty();
   Append(bookmarks_, kCmdBookmarkThisTab, PhiStr("app.bookmarksMenu.addOrEditCurrentTab"),
-         controller_->host_ && !controller_->nav_url_.empty() &&
-             !controller_->is_incognito());
+         services_->MenuHost() && !services_->MenuNavState().url.empty() &&
+             !services_->MenuIncognito());
   Append(bookmarks_, kCmdBookmarkAllTabs,
          PhiStr("app.bookmarksMenu.addAllOpenTabs"),
-         controller_->host_ && !controller_->tabs_.empty() &&
-             !controller_->is_incognito());
+         services_->MenuHost() && has_rows && !services_->MenuIncognito());
   Separator(bookmarks_);
   Append(bookmarks_, kCmdExportBookmarks, PhiStr("app.bookmarksMenu.exportCurrentSpace"),
-         controller_->host_ != nullptr);
+         services_->MenuHost() != nullptr);
   Separator(bookmarks_);
   // The Mac's Bookmarks-menu entry for the native manager; Chromium's own
   // shortcut for IDC_SHOW_BOOKMARK_MANAGER on Windows is Ctrl+Shift+O.
   Append(bookmarks_, kCmdBookmarkManager, PhiStr("menuBar.bookmarkManager"),
-         controller_->framework_ != nullptr &&
-             !controller_->is_incognito());
+         services_->MenuFramework() != nullptr &&
+             !services_->MenuIncognito());
   const int fixed = ::GetMenuItemCount(bookmarks_);
   AppendBookmarkRows(bookmarks_, std::string(), 0);
   if (::GetMenuItemCount(bookmarks_) > fixed) {
@@ -742,23 +746,22 @@ void PhiMenuBar::RefreshTab() {
   ClearMenu(tab_);
   tab_ids_.clear();
   // The rows as the last rebuild placed them — never rebuilt from a menu.
-  const bool several = controller_->tabs_.size() > 1;
+  const std::vector<PhiMenuBarTab> rows = services_->MenuTabRows();
+  const bool several = rows.size() > 1;
   Append(tab_, kCmdNewTabToRight, PhiStr("menuBar.newTabToTheRight"),
-         controller_->framework_ != nullptr);
+         services_->MenuFramework() != nullptr);
   Append(tab_, kCmdNextTab, PhiStr("settings.shortcuts.command.selectNextTab"), several);
   Append(tab_, kCmdPreviousTab, PhiStr("settings.shortcuts.command.selectPreviousTab"),
          several);
   Append(tab_, kCmdDuplicateTab, PhiStr("settings.shortcuts.command.duplicateTab"), false);
   Append(tab_, kCmdMuteSite, PhiStr("settings.shortcuts.command.muteSite"), false);
   Append(tab_, kCmdSearchTabs, PhiStr("menuBar.searchTabs"));
-  if (controller_->tabs_.empty()) {
+  if (rows.empty()) {
     return;
   }
   Separator(tab_);
-  for (size_t i = 0; i < controller_->tabs_.size() &&
-                     kTabFirst + i <= kTabLast;
-       ++i) {
-    const auto& row = controller_->tabs_[i];
+  for (size_t i = 0; i < rows.size() && kTabFirst + i <= kTabLast; ++i) {
+    const PhiMenuBarTab& row = rows[i];
     ::AppendMenuW(tab_, MF_STRING | (row.active ? MF_CHECKED : 0),
                   kTabFirst + static_cast<UINT>(i),
                   row.title.empty() ? PhiStr("common.bookmarkFolder.defaultName") : row.title.c_str());
@@ -767,23 +770,23 @@ void PhiMenuBar::RefreshTab() {
 }
 
 bool PhiMenuBar::OnCommand(UINT id) {
-  PhiWindowController* c = controller_;
+  PhiMenuBarShell* c = services_;
   // The browser the slot SHOWS — invalid when none is attached, and NEVER
   // the slot's own number. Every framework branch below tests it first.
   // Nothing here refreshes by hand after a framework mutation: the model's
   // push schedules the rebuild (docs/architecture-review.md §3.1
   // principle 3).
-  const BrowserId target = c->active_browser_id();
+  const BrowserId target = c->MenuActiveBrowser();
 
   // Dynamic ranges first.
   if (id >= kSpaceFirst && id <= kSpaceLast) {
     const size_t i = id - kSpaceFirst;
     if (i < space_ids_.size()) {
       const std::string space_id = space_ids_[i];
-      if (c->HasSpace(space_id)) {
-        c->ShowSpace(space_id);
-      } else if (c->host_) {
-        c->host_->RequestSwitchSpace(c->slot().value, space_id);
+      if (c->MenuHasSpace(space_id)) {
+        c->MenuShowSpace(space_id);
+      } else if (c->MenuHost()) {
+        c->MenuHost()->RequestSwitchSpace(c->MenuSlot().value, space_id);
       }
     }
     return true;
@@ -793,27 +796,27 @@ bool PhiMenuBar::OnCommand(UINT id) {
     // (space_ids_ only refreshes when the Spaces menu opens).
     const std::vector<SpaceEntry> spaces = SpaceList();
     const size_t i = id - kCmdSpace1;
-    if (i < spaces.size() && spaces[i].id != c->active_space_) {
+    if (i < spaces.size() && spaces[i].id != c->MenuActiveSpace()) {
       const std::string space_id = spaces[i].id;
-      if (c->HasSpace(space_id)) {
-        c->ShowSpace(space_id);
-      } else if (c->host_) {
-        c->host_->RequestSwitchSpace(c->slot().value, space_id);
+      if (c->MenuHasSpace(space_id)) {
+        c->MenuShowSpace(space_id);
+      } else if (c->MenuHost()) {
+        c->MenuHost()->RequestSwitchSpace(c->MenuSlot().value, space_id);
       }
     }
     return true;
   }
   if (id >= kTabFirst && id <= kTabLast) {
     const size_t i = id - kTabFirst;
-    if (c->framework_ && target.valid() && i < tab_ids_.size()) {
-      c->framework_->ActivateTabById(target.value, tab_ids_[i].value);
+    if (c->MenuFramework() && target.valid() && i < tab_ids_.size()) {
+      c->MenuFramework()->ActivateTabById(target.value, tab_ids_[i].value);
     }
     return true;
   }
   if (id >= kBookmarkFirst && id <= kBookmarkLast) {
     const size_t i = id - kBookmarkFirst;
-    if (c->host_ && i < bookmark_urls_.size()) {
-      c->host_->RequestOpen(c->slot().value, bookmark_urls_[i]);
+    if (c->MenuHost() && i < bookmark_urls_.size()) {
+      c->MenuHost()->RequestOpen(c->MenuSlot().value, bookmark_urls_[i]);
     }
     return true;
   }
@@ -822,8 +825,8 @@ bool PhiMenuBar::OnCommand(UINT id) {
     // window is replaced and its tabs reload in the new profile, where the
     // old profile's logins do not exist.
     const size_t i = id - kProfileFirst;
-    if (c->host_ && i < profile_ids_.size() &&
-        PhiConfirm(c->shell_hwnd_,
+    if (c->MenuHost() && i < profile_ids_.size() &&
+        PhiConfirm(c->MenuShellWindow(),
                    PhiStrF("app.changeSpaceProfileConfirmation.title",
                            {i < profile_names_.size() ? profile_names_[i]
                                                       : std::wstring()})
@@ -831,72 +834,72 @@ bool PhiMenuBar::OnCommand(UINT id) {
                    PhiStr("app.changeSpaceProfileConfirmation."
                           "profileScopedMessage"),
                    nullptr, /*destructive=*/false)) {
-      c->host_->SetSpaceProfile(c->active_space_, profile_ids_[i]);
+      c->MenuHost()->SetSpaceProfile(c->MenuActiveSpace(), profile_ids_[i]);
     }
     return true;
   }
   if (id >= kDeleteProfileFirst && id <= kDeleteProfileLast) {
     const size_t i = id - kDeleteProfileFirst;
-    if (c->host_ && i < profile_ids_.size() &&
-        PhiConfirm(c->shell_hwnd_,
+    if (c->MenuHost() && i < profile_ids_.size() &&
+        PhiConfirm(c->MenuShellWindow(),
                    PhiStr("app.spacesMenu.deleteProfile.submenuTitle"),
                    PhiStr("menuBar.deleteProfileConfirmBody"), L"Delete")) {
-      c->host_->DeleteProfileById(profile_ids_[i]);
+      c->MenuHost()->DeleteProfileById(profile_ids_[i]);
     }
     return true;
   }
 
   if (const int idc = IdcForCommand(id)) {
-    if (c->framework_ && target.valid()) {
-      c->framework_->ExecuteChromiumCommand(target.value, idc);
+    if (c->MenuFramework() && target.valid()) {
+      c->MenuFramework()->ExecuteChromiumCommand(target.value, idc);
     }
     return true;
   }
 
   switch (id) {
     case kCmdAbout:
-      PhiNotice(c->shell_hwnd_, PhiStr("menuBar.aboutPhi"),
+      PhiNotice(c->MenuShellWindow(), PhiStr("menuBar.aboutPhi"),
                 PhiStrF("menuBar.aboutBody", {PHI_WIN_VERSION_WIDE}).c_str());
       return true;
     case kCmdReportIssue:
-      c->OpenFeedback();
+      c->MenuOpenFeedback();
       return true;
     case kCmdCheckUpdate:
       if (!PhiUpdater::CheckForUpdateWithUi()) {
-        PhiNotice(c->shell_hwnd_, PhiStr("menuBar.checkForUpdate"),
+        PhiNotice(c->MenuShellWindow(), PhiStr("menuBar.checkForUpdate"),
                   PhiStr("menuBar.updaterUnavailableBody"));
       }
       return true;
     case kCmdPreferences:
-      if (c->host_) {
-        c->host_->RequestSettings();
+      if (c->MenuHost()) {
+        c->MenuHost()->RequestSettings();
       }
       return true;
     case kCmdQuit:
     case kCmdCloseWindow:
       // Through the normal close path; posted so the menu unwinds first.
-      ::PostMessageW(c->shell_hwnd_, WM_CLOSE, 0, 0);
+      ::PostMessageW(c->MenuShellWindow(), WM_CLOSE, 0, 0);
       return true;
     case kCmdNewTab:
-      c->StartNewTab();  // Honors the "New tab behavior" setting.
+      c->MenuNewTab();  // Honors the "New tab behavior" setting.
       return true;
     case kCmdNewWindow:
-      if (c->host_) {
-        c->host_->RequestNewWindow(c->slot().value);  // Shown profile.
+      if (c->MenuHost()) {
+        c->MenuHost()->RequestNewWindow(c->MenuSlot().value);  // Shown profile.
       }
       return true;
     case kCmdOpenLocation:
-      if (c->url_field_) {
-        ::SetFocus(c->url_field_);
-        ::SendMessageW(c->url_field_, EM_SETSEL, 0, -1);
+      if (c->MenuAddressField()) {
+        ::SetFocus(c->MenuAddressField());
+        ::SendMessageW(c->MenuAddressField(), EM_SETSEL, 0, -1);
       }
       return true;
     case kCmdCloseTab:
       // The TREE's active tab, not the active ROW: a tab bound to a pinned
       // cell or a bookmark is no row in the list, and Ctrl+W must still
       // close it (lane 1 D2).
-      if (c->framework_ && target.valid() && c->active_tab_id_.valid()) {
-        c->framework_->CloseTabById(target.value, c->active_tab_id_.value);
+      if (c->MenuFramework() && target.valid() && c->MenuActiveTab().valid()) {
+        c->MenuFramework()->CloseTabById(target.value, c->MenuActiveTab().value);
       }
       return true;
     case kCmdUndo:
@@ -905,7 +908,7 @@ bool PhiMenuBar::OnCommand(UINT id) {
     case kCmdPaste:
     case kCmdDelete:
     case kCmdSelectAll: {
-      HWND field = c->url_field_;
+      HWND field = c->MenuAddressField();
       if (!field || ::GetFocus() != field) {
         return true;
       }
@@ -932,8 +935,8 @@ bool PhiMenuBar::OnCommand(UINT id) {
       return true;
     }
     case kCmdCopyUrl: {
-      const std::wstring& url = c->nav_url_;
-      if (url.empty() || !::OpenClipboard(c->shell_hwnd_)) {
+      const std::wstring url = c->MenuNavState().url;
+      if (url.empty() || !::OpenClipboard(c->MenuShellWindow())) {
         return true;
       }
       ::EmptyClipboard();
@@ -951,100 +954,93 @@ bool PhiMenuBar::OnCommand(UINT id) {
       }
       ::CloseClipboard();
       // The Mac's copy confirmation toast (OverlayToastCenter).
-      PhiShowToast(c->shell_hwnd_, c->CurrentPalette(), PhiStr("app.copyTabURLsToast.single"));
+      PhiShowToast(c->MenuShellWindow(), c->MenuPalette(), PhiStr("app.copyTabURLsToast.single"));
       return true;
     }
     case kCmdStop:
-      if (c->framework_ && target.valid()) {
-        c->framework_->StopLoading(target.value);
+      if (c->MenuFramework() && target.valid()) {
+        c->MenuFramework()->StopLoading(target.value);
       }
       return true;
     case kCmdAlwaysShowBookmarkBar:
-      if (c->host_) {
-        c->host_->SetAlwaysShowBookmarkBar(!c->host_->AlwaysShowBookmarkBar());
+      if (c->MenuHost()) {
+        c->MenuHost()->SetAlwaysShowBookmarkBar(!c->MenuHost()->AlwaysShowBookmarkBar());
       }
       return true;
     case kCmdBookmarkBarOnNewTab:
-      if (c->host_) {
-        c->host_->SetBookmarkBarOnNewTab(!c->host_->BookmarkBarOnNewTab());
+      if (c->MenuHost()) {
+        c->MenuHost()->SetBookmarkBarOnNewTab(!c->MenuHost()->BookmarkBarOnNewTab());
       }
       return true;
     case kCmdToggleSidebar:
-      c->ToggleSidebar();
+      c->MenuToggleSidebar();
       return true;
     case kCmdToggleReader:
-      c->ToggleReaderView();
+      c->MenuToggleReader();
       return true;
     case kCmdReload:
     case kCmdForceReload:
-      if (c->framework_ && target.valid()) {
-        c->framework_->Reload(target.value, id == kCmdForceReload);
+      if (c->MenuFramework() && target.valid()) {
+        c->MenuFramework()->Reload(target.value, id == kCmdForceReload);
       }
       return true;
     case kCmdLayoutBalanced:
     case kCmdLayoutPerformance:
     case kCmdLayoutComfortable:
-      if (c->host_) {
-        c->host_->RequestLayoutMode(
+      if (c->MenuHost()) {
+        c->MenuHost()->RequestLayoutMode(
             id == kCmdLayoutBalanced    ? PhiLayoutMode::kBalanced
             : id == kCmdLayoutComfortable ? PhiLayoutMode::kComfortable
                                           : PhiLayoutMode::kPerformance);
       }
       return true;
     case kCmdNewSpace:
-      c->ShowCreateSpaceForm();  // The sidebar form, or at once without one.
+      c->MenuCreateSpace();  // The sidebar form, or at once without one.
       return true;
     case kCmdRenameSpace: {
-      if (!c->host_) {
+      if (!c->MenuHost()) {
         return true;
       }
       // Prefill with the Space's current name (from the owner's list; the
       // chip label is the same string).
       std::wstring name;
-      for (const PhiSpaceView& space : c->host_->Spaces()) {
-        if (space.id == c->active_space_) {
+      for (const PhiSpaceView& space : c->MenuHost()->Spaces()) {
+        if (space.id == c->MenuActiveSpace()) {
           name = base::UTF8ToWide(space.name);
           break;
         }
       }
-      if (PhiPromptText(c->shell_hwnd_, PhiStr("app.renameSpaceDialog.title"),
+      if (PhiPromptText(c->MenuShellWindow(), PhiStr("app.renameSpaceDialog.title"),
                         PhiStr("app.renameSpaceDialog.message"), &name)) {
-        c->host_->RenameSpace(c->active_space_, base::WideToUTF8(name));
+        c->MenuHost()->RenameSpace(c->MenuActiveSpace(), base::WideToUTF8(name));
       }
       return true;
     }
     case kCmdChangeIcon:
-      if (c->host_) {
-        c->host_->RequestSpaceIconPicker(c->active_space_);
+      if (c->MenuHost()) {
+        c->MenuHost()->RequestSpaceIconPicker(c->MenuActiveSpace());
       }
       return true;
-    case kCmdEditSpaceTheme: {
-      // The Mac's .windowTop placement: the menu bar has no trigger point
-      // to hang the panel off, so it drops under the caption, centred on
-      // the window (the panel centres itself in an anchor wider than it).
-      if (!c->host_ || c->active_space_.empty() || !c->shell_hwnd_) {
-        return true;
-      }
-      RECT shell = {};
-      ::GetWindowRect(c->shell_hwnd_, &shell);
-      const RECT anchor = {shell.left, shell.top, shell.right, shell.top};
-      PhiShowSpaceThemePanel(c, anchor, c->active_space_);
+    case kCmdEditSpaceTheme:
+      // The Mac's .windowTop placement: the menu bar has no trigger point to
+      // hang the panel off, so the shell drops it under the caption, centred
+      // on the window.
+      c->MenuEditSpaceTheme();
       return true;
-    }
     case kCmdDeleteSpace:
-      if (c->host_ &&
-          PhiConfirm(c->shell_hwnd_, PhiStr("menuBar.deleteSpace"),
+      if (c->MenuHost() &&
+          PhiConfirm(c->MenuShellWindow(), PhiStr("menuBar.deleteSpace"),
                      PhiStr("menuBar.deleteSpaceConfirmBody"), L"Delete")) {
-        c->host_->DeleteSpace(c->active_space_);
+        c->MenuHost()->DeleteSpace(c->MenuActiveSpace());
       }
       return true;
     case kCmdNewProfile: {
       std::wstring name;
-      if (c->framework_ &&
-          PhiPromptText(c->shell_hwnd_,
+      if (c->MenuFramework() &&
+          PhiPromptText(c->MenuShellWindow(),
                         PhiStr("settings.profiles.createDialog.title"),
                         PhiStr("menuBar.newProfilePromptBody"), &name)) {
-        c->framework_->CreateProfile(base::WideToUTF8(name).c_str());
+        c->MenuFramework()->CreateProfile(base::WideToUTF8(name).c_str());
       }
       return true;
     }
@@ -1056,7 +1052,7 @@ bool PhiMenuBar::OnCommand(UINT id) {
       }
       size_t at = 0;
       for (size_t i = 0; i < spaces.size(); ++i) {
-        if (spaces[i].id == c->active_space_) {
+        if (spaces[i].id == c->MenuActiveSpace()) {
           at = i;
           break;
         }
@@ -1065,60 +1061,60 @@ bool PhiMenuBar::OnCommand(UINT id) {
                               ? (at + 1) % spaces.size()
                               : (at + spaces.size() - 1) % spaces.size();
       const std::string space_id = spaces[next].id;
-      if (c->HasSpace(space_id)) {
-        c->ShowSpace(space_id);
-      } else if (c->host_) {
-        c->host_->RequestSwitchSpace(c->slot().value, space_id);
+      if (c->MenuHasSpace(space_id)) {
+        c->MenuShowSpace(space_id);
+      } else if (c->MenuHost()) {
+        c->MenuHost()->RequestSwitchSpace(c->MenuSlot().value, space_id);
       }
       return true;
     }
     case kCmdBack:
       // Back over a tab the reader is covering means "leave the reader" —
       // the same rule the toolbar's back button follows.
-      if (c->LeaveReaderViewForNavigation()) {
+      if (c->MenuLeaveReaderForNavigation()) {
         return true;
       }
-      if (c->framework_ && target.valid()) {
-        c->framework_->GoBack(target.value);
+      if (c->MenuFramework() && target.valid()) {
+        c->MenuFramework()->GoBack(target.value);
       }
       return true;
     case kCmdForward:
-      if (c->LeaveReaderViewForNavigation()) {
+      if (c->MenuLeaveReaderForNavigation()) {
         return true;
       }
-      if (c->framework_ && target.valid()) {
-        c->framework_->GoForward(target.value);
+      if (c->MenuFramework() && target.valid()) {
+        c->MenuFramework()->GoForward(target.value);
       }
       return true;
     case kCmdBookmarkThisTab:
-      if (c->host_) {
-        c->host_->RequestBookmarkActiveTab(c->slot().value);
+      if (c->MenuHost()) {
+        c->MenuHost()->RequestBookmarkActiveTab(c->MenuSlot().value);
       }
       return true;
     case kCmdBookmarkAllTabs: {
-      if (!c->host_ || c->is_incognito()) {
+      if (!c->MenuHost() || c->MenuIncognito()) {
         return true;
       }
       std::wstring name = PhiStr("menuBar.savedTabs");
       if (!PhiPromptText(
-              c->shell_hwnd_,
+              c->MenuShellWindow(),
               PhiStr("common.tabAreaContextMenu.bookmarkAllTabsAction"),
               PhiStr("menuBar.bookmarkAllTabsPromptBody"), &name) ||
           name.empty()) {
         return true;
       }
-      const std::string folder = c->host_->AddBookmarkFolder(
-          c->slot().value, std::string(), base::WideToUTF8(name));
-      if (folder.empty() || !c->model_ || !target.valid()) {
+      const std::string folder = c->MenuHost()->AddBookmarkFolder(
+          c->MenuSlot().value, std::string(), base::WideToUTF8(name));
+      if (folder.empty() || !c->MenuModel() || !target.valid()) {
         return true;
       }
       int added = 0;
       if (const phi_framework::WindowSnapshot* snapshot =
-              c->model_->Get(target)) {
+              c->MenuModel()->Get(target)) {
         for (const phi_framework::TabSnapshot& tab : snapshot->tabs) {
           if (!tab.url.empty() &&
-              !c->host_
-                   ->AddBookmarkRow(c->slot().value, folder, tab.title,
+              !c->MenuHost()
+                   ->AddBookmarkRow(c->MenuSlot().value, folder, tab.title,
                                     tab.url)
                    .empty()) {
             ++added;
@@ -1126,24 +1122,24 @@ bool PhiMenuBar::OnCommand(UINT id) {
         }
       }
       PhiShowToast(
-          c->shell_hwnd_, c->CurrentPalette(),
+          c->MenuShellWindow(), c->MenuPalette(),
           PhiStrF("menuBar.tabsBookmarkedToast", {std::to_wstring(added)}));
       return true;
     }
     case kCmdBookmarkManager:
       // URL-driven, as on Mac: the manager IS a tab on the bookmark route,
       // and the client mounts its native page over that tab's content.
-      if (c->framework_ && target.valid()) {
-        c->framework_->NewTab(target.value, PhiBookmarkManager::ManagerUrl());
+      if (c->MenuFramework() && target.valid()) {
+        c->MenuFramework()->NewTab(target.value, PhiBookmarkManager::ManagerUrl());
       }
       return true;
     case kCmdExportBookmarks: {
-      if (!c->host_) {
+      if (!c->MenuHost()) {
         return true;
       }
       wchar_t path[MAX_PATH] = L"bookmarks.html";
       OPENFILENAMEW ofn = {sizeof(ofn)};
-      ofn.hwndOwner = c->shell_hwnd_;
+      ofn.hwndOwner = c->MenuShellWindow();
       ofn.lpstrFilter = L"HTML File\0*.html\0\0";
       ofn.lpstrFile = path;
       ofn.nMaxFile = MAX_PATH;
@@ -1161,15 +1157,16 @@ bool PhiMenuBar::OnCommand(UINT id) {
         ::WriteFile(f, html.data(), static_cast<DWORD>(html.size()), &wrote,
                     nullptr);
         ::CloseHandle(f);
-        PhiShowToast(c->shell_hwnd_, c->CurrentPalette(),
+        PhiShowToast(c->MenuShellWindow(), c->MenuPalette(),
                      PhiStr("menuBar.bookmarksExported"));
       }
       return true;
     }
     case kCmdNextTab:
     case kCmdPreviousTab: {
-      const auto& tabs = c->tabs_;  // As the last rebuild placed them.
-      if (tabs.size() < 2 || !c->framework_ || !target.valid()) {
+      // As the last rebuild placed them.
+      const std::vector<PhiMenuBarTab> tabs = c->MenuTabRows();
+      if (tabs.size() < 2 || !c->MenuFramework() || !target.valid()) {
         return true;
       }
       size_t at = 0;
@@ -1182,16 +1179,16 @@ bool PhiMenuBar::OnCommand(UINT id) {
       const size_t next = id == kCmdNextTab
                               ? (at + 1) % tabs.size()
                               : (at + tabs.size() - 1) % tabs.size();
-      c->framework_->ActivateTabById(target.value, tabs[next].id.value);
+      c->MenuFramework()->ActivateTabById(target.value, tabs[next].id.value);
       return true;
     }
     case kCmdImportBrowser:
-      if (c->framework_ &&
-          PhiConfirm(c->shell_hwnd_, PhiStr("menuBar.importFromGoogleChrome"),
+      if (c->MenuFramework() &&
+          PhiConfirm(c->MenuShellWindow(), PhiStr("menuBar.importFromGoogleChrome"),
                      PhiStr("menuBar.importChromePromptBody"),
                      PhiStr("app.import"), /*destructive=*/false)) {
-        if (!c->framework_->StartChromeImport(target.value)) {
-          PhiNotice(c->shell_hwnd_, PhiStr("app.import"),
+        if (!c->MenuFramework()->StartChromeImport(target.value)) {
+          PhiNotice(c->MenuShellWindow(), PhiStr("app.import"),
                     PhiStr("menuBar.importChromeFailedBody"));
         }
       }
@@ -1199,32 +1196,32 @@ bool PhiMenuBar::OnCommand(UINT id) {
     case kCmdNewTabToRight: {
       // Composed from the primitives: IDC_NEW_TAB_TO_RIGHT stays disabled in
       // the hollowed chrome (it keys off FEATURE_TABSTRIP).
-      if (!c->framework_ || !target.valid()) {
+      if (!c->MenuFramework() || !target.valid()) {
         return true;
       }
       // By stable ids: the new tab's own id from OpenTab, the anchor the
       // tree's active tab, and an anchored move that survives whatever the
       // insertion did to the indices.
-      const TabId anchor = c->active_tab_id_;
-      const TabId created = c->framework_->OpenTab(target, "");
+      const TabId anchor = c->MenuActiveTab();
+      const TabId created = c->MenuFramework()->OpenTab(target, "");
       if (created.valid() && anchor.valid()) {
-        c->framework_->MoveTabAfter(target.value, created.value, anchor.value,
+        c->MenuFramework()->MoveTabAfter(target.value, created.value, anchor.value,
                                     nullptr);
       }
       return true;
     }
     case kCmdSearchTabs:
-      PhiSearchTabsPanel::Toggle(c);
+      c->MenuToggleSearchTabs();
       return true;
     case kCmdDownloads:
-      c->ToggleDownloadsPopover();
+      c->MenuToggleDownloads();
       return true;
     case kCmdMinimize:
-      ::ShowWindow(c->shell_hwnd_, SW_MINIMIZE);
+      ::ShowWindow(c->MenuShellWindow(), SW_MINIMIZE);
       return true;
     case kCmdZoomWindow:
-      ::ShowWindow(c->shell_hwnd_,
-                   ::IsZoomed(c->shell_hwnd_) ? SW_RESTORE : SW_MAXIMIZE);
+      ::ShowWindow(c->MenuShellWindow(),
+                   ::IsZoomed(c->MenuShellWindow()) ? SW_RESTORE : SW_MAXIMIZE);
       return true;
     default:
       break;
@@ -1267,9 +1264,9 @@ std::string PhiMenuBar::BuildBookmarksHtml() const {
       "<TITLE>Bookmarks</TITLE>\n"
       "<H1>Bookmarks</H1>\n"
       "<DL><p>\n";
-  if (controller_->host_) {
+  if (services_->MenuHost()) {
     const std::vector<PhiStoredRowView> pins =
-        controller_->host_->PinnedRows(controller_->slot().value);
+        services_->MenuHost()->PinnedRows(services_->MenuSlot().value);
     if (!pins.empty()) {
       html += "    <DT><H3>Favorites</H3>\n    <DL><p>\n";
       for (const PhiStoredRowView& pin : pins) {
@@ -1285,7 +1282,7 @@ std::string PhiMenuBar::BuildBookmarksHtml() const {
     const auto descend = [&](const auto& self, const std::string& parent,
                              const std::string& indent) -> void {
       for (const PhiStoredRowView& row :
-           controller_->host_->BookmarkRows(controller_->slot().value,
+           services_->MenuHost()->BookmarkRows(services_->MenuSlot().value,
                                             parent)) {
         if (row.folder) {
           html += indent + "<DT><H3>" + escaped(row.title) + "</H3>\n" +
