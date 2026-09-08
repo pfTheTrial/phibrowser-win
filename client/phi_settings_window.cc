@@ -2567,7 +2567,17 @@ void PhiSettingsWindow::Rebuild() {
     section_ = "general";  // A retired pane id (e.g. "phiLink").
     BuildGeneral(&y);
   }
-  content_height_ = y - top + Scaled(kMargin);
+  // The running `y` carries the trailing section gap and, on the
+  // master-detail panes, none of a detail column that outgrows the band —
+  // so measure the content by what was actually laid out. It decides both
+  // the scroll limit and the indicator's thumb.
+  int bottom = top;
+  for (const Item& item : items_) {
+    if (item.kind != ItemKind::kToolbarItem) {
+      bottom = std::max<int>(bottom, item.bounds.bottom);
+    }
+  }
+  content_height_ = bottom - top + Scaled(kMargin);
   PublishHits();
 }
 
@@ -3579,7 +3589,7 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
                       nullptr, SW_SHOWNORMAL);
     }
   } else if (item.action == "signin") {
-    // No Rebuild() here (or in any other action): OnItemClick calls
+    // No Rebuild() here (or in any other action): OnClick calls
     // ScheduleRebuild() once, after Apply, and that is the only path.
     if (host_) {
       host_->RequestSignIn();
