@@ -1049,7 +1049,11 @@ void PhiSettingsWindow::AddToggleRow(int* y, const wchar_t* title, bool on,
                                      const std::string& action,
                                      const wchar_t* hint) {
   const size_t first = items_.size();
-  const RECT area = AddRow(y, title, kToggleHeight + 4, kToggleWidth, hint);
+  // kToggleHeight, not kToggleHeight + 4: the row's padding is AddRow's
+  // business. Handing the extra four points to the painter drew the Mac's
+  // 26x15 mini switch as a 26x19 one — squat, and with barely half the
+  // knob travel, which is what wedged the knob against the end.
+  const RECT area = AddRow(y, title, kToggleHeight, kToggleWidth, hint);
   // A dead row must READ dead. The label and its description used to paint
   // at full strength beside a washed-out switch, so the Kiosk pair and
   // "Apply theme to text selection" looked exactly like the live rows
@@ -2987,7 +2991,10 @@ void PhiSettingsWindow::Paint(HDC dc, const RECT&) {
         break;
       }
       case ItemKind::kToggle: {
+        // The Mac's .mini switch: a 26x15 capsule carrying an 11pt knob
+        // inset 2 on every side, so the knob travels its own width.
         const int height = bounds.bottom - bounds.top;
+        const int radius = height / 2;
         COLORREF fill = item.on ? accent : Blend(ink, bg, 60);
         if (!item.enabled) {
           fill = Blend(fill, bg, 120);
@@ -2998,13 +3005,23 @@ void PhiSettingsWindow::Paint(HDC dc, const RECT&) {
           ::InflateRect(&halo, Scaled(3), Scaled(3));
           FillRounded(dc, halo, hover_wash, (halo.bottom - halo.top) / 2);
         }
-        FillRounded(dc, bounds, fill, height / 2);
-        const int knob = height - Scaled(4);
-        const int left = item.on ? bounds.right - knob - Scaled(2)
-                                 : bounds.left + Scaled(2);
-        RECT dot = {left, bounds.top + Scaled(2), left + knob,
-                    bounds.top + Scaled(2) + knob};
-        Ellipse(dc, dot, RGB(0xFF, 0xFF, 0xFF), 0, 0);
+        FillRounded(dc, bounds, fill, radius);
+        if (!item.on) {
+          // The off track is a flat wash a shade lighter than the card
+          // border it sits next to; a hairline keeps its ends legible.
+          OutlineRounded(dc, bounds, Blend(ink, bg, 30), radius, 1);
+        }
+        const int inset = Scaled(2);
+        const int knob = height - 2 * inset;
+        const int left = item.on ? bounds.right - knob - inset
+                                 : bounds.left + inset;
+        RECT dot = {left, bounds.top + inset, left + knob,
+                    bounds.top + inset + knob};
+        // The knob wears the Mac's soft shadow as one darker pixel of its
+        // own track: a plain white disc had no edge at all against a
+        // disabled switch's pale fill.
+        Ellipse(dc, dot, RGB(0xFF, 0xFF, 0xFF),
+                Blend(RGB(0x00, 0x00, 0x00), fill, 46), 1);
         break;
       }
       case ItemKind::kSliderTrack: {
