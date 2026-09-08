@@ -20,6 +20,10 @@ public static class SS {
   [DllImport("user32.dll")] public static extern bool RedrawWindow(IntPtr h, IntPtr r, IntPtr u, uint f);
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c);
+  [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h, ref P p);
+  [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+  [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint x, uint y, uint d, IntPtr e);
+  [StructLayout(LayoutKind.Sequential)] public struct P { public int X,Y; }
   [StructLayout(LayoutKind.Sequential)] public struct R { public int L,T,Rr,B; }
 }
 '@
@@ -29,6 +33,42 @@ public static class SS {
   [SS]::ShowWindow($h, 5) | Out-Null
   [SS]::SetForegroundWindow($h) | Out-Null
   Start-Sleep -Milliseconds 400
+  # Optional pointer park (CLIENT px), so a capture can show hover state.
+  $pt = [Environment]::GetEnvironmentVariable("PHI_SETSHOT_POINT", "User")
+  if ($pt) {
+    $xy = $pt.Split(",")
+    $p = New-Object SS+P
+    $p.X = [int]$xy[0]; $p.Y = [int]$xy[1]
+    [SS]::ClientToScreen($h, [ref]$p) | Out-Null
+    [SS]::SetCursorPos($p.X, $p.Y) | Out-Null
+    Start-Sleep -Milliseconds 500
+    # Optional gesture: "click" = press+release here; "drag" = press here,
+    # sweep right across the card, release.
+    $gesture = [Environment]::GetEnvironmentVariable("PHI_SETSHOT_CLICK", "User")
+    if ($gesture -eq "click") {
+      [SS]::mouse_event(0x0002, 0, 0, 0, [IntPtr]::Zero)
+      Start-Sleep -Milliseconds 80
+      [SS]::mouse_event(0x0004, 0, 0, 0, [IntPtr]::Zero)
+      Start-Sleep -Milliseconds 500
+    } elseif ($gesture -like "wheel*") {
+      $n = [int]($gesture -replace "wheel", "")
+      $delta = [uint32]120
+      if ($n -lt 0) { $delta = [uint32]4294967176 }
+      for ($i = 0; $i -lt [Math]::Abs($n); $i++) {
+        [SS]::mouse_event(0x0800, 0, 0, $delta, [IntPtr]::Zero)
+        Start-Sleep -Milliseconds 60
+      }
+      Start-Sleep -Milliseconds 400
+    } elseif ($gesture -eq "drag") {
+      [SS]::mouse_event(0x0002, 0, 0, 0, [IntPtr]::Zero)
+      for ($i = 1; $i -le 12; $i++) {
+        [SS]::SetCursorPos($p.X + ($i * 50), $p.Y) | Out-Null
+        Start-Sleep -Milliseconds 60
+      }
+      [SS]::mouse_event(0x0004, 0, 0, 0, [IntPtr]::Zero)
+      Start-Sleep -Milliseconds 500
+    }
+  }
   [SS]::RedrawWindow($h, [IntPtr]::Zero, [IntPtr]::Zero, 0x181) | Out-Null
   Start-Sleep -Milliseconds 300
   $r = New-Object SS+R
