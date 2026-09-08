@@ -1028,9 +1028,14 @@ down by ownership). `friend class PhiMenuBar` is retired, the settings host
 passes typed structs instead of tab-separated rows (75 virtuals down to 46,
 setters addressed by identity rather than list position), and the combined
 `PhiSlotHost` is replaced by the five `ShellServices` interfaces, each
-component holding only what it calls. NOT yet verified on the box: the
-sweep, the two rigs and a fingerprint diff against the phase-4 baseline are
-owed, and two agents moved antialiased corner pixels deliberately.
+component holding only what it calls. Verified on the box (2026-09-08): the sweep matches the
+baseline exactly (13 of 18; the four long-standing failures are suites
+fighting over one profile, not product bugs), `sv-surface` and `sv-drag`
+both report ALL PASS, and the 660-point fingerprint is identical to phase 4
+at 655 points — the five that differ all sit on one live tab row whose
+content differs between captures, so the deliberate antialiasing changes
+moved nothing the grid samples. The pixel suites (theme, tab UI, settings
+saturation, toolbar) pass, which is the real check on the Direct2D swap.
 
 ### Continuous — tests, tooling, cross-cutting (alongside phases 1 to 6)
 
