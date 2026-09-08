@@ -9388,7 +9388,7 @@ void PhiWindowController::PaintChrome(HDC dc,
     }
     StrokeRounded(dc, pill, kRowSelectedBg,
                   palette.dark ? kActivePillBorder : kBorder,
-                  Scaled(kSpaceCardRadius) * 2);
+                  Scaled(kSpaceCardRadius));
   }
   for (const SpaceChip& chip : chips_) {
     const bool active = (chip.id == active_space_);
@@ -9396,7 +9396,7 @@ void PhiWindowController::PaintChrome(HDC dc,
         hover_index_ == static_cast<int>(&chip - chips_.data())) {
       // The Mac's dim hover wash on an inactive pip (sidebarTabHovered).
       FillRounded(dc, PaintedChip(chip.bounds, Scaled(kSpaceChip)),
-                  palette.hover, Scaled(kSpaceCardRadius) * 2);
+                  palette.hover, Scaled(kSpaceCardRadius));
     }
     // Every pip's icon is the label colour, active or not — the Mac tints
     // them all Color.primary and lets the selected chip alone say which one
