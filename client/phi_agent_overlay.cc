@@ -768,7 +768,7 @@ class Overlay : public OverlayHost {
 
   void PillClicked(int x, int y) override {
     const POINT pt = {x, y};
-    PhiSlotHost* host = controller_ ? controller_->host() : nullptr;
+    AgentHost* host = controller_ ? controller_->agent_host() : nullptr;
     if (!host) {
       return;
     }

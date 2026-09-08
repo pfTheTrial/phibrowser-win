@@ -169,7 +169,7 @@ class Panel : public PhiPopover {
     pinned_.clear();
     bookmarks_.clear();
     recently_closed_.clear();
-    PhiSlotHost* host = controller_->host();
+    SidebarHost* host = controller_->sidebar_host();
     phi_framework::PhiFramework* framework = controller_->framework();
     const int64_t browser = controller_->active_browser_id().value;
     if (framework && browser) {
@@ -421,23 +421,25 @@ class Panel : public PhiPopover {
     // First — the action may refocus other windows. Everything below runs
     // on locals: `this` is gone once the window is.
     Destroy();
-    PhiSlotHost* host = controller->host();
+    SidebarHost* sidebar_host = controller->sidebar_host();
+    WindowHost* window_host = controller->window_host();
     phi_framework::PhiFramework* framework = controller->framework();
     const int64_t browser = controller->active_browser_id().value;
     switch (row.kind) {
       case Row::Kind::kOpenTab:
-        if (framework && framework->ActivateSearchTab(row.tab_id) && host) {
+        if (framework && framework->ActivateSearchTab(row.tab_id) &&
+            window_host) {
           // The tab may live in another window (or a hidden Space) — the
           // client surfaces the right shell.
-          host->FocusWindowForBrowser(row.window_id);
+          window_host->FocusWindowForBrowser(row.window_id);
         }
         break;
       case Row::Kind::kPinned:
         controller->OpenOrFocusPinned(row.guid, row.url_utf8);
         break;
       case Row::Kind::kBookmark:
-        if (host) {
-          host->RequestOpen(controller->slot().value, row.url_utf8);
+        if (sidebar_host) {
+          sidebar_host->RequestOpen(controller->slot().value, row.url_utf8);
         }
         break;
       case Row::Kind::kRecentlyClosed:

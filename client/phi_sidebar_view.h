@@ -130,9 +130,13 @@ int PhiIndexOfKey(const Rows& rows, const SidebarKey& key) {
 
 namespace phi_client {
 
+class AgentHost;
+class ChromePrefsHost;
 class PhiSidebarDragSession;
-class PhiSlotHost;
 class PhiSpacesStrip;
+class SidebarHost;
+class SpacesHost;
+class WindowHost;
 class PhiWindowController;
 class PhiWindowModel;
 
@@ -495,10 +499,19 @@ class PhiSidebarShell {
 //    split-drop overlay with it.
 class PhiSidebarView {
  public:
+  // The narrow services the view calls (docs/architecture-review.md §3.5):
+  // its own store rows and the sidebar mutator, the palette the band paints
+  // with, the client-wide layout mode, the agent mask badges — plus the
+  // window host it does not call itself and hands to the drag session for
+  // tear-off and cross-window drops. Any of them may be null.
   PhiSidebarView(PhiSidebarShell* shell,
                  SlotId slot,
                  phi_framework::PhiFramework* framework,
-                 PhiSlotHost* host,
+                 SidebarHost* sidebar_host,
+                 SpacesHost* spaces_host,
+                 ChromePrefsHost* prefs_host,
+                 AgentHost* agent_host,
+                 WindowHost* window_host,
                  const PhiWindowModel* model,
                  bool incognito);
   ~PhiSidebarView();
@@ -637,7 +650,12 @@ class PhiSidebarView {
   // The shell, for the session that shares it.
   PhiSidebarShell* shell() const { return shell_; }
   phi_framework::PhiFramework* framework() const { return framework_; }
-  PhiSlotHost* host() const { return host_; }
+  SidebarHost* sidebar_host() const { return sidebar_host_; }
+  // What the drag session it owns takes: the Space list for the pip
+  // reorder and its palette, and the window set for tear-off and the
+  // cross-window drop.
+  SpacesHost* spaces_host() const { return spaces_host_; }
+  WindowHost* window_host() const { return window_host_; }
   SlotId slot() const { return slot_; }
   bool incognito() const { return incognito_; }
 
@@ -678,7 +696,13 @@ class PhiSidebarView {
   // Owned by the framework (a singleton in chrome.dll); non-owning, and
   // across a module boundary, so not a raw_ptr.
   RAW_PTR_EXCLUSION phi_framework::PhiFramework* const framework_;
-  RAW_PTR_EXCLUSION PhiSlotHost* const host_;
+  // The coordinator's services (§3.5). It outlives every shell, so these
+  // are non-owning and never rebound.
+  RAW_PTR_EXCLUSION SidebarHost* const sidebar_host_;
+  RAW_PTR_EXCLUSION SpacesHost* const spaces_host_;
+  RAW_PTR_EXCLUSION ChromePrefsHost* const prefs_host_;
+  RAW_PTR_EXCLUSION AgentHost* const agent_host_;
+  RAW_PTR_EXCLUSION WindowHost* const window_host_;
   // The coordinator's window model: the one source for rows, splits and
   // groups. It owns the instance and outlives every shell.
   RAW_PTR_EXCLUSION const PhiWindowModel* const model_;

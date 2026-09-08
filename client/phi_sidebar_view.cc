@@ -277,13 +277,21 @@ RECT PhiToRect(const SidebarRect& r) {
 PhiSidebarView::PhiSidebarView(PhiSidebarShell* shell,
                                SlotId slot,
                                phi_framework::PhiFramework* framework,
-                               PhiSlotHost* host,
+                               SidebarHost* sidebar_host,
+                               SpacesHost* spaces_host,
+                               ChromePrefsHost* prefs_host,
+                               AgentHost* agent_host,
+                               WindowHost* window_host,
                                const PhiWindowModel* model,
                                bool incognito)
     : shell_(shell),
       slot_(slot),
       framework_(framework),
-      host_(host),
+      sidebar_host_(sidebar_host),
+      spaces_host_(spaces_host),
+      prefs_host_(prefs_host),
+      agent_host_(agent_host),
+      window_host_(window_host),
       model_(model),
       incognito_(incognito) {}
 
@@ -605,11 +613,11 @@ void PhiSidebarView::Rebuild() {
   // the selection, and the address bar, to the tab it is covering.
   {
     SidebarInputs in;
-    if (host_) {
-      in.stored = host_->SidebarStoredItems(slot_.value);
-      in.surfaces = host_->AttachedSurfaces(browser.value);
+    if (sidebar_host_ && prefs_host_) {
+      in.stored = sidebar_host_->SidebarStoredItems(slot_.value);
+      in.surfaces = sidebar_host_->AttachedSurfaces(browser.value);
       in.policy.horizontal_layout =
-          host_->LayoutMode() == PhiLayoutMode::kComfortable;
+          prefs_host_->LayoutMode() == PhiLayoutMode::kComfortable;
     }
     in.policy.incognito = incognito_;
     for (const TabSnapshot& tab : snapshot.tabs) {
@@ -637,7 +645,7 @@ void PhiSidebarView::Rebuild() {
   // ComputeLayout runs ONCE here, before any row is placed. (It used to be
   // called from inside the shortcut rebuild it depended on.)
   const bool comfortable =
-      host_ && host_->LayoutMode() == PhiLayoutMode::kComfortable;
+      prefs_host_ && prefs_host_->LayoutMode() == PhiLayoutMode::kComfortable;
   {
     std::vector<int> units;
     units.reserve(sidebar_tree_.pins.size());
@@ -960,7 +968,7 @@ void PhiSidebarView::Rebuild() {
 void PhiSidebarView::RebuildShortcuts(const PhiSidebarRects& layout) {
   pinned_.clear();
   bookmarks_.clear();
-  if (!host_ || incognito_) {
+  if (!sidebar_host_ || incognito_) {
     return;  // Nothing persists from an incognito window.
   }
   const auto consume = [](PhiStoredRowView view) {
@@ -992,7 +1000,7 @@ void PhiSidebarView::RebuildShortcuts(const PhiSidebarRects& layout) {
     row->attached_surface = cell.attached_surface;
   };
   std::map<std::string, PhiStoredRowView> pin_views;
-  for (PhiStoredRowView& view : host_->PinnedRows(slot_.value)) {
+  for (PhiStoredRowView& view : sidebar_host_->PinnedRows(slot_.value)) {
     pin_views.emplace(view.guid, std::move(view));
   }
   for (const SidebarCell& cell : sidebar_tree_.pins) {
@@ -1012,7 +1020,7 @@ void PhiSidebarView::RebuildShortcuts(const PhiSidebarRects& layout) {
     auto& siblings = by_parent[cell->parent_guid];
     if (siblings.empty()) {
       for (PhiStoredRowView& view :
-           host_->BookmarkRows(slot_.value, cell->parent_guid)) {
+           sidebar_host_->BookmarkRows(slot_.value, cell->parent_guid)) {
         siblings.emplace(view.guid, std::move(view));
       }
     }
@@ -1168,7 +1176,8 @@ std::vector<const SidebarCell*> PhiSidebarView::VisibleBookmarkCells()
 
 
 bool PhiSidebarView::Apply(const SidebarCommand& command) {
-  return host_ && host_->Apply(slot_.value, command, sidebar_tree_);
+  return sidebar_host_ &&
+         sidebar_host_->Apply(slot_.value, command, sidebar_tree_);
 }
 
 std::vector<DropRow> PhiSidebarView::TabDropRows() const {
@@ -1314,7 +1323,8 @@ base::ListValue PhiSidebarView::LayoutRowsJson() const {
 }
 
 bool PhiSidebarView::OnWheel(POINT client_pt, int wheel_delta) {
-  if (!host_ || host_->LayoutMode() == PhiLayoutMode::kComfortable) {
+  if (!prefs_host_ ||
+      prefs_host_->LayoutMode() == PhiLayoutMode::kComfortable) {
     return false;
   }
   const PhiSidebarRects layout = shell_->SidebarRects();
@@ -1616,10 +1626,11 @@ void PhiSidebarView::DrawSurfaceBadge(HDC dc,
                                       bool hovered,
                                       COLORREF ground) {
   const HFONT glyph_font = shell_->SidebarGlyphFont();
-  if (box.right <= box.left || kind == SidebarSurface::kContent || !host_) {
+  if (box.right <= box.left || kind == SidebarSurface::kContent ||
+      !spaces_host_) {
     return;
   }
-  const PhiPalette& palette = host_->PaletteForSlot(slot_.value);
+  const PhiPalette& palette = spaces_host_->PaletteForSlot(slot_.value);
   // A small plate the accent tints, so it reads as "something is attached"
   // whether or not the row is selected.
   PhiFillRounded(dc, box, PhiBlendOver(palette.accent, ground, 46),
@@ -2225,8 +2236,9 @@ void PhiSidebarView::PaintBand(HDC dc,
     // The agent operating mask: a badge on rows an agent is holding. Accent
     // while the agent drives; dimmed once the user has taken the tab back
     // (the row keeps the badge so "Hand Back" stays discoverable).
-    if (host_ && row.id.valid() && host_->IsTabAgentDriven(row.id.value)) {
-      const bool reclaimed = host_->IsTabReclaimed(row.id.value);
+    if (agent_host_ && row.id.valid() &&
+        agent_host_->IsTabAgentDriven(row.id.value)) {
+      const bool reclaimed = agent_host_->IsTabReclaimed(row.id.value);
       const int dot = Scaled(8);
       const int cx = trailing - Scaled(10);
       const int cy = (pill.top + pill.bottom) / 2;

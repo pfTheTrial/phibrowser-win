@@ -510,9 +510,9 @@ ShellLayoutInputs PhiWindowController::CurrentLayoutInputs() const {
 void PhiWindowController::RefreshLayoutInputs() {
   // The sidebar width is the host's pref except while the user drags the
   // edge, when the live value wins until release persists it.
-  if (!sidebar_resizing_ && host_) {
+  if (!sidebar_resizing_ && services_.prefs) {
     sidebar_dip_ = std::max(kSidebarWidthMin,
-                            std::min(host_->SidebarWidth(),
+                            std::min(services_.prefs->SidebarWidth(),
                                      kSidebarWidthMax));
   }
   layout_bookmark_bar_ = BookmarkBarVisible();
@@ -548,8 +548,9 @@ RECT PhiWindowController::reader_button_rect() {
 }
 
 bool PhiWindowController::ActiveTabExtensionOfferable() const {
-  return host_ && active_tab_id().valid() &&
-         host_->IsReaderOfferable(active_tab_id().value, active_tab_url());
+  return services_.sidebar && active_tab_id().valid() &&
+         services_.sidebar->IsReaderOfferable(active_tab_id().value,
+                                              active_tab_url());
 }
 
 int PhiWindowController::tabs_top() {
@@ -610,7 +611,7 @@ PhiWindowController::PhiWindowController(SlotId slot,
                                         BrowserId browser,
                                         HWND browser_hwnd,
                                         phi_framework::PhiFramework* framework,
-                                        PhiSlotHost* host,
+                                        const ShellServices& services,
                                         const PhiWindowModel* model,
                                         bool agent,
                                         bool incognito)
@@ -630,17 +631,24 @@ PhiWindowController::PhiWindowController(SlotId slot,
       omnibox_(std::make_unique<PhiOmniboxSession>(
           static_cast<PhiOmniboxShell*>(this))),
       framework_(framework),
-      host_(host),
+      services_(services),
       model_(model),
       // The Spaces strip: pips, hover card, create form, switch animation.
       spaces_(std::make_unique<PhiSpacesStrip>(
-          static_cast<PhiSpacesStripShell*>(this))),
+          static_cast<PhiSpacesStripShell*>(this),
+          services.spaces,
+          services.prefs,
+          services.agent)),
       // The sidebar: the row pipeline, its band's paint and its drags.
       sidebar_(std::make_unique<PhiSidebarView>(
           static_cast<PhiSidebarShell*>(this),
           slot,
           framework,
-          host,
+          services.sidebar,
+          services.spaces,
+          services.prefs,
+          services.agent,
+          services.window,
           model,
           incognito)),
       agent_(agent),
@@ -651,8 +659,9 @@ PhiWindowController::PhiWindowController(SlotId slot,
     return;
   }
   EnsureShellClass();
-  if (host_) {
-    layout_mode_ = host_->LayoutMode();  // One layout for the whole client.
+  if (services_.prefs) {
+    // One layout for the whole client.
+    layout_mode_ = services_.prefs->LayoutMode();
   }
 
   // Create the client shell so its CONTENT REGION lands exactly where the
@@ -760,7 +769,7 @@ PhiWindowController::PhiWindowController(SlotId slot,
   // bottom-right pulls the window up and left to stay on screen. The size
   // is whatever the placement above produced.
   POINT drop = {};
-  if (!agent_ && host_ && host_->TakeTearOffDrop(&drop)) {
+  if (!agent_ && services_.window && services_.window->TakeTearOffDrop(&drop)) {
     MONITORINFO target = {sizeof(target)};
     if (::GetMonitorInfoW(::MonitorFromPoint(drop, MONITOR_DEFAULTTONEAREST),
                           &target)) {
@@ -819,17 +828,17 @@ PhiWindowController::PhiWindowController(SlotId slot,
   // The window the slot was created with backs the DEFAULT Space — whichever
   // Space holds that role now (it moves when its holder is deleted).
   const std::string default_space =
-      host_ ? host_->DefaultSpaceId() : std::string("1");
+      services_.spaces ? services_.spaces->DefaultSpaceId() : std::string("1");
   browsers_->AdoptFirst(default_space, browser, browser_hwnd);
   omnibox_->EnsureField();
-  if (host_ && !incognito_ && !agent_) {
+  if (services_.spaces && !incognito_ && !agent_) {
     // The default Space binds here rather than through AttachSpaceBrowser,
     // so it needs its own note or lazy restore would never learn its window.
     // NEVER for an agent/shadow window: it nominally binds the default Space
     // too, and noting it made the Space's remembered window THE AGENT'S —
     // an agent alive at quit then put the agent window (omitted from the
     // session) in the cold-start eager set and PARKED the user's real one.
-    host_->NoteSpaceWindow(default_space, browser.value);
+    services_.spaces->NoteSpaceWindow(default_space, browser.value);
   }
   if (framework_ && !incognito_ && !agent_) {
     // An incognito shell stays OUT of the Space registry: routed URLs must
@@ -1104,8 +1113,20 @@ bool PhiWindowController::MenuIncognito() const {
   return incognito_;
 }
 
-PhiSlotHost* PhiWindowController::MenuHost() const {
-  return host_;
+SidebarHost* PhiWindowController::MenuSidebarHost() const {
+  return services_.sidebar;
+}
+
+SpacesHost* PhiWindowController::MenuSpacesHost() const {
+  return services_.spaces;
+}
+
+ChromePrefsHost* PhiWindowController::MenuPrefsHost() const {
+  return services_.prefs;
+}
+
+WindowHost* PhiWindowController::MenuWindowHost() const {
+  return services_.window;
 }
 
 phi_framework::PhiFramework* PhiWindowController::MenuFramework() const {
@@ -1219,7 +1240,7 @@ void PhiWindowController::MenuEditSpaceTheme() {
   // The Mac's .windowTop placement: the menu bar has no trigger point to
   // hang the panel off, so it drops under the caption, centred on the window
   // (the panel centres itself in an anchor wider than it).
-  if (!host_ || active_space().empty() || !shell_hwnd_) {
+  if (!services_.spaces || active_space().empty() || !shell_hwnd_) {
     return;
   }
   RECT shell = {};
@@ -1299,15 +1320,15 @@ void PhiWindowController::BrowserHostEndSpacePreview() {
 void PhiWindowController::BrowserHostNoteSpaceWindow(
     const std::string& space_id,
     BrowserId browser) {
-  if (host_) {
-    host_->NoteSpaceWindow(space_id, browser.value);
+  if (services_.spaces) {
+    services_.spaces->NoteSpaceWindow(space_id, browser.value);
   }
 }
 
 void PhiWindowController::BrowserHostNoteActiveSpace(
     const std::string& space_id) {
-  if (host_ && !agent_) {
-    host_->NoteSlotActiveSpace(space_id);
+  if (services_.spaces && !agent_) {
+    services_.spaces->NoteSlotActiveSpace(space_id);
   }
 }
 
@@ -1408,7 +1429,7 @@ bool PhiWindowController::OmniboxBrowserPlaceholding() const {
 }
 
 bool PhiWindowController::OmniboxNewTabFocusesField() const {
-  return host_ && host_->NewTabOpensOmnibox();
+  return services_.prefs && services_.prefs->NewTabOpensOmnibox();
 }
 
 HWND PhiWindowController::OmniboxNativePageField() const {
@@ -1669,10 +1690,6 @@ SlotId PhiWindowController::SpacesSlot() const {
   return slot_;
 }
 
-PhiSlotHost* PhiWindowController::SpacesHost() const {
-  return host_;
-}
-
 bool PhiWindowController::SpacesIncognito() const {
   return incognito_;
 }
@@ -1837,7 +1854,7 @@ void PhiWindowController::RebuildNavState() {
 }
 
 void PhiWindowController::OpenFeedback() {
-  if (!host_) {
+  if (!services_.window) {
     return;
   }
   // About the focused tab of the VISIBLE browser (the active Space's), whose
@@ -1858,7 +1875,7 @@ void PhiWindowController::OpenFeedback() {
   if (context.url.empty()) {
     context.url = active_tab_url();
   }
-  host_->RequestFeedback(slot_.value, context);
+  services_.window->RequestFeedback(slot_.value, context);
 }
 
 RECT PhiWindowController::ContentRect() {
@@ -1882,15 +1899,15 @@ void PhiWindowController::ToggleDownloadsPopover() {
   // The popover's own opening grace period absorbs the menu teardown's
   // activation churn, so this can run inline.
   const BrowserId browser = active_browser_id();
-  if (!host_ || !framework_ || !shell_hwnd_ || !browser.valid()) {
+  if (!services_.spaces || !framework_ || !shell_hwnd_ || !browser.valid()) {
     return;
   }
   RECT anchor = ComputeLayout().downloads;
   ::MapWindowPoints(shell_hwnd_, nullptr, reinterpret_cast<POINT*>(&anchor),
                     2);
   PhiDownloadsPopover::Toggle(shell_hwnd_, anchor,
-                              host_->PaletteForSlot(slot_.value), framework_,
-                              browser);
+                              services_.spaces->PaletteForSlot(slot_.value),
+                              framework_, browser);
 }
 
 void PhiWindowController::LayoutContents() {
@@ -1900,8 +1917,8 @@ void PhiWindowController::LayoutContents() {
   native_pages_->Reposition();
   // Reader and peek panels are hosted OVER the content card, in windows the
   // coordinator owns rather than this controller — they have to follow it.
-  if (host_) {
-    host_->NoteContentLayoutChanged(slot_.value);
+  if (services_.sidebar) {
+    services_.sidebar->NoteContentLayoutChanged(slot_.value);
   }
   if (!shell_hwnd_) {
     return;
@@ -1944,7 +1961,8 @@ void PhiWindowController::LayoutContents() {
 }
 
 bool PhiWindowController::InSidebarResizeBand(POINT client_pt) {
-  if (!host_ || host_->LayoutMode() == PhiLayoutMode::kComfortable) {
+  if (!services_.prefs ||
+      services_.prefs->LayoutMode() == PhiLayoutMode::kComfortable) {
     return false;
   }
   const Layout layout = ComputeLayout();
@@ -2286,14 +2304,17 @@ bool PhiWindowController::ActiveTabReaderOfferable() const {
   if (ActiveTabDistillable()) {
     return true;
   }
-  return host_ &&
-         (host_->IsReaderOfferable(active_tab_id().value, active_tab_url()) ||
-          host_->IsReaderActive(active_tab_id().value, active_tab_url()));
+  return services_.sidebar &&
+         (services_.sidebar->IsReaderOfferable(active_tab_id().value,
+                                               active_tab_url()) ||
+          services_.sidebar->IsReaderActive(active_tab_id().value,
+                                            active_tab_url()));
 }
 
 bool PhiWindowController::ActiveTabShowsReader() const {
-  return host_ && active_tab_id().valid() &&
-         host_->IsReaderActive(active_tab_id().value, active_tab_url());
+  return services_.sidebar && active_tab_id().valid() &&
+         services_.sidebar->IsReaderActive(active_tab_id().value,
+                                           active_tab_url());
 }
 
 bool PhiWindowController::ActiveTabCanUseReader() const {
@@ -2361,20 +2382,21 @@ void PhiWindowController::CardRoundedCorners(bool* top, bool* bottom) const {
 
 
 void PhiWindowController::ToggleReaderView() {
-  if (!host_ || !active_tab_id().valid()) {
+  if (!services_.sidebar || !active_tab_id().valid()) {
     return;
   }
-  host_->RequestToggleReaderView(active_tab_id().value, active_tab_url());
+  services_.sidebar->RequestToggleReaderView(active_tab_id().value,
+                                             active_tab_url());
 }
 
 bool PhiWindowController::LeaveReaderViewForNavigation() {
   // Every surface attached to the active tab — the reader covering it, a
   // peek floating over it — closes before the page underneath changes.
-  if (!host_ || !active_tab_id().valid()) {
+  if (!services_.sidebar || !active_tab_id().valid()) {
     return false;
   }
-  const bool reader =
-      host_->IsReaderActive(active_tab_id().value, active_tab_url());
+  const bool reader = services_.sidebar->IsReaderActive(active_tab_id().value,
+                                                         active_tab_url());
   bool peek = false;
   for (const SidebarContentNode& node : sidebar_->tree().content) {
     if (node.active && node.attached_surface != SidebarSurface::kContent) {
@@ -2394,12 +2416,13 @@ bool PhiWindowController::LeaveReaderViewForNavigation() {
   if (!reader && !peek) {
     return false;
   }
-  host_->RequestCloseSurfaces(active_tab_id().value);
+  services_.sidebar->RequestCloseSurfaces(active_tab_id().value);
   return true;
 }
 
 void PhiWindowController::UpdateTabPreview() {
-  if (!host_ || !host_->ShowTabPreviews() || sidebar_->drag_active()) {
+  if (!services_.prefs || !services_.prefs->ShowTabPreviews() ||
+      sidebar_->drag_active()) {
     if (tab_preview_) {
       tab_preview_->PointerExited();
     }
@@ -2500,7 +2523,8 @@ void PhiWindowController::UpdateTabPreview() {
 
   // Sidebar rows hand the card off their right edge; the pinned grid and the
   // comfortable strip drop it underneath, as the Mac call sites do.
-  const bool comfortable = host_->LayoutMode() == PhiLayoutMode::kComfortable;
+  const bool comfortable =
+      services_.prefs->LayoutMode() == PhiLayoutMode::kComfortable;
   target.placement =
       (hover_kind_ == HoverKind::kPin || comfortable)
           ? PhiTabPreview::Placement::kBelowAttached
@@ -2542,8 +2566,9 @@ void PhiWindowController::SetAgentVisible(bool visible) {
 
 
 COLORREF PhiWindowController::BackgroundFill() const {
-  return host_ ? host_->PaletteForSlot(slot_.value).window_bg
-               : RGB(0xFF, 0xFF, 0xFF);
+  return services_.spaces
+             ? services_.spaces->PaletteForSlot(slot_.value).window_bg
+             : RGB(0xFF, 0xFF, 0xFF);
 }
 
 void PhiWindowController::RefreshTabs() {
@@ -2716,8 +2741,9 @@ PhiPalette PhiWindowController::CurrentPalette() const {
   }
   // The strip owns the create form's live preview and the switch ramp: THE
   // one place a palette is overridden (phi_spaces_strip.h).
-  return spaces_->RampPalette(host_ ? host_->PaletteForSlot(slot_.value)
-                                    : kFallback);
+  return spaces_->RampPalette(
+      services_.spaces ? services_.spaces->PaletteForSlot(slot_.value)
+                       : kFallback);
 }
 
 void PhiWindowController::ComposeFrame(HDC mem) {
@@ -3017,12 +3043,12 @@ void PhiWindowController::OnChromeClick(int x, int y) {
   if (::PtInRect(&layout.downloads, pt)) {
     // The Mac DownloadButtonView's popover toggle.
     const BrowserId browser = active_browser_id();
-    if (host_ && framework_ && browser.valid()) {
+    if (services_.spaces && framework_ && browser.valid()) {
       RECT anchor = layout.downloads;
       ::MapWindowPoints(shell_hwnd_, nullptr,
                         reinterpret_cast<POINT*>(&anchor), 2);
       PhiDownloadsPopover::Toggle(shell_hwnd_, anchor,
-                                  host_->PaletteForSlot(slot_.value),
+                                  services_.spaces->PaletteForSlot(slot_.value),
                                   framework_, browser);
     }
     return;
@@ -3034,13 +3060,13 @@ void PhiWindowController::OnChromeClick(int x, int y) {
   if (::PtInRect(&layout.extensions, pt)) {
     // The extensions popover, off the puzzle button.
     const BrowserId browser = active_browser_id();
-    if (host_ && framework_ && browser.valid()) {
+    if (services_.spaces && framework_ && browser.valid()) {
       RECT anchor = layout.extensions;
       ::MapWindowPoints(shell_hwnd_, nullptr,
                         reinterpret_cast<POINT*>(&anchor), 2);
-      PhiExtensionsPopover::Toggle(shell_hwnd_, anchor,
-                                   host_->PaletteForSlot(slot_.value),
-                                   framework_, browser);
+      PhiExtensionsPopover::Toggle(
+          shell_hwnd_, anchor, services_.spaces->PaletteForSlot(slot_.value),
+          framework_, browser);
     }
     return;
   }
@@ -3116,8 +3142,8 @@ void PhiWindowController::OnChromeClick(int x, int y) {
     // An agent pip toggles watching that agent Space (surface / park its
     // hidden window). It never reorders and has no Space card.
     if (chip.is_agent) {
-      if (host_) {
-        host_->RequestWatchAgentSpace(chip.id);
+      if (services_.agent) {
+        services_.agent->RequestWatchAgentSpace(chip.id);
       }
       ScheduleRefresh();  // The pip's watched state is the owner's.
       return;
@@ -3143,14 +3169,14 @@ void PhiWindowController::OnChromeClick(int x, int y) {
     }
     if (chip.open) {
       ShowSpace(chip.id);
-    } else if (host_) {
+    } else if (services_.spaces) {
       // Not yet in this slot: the owner creates its browser in the Space's
       // profile and attaches it here.
-      host_->RequestSwitchSpace(slot_.value, chip.id);
+      services_.spaces->RequestSwitchSpace(slot_.value, chip.id);
     }
     return;
   }
-  if (host_ && ::PtInRect(&layout.add_space, pt)) {
+  if (services_.spaces && ::PtInRect(&layout.add_space, pt)) {
     if (spaces_->creating()) {
       return;  // The form is already up: requestCreation is a no-op then.
     }
@@ -3235,10 +3261,10 @@ std::vector<PhiMenuChoice> PhiWindowController::SpaceMenuChoices() const {
   // appendSpaceTransferMenuItems. Ids, never rows: the list may be rebuilt
   // while the menu is up.
   std::vector<PhiMenuChoice> choices;
-  if (!host_) {
+  if (!services_.spaces) {
     return choices;
   }
-  for (const PhiSpaceView& space : host_->Spaces()) {
+  for (const PhiSpaceView& space : services_.spaces->Spaces()) {
     if (space.id == active_space() || choices.size() >= 99u) {
       continue;
     }
@@ -3254,13 +3280,13 @@ std::vector<PhiMenuChoice> PhiWindowController::SpaceMenuChoices() const {
 std::vector<PhiMenuChoice> PhiWindowController::BookmarkFolderChoices() const {
   // This Space's bookmark folders in outline order, nesting indented.
   std::vector<PhiMenuChoice> choices;
-  if (!host_) {
+  if (!services_.sidebar) {
     return choices;
   }
   const std::function<void(const std::string&, int)> walk =
       [&](const std::string& parent, int depth) {
         for (const PhiStoredRowView& stored :
-             host_->BookmarkRows(slot_.value, parent)) {
+             services_.sidebar->BookmarkRows(slot_.value, parent)) {
           if (!stored.folder || choices.size() >= 99u) {
             continue;
           }
@@ -3305,10 +3331,10 @@ std::vector<PhiMenuChoice> PhiWindowController::SpaceSwitcherChoices() const {
   // The FULL Space list, with each Space's glyph — the strip's chips only
   // mirror what fits.
   std::vector<PhiMenuChoice> choices;
-  if (!host_) {
+  if (!services_.spaces) {
     return choices;
   }
-  for (const PhiSpaceView& space : host_->Spaces()) {
+  for (const PhiSpaceView& space : services_.spaces->Spaces()) {
     PhiMenuChoice choice;
     choice.id = space.id;
     choice.label = base::UTF8ToWide(!space.name.empty() ? space.name
@@ -3324,11 +3350,11 @@ std::vector<PhiMenuBookmarkNode> PhiWindowController::BookmarkTreeSnapshot(
     int depth) const {
   // The store's outline as a VALUE, read before the dropdown opens.
   std::vector<PhiMenuBookmarkNode> rows;
-  if (!host_ || depth > 5) {
+  if (!services_.sidebar || depth > 5) {
     return rows;
   }
   for (const PhiStoredRowView& row :
-       host_->BookmarkRows(slot_.value, parent_guid)) {
+       services_.sidebar->BookmarkRows(slot_.value, parent_guid)) {
     PhiMenuBookmarkNode node;
     node.guid = row.guid;
     node.url = row.url;
@@ -3389,9 +3415,10 @@ void PhiWindowController::ShowTabRowMenu(POINT pt, const MenuRow& row) {
   in.grouped = !row.group_id.empty();
   in.split_bound = !row.split_id.empty();
   in.split_stacked = row.merged && SplitIsStacked(row.id);
-  if (host_ && row.id.valid()) {
-    in.agent_driven = host_->IsTabAgentDriven(row.id.value);
-    in.agent_reclaimed = in.agent_driven && host_->IsTabReclaimed(row.id.value);
+  if (services_.agent && row.id.valid()) {
+    in.agent_driven = services_.agent->IsTabAgentDriven(row.id.value);
+    in.agent_reclaimed =
+        in.agent_driven && services_.agent->IsTabReclaimed(row.id.value);
   }
   if (!row.merged && row.split_id.empty()) {
     // "Split with Current" pairs this row with the FOCUSED tab; on the
@@ -3406,7 +3433,7 @@ void PhiWindowController::ShowTabRowMenu(POINT pt, const MenuRow& row) {
     }
   }
   if (!row.merged) {
-    in.bookmark_folders = !incognito_ && host_ != nullptr;
+    in.bookmark_folders = !incognito_ && services_.sidebar != nullptr;
     if (in.bookmark_folders) {
       in.folders = BookmarkFolderChoices();
     }
@@ -3434,16 +3461,16 @@ void PhiWindowController::ShowTabRowMenu(POINT pt, const MenuRow& row) {
   } else if (action.is("tab.cloneToSpace")) {
     sidebar_->Apply(
         SidebarMoveToSpace{row.key, action.target.id, /*clone=*/true});
-  } else if (action.is("tab.addToFolder") && host_) {
-    host_->AddBookmarkRow(slot_.value, action.target.id,
+  } else if (action.is("tab.addToFolder") && services_.sidebar) {
+    services_.sidebar->AddBookmarkRow(slot_.value, action.target.id,
                           base::WideToUTF8(row.title), row.url);
-  } else if (action.is("tab.newFolder") && host_) {
+  } else if (action.is("tab.newFolder") && services_.sidebar) {
     std::wstring name = L"Untitled";
     if (PhiPromptText(shell_hwnd_, L"New Folder", L"Folder name:", &name)) {
-      const std::string folder = host_->AddBookmarkFolder(
+      const std::string folder = services_.sidebar->AddBookmarkFolder(
           slot_.value, std::string(), base::WideToUTF8(name));
       if (!folder.empty()) {
-        host_->AddBookmarkRow(slot_.value, folder,
+        services_.sidebar->AddBookmarkRow(slot_.value, folder,
                               base::WideToUTF8(row.title), row.url);
       }
     }
@@ -3497,10 +3524,10 @@ void PhiWindowController::ShowTabRowMenu(POINT pt, const MenuRow& row) {
       framework_->ActivateTabById(browser.value, row.id.value);
       sidebar_->SplitTabsNormalized(browser, row.id, fresh);
     }
-  } else if (action.is("tab.takeControl") && host_) {
-    host_->RequestReclaimTab(row.id.value);
-  } else if (action.is("tab.handBack") && host_) {
-    host_->RequestReleaseTab(row.id.value);
+  } else if (action.is("tab.takeControl") && services_.agent) {
+    services_.agent->RequestReclaimTab(row.id.value);
+  } else if (action.is("tab.handBack") && services_.agent) {
+    services_.agent->RequestReleaseTab(row.id.value);
   } else if (action.is("tab.convertSplit")) {
     // Toggle the divider axis; the stored cell a pane is bound to remembers
     // it so the split reopens the same way.
@@ -3569,22 +3596,23 @@ void PhiWindowController::ShowPinnedCellMenu(POINT pt, const MenuRow& row) {
     CopyTextToClipboard(shell_hwnd_, base::UTF8ToWide(row.url));
   } else if (action.is("pin.copyRight")) {
     CopyTextToClipboard(shell_hwnd_, base::UTF8ToWide(row.url_b));
-  } else if (action.is("pin.rename") && host_) {
+  } else if (action.is("pin.rename") && services_.sidebar) {
     std::wstring name = row.title;
     if (PhiPromptText(shell_hwnd_, L"Rename Pinned Tab",
                       L"Enter a new name for this pinned tab.", &name)) {
-      host_->RenameStoredRow(row.guid, base::WideToUTF8(name));
+      services_.sidebar->RenameStoredRow(row.guid, base::WideToUTF8(name));
     }
   } else if (action.is("pin.convertSplit")) {
     // Flip what the cell REMEMBERS, and the live split too when it is
     // currently open — the Mac's convertClosedPinnedSplitLayout.
     sidebar_->Apply(SidebarSetLayout{SidebarKey::Cell(row.guid),
                            in.horizontal ? "vertical" : "horizontal"});
-  } else if (action.is("pin.editUrl") && host_ && !row.guid.empty()) {
+  } else if (action.is("pin.editUrl") && services_.sidebar &&
+             !row.guid.empty()) {
     std::wstring edited = base::UTF8ToWide(row.url);
     if (PhiPromptText(shell_hwnd_, L"Edit Pinned Tab", L"Address:", &edited) &&
         !edited.empty()) {
-      host_->SetStoredRowUrl(row.guid, base::WideToUTF8(edited));
+      services_.sidebar->SetStoredRowUrl(row.guid, base::WideToUTF8(edited));
     }
   } else if (action.is("pin.unpin") && !row.guid.empty()) {
     // The cell goes; a live bound tab returns to the tab list as a normal
@@ -3623,11 +3651,11 @@ void PhiWindowController::ShowBookmarkRowMenu(POINT pt, const MenuRow& row) {
   } else if (action.is("bm.cloneToSpace")) {
     sidebar_->Apply(SidebarMoveToSpace{SidebarKey::Cell(row.guid),
                                        action.target.id, /*clone=*/true});
-  } else if (action.is("bm.editUrl") && host_) {
+  } else if (action.is("bm.editUrl") && services_.sidebar) {
     std::wstring edited = base::UTF8ToWide(row.url);
     if (PhiPromptText(shell_hwnd_, L"Edit Bookmark", L"Address:", &edited) &&
         !edited.empty()) {
-      host_->SetStoredRowUrl(row.guid, base::WideToUTF8(edited));
+      services_.sidebar->SetStoredRowUrl(row.guid, base::WideToUTF8(edited));
     }
   } else if (action.is("bm.open") && !row.url.empty()) {
     OpenOrFocusPinned(row.guid, row.url);
@@ -3655,19 +3683,19 @@ void PhiWindowController::ShowBookmarkRowMenu(POINT pt, const MenuRow& row) {
     CopyTextToClipboard(shell_hwnd_, base::UTF8ToWide(row.url));
   } else if (action.is("bm.copyRight")) {
     CopyTextToClipboard(shell_hwnd_, base::UTF8ToWide(row.url_b));
-  } else if (action.is("bm.rename") && host_) {
+  } else if (action.is("bm.rename") && services_.sidebar) {
     std::wstring name = row.title;
     if (PhiPromptText(shell_hwnd_,
                       row.folder ? L"Rename Folder" : L"Rename Bookmark",
                       row.folder ? L"Enter a new name for this folder."
                                  : L"Enter a new name for this bookmark.",
                       &name)) {
-      host_->RenameStoredRow(row.guid, base::WideToUTF8(name));
+      services_.sidebar->RenameStoredRow(row.guid, base::WideToUTF8(name));
     }
   } else if (action.is("bm.convertSplit")) {
     sidebar_->Apply(SidebarSetLayout{SidebarKey::Cell(row.guid),
                            in.horizontal ? "vertical" : "horizontal"});
-  } else if (action.is("bm.changeIcon") && row.folder && host_) {
+  } else if (action.is("bm.changeIcon") && row.folder && services_.sidebar) {
     // The picker hangs off the row, as the Mac's popover does.
     POINT top_left = {row.bounds.left, row.bounds.top};
     POINT bottom_right = {row.bounds.right, row.bounds.bottom};
@@ -3681,14 +3709,15 @@ void PhiWindowController::ShowBookmarkRowMenu(POINT pt, const MenuRow& row) {
       picked = PhiPickFolderIcon(this, anchor, row.icon);
     }
     if (!picked.empty()) {
-      host_->SetStoredRowIcon(row.guid, picked);
+      services_.sidebar->SetStoredRowIcon(row.guid, picked);
     }
-  } else if (action.is("bm.newFolder") && row.folder && host_) {
+  } else if (action.is("bm.newFolder") && row.folder && services_.sidebar) {
     std::wstring name = L"Untitled";
     if (PhiPromptText(shell_hwnd_, L"New Folder", L"Folder name:", &name)) {
       // Disclose the parent so the new child is visible where it lands.
       sidebar_->Expand(row.guid);
-      host_->AddBookmarkFolder(slot_.value, row.guid, base::WideToUTF8(name));
+      services_.sidebar->AddBookmarkFolder(slot_.value, row.guid,
+                                           base::WideToUTF8(name));
     }
   } else if (action.is("bm.remove") && !row.guid.empty()) {
     // A folder takes its subtree.
@@ -3701,7 +3730,7 @@ void PhiWindowController::ShowTabAreaMenu(POINT pt) {
   // The Mac tab-area menu (TabAreaContextMenuHelper): new tab, reopen, the
   // bookmark block, the layout switch, then the active Space's own controls
   // (the Spaces menu's rows, for the Space under the pointer).
-  if (!host_) {
+  if (!services_.spaces) {
     return;
   }
   PhiTabAreaMenuInputs in;
@@ -3709,8 +3738,8 @@ void PhiWindowController::ShowTabAreaMenu(POINT pt) {
   in.tabs_empty = sidebar_->tabs().empty();
   in.mode = layout_mode_;
   if (!incognito_) {
-    in.can_delete_space = host_->CanDeleteSpace(active_space());
-    for (const PhiSpaceView& space : host_->Spaces()) {
+    in.can_delete_space = services_.spaces->CanDeleteSpace(active_space());
+    for (const PhiSpaceView& space : services_.spaces->Spaces()) {
       if (space.id == active_space()) {
         in.active_profile = space.profile_id;
         break;
@@ -3719,8 +3748,8 @@ void PhiWindowController::ShowTabAreaMenu(POINT pt) {
     // The default Space's window cannot be re-bound (a fresh shell's first
     // browser lands there), so its rows read the binding out but stay
     // disabled.
-    in.can_reprofile = active_space() != host_->DefaultSpaceId();
-    for (const std::string& summary : host_->ProfileSummaries()) {
+    in.can_reprofile = active_space() != services_.spaces->DefaultSpaceId();
+    for (const std::string& summary : services_.spaces->ProfileSummaries()) {
       const size_t tab = summary.find('\t');
       const std::string id = summary.substr(0, tab);
       if (id.empty()) {
@@ -3751,18 +3780,18 @@ void PhiWindowController::ShowTabAreaMenu(POINT pt) {
                        .c_str(),
                    PhiStr("app.changeSpaceProfileConfirmation."
                           "profileScopedMessage"))) {
-      host_->SetSpaceProfile(active_space(), action.target.id);
+      services_.spaces->SetSpaceProfile(active_space(), action.target.id);
     }
   } else if (action.is("area.newTab")) {
     StartNewTab();
   } else if (action.is("area.newRootFolder")) {
     std::wstring name = L"Untitled";
     if (PhiPromptText(shell_hwnd_, L"New Folder", L"Folder name:", &name)) {
-      host_->AddBookmarkFolder(slot_.value, std::string(),
+      services_.sidebar->AddBookmarkFolder(slot_.value, std::string(),
                                base::WideToUTF8(name));
     }
   } else if (action.is("area.layout")) {
-    host_->RequestLayoutMode(action.target.id == "balanced"
+    services_.prefs->RequestLayoutMode(action.target.id == "balanced"
                                  ? PhiLayoutMode::kBalanced
                              : action.target.id == "comfortable"
                                  ? PhiLayoutMode::kComfortable
@@ -3792,13 +3821,13 @@ void PhiWindowController::ShowAgentChipMenu(POINT pt, std::string task) {
   // rename/theme/delete to a task id.
   const PhiMenuAction action = PhiRunPopupMenu(
       PhiBuildAgentChipMenu(), PopupAt(pt, TPM_LEFTALIGN | TPM_TOPALIGN));
-  if (!host_) {
+  if (!services_.agent) {
     return;
   }
   if (action.is("agent.transcript")) {
-    host_->RequestShowTranscript(task);
+    services_.agent->RequestShowTranscript(task);
   } else if (action.is("agent.finish")) {
-    host_->RequestAgentFinish(task);
+    services_.agent->RequestAgentFinish(task);
     ScheduleRefresh();  // The pip leaves the strip with the task.
   }
 }
@@ -3808,7 +3837,7 @@ void PhiWindowController::ShowSpaceSwitcherMenu(POINT pt,
   // The full Space list as a popup: comfortable's compact pip opens it over
   // every Space (the Mac's SpacesStripView compact-chip behaviour), and the
   // overflow "…" adds the two creation rows (the moreButton's menu).
-  if (!host_) {
+  if (!services_.spaces) {
     return;
   }
   const std::vector<PhiMenuChoice> spaces = SpaceSwitcherChoices();
@@ -3825,18 +3854,18 @@ void PhiWindowController::ShowSpaceSwitcherMenu(POINT pt,
   if (action.is("space.new")) {
     ShowCreateSpaceForm();
   } else if (action.is("space.newWithProfile")) {
-    host_->RequestCreateSpace(slot_.value, /*new_profile=*/true);
+    services_.spaces->RequestCreateSpace(slot_.value, /*new_profile=*/true);
   } else if (action.is("space.switch")) {
     if (HasSpace(action.target.id)) {
       ShowSpace(action.target.id);
     } else {
-      host_->RequestSwitchSpace(slot_.value, action.target.id);
+      services_.spaces->RequestSwitchSpace(slot_.value, action.target.id);
     }
   }
 }
 
 void PhiWindowController::OnChromeContextMenu(int x, int y) {
-  if (!host_ || !shell_hwnd_) {
+  if (!services_.sidebar || !shell_hwnd_) {
     return;
   }
   const POINT pt = {x, y};
@@ -4179,13 +4208,13 @@ LRESULT CALLBACK PhiWindowController::FloatingSidebarProc(HWND hwnd,
 }
 
 bool PhiWindowController::BookmarkBarVisible() {
-  if (!host_ || incognito_ || browsers_->content_fullscreen()) {
+  if (!services_.prefs || incognito_ || browsers_->content_fullscreen()) {
     return false;
   }
-  if (host_->AlwaysShowBookmarkBar()) {
+  if (services_.prefs->AlwaysShowBookmarkBar()) {
     return true;
   }
-  if (!host_->BookmarkBarOnNewTab()) {
+  if (!services_.prefs->BookmarkBarOnNewTab()) {
     return false;
   }
   // "On new tab": Chromium's NTP, a blank tab, or the placeholder shell.
@@ -4294,7 +4323,7 @@ void PhiWindowController::PaintBookmarkBar(HDC dc,
 void PhiWindowController::ShowBookmarkBarMenu(RECT anchor,
                                               std::string parent_guid,
                                               size_t skip_first) {
-  if (!host_) {
+  if (!services_.sidebar) {
     return;
   }
   // The outline is read into a value FIRST: the dropdown's loop can dispatch
@@ -4867,7 +4896,7 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
     case WM_CTLCOLOREDIT:
       // The EDIT would otherwise paint itself in SYSTEM colours; the session
       // hands it the palette's brush instead.
-      if (self && self->host_) {
+      if (self && self->services_.spaces) {
         if (HBRUSH brush = self->omnibox_->OnCtlColorEdit(
                 reinterpret_cast<HDC>(wparam),
                 reinterpret_cast<HWND>(lparam))) {
@@ -5054,10 +5083,10 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
           ::SetWindowPos(self->native_pages_->ntp_hwnd(), HWND_TOP, 0, 0, 0, 0,
                          SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         }
-        if (self->host_) {
+        if (self->services_.sidebar) {
           // The reader panel covers the whole card, so it has to come up
           // before the caps that round it.
-          self->host_->RaiseReaderPanels(self->slot_.value);
+          self->services_.sidebar->RaiseReaderPanels(self->slot_.value);
         }
         self->browsers_->RaiseOverlays();
       }
@@ -5131,8 +5160,8 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
           if (::GetCapture() == hwnd) {
             ::ReleaseCapture();
           }
-          if (self->host_) {
-            self->host_->RequestSidebarWidth(self->sidebar_dip_);
+          if (self->services_.prefs) {
+            self->services_.prefs->RequestSidebarWidth(self->sidebar_dip_);
           }
           return 0;
         }
@@ -5146,8 +5175,8 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
         }
         if (self->sidebar_resizing_) {
           self->sidebar_resizing_ = false;
-          if (self->host_) {
-            self->host_->RequestSidebarWidth(self->sidebar_dip_);
+          if (self->services_.prefs) {
+            self->services_.prefs->RequestSidebarWidth(self->sidebar_dip_);
           }
         }
         self->sidebar_->AbortDrag();

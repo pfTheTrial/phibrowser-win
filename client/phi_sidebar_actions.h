@@ -11,7 +11,7 @@
 #include "phi_sidebar_model.h"
 
 // The sidebar's ONE verb set — docs/sidebar-architecture.md §5. Every gesture,
-// menu item and shortcut produces a SidebarCommand; PhiSlotHost::Apply is the
+// menu item and shortcut produces a SidebarCommand; SidebarHost::Apply is the
 // only mutator, dispatching Move over the (what the key is) × (where it goes)
 // table. The types and the place helpers here are pure (host-tested); the
 // effects live in the coordinator, which owns the store and the framework.

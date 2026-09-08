@@ -140,7 +140,7 @@ class PhiSettingsHost {
   virtual void SetSpaceIcon(const std::string& space_id,
                             const std::string& icon) = 0;
   virtual void SetSpaceSaturation(const std::string& space_id, int value) = 0;
-  // Space / profile management, with the Mac's guards (see PhiSlotHost).
+  // Space / profile management, with the Mac's guards (see SpacesHost).
   virtual bool RenameSpace(const std::string& space_id,
                            const std::string& name) = 0;
   virtual bool DeleteSpace(const std::string& space_id) = 0;

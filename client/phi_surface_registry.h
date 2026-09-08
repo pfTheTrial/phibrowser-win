@@ -90,7 +90,7 @@ class PhiSurfaceRegistry {
   // Every surface attached to a tab of `origin_window_id`.
   std::vector<PhiSurfacePanel*> OverWindow(BrowserId origin_window_id) const;
   // The sidebar's view: origin tab -> attached kind, for one browser. Keyed
-  // by the raw id because it IS the PhiSlotHost::AttachedSurfaces reply.
+  // by the raw id because it IS the SidebarHost::AttachedSurfaces reply.
   std::map<int, SidebarSurface> Surfaces(BrowserId origin_window_id) const;
 
   bool empty() const { return panels_.empty(); }

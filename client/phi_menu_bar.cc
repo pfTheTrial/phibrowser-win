@@ -28,8 +28,8 @@
 #include "phibrowser-win/client/phi_version.h"
 #include "phibrowser-win/client/phi_toast.h"
 #include "phibrowser-win/client/phi_theme.h"
-// PhiSlotHost and PhiWindowModel still live in the shell's header; §4.3
-// splits them out. The bar reaches nothing else in it — no `friend`, no
+// The four narrow host interfaces and PhiWindowModel still live in the
+// shell's header. The bar reaches nothing else in it — no `friend`, no
 // private member: everything else comes through PhiMenuBarShell.
 #include "phibrowser-win/client/phi_window_controller.h"
 
@@ -457,7 +457,7 @@ void PhiMenuBar::RefreshChromiumCommands() {
 }
 
 void PhiMenuBar::RefreshPhi() {
-  SetEnabled(phi_, kCmdPreferences, services_->MenuHost() != nullptr);
+  SetEnabled(phi_, kCmdPreferences, services_->MenuWindowHost() != nullptr);
   SetEnabled(phi_, kCmdImportBrowser,
              services_->MenuFramework() != nullptr &&
                  !services_->MenuIncognito());
@@ -498,8 +498,8 @@ void PhiMenuBar::RefreshView() {
   ::CheckMenuItem(view_, kCmdToggleReader,
                   MF_BYCOMMAND | (reader_active ? MF_CHECKED : MF_UNCHECKED));
   PhiLayoutMode mode = PhiLayoutMode::kPerformance;
-  if (services_->MenuHost()) {
-    mode = services_->MenuHost()->LayoutMode();
+  if (services_->MenuPrefsHost()) {
+    mode = services_->MenuPrefsHost()->LayoutMode();
   }
   const UINT chosen = mode == PhiLayoutMode::kBalanced ? kCmdLayoutBalanced
                       : mode == PhiLayoutMode::kComfortable
@@ -507,25 +507,26 @@ void PhiMenuBar::RefreshView() {
                           : kCmdLayoutPerformance;
   ::CheckMenuRadioItem(view_, kCmdLayoutBalanced, kCmdLayoutComfortable,
                        chosen, MF_BYCOMMAND);
-  if (services_->MenuHost()) {
+  if (services_->MenuPrefsHost()) {
     ::CheckMenuItem(view_, kCmdAlwaysShowBookmarkBar,
                     MF_BYCOMMAND |
-                        (services_->MenuHost()->AlwaysShowBookmarkBar()
+                        (services_->MenuPrefsHost()->AlwaysShowBookmarkBar()
                              ? MF_CHECKED
                              : MF_UNCHECKED));
     ::CheckMenuItem(view_, kCmdBookmarkBarOnNewTab,
-                    MF_BYCOMMAND | (services_->MenuHost()->BookmarkBarOnNewTab()
-                                        ? MF_CHECKED
-                                        : MF_UNCHECKED));
+                    MF_BYCOMMAND |
+                        (services_->MenuPrefsHost()->BookmarkBarOnNewTab()
+                             ? MF_CHECKED
+                             : MF_UNCHECKED));
   }
 }
 
 std::vector<PhiMenuBar::SpaceEntry> PhiMenuBar::SpaceList() const {
   std::vector<SpaceEntry> spaces;
-  if (!services_->MenuHost()) {
+  if (!services_->MenuSpacesHost()) {
     return spaces;
   }
-  for (const PhiSpaceView& space : services_->MenuHost()->Spaces()) {
+  for (const PhiSpaceView& space : services_->MenuSpacesHost()->Spaces()) {
     spaces.push_back(
         {space.id,
          base::UTF8ToWide(!space.name.empty() ? space.name
@@ -550,13 +551,13 @@ void PhiMenuBar::RefreshSpaces() {
   profile_names_.clear();
 
   Append(spaces_, kCmdNewSpace, PhiStr("app.activeSpaceContextMenu.newSpaceAction"),
-         services_->MenuHost() != nullptr);
+         services_->MenuSpacesHost() != nullptr);
   Append(spaces_, kCmdRenameSpace, PhiStr("app.activeSpaceContextMenu.renameSpaceAction"),
-         services_->MenuHost() != nullptr);
+         services_->MenuSpacesHost() != nullptr);
   // Lands on Settings > Spaces with the active Space selected — the
   // detail column there is the icon picker.
   Append(spaces_, kCmdChangeIcon, PhiStr("menuBar.changeIcon"),
-         services_->MenuHost() != nullptr);
+         services_->MenuSpacesHost() != nullptr);
 
   // Edit Theme — the Mac's item of the same name: it presents the Space
   // theme editor (swatch row + saturation slider) on the ACTIVE Space
@@ -565,7 +566,7 @@ void PhiMenuBar::RefreshSpaces() {
   const std::string active = services_->MenuActiveSpace();
   Append(spaces_, kCmdEditSpaceTheme,
          PhiStr("app.activeSpaceContextMenu.themeSubmenuTitle"),
-         services_->MenuHost() != nullptr && !active.empty());
+         services_->MenuSpacesHost() != nullptr && !active.empty());
 
   // Change Profile — the Mac's radio list: picking a row re-binds the ACTIVE
   // Space, respawning its window in the new profile. The default Space's
@@ -574,8 +575,8 @@ void PhiMenuBar::RefreshSpaces() {
   // profile still bound to a Space refuse.
   std::string active_profile;
   std::vector<std::string> bound_profiles;
-  if (services_->MenuHost()) {
-    for (const PhiSpaceView& space : services_->MenuHost()->Spaces()) {
+  if (services_->MenuSpacesHost()) {
+    for (const PhiSpaceView& space : services_->MenuSpacesHost()->Spaces()) {
       bound_profiles.push_back(space.profile_id);
       if (space.id == active) {
         active_profile = space.profile_id;
@@ -584,13 +585,15 @@ void PhiMenuBar::RefreshSpaces() {
   }
   HMENU profiles = ::CreatePopupMenu();
   HMENU delete_profiles = ::CreatePopupMenu();
-  const bool can_reprofile = services_->MenuHost() && !active.empty() &&
-                             active != services_->MenuHost()->DefaultSpaceId();
+  const bool can_reprofile =
+      services_->MenuSpacesHost() && !active.empty() &&
+      active != services_->MenuSpacesHost()->DefaultSpaceId();
   int profile_count = 0;
-  if (services_->MenuHost()) {
+  if (services_->MenuSpacesHost()) {
     // The host's "id\tname" summaries — the one profile list every menu
     // and form reads, so none of them parses the framework's JSON.
-    for (const std::string& summary : services_->MenuHost()->ProfileSummaries()) {
+    for (const std::string& summary :
+         services_->MenuSpacesHost()->ProfileSummaries()) {
       const size_t tab = summary.find('\t');
       const std::string id = summary.substr(0, tab);
       const std::string name =
@@ -631,7 +634,7 @@ void PhiMenuBar::RefreshSpaces() {
   ::AppendMenuW(spaces_, MF_POPUP | MF_STRING,
                 reinterpret_cast<UINT_PTR>(profiles), PhiStr("app.activeSpaceContextMenu.profileSubmenuTitle"));
   Append(spaces_, kCmdDeleteSpace, PhiStr("app.activeSpaceContextMenu.deleteSpaceAction"),
-         services_->MenuHost() && active != "1");
+         services_->MenuSpacesHost() && active != "1");
   Separator(spaces_);
   const std::vector<SpaceEntry> spaces = SpaceList();
   const bool several = spaces.size() > 1;
@@ -683,11 +686,11 @@ void PhiMenuBar::RefreshHistory() {
 
 void PhiMenuBar::AppendBookmarkRows(HMENU menu, const std::string& parent_guid,
                                     int depth) {
-  if (!services_->MenuHost() || depth > 5) {
+  if (!services_->MenuSidebarHost() || depth > 5) {
     return;
   }
   for (const PhiStoredRowView& row :
-       services_->MenuHost()->BookmarkRows(services_->MenuSlot().value,
+       services_->MenuSidebarHost()->BookmarkRows(services_->MenuSlot().value,
                                         parent_guid)) {
     const std::wstring shown =
         base::UTF8ToWide(!row.title.empty() ? row.title : row.url);
@@ -717,15 +720,18 @@ void PhiMenuBar::RefreshBookmarks() {
   // The rows as the last rebuild placed them; a menu opening never asks for
   // a fresh one (docs/architecture-review.md §3.1 principle 3).
   const bool has_rows = !services_->MenuTabRows().empty();
-  Append(bookmarks_, kCmdBookmarkThisTab, PhiStr("app.bookmarksMenu.addOrEditCurrentTab"),
-         services_->MenuHost() && !services_->MenuNavState().url.empty() &&
+  Append(bookmarks_, kCmdBookmarkThisTab,
+         PhiStr("app.bookmarksMenu.addOrEditCurrentTab"),
+         services_->MenuSidebarHost() &&
+             !services_->MenuNavState().url.empty() &&
              !services_->MenuIncognito());
   Append(bookmarks_, kCmdBookmarkAllTabs,
          PhiStr("app.bookmarksMenu.addAllOpenTabs"),
-         services_->MenuHost() && has_rows && !services_->MenuIncognito());
+         services_->MenuSidebarHost() && has_rows &&
+             !services_->MenuIncognito());
   Separator(bookmarks_);
   Append(bookmarks_, kCmdExportBookmarks, PhiStr("app.bookmarksMenu.exportCurrentSpace"),
-         services_->MenuHost() != nullptr);
+         services_->MenuSidebarHost() != nullptr);
   Separator(bookmarks_);
   // The Mac's Bookmarks-menu entry for the native manager; Chromium's own
   // shortcut for IDC_SHOW_BOOKMARK_MANAGER on Windows is Ctrl+Shift+O.
@@ -785,8 +791,8 @@ bool PhiMenuBar::OnCommand(UINT id) {
       const std::string space_id = space_ids_[i];
       if (c->MenuHasSpace(space_id)) {
         c->MenuShowSpace(space_id);
-      } else if (c->MenuHost()) {
-        c->MenuHost()->RequestSwitchSpace(c->MenuSlot().value, space_id);
+      } else if (c->MenuSpacesHost()) {
+        c->MenuSpacesHost()->RequestSwitchSpace(c->MenuSlot().value, space_id);
       }
     }
     return true;
@@ -800,8 +806,8 @@ bool PhiMenuBar::OnCommand(UINT id) {
       const std::string space_id = spaces[i].id;
       if (c->MenuHasSpace(space_id)) {
         c->MenuShowSpace(space_id);
-      } else if (c->MenuHost()) {
-        c->MenuHost()->RequestSwitchSpace(c->MenuSlot().value, space_id);
+      } else if (c->MenuSpacesHost()) {
+        c->MenuSpacesHost()->RequestSwitchSpace(c->MenuSlot().value, space_id);
       }
     }
     return true;
@@ -815,8 +821,8 @@ bool PhiMenuBar::OnCommand(UINT id) {
   }
   if (id >= kBookmarkFirst && id <= kBookmarkLast) {
     const size_t i = id - kBookmarkFirst;
-    if (c->MenuHost() && i < bookmark_urls_.size()) {
-      c->MenuHost()->RequestOpen(c->MenuSlot().value, bookmark_urls_[i]);
+    if (c->MenuSidebarHost() && i < bookmark_urls_.size()) {
+      c->MenuSidebarHost()->RequestOpen(c->MenuSlot().value, bookmark_urls_[i]);
     }
     return true;
   }
@@ -825,7 +831,7 @@ bool PhiMenuBar::OnCommand(UINT id) {
     // window is replaced and its tabs reload in the new profile, where the
     // old profile's logins do not exist.
     const size_t i = id - kProfileFirst;
-    if (c->MenuHost() && i < profile_ids_.size() &&
+    if (c->MenuSpacesHost() && i < profile_ids_.size() &&
         PhiConfirm(c->MenuShellWindow(),
                    PhiStrF("app.changeSpaceProfileConfirmation.title",
                            {i < profile_names_.size() ? profile_names_[i]
@@ -834,17 +840,18 @@ bool PhiMenuBar::OnCommand(UINT id) {
                    PhiStr("app.changeSpaceProfileConfirmation."
                           "profileScopedMessage"),
                    nullptr, /*destructive=*/false)) {
-      c->MenuHost()->SetSpaceProfile(c->MenuActiveSpace(), profile_ids_[i]);
+      c->MenuSpacesHost()->SetSpaceProfile(c->MenuActiveSpace(),
+                                           profile_ids_[i]);
     }
     return true;
   }
   if (id >= kDeleteProfileFirst && id <= kDeleteProfileLast) {
     const size_t i = id - kDeleteProfileFirst;
-    if (c->MenuHost() && i < profile_ids_.size() &&
+    if (c->MenuSpacesHost() && i < profile_ids_.size() &&
         PhiConfirm(c->MenuShellWindow(),
                    PhiStr("app.spacesMenu.deleteProfile.submenuTitle"),
                    PhiStr("menuBar.deleteProfileConfirmBody"), L"Delete")) {
-      c->MenuHost()->DeleteProfileById(profile_ids_[i]);
+      c->MenuSpacesHost()->DeleteProfileById(profile_ids_[i]);
     }
     return true;
   }
@@ -871,8 +878,8 @@ bool PhiMenuBar::OnCommand(UINT id) {
       }
       return true;
     case kCmdPreferences:
-      if (c->MenuHost()) {
-        c->MenuHost()->RequestSettings();
+      if (c->MenuWindowHost()) {
+        c->MenuWindowHost()->RequestSettings();
       }
       return true;
     case kCmdQuit:
@@ -884,8 +891,9 @@ bool PhiMenuBar::OnCommand(UINT id) {
       c->MenuNewTab();  // Honors the "New tab behavior" setting.
       return true;
     case kCmdNewWindow:
-      if (c->MenuHost()) {
-        c->MenuHost()->RequestNewWindow(c->MenuSlot().value);  // Shown profile.
+      if (c->MenuWindowHost()) {
+        // The profile the slot is showing.
+        c->MenuWindowHost()->RequestNewWindow(c->MenuSlot().value);
       }
       return true;
     case kCmdOpenLocation:
@@ -963,13 +971,15 @@ bool PhiMenuBar::OnCommand(UINT id) {
       }
       return true;
     case kCmdAlwaysShowBookmarkBar:
-      if (c->MenuHost()) {
-        c->MenuHost()->SetAlwaysShowBookmarkBar(!c->MenuHost()->AlwaysShowBookmarkBar());
+      if (c->MenuPrefsHost()) {
+        c->MenuPrefsHost()->SetAlwaysShowBookmarkBar(
+            !c->MenuPrefsHost()->AlwaysShowBookmarkBar());
       }
       return true;
     case kCmdBookmarkBarOnNewTab:
-      if (c->MenuHost()) {
-        c->MenuHost()->SetBookmarkBarOnNewTab(!c->MenuHost()->BookmarkBarOnNewTab());
+      if (c->MenuPrefsHost()) {
+        c->MenuPrefsHost()->SetBookmarkBarOnNewTab(
+            !c->MenuPrefsHost()->BookmarkBarOnNewTab());
       }
       return true;
     case kCmdToggleSidebar:
@@ -987,8 +997,8 @@ bool PhiMenuBar::OnCommand(UINT id) {
     case kCmdLayoutBalanced:
     case kCmdLayoutPerformance:
     case kCmdLayoutComfortable:
-      if (c->MenuHost()) {
-        c->MenuHost()->RequestLayoutMode(
+      if (c->MenuPrefsHost()) {
+        c->MenuPrefsHost()->RequestLayoutMode(
             id == kCmdLayoutBalanced    ? PhiLayoutMode::kBalanced
             : id == kCmdLayoutComfortable ? PhiLayoutMode::kComfortable
                                           : PhiLayoutMode::kPerformance);
@@ -998,13 +1008,13 @@ bool PhiMenuBar::OnCommand(UINT id) {
       c->MenuCreateSpace();  // The sidebar form, or at once without one.
       return true;
     case kCmdRenameSpace: {
-      if (!c->MenuHost()) {
+      if (!c->MenuSpacesHost()) {
         return true;
       }
       // Prefill with the Space's current name (from the owner's list; the
       // chip label is the same string).
       std::wstring name;
-      for (const PhiSpaceView& space : c->MenuHost()->Spaces()) {
+      for (const PhiSpaceView& space : c->MenuSpacesHost()->Spaces()) {
         if (space.id == c->MenuActiveSpace()) {
           name = base::UTF8ToWide(space.name);
           break;
@@ -1012,13 +1022,14 @@ bool PhiMenuBar::OnCommand(UINT id) {
       }
       if (PhiPromptText(c->MenuShellWindow(), PhiStr("app.renameSpaceDialog.title"),
                         PhiStr("app.renameSpaceDialog.message"), &name)) {
-        c->MenuHost()->RenameSpace(c->MenuActiveSpace(), base::WideToUTF8(name));
+        c->MenuSpacesHost()->RenameSpace(c->MenuActiveSpace(),
+                                         base::WideToUTF8(name));
       }
       return true;
     }
     case kCmdChangeIcon:
-      if (c->MenuHost()) {
-        c->MenuHost()->RequestSpaceIconPicker(c->MenuActiveSpace());
+      if (c->MenuSpacesHost()) {
+        c->MenuSpacesHost()->RequestSpaceIconPicker(c->MenuActiveSpace());
       }
       return true;
     case kCmdEditSpaceTheme:
@@ -1028,10 +1039,10 @@ bool PhiMenuBar::OnCommand(UINT id) {
       c->MenuEditSpaceTheme();
       return true;
     case kCmdDeleteSpace:
-      if (c->MenuHost() &&
+      if (c->MenuSpacesHost() &&
           PhiConfirm(c->MenuShellWindow(), PhiStr("menuBar.deleteSpace"),
                      PhiStr("menuBar.deleteSpaceConfirmBody"), L"Delete")) {
-        c->MenuHost()->DeleteSpace(c->MenuActiveSpace());
+        c->MenuSpacesHost()->DeleteSpace(c->MenuActiveSpace());
       }
       return true;
     case kCmdNewProfile: {
@@ -1063,8 +1074,8 @@ bool PhiMenuBar::OnCommand(UINT id) {
       const std::string space_id = spaces[next].id;
       if (c->MenuHasSpace(space_id)) {
         c->MenuShowSpace(space_id);
-      } else if (c->MenuHost()) {
-        c->MenuHost()->RequestSwitchSpace(c->MenuSlot().value, space_id);
+      } else if (c->MenuSpacesHost()) {
+        c->MenuSpacesHost()->RequestSwitchSpace(c->MenuSlot().value, space_id);
       }
       return true;
     }
@@ -1087,12 +1098,12 @@ bool PhiMenuBar::OnCommand(UINT id) {
       }
       return true;
     case kCmdBookmarkThisTab:
-      if (c->MenuHost()) {
-        c->MenuHost()->RequestBookmarkActiveTab(c->MenuSlot().value);
+      if (c->MenuSidebarHost()) {
+        c->MenuSidebarHost()->RequestBookmarkActiveTab(c->MenuSlot().value);
       }
       return true;
     case kCmdBookmarkAllTabs: {
-      if (!c->MenuHost() || c->MenuIncognito()) {
+      if (!c->MenuSidebarHost() || c->MenuIncognito()) {
         return true;
       }
       std::wstring name = PhiStr("menuBar.savedTabs");
@@ -1103,7 +1114,7 @@ bool PhiMenuBar::OnCommand(UINT id) {
           name.empty()) {
         return true;
       }
-      const std::string folder = c->MenuHost()->AddBookmarkFolder(
+      const std::string folder = c->MenuSidebarHost()->AddBookmarkFolder(
           c->MenuSlot().value, std::string(), base::WideToUTF8(name));
       if (folder.empty() || !c->MenuModel() || !target.valid()) {
         return true;
@@ -1113,7 +1124,7 @@ bool PhiMenuBar::OnCommand(UINT id) {
               c->MenuModel()->Get(target)) {
         for (const phi_framework::TabSnapshot& tab : snapshot->tabs) {
           if (!tab.url.empty() &&
-              !c->MenuHost()
+              !c->MenuSidebarHost()
                    ->AddBookmarkRow(c->MenuSlot().value, folder, tab.title,
                                     tab.url)
                    .empty()) {
@@ -1134,7 +1145,7 @@ bool PhiMenuBar::OnCommand(UINT id) {
       }
       return true;
     case kCmdExportBookmarks: {
-      if (!c->MenuHost()) {
+      if (!c->MenuSidebarHost()) {
         return true;
       }
       wchar_t path[MAX_PATH] = L"bookmarks.html";
@@ -1264,9 +1275,9 @@ std::string PhiMenuBar::BuildBookmarksHtml() const {
       "<TITLE>Bookmarks</TITLE>\n"
       "<H1>Bookmarks</H1>\n"
       "<DL><p>\n";
-  if (services_->MenuHost()) {
+  if (services_->MenuSidebarHost()) {
     const std::vector<PhiStoredRowView> pins =
-        services_->MenuHost()->PinnedRows(services_->MenuSlot().value);
+        services_->MenuSidebarHost()->PinnedRows(services_->MenuSlot().value);
     if (!pins.empty()) {
       html += "    <DT><H3>Favorites</H3>\n    <DL><p>\n";
       for (const PhiStoredRowView& pin : pins) {
@@ -1282,8 +1293,8 @@ std::string PhiMenuBar::BuildBookmarksHtml() const {
     const auto descend = [&](const auto& self, const std::string& parent,
                              const std::string& indent) -> void {
       for (const PhiStoredRowView& row :
-           services_->MenuHost()->BookmarkRows(services_->MenuSlot().value,
-                                            parent)) {
+           services_->MenuSidebarHost()->BookmarkRows(
+               services_->MenuSlot().value, parent)) {
         if (row.folder) {
           html += indent + "<DT><H3>" + escaped(row.title) + "</H3>\n" +
                   indent + "<DL><p>\n";

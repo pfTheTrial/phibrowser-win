@@ -18,9 +18,11 @@
 
 namespace phi_client {
 
+class AgentHost;
+class ChromePrefsHost;
 class PhiCreateSpacePanel;
-class PhiSlotHost;
 class PhiWindowController;
+class SpacesHost;
 struct PhiNewSpaceSpec;
 
 // One Space as the strip draws it — the Mac's stripOrderedSpaces entry.
@@ -59,7 +61,6 @@ class PhiSpacesStripShell {
   // the shell's layout and palette through it), as with the native pages.
   virtual PhiWindowController* SpacesOwner() = 0;
   virtual SlotId SpacesSlot() const = 0;
-  virtual PhiSlotHost* SpacesHost() const = 0;
   virtual bool SpacesIncognito() const = 0;
   virtual bool SpacesIsAgent() const = 0;
   virtual int SpacesScaled(int design_units) const = 0;
@@ -135,7 +136,14 @@ class PhiSpacesStripShell {
 //    calls; nothing else blends a palette.
 class PhiSpacesStrip {
  public:
-  explicit PhiSpacesStrip(PhiSpacesStripShell* shell);
+  // The three narrow services the strip calls — the Space list it draws,
+  // the client-wide chrome prefs the create form seeds from, and the agent
+  // pips (docs/architecture-review.md §3.5). Never the shell's whole set:
+  // the strip cannot reach a store row or another window from here.
+  PhiSpacesStrip(PhiSpacesStripShell* shell,
+                 SpacesHost* spaces_host,
+                 ChromePrefsHost* prefs_host,
+                 AgentHost* agent_host);
   ~PhiSpacesStrip();
 
   PhiSpacesStrip(const PhiSpacesStrip&) = delete;
@@ -266,6 +274,11 @@ class PhiSpacesStrip {
 
   // Owns this strip and outlives it.
   RAW_PTR_EXCLUSION PhiSpacesStripShell* const shell_;
+  // The coordinator's services, handed in at construction; they outlive the
+  // shell that owns this strip. Any of them may be null (a stand-in shell).
+  RAW_PTR_EXCLUSION SpacesHost* const spaces_host_;
+  RAW_PTR_EXCLUSION ChromePrefsHost* const prefs_host_;
+  RAW_PTR_EXCLUSION AgentHost* const agent_host_;
 
   // The windowed pip row (the Mac's SpacesStripView viewport): `chips_`
   // holds the whole pips the window shows plus the peeked neighbours,

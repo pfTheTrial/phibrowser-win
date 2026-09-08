@@ -104,8 +104,9 @@ namespace phi_client {
 
 class PhiSidebarShell;
 class PhiSidebarView;
-class PhiSlotHost;
 class PhiSpacesStrip;
+class SpacesHost;
+class WindowHost;
 
 // ONE drag of a sidebar row, pinned cell, bookmark or Space pip
 // (docs/architecture-review.md §3.5; lane 1 cluster I): the reorder and its
@@ -235,7 +236,12 @@ class PhiSidebarDragSession {
   RAW_PTR_EXCLUSION PhiSidebarView* const view_;
   RAW_PTR_EXCLUSION PhiSidebarShell* const shell_;
   RAW_PTR_EXCLUSION phi_framework::PhiFramework* const framework_;
-  RAW_PTR_EXCLUSION PhiSlotHost* const host_;
+  // The two narrow services a drag needs, taken from the view that owns
+  // it: the Space list for a pip reorder (and the drop indicator's
+  // palette), and the window set for the cross-window drop and the
+  // tear-off (docs/architecture-review.md §3.5).
+  RAW_PTR_EXCLUSION SpacesHost* const spaces_host_;
+  RAW_PTR_EXCLUSION WindowHost* const window_host_;
   const SlotId slot_;
   const bool incognito_;
 

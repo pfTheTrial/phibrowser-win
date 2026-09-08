@@ -2972,7 +2972,7 @@ void PhiCoordinator::HostAgentWindow(BrowserId browser,
   PhiWindowController* controller = registry_.Add(
       slot,
       std::make_unique<PhiWindowController>(slot, browser, hwnd, framework_,
-                                            this, &window_model_,
+                                            SlotServices(), &window_model_,
                                             /*agent=*/true),
       /*agent=*/true, incognito);
   registry_.Bind(browser, slot);
@@ -3069,7 +3069,7 @@ void PhiCoordinator::HostUserShell(BrowserId browser, HWND hwnd,
   PhiWindowController* controller = registry_.Add(
       slot,
       std::make_unique<PhiWindowController>(slot, browser, hwnd, framework_,
-                                            this, &window_model_,
+                                            SlotServices(), &window_model_,
                                             /*agent=*/false, incognito),
       /*agent=*/false, incognito);
   registry_.Bind(browser, slot);

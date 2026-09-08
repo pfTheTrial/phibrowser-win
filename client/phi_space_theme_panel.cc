@@ -186,7 +186,8 @@ class Panel : public PhiPopover {
     const std::vector<PhiTheme>& themes = PhiBuiltInThemes();
     const size_t index = static_cast<size_t>(target.key);
     if (index < themes.size()) {
-      if (PhiSlotHost* host = controller_ ? controller_->host() : nullptr) {
+      if (SpacesHost* host =
+              controller_ ? controller_->spaces_host() : nullptr) {
         host->SetSpaceTheme(space_id_, themes[index].id);
       }
       Invalidate();
@@ -290,26 +291,28 @@ class Panel : public PhiPopover {
   // on every paint — a click applies immediately and the window behind
   // recolors.
   std::string CurrentThemeId() const {
-    PhiSlotHost* host = controller_ ? controller_->host() : nullptr;
-    if (!host) {
+    SpacesHost* spaces = controller_ ? controller_->spaces_host() : nullptr;
+    ChromePrefsHost* prefs = controller_ ? controller_->prefs_host() : nullptr;
+    if (!spaces || !prefs) {
       return std::string();
     }
     // The Mac's resolvedThemeId: a Space with no pin of its own shows —
     // and edits from — the app-wide theme, so the row always has a
     // selection.
-    const std::string pinned = host->SpaceThemeId(space_id_);
-    return pinned.empty() ? host->ThemeId() : pinned;
+    const std::string pinned = spaces->SpaceThemeId(space_id_);
+    return pinned.empty() ? prefs->ThemeId() : pinned;
   }
 
   int CurrentSaturation() const {
-    PhiSlotHost* host = controller_ ? controller_->host() : nullptr;
-    if (!host) {
+    SpacesHost* spaces = controller_ ? controller_->spaces_host() : nullptr;
+    ChromePrefsHost* prefs = controller_ ? controller_->prefs_host() : nullptr;
+    if (!spaces || !prefs) {
       return 0;
     }
     // -1 means the Space follows the app-wide slider, which is the value
     // its own slider then shows (the Spaces settings pane's rule).
-    const int stored = host->SpaceSaturation(space_id_);
-    return stored < 0 ? host->Saturation() : stored;
+    const int stored = spaces->SpaceSaturation(space_id_);
+    return stored < 0 ? prefs->Saturation() : stored;
   }
 
   void DrawLabel(HDC dc, const RECT& bounds, const wchar_t* text,
@@ -423,7 +426,7 @@ class Panel : public PhiPopover {
   // Maps a pointer x onto the slider's 0..100 travel, knob-width aware so
   // the knob's centre lands under the cursor at both ends.
   void ApplySaturationAt(int x) {
-    PhiSlotHost* host = controller_ ? controller_->host() : nullptr;
+    SpacesHost* host = controller_ ? controller_->spaces_host() : nullptr;
     if (!host) {
       return;
     }
@@ -466,7 +469,7 @@ void PhiOpenSpaceThemePanel(PhiWindowController* controller,
                             const std::string& space_id,
                             std::function<void()> on_closed) {
   if (!controller || !controller->shell_hwnd() || space_id.empty() ||
-      !controller->host()) {
+      !controller->spaces_host()) {
     if (on_closed) {
       on_closed();
     }

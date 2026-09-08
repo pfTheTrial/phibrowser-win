@@ -253,11 +253,11 @@ void PhiBookmarkManager::OnSize(int, int) {
 
 void PhiBookmarkManager::AppendSubtree(const std::string& parent_guid,
                                        int depth) {
-  if (!controller_ || !controller_->host()) {
+  if (!controller_ || !controller_->sidebar_host()) {
     return;
   }
   for (PhiStoredRowView& view :
-       controller_->host()->BookmarkRows(controller_->slot().value,
+       controller_->sidebar_host()->BookmarkRows(controller_->slot().value,
                                          parent_guid)) {
     Row row;
     row.guid = view.guid;
@@ -277,7 +277,7 @@ void PhiBookmarkManager::AppendSubtree(const std::string& parent_guid,
     row.favicon_height = view.favicon_height;
     if (row.folder) {
       row.child_count = static_cast<int>(
-          controller_->host()
+          controller_->sidebar_host()
               ->BookmarkRows(controller_->slot().value, row.guid)
               .size());
       row.expanded = expanded_.count(row.guid) > 0;
@@ -292,12 +292,12 @@ void PhiBookmarkManager::AppendSubtree(const std::string& parent_guid,
 }
 
 void PhiBookmarkManager::AppendMatches(const std::string& parent_guid) {
-  if (!controller_ || !controller_->host()) {
+  if (!controller_ || !controller_->sidebar_host()) {
     return;
   }
   const std::wstring needle = Fold(Trim(query_));
   for (PhiStoredRowView& view :
-       controller_->host()->BookmarkRows(controller_->slot().value,
+       controller_->sidebar_host()->BookmarkRows(controller_->slot().value,
                                          parent_guid)) {
     const std::wstring title = base::UTF8ToWide(view.title);
     const std::wstring url = base::UTF8ToWide(view.url);
@@ -331,7 +331,7 @@ void PhiBookmarkManager::AppendMatches(const std::string& parent_guid) {
       row.favicon_height = view.favicon_height;
       if (folder) {
         row.child_count = static_cast<int>(
-            controller_->host()
+            controller_->sidebar_host()
                 ->BookmarkRows(controller_->slot().value, guid)
                 .size());
       }
@@ -629,12 +629,14 @@ void PhiBookmarkManager::ClickAt(POINT pt, bool ctrl, bool shift) {
 }
 
 void PhiBookmarkManager::OpenRow(const Row& row) {
-  if (row.folder || row.url.empty() || !controller_ || !controller_->host()) {
+  if (row.folder || row.url.empty() || !controller_ ||
+      !controller_->sidebar_host()) {
     return;
   }
-  controller_->host()->RequestOpen(controller_->slot().value, row.url);
+  controller_->sidebar_host()->RequestOpen(controller_->slot().value, row.url);
   if (!row.url_b.empty()) {
-    controller_->host()->RequestOpen(controller_->slot().value, row.url_b);
+    controller_->sidebar_host()->RequestOpen(controller_->slot().value,
+                                             row.url_b);
   }
 }
 
@@ -659,7 +661,7 @@ void PhiBookmarkManager::OnDoubleClick(POINT pt) {
 }
 
 void PhiBookmarkManager::NewFolder(const std::string& parent_guid) {
-  if (!controller_ || !controller_->host()) {
+  if (!controller_ || !controller_->sidebar_host()) {
     return;
   }
   std::wstring name = L"Untitled";
@@ -670,13 +672,14 @@ void PhiBookmarkManager::NewFolder(const std::string& parent_guid) {
   if (!parent_guid.empty()) {
     expanded_.insert(parent_guid);
   }
-  controller_->host()->AddBookmarkFolder(controller_->slot().value, parent_guid,
-                                         base::WideToUTF8(name));
+  controller_->sidebar_host()->AddBookmarkFolder(controller_->slot().value,
+                                                 parent_guid,
+                                                 base::WideToUTF8(name));
   Refresh();
 }
 
 void PhiBookmarkManager::EditRow(const Row& row) {
-  if (!controller_ || !controller_->host()) {
+  if (!controller_ || !controller_->sidebar_host()) {
     return;
   }
   std::wstring name = row.title;
@@ -685,13 +688,14 @@ void PhiBookmarkManager::EditRow(const Row& row) {
                     row.folder ? L"Enter a new name for this folder."
                                : L"Enter a new name for this bookmark.",
                     &name)) {
-    controller_->host()->RenameStoredRow(row.guid, base::WideToUTF8(name));
+    controller_->sidebar_host()->RenameStoredRow(row.guid,
+                                                 base::WideToUTF8(name));
   }
   Refresh();
 }
 
 void PhiBookmarkManager::DeleteSelection() {
-  if (!controller_ || !controller_->host()) {
+  if (!controller_ || !controller_->sidebar_host()) {
     return;
   }
   const std::vector<std::string> guids = SelectedGuids();
@@ -719,7 +723,8 @@ void PhiBookmarkManager::DeleteSelection() {
     }
   }
   for (const std::string& guid : guids) {
-    controller_->host()->RemoveStoredRow(guid);  // A folder takes its subtree.
+    // A folder takes its subtree.
+    controller_->sidebar_host()->RemoveStoredRow(guid);
   }
   selected_.clear();
   Refresh();

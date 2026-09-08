@@ -59,7 +59,11 @@ class PhiControlDispatcher;
 // wires them (their Host/Observer seams below), keeps the app operations
 // that span several of them, and still implements the shell's and the
 // settings window's host interfaces by forwarding.
-class PhiCoordinator : public PhiSlotHost,
+class PhiCoordinator : public SidebarHost,
+                       public SpacesHost,
+                       public ChromePrefsHost,
+                       public AgentHost,
+                       public WindowHost,
                        public PhiSettingsHost,
                        public PhiPreferences::Observer,
                        public PhiSpaceManager::Observer,
@@ -187,7 +191,19 @@ class PhiCoordinator : public PhiSlotHost,
   // through it (CompletePendingReply).
   PhiControlDispatcher& dispatcher() { return *dispatcher_; }
 
-  // PhiSlotHost (called on the UI thread by a slot's sidebar):
+  // What a shell is constructed with: the five interfaces this coordinator
+  // implements, as one struct. It outlives every controller, so the
+  // pointers are non-owning.
+  ShellServices SlotServices() {
+    return ShellServices{this, this, this, this, this};
+  }
+
+  // The shell's five services — SidebarHost, SpacesHost, ChromePrefsHost,
+  // AgentHost and WindowHost (called on the UI thread by a slot). The
+  // coordinator is the composition root, so it implements all five and
+  // forwards each to the service that owns it; a shell is handed
+  // SlotServices() and each of its components only the ones it calls
+  // (docs/architecture-review.md §3.5).
   std::vector<PhiSpaceView> Spaces() const override;
   void RequestSwitchSpace(int64_t slot, const std::string& space_id) override;
   void RequestNewWindow(int64_t slot) override;

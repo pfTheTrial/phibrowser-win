@@ -118,7 +118,14 @@ RECT PaintedChip(const RECT& cell, int painted) {
 
 }  // namespace
 
-PhiSpacesStrip::PhiSpacesStrip(PhiSpacesStripShell* shell) : shell_(shell) {}
+PhiSpacesStrip::PhiSpacesStrip(PhiSpacesStripShell* shell,
+                               SpacesHost* spaces_host,
+                               ChromePrefsHost* prefs_host,
+                               AgentHost* agent_host)
+    : shell_(shell),
+      spaces_host_(spaces_host),
+      prefs_host_(prefs_host),
+      agent_host_(agent_host) {}
 
 PhiSpacesStrip::~PhiSpacesStrip() {
   StopAnimations();
@@ -157,8 +164,7 @@ void PhiSpacesStrip::Rebuild() {
   creating_pip_ = RECT{};
   const PhiSpacesStripRects rects = shell_->SpacesRects();
   add_slot_ = rects.add_space;
-  PhiSlotHost* const host = shell_->SpacesHost();
-  if (!host || shell_->SpacesIncognito()) {
+  if (!spaces_host_ || shell_->SpacesIncognito()) {
     add_slot_ = RECT{};  // Incognito has no Spaces strip.
     return;
   }
@@ -168,7 +174,7 @@ void PhiSpacesStrip::Rebuild() {
   // window never lists them — the live agent Spaces as robot pips. Clicking
   // one surfaces its window so the user can watch the agent work live.
   std::vector<PhiSpaceChip> row;
-  for (const PhiSpaceView& space : host->Spaces()) {
+  for (const PhiSpaceView& space : spaces_host_->Spaces()) {
     // Comfortable shows a single compact pip — the ACTIVE Space; the rest
     // live in the popup it opens.
     if (rects.horizontal_tabs && space.id != active) {
@@ -182,8 +188,8 @@ void PhiSpacesStrip::Rebuild() {
     chip.open = shell_->SpacesHasSpace(space.id);
     row.push_back(std::move(chip));
   }
-  if (!shell_->SpacesIsAgent() && !rects.horizontal_tabs) {
-    for (const PhiAgentPipView& pip : host->AgentSpaces()) {
+  if (agent_host_ && !shell_->SpacesIsAgent() && !rects.horizontal_tabs) {
+    for (const PhiAgentPipView& pip : agent_host_->AgentSpaces()) {
       PhiSpaceChip chip;
       chip.id = pip.task_id;
       chip.is_agent = true;
@@ -490,18 +496,18 @@ void PhiSpacesStrip::DismissHoverCard(const std::string& suppress_space_id) {
 }
 
 void PhiSpacesStrip::ResolveHoverCard(const std::string& space_id) {
-  PhiSlotHost* const host = shell_->SpacesHost();
   const SlotId slot = shell_->SpacesSlot();
   card_profile_.clear();
-  card_accent_ =
-      host ? host->PaletteForSlot(slot.value).accent : RGB(0x3A, 0xA4, 0xD5);
+  card_accent_ = spaces_host_
+                     ? spaces_host_->PaletteForSlot(slot.value).accent
+                     : RGB(0x3A, 0xA4, 0xD5);
   card_shortcut_ = 0;
-  if (!host) {
+  if (!spaces_host_) {
     return;
   }
   std::string profile_id;
   int position = 0;
-  for (const PhiSpaceView& space : host->Spaces()) {
+  for (const PhiSpaceView& space : spaces_host_->Spaces()) {
     ++position;
     if (space.id == space_id) {
       profile_id = space.profile_id;
@@ -513,9 +519,9 @@ void PhiSpacesStrip::ResolveHoverCard(const std::string& space_id) {
   }
   // The pill and keycaps tint with the SPACE's own theme where it pins one
   // (the Mac card resolves the pip's theme color the same way).
-  const std::string theme_id = host->SpaceThemeId(space_id);
+  const std::string theme_id = spaces_host_->SpaceThemeId(space_id);
   if (!theme_id.empty()) {
-    const bool dark = host->PaletteForSlot(slot.value).dark;
+    const bool dark = spaces_host_->PaletteForSlot(slot.value).dark;
     card_accent_ =
         PhiResolvePalette(PhiThemeById(theme_id),
                           dark ? PhiAppearance::kDark : PhiAppearance::kLight)
@@ -528,7 +534,7 @@ void PhiSpacesStrip::ResolveHoverCard(const std::string& space_id) {
   if (profile_id.empty()) {
     return;
   }
-  for (const std::string& summary : host->ProfileSummaries()) {
+  for (const std::string& summary : spaces_host_->ProfileSummaries()) {
     const size_t tab = summary.find('\t');
     if (summary.substr(0, tab) != profile_id) {
       continue;
@@ -550,8 +556,7 @@ RECT PhiSpacesStrip::FormRect() {
 }
 
 void PhiSpacesStrip::ShowCreateForm() {
-  PhiSlotHost* const host = shell_->SpacesHost();
-  if (!host) {
+  if (!spaces_host_ || !prefs_host_) {
     return;
   }
   // CreateSpacePanel.requestCreation: the vertical layouts host the form
@@ -561,7 +566,8 @@ void PhiSpacesStrip::ShowCreateForm() {
   // no Windows counterpart yet.
   const RECT form = FormRect();
   if (!shell_->SpacesSidebarCanHostForm(form)) {
-    host->RequestCreateSpace(shell_->SpacesSlot().value, /*new_profile=*/false);
+    spaces_host_->RequestCreateSpace(shell_->SpacesSlot().value,
+                                     /*new_profile=*/false);
     return;  // The owner attaches the new Space's browser, which refreshes.
   }
   if (creating_) {
@@ -577,20 +583,20 @@ void PhiSpacesStrip::ShowCreateForm() {
   // picker, its theme is what the random pick must differ from.
   const std::string& active = shell_->SpacesActiveSpace();
   std::string profile_id = "Default";
-  for (const PhiSpaceView& space : host->Spaces()) {
+  for (const PhiSpaceView& space : spaces_host_->Spaces()) {
     if (space.id == active) {
       profile_id = space.profile_id;
       break;
     }
   }
-  std::string theme_id = host->SpaceThemeId(active);
+  std::string theme_id = spaces_host_->SpaceThemeId(active);
   if (theme_id.empty()) {
-    theme_id = host->ThemeId();
+    theme_id = prefs_host_->ThemeId();
   }
   creating_ = true;
   preview_until_switch_ = false;
   DismissHoverCard(std::string());
-  form_->Show(form, profile_id, theme_id, host->Saturation());
+  form_->Show(form, profile_id, theme_id, prefs_host_->Saturation());
   shell_->SpacesScheduleRefresh();  // The strip reserves the placeholder pip.
   form_->FocusField();
 }
@@ -609,11 +615,10 @@ void PhiSpacesStrip::CommitCreateForm(const PhiNewSpaceSpec& spec) {
   // The previewed theme stays up until the created Space presents, so the
   // chrome never flashes back to the source theme in between.
   preview_until_switch_ = true;
-  PhiSlotHost* const host = shell_->SpacesHost();
   const std::string id =
-      host ? host->RequestCreateSpaceWithOptions(shell_->SpacesSlot().value,
-                                                 spec)
-           : std::string();
+      spaces_host_ ? spaces_host_->RequestCreateSpaceWithOptions(
+                         shell_->SpacesSlot().value, spec)
+                   : std::string();
   if (id.empty()) {
     EndPreview();  // Creation failed: back to the source theme.
   }
@@ -636,12 +641,12 @@ void PhiSpacesStrip::CancelCreateForm() {
 }
 
 void PhiSpacesStrip::PreviewTheme(const std::string& theme_id, int saturation) {
-  PhiSlotHost* const host = shell_->SpacesHost();
-  if (!host || !creating_) {
+  if (!prefs_host_ || !creating_) {
     return;
   }
   preview_palette_ =
-      PhiResolvePalette(PhiThemeById(theme_id), host->Appearance(), saturation);
+      PhiResolvePalette(PhiThemeById(theme_id), prefs_host_->Appearance(),
+                        saturation);
   shell_->SpacesApplyPalette();
   if (form_) {
     form_->Refresh();
@@ -702,16 +707,16 @@ PhiPalette PhiSpacesStrip::RampPalette(const PhiPalette& target) const {
 }
 
 void PhiSpacesStrip::BeginSwap(const std::string& entering_space_id) {
-  PhiSlotHost* const host = shell_->SpacesHost();
   const std::string& active = shell_->SpacesActiveSpace();
-  if (!host || host->LayoutMode() == PhiLayoutMode::kComfortable ||
+  if (!spaces_host_ || !prefs_host_ ||
+      prefs_host_->LayoutMode() == PhiLayoutMode::kComfortable ||
       entering_space_id == active) {
     return;
   }
   CancelSwap();  // Settle any in-flight switch first.
   // Direction from strip order, the Mac's forward/backward semantics.
   int from = -1, to = -1, at = 0;
-  for (const PhiSpaceView& space : host->Spaces()) {
+  for (const PhiSpaceView& space : spaces_host_->Spaces()) {
     if (space.id == active) {
       from = at;
     }

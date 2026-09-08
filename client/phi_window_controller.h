@@ -94,11 +94,12 @@ struct PhiAgentPipView {
 // What a slot needs from its owner (the coordinator), as five narrow
 // interfaces (docs/architecture-review.md §3.5): the full Space list to draw,
 // and requests that only the owner can service (switching to a Space that
-// has no browser yet must create one in that Space's profile). PhiSlotHost
-// is the union the controller still receives; ShellServices is the struct
-// of the five it moves to next (phase 4), at which point each interface is
-// handed to the service that owns it — ChromePrefsHost is PhiPreferences
-// already.
+// has no browser yet must create one in that Space's profile). The shell
+// takes the five as a ShellServices at construction and hands each
+// component only the ones it calls — there is no union to reach a service
+// through any more. ChromePrefsHost is PhiPreferences already; the
+// coordinator implements the other four by forwarding to the service that
+// owns each.
 // Every `int64_t slot` parameter carries SlotId::value (the controller's
 // slot()) and becomes SlotId in phase 2; a `browser` parameter carries
 // BrowserId::value.
@@ -368,27 +369,14 @@ class WindowHost {
   virtual bool TakeTearOffDrop(POINT* screen) = 0;
 };
 
-// The five, as the shell will receive them once the controller stops taking
-// one object for all (the next extraction step). Non-owning; every pointer
-// outlives the shell.
+// The five, as the shell receives them at construction. Non-owning; every
+// pointer outlives the shell.
 struct ShellServices {
   RAW_PTR_EXCLUSION SidebarHost* sidebar = nullptr;
   RAW_PTR_EXCLUSION SpacesHost* spaces = nullptr;
   RAW_PTR_EXCLUSION ChromePrefsHost* prefs = nullptr;
   RAW_PTR_EXCLUSION AgentHost* agent = nullptr;
   RAW_PTR_EXCLUSION WindowHost* window = nullptr;
-};
-
-// The union the controller (and its satellites' `host()`) still hold: one
-// object implementing all five. The coordinator is it today, forwarding
-// each interface's methods to the service that owns them.
-class PhiSlotHost : public SidebarHost,
-                    public SpacesHost,
-                    public ChromePrefsHost,
-                    public AgentHost,
-                    public WindowHost {
- public:
-  ~PhiSlotHost() override = default;
 };
 
 // The Mac sidebar's default and drag range (MainSplitViewController).
@@ -468,7 +456,7 @@ class PhiWindowController : public PhiHitSource,
                       BrowserId browser,
                       HWND browser_hwnd,
                       phi_framework::PhiFramework* framework,
-                      PhiSlotHost* host,
+                      const ShellServices& services,
                       const PhiWindowModel* model,
                       bool agent = false,
                       bool incognito = false);
@@ -480,7 +468,7 @@ class PhiWindowController : public PhiHitSource,
   PhiWindowController(const PhiWindowController&) = delete;
   PhiWindowController& operator=(const PhiWindowController&) = delete;
 
-  // The slot's identity — what every PhiSlotHost `slot` parameter takes.
+  // The slot's identity — what every host interface's `slot` takes.
   // Never a browser: see active_browser_id() for the one the slot shows.
   SlotId slot() const { return slot_; }
   // Upstream's distillability verdict for one of this window's tabs.
@@ -522,8 +510,13 @@ class PhiWindowController : public PhiHitSource,
   bool is_agent() const { return agent_; }
   bool is_incognito() const { return incognito_; }
   // For satellite surfaces (search palette, popovers) that act through the
-  // same seams the controller does.
-  PhiSlotHost* host() const { return host_; }
+  // same seams the controller does — each takes the ONE interface its own
+  // job needs, never the set (docs/architecture-review.md §3.5).
+  SidebarHost* sidebar_host() const { return services_.sidebar; }
+  SpacesHost* spaces_host() const { return services_.spaces; }
+  ChromePrefsHost* prefs_host() const { return services_.prefs; }
+  AgentHost* agent_host() const { return services_.agent; }
+  WindowHost* window_host() const { return services_.window; }
   phi_framework::PhiFramework* framework() const { return framework_; }
   // The window model the rows are built from — what a satellite reads
   // instead of parsing the framework's tab JSON.
@@ -1182,7 +1175,10 @@ class PhiWindowController : public PhiHitSource,
   HWND MenuShellWindow() const override;
   SlotId MenuSlot() const override;
   bool MenuIncognito() const override;
-  PhiSlotHost* MenuHost() const override;
+  SidebarHost* MenuSidebarHost() const override;
+  SpacesHost* MenuSpacesHost() const override;
+  ChromePrefsHost* MenuPrefsHost() const override;
+  WindowHost* MenuWindowHost() const override;
   phi_framework::PhiFramework* MenuFramework() const override;
   const PhiWindowModel* MenuModel() const override;
   BrowserId MenuActiveBrowser() const override;
@@ -1309,7 +1305,6 @@ class PhiWindowController : public PhiHitSource,
   HWND SpacesShellWindow() const override;
   PhiWindowController* SpacesOwner() override;
   SlotId SpacesSlot() const override;
-  PhiSlotHost* SpacesHost() const override;
   bool SpacesIncognito() const override;
   bool SpacesIsAgent() const override;
   int SpacesScaled(int design_units) const override;
@@ -1346,7 +1341,11 @@ class PhiWindowController : public PhiHitSource,
   // Owned by the framework (a singleton in chrome.dll); non-owning, and across
   // a module boundary, so not a raw_ptr.
   RAW_PTR_EXCLUSION phi_framework::PhiFramework* const framework_;
-  RAW_PTR_EXCLUSION PhiSlotHost* const host_;  // Owns this controller.
+  // The five narrow services the shell was constructed with (§3.5). The
+  // coordinator implements all five and owns this controller, so every
+  // pointer outlives it; each component below is handed only the ones it
+  // calls.
+  const ShellServices services_;
   // The coordinator's window model (it owns the instance and outlives every
   // controller): the one source for rows, nav state, splits and groups.
   RAW_PTR_EXCLUSION const PhiWindowModel* const model_;

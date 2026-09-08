@@ -303,10 +303,11 @@ void PhiCreateSpacePanel::EnsureField() {
 
 void PhiCreateSpacePanel::ReloadProfiles() {
   profiles_.clear();
-  if (!controller_ || !controller_->host()) {
+  if (!controller_ || !controller_->spaces_host()) {
     return;
   }
-  for (const std::string& row : controller_->host()->ProfileSummaries()) {
+  for (const std::string& row :
+       controller_->spaces_host()->ProfileSummaries()) {
     const size_t tab = row.find('\t');
     const std::string id = row.substr(0, tab);
     const std::string name =
@@ -767,7 +768,7 @@ void PhiCreateSpacePanel::PushPreview() {
 }
 
 void PhiCreateSpacePanel::ShowProfileMenu(const Geometry& g) {
-  if (!controller_ || !controller_->host()) {
+  if (!controller_ || !controller_->spaces_host()) {
     return;
   }
   ReloadProfiles();
@@ -799,7 +800,7 @@ void PhiCreateSpacePanel::ShowProfileMenu(const Geometry& g) {
                       PhiStr("settings.profiles.createDialog.title"),
                       PhiStr("settings.profiles.createDialog.message"),
                       &name)) {
-      controller_->host()->RequestCreateProfileForSpaceForm(
+      controller_->spaces_host()->RequestCreateProfileForSpaceForm(
           controller_->slot().value, base::WideToUTF8(name));
     }
   } else if (chosen >= 1 && chosen <= profiles_.size()) {
@@ -809,7 +810,7 @@ void PhiCreateSpacePanel::ShowProfileMenu(const Geometry& g) {
 }
 
 void PhiCreateSpacePanel::Create() {
-  if (!controller_ || !controller_->host()) {
+  if (!controller_ || !controller_->spaces_host()) {
     return;
   }
   PhiNewSpaceSpec spec;
@@ -831,8 +832,8 @@ void PhiCreateSpacePanel::Create() {
     if (name.empty()) {
       // "Space N" for the N-th Space — the Mac's default.
       name = PhiStrF("sidebar.createSpace.defaultName",
-                     {std::to_wstring(controller_->host()->Spaces().size() +
-                                      1)});
+                     {std::to_wstring(
+                         controller_->spaces_host()->Spaces().size() + 1)});
     }
     spec.name = base::WideToUTF8(name);
   }
@@ -972,8 +973,8 @@ void PhiCreateSpacePanel::PaintForm(HDC dc) {
   {
     const auto& themes = PhiBuiltInThemes();
     const PhiAppearance appearance =
-        controller_->host() ? controller_->host()->Appearance()
-                            : PhiAppearance::kSystem;
+        controller_->prefs_host() ? controller_->prefs_host()->Appearance()
+                                  : PhiAppearance::kSystem;
     for (size_t i = 0; i < g.dot_count; ++i) {
       const PhiPalette resolved =
           PhiResolvePalette(themes[i], appearance, slider_);
@@ -1000,8 +1001,8 @@ void PhiCreateSpacePanel::PaintForm(HDC dc) {
   {
     const PhiPalette selected_palette = PhiResolvePalette(
         PhiThemeById(theme_id_),
-        controller_->host() ? controller_->host()->Appearance()
-                            : PhiAppearance::kSystem,
+        controller_->prefs_host() ? controller_->prefs_host()->Appearance()
+                                  : PhiAppearance::kSystem,
         slider_);
     COLORREF accent = selected_palette.accent;
     if (hover_ == Hit::kCreate) {

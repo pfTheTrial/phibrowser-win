@@ -21,8 +21,11 @@ class PhiFramework;
 
 namespace phi_client {
 
-class PhiSlotHost;
+class ChromePrefsHost;
 class PhiWindowModel;
+class SidebarHost;
+class SpacesHost;
+class WindowHost;
 
 // Menu command ids (WM_COMMAND). In the header so the keyboard-accelerator
 // hook can post the same commands the menus fire.
@@ -174,10 +177,15 @@ class PhiMenuBarShell {
   virtual HWND MenuShellWindow() const = 0;
   virtual SlotId MenuSlot() const = 0;
   virtual bool MenuIncognito() const = 0;
-  // The host and the framework stay whole for now: the bar genuinely spans
-  // bookmarks, Spaces, profiles and prefs, and §4.3 splits PhiSlotHost into
-  // ShellServices as its own step.
-  virtual PhiSlotHost* MenuHost() const = 0;
+  // The bar genuinely spans bookmarks, Spaces, profiles and prefs — but not
+  // the agent's: it takes those FOUR narrow services, never the set
+  // (docs/architecture-review.md §3.5, lane 1 §4.3). Any of them may be
+  // null, and the same guards that used to test one host now test the one
+  // the item about to run needs.
+  virtual SidebarHost* MenuSidebarHost() const = 0;
+  virtual SpacesHost* MenuSpacesHost() const = 0;
+  virtual ChromePrefsHost* MenuPrefsHost() const = 0;
+  virtual WindowHost* MenuWindowHost() const = 0;
   virtual phi_framework::PhiFramework* MenuFramework() const = 0;
   virtual const PhiWindowModel* MenuModel() const = 0;
   // The browser the slot SHOWS — invalid when none is attached, and NEVER

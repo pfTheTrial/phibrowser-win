@@ -39,7 +39,8 @@ PhiSidebarDragSession::PhiSidebarDragSession(PhiSidebarView* view,
     : view_(view),
       shell_(view->shell()),
       framework_(view->framework()),
-      host_(view->host()),
+      spaces_host_(view->spaces_host()),
+      window_host_(view->window_host()),
       slot_(view->slot()),
       incognito_(view->incognito()) {
   key_ = key;
@@ -589,15 +590,15 @@ bool PhiSidebarDragSession::CommitDragImpl() {
     POINT screen = release;
     ::ClientToScreen(shell_hwnd(), &screen);
     const int64_t target =
-        host_ ? host_->SlotAtScreenPoint(screen, slot_.value) : 0;
-    if (!target || !host_ ||
-        !host_->RequestDropTabOnWindow(slot_.value, tab_a.value, tab_b.value,
-                                       target)) {
+        window_host_ ? window_host_->SlotAtScreenPoint(screen, slot_.value) : 0;
+    if (!target || !window_host_ ||
+        !window_host_->RequestDropTabOnWindow(slot_.value, tab_a.value,
+                                              tab_b.value, target)) {
       // No browser attached: an empty strip, and nothing tears off.
       const BrowserId browser = shell_->SidebarActiveBrowser();
       if (browser.valid()) {
-        if (host_) {
-          host_->NoteTearOffDrop(screen);
+        if (window_host_) {
+          window_host_->NoteTearOffDrop(screen);
         }
         const TabId ids[] = {tab_a, tab_b};
         framework_->MoveTabsToNewWindowByIds(browser, ids,
@@ -608,7 +609,8 @@ bool PhiSidebarDragSession::CommitDragImpl() {
   }
   if (kind == PhiDragKind::kChip) {
     if (slot < 0 || chip_pos < 0 ||
-        chip_pos >= static_cast<int>(strip()->chips().size()) || !host_) {
+        chip_pos >= static_cast<int>(strip()->chips().size()) ||
+        !spaces_host_) {
       return false;
     }
     // Insert-before `slot` becomes the final position by removing the
@@ -618,8 +620,9 @@ bool PhiSidebarDragSession::CommitDragImpl() {
     if (to_pos == chip_pos) {
       return false;
     }
-    host_->ReorderSpace(strip()->chips()[static_cast<size_t>(chip_pos)].id,
-                        to_pos + strip()->first_index());
+    spaces_host_->ReorderSpace(
+        strip()->chips()[static_cast<size_t>(chip_pos)].id,
+        to_pos + strip()->first_index());
     return true;
   }
   // Everything else is ONE verb: the item goes to the resolved place — a
@@ -752,7 +755,8 @@ bool PhiSidebarDragSession::DragImageInside(POINT pt) {
   }
   // Another shell window under the cursor takes the row into its strip, so
   // the row is what shows there (isInsideAnyOtherBrowserTabDragBoundary).
-  return host_ && host_->SlotAtScreenPoint(screen, slot_.value) != 0;
+  return window_host_ &&
+         window_host_->SlotAtScreenPoint(screen, slot_.value) != 0;
 }
 
 void PhiSidebarDragSession::BeginDragImage(POINT pt) {
@@ -1065,12 +1069,12 @@ bool PhiSidebarDragSession::TearOffStoredRow(PhiDragKind kind,
   POINT screen = release;
   ::ClientToScreen(shell_hwnd(), &screen);
   const int64_t target =
-      host_ ? host_->SlotAtScreenPoint(screen, slot_.value) : 0;
-  if (!target || !host_ ||
-      !host_->RequestDropTabOnWindow(slot_.value, id_a.value, id_b.value,
-                                     target)) {
-    if (host_) {
-      host_->NoteTearOffDrop(screen);
+      window_host_ ? window_host_->SlotAtScreenPoint(screen, slot_.value) : 0;
+  if (!target || !window_host_ ||
+      !window_host_->RequestDropTabOnWindow(slot_.value, id_a.value,
+                                            id_b.value, target)) {
+    if (window_host_) {
+      window_host_->NoteTearOffDrop(screen);
     }
     const TabId ids[] = {id_a, id_b};
     framework_->MoveTabsToNewWindowByIds(browser, ids, id_b.valid() ? 2 : 1);
@@ -1458,10 +1462,10 @@ int PhiSidebarDragSession::DragInsertSlot(POINT pt) {
 }
 
 void PhiSidebarDragSession::DrawIndicator(HDC dc) {
-  if (!active_ || insert_ < 0 || !host_) {
+  if (!active_ || insert_ < 0 || !spaces_host_) {
     return;
   }
-  const PhiPalette& palette = host_->PaletteForSlot(slot_.value);
+  const PhiPalette& palette = spaces_host_->PaletteForSlot(slot_.value);
   // The 2px accent insertion line, horizontal for vertical lists and
   // vertical for horizontal ones.
   RECT line{};

@@ -100,7 +100,7 @@ class PhiProfileService {
   // Every profile the framework knows, id and display name.
   std::vector<PhiProfileSummary> Profiles() const;
   // The same list as "<id>\t<name>" rows — the SHELL host's spelling
-  // (PhiSlotHost::ProfileSummaries, which the create-Space form, the menu
+  // (SpacesHost::ProfileSummaries, which the create-Space form, the menu
   // bar and the Kiosk chooser read). Built from Profiles(); the settings
   // panes take the structs.
   std::vector<std::string> ProfileSummaries() const;
