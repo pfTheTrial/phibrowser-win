@@ -211,6 +211,16 @@ PhiVerbResult PhiControlDispatcher::VerbAgentCreate(
   }
   const std::string profile_id = ctx.params.String("profileId");
   const bool persistent = ctx.params.Bool("persistent", false);
+  // Developer ▸ "Profiles agents can use". The refusal lands HERE and not
+  // at the re-bind above: a Space already open in a profile the user has
+  // since switched off keeps working, exactly as the pane's description
+  // promises — only the next new Space is stopped.
+  if (!profile_id.empty() &&
+      !coordinator_->preferences().AgentProfileAllowed(profile_id)) {
+    LOG(INFO) << "[PhiAgent] refused an agent Space in profile "
+              << profile_id << " (switched off in Settings)";
+    return PhiVerbResult::Fail("profile_not_agent_allowed");
+  }
   if (!framework_) {
     return PhiVerbResult::Fail("create_failed");
   }

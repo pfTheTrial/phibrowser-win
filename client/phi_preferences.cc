@@ -309,6 +309,32 @@ void PhiPreferences::SetAllowAgentUserSpaces(bool enabled) {
   Notify(PreferenceChange::kAgentUserSpaces);
 }
 
+bool PhiPreferences::AgentProfileAllowed(
+    const std::string& profile_id) const {
+  const auto& blocked = settings_.disallowed_agent_profile_ids;
+  return std::find(blocked.begin(), blocked.end(), profile_id) ==
+         blocked.end();
+}
+
+void PhiPreferences::SetAgentProfileAllowed(const std::string& profile_id,
+                                            bool allowed) {
+  // Settings-window only, like the two gates above: an agent that could
+  // clear its own refusal would make the switch decorative.
+  if (profile_id.empty() || AgentProfileAllowed(profile_id) == allowed) {
+    return;
+  }
+  std::vector<std::string>& blocked = settings_.disallowed_agent_profile_ids;
+  if (allowed) {
+    std::erase(blocked, profile_id);
+  } else {
+    blocked.push_back(profile_id);
+  }
+  LOG(INFO) << "[PhiAgent] agent Spaces in profile " << profile_id << " "
+            << (allowed ? "allowed" : "refused");
+  MarkDirty();
+  Notify(PreferenceChange::kAgentUserSpaces);
+}
+
 void PhiPreferences::SetAnalyticsEnabled(bool enabled) {
   if (enabled == settings_.analytics_enabled) {
     return;

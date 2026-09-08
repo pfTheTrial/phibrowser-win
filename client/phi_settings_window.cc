@@ -146,6 +146,19 @@ constexpr int kSpacesBlockHeight = 431;  // The Mac's fixed master-detail band.
 // The Profiles trailing pill: inner width 110, H10/V5, primary@0.06, r6.
 constexpr int kPillWidth = 130;
 constexpr int kPillHeight = 24;
+// The Mac's SettingsIconChip: a 24pt rounded square (r6) filled with the
+// colour's gradient, carrying a 12pt semibold white glyph, 12pt from the
+// text it leads — so a chip-led row's text column starts 36 in, and the
+// rows grouped under such a header are indented to match.
+constexpr int kChipSize = 24;
+constexpr int kChipRadius = 6;
+constexpr int kChipGap = 12;
+constexpr int kChipIndent = kChipSize + kChipGap;
+// Apple's system colours, which the Mac pane names directly (.indigo,
+// .orange, .blue).
+constexpr COLORREF kChipIndigo = RGB(0x58, 0x56, 0xD6);
+constexpr COLORREF kChipOrange = RGB(0xFF, 0x95, 0x00);
+constexpr COLORREF kChipBlue = RGB(0x00, 0x7A, 0xFF);
 // Icon picker grid (IconPicker): 26pt cells, 4pt gaps, r10 cells.
 constexpr int kEmojiCell = 26;
 constexpr int kEmojiGap = 4;
@@ -632,8 +645,12 @@ void PhiSettingsWindow::AddHint(int* y, const wchar_t* text) {
 
 RECT PhiSettingsWindow::AddRow(int* y, const wchar_t* title,
                                int control_height, int control_width,
-                               const wchar_t* hint) {
-  const int left = Scaled(kMargin + kCardPadding);
+                               const wchar_t* hint, int text_indent,
+                               wchar_t chip_glyph, COLORREF chip_color,
+                               int row_padding) {
+  const int padding = row_padding < 0 ? kRowPadding : row_padding;
+  const int gutter = Scaled(kMargin + kCardPadding);
+  const int left = gutter + Scaled(text_indent);
   const int right = Scaled(kWidth - kMargin - kCardPadding);
   const int text_right = right - Scaled(control_width) - Scaled(12);
   const int text_width = std::max(1, text_right - left);
@@ -649,6 +666,18 @@ RECT PhiSettingsWindow::AddRow(int* y, const wchar_t* title,
       title_height + (hint_height > 0 ? Scaled(4) + hint_height : 0);
   const int row_height = std::max(text_height, Scaled(control_height));
   const int text_top = *y + (row_height - text_height) / 2;
+  if (chip_glyph) {
+    // HStack(alignment: .top): the chip's top meets the title's, so it
+    // hangs a little below the first line rather than centring on a block
+    // whose height the description decides.
+    Item chip;
+    chip.kind = ItemKind::kIconChip;
+    chip.text = std::wstring(1, chip_glyph);
+    chip.swatch = chip_color;
+    chip.bounds = {gutter, text_top, gutter + Scaled(kChipSize),
+                   text_top + Scaled(kChipSize)};
+    items_.push_back(std::move(chip));
+  }
   Item label;
   label.kind = ItemKind::kRowLabel;
   label.text = title;
@@ -668,7 +697,7 @@ RECT PhiSettingsWindow::AddRow(int* y, const wchar_t* title,
   RECT control = {right - Scaled(control_width),
                   *y + (row_height - Scaled(control_height)) / 2, right,
                   *y + (row_height + Scaled(control_height)) / 2};
-  *y += row_height + Scaled(kRowPadding);
+  *y += row_height + Scaled(padding);
   ++card_rows_;
   return control;
 }
@@ -1047,13 +1076,16 @@ void PhiSettingsWindow::AddSectionHeading(int* y, const wchar_t* title,
 void PhiSettingsWindow::AddToggleRow(int* y, const wchar_t* title, bool on,
                                      bool enabled,
                                      const std::string& action,
-                                     const wchar_t* hint) {
+                                     const wchar_t* hint, int text_indent,
+                                     wchar_t chip_glyph,
+                                     COLORREF chip_color, int row_padding) {
   const size_t first = items_.size();
   // kToggleHeight, not kToggleHeight + 4: the row's padding is AddRow's
   // business. Handing the extra four points to the painter drew the Mac's
   // 26x15 mini switch as a 26x19 one — squat, and with barely half the
   // knob travel, which is what wedged the knob against the end.
-  const RECT area = AddRow(y, title, kToggleHeight, kToggleWidth, hint);
+  const RECT area = AddRow(y, title, kToggleHeight, kToggleWidth, hint,
+                           text_indent, chip_glyph, chip_color, row_padding);
   // A dead row must READ dead. The label and its description used to paint
   // at full strength beside a washed-out switch, so the Kiosk pair and
   // "Apply theme to text selection" looked exactly like the live rows
@@ -2405,12 +2437,19 @@ void PhiSettingsWindow::BuildShortcuts(int* y) {
 }
 
 void PhiSettingsWindow::BuildDeveloper(int* y) {
+  // The Mac's two cards under one "Agent control" title: the ACCESS card
+  // (the master gate) and, under it, the PERMISSIONS card — what an
+  // approved agent may touch. Both are chip-led, which is the visual
+  // language the whole Mac Developer pane shares.
   BeginSection(y, L"Agent control");
   AddToggleRow(y, L"Allow agents to control Phi (CDP)", /*on=*/true,
                /*enabled=*/false, std::string(),
                L"Agent tools drive Phi over the DevTools Protocol through "
-               L"a private socket only this machine's processes can reach.");
-  AddDividerRow(y);
+               L"a private socket only this machine's processes can reach.",
+               kChipIndent, 0xE735, kChipIndigo);  // sparkles (filled)
+  EndSection(y);
+
+  BeginSection(y, nullptr);
   // The user-space gate: off, a connected agent works only inside its own
   // agent Spaces; on, the management verbs reach the user's Spaces too.
   AddToggleRow(y, L"Allow agents to operate your Spaces",
@@ -2418,7 +2457,36 @@ void PhiSettingsWindow::BuildDeveloper(int* y) {
                "agentuserspaces",
                L"Lets connected agents read and change your own Spaces, "
                L"tabs, bookmarks, URL rules and profiles. Off, they can "
-               L"only work in their own agent Spaces.");
+               L"only work in their own agent Spaces.",
+               kChipIndent, 0xE8A9, kChipOrange);  // square.grid.2x2.fill
+  AddDividerRow(y);
+  // "Profiles agents can use": a chip-led header, then one switch per
+  // profile INDENTED to the header's text column, exactly as the Mac's
+  // profilesRows does with .padding(.leading, 36).
+  AddRow(y, L"Profiles agents can use", kRowLabelHeight, 0,
+         L"Choose which profiles agents may create their own Spaces in. "
+         L"Turning a profile off stops agents from opening any new Space "
+         L"bound to it; existing Spaces are unaffected.",
+         kChipIndent, 0xE716, kChipBlue);  // person.2.fill
+  const std::vector<PhiProfileSummary> profiles = profiles_->Profiles();
+  if (profiles.empty()) {
+    AddSubHint(y, L"No profiles found.");
+  } else {
+    for (const PhiProfileSummary& profile : profiles) {
+      const size_t first = items_.size();
+      AddToggleRow(y, base::UTF8ToWide(profile.name).c_str(),
+                   prefs_->AgentProfileAllowed(profile.id),
+                   /*enabled=*/true, "agentprofile", nullptr, kChipIndent,
+                   /*chip_glyph=*/0, /*chip_color=*/0, /*row_padding=*/6);
+      // The switch is the item AddToggleRow pushed last; the profile is
+      // its identity, so a list that moves cannot revoke a neighbour.
+      for (size_t i = first; i < items_.size(); ++i) {
+        if (items_[i].kind == ItemKind::kToggle) {
+          items_[i].payload = profile.id;
+        }
+      }
+    }
+  }
   EndSection(y);
   BeginSection(y, L"Approved agents");
   const std::vector<std::string> grants = host_->AgentGrantPaths();
@@ -3324,6 +3392,45 @@ void PhiSettingsWindow::Paint(HDC dc, const RECT&) {
         }
         break;
       }
+      case ItemKind::kIconChip: {
+        // The Mac's SettingsIconChip: a 24pt rounded square filled with
+        // `color.gradient` — SwiftUI's subtle lighter-top, darker-bottom
+        // ramp — under a 12pt white glyph. The ramp is painted square and
+        // its corners knocked back to the card ground afterwards, the same
+        // way the saturation track is.
+        COLORREF tint = item.swatch;
+        if (!item.enabled) {
+          tint = Blend(tint, card_bg, 110);
+        }
+        const int bands = 12;
+        const int span = std::max(1, static_cast<int>(bounds.bottom -
+                                                      bounds.top));
+        for (int i = 0; i < bands; ++i) {
+          RECT band = {bounds.left, bounds.top + span * i / bands,
+                       bounds.right, bounds.top + span * (i + 1) / bands};
+          // +8% white at the top down to -8% black at the bottom.
+          const double t = (i + 0.5) / bands;
+          const COLORREF shade =
+              t < 0.5 ? Blend(RGB(0xFF, 0xFF, 0xFF), tint,
+                              static_cast<int>(20 * (1.0 - 2.0 * t)))
+                      : Blend(RGB(0x00, 0x00, 0x00), tint,
+                              static_cast<int>(20 * (2.0 * t - 1.0)));
+          HBRUSH brush = ::CreateSolidBrush(shade);
+          ::FillRect(dc, &band, brush);
+          ::DeleteObject(brush);
+        }
+        PhiKnockOutRoundRectAA(dc, bounds, Scaled(kChipRadius), card_bg);
+        if (HFONT chip_font = IconFont(14)) {
+          ::SelectObject(dc, chip_font);
+        }
+        ::SetTextColor(dc, RGB(0xFF, 0xFF, 0xFF));
+        PhiDrawTextAA(dc, item.text.c_str(), -1, &bounds,
+                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        if (font_) {
+          ::SelectObject(dc, font_);
+        }
+        break;
+      }
       case ItemKind::kBadge: {
         FillRounded(dc, bounds, Blend(ink, bg, 25),
                     (bounds.bottom - bounds.top) / 2);
@@ -3410,6 +3517,8 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
     host_->SetAutoPeekViewEnabled(!item.on);
   } else if (item.action == "devmode") {
     host_->SetDeveloperMode(!item.on);
+  } else if (item.action == "agentprofile") {
+    host_->SetAgentProfileAllowed(item.payload, !item.on);
   } else if (item.action == "agentuserspaces") {
     host_->SetAllowAgentUserSpaces(!item.on);
   } else if (item.action == "gospaces") {

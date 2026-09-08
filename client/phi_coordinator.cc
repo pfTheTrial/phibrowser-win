@@ -2081,6 +2081,11 @@ void PhiCoordinator::SetAllowAgentUserSpaces(bool enabled) {
   preferences_.SetAllowAgentUserSpaces(enabled);
 }
 
+void PhiCoordinator::SetAgentProfileAllowed(const std::string& profile_id,
+                                            bool allowed) {
+  preferences_.SetAgentProfileAllowed(profile_id, allowed);
+}
+
 void PhiCoordinator::OpenBrowserSettings() {
   OpenBrowserPage("chrome://settings");
 }

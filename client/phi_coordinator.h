@@ -367,6 +367,8 @@ class PhiCoordinator : public PhiSlotHost,
   void SetDeveloperMode(bool enabled) override;
   bool AllowAgentUserSpaces() const;
   void SetAllowAgentUserSpaces(bool enabled) override;
+  void SetAgentProfileAllowed(const std::string& profile_id,
+                              bool allowed) override;
   void OpenBrowserSettings() override;
   void OpenBrowserPage(const std::string& url) override;
   void SetSpaceTheme(const std::string& space_id,

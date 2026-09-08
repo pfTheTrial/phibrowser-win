@@ -202,6 +202,11 @@ class PhiSettingsHost {
   // and profiles. Default off; agent Spaces are never affected, and the
   // agent cannot flip it over the control channel.
   virtual void SetAllowAgentUserSpaces(bool enabled) = 0;
+  // Developer ▸ "Profiles agents can use": which profiles an agent may
+  // bind a NEW agent Space to. Turning one off stops the next
+  // agentSpace.create against it; Spaces already open are untouched.
+  virtual void SetAgentProfileAllowed(const std::string& profile_id,
+                                      bool allowed) = 0;
   // "Additional browser settings" — opens chrome://settings in a tab.
   virtual void OpenBrowserSettings() = 0;
   // Opens any browser page in a tab — the Mac profile pane's data links
@@ -281,6 +286,7 @@ class PhiSettingsWindow : public PhiSecondaryWindow,
     kIcon,           // A lone MDL2 glyph (row gutters, drag handles).
     kKeycap,         // Shortcuts' bordered key pill (min width 80, r6).
     kSearchField,    // Shortcuts' in-card filter field.
+    kIconChip,       // The Mac's 24pt SettingsIconChip leading a row.
   };
   struct Item {
     ItemKind kind = ItemKind::kRowLabel;
@@ -349,7 +355,11 @@ class PhiSettingsWindow : public PhiSecondaryWindow,
   // `hint` is the row's own 11pt description, part of the SAME row.
   void AddToggleRow(int* y, const wchar_t* title, bool on, bool enabled,
                     const std::string& action,
-                    const wchar_t* hint = nullptr);
+                    const wchar_t* hint = nullptr,
+                    int text_indent = 0,
+                    wchar_t chip_glyph = 0,
+                    COLORREF chip_color = 0,
+                    int row_padding = -1);
   // A row inside the open card; returns the rect its control occupies,
   // RIGHT-ALIGNED as on Mac (label left, Spacer, accessory trailing).
   //
@@ -358,8 +368,18 @@ class PhiSettingsWindow : public PhiSecondaryWindow,
   // VStack): the trailing control centres on the pair, and the divider a
   // caller adds next lands after the description rather than between a
   // title and the sentence explaining it.
+  // `text_indent` moves the text block right of the card's padding — the
+  // Mac's `.padding(.leading, 36)` on the rows under a chip-led header, so
+  // they line up with that header's text rather than with its icon.
+  // `chip_glyph` / `chip_color` draw the Mac's SettingsIconChip in the 24pt
+  // gutter that indent leaves, top-aligned with the title.
+  // `row_padding` is the Mac's `.padding(.vertical, …)`: the card default
+  // for a header row, 6 for the tight rows grouped under one. -1 takes the
+  // default (the metric itself lives with the other metrics, in the .cc).
   RECT AddRow(int* y, const wchar_t* title, int control_height,
-              int control_width, const wchar_t* hint = nullptr);
+              int control_width, const wchar_t* hint = nullptr,
+              int text_indent = 0, wchar_t chip_glyph = 0,
+              COLORREF chip_color = 0, int row_padding = -1);
   // Height of `text` wrapped into `width` with `font` — DT_CALCRECT
   // through the same DrawTextW the paint pass ends in, so what is measured
   // and what is drawn cannot disagree.

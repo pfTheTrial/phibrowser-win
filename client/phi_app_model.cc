@@ -121,6 +121,15 @@ void DecodePrefsFields(const base::DictValue& dict, PhiSettings* out) {
       dict.FindBool("developerMode").value_or(out->developer_mode);
   out->allow_agent_user_spaces = dict.FindBool("allowAgentUserSpaces")
                                      .value_or(out->allow_agent_user_spaces);
+  if (const base::ListValue* blocked =
+          dict.FindList("disallowedAgentProfileIds")) {
+    out->disallowed_agent_profile_ids.clear();
+    for (const base::Value& entry : *blocked) {
+      if (const std::string* id = entry.GetIfString()) {
+        out->disallowed_agent_profile_ids.push_back(*id);
+      }
+    }
+  }
   out->test_rig = dict.FindBool("testRig").value_or(out->test_rig);
   if (const std::string* language = dict.FindString("language")) {
     out->language = *language;
@@ -387,6 +396,11 @@ base::DictValue PhiStoreTraits<PhiSettings>::Encode(const PhiSettings& value) {
   root.Set("language", value.language);
   root.Set("developerMode", value.developer_mode);
   root.Set("allowAgentUserSpaces", value.allow_agent_user_spaces);
+  base::ListValue blocked;
+  for (const std::string& id : value.disallowed_agent_profile_ids) {
+    blocked.Append(id);
+  }
+  root.Set("disallowedAgentProfileIds", std::move(blocked));
   root.Set("testRig", value.test_rig);
   root.Set("pinScope", PhiPinScopeName(value.pin_scope));
   root.Set("analyticsEnabled", value.analytics_enabled);

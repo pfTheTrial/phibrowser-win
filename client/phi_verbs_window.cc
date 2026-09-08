@@ -900,6 +900,15 @@ PhiVerbResult PhiControlDispatcher::VerbSettingsGet(
   out.Set("developerMode", coordinator_->settings().developer_mode);
   out.Set("allowAgentUserSpaces",
           coordinator_->settings().allow_agent_user_spaces);
+  // Developer ▸ "Profiles agents can use", as the refusals the pane
+  // stores. Readable so a caller can see why a create was turned down;
+  // settable only from that pane (below).
+  base::ListValue blocked_profiles;
+  for (const std::string& id :
+       coordinator_->settings().disallowed_agent_profile_ids) {
+    blocked_profiles.Append(id);
+  }
+  out.Set("disallowedAgentProfileIds", std::move(blocked_profiles));
   out.Set("themeId", coordinator_->settings().theme_id);
   out.Set("appearance", PhiAppearanceName(coordinator_->Appearance()));
   out.Set("saturation", coordinator_->settings().saturation);
@@ -939,7 +948,8 @@ PhiVerbResult PhiControlDispatcher::VerbSettingsSet(
   if (ctx.caller == ControlCaller::kPipe &&
       (ctx.params.Has("developerMode") ||
        ctx.params.Has("allowAgentUserSpaces") || ctx.params.Has("testRig") ||
-       ctx.params.Has("analyticsEnabled"))) {
+       ctx.params.Has("analyticsEnabled") ||
+       ctx.params.Has("disallowedAgentProfileIds"))) {
     return PhiVerbResult::Fail(PhiErrorCode::kPrefNotAgentSettable);
   }
   bool ok = false;

@@ -137,6 +137,10 @@ class PhiPreferences : public ChromePrefsHost {
     return settings_.allow_agent_user_spaces;
   }
   void SetAllowAgentUserSpaces(bool enabled);
+  // May an agent bind a new agent Space to `profile_id`? Stored as the
+  // refusals, so a profile made later starts allowed (the Mac's set).
+  bool AgentProfileAllowed(const std::string& profile_id) const;
+  void SetAgentProfileAllowed(const std::string& profile_id, bool allowed);
   bool AnalyticsEnabled() const { return settings_.analytics_enabled; }
   void SetAnalyticsEnabled(bool enabled);
 

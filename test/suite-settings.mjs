@@ -30,7 +30,8 @@ test('settings: the security prefs are not agent-settable', async () => {
     // docs/architecture-review.md §3.7: developerMode, allowAgentUserSpaces
     // and testRig can only be changed by the user (Settings) or by editing
     // PhiPrefs.json — never over the pipe.
-    for (const key of ['developerMode', 'allowAgentUserSpaces', 'testRig']) {
+    for (const key of ['developerMode', 'allowAgentUserSpaces', 'testRig',
+                       'disallowedAgentProfileIds']) {
       const r = await ctl.send('agentSpace.settings.set', { [key]: false })
       assertEq(r.ok, false, `${key} refused`)
       assertEq(r.error, 'pref_not_agent_settable', `${key} error code`)

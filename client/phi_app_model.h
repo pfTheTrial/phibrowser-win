@@ -183,6 +183,12 @@ struct PhiSettings {
   // The two runtime gates. Never settable over the control channel; this
   // file, hand-edited or seeded by the box runner, is their only source.
   bool allow_agent_user_spaces = false;
+  // Profiles an agent may NOT bind a new agent Space to (the Mac's
+  // AgentSpaces.disallowedAgentProfileIds). Stored as the refusals rather
+  // than the permissions so a profile created later is allowed by default,
+  // which is what the Mac's set does. Never settable over the control
+  // channel — an agent cannot widen its own reach.
+  std::vector<std::string> disallowed_agent_profile_ids;
   bool test_rig = false;
   // Where a pinned tab lives (the Mac's PinnedTabScope). The TAB STORE is
   // its truth (its rows re-own themselves when it changes, so the value
