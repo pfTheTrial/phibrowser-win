@@ -3141,6 +3141,13 @@ void PhiCoordinator::OnContentFullscreenChanged(int64_t window_id,
   }
 }
 
+void PhiCoordinator::OnContentBoundsChanged(int64_t window_id) {
+  const BrowserId browser{window_id};
+  if (PhiShellWindow* shell = registry_.ControllerForBrowser(browser)) {
+    shell->OnContentBoundsChanged(browser);
+  }
+}
+
 void PhiCoordinator::OnTargetURLChanged(int64_t window_id, const char* url) {
   const BrowserId browser{window_id};
   if (PhiShellWindow* shell = registry_.ControllerForBrowser(browser)) {

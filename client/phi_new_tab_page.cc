@@ -184,12 +184,25 @@ void PhiNewTabPage::Hide() {
   HidePanel();
 }
 
+void PhiNewTabPage::SetPlacement(int tab_id, const RECT* pane) {
+  const bool has_pane = pane != nullptr;
+  const RECT rect = has_pane ? *pane : RECT{};
+  const bool moved = has_pane != has_pane_ || tab_id != tab_id_ ||
+                     (has_pane && !::EqualRect(&rect, &pane_));
+  tab_id_ = tab_id;
+  has_pane_ = has_pane;
+  pane_ = rect;
+  if (moved && alive()) {
+    Reposition();
+  }
+}
+
 void PhiNewTabPage::Reposition() {
   if (!alive() || !controller_) {
     return;
   }
   SyncDpiFromParent();
-  SetPanelBounds(controller_->ContentRect());
+  SetPanelBounds(has_pane_ ? pane_ : controller_->ContentRect());
   RaisePanel();
   LayoutField();
   Invalidate();
@@ -377,6 +390,11 @@ void PhiNewTabPage::Paint(HDC dc, const RECT&) {
 }
 
 void PhiNewTabPage::OnMouseDown(int, POINT pt) {
+  // A pane's page: the click makes its tab the active one first, as a
+  // click on the pane's web content would (the omnibox commits there).
+  if (tab_id_ && controller_) {
+    controller_->ActivatePaneTab(tab_id_);
+  }
   // The box's padding focuses the field like the Mac's box does; the
   // ground takes focus itself, which blurs the field and drops its
   // suggestion list.
@@ -395,11 +413,17 @@ LRESULT PhiNewTabPage::OnMessage(UINT message,
                                  bool* handled) {
   switch (message) {
     case WM_COMMAND:
-      if (controller_ && field_ && reinterpret_cast<HWND>(lparam) == field_ &&
-          HIWORD(wparam) == EN_CHANGE) {
-        *handled = true;
-        controller_->OnOmniboxFieldChanged(field_);
-        return 0;
+      if (controller_ && field_ && reinterpret_cast<HWND>(lparam) == field_) {
+        if (HIWORD(wparam) == EN_CHANGE) {
+          *handled = true;
+          controller_->OnOmniboxFieldChanged(field_);
+          return 0;
+        }
+        if (HIWORD(wparam) == EN_SETFOCUS && tab_id_) {
+          // The keyboard landed in a pane's omnibox (a click, Tab): that
+          // pane's tab is where the session must commit.
+          controller_->ActivatePaneTab(tab_id_);
+        }
       }
       break;
     case WM_CTLCOLOREDIT:

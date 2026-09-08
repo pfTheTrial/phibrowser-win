@@ -4,6 +4,9 @@
 
 #include "phibrowser-win/client/phi_native_pages_host.h"
 
+#include <algorithm>
+#include <array>
+
 #include "phibrowser-win/client/phi_bookmark_manager.h"
 #include "phibrowser-win/client/phi_new_tab_page.h"
 #include "phibrowser-win/client/phi_shell_window.h"
@@ -17,48 +20,99 @@ PhiNativePagesHost::~PhiNativePagesHost() = default;
 
 void PhiNativePagesHost::Shutdown() {
   bookmark_manager_.reset();
-  new_tab_page_.reset();
+  for (auto& page : pages_) {
+    page.reset();
+  }
 }
 
 bool PhiNativePagesHost::bookmark_page_mounted() const {
   return bookmark_manager_ && bookmark_manager_->visible();
 }
 
-bool PhiNativePagesHost::ntp_mounted() const {
-  return new_tab_page_ && new_tab_page_->visible();
+bool PhiNativePagesHost::PageMounted(int slot) const {
+  return pages_[slot] && pages_[slot]->visible();
 }
 
-HWND PhiNativePagesHost::ntp_hwnd() const {
-  return new_tab_page_ ? new_tab_page_->hwnd() : nullptr;
+bool PhiNativePagesHost::ntp_mounted() const {
+  for (int slot = 0; slot < kSlots; ++slot) {
+    if (PageMounted(slot)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+PhiNewTabPage* PhiNativePagesHost::ActivePage() const {
+  const int active = shell_->NativePagesActiveTabId();
+  for (int slot = 0; slot < kSlots; ++slot) {
+    if (PageMounted(slot) &&
+        (pages_[slot]->tab_id() == 0 || pages_[slot]->tab_id() == active)) {
+      return pages_[slot].get();
+    }
+  }
+  return nullptr;
+}
+
+PhiNewTabPage* PhiNativePagesHost::FocusedPage() const {
+  const HWND focus = ::GetFocus();
+  if (!focus) {
+    return nullptr;
+  }
+  for (int slot = 0; slot < kSlots; ++slot) {
+    if (PageMounted(slot) &&
+        (focus == pages_[slot]->hwnd() || focus == pages_[slot]->field())) {
+      return pages_[slot].get();
+    }
+  }
+  return nullptr;
+}
+
+void PhiNativePagesHost::RaiseNtp() {
+  for (int slot = 0; slot < kSlots; ++slot) {
+    if (PageMounted(slot)) {
+      ::SetWindowPos(pages_[slot]->hwnd(), HWND_TOP, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    }
+  }
 }
 
 HWND PhiNativePagesHost::ntp_field() const {
-  return new_tab_page_ ? new_tab_page_->field() : nullptr;
+  PhiNewTabPage* page = FocusedPage();
+  if (!page) {
+    page = ActivePage();
+  }
+  return page ? page->field() : nullptr;
 }
 
 bool PhiNativePagesHost::NtpBoxScreenRect(RECT* out) const {
-  if (!new_tab_page_ || !out) {
+  PhiNewTabPage* page = FocusedPage();
+  if (!page) {
+    page = ActivePage();
+  }
+  if (!page || !out) {
     return false;
   }
-  *out = new_tab_page_->BoxScreenRect();
+  *out = page->BoxScreenRect();
   return true;
 }
 
 bool PhiNativePagesHost::ntp_wants_focus() const {
-  return new_tab_page_ && new_tab_page_->WantsFocus();
+  PhiNewTabPage* page = ActivePage();
+  return page && page->WantsFocus();
 }
 
 void PhiNativePagesHost::FocusNtpField() {
-  if (new_tab_page_) {
-    new_tab_page_->FocusField();
+  if (PhiNewTabPage* page = ActivePage()) {
+    page->FocusField();
   }
 }
 
 bool PhiNativePagesHost::HideNtpControls() {
-  if (!ntp_mounted()) {
+  PhiNewTabPage* page = ActivePage();
+  if (!page) {
     return false;
   }
-  new_tab_page_->HideControls();
+  page->HideControls();
   return true;
 }
 
@@ -69,9 +123,9 @@ bool PhiNativePagesHost::WantsBookmarkPage() const {
          PhiBookmarkManager::IsManagerUrl(shell_->NativePagesActiveUrl());
 }
 
-// The new-tab route: the ACTIVE tab sits on a new-tab URL — or the browser
-// has no tabs at all (placeholder mode), where the page's omnibox is the
-// way back in.
+// The new-tab route outside a split: the ACTIVE tab sits on a new-tab URL
+// — or the browser has no tabs at all (placeholder mode), where the page's
+// omnibox is the way back in.
 bool PhiNativePagesHost::WantsNtp() const {
   if (shell_->NativePagesIsAgent() || shell_->NativePagesContentFullscreen()) {
     return false;
@@ -80,6 +134,34 @@ bool PhiNativePagesHost::WantsNtp() const {
     return true;
   }
   return PhiNewTabPage::IsNewTabUrl(shell_->NativePagesActiveUrl());
+}
+
+std::array<PhiNativePagesHost::Placement, PhiNativePagesHost::kSlots>
+PhiNativePagesHost::ComputePlacements() const {
+  std::array<Placement, kSlots> out;
+  if (shell_->NativePagesIsAgent() || shell_->NativePagesContentFullscreen()) {
+    return out;
+  }
+  const std::vector<NativePane> panes = shell_->NativePagesSplitPanes();
+  if (panes.empty()) {
+    // The one page over the card, keyed by the active tab's URL.
+    out[0].wanted = WantsNtp();
+    return out;
+  }
+  // A page per new-tab pane, over that pane; a web pane keeps Chromium's
+  // content. Both panes may be new tabs — that is the "split of two new
+  // tabs" the sidebar can form, and it shows as two pages side by side.
+  const int count = std::min<int>(kSlots, static_cast<int>(panes.size()));
+  for (int slot = 0; slot < count; ++slot) {
+    if (!PhiNewTabPage::IsNewTabUrl(panes[slot].url)) {
+      continue;
+    }
+    out[slot].wanted = true;
+    out[slot].tab_id = panes[slot].tab_id;
+    out[slot].pane = true;
+    out[slot].rect = panes[slot].rect;
+  }
+  return out;
 }
 
 void PhiNativePagesHost::SyncBookmarkPage() {
@@ -101,19 +183,14 @@ void PhiNativePagesHost::SyncBookmarkPage() {
   }
 }
 
-void PhiNativePagesHost::SyncNtp() {
-  if (shell_->NativePagesSwapPending()) {
-    // A Space switch is mid-slide: the page arrives (or leaves) with the
-    // content, when the slide's completion re-runs this — the Mac reveals
-    // the target Space's content, native page included, on completion.
-    return;
-  }
-  if (!WantsNtp()) {
-    if (ntp_mounted()) {
+void PhiNativePagesHost::SyncNtpSlot(int slot, const Placement& want) {
+  std::unique_ptr<PhiNewTabPage>& page = pages_[slot];
+  if (!want.wanted) {
+    if (PageMounted(slot)) {
       const HWND focus = ::GetFocus();
-      const bool had_focus = focus && (focus == new_tab_page_->hwnd() ||
-                                       focus == new_tab_page_->field());
-      new_tab_page_->Hide();
+      const bool had_focus =
+          focus && (focus == page->hwnd() || focus == page->field());
+      page->Hide();
       if (had_focus) {
         // Never leave the keyboard on a hidden field.
         shell_->NativePagesFocusContent();
@@ -121,33 +198,52 @@ void PhiNativePagesHost::SyncNtp() {
     }
     return;
   }
-  if (!new_tab_page_) {
-    new_tab_page_ =
-        std::make_unique<PhiNewTabPage>(shell_->NativePagesOwner());
+  if (!page) {
+    page = std::make_unique<PhiNewTabPage>(shell_->NativePagesOwner());
   }
-  if (new_tab_page_->visible()) {
+  page->SetPlacement(want.tab_id, want.pane ? &want.rect : nullptr);
+  const bool active = want.tab_id == 0 ||
+                      want.tab_id == shell_->NativePagesActiveTabId();
+  if (page->visible()) {
     // Controls blanked by a commit come back once that navigation is no
     // longer the active tab's business: another tab is active, or the load
     // ended and this tab is still a new tab (a new-tab URL typed in, a
     // navigation that never left).
-    if (new_tab_page_->controls_hidden() &&
-        !shell_->NativePagesCommitPending()) {
-      new_tab_page_->Reset();
-      FocusNtpIfIdle();
+    if (page->controls_hidden() &&
+        !(active && shell_->NativePagesCommitPending())) {
+      page->Reset();
+      if (active) {
+        FocusNtpIfIdle();
+      }
     } else {
-      new_tab_page_->Refresh();  // A palette ramp repaints it with the chrome.
+      page->Refresh();  // A palette ramp repaints it with the chrome.
     }
     return;
   }
-  new_tab_page_->Show();
+  page->Show();
   if (const HWND shell = shell_->NativePagesShellWindow()) {
     // The corner caps go back on top of the page, as they ride the browser.
     shell_->NativePagesRaiseCaps();
-    // viewDidAppear focuses the omnibox — in the window the user is in; a
-    // background window mounting its page must not pull the focus over.
-    if (::GetForegroundWindow() == shell) {
-      new_tab_page_->FocusField();
+    // viewDidAppear focuses the omnibox — in the window the user is in, and
+    // only the ACTIVE pane's: a background window mounting its page must
+    // not pull the focus over, and the other pane's page must not pull it
+    // off the active pane.
+    if (active && ::GetForegroundWindow() == shell) {
+      page->FocusField();
     }
+  }
+}
+
+void PhiNativePagesHost::SyncNtp() {
+  if (shell_->NativePagesSwapPending()) {
+    // A Space switch is mid-slide: the page arrives (or leaves) with the
+    // content, when the slide's completion re-runs this — the Mac reveals
+    // the target Space's content, native page included, on completion.
+    return;
+  }
+  const std::array<Placement, kSlots> want = ComputePlacements();
+  for (int slot = 0; slot < kSlots; ++slot) {
+    SyncNtpSlot(slot, want[slot]);
   }
 }
 
@@ -162,15 +258,36 @@ void PhiNativePagesHost::SyncIfRouteChanged() {
     return;
   }
   const bool mounted = bookmark_page_mounted();
-  const bool ntp = ntp_mounted();
-  // A page blanked by a commit whose navigation is over (or belongs to
-  // another tab now) needs the sync too, to bring its controls back.
-  const bool ntp_stale = ntp && new_tab_page_->controls_hidden() &&
-                         !shell_->NativePagesCommitPending();
-  if (ntp) {
-    new_tab_page_->Refresh();  // Palette ramps repaint it with the chrome.
+  bool post = mounted != WantsBookmarkPage();
+  const std::array<Placement, kSlots> want = ComputePlacements();
+  const int active = shell_->NativePagesActiveTabId();
+  for (int slot = 0; slot < kSlots; ++slot) {
+    const bool up = PageMounted(slot);
+    if (up != want[slot].wanted) {
+      post = true;
+      continue;
+    }
+    if (!up) {
+      continue;
+    }
+    PhiNewTabPage* page = pages_[slot].get();
+    if (page->tab_id() != want[slot].tab_id) {
+      post = true;  // The pane changed hands (a swap): remount for it.
+      continue;
+    }
+    // A page blanked by a commit whose navigation is over (or belongs to
+    // another tab now) needs the sync too, to bring its controls back.
+    const bool this_active = page->tab_id() == 0 || page->tab_id() == active;
+    if (page->controls_hidden() &&
+        !(this_active && shell_->NativePagesCommitPending())) {
+      post = true;
+    }
+    // In place: the pane Chromium laid out, and the palette.
+    page->SetPlacement(want[slot].tab_id,
+                       want[slot].pane ? &want[slot].rect : nullptr);
+    page->Refresh();  // Palette ramps repaint it with the chrome.
   }
-  if (mounted != WantsBookmarkPage() || ntp != WantsNtp() || ntp_stale) {
+  if (post) {
     ::PostMessageW(shell, kMsgPhiSyncNativePages, 0, 0);
   }
 }
@@ -179,34 +296,51 @@ void PhiNativePagesHost::Reposition() {
   if (bookmark_page_mounted()) {
     bookmark_manager_->Reposition();
   }
-  if (ntp_mounted()) {
-    new_tab_page_->Reposition();
+  if (!ntp_mounted()) {
+    return;
+  }
+  // Chromium may have moved the panes (a divider drag) with no route
+  // change: re-read where each mounted page's pane is now.
+  const std::array<Placement, kSlots> want = ComputePlacements();
+  for (int slot = 0; slot < kSlots; ++slot) {
+    if (!PageMounted(slot)) {
+      continue;
+    }
+    PhiNewTabPage* page = pages_[slot].get();
+    if (want[slot].wanted && want[slot].tab_id == page->tab_id()) {
+      page->SetPlacement(want[slot].tab_id,
+                         want[slot].pane ? &want[slot].rect : nullptr);
+    }
+    page->Reposition();
   }
 }
 
 void PhiNativePagesHost::Refresh() {
-  if (ntp_mounted()) {
-    new_tab_page_->Refresh();
+  for (int slot = 0; slot < kSlots; ++slot) {
+    if (PageMounted(slot)) {
+      pages_[slot]->Refresh();
+    }
   }
 }
 
 void PhiNativePagesHost::FocusNtpIfIdle() {
   const HWND shell = shell_->NativePagesShellWindow();
-  if (!new_tab_page_ || !shell || ::GetForegroundWindow() != shell) {
+  PhiNewTabPage* page = ActivePage();
+  if (!page || !shell || ::GetForegroundWindow() != shell) {
     return;
   }
   const HWND focus = ::GetFocus();
   if (focus && focus != shell &&
       focus != shell_->NativePagesContentWindow() &&
-      focus != new_tab_page_->hwnd() && focus != new_tab_page_->field()) {
+      focus != page->hwnd() && focus != page->field()) {
     return;  // The user is in another control (the address field, a panel).
   }
-  new_tab_page_->FocusField();
+  page->FocusField();
 }
 
 void PhiNativePagesHost::ResetNtp() {
-  if (ntp_mounted()) {
-    new_tab_page_->Reset();
+  if (PhiNewTabPage* page = ActivePage()) {
+    page->Reset();
     FocusNtpIfIdle();
     return;
   }

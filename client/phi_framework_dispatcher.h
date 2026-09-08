@@ -61,6 +61,7 @@ class PhiFrameworkDispatcher : public phi_framework::PhiFrameworkDelegate {
   void OnPlaceholderModeChanged(int64_t window_id, bool entered) override;
   void OnRefreshNewTab(int64_t window_id) override;
   void OnContentFullscreenChanged(int64_t window_id, bool fullscreen) override;
+  void OnContentBoundsChanged(int64_t window_id) override;
   void OnExtensionsChanged(int64_t window_id) override;
   void OnProfileCreated(const char* profile_id) override;
   void OnReaderArticleExtracted(int request_id, const char* json) override;

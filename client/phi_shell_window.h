@@ -573,6 +573,9 @@ class PhiShellWindow : public PhiHitSource,
   // child resizes itself to the MONITOR, so the shell must go borderless
   // fullscreen for the duration or the render is clipped to the window.
   void OnContentFullscreenChanged(BrowserId browser_id, bool fullscreen);
+  // Chromium moved a pane of this window's split (the framework's
+  // OnContentBoundsChanged): the native pages over the panes follow.
+  void OnContentBoundsChanged(BrowserId browser_id);
 
   // THE refresh entry point (docs/architecture-review.md §3.1 principle 3):
   // marks the rows dirty and posts ONE coalesced rebuild (kMsgPhiRebuildRows)
@@ -670,6 +673,11 @@ class PhiShellWindow : public PhiHitSource,
   // tab (the framework's OnRefreshNewTab): the native page returns to its
   // clean state, as the Mac's resetToInitialState does.
   void ResetNativeNtp();
+  // A pane's native new-tab page was clicked (or its field took focus):
+  // that pane's tab becomes the active one, as a click on the pane's web
+  // content would make it — the omnibox session commits into the active
+  // tab, so it must be the pane the user is typing in.
+  void ActivatePaneTab(int tab_id);
 
   // The shell window's menu bar (null before the shell exists). The control
   // socket reads and clicks it through here.
@@ -1257,6 +1265,8 @@ class PhiShellWindow : public PhiHitSource,
   bool NativePagesPlaceholding() const override;
   bool NativePagesSwapPending() const override;
   const std::string& NativePagesActiveUrl() const override;
+  int NativePagesActiveTabId() const override;
+  std::vector<NativePane> NativePagesSplitPanes() const override;
   void NativePagesRaiseCaps() override;
   void NativePagesFocusContent() override;
   HWND NativePagesContentWindow() const override;

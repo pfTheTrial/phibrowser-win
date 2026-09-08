@@ -7,8 +7,10 @@
 
 #include <windows.h>
 
+#include <array>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "base/memory/raw_ptr_exclusion.h"
 
@@ -18,12 +20,27 @@ class PhiBookmarkManager;
 class PhiNewTabPage;
 class PhiShellWindow;
 
+// One pane of the split on screen, as the new-tab route reads it: the
+// tab, its URL, and where Chromium laid the pane out, in shell client
+// coordinates (empty until Chromium's layout has run).
+struct NativePane {
+  int tab_id = 0;
+  std::string url;
+  RECT rect = {};
+};
+
 // THE two client-drawn pages that mount OVER the content card by URL
 // (docs/architecture-review.md §3.5, lane 1 cluster M): the bookmark
 // manager and the native new-tab page. The Mac mounts both the same way —
 // the tab stays an ordinary browser tab and navigating it away restores
 // the Chromium view — so the whole component is one predicate per page
 // plus the mount/unmount it drives.
+//
+// A SPLIT has a new-tab page PER PANE (the Mac's per-pane
+// WebContentViewController, each with its own NewTabViewController): a
+// pane on a new-tab URL gets a page over its own rect, a pane on a web
+// page shows Chromium's content. Outside a split the one page covers the
+// card, as before.
 //
 // INVARIANT: a page is mounted or unmounted ONLY from Sync(), and Sync()
 // runs only on the posted kMsgPhiSyncNativePages turn (or on the two
@@ -53,6 +70,12 @@ class PhiNativePagesShell {
   virtual bool NativePagesSwapPending() const = 0;
   // The ACTIVE tab's URL, which is what selects the route.
   virtual const std::string& NativePagesActiveUrl() const = 0;
+  // The ACTIVE tab's id (0 when there is none) — in a split, the pane
+  // whose page owns the keyboard and the commit.
+  virtual int NativePagesActiveTabId() const = 0;
+  // The panes of the split the ACTIVE tab is in, primary (left/top) first;
+  // empty when the active tab is not in a split.
+  virtual std::vector<NativePane> NativePagesSplitPanes() const = 0;
   virtual void NativePagesRaiseCaps() = 0;
   // Never leave the keyboard on a hidden field.
   virtual void NativePagesFocusContent() = 0;
@@ -83,10 +106,11 @@ class PhiNativePagesHost {
   // the reveal, exactly as the content itself is deferred.
   void SyncNtp();
   // A rebuild noticed the route may have moved. Refreshes a mounted NTP in
-  // place (a palette ramp repaints it with the chrome) and posts
-  // kMsgPhiSyncNativePages when the mount state actually has to change.
+  // place (a palette ramp repaints it with the chrome, a pane that moved
+  // is followed) and posts kMsgPhiSyncNativePages when the mount state
+  // actually has to change.
   void SyncIfRouteChanged();
-  // The content card moved or resized.
+  // The content card moved or resized, or Chromium moved a pane.
   void Reposition();
   // A palette change (the create-Space form's live preview, a theme ramp).
   void Refresh();
@@ -98,36 +122,60 @@ class PhiNativePagesHost {
 
   // Whether either page is currently mounted over the content card.
   bool bookmark_page_mounted() const;
+  // Any new-tab page is up (the card's, or a pane's).
   bool ntp_mounted() const;
-  // The NTP's own window and its omnibox EDIT — the shell's focus routing
-  // and the omnibox session's field adoption read these. Null when the
-  // page has never been created.
-  HWND ntp_hwnd() const;
+  // Back above the browser child — every mounted page.
+  void RaiseNtp();
+  // The omnibox EDIT the session is (or should be) in: the field that has
+  // the focus when a page's field does, else the ACTIVE pane's page's
+  // field. Null when no page is up.
   HWND ntp_field() const;
-  // The page's search box in screen coordinates, for the omnibox session's
-  // suggestion dropdown. False when the page has never been created.
+  // That page's search box in screen coordinates, for the omnibox
+  // session's suggestion dropdown. False when no page is up.
   bool NtpBoxScreenRect(RECT* out) const;
-  // The page is up and its field is where the keyboard belongs (the shell
-  // forwards activation and focus to it rather than to the browser child).
+  // The active pane's page is up and its field is where the keyboard
+  // belongs (the shell forwards activation and focus to it rather than to
+  // the browser child).
   bool ntp_wants_focus() const;
   void FocusNtpField();
-  // omniBoxDidClear: the page blanks its controls so nothing of the new-tab
-  // page lingers over the arriving one; the rebuild that sees the new URL
-  // unmounts it. No-op unless the page is mounted; true when it blanked.
+  // omniBoxDidClear: the active pane's page blanks its controls so nothing
+  // of the new-tab page lingers over the arriving one; the rebuild that
+  // sees the new URL unmounts it. No-op unless that page is mounted; true
+  // when it blanked.
   bool HideNtpControls();
 
  private:
+  // Where a slot's page should be: slot 0 is the card (no split) or the
+  // primary pane, slot 1 the secondary pane.
+  struct Placement {
+    bool wanted = false;
+    int tab_id = 0;
+    bool pane = false;  // false: the whole content card.
+    RECT rect = {};
+  };
+  static constexpr int kSlots = 2;
+
   // The two route predicates. Pure functions of the shell's state.
   bool WantsBookmarkPage() const;
   bool WantsNtp() const;
+  // The new-tab route per slot, from the shell's state.
+  std::array<Placement, kSlots> ComputePlacements() const;
   void SyncBookmarkPage();
-  // Focuses the page's omnibox unless the user is busy in another control.
+  void SyncNtpSlot(int slot, const Placement& want);
+  // The page whose tab is the active one (or the card's page). Null when
+  // none is mounted.
+  PhiNewTabPage* ActivePage() const;
+  // The page whose window or field has the keyboard focus, if any.
+  PhiNewTabPage* FocusedPage() const;
+  bool PageMounted(int slot) const;
+  // Focuses the active page's omnibox unless the user is busy in another
+  // control.
   void FocusNtpIfIdle();
 
   // Owns this host and outlives it.
   RAW_PTR_EXCLUSION PhiNativePagesShell* const shell_;
   std::unique_ptr<PhiBookmarkManager> bookmark_manager_;
-  std::unique_ptr<PhiNewTabPage> new_tab_page_;
+  std::array<std::unique_ptr<PhiNewTabPage>, kSlots> pages_;
 };
 
 }  // namespace phi_client

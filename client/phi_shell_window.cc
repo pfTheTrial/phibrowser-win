@@ -1409,6 +1409,21 @@ void PhiShellWindow::OnContentFullscreenChanged(BrowserId browser_id,
   browsers_->OnContentFullscreenChanged(browser_id, fullscreen);
 }
 
+void PhiShellWindow::OnContentBoundsChanged(BrowserId browser_id) {
+  if (browser_id == active_browser_id()) {
+    native_pages_->Reposition();
+  }
+}
+
+void PhiShellWindow::ActivatePaneTab(int tab_id) {
+  const BrowserId browser = active_browser_id();
+  if (!framework_ || !browser.valid() || tab_id <= 0 ||
+      active_tab_id().value == tab_id) {
+    return;
+  }
+  framework_->ActivateTabById(browser.value, tab_id);
+}
+
 PhiOmniboxCapsule PhiShellWindow::OmniboxCapsule() {
   const Layout layout = ComputeLayout();
   auto to_pure = [](const RECT& r) {
@@ -1482,6 +1497,43 @@ bool PhiShellWindow::NativePagesSwapPending() const {
 
 const std::string& PhiShellWindow::NativePagesActiveUrl() const {
   return active_tab_url();
+}
+
+int PhiShellWindow::NativePagesActiveTabId() const {
+  const TabId active = active_tab_id();
+  return active.valid() ? active.value : 0;
+}
+
+std::vector<NativePane> PhiShellWindow::NativePagesSplitPanes() const {
+  std::vector<NativePane> panes;
+  const BrowserId browser = active_browser_id();
+  const TabId active = active_tab_id();
+  const SplitSnapshot* split = model_ && browser.valid() && active.valid()
+                                   ? model_->SplitOfTab(browser, active)
+                                   : nullptr;
+  if (!split || !framework_ || !shell_hwnd_) {
+    return panes;
+  }
+  for (const TabId tab : {split->primary, split->secondary}) {
+    NativePane pane;
+    pane.tab_id = tab.value;
+    if (const TabSnapshot* snapshot = model_->FindTab(browser, tab)) {
+      pane.url = snapshot->url;
+    }
+    // Where Chromium laid the pane out, in SCREEN pixels; mapped into the
+    // shell, whose child the page is. Empty until the layout has run —
+    // the framework's OnContentBoundsChanged repositions then.
+    int left = 0, top = 0, right = 0, bottom = 0;
+    if (framework_->TabContentBoundsById(browser.value, tab.value, &left,
+                                         &top, &right, &bottom)) {
+      RECT rect = {left, top, right, bottom};
+      ::MapWindowPoints(nullptr, shell_hwnd_, reinterpret_cast<POINT*>(&rect),
+                        2);
+      pane.rect = rect;
+    }
+    panes.push_back(std::move(pane));
+  }
+  return panes;
 }
 
 void PhiShellWindow::NativePagesRaiseCaps() {
@@ -5078,11 +5130,8 @@ LRESULT CALLBACK PhiShellWindow::ShellWndProc(HWND hwnd,
       return 0;
     case PhiBrowserHost::kMsgRaiseCaps:
       if (self) {
-        if (self->native_pages_->ntp_mounted()) {
-          // Above the browser child; the bubble and caps go above it next.
-          ::SetWindowPos(self->native_pages_->ntp_hwnd(), HWND_TOP, 0, 0, 0, 0,
-                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-        }
+        // Above the browser child; the bubble and caps go above it next.
+        self->native_pages_->RaiseNtp();
         if (self->services_.sidebar) {
           // The reader panel covers the whole card, so it has to come up
           // before the caps that round it.

@@ -141,6 +141,7 @@ class PhiCoordinator : public SidebarHost,
   void OnPlaceholderModeChanged(int64_t window_id, bool entered);
   void OnRefreshNewTab(int64_t window_id);
   void OnContentFullscreenChanged(int64_t window_id, bool fullscreen);
+  void OnContentBoundsChanged(int64_t window_id);
   void OnExtensionsChanged(int64_t window_id);
   void OnShowFeedbackRequested();
   void OnTabDistillable(int64_t window_id, int tab_id, bool distillable);

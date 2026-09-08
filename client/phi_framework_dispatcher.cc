@@ -82,6 +82,10 @@ void PhiFrameworkDispatcher::OnContentFullscreenChanged(int64_t window_id,
   coordinator_.OnContentFullscreenChanged(window_id, fullscreen);
 }
 
+void PhiFrameworkDispatcher::OnContentBoundsChanged(int64_t window_id) {
+  coordinator_.OnContentBoundsChanged(window_id);
+}
+
 void PhiFrameworkDispatcher::OnExtensionsChanged(int64_t window_id) {
   coordinator_.OnExtensionsChanged(window_id);
 }

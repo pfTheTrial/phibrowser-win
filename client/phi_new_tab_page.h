@@ -33,6 +33,13 @@ class PhiShellWindow;
 // The omnibox is a real EDIT owned by this page but driven by the window
 // controller's ONE omnibox session (query, suggestion dropdown, commit) —
 // the controller subclasses the field exactly like its own address field.
+//
+// IN A SPLIT the page covers ONE PANE, not the card: the host mounts a page
+// per new-tab pane (the Mac's per-pane WebContentViewController each hosting
+// its own NewTabViewController) and places it with SetPlacement. A click on
+// a pane's page activates that pane's tab, as a click on its web content
+// would — the omnibox session commits into the active tab, so the pane the
+// user is typing in must be the active one.
 class PhiNewTabPage : public PhiPanel {
  public:
   explicit PhiNewTabPage(PhiShellWindow* controller);
@@ -57,7 +64,12 @@ class PhiNewTabPage : public PhiPanel {
   // True after HideControls, until Show or Reset.
   bool controls_hidden() const { return controls_hidden_; }
 
-  // Follows the content card (and the monitor's DPI) on relayout.
+  // Where the page sits: over `pane` (shell client coordinates) for the tab
+  // `tab_id`, or over the whole content card when `pane` is null (`tab_id`
+  // then 0). Moves a mounted page at once.
+  void SetPlacement(int tab_id, const RECT* pane);
+  int tab_id() const { return tab_id_; }
+  // Follows the content card / its pane (and the monitor's DPI) on relayout.
   void Reposition();
   // Repaints — a palette change.
   void Refresh();
@@ -111,6 +123,10 @@ class PhiNewTabPage : public PhiPanel {
   HBRUSH field_brush_ = nullptr;
   COLORREF field_brush_color_ = CLR_INVALID;
   bool controls_hidden_ = false;
+  // The pane this page covers: 0 / no rect = the whole content card.
+  int tab_id_ = 0;
+  bool has_pane_ = false;
+  RECT pane_ = {};
 };
 
 }  // namespace phi_client
