@@ -42,6 +42,18 @@ constexpr int kBufSize = 32 * 1024;
 constexpr char kControlPathPrefix[] = "/phi-agent";
 constexpr char kDevToolsPathPrefix[] = "/devtools/";
 constexpr char kTokenHeader[] = "x-phi-token";
+// The agent capability (lane 5 §4.1) a peer presents to join an existing
+// principal, and the name the 101 echoes it back under. The skill parses
+// exactly this alphabet and length band (cdp.mjs agentCapabilityHeader).
+constexpr char kCapabilityHeader[] = "x-phi-agent-capability";
+constexpr char kCapabilityEchoHeader[] = "X-Phi-Agent-Capability";
+// The control-plane wire version the peer asks for on its /phi-agent
+// upgrade, and the name the 101 confirms it under (lane 5 §4.4). Absent — or
+// anything but "2" — means protocol 1, the byte-compatible legacy envelope.
+constexpr char kProtocolHeader[] = "x-phi-protocol";
+constexpr char kProtocolEchoHeader[] = "X-Phi-Protocol";
+constexpr int kProtocolV1 = 1;
+constexpr int kProtocolV2 = 2;
 // Concurrent connections beyond this get 429 without touching the delegate:
 // every un-decided connection is a potential consent dialog, and a local
 // process must not be able to stack fifty of them.
@@ -163,6 +175,23 @@ bool TokenMatches(const std::string& expected, const std::string& presented) {
                                   static_cast<unsigned char>(expected[i]));
   }
   return diff == 0;
+}
+
+// The wire form of a capability id: [A-Za-z0-9_-]{32,128}. Anything else
+// is dropped before it reaches the delegate, so a malformed header can
+// neither match nor be echoed.
+bool IsCapabilityToken(const std::string& value) {
+  if (value.size() < 32 || value.size() > 128) {
+    return false;
+  }
+  for (char c : value) {
+    const bool ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                    (c >= '0' && c <= '9') || c == '_' || c == '-';
+    if (!ok) {
+      return false;
+    }
+  }
+  return true;
 }
 
 bool RandomHex(size_t bytes, std::string* out) {
@@ -391,8 +420,14 @@ class WsDecoder {
 
 // Validates the upgrade and builds the 101 (true) or a 400 with a body
 // (false). The old server answered a bad handshake with silence, which left
-// the peer hanging until its own timeout.
-bool BuildWsHandshake(const std::string& head, std::string* response) {
+// the peer hanging until its own timeout. `capability_id`, when non-empty,
+// rides the 101 as X-Phi-Agent-Capability — the skill reads it off the
+// upgrade response (cdp.mjs UnixWebSocket._onData) and presents it on its
+// later connections.
+bool BuildWsHandshake(const std::string& head,
+                      const std::string& capability_id,
+                      int protocol,
+                      std::string* response) {
   std::optional<std::string> key = HeaderValue(head, "sec-websocket-key");
   if (!IsWebSocketUpgrade(head) || !key || key->empty()) {
     *response = HttpText(
@@ -408,8 +443,24 @@ bool BuildWsHandshake(const std::string& head, std::string* response) {
       "Upgrade: websocket\r\n"
       "Connection: Upgrade\r\n"
       "Sec-WebSocket-Accept: " +
-      accept + "\r\n\r\n";
+      accept + "\r\n";
+  if (!capability_id.empty() && IsCapabilityToken(capability_id)) {
+    *response += std::string(kCapabilityEchoHeader) + ": " + capability_id +
+                 "\r\n";
+  }
+  // Confirmed, never assumed: a peer that asked for 2 on a build that does
+  // not know it sees no echo and stays on 1 (cdp.mjs reads exactly this).
+  if (protocol == kProtocolV2) {
+    *response += std::string(kProtocolEchoHeader) + ": 2\r\n";
+  }
+  *response += "\r\n";
   return true;
+}
+
+// The control wire the peer asked for on its upgrade.
+int RequestedProtocol(const std::string& head) {
+  std::optional<std::string> value = HeaderValue(head, kProtocolHeader);
+  return value && *value == "2" ? kProtocolV2 : kProtocolV1;
 }
 
 // --- Peer identity ----------------------------------------------------------
@@ -764,6 +815,12 @@ void PhiControlServer::HandleConnection(HANDLE pipe) {
   conn.pipe = pipe;
   conn.read_event = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
   conn.write_event = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+  // The delegate's handle for this connection's principal; allocated for
+  // every accept so a refused connection never shares an id with a served
+  // one.
+  const uint64_t connection_id = next_connection_id_.fetch_add(1);
+  std::string capability_id;
+  bool consented = false;
 
   // Gates in order: cap, token, consent. Each one refuses without touching
   // the next, and the delegate (the consent dialog) is the LAST.
@@ -778,13 +835,24 @@ void PhiControlServer::HandleConnection(HANDLE pipe) {
     // No UI, no log spam: this is the case a process that cannot read the
     // profile directory hits, and it must learn nothing from it.
     conn.Write(HttpText("403 Forbidden", "Missing or invalid X-Phi-Token.\n"));
-  } else if (!delegate_ || !delegate_->AuthorizeAgentPeer(ResolvePeer(pipe))) {
-    conn.Write(HttpText("403 Forbidden", "Phi denied this agent.\n"));
   } else {
+    PhiAgentPeer peer = ResolvePeer(pipe);
+    if (std::optional<std::string> presented =
+            HeaderValue(head, kCapabilityHeader);
+        presented && IsCapabilityToken(*presented)) {
+      peer.presented_capability = *presented;
+    }
+    consented = delegate_ && delegate_->AuthorizeAgentPeer(connection_id, peer,
+                                                           &capability_id);
+    if (!consented) {
+      conn.Write(HttpText("403 Forbidden", "Phi denied this agent.\n"));
+    }
+  }
+  if (consented) {
     const std::string raw_path = RequestPath(head);
     const std::string path = NormalizePath(raw_path);
     if (raw_path.rfind(kControlPathPrefix, 0) == 0) {
-      ServeControlChannel(&conn, head);
+      ServeControlChannel(&conn, head, connection_id, capability_id);
     } else if (IsWebSocketUpgrade(head)) {
       // /devtools/<kind>/<id> — <id> may be empty for the browser target.
       if (path.rfind(kDevToolsPathPrefix, 0) != 0) {
@@ -794,7 +862,8 @@ void PhiControlServer::HandleConnection(HANDLE pipe) {
         const std::string target_id =
             id_start == std::string::npos ? std::string()
                                           : path.substr(id_start + 1);
-        ServeDevToolsSession(&conn, head, target_id);
+        ServeDevToolsSession(&conn, head, target_id, connection_id,
+                             capability_id);
       }
     } else if (RequestMethod(head) == "GET" &&
                (path == "/json" || path == "/json/version" ||
@@ -810,6 +879,9 @@ void PhiControlServer::HandleConnection(HANDLE pipe) {
     } else {
       conn.Write(HttpText("404 Not Found", "No such path.\n"));
     }
+    // After the serve loops, so every session the connection opened has
+    // already been reported closed.
+    delegate_->OnConnectionClosed(connection_id);
   }
   ::FlushFileBuffers(pipe);
   ::DisconnectNamedPipe(pipe);
@@ -819,9 +891,15 @@ void PhiControlServer::HandleConnection(HANDLE pipe) {
 }
 
 void PhiControlServer::ServeControlChannel(Connection* conn,
-                                           const std::string& head) {
+                                           const std::string& head,
+                                           uint64_t connection_id,
+                                           const std::string& capability_id) {
+  // Which wire this connection speaks, decided ONCE on the upgrade and
+  // fixed for its life: v2 when the peer sent `X-Phi-Protocol: 2` (the 101
+  // confirms it), v1 otherwise.
+  const int protocol = RequestedProtocol(head);
   std::string handshake;
-  const bool ok = BuildWsHandshake(head, &handshake);
+  const bool ok = BuildWsHandshake(head, capability_id, protocol, &handshake);
   if (!conn->Write(handshake) || !ok) {
     return;
   }
@@ -833,7 +911,11 @@ void PhiControlServer::ServeControlChannel(Connection* conn,
   auto channel = std::make_shared<ControlChannel>();
   channel->pipe = conn->pipe;
   channel->write_event = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+  channel->protocol = protocol;
   RegisterChannel(channel);
+  if (delegate_) {
+    delegate_->OnControlProtocol(connection_id, protocol);
+  }
 
   auto send_frame = [&](const std::string& frame) {
     // Shares the pipe with BroadcastEvent — never interleave two frames.
@@ -841,7 +923,12 @@ void PhiControlServer::ServeControlChannel(Connection* conn,
     return conn->Write(frame);
   };
 
-  // Message loop: {id, type, payloadJson} -> {id, responseJson|error}.
+  // Message loop. The delegate answers a PhiVerbResult either way; the two
+  // wires differ only in how this loop spells it:
+  //   v1  {id, type, payloadJson}  -> {id, responseJson:"{ok,…}"}
+  //   v2  {id, type, payload}      -> {id, ok:true, result:{…}}
+  //                                   {id, ok:false, error:{code,message?,
+  //                                                         details?}}
   WsDecoder decoder;
   bool close_sent = false;
   for (;;) {
@@ -879,17 +966,53 @@ void PhiControlServer::ServeControlChannel(Connection* conn,
       const base::DictValue& req = *parsed;
       std::optional<int> id = req.FindInt("id");
       const std::string* type = req.FindString("type");
-      const std::string* payload = req.FindString("payloadJson");
       if (id) {
         resp_dict.Set("id", *id);
       }
       if (type && delegate_) {
-        resp_dict.Set("responseJson",
-                      delegate_->HandleControlCommand(
-                          *type, payload ? *payload : std::string("{}")));
+        // The payload reaches the delegate parsed, whichever wire brought
+        // it: v1 carries it stringified under `payloadJson`, v2 carries the
+        // object under `payload`. An unparseable v1 string is an empty
+        // payload — exactly what the old reader did with it.
+        base::DictValue payload;
+        if (protocol == kProtocolV2) {
+          if (const base::DictValue* given = req.FindDict("payload")) {
+            payload = given->Clone();
+          }
+        } else if (const std::string* json = req.FindString("payloadJson")) {
+          std::optional<base::DictValue> given =
+              base::JSONReader::ReadDict(*json, base::JSON_PARSE_RFC);
+          if (given) {
+            payload = std::move(*given);
+          }
+        }
+        PhiVerbResult result = delegate_->HandleControlCommand(
+            connection_id, *type, std::move(payload));
+        if (protocol == kProtocolV2) {
+          resp_dict.Set("ok", result.ok);
+          if (result.ok) {
+            resp_dict.Set("result", std::move(result.fields));
+          } else {
+            resp_dict.Set("error", result.ToV2Error());
+          }
+        } else {
+          resp_dict.Set("responseJson", result.ToLegacyJson());
+        }
+      } else if (protocol == kProtocolV2) {
+        base::DictValue error;
+        error.Set("code", PhiErrorCodeName(PhiErrorCode::kInvalidPayload));
+        error.Set("message", "missing type");
+        resp_dict.Set("ok", false);
+        resp_dict.Set("error", std::move(error));
       } else {
         resp_dict.Set("error", "missing type");
       }
+    } else if (protocol == kProtocolV2) {
+      base::DictValue error;
+      error.Set("code", PhiErrorCodeName(PhiErrorCode::kInvalidPayload));
+      error.Set("message", "bad json");
+      resp_dict.Set("ok", false);
+      resp_dict.Set("error", std::move(error));
     } else {
       resp_dict.Set("error", "bad json");
     }
@@ -910,9 +1033,13 @@ void PhiControlServer::ServeControlChannel(Connection* conn,
 
 void PhiControlServer::ServeDevToolsSession(Connection* conn,
                                             const std::string& head,
-                                            const std::string& target_id) {
+                                            const std::string& target_id,
+                                            uint64_t connection_id,
+                                            const std::string& capability_id) {
   std::string handshake;
-  if (!BuildWsHandshake(head, &handshake)) {
+  // A CDP session carries no control envelope, so it never negotiates the
+  // control wire.
+  if (!BuildWsHandshake(head, capability_id, kProtocolV1, &handshake)) {
     conn->Write(handshake);
     return;
   }
@@ -932,8 +1059,13 @@ void PhiControlServer::ServeDevToolsSession(Connection* conn,
                          "DevTools is shutting down.\n"));
     return;
   }
+  // Scoped BEFORE the 101: a session starts seeing nothing (the framework's
+  // default), and the peer's first message must already find the
+  // principal's windows in place rather than an empty target list.
+  delegate_->OnDevToolsSessionOpened(connection_id, session);
   if (!conn->Write(handshake)) {
     framework_->CloseDevToolsSession(session);
+    delegate_->OnDevToolsSessionClosed(connection_id, session);
     ::CloseHandle(wake);
     return;
   }
@@ -1026,6 +1158,7 @@ void PhiControlServer::ServeDevToolsSession(Connection* conn,
   // pump (on this stack) is safe to destroy afterwards; and the pending
   // read must be cancelled AND reaped before read_ov goes out of scope.
   framework_->CloseDevToolsSession(session);
+  delegate_->OnDevToolsSessionClosed(connection_id, session);
   if (read_pending) {
     ::CancelIoEx(conn->pipe, &read_ov);
     DWORD ignored = 0;
@@ -1052,12 +1185,25 @@ void PhiControlServer::UnregisterChannel(
 
 void PhiControlServer::BroadcastEvent(const std::string& type,
                                       const std::string& payload_json) {
-  base::DictValue frame;
-  frame.Set("event", type);
-  frame.Set("payloadJson", payload_json);
-  std::string text;
-  base::JSONWriter::Write(frame, &text);
-  const std::string bytes = WsFrame(kWsText, text);
+  // One event, two spellings — {event, payloadJson} on v1, {event, payload}
+  // on v2. Both are built once here, not per channel.
+  base::DictValue v1_frame;
+  v1_frame.Set("event", type);
+  v1_frame.Set("payloadJson", payload_json);
+  std::string v1_text;
+  base::JSONWriter::Write(v1_frame, &v1_text);
+  const std::string v1_bytes = WsFrame(kWsText, v1_text);
+
+  base::DictValue v2_frame;
+  v2_frame.Set("event", type);
+  std::optional<base::DictValue> parsed =
+      base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
+  v2_frame.Set("payload",
+               parsed ? std::move(*parsed) : base::DictValue());
+  std::string v2_text;
+  base::JSONWriter::Write(v2_frame, &v2_text);
+  const std::string v2_bytes = WsFrame(kWsText, v2_text);
+
   // Snapshot under the registry lock, then write outside it: a slow peer must
   // not block another connection from arriving or leaving.
   std::vector<std::shared_ptr<ControlChannel>> targets;
@@ -1066,6 +1212,8 @@ void PhiControlServer::BroadcastEvent(const std::string& type,
     targets = channels_;
   }
   for (const std::shared_ptr<ControlChannel>& channel : targets) {
+    const std::string& bytes =
+        channel->protocol == kProtocolV2 ? v2_bytes : v1_bytes;
     base::AutoLock lock(channel->write_lock);
     OvWriteTimeout(channel->pipe, channel->write_event, bytes.data(),
                    bytes.size(), 1000);

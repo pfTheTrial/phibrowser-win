@@ -1,0 +1,198 @@
+// Copyright 2026 The Fyde Innovations Limited. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#ifndef PHIBROWSER_WIN_CLIENT_PHI_SESSION_RESTORE_H_
+#define PHIBROWSER_WIN_CLIENT_PHI_SESSION_RESTORE_H_
+
+#include <functional>
+#include <memory>
+#include <string>
+#include <vector>
+
+#include "base/memory/raw_ptr_exclusion.h"
+#include "phibrowser-win/client/phi_app_model.h"
+#include "phibrowser-win/client/phi_ghost_spaces.h"
+#include "phibrowser-win/client/phi_ids.h"
+
+namespace phi_framework {
+class PhiFramework;
+}  // namespace phi_framework
+
+namespace phi_client {
+
+template <typename T>
+class PhiStore;
+
+// Lazy Space restore (docs/architecture-review.md §3.4, lane 1 §1.2 cluster
+// 11): the ghost Spaces (windows the last session parked), the cold-start
+// plan, the reopen receipt and the last-active Space — one model, one file
+// (PhiRestore.json).
+//
+// Invariants (§3.4): a Space↔window record is written only from an explicit
+// attach or a restore match; deleting a Space erases its record and drops
+// the parked window on the session side too; parked windows no Space claims
+// are dropped once the restore settles, or the next unfiltered replay would
+// bring them back as loose windows.
+//
+// The app phases are NOT this service's: it reports the milestones it
+// reaches through Host and the coordinator owns the ladder.
+class PhiSessionRestore {
+ public:
+  class Host {
+   public:
+    virtual ~Host() = default;
+    // The Space the user is looking at RIGHT NOW, from the live user
+    // windows, or empty when none is up (a cold start).
+    virtual std::string ActiveSpaceOfLiveWindow() const = 0;
+    // The Space holding the default role — what a fresh shell opens with.
+    virtual std::string DefaultSpaceId() const = 0;
+    // Whether the Space list still holds `space_id` (an id remembered from
+    // the last run may have been deleted since).
+    virtual bool HasSpace(const std::string& space_id) const = 0;
+    // The Space list gained or lost a window id: re-push the wire's menu.
+    virtual void PushSpaceMenu() = 0;
+    // The cold start armed an eager set: if no user window is up once the
+    // replay settles, open a default shell. Re-armed shorter once the park
+    // list lands; disarmed by the first user window.
+    virtual void ArmColdStartFallback(unsigned delay_ms) = 0;
+    virtual void DisarmColdStartFallback() = 0;
+    // The milestones. `NoteRestorePlanned` is reached from the plan
+    // callback (armed or not), `NoteRestoring` from the first park receipt,
+    // and `OnRestoreSettled` carries the rescue and the phase move.
+    virtual void NoteRestorePlanned(const char* reason) = 0;
+    virtual void NoteRestoring() = 0;
+    // True once the restore's verdict is in (the coordinator's kSettled).
+    virtual bool RestoreSettled() const = 0;
+    virtual void OnRestoreSettled(const char* reason) = 0;
+  };
+
+  // How long the cold-start rescue waits for the replay to have its say,
+  // and the shorter re-arm once the park list has landed.
+  static constexpr unsigned kColdStartFallbackMs = 4000;
+  static constexpr unsigned kColdStartSettleMs = 2000;
+
+  using DirtyCallback = std::function<void()>;
+
+  PhiSessionRestore(phi_framework::PhiFramework& framework,
+                    Host& host,
+                    DirtyCallback dirty);
+  ~PhiSessionRestore();
+
+  PhiSessionRestore(const PhiSessionRestore&) = delete;
+  PhiSessionRestore& operator=(const PhiSessionRestore&) = delete;
+
+  // Binds and loads PhiRestore.json (a missing file imports what it
+  // replaces; a corrupt one is quarantined and defaults stand).
+  void Load(const std::wstring& user_data_dir);
+  void Save();
+  // The shutdown pass: the last-active Space is re-derived from the live
+  // window before the file is written.
+  void PrepareForShutdown();
+
+  // --- The last-active Space ----------------------------------------------
+  // A live slot's current Space when there is one (a reopen mid-run); at
+  // cold start what PhiRestore.json remembers from the last run, falling
+  // back to the default Space when that id was deleted since.
+  std::string LastActiveSpaceId() const;
+  // Notes the Space the user is in — on every switch; written by the
+  // coalesced save. Empty and unchanged ids are no-ops.
+  void NoteActiveSpace(const std::string& space_id);
+
+  // --- The framework's restore callbacks ----------------------------------
+  void OnColdStartRestorePlan(std::vector<int>* eager_window_ids, bool* armed);
+  void OnColdStartParkedWindows(const char* parked_json,
+                                const char* reporting_profile);
+  void OnSessionRestoreSettled(const char* receipt_json);
+  // The kSettled work, reached from BOTH restore paths — the reopen
+  // receipt, the cold start's fallback timer, or, when neither will fire,
+  // the first user shell's first OnWindowChanged: drops the parked windows
+  // no Space claims, then hands the rescue and the phase move to the Host.
+  void Settle(const char* reason);
+  // The cold-start fallback fired: nothing disarmed it, so settle.
+  void OnColdStartFallbackTimer();
+  // A user window exists: the fallback has nothing to rescue.
+  void NoteUserWindowUp();
+
+  // --- The ghost records ---------------------------------------------------
+  // The Space a materialized window belonged to, or null.
+  const std::string* SpaceForWindowId(BrowserId window_id) const;
+  // The parked record for `space_id`, or null when it has none.
+  const PhiGhostSpaces::Remembered* Parked(const std::string& space_id) const;
+  // The Space's window is live now (an attach or a restore match).
+  void NoteLiveWindow(const std::string& space_id,
+                      const std::string& profile,
+                      BrowserId window_id);
+  // The parked window was materialized, refused for good, or belongs to a
+  // profile the Space no longer lives in: stop offering it.
+  void ClearParked(const std::string& space_id);
+  // The Space is gone: erase its record, and when it existed only as a
+  // PARKED window from the last session drop that window on the session
+  // side too — the next unfiltered restore would otherwise replay it as a
+  // loose window of a Space that no longer exists.
+  void ForgetSpace(const std::string& space_id);
+
+  // --- The harness surface (agentSpace.lazyRestore.*) ---------------------
+  // The last lazy-restore receipt, verbatim.
+  const std::string& last_receipt() const { return last_receipt_; }
+  void ClearLastReceipt() { last_receipt_.clear(); }
+
+ private:
+  // Drops (framework side) and forgets the parked windows no Space claims.
+  void DropOrphanGhosts();
+
+  // The framework command interface; handed over at construction and never
+  // null (across a module boundary, so not a raw_ptr).
+  RAW_PTR_EXCLUSION phi_framework::PhiFramework& framework_;
+  RAW_PTR_EXCLUSION Host& host_;
+  DirtyCallback dirty_;
+
+  // PhiRestore.json: the remembered windows, the parked list and the
+  // last-active Space. The store is held behind a pointer so this header
+  // stays host-clean.
+  model::PhiRestoreModel model_;
+  std::unique_ptr<PhiStore<model::PhiRestoreModel>> store_;
+  // Which Spaces exist only as a parked window, and the window each Space
+  // had last run — a view over `model_` (declared above, so it outlives it).
+  PhiGhostSpaces ghosts_{&model_};
+  // The last lazy-restore receipt, verbatim (the lazyRestore.* harness verbs
+  // read it and clear it before a replay).
+  std::string last_receipt_;
+  // True from OnColdStartRestorePlan arming a filter until a user window
+  // exists — the window the fallback timer checks for.
+  bool cold_start_armed_ = false;
+
+ public:
+  // --- Pure helpers (host-tested; test/model/session_restore_test.cc) ------
+  // What a reopen receipt says the settle reason is. `matchedNothing` (an
+  // armed eager set that matched no window) and a replay that restored
+  // nothing both leave the session with no window up and must be rescued;
+  // anything else is an ordinary receipt. Bare strings, so the rule is
+  // testable without JSON: the caller decodes.
+  static const char* SettleReasonFor(bool eager_filter_matched_nothing,
+                                     bool restored_any) {
+    if (eager_filter_matched_nothing) {
+      return "matchednothing";
+    }
+    return restored_any ? "receipt" : "nothingrestored";
+  }
+  // The last-active Space, given what the live window says and what the
+  // file remembers. The live window always wins; a remembered id that no
+  // longer names a Space falls back to the default.
+  static std::string ResolveLastActiveSpace(const std::string& live_space,
+                                            const std::string& remembered,
+                                            bool remembered_still_exists,
+                                            const std::string& default_space) {
+    if (!live_space.empty()) {
+      return live_space;
+    }
+    if (!remembered.empty() && remembered_still_exists) {
+      return remembered;
+    }
+    return default_space;
+  }
+};
+
+}  // namespace phi_client
+
+#endif  // PHIBROWSER_WIN_CLIENT_PHI_SESSION_RESTORE_H_

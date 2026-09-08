@@ -296,6 +296,7 @@ std::vector<std::string> SplitTabs(const std::string& value) {
 }  // namespace
 
 PhiSettingsWindow::~PhiSettingsWindow() {
+  host_->RemoveSettingsObserver(this);
   if (font_) {
     ::DeleteObject(font_);
   }
@@ -320,6 +321,9 @@ PhiSettingsWindow::~PhiSettingsWindow() {
 }
 
 PhiSettingsWindow::PhiSettingsWindow(PhiSettingsHost* host) : host_(host) {
+  // Subscribed for the life of the object (the destructor unsubscribes),
+  // whether or not the window below comes up.
+  host_->AddSettingsObserver(this);
   static const ATOM atom = [] {
     WNDCLASSEXW wc = {};
     wc.cbSize = sizeof(wc);
@@ -463,6 +467,14 @@ HWND PhiSettingsWindow::Handle() {
 void PhiSettingsWindow::Refresh() {
   if (Handle()) {
     ::InvalidateRect(g_instance->hwnd_, nullptr, TRUE);
+  }
+}
+
+void PhiSettingsWindow::OnSettingsChanged(PhiSettingsChange /*what*/) {
+  // Every pane rebuilds from the host on paint, so one invalidate covers
+  // any domain.
+  if (hwnd_ && ::IsWindow(hwnd_)) {
+    ::InvalidateRect(hwnd_, nullptr, TRUE);
   }
 }
 

@@ -13,7 +13,7 @@
 #include "base/logging.h"
 #include "base/strings/escape.h"
 #include "base/strings/string_number_conversions.h"
-#include "phibrowser-win/client/phi_coordinator.h"
+#include "phibrowser-win/client/phi_surface_coordinator.h"
 #include "phibrowser-win/client/phi_i18n.h"
 #include "phibrowser-win/client/phi_toast.h"
 #include "phibrowser-win/client/phi_window_controller.h"
@@ -154,8 +154,8 @@ void PhiReaderStyle::MergeFrom(const base::DictValue& dict) {
 // PhiReaderBridge
 // -----------------------------------------------------------------------
 
-PhiReaderBridge::PhiReaderBridge(PhiCoordinator* coordinator)
-    : coordinator_(coordinator) {}
+PhiReaderBridge::PhiReaderBridge(PhiSurfaceCoordinator* owner)
+    : owner_(owner) {}
 
 PhiReaderBridge::~PhiReaderBridge() = default;
 
@@ -215,7 +215,7 @@ bool PhiReaderBridge::HandleExtensionMessage(const std::string& request_id,
   // timeout.
   if (sender_id != kMirageExtensionId) {
     LOG(WARNING) << "[Reader] " << type << " dropped: sender=" << sender_id;
-    coordinator_->RespondToExtension(request_id, "{}");
+    owner_->RespondToExtension(request_id, "{}");
     return true;
   }
   extension_seen_ = true;
@@ -223,22 +223,22 @@ bool PhiReaderBridge::HandleExtensionMessage(const std::string& request_id,
       base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
   if (!payload) {
     LOG(WARNING) << "[Reader] " << type << " dropped: bad payload";
-    coordinator_->RespondToExtension(request_id, "{}");
+    owner_->RespondToExtension(request_id, "{}");
     return true;
   }
 
   if (type == kMsgGetStyle) {
     // The reader page is mounting and wants the one stored style, so the
     // native store stays the source of truth across surfaces.
-    coordinator_->RespondToExtension(request_id, style_.ToJson());
+    owner_->RespondToExtension(request_id, style_.ToJson());
     return true;
   }
 
   if (type == kMsgSetStyle) {
     style_.MergeFrom(*payload);
-    coordinator_->OnReaderStyleChanged();
+    owner_->OnReaderStyleChanged();
     BroadcastStyle();
-    coordinator_->RespondToExtension(request_id, "{}");
+    owner_->RespondToExtension(request_id, "{}");
     return true;
   }
 
@@ -257,9 +257,9 @@ bool PhiReaderBridge::HandleExtensionMessage(const std::string& request_id,
       offerable_[*tab_id] = url ? *url : std::string();
       LOG(INFO) << "[Reader] offerable granted tab=" << *tab_id << " url="
                 << (url ? *url : std::string("(unnamed)"));
-      coordinator_->OnReaderOfferabilityChanged(TabId{*tab_id});
+      owner_->OnReaderOfferabilityChanged(TabId{*tab_id});
     }
-    coordinator_->RespondToExtension(request_id, "{}");
+    owner_->RespondToExtension(request_id, "{}");
     return true;
   }
 
@@ -278,7 +278,7 @@ bool PhiReaderBridge::HandleExtensionMessage(const std::string& request_id,
         // page — the Mac's overlay, by the only means this client has. Done
         // BEFORE the pending flag is dropped, so the restored-husk sweep
         // cannot mistake the surface for a leftover in the gap.
-        coordinator_->PanelizeReaderSurface(TabId{*tab_id});
+        owner_->PanelizeReaderSurface(TabId{*tab_id});
       }
       pending_opens_.erase(*tab_id);
       if (!active) {
@@ -288,7 +288,7 @@ bool PhiReaderBridge::HandleExtensionMessage(const std::string& request_id,
         // address bar, an agent, a redirect), the surface was removed, the
         // tab went away — so this one report retires the panel rather than
         // every navigation site having to remember to.
-        coordinator_->CloseReaderPanelForOrigin(TabId{*tab_id});
+        owner_->CloseReaderPanelForOrigin(TabId{*tab_id});
         // A refused open never creates a surface — say so where the Mac does,
         // with the same two messages.
         if (error) {
@@ -297,9 +297,9 @@ bool PhiReaderBridge::HandleExtensionMessage(const std::string& request_id,
           ShowRefusalToast(*tab_id, *error);
         }
       }
-      coordinator_->OnReaderOfferabilityChanged(TabId{*tab_id});
+      owner_->OnReaderOfferabilityChanged(TabId{*tab_id});
     }
-    coordinator_->RespondToExtension(request_id, "{}");
+    owner_->RespondToExtension(request_id, "{}");
     return true;
   }
 
@@ -308,7 +308,7 @@ bool PhiReaderBridge::HandleExtensionMessage(const std::string& request_id,
   auto pending = extract_id ? pending_extractions_.find(*extract_id)
                             : pending_extractions_.end();
   if (pending == pending_extractions_.end()) {
-    coordinator_->RespondToExtension(request_id, "{}");
+    owner_->RespondToExtension(request_id, "{}");
     return true;
   }
   const int reply_id = pending->second;
@@ -356,8 +356,8 @@ bool PhiReaderBridge::HandleExtensionMessage(const std::string& request_id,
   }
   std::string json;
   base::JSONWriter::Write(article, &json);
-  coordinator_->OnReaderArticleExtracted(reply_id, json.c_str());
-  coordinator_->RespondToExtension(request_id, "{}");
+  owner_->OnReaderArticleExtracted(reply_id, json.c_str());
+  owner_->RespondToExtension(request_id, "{}");
   return true;
 }
 
@@ -422,7 +422,7 @@ std::string PhiReaderBridge::TabPayload(int tab_id, const std::string& extra) {
   // background Space from being handed to the wrong profile's extension.
   // Unresolvable (a tab in no visible strip) falls back to the active window,
   // which is the Mac's only routing.
-  if (PhiWindowController* window = coordinator_->WindowShowingTab(TabId{tab_id})) {
+  if (PhiWindowController* window = owner_->WindowShowingTab(TabId{tab_id})) {
     // The browser, never the slot: a slot whose opening browser has closed
     // would name a window the extension cannot find.
     const BrowserId browser = window->active_browser_id();
@@ -454,11 +454,11 @@ void PhiReaderBridge::BroadcastStyle() {
 
 bool PhiReaderBridge::Broadcast(const std::string& type,
                                 const std::string& payload) {
-  return coordinator_->BroadcastToExtensions(type, payload);
+  return owner_->BroadcastToExtensions(type, payload);
 }
 
 void PhiReaderBridge::ShowRefusalToast(int tab_id, const std::string& error) {
-  PhiWindowController* window = coordinator_->WindowShowingTab(TabId{tab_id});
+  PhiWindowController* window = owner_->WindowShowingTab(TabId{tab_id});
   if (!window) {
     return;
   }

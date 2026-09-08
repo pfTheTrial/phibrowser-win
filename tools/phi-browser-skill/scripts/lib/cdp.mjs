@@ -242,6 +242,23 @@ function agentCapabilityHeader(agentCapability) {
     : {}
 }
 
+// The capability the app echoed on the most recent 101 in THIS process.
+// Phi keys task ownership and the CDP session's visible windows on the
+// capability, not the connection: the browser-target WebSocket and the
+// /phi-agent channel are two connections of one agent, and a task created
+// on the second must be visible to the first. So every connection after the
+// first one presents what the first was given, unless the caller supplies
+// a capability of its own (a delegated helper handed one by its agent). On
+// Windows the record lives in the app's memory until Phi quits; a stale
+// value is simply not honoured and the app falls back to consent.
+let rememberedCapability = null
+
+/** The capability the app issued this process, or null before the first
+ * successful upgrade (and after connecting to an app that issues none). */
+export function rememberedAgentCapability() {
+  return rememberedCapability
+}
+
 /** GETs a JSON document from the app socket over HTTP. */
 function httpGetJson(endpoint, path, timeoutMs, agentPid = null,
                      agentCapability = null) {
@@ -281,7 +298,8 @@ export async function verifyEndpoint(endpoint, { agentPid = null,
   let version
   try {
     version = await httpGetJson(endpoint, '/json/version', timeoutMs,
-                                agentPid, agentCapability)
+                                agentPid,
+                                agentCapability ?? rememberedCapability)
   } catch (err) {
     if (isPhiDenied(err)) throw err  // an answer, not a state — never retried
     // Codex runs shell commands in a seatbelt sandbox that by default denies
@@ -327,7 +345,7 @@ export async function verifyEndpoint(endpoint, { agentPid = null,
  */
 export class UnixWebSocket {
   constructor({ socketPath, path, host = 'localhost', agentPid = null,
-                agentCapability = null }) {
+                agentCapability = null, protocol = 1 }) {
     this._listeners = { open: [], message: [], error: [], close: [] }
     this._buf = Buffer.alloc(0)
     this._handshakeDone = false
@@ -336,6 +354,11 @@ export class UnixWebSocket {
     this._fragChunks = []
     this._agentPid = agentPid
     this._agentCapability = agentCapability
+    // The control wire we ASK for. What we actually got is `peerProtocol`,
+    // read off the 101: a build that does not know protocol 2 echoes
+    // nothing and keeps speaking 1, so asking is always safe.
+    this._protocol = protocol
+    this.peerProtocol = 1
     this._openSocket(socketPath, path, host)
   }
 
@@ -381,6 +404,7 @@ export class UnixWebSocket {
         (tokenName ? `${tokenName}: ${tokenValue}\r\n` : '') +
         (capabilityName ? `${capabilityName}: ${capabilityValue}\r\n` : '') +
         (claimName ? `${claimName}: ${claimValue}\r\n` : '') +
+        (this._protocol === 2 ? `X-Phi-Protocol: 2\r\n` : '') +
         `Upgrade: websocket\r\n` +
         `Connection: Upgrade\r\n` +
         `Sec-WebSocket-Key: ${key}\r\n` +
@@ -403,6 +427,10 @@ export class UnixWebSocket {
       this.peerAgentPid = claim ? Number(claim[1]) : null
       const capability = /^x-phi-agent-capability:\s*([A-Za-z0-9_-]{32,128})\s*$/im.exec(head)
       this.peerAgentCapability = capability ? capability[1] : null
+      // The app CONFIRMS the control wire on the 101; no echo means 1.
+      const wire = /^x-phi-protocol:\s*(\d+)\s*$/im.exec(head)
+      this.peerProtocol = wire ? Number(wire[1]) : 1
+      if (this.peerAgentCapability) rememberedCapability = this.peerAgentCapability
       if (!/ 101 /.test(statusLine)) {
         const denied = / 403 /.test(statusLine)
         this._emit('error', {
@@ -535,7 +563,8 @@ export class CdpClient {
                                   path: this.transport.wsPath,
                                   agentPid: this.transport.agentPid ?? null,
                                   agentCapability:
-                                    this.transport.agentCapability ?? null })
+                                    this.transport.agentCapability
+                                      ?? rememberedCapability })
     await new Promise((resolve, reject) => {
       this.ws.addEventListener('open', () => resolve(), { once: true })
       this.ws.addEventListener('error', (ev) =>
@@ -658,10 +687,18 @@ export class CdpClient {
  * `onEvent(type, cb)` surface, so helpers.mjs doesn't care which is in play.
  */
 export class DirectPhiChannel {
-  constructor({ socketPath, agentPid = null, agentCapability = null }) {
+  constructor({ socketPath, agentPid = null, agentCapability = null,
+                protocol = 2 }) {
     this.socketPath = socketPath
     this.agentPid = agentPid
     this.agentCapability = agentCapability
+    // Ask for the typed wire (protocol 2). What the channel ends up on is
+    // `this.protocol`, set from the 101's X-Phi-Protocol echo — a Phi that
+    // predates it answers nothing and this channel silently stays on 1.
+    // Either way `send()` hands its caller the SAME flat `{ok, …}` object
+    // helpers.mjs has always seen, so nothing downstream can tell.
+    this.wantProtocol = protocol
+    this.protocol = 1
     this.nextId = 1
     this.pending = new Map()
     this.listeners = []
@@ -677,7 +714,9 @@ export class DirectPhiChannel {
       : '/phi-agent'
     this.ws = new UnixWebSocket({ socketPath: this.socketPath, path,
                                   agentPid: this.agentPid,
-                                  agentCapability: this.agentCapability })
+                                  protocol: this.wantProtocol,
+                                  agentCapability: this.agentCapability
+                                    ?? rememberedCapability })
     await new Promise((resolve, reject) => {
       this.ws.addEventListener('open', () => resolve(), { once: true })
       this.ws.addEventListener('error', (ev) =>
@@ -689,6 +728,7 @@ export class DirectPhiChannel {
     // The agent pid the app resolved for this connection (see _onData).
     this.peerAgentPid = this.ws.peerAgentPid ?? null
     this.peerAgentCapability = this.ws.peerAgentCapability ?? null
+    this.protocol = this.ws.peerProtocol ?? 1
     this.ws.addEventListener('message', (ev) => this.#onMessage(ev.data))
     this.ws.addEventListener('close', () => {
       for (const [, p] of this.pending) p.reject(new Error('phi-agent channel closed'))
@@ -697,12 +737,30 @@ export class DirectPhiChannel {
     return this
   }
 
+  /**
+   * Folds a protocol-2 reply back into the flat `{ok, error?, …}` body the
+   * v1 wire carried inside `responseJson`, so helpers.mjs and every caller
+   * above it keep the exact shape they had. The finer legacy token (the
+   * `unknown_space` / `ambiguous` family) rides v2 as `error.details.reason`
+   * and comes back out as `error`; the closed code is the fallback.
+   */
+  #flatten(msg) {
+    if (msg.ok) return { ok: true, ...(msg.result ?? {}) }
+    const err = msg.error ?? {}
+    const { reason, ...details } = err.details ?? {}
+    return { ok: false, error: reason ?? err.code ?? 'internal', ...details }
+  }
+
   #onMessage(data) {
     let msg
     try { msg = JSON.parse(data) } catch { return }
     if (msg.event) {
-      let payload = {}
-      try { payload = JSON.parse(msg.payloadJson || '{}') } catch {}
+      // v2 carries the event payload as an object, v1 as a JSON string.
+      let payload = msg.payload ?? {}
+      if (msg.payloadJson !== undefined) {
+        payload = {}
+        try { payload = JSON.parse(msg.payloadJson || '{}') } catch {}
+      }
       for (const l of this.listeners) {
         if (l.type === msg.event) { try { l.cb(payload) } catch {} }
       }
@@ -712,6 +770,9 @@ export class DirectPhiChannel {
     const p = this.pending.get(msg.id)
     if (!p) return
     this.pending.delete(msg.id)
+    if (msg.ok !== undefined) { p.resolve(this.#flatten(msg)); return }
+    // Protocol 1: an envelope-level `error` (bad json / missing type) is a
+    // transport failure, and the verb's own answer is the stringified body.
     if (msg.error) { p.reject(new Error(`${p.type}: ${msg.error}`)); return }
     let parsed
     try { parsed = JSON.parse(msg.responseJson) } catch {
@@ -733,7 +794,10 @@ export class DirectPhiChannel {
         resolve: (v) => { clearTimeout(timer); resolve(v) },
         reject: (e) => { clearTimeout(timer); reject(e) },
       })
-      this.ws.send(JSON.stringify({ id, type, payloadJson: JSON.stringify(payload) }))
+      this.ws.send(JSON.stringify(
+        this.protocol === 2
+          ? { id, type, payload }
+          : { id, type, payloadJson: JSON.stringify(payload) }))
     })
   }
 
@@ -844,7 +908,9 @@ async function connectAfterLaunch(opts, out) {
 }
 
 export async function connectBrowser({ agentPid = null, agentCapability = null } = {}) {
-  const opts = { agentPid, agentCapability }
+  // A second connectBrowser in the same process (a re-bind, a retry after
+  // the app relaunched) presents what the first one was issued.
+  const opts = { agentPid, agentCapability: agentCapability ?? rememberedCapability }
   const out = { lastErr: null }
 
   const candidates = discoverEndpoints()

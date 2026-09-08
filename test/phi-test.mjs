@@ -2,7 +2,8 @@
 //
 // Speaks BOTH halves of the client's unified named pipe (see
 // client/phi_control_server.cc):
-//   /phi-agent  -> WebSocket client control ({id,type,payloadJson} envelope)
+//   /phi-agent  -> WebSocket client control ({id,type,payloadJson} envelope,
+//                  or the typed {id,type,payload} one with X-Phi-Protocol: 2)
 //   otherwise   -> CDP (/json/* discovery, /devtools/<kind>/<id> sessions
 //                  pumped through the framework's in-process transport)
 // Discovery matches the Mac contract: the CDPAgentSocket pointer file in the
@@ -122,47 +123,86 @@ class Ws {
   close() { this.sock.destroy() }
 }
 
-/** Client control channel: ctl.send('agentSpace.list', {}) -> parsed response. */
-export async function openControl() {
+/** Client control channel: ctl.send('agentSpace.list', {}) -> parsed response.
+ *  `capability` is the X-Phi-Agent-Capability the client echoed on the 101
+ *  (phase 4: the principal this connection joined — every connection of one
+ *  image in a session shares it), or null on a build that issues none. The
+ *  rig never needs to present it: PhiSettings.json testRig makes its
+ *  principal the host, which sees and drives every task.
+ *
+ *  `{protocol: 2}` asks for the typed control wire (`X-Phi-Protocol: 2`):
+ *  requests carry `payload` as an object and replies come back as
+ *  {id, ok, result|error{code,message?,details?}}. The default is 1 — the
+ *  byte-compatible legacy envelope every suite below is written against.
+ *  `send()` flattens either wire to the same `{ok, error?, …}` body, so a
+ *  suite reads the same fields whichever it opened; `ctl.protocol` says
+ *  which the app confirmed, and `ctl.lastEnvelope` keeps the raw reply for
+ *  a test that wants to assert the envelope itself. */
+export async function openControl({ protocol = 1 } = {}) {
   const sock = await connect()
   const key = crypto.randomBytes(16).toString('base64')
   sock.write(
     `GET /phi-agent HTTP/1.1\r\nHost: phi\r\n${tokenHeader()}` +
+    (protocol === 2 ? `X-Phi-Protocol: 2\r\n` : '') +
     `Upgrade: websocket\r\n` +
     `Connection: Upgrade\r\nSec-WebSocket-Key: ${key}\r\n` +
     `Sec-WebSocket-Version: 13\r\n\r\n`)
-  await new Promise((resolve, reject) => {
+  const handshake = await new Promise((resolve, reject) => {
     const onData = (d) => {
       const s = d.toString('latin1')
       if (s.includes('\r\n\r\n')) {
         if (!/101/.test(s)) return reject(new Error(`bad handshake: ${s.split('\r\n')[0]}`))
         sock.removeListener('data', onData)
-        resolve()
+        const head = s.slice(0, s.indexOf('\r\n\r\n'))
+        const echoed = /^x-phi-agent-capability:\s*([A-Za-z0-9_-]{32,128})\s*$/im.exec(head)
+        const wire = /^x-phi-protocol:\s*(\d+)\s*$/im.exec(head)
+        resolve({ capability: echoed ? echoed[1] : null,
+                  protocol: wire ? Number(wire[1]) : 1 })
       }
     }
     sock.on('data', onData)
     sock.once('error', reject)
     setTimeout(() => reject(new Error('handshake timeout')), 8000)
   })
+  const { capability } = handshake
+  const wire = handshake.protocol
   const ws = new Ws(sock)
   let id = 0
   const listeners = []
-  return {
+  // A v2 reply, folded back into the flat body v1 carries in responseJson:
+  // the finer legacy token rides v2 as error.details.reason.
+  const flatten = (env) => {
+    if (env.ok) return { ok: true, ...(env.result ?? {}) }
+    const err = env.error ?? {}
+    const { reason, ...details } = err.details ?? {}
+    return { ok: false, error: reason ?? err.code ?? 'internal', ...details }
+  }
+  const eventPayload = (env) => {
+    if (env.payloadJson === undefined) return env.payload ?? {}
+    try { return JSON.parse(env.payloadJson || '{}') } catch { return {} }
+  }
+  const handle = {
+    capability,
+    protocol: wire,
+    lastEnvelope: null,
     async send(type, payload = {}) {
       const mine = ++id
-      ws.send(JSON.stringify({ id: mine, type, payloadJson: JSON.stringify(payload) }))
+      ws.send(JSON.stringify(
+        wire === 2 ? { id: mine, type, payload }
+                   : { id: mine, type, payloadJson: JSON.stringify(payload) }))
       // Pushed events (agentSpace.ownershipChanged and friends) interleave
       // with replies, so read until OUR id comes back — the same id matching
       // the real skill does.
       for (;;) {
         const env = JSON.parse(await ws.next())
         if (env.event) {
-          let payload = {}
-          try { payload = JSON.parse(env.payloadJson || '{}') } catch {}
-          for (const cb of listeners) { try { cb(env.event, payload) } catch {} }
+          const p = eventPayload(env)
+          for (const cb of listeners) { try { cb(env.event, p) } catch {} }
           continue
         }
         if (env.id != null && env.id !== mine) continue
+        handle.lastEnvelope = env
+        if (env.ok !== undefined) return flatten(env)
         if (env.error) throw new Error(`${type}: ${env.error}`)
         return env.responseJson ? JSON.parse(env.responseJson) : {}
       }
@@ -179,13 +219,13 @@ export async function openControl() {
         let env
         try { env = JSON.parse(raw) } catch { continue }
         if (!env.event) continue
-        let payload = {}
-        try { payload = JSON.parse(env.payloadJson || '{}') } catch {}
-        for (const cb of listeners) { try { cb(env.event, payload) } catch {} }
+        const p = eventPayload(env)
+        for (const cb of listeners) { try { cb(env.event, p) } catch {} }
       }
     },
     close: () => ws.close(),
   }
+  return handle
 }
 
 /** One HTTP GET over the pipe (CDP's /json endpoints). */

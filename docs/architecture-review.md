@@ -941,6 +941,45 @@ v1 shim, regenerated skill references, and the fix for silent unknown-verb
 success in the skill's shim. CDP target filtering or per-task browser
 contexts land here if the in-process transport was chosen in phase 0.
 
+**Phase 4 status (2026-09-08, uncommitted).** Landed, control plane first:
+`PhiControlDispatcher` took the whole verb surface out of the coordinator,
+then the four `if (type == …)` ladders became ONE typed registry —
+`phi_verb_registry.{h,cc}`, 142 specs, handlers split across four
+`phi_verbs_*.cc` — with one payload parse per request against a declared
+`ParamSchema` (aliases declared once), name collisions settled by required
+fields rather than payload sniffing, and a uniform envelope: protocol v2
+(`{id, ok, result|error{code}}`, closed error enum) selected by
+`X-Phi-Protocol: 2`, with a byte-compatible v1 shim whose only change is
+that an unknown verb now answers `ok:false` instead of succeeding silently.
+`references/verbs.md` is generated from the table and the release gate
+fails on a stale one. The trust model underneath: a `PhiPrincipal` per
+connection with a capability bitset, an agent capability token minted at
+consent and presented by later connections, task ownership (`not_owner`),
+ONE `ResolveScope` for every verb, and — new in the fork —
+`SetAgentDriveContext` so a verb driving a USER window arms the same
+operating mask and reclaim refusal CDP driving has, plus
+`SetDevToolsSessionScope` so a session sees only its own windows (default
+empty; the rig is unrestricted). Scope enforcement is live:
+`scope_not_allowed` before the handler runs. The fork also retired the 24
+legacy methods and the two legacy callbacks the client no longer calls.
+Services: `PhiPreferences` (observers replaced all 34 static settings
+refreshes), `PhiSpaceManager` (coalesced menu/routing pushes),
+`PhiUrlRouter` (the ask prompt now deferred off the navigation throttle),
+`PhiFrameworkDispatcher` (every delegate override ≤ 10 lines, forward
+only), `PhiProfileService`, `PhiSessionRestore` (ghost store folded in),
+`PhiSurfaceCoordinator`, `PhiAgentSpaceManager`, `PhiCredentialService`,
+`PhiAccountAndFeedback`, `PhiKeyboardAccelerators`; `PhiSlotHost` split
+into the five `ShellServices` interfaces (the controller still sees the
+union, so its `.cc` is untouched). `phi_coordinator.cc` 9,366 → 3,512.
+Verified: sweep identical to the baseline, `sv-surface` and `sv-drag` ALL
+PASS, release gate and host tests green. One regression the rigs caught and
+fixed: five handlers built a slot from the raw payload `windowId` instead
+of the resolved scope, so a Space's own browser id listed no pins.
+Left for later: the coordinator's remaining ~2,000 lines are the sidebar
+mutator (`PhiSidebarActions`, phase 6's neighbour) and the creation switch;
+the controller's `ShellServices` adoption and the typed `PhiSettingsHost`;
+vault helper I/O still on the UI thread.
+
 ### Phase 5 — UI substrate (~4 weeks)
 
 `PhiWindow` + `PhiPopover` and the 11 popovers (1 week); `PhiPanel` +

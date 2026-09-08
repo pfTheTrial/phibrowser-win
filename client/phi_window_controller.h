@@ -86,9 +86,14 @@ struct PhiAgentPipView {
   bool watched = false;  // Its window is currently surfaced on-screen.
 };
 
-// What a slot needs from its owner (the coordinator): the full Space list to
-// draw, and requests that only the owner can service (switching to a Space
-// that has no browser yet must create one in that Space's profile).
+// What a slot needs from its owner (the coordinator), as five narrow
+// interfaces (docs/architecture-review.md §3.5): the full Space list to draw,
+// and requests that only the owner can service (switching to a Space that
+// has no browser yet must create one in that Space's profile). PhiSlotHost
+// is the union the controller still receives; ShellServices is the struct
+// of the five it moves to next (phase 4), at which point each interface is
+// handed to the service that owns it — ChromePrefsHost is PhiPreferences
+// already.
 // Every `int64_t slot` parameter carries SlotId::value (the controller's
 // slot()) and becomes SlotId in phase 2; a `browser` parameter carries
 // BrowserId::value.
@@ -97,38 +102,10 @@ class PhiBookmarkManager;
 class PhiNewTabPage;
 class PhiCreateSpacePanel;
 
-class PhiSlotHost {
+// Stored items, rows, surfaces, Reader View and THE sidebar mutator.
+class SidebarHost {
  public:
-  virtual ~PhiSlotHost() = default;
-  // Every Space, in display order.
-  virtual std::vector<PhiSpaceView> Spaces() const = 0;
-  virtual void RequestSwitchSpace(int64_t slot, const std::string& space_id) = 0;
-  // File > New Window: a user window in the profile the slot is showing.
-  // Goes through the coordinator so the request is token-matched like every
-  // other creation (contract rule 3) instead of the legacy NewWindow.
-  virtual void RequestNewWindow(int64_t slot) = 0;
-  // Live agent Spaces to show as pips (empty when none). The user watches one
-  // by clicking its pip, which toggles its hidden window on/off screen.
-  virtual std::vector<PhiAgentPipView> AgentSpaces() const = 0;
-  virtual void RequestWatchAgentSpace(const std::string& task_id) = 0;
-  // Watch-mode control pill (C3): ownership transfers ONLY through these —
-  // the fog barrier is what makes that true. Finish ends the task.
-  virtual void RequestAgentTakeControl(const std::string& task_id) = 0;
-  virtual void RequestAgentHandBack(const std::string& task_id) = 0;
-  virtual void RequestAgentFinish(const std::string& task_id) = 0;
-  // Opens the task's transcript console (the agent pip context menu's
-  // "Show Transcript", the Mac showTranscriptAction).
-  virtual void RequestShowTranscript(const std::string& task_id) = 0;
-  // Creates a Space in this slot's current profile (`new_profile` = false) or
-  // in a freshly created profile (true), then switches to it.
-  virtual void RequestCreateSpace(int64_t slot, bool new_profile) = 0;
-  // The layout every slot renders in — one setting for the whole client, as on
-  // Mac, so a new window never disagrees with the one beside it.
-  virtual PhiLayoutMode LayoutMode() const = 0;
-  virtual void RequestLayoutMode(PhiLayoutMode mode) = 0;
-  // The Mac's GeneralSettings.showTabPreviews: whether a settled hover on a
-  // tab, pin or bookmark row raises its page-snapshot card.
-  virtual bool ShowTabPreviews() const = 0;
+  virtual ~SidebarHost() = default;
   // Reader View: upstream says this tab has an article. The shell shows its
   // reader button only for such tabs.
   virtual void NoteTabDistillable(int64_t window_id,
@@ -156,26 +133,6 @@ class PhiSlotHost {
   // Raise this slot's surface panels above the browser child, so the corner
   // caps can then be raised above THEM (see RaiseCornerCaps).
   virtual void RaiseReaderPanels(int64_t slot) = 0;
-  // A Space's browser is live in this slot. The coordinator remembers the
-  // (Space, window id) pair so a later run can name that window when it asks
-  // the framework to park or rebuild it (lazy Space restore).
-  virtual void NoteSpaceWindow(const std::string& space_id,
-                               int64_t browser_window_id) = 0;
-  // The user is now looking at `space_id` in this slot — every switch, not
-  // only the ones the coordinator drove: a chip click on a Space whose
-  // browser is already attached never leaves the controller. The
-  // coordinator persists it as the Space a cold start should reopen
-  // (docs/architecture-review.md §4 item 21). Agent shells never call it.
-  virtual void NoteSlotActiveSpace(const std::string& space_id) = 0;
-  // --- Agent operating mask (the user's own Spaces) -----------------------
-  // True while an agent holds `tab_id`; the row wears the mask badge.
-  virtual bool IsTabAgentDriven(int tab_id) const = 0;
-  // True once the user took `tab_id` back — the badge reads as "you have
-  // control" and the browser refuses that tab's drive commands.
-  virtual bool IsTabReclaimed(int tab_id) const = 0;
-  // "Take control" / "Hand back" on a driven tab.
-  virtual void RequestReclaimTab(int tab_id) = 0;
-  virtual void RequestReleaseTab(int tab_id) = 0;
   // The slot's pinned tabs, in sibling order.
   virtual std::vector<PhiStoredRowView> PinnedRows(int64_t slot) const = 0;
   // Complete scoped identity inventory, independent of folder expansion,
@@ -198,13 +155,6 @@ class PhiSlotHost {
       const std::string& parent_guid) const = 0;
   // Opens `url` in the slot (a pinned tab or bookmark was clicked).
   virtual void RequestOpen(int64_t slot, const std::string& url) = 0;
-  // Surfaces the shell hosting `browser_window_id` (foregrounding it and
-  // switching it to that browser's Space when it is hidden) — the search
-  // palette's cross-window jump.
-  virtual void FocusWindowForBrowser(int64_t browser_window_id) = 0;
-  // "New tab behavior = Omnibox": a new tab focuses the address field
-  // instead of opening a page (the tab is born on commit).
-  virtual bool NewTabOpensOmnibox() const = 0;
   // Appends one bookmark row under `parent_guid` ("" = root) in `slot`'s
   // Space — Bookmark All Tabs' per-tab fill. Returns the new row's guid.
   virtual std::string AddBookmarkRow(int64_t slot,
@@ -234,14 +184,31 @@ class PhiSlotHost {
                                   const std::string& layout) = 0;
   virtual bool RenameStoredRow(const std::string& guid,
                                const std::string& name) = 0;
+};
+
+// The Space list, switching, creation, per-Space theme and the default role.
+class SpacesHost {
+ public:
+  virtual ~SpacesHost() = default;
+  // Every Space, in display order.
+  virtual std::vector<PhiSpaceView> Spaces() const = 0;
+  virtual void RequestSwitchSpace(int64_t slot, const std::string& space_id) = 0;
+  // Creates a Space in this slot's current profile (`new_profile` = false) or
+  // in a freshly created profile (true), then switches to it.
+  virtual void RequestCreateSpace(int64_t slot, bool new_profile) = 0;
+  // A Space's browser is live in this slot. The coordinator remembers the
+  // (Space, window id) pair so a later run can name that window when it asks
+  // the framework to park or rebuild it (lazy Space restore).
+  virtual void NoteSpaceWindow(const std::string& space_id,
+                               int64_t browser_window_id) = 0;
+  // The user is now looking at `space_id` in this slot — every switch, not
+  // only the ones the coordinator drove: a chip click on a Space whose
+  // browser is already attached never leaves the controller. The
+  // coordinator persists it as the Space a cold start should reopen
+  // (docs/architecture-review.md §4 item 21). Agent shells never call it.
+  virtual void NoteSlotActiveSpace(const std::string& space_id) = 0;
   // Moves a Space to `new_index` in the Space list (chip drag).
   virtual void ReorderSpace(const std::string& space_id, int new_index) = 0;
-  // The sidebar width in DIP — one app-wide value like the layout mode,
-  // clamped to the Mac split range (193–500).
-  virtual int SidebarWidth() const = 0;
-  virtual void RequestSidebarWidth(int dip) = 0;
-  // The app-wide resolved theme.
-  virtual const PhiPalette& Palette() const = 0;
   // The theme THIS SLOT paints with: a Space may pin its own (the Mac's
   // per-Space theme override), otherwise the app-wide one.
   virtual const PhiPalette& PaletteForSlot(int64_t slot) const = 0;
@@ -277,6 +244,98 @@ class PhiSlotHost {
   // Profile management. Deleting Default, or a profile still bound to a
   // Space, is refused (re-bind or delete those Spaces first).
   virtual bool DeleteProfileById(const std::string& profile_id) = 0;
+  // Opens Settings > Spaces with this Space selected — its detail column is
+  // the icon picker (the "Change Icon…" destination).
+  virtual void RequestSpaceIconPicker(const std::string& space_id) = 0;
+  // The create-Space form (PhiCreateSpacePanel). ProfileSummaries is the
+  // Settings host's spelling, so one coordinator override serves both.
+  virtual std::vector<std::string> ProfileSummaries() const = 0;  // "id\tname"
+  // Creates a profile for the form; the slot's controller hears
+  // OnSpaceFormProfileCreated once it exists (creation is asynchronous).
+  virtual void RequestCreateProfileForSpaceForm(int64_t slot,
+                                                const std::string& name) = 0;
+  // Creates the Space the form described, pins its theme, and switches
+  // `slot` to it. Returns the new Space's id, or empty on failure.
+  virtual std::string RequestCreateSpaceWithOptions(
+      int64_t slot,
+      const PhiNewSpaceSpec& spec) = 0;
+};
+
+// The client-wide chrome preferences: layout, palette, previews, the
+// bookmark-bar flags, the sidebar width. PhiPreferences implements it.
+class ChromePrefsHost {
+ public:
+  virtual ~ChromePrefsHost() = default;
+  // The layout every slot renders in — one setting for the whole client, as on
+  // Mac, so a new window never disagrees with the one beside it.
+  virtual PhiLayoutMode LayoutMode() const = 0;
+  virtual void RequestLayoutMode(PhiLayoutMode mode) = 0;
+  // The Mac's GeneralSettings.showTabPreviews: whether a settled hover on a
+  // tab, pin or bookmark row raises its page-snapshot card.
+  virtual bool ShowTabPreviews() const = 0;
+  // "New tab behavior = Omnibox": a new tab focuses the address field
+  // instead of opening a page (the tab is born on commit).
+  virtual bool NewTabOpensOmnibox() const = 0;
+  // The sidebar width in DIP — one app-wide value like the layout mode,
+  // clamped to the Mac split range (193–500).
+  virtual int SidebarWidth() const = 0;
+  virtual void RequestSidebarWidth(int dip) = 0;
+  // The app-wide resolved theme.
+  virtual const PhiPalette& Palette() const = 0;
+  // The bookmark bar's two visibility switches (the Mac View menu's
+  // "Always Show Bookmark Bar" / "Show Bookmark Bar on New Tab").
+  virtual bool AlwaysShowBookmarkBar() const = 0;
+  virtual void SetAlwaysShowBookmarkBar(bool enabled) = 0;
+  virtual bool BookmarkBarOnNewTab() const = 0;
+  virtual void SetBookmarkBarOnNewTab(bool enabled) = 0;
+  // The create-Space form's theme defaults. The three are the Settings
+  // host's spellings, so one coordinator override serves both.
+  virtual std::string ThemeId() const = 0;  // The app-wide theme.
+  virtual PhiAppearance Appearance() const = 0;
+  virtual int Saturation() const = 0;  // 0..100.
+};
+
+// Agent Spaces as pips, watching, and the operating mask over the user's
+// own tabs.
+class AgentHost {
+ public:
+  virtual ~AgentHost() = default;
+  // Live agent Spaces to show as pips (empty when none). The user watches one
+  // by clicking its pip, which toggles its hidden window on/off screen.
+  virtual std::vector<PhiAgentPipView> AgentSpaces() const = 0;
+  virtual void RequestWatchAgentSpace(const std::string& task_id) = 0;
+  // Watch-mode control pill (C3): ownership transfers ONLY through these —
+  // the fog barrier is what makes that true. Finish ends the task.
+  virtual void RequestAgentTakeControl(const std::string& task_id) = 0;
+  virtual void RequestAgentHandBack(const std::string& task_id) = 0;
+  virtual void RequestAgentFinish(const std::string& task_id) = 0;
+  // Opens the task's transcript console (the agent pip context menu's
+  // "Show Transcript", the Mac showTranscriptAction).
+  virtual void RequestShowTranscript(const std::string& task_id) = 0;
+  // --- Agent operating mask (the user's own Spaces) -----------------------
+  // True while an agent holds `tab_id`; the row wears the mask badge.
+  virtual bool IsTabAgentDriven(int tab_id) const = 0;
+  // True once the user took `tab_id` back — the badge reads as "you have
+  // control" and the browser refuses that tab's drive commands.
+  virtual bool IsTabReclaimed(int tab_id) const = 0;
+  // "Take control" / "Hand back" on a driven tab.
+  virtual void RequestReclaimTab(int tab_id) = 0;
+  virtual void RequestReleaseTab(int tab_id) = 0;
+};
+
+// Windows as a set: new windows, cross-window drops, tear-off placement,
+// the feedback form and the settings window.
+class WindowHost {
+ public:
+  virtual ~WindowHost() = default;
+  // File > New Window: a user window in the profile the slot is showing.
+  // Goes through the coordinator so the request is token-matched like every
+  // other creation (contract rule 3) instead of the legacy NewWindow.
+  virtual void RequestNewWindow(int64_t slot) = 0;
+  // Surfaces the shell hosting `browser_window_id` (foregrounding it and
+  // switching it to that browser's Space when it is hidden) — the search
+  // palette's cross-window jump.
+  virtual void FocusWindowForBrowser(int64_t browser_window_id) = 0;
   // Opens the settings window (theme, appearance, layout).
   virtual void RequestSettings() = 0;
   // Opens the feedback form for `slot`, about `context` (its focused
@@ -302,30 +361,29 @@ class PhiSlotHost {
   // placement. Stale after a few seconds, in case no window ever came.
   virtual void NoteTearOffDrop(POINT screen) = 0;
   virtual bool TakeTearOffDrop(POINT* screen) = 0;
-  // The bookmark bar's two visibility switches (the Mac View menu's
-  // "Always Show Bookmark Bar" / "Show Bookmark Bar on New Tab").
-  virtual bool AlwaysShowBookmarkBar() const = 0;
-  virtual void SetAlwaysShowBookmarkBar(bool enabled) = 0;
-  virtual bool BookmarkBarOnNewTab() const = 0;
-  virtual void SetBookmarkBarOnNewTab(bool enabled) = 0;
-  // Opens Settings > Spaces with this Space selected — its detail column is
-  // the icon picker (the "Change Icon…" destination).
-  virtual void RequestSpaceIconPicker(const std::string& space_id) = 0;
-  // The create-Space form (PhiCreateSpacePanel). The first four are the
-  // Settings host's spellings, so one coordinator override serves both.
-  virtual std::vector<std::string> ProfileSummaries() const = 0;  // "id\tname"
-  virtual std::string ThemeId() const = 0;  // The app-wide theme.
-  virtual PhiAppearance Appearance() const = 0;
-  virtual int Saturation() const = 0;  // 0..100.
-  // Creates a profile for the form; the slot's controller hears
-  // OnSpaceFormProfileCreated once it exists (creation is asynchronous).
-  virtual void RequestCreateProfileForSpaceForm(int64_t slot,
-                                                const std::string& name) = 0;
-  // Creates the Space the form described, pins its theme, and switches
-  // `slot` to it. Returns the new Space's id, or empty on failure.
-  virtual std::string RequestCreateSpaceWithOptions(
-      int64_t slot,
-      const PhiNewSpaceSpec& spec) = 0;
+};
+
+// The five, as the shell will receive them once the controller stops taking
+// one object for all (the next extraction step). Non-owning; every pointer
+// outlives the shell.
+struct ShellServices {
+  RAW_PTR_EXCLUSION SidebarHost* sidebar = nullptr;
+  RAW_PTR_EXCLUSION SpacesHost* spaces = nullptr;
+  RAW_PTR_EXCLUSION ChromePrefsHost* prefs = nullptr;
+  RAW_PTR_EXCLUSION AgentHost* agent = nullptr;
+  RAW_PTR_EXCLUSION WindowHost* window = nullptr;
+};
+
+// The union the controller (and its satellites' `host()`) still hold: one
+// object implementing all five. The coordinator is it today, forwarding
+// each interface's methods to the service that owns them.
+class PhiSlotHost : public SidebarHost,
+                    public SpacesHost,
+                    public ChromePrefsHost,
+                    public AgentHost,
+                    public WindowHost {
+ public:
+  ~PhiSlotHost() override = default;
 };
 
 // The Mac sidebar's default and drag range (MainSplitViewController).

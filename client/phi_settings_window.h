@@ -21,11 +21,36 @@ namespace phi_client {
 // What the New Tab shortcut opens — the Mac's NewTabShortcutBehavior.
 enum class PhiNewTabBehavior { kNewTabPage, kOmnibox };
 
+// What changed behind the host, for a window showing it. The view
+// subscribes (PhiSettingsHost::AddSettingsObserver) and repaints on a
+// notification; the model side no longer reaches it through the static
+// PhiSettingsWindow::Refresh() (lane 1 D9).
+enum class PhiSettingsChange {
+  kPreferences,  // Any PhiPreferences domain (theme, prefs, language...).
+  kSpaces,       // The Space list, a Space's theme, icon or profile.
+  kProfiles,     // A profile was created, renamed, deleted or imported.
+  kAccount,      // The Auth0 session settled or was signed out.
+  kStoredRows,   // Pinned tabs / bookmarks changed.
+  kConsent,      // The credential audit trail grew.
+};
+class PhiSettingsObserver {
+ public:
+  virtual void OnSettingsChanged(PhiSettingsChange what) = 0;
+
+ protected:
+  virtual ~PhiSettingsObserver() = default;
+};
+
 // Everything the settings window reads and writes. Implemented by the
 // coordinator, which owns the persisted values and pushes changes to the slots.
 class PhiSettingsHost {
  public:
   virtual ~PhiSettingsHost() = default;
+
+  // The window's subscription to changes behind the host (above). The
+  // window adds itself when it opens and removes itself when it goes.
+  virtual void AddSettingsObserver(PhiSettingsObserver* observer) = 0;
+  virtual void RemoveSettingsObserver(PhiSettingsObserver* observer) = 0;
 
   // Theme
   virtual std::string ThemeId() const = 0;
@@ -193,9 +218,12 @@ class PhiSettingsHost {
 // top-level window, NOT an overlay inside a shell: the content region belongs
 // to Chromium's DirectComposition surface, which composites above anything GDI
 // draws there (windows-framework-design.md — the falsified overlay approach).
-class PhiSettingsWindow {
+class PhiSettingsWindow : public PhiSettingsObserver {
  public:
   static void Open(PhiSettingsHost* host);
+  // Repaints the open window. The coordinator no longer calls this (it
+  // notifies the observer instead); the verb ladder still does for the
+  // profile settings it writes through the framework.
   static void Refresh();
   // The open window's HWND, or null. Reported over the control socket: a caller
   // in another session cannot enumerate our windows to find it.
@@ -207,7 +235,10 @@ class PhiSettingsWindow {
   // (callers Open() first).
   static void ShowSpacePicker(const std::string& space_id);
 
-  ~PhiSettingsWindow();
+  ~PhiSettingsWindow() override;
+
+  // PhiSettingsObserver: whatever changed, the pane re-reads on paint.
+  void OnSettingsChanged(PhiSettingsChange what) override;
 
   static LRESULT CALLBACK WndProc(HWND hwnd,
                                   UINT msg,

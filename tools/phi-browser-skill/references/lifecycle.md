@@ -7,6 +7,12 @@ commands. Read this before a task that spans days or relaunches, runs in a
 shadow window, uses `saveState`/`importCookies`, or co-works with the user
 through the console.
 
+> The wire under these helpers — every verb name, the payload fields
+> each one reads, the capability it costs and the errors it can
+> answer — is generated from the client's verb registry into
+> [verbs.md](verbs.md). Read that when a call refuses and the helper
+> does not say why.
+
 ## Profiles and agent permissions
 
 `enterContext` picks the first browser profile by default; pass
@@ -23,6 +29,30 @@ fails for lack of a profile). You only hit `profile_not_agent_allowed` by
 EXPLICITLY naming a blocked profile — pick an `agentSpacesAllowed: true`
 profile instead, and if the user asked for a blocked one, tell them it's
 disallowed rather than retrying.
+
+## Task ownership (Windows)
+
+A task belongs to the principal that created it — the connection's agent
+capability (see management.md "Capabilities and principals"), which every
+connection of the same process shares. Lifecycle verbs on a task another
+principal created — `complete`, `handOff`, `takeOver`, `setStatus`,
+`narrate`, `markError`, `readUserMessages`, `ping`, `openTab`,
+`screenshotBrowser`, the cursor/effect mirrors, closing its window, and the
+shadow-window verbs — fail `not_owner`. So does `enterContext` on an
+existing task name that is not yours: pick a different name rather than
+retrying. `listTasks`/`agentSpace.list` and `listShadowWindows` show only
+your own tasks. The task keeps its owner across rounds and reconnects for
+as long as Phi runs (the capability is in Phi's memory, not on disk); after
+the user quits Phi every task is gone anyway.
+
+The transcript's "You:" line is the user's: `agentSpace.userMessage` is no
+longer agent-callable on Windows (`test_rig_only`) — the console prompt
+and Phi's own mirror deliver the user's commands, `readUserMessages` drains
+them.
+
+The consent prompt states how long an approval lasts: until Phi quits.
+There is no standing "Always Allow" for an interpreter image (`node.exe`);
+its approval IS the capability above.
 
 ## Persistent Spaces
 

@@ -1,0 +1,154 @@
+// Copyright 2026 The Fyde Innovations Limited. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#ifndef PHIBROWSER_WIN_CLIENT_PHI_CREDENTIAL_SERVICE_H_
+#define PHIBROWSER_WIN_CLIENT_PHI_CREDENTIAL_SERVICE_H_
+
+#include <windows.h>
+
+#include <functional>
+#include <map>
+#include <optional>
+#include <string>
+#include <vector>
+
+#include "base/memory/raw_ptr_exclusion.h"
+#include "base/values.h"
+#include "phibrowser-win/client/phi_app_model.h"
+#include "phibrowser-win/client/phi_credentials.h"
+#include "phibrowser-win/client/phi_vault_helper.h"
+
+namespace phi_client {
+
+// The agent's password surface (docs/architecture-review.md §3.4, lane 1
+// §1.2 cluster 5): the two credential providers, the approval prompt, the
+// session-scoped grants, the denial memory and the audit trail.
+//
+// Invariant: the grant key is "<item scope>|<page host>" for a fill and the
+// item scope for a reveal — grants are all-agents, as on Mac, but never
+// wider than one page host; only a LIVE TIMED grant ever covers a request
+// (the persisted "always" rows are loaded for the Settings display only —
+// a standing password grant plus an agent-chosen page was the exfil path,
+// lane 5 F2); and every decision, allowed or not, is written to the audit.
+//
+// It is the only writer of the consent model's credential half
+// (`credential_grants`, `credential_audit`); the agent-peer half
+// (`agent_always_paths`) belongs to the control plane's consent ladder and
+// this service never touches it. Both mark the one consent file dirty
+// through their own callback.
+class PhiCredentialService {
+ public:
+  // What the service needs from the app: a window to parent the modal to,
+  // and who to tell when the audit trail moved.
+  class Host {
+   public:
+    virtual ~Host() = default;
+    // Any shell window to own the approval dialog, or null (the degraded
+    // MessageBox path, which offers allow-ONCE only).
+    virtual HWND CredentialPromptOwner() = 0;
+    // A grant or audit row changed: the Settings pane re-reads them.
+    virtual void NoteCredentialConsentChanged() = 0;
+  };
+
+  using DirtyCallback = std::function<void()>;
+
+  PhiCredentialService(model::PhiConsentModel& consent,
+                       Host& host,
+                       DirtyCallback dirty);
+  ~PhiCredentialService();
+
+  PhiCredentialService(const PhiCredentialService&) = delete;
+  PhiCredentialService& operator=(const PhiCredentialService&) = delete;
+
+  // Starts the REAL provider: the out-of-process Bitwarden helper, which
+  // owns the user's actual vault (and links the GPL SDK on its own side of
+  // the process boundary). With no helper installed every credentials verb
+  // answers not_installed. A --dev-hooks build (phi_features.h) adds two
+  // doors: PHI_VAULT_HELPER replaces the helper binary (a PATH TO AN EXE,
+  // never arguments, so the no-arguments spawn contract is intact), and the
+  // local DPAPI dev vault stands in when no helper is installed.
+  void Init(const std::wstring& user_data_dir);
+
+  // The providers, for the credentials.* verbs' status reports.
+  const PhiVaultHelper& vault_helper() const { return vault_helper_; }
+  const PhiCredentialVault& credentials() const { return credentials_; }
+  // The helper's vault status wire string, or empty when it is not running.
+  std::string HelperStatus();
+
+  // Resolves a query through whichever provider is active (helper first, dev
+  // vault otherwise) to exactly ONE item. True fills `item` with the vault
+  // item; false fills `out` with the wire error body (not_found / ambiguous +
+  // non-secret candidates / not_ready), so both credential verbs share one
+  // matching and one refusal policy.
+  bool ResolveCredentialItem(const std::string& domain,
+                             const std::string& id,
+                             const std::string& search,
+                             const std::string& username,
+                             base::DictValue* item,
+                             base::DictValue* out);
+
+  // The native approve/deny prompt for a credential request. `detail` names
+  // the item and purpose. Returns true when the user approves.
+  // Consults the timed grants and the denial memory first; prompts only
+  // when neither answers. `grant_key` is "<item scope>|<page host>" for a
+  // fill and the item scope for a reveal. `once_only` (a cross-origin fill)
+  // offers no timed grant and consumes none.
+  bool PromptCredentialApproval(const std::wstring& detail,
+                                model::CredentialAccessKind kind,
+                                const std::string& grant_key,
+                                bool once_only);
+
+  // Appends one line to the credential audit trail (newest first, capped)
+  // and persists it — every approval decision is recorded, allowed or not.
+  void AppendCredentialAudit(const std::string& scope,
+                             model::CredentialAccessKind kind,
+                             const char* decision);
+
+  // --- The Settings pane's rows -------------------------------------------
+  // "<scope>\t<fill|reveal>" per persisted grant.
+  std::vector<std::string> GrantRows() const;
+  // Drops the persisted grant at `index` AND any live timed grant standing
+  // under the same scope — revoking must not leave a ten-minute window open.
+  void RemoveGrant(int index);
+  const std::vector<std::string>& AuditRows() const;
+
+ private:
+  // Looks a query up through the helper. Returns the reply's `result` dict,
+  // or nullopt with `error` set (`ambiguous` carries a candidates list).
+  std::optional<base::DictValue> HelperLookup(const std::string& domain,
+                                              const std::string& id,
+                                              const std::string& search,
+                                              const std::string& username,
+                                              std::string* error);
+  // True while a live TIMED grant covers `grant_key`. The kind is not
+  // consulted: fill and reveal are one exposure (model::CredentialAccessKind).
+  bool GrantCovers(const std::string& grant_key) const;
+
+  // The persisted consent file's credential half. Owned by the coordinator's
+  // store; this service is its only writer.
+  RAW_PTR_EXCLUSION model::PhiConsentModel& consent_;
+  RAW_PTR_EXCLUSION Host& host_;
+  DirtyCallback dirty_;
+
+  // The REAL provider: the out-of-process Bitwarden helper (the user's own
+  // vault, same engine as macOS). `credentials_` is a local DPAPI dev/test
+  // store used ONLY when no helper binary is installed.
+  PhiVaultHelper vault_helper_;
+  PhiCredentialVault credentials_;
+
+  // The session-scoped grants (the Mac's in-memory 10-minute cache), so a
+  // restart is always a clean slate for them.
+  struct TimedGrant {
+    model::CredentialAccessKind kind = model::CredentialAccessKind::kFill;
+    ULONGLONG expires_tick = 0;
+  };
+  std::map<std::string, TimedGrant> timed_grants_;
+  // Denial memory: grant key -> tick until which the request is refused
+  // without a prompt (5 minutes), so a denied ask cannot re-prompt at once.
+  std::map<std::string, ULONGLONG> denials_;
+};
+
+}  // namespace phi_client
+
+#endif  // PHIBROWSER_WIN_CLIENT_PHI_CREDENTIAL_SERVICE_H_

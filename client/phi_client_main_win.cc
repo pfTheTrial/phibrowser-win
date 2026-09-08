@@ -73,7 +73,11 @@ int main();
 // windows-framework-design.md §2.5.
 extern "C" __declspec(dllexport)
 phi_framework::PhiFrameworkDelegate* PhiClientCreateDelegate() {
-  return new phi_client::PhiCoordinator();
+  // The coordinator is the composition root; the delegate the framework
+  // talks to is the member it owns (docs/architecture-review.md §3.4), so
+  // the leak keeps both alive.
+  auto* coordinator = new phi_client::PhiCoordinator();
+  return &coordinator->framework_dispatcher();
 }
 
 namespace {

@@ -15,7 +15,7 @@
 
 namespace phi_client {
 
-class PhiCoordinator;
+class PhiSurfaceCoordinator;
 
 // How Reader View presents an article — the Mac's ReaderStyle, and the wire
 // format the extension's `style.ts` speaks. Everything is a raw string here
@@ -61,7 +61,7 @@ struct PhiReaderStyle {
 // The Mac twin is Sources/States/ReaderExtensionBridge.swift.
 class PhiReaderBridge {
  public:
-  explicit PhiReaderBridge(PhiCoordinator* coordinator);
+  explicit PhiReaderBridge(PhiSurfaceCoordinator* owner);
   ~PhiReaderBridge();
 
   PhiReaderBridge(const PhiReaderBridge&) = delete;
@@ -136,7 +136,7 @@ class PhiReaderBridge {
   // tab (nothing when the tab is not on screen anywhere).
   void ShowRefusalToast(int tab_id, const std::string& error);
 
-  RAW_PTR_EXCLUSION PhiCoordinator* const coordinator_;  // Owns this.
+  RAW_PTR_EXCLUSION PhiSurfaceCoordinator* const owner_;  // Owns this.
   PhiReaderStyle style_;
   bool extension_seen_ = false;
   // The URL each tab's positive probe verdict was about. Absence = no offer,

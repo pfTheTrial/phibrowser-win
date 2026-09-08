@@ -10,6 +10,12 @@ agent-private sandbox. They need no agent Space (callable before
 `enterContext`) and ignore control ownership, since they don't touch the
 agent window.
 
+> The wire under these helpers — every verb name, the payload fields
+> each one reads, the capability it costs and the errors it can
+> answer — is generated from the client's verb registry into
+> [verbs.md](verbs.md). Read that when a call refuses and the helper
+> does not say why.
+
 The data model, in one breath: a **Space** is a workspace bound to exactly one
 **profile** (fixed at creation; one profile can back many Spaces).
 **Bookmarks** are per-Space; **pinned tabs** are per-profile (shared by all of
@@ -82,9 +88,48 @@ Two more refusals are final for the same reason: `pref_not_agent_settable`
 (the toggle itself, developer mode, the analytics consent and the test-rig
 switch can only be changed by the user) and `test_rig_only` (verbs that exist for Phi's own test
 harness — deleting a profile, capturing a window to a file, feedback account
-overrides). On Windows a verb sent while the user has a menu or dialog open
-is held until it closes rather than lost; a verb that waits longer than
-three minutes fails `timeout`.
+overrides — and, on Windows, every destructive user-Space operation:
+deleting a Space or a URL rule, removing a bookmark FOLDER, closing a tab
+group, a tab or a window in the user's own Space). On Windows a verb sent
+while the user has a menu or dialog open is held until it closes rather
+than lost; a verb that waits longer than three minutes fails `timeout`.
+
+### Capabilities and principals (Windows)
+
+On Windows every connection to Phi acts as a *principal* with a set of
+capabilities, and each verb is checked against them BEFORE it runs:
+
+- Consent grants the agent-Space capability: its own agent Spaces and
+  shadow windows, `listSpaces`, `userFocus`, `listProfiles`, and
+  credentials (with their own prompts). The toggle above adds reading and
+  operating the user's Spaces; developer mode adds app settings
+  (`settings.set`, theme, layout, menus, feedback); nothing an agent can
+  do adds the host or destructive capabilities — those are Phi's test rig.
+- A verb the principal lacks the capability for fails
+  `user_space_operations_disabled` (the toggle), `test_rig_only` (host or
+  destructive), or `capability_required` (app settings without developer
+  mode, or a connection Phi never consented). All three are final for the
+  round — tell the user which switch it is, and carry on in the agent
+  Space.
+- Scope decides which capability applies: the same verb aimed at a task
+  window (`{taskId}`, or the windowId of an agent/shadow window) needs
+  only the agent-Space capability, aimed at a user window (a `spaceId`, a
+  user windowId, or no scope at all) needs the user-Space one.
+- **The capability header.** The first consented connection of a process
+  is issued an opaque capability, echoed on the upgrade response as
+  `X-Phi-Agent-Capability`; `cdp.mjs` remembers it for the process and
+  presents it on every later connection, so the browser-target WebSocket
+  and the `/phi-agent` channel act as ONE principal, and a delegated
+  helper (the mirror tailer) joins it without a second prompt. The record
+  lives in Phi's memory until Phi quits — that is what "Allow Once" now
+  means for an interpreter such as `node.exe`, which is never remembered
+  on disk.
+- **Driving the user's windows arms the mask.** Every mutating verb whose
+  scope is a user window (`openSpaceTab`, `activateSpace`, tab layout,
+  navigation, closing tabs, …) is reported to the browser as agent-driven
+  under the principal's capability, exactly as CDP input is: the tab shows
+  the operating mask, and a tab the user has taken back REFUSES the verb
+  (it answers `ok:false`) the same way it refuses a CDP command.
 
 ## Working in a user Space
 

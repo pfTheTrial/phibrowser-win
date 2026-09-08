@@ -15,6 +15,8 @@
 
 #include "base/memory/raw_ptr_exclusion.h"
 #include "base/synchronization/lock.h"
+#include "base/values.h"
+#include "phibrowser-win/client/phi_verb_registry.h"
 
 namespace phi_framework {
 class PhiFramework;
@@ -29,24 +31,64 @@ struct PhiAgentPeer {
   // Full image path of the connecting process; empty when the process died
   // or could not be opened (treated as unidentified).
   std::wstring image_path;
+  // The `X-Phi-Agent-Capability` the request carried (lane 5 §4.1): an
+  // opaque id Phi minted for an earlier consented connection, which a
+  // later connection — or a helper the agent delegated to — presents to
+  // join that principal without a second prompt. Already validated to the
+  // wire alphabet ([A-Za-z0-9_-]{32,128}); empty when absent. Whether it
+  // still names a live capability is the delegate's call.
+  std::string presented_capability;
 };
 
-// Handles /phi-agent control commands. Called on the control server's I/O
+// Handles /phi-agent control commands and the per-connection trust
+// bookkeeping. Every method is called on a control server connection
 // thread; the implementation marshals to the browser UI thread itself.
-// `type` is the envelope verb (e.g. "agentSpace.list"); `payload_json` is the
-// stringified payload. Returns the stringified JSON response.
+//
+// `connection_id` is the server's handle for ONE accepted pipe connection
+// (never reused within a process). The delegate keys its principal on it
+// (docs/architecture-review.md §3.7 item 3): AuthorizeAgentPeer creates the
+// principal, HandleControlCommand and the DevTools-session notices act on
+// it, OnConnectionClosed retires it.
 class PhiControlDelegate {
  public:
   virtual ~PhiControlDelegate() = default;
-  virtual std::string HandleControlCommand(const std::string& type,
-                                           const std::string& payload_json) = 0;
-  // Called ONCE per accepted connection, on the I/O thread, BEFORE any
-  // request is served — control channel and CDP session alike (CDP grants
-  // full browser control, so both families sit behind the same consent).
-  // Only connections that already presented the launch token reach this;
-  // the implementation marshals to the UI thread and may block on a consent
-  // dialog. False refuses the connection.
-  virtual bool AuthorizeAgentPeer(const PhiAgentPeer& peer) = 0;
+  // `type` is the envelope verb (e.g. "agentSpace.list"); `payload` is the
+  // request's payload, already parsed (v1 parses `payloadJson` for the
+  // delegate; v2 carries the object itself). The answer is the TYPED result
+  // — success fields, or a code from the closed enum — which the server
+  // formats onto whichever protocol the connection speaks. The delegate
+  // never sees an envelope and never spells a wire shape.
+  virtual PhiVerbResult HandleControlCommand(uint64_t connection_id,
+                                             const std::string& type,
+                                             base::DictValue payload) = 0;
+  // Called ONCE per accepted connection, BEFORE any request is served —
+  // control channel and CDP session alike (CDP grants browser control, so
+  // both families sit behind the same consent). Only connections that
+  // already presented the launch token reach this; the implementation
+  // marshals to the UI thread and may block on a consent dialog. False
+  // refuses the connection. On success `capability_id` receives the agent
+  // capability the connection now holds (minted here, or the one the peer
+  // presented), which the server echoes on the 101 as
+  // `X-Phi-Agent-Capability`; empty when the delegate issued none.
+  virtual bool AuthorizeAgentPeer(uint64_t connection_id,
+                                  const PhiAgentPeer& peer,
+                                  std::string* capability_id) = 0;
+  // The control wire the connection negotiated on its /phi-agent upgrade
+  // (1, or 2 when it sent `X-Phi-Protocol: 2`). Called once, right after
+  // the 101 and before the first request. A connection that never opens a
+  // control channel (a CDP session) is never told.
+  virtual void OnControlProtocol(uint64_t connection_id, int protocol) = 0;
+  // A CDP session (PhiFramework::OpenDevToolsSession) was opened / closed
+  // on the connection. Reported right after the open succeeded and before
+  // the 101 goes out, so the delegate can scope the session
+  // (SetDevToolsSessionScope) before the peer's first message.
+  virtual void OnDevToolsSessionOpened(uint64_t connection_id,
+                                       uint64_t session_id) = 0;
+  virtual void OnDevToolsSessionClosed(uint64_t connection_id,
+                                       uint64_t session_id) = 0;
+  // The connection is gone (after its sessions closed). Called only for
+  // connections AuthorizeAgentPeer accepted.
+  virtual void OnConnectionClosed(uint64_t connection_id) = 0;
 };
 
 // The client's unified control socket — the Windows twin of the Mac
@@ -79,8 +121,10 @@ class PhiControlDelegate {
 //      so a process that cannot read the profile directory cannot even make
 //      the consent prompt appear.
 //   3. Consent: PhiControlDelegate::AuthorizeAgentPeer with the peer's image
-//      path, which the coordinator turns into the Allow/Deny dialog and its
-//      grant memory.
+//      path and the agent capability it presented (if any), which the
+//      control dispatcher turns into the Allow/Deny dialog, its grant
+//      memory, and a per-connection principal; the capability the
+//      connection ends up holding is echoed on the 101.
 // Plus a cap of kMaxConnections concurrent connections (429 beyond it, no
 // delegate call) so a prompt cannot be spammed.
 //
@@ -125,6 +169,9 @@ class PhiControlServer {
   struct ControlChannel {
     HANDLE pipe = nullptr;
     HANDLE write_event = nullptr;
+    // The wire the peer asked for on its upgrade (1 unless it sent
+    // `X-Phi-Protocol: 2`); a pushed event is shaped for it.
+    int protocol = 1;
     base::Lock write_lock;
   };
   void RegisterChannel(const std::shared_ptr<ControlChannel>& channel);
@@ -137,13 +184,20 @@ class PhiControlServer {
   void HandleConnection(HANDLE pipe);
   // Serves the /phi-agent WebSocket control channel on an accepted
   // connection whose HTTP head has been read and validated. Dispatches each
-  // message to delegate_.
-  void ServeControlChannel(Connection* conn, const std::string& head);
+  // message to delegate_ under `connection_id`. `capability_id` (may be
+  // empty) is echoed on the 101 as X-Phi-Agent-Capability.
+  void ServeControlChannel(Connection* conn,
+                           const std::string& head,
+                           uint64_t connection_id,
+                           const std::string& capability_id);
   // Serves one CDP WebSocket session (/devtools/<kind>/<id>) through the
-  // framework's in-process transport until either side closes.
+  // framework's in-process transport until either side closes, reporting
+  // the session to delegate_ so it can be scoped to the principal.
   void ServeDevToolsSession(Connection* conn,
                             const std::string& head,
-                            const std::string& target_id);
+                            const std::string& target_id,
+                            uint64_t connection_id,
+                            const std::string& capability_id);
 
   std::wstring user_data_dir_;
   std::wstring pipe_name_;
@@ -157,6 +211,9 @@ class PhiControlServer {
   volatile bool started_ = false;
   // Connections accepted and not yet finished, for the concurrency cap.
   std::atomic<int> active_connections_{0};
+  // The next connection id (see PhiControlDelegate); 0 is never handed out
+  // — the dispatcher uses it for its internal principal.
+  std::atomic<uint64_t> next_connection_id_{1};
   // Live control channels, for BroadcastEvent.
   std::vector<std::shared_ptr<ControlChannel>> channels_;
   mutable base::Lock channels_lock_;

@@ -17,6 +17,7 @@ before cutting an installer. --source-only skips the binary checks.
 import argparse
 import os
 import re
+import subprocess
 import sys
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -113,6 +114,15 @@ def check_sources():
             if not re.search(r"analytics_enabled\s*=\s*false", f.read()):
                 rc |= fail("phi_app_model.h: analytics_enabled must default "
                            "to false (review §4 item 32)")
+    # The agent-facing verb reference is generated from the C++ table; a
+    # stale one is a contract the skill cannot trust (review §3.7 item 4).
+    check_verbs = os.path.join(REPO, "tools", "check-verbs-md.sh")
+    if os.path.isfile(check_verbs):
+        proc = subprocess.run(["bash", check_verbs], capture_output=True,
+                              text=True)
+        if proc.returncode != 0:
+            rc |= fail("references/verbs.md is stale — run "
+                       "tools/gen-verbs-md.py")
     rc_path = os.path.join(CLIENT, "phi_client.rc")
     with open(rc_path, errors="replace") as f:
         if "VS_VERSION_INFO" not in f.read():

@@ -11,32 +11,33 @@
 #include <deque>
 #include <map>
 #include <memory>
-#include <set>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "base/memory/raw_ptr_exclusion.h"
-#include "base/synchronization/lock.h"
 #include "chrome/browser/phinomenon/phi_framework/phi_framework_api.h"
-#include "phibrowser-win/client/phi_agent_spaces.h"
+#include "phibrowser-win/client/phi_agent_space_manager.h"
 #include "phibrowser-win/client/phi_control_server.h"
-#include "phibrowser-win/client/phi_credentials.h"
+#include "phibrowser-win/client/phi_credential_service.h"
 #include "phibrowser-win/client/phi_kiosk_window.h"
 #include "phibrowser-win/client/phi_peek_panel.h"
-#include "phibrowser-win/client/phi_vault_helper.h"
 #include "phibrowser-win/client/phi_emoji.h"
 #include "phibrowser-win/client/phi_prompt.h"
-#include "phibrowser-win/client/phi_reader.h"
 #include "phibrowser-win/client/phi_reader_panel.h"
-#include "phibrowser-win/client/phi_surface_registry.h"
-#include "phibrowser-win/client/phi_auth.h"
+#include "phibrowser-win/client/phi_surface_coordinator.h"
+#include "phibrowser-win/client/phi_account_feedback.h"
 #include "phibrowser-win/client/phi_feedback_window.h"
 #include "phibrowser-win/client/phi_settings_window.h"
 #include "phibrowser-win/client/phi_transcript_panel.h"
-#include "phibrowser-win/client/phi_agent_drive_registry.h"
+#include "phibrowser-win/client/phi_url_router.h"
 #include "phibrowser-win/client/phi_app_model.h"
-#include "phibrowser-win/client/phi_ghost_spaces.h"
+#include "phibrowser-win/client/phi_session_restore.h"
+#include "phibrowser-win/client/phi_framework_dispatcher.h"
+#include "phibrowser-win/client/phi_keyboard_accelerators.h"
+#include "phibrowser-win/client/phi_preferences.h"
+#include "phibrowser-win/client/phi_profile_service.h"
+#include "phibrowser-win/client/phi_space_manager.h"
 #include "phibrowser-win/client/phi_store.h"
 #include "phibrowser-win/client/phi_tab_store.h"
 #include "phibrowser-win/client/phi_theme.h"
@@ -46,22 +47,31 @@
 
 namespace phi_client {
 
-// One request marshalled from the control server's I/O thread to the UI
-// thread (a control verb or a peer-consent decision). Defined in the .cc;
-// the coordinator only queues pointers to it.
-struct PhiUiCall;
+class PhiControlDispatcher;
 
 // The client's implementation of the framework delegate — the Windows twin of
 // the Mac PhiChromiumCoordinator. Registered with the framework before
-// ChromeMain; the framework calls it back on the browser UI thread. F2 slice 1
-// only observes window lifecycle and logs it; adopting the HWND and drawing
-// chrome comes next.
-class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
-                       public PhiControlDelegate,
-                       public PhiSlotHost,
+// ChromeMain; the framework calls it back on the browser UI thread.
+//
+// Phase 4 (docs/architecture-review.md §3.4) is turning it into a
+// composition root over services: PhiPreferences, PhiSpaceManager and
+// PhiUrlRouter own their domains, stores and invariants; the coordinator
+// wires them (their Host/Observer seams below), keeps the app operations
+// that span several of them, and still implements the shell's and the
+// settings window's host interfaces by forwarding.
+class PhiCoordinator : public PhiSlotHost,
                        public PhiSettingsHost,
-                       public PhiTranscriptHost,
-                       public PhiFeedbackHost {
+                       public PhiPreferences::Observer,
+                       public PhiSpaceManager::Observer,
+                       public PhiSpaceManager::Host,
+                       public PhiUrlRouter::Host,
+                       public PhiKeyboardAccelerators::Host,
+                       public PhiAccountAndFeedback::Host,
+                       public PhiCredentialService::Host,
+                       public PhiSessionRestore::Host,
+                       public PhiProfileService::Host,
+                       public PhiSurfaceCoordinator::Host,
+                       public PhiAgentSpaceManager::Host {
  public:
   PhiCoordinator();
   ~PhiCoordinator() override;
@@ -95,117 +105,87 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   AppPhase phase() const { return phase_; }
   static const char* AppPhaseName(AppPhase phase);
 
-  // phi_framework::PhiFrameworkDelegate:
+  // --- The framework's callbacks --------------------------------------------
+  // Reached through PhiFrameworkDispatcher, which is the delegate: it holds
+  // no state and forwards each callback to the service that owns the domain
+  // (docs/architecture-review.md §3.4). What is left here is what the
+  // coordinator itself owns — the bootstrap, the creation switch, the
+  // window-facing relays and the analytics ring.
   void OnFrameworkReady(phi_framework::PhiFramework* framework,
-                        const char* user_data_dir_utf8) override;
+                        const char* user_data_dir_utf8);
   // Pushes the client's per-profile mirrors (restore-on-startup) into the
   // profile that just loaded, and the global ones (peek, display language)
   // once, on the first load — the ONE place the framework learns them, so
   // no path that happens to load a profile has to remember to.
-  void OnProfileLoaded(const char* profile_id) override;
+  void OnProfileLoaded(const char* profile_id);
   // Delivered INSIDE Browser::Create (contract rule 2): adopts the HWND by
   // `creation.kind`, matching a requested window to what RequestCreation
-  // filed under its token. Creates and closes no browsers.
-  void OnBrowserWindowCreated(
-      const phi_framework::WindowCreation& creation) override;
-  void OnBrowserWindowClosing(int64_t window_id) override;
+  // filed under its token. Creates and closes no browsers. The dispatcher
+  // has already captured the struct into a value.
+  void AdoptCreatedWindow(const phi_framework::WindowCreation& creation);
+  void RetireBrowserWindow(BrowserId browser);
   // The ONE strip/nav/split/group notification the client consumes (the
   // legacy OnTabsChanged that follows it is left unimplemented): stores the
   // snapshot in window_model_, settles the surfaces over the window and
   // posts the slot's rebuild. Delivered under contract rule 1, so the
   // framework may be called from inside it.
-  void OnWindowChanged(const phi_framework::WindowSnapshot& snapshot,
-                       phi_framework::WindowChangeReason reason) override;
-  void OnOpenLinkInSpace(int64_t source_window_id,
-                         const char* space_id,
-                         const char* url) override;
-  void OnAskSpaceForURL(const char* url,
-                        const char* default_space_id,
-                        int64_t source_window_id,
-                        bool source_is_new_tab) override;
-  void OnRouteURLToSpace(const char* space_id,
-                         const char* url,
-                         int64_t source_window_id) override;
-  void OnTargetURLChanged(int64_t window_id, const char* url) override;
-  void OnOmniboxResults(int64_t window_id, const char* json) override;
-  void OnImportCompleted(const char* source, bool success) override;
-  void OnPlaceholderModeChanged(int64_t window_id, bool entered) override;
-  void OnRefreshNewTab(int64_t window_id) override;
-  void OnContentFullscreenChanged(int64_t window_id, bool fullscreen) override;
-  void OnExtensionsChanged(int64_t window_id) override;
-  void OnProfileCreated(const char* profile_id) override;
-  void OnReaderArticleExtracted(int request_id, const char* json) override;
-  void OnShowFeedbackRequested() override;
-  void OnFeedbackSystemLogs(int request_id, const char* text) override;
-  void OnAgentDroveUserSpaceTab(int64_t tab_id,
-                                int64_t window_id,
-                                int64_t session_id) override;
-  void OnAgentObservedUserSpaceTab(int64_t tab_id,
-                                   int64_t window_id,
-                                   int64_t session_id) override;
-  void OnAgentStoppedUserSpaceTab(int64_t tab_id,
-                                  int64_t session_id) override;
-  void OnTabDistillable(int64_t window_id, int tab_id,
-                        bool distillable) override;
+  void NoteWindowSnapshot(const phi_framework::WindowSnapshot& snapshot,
+                          phi_framework::WindowChangeReason reason);
+  void OnTargetURLChanged(int64_t window_id, const char* url);
+  void OnOmniboxResults(int64_t window_id, const char* json);
+  void OnImportCompleted(const char* source, bool success);
+  void OnPlaceholderModeChanged(int64_t window_id, bool entered);
+  void OnRefreshNewTab(int64_t window_id);
+  void OnContentFullscreenChanged(int64_t window_id, bool fullscreen);
+  void OnExtensionsChanged(int64_t window_id);
+  void OnShowFeedbackRequested();
+  void OnTabDistillable(int64_t window_id, int tab_id, bool distillable);
   void OnExtensionMessage(const char* request_id,
                           const char* sender_id,
                           const char* type,
-                          const char* payload_json) override;
-  void OnOpenReaderView(int64_t window_id, int64_t tab_id) override;
-  void OnSessionRestoreSettled(const char* receipt_json) override;
-  void OnAnalyticsEventCaptured(const char* module,
-                                const char* event_name,
-                                const char* properties_json) override;
-  void OnColdStartRestorePlan(std::vector<int>* eager_window_ids,
-                              bool* armed) override;
-  void OnColdStartParkedWindows(const char* parked_json,
-                                const char* reporting_profile) override;
+                          const char* payload_json);
+  // One phi_analytics event as it crossed the framework boundary, into the
+  // ring below.
+  void RecordAnalyticsEvent(const char* module,
+                            const char* event_name,
+                            const char* properties_json);
+  // The framework delegate itself: the client's ONE entry point from the
+  // browser, handed to the framework by PhiClientCreateDelegate.
+  PhiFrameworkDispatcher& framework_dispatcher() {
+    return framework_dispatcher_;
+  }
 
-  // --- Reader View ---------------------------------------------------------
-  // Reader View lives in the Mirage extension; PhiReaderBridge is the app's
-  // half of that conversation and these are the seams it acts through.
-  PhiReaderBridge& reader() { return reader_; }
-  // Answers one extension request (see PhiFramework::RespondToExtensionMessage).
-  void RespondToExtension(const std::string& request_id,
-                          const std::string& response_json);
-  // App -> extensions. False when the broadcast reached nobody.
-  bool BroadcastToExtensions(const std::string& type,
-                             const std::string& payload_json);
+  // --- Reader View and Peek -------------------------------------------------
+  // The surfaces service (docs/architecture-review.md §3.4) and the seams
+  // the panels, the settings window and the verb ladder reach it through.
+  PhiSurfaceCoordinator& surface_coordinator() { return surface_coordinator_; }
+  PhiReaderBridge& reader() { return surface_coordinator_.reader(); }
   // The window whose ON-SCREEN browser holds `tab_id` (by the model, so a
   // tab hidden in a pin or bookmark cell still counts), or null when the
   // tab is not on screen anywhere (a background Space, or a tab already
-  // gone).
-  PhiWindowController* WindowShowingTab(TabId tab_id);
-  // The reader extension's surface tab has appeared in the origin's strip:
-  // move it into a browser of its own and host that in a panel over the
-  // origin's page. False when there is no such tab to move.
-  bool PanelizeReaderSurface(TabId origin_tab_id);
-  // Closes the reader panel covering `origin_tab_id`, if any. The panel's
-  // browser holds only the surface tab, so closing the window is the whole
-  // teardown.
-  void CloseReaderPanelForOrigin(TabId origin_tab_id);
+  // gone). PhiSurfaceCoordinator::Host.
+  PhiWindowController* WindowShowingTab(TabId tab_id) override;
   // Closes every surface of `kind` (kContent = all kinds) attached to the
   // tab: the panel browsers close, and OnBrowserWindowClosing forgets them.
   void CloseSurfacesForOrigin(TabId origin_tab_id,
-                              SidebarSurface kind = SidebarSurface::kContent);
-  // Whether a reader panel is currently up for this origin tab.
-  bool HasReaderPanelForOrigin(TabId origin_tab_id) const;
+                              SidebarSurface kind = SidebarSurface::kContent) {
+    surface_coordinator_.CloseSurfacesForOrigin(origin_tab_id, kind);
+  }
   // A link inside the reading surface navigated it away from reader.html:
   // hand `url` back to the origin window as a normal tab and drop the panel.
+  // (PhiReaderPanel's seam.)
   void ExpandReaderPanelIntoTab(int64_t panel_window_id,
-                                const std::string& url);
-  // The deferred half of the above (WM_PHI_READER_EXPAND).
-  void FinishReaderPanelExpand(BrowserId panel_window);
-  // A reader style axis moved: persist it.
-  void OnReaderStyleChanged();
-  // The reader affordance for `tab_id` may have changed — repaint the window
-  // showing it.
-  void OnReaderOfferabilityChanged(TabId tab_id);
+                                const std::string& url) {
+    surface_coordinator_.ExpandReaderPanelIntoTab(panel_window_id, url);
+  }
 
-  // PhiControlDelegate (called on the control server's I/O thread):
-  std::string HandleControlCommand(const std::string& type,
-                                   const std::string& payload_json) override;
-  bool AuthorizeAgentPeer(const PhiAgentPeer& peer) override;
+  // The control plane: the /phi-agent verb ladder, peer consent and the
+  // deferred replies (docs/architecture-review.md §3.4). Built in
+  // OnFrameworkReady, before the pipe server starts; the client's own UI
+  // still calls verbs through it (ExecuteControlOnUi, ControlCaller::
+  // kInternal) and the creation/reader paths answer deferred replies
+  // through it (CompletePendingReply).
+  PhiControlDispatcher& dispatcher() { return *dispatcher_; }
 
   // PhiSlotHost (called on the UI thread by a slot's sidebar):
   std::vector<PhiSpaceView> Spaces() const override;
@@ -218,12 +198,6 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   void RequestAgentFinish(const std::string& task_id) override;
   void RequestShowTranscript(const std::string& task_id) override;
 
-  // PhiTranscriptHost:
-  std::vector<std::string> TranscriptLines(
-      const std::string& task_id) override;
-  std::string TranscriptAgentName(const std::string& task_id) override;
-  bool PushTranscriptMessage(const std::string& task_id,
-                             const std::string& text) override;
   void RequestCreateSpace(int64_t slot, bool new_profile) override;
   bool AccountInfo(std::string* name, std::string* email) const override;
   bool AccountSigningIn() const override;
@@ -238,6 +212,12 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // Opens `url` as a foreground tab in the first shell window and raises it —
   // how a Kiosk window hands its page over when the user expands it.
   void OpenUrlInMainWindow(const std::string& url);
+  // Routes `url` into `space_id` on the user's behalf — the Kiosk's Space
+  // menu. The framework's own callback of this name goes straight to the
+  // router through PhiFrameworkDispatcher; this is the in-app entry point.
+  void OnOpenLinkInSpace(int64_t source_window_id,
+                         const char* space_id,
+                         const char* url);
   // The Space a Kiosk offers to hand its page to: the main window's ACTIVE
   // Space, the Space holding the default role when no window is up — the
   // Mac's KioskSpaceMenuTargetResolver.primarySpace.
@@ -247,13 +227,6 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
                        const PhiFeedbackContext& context) override;
   void RequestSpaceIconPicker(const std::string& space_id) override;
 
-  // PhiFeedbackHost:
-  bool FeedbackAccount(std::string* email) override;
-  void RequestFeedbackSignIn() override;
-  void OpenFeedbackLink(int64_t window_id, const std::string& url) override;
-  bool FetchFeedbackSystemLogs(int64_t window_id, int request_id) override;
-  std::map<std::string, std::string> PhiExtensionVersions(
-      int64_t window_id) override;
   void RequestCreateProfileForSpaceForm(int64_t slot,
                                         const std::string& name) override;
   std::string RequestCreateSpaceWithOptions(
@@ -423,8 +396,197 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
                         const std::string& space_id,
                         bool ask) override;
   void RemoveURLRule(int index) override;
+  void AddSettingsObserver(PhiSettingsObserver* observer) override;
+  void RemoveSettingsObserver(PhiSettingsObserver* observer) override;
 
- private:
+  // --- The control plane's view of the app ----------------------------------
+  // What the verb ladder (PhiControlDispatcher) reaches: the model values and
+  // registries by reference, and the coordinator operations the verbs are
+  // built on. Phase 4 step one exposes them as-is so the ladder could move
+  // out unchanged; the service extraction (§3.4) replaces them with the
+  // services' own interfaces and must keep every one of them working
+  // meanwhile.
+  // The services (docs/architecture-review.md §3.4) and, through them,
+  // the persisted domains. The ladder still reads the settings and writes
+  // the Spaces model directly; the next extraction step gives it the
+  // services' own interfaces.
+  PhiPreferences& preferences() { return preferences_; }
+  PhiSpaceManager& space_manager() { return *space_manager_; }
+  PhiUrlRouter& url_router() { return *url_router_; }
+  const model::PhiSettings& settings() const { return preferences_.settings(); }
+  model::PhiSpacesModel& spaces_model() {
+    return space_manager_->mutable_model();
+  }
+  model::PhiConsentModel& consent() { return consent_; }
+  // Window state, the shell slots, the surfaces, the stored rows.
+  PhiWindowModel& window_model() { return window_model_; }
+  PhiWindowRegistry& registry() { return registry_; }
+  PhiSurfaceRegistry& surfaces() { return surface_coordinator_.registry(); }
+  PhiTabStore& tab_store() { return tab_store_; }
+  // The agent Spaces, the shadow windows and the operating mask
+  // (docs/architecture-review.md §3.4). The verb ladder's seams below are
+  // one-line forwarders onto it.
+  PhiAgentSpaceManager& agent_manager() { return agent_manager_; }
+  PhiAgentSpaces& agent_spaces() { return agent_manager_.spaces(); }
+  using ShadowWindow = PhiAgentSpaceManager::ShadowWindow;
+  std::map<std::string, ShadowWindow>& shadow_windows() {
+    return agent_manager_.shadows();
+  }
+  ShadowWindow* FindShadowByWindow(BrowserId window_id) {
+    return agent_manager_.FindShadowByWindow(window_id);
+  }
+  void TouchShadow(ShadowWindow* shadow, int ttl_seconds, uint64_t now_ms) {
+    agent_manager_.TouchShadow(shadow, ttl_seconds, now_ms);
+  }
+  void CloseShadowWindow(const std::string& task_id, const char* reason) {
+    agent_manager_.CloseShadowWindow(task_id, reason);
+  }
+  void CloseAgentSpace(const std::string& task_id) {
+    agent_manager_.CloseAgentSpace(task_id);
+  }
+  void PushOwnershipChanged(const std::string& task_id) {
+    agent_manager_.PushOwnershipChanged(task_id);
+  }
+  void RefreshAgentOverlay() { agent_manager_.RefreshOverlay(); }
+  // The profile service (docs/architecture-review.md §3.4) and the seams the
+  // verb ladder reaches it through. `PendingProfile` keeps its old spelling
+  // here so the ladder's `PhiCoordinator::PendingProfile` still names it.
+  PhiProfileService& profiles() { return *profile_service_; }
+  using PendingProfile = PhiProfileService::PendingProfile;
+  const std::deque<PendingProfile>& pending_profiles() const {
+    return profile_service_->pending();
+  }
+  // Files a CreateProfile and asks the framework for it.
+  void RequestProfile(PendingProfile pending) {
+    profile_service_->RequestProfile(std::move(pending));
+  }
+  // The display name the framework reports for `profile_id`, or empty.
+  std::string ProfileDisplayName(const std::string& profile_id) const {
+    return profile_service_->ProfileDisplayName(profile_id);
+  }
+  // Asks the framework for a browser (PhiFramework::RequestBrowser) and files
+  // `pending` under the token it returns, so OnBrowserWindowCreated can
+  // finish the job when the window arrives — `kind`, the profile and the
+  // deadline are stamped here. Invalid when the framework refused; then
+  // nothing was filed and a waiting reply (pending.pending_reply_id) is
+  // already answered create_failed.
+  RequestToken RequestCreation(phi_framework::WindowKind kind,
+                               const std::string& profile_id,
+                               bool incognito,
+                               BrowserId source_window,
+                               PendingCreation pending);
+  // The browser a wire `windowId` means: a slot number resolves to the
+  // browser that slot is SHOWING (the Space's browser, never the slot's
+  // original), anything else names a browser itself (an agent window, a
+  // Space browser the caller learned from spaces.list).
+  BrowserId ResolveBrowser(int64_t slot_or_browser) const;
+  BrowserId ResolveBrowser(SlotId slot) const;
+  // The session id of `browser`'s active tab (what the extensions API calls
+  // a tab id), or invalid — from the model.
+  TabId ActiveTabId(BrowserId browser) const;
+  // The slot's controller; an invalid slot (the wire's 0 / no windowId)
+  // falls back to the first USER window — the verb convention for "the
+  // window". Null when none exists.
+  PhiWindowController* ControllerForSlot(SlotId slot);
+  // The browser hosting `space_id`'s tabs (possibly hidden behind a sibling
+  // Space), or invalid when the Space has no open window.
+  BrowserId BrowserForSpace(const std::string& space_id) const;
+  // The USER window the user is looking at: the foreground shell when it is
+  // one of ours, the first user window otherwise. Null without windows.
+  PhiWindowController* FocusedUserController();
+  // Surfaces `space_id` in `slot` (invalid: the first user window),
+  // requesting its browser in the Space's profile when the slot has none —
+  // the spaces.switch body, shared with the skill's spaces.activate.
+  // `cold` reports the request path; `pending` that the browser is still
+  // to arrive (a request never attaches before it returns). `reopen_urls`
+  // are opened in the new browser once it attaches (a re-profiled Space's
+  // tabs).
+  bool SwitchSlotToSpace(SlotId slot, const std::string& space_id,
+                         bool* pending, bool* cold,
+                         const std::vector<std::string>* reopen_urls = nullptr);
+  // Opens a shell on the default Space when a restore left no user window.
+  void OpenDefaultShellIfNoUserWindow(const char* reason);
+  // Publishes the Space list (with each Space's open browser id) into the
+  // framework for the page context menu's "Open Link in Space" submenu,
+  // and the routing table with it. COALESCED: the push runs once on the
+  // next posted turn however many callers ask in this one (§3.4).
+  void PushSpaceMenu() override;
+  void RebuildSpacePalettes();
+  // The (profile, space) a slot's pinned/bookmark rows belong to.
+  bool OwnerForSlot(SlotId slot, std::string* profile_id,
+                    std::string* space_id) const;
+  // The active tab's favicon as base64 BGRA, for storing on a pinned/bookmark
+  // row. A pinned tab has no live tab to ask later.
+  std::string CaptureFavicon(SlotId slot, int* width, int* height);
+  // The url the slot is showing right now (the model's nav state).
+  std::string LiveUrl(SlotId slot) const;
+  void StoreSplitInternal(SlotId slot, TabId tab_a, TabId tab_b,
+                          bool as_bookmark, int insert_index,
+                          bool bind_bookmark);
+  // The pin scope's truth is the tab store (its rows re-own themselves on a
+  // change); the preferences carry a write-through mirror so the two files
+  // never disagree — called after every tab-store change and load.
+  void MirrorPinScope();
+  // --- Coalesced saves -----------------------------------------------------
+  // Every client store the coordinator writes. A mutation marks its domain
+  // dirty (ScheduleSave); ONE timer writes every dirty domain ~250 ms later,
+  // so a burst of edits (a rename typed letter by letter, three pins from
+  // one split) costs one disk round-trip per file instead of one per
+  // keystroke — every write here is synchronous on the UI thread. The tab
+  // store keeps its own atomic writer (docs/architecture-review.md §3.4).
+  enum class StoreDomain : uint32_t {
+    kSettings,  // preferences_: layout, theme, prefs, shortcuts, reader...
+    kSpaces,    // space_manager_: the Space list, default role, URL rules
+    kRestore,   // session_restore_: remembered windows, parked, last-active
+    kConsent,   // consent_: agent "always" grants, credential grants/audit
+  };
+  void ScheduleSave(StoreDomain domain);
+  // The bit set of dirty StoreDomains (1u << domain) — what agentSpace.ping
+  // reports as pendingSaves.
+  uint32_t dirty_stores() const { return dirty_stores_; }
+  // The credential service (docs/architecture-review.md §3.4) and the four
+  // seams the verb ladder reaches it through — one-line forwarders, so the
+  // ladder is unchanged.
+  PhiCredentialService& credential_service() { return credentials_; }
+  const PhiVaultHelper& vault_helper() const {
+    return credentials_.vault_helper();
+  }
+  const PhiCredentialVault& credentials() const {
+    return credentials_.credentials();
+  }
+  std::string HelperStatus() { return credentials_.HelperStatus(); }
+  bool ResolveCredentialItem(const std::string& domain,
+                             const std::string& id,
+                             const std::string& search,
+                             const std::string& username,
+                             base::DictValue* item,
+                             base::DictValue* out) {
+    return credentials_.ResolveCredentialItem(domain, id, search, username,
+                                              item, out);
+  }
+  bool PromptCredentialApproval(const std::wstring& detail,
+                                model::CredentialAccessKind kind,
+                                const std::string& grant_key,
+                                bool once_only) {
+    return credentials_.PromptCredentialApproval(detail, kind, grant_key,
+                                                 once_only);
+  }
+  void AppendCredentialAudit(const std::string& scope,
+                             model::CredentialAccessKind kind,
+                             const char* decision) {
+    credentials_.AppendCredentialAudit(scope, kind, decision);
+  }
+  // The Auth0 session, for the feedback harness verb's signedIn report.
+  const PhiAuth& auth() const { return account_.auth(); }
+  // The account / feedback service (docs/architecture-review.md §3.4).
+  PhiAccountAndFeedback& account() { return account_; }
+  // Harness only (agentSpace.feedback.setAccount): a stand-in account for a
+  // box with no Auth0 session; empty clears. Ignored while a real session
+  // is signed in.
+  void SetTestFeedbackAccount(const std::string& user_id,
+                              const std::string& email) {
+    account_.SetTestFeedbackAccount(user_id, email);
+  }
   // One phi_analytics event as it crossed the framework boundary. The client
   // has no analytics pipeline yet, so the browser's events are kept here —
   // bounded, newest last — and read back over the control socket. Without
@@ -436,13 +598,25 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
     std::string name;
     std::string properties_json;
   };
+  const std::deque<AnalyticsEvent>& analytics_events() const {
+    return analytics_events_;
+  }
+  // The last lazy-restore receipt, verbatim (the lazyRestore.* harness
+  // verbs read it and clear it before a replay).
+  const std::string& last_restore_receipt() const {
+    return session_restore_->last_receipt();
+  }
+  void ClearLastRestoreReceipt() { session_restore_->ClearLastReceipt(); }
+  // The lazy-restore service (docs/architecture-review.md §3.4).
+  PhiSessionRestore& session_restore() { return *session_restore_; }
+
+ private:
   static constexpr size_t kAnalyticsRingSize = 256;
   std::deque<AnalyticsEvent> analytics_events_;
 
   // The model's value types under the names this file has always used
   // (docs/architecture-review.md §3.4: one definition, in phi_app_model.h).
   using Space = model::Space;
-  using UrlRule = model::UrlRule;
   // Agent credential approval (C2). `kind` names the ROUTE the secret takes
   // — kFill: Phi types it into the page; kReveal: it is handed to the agent
   // — for the audit line and the prompt wording ONLY. For grant purposes
@@ -450,33 +624,6 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // page it asked Phi to fill and can read the field back, so a fill is a
   // reveal with extra steps (docs/architecture-review.md §4 item 2).
   using CredentialAccessKind = model::CredentialAccessKind;
-
-  // Runs a control command on the UI thread; returns the JSON response.
-  // Reached from HandleControlCommand through the posted WM_PHI_CONTROL and
-  // the deferred-call queue, so it only ever runs from the main loop, never
-  // inside a nested modal one.
-  // Who is asking: the pipe (an agent — gated by IsUserSpaceRequest and the
-  // test-rig switch) or the client's own UI, which calls the verb ladder as
-  // its internal API and is never gated.
-  enum class ControlCaller { kInternal, kPipe };
-  std::string ExecuteControlOnUi(const std::string& type,
-                                 const std::string& payload_json,
-                                 ControlCaller caller);
-  // The user-space gate (lane 5 F3). True when `type` is a verb that reads
-  // or changes the USER's own Spaces/state AND the request's scope resolves
-  // to a user window/Space — a {taskId} scope, or a windowId naming an
-  // agent/shadow window, is agent territory and stays ungated. Resolves the
-  // scope the way the handlers do (ResolveScopeBrowser / ControllerForSlot /
-  // DialectOwner), so the answer matches what the verb would touch.
-  bool IsUserSpaceRequest(const std::string& type,
-                          const base::DictValue* payload);
-  // Runs `call` now, or queues it while a nested modal loop is on the UI
-  // thread (PhiModalDepth() > 0) and arms kDeferredUiCallTimer to drain
-  // the queue once the loop unwinds. The UI side owns its reference to the
-  // call and releases it after running it.
-  void RunOrDeferUiCall(PhiUiCall* call);
-  void RunUiCall(PhiUiCall* call);
-  void DrainDeferredUiCalls();
 
   // --- Lifecycle -----------------------------------------------------------
   AppPhase phase_ = AppPhase::kBooting;
@@ -507,46 +654,56 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
 
   // --- The application model and its stores --------------------------------
   // The four persisted domains (docs/architecture-review.md §3.4 store
-  // mapping), each a plain value the rest of the coordinator reads and
-  // writes directly, and the PhiStore that owns its file. Every former
-  // pref/list/grant member lives in one of these; nothing else is truth.
-  // The tab store keeps its own rows and writer.
-  model::PhiSettings settings_;         // PhiSettings.json
-  model::PhiSpacesModel spaces_model_;  // PhiSpaces.json (Spaces + rules)
-  model::PhiRestoreModel restore_;      // PhiRestore.json
+  // mapping) all belong to their services now — settings to preferences_,
+  // Spaces (+ rules) to space_manager_/url_router_, restore to
+  // session_restore_ — except the consent file, whose two halves have two
+  // owners: the credential grants and audit are credentials_' and the agent
+  // "always" paths are the control plane's, so the model and its PhiStore
+  // stay here, above both. The tab store keeps its own rows and writer.
   model::PhiConsentModel consent_;      // PhiConsent.json (sealed)
-  PhiStore<model::PhiSettings> settings_store_;
-  PhiStore<model::PhiSpacesModel> spaces_store_;
-  PhiStore<model::PhiRestoreModel> restore_store_;
   PhiStore<model::PhiConsentModel> consent_store_;
   // Binds and loads the four stores (a missing file imports the pre-phase-3
   // files it replaces; a corrupt one is quarantined and defaults stand),
-  // then applies what the loaded settings drive outside the model: the
-  // reader style, the display language, the palettes, telemetry consent.
+  // then applies what the loaded settings drive outside the services: the
+  // reader style, the Space palettes, telemetry consent.
   void LoadStores(const std::wstring& user_data_dir);
-  // The reader's live style is PhiReaderBridge's; it is copied into
-  // settings_.reader whenever it changes (OnReaderStyleChanged) and out of
-  // it after a load, so the model is what the store writes.
-  void SyncReaderStyleToModel();
-  // The pin scope's truth is the tab store (its rows re-own themselves on a
-  // change); settings_.pin_scope is a write-through mirror so the two
-  // files never disagree — called after every tab-store change and load.
-  void MirrorPinScope();
 
-  // --- Coalesced saves -----------------------------------------------------
-  // Every client store the coordinator writes. A mutation marks its domain
-  // dirty (ScheduleSave); ONE timer writes every dirty domain ~250 ms later,
-  // so a burst of edits (a rename typed letter by letter, three pins from
-  // one split) costs one disk round-trip per file instead of one per
-  // keystroke — every write here is synchronous on the UI thread. The tab
-  // store keeps its own atomic writer (docs/architecture-review.md §3.4).
-  enum class StoreDomain : uint32_t {
-    kSettings,  // settings_: layout, theme, prefs, shortcuts, reader...
-    kSpaces,    // spaces_model_: the Space list, default role, URL rules
-    kRestore,   // restore_: remembered windows, parked, last-active Space
-    kConsent,   // consent_: agent "always" grants, credential grants/audit
-  };
-  void ScheduleSave(StoreDomain domain);
+  // --- The services' seams --------------------------------------------------
+  // PhiPreferences::Observer: fans a preference change out to the windows
+  // (palette, layout, repaint), the framework mirrors (restore, peek,
+  // language), telemetry, and the settings window.
+  void OnPreferencesChanged(PhiPreferences::PreferenceChange what) override;
+  // PhiSpaceManager::Observer: repaints, re-applies palettes, refreshes the
+  // settings window and re-pushes the wire's Space list.
+  void OnSpacesChanged(PhiSpaceManager::SpacesChange what) override;
+  // PhiSpaceManager::Host: the slot retreat/respawn and the data a Space
+  // owns outside the list (rows, rules, ghosts).
+  void SurfaceSpaceInSlot(SlotId slot,
+                          const std::string& space_id,
+                          const std::vector<std::string>* reopen_urls) override;
+  void ForgetSpaceData(const std::string& space_id) override;
+  void RehomeSpaceData(const std::string& space_id,
+                       const std::string& profile_id) override;
+  // PhiUrlRouter::Host: a cold Space's browser, the coalesced pushes, and
+  // the posted turn the ask prompt runs on.
+  void RequestSpaceBrowser(const std::string& profile_id,
+                           PendingCreation pending) override;
+  void SchedulePushRoutingTable() override;
+  void SchedulePushSpaceMenu() override;
+  void PostAskSpace() override;
+  // The settings window's subscription (PhiSettingsHost): what changed
+  // behind the host — the services' notifications relayed, plus the
+  // domains no service owns yet (account, profiles, stored rows).
+  std::vector<PhiSettingsObserver*> settings_observers_;
+  void NotifySettingsObservers(PhiSettingsChange what);
+  // The coalesced framework pushes (PushSpaceMenu / the router's table):
+  // the bits due, flushed once by WM_PHI_PUSH_SPACES on the next turn.
+  enum PushBits : uint32_t { kPushMenu = 1u << 0, kPushRouting = 1u << 1 };
+  uint32_t pending_pushes_ = 0;
+  void SchedulePush(uint32_t bits);
+  void FlushSpacePushes();
+
+  // --- Coalesced saves (the domains and ScheduleSave are public, above) -----
   // Writes every dirty domain now and disarms the timer. The shutdown path
   // and the timer are its only callers.
   void FlushDirtyStores();
@@ -556,19 +713,6 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   static constexpr uint32_t StoreBit(StoreDomain domain) {
     return 1u << static_cast<uint32_t>(domain);
   }
-  // The browser a wire `windowId` means: a slot number resolves to the
-  // browser that slot is SHOWING (the Space's browser, never the slot's
-  // original), anything else names a browser itself (an agent window, a
-  // Space browser the caller learned from spaces.list).
-  BrowserId ResolveBrowser(int64_t slot_or_browser) const;
-  BrowserId ResolveBrowser(SlotId slot) const;
-  // The session id of `browser`'s active tab (what the extensions API calls
-  // a tab id), or invalid — from the model.
-  TabId ActiveTabId(BrowserId browser) const;
-  // A window's tab strip changed: re-fit, re-hide and retire the reader
-  // panels bound to it. Reads the model, so it runs AFTER the snapshot that
-  // reports the change has been stored.
-  void UpdateReaderPanelsForWindow(BrowserId window_id);
   // Finishes the store's schema 1 -> 2 fold on LIVE tabs: a tab still tagged
   // with a folded-away pin guid (session restore brings them back) is retagged
   // to the survivor's pane-B tag. No-op once the store has no aliases.
@@ -578,10 +722,6 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   void UpgradeFavicon(SlotId slot,
                       const std::string& url,
                       PhiStoredRowView* view) const;
-  // The slot's controller; an invalid slot (the wire's 0 / no windowId)
-  // falls back to the first USER window — the verb convention for "the
-  // window". Null when none exists.
-  PhiWindowController* ControllerForSlot(SlotId slot);
   static LRESULT CALLBACK MsgWndProc(HWND hwnd,
                                      UINT msg,
                                      WPARAM wparam,
@@ -590,44 +730,27 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // The framework command interface (a singleton in chrome.dll); non-owning,
   // across a module boundary, so not a raw_ptr.
   RAW_PTR_EXCLUSION phi_framework::PhiFramework* framework_ = nullptr;
+  // The control plane (see dispatcher()). Declared BEFORE the socket it is
+  // the delegate of, so it outlives the server's teardown.
+  std::unique_ptr<PhiControlDispatcher> dispatcher_;
   // The unified control/CDP socket.
   PhiControlServer control_server_;
-  // Message-only window on the UI thread; control commands marshal here.
+  // Message-only window on the UI thread: the coordinator's timers, the
+  // auth worker's completion and the deferred reader-panel messages. (The
+  // control verbs marshal to the dispatcher's own window.)
   HWND msg_hwnd_ = nullptr;
-  // Keyboard accelerators: a UI-thread WH_KEYBOARD hook translates the menu
-  // bar's shortcuts (Ctrl+T, Ctrl+W, ...) into WM_COMMAND on the focused
-  // shell — keys normally land in the browser child, never in our chrome.
-  HHOOK keyboard_hook_ = nullptr;
   // Thread-scoped mouse hook: a click anywhere in a shell OUTSIDE its open
   // Peek card dismisses the card (the Mac's click-outside monitor). Clicks
   // reach the browser child's own HWNDs, never the shell, so a hook is the
   // only place that sees them first.
   HHOOK mouse_hook_ = nullptr;
   static LRESULT CALLBACK MouseHookProc(int code, WPARAM wparam, LPARAM lparam);
-  // Dismisses the Peek card(s) floating over `shell`, skipping any whose
-  // card contains `inside` (a click landing in the card itself). Returns
-  // true when one was dismissed.
-  bool DismissPeeksForShell(HWND shell, HWND inside);
-  // Alt is down with nothing pressed since — a bare tap summons the caption
-  // band's hidden menu titles on release. Cleared by any other key-down, so
-  // Alt+Tab and the Alt+arrow history chords never trip it.
-  bool alt_solo_ = false;
-  static LRESULT CALLBACK KeyboardHookProc(int code,
-                                           WPARAM wparam,
-                                           LPARAM lparam);
   // The shell window owning the focus HWND, or null (focus is elsewhere).
   HWND ShellForFocus() const;
-  // Agent-peer consent (C1): the UI-thread half of AuthorizeAgentPeer —
-  // grant store first, then the session's remembered choices, then the
-  // consent dialog. Grants persist in the sealed consent file by IMAGE
-  // PATH (lowercased for comparison).
-  bool AuthorizeAgentPeerOnUi(const PhiAgentPeer& peer);
-  // The chord a rebindable shortcut currently answers to: its override when
-  // one exists, its default otherwise.
-  PhiShortcutChord EffectiveChord(const std::string& name) const;
-  // The command bound to this chord among the REBINDABLE shortcuts, or 0.
-  // Checked by the hook before the fixed table, so a custom chord wins.
-  UINT MatchRebindableChord(UINT vk, bool ctrl, bool shift, bool alt) const;
+  // PhiKeyboardAccelerators::Host: the focused shell and the one key the
+  // accelerators hand back to the app (Esc over a Peek card).
+  HWND FocusedShellHwnd() const override;
+  bool DismissPeeksForShell(HWND shell) override;
 
   // The client's one copy of framework window state (docs/architecture-
   // review.md §3.3 "client side"): every controller reads it through a
@@ -640,28 +763,44 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // in flight (docs/architecture-review.md §3.4). Every "which window"
   // question goes through here.
   PhiWindowRegistry registry_;
-  // Peek and Reader View panels — browsers of their own, hosted over an
-  // origin tab's page, one lifecycle for both kinds (see the registry).
-  PhiSurfaceRegistry surfaces_;
-  // Panels whose page left reader.html, with the url to re-open, until the
-  // deferred expand runs.
-  std::map<BrowserId, std::string> pending_reader_expands_;
-  // Spaces are a client concept (model::Space): each binds EXACTLY ONE
-  // profile; several Spaces may share a profile (the fork's model). The
-  // binding is fixed for the life of a browser window — changing it goes
-  // through SetSpaceProfile, which respawns the Space's window. The list,
-  // the default role and the URL rules are spaces_model_.
-  // Compiles the rules plus the Space -> VISIBLE browser map into the
-  // framework's PhiURLRouter table. Called (via PushSpaceMenu) on every
-  // rules edit, browser attach/close and Space switch.
-  void PushRoutingTable() const;
-  // Surfaces `space_id` (cold-spawning its browser if needed) and opens
-  // `url` there with a one-shot routing bypass — the shared tail of the
-  // context menu's "Open Link in Space", the silent auto-route into a
-  // hidden/cold Space, and the "ask first" prompt's pick.
-  void RouteUrlToSpace(const std::string& space_id,
-                       const std::string& url,
-                       BrowserId source_window);
+  // Peek and Reader View panels, the Mirage bridge and the two deferred
+  // panel hops (docs/architecture-review.md §3.4). Declared after the
+  // window model it reads; the framework arrives through Init.
+  PhiSurfaceCoordinator surface_coordinator_{window_model_, *this};
+  // PhiSurfaceCoordinator::Host (WindowShowingTab is public, above):
+  void ScheduleRefreshForTab(TabId tab_id) override;
+  SlotId SlotForBrowser(BrowserId browser) const override;
+  void PersistReaderStyle(const model::ReaderStyle& style) override;
+  bool PendingReplyShape(int request_id,
+                         bool* document,
+                         bool* include_html) override;
+  void CompleteReaderReply(int request_id, std::string json) override;
+  void PostReaderExpand(BrowserId panel) override;
+  void PostReaderRetire(BrowserId panel) override;
+  // The services (docs/architecture-review.md §3.4). The preferences need
+  // nothing but their dirty callback and exist from construction (the
+  // popup chrome takes a pointer to their palette in the constructor); the
+  // Space manager and the router hold the framework, the registry and the
+  // window model by reference, so they are built in OnFrameworkReady once
+  // the framework is known — after the members they reference, and
+  // declared after them so they are destroyed first.
+  PhiPreferences preferences_{[this] { ScheduleSave(StoreDomain::kSettings); }};
+  std::unique_ptr<PhiSpaceManager> space_manager_;
+  std::unique_ptr<PhiUrlRouter> url_router_;
+  // The menu-bar accelerators (lane 1 §1.2 cluster 17): the WH_KEYBOARD
+  // hook, the fixed table and the Alt-solo state, over the preferences'
+  // rebindable chords. Built in OnFrameworkReady, on the UI thread the hook
+  // is scoped to.
+  std::unique_ptr<PhiKeyboardAccelerators> accelerators_;
+  // The Auth0 session, the feedback outbox and the Send Feedback window
+  // (lane 1 §1.2 cluster 15). Needs nothing but its host, so it exists from
+  // construction; Init (OnFrameworkReady) hands it the framework and the
+  // user data dir.
+  PhiAccountAndFeedback account_{*this};
+
+  // PhiAccountAndFeedback::Host:
+  void OpenUrlInFirstUserSlot(const std::string& url) override;
+  void NoteAccountChanged() override;
   // The shared store-tab/split bodies behind the menu (append, bookmark
   // unbound) and drag (placed + bound) entry points.
   // One cell from live tab(s), by STABLE id: a single (tab_b 0) or a split
@@ -705,45 +844,34 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
                          TabId tab,
                          const std::string& space_id,
                          bool move);
-  void StoreSplitInternal(SlotId slot, TabId tab_a, TabId tab_b,
-                          bool as_bookmark, int insert_index,
-                          bool bind_bookmark);
 
-  // Publishes the Space list (with each Space's open browser id) into the
-  // framework for the page context menu's "Open Link in Space" submenu.
-  void PushSpaceMenu() const;
-  // The app-wide palette, resolved from settings_ (theme id, appearance,
-  // saturation) — derived, never persisted.
-  PhiPalette palette_;
-  // One resolved palette per Space that overrides the app-wide theme; a Space
-  // with no override is not in here and uses `palette_`.
-  std::map<std::string, PhiPalette> palette_by_space_;
-  void RebuildSpacePalettes();
-  // Which of the user's own tabs an agent currently holds (the operating
-  // mask). Fed by the three delegate reports above.
-  PhiAgentDriveRegistry agent_drives_;
-  // The last lazy-restore receipt, verbatim. Phase 2 keeps it only so the
-  // harness can read it back; the park/materialize state machine (phase 3)
-  // will REPLACE its records from this, never merge.
-  std::string last_restore_receipt_;
-  // Which Spaces exist only as a parked window, and the window each Space
-  // had last run — a view over restore_ (declared above, so it outlives
-  // this).
-  PhiGhostSpaces ghost_spaces_{&restore_};
+  // Lazy Space restore (docs/architecture-review.md §3.4): the ghosts, the
+  // cold-start plan, the receipts and the last-active Space, over
+  // PhiRestore.json. Holds the framework by reference, so it is built in
+  // OnFrameworkReady.
+  std::unique_ptr<PhiSessionRestore> session_restore_;
+  // PhiSessionRestore::Host:
+  std::string ActiveSpaceOfLiveWindow() const override;
+  bool HasSpace(const std::string& space_id) const override;
+  void ArmColdStartFallback(unsigned delay_ms) override;
+  void DisarmColdStartFallback() override;
+  void NoteRestorePlanned(const char* reason) override;
+  void NoteRestoring() override;
+  bool RestoreSettled() const override;
+  void OnRestoreSettled(const char* reason) override;
   // Which Space the cold start should rebuild eagerly: the one that was
   // active when the last run ended.
   std::string LastActiveSpaceId() const;
   // Message-window (msg_hwnd_) timer ids. (Id 1 was the profile-creation
   // poll; OnProfileCreated made it redundant.)
   // Agent-space / shadow-window keep-alive sweep (the Mac's 10 s tick) —
-  // also sweeps the creations in flight (registry_ pending, pending_profiles_).
+  // also sweeps the creations in flight (registry_ and profile_service_).
   static constexpr UINT_PTR kAgentSpaceSweepTimer = 2;
   static constexpr UINT kAgentSpaceSweepIntervalMs = 10 * 1000;
   // The operating mask's idle/takeover sweep.
   static constexpr UINT_PTR kAgentDriveSweepTimer = 3;
-  // Drains deferred_ui_calls_ once no modal loop is up.
-  static constexpr UINT_PTR kDeferredUiCallTimer = 4;
-  static constexpr UINT kDeferredUiCallPollMs = 50;
+  // (Id 4 was the deferred-verb drain; it is the dispatcher's own timer on
+  // its own window now.)
   // The one coalesced-save timer (ScheduleSave / FlushDirtyStores). Armed
   // when the first domain goes dirty, never re-armed by later marks, so a
   // steady stream of edits still lands on disk every kSaveDelayMs.
@@ -753,82 +881,26 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // settles, open a default shell (lane 4 §6 item 6). Armed for the replay
   // to have its say, re-armed shorter once the park list has landed.
   static constexpr UINT_PTR kColdStartFallbackTimer = 6;
-  static constexpr UINT kColdStartFallbackMs = 4000;
-  static constexpr UINT kColdStartSettleMs = 2000;
   // How long a RequestBrowser / CreateProfile request may stay unanswered
   // before the sweep presumes it lost and fails any waiting reply with
   // create_timeout. The framework has no failure callback for either.
-  static constexpr uint64_t kCreateTimeoutMs = 20 * 1000;
+  static constexpr uint64_t kCreateTimeoutMs =
+      PhiProfileService::kCreateTimeoutMs;
   // Arms the sweep while anything needs sweeping (agent Spaces, shadow
   // windows, creations in flight) and stops it once nothing does.
-  void UpdateSweepTimer();
-  // Verbs and consent decisions that arrived while a modal loop was on the
-  // UI thread, in arrival order (see RunOrDeferUiCall).
-  std::deque<PhiUiCall*> deferred_ui_calls_;
-  bool draining_ui_calls_ = false;
-  // Notes the Space the user is in (restore_.last_active_space_id, what
-  // LastActiveSpaceId() answers before any window is live) — on every
-  // switch; written by the coalesced restore save.
+  void UpdateSweepTimer() override;
+  // Notes the Space the user is in (the restore service's last-active
+  // Space, what LastActiveSpaceId() answers before any window is live) —
+  // on every switch; written by the coalesced restore save.
   void NoteActiveSpace(const std::string& space_id);
-  // True from OnColdStartRestorePlan arming a filter until a user window
-  // exists — the window the fallback timer checks for.
-  bool cold_start_armed_ = false;
-  // Opens a shell on the default Space when a restore left no user window.
-  void OpenDefaultShellIfNoUserWindow(const char* reason);
-  // Drops (framework side) and forgets the parked windows no Space claims.
-  void DropOrphanGhosts();
   // The global framework mirrors (peek switches, display language) are
   // pushed once, on the first OnProfileLoaded; later loads push only the
   // per-profile restore choice.
   bool global_mirrors_pushed_ = false;
-  // The session-scoped agent consent memory (allow-once / deny-for-now per
-  // lowercased image path); the standing "Always Allow" set is
-  // consent_.agent_always_paths.
-  std::set<std::wstring> session_allowed_peers_;
-  std::set<std::wstring> session_denied_peers_;
-  // Credential approvals. The persisted "always" grants
-  // (consent_.credential_grants) are LOADED FOR THE SETTINGS DISPLAY ONLY —
-  // they no longer cover anything (a standing password grant plus an
-  // agent-chosen page was the exfil path, lane 5 F2); the timed ones are
-  // session-scoped by design (the Mac's in-memory 10-minute cache), so a
-  // restart is always a clean slate for them.
-  struct TimedCredentialGrant {
-    CredentialAccessKind kind = CredentialAccessKind::kFill;
-    ULONGLONG expires_tick = 0;
-  };
-  std::map<std::string, TimedCredentialGrant> credential_timed_grants_;
-  // Denial memory: grant key -> tick until which the request is refused
-  // without a prompt (5 minutes), so a denied ask cannot re-prompt at once.
-  std::map<std::string, ULONGLONG> credential_denials_;
-  // --- Deferred control replies -------------------------------------------
-  // A verb whose answer arrives asynchronously (reader extraction, a window
-  // or profile creation) returns {"pendingReply":<id>} from the UI thread;
-  // HandleControlCommand (the pipe I/O thread) then waits on the id's event
-  // and returns the JSON the UI thread stored for it. The map is the only
-  // coordinator state touched from two threads.
-  struct PendingReply {
-    HANDLE event = nullptr;  // Manual-reset; owned by the I/O waiter.
-    std::string json;
-    bool document = false;      // readerDocument (else readerArticle)
-    bool include_html = true;   // readerArticle {includeHTML}
-  };
-  base::Lock pending_replies_lock_;
-  std::map<int, PendingReply> pending_replies_;
-  int next_pending_reply_ = 1;
-  // UI thread: registers a slot and returns its id.
-  int RegisterPendingReply(bool document, bool include_html);
-  // UI thread: stores the answer and wakes the waiter (no-op if it gave up).
-  void CompletePendingReply(int id, std::string json);
-  // I/O thread: waits up to `timeout_ms` and returns the stored JSON (or a
-  // timeout error), releasing the slot either way.
-  std::string WaitPendingReply(int id, DWORD timeout_ms);
-  // The JSON error a waiter gets when its creation never arrived.
+  // The JSON error a waiter gets when its creation never arrived (the
+  // dispatcher's deferred-reply slot, answered by the sweep).
   static constexpr char kCreateTimeoutReply[] =
       "{\"ok\":false,\"error\":\"create_timeout\"}";
-  // Reader View's app half. Holds the live reading style (one store for
-  // every reader surface; persisted as settings_.reader) and the per-tab
-  // offer/state the extension reports.
-  PhiReaderBridge reader_{this};
   // Hands the display language to the framework, which owns Chromium's own
   // locale (context menus, error pages, Accept-Language). The client catalog
   // and Chromium keep separate copies of the choice, so this runs both when
@@ -837,27 +909,6 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   void PushDisplayLanguageToChromium();
   // Pinned tabs and bookmarks, the Mac's LocalStore equivalent.
   PhiTabStore tab_store_;
-  // The (profile, space) a slot's pinned/bookmark rows belong to.
-  bool OwnerForSlot(SlotId slot, std::string* profile_id,
-                    std::string* space_id) const;
-  // The active tab's favicon as base64 BGRA, for storing on a pinned/bookmark
-  // row. A pinned tab has no live tab to ask later.
-  std::string CaptureFavicon(SlotId slot, int* width, int* height);
-  // The url the slot is showing right now (the model's nav state).
-  std::string LiveUrl(SlotId slot) const;
-  // Recomputes `palette_` and repaints every slot.
-  void ApplyTheme();
-  // Asks the framework for a browser (PhiFramework::RequestBrowser) and files
-  // `pending` under the token it returns, so OnBrowserWindowCreated can
-  // finish the job when the window arrives — `kind`, the profile and the
-  // deadline are stamped here. Invalid when the framework refused; then
-  // nothing was filed and a waiting reply (pending.pending_reply_id) is
-  // already answered create_failed.
-  RequestToken RequestCreation(phi_framework::WindowKind kind,
-                               const std::string& profile_id,
-                               bool incognito,
-                               BrowserId source_window,
-                               PendingCreation pending);
   // The OnBrowserWindowCreated branches. Each adopts `hwnd` for `browser`.
   // A requested kind whose pending record names a slot that is gone, and a
   // peek/reader whose opener is gone, fall back to HostUserShell.
@@ -878,178 +929,49 @@ class PhiCoordinator : public phi_framework::PhiFrameworkDelegate,
   // `tear_off_drop_at_` is the tick it was noted at; 0 = none pending.
   POINT tear_off_drop_{};
   ULONGLONG tear_off_drop_at_ = 0;
-  // A CreateProfile in flight and what to do with the profile once
-  // OnProfileCreated names it. Keyed by the DISPLAY NAME asked for — the
-  // only thing the client knows about the profile before the framework
-  // reports its basename; the oldest request is the fallback when the
-  // name cannot be read back. Swept with kCreateTimeoutMs.
-  struct PendingProfile {
-    enum class Then {
-      kOpenSpace,   // "+ Space & profile": create a Space on it, switch.
-      kFillForm,    // The create-Space form's picker selects it.
-      kReplyOnly,   // profiles.create: answer the waiting verb.
-    };
-    std::string display_name;
-    SlotId slot;
-    Then then = Then::kReplyOnly;
-    int pending_reply_id = 0;
-    uint64_t deadline_tick = 0;
-  };
-  std::deque<PendingProfile> pending_profiles_;
-  // Files a CreateProfile and asks the framework for it.
-  void RequestProfile(PendingProfile pending);
-  // The display name the framework reports for `profile_id`, or empty.
-  std::string ProfileDisplayName(const std::string& profile_id) const;
+  // Chromium profiles (docs/architecture-review.md §3.4): the async
+  // creation with tokens, rename/delete, the listing reads, the engines
+  // and the download directory. Holds the framework by reference, so it is
+  // built in OnFrameworkReady.
+  std::unique_ptr<PhiProfileService> profile_service_;
+  // PhiProfileService::Host:
+  void CompleteProfileReply(int reply_id, std::string json) override;
+  void FillSpaceFormProfile(SlotId slot,
+                            const std::string& profile_id) override;
+  void OpenSpaceOnNewProfile(SlotId slot,
+                             const std::string& profile_id) override;
+  void NoteProfilesChanged() override;
+  bool AnySpaceUsesProfile(const std::string& profile_id) const override;
 
-  // --- Agent Spaces (the phi-browser skill's hidden windows) ---------------
-  PhiAgentSpaces agent_spaces_;
-  // The agent Space whose window is currently surfaced for the user to watch
-  // (empty = none). At most one is watched at a time.
-  std::string watched_agent_task_;
-
-  // --- Shadow windows (the skill's invisible background windows) ----------
-  // A shadow window is an agent-style off-screen window WITHOUT a presence:
-  // no pip, no watch, no transcript, no ownership — the Mac's
-  // AgentSpaceManager+Shadow registry, keyed by the skill's taskId. Kept out
-  // of agent_spaces_ so nothing that draws or surfaces agent Spaces sees it;
-  // the window itself is adopted exactly like an agent Space's (hidden
-  // controller, parked off-screen, composited for CDP).
-  struct ShadowWindow {
-    std::string task_id;
-    BrowserId window_id;  // Its value is the CDP windowId.
-    std::string profile_id;
-    bool incognito = false;
-    int64_t created_ms = 0;              // epoch ms (the list's createdAt)
-    uint64_t keepalive_deadline_ms = 0;  // GetTickCount64 ms; swept when past
-  };
-  std::map<std::string, ShadowWindow> shadow_windows_;
-  ShadowWindow* FindShadowByWindow(BrowserId window_id);
-  // The Mac's keep-alive contract, shared with agent Spaces: extends the
-  // deadline to max(existing, now + ttl); ttl <= 0 is the default round TTL.
-  void TouchShadow(ShadowWindow* shadow, int ttl_seconds, uint64_t now_ms);
-  void CloseShadowWindow(const std::string& task_id, const char* reason);
-  // agentSpace.shadow.* (create / list / openTab / ping / close).
-  bool HandleShadowVerb(const std::string& type,
-                        const base::DictValue* payload,
-                        uint64_t now_ms,
-                        base::DictValue* out);
-  // Handles one agentSpace.* control verb; returns true when `type` was an
-  // agent-space verb (its result is in `out`), false to fall through to the
-  // client-UI verbs. `now_ms` is GetTickCount64().
-  bool HandleAgentSpaceVerb(const std::string& type,
-                            const base::DictValue* payload,
-                            uint64_t now_ms,
-                            base::DictValue* out);
-  // Handles one verb of the Mac skill's dialect — tabGroups.*, splitView.*,
-  // downloads.*, pinnedTabs.*, the bookmark-tree forms, the spaces.listTabs/
-  // openTab/focus/activate/update family and resolveTabIds; true when `type`
-  // was one (result in `out`). Verbs whose names collide with the client-UI
-  // dialect (bookmarks.list/add) claim the call only for skill-shaped
-  // payloads (no windowId) and return false otherwise.
-  bool HandleSkillDialectVerb(const std::string& type,
-                              const base::DictValue* payload,
-                              base::DictValue* out);
-  // Resolves the skill's layout scope — {taskId}: the agent window,
-  // {spaceId}: a user Space's open window — to the browser bound to it.
-  // Invalid with `error` set (unknown_task / space_not_open /
-  // invalid_payload) when the scope names nothing live.
-  BrowserId ResolveScopeBrowser(const base::DictValue* payload,
-                                std::string* error);
-  // The browser hosting `space_id`'s tabs (possibly hidden behind a sibling
-  // Space), or invalid when the Space has no open window.
-  BrowserId BrowserForSpace(const std::string& space_id) const;
-  // The USER window the user is looking at: the foreground shell when it is
-  // one of ours, the first user window otherwise. Null without windows.
-  PhiWindowController* FocusedUserController();
-  // Surfaces `space_id` in `slot` (invalid: the first user window),
-  // requesting its browser in the Space's profile when the slot has none —
-  // the spaces.switch body, shared with the skill's spaces.activate.
-  // `cold` reports the request path; `pending` that the browser is still
-  // to arrive (a request never attaches before it returns). `reopen_urls`
-  // are opened in the new browser once it attaches (a re-profiled Space's
-  // tabs).
-  bool SwitchSlotToSpace(SlotId slot, const std::string& space_id,
-                         bool* pending, bool* cold,
-                         const std::vector<std::string>* reopen_urls = nullptr);
-  // The (profile, space) the skill's pinned/bookmark dialect verbs target:
-  // an explicit profile id wins, else the focused window's active Space.
-  bool DialectOwner(const std::string& profile_id_or_empty,
-                    std::string* profile_id, std::string* space_id);
-  // Tears down an agent Space: closes its hidden window and drops the record.
-  void CloseAgentSpace(const std::string& task_id);
+  // --- Agent Spaces, shadow windows and the operating mask ----------------
+  // (docs/architecture-review.md §3.4, lane 1 §1.2 clusters 12 and 18.)
+  PhiAgentSpaceManager agent_manager_{*this};
+  // PhiAgentSpaceManager::Host:
+  PhiWindowController* ControllerForAgentWindow(BrowserId window_id) override;
+  PhiWindowController* FirstUserController() override;
+  void InvalidateUserSlots() override;
+  void InvalidateAll() override;
+  void BroadcastControlEvent(const std::string& type,
+                             const std::string& payload_json) override;
+  void CompleteAgentReply(int reply_id, std::string json) override;
   // Keep-alive sweep (kAgentSpaceSweepTimer): completes and closes expired
   // spaces and shadows, and fails the creations that never arrived.
   void SweepAgentSpaces();
 
   // --- Credentials (the skill's agent password surface) --------------------
-  // The REAL provider: the out-of-process Bitwarden helper (the user's own
-  // vault, same engine as macOS). `credentials_` is a local DPAPI dev/test
-  // store used ONLY when no helper binary is installed.
-  PhiVaultHelper vault_helper_;
-  PhiCredentialVault credentials_;
-  // The Auth0 session (bucket D auth, stage 1).
-  PhiAuth auth_;
-  // Hands the signed-in account to the feedback outbox (whose jobs are
-  // filed and uploaded per account) after every auth change.
-  void SyncFeedbackAccount();
-  // A harness-set stand-in account (agentSpace.feedback.setAccount) for a
-  // box with no Auth0 session: reports file and prepare under it, and the
-  // upload then fails for want of a token — which is the testable part.
-  // Ignored while a real session is signed in.
-  std::string test_feedback_user_id_;
-  std::string test_feedback_email_;
-  std::wstring credentials_dir_;
-  // Looks a query up through the helper. Returns the reply's `result` dict, or
-  // nullopt with `error` set (`ambiguous` carries a candidates list).
-  std::optional<base::DictValue> HelperLookup(const std::string& domain,
-                                              const std::string& id,
-                                              const std::string& search,
-                                              const std::string& username,
-                                              std::string* error);
-  // The helper's vault status wire string, or empty when it is not running.
-  std::string HelperStatus();
-  // Resolves a query through whichever provider is active (helper first, dev
-  // vault otherwise) to exactly ONE item. True fills `item` with the vault
-  // item; false fills `out` with the wire error body (not_found / ambiguous +
-  // non-secret candidates / not_ready), so both credential verbs share one
-  // matching and one refusal policy.
-  bool ResolveCredentialItem(const std::string& domain,
-                             const std::string& id,
-                             const std::string& search,
-                             const std::string& username,
-                             base::DictValue* item,
-                             base::DictValue* out);
-  // Handles one credentials.* verb; true when `type` was one (result in
-  // `out`). The per-request approve/deny prompt and origin binding live here.
-  bool HandleCredentialsVerb(const std::string& type,
-                             const base::DictValue* payload,
-                             base::DictValue* out);
-  // The native approve/deny prompt for a credential request. `detail` names
-  // the item and purpose. Returns true when the user approves.
-  // Consults the timed grants and the denial memory first; prompts only
-  // when neither answers. `grant_key` is "<item scope>|<page host>" for a
-  // fill and the item scope for a reveal: grants are all-agents, as on Mac,
-  // but never wider than one page host. `once_only` (a cross-origin fill)
-  // offers no timed grant and consumes none.
-  bool PromptCredentialApproval(const std::wstring& detail,
-                                CredentialAccessKind kind,
-                                const std::string& grant_key,
-                                bool once_only);
-  // Pushes agentSpace.ownershipChanged to connected drivers — the Mac's
-  // broadcastToTaskDriver. Called after every ownership transition; a task
-  // whose record is already gone is deliberately NOT announced (drivers
-  // learn of an ended task from its absence in agentSpace.list).
-  void PushOwnershipChanged(const std::string& task_id);
-  // Mounts/updates/tears down the watch-mode overlay for the watched task.
-  void RefreshAgentOverlay();
-  // True while a live TIMED grant covers `grant_key`. The kind is not
-  // consulted: fill and reveal are one exposure (see CredentialAccessKind).
-  bool CredentialGrantCovers(const std::string& grant_key) const;
-  // Appends one line to the credential audit trail (newest first, capped)
-  // and persists it — every approval decision is recorded, allowed or not.
-  void AppendCredentialAudit(const std::string& scope,
-                             CredentialAccessKind kind,
-                             const char* decision);
+  // The vault providers, the grants, the audit and the approval prompt
+  // (lane 1 §1.2 cluster 5). Writes the consent file's credential half;
+  // declared after consent_ (above), which it holds by reference.
+  PhiCredentialService credentials_{
+      consent_, *this, [this] { ScheduleSave(StoreDomain::kConsent); }};
+  // PhiCredentialService::Host:
+  HWND CredentialPromptOwner() override;
+  void NoteCredentialConsentChanged() override;
+
+  // The framework delegate (docs/architecture-review.md §3.4): record or
+  // forward, nothing else. Declared LAST so it is destroyed first — the
+  // framework can no longer reach a half-torn-down coordinator through it.
+  PhiFrameworkDispatcher framework_dispatcher_{*this};
 };
 
 }  // namespace phi_client
