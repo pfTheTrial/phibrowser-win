@@ -135,23 +135,6 @@ struct PhiHit {
   bool enabled = true;
 };
 
-// What the accessibility provider needs from a surface, and nothing more.
-// PhiWindow implements it, and so does the shell — which owns a hand-rolled
-// window procedure of its own and is therefore not a PhiWindow, yet holds
-// the one hit list a screen reader most needs to see (the tab list). The
-// provider talks to this, so neither surface has to pretend to be the other.
-class PhiHitSource {
- public:
-  virtual ~PhiHitSource() = default;
-  virtual HWND hwnd() const = 0;
-  virtual const std::vector<PhiHit>& hits() const = 0;
-  virtual uint32_t hits_version() const = 0;
-  // Index of the hit under a CLIENT point, or -1.
-  virtual int HitTest(POINT client_pt) const = 0;
-  // Acts on hits()[index] exactly as a mouse click on it would.
-  virtual bool InvokeHit(int index) = 0;
-};
-
 // The index of the hit under (x, y), or -1. LAST match wins: hits are
 // added in paint order, so a child rect added after its row's rect takes
 // the pointer, exactly as the pixels do.
@@ -260,6 +243,24 @@ int PhiLerpInt(int from, int to, double t);
 
 // ---------------------------------------------------------------------------
 // Win32.
+
+// What the accessibility provider needs from a surface, and nothing more.
+// PhiWindow implements it, and so does the shell — which owns a hand-rolled
+// window procedure of its own and is therefore not a PhiWindow, yet holds
+// the one hit list a screen reader most needs to see (the tab list). The
+// provider talks to this, so neither surface has to pretend to be the other.
+class PhiHitSource {
+ public:
+  virtual ~PhiHitSource() = default;
+  virtual HWND hwnd() const = 0;
+  virtual const std::vector<PhiHit>& hits() const = 0;
+  virtual uint32_t hits_version() const = 0;
+  // Index of the hit under a CLIENT point, or -1.
+  virtual int HitTest(POINT client_pt) const = 0;
+  // Acts on hits()[index] exactly as a mouse click on it would.
+  virtual bool InvokeHit(int index) = 0;
+};
+
 
 inline RECT PhiToRect(const PhiRectI& r) {
   RECT out = {r.left, r.top, r.right, r.bottom};
