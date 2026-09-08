@@ -1820,6 +1820,21 @@ void PhiShellWindow::SpacesFocusContent() {
   FocusActiveBrowser();
 }
 
+void PhiShellWindow::SpacesSetCoveredContentSuppressed(bool suppressed) {
+  // The EDIT has no WS_CLIPSIBLINGS, so it paints straight through a panel
+  // raised over it; only hiding it keeps the address text off the form.
+  if (suppressed) {
+    omnibox_->ClosePopup(/*stop_query=*/true);
+  }
+  omnibox_->SetFieldVisible(!OmniboxFieldHidden());
+}
+
+bool PhiShellWindow::OmniboxFieldHidden() const {
+  return browsers_->content_fullscreen() ||
+         (sidebar_collapsed_ && layout_mode_ == PhiLayoutMode::kPerformance) ||
+         spaces_->creating();
+}
+
 void PhiShellWindow::SpacesRevealSwappedContent() {
   RevealSwappedContent();
 }
@@ -1991,10 +2006,7 @@ void PhiShellWindow::LayoutContents() {
       spaces_->RepositionForm();
     }
   }
-  const bool field_hidden =
-      browsers_->content_fullscreen() ||
-      (sidebar_collapsed_ && layout.mode == PhiLayoutMode::kPerformance);
-  omnibox_->SetFieldVisible(!field_hidden);
+  omnibox_->SetFieldVisible(!OmniboxFieldHidden());
   PhiContentLayout content;
   content.content = layout.content;
   content.client = layout.client;

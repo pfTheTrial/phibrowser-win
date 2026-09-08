@@ -548,6 +548,10 @@ class PhiShellWindow : public PhiHitSource,
   void SetCreateSpaceIcon(const std::string& storage_value);
   void OnSpaceFormProfileCreated(const std::string& profile_id);
   bool creating_space() const { return spaces_->creating(); }
+  // Whether the address EDIT — a real child window — must stay hidden:
+  // fullscreen content, a collapsed performance sidebar, or the create-Space
+  // form covering the sidebar's address row.
+  bool OmniboxFieldHidden() const;
   // Surfaces (visible=true) or parks off-screen (visible=false) an agent
   // window so the user can watch it live. No-op on a non-agent window.
   void SetAgentVisible(bool visible);
@@ -1336,6 +1340,7 @@ class PhiShellWindow : public PhiHitSource,
   void SpacesRefreshTinted() override;
   void SpacesRepaintOmnibox() override;
   void SpacesFocusContent() override;
+  void SpacesSetCoveredContentSuppressed(bool suppressed) override;
   void SpacesRevealSwappedContent() override;
   void SpacesSwapBandModel() override;
   void SpacesDropLeavingBand() override;

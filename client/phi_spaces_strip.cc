@@ -597,6 +597,7 @@ void PhiSpacesStrip::ShowCreateForm() {
   preview_until_switch_ = false;
   DismissHoverCard(std::string());
   form_->Show(form, profile_id, theme_id, prefs_host_->Saturation());
+  shell_->SpacesSetCoveredContentSuppressed(true);  // After the slide-in.
   shell_->SpacesScheduleRefresh();  // The strip reserves the placeholder pip.
   form_->FocusField();
 }
@@ -612,6 +613,7 @@ void PhiSpacesStrip::CommitCreateForm(const PhiNewSpaceSpec& spec) {
     // `animated: false` activation after the sidebar flow).
     form_->Hide(/*animated=*/false);
   }
+  shell_->SpacesSetCoveredContentSuppressed(false);
   // The previewed theme stays up until the created Space presents, so the
   // chrome never flashes back to the source theme in between.
   preview_until_switch_ = true;
@@ -635,6 +637,7 @@ void PhiSpacesStrip::CancelCreateForm() {
   if (form_) {
     form_->Hide(/*animated=*/true);
   }
+  shell_->SpacesSetCoveredContentSuppressed(false);
   EndPreview();
   shell_->SpacesFocusContent();
   shell_->SpacesScheduleRefresh();  // The placeholder pip leaves the strip.

@@ -90,6 +90,11 @@ class PhiSpacesStripShell {
   virtual void SpacesRefreshTinted() = 0;
   virtual void SpacesRepaintOmnibox() = 0;
   virtual void SpacesFocusContent() = 0;
+  // The create form covers the sidebar below the strip (or has left it): the
+  // covered chrome that is a real child window — the address EDIT — cannot be
+  // painted over by a sibling and must hide for the duration (the Mac's
+  // setCreateSpaceCoveredContentSuppressed).
+  virtual void SpacesSetCoveredContentSuppressed(bool suppressed) = 0;
   // The band slide landed: the parked browser child becomes visible.
   virtual void SpacesRevealSwappedContent() = 0;
   // Swap the live sidebar rows with the retained leaving Space's — the
