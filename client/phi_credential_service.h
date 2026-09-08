@@ -17,6 +17,7 @@
 #include "base/values.h"
 #include "phibrowser-win/client/phi_app_model.h"
 #include "phibrowser-win/client/phi_credentials.h"
+#include "phibrowser-win/client/phi_settings_types.h"
 #include "phibrowser-win/client/phi_vault_helper.h"
 
 namespace phi_client {
@@ -106,12 +107,18 @@ class PhiCredentialService {
                              const char* decision);
 
   // --- The Settings pane's rows -------------------------------------------
-  // "<scope>\t<fill|reveal>" per persisted grant.
-  std::vector<std::string> GrantRows() const;
-  // Drops the persisted grant at `index` AND any live timed grant standing
-  // under the same scope — revoking must not leave a ten-minute window open.
-  void RemoveGrant(int index);
-  const std::vector<std::string>& AuditRows() const;
+  // The persisted grants, scope and exposure, in scope order.
+  std::vector<PhiCredentialGrantRow> GrantRows() const;
+  // Drops the grant held under `scope` AND any live timed grant standing
+  // under it — revoking must not leave a ten-minute window open. Addressed
+  // by SCOPE, never by row position: the pane re-reads the list between
+  // paint and click, and a reordered list would revoke a neighbour (lane 1
+  // §5 D7). False when no such grant is held.
+  bool RemoveGrant(const std::string& scope);
+  // The audit trail, newest first. Decoded from the consent file's line
+  // format (PhiCredentialAuditWireRow); an undecodable line is dropped
+  // rather than shown half-parsed.
+  std::vector<PhiCredentialAuditRow> AuditRows() const;
 
  private:
   // Looks a query up through the helper. Returns the reply's `result` dict,

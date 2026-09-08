@@ -25,6 +25,7 @@
 #include "phibrowser-win/client/phi_browser_host.h"
 #include "phibrowser-win/client/phi_caption_band.h"
 #include "phibrowser-win/client/phi_menu_bar.h"
+#include "phibrowser-win/client/phi_native_pages_host.h"
 #include "phibrowser-win/client/phi_ids.h"
 #include "phibrowser-win/client/phi_omnibox_session.h"
 #include "phibrowser-win/client/phi_split_drop.h"
@@ -33,6 +34,7 @@
 #include "phibrowser-win/client/phi_sidebar_layout.h"
 #include "phibrowser-win/client/phi_shell_menus.h"
 #include "phibrowser-win/client/phi_shell_layout.h"
+#include "phibrowser-win/client/phi_spaces_strip.h"
 #include "phibrowser-win/client/phi_sidebar_model.h"
 #include "phibrowser-win/client/phi_theme.h"
 #include "phibrowser-win/client/phi_window_model.h"
@@ -442,7 +444,9 @@ enum : UINT {
 class PhiWindowController : private PhiOmniboxShell,
                             private PhiBrowserHostShell,
                             private PhiCaptionShell,
-                            private PhiMenuBarShell {
+                            private PhiMenuBarShell,
+                            private PhiNativePagesShell,
+                            private PhiSpacesStripShell {
  public:
   // `agent` hosts the window as a HIDDEN agent Space: the shell is created
   // off-screen and off the taskbar (WS_EX_TOOLWINDOW), shown without
@@ -547,7 +551,7 @@ class PhiWindowController : private PhiOmniboxShell,
   // The form's icon, mirrored on the strip's dashed placeholder pip.
   void SetCreateSpaceIcon(const std::string& storage_value);
   void OnSpaceFormProfileCreated(const std::string& profile_id);
-  bool creating_space() const { return creating_space_; }
+  bool creating_space() const { return spaces_->creating(); }
   // Where the form mounts: the sidebar below the Spaces strip.
   RECT CreateSpaceFormRect();
   // Surfaces (visible=true) or parks off-screen (visible=false) an agent
@@ -1290,69 +1294,15 @@ class PhiWindowController : private PhiOmniboxShell,
   // The chrome buttons a kNav hover indexes, in PaintChrome's order.
   std::array<RECT, 14> NavHoverTable(const Layout& layout) const;
 
-  // The Space pips' hover card (the Mac SpacesStripView's delayed tooltip):
-  // the dim wash is immediate (the hover state above); the info card — the
-  // Space as a tinted pill, its bound profile, its Ctrl+N switch shortcut —
-  // appears only after the cursor SETTLES on a pip, retargets instantly
-  // while already up, and a click keeps it down until the pointer leaves
-  // the clicked pip (so the card never blinks back right after a switch).
-  std::string hover_card_space_;       // Card owner (empty = no card).
-  std::string pending_card_space_;     // Scheduled, awaiting the delay.
-  std::string card_suppressed_space_;  // Clicked; no card until hover-off.
-  // Card content, resolved when the card arms — the profile name needs a
-  // framework JSON round-trip, not per-paint work.
-  std::wstring card_profile_;
-  COLORREF card_accent_ = 0;  // The owner Space's theme accent.
-  int card_shortcut_ = 0;     // 1-based Ctrl+N digit; 0 = past the ninth.
-  void UpdateHoverCard();  // Re-aims card state at the hovered pip.
-  void PromoteHoverCard();  // Delay elapsed: pending becomes shown.
-  void DismissHoverCard(const std::string& suppress_space_id);
-  void ResolveHoverCard(const std::string& space_id);  // Fills card_*.
-  // The Space pip's hover card. It is a floating POPUP (like PhiTabPreview),
-  // not shell-DC chrome: it hangs below the strip, where the omnibox EDIT
-  // child would paint over anything the shell drew and the content child
-  // would clip it. PaintChrome measures it (MeasureHoverCard, with the
-  // shell DC's font) and SyncHoverCardPopup shows / moves / hides the popup,
-  // which paints the measured geometry at its own origin.
-  struct HoverCardGeometry {
-    RECT card{};
-    int pill_h = 0, pill_w = 0, name_w = 0, profile_w = 0, keys_w = 0;
-    int dot_w = 0, gap = 0;
-    std::vector<int> key_widths;
-    std::vector<std::wstring> keycaps;
-    std::wstring icon, name, profile;
-  };
-  HoverCardGeometry hover_card_geom_;  // As last synced; card at (0, 0).
-  HWND hover_card_popup_ = nullptr;
-  RECT hover_card_popup_rect_{};  // Screen rect last applied to the popup.
-  bool MeasureHoverCard(HDC dc, const Layout& layout, HoverCardGeometry* out);
-  void PaintHoverCard(HDC dc,
-                      const HoverCardGeometry& geometry,
-                      const PhiPalette& palette);
-  void SyncHoverCardPopup(HDC dc, const Layout& layout);
-  void PaintHoverCardPopup(HWND popup, HDC dc);
-  static LRESULT CALLBACK HoverCardPopupProc(HWND hwnd,
-                                             UINT msg,
-                                             WPARAM wparam,
-                                             LPARAM lparam);
   // The hovered row's page-snapshot card (the Mac's TabPreviewController).
   // Unlike the Space card above it floats in its own popup, so it can hang
   // over the Chromium child window.
   std::unique_ptr<PhiTabPreview> tab_preview_;
-  // The native bookmark manager page, mounted over the content card while
-  // the active tab sits on the bookmark route (the Mac's URL-driven mount).
-  std::unique_ptr<PhiBookmarkManager> bookmark_manager_;
-  void SyncBookmarkManager();
-  bool WantsBookmarkPage() const;
-  // The native new-tab page, mounted over the content card while the active
-  // tab sits on a new-tab URL (or the browser is in placeholder mode) — the
-  // Mac's NewTabViewController, URL-driven like the bookmark manager.
-  std::unique_ptr<PhiNewTabPage> new_tab_page_;
-  std::unique_ptr<PhiCreateSpacePanel> create_space_panel_;
-  void SyncNativeNtp();
-  bool WantsNativeNtp() const;
-  // Focuses the page's omnibox unless the user is busy in another control.
-  void FocusNativeNtpIfIdle();
+  // --- The client-drawn pages, as a component (phi_native_pages_host.h) ----
+  // The bookmark manager and the native new-tab page, mounted over the
+  // content card by the ACTIVE tab's URL (docs/architecture-review.md §3.5,
+  // lane 1 cluster M). Nothing else creates, shows or hides either one.
+  std::unique_ptr<PhiNativePagesHost> native_pages_;
   void UpdateTabPreview();  // Re-aims the card at the hovered row.
 
   // Whether to offer the reader control for the active tab: upstream's
@@ -1485,25 +1435,14 @@ class PhiWindowController : private PhiOmniboxShell,
     std::vector<GroupHeader> headers;
   };
   BandModel leaving_band_;
+  void DropLeavingBand() { leaving_band_ = BandModel(); }
   // The page changes AFTER the band slide completes (the Mac reveals the
   // target on completion): the entering child stays hidden and the leaving
   // one visible until then.
   HWND swap_reveal_ = nullptr;   // Shown when the slide lands.
   HWND swap_conceal_ = nullptr;  // Hidden when the slide lands.
   void RevealSwappedContent();
-  bool swap_forward_ = true;
-  // The strip's selected pill slides from the leaving pip to the entering
-  // one during a switch (the Mac's matchedGeometryEffect glass chip),
-  // riding the band slide's clock. Empty when idle.
-  RECT swap_chip_from_{};
-  ULONGLONG swap_start_ = 0;  // Band slide clock; 0 = idle.
-  PhiPalette swap_source_palette_{};
-  ULONGLONG ramp_start_ = 0;  // Theme ramp clock; 0 = idle.
-  double SwapEasedProgress() const;  // Slide progress; 1.0 when idle.
-  double RampEasedProgress() const;  // Theme progress; 1.0 when idle.
-  void ComposeFrame(HDC mem);        // Chrome + drag indicator.
-  void BeginSpaceSwap(const std::string& entering_space_id);
-  void CancelSpaceSwap();
+  void ComposeFrame(HDC mem);  // Chrome + drag indicator.
   // The sidebar band (pinned grid through tab list): once normally, or the
   // two-pass slide while a switch animates.
   void PaintSidebarBand(HDC dc, const Layout& layout,
@@ -1682,6 +1621,58 @@ class PhiWindowController : private PhiOmniboxShell,
   bool OmniboxNativePageBox(RECT* out) const override;
   void OmniboxNativePageCommitting() override;
 
+  // --- PhiNativePagesShell: what the native pages ask of their shell -------
+  HWND NativePagesShellWindow() const override;
+  PhiWindowController* NativePagesOwner() override;
+  bool NativePagesIncognito() const override;
+  bool NativePagesIsAgent() const override;
+  bool NativePagesContentFullscreen() const override;
+  bool NativePagesPlaceholding() const override;
+  bool NativePagesSwapPending() const override;
+  const std::string& NativePagesActiveUrl() const override;
+  void NativePagesRaiseCaps() override;
+  void NativePagesFocusContent() override;
+  HWND NativePagesContentWindow() const override;
+  bool NativePagesCommitPending() const override;
+
+  // --- PhiSpacesStripShell: what the Spaces strip asks of its shell --------
+  HWND SpacesShellWindow() const override;
+  PhiWindowController* SpacesOwner() override;
+  SlotId SpacesSlot() const override;
+  PhiSlotHost* SpacesHost() const override;
+  bool SpacesIncognito() const override;
+  bool SpacesIsAgent() const override;
+  int SpacesScaled(int design_units) const override;
+  PhiSpacesStripRects SpacesRects() override;
+  const std::string& SpacesActiveSpace() const override;
+  bool SpacesHasSpace(const std::string& space_id) const override;
+  PhiPalette SpacesPalette() const override;
+  bool SpacesDragActive() const override;
+  int SpacesHoveredChip() const override;
+  bool SpacesAddSlotHovered() const override;
+  RECT SpacesAddSlotDirtyRect() override;
+  void SpacesForgetHover() override;
+  void SpacesRehoverAtCursor() override;
+  void SpacesScheduleRefresh() override;
+  void SpacesApplyPalette() override;
+  void SpacesRefreshTinted() override;
+  void SpacesRepaintOmnibox() override;
+  void SpacesFocusContent() override;
+  void SpacesRevealSwappedContent() override;
+  void SpacesSwapBandModel() override;
+  void SpacesDropLeavingBand() override;
+  HFONT SpacesUiFont() const override;
+  HFONT SpacesSmallFont() const override;
+  HFONT SpacesEmojiFont() const override;
+  HFONT SpacesChipIconFont() const override;
+  HFONT SpacesPipIconFont() const override;
+  HFONT SpacesPipEmojiFont() const override;
+  HFONT SpacesPipTextFont() const override;
+  bool SpacesSidebarCanHostForm(const RECT& form) const override;
+  HWND SpacesFloatingPanel(int* offset_y) const override;
+  // The strip's slice of a per-turn Layout.
+  PhiSpacesStripRects StripRects(const Layout& layout) const;
+
   // Owned by the framework (a singleton in chrome.dll); non-owning, and across
   // a module boundary, so not a raw_ptr.
   RAW_PTR_EXCLUSION phi_framework::PhiFramework* const framework_;
@@ -1715,58 +1706,14 @@ class PhiWindowController : private PhiOmniboxShell,
   // Invalidates what changed between two signatures (everything when the
   // layout itself moved).
   void InvalidateChangedBands(const BandSignature& before);
-  // The Space list as drawn (id + whether this slot has it open).
-  struct SpaceChip {
-    std::string id;
-    std::wstring label;
-    std::wstring icon;  // The Space's emoji, empty when it has none.
-    bool open = false;
-    bool is_agent = false;  // A live agent Space pip; `id` is its taskId.
-    RECT bounds{};
-  };
-  std::vector<SpaceChip> chips_;
-  // The Mac's SpacesStripView pip viewport: when the row overflows, a
-  // clipped window of `visible` whole pips slides along the FULL row,
-  // widened by 65% of a pip at any edge with pips hidden past it so the
-  // neighbour peeks through — the cue that the row continues. `chips_`
-  // holds the windowed pips plus those peeked ones; `chips_first_index_`
-  // is the row index of chips_[0], and `chips_clip_` the viewport rect
-  // (empty when nothing is hidden) that bounds both paint and hit tests.
-  int chips_start_ = 0;         // stripStartIndex: first whole pip shown.
-  int chips_first_index_ = 0;
-  RECT chips_clip_{};
-  // The window re-centres on the active pip when the active Space or the
-  // pip count changes (ensureActivePipVisible); wheel steps move it freely
-  // in between, so both are remembered to tell the two apart.
-  std::string chips_anchor_space_;
-  int chips_anchor_visible_ = -1;
-  bool ChipHit(const SpaceChip& chip, POINT client_pt) const;
-  void StepChipsViewport(int step);  // stepViewport: +1 toward the end.
-  RECT add_space_button_{};
-  // True when not every Space fit the strip: the trailing "+" becomes the
-  // Mac's "…" (moreButton) and opens the full switcher menu instead.
-  bool chips_overflow_ = false;
-  // The Mac's SpacesStripView shows its "+" only while the pointer is over
-  // the strip's ROW (slot.isStripRowHovered): the whole row is the hover
-  // region, so the button is already up by the time the cursor could reach
-  // its far-right slot, and the slot stays reserved so the pips never
-  // reflow. The overflow "…" is never gated. A flip fades the button over
-  // kAddSpaceFadeMs (the Mac's 0.15s easeInOut on the button's opacity).
-  bool strip_row_hovered_ = false;
-  ULONGLONG add_space_fade_start_ = 0;  // Fade clock; 0 = settled.
-  void SetStripRowHovered(bool hovered);
-  double AddSpaceRevealProgress() const;  // 0 = hidden … 1 = fully shown.
-  // The create-Space form's host state — the Mac SpaceWindowSlot's
-  // isCreatingSpace / creatingSpaceIconValue: the strip reserves a dashed
-  // placeholder pip at its end, hides the active pill and turns read-only.
-  // The palette override is the form's live theme preview, kept through the
-  // created Space's arrival so the chrome never flashes the source theme.
-  bool creating_space_ = false;
-  std::wstring creating_space_icon_text_;
-  RECT creating_pip_bounds_{};
-  std::optional<PhiPalette> preview_palette_;
-  bool preview_until_switch_ = false;
-  void EndCreateSpacePreview();
+  // --- The Spaces strip, as a component (phi_spaces_strip.h) --------------
+  // The pips, their viewport and overflow, the hover card, the trailing "+"
+  // and its fade, the create-Space form host and the Space-switch animation
+  // (docs/architecture-review.md §3.5, lane 1 clusters K and O plus the chip
+  // half of H). The shell keeps only the RETAINED sidebar rows the band
+  // slide paints (leaving_band_ below) — they are the sidebar's, not the
+  // strip's — and the parked browser child the slide reveals.
+  std::unique_ptr<PhiSpacesStrip> spaces_;
   PhiLayoutMode layout_mode_ = PhiLayoutMode::kPerformance;
 
   // The Mac floating sidebar (WebContentContainerViewController+

@@ -199,8 +199,8 @@ class PhiCoordinator : public PhiSlotHost,
   void RequestShowTranscript(const std::string& task_id) override;
 
   void RequestCreateSpace(int64_t slot, bool new_profile) override;
-  bool AccountInfo(std::string* name, std::string* email) const override;
-  bool AccountSigningIn() const override;
+  bool AccountInfo(std::string* name, std::string* email) const;
+  bool AccountSigningIn() const;
   void RequestSignIn() override;
   void RequestSignOut() override;
   void RequestDefaultBrowser() override;
@@ -280,9 +280,11 @@ class PhiCoordinator : public PhiSlotHost,
   void SetThemeId(const std::string& id) override;
   void SetAppearance(PhiAppearance appearance) override;
   void SetSaturation(int value) override;
-  PhiNewTabBehavior NewTabBehavior() const override;
+  // Kept for the VERB LADDER's settings.get (the settings window reads
+  // PhiPreferences directly now); no longer a settings-host virtual.
+  PhiNewTabBehavior NewTabBehavior() const;
   void SetNewTabBehavior(PhiNewTabBehavior behavior) override;
-  bool AlwaysShowFullUrl() const override;
+  bool AlwaysShowFullUrl() const;
   void SetAlwaysShowFullUrl(bool enabled) override;
   bool ShowTabPreviews() const override;
   void NoteSlotActiveSpace(const std::string& space_id) override;
@@ -301,9 +303,9 @@ class PhiCoordinator : public PhiSlotHost,
   void RequestReclaimTab(int tab_id) override;
   void RequestReleaseTab(int tab_id) override;
   void SetShowTabPreviews(bool enabled) override;
-  std::string LanguagePreference() const override;
+  std::string LanguagePreference() const;
   void SetLanguagePreference(const std::string& tag) override;
-  bool RestoreLastSession() const override;
+  bool RestoreLastSession() const;
   void SetRestoreLastSession(bool enabled) override;
   void FocusWindowForBrowser(int64_t browser_window_id) override;
   bool NewTabOpensOmnibox() const override;
@@ -314,19 +316,18 @@ class PhiCoordinator : public PhiSlotHost,
   // Pushes the persisted restore choice into every loaded profile — the
   // ON-CHANGE push. A profile that loads later gets it from OnProfileLoaded.
   void PushRestorePreference();
-  bool PeekViewEnabled() const override;
+  bool PeekViewEnabled() const;
   void SetPeekViewEnabled(bool enabled) override;
-  bool AutoPeekViewEnabled() const override;
+  bool AutoPeekViewEnabled() const;
   void SetAutoPeekViewEnabled(bool enabled) override;
   // Pushes both Peek switches into the framework, which owns the two
   // decisions they gate (the context-menu item and the cross-domain
   // throttle's diversion). Run on the first profile load and on every change.
   void PushPeekPreferences();
-  bool AnalyticsEnabled() const override;
+  bool AnalyticsEnabled() const;
   void SetAnalyticsEnabled(bool enabled) override;
   PhiPinScope PinScope() const override;
   void SetPinScope(PhiPinScope scope) override;
-  std::vector<std::string> SpaceSummaries() const override;
   std::string SpaceThemeId(const std::string& space_id) const override;
   void SetSpaceIcon(const std::string& space_id,
                     const std::string& icon) override;
@@ -353,22 +354,18 @@ class PhiCoordinator : public PhiSlotHost,
   bool DeleteProfileById(const std::string& profile_id) override;
   bool RenameProfileById(const std::string& profile_id,
                          const std::string& name) override;
-  std::vector<std::string> ShortcutRows() const override;
   void RebindShortcut(const std::string& name,
                       UINT vk,
                       bool ctrl,
                       bool shift,
                       bool alt) override;
   void RestoreAllShortcuts() override;
-  bool AnyShortcutCustomized() const override;
-  std::vector<std::string> AgentGrantRows() const override;
-  void RemoveAgentGrant(int index) override;
-  std::vector<std::string> CredentialGrantRows() const override;
-  void RemoveCredentialGrant(int index) override;
-  std::vector<std::string> CredentialAuditRows() const override;
-  bool DeveloperMode() const override;
+  std::vector<std::string> AgentGrantPaths() const override;
+  bool RemoveAgentGrant(const std::string& path) override;
+  bool RemoveCredentialGrant(const std::string& scope) override;
+  bool DeveloperMode() const;
   void SetDeveloperMode(bool enabled) override;
-  bool AllowAgentUserSpaces() const override;
+  bool AllowAgentUserSpaces() const;
   void SetAllowAgentUserSpaces(bool enabled) override;
   void OpenBrowserSettings() override;
   void OpenBrowserPage(const std::string& url) override;
@@ -376,28 +373,44 @@ class PhiCoordinator : public PhiSlotHost,
                      const std::string& theme_id) override;
   std::vector<std::string> ProfileSummaries() const override;
   void CreateProfileNamed(const std::string& name) override;
-  std::vector<std::string> SearchEngines(
-      const std::string& profile_id) const override;
   bool SetSearchEngine(const std::string& profile_id,
                        const std::string& keyword) override;
-  std::string DownloadDirectory(const std::string& profile_id) const override;
+  // The VERB LADDER's search-engine door: agentSpace.settings.get answers
+  // these wire rows verbatim (PhiSearchEngineWireRow), so the encoding is
+  // part of the control-plane contract. The settings pane takes the structs
+  // off PhiProfileService.
+  std::vector<std::string> SearchEngines(const std::string& profile_id) const;
+  std::string DownloadDirectory(const std::string& profile_id) const;
   bool SetDownloadDirectory(const std::string& profile_id,
                             const std::string& dir) override;
   void CreateSpaceNamed(const std::string& name) override;
-  std::vector<std::string> URLRuleRows() const override;
+  // The URL-rule door the VERB LADDER still takes: wire rows and POSITIONAL
+  // edits (agentSpace.urlRules.*, which resolve a wire id to an index of
+  // their own before calling in). The settings window takes PhiUrlRouter
+  // directly and addresses rules by id; when the ladder does the same these
+  // five go with them.
+  std::vector<std::string> URLRuleRows() const;
   void AddURLRule(const std::string& space_id,
                   const std::string& host,
                   const std::string& path_prefix,
-                  bool ask) override;
+                  bool ask);
   void SetURLRulePattern(int index,
                          const std::string& host,
-                         const std::string& path_prefix) override;
-  void SetURLRuleTarget(int index,
-                        const std::string& space_id,
-                        bool ask) override;
-  void RemoveURLRule(int index) override;
+                         const std::string& path_prefix);
+  void SetURLRuleTarget(int index, const std::string& space_id, bool ask);
+  void RemoveURLRule(int index);
   void AddSettingsObserver(PhiSettingsObserver* observer) override;
   void RemoveSettingsObserver(PhiSettingsObserver* observer) override;
+  // The services the settings window reads directly (PhiSettingsHost): the
+  // owners of the domains the panes show. The coordinator has nothing to
+  // add to a READ, and its per-field forwards were the only reason the
+  // interface reached 75 virtuals (docs/architecture-review.md §3.5).
+  const PhiPreferences& Preferences() const override;
+  const PhiSpaceManager& SpaceList() const override;
+  const PhiProfileService& ProfileList() const override;
+  const PhiCredentialService& Credentials() const override;
+  const PhiAccountAndFeedback& Account() const override;
+  PhiUrlRouter& UrlRules() override;
 
   // --- The control plane's view of the app ----------------------------------
   // What the verb ladder (PhiControlDispatcher) reaches: the model values and

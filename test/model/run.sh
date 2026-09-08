@@ -110,3 +110,11 @@ $CXX browser_host_test.cc -o /tmp/phi_browser_host_test
 $CXX ../../client/phi_shell_menus.cc shell_menus_test.cc \
      -o /tmp/phi_shell_menus_test
 /tmp/phi_shell_menus_test
+# Phase 6's settings rows (§3.5, lane 1 §1.3 and §5 D7): the typed rows the
+# settings panes read, and the three records that still travel as TEXT — the
+# search-engine rows agentSpace.settings.get answers verbatim, the rule rows
+# the urlRules.* verbs build their JSON from, and the audit lines the consent
+# FILE stores. Each is round-tripped through its encoding, plus the Shortcuts
+# pane's row order. Header-only, so the test needs no client .cc.
+$CXX settings_rows_test.cc -o /tmp/phi_settings_rows_test
+/tmp/phi_settings_rows_test

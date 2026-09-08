@@ -16,6 +16,7 @@
 #include "base/memory/raw_ptr_exclusion.h"
 #include "phibrowser-win/client/phi_app_model.h"
 #include "phibrowser-win/client/phi_ids.h"
+#include "phibrowser-win/client/phi_settings_types.h"
 #include "phibrowser-win/client/phi_window_registry.h"
 
 // The Space URL routing service (docs/architecture-review.md §3.4, the
@@ -60,14 +61,15 @@ inline bool UrlRuleIsLive(const model::UrlRule& rule) {
   return rule.space_id != "space.incognito";
 }
 
-// "spaceId\thost\tpathPrefix\task(0|1)" per rule — the Settings host's rows.
+// The urlRules.* verbs' wire encoding of the rule list
+// (PhiUrlRuleWireRow, phi_settings_types.h). The SETTINGS pane takes
+// RulesWithIds() instead — structs carrying each rule's wire id.
 inline std::vector<std::string> UrlRuleRowsOf(
     const std::vector<model::UrlRule>& rules) {
   std::vector<std::string> rows;
   rows.reserve(rules.size());
   for (const model::UrlRule& rule : rules) {
-    rows.push_back(rule.space_id + "\t" + rule.host + "\t" +
-                   rule.path_prefix + "\t" + (rule.ask ? "1" : "0"));
+    rows.push_back(PhiUrlRuleWireRow(rule));
   }
   return rows;
 }
@@ -198,7 +200,7 @@ class PhiUrlRouter {
   // --- Rules (the Settings host's spellings and the urlRules.* verbs' ops) --
   const std::vector<model::UrlRule>& rules() const { return model_.url_rules; }
   int generation() const { return model_.url_rules_generation; }
-  // ListRules: the rows, and the wire id of the rule at `index`.
+  // ListRules: the wire rows, and the wire id of the rule at `index`.
   std::vector<std::string> RuleRows() const {
     return UrlRuleRowsOf(model_.url_rules);
   }
@@ -208,6 +210,12 @@ class PhiUrlRouter {
   bool ResolveRuleIndex(std::string_view wire_id, size_t* index) const {
     return ResolveUrlRuleIndex(model_, wire_id, index);
   }
+  // Every rule with its CURRENT wire id — what the Settings editor reads
+  // and what its edits name back. Position is not identity here: a write
+  // bumps the generation and every id with it, so an index the pane read
+  // before an edit would land on whatever moved into that slot (lane 1 §5
+  // D7). Reject a stale id instead of retargeting.
+  std::vector<PhiUrlRuleRow> RulesWithIds() const;
   // Each write persists and re-pushes the routing table at once.
   void AddRule(const std::string& space_id,
                const std::string& host,
@@ -218,6 +226,16 @@ class PhiUrlRouter {
                       const std::string& path_prefix);
   void SetRuleTarget(int index, const std::string& space_id, bool ask);
   void RemoveRule(int index);
+  // The same three writes addressed by wire id. False when the id no
+  // longer names a rule (a prior generation, or a list that shrank) —
+  // the caller re-lists rather than hitting a neighbour.
+  bool SetRulePatternById(const std::string& rule_id,
+                          const std::string& host,
+                          const std::string& path_prefix);
+  bool SetRuleTargetById(const std::string& rule_id,
+                         const std::string& space_id,
+                         bool ask);
+  bool RemoveRuleById(const std::string& rule_id);
   // A Space is going: its rules go with it (the space manager's DeleteSpace,
   // through the coordinator).
   void DropRulesForSpace(const std::string& space_id);

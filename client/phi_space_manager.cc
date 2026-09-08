@@ -71,12 +71,12 @@ std::vector<PhiSpaceView> PhiSpaceManager::Spaces() const {
   return out;
 }
 
-std::vector<std::string> PhiSpaceManager::SpaceSummaries() const {
-  std::vector<std::string> out;
+std::vector<PhiSpaceSummary> PhiSpaceManager::Summaries() const {
+  std::vector<PhiSpaceSummary> out;
+  out.reserve(model_.spaces.size());
   for (const model::Space& space : model_.spaces) {
-    out.push_back(space.name + "\t" + PhiIconDisplayText(space.icon) + "\t" +
-                  space.profile_id + "\t" + space.id + "\t" + space.theme_id +
-                  "\t" + std::to_string(space.saturation));
+    out.push_back({space.id, space.name, PhiIconDisplayText(space.icon),
+                   space.profile_id, space.theme_id, space.saturation});
   }
   return out;
 }

@@ -469,7 +469,7 @@ void PhiCoordinator::UpdateSweepTimer() {
   }
 }
 
-std::vector<std::string> PhiCoordinator::AgentGrantRows() const {
+std::vector<std::string> PhiCoordinator::AgentGrantPaths() const {
   std::vector<std::string> rows;
   for (const std::wstring& path : consent_.agent_always_paths) {
     rows.push_back(base::WideToUTF8(path));
@@ -477,27 +477,19 @@ std::vector<std::string> PhiCoordinator::AgentGrantRows() const {
   return rows;
 }
 
-void PhiCoordinator::RemoveAgentGrant(int index) {
-  if (index < 0 ||
-      index >= static_cast<int>(consent_.agent_always_paths.size())) {
-    return;
+bool PhiCoordinator::RemoveAgentGrant(const std::string& path) {
+  // By PATH, not by row position: the set is ordered by the collating of
+  // whatever paths it holds, and the pane re-reads it between the paint
+  // that drew the button and the click that presses it.
+  if (consent_.agent_always_paths.erase(base::UTF8ToWide(path)) == 0) {
+    return false;
   }
-  auto it = consent_.agent_always_paths.begin();
-  std::advance(it, index);
-  consent_.agent_always_paths.erase(it);
   ScheduleSave(StoreDomain::kConsent);
+  return true;
 }
 
-std::vector<std::string> PhiCoordinator::CredentialGrantRows() const {
-  return credentials_.GrantRows();
-}
-
-void PhiCoordinator::RemoveCredentialGrant(int index) {
-  credentials_.RemoveGrant(index);
-}
-
-std::vector<std::string> PhiCoordinator::CredentialAuditRows() const {
-  return credentials_.AuditRows();
+bool PhiCoordinator::RemoveCredentialGrant(const std::string& scope) {
+  return credentials_.RemoveGrant(scope);
 }
 
 HWND PhiCoordinator::CredentialPromptOwner() {
@@ -1808,9 +1800,9 @@ void PhiCoordinator::SetSaturation(int value) {
 }
 
 PhiNewTabBehavior PhiCoordinator::NewTabBehavior() const {
-  // Same enumerators in the same order (phi_app_model.h): the model's twin
-  // exists only to keep that header off windows.h.
-  return static_cast<PhiNewTabBehavior>(preferences_.new_tab_behavior());
+  // PhiNewTabBehavior IS model::NewTabBehavior now (phi_settings_window.h):
+  // the UI side stopped keeping a twin to cast between.
+  return preferences_.new_tab_behavior();
 }
 
 bool PhiCoordinator::NewTabOpensOmnibox() const {
@@ -1818,11 +1810,7 @@ bool PhiCoordinator::NewTabOpensOmnibox() const {
 }
 
 void PhiCoordinator::SetNewTabBehavior(PhiNewTabBehavior behavior) {
-  preferences_.SetNewTabBehavior(static_cast<model::NewTabBehavior>(behavior));
-}
-
-std::vector<std::string> PhiCoordinator::ShortcutRows() const {
-  return preferences_.ShortcutRows();
+  preferences_.SetNewTabBehavior(behavior);
 }
 
 void PhiCoordinator::RebindShortcut(const std::string& name,
@@ -1835,10 +1823,6 @@ void PhiCoordinator::RebindShortcut(const std::string& name,
 
 void PhiCoordinator::RestoreAllShortcuts() {
   preferences_.RestoreAllShortcuts();
-}
-
-bool PhiCoordinator::AnyShortcutCustomized() const {
-  return preferences_.AnyShortcutCustomized();
 }
 
 void PhiCoordinator::FocusWindowForBrowser(int64_t browser_window_id) {
@@ -2003,10 +1987,6 @@ void PhiCoordinator::SetPinScope(PhiPinScope scope) {
   registry_.InvalidateAll();
 }
 
-std::vector<std::string> PhiCoordinator::SpaceSummaries() const {
-  return space_manager_->SpaceSummaries();
-}
-
 void PhiCoordinator::SetSpaceIcon(const std::string& space_id,
                                   const std::string& icon) {
   space_manager_->SetSpaceIcon(space_id, icon);
@@ -2121,7 +2101,12 @@ void PhiCoordinator::CreateProfileNamed(const std::string& name) {
 
 std::vector<std::string> PhiCoordinator::SearchEngines(
     const std::string& profile_id) const {
-  return profile_service_->SearchEngines(profile_id);
+  std::vector<std::string> rows;
+  for (const PhiSearchEngineRow& engine :
+       profile_service_->SearchEngines(profile_id)) {
+    rows.push_back(PhiSearchEngineWireRow(engine));
+  }
+  return rows;
 }
 
 bool PhiCoordinator::SetSearchEngine(const std::string& profile_id,
@@ -2155,6 +2140,30 @@ void PhiCoordinator::CreateSpaceNamed(const std::string& name) {
 
 std::vector<std::string> PhiCoordinator::URLRuleRows() const {
   return url_router_->RuleRows();
+}
+
+const PhiPreferences& PhiCoordinator::Preferences() const {
+  return preferences_;
+}
+
+const PhiSpaceManager& PhiCoordinator::SpaceList() const {
+  return *space_manager_;
+}
+
+const PhiProfileService& PhiCoordinator::ProfileList() const {
+  return *profile_service_;
+}
+
+const PhiCredentialService& PhiCoordinator::Credentials() const {
+  return credentials_;
+}
+
+const PhiAccountAndFeedback& PhiCoordinator::Account() const {
+  return account_;
+}
+
+PhiUrlRouter& PhiCoordinator::UrlRules() {
+  return *url_router_;
 }
 
 void PhiCoordinator::AddURLRule(const std::string& space_id,

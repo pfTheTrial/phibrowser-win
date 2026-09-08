@@ -33,6 +33,16 @@ PhiUrlRouter::~PhiUrlRouter() = default;
 
 // --- Rules ----------------------------------------------------------------------
 
+std::vector<PhiUrlRuleRow> PhiUrlRouter::RulesWithIds() const {
+  std::vector<PhiUrlRuleRow> rows;
+  rows.reserve(model_.url_rules.size());
+  for (size_t i = 0; i < model_.url_rules.size(); ++i) {
+    rows.push_back({model::UrlRuleWireId(model_.url_rules_generation, i),
+                    model_.url_rules[i]});
+  }
+  return rows;
+}
+
 void PhiUrlRouter::AddRule(const std::string& space_id,
                            const std::string& host,
                            const std::string& path_prefix,
@@ -70,6 +80,37 @@ void PhiUrlRouter::RemoveRule(int index) {
   }
   MarkDirty();
   host_.SchedulePushRoutingTable();
+}
+
+bool PhiUrlRouter::SetRulePatternById(const std::string& rule_id,
+                                     const std::string& host,
+                                     const std::string& path_prefix) {
+  size_t index = 0;
+  if (!ResolveRuleIndex(rule_id, &index)) {
+    return false;
+  }
+  SetRulePattern(static_cast<int>(index), host, path_prefix);
+  return true;
+}
+
+bool PhiUrlRouter::SetRuleTargetById(const std::string& rule_id,
+                                     const std::string& space_id,
+                                     bool ask) {
+  size_t index = 0;
+  if (!ResolveRuleIndex(rule_id, &index)) {
+    return false;
+  }
+  SetRuleTarget(static_cast<int>(index), space_id, ask);
+  return true;
+}
+
+bool PhiUrlRouter::RemoveRuleById(const std::string& rule_id) {
+  size_t index = 0;
+  if (!ResolveRuleIndex(rule_id, &index)) {
+    return false;
+  }
+  RemoveRule(static_cast<int>(index));
+  return true;
 }
 
 void PhiUrlRouter::DropRulesForSpace(const std::string& space_id) {

@@ -114,8 +114,8 @@ void PhiProfileService::ExpirePending(uint64_t now_ms,
   }
 }
 
-std::vector<std::string> PhiProfileService::ProfileSummaries() const {
-  std::vector<std::string> out;
+std::vector<PhiProfileSummary> PhiProfileService::Profiles() const {
+  std::vector<PhiProfileSummary> out;
   std::optional<base::Value> parsed = base::JSONReader::Read(
       framework_.ListProfilesJson(), base::JSON_PARSE_RFC);
   if (!parsed || !parsed->is_list()) {
@@ -128,8 +128,17 @@ std::vector<std::string> PhiProfileService::ProfileSummaries() const {
     const std::string* id = value.GetDict().FindString("id");
     const std::string* name = value.GetDict().FindString("name");
     if (id) {
-      out.push_back(*id + "\t" + (name ? *name : *id));
+      // A nameless profile shows as its id, as it always has.
+      out.push_back({*id, name ? *name : *id});
     }
+  }
+  return out;
+}
+
+std::vector<std::string> PhiProfileService::ProfileSummaries() const {
+  std::vector<std::string> out;
+  for (const PhiProfileSummary& profile : Profiles()) {
+    out.push_back(profile.id + "\t" + profile.name);
   }
   return out;
 }
@@ -206,9 +215,9 @@ bool PhiProfileService::DeleteProfileById(const std::string& profile_id) {
   return true;
 }
 
-std::vector<std::string> PhiProfileService::SearchEngines(
+std::vector<PhiSearchEngineRow> PhiProfileService::SearchEngines(
     const std::string& profile_id) const {
-  std::vector<std::string> out;
+  std::vector<PhiSearchEngineRow> out;
   std::optional<base::Value> parsed = base::JSONReader::Read(
       framework_.ListSearchEnginesJson(profile_id.c_str()),
       base::JSON_PARSE_RFC);
@@ -224,9 +233,9 @@ std::vector<std::string> PhiProfileService::SearchEngines(
     if (!keyword) {
       continue;
     }
-    out.push_back(
-        *keyword + "\t" + (name && !name->empty() ? *name : *keyword) + "\t" +
-        (value.GetDict().FindBool("default").value_or(false) ? "1" : "0"));
+    // A nameless engine shows as its keyword, as it always has.
+    out.push_back({*keyword, name && !name->empty() ? *name : *keyword,
+                   value.GetDict().FindBool("default").value_or(false)});
   }
   return out;
 }

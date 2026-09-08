@@ -15,14 +15,24 @@
 #include "base/memory/raw_ptr_exclusion.h"
 #include "phibrowser-win/client/phi_popup_chrome.h"
 #include "phibrowser-win/client/phi_secondary_window.h"
+#include "phibrowser-win/client/phi_settings_types.h"
 #include "phibrowser-win/client/phi_tab_store.h"
 #include "phibrowser-win/client/phi_theme.h"
 #include "phibrowser-win/client/phi_window_controller.h"
 
 namespace phi_client {
 
-// What the New Tab shortcut opens — the Mac's NewTabShortcutBehavior.
-enum class PhiNewTabBehavior { kNewTabPage, kOmnibox };
+class PhiAccountAndFeedback;
+class PhiCredentialService;
+class PhiPreferences;
+class PhiProfileService;
+class PhiSpaceManager;
+class PhiUrlRouter;
+
+// What the New Tab shortcut opens — the Mac's NewTabShortcutBehavior. The
+// windows-free model header carries the enum (phi_app_model.h); this is the
+// UI side's spelling of the SAME type, not a second one to cast between.
+using PhiNewTabBehavior = model::NewTabBehavior;
 
 // What changed behind the host, for a window showing it. The view
 // subscribes (PhiSettingsHost::AddSettingsObserver) and repaints on a
@@ -44,8 +54,27 @@ class PhiSettingsObserver {
   virtual ~PhiSettingsObserver() = default;
 };
 
-// Everything the settings window reads and writes. Implemented by the
-// coordinator, which owns the persisted values and pushes changes to the slots.
+// What the settings window asks the app to DO, plus the doors to the
+// services that own the values it shows.
+//
+// It used to be 75 virtuals, most of them one-line forwards from the
+// coordinator to a service, several of them handing rows across as
+// TAB-SEPARATED STRINGS that both sides split apart again by position
+// (docs/architecture-review.md §3.5; lane 1 §1.3 and §5 D7). Phase 6 splits
+// it in two:
+//
+//   READS go to the service that owns the domain. PhiPreferences,
+//   PhiSpaceManager, PhiProfileService, PhiCredentialService and
+//   PhiAccountAndFeedback are handed to the window CONST — it can see the
+//   values, it cannot write behind the coordinator's back — and every row
+//   they answer is a struct (phi_settings_types.h).
+//
+//   ACTIONS stay here, because each one needs something the service cannot
+//   reach on its own: a framework push, a window, another store, a Chromium
+//   profile. The exception is PhiUrlRouter, handed over MUTABLE: it is the
+//   sole owner of the rules half of PhiSpaces.json and persists and
+//   re-pushes the routing table itself, so the coordinator added nothing but
+//   an index-shaped seam between the pane and it.
 class PhiSettingsHost {
  public:
   virtual ~PhiSettingsHost() = default;
@@ -55,19 +84,23 @@ class PhiSettingsHost {
   virtual void AddSettingsObserver(PhiSettingsObserver* observer) = 0;
   virtual void RemoveSettingsObserver(PhiSettingsObserver* observer) = 0;
 
-  // Theme
-  virtual std::string ThemeId() const = 0;
-  virtual PhiAppearance Appearance() const = 0;
-  virtual int Saturation() const = 0;  // 0..100, the Mac's slider range.
+  // --- The services the window reads directly -------------------------------
+  // All outlive the window (the coordinator owns them for the app's life).
+  virtual const PhiPreferences& Preferences() const = 0;
+  virtual const PhiSpaceManager& SpaceList() const = 0;
+  virtual const PhiProfileService& ProfileList() const = 0;
+  virtual const PhiCredentialService& Credentials() const = 0;
+  virtual const PhiAccountAndFeedback& Account() const = 0;
+  // Mutable: see the class comment — the URL Rules editor IS this service's
+  // editor, and rules are addressed by wire id, never by row position.
+  virtual PhiUrlRouter& UrlRules() = 0;
+
+  // --- Theme ----------------------------------------------------------------
   virtual void SetThemeId(const std::string& id) = 0;
   virtual void SetAppearance(PhiAppearance appearance) = 0;
-  virtual void SetSaturation(int value) = 0;
-  virtual const PhiPalette& Palette() const = 0;
+  virtual void SetSaturation(int value) = 0;  // 0..100, the Mac's range.
 
-  // Account (the Auth0 session; stage 1 of bucket D's auth work).
-  // False when signed out; fills the display identity otherwise.
-  virtual bool AccountInfo(std::string* name, std::string* email) const = 0;
-  virtual bool AccountSigningIn() const = 0;
+  // --- Account (the Auth0 session; stage 1 of bucket D's auth work) ---------
   virtual void RequestSignIn() = 0;
   virtual void RequestSignOut() = 0;
   // Registers Phi with Windows and opens the system Default apps page. The
@@ -75,43 +108,35 @@ class PhiSettingsHost {
   // no other way.
   virtual void RequestDefaultBrowser() = 0;
 
-  // Appearance
-  virtual PhiLayoutMode LayoutMode() const = 0;
+  // --- Appearance -----------------------------------------------------------
   virtual void RequestLayoutMode(PhiLayoutMode mode) = 0;
 
-  // Browsing
-  virtual PhiNewTabBehavior NewTabBehavior() const = 0;
+  // --- Browsing -------------------------------------------------------------
   virtual void SetNewTabBehavior(PhiNewTabBehavior behavior) = 0;
-  virtual bool AlwaysShowFullUrl() const = 0;
   virtual void SetAlwaysShowFullUrl(bool enabled) = 0;
   // GeneralSettings.showTabPreviews — the hover cards on tab, pin and
   // bookmark rows. On by default, as on Mac.
-  virtual bool ShowTabPreviews() const = 0;
   virtual void SetShowTabPreviews(bool enabled) = 0;
   // The UI language. An EMPTY tag means "follow the operating system", which
   // is the default and the only value that tracks a later OS change.
-  virtual std::string LanguagePreference() const = 0;
   virtual void SetLanguagePreference(const std::string& tag) = 0;
   // "Restore last session": app-wide choice, pushed into every loaded
   // profile's Chromium startup pref (SessionStartupPref LAST).
-  virtual bool RestoreLastSession() const = 0;
   virtual void SetRestoreLastSession(bool enabled) = 0;
   // "Share anonymous usage analytics": the telemetry consent. Off by
   // default; only this pane can turn it on (never the control channel).
-  virtual bool AnalyticsEnabled() const = 0;
   virtual void SetAnalyticsEnabled(bool enabled) = 0;
 
-  // Spaces / Profiles
+  // --- Spaces / Profiles ----------------------------------------------------
+  // The pin scope's truth is the TAB STORE, not the preferences (the
+  // settings file only mirrors it), and setting it re-owns every stored
+  // row — so it stays an action here rather than a service read.
   virtual PhiPinScope PinScope() const = 0;
   virtual void SetPinScope(PhiPinScope scope) = 0;
-  // "name\ticonText\tprofileId\tspaceId\tthemeId\tsaturation" per Space.
-  virtual std::vector<std::string> SpaceSummaries() const = 0;
-  // A Space's pinned theme id, or empty when it follows the app-wide one.
-  virtual std::string SpaceThemeId(const std::string& space_id) const = 0;
+  // A Space's own theme, icon and saturation override (the Mac's per-Space
+  // settings; saturation -1 follows the app-wide slider).
   virtual void SetSpaceTheme(const std::string& space_id,
                              const std::string& theme_id) = 0;
-  // A Space's own icon and saturation override (the Mac's per-Space settings;
-  // saturation -1 follows the app-wide slider).
   virtual void SetSpaceIcon(const std::string& space_id,
                             const std::string& icon) = 0;
   virtual void SetSpaceSaturation(const std::string& space_id, int value) = 0;
@@ -119,92 +144,63 @@ class PhiSettingsHost {
   virtual bool RenameSpace(const std::string& space_id,
                            const std::string& name) = 0;
   virtual bool DeleteSpace(const std::string& space_id) = 0;
-  // The Space wearing the default badge, and whether Remove is offered for
-  // a Space (refused for the last one) — see the coordinator's twins.
-  virtual std::string DefaultSpaceId() const = 0;
-  virtual bool CanDeleteSpace(const std::string& space_id) const = 0;
   virtual bool DeleteProfileById(const std::string& profile_id) = 0;
   virtual bool RenameProfileById(const std::string& profile_id,
                                  const std::string& name) = 0;
-  virtual std::vector<std::string> ProfileSummaries() const = 0;
   virtual void CreateProfileNamed(const std::string& name) = 0;
   // Per-profile browsing settings (the Mac profile pane's two controls).
-  // Engines come back as "keyword\tname\tdefault(0|1)" rows; the list is
-  // empty — and the row disabled — while the profile is not loaded.
-  virtual std::vector<std::string> SearchEngines(
-      const std::string& profile_id) const = 0;
+  // The engine LIST is read off PhiProfileService; setting one goes through
+  // the framework's keyword service, so it comes back here.
   virtual bool SetSearchEngine(const std::string& profile_id,
                                const std::string& keyword) = 0;
-  virtual std::string DownloadDirectory(
-      const std::string& profile_id) const = 0;
   virtual bool SetDownloadDirectory(const std::string& profile_id,
                                     const std::string& dir) = 0;
   // Creates a Space (Default profile) — the list's "+" button.
   virtual void CreateSpaceNamed(const std::string& name) = 0;
 
-  // Navigation
+  // --- Navigation -----------------------------------------------------------
   // Peek View, the Mac's peekViewEnabled / autoPeekViewEnabled pair. The
   // master gate governs the "Open Link in Peek View" context-menu item and,
   // under it, the automatic diversion; the sub-gate governs that diversion
   // alone — a cross-site link leaving a bookmark- or pinned-bound tab
   // previews in a Peek instead of taking a new tab. Both are pushed into the
   // framework, which is where both decisions are actually made.
-  virtual bool PeekViewEnabled() const = 0;
   virtual void SetPeekViewEnabled(bool enabled) = 0;
-  virtual bool AutoPeekViewEnabled() const = 0;
   virtual void SetAutoPeekViewEnabled(bool enabled) = 0;
 
-  // Space URL routing rules (the Mac's universal URL Rules editor).
-  // Rows come back as "spaceId\thost\tpathPrefix\task(0|1)"; `host` is the
-  // wire form ("github.com" exact, "*.foo.com" suffix, "*needle*"
-  // contains). Mutations persist and re-push the routing table at once.
-  virtual std::vector<std::string> URLRuleRows() const = 0;
-  virtual void AddURLRule(const std::string& space_id,
-                          const std::string& host,
-                          const std::string& path_prefix,
-                          bool ask) = 0;
-  virtual void SetURLRulePattern(int index,
-                                 const std::string& host,
-                                 const std::string& path_prefix) = 0;
-  virtual void SetURLRuleTarget(int index,
-                                const std::string& space_id,
-                                bool ask) = 0;
-  virtual void RemoveURLRule(int index) = 0;
-
-  // Rebindable keyboard shortcuts (the Mac Shortcuts pane's customising).
-  // Rows come back as "group\tlabel\tkeys\tname\tcustomized(0|1)" in display
-  // order; `name` is empty for fixed, informational rows. Rebinding takes the
-  // chord's raw parts; a chord already held by another rebindable shortcut is
-  // STOLEN (that one goes unbound), as the Mac pane does.
-  virtual std::vector<std::string> ShortcutRows() const = 0;
+  // --- Shortcuts (the Mac Shortcuts pane's customising) ---------------------
+  // Rebinding takes the chord's raw parts; a chord already held by another
+  // rebindable shortcut is STOLEN (that one goes unbound), as the Mac pane
+  // does. The keyboard hook reads the table live, so this is a push, not a
+  // plain preference write.
   virtual void RebindShortcut(const std::string& name,
                               UINT vk,
                               bool ctrl,
                               bool shift,
                               bool alt) = 0;
   virtual void RestoreAllShortcuts() = 0;
-  virtual bool AnyShortcutCustomized() const = 0;
 
-  // The persisted "Always Allow" agent grants (C1 consent), as displayable
-  // rows (the UTF-8 image path). Removing one revokes it for future
-  // connections; live sessions keep their allow-once.
-  virtual std::vector<std::string> AgentGrantRows() const = 0;
-  virtual void RemoveAgentGrant(int index) = 0;
-  // Standing credential approvals ("scope\tfill|reveal") and the approval
-  // audit trail ("stamp\tkind\tscope\tdecision", newest first). Revoking a
-  // grant only affects future requests.
-  virtual std::vector<std::string> CredentialGrantRows() const = 0;
-  virtual void RemoveCredentialGrant(int index) = 0;
-  virtual std::vector<std::string> CredentialAuditRows() const = 0;
+  // --- Consent --------------------------------------------------------------
+  // The persisted "Always Allow" agent grants (C1 consent) as displayable
+  // UTF-8 image paths. This half of the consent file belongs to the control
+  // plane's ladder, not to PhiCredentialService, so it is read and revoked
+  // here. Revoking is by PATH — the identity — never by row position: the
+  // pane re-reads the list between paint and click (lane 1 §5 D7). Future
+  // connections are affected; live sessions keep their allow-once.
+  virtual std::vector<std::string> AgentGrantPaths() const = 0;
+  virtual bool RemoveAgentGrant(const std::string& path) = 0;
+  // Revokes the standing credential approval held under `scope`, and with
+  // it any live timed grant beneath it. Also by identity, for the same
+  // reason.
+  virtual bool RemoveCredentialGrant(const std::string& scope) = 0;
 
+  // --- Developer ------------------------------------------------------------
   // Developer mode gates the Developer pane, as on Mac (default off).
-  virtual bool DeveloperMode() const = 0;
   virtual void SetDeveloperMode(bool enabled) = 0;
   // Developer ▸ "Allow agents to operate your Spaces": lets a connected
   // agent read and change the user's OWN Spaces, tabs, bookmarks, URL rules
   // and profiles. Default off; agent Spaces are never affected, and the
   // agent cannot flip it over the control channel.
-  virtual bool AllowAgentUserSpaces() const = 0;
   virtual void SetAllowAgentUserSpaces(bool enabled) = 0;
   // "Additional browser settings" — opens chrome://settings in a tab.
   virtual void OpenBrowserSettings() = 0;
@@ -295,11 +291,21 @@ class PhiSettingsWindow : public PhiSecondaryWindow,
     bool selected = false;
     bool on = false;
     bool enabled = true;  // Drawn dim and inert when false.
+    // Multi-line text, measured at build time and drawn DT_WORDBREAK. The
+    // Mac wraps every label and description
+    // (`fixedSize(horizontal: false, vertical: true)`); a single line with
+    // DT_END_ELLIPSIS chopped the longer ones mid-sentence.
+    bool wrap = false;
     COLORREF swatch = 0;
     COLORREF ring = 0;   // A swatch's selection-ring color (its own accent).
     int value = 0;       // Slider position, or an option index.
     std::string action;  // What a click does; empty = not clickable.
+    // The action's ONE target id (a theme, a Space, a profile, a rule, a
+    // shortcut name). `space` carries the Space a Space-SCOPED action (a
+    // theme dot, an icon cell) applies to, so no item packs two ids into
+    // one tab-separated payload the click handler has to split again.
     std::string payload;
+    std::string space;
   };
 
   void Rebuild();
@@ -340,18 +346,44 @@ class PhiSettingsWindow : public PhiSecondaryWindow,
   // An 11pt tertiary line tucked under the row just added.
   void AddSubHint(int* y, const wchar_t* text);
   // Label + trailing switch, one call — most Mac rows are exactly this.
+  // `hint` is the row's own 11pt description, part of the SAME row.
   void AddToggleRow(int* y, const wchar_t* title, bool on, bool enabled,
-                    const std::string& action);
+                    const std::string& action,
+                    const wchar_t* hint = nullptr);
   // A row inside the open card; returns the rect its control occupies,
   // RIGHT-ALIGNED as on Mac (label left, Spacer, accessory trailing).
+  //
+  // `hint`, when given, is the Mac's 11pt description line 4pt under the
+  // title and INSIDE the row (GeneralSettingView stacks them in one
+  // VStack): the trailing control centres on the pair, and the divider a
+  // caller adds next lands after the description rather than between a
+  // title and the sentence explaining it.
   RECT AddRow(int* y, const wchar_t* title, int control_height,
-              int control_width);
+              int control_width, const wchar_t* hint = nullptr);
+  // Height of `text` wrapped into `width` with `font` — DT_CALCRECT
+  // through the same DrawTextW the paint pass ends in, so what is measured
+  // and what is drawn cannot disagree.
+  int WrappedHeight(HFONT font, const wchar_t* text, int width) const;
   void AddChips(const RECT& area,
                 const std::vector<std::wstring>& labels,
                 int selected_index,
                 const std::string& action);
 
-  void OnItemClick(int x, int y);
+  // Hover, press and the slider drag. Every control here was inert under
+  // the pointer (no hover wash, no hand cursor) and FIRED on the press —
+  // and again on every mouse-move while the button stayed down, so a drag
+  // across the pane flipped every switch it crossed. The base's hit list
+  // (phi_window.h: "hits_ is THE rect list") owns all of it now, which is
+  // also what makes the window answer UI Automation.
+  void OnMouseDown(int hit, POINT client_pt) override;
+  void OnClick(int hit, POINT client_pt) override;
+  void OnWheel(int delta, POINT client_pt) override;
+  void OnEscape() override;
+  // items_ index for a hit index, or -1. The hit's `key` IS that index.
+  int ItemOfHit(int hit) const;
+  // Publishes every actionable item into hits_ — the one rect list hover,
+  // clicks, tooltips and UIA all read.
+  void PublishHits();
   void Apply(const Item& item, int x);
   void EnsureFont();
   // A lone MDL2 glyph at a size the ladder does not carry (the Account
@@ -363,6 +395,15 @@ class PhiSettingsWindow : public PhiSecondaryWindow,
   void SyncTitle();
 
   RAW_PTR_EXCLUSION PhiSettingsHost* host_;
+  // The services the panes read straight out of (see PhiSettingsHost).
+  // Taken once at construction: the coordinator owns them for the app's
+  // life, so they outlive every window.
+  RAW_PTR_EXCLUSION const PhiPreferences* prefs_;
+  RAW_PTR_EXCLUSION const PhiSpaceManager* spaces_;
+  RAW_PTR_EXCLUSION const PhiProfileService* profiles_;
+  RAW_PTR_EXCLUSION const PhiCredentialService* credentials_;
+  RAW_PTR_EXCLUSION const PhiAccountAndFeedback* account_;
+  RAW_PTR_EXCLUSION PhiUrlRouter* rules_;
   HFONT font_ = nullptr;
   HFONT title_font_ = nullptr;
   HFONT small_font_ = nullptr;  // Section titles and toolbar labels.
@@ -407,6 +448,19 @@ class PhiSettingsWindow : public PhiSecondaryWindow,
   // the same reason. Before phase 5 this probe sat behind a Rebuild()
   // that ran inside WM_PAINT (lane 3 §3.1).
   std::optional<bool> is_default_browser_;
+  // The item the press landed on, and the capture a slider drag holds so
+  // the knob keeps following the pointer outside the window.
+  int pressed_ = -1;
+  bool dragging_ = false;
+  // The slider the press landed on, replayed by every move of the drag —
+  // re-hit-testing each move is what let a drag act on its neighbours.
+  Item drag_item_;
+  Capture drag_;
+  // Rows added to the card BeginSection opened, so a lone hint knows
+  // whether it tucks under a row or is the card's own first line.
+  int card_rows_ = 0;
+  // Screen-compatible DC kept for DT_CALCRECT measuring; owned.
+  mutable HDC measure_dc_ = nullptr;
   // A profile whose data is still loading re-arms one short poll per
   // rebuild; the id comes from the window's own pool, not the hand-picked
   // 0x517 (lane 3 §4.1).

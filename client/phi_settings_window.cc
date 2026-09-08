@@ -10,23 +10,37 @@
 #include <windowsx.h>
 #include <wrl/client.h>
 
+// shlwapi.h (for AssocQueryStringW, the default-browser probe) defines
+// StrCat as a macro; base/strings/strcat.h, reached through the preferences
+// service's store, declares a function of that name and re-#defines it.
+// Drop the Windows spelling — nothing here calls it.
+#undef StrCat
+
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <cwctype>
+#include <limits>
 #include <string>
 #include <vector>
 
 #include "base/logging.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
+#include "phibrowser-win/client/phi_account_feedback.h"
+#include "phibrowser-win/client/phi_credential_service.h"
 #include "phibrowser-win/client/phi_emoji.h"
 #include "phibrowser-win/client/phi_features.h"
 #include "phibrowser-win/client/phi_dwrite.h"
 #include "phibrowser-win/client/phi_i18n.h"
 #include "phibrowser-win/client/phi_icons.h"
+#include "phibrowser-win/client/phi_preferences.h"
+#include "phibrowser-win/client/phi_profile_service.h"
 #include "phibrowser-win/client/phi_prompt.h"
+#include "phibrowser-win/client/phi_space_manager.h"
+#include "phibrowser-win/client/phi_url_router.h"
 
 namespace phi_client {
 
@@ -275,19 +289,17 @@ std::wstring PickFolder(HWND owner, const wchar_t* title) {
   return result;
 }
 
-// "a\tb\tc" -> {"a","b","c"}
-std::vector<std::string> SplitTabs(const std::string& value) {
-  std::vector<std::string> parts;
-  size_t start = 0;
-  for (;;) {
-    const size_t tab = value.find('\t', start);
-    if (tab == std::string::npos) {
-      parts.push_back(value.substr(start));
-      return parts;
-    }
-    parts.push_back(value.substr(start, tab - start));
-    start = tab + 1;
+// The rule a WIRE ID names in the router's current generation, or null.
+// A row's position is not its identity: ids regenerate on every rule write,
+// so an id the pane read before an edit stops resolving rather than aiming
+// at whatever slid into that slot (lane 1 §5 D7).
+const model::UrlRule* FindRuleById(const PhiUrlRouter* router,
+                                   const std::string& rule_id) {
+  size_t index = 0;
+  if (!router->ResolveRuleIndex(rule_id, &index)) {
+    return nullptr;
   }
+  return &router->rules()[index];
 }
 
 }  // namespace
@@ -295,6 +307,10 @@ std::vector<std::string> SplitTabs(const std::string& value) {
 PhiSettingsWindow::~PhiSettingsWindow() {
   host_->RemoveSettingsObserver(this);
   Destroy();  // The base clears GWLP_USERDATA at WM_NCDESTROY.
+  if (measure_dc_) {
+    ::DeleteDC(measure_dc_);
+    measure_dc_ = nullptr;
+  }
   for (HFONT font :
        {font_, title_font_, small_font_, hint_font_, emoji_font_, mdl2_font_}) {
     if (font) {
@@ -307,7 +323,14 @@ PhiSettingsWindow::~PhiSettingsWindow() {
   }
 }
 
-PhiSettingsWindow::PhiSettingsWindow(PhiSettingsHost* host) : host_(host) {
+PhiSettingsWindow::PhiSettingsWindow(PhiSettingsHost* host)
+    : host_(host),
+      prefs_(&host->Preferences()),
+      spaces_(&host->SpaceList()),
+      profiles_(&host->ProfileList()),
+      credentials_(&host->Credentials()),
+      account_(&host->Account()),
+      rules_(&host->UrlRules()) {
   // Subscribed for the life of the object (the destructor unsubscribes),
   // whether or not the window below comes up.
   host_->AddSettingsObserver(this);
@@ -483,6 +506,18 @@ void PhiSettingsWindow::ScheduleRebuild() {
   }
   Rebuild();
   Invalidate();
+  // ClearHits() drops the base's hover index, so a rebuild fired by a click
+  // would leave the control still under the pointer un-lit until the mouse
+  // moved. Re-run the hover through THE path — the wndproc — rather than a
+  // copy of it. Never during a slider drag: that move handler rebuilds, and
+  // feeding it its own message would not terminate.
+  POINT pt = {};
+  if (!dragging_ && ::GetCursorPos(&pt) && ::WindowFromPoint(pt) == hwnd()) {
+    ::ScreenToClient(hwnd(), &pt);
+    ::SendMessageW(hwnd(), WM_MOUSEMOVE, 0,
+                   MAKELPARAM(static_cast<WORD>(pt.x),
+                              static_cast<WORD>(pt.y)));
+  }
 }
 
 // static
@@ -497,8 +532,8 @@ bool PhiSettingsWindow::ShowSection(const std::string& name) {
       continue;
     }
     // Developer exists only in developer mode, exactly as on Mac.
-    if (name == "developer" && g_instance && g_instance->host_ &&
-        !g_instance->host_->DeveloperMode()) {
+    if (name == "developer" && g_instance &&
+        !g_instance->prefs_->DeveloperMode()) {
       return false;
     }
     // Phi & AI is not mounted while the AI suite is off.
@@ -538,55 +573,103 @@ void PhiSettingsWindow::BeginSection(int* y, const wchar_t* title) {
     heading.bounds = {Scaled(kMargin), *y, Scaled(kWidth - kMargin),
                       *y + Scaled(kSectionTitleHeight)};
     items_.push_back(std::move(heading));
-    *y += Scaled(kSectionTitleHeight) + Scaled(kTitleToCard) -
-          Scaled(kRowPadding);
+    *y += Scaled(kSectionTitleHeight) + Scaled(kTitleToCard);
   }
   // The card is emitted FIRST so it paints behind its rows; EndSection sizes
-  // it around whatever was added.
+  // it around whatever was added. The card OPENS at `*y` and CLOSES at the
+  // `*y` a row leaves behind, so its padding is kRowPadding on both edges —
+  // it used to open four pixels above its first row and close sixteen below
+  // its last, which made every card top-tight and bottom-loose and left a
+  // card whose only line was a hint (Developer's two empty lists) with the
+  // text riding its top border.
   Item card;
   card.kind = ItemKind::kCard;
-  card.bounds = {Scaled(kMargin), *y + Scaled(kRowPadding) - Scaled(4),
-                 Scaled(kWidth - kMargin), 0};
+  card.bounds = {Scaled(kMargin), *y, Scaled(kWidth - kMargin), 0};
   items_.push_back(std::move(card));
   open_card_ = items_.size() - 1;
+  card_rows_ = 0;
   *y += Scaled(kRowPadding);
 }
 
 void PhiSettingsWindow::EndSection(int* y) {
-  items_[open_card_].bounds.bottom = *y + Scaled(4);
+  items_[open_card_].bounds.bottom = *y;
+  card_rows_ = 0;
   *y += Scaled(kSectionGap);
 }
 
+int PhiSettingsWindow::WrappedHeight(HFONT font, const wchar_t* text,
+                                     int width) const {
+  if (!font || !text || !*text || width <= 0) {
+    return 0;
+  }
+  if (!measure_dc_) {
+    measure_dc_ = ::CreateCompatibleDC(nullptr);
+    if (!measure_dc_) {
+      return 0;
+    }
+  }
+  HGDIOBJ previous = ::SelectObject(measure_dc_, font);
+  RECT box = {0, 0, width, 0};
+  ::DrawTextW(measure_dc_, text, -1, &box,
+              DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX);
+  ::SelectObject(measure_dc_, previous);
+  return box.bottom - box.top;
+}
+
 void PhiSettingsWindow::AddHint(int* y, const wchar_t* text) {
+  const int left = Scaled(kMargin + kCardPadding);
+  const int right = Scaled(kWidth - kMargin - kCardPadding);
+  const int height = std::max(Scaled(kHintHeight),
+                              WrappedHeight(hint_font_, text, right - left));
   Item hint;
   hint.kind = ItemKind::kHint;
   hint.text = text;
-  hint.bounds = {Scaled(kMargin + kCardPadding), *y,
-                 Scaled(kWidth - kMargin - kCardPadding),
-                 *y + Scaled(kHintHeight)};
+  hint.wrap = true;
+  hint.bounds = {left, *y, right, *y + height};
   items_.push_back(std::move(hint));
-  *y += Scaled(kHintHeight) + Scaled(6);
+  *y += height + Scaled(6);
 }
 
 RECT PhiSettingsWindow::AddRow(int* y, const wchar_t* title,
-                               int control_height, int control_width) {
-  const int row_height =
-      std::max(Scaled(kRowLabelHeight), Scaled(control_height));
+                               int control_height, int control_width,
+                               const wchar_t* hint) {
+  const int left = Scaled(kMargin + kCardPadding);
+  const int right = Scaled(kWidth - kMargin - kCardPadding);
+  const int text_right = right - Scaled(control_width) - Scaled(12);
+  const int text_width = std::max(1, text_right - left);
+  // The Mac's row is ONE VStack(spacing: 4): the 13pt title over its 11pt
+  // description, both wrapping, with the trailing control centred on the
+  // pair. Measuring here is what stops a long line being chopped with an
+  // ellipsis ("…so each profile manages its ow…").
+  const int title_height = std::max(
+      Scaled(kRowLabelHeight), WrappedHeight(font_, title, text_width));
+  const int hint_height =
+      hint && *hint ? WrappedHeight(hint_font_, hint, text_width) : 0;
+  const int text_height =
+      title_height + (hint_height > 0 ? Scaled(4) + hint_height : 0);
+  const int row_height = std::max(text_height, Scaled(control_height));
+  const int text_top = *y + (row_height - text_height) / 2;
   Item label;
   label.kind = ItemKind::kRowLabel;
   label.text = title;
-  label.bounds = {Scaled(kMargin + kCardPadding), *y,
-                  Scaled(kWidth - kMargin - kCardPadding) -
-                      Scaled(control_width) - Scaled(12),
-                  *y + row_height};
+  label.wrap = title_height > Scaled(kRowLabelHeight);
+  label.bounds = {left, text_top, text_right, text_top + title_height};
   items_.push_back(std::move(label));
+  if (hint_height > 0) {
+    Item note;
+    note.kind = ItemKind::kHint;
+    note.text = hint;
+    note.wrap = true;
+    note.bounds = {left, text_top + title_height + Scaled(4), text_right,
+                   text_top + text_height};
+    items_.push_back(std::move(note));
+  }
   // The control is TRAILING, as on Mac (label, Spacer, accessory).
-  RECT control = {Scaled(kWidth - kMargin - kCardPadding) -
-                      Scaled(control_width),
-                  *y + (row_height - Scaled(control_height)) / 2,
-                  Scaled(kWidth - kMargin - kCardPadding),
+  RECT control = {right - Scaled(control_width),
+                  *y + (row_height - Scaled(control_height)) / 2, right,
                   *y + (row_height + Scaled(control_height)) / 2};
   *y += row_height + Scaled(kRowPadding);
+  ++card_rows_;
   return control;
 }
 
@@ -614,7 +697,7 @@ void PhiSettingsWindow::BuildGeneral(int* y) {
   const auto& themes = PhiBuiltInThemes();
   // With more than one Space, each Space owns colour and saturation; the Mac
   // locks these rows at 40% and adds the jump link.
-  const bool locked = host_->SpaceSummaries().size() > 1;
+  const bool locked = spaces_->Summaries().size() > 1;
 
   // The Mac's section order: Language, Theme, Appearance, Browsing,
   // Profile, Developer.
@@ -626,13 +709,13 @@ void PhiSettingsWindow::BuildGeneral(int* y) {
     // endonyms, so someone hunting for their own language does not first have
     // to read the language the app happens to be in.
     const RECT area = AddRow(y, PhiStr("settings.displayLanguage"), kPillHeight,
-                             kPillWidth);
-    AddSubHint(y, PhiStr("settings.languageHint"));
+                             kPillWidth,
+                             PhiStr("settings.languageHint"));
     Item pill;
     pill.kind = ItemKind::kPopup;
-    pill.text = host_->LanguagePreference().empty()
+    pill.text = prefs_->LanguagePreference().empty()
                     ? PhiStr("settings.languageSystemDefault")
-                    : PhiLocaleDisplayName(host_->LanguagePreference());
+                    : PhiLocaleDisplayName(prefs_->LanguagePreference());
     pill.action = "language";
     pill.bounds = area;
     items_.push_back(std::move(pill));
@@ -650,10 +733,10 @@ void PhiSettingsWindow::BuildGeneral(int* y) {
       swatch.kind = ItemKind::kSwatch;
       swatch.text = base::UTF8ToWide(themes[i].name);
       swatch.payload = themes[i].id;
-      swatch.selected = host_->ThemeId() == themes[i].id;
+      swatch.selected = prefs_->ThemeId() == themes[i].id;
       swatch.enabled = !locked;
       const PhiPalette resolved = PhiResolvePalette(
-          themes[i], host_->Appearance(), host_->Saturation());
+          themes[i], prefs_->Appearance(), prefs_->Saturation());
       // The dot is the theme's own colour; Pure fills white (contrast ring).
       // The selection ring is that theme's OWN accent, as on Mac.
       swatch.swatch = i == 0 ? RGB(0xFF, 0xFF, 0xFF) : resolved.accent;
@@ -672,15 +755,15 @@ void PhiSettingsWindow::BuildGeneral(int* y) {
     const RECT area = AddRow(y, L"Saturation", kSliderHeight, kSliderGeneral);
     Item slider;
     slider.kind = ItemKind::kSliderTrack;
-    slider.value = host_->Saturation();
+    slider.value = prefs_->Saturation();
     slider.enabled = !locked;
     slider.action = "saturation";
     // The track ramps the SELECTED theme's overlay colour (Pure ramps
     // brightness instead — flagged via `on`).
-    const PhiTheme& selected = PhiThemeById(host_->ThemeId());
-    slider.swatch = host_->Palette().dark ? selected.dark.overlay
+    const PhiTheme& selected = PhiThemeById(prefs_->ThemeId());
+    slider.swatch = prefs_->Palette().dark ? selected.dark.overlay
                                           : selected.light.overlay;
-    slider.on = host_->ThemeId() == "pure";
+    slider.on = prefs_->ThemeId() == "pure";
     slider.bounds = area;
     items_.push_back(std::move(slider));
   }
@@ -724,7 +807,7 @@ void PhiSettingsWindow::BuildGeneral(int* y) {
       card.kind = ItemKind::kImageCard;
       card.text = definition.title;
       card.payload = definition.sketch;
-      card.selected = host_->LayoutMode() == definition.mode;
+      card.selected = prefs_->LayoutMode() == definition.mode;
       card.value = static_cast<int>(definition.mode);
       card.action = "layout";
       const int x = area.left + i * Scaled(kImageCardW + kImageCardGap);
@@ -753,7 +836,7 @@ void PhiSettingsWindow::BuildGeneral(int* y) {
       card.kind = ItemKind::kImageCard;
       card.text = definition.title;
       card.payload = definition.sketch;
-      card.selected = host_->Appearance() == definition.value;
+      card.selected = prefs_->Appearance() == definition.value;
       card.value = static_cast<int>(definition.value);
       card.action = "appearance";
       const int x = area.left + i * Scaled(kImageCardW + kImageCardGap);
@@ -787,7 +870,7 @@ void PhiSettingsWindow::BuildGeneral(int* y) {
       card.kind = ItemKind::kImageCard;
       card.text = definition.title;
       card.payload = definition.sketch;
-      card.selected = host_->NewTabBehavior() == definition.value;
+      card.selected = prefs_->new_tab_behavior() == definition.value;
       card.enabled = definition.enabled;
       card.value = static_cast<int>(definition.value);
       card.action = "newtab";
@@ -799,16 +882,20 @@ void PhiSettingsWindow::BuildGeneral(int* y) {
     }
   }
   AddDividerRow(y);
-  AddToggleRow(y, L"Always show full URL", host_->AlwaysShowFullUrl(),
+  AddToggleRow(y, L"Always show full URL", prefs_->AlwaysShowFullUrl(),
                /*enabled=*/true, "fullurl");
   AddDividerRow(y);
-  AddToggleRow(y, L"Show tab preview cards", host_->ShowTabPreviews(),
+  AddToggleRow(y, L"Show tab preview cards", prefs_->ShowTabPreviews(),
                /*enabled=*/true, "tabpreviews");
   AddDividerRow(y);
   {
-    const RECT area = AddRow(y, L"Auto picture-in-picture", kPillHeight,
-                             kPillWidth);
-    AddSubHint(y, L"Pop out playing video when you switch tabs or apps");
+    const size_t first = items_.size();
+    const RECT area = AddRow(
+        y, L"Auto picture-in-picture", kPillHeight, kPillWidth,
+        L"Pop out playing video when you switch tabs or apps");
+    for (size_t i = first; i < items_.size(); ++i) {
+      items_[i].enabled = false;  // The row is a placeholder, like its pill.
+    }
     Item pill;
     pill.kind = ItemKind::kPopup;
     pill.text = L"Normal";
@@ -818,9 +905,10 @@ void PhiSettingsWindow::BuildGeneral(int* y) {
   }
   AddDividerRow(y);
   {
-    AddToggleRow(y, L"Restore last session", host_->RestoreLastSession(),
-                 /*enabled=*/true, "restoresession");
-    AddSubHint(y, L"Reopen your windows and tabs the next time you open Phi.");
+    AddToggleRow(y, L"Restore last session", prefs_->RestoreLastSession(),
+                 /*enabled=*/true, "restoresession",
+                 L"Reopen your windows and tabs the next time you open "
+                 L"Phi.");
   }
   AddDividerRow(y);
   {
@@ -828,12 +916,19 @@ void PhiSettingsWindow::BuildGeneral(int* y) {
     // for the analytics pipeline. Off by default, and deliberately out of
     // reach of agentSpace.settings.set.
     AddToggleRow(y, PhiStr("settings.general.analytics.toggle"),
-                 host_->AnalyticsEnabled(), /*enabled=*/true, "analytics");
-    AddSubHint(y, PhiStr("settings.general.analytics.hint"));
+                 prefs_->AnalyticsEnabled(), /*enabled=*/true, "analytics",
+                 PhiStr("settings.general.analytics.hint"));
   }
   AddDividerRow(y);
   {
     // Chevron.right, 12pt semibold textSecondary on Mac — a kIcon glyph.
+    // The whole row opens chrome://settings, as on Mac — emitted FIRST so
+    // its hover wash paints behind the label and the chevron.
+    Item row;
+    row.kind = ItemKind::kListRow;
+    row.action = "browsersettings";
+    items_.push_back(std::move(row));
+    const size_t row_index = items_.size() - 1;
     const RECT area = AddRow(y, L"Additional browser settings",
                              kRowLabelHeight, 20);
     Item chevron;
@@ -841,20 +936,16 @@ void PhiSettingsWindow::BuildGeneral(int* y) {
     chevron.text = std::wstring(1, wchar_t(0xE76C));  // ChevronRight
     chevron.bounds = area;
     items_.push_back(std::move(chevron));
-    // The whole row opens chrome://settings, as on Mac.
-    Item row;
-    row.kind = ItemKind::kListRow;
-    row.text.clear();
-    row.action = "browsersettings";
-    row.bounds = {Scaled(kMargin), area.top - Scaled(4),
-                  Scaled(kWidth - kMargin), area.bottom + Scaled(4)};
-    items_.push_back(std::move(row));
+    items_[row_index].bounds = {Scaled(kMargin) + Scaled(4),
+                                area.top - Scaled(6),
+                                Scaled(kWidth - kMargin) - Scaled(4),
+                                area.bottom + Scaled(6)};
   }
   EndSection(y);
 
   // Profile: with several profiles just the jump link; with one, the Mac
   // INLINES the profile detail (search engine, downloads, data links).
-  if (host_->ProfileSummaries().size() > 1) {
+  if (profiles_->Profiles().size() > 1) {
     BeginSection(y, L"Profile");
     const RECT area = AddRow(y,
                              L"You have more than one profile, so each "
@@ -875,25 +966,26 @@ void PhiSettingsWindow::BuildGeneral(int* y) {
                       *y + Scaled(kSectionTitleHeight)};
     items_.push_back(std::move(heading));
     *y += Scaled(kSectionTitleHeight) + Scaled(kTitleToCard);
-    const std::vector<std::string> profiles = host_->ProfileSummaries();
+    const std::vector<PhiProfileSummary> profiles = profiles_->Profiles();
     const std::string profile_id =
-        profiles.empty() ? std::string() : SplitTabs(profiles.front())[0];
+        profiles.empty() ? std::string() : profiles.front().id;
     BuildProfileDetail(y, Scaled(kMargin), Scaled(kWidth - kMargin),
                        profile_id);
     *y += Scaled(kSectionGap) - Scaled(kMasterDetailGap);
   }
 
   BeginSection(y, L"Developer");
-  AddToggleRow(y, L"Developer mode", host_->DeveloperMode(), /*enabled=*/true,
-               "devmode");
-  AddDividerRow(y);
-  AddSubHint(y, host_->DeveloperMode()
-                    ? L"Agent access, permissions, and the password manager "
-                      L"live in the Developer tab."
-                    : L"Turning developer mode off turns off agent access "
-                      L"and the agent password manager. An agent that "
-                      L"connects later can ask you to turn it back on.");
-  *y += Scaled(kRowPadding);
+  // The description belongs TO the row (GeneralSettingView stacks title and
+  // description in one VStack); a divider between them fenced the sentence
+  // off from the switch it explains.
+  AddToggleRow(y, L"Developer mode", prefs_->DeveloperMode(),
+               /*enabled=*/true, "devmode",
+               prefs_->DeveloperMode()
+                   ? L"Agent access, permissions, and the password manager "
+                     L"live in the Developer tab."
+                   : L"Turning developer mode off turns off agent access "
+                     L"and the agent password manager. An agent that "
+                     L"connects later can ask you to turn it back on.");
   EndSection(y);
 }
 
@@ -908,14 +1000,24 @@ void PhiSettingsWindow::AddDividerRow(int* y) {
 }
 
 void PhiSettingsWindow::AddSubHint(int* y, const wchar_t* text) {
+  const int left = Scaled(kMargin + kCardPadding);
+  const int right = Scaled(kWidth - kMargin - kCardPadding);
+  // Tucked under the row above it at the Mac's 4pt VStack spacing — or,
+  // when it IS the card's first line (Developer's empty grant lists), on
+  // the card's own padding. The old unconditional pull-up put that case
+  // four pixels ABOVE the card's top edge.
+  const int top =
+      card_rows_ > 0 ? *y - Scaled(kRowPadding) + Scaled(4) : *y;
+  const int height = std::max(Scaled(kHintHeight),
+                              WrappedHeight(hint_font_, text, right - left));
   Item hint;
   hint.kind = ItemKind::kHint;
   hint.text = text;
-  hint.bounds = {Scaled(kMargin + kCardPadding), *y - Scaled(8),
-                 Scaled(kWidth - kMargin - kCardPadding),
-                 *y - Scaled(8) + Scaled(kHintHeight)};
+  hint.wrap = true;
+  hint.bounds = {left, top, right, top + height};
   items_.push_back(std::move(hint));
-  *y += Scaled(kHintHeight);
+  *y = top + height + Scaled(kRowPadding);
+  ++card_rows_;
 }
 
 void PhiSettingsWindow::AddSectionHeading(int* y, const wchar_t* title,
@@ -927,21 +1029,34 @@ void PhiSettingsWindow::AddSectionHeading(int* y, const wchar_t* title,
                     *y + Scaled(kSectionTitleHeight)};
   items_.push_back(std::move(heading));
   *y += Scaled(kSectionTitleHeight) + Scaled(4);
+  const int width = Scaled(kWidth - kMargin) - Scaled(kMargin);
+  const int height = std::max(
+      Scaled(kHintHeight), WrappedHeight(hint_font_, description, width));
   Item subtitle;
   subtitle.kind = ItemKind::kSubtitle;
   subtitle.text = description;
+  subtitle.wrap = true;
   subtitle.bounds = {Scaled(kMargin), *y, Scaled(kWidth - kMargin),
-                     *y + Scaled(kHintHeight)};
+                     *y + height};
   items_.push_back(std::move(subtitle));
   // Leaves `y` where BeginSection(y, nullptr) expects it: the card follows at
   // the same title-to-card gap a titled section uses.
-  *y += Scaled(kHintHeight) + Scaled(kTitleToCard) - Scaled(kRowPadding);
+  *y += height + Scaled(kTitleToCard);
 }
 
 void PhiSettingsWindow::AddToggleRow(int* y, const wchar_t* title, bool on,
                                      bool enabled,
-                                     const std::string& action) {
-  const RECT area = AddRow(y, title, kToggleHeight + 4, kToggleWidth);
+                                     const std::string& action,
+                                     const wchar_t* hint) {
+  const size_t first = items_.size();
+  const RECT area = AddRow(y, title, kToggleHeight + 4, kToggleWidth, hint);
+  // A dead row must READ dead. The label and its description used to paint
+  // at full strength beside a washed-out switch, so the Kiosk pair and
+  // "Apply theme to text selection" looked exactly like the live rows
+  // above them and simply did nothing when clicked.
+  for (size_t i = first; i < items_.size(); ++i) {
+    items_[i].enabled = enabled;
+  }
   Item toggle;
   toggle.kind = ItemKind::kToggle;
   toggle.on = on;
@@ -952,39 +1067,25 @@ void PhiSettingsWindow::AddToggleRow(int* y, const wchar_t* title, bool on,
 }
 
 void PhiSettingsWindow::BuildSpaces(int* y) {
-  const std::vector<std::string> spaces = host_->SpaceSummaries();
+  const std::vector<PhiSpaceSummary> spaces = spaces_->Summaries();
   // Resolve (and default) the selection.
-  bool found = false;
-  for (const std::string& summary : spaces) {
-    const std::vector<std::string> parts = SplitTabs(summary);
-    if (parts.size() > 3 && parts[3] == selected_space_) {
-      found = true;
+  const PhiSpaceSummary* selected = nullptr;
+  for (const PhiSpaceSummary& space : spaces) {
+    if (space.id == selected_space_) {
+      selected = &space;
       break;
     }
   }
-  if (!found) {
+  if (!selected) {
     selected_space_.clear();
     if (!spaces.empty()) {
-      const std::vector<std::string> parts = SplitTabs(spaces.front());
-      if (parts.size() > 3) {
-        selected_space_ = parts[3];
-      }
+      selected = &spaces.front();
+      selected_space_ = selected->id;
     }
   }
-  std::string selected_theme;
-  int selected_saturation = -1;
-  for (const std::string& summary : spaces) {
-    const std::vector<std::string> parts = SplitTabs(summary);
-    if (parts.size() > 3 && parts[3] == selected_space_) {
-      selected_theme = parts.size() > 4 ? parts[4] : std::string();
-      if (parts.size() > 5) {
-        int parsed = -1;
-        base::StringToInt(parts[5], &parsed);
-        selected_saturation = parsed;
-      }
-      break;
-    }
-  }
+  const std::string selected_theme =
+      selected ? selected->theme_id : std::string();
+  const int selected_saturation = selected ? selected->saturation : -1;
 
   // The master-detail band: list 280 wide, detail beside, fixed height.
   const int band_top = *y;
@@ -1013,46 +1114,35 @@ void PhiSettingsWindow::BuildSpaces(int* y) {
   }
   // The trailing profile is shown by NAME (the Mac row hosts a profile
   // picker; bindings are immutable here, so it reads as a static menu).
-  std::vector<std::pair<std::string, std::wstring>> profile_names;
-  for (const std::string& summary : host_->ProfileSummaries()) {
-    const std::vector<std::string> parts = SplitTabs(summary);
-    profile_names.emplace_back(
-        parts[0],
-        base::UTF8ToWide(parts.size() > 1 ? parts[1] : parts[0]));
-  }
+  const std::vector<PhiProfileSummary> profile_names = profiles_->Profiles();
   int row_y = band_top + Scaled(kListHeaderHeight) + Scaled(6);
   const int rows_bottom = band_bottom - Scaled(kToolStripHeight) - Scaled(6);
-  for (const std::string& summary : spaces) {
+  const std::string default_space = spaces_->DefaultSpaceId();
+  for (const PhiSpaceSummary& space : spaces) {
     if (row_y + Scaled(kListRowHeight) > rows_bottom) {
       break;  // The Mac scrolls the inner list; ours clips for now.
     }
-    const std::vector<std::string> parts = SplitTabs(summary);
-    const std::string id = parts.size() > 3 ? parts[3] : std::string();
     Item row;
     row.kind = ItemKind::kListRow;
-    row.text = base::UTF8ToWide(parts[0]);
-    if (parts.size() > 1) {
-      // The Space's icon, drawn by the paint pass as the Mac catalog's
-      // artwork or a colour emoji (it used to be pasted into the text,
-      // which dropped catalog icons and greyed emoji out).
-      row.icon = base::UTF8ToWide(parts[1]);
-    }
+    row.text = base::UTF8ToWide(space.name);
+    // The Space's icon, drawn by the paint pass as the Mac catalog's
+    // artwork or a colour emoji (it used to be pasted into the text,
+    // which dropped catalog icons and greyed emoji out).
+    row.icon = base::UTF8ToWide(space.icon_text);
     row.detail = L"";
-    if (parts.size() > 2) {
-      for (const auto& profile : profile_names) {
-        if (profile.first == parts[2]) {
-          row.detail = profile.second;
-          break;
-        }
+    for (const PhiProfileSummary& profile : profile_names) {
+      if (profile.id == space.profile_id) {
+        row.detail = base::UTF8ToWide(profile.name);
+        break;
       }
     }
-    row.selected = id == selected_space_;
+    row.selected = space.id == selected_space_;
     // The default ROLE's holder wears the badge, as on Mac (it moves when
     // the default Space is deleted).
-    row.on = host_ && id == host_->DefaultSpaceId();
+    row.on = space.id == default_space;
     row.value = 1;       // Solid-accent selection (the Spaces list style).
     row.action = "selectspace";
-    row.payload = id;
+    row.payload = space.id;
     row.bounds = {list_left + Scaled(6), row_y, list_right - Scaled(6),
                   row_y + Scaled(kListRowHeight)};
     items_.push_back(std::move(row));
@@ -1074,11 +1164,12 @@ void PhiSettingsWindow::BuildSpaces(int* y) {
         {0xE710, "newspace", true},  // Add
         // Only the LAST Space is permanent (the Mac's last-Space rule).
         {0xE738, "delspace",
-         !selected_space_.empty() && host_ &&
-             host_->CanDeleteSpace(selected_space_)},  // Remove
+         !selected_space_.empty() &&
+             spaces_->CanDeleteSpace(selected_space_)},  // Remove
         {0xE70F, "renspace", !selected_space_.empty()},        // Edit
     };
     int x = list_left;
+    size_t placed = 0;
     for (const auto& tool : kTools) {
       Item button;
       button.kind = ItemKind::kToolButton;
@@ -1089,12 +1180,15 @@ void PhiSettingsWindow::BuildSpaces(int* y) {
                        x + Scaled(kToolStripHeight), band_bottom};
       items_.push_back(std::move(button));
       x += Scaled(kToolStripHeight);
-      // The Mac's 1x20 separatorColor rule between the buttons.
-      Item rule;
-      rule.kind = ItemKind::kDivider;
-      rule.bounds = {x, band_bottom - Scaled(kToolStripHeight) + Scaled(7),
-                     x + 1, band_bottom - Scaled(7)};
-      items_.push_back(std::move(rule));
+      // The Mac's 1x20 separatorColor rule BETWEEN the buttons; the loop
+      // used to hang one off the trailing edge of the last one as well.
+      if (++placed < std::size(kTools)) {
+        Item rule;
+        rule.kind = ItemKind::kDivider;
+        rule.bounds = {x, band_bottom - Scaled(kToolStripHeight) + Scaled(7),
+                       x + 1, band_bottom - Scaled(7)};
+        items_.push_back(std::move(rule));
+      }
     }
   }
 
@@ -1151,14 +1245,8 @@ void PhiSettingsWindow::BuildSpaces(int* y) {
       }
     }
     // The Space's current icon, so its cell reads selected as on Mac.
-    std::wstring current_icon;
-    for (const std::string& summary : spaces) {
-      const std::vector<std::string> parts = SplitTabs(summary);
-      if (parts.size() > 3 && parts[3] == selected_space_) {
-        current_icon = base::UTF8ToWide(parts[1]);
-        break;
-      }
-    }
+    const std::wstring current_icon =
+        selected ? base::UTF8ToWide(selected->icon_text) : std::wstring();
     // The grid scrolls a whole cell row at a time (three per wheel notch,
     // like the create-space form's grid), so no row ever straddles the
     // viewport's edge and nothing needs clipping. `picker_scroll_` is the
@@ -1188,7 +1276,8 @@ void PhiSettingsWindow::BuildSpaces(int* y) {
       cell.text = cells[i].first;
       cell.selected = !current_icon.empty() && cells[i].first == current_icon;
       cell.action = "spaceicon";
-      cell.payload = selected_space_ + "\t" + cells[i].second;
+      cell.payload = cells[i].second;
+      cell.space = selected_space_;
       const int x = grid_left + col * pitch;
       const int top = grid_top + line * pitch;
       cell.bounds = {x, top, x + Scaled(kEmojiCell),
@@ -1218,19 +1307,27 @@ void PhiSettingsWindow::BuildSpaces(int* y) {
                       theme_top + Scaled(kRowPadding) + Scaled(20)};
       items_.push_back(std::move(label));
       const auto& themes = PhiBuiltInThemes();
+      // A Space that pins no theme follows the app-wide one: mark THAT dot
+      // instead of leaving the row with nothing ringed, and say so in the
+      // caption (`on` = inherited, drawn as a quieter ring).
+      const bool inherited = selected_theme.empty();
+      const std::string effective_theme =
+          inherited ? prefs_->ThemeId() : selected_theme;
       int x = detail_left + Scaled(kCardPadding) + Scaled(46) + Scaled(12);
       for (size_t i = 0; i < themes.size(); ++i) {
         Item swatch;
         swatch.kind = ItemKind::kSwatch;
         swatch.text = base::UTF8ToWide(themes[i].name);
-        swatch.selected = selected_theme == themes[i].id;
+        swatch.selected = effective_theme == themes[i].id;
+        swatch.on = swatch.selected && inherited;
         const PhiPalette resolved = PhiResolvePalette(
-            themes[i], host_->Appearance(), host_->Saturation());
+            themes[i], prefs_->Appearance(), prefs_->Saturation());
         swatch.swatch = i == 0 ? RGB(0xFF, 0xFF, 0xFF) : resolved.accent;
         swatch.ring = resolved.accent;
         swatch.value = kSwatchDotSpaces;  // Compact 16pt dot.
         swatch.action = "spacetheme";
-        swatch.payload = selected_space_ + "\t" + themes[i].id;
+        swatch.payload = themes[i].id;
+        swatch.space = selected_space_;
         swatch.bounds = {x, theme_top + Scaled(kRowPadding),
                          x + Scaled(kSwatchItemSpaces),
                          theme_top + Scaled(kRowPadding) +
@@ -1260,15 +1357,15 @@ void PhiSettingsWindow::BuildSpaces(int* y) {
       items_.push_back(std::move(label));
       Item slider;
       slider.kind = ItemKind::kSliderTrack;
-      slider.value = selected_saturation < 0 ? host_->Saturation()
+      slider.value = selected_saturation < 0 ? prefs_->Saturation()
                                              : selected_saturation;
       slider.action = "spacesat";
       slider.payload = selected_space_;
       // The track ramps THIS Space's effective theme.
       const std::string effective =
-          selected_theme.empty() ? host_->ThemeId() : selected_theme;
+          selected_theme.empty() ? prefs_->ThemeId() : selected_theme;
       const PhiTheme& theme = PhiThemeById(effective);
-      slider.swatch = host_->Palette().dark ? theme.dark.overlay
+      slider.swatch = prefs_->Palette().dark ? theme.dark.overlay
                                             : theme.light.overlay;
       slider.on = effective == "pure";
       slider.bounds = {detail_right - Scaled(kCardPadding) -
@@ -1291,7 +1388,6 @@ void PhiSettingsWindow::BuildSpaces(int* y) {
   // Pane-wide card: pinned tab scope, with the live description.
   BeginSection(y, nullptr);
   {
-    const RECT area = AddRow(y, L"Pinned tab scope", kPillHeight, kPillWidth);
     const wchar_t* description = L"";
     switch (host_->PinScope()) {
       case PhiPinScope::kSpace:
@@ -1305,7 +1401,8 @@ void PhiSettingsWindow::BuildSpaces(int* y) {
                       L"Spaces.";
         break;
     }
-    AddSubHint(y, description);
+    const RECT area =
+        AddRow(y, L"Pinned tab scope", kPillHeight, kPillWidth, description);
     Item pill;
     pill.kind = ItemKind::kPopup;
     pill.text = host_->PinScope() == PhiPinScope::kSpace     ? L"Space"
@@ -1332,51 +1429,57 @@ void PhiSettingsWindow::BuildNavigation(int* y) {
                     L"time.");
   BeginSection(y, nullptr);
   AddToggleRow(y, L"Open external links in Kiosk", /*on=*/false,
-               /*enabled=*/false, std::string());
-  AddSubHint(y, L"Links opened from other apps use a focused, single-page "
-                L"Kiosk window.");
+               /*enabled=*/false, std::string(),
+               L"Links opened from other apps use a focused, single-page "
+               L"Kiosk window.");
   AddDividerRow(y);
   AddToggleRow(y, L"Open Kiosk when clicking links with Ctrl+Alt held",
-               /*on=*/true, /*enabled=*/false, std::string());
-  AddSubHint(y, L"Hold Ctrl and Alt while clicking a link to open it in a "
-                L"Kiosk window.");
+               /*on=*/true, /*enabled=*/false, std::string(),
+               L"Hold Ctrl and Alt while clicking a link to open it in a "
+               L"Kiosk window.");
   AddDividerRow(y);
   AddSubHint(y, L"On Windows, Kiosk opens from a link's context menu and "
                 L"from URL rules.");
-  *y += Scaled(kRowPadding);
   EndSection(y);
 
   AddSectionHeading(y, L"Peek",
                     L"Preview a link without opening it in a new tab.");
-  const bool peek = host_->PeekViewEnabled();
+  const bool peek = prefs_->PeekViewEnabled();
   BeginSection(y, nullptr);
-  AddToggleRow(y, L"Enable Peek View", peek, /*enabled=*/true, "peekview");
-  AddSubHint(y, L"Choose \u201COpen Link in Peek View\u201D to preview a "
-                L"link in a floating panel over the page.");
+  AddToggleRow(y, L"Enable Peek View", peek, /*enabled=*/true, "peekview",
+               L"Choose \u201COpen Link in Peek View\u201D to preview a "
+               L"link in a floating panel over the page.");
   AddDividerRow(y);
   // The sub-switch is dimmed and inert while the master is off, as on Mac.
   AddToggleRow(y, L"Automatically peek from pinned tabs and bookmarks",
-               host_->AutoPeekViewEnabled(), /*enabled=*/peek, "autopeek");
-  AddSubHint(y, L"Links that leave a pinned tab\u2019s or bookmark\u2019s "
-                L"site open in a Peek panel instead of a new tab.");
+               prefs_->AutoPeekViewEnabled(), /*enabled=*/peek, "autopeek",
+               L"Links that leave a pinned tab\u2019s or bookmark\u2019s "
+               L"site open in a Peek panel instead of a new tab.");
   EndSection(y);
 
   BeginSection(y, L"URL Rules");
   {
-    const RECT area = AddRow(y, L"Manage URL Rules…", kRowLabelHeight, 20);
+    // The whole row opens the editor, not just the trailing chevron —
+    // emitted FIRST so its hover wash paints behind the text.
+    Item row;
+    row.kind = ItemKind::kListRow;
+    row.action = "urlrules";
+    items_.push_back(std::move(row));
+    const size_t row_index = items_.size() - 1;
+    const size_t first = items_.size();
+    const RECT area =
+        AddRow(y, L"Manage URL Rules…", kRowLabelHeight, 20,
+               L"Route matching domains or URLs to a Space, or ask every "
+               L"time.");
     Item chevron;
-    chevron.kind = ItemKind::kLink;
-    chevron.text = L"›";
-    chevron.action = "urlrules";
+    chevron.kind = ItemKind::kIcon;
+    chevron.text = std::wstring(1, wchar_t(0xE76C));  // ChevronRight
     chevron.bounds = area;
     items_.push_back(std::move(chevron));
-    // The whole row opens the editor, not just the trailing chevron.
-    Item& label = items_[items_.size() - 2];
-    if (label.kind == ItemKind::kRowLabel) {
-      label.action = "urlrules";
-    }
-    AddSubHint(y, L"Route matching domains or URLs to a Space, or ask every "
-                  L"time.");
+    items_[row_index].bounds = {
+        Scaled(kMargin) + Scaled(4), items_[first].bounds.top - Scaled(6),
+        Scaled(kWidth - kMargin) - Scaled(4),
+        items_[items_.size() - 2].bounds.bottom + Scaled(6)};
   }
   EndSection(y);
 }
@@ -1573,15 +1676,9 @@ void PhiSettingsWindow::BuildUrlRules(int* y) {
              L"where you click or type them.");
   *y += Scaled(4);
 
-  const std::vector<std::string> rules = host_->URLRuleRows();
+  const std::vector<PhiUrlRuleRow> rules = rules_->RulesWithIds();
   // Space names for the target pills.
-  std::vector<std::pair<std::string, std::wstring>> space_names;
-  for (const std::string& summary : host_->SpaceSummaries()) {
-    const std::vector<std::string> parts = SplitTabs(summary);
-    if (parts.size() > 3) {
-      space_names.emplace_back(parts[3], base::UTF8ToWide(parts[0]));
-    }
-  }
+  const std::vector<PhiSpaceSummary> space_names = spaces_->Summaries();
 
   BeginSection(y, nullptr);
   if (rules.empty()) {
@@ -1598,13 +1695,12 @@ void PhiSettingsWindow::BuildUrlRules(int* y) {
     if (i > 0) {
       AddDividerRow(y);
     }
-    const std::vector<std::string> parts = SplitTabs(rules[i]);
-    const std::string space_id = parts.size() > 0 ? parts[0] : std::string();
-    const std::string host = parts.size() > 1 ? parts[1] : std::string();
-    const std::string prefix = parts.size() > 2 ? parts[2] : std::string();
-    const bool ask = parts.size() > 3 && parts[3] == "1";
-    const RuleMatchType type = RuleTypeOf(host, prefix);
-    const std::string index_payload = base::NumberToString(i);
+    const model::UrlRule& rule = rules[i].rule;
+    const RuleMatchType type = RuleTypeOf(rule.host, rule.path_prefix);
+    // Every control on the row names the rule by its WIRE ID, so an edit
+    // made after the list moved is refused rather than aimed at whatever
+    // slid into that position.
+    const std::string& rule_id = rules[i].id;
 
     const int row_height = Scaled(kPillHeight);
     const int right = Scaled(kWidth - kMargin - kCardPadding);
@@ -1618,9 +1714,10 @@ void PhiSettingsWindow::BuildUrlRules(int* y) {
 
     Item pattern;
     pattern.kind = ItemKind::kRowLabel;
-    pattern.text = base::UTF8ToWide(RuleDisplayValue(host, prefix));
+    pattern.text =
+        base::UTF8ToWide(RuleDisplayValue(rule.host, rule.path_prefix));
     pattern.action = "editrule";
-    pattern.payload = index_payload;
+    pattern.payload = rule_id;
     pattern.bounds = {Scaled(kMargin + kCardPadding), *y,
                       type_rect.left - Scaled(12), *y + row_height};
     items_.push_back(std::move(pattern));
@@ -1629,25 +1726,25 @@ void PhiSettingsWindow::BuildUrlRules(int* y) {
     type_pill.kind = ItemKind::kPopup;
     type_pill.text = RuleTypeLabel(type);
     type_pill.action = "ruletype";
-    type_pill.payload = index_payload;
+    type_pill.payload = rule_id;
     type_pill.bounds = type_rect;
     items_.push_back(std::move(type_pill));
 
     Item target_pill;
     target_pill.kind = ItemKind::kPopup;
-    if (ask) {
+    if (rule.ask) {
       target_pill.text = L"Ask every time";
     } else {
       target_pill.text = L"?";
-      for (const auto& [id, name] : space_names) {
-        if (id == space_id) {
-          target_pill.text = name;
+      for (const PhiSpaceSummary& space : space_names) {
+        if (space.id == rule.space_id) {
+          target_pill.text = base::UTF8ToWide(space.name);
           break;
         }
       }
     }
     target_pill.action = "ruletarget";
-    target_pill.payload = index_payload;
+    target_pill.payload = rule_id;
     target_pill.bounds = target;
     items_.push_back(std::move(target_pill));
 
@@ -1655,7 +1752,7 @@ void PhiSettingsWindow::BuildUrlRules(int* y) {
     remove.kind = ItemKind::kToolButton;
     remove.text = L"\uE74D";  // MDL2 Delete.
     remove.action = "delrule";
-    remove.payload = index_payload;
+    remove.payload = rule_id;
     remove.bounds = del;
     items_.push_back(std::move(remove));
 
@@ -1676,12 +1773,11 @@ void PhiSettingsWindow::BuildUrlRules(int* y) {
 }
 
 void PhiSettingsWindow::BuildProfiles(int* y) {
-  const std::vector<std::string> profiles = host_->ProfileSummaries();
-  const std::vector<std::string> spaces = host_->SpaceSummaries();
+  const std::vector<PhiProfileSummary> profiles = profiles_->Profiles();
+  const std::vector<PhiSpaceSummary> spaces = spaces_->Summaries();
   bool found = false;
-  for (const std::string& summary : profiles) {
-    const std::vector<std::string> parts = SplitTabs(summary);
-    if (!parts.empty() && parts[0] == selected_profile_) {
+  for (const PhiProfileSummary& profile : profiles) {
+    if (profile.id == selected_profile_) {
       found = true;
       break;
     }
@@ -1689,7 +1785,7 @@ void PhiSettingsWindow::BuildProfiles(int* y) {
   if (!found) {
     selected_profile_.clear();
     if (!profiles.empty()) {
-      selected_profile_ = SplitTabs(profiles.front())[0];
+      selected_profile_ = profiles.front().id;
     }
   }
 
@@ -1717,22 +1813,20 @@ void PhiSettingsWindow::BuildProfiles(int* y) {
   }
   int row_y = band_top + Scaled(kListHeaderHeight) + Scaled(6);
   const int rows_bottom = band_bottom - Scaled(kToolStripHeight) - Scaled(6);
-  for (const std::string& summary : profiles) {
+  for (const PhiProfileSummary& profile : profiles) {
     if (row_y + Scaled(kListRowHeight) > rows_bottom) {
       break;
     }
-    const std::vector<std::string> parts = SplitTabs(summary);
-    const std::string& id = parts[0];
+    const std::string& id = profile.id;
     int bound = 0;
-    for (const std::string& space : spaces) {
-      const std::vector<std::string> space_parts = SplitTabs(space);
-      if (space_parts.size() > 2 && space_parts[2] == id) {
+    for (const PhiSpaceSummary& space : spaces) {
+      if (space.profile_id == id) {
         ++bound;
       }
     }
     Item row;
     row.kind = ItemKind::kListRow;
-    row.text = base::UTF8ToWide(parts.size() > 1 ? parts[1] : id);
+    row.text = base::UTF8ToWide(profile.name);
     row.detail =
         bound == 0
             ? L"Not used"
@@ -1764,9 +1858,8 @@ void PhiSettingsWindow::BuildProfiles(int* y) {
            if (selected_profile_.empty() || selected_profile_ == "Default") {
              return false;
            }
-           for (const std::string& space : spaces) {
-             const std::vector<std::string> parts = SplitTabs(space);
-             if (parts.size() > 2 && parts[2] == selected_profile_) {
+           for (const PhiSpaceSummary& space : spaces) {
+             if (space.profile_id == selected_profile_) {
                return false;
              }
            }
@@ -1775,6 +1868,7 @@ void PhiSettingsWindow::BuildProfiles(int* y) {
         {0xE70F, "renprofile", !selected_profile_.empty()},  // Edit
     };
     int x = list_left;
+    size_t placed = 0;
     for (const auto& tool : kTools) {
       Item button;
       button.kind = ItemKind::kToolButton;
@@ -1785,11 +1879,13 @@ void PhiSettingsWindow::BuildProfiles(int* y) {
                        x + Scaled(kToolStripHeight), band_bottom};
       items_.push_back(std::move(button));
       x += Scaled(kToolStripHeight);
-      Item rule;
-      rule.kind = ItemKind::kDivider;
-      rule.bounds = {x, band_bottom - Scaled(kToolStripHeight) + Scaled(7),
-                     x + 1, band_bottom - Scaled(7)};
-      items_.push_back(std::move(rule));
+      if (++placed < std::size(kTools)) {
+        Item rule;
+        rule.kind = ItemKind::kDivider;
+        rule.bounds = {x, band_bottom - Scaled(kToolStripHeight) + Scaled(7),
+                       x + 1, band_bottom - Scaled(7)};
+        items_.push_back(std::move(rule));
+      }
     }
   }
 
@@ -1855,16 +1951,16 @@ void PhiSettingsWindow::BuildProfileDetail(int* y, int left, int right,
   // Card 1: Search Engine / Download Location — live, per profile. Both
   // read empty while the profile is not loaded, and the rows gray out.
   {
-    const std::vector<std::string> engines = host_->SearchEngines(profile_id);
+    const std::vector<PhiSearchEngineRow> engines =
+        profiles_->SearchEngines(profile_id);
     std::wstring engine_name = L"Unavailable";
-    for (const std::string& engine : engines) {
-      const std::vector<std::string> parts = SplitTabs(engine);
-      if (parts.size() > 2 && parts[2] == "1") {
-        engine_name = base::UTF8ToWide(parts[1]);
+    for (const PhiSearchEngineRow& engine : engines) {
+      if (engine.is_default) {
+        engine_name = base::UTF8ToWide(engine.name);
         break;
       }
     }
-    const std::string download_dir = host_->DownloadDirectory(profile_id);
+    const std::string download_dir = profiles_->DownloadDirectory(profile_id);
     // A selected profile loads on demand (the framework kicks the profile
     // and its keyword service). While either read is still pending, poll:
     // one short timer per rebuild, re-armed only while data is missing, so
@@ -1927,6 +2023,14 @@ void PhiSettingsWindow::BuildProfileDetail(int* y, int left, int right,
     int i = 0;
     for (const auto& def : kRows) {
       const int top = *y + i * row_h;
+      // The whole row is the button, as on Mac — behind its own content, so
+      // the hover wash does not paint over the label.
+      Item row;
+      row.kind = ItemKind::kListRow;
+      row.action = "openpage";
+      row.payload = def.url;
+      row.bounds = {left + Scaled(4), top, right - Scaled(4), top + row_h};
+      items_.push_back(std::move(row));
       detail_row(top, def.glyph, def.title, true);
       Item arrow;
       arrow.kind = ItemKind::kIcon;
@@ -1935,13 +2039,6 @@ void PhiSettingsWindow::BuildProfileDetail(int* y, int left, int right,
       arrow.bounds = {right - Scaled(kCardPadding + 24), top,
                       right - Scaled(kCardPadding), top + row_h};
       items_.push_back(std::move(arrow));
-      // The whole row is the button, as on Mac.
-      Item row;
-      row.kind = ItemKind::kListRow;
-      row.action = "openpage";
-      row.payload = def.url;
-      row.bounds = {left + Scaled(4), top, right - Scaled(4), top + row_h};
-      items_.push_back(std::move(row));
       if (i < 2) {
         Item divider;
         divider.kind = ItemKind::kDivider;
@@ -1961,15 +2058,21 @@ void PhiSettingsWindow::BuildAccount(int* y) {
   // Sign-in does not exist on this build, so the account side is inert;
   // the default-browser button IS live (Windows' default-apps page).
   const int top = *y;
-  const int left = Scaled(24);
-  const int card_w = Scaled(264);
+  // The Mac's `offset(24)` is 36 minus the 12pt of shadow padding its card
+  // view carries INSIDE its frame ("36 - 12(inner padding for shadow)"), and
+  // that 264pt frame holds a 240pt card. Ported literally, this pane drew a
+  // 264-wide card whose VISIBLE edge sat at 24 — twelve points left of every
+  // other pane's content and of the toolbar above it. These are the Mac's
+  // visible metrics: card 36..276, right column 292..644.
+  const int left = Scaled(kMargin);
+  const int card_w = Scaled(240);
   const int right_left = left + card_w + Scaled(16);
   const int right_edge = Scaled(kWidth - kMargin);
   std::string account_name;
   std::string account_email;
   const bool signed_in =
-      host_ && host_->AccountInfo(&account_name, &account_email);
-  const bool signing_in = host_ && host_->AccountSigningIn();
+      account_->AccountInfo(&account_name, &account_email);
+  const bool signing_in = account_->AccountSigningIn();
   {
     Item card;
     card.kind = ItemKind::kCard;
@@ -2071,11 +2174,13 @@ void PhiSettingsWindow::BuildAi(int* y) {
   *y += Scaled(8);
   BeginSection(y, L"Browser memory");
   {
+    const size_t first = items_.size();
     const RECT area = AddRow(y, L"View and manage your browser memory",
                              kRowLabelHeight, 20);
+    items_[first].enabled = false;
     Item chevron;
-    chevron.kind = ItemKind::kLink;
-    chevron.text = L"›";
+    chevron.kind = ItemKind::kIcon;
+    chevron.text = std::wstring(1, wchar_t(0xE76C));  // ChevronRight
     chevron.enabled = false;
     chevron.bounds = area;
     items_.push_back(std::move(chevron));
@@ -2086,10 +2191,12 @@ void PhiSettingsWindow::BuildAi(int* y) {
                std::string());
   AddDividerRow(y);
   {
+    const size_t first = items_.size();
     const RECT area = AddRow(y, L"Private AI", kRowLabelHeight, 20);
+    items_[first].enabled = false;
     Item chevron;
-    chevron.kind = ItemKind::kLink;
-    chevron.text = L"›";
+    chevron.kind = ItemKind::kIcon;
+    chevron.text = std::wstring(1, wchar_t(0xE76C));  // ChevronRight
     chevron.enabled = false;
     chevron.bounds = area;
     items_.push_back(std::move(chevron));
@@ -2106,11 +2213,9 @@ void PhiSettingsWindow::BuildAi(int* y) {
   EndSection(y);
   BeginSection(y, L"External Data Connectors");
   AddToggleRow(y, L"Enable External Data Connectors", true, false,
-               std::string());
-  AddDividerRow(y);
-  AddSubHint(y, L"External Data Connectors help to provide additional "
-                L"context for better AI experience");
-  *y += Scaled(kRowPadding);
+               std::string(),
+               L"External Data Connectors help to provide additional "
+               L"context for better AI experience");
   EndSection(y);
 }
 
@@ -2129,7 +2234,7 @@ void PhiSettingsWindow::BuildShortcuts(int* y) {
     Item restore;
     restore.kind = ItemKind::kButton;
     restore.text = L"Restore all shortcuts";
-    restore.enabled = host_->AnyShortcutCustomized();
+    restore.enabled = prefs_->AnyShortcutCustomized();
     restore.action = "restoreshortcuts";
     restore.bounds = {Scaled(kWidth - kMargin) - Scaled(150),
                       *y - Scaled(4),
@@ -2163,10 +2268,11 @@ void PhiSettingsWindow::BuildShortcuts(int* y) {
   }
 
   // The table, grouped as on Mac (App, File, Edit, View, History,
-  // Bookmarks, Window, Tab, Spaces). The host serves the rows: rebindable
-  // ones (clickable keycap → the chord recorder) carry a stable name and
-  // their EFFECTIVE chord; fixed rows are informational. Plus the live
-  // "Go to Space" rows for the first nine Spaces.
+  // Bookmarks, Window, Tab, Spaces). The preferences service serves the
+  // rows: rebindable ones (clickable keycap → the chord recorder) carry a
+  // stable name and their EFFECTIVE chord; fixed rows are informational.
+  // Plus the live "Go to Space" rows for the first nine Spaces, which are
+  // the pane's own and belong to no shortcut table.
   struct ShortcutRowDef {
     std::wstring group;
     std::wstring name;
@@ -2175,24 +2281,18 @@ void PhiSettingsWindow::BuildShortcuts(int* y) {
     bool customized = false;
   };
   std::vector<ShortcutRowDef> rows;
-  for (const std::string& summary : host_->ShortcutRows()) {
-    const std::vector<std::string> parts = SplitTabs(summary);
-    if (parts.size() < 4) {
-      continue;
-    }
-    rows.push_back({base::UTF8ToWide(parts[0]), base::UTF8ToWide(parts[1]),
-                    base::UTF8ToWide(parts[2]), parts[3],
-                    parts.size() > 4 && parts[4] == "1"});
+  for (const PhiShortcutRow& row : prefs_->ShortcutRows()) {
+    rows.push_back({base::UTF8ToWide(row.group), base::UTF8ToWide(row.label),
+                    base::UTF8ToWide(row.keys), row.name, row.customized});
   }
   {
     int at = 0;
-    for (const std::string& summary : host_->SpaceSummaries()) {
+    for (const PhiSpaceSummary& space : spaces_->Summaries()) {
       if (++at > 9) {
         break;
       }
-      const std::vector<std::string> parts = SplitTabs(summary);
       rows.push_back({L"Spaces",
-                      L"Go to Space \u201C" + base::UTF8ToWide(parts[0]) +
+                      L"Go to Space \u201C" + base::UTF8ToWide(space.name) +
                           L"\u201D",
                       L"Ctrl+" + std::to_wstring(at)});
     }
@@ -2220,6 +2320,7 @@ void PhiSettingsWindow::BuildShortcuts(int* y) {
   const int row_h = Scaled(42);
   std::wstring group;
   bool any = false;
+  size_t last_rule = std::numeric_limits<size_t>::max();
   for (const auto& row : rows) {
     if (!matches(row)) {
       continue;
@@ -2276,7 +2377,14 @@ void PhiSettingsWindow::BuildShortcuts(int* y) {
     rule.bounds = {Scaled(kMargin + kCardPadding), *y,
                    Scaled(kWidth - kMargin - kCardPadding), *y + 1};
     items_.push_back(std::move(rule));
+    last_rule = items_.size() - 1;
     *y += 1;
+  }
+  // The table's rules go BETWEEN rows; the loop left one hanging under the
+  // last row, inside the card's own bottom padding.
+  if (last_rule != std::numeric_limits<size_t>::max()) {
+    items_.erase(items_.begin() + static_cast<ptrdiff_t>(last_rule));
+    *y -= 1;
   }
   if (!any) {
     Item empty;
@@ -2295,24 +2403,21 @@ void PhiSettingsWindow::BuildShortcuts(int* y) {
 void PhiSettingsWindow::BuildDeveloper(int* y) {
   BeginSection(y, L"Agent control");
   AddToggleRow(y, L"Allow agents to control Phi (CDP)", /*on=*/true,
-               /*enabled=*/false, std::string());
-  AddDividerRow(y);
-  AddSubHint(y, L"Agent tools drive Phi over the DevTools Protocol through "
-                L"a private socket only this machine's processes can reach.");
+               /*enabled=*/false, std::string(),
+               L"Agent tools drive Phi over the DevTools Protocol through "
+               L"a private socket only this machine's processes can reach.");
   AddDividerRow(y);
   // The user-space gate: off, a connected agent works only inside its own
   // agent Spaces; on, the management verbs reach the user's Spaces too.
   AddToggleRow(y, L"Allow agents to operate your Spaces",
-               host_->AllowAgentUserSpaces(), /*enabled=*/true,
-               "agentuserspaces");
-  AddDividerRow(y);
-  AddSubHint(y, L"Lets connected agents read and change your own Spaces, "
-                L"tabs, bookmarks, URL rules and profiles. Off, they can "
-                L"only work in their own agent Spaces.");
-  *y += Scaled(kRowPadding);
+               prefs_->AllowAgentUserSpaces(), /*enabled=*/true,
+               "agentuserspaces",
+               L"Lets connected agents read and change your own Spaces, "
+               L"tabs, bookmarks, URL rules and profiles. Off, they can "
+               L"only work in their own agent Spaces.");
   EndSection(y);
   BeginSection(y, L"Approved agents");
-  const std::vector<std::string> grants = host_->AgentGrantRows();
+  const std::vector<std::string> grants = host_->AgentGrantPaths();
   if (grants.empty()) {
     AddSubHint(y, L"No program holds \u201CAlways Allow\u201D. Anything "
                   L"connecting to control Phi is approved per connection.");
@@ -2324,7 +2429,9 @@ void PhiSettingsWindow::BuildDeveloper(int* y) {
       remove.kind = ItemKind::kToolButton;
       remove.text = L"\uE74D";  // Delete — revokes the standing grant.
       remove.action = "removegrant";
-      remove.payload = base::NumberToString(static_cast<int>(i));
+      // The PATH is the grant's identity; a row index would revoke a
+      // neighbour if the set moved between this build and the click.
+      remove.payload = grants[i];
       remove.bounds = control;
       items_.push_back(std::move(remove));
       if (i + 1 < grants.size()) {
@@ -2332,28 +2439,28 @@ void PhiSettingsWindow::BuildDeveloper(int* y) {
       }
     }
   }
-  *y += Scaled(kRowPadding);
   EndSection(y);
   BeginSection(y, L"Credential approvals");
-  const std::vector<std::string> creds = host_->CredentialGrantRows();
+  const std::vector<PhiCredentialGrantRow> creds = credentials_->GrantRows();
   if (creds.empty()) {
     AddSubHint(y, L"No standing approvals. Every credential request is "
                   L"approved individually.");
   } else {
     for (size_t i = 0; i < creds.size(); ++i) {
-      const std::vector<std::string> parts = SplitTabs(creds[i]);
-      const bool reveal = parts.size() > 1 && parts[1] == "reveal";
       // The exposure is part of the row: "reveal" means the secret is handed
       // to the agent, "fill" means it never leaves Phi.
+      const bool reveal =
+          creds[i].kind == model::CredentialAccessKind::kReveal;
       const std::wstring label =
-          base::UTF8ToWide(parts[0]) +
+          base::UTF8ToWide(creds[i].scope) +
           (reveal ? L"  \u2014 reveal to agent" : L"  \u2014 fill only");
       const RECT control = AddRow(y, label.c_str(), 22, 22);
       Item remove;
       remove.kind = ItemKind::kToolButton;
       remove.text = L"\uE74D";
       remove.action = "removecredgrant";
-      remove.payload = base::NumberToString(static_cast<int>(i));
+      // The SCOPE is the grant's identity, for the same reason.
+      remove.payload = creds[i].scope;
       remove.bounds = control;
       items_.push_back(std::move(remove));
       if (i + 1 < creds.size()) {
@@ -2361,36 +2468,28 @@ void PhiSettingsWindow::BuildDeveloper(int* y) {
       }
     }
   }
-  *y += Scaled(kRowPadding);
   EndSection(y);
   BeginSection(y, L"Credential activity");
-  const std::vector<std::string> audit = host_->CredentialAuditRows();
+  const std::vector<PhiCredentialAuditRow> audit = credentials_->AuditRows();
   if (audit.empty()) {
     AddSubHint(y, L"No credential requests yet.");
   } else {
     // Newest first; the pane shows the most recent ten.
     const size_t shown = std::min<size_t>(audit.size(), 10);
     for (size_t i = 0; i < shown; ++i) {
-      const std::vector<std::string> parts = SplitTabs(audit[i]);
-      if (parts.size() < 4) {
-        continue;
-      }
-      AddSubHint(y, (base::UTF8ToWide(parts[0]) + L"  " +
-                     base::UTF8ToWide(parts[1]) + L"  " +
-                     base::UTF8ToWide(parts[2]) + L"  \u2014  " +
-                     base::UTF8ToWide(parts[3]))
+      AddSubHint(y, (base::UTF8ToWide(audit[i].stamp) + L"  " +
+                     base::UTF8ToWide(PhiCredentialKindName(audit[i].kind)) +
+                     L"  " + base::UTF8ToWide(audit[i].scope) + L"  \u2014  " +
+                     base::UTF8ToWide(audit[i].decision))
                         .c_str());
     }
   }
-  *y += Scaled(kRowPadding);
   EndSection(y);
   BeginSection(y, L"Agent Password Manager");
   AddToggleRow(y, L"Bitwarden password manager", /*on=*/false,
-               /*enabled=*/false, std::string());
-  AddDividerRow(y);
-  AddSubHint(y, L"Logins for Phi and agent requests, held by a separate "
-                L"helper — passwords never touch the browser process.");
-  *y += Scaled(kRowPadding);
+               /*enabled=*/false, std::string(),
+               L"Logins for Phi and agent requests, held by a separate "
+               L"helper — passwords never touch the browser process.");
   EndSection(y);
 }
 
@@ -2398,12 +2497,13 @@ void PhiSettingsWindow::Rebuild() {
   items_.clear();
   open_card_ = 0;
   if (!host_) {
+    ClearHits();
     return;
   }
   // The pane toolbar, centred across the top. Two panes are not always
   // mounted: Developer outside developer mode, and Phi & AI while the AI
   // suite is off (phi_features.h).
-  const bool developer = host_->DeveloperMode();
+  const bool developer = prefs_->DeveloperMode();
   const auto unmounted = [developer](const char* id) {
     const std::string name(id);
     return (!developer && name == "developer") ||
@@ -2468,6 +2568,96 @@ void PhiSettingsWindow::Rebuild() {
     BuildGeneral(&y);
   }
   content_height_ = y - top + Scaled(kMargin);
+  PublishHits();
+}
+
+// The base's hit list is THE rect list (phi_window.h): hover, clicks,
+// tooltips and UI Automation all read it and nothing else. This window used
+// to hit-test items_ by hand from its own WM_LBUTTONDOWN, which is why it
+// had no hover state and answered a screen reader with an empty window.
+void PhiSettingsWindow::PublishHits() {
+  ClearHits();
+  RECT client = {};
+  ::GetClientRect(hwnd(), &client);
+  const int content_top = Scaled(kChromeTop) + 1;
+  for (size_t i = 0; i < items_.size(); ++i) {
+    const Item& item = items_[i];
+    if (item.action.empty()) {
+      continue;
+    }
+    // Pane content scrolls UNDER the toolbar and off the bottom; the paint
+    // pass clips it there, so the hit list has to as well. PhiHitAt takes
+    // the LAST match, and content is added after the toolbar — an unclipped
+    // row that had scrolled up would take the pane buttons' clicks.
+    RECT bounds = item.bounds;
+    if (item.kind != ItemKind::kToolbarItem) {
+      if (bounds.bottom <= content_top || bounds.top >= client.bottom) {
+        continue;
+      }
+      bounds.top = std::max<LONG>(bounds.top, content_top);
+      bounds.bottom = std::min<LONG>(bounds.bottom, client.bottom);
+    }
+    std::wstring name = item.text.empty() ? item.detail : item.text;
+    if (name.empty()) {
+      // A row rect that sits BEHIND its own content is named by the label
+      // inside it ("Additional browser settings", the data links).
+      for (size_t j = i + 1; j < items_.size(); ++j) {
+        if (items_[j].kind == ItemKind::kCard) {
+          break;
+        }
+        if (items_[j].kind == ItemKind::kRowLabel &&
+            items_[j].bounds.top >= item.bounds.top &&
+            items_[j].bounds.bottom <= item.bounds.bottom) {
+          name = items_[j].text;
+          break;
+        }
+      }
+    }
+    if (name.empty()) {
+      // A bare trailing control (a switch, a slider, a pill) is named by
+      // the row label it trails, inside the same card.
+      for (size_t j = i; j-- > 0;) {
+        if (items_[j].kind == ItemKind::kCard) {
+          break;
+        }
+        if (items_[j].kind == ItemKind::kRowLabel) {
+          name = items_[j].text;
+          break;
+        }
+      }
+    }
+    PhiHitRole role = PhiHitRole::kButton;
+    switch (item.kind) {
+      case ItemKind::kToolbarItem:
+        role = PhiHitRole::kTab;
+        break;
+      case ItemKind::kToggle:
+        role = PhiHitRole::kToggle;
+        break;
+      case ItemKind::kSliderTrack:
+        role = PhiHitRole::kSlider;
+        break;
+      case ItemKind::kListRow:
+      case ItemKind::kEmojiCell:
+      case ItemKind::kSwatch:
+      case ItemKind::kImageCard:
+        role = PhiHitRole::kListItem;
+        break;
+      default:
+        break;
+    }
+    AddHit(bounds, static_cast<int>(i), std::move(name), role,
+           item.kind == ItemKind::kToggle ? item.on : item.selected,
+           item.enabled);
+  }
+}
+
+int PhiSettingsWindow::ItemOfHit(int hit) const {
+  if (hit < 0 || hit >= static_cast<int>(hits().size())) {
+    return -1;
+  }
+  const int index = hits()[static_cast<size_t>(hit)].key;
+  return index >= 0 && index < static_cast<int>(items_.size()) ? index : -1;
 }
 
 void PhiSettingsWindow::Paint(HDC dc, const RECT&) {
@@ -2476,7 +2666,7 @@ void PhiSettingsWindow::Paint(HDC dc, const RECT&) {
   }
   // The Mac's fixedWindowBackground: flat, theme-INdependent — #EAEAEA
   // light / #252525 dark. Only the appearance choice matters here.
-  const bool dark = host_->Palette().dark;
+  const bool dark = prefs_->Palette().dark;
   const COLORREF bg = dark ? RGB(0x25, 0x25, 0x25) : RGB(0xEA, 0xEA, 0xEA);
   const COLORREF ink = dark ? RGB(0xFF, 0xFF, 0xFF) : RGB(0x00, 0x00, 0x00);
   const COLORREF label = dark ? Blend(RGB(0xFF, 0xFF, 0xFF), bg, 204)
@@ -2486,7 +2676,13 @@ void PhiSettingsWindow::Paint(HDC dc, const RECT&) {
   const COLORREF card_bg = Blend(ink, bg, 5);        // settingItemBackground 2%
   const COLORREF card_border = Blend(ink, bg, 20);   // border 8%
   const COLORREF separator = Blend(ink, bg, 15);
-  const COLORREF accent = host_->Palette().accent;
+  // A row divider is drawn ON the card, not on the page: blended against
+  // the page ground it came out ~4% over a card already 2% dark, which on
+  // a screen is no line at all. AppKit's Divider is nearer 12%.
+  const COLORREF rule_ink = Blend(ink, card_bg, 30);
+  // The pointer's wash — the one cue every control here lacked.
+  const COLORREF hover_wash = Blend(ink, bg, 12);
+  const COLORREF accent = prefs_->Palette().accent;
 
   RECT client = {};
   ::GetClientRect(hwnd(), &client);
@@ -2509,7 +2705,9 @@ void PhiSettingsWindow::Paint(HDC dc, const RECT&) {
   HGDIOBJ previous_font = font_ ? ::SelectObject(dc, font_) : nullptr;
   bool clipped = false;
 
-  for (const Item& item : items_) {
+  const int hot_item = ItemOfHit(hovered());
+  for (size_t item_index = 0; item_index < items_.size(); ++item_index) {
+    const Item& item = items_[item_index];
     if (item.kind != ItemKind::kToolbarItem && !clipped) {
       // Pane content scrolls; nothing of it may paint over the toolbar.
       ::IntersectClipRect(dc, 0, Scaled(kChromeTop) + 1, client.right,
@@ -2517,11 +2715,15 @@ void PhiSettingsWindow::Paint(HDC dc, const RECT&) {
       clipped = true;
     }
     RECT bounds = item.bounds;
+    const bool hot =
+        item.enabled && static_cast<int>(item_index) == hot_item;
     const COLORREF row_ink = item.enabled ? label : Blend(label, bg, 120);
     switch (item.kind) {
       case ItemKind::kToolbarItem: {
         if (item.selected) {
           FillRounded(dc, bounds, Blend(ink, bg, 20), Scaled(kRadius));
+        } else if (hot) {
+          FillRounded(dc, bounds, hover_wash, Scaled(kRadius));
         }
         ::SetTextColor(dc, item.selected ? accent : secondary);
         RECT glyph = bounds;
@@ -2577,20 +2779,27 @@ void PhiSettingsWindow::Paint(HDC dc, const RECT&) {
         if (hint_font_) {
           ::SelectObject(dc, hint_font_);
         }
-        ::SetTextColor(dc, tertiary);
+        ::SetTextColor(dc, item.enabled ? tertiary : Blend(tertiary, bg, 120));
+        // Wrapped items were MEASURED at this width, so DT_TOP lands them
+        // exactly in the box the layout reserved. DT_WORDBREAK silently
+        // disables DT_VCENTER, which is why a one-line item keeps the
+        // centred single-line path.
         PhiDrawTextAA(dc, item.text.c_str(), -1, &bounds,
-                    DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+                    item.wrap ? (DT_LEFT | DT_TOP | DT_WORDBREAK |
+                                 DT_NOPREFIX)
+                              : (DT_LEFT | DT_VCENTER | DT_SINGLELINE |
+                                 DT_END_ELLIPSIS | DT_NOPREFIX));
         if (font_) {
           ::SelectObject(dc, font_);
         }
         break;
       case ItemKind::kRowLabel:
-        // Single line, truly centred: DT_WORDBREAK silently disables
-        // DT_VCENTER, which left labels riding the top of tall rows.
         ::SetTextColor(dc, row_ink);
         PhiDrawTextAA(dc, item.text.c_str(), -1, &bounds,
-                    DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
-                        DT_NOPREFIX);
+                    item.wrap ? (DT_LEFT | DT_TOP | DT_WORDBREAK |
+                                 DT_NOPREFIX)
+                              : (DT_LEFT | DT_VCENTER | DT_SINGLELINE |
+                                 DT_END_ELLIPSIS | DT_NOPREFIX));
         break;
       case ItemKind::kLink:
         if (small_font_) {
@@ -2604,7 +2813,7 @@ void PhiSettingsWindow::Paint(HDC dc, const RECT&) {
         }
         break;
       case ItemKind::kDivider: {
-        HBRUSH line = ::CreateSolidBrush(separator);
+        HBRUSH line = ::CreateSolidBrush(rule_ink);
         ::FillRect(dc, &bounds, line);
         ::DeleteObject(line);
         break;
@@ -2620,9 +2829,16 @@ void PhiSettingsWindow::Paint(HDC dc, const RECT&) {
         RECT ring_rc = {cx - ring / 2, bounds.top, cx + ring / 2,
                         bounds.top + ring};
         if (item.selected) {
+          // `on` marks a colour this Space INHERITS from the app-wide
+          // choice rather than pins: same dot, a hairline ring in the
+          // secondary ink instead of two points of accent.
           const COLORREF ring_color = item.ring ? item.ring : accent;
           Ellipse(dc, ring_rc, card_bg,
-                  item.enabled ? ring_color : tertiary, Scaled(2));
+                  !item.enabled ? tertiary
+                                : (item.on ? secondary : ring_color),
+                  Scaled(item.on ? 1 : 2));
+        } else if (hot) {
+          Ellipse(dc, ring_rc, card_bg, Blend(ink, bg, 46), 1);
         }
         RECT dot_rc = {cx - dot / 2, bounds.top + (ring - dot) / 2,
                        cx + dot / 2, bounds.top + (ring + dot) / 2};
@@ -2744,6 +2960,8 @@ void PhiSettingsWindow::Paint(HDC dc, const RECT&) {
         }
         if (item.selected) {
           OutlineRounded(dc, image, accent, Scaled(5), Scaled(2));
+        } else if (hot) {
+          OutlineRounded(dc, image, Blend(ink, bg, 60), Scaled(5), 1);
         }
         if (hint_font_) {
           ::SelectObject(dc, hint_font_);
@@ -2763,6 +2981,12 @@ void PhiSettingsWindow::Paint(HDC dc, const RECT&) {
         COLORREF fill = item.on ? accent : Blend(ink, bg, 60);
         if (!item.enabled) {
           fill = Blend(fill, bg, 120);
+        }
+        if (hot) {
+          // A switch has no room for a wash; the halo is the hover cue.
+          RECT halo = bounds;
+          ::InflateRect(&halo, Scaled(3), Scaled(3));
+          FillRounded(dc, halo, hover_wash, (halo.bottom - halo.top) / 2);
         }
         FillRounded(dc, bounds, fill, height / 2);
         const int knob = height - Scaled(4);
@@ -2816,7 +3040,8 @@ void PhiSettingsWindow::Paint(HDC dc, const RECT&) {
         break;
       }
       case ItemKind::kPopup: {
-        FillRounded(dc, bounds, Blend(ink, bg, 15), Scaled(kRadius));
+        FillRounded(dc, bounds, Blend(ink, bg, hot ? 30 : 15),
+                    Scaled(kRadius));
         ::SetTextColor(dc, row_ink);
         RECT text = bounds;
         text.left += Scaled(10);
@@ -2839,6 +3064,8 @@ void PhiSettingsWindow::Paint(HDC dc, const RECT&) {
           FillRounded(dc, bounds,
                       solid ? accent : Blend(accent, card_bg, 38),
                       Scaled(kRadius));
+        } else if (hot) {
+          FillRounded(dc, bounds, hover_wash, Scaled(kRadius));
         }
         const bool on_accent = solid && item.selected;
         const COLORREF text_ink = on_accent ? RGB(0xFF, 0xFF, 0xFF)
@@ -2949,6 +3176,11 @@ void PhiSettingsWindow::Paint(HDC dc, const RECT&) {
       case ItemKind::kToolButton: {
         // The +/-/pencil strip glyphs are MDL2; pager arrows and plain
         // captions ride the UI font.
+        if (hot && !item.action.empty()) {
+          RECT wash = bounds;
+          ::InflateRect(&wash, -Scaled(4), -Scaled(4));
+          FillRounded(dc, wash, hover_wash, Scaled(kRadius));
+        }
         const bool mdl2 = !item.text.empty() && PhiIsPrivateGlyph(item.text);
         if (mdl2 && mdl2_font_) {
           ::SelectObject(dc, mdl2_font_);
@@ -2992,7 +3224,8 @@ void PhiSettingsWindow::Paint(HDC dc, const RECT&) {
                  : RGB(0xFF, 0xFF, 0xFF);
         // A customised chord (`on`) shows in the accent, the Mac's cue that
         // the row departs from its default.
-        StrokeRounded(dc, bounds, cap_bg, item.on ? accent : separator,
+        StrokeRounded(dc, bounds, cap_bg,
+                      item.on ? accent : (hot ? secondary : rule_ink),
                       Scaled(6), 1);
         ::SetTextColor(dc, item.on ? accent : secondary);
         PhiDrawTextAA(dc, item.text.c_str(), -1, &bounds,
@@ -3028,6 +3261,8 @@ void PhiSettingsWindow::Paint(HDC dc, const RECT&) {
       case ItemKind::kEmojiCell: {
         if (item.selected) {
           FillRounded(dc, bounds, Blend(ink, bg, 25), Scaled(10));
+        } else if (hot) {
+          FillRounded(dc, bounds, hover_wash, Scaled(10));
         }
         {
           // Inset: the colour pass repaints its whole rect, and a selected
@@ -3080,14 +3315,33 @@ void PhiSettingsWindow::Paint(HDC dc, const RECT&) {
         if (item.selected) {
           FillRounded(dc, bounds, accent, Scaled(kRadius));
         } else {
-          StrokeRounded(dc, bounds, Blend(ink, bg, 10), card_border,
-                        Scaled(kRadius), 1);
+          StrokeRounded(dc, bounds, Blend(ink, bg, hot ? 24 : 10),
+                        card_border, Scaled(kRadius), 1);
         }
         ::SetTextColor(dc, item.selected ? RGB(0xFF, 0xFF, 0xFF) : row_ink);
         PhiDrawTextAA(dc, item.text.c_str(), -1, &bounds,
                     DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         break;
     }
+  }
+
+  // Panes taller than the window (General, Developer, Shortcuts) scrolled
+  // under the wheel with nothing on screen saying so, and no way to tell
+  // how far down the content already was.
+  const int visible = client.bottom - Scaled(kChromeTop);
+  if (content_height_ > visible && visible > 0) {
+    const int track_top = Scaled(kChromeTop) + Scaled(6);
+    const int track_height = visible - Scaled(12);
+    const int thumb_height =
+        std::max(Scaled(28),
+                 static_cast<int>(static_cast<int64_t>(track_height) *
+                                  visible / content_height_));
+    const int span = std::max(1, content_height_ - visible);
+    const int at = track_top + (track_height - thumb_height) *
+                                   std::min(scroll_, span) / span;
+    RECT thumb = {client.right - Scaled(8), at, client.right - Scaled(4),
+                  at + thumb_height};
+    FillRounded(dc, thumb, Blend(ink, bg, 46), Scaled(2));
   }
 
   ::SelectClipRgn(dc, nullptr);
@@ -3155,13 +3409,9 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
   } else if (item.action == "restoreshortcuts") {
     host_->RestoreAllShortcuts();
   } else if (item.action == "removegrant") {
-    int index = -1;
-    base::StringToInt(item.payload, &index);
-    host_->RemoveAgentGrant(index);
+    host_->RemoveAgentGrant(item.payload);
   } else if (item.action == "removecredgrant") {
-    int index = -1;
-    base::StringToInt(item.payload, &index);
-    host_->RemoveCredentialGrant(index);
+    host_->RemoveCredentialGrant(item.payload);
   } else if (item.action == "addrule") {
     std::wstring value;
     if (PhiPromptText(hwnd(), L"Add URL Rule",
@@ -3172,28 +3422,19 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
       std::string host;
       std::string prefix;
       RuleEncode(RuleTypeForInput(typed), typed, &host, &prefix);
-      std::string first_space;
-      for (const std::string& summary : host_->SpaceSummaries()) {
-        const std::vector<std::string> parts = SplitTabs(summary);
-        if (parts.size() > 3) {
-          first_space = parts[3];
-          break;
-        }
-      }
+      const std::vector<PhiSpaceSummary> spaces = spaces_->Summaries();
+      const std::string first_space =
+          spaces.empty() ? std::string() : spaces.front().id;
       if (!host.empty() && !first_space.empty()) {
-        host_->AddURLRule(first_space, host, prefix, false);
+        rules_->AddRule(first_space, host, prefix, false);
       }
     }
   } else if (item.action == "editrule") {
-    int index = -1;
-    base::StringToInt(item.payload, &index);
-    const std::vector<std::string> rules = host_->URLRuleRows();
-    if (index >= 0 && index < static_cast<int>(rules.size())) {
-      const std::vector<std::string> parts = SplitTabs(rules[index]);
-      const std::string old_host =
-          parts.size() > 1 ? parts[1] : std::string();
-      const std::string old_prefix =
-          parts.size() > 2 ? parts[2] : std::string();
+    // `payload` is the rule's wire id: it stops resolving the moment the
+    // list is rewritten, which is exactly what should happen.
+    if (const model::UrlRule* found = FindRuleById(rules_, item.payload)) {
+      const std::string old_host = found->host;
+      const std::string old_prefix = found->path_prefix;
       std::wstring value =
           base::UTF8ToWide(RuleDisplayValue(old_host, old_prefix));
       if (PhiPromptText(hwnd(), L"Edit URL Rule",
@@ -3211,20 +3452,14 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
         std::string prefix;
         RuleEncode(type, typed, &host, &prefix);
         if (!host.empty()) {
-          host_->SetURLRulePattern(index, host, prefix);
+          rules_->SetRulePatternById(item.payload, host, prefix);
         }
       }
     }
   } else if (item.action == "ruletype") {
-    int index = -1;
-    base::StringToInt(item.payload, &index);
-    const std::vector<std::string> rules = host_->URLRuleRows();
-    if (index >= 0 && index < static_cast<int>(rules.size())) {
-      const std::vector<std::string> parts = SplitTabs(rules[index]);
-      const std::string old_host =
-          parts.size() > 1 ? parts[1] : std::string();
-      const std::string old_prefix =
-          parts.size() > 2 ? parts[2] : std::string();
+    if (const model::UrlRule* found = FindRuleById(rules_, item.payload)) {
+      const std::string old_host = found->host;
+      const std::string old_prefix = found->path_prefix;
       const RuleMatchType current = RuleTypeOf(old_host, old_prefix);
       HMENU menu = ::CreatePopupMenu();
       if (!menu) {
@@ -3251,34 +3486,25 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
         RuleEncode(kTypes[chosen - 1],
                    RuleDisplayValue(old_host, old_prefix), &host, &prefix);
         if (!host.empty()) {
-          host_->SetURLRulePattern(index, host, prefix);
+          rules_->SetRulePatternById(item.payload, host, prefix);
         }
       }
     }
   } else if (item.action == "ruletarget") {
-    int index = -1;
-    base::StringToInt(item.payload, &index);
-    const std::vector<std::string> rules = host_->URLRuleRows();
-    if (index >= 0 && index < static_cast<int>(rules.size())) {
-      const std::vector<std::string> parts = SplitTabs(rules[index]);
-      const std::string current_space =
-          parts.size() > 0 ? parts[0] : std::string();
-      const bool ask = parts.size() > 3 && parts[3] == "1";
+    if (const model::UrlRule* found = FindRuleById(rules_, item.payload)) {
+      const std::string current_space = found->space_id;
+      const bool ask = found->ask;
       std::vector<std::string> space_ids;
       HMENU menu = ::CreatePopupMenu();
       if (!menu) {
         return;
       }
-      for (const std::string& summary : host_->SpaceSummaries()) {
-        const std::vector<std::string> space_parts = SplitTabs(summary);
-        if (space_parts.size() <= 3) {
-          continue;
-        }
-        const bool checked = !ask && space_parts[3] == current_space;
+      for (const PhiSpaceSummary& space : spaces_->Summaries()) {
+        const bool checked = !ask && space.id == current_space;
         ::AppendMenuW(menu, MF_STRING | (checked ? MF_CHECKED : 0),
                       static_cast<UINT>(space_ids.size()) + 1,
-                      base::UTF8ToWide(space_parts[0]).c_str());
-        space_ids.push_back(space_parts[3]);
+                      base::UTF8ToWide(space.name).c_str());
+        space_ids.push_back(space.id);
       }
       ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
       // "Ask every time" rides the rule's target Space as the prompt's
@@ -3293,17 +3519,13 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
           anchor.y, 0, hwnd(), nullptr));
       ::DestroyMenu(menu);
       if (chosen >= 1 && chosen <= space_ids.size()) {
-        host_->SetURLRuleTarget(index, space_ids[chosen - 1], false);
+        rules_->SetRuleTargetById(item.payload, space_ids[chosen - 1], false);
       } else if (chosen == space_ids.size() + 1) {
-        host_->SetURLRuleTarget(index, current_space, true);
+        rules_->SetRuleTargetById(item.payload, current_space, true);
       }
     }
   } else if (item.action == "delrule") {
-    int index = -1;
-    base::StringToInt(item.payload, &index);
-    if (index >= 0) {
-      host_->RemoveURLRule(index);
-    }
+    rules_->RemoveRuleById(item.payload);
   } else if (item.action == "goprofiles") {
     section_ = "profiles";
     scroll_ = 0;
@@ -3314,8 +3536,8 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
     host_->OpenBrowserPage(item.payload);
   } else if (item.action == "searchengine") {
     // The Mac's inline picker as a popup: every engine, the default checked.
-    const std::vector<std::string> engines =
-        host_->SearchEngines(item.payload);
+    const std::vector<PhiSearchEngineRow> engines =
+        profiles_->SearchEngines(item.payload);
     HMENU menu = ::CreatePopupMenu();
     if (!menu || engines.empty()) {
       if (menu) {
@@ -3325,13 +3547,10 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
     }
     std::vector<std::string> keywords;
     for (size_t i = 0; i < engines.size(); ++i) {
-      const std::vector<std::string> parts = SplitTabs(engines[i]);
-      keywords.push_back(parts[0]);
-      const bool is_default = parts.size() > 2 && parts[2] == "1";
-      ::AppendMenuW(menu, MF_STRING | (is_default ? MF_CHECKED : 0),
+      keywords.push_back(engines[i].keyword);
+      ::AppendMenuW(menu, MF_STRING | (engines[i].is_default ? MF_CHECKED : 0),
                     static_cast<UINT>(i) + 1,
-                    base::UTF8ToWide(parts.size() > 1 ? parts[1] : parts[0])
-                        .c_str());
+                    base::UTF8ToWide(engines[i].name).c_str());
     }
     POINT anchor = {item.bounds.left, item.bounds.bottom};
     ::ClientToScreen(hwnd(), &anchor);
@@ -3376,7 +3595,7 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
     if (!menu) {
       return;
     }
-    const std::string current = host_->LanguagePreference();
+    const std::string current = prefs_->LanguagePreference();
     ::AppendMenuW(menu, MF_STRING | (current.empty() ? MF_CHECKED : 0), 1,
                   PhiStr("settings.languageSystemDefault"));
     ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
@@ -3441,16 +3660,9 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
                                 value < 0 ? 0 : (value > 100 ? 100 : value));
     }
   } else if (item.action == "spacetheme") {
-    const std::vector<std::string> parts = SplitTabs(item.payload);
-    if (!parts.empty()) {
-      host_->SetSpaceTheme(parts[0],
-                           parts.size() > 1 ? parts[1] : std::string());
-    }
+    host_->SetSpaceTheme(item.space, item.payload);
   } else if (item.action == "spaceicon") {
-    const std::vector<std::string> parts = SplitTabs(item.payload);
-    if (parts.size() > 1) {
-      host_->SetSpaceIcon(parts[0], parts[1]);
-    }
+    host_->SetSpaceIcon(item.space, item.payload);
   } else if (item.action == "selectspace") {
     selected_space_ = item.payload;
   } else if (item.action == "selectprofile") {
@@ -3466,10 +3678,9 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
     }
   } else if (item.action == "renspace") {
     std::wstring name;
-    for (const std::string& summary : host_->SpaceSummaries()) {
-      const std::vector<std::string> parts = SplitTabs(summary);
-      if (parts.size() > 3 && parts[3] == selected_space_) {
-        name = base::UTF8ToWide(parts[0]);
+    for (const PhiSpaceSummary& space : spaces_->Summaries()) {
+      if (space.id == selected_space_) {
+        name = base::UTF8ToWide(space.name);
         break;
       }
     }
@@ -3487,10 +3698,9 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
     }
   } else if (item.action == "renprofile") {
     std::wstring name;
-    for (const std::string& summary : host_->ProfileSummaries()) {
-      const std::vector<std::string> parts = SplitTabs(summary);
-      if (!parts.empty() && parts[0] == selected_profile_) {
-        name = base::UTF8ToWide(parts.size() > 1 ? parts[1] : parts[0]);
+    for (const PhiProfileSummary& profile : profiles_->Profiles()) {
+      if (profile.id == selected_profile_) {
+        name = base::UTF8ToWide(profile.name);
         break;
       }
     }
@@ -3518,24 +3728,91 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
   }
 }
 
-void PhiSettingsWindow::OnItemClick(int x, int y) {
-  if (!host_) {
+void PhiSettingsWindow::OnMouseDown(int hit, POINT client_pt) {
+  pressed_ = -1;
+  dragging_ = false;
+  const int index = ItemOfHit(hit);
+  if (index < 0 || !items_[static_cast<size_t>(index)].enabled) {
     return;
   }
-  POINT pt = {x, y};
-  // The list is walked by value where it can be: Apply() may open a modal
-  // prompt whose nested loop repaints (and therefore could rebuild)
-  // items_ underneath the iteration.
-  for (size_t i = 0; i < items_.size(); ++i) {
-    const Item item = items_[i];
-    if (item.action.empty() || !item.enabled ||
-        !::PtInRect(&item.bounds, pt)) {
-      continue;
-    }
-    Apply(item, x);
+  pressed_ = index;
+  const Item item = items_[static_cast<size_t>(index)];
+  // A slider is the one control that acts on the PRESS, and it keeps
+  // following the pointer — outside the window too — until the button
+  // comes back up. Everything else waits for the release.
+  if (item.action == "saturation" || item.action == "spacesat") {
+    dragging_ = true;
+    drag_item_ = item;
+    drag_ = Capture(this);
+    Apply(item, client_pt.x);
+    ScheduleRebuild();
+  }
+}
+
+void PhiSettingsWindow::OnClick(int hit, POINT client_pt) {
+  const int pressed = pressed_;
+  pressed_ = -1;
+  if (dragging_) {
+    dragging_ = false;
+    drag_.Release();
+    return;
+  }
+  // Press and release must land on the SAME control: the old handler fired
+  // from WM_LBUTTONDOWN and then again from every WM_MOUSEMOVE that still
+  // had the button down, so dragging across the pane flipped every switch
+  // the pointer crossed.
+  const int index = ItemOfHit(hit);
+  if (index < 0 || index != pressed) {
+    return;
+  }
+  // By value: Apply() may open a modal menu or prompt whose nested loop
+  // rebuilds items_ underneath us.
+  const Item item = items_[static_cast<size_t>(index)];
+  if (item.action.empty() || !item.enabled) {
+    return;
+  }
+  Apply(item, client_pt.x);
+  ScheduleRebuild();
+}
+
+void PhiSettingsWindow::OnWheel(int delta, POINT client_pt) {
+  // Pane content can outgrow the fixed window; the Mac scrolls, so do we.
+  // The offset feeds Rebuild(), so the scroll is a rebuild — not something
+  // WM_PAINT discovers.
+  if (picker_max_line_ > 0 && ::PtInRect(&picker_grid_, client_pt)) {
+    // Over the icon picker: three cell rows per notch, in place.
+    const int rows = std::max(1, 3 * std::abs(delta) / WHEEL_DELTA);
+    picker_scroll_ =
+        std::max(0, std::min(picker_max_line_,
+                             picker_scroll_ + (delta > 0 ? -rows : rows)));
     ScheduleRebuild();
     return;
   }
+  RECT client = {};
+  ::GetClientRect(hwnd(), &client);
+  const int visible = client.bottom - Scaled(kChromeTop);
+  const int max_scroll = std::max(0, content_height_ - visible);
+  scroll_ = std::max(0, std::min(max_scroll, scroll_ - delta / 2));
+  ScheduleRebuild();
+}
+
+void PhiSettingsWindow::OnEscape() {
+  // Esc walks back out, one step at a time — the filter, then the URL
+  // Rules drill-in, then the window (which only hides, as WM_CLOSE does).
+  if (section_ == "shortcuts" && !shortcut_search_.empty()) {
+    shortcut_search_.clear();
+    scroll_ = 0;
+    ScheduleRebuild();
+    return;
+  }
+  if (section_ == "urlrules") {
+    section_ = "navigation";
+    scroll_ = 0;
+    SyncTitle();
+    ScheduleRebuild();
+    return;
+  }
+  ::ShowWindow(hwnd(), SW_HIDE);
 }
 
 LRESULT PhiSettingsWindow::OnWindowMessage(UINT msg,
@@ -3543,26 +3820,43 @@ LRESULT PhiSettingsWindow::OnWindowMessage(UINT msg,
                                         LPARAM lparam,
                                         bool* handled) {
   switch (msg) {
-    case WM_LBUTTONDOWN:
-      OnItemClick(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
-      *handled = true;
-      return 0;
     case WM_MOUSEMOVE:
-      // Dragging a saturation slider. (The frame has already dropped its
-      // own hot window control for this move.)
-      if (wparam & MK_LBUTTON) {
-        OnItemClick(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
+      // Only a slider drag is answered here; every other move belongs to
+      // the base, which updates the hover the paint pass reads. The drag
+      // replays the item CAPTURED on the press, not whatever happens to
+      // sit under the pointer now.
+      if (dragging_ && (wparam & MK_LBUTTON)) {
+        Apply(drag_item_, GET_X_LPARAM(lparam));
+        ScheduleRebuild();
+        *handled = true;
+        return 0;
       }
-      *handled = true;
-      return 0;
+      break;
+    case WM_SETCURSOR: {
+      // The house rule (phi_popup_chrome.cc): a hand for links, the arrow
+      // for everything else — the hover wash is the cue there.
+      const int index = ItemOfHit(hovered());
+      if (LOWORD(lparam) == HTCLIENT && index >= 0 &&
+          items_[static_cast<size_t>(index)].kind == ItemKind::kLink &&
+          items_[static_cast<size_t>(index)].enabled) {
+        ::SetCursor(::LoadCursorW(nullptr, IDC_HAND));
+        *handled = true;
+        return TRUE;
+      }
+      break;
+    }
     case WM_CHAR:
       // The Shortcuts filter: typing anywhere while the pane is up feeds
       // the search field — Esc clears, Backspace deletes.
       if (section_ == "shortcuts") {
         const wchar_t c = static_cast<wchar_t>(wparam);
+        // Escape arrives as WM_KEYDOWN first and OnEscape() has already
+        // cleared the filter by now; swallow the character it leaves.
         if (c == VK_ESCAPE) {
-          shortcut_search_.clear();
-        } else if (c == VK_BACK) {
+          *handled = true;
+          return 0;
+        }
+        if (c == VK_BACK) {
           if (!shortcut_search_.empty()) {
             shortcut_search_.pop_back();
           }
@@ -3577,32 +3871,6 @@ LRESULT PhiSettingsWindow::OnWindowMessage(UINT msg,
       }
       *handled = true;
       return 0;
-    case WM_MOUSEWHEEL: {
-      // Pane content can outgrow the fixed window; the Mac scrolls, so do
-      // we. The offset feeds Rebuild(), so the scroll is a rebuild — not
-      // something WM_PAINT discovers.
-      const int delta = GET_WHEEL_DELTA_WPARAM(wparam);
-      POINT pt = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
-      ::ScreenToClient(hwnd(), &pt);
-      if (picker_max_line_ > 0 && ::PtInRect(&picker_grid_, pt)) {
-        // Over the icon picker: three cell rows per notch, in place.
-        const int rows = std::max(1, 3 * std::abs(delta) / WHEEL_DELTA);
-        picker_scroll_ = std::max(
-            0, std::min(picker_max_line_,
-                        picker_scroll_ + (delta > 0 ? -rows : rows)));
-        ScheduleRebuild();
-        *handled = true;
-        return 0;
-      }
-      RECT client = {};
-      ::GetClientRect(hwnd(), &client);
-      const int visible = client.bottom - Scaled(kChromeTop);
-      const int max_scroll = std::max(0, content_height_ - visible);
-      scroll_ = std::max(0, std::min(max_scroll, scroll_ - delta / 2));
-      ScheduleRebuild();
-      *handled = true;
-      return 0;
-    }
     case WM_ACTIVATE:
       // The "Set as default" button hands the choice to the Windows
       // Settings app, so the answer changes while this window is in the

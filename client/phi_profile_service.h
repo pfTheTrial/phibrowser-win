@@ -14,6 +14,7 @@
 
 #include "base/memory/raw_ptr_exclusion.h"
 #include "phibrowser-win/client/phi_ids.h"
+#include "phibrowser-win/client/phi_settings_types.h"
 
 namespace phi_framework {
 class PhiFramework;
@@ -96,7 +97,12 @@ class PhiProfileService {
   void ExpirePending(uint64_t now_ms, const char* timeout_reply);
 
   // --- Reads ---------------------------------------------------------------
-  // "<id>\t<name>" per profile.
+  // Every profile the framework knows, id and display name.
+  std::vector<PhiProfileSummary> Profiles() const;
+  // The same list as "<id>\t<name>" rows — the SHELL host's spelling
+  // (PhiSlotHost::ProfileSummaries, which the create-Space form, the menu
+  // bar and the Kiosk chooser read). Built from Profiles(); the settings
+  // panes take the structs.
   std::vector<std::string> ProfileSummaries() const;
   // The display name the framework reports for `profile_id`, or empty.
   std::string ProfileDisplayName(const std::string& profile_id) const;
@@ -112,8 +118,10 @@ class PhiProfileService {
   bool DeleteProfileById(const std::string& profile_id);
 
   // --- Per-profile settings ------------------------------------------------
-  // "<keyword>\t<name>\t<0|1 default>" per engine.
-  std::vector<std::string> SearchEngines(const std::string& profile_id) const;
+  // The profile's engines, the default flagged. EMPTY while the profile is
+  // not loaded — which is what greys the Settings row out.
+  std::vector<PhiSearchEngineRow> SearchEngines(
+      const std::string& profile_id) const;
   bool SetSearchEngine(const std::string& profile_id,
                        const std::string& keyword);
   std::string DownloadDirectory(const std::string& profile_id) const;

@@ -5,7 +5,6 @@
 #include "phibrowser-win/client/phi_preferences.h"
 
 #include <algorithm>
-#include <array>
 #include <utility>
 
 #include "base/logging.h"
@@ -342,42 +341,23 @@ void PhiPreferences::SetLanguage(const std::string& tag) {
 
 // --- Shortcuts --------------------------------------------------------------
 
-std::vector<std::string> PhiPreferences::ShortcutRows() const {
-  std::vector<std::string> rows;
-  const auto fixed = [&](const char* group, const char* label,
-                         const char* keys) {
-    rows.push_back(std::string(group) + "\t" + label + "\t" + keys + "\t\t0");
-  };
-  const auto rebindable = [&](const RebindableShortcut& def) {
-    rows.push_back(base::WideToUTF8(def.group) + "\t" +
-                   base::WideToUTF8(def.label) + "\t" +
-                   base::WideToUTF8(PhiFormatChord(EffectiveChord(def.name))) +
-                   "\t" + def.name + "\t" +
-                   (settings_.shortcut_overrides.count(def.name) ? "1" : "0"));
-  };
-  // The pane's groups in Mac order; a group's rebindable rows first, then its
-  // fixed, informational ones (chords the hook special-cases or that other
-  // machinery advertises — shown but not editable).
-  fixed("App", "Preferences", "Ctrl+,");
-  fixed("App", "Quit Phi", "Ctrl+Shift+Q");
-  const std::array<const wchar_t*, 8> kGroups = {
-      L"File", L"Edit", L"View", L"History", L"Bookmarks",
-      L"Window", L"Tab", L"Spaces"};
-  for (const wchar_t* group : kGroups) {
-    for (const RebindableShortcut& def : kRebindableShortcuts) {
-      if (std::wstring(def.group) == group) {
-        rebindable(def);
-      }
-    }
-    if (std::wstring(group) == L"History") {
-      fixed("History", "Back", "Alt+Left");
-      fixed("History", "Forward", "Alt+Right");
-    } else if (std::wstring(group) == L"Tab") {
-      fixed("Tab", "Select Next Tab", "Ctrl+Tab");
-      fixed("Tab", "Select Previous Tab", "Ctrl+Shift+Tab");
-    }
-  }
-  return rows;
+std::vector<PhiShortcutRow> PhiPreferences::ShortcutRows() const {
+  // The group order and the fixed, informational rows are the PANE's shape
+  // and live in phi_settings_types.h; this service supplies only what it
+  // owns — each group's rebindable rows, with their EFFECTIVE chords.
+  return PhiBuildShortcutRows(
+      [this](std::string_view group, std::vector<PhiShortcutRow>* out) {
+        for (const RebindableShortcut& def : kRebindableShortcuts) {
+          if (base::WideToUTF8(def.group) != group) {
+            continue;
+          }
+          out->push_back(
+              {std::string(group), base::WideToUTF8(def.label),
+               base::WideToUTF8(PhiFormatChord(EffectiveChord(def.name))),
+               def.name,
+               settings_.shortcut_overrides.count(def.name) != 0});
+        }
+      });
 }
 
 void PhiPreferences::RebindShortcut(const std::string& name,

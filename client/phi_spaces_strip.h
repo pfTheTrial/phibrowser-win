@@ -1,0 +1,323 @@
+// Copyright 2026 The Fyde Innovations Limited. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#ifndef PHIBROWSER_WIN_CLIENT_PHI_SPACES_STRIP_H_
+#define PHIBROWSER_WIN_CLIENT_PHI_SPACES_STRIP_H_
+
+#include <windows.h>
+
+#include <memory>
+#include <optional>
+#include <string>
+#include <vector>
+
+#include "base/memory/raw_ptr_exclusion.h"
+#include "phibrowser-win/client/phi_ids.h"
+#include "phibrowser-win/client/phi_theme.h"
+
+namespace phi_client {
+
+class PhiCreateSpacePanel;
+class PhiSlotHost;
+class PhiWindowController;
+struct PhiNewSpaceSpec;
+
+// One Space as the strip draws it — the Mac's stripOrderedSpaces entry.
+// `is_agent` pips carry a taskId in `id`, not a Space id.
+struct PhiSpaceChip {
+  std::string id;
+  std::wstring label;
+  std::wstring icon;  // The Space's emoji, empty when it has none.
+  bool open = false;
+  bool is_agent = false;  // A live agent Space pip; `id` is its taskId.
+  RECT bounds{};
+};
+
+// Where the strip is laid out, taken from the shell's per-turn Layout so the
+// strip never derives geometry of its own (docs/architecture-review.md §3.5).
+struct PhiSpacesStripRects {
+  RECT client{};
+  RECT strip{};      // The band the pips live in.
+  // What a viewport step repaints: the strip band, or — where the pips
+  // ride the caption row — that row.
+  RECT strip_repaint{};
+  RECT sidebar{};    // The create-Space form mounts under the strip in it.
+  RECT add_space{};  // The trailing "+" / "…" slot.
+  int chip_size = 0;
+  int chips_left = 0;
+  int chips_top = 0;
+  int chips_limit = 0;  // Right edge the pips may not cross.
+  bool horizontal_tabs = false;
+};
+
+// What the Spaces strip asks of its shell.
+class PhiSpacesStripShell {
+ public:
+  virtual HWND SpacesShellWindow() const = 0;
+  // The controller the create-Space form is constructed against (it reads
+  // the shell's layout and palette through it), as with the native pages.
+  virtual PhiWindowController* SpacesOwner() = 0;
+  virtual SlotId SpacesSlot() const = 0;
+  virtual PhiSlotHost* SpacesHost() const = 0;
+  virtual bool SpacesIncognito() const = 0;
+  virtual bool SpacesIsAgent() const = 0;
+  virtual int SpacesScaled(int design_units) const = 0;
+  virtual PhiSpacesStripRects SpacesRects() = 0;
+  // The Space this slot currently shows.
+  virtual const std::string& SpacesActiveSpace() const = 0;
+  virtual bool SpacesHasSpace(const std::string& space_id) const = 0;
+  // The ramped palette the whole chrome is painting with right now.
+  virtual PhiPalette SpacesPalette() const = 0;
+  // A drag is live: the viewport may not slide, and the hover card stays
+  // down.
+  virtual bool SpacesDragActive() const = 0;
+  // The chip the shell's hover state currently names, or -1.
+  virtual int SpacesHoveredChip() const = 0;
+  virtual bool SpacesAddSlotHovered() const = 0;
+  // The trailing slot's invalidation rect (the hover wash's, inflated).
+  virtual RECT SpacesAddSlotDirtyRect() = 0;
+  // Forget the shell's hover so a viewport step re-registers as a change.
+  virtual void SpacesForgetHover() = 0;
+  // Re-run the shell's hover hit-test against the pointer where it rests.
+  virtual void SpacesRehoverAtCursor() = 0;
+  virtual void SpacesScheduleRefresh() = 0;
+  // The palette moved: repaint the chrome that is not the strip's.
+  virtual void SpacesApplyPalette() = 0;
+  // The tinted satellites that ride the palette (the native pages, the
+  // content card's corner caps).
+  virtual void SpacesRefreshTinted() = 0;
+  virtual void SpacesRepaintOmnibox() = 0;
+  virtual void SpacesFocusContent() = 0;
+  // The band slide landed: the parked browser child becomes visible.
+  virtual void SpacesRevealSwappedContent() = 0;
+  // Swap the live sidebar rows with the retained leaving Space's — the
+  // slide paints both models, so the shell exchanges them twice per frame.
+  virtual void SpacesSwapBandModel() = 0;
+  // Drop the retained leaving rows once the slide is over.
+  virtual void SpacesDropLeavingBand() = 0;
+  // The strip's fonts, all built and owned by the shell.
+  virtual HFONT SpacesUiFont() const = 0;
+  virtual HFONT SpacesSmallFont() const = 0;
+  virtual HFONT SpacesEmojiFont() const = 0;
+  virtual HFONT SpacesChipIconFont() const = 0;
+  virtual HFONT SpacesPipIconFont() const = 0;
+  virtual HFONT SpacesPipEmojiFont() const = 0;
+  virtual HFONT SpacesPipTextFont() const = 0;
+  // Whether the sidebar can host the create-Space form inline, and the
+  // window the hover card's popup is positioned against when the floating
+  // sidebar panel is the one showing the strip.
+  virtual bool SpacesSidebarCanHostForm(const RECT& form) const = 0;
+  virtual HWND SpacesFloatingPanel(int* offset_y) const = 0;
+
+ protected:
+  // Non-virtual and protected: the shell OWNS the strip, never the other
+  // way round, so nothing ever deletes through this pointer.
+  ~PhiSpacesStripShell() = default;
+};
+
+// THE Spaces strip (docs/architecture-review.md §3.5; lane 1 clusters K and
+// O plus the chip half of H): the pips, their viewport and overflow, the
+// hover card, the trailing "+" and its fade, the create-Space form host and
+// the Space-switch animation.
+//
+// INVARIANTS
+//  * `chips_` is written in ONE function — Rebuild() — from the owner's
+//    full Space list plus the shell's per-turn rects. Paint, hit tests and
+//    menus read it; none of them writes it.
+//  * A hit test answers a chip INDEX into that vector or -1, and a peeked
+//    pip is hit only on the part the viewport clip shows.
+//  * Every animation the strip runs — the "+" fade, the band slide and the
+//    theme ramp — is a PhiAnimator animation bound to the shell window,
+//    invalidating the rect it actually moves. The strip owns no WM_TIMER.
+//  * The palette override (the create form's live preview) and the ramp are
+//    applied in ONE place, RampPalette(), which the shell's CurrentPalette()
+//    calls; nothing else blends a palette.
+class PhiSpacesStrip {
+ public:
+  explicit PhiSpacesStrip(PhiSpacesStripShell* shell);
+  ~PhiSpacesStrip();
+
+  PhiSpacesStrip(const PhiSpacesStrip&) = delete;
+  PhiSpacesStrip& operator=(const PhiSpacesStrip&) = delete;
+
+  // --- The pip row --------------------------------------------------------
+  // THE writer of the chip vector. Runs on the shell's rebuild turn.
+  void Rebuild();
+  const std::vector<PhiSpaceChip>& chips() const { return chips_; }
+  // The row index of chips()[0] — a windowed viewport starts partway along
+  // the full row, and a reorder has to name the row position.
+  int first_index() const { return first_index_; }
+  bool overflow() const { return overflow_; }
+  const RECT& add_slot() const { return add_slot_; }
+  // The chip under `client_pt`, or -1. Peeked pips are hit only where the
+  // viewport clip shows them.
+  int ChipAt(POINT client_pt) const;
+  RECT ChipBounds(int index) const;
+  // The insertion slot a pip drag at `client_pt` would land in.
+  int InsertSlotAt(POINT client_pt) const;
+  // stepViewport: +1 slides the window toward the row's end.
+  void StepViewport(int step);
+  // The wheel over the strip band; true when consumed.
+  bool OnWheel(int wheel_delta);
+  // --- The trailing "+" reveal --------------------------------------------
+  // The Mac's slot.isStripRowHovered: the "+" is up only while the pointer
+  // is over the strip's ROW.
+  void SetRowHovered(bool hovered);
+  bool row_hovered() const { return row_hovered_; }
+  double AddSlotRevealProgress() const;
+
+  // --- The hover card -----------------------------------------------------
+  // Re-aims the card at `chip_index` (-1 = none), which the shell's hover
+  // state names.
+  void UpdateHoverCard(int chip_index);
+  // Delay elapsed: the pending card becomes the shown one.
+  void PromoteHoverCard();
+  // `suppress_space_id` keeps the card down until the pointer leaves that
+  // pip (a click on it), empty to simply take it down.
+  void DismissHoverCard(const std::string& suppress_space_id);
+  // The card's popup timer id, so the shell's WM_TIMER can route to
+  // PromoteHoverCard. The card is the one thing that still needs a real
+  // delay timer — an animation clock is the wrong tool for a dwell.
+  static constexpr UINT_PTR kHoverCardTimer = 0x516;
+
+  // --- The create-Space form ----------------------------------------------
+  void ShowCreateForm();
+  void CommitCreateForm(const PhiNewSpaceSpec& spec);
+  void CancelCreateForm();
+  void PreviewTheme(const std::string& theme_id, int saturation);
+  void SetFormIcon(const std::string& storage_value);
+  void OnFormProfileCreated(const std::string& profile_id);
+  bool creating() const { return creating_; }
+  const std::wstring& creating_icon_text() const { return creating_icon_; }
+  // Where the form mounts: the sidebar below the strip.
+  RECT FormRect();
+  // The form's live theme preview ends (it was cancelled, or the created
+  // Space has presented).
+  void EndPreview();
+  // The preview is being held ACROSS the created Space's arrival, so the
+  // chrome never flashes the source theme in between: the Space presenting
+  // is what ends it.
+  bool preview_awaits_switch() const { return preview_until_switch_; }
+  // The form panel follows a layout change.
+  void RepositionForm();
+  // The form, the card popup and every animation go before the shell
+  // window they belong to.
+  void Shutdown();
+
+  // --- The Space switch ---------------------------------------------------
+  // Begins the band slide + theme ramp toward `entering_space_id`.
+  void BeginSwap(const std::string& entering_space_id);
+  // Settles an in-flight switch instantly (a superseded switch, a resize,
+  // the window going away).
+  void CancelSwap();
+  bool swap_running() const { return swap_start_ != 0; }
+  bool swap_forward() const { return swap_forward_; }
+  // The slide's eased position, 1.0 when idle.
+  double SwapProgress() const;
+  // The palette the leaving Space's retained rows are painted at — frozen
+  // when the switch began, so the two models never share a tint.
+  const PhiPalette& swap_source_palette() const {
+    return swap_source_palette_;
+  }
+  // The slide reached its end: the shell drops the retained rows and the
+  // page flips. Called from the band paint, which is where the last frame
+  // of the slide is known to have been drawn.
+  void NoteSlideLanded();
+  // `target` blended toward from the frozen source palette while the ramp
+  // runs, or replaced outright by the create form's live preview. THE one
+  // place a palette is overridden.
+  PhiPalette RampPalette(const PhiPalette& target) const;
+
+  // --- Paint --------------------------------------------------------------
+  // The pips, the placeholder and the trailing slot, into the shell's DC.
+  void Paint(HDC dc, const PhiSpacesStripRects& rects,
+             const PhiPalette& palette);
+  // The hover card's own popup window, measured against the shell's DC and
+  // shown / moved / hidden. Runs from the shell's paint, after Paint().
+  void SyncHoverCardPopup(HDC dc, const PhiSpacesStripRects& rects);
+
+ private:
+  // The measured hover card, at the popup's own origin.
+  struct CardGeometry {
+    RECT card{};
+    int pill_h = 0, pill_w = 0, name_w = 0, profile_w = 0, keys_w = 0;
+    int dot_w = 0, gap = 0;
+    std::vector<int> key_widths;
+    std::vector<std::wstring> keycaps;
+    std::wstring icon, name, profile;
+  };
+
+  bool MeasureHoverCard(HDC dc,
+                        const PhiSpacesStripRects& rects,
+                        CardGeometry* out);
+  void PaintHoverCard(HDC dc,
+                      const CardGeometry& g,
+                      const PhiPalette& palette);
+  void PaintHoverCardPopup(HWND popup, HDC dc);
+  static LRESULT CALLBACK HoverCardPopupProc(HWND hwnd,
+                                             UINT msg,
+                                             WPARAM wparam,
+                                             LPARAM lparam);
+  void ResolveHoverCard(const std::string& space_id);
+  // Restarts the "+" fade animation with `ms` still to run.
+  void StartFade(int ms);
+  void StopAnimations();
+
+  // Owns this strip and outlives it.
+  RAW_PTR_EXCLUSION PhiSpacesStripShell* const shell_;
+
+  // The windowed pip row (the Mac's SpacesStripView viewport): `chips_`
+  // holds the whole pips the window shows plus the peeked neighbours,
+  // `clip_` bounds both paint and hit tests (empty when nothing is hidden),
+  // and `first_index_` is the row index of chips_[0].
+  std::vector<PhiSpaceChip> chips_;
+  int start_ = 0;  // stripStartIndex: the first WHOLE pip shown.
+  int first_index_ = 0;
+  RECT clip_{};
+  // The window re-centres on the active pip when the active Space or the
+  // pip count changes; wheel steps move it freely in between, so both are
+  // remembered to tell the two apart.
+  std::string anchor_space_;
+  int anchor_visible_ = -1;
+  bool overflow_ = false;
+  RECT add_slot_{};
+  RECT creating_pip_{};
+
+  // The trailing "+"'s reveal fade.
+  bool row_hovered_ = false;
+  ULONGLONG fade_start_ = 0;  // Fade clock; 0 = settled.
+  int fade_anim_ = 0;
+
+  // The hover card.
+  std::string card_space_;       // Card owner (empty = no card).
+  std::string pending_card_;     // Scheduled, awaiting the delay.
+  std::string suppressed_card_;  // Clicked; no card until hover-off.
+  std::wstring card_profile_;
+  COLORREF card_accent_ = 0;
+  int card_shortcut_ = 0;  // 1-based Ctrl+N digit; 0 = past the ninth.
+  CardGeometry card_geom_;
+  HWND card_popup_ = nullptr;
+  RECT card_popup_rect_{};
+
+  // The create-Space form.
+  std::unique_ptr<PhiCreateSpacePanel> form_;
+  bool creating_ = false;
+  std::wstring creating_icon_;
+  std::optional<PhiPalette> preview_palette_;
+  bool preview_until_switch_ = false;
+
+  // The Space switch: the band slide's clock and the theme ramp's, plus the
+  // selected pill's start rect and the frozen source palette.
+  ULONGLONG swap_start_ = 0;
+  ULONGLONG ramp_start_ = 0;
+  bool swap_forward_ = true;
+  RECT swap_chip_from_{};
+  PhiPalette swap_source_palette_{};
+  int swap_anim_ = 0;
+  int ramp_anim_ = 0;
+};
+
+}  // namespace phi_client
+
+#endif  // PHIBROWSER_WIN_CLIENT_PHI_SPACES_STRIP_H_

@@ -13,6 +13,7 @@
 
 #include "phibrowser-win/client/phi_app_model.h"
 #include "phibrowser-win/client/phi_prompt.h"
+#include "phibrowser-win/client/phi_settings_types.h"
 #include "phibrowser-win/client/phi_store.h"
 #include "phibrowser-win/client/phi_theme.h"
 #include "phibrowser-win/client/phi_window_controller.h"
@@ -151,9 +152,10 @@ class PhiPreferences : public ChromePrefsHost {
   void SetLanguage(const std::string& tag);
 
   // --- Shortcuts (the Mac Shortcuts pane's customising) --------------------
-  // Rows as "group\tlabel\tkeys\tname\tcustomized(0|1)" in display order;
-  // `name` is empty for fixed, informational rows.
-  std::vector<std::string> ShortcutRows() const;
+  // The pane's rows in display order (PhiShortcutRow: group, label, the
+  // EFFECTIVE chord, the stable rebind name and whether it is overridden).
+  // A row with an empty name is fixed and informational.
+  std::vector<PhiShortcutRow> ShortcutRows() const;
   // Rebinds the named rebindable shortcut to the chord's raw parts; a chord
   // already held by another rebindable shortcut is STOLEN (that one goes
   // unbound), as the Mac pane does. Rebinding back to the default is a

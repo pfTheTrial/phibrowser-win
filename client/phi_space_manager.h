@@ -18,6 +18,7 @@
 #include "base/memory/raw_ptr_exclusion.h"
 #include "phibrowser-win/client/phi_app_model.h"
 #include "phibrowser-win/client/phi_ids.h"
+#include "phibrowser-win/client/phi_settings_types.h"
 #include "phibrowser-win/client/phi_window_model.h"
 #include "phibrowser-win/client/phi_window_registry.h"
 
@@ -180,9 +181,10 @@ class PhiSpaceManager {
   int next_space_id() const { return model_.next_space_id; }
   // Every Space, in display order, as the chips row and menus consume it.
   std::vector<PhiSpaceView> Spaces() const;
-  // "name\ticonText\tprofileId\tspaceId\tthemeId\tsaturation" per Space —
-  // the Settings host's rows.
-  std::vector<std::string> SpaceSummaries() const;
+  // Every Space as the SETTINGS panes read it: id, name, display icon,
+  // profile, and the per-Space theme/saturation overrides. A struct, not a
+  // packed row — the panes name the fields (lane 1 §1.3).
+  std::vector<PhiSpaceSummary> Summaries() const;
   // The Space holding the DEFAULT role (the Mac's currentDefaultSpaceId):
   // the landing target for retreats and windows opened without a Space, the
   // pre-selected bookmark target, the badge in Settings. Starts on "1" and,

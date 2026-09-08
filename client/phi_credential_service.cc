@@ -301,9 +301,7 @@ void PhiCredentialService::AppendCredentialAudit(const std::string& scope,
              now.wMonth, now.wDay, now.wHour, now.wMinute);
   consent_.credential_audit.insert(
       consent_.credential_audit.begin(),
-      std::string(stamp) + "\t" +
-          (kind == CredentialAccessKind::kReveal ? "reveal" : "fill") + "\t" +
-          scope + "\t" + decision);
+      PhiCredentialAuditWireRow({stamp, kind, scope, decision}));
   constexpr size_t kMaxAudit = 50;
   if (consent_.credential_audit.size() > kMaxAudit) {
     consent_.credential_audit.resize(kMaxAudit);
@@ -312,36 +310,42 @@ void PhiCredentialService::AppendCredentialAudit(const std::string& scope,
   host_.NoteCredentialConsentChanged();
 }
 
-std::vector<std::string> PhiCredentialService::GrantRows() const {
-  std::vector<std::string> rows;
+std::vector<PhiCredentialGrantRow> PhiCredentialService::GrantRows() const {
+  std::vector<PhiCredentialGrantRow> rows;
+  rows.reserve(consent_.credential_grants.size());
   for (const auto& [scope, kind] : consent_.credential_grants) {
-    rows.push_back(scope + "\t" +
-                   (kind == CredentialAccessKind::kReveal ? "reveal" : "fill"));
+    rows.push_back({scope, kind});
   }
   return rows;
 }
 
-void PhiCredentialService::RemoveGrant(int index) {
-  if (index < 0 ||
-      index >= static_cast<int>(consent_.credential_grants.size())) {
-    return;
+bool PhiCredentialService::RemoveGrant(const std::string& scope) {
+  const auto it = consent_.credential_grants.find(scope);
+  if (it == consent_.credential_grants.end()) {
+    return false;
   }
-  auto it = consent_.credential_grants.begin();
-  std::advance(it, index);
   // Drop any live timed grant under the same scope too (their keys are
   // "<scope>|<page host>") — revoking must not leave a ten-minute window
   // standing behind the removed row.
-  const std::string scope = it->first;
   std::erase_if(timed_grants_, [&](const auto& entry) {
     return entry.first == scope ||
            entry.first.compare(0, scope.size() + 1, scope + "|") == 0;
   });
   consent_.credential_grants.erase(it);
   dirty_();
+  return true;
 }
 
-const std::vector<std::string>& PhiCredentialService::AuditRows() const {
-  return consent_.credential_audit;
+std::vector<PhiCredentialAuditRow> PhiCredentialService::AuditRows() const {
+  std::vector<PhiCredentialAuditRow> rows;
+  rows.reserve(consent_.credential_audit.size());
+  for (const std::string& line : consent_.credential_audit) {
+    PhiCredentialAuditRow row;
+    if (PhiParseCredentialAuditWireRow(line, &row)) {
+      rows.push_back(std::move(row));
+    }
+  }
+  return rows;
 }
 
 }  // namespace phi_client

@@ -98,9 +98,6 @@ using shell_metrics::kOmniboxHeight;
 using shell_metrics::kPillHeight;
 using shell_metrics::kPinnedCellHeight;
 using shell_metrics::kPinnedGap;
-using shell_metrics::kSpaceChip;
-using shell_metrics::kSpaceChipGap;
-using shell_metrics::kSpaceChipVertical;
 using shell_metrics::kSpacesStripHeight;
 using shell_metrics::kSpacesStripPad;
 using shell_metrics::kSpacesStripTop;
@@ -124,7 +121,6 @@ using shell_metrics::kTopBarSpacing;
 // as far as the corner goes: the colour pass clears the glyph box whole,
 // and a rounder card would have the box's own corners poking out of it and
 // squaring it back off.
-constexpr int kSpaceCardRadius = 9;
 // ONE size per pip: what a Space's ICON measures, whichever medium it comes
 // from — catalog artwork, colour emoji, or an MDL2 stand-in. Each medium
 // needs a different number to land there (an imageset pads its canvas; a
@@ -164,18 +160,9 @@ constexpr int kStripPinSize = 28;
 constexpr int kStripPinGap = 2;
 constexpr int kStripPinToTabs = 6;
 constexpr int kStripPinFavicon = 16;
-// The Mac's vertical-layout Space swap (SpaceManager.swapAnimationDuration).
-constexpr int kSpaceSwapMs = 150;
-// The theme ramp outlives the slide: a deliberate slow fade of the whole
-// chrome to the target Space's colors.
-constexpr int kThemeRampMs = 600;
-constexpr UINT_PTR kSpaceSwapTimer = 0x515;
-// How long a Space pip must stay hovered before its info card appears
-// (SpacesStripView.hoverCardDelay), so a cursor just passing across the
-// strip doesn't flash cards.
-constexpr int kHoverCardDelayMs = 300;
-constexpr int kHoverCardRadius = 12;  // Rounder than the pills' 8.
-constexpr UINT_PTR kHoverCardTimer = 0x516;
+// 0x515 and 0x516 belonged to the Space swap and hover-card clocks; the
+// swap now rides PhiAnimator and the card's dwell timer is
+// PhiSpacesStrip::kHoverCardTimer (still 0x516), which the strip owns.
 // Drag-reorder slide: Chrome's vertical-tab layout animation (200ms,
 // EASE_IN_OUT) — sibling rows glide to open the insertion gap.
 constexpr int kDragSlideMs = 200;
@@ -187,10 +174,7 @@ constexpr char kBandShiftKey[] = "\x01" "band";
 constexpr UINT_PTR kFloatingTickTimer = 0x522;
 // 0x523 is PhiOmniboxSession::kCopyLinkTimer — the shell routes it back to
 // the session, which owns the copy-link flash.
-// The Spaces strip's "+" fading in and out with the row hover
-// (SpacesStripView.addButton: .animation(.easeInOut(duration: 0.15))).
-constexpr int kAddSpaceFadeMs = 150;
-constexpr UINT_PTR kAddSpaceFadeTimer = 0x524;
+// 0x524 was the Spaces strip's "+" fade; it rides PhiAnimator now.
 // Re-arms a kMsgPhiDeferredClose that found a nested loop still on the
 // stack (see PhiWindowController::RequestClose).
 constexpr UINT_PTR kDeferredCloseTimer = 0x525;
@@ -746,7 +730,11 @@ PhiWindowController::PhiWindowController(SlotId slot,
                                         const PhiWindowModel* model,
                                         bool agent,
                                         bool incognito)
-    : slot_(slot),
+    : // The URL-driven client-drawn pages (bookmark manager, new-tab page).
+      // First, so the early return below still leaves a usable host.
+      native_pages_(std::make_unique<PhiNativePagesHost>(
+          static_cast<PhiNativePagesShell*>(this))),
+      slot_(slot),
       // The content area's component: the adopted browser child and the
       // slot's Space -> browser table.
       browsers_(std::make_unique<PhiBrowserHost>(
@@ -760,6 +748,9 @@ PhiWindowController::PhiWindowController(SlotId slot,
       framework_(framework),
       host_(host),
       model_(model),
+      // The Spaces strip: pips, hover card, create form, switch animation.
+      spaces_(std::make_unique<PhiSpacesStrip>(
+          static_cast<PhiSpacesStripShell*>(this))),
       agent_(agent),
       incognito_(incognito) {
   if (!browser_hwnd || !::IsWindow(browser_hwnd)) {
@@ -984,16 +975,13 @@ PhiWindowController::~PhiWindowController() {
   // back into a controller that is still whole, rather than running as a
   // side effect of the shell's DestroyWindow on one that is half gone.
   tab_preview_.reset();
-  bookmark_manager_.reset();
-  new_tab_page_.reset();
-  create_space_panel_.reset();
+  native_pages_->Shutdown();
+  spaces_->Shutdown();
   caption_band_.reset();
-  for (HWND* popup : {&hover_card_popup_, &floating_sidebar_}) {
-    if (*popup && ::IsWindow(*popup)) {
-      ::DestroyWindow(*popup);
-    }
-    *popup = nullptr;
+  if (floating_sidebar_ && ::IsWindow(floating_sidebar_)) {
+    ::DestroyWindow(floating_sidebar_);
   }
+  floating_sidebar_ = nullptr;
   // Detach the browser child before tearing down our window, so its teardown
   // is not entangled with ours. Full close plumbing is a later slice. The
   // caps and the status bubble are the content host's and go with it, after
@@ -1145,10 +1133,8 @@ bool PhiWindowController::CaptionStripTakesPoint(POINT client_pt) {
       return true;
     }
   }
-  for (const SpaceChip& chip : chips_) {
-    if (ChipHit(chip, client_pt)) {
-      return true;
-    }
+  if (spaces_->ChipAt(client_pt) >= 0) {
+    return true;
   }
   for (const ShortcutRow& pin : pinned_) {
     if (::PtInRect(&pin.bounds, client_pt)) {
@@ -1394,11 +1380,11 @@ void PhiWindowController::BrowserHostScheduleRefresh() {
 
 void PhiWindowController::BrowserHostBeginSpaceSwap(
     const std::string& space_id) {
-  BeginSpaceSwap(space_id);
+  spaces_->BeginSwap(space_id);
 }
 
 bool PhiWindowController::BrowserHostSwapRunning() const {
-  return swap_start_ != 0;
+  return spaces_->swap_running();
 }
 
 void PhiWindowController::BrowserHostNoteSwapChildren(HWND reveal,
@@ -1408,8 +1394,8 @@ void PhiWindowController::BrowserHostNoteSwapChildren(HWND reveal,
 }
 
 void PhiWindowController::BrowserHostEndSpacePreview() {
-  if (preview_until_switch_) {
-    EndCreateSpacePreview();
+  if (spaces_->preview_awaits_switch()) {
+    spaces_->EndPreview();
   }
 }
 
@@ -1441,10 +1427,10 @@ void PhiWindowController::BrowserHostFocusAddressField() {
 }
 
 bool PhiWindowController::BrowserHostFocusNativePage() {
-  if (!new_tab_page_ || !new_tab_page_->WantsFocus()) {
+  if (!native_pages_->ntp_wants_focus()) {
     return false;
   }
-  new_tab_page_->FocusField();
+  native_pages_->FocusNtpField();
   return true;
 }
 
@@ -1529,25 +1515,245 @@ bool PhiWindowController::OmniboxNewTabFocusesField() const {
 }
 
 HWND PhiWindowController::OmniboxNativePageField() const {
-  return new_tab_page_ ? new_tab_page_->field() : nullptr;
+  return native_pages_->ntp_field();
 }
 
 bool PhiWindowController::OmniboxNativePageBox(RECT* out) const {
-  if (!new_tab_page_ || !out) {
-    return false;
-  }
-  *out = new_tab_page_->BoxScreenRect();
-  return true;
+  return native_pages_->NtpBoxScreenRect(out);
 }
 
 void PhiWindowController::OmniboxNativePageCommitting() {
-  if (new_tab_page_ && new_tab_page_->visible()) {
-    // omniBoxDidClear: the native page blanks its controls now, so nothing
-    // of the new-tab page lingers over the arriving one; the rebuild that
-    // sees the new URL unmounts it.
-    ntp_commit_tab_id_ = active_tab_id_;
-    new_tab_page_->HideControls();
+  // omniBoxDidClear: the native page blanks its controls now, so nothing of
+  // the new-tab page lingers over the arriving one; the rebuild that sees
+  // the new URL unmounts it.
+  const TabId committing = active_tab_id_;
+  if (native_pages_->HideNtpControls()) {
+    ntp_commit_tab_id_ = committing;
   }
+}
+
+// --- PhiNativePagesShell ----------------------------------------------------
+
+HWND PhiWindowController::NativePagesShellWindow() const {
+  return shell_hwnd_;
+}
+
+PhiWindowController* PhiWindowController::NativePagesOwner() {
+  return this;
+}
+
+bool PhiWindowController::NativePagesIncognito() const {
+  return incognito_;
+}
+
+bool PhiWindowController::NativePagesIsAgent() const {
+  return agent_;
+}
+
+bool PhiWindowController::NativePagesContentFullscreen() const {
+  return browsers_->content_fullscreen();
+}
+
+bool PhiWindowController::NativePagesPlaceholding() const {
+  return browsers_->ActiveBrowserPlaceholding();
+}
+
+bool PhiWindowController::NativePagesSwapPending() const {
+  return swap_reveal_ != nullptr;
+}
+
+const std::string& PhiWindowController::NativePagesActiveUrl() const {
+  return active_tab_url_;
+}
+
+void PhiWindowController::NativePagesRaiseCaps() {
+  browsers_->RequestRaiseCaps();
+}
+
+void PhiWindowController::NativePagesFocusContent() {
+  FocusActiveBrowser();
+}
+
+HWND PhiWindowController::NativePagesContentWindow() const {
+  return browsers_->content_hwnd();
+}
+
+bool PhiWindowController::NativePagesCommitPending() const {
+  return active_tab_id_ == ntp_commit_tab_id_ && omnibox_->nav_loading();
+}
+
+// --- PhiSpacesStripShell ----------------------------------------------------
+
+PhiSpacesStripRects PhiWindowController::StripRects(
+    const Layout& layout) const {
+  PhiSpacesStripRects rects;
+  rects.client = layout.client;
+  rects.strip = layout.spaces_strip;
+  rects.strip_repaint =
+      layout.horizontal_tabs ? layout.title_bar : layout.spaces_strip;
+  rects.sidebar = layout.sidebar;
+  rects.add_space = layout.add_space;
+  rects.chip_size = layout.chip_size;
+  rects.chips_left = layout.chips_left;
+  rects.chips_top = layout.chips_top;
+  rects.chips_limit = layout.chips_limit;
+  rects.horizontal_tabs = layout.horizontal_tabs;
+  return rects;
+}
+
+HWND PhiWindowController::SpacesShellWindow() const {
+  return shell_hwnd_;
+}
+
+PhiWindowController* PhiWindowController::SpacesOwner() {
+  return this;
+}
+
+SlotId PhiWindowController::SpacesSlot() const {
+  return slot_;
+}
+
+PhiSlotHost* PhiWindowController::SpacesHost() const {
+  return host_;
+}
+
+bool PhiWindowController::SpacesIncognito() const {
+  return incognito_;
+}
+
+bool PhiWindowController::SpacesIsAgent() const {
+  return agent_;
+}
+
+int PhiWindowController::SpacesScaled(int design_units) const {
+  return Scaled(design_units);
+}
+
+PhiSpacesStripRects PhiWindowController::SpacesRects() {
+  return StripRects(ComputeLayout());
+}
+
+const std::string& PhiWindowController::SpacesActiveSpace() const {
+  return active_space();
+}
+
+bool PhiWindowController::SpacesHasSpace(const std::string& space_id) const {
+  return HasSpace(space_id);
+}
+
+PhiPalette PhiWindowController::SpacesPalette() const {
+  return CurrentPalette();
+}
+
+bool PhiWindowController::SpacesDragActive() const {
+  return drag_active_;
+}
+
+int PhiWindowController::SpacesHoveredChip() const {
+  return hover_kind_ == HoverKind::kChip ? hover_index_ : -1;
+}
+
+bool PhiWindowController::SpacesAddSlotHovered() const {
+  return hover_kind_ == HoverKind::kAddSpace;
+}
+
+RECT PhiWindowController::SpacesAddSlotDirtyRect() {
+  return HoverRect(HoverKind::kAddSpace, 0);
+}
+
+void PhiWindowController::SpacesForgetHover() {
+  hover_kind_ = HoverKind::kNone;
+  hover_index_ = -1;
+}
+
+void PhiWindowController::SpacesRehoverAtCursor() {
+  POINT cursor = {};
+  if (shell_hwnd_ && ::GetCursorPos(&cursor)) {
+    ::ScreenToClient(shell_hwnd_, &cursor);
+    OnChromeMouseMove(cursor);
+  }
+}
+
+void PhiWindowController::SpacesScheduleRefresh() {
+  ScheduleRefresh();
+}
+
+void PhiWindowController::SpacesApplyPalette() {
+  ApplyPalette();
+}
+
+void PhiWindowController::SpacesRefreshTinted() {
+  native_pages_->Refresh();
+  browsers_->RefreshCornerCaps();
+}
+
+void PhiWindowController::SpacesRepaintOmnibox() {
+  omnibox_->Repaint();
+}
+
+void PhiWindowController::SpacesFocusContent() {
+  FocusActiveBrowser();
+}
+
+void PhiWindowController::SpacesRevealSwappedContent() {
+  RevealSwappedContent();
+}
+
+void PhiWindowController::SpacesSwapBandModel() {
+  SwapBandModel();
+}
+
+void PhiWindowController::SpacesDropLeavingBand() {
+  DropLeavingBand();
+}
+
+HFONT PhiWindowController::SpacesUiFont() const {
+  return ui_font_;
+}
+
+HFONT PhiWindowController::SpacesSmallFont() const {
+  return small_font_;
+}
+
+HFONT PhiWindowController::SpacesEmojiFont() const {
+  return emoji_font_;
+}
+
+HFONT PhiWindowController::SpacesChipIconFont() const {
+  return chip_icon_font_;
+}
+
+HFONT PhiWindowController::SpacesPipIconFont() const {
+  return pip_icon_font_;
+}
+
+HFONT PhiWindowController::SpacesPipEmojiFont() const {
+  return pip_emoji_font_;
+}
+
+HFONT PhiWindowController::SpacesPipTextFont() const {
+  return pip_text_font_;
+}
+
+bool PhiWindowController::SpacesSidebarCanHostForm(const RECT& form) const {
+  // CreateSpacePanel.requestCreation: the vertical layouts host the form
+  // inline in the docked sidebar. The horizontal layout, a collapsed
+  // sidebar (the floating panel does not host it here) and windows without
+  // a Spaces strip create at once instead.
+  return !incognito_ && !agent_ && !floating_layout_ && !sidebar_collapsed_ &&
+         layout_mode_ != PhiLayoutMode::kComfortable &&
+         form.right - form.left > Scaled(120) &&
+         form.bottom - form.top > Scaled(200);
+}
+
+HWND PhiWindowController::SpacesFloatingPanel(int* offset_y) const {
+  if (floating_layout_ && floating_sidebar_ && ::IsWindow(floating_sidebar_)) {
+    if (offset_y) {
+      *offset_y = floating_offset_y_;
+    }
+    return floating_sidebar_;
+  }
+  return nullptr;
 }
 
 void PhiWindowController::AttachOmniboxField(HWND edit) {
@@ -1710,12 +1916,7 @@ void PhiWindowController::LayoutContents() {
   if (destroying_) {
     return;  // The shell's own DestroyWindow sends WM_SIZE on the way down.
   }
-  if (bookmark_manager_ && bookmark_manager_->visible()) {
-    bookmark_manager_->Reposition();
-  }
-  if (new_tab_page_ && new_tab_page_->visible()) {
-    new_tab_page_->Reposition();
-  }
+  native_pages_->Reposition();
   // Reader and peek panels are hosted OVER the content card, in windows the
   // coordinator owns rather than this controller — they have to follow it.
   if (host_) {
@@ -1731,13 +1932,13 @@ void PhiWindowController::LayoutContents() {
   omnibox_->ClosePopup(/*stop_query=*/false);  // Anchored to the OLD rect.
   const Layout layout = ComputeLayout();
   omnibox_->Position();
-  if (creating_space_) {
+  if (spaces_->creating()) {
     // The form lives only in a docked vertical sidebar: a layout switch or
     // a collapse ends it (the Mac re-routes to its standalone window).
     if (layout_mode_ == PhiLayoutMode::kComfortable || sidebar_collapsed_) {
-      CancelCreateSpaceForm();
-    } else if (create_space_panel_) {
-      create_space_panel_->Reposition(CreateSpaceFormRect());
+      spaces_->CancelCreateForm();
+    } else {
+      spaces_->RepositionForm();
     }
   }
   const bool field_hidden =
@@ -1751,7 +1952,7 @@ void PhiWindowController::LayoutContents() {
   // under a top bar the card's top corners belong to the bar band.
   content.top_caps = layout.mode == PhiLayoutMode::kPerformance;
   content.corner_radius = Scaled(kContentRadius);
-  content.parked = swap_start_ ? swap_reveal_ : nullptr;
+  content.parked = spaces_->swap_running() ? swap_reveal_ : nullptr;
   browsers_->PositionContentChild(content);
 
   // Watch-mode overlay (fog + control pill) tracks the content rect. It goes
@@ -1824,8 +2025,10 @@ int PhiWindowController::DragIndex() const {
       }
       return -1;
     case DragKind::kChip:
-      for (size_t i = 0; i < chips_.size(); ++i) {
-        if (chips_[i].id == drag_key_.id) return static_cast<int>(i);
+      for (size_t i = 0; i < spaces_->chips().size(); ++i) {
+        if (spaces_->chips()[i].id == drag_key_.id) {
+          return static_cast<int>(i);
+        }
       }
       return -1;
     case DragKind::kNone:
@@ -2397,8 +2600,8 @@ bool PhiWindowController::CommitDragImpl() {
     return true;
   }
   if (kind == DragKind::kChip) {
-    if (slot < 0 || chip_pos < 0 || chip_pos >= static_cast<int>(chips_.size()) ||
-        !host_) {
+    if (slot < 0 || chip_pos < 0 ||
+        chip_pos >= static_cast<int>(spaces_->chips().size()) || !host_) {
       return false;
     }
     // Insert-before `slot` becomes the final position by removing the
@@ -2408,8 +2611,8 @@ bool PhiWindowController::CommitDragImpl() {
     if (to_pos == chip_pos) {
       return false;
     }
-    host_->ReorderSpace(chips_[static_cast<size_t>(chip_pos)].id,
-                        to_pos + chips_first_index_);
+    host_->ReorderSpace(spaces_->chips()[static_cast<size_t>(chip_pos)].id,
+                        to_pos + spaces_->first_index());
     return true;
   }
   // Everything else is ONE verb: the item goes to the resolved place — a
@@ -3350,15 +3553,8 @@ int PhiWindowController::DragInsertSlot(POINT pt) {
         default:
           return take(ResolveBookmarkDrop(BookmarkDropRows(), pt.y, drag_key_));
       }
-    case DragKind::kChip: {
-      int slot = 0;
-      for (const SpaceChip& chip : chips_) {
-        if (pt.x > (chip.bounds.left + chip.bounds.right) / 2) {
-          ++slot;
-        }
-      }
-      return slot;
-    }
+    case DragKind::kChip:
+      return spaces_->InsertSlotAt(pt);
     case DragKind::kNone:
       break;
   }
@@ -3420,7 +3616,7 @@ void PhiWindowController::DrawDragIndicator(HDC dc) {
       have = false;  // The row gap is the indicator.
       break;
     case DragKind::kChip:
-      have = pick(chips_, /*horizontal_list=*/true);
+      have = pick(spaces_->chips(), /*horizontal_list=*/true);
       break;
     case DragKind::kNone:
       break;
@@ -3470,7 +3666,7 @@ RECT PhiWindowController::HoverRect(HoverKind kind, int index) {
       r = at(group_headers_);
       break;
     case HoverKind::kChip:
-      r = at(chips_);
+      r = spaces_->ChipBounds(index);
       break;
     case HoverKind::kNav: {
       const std::array<RECT, 14> nav = NavHoverTable(ComputeLayout());
@@ -3487,7 +3683,7 @@ RECT PhiWindowController::HoverRect(HoverKind kind, int index) {
                        static_cast<size_t>(std::max(index, 0)));
       break;
     case HoverKind::kAddSpace:
-      r = add_space_button_;
+      r = spaces_->add_slot();
       break;
   }
   if (r.right > r.left && r.bottom > r.top) {
@@ -3507,7 +3703,7 @@ void PhiWindowController::SetHover(HoverKind kind, int index) {
   const RECT before = HoverRect(hover_kind_, hover_index_);
   hover_kind_ = kind;
   hover_index_ = index;
-  UpdateHoverCard();
+  spaces_->UpdateHoverCard(kind == HoverKind::kChip ? index : -1);
   UpdateTabPreview();
   const RECT after = HoverRect(kind, index);
   if (!shell_hwnd_) {
@@ -3533,10 +3729,10 @@ void PhiWindowController::OnChromeMouseMove(POINT client_pt) {
       }
     }
   }
-  for (size_t i = 0; i < chips_.size() && kind == HoverKind::kNone; ++i) {
-    if (ChipHit(chips_[i], client_pt)) {
+  if (kind == HoverKind::kNone) {
+    if (const int chip = spaces_->ChipAt(client_pt); chip >= 0) {
       kind = HoverKind::kChip;
-      index = static_cast<int>(i);
+      index = chip;
     }
   }
   {
@@ -3547,9 +3743,9 @@ void PhiWindowController::OnChromeMouseMove(POINT client_pt) {
     // reveal region (the Mac's onHover on the whole row). Empty slot =
     // no strip in this layout (comfortable, incognito): no row to hover.
     bool row_hovered = false;
-    if (add_space_button_.right > add_space_button_.left) {
-      if (kind == HoverKind::kNone &&
-          ::PtInRect(&add_space_button_, client_pt)) {
+    const RECT add_slot = spaces_->add_slot();
+    if (add_slot.right > add_slot.left) {
+      if (kind == HoverKind::kNone && ::PtInRect(&add_slot, client_pt)) {
         kind = HoverKind::kAddSpace;
         index = 0;
       }
@@ -3557,7 +3753,7 @@ void PhiWindowController::OnChromeMouseMove(POINT client_pt) {
       ::InflateRect(&row, -Scaled(kSpacesStripPad), 0);
       row_hovered = ::PtInRect(&row, client_pt) != FALSE;
     }
-    SetStripRowHovered(row_hovered);
+    spaces_->SetRowHovered(row_hovered);
   }
   for (size_t i = 0; i < pinned_.size() && kind == HoverKind::kNone; ++i) {
     if (::PtInRect(&pinned_[i].bounds, client_pt)) {
@@ -3609,185 +3805,42 @@ void PhiWindowController::OnChromeMouseMove(POINT client_pt) {
 }
 
 void PhiWindowController::ClearHover() {
-  DismissHoverCard(std::string());
-  SetStripRowHovered(false);
+  spaces_->DismissHoverCard(std::string());
+  spaces_->SetRowHovered(false);
   if (tab_preview_) {
     tab_preview_->PointerExited();
   }
   SetHover(HoverKind::kNone, -1);
 }
 
-void PhiWindowController::SetStripRowHovered(bool hovered) {
-  if (strip_row_hovered_ == hovered) {
-    return;
-  }
-  strip_row_hovered_ = hovered;
-  const ULONGLONG now = ::GetTickCount64();
-  const ULONGLONG elapsed =
-      add_space_fade_start_ ? now - add_space_fade_start_ : 0;
-  // A flip mid-fade reverses from where the fade stands: the curve is
-  // symmetric, so backdating the clock by the leg still to run lands the
-  // reversed fade exactly on the current opacity — a quick in-and-out
-  // never snaps.
-  add_space_fade_start_ =
-      add_space_fade_start_ &&
-              elapsed < static_cast<ULONGLONG>(kAddSpaceFadeMs)
-          ? now - (static_cast<ULONGLONG>(kAddSpaceFadeMs) - elapsed)
-          : now;
-  if (shell_hwnd_) {
-    ::SetTimer(shell_hwnd_, kAddSpaceFadeTimer, 16, nullptr);
-    const RECT button = HoverRect(HoverKind::kAddSpace, 0);
-    ::InvalidateRect(shell_hwnd_, &button, FALSE);
-  }
-}
-
-double PhiWindowController::AddSpaceRevealProgress() const {
-  double eased = 1.0;
-  if (add_space_fade_start_) {
-    const double linear = std::min(
-        1.0, static_cast<double>(::GetTickCount64() - add_space_fade_start_) /
-                 kAddSpaceFadeMs);
-    eased = linear * linear * (3.0 - 2.0 * linear);
-  }
-  return strip_row_hovered_ ? eased : 1.0 - eased;
-}
-
 RECT PhiWindowController::CreateSpaceFormRect() {
-  const Layout layout = ComputeLayout();
-  return {layout.sidebar.left, layout.spaces_strip.bottom,
-          layout.sidebar.right, layout.sidebar.bottom};
+  return spaces_->FormRect();
 }
 
 void PhiWindowController::ShowCreateSpaceForm() {
-  if (!host_) {
-    return;
-  }
-  // CreateSpacePanel.requestCreation: the vertical layouts host the form
-  // inline in the docked sidebar. The horizontal layout, a collapsed
-  // sidebar (the floating panel does not host it here) and windows without
-  // a Spaces strip create at once instead — the Mac's standalone window has
-  // no Windows counterpart yet.
-  const RECT form = CreateSpaceFormRect();
-  const bool can_host = !incognito_ && !agent_ && !floating_layout_ &&
-                        !sidebar_collapsed_ &&
-                        layout_mode_ != PhiLayoutMode::kComfortable &&
-                        form.right - form.left > Scaled(120) &&
-                        form.bottom - form.top > Scaled(200);
-  if (!can_host) {
-    host_->RequestCreateSpace(slot_.value, /*new_profile=*/false);
-    return;  // The owner attaches the new Space's browser, which refreshes.
-  }
-  if (creating_space_) {
-    if (create_space_panel_) {
-      create_space_panel_->FocusField();
-    }
-    return;
-  }
-  if (!create_space_panel_) {
-    create_space_panel_ = std::make_unique<PhiCreateSpacePanel>(this);
-  }
-  // Seeded from the Space the "+" was pressed in: its profile opens the
-  // picker, its theme is what the random pick must differ from.
-  std::string profile_id = "Default";
-  for (const PhiSpaceView& space : host_->Spaces()) {
-    if (space.id == active_space()) {
-      profile_id = space.profile_id;
-      break;
-    }
-  }
-  std::string theme_id = host_->SpaceThemeId(active_space());
-  if (theme_id.empty()) {
-    theme_id = host_->ThemeId();
-  }
-  creating_space_ = true;
-  preview_until_switch_ = false;
-  DismissHoverCard(std::string());
-  create_space_panel_->Show(form, profile_id, theme_id, host_->Saturation());
-  ScheduleRefresh();  // The strip reserves the placeholder pip's slot.
-  create_space_panel_->FocusField();
+  spaces_->ShowCreateForm();
 }
 
 void PhiWindowController::CommitCreateSpaceForm(const PhiNewSpaceSpec& spec) {
-  if (!creating_space_) {
-    return;
-  }
-  creating_space_ = false;
-  creating_space_icon_text_.clear();
-  if (create_space_panel_) {
-    // Instant: the new Space presents over this window (the Mac's
-    // `animated: false` activation after the sidebar flow).
-    create_space_panel_->Hide(/*animated=*/false);
-  }
-  // The previewed theme stays up until the created Space presents, so the
-  // chrome never flashes back to the source theme in between.
-  preview_until_switch_ = true;
-  const std::string id =
-      host_ ? host_->RequestCreateSpaceWithOptions(slot_.value, spec)
-            : std::string();
-  if (id.empty()) {
-    EndCreateSpacePreview();  // Creation failed: back to the source theme.
-  }
-  FocusActiveBrowser();
-  ScheduleRefresh();  // The placeholder pip leaves the strip.
+  spaces_->CommitCreateForm(spec);
 }
 
 void PhiWindowController::CancelCreateSpaceForm() {
-  if (!creating_space_) {
-    return;
-  }
-  creating_space_ = false;
-  creating_space_icon_text_.clear();
-  if (create_space_panel_) {
-    create_space_panel_->Hide(/*animated=*/true);
-  }
-  EndCreateSpacePreview();
-  FocusActiveBrowser();
-  ScheduleRefresh();  // The placeholder pip leaves the strip.
+  spaces_->CancelCreateForm();
 }
 
 void PhiWindowController::PreviewCreateSpaceTheme(const std::string& theme_id,
                                                   int saturation) {
-  if (!host_ || !creating_space_) {
-    return;
-  }
-  preview_palette_ = PhiResolvePalette(PhiThemeById(theme_id),
-                                       host_->Appearance(), saturation);
-  ApplyPalette();
-  if (create_space_panel_) {
-    create_space_panel_->Refresh();
-  }
-  if (new_tab_page_ && new_tab_page_->visible()) {
-    new_tab_page_->Refresh();
-  }
-  browsers_->RefreshCornerCaps();
-}
-
-void PhiWindowController::EndCreateSpacePreview() {
-  if (!preview_palette_ && !preview_until_switch_) {
-    return;
-  }
-  preview_palette_.reset();
-  preview_until_switch_ = false;
-  ApplyPalette();
-  if (new_tab_page_ && new_tab_page_->visible()) {
-    new_tab_page_->Refresh();
-  }
-  browsers_->RefreshCornerCaps();
+  spaces_->PreviewTheme(theme_id, saturation);
 }
 
 void PhiWindowController::SetCreateSpaceIcon(const std::string& storage_value) {
-  creating_space_icon_text_ =
-      base::UTF8ToWide(PhiIconDisplayText(storage_value));
-  if (shell_hwnd_) {
-    ::InvalidateRect(shell_hwnd_, nullptr, FALSE);
-  }
+  spaces_->SetFormIcon(storage_value);
 }
 
 void PhiWindowController::OnSpaceFormProfileCreated(
     const std::string& profile_id) {
-  if (creating_space_ && create_space_panel_) {
-    create_space_panel_->OnProfileCreated(profile_id);
-  }
+  spaces_->OnFormProfileCreated(profile_id);
 }
 
 // True when `tab_id`'s split stacks its panes.
@@ -3808,116 +3861,8 @@ bool PhiWindowController::PullSnapshot(BrowserId browser,
 // which every tab surface installs on its cells). Eligibility is the Mac's:
 // the setting on, no drag in flight, and a LIVE tab behind the row. A split
 // row previews BOTH its panes in one card, the Mac's SplitTabPreview.
-bool PhiWindowController::WantsBookmarkPage() const {
-  return !is_incognito() && PhiBookmarkManager::IsManagerUrl(active_tab_url_);
-}
-
-// Mounts or unmounts the native bookmark page for the ACTIVE tab's URL —
-// the Mac's URL-driven rule, so the tab stays an ordinary browser tab and
-// navigating it away restores the Chromium view.
-void PhiWindowController::SyncBookmarkManager() {
-  const bool wanted = WantsBookmarkPage();
-  if (!wanted) {
-    if (bookmark_manager_) {
-      bookmark_manager_->Hide();
-    }
-    return;
-  }
-  if (!bookmark_manager_) {
-    bookmark_manager_ = std::make_unique<PhiBookmarkManager>(this);
-  }
-  if (bookmark_manager_->visible()) {
-    bookmark_manager_->Reposition();
-    bookmark_manager_->Refresh();
-  } else {
-    bookmark_manager_->Show();
-  }
-}
-
-// The native new-tab page (phi_new_tab_page.cc) mounts by the same rule:
-// the ACTIVE tab sits on a new-tab URL — or the browser has no tabs at all
-// (placeholder mode), where the page's omnibox is the way back in. Agent
-// windows keep Chromium's web NTP: the agent drives it over CDP and no one
-// looks at a native one there.
-bool PhiWindowController::WantsNativeNtp() const {
-  if (agent_ || browsers_->content_fullscreen()) {
-    return false;
-  }
-  if (browsers_->ActiveBrowserPlaceholding()) {
-    return true;
-  }
-  return PhiNewTabPage::IsNewTabUrl(active_tab_url_);
-}
-
-void PhiWindowController::SyncNativeNtp() {
-  if (swap_reveal_) {
-    // A Space switch is mid-slide: the page arrives (or leaves) with the
-    // content, when RevealSwappedContent re-runs this — the Mac reveals the
-    // target Space's content, native page included, on completion.
-    return;
-  }
-  if (!WantsNativeNtp()) {
-    if (new_tab_page_ && new_tab_page_->visible()) {
-      const HWND focus = ::GetFocus();
-      const bool had_focus =
-          focus && (focus == new_tab_page_->hwnd() ||
-                    focus == new_tab_page_->field());
-      new_tab_page_->Hide();
-      if (had_focus) {
-        FocusActiveBrowser();  // Never leave the keyboard on a hidden field.
-      }
-    }
-    return;
-  }
-  if (!new_tab_page_) {
-    new_tab_page_ = std::make_unique<PhiNewTabPage>(this);
-  }
-  if (new_tab_page_->visible()) {
-    // Controls blanked by a commit come back once that navigation is no
-    // longer the active tab's business: another tab is active, or the load
-    // ended and this tab is still a new tab (a new-tab URL typed in, a
-    // navigation that never left).
-    if (new_tab_page_->controls_hidden() &&
-        (active_tab_id_ != ntp_commit_tab_id_ || !omnibox_->nav_loading())) {
-      new_tab_page_->Reset();
-      FocusNativeNtpIfIdle();
-    } else {
-      new_tab_page_->Refresh();  // A palette ramp repaints it with the chrome.
-    }
-    return;
-  }
-  new_tab_page_->Show();
-  if (shell_hwnd_) {
-    // The corner caps go back on top of the page, as they ride the browser.
-    browsers_->RequestRaiseCaps();
-    // viewDidAppear focuses the omnibox — in the window the user is in; a
-    // background window mounting its page must not pull the focus over.
-    if (::GetForegroundWindow() == shell_hwnd_) {
-      new_tab_page_->FocusField();
-    }
-  }
-}
-
-void PhiWindowController::FocusNativeNtpIfIdle() {
-  if (!new_tab_page_ || !shell_hwnd_ ||
-      ::GetForegroundWindow() != shell_hwnd_) {
-    return;
-  }
-  const HWND focus = ::GetFocus();
-  if (focus && focus != shell_hwnd_ && focus != browsers_->content_hwnd() &&
-      focus != new_tab_page_->hwnd() && focus != new_tab_page_->field()) {
-    return;  // The user is in another control (the address field, a panel).
-  }
-  new_tab_page_->FocusField();
-}
-
 void PhiWindowController::ResetNativeNtp() {
-  if (new_tab_page_ && new_tab_page_->visible()) {
-    new_tab_page_->Reset();
-    FocusNativeNtpIfIdle();
-    return;
-  }
-  SyncNativeNtp();
+  native_pages_->ResetNtp();
 }
 
 void PhiWindowController::NoteTabDistillable(TabId tab_id,
@@ -4181,132 +4126,6 @@ void PhiWindowController::UpdateTabPreview() {
   tab_preview_->PointerEntered(target);
 }
 
-void PhiWindowController::UpdateHoverCard() {
-  std::string chip_id;
-  if (hover_kind_ == HoverKind::kChip && hover_index_ >= 0 &&
-      hover_index_ < static_cast<int>(chips_.size()) &&
-      // Agent pips carry a taskId, not a Space id — they have no Space card.
-      !chips_[static_cast<size_t>(hover_index_)].is_agent) {
-    chip_id = chips_[static_cast<size_t>(hover_index_)].id;
-  }
-  // Click suppression means "while the cursor stays on the clicked pip":
-  // genuinely moving off it re-arms the card (the Mac's hoverBegan).
-  if (!card_suppressed_space_.empty() && chip_id != card_suppressed_space_) {
-    card_suppressed_space_.clear();
-  }
-  if (chip_id.empty() || chip_id == card_suppressed_space_) {
-    DismissHoverCard(chip_id);
-    return;
-  }
-  if (chip_id == hover_card_space_) {
-    return;  // Already up for this pip.
-  }
-  if (!hover_card_space_.empty()) {
-    // Warm hand-off pip → pip: swap the card's content instantly, the
-    // Mac's already-warm behavior (system tooltips do the same).
-    ResolveHoverCard(chip_id);
-    hover_card_space_ = chip_id;
-    pending_card_space_.clear();
-    return;
-  }
-  // Cold: show only once the cursor settles. Re-setting the same timer id
-  // restarts the countdown as the cursor walks across pips.
-  pending_card_space_ = chip_id;
-  if (shell_hwnd_) {
-    ::SetTimer(shell_hwnd_, kHoverCardTimer, kHoverCardDelayMs, nullptr);
-  }
-}
-
-void PhiWindowController::PromoteHoverCard() {
-  if (shell_hwnd_) {
-    ::KillTimer(shell_hwnd_, kHoverCardTimer);
-  }
-  if (pending_card_space_.empty()) {
-    return;
-  }
-  const std::string pending = pending_card_space_;
-  pending_card_space_.clear();
-  // Show only if the cursor is still on the scheduled pip — the Mac gates
-  // presentation on the real cursor position for the same reason.
-  if (hover_kind_ != HoverKind::kChip || hover_index_ < 0 ||
-      hover_index_ >= static_cast<int>(chips_.size()) ||
-      chips_[static_cast<size_t>(hover_index_)].id != pending) {
-    return;
-  }
-  ResolveHoverCard(pending);
-  hover_card_space_ = pending;
-  if (shell_hwnd_) {
-    ::InvalidateRect(shell_hwnd_, nullptr, FALSE);
-  }
-}
-
-void PhiWindowController::DismissHoverCard(
-    const std::string& suppress_space_id) {
-  card_suppressed_space_ = suppress_space_id;
-  if (pending_card_space_.empty() && hover_card_space_.empty()) {
-    return;
-  }
-  pending_card_space_.clear();
-  if (shell_hwnd_) {
-    ::KillTimer(shell_hwnd_, kHoverCardTimer);
-  }
-  if (!hover_card_space_.empty()) {
-    hover_card_space_.clear();
-    if (shell_hwnd_) {
-      ::InvalidateRect(shell_hwnd_, nullptr, FALSE);
-    }
-  }
-}
-
-void PhiWindowController::ResolveHoverCard(const std::string& space_id) {
-  card_profile_.clear();
-  card_accent_ = host_ ? host_->PaletteForSlot(slot_.value).accent
-                       : RGB(0x3A, 0xA4, 0xD5);
-  card_shortcut_ = 0;
-  if (!host_) {
-    return;
-  }
-  std::string profile_id;
-  int position = 0;
-  for (const PhiSpaceView& space : host_->Spaces()) {
-    ++position;
-    if (space.id == space_id) {
-      profile_id = space.profile_id;
-      if (position <= 9) {
-        card_shortcut_ = position;  // The Spaces menu's Ctrl+1..9 binding.
-      }
-      break;
-    }
-  }
-  // The pill and keycaps tint with the SPACE's own theme where it pins one
-  // (the Mac card resolves the pip's theme color the same way).
-  const std::string theme_id = host_->SpaceThemeId(space_id);
-  if (!theme_id.empty()) {
-    const bool dark = host_->PaletteForSlot(slot_.value).dark;
-    card_accent_ =
-        PhiResolvePalette(PhiThemeById(theme_id),
-                          dark ? PhiAppearance::kDark : PhiAppearance::kLight)
-            .accent;
-  }
-  // The bound profile's display name, from the same summaries the create
-  // form and the tab-area menu read ("id\tname"); the raw id stands in
-  // when unnamed.
-  card_profile_ = base::UTF8ToWide(profile_id);
-  if (profile_id.empty()) {
-    return;
-  }
-  for (const std::string& summary : host_->ProfileSummaries()) {
-    const size_t tab = summary.find('\t');
-    if (summary.substr(0, tab) != profile_id) {
-      continue;
-    }
-    if (tab != std::string::npos && tab + 1 < summary.size()) {
-      card_profile_ = base::UTF8ToWide(summary.substr(tab + 1));
-    }
-    break;
-  }
-}
-
 void PhiWindowController::SetAgentVisible(bool visible) {
   if (!agent_ || !shell_hwnd_ || visible == agent_visible_) {
     return;
@@ -4344,8 +4163,7 @@ bool PhiWindowController::OnSidebarWheel(POINT client_pt, int wheel_delta) {
     // Over the strip the wheel slides the pip viewport by whole pips, one
     // per notch (the Mac's SpacesStripWheelTracker): a notch toward the
     // user reveals later pips, the direction a vertical list would scroll.
-    StepChipsViewport(wheel_delta < 0 ? 1 : -1);
-    return true;
+    return spaces_->OnWheel(wheel_delta);
   }
   if (!::PtInRect(&layout.sidebar, client_pt) || tabs_scroll_max_ <= 0) {
     return false;
@@ -4450,17 +4268,17 @@ PhiWindowController::BandSignature PhiWindowController::CurrentBandSignature()
   for (const ShortcutRow& bookmark : bookmarks_) {
     stored("b:", bookmark);
   }
-  for (const SpaceChip& chip : chips_) {
-    out.chips.emplace_back(chip.id + "|" + base::WideToUTF8(chip.label) +
-                               "|" + base::WideToUTF8(chip.icon) +
+  for (const PhiSpaceChip& chip : spaces_->chips()) {
+    out.chips.emplace_back(chip.id + "|" + base::WideToUTF8(chip.label) + "|" +
+                               base::WideToUTF8(chip.icon) +
                                (chip.open ? "o" : "") +
                                (chip.is_agent ? "g" : "") +
                                (chip.id == active_space() ? "*" : ""),
                            chip.bounds);
   }
-  out.chips.emplace_back("+" + std::to_string(chips_overflow_) +
-                             (creating_space_ ? "c" : ""),
-                         add_space_button_);
+  out.chips.emplace_back("+" + std::to_string(spaces_->overflow()) +
+                             (spaces_->creating() ? "c" : ""),
+                         spaces_->add_slot());
   out.nav_url = omnibox_->nav_url();
   out.can_go_back = omnibox_->can_go_back();
   out.can_go_forward = omnibox_->can_go_forward();
@@ -4523,57 +4341,6 @@ void PhiWindowController::InvalidateChangedBands(
   }
 }
 
-namespace {
-
-COLORREF LerpColor(COLORREF a, COLORREF b, double t) {
-  const auto mix = [t](int from, int to) {
-    return static_cast<int>(from + (to - from) * t + 0.5);
-  };
-  return RGB(mix(GetRValue(a), GetRValue(b)), mix(GetGValue(a), GetGValue(b)),
-             mix(GetBValue(a), GetBValue(b)));
-}
-
-PhiPalette LerpPalette(const PhiPalette& a, const PhiPalette& b, double t) {
-  PhiPalette out = b;
-  out.ground_top = LerpColor(a.ground_top, b.ground_top, t);
-  out.ground_bottom = LerpColor(a.ground_bottom, b.ground_bottom, t);
-  out.card = LerpColor(a.card, b.card, t);
-  out.selected = LerpColor(a.selected, b.selected, t);
-  out.hover = LerpColor(a.hover, b.hover, t);
-  out.hover_strong = LerpColor(a.hover_strong, b.hover_strong, t);
-  out.label = LerpColor(a.label, b.label, t);
-  out.label_dim = LerpColor(a.label_dim, b.label_dim, t);
-  out.label_tertiary = LerpColor(a.label_tertiary, b.label_tertiary, t);
-  out.border = LerpColor(a.border, b.border, t);
-  out.separator = LerpColor(a.separator, b.separator, t);
-  out.window_bg = LerpColor(a.window_bg, b.window_bg, t);
-  out.accent = LerpColor(a.accent, b.accent, t);
-  out.dark = t < 0.5 ? a.dark : b.dark;
-  return out;
-}
-
-}  // namespace
-
-double PhiWindowController::SwapEasedProgress() const {
-  if (!swap_start_) {
-    return 1.0;
-  }
-  const double linear = std::min(
-      1.0, static_cast<double>(::GetTickCount64() - swap_start_) /
-               kSpaceSwapMs);
-  return linear * linear * (3.0 - 2.0 * linear);
-}
-
-double PhiWindowController::RampEasedProgress() const {
-  if (!ramp_start_) {
-    return 1.0;
-  }
-  const double linear = std::min(
-      1.0, static_cast<double>(::GetTickCount64() - ramp_start_) /
-               kThemeRampMs);
-  return linear * linear * (3.0 - 2.0 * linear);
-}
-
 PhiPalette PhiWindowController::CurrentPalette() const {
   static const PhiPalette kFallback =
       PhiResolvePalette(PhiThemeById("pure"), PhiAppearance::kLight);
@@ -4584,58 +4351,15 @@ PhiPalette PhiWindowController::CurrentPalette() const {
         PhiResolvePalette(PhiThemeById("pure"), PhiAppearance::kDark);
     return kIncognito;
   }
-  if (preview_palette_) {
-    return *preview_palette_;  // The create form's live theme preview.
-  }
-  PhiPalette target = host_ ? host_->PaletteForSlot(slot_.value) : kFallback;
-  const double t = RampEasedProgress();
-  if (t < 1.0) {
-    target = LerpPalette(swap_source_palette_, target, t);
-  }
-  return target;
+  // The strip owns the create form's live preview and the switch ramp: THE
+  // one place a palette is overridden (phi_spaces_strip.h).
+  return spaces_->RampPalette(host_ ? host_->PaletteForSlot(slot_.value)
+                                    : kFallback);
 }
 
 void PhiWindowController::ComposeFrame(HDC mem) {
   PaintChrome(mem, ComputeLayout(), /*include_child_controls=*/false);
   DrawDragIndicator(mem);
-}
-
-void PhiWindowController::BeginSpaceSwap(
-    const std::string& entering_space_id) {
-  if (!host_ || host_->LayoutMode() == PhiLayoutMode::kComfortable ||
-      entering_space_id == active_space()) {
-    return;
-  }
-  CancelSpaceSwap();  // Settle any in-flight switch first.
-  // Direction from strip order, the Mac's forward/backward semantics.
-  int from = -1, to = -1, at = 0;
-  for (const PhiSpaceView& space : host_->Spaces()) {
-    if (space.id == active_space()) {
-      from = at;
-    }
-    if (space.id == entering_space_id) {
-      to = at;
-    }
-    ++at;
-  }
-  swap_forward_ = to >= from;
-  swap_source_palette_ = CurrentPalette();
-  // The strip's selected pill slides from the leaving pip to the entering
-  // one on the same clock; capture where it starts (active_space() is still
-  // the leaving Space here). An off-strip leaving pip just skips the slide.
-  swap_chip_from_ = RECT{};
-  for (const SpaceChip& chip : chips_) {
-    if (chip.id == active_space()) {
-      swap_chip_from_ = chip.bounds;
-      break;
-    }
-  }
-  // Retain the leaving Space's laid-out rows: the slide paints them LIVE
-  // (RebuildTabs refills the working vectors with the entering Space's).
-  leaving_band_ = BandModel();
-  SwapBandModel();
-  swap_start_ = ramp_start_ = ::GetTickCount64();
-  ::SetTimer(shell_hwnd_, kSpaceSwapTimer, 16, nullptr);
 }
 
 void PhiWindowController::RevealSwappedContent() {
@@ -4655,21 +4379,10 @@ void PhiWindowController::RevealSwappedContent() {
   swap_reveal_ = nullptr;
   swap_conceal_ = nullptr;
   if (had_reveal) {
-    SyncNativeNtp();  // Deferred past the slide, like the content itself.
+    // Deferred past the slide, like the content itself.
+    native_pages_->SyncNtp();
     FocusActiveBrowser();
   }
-}
-
-void PhiWindowController::CancelSpaceSwap() {
-  RevealSwappedContent();  // A superseded/aborted switch settles instantly.
-  leaving_band_ = BandModel();
-  swap_chip_from_ = RECT{};
-  if ((swap_start_ || ramp_start_) && shell_hwnd_) {
-    ::KillTimer(shell_hwnd_, kSpaceSwapTimer);
-  }
-  swap_start_ = 0;
-  ramp_start_ = 0;
-  omnibox_->Repaint();  // The palette jumped to its target.
 }
 
 void PhiWindowController::RequestClose() {
@@ -4827,189 +4540,7 @@ RECT PhiWindowController::FieldExtRect(const Layout& layout, size_t i) const {
 }
 
 void PhiWindowController::RebuildChips() {
-  chips_.clear();
-  chips_overflow_ = false;
-  chips_clip_ = RECT{};
-  chips_first_index_ = 0;
-  creating_pip_bounds_ = RECT{};
-  const Layout layout = ComputeLayout();
-  add_space_button_ = layout.add_space;
-  if (!host_ || incognito_) {
-    add_space_button_ = RECT{};  // Incognito has no Spaces strip.
-    return;
-  }
-  // The full pip row in strip order (the Mac's stripOrderedSpaces): the
-  // user Spaces, then — only in a real user window; the agent's own hidden
-  // window never lists them — the live agent Spaces as robot pips. Clicking
-  // one surfaces its window so the user can watch the agent work live.
-  std::vector<SpaceChip> row;
-  for (const PhiSpaceView& space : host_->Spaces()) {
-    // Comfortable shows a single compact pip — the ACTIVE Space; the rest
-    // live in the popup it opens.
-    if (layout.horizontal_tabs && space.id != active_space()) {
-      continue;
-    }
-    SpaceChip chip;
-    chip.id = space.id;
-    chip.label = !space.name.empty()
-                     ? base::UTF8ToWide(space.name)
-                     : L"Space " + base::UTF8ToWide(space.id);
-    chip.icon = base::UTF8ToWide(space.icon_text);
-    chip.open = HasSpace(space.id);
-    row.push_back(std::move(chip));
-  }
-  if (!agent_ && !layout.horizontal_tabs) {
-    for (const PhiAgentPipView& pip : host_->AgentSpaces()) {
-      SpaceChip chip;
-      chip.id = pip.task_id;
-      chip.is_agent = true;
-      chip.open = pip.watched;
-      chip.label = pip.caption.empty()
-                       ? L"Agent"
-                       : base::UTF8ToWide(pip.caption);
-      chip.icon = L"\U0001F916";  // 🤖
-      row.push_back(std::move(chip));
-    }
-  }
-  const int item = Scaled(layout.chip_size);
-  const int gap = Scaled(kSpaceChipGap);
-  const auto width = [&](int pips) {
-    return pips <= 0 ? 0 : pips * item + (pips - 1) * gap;
-  };
-  const int total = static_cast<int>(row.size());
-  const bool reserve_placeholder = creating_space_ && !layout.horizontal_tabs;
-  // visiblePipCount: the room left of the trailing slot (`chips_limit`
-  // already keeps the gap before it). While the create form is up the row's
-  // end holds the dashed placeholder pip (the Mac's
-  // creatingSpacePlaceholderPip): reserve its slot so the real pips can
-  // never collide with it.
-  int budget = layout.chips_limit - layout.chips_left;
-  if (reserve_placeholder) {
-    budget -= item + gap;
-  }
-  // 65% of a pip (plus its gap) of a hidden neighbour shows past an edge
-  // that hides pips — enough of the icon to read; the peeked pip is laid
-  // out whole and clipped.
-  const int peek = item * 13 / 20 + gap;
-  // Whole pips that fit beside ONE peek (the window at either end of the
-  // row) and beside both (anywhere between). The Mac reserves both at every
-  // position so its animated slide never reflows; this slide is instant, so
-  // the window keeps only the peeks it shows and the pips fill the room up
-  // to the "…" instead of leaving a blank slot before it.
-  int count_edge = total;
-  int count_mid = total;
-  if (total > 0 && width(total) > budget) {
-    chips_overflow_ = true;
-    count_edge = total - 1;
-    while (count_edge > 1 && width(count_edge) + peek > budget) {
-      --count_edge;
-    }
-    count_mid = count_edge;
-    while (count_mid > 1 && width(count_mid) + 2 * peek > budget) {
-      --count_mid;
-    }
-  }
-  const int max_start = std::max(0, total - count_edge);
-  if (reserve_placeholder) {
-    // slideViewportToEnd: the placeholder stands after the last pip, so an
-    // overflowing row shows its tail for the placeholder to read as
-    // continuing it.
-    chips_start_ = max_start;
-  } else if (chips_anchor_space_ != active_space() ||
-             chips_anchor_visible_ != count_mid) {
-    // ensureActivePipVisible: centre the active pip in the window, clamped
-    // at the row's ends so the first/last few pips still fill it. Wheel
-    // steps between switches are a manual peek and are left alone.
-    chips_anchor_space_ = active_space();
-    chips_anchor_visible_ = count_mid;
-    int index = 0;
-    for (int i = 0; i < total; ++i) {
-      if (!row[static_cast<size_t>(i)].is_agent &&
-          row[static_cast<size_t>(i)].id == active_space()) {
-        index = i;
-        break;
-      }
-    }
-    chips_start_ = std::max(0, std::min(index - count_mid / 2, max_start));
-  }
-  chips_start_ = std::max(0, std::min(chips_start_, max_start));
-  const bool at_edge = chips_start_ == 0 || chips_start_ == max_start;
-  const int visible =
-      std::min(at_edge ? count_edge : count_mid, total - chips_start_);
-  const int leading_peek = chips_start_ > 0 ? peek : 0;
-  const int trailing_peek = chips_start_ + visible < total ? peek : 0;
-  const int first = chips_start_ - (leading_peek ? 1 : 0);
-  const int end = std::min(total, chips_start_ + visible + (trailing_peek ? 1 : 0));
-  chips_first_index_ = first;
-  const int origin =
-      layout.chips_left + leading_peek - chips_start_ * (item + gap);
-  for (int i = first; i < end; ++i) {
-    SpaceChip chip = std::move(row[static_cast<size_t>(i)]);
-    const int x = origin + i * (item + gap);
-    chip.bounds = {x, layout.chips_top, x + item, layout.chips_top + item};
-    chips_.push_back(std::move(chip));
-  }
-  const int viewport_right =
-      layout.chips_left + leading_peek + width(visible) + trailing_peek;
-  if (leading_peek || trailing_peek) {
-    chips_clip_ = {layout.chips_left, layout.chips_top, viewport_right,
-                   layout.chips_top + item};
-  }
-  if (reserve_placeholder) {
-    const int x = total > 0 ? viewport_right + gap : layout.chips_left;
-    // The same CELL a real pip gets; the dashed ring is painted inside it at
-    // the chip size, exactly as a pip's card is.
-    creating_pip_bounds_ = {x, layout.chips_top, x + item,
-                            layout.chips_top + item};
-  }
-}
-
-bool PhiWindowController::ChipHit(const SpaceChip& chip,
-                                  POINT client_pt) const {
-  // A peeked pip is hit only on the part that shows (the Mac's
-  // peekHitTarget): its full rect would leak past the clip into the padding.
-  if (!::PtInRect(&chip.bounds, client_pt)) {
-    return false;
-  }
-  return chips_clip_.right <= chips_clip_.left ||
-         ::PtInRect(&chips_clip_, client_pt);
-}
-
-void PhiWindowController::StepChipsViewport(int step) {
-  // Purely a manual peek at off-screen pips, clamped at the row's ends: the
-  // next Space switch re-anchors the window on the active pip. Ignored
-  // mid-drag, where sliding the row under the drop targets would scramble
-  // the reorder, and while the create form pins the window to the end.
-  if (step == 0 || !chips_overflow_ || drag_active_ || creating_space_) {
-    return;
-  }
-  // RebuildChips clamps the window to the row's true end; only a step that
-  // can never move it is refused here, so the repaint is not wasted.
-  if (step < 0 && chips_start_ == 0) {
-    return;
-  }
-  chips_start_ = std::max(0, chips_start_ + step);
-  // The pips move under a RESTING pointer: re-hover against the new row now,
-  // not at the next paint, so the wash and the hover card follow the pip
-  // that is under the cursor rather than the index that used to be.
-  RebuildChips();
-  // A one-pip step often leaves the SAME chips_ index under the cursor with
-  // a different pip in it; forget the old hover so the re-hover registers
-  // as a change and hands the card over.
-  hover_kind_ = HoverKind::kNone;
-  hover_index_ = -1;
-  POINT cursor = {};
-  if (shell_hwnd_ && ::GetCursorPos(&cursor)) {
-    ::ScreenToClient(shell_hwnd_, &cursor);
-    OnChromeMouseMove(cursor);
-    // The pips moved NOW, ahead of any rebuild: the strip repaints itself
-    // (the rebuild turn compares against rows that already moved).
-    const Layout layout = ComputeLayout();
-    const RECT strip =
-        layout.horizontal_tabs ? layout.title_bar : layout.spaces_strip;
-    ::InvalidateRect(shell_hwnd_, &strip, FALSE);
-  }
-  ScheduleRefresh();
+  spaces_->Rebuild();
 }
 
 namespace {
@@ -5490,22 +5021,7 @@ void PhiWindowController::RebuildTabs() {
   // The native-page routes (bookmark manager, new-tab page) can only be
   // entered or left by a rebuild; mounting a page here would run inside
   // WM_PAINT, so post and do it after.
-  if (shell_hwnd_) {
-    const bool mounted = bookmark_manager_ && bookmark_manager_->visible();
-    const bool ntp_mounted = new_tab_page_ && new_tab_page_->visible();
-    // A page blanked by a commit whose navigation is over (or belongs to
-    // another tab now) needs the sync too, to bring its controls back.
-    const bool ntp_stale =
-        ntp_mounted && new_tab_page_->controls_hidden() &&
-        (active_tab_id_ != ntp_commit_tab_id_ || !omnibox_->nav_loading());
-    if (ntp_mounted) {
-      new_tab_page_->Refresh();  // Palette ramps repaint it with the chrome.
-    }
-    if (mounted != WantsBookmarkPage() || ntp_mounted != WantsNativeNtp() ||
-        ntp_stale) {
-      ::PostMessageW(shell_hwnd_, kMsgPhiSyncNativePages, 0, 0);
-    }
-  }
+  native_pages_->SyncIfRouteChanged();
 
   // Geometry for the content nodes.
   int x = layout.tabs_left;
@@ -6019,10 +5535,8 @@ void PhiWindowController::OnChromeClick(int x, int y) {
   }
   // The chips and rows are hit-tested as they are — what the last frame
   // showed under the pointer (docs/architecture-review.md §3.1 principle 7).
-  for (const SpaceChip& chip : chips_) {
-    if (!ChipHit(chip, pt)) {
-      continue;
-    }
+  if (const int hit = spaces_->ChipAt(pt); hit >= 0) {
+    const PhiSpaceChip chip = spaces_->chips()[static_cast<size_t>(hit)];
     // An agent pip toggles watching that agent Space (surface / park its
     // hidden window). It never reorders and has no Space card.
     if (chip.is_agent) {
@@ -6036,7 +5550,7 @@ void PhiWindowController::OnChromeClick(int x, int y) {
     // down until the pointer leaves this pip — without this the switched-to
     // strip's fresh hover re-presents it right after the swap (the Mac's
     // suppressHoverCard). The modal popup below would freeze it, too.
-    DismissHoverCard(chip.id);
+    spaces_->DismissHoverCard(chip.id);
     if (!layout.horizontal_tabs) {
       // Vertical strips show every pip: reorderable by drag.
       ArmDrag(SidebarKey::Space(chip.id), pt);
@@ -6048,7 +5562,7 @@ void PhiWindowController::OnChromeClick(int x, int y) {
       ShowSpaceSwitcherMenu(pt, /*with_new_space=*/false);
       return;
     }
-    if (creating_space_) {
+    if (spaces_->creating()) {
       return;  // Read-only while the form is up (the Mac's isCreatingSpace).
     }
     if (chip.open) {
@@ -6061,17 +5575,17 @@ void PhiWindowController::OnChromeClick(int x, int y) {
     return;
   }
   if (host_ && ::PtInRect(&layout.add_space, pt)) {
-    if (creating_space_) {
+    if (spaces_->creating()) {
       return;  // The form is already up: requestCreation is a no-op then.
     }
-    if (!chips_overflow_) {
+    if (!spaces_->overflow()) {
       // The pointer is on the row, so the "+" is up — or would be, had the
       // hover-in reached us: a click under a pointer that never moved since
       // a menu dismissed over it reveals the button rather than being lost.
       // (The Mac's flag is watchdog-verified against the real pointer, so
       // its hidden-and-disabled "+" never sits under a pointer on the row.)
-      SetStripRowHovered(true);
-      ShowCreateSpaceForm();
+      spaces_->SetRowHovered(true);
+      spaces_->ShowCreateForm();
       return;
     }
     // Overflow: the "…" opens the full switcher — every Space plus a
@@ -6164,21 +5678,6 @@ void FillRoundedTop(HDC dc, const RECT& r, COLORREF fill, int radius) {
 
 void FillRounded(HDC dc, const RECT& r, COLORREF fill, int radius) {
   PhiFillRoundRectAA(dc, r, radius, fill);
-}
-
-// A rounded rect with a hairline border — the address field.
-// The chip the paint pass draws: `painted` square, centred in whatever cell
-// the layout hands it. The vertical layouts' cell is the whole 32pt strip
-// band — that size is hit area and spacing, and a selection card filling it
-// would swallow the icon it exists to frame, so the card stays the Mac's
-// 24pt chip (radius 8 on it, the third-of-a-side the Mac draws).
-RECT PaintedChip(const RECT& cell, int painted) {
-  RECT chip = cell;
-  ::InflateRect(
-      &chip,
-      -std::max(0, static_cast<int>(cell.right - cell.left) - painted) / 2,
-      -std::max(0, static_cast<int>(cell.bottom - cell.top) - painted) / 2);
-  return chip;
 }
 
 void StrokeRounded(HDC dc, const RECT& r, COLORREF fill, COLORREF border,
@@ -6987,10 +6486,8 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
   // The chips and rows are hit-tested as the last frame showed them; what a
   // hit produces is a SNAPSHOT, copied here, and every menu below runs from
   // that copy alone.
-  for (const SpaceChip& chip : chips_) {
-    if (!ChipHit(chip, pt)) {
-      continue;
-    }
+  if (const int hit = spaces_->ChipAt(pt); hit >= 0) {
+    const PhiSpaceChip& chip = spaces_->chips()[static_cast<size_t>(hit)];
     if (chip.is_agent) {
       ShowAgentChipMenu(pt, chip.id);
     }
@@ -7463,7 +6960,6 @@ void PhiWindowController::PaintChrome(HDC dc,
   const PhiPalette palette = CurrentPalette();
   const COLORREF kTintTop = palette.ground_top;
   const COLORREF kTintBottom = palette.ground_bottom;
-  const COLORREF kRowSelectedBg = palette.selected;
   const COLORREF kLabel = palette.label;
   const COLORREF kLabelDim = palette.label_dim;
   const COLORREF kBorder = palette.border;
@@ -7479,10 +6975,6 @@ void PhiWindowController::PaintChrome(HDC dc,
   const COLORREF kFieldBg = kFieldOnBar ? palette.bar_hover : palette.hover;
   const COLORREF kFieldBgHot =
       kFieldOnBar ? palette.bar_hover_strong : palette.hover_strong;
-  // The active pill's 1pt outline exists only in dark mode (white 20%).
-  const COLORREF kActivePillBorder =
-      palette.dark ? BlendOver(RGB(0xFF, 0xFF, 0xFF), kRowSelectedBg, 51)
-                   : kRowSelectedBg;
   // Paint only the bands we own. Whatever is left is the content region, and
   // the reparented browser child covers it. No seam along the content edge:
   // the chrome runs straight into the page.
@@ -7769,208 +7261,10 @@ void PhiWindowController::PaintChrome(HDC dc,
   // Space pips: 24pt, icon only. The selected one sits on a selected-pill
   // card (SpacesStripView's matchedGeometry indicator); the trailing "+"
   // creates a Space.
-  // The selected pill first, as a background layer (the Mac's strip-level
-  // glass chip sits BEHIND the pips): mid-switch it slides across
-  // neighboring pips' rects on the band slide's clock, and their glyphs
-  // must draw over it, not vanish under it. The pips themselves stay put.
-  // The hairline stands in for the Mac chip's drop shadow — without it the
-  // white pill disappears on a white ground.
-  // An overflowing row paints through the viewport clip: the peeked
-  // neighbours show partly, the cue that the row continues.
-  const int chips_clip_save = ::SaveDC(dc);
-  if (chips_clip_.right > chips_clip_.left) {
-    ::IntersectClipRect(dc, chips_clip_.left, layout.spaces_strip.top,
-                        chips_clip_.right, layout.spaces_strip.bottom);
-  }
-  for (const SpaceChip& chip : chips_) {
-    // A watched agent pip wears the selection pill too, so "which agent am I
-    // watching" reads at a glance.
-    if (chip.id != active_space() && !(chip.is_agent && chip.open)) {
-      continue;
-    }
-    if (creating_space_ && !chip.is_agent) {
-      // The dashed placeholder is the Space in focus while the form is up;
-      // the source Space must not keep reading as active beside it.
-      continue;
-    }
-    RECT pill = PaintedChip(chip.bounds, Scaled(kSpaceChip));
-    if (!chip.is_agent && swap_start_ &&
-        swap_chip_from_.right > swap_chip_from_.left) {
-      const double t = SwapEasedProgress();
-      const auto mix = [t](LONG from, LONG to) {
-        return from + static_cast<LONG>(std::lround((to - from) * t));
-      };
-      const RECT from = PaintedChip(swap_chip_from_, Scaled(kSpaceChip));
-      const RECT to = PaintedChip(chip.bounds, Scaled(kSpaceChip));
-      pill.left = mix(from.left, to.left);
-      pill.top = mix(from.top, to.top);
-      pill.right = mix(from.right, to.right);
-      pill.bottom = mix(from.bottom, to.bottom);
-    }
-    StrokeRounded(dc, pill, kRowSelectedBg,
-                  palette.dark ? kActivePillBorder : kBorder,
-                  Scaled(kSpaceCardRadius));
-  }
-  for (const SpaceChip& chip : chips_) {
-    const bool active = (chip.id == active_space());
-    if (!active && hover_kind_ == HoverKind::kChip &&
-        hover_index_ == static_cast<int>(&chip - chips_.data())) {
-      // The Mac's dim hover wash on an inactive pip (sidebarTabHovered).
-      FillRounded(dc, PaintedChip(chip.bounds, Scaled(kSpaceChip)),
-                  palette.hover, Scaled(kSpaceCardRadius));
-    }
-    // Every pip's icon is the label colour, active or not — the Mac tints
-    // them all Color.primary and lets the selected chip alone say which one
-    // is current. Only the trailing slot's "+" / "…" is secondary.
-    ::SetTextColor(dc, kLabel);
-    // The vertical layouts' pip fills the strip band; its glyph grows with
-    // it, at the same proportion the 24pt pip gives its own.
-    const bool big_pip = layout.chip_size >= kSpaceChipVertical;
-    const int icon_pt = big_pip ? kSpaceIconVertical : kSpaceIcon;
-    // The glyph box is INSET FROM THE PAINTED CHIP, not from the cell: the
-    // colour pass repaints its whole rect from a pixel sampled at the
-    // rect's corner, so a box reaching the chip's own corners would sample
-    // the ground tint outside the rounded corner and clear the card away —
-    // and, where it did survive, square off the corners it covered. 3pt
-    // keeps the sample inside the radius-8 arc with room for the icon.
-    RECT glyph_rc = PaintedChip(chip.bounds, Scaled(kSpaceChip));
-    ::InflateRect(&glyph_rc, -Scaled(3), -Scaled(3));
-    // Colour emoji take the same box: the colour pass centres their INK in
-    // it, so the old hand-tuned lift (they ride low in their line box) is
-    // gone — it left the repainted patch sitting higher than the pip it
-    // belongs to.
-    if (!chip.icon.empty() &&
-        PhiDrawCatalogIcon(dc, glyph_rc, chip.icon, Scaled(icon_pt),
-                           kLabel)) {
-      // The Mac catalog's own artwork, tinted like the glyph would be.
-    } else if (!chip.icon.empty() && !PhiIsPrivateGlyph(chip.icon) &&
-        PhiDrawColorIcon(dc, glyph_rc, chip.icon, Scaled(icon_pt),
-                         kLabel)) {
-      // Emoji rendered in COLOUR via DirectWrite; GDI below is the fallback.
-    } else if (!chip.icon.empty() &&
-               (emoji_font_ || chip_icon_font_)) {
-      // A private-use glyph is one of the Phi icon catalog's MDL2 stand-ins
-      // (one step above the emoji, so the two align); everything else emoji.
-      // Each face comes in both pip sizes; the small one stands in if the
-      // big one failed to build.
-      HFONT icon_font =
-          PhiIsPrivateGlyph(chip.icon)
-              ? (big_pip && pip_icon_font_ ? pip_icon_font_ : chip_icon_font_)
-              : (big_pip && pip_emoji_font_ ? pip_emoji_font_ : emoji_font_);
-      HGDIOBJ previous_icon_font =
-          icon_font ? ::SelectObject(dc, icon_font) : nullptr;
-      PhiDrawTextAA(dc, chip.icon.c_str(), -1, &glyph_rc,
-                  DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-      if (previous_icon_font) {
-        ::SelectObject(dc, previous_icon_font);
-      }
-    } else {
-      // No icon: the name's first character stands in (the pip has no room
-      // for the name itself). It rides the UI font, so the big pip needs the
-      // strip's own text font to keep pace with its glyphs.
-      const std::wstring initial =
-          chip.label.empty() ? std::wstring(L"?") : chip.label.substr(0, 1);
-      HGDIOBJ previous_initial_font =
-          big_pip && pip_text_font_ ? ::SelectObject(dc, pip_text_font_)
-                                    : nullptr;
-      PhiDrawTextAA(dc, initial.c_str(), -1, const_cast<RECT*>(&chip.bounds),
-                  DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-      if (previous_initial_font) {
-        ::SelectObject(dc, previous_initial_font);
-      }
-    }
-  }
-  ::RestoreDC(dc, chips_clip_save);
-  if (creating_space_ &&
-      creating_pip_bounds_.right > creating_pip_bounds_.left) {
-    // The Mac's creatingSpacePlaceholderPip: a dashed outline where the new
-    // Space will land, carrying the form's currently selected icon.
-    const RECT pip = PaintedChip(creating_pip_bounds_, Scaled(kSpaceChip));
-    PhiStrokeRoundRectDashedAA(dc, pip, Scaled(kCornerRadius),
-                               BlendOver(kLabelDim, palette.ground_top, 166),
-                               1, Scaled(3), Scaled(2));
-    if (!creating_space_icon_text_.empty()) {
-      // Sized like a real pip's icon, through the same ink-fitting draws:
-      // the old fixed-point artwork/text path rendered the chosen icon
-      // visibly smaller than the pips it stands among.
-      const bool big_pip = layout.chip_size >= kSpaceChipVertical;
-      const int icon_pt = big_pip ? kSpaceIconVertical : kSpaceIcon;
-      RECT glyph_rc = pip;
-      ::InflateRect(&glyph_rc, -Scaled(3), -Scaled(3));
-      if (PhiDrawCatalogIcon(dc, glyph_rc, creating_space_icon_text_,
-                             Scaled(icon_pt), kLabel)) {
-        // The catalog's own artwork.
-      } else if (!PhiIsPrivateGlyph(creating_space_icon_text_) &&
-                 PhiDrawColorIcon(dc, glyph_rc, creating_space_icon_text_,
-                                  Scaled(icon_pt), kLabel)) {
-        // Colour emoji.
-      } else if (emoji_font_ || chip_icon_font_) {
-        HFONT pip_icon_font =
-            PhiIsPrivateGlyph(creating_space_icon_text_)
-                ? (big_pip && pip_icon_font_ ? pip_icon_font_
-                                             : chip_icon_font_)
-                : (big_pip && pip_emoji_font_ ? pip_emoji_font_
-                                              : emoji_font_);
-        HGDIOBJ previous_pip_font =
-            pip_icon_font ? ::SelectObject(dc, pip_icon_font) : nullptr;
-        ::SetTextColor(dc, kLabel);
-        PhiDrawTextAA(dc, creating_space_icon_text_.c_str(), -1, &glyph_rc,
-                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-        if (previous_pip_font) {
-          ::SelectObject(dc, previous_pip_font);
-        }
-      }
-    }
-  }
-  if (!incognito_ && layout.add_space.right > layout.add_space.left) {
-    // The Mac trailing slot: "+" creates; on overflow it becomes the "…"
-    // switcher (moreButton) since not every pip is visible. The "+" is up
-    // only while the pointer is over the strip's row (addButton's opacity
-    // rides slot.isStripRowHovered, 0.15s easeInOut); the "…" always is.
-    // Whichever shows wears the pips' hover wash (radius 6) under the
-    // cursor. GDI has no opacity: the fade blends toward the ground the
-    // slot sits on, sampled from its corner — nothing else paints there.
-    const double reveal = chips_overflow_ ? 1.0 : AddSpaceRevealProgress();
-    if (reveal > 0.0) {
-      COLORREF ground =
-          ::GetPixel(dc, layout.add_space.left, layout.add_space.top);
-      if (ground == CLR_INVALID) {
-        ground = palette.ground_top;
-      }
-      const int alpha = static_cast<int>(std::lround(reveal * 255.0));
-      if (hover_kind_ == HoverKind::kAddSpace) {
-        FillRounded(dc, layout.add_space,
-                    BlendOver(palette.hover, ground, alpha), Scaled(6));
-      }
-      const COLORREF slot_ink = BlendOver(kLabelDim, ground, alpha);
-      if (chips_overflow_) {
-        // The Mac's moreButton is SF Symbols' `ellipsis` — three ROUND dots
-        // at the icon size. A text "…" is not that: its dots are small,
-        // square-cornered and sit on the baseline, which reads as a typo
-        // beside the icons. Three circles, 3pt across on a 5pt pitch,
-        // centred in the slot.
-        const int dot = Scaled(3);
-        const int pitch = Scaled(5);
-        const int mid_x = (layout.add_space.left + layout.add_space.right) / 2;
-        const int mid_y = (layout.add_space.top + layout.add_space.bottom) / 2;
-        for (int i = -1; i <= 1; ++i) {
-          const RECT d = {mid_x + i * pitch - dot / 2, mid_y - dot / 2,
-                          mid_x + i * pitch - dot / 2 + dot,
-                          mid_y - dot / 2 + dot};
-          PhiFillEllipseAA(dc, d, slot_ink);
-        }
-      } else {
-        HGDIOBJ previous_slot_font =
-            layout.chip_size >= kSpaceChipVertical && pip_text_font_
-                ? ::SelectObject(dc, pip_text_font_)
-                : nullptr;
-        DrawGlyph(dc, layout.add_space, L"+", slot_ink);
-        if (previous_slot_font) {
-          ::SelectObject(dc, previous_slot_font);
-        }
-      }
-    }
-  }
+  // The pips, the create form's placeholder and the trailing "+" / "…"
+  // (phi_spaces_strip.h). Only the strip paints them, and it never paints
+  // anything else.
+  spaces_->Paint(dc, StripRects(layout), palette);
 
   PaintBandOrSwipe(dc, layout, palette);
 
@@ -8100,334 +7394,11 @@ void PhiWindowController::PaintChrome(HDC dc,
 
   // The Space hover card floats over the window as a popup, the way the
   // Mac's panel does; it is measured with this DC's font.
-  SyncHoverCardPopup(dc, layout);
+  spaces_->SyncHoverCardPopup(dc, StripRects(layout));
 
   if (previous_font) {
     ::SelectObject(dc, previous_font);
   }
-}
-
-// A hovered pip's info card (the Mac's SpaceHoverCard): the Space as a
-// tinted capsule (icon + name), the bound profile, and the Ctrl+N switch
-// shortcut as keycaps, floating just above the pip on a bordered card. The
-// header above the strip is all shell-drawn — no child window clips it —
-// which is why the card anchors UPWARD, like the Mac panel.
-bool PhiWindowController::MeasureHoverCard(HDC dc,
-                                           const Layout& layout,
-                                           HoverCardGeometry* out) {
-  if (hover_card_space_.empty() || drag_active_) {
-    return false;
-  }
-  const SpaceChip* chip = nullptr;
-  for (const SpaceChip& c : chips_) {
-    if (c.id == hover_card_space_) {
-      chip = &c;
-      break;
-    }
-  }
-  if (!chip) {
-    return false;  // The Space left the strip; the next hover change prunes state.
-  }
-  HoverCardGeometry g;
-  g.icon = chip->icon;
-  g.name = chip->label.empty() ? L"Space" : chip->label;
-  g.profile = card_profile_.empty() ? L"Default" : card_profile_;
-
-  // Measure the two labels in the card's (small) font, clamped so the card
-  // always fits the window.
-  HGDIOBJ previous_font =
-      small_font_ ? ::SelectObject(dc, small_font_) : nullptr;
-  const auto measure = [&](const std::wstring& text, int max_w) {
-    RECT rc = {0, 0, 0, 0};
-    PhiDrawTextAA(dc, text.c_str(), -1, &rc,
-                DT_CALCRECT | DT_SINGLELINE | DT_LEFT);
-    return std::min(static_cast<int>(rc.right), max_w);
-  };
-  // A compact take on SpaceHoverCard's metrics: an 18pt capsule with 6/3
-  // padding around a 12pt icon and the name; 6pt between sections; 15pt
-  // keycaps with 2pt gaps; 8/5 card padding.
-  g.pill_h = Scaled(18);
-  g.dot_w = Scaled(5);
-  g.gap = Scaled(6);
-  if (card_shortcut_ > 0) {
-    g.keycaps.push_back(L"Ctrl");
-    g.keycaps.push_back(std::to_wstring(card_shortcut_));
-  }
-  for (const std::wstring& token : g.keycaps) {
-    const int w = std::max(Scaled(15), measure(token, Scaled(36)) + Scaled(6));
-    g.key_widths.push_back(w);
-    g.keys_w += (g.keys_w ? Scaled(2) : 0) + w;
-  }
-
-  // The popup floats over the whole window, content child included, so
-  // only the window's own width bounds it. Shrink the name first, then the
-  // profile — never the keycaps.
-  const int band_right = static_cast<int>(layout.client.right) - Scaled(4);
-  int name_w = measure(g.name, Scaled(100));
-  int profile_w = measure(g.profile, Scaled(72));
-  if (previous_font) {
-    ::SelectObject(dc, previous_font);
-  }
-  const int fixed_w = 2 * Scaled(6) + Scaled(12) + Scaled(4) +  // Pill chrome.
-                      g.gap + g.dot_w + g.gap +
-                      (g.keys_w ? g.gap + g.dot_w + g.gap + g.keys_w : 0);
-  const int avail = band_right - Scaled(4) - 2 * Scaled(8);
-  int overflow = fixed_w + name_w + profile_w - avail;
-  if (overflow > 0 && name_w > Scaled(44)) {
-    const int take = std::min(overflow, name_w - Scaled(44));
-    name_w -= take;
-    overflow -= take;
-  }
-  if (overflow > 0 && profile_w > Scaled(32)) {
-    profile_w -= std::min(overflow, profile_w - Scaled(32));
-  }
-  g.name_w = name_w;
-  g.profile_w = profile_w;
-  g.pill_w = 2 * Scaled(6) + Scaled(12) + Scaled(4) + name_w;
-  int content_w = g.pill_w + g.gap + g.dot_w + g.gap + profile_w;
-  if (g.keys_w) {
-    content_w += g.gap + g.dot_w + g.gap + g.keys_w;
-  }
-  const int card_w = content_w + 2 * Scaled(8);
-  const int card_h = g.pill_h + 2 * Scaled(5);
-
-  // Centered under the pip, clamped to the window; always BELOW the strip,
-  // so it never covers the caption row or the pips.
-  const int mid_x = (chip->bounds.left + chip->bounds.right) / 2;
-  int left = mid_x - card_w / 2;
-  left = std::min(left, band_right - card_w);
-  left = std::max(left, Scaled(4));
-  int top = chip->bounds.bottom + Scaled(4);
-  top = std::min(top,
-                 static_cast<int>(layout.client.bottom) - Scaled(2) - card_h);
-  g.card = {left, top, left + card_w, top + card_h};
-  *out = std::move(g);
-  return true;
-}
-
-void PhiWindowController::PaintHoverCard(HDC dc,
-                                         const HoverCardGeometry& g,
-                                         const PhiPalette& palette) {
-  const COLORREF card_bg = palette.card;
-  const COLORREF accent = card_accent_;
-  const RECT& card = g.card;
-  StrokeRounded(dc, card, card_bg, palette.border, Scaled(kHoverCardRadius));
-
-  const int mid_y = (card.top + card.bottom) / 2;
-  int x = card.left + Scaled(8);
-
-  // The Space capsule: icon + name on the accent's 15% wash.
-  const RECT pill = {x, mid_y - g.pill_h / 2, x + g.pill_w,
-                     mid_y + g.pill_h / 2};
-  FillRounded(dc, pill, BlendOver(accent, card_bg, 38), g.pill_h);
-  RECT icon_rc = {pill.left + Scaled(6), mid_y - Scaled(6),
-                  pill.left + Scaled(6) + Scaled(12), mid_y + Scaled(6)};
-  // The icon keeps its strip colours — catalog art in the label ink, emoji
-  // in their own — only the name and keycaps wear the accent.
-  const COLORREF icon_ink = palette.label;
-  if (!g.icon.empty() &&
-      PhiDrawCatalogIcon(dc, icon_rc, g.icon, Scaled(12), icon_ink)) {
-    // The Mac catalog's own artwork.
-  } else if (!g.icon.empty() && !PhiIsPrivateGlyph(g.icon) &&
-             PhiDrawColorIcon(dc, icon_rc, g.icon, Scaled(12), icon_ink)) {
-    // Colour emoji via DirectWrite; the font paths below are the fallback.
-  } else if (!g.icon.empty() && (emoji_font_ || chip_icon_font_)) {
-    HFONT icon_font = PhiIsPrivateGlyph(g.icon) ? chip_icon_font_ : emoji_font_;
-    HGDIOBJ previous_icon_font =
-        icon_font ? ::SelectObject(dc, icon_font) : nullptr;
-    ::SetTextColor(dc, icon_ink);
-    PhiDrawTextAA(dc, g.icon.c_str(), -1, &icon_rc,
-                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-    if (previous_icon_font) {
-      ::SelectObject(dc, previous_icon_font);
-    }
-  } else {
-    ::SetTextColor(dc, icon_ink);
-    const std::wstring initial = g.name.substr(0, 1);
-    PhiDrawTextAA(dc, initial.c_str(), -1, &icon_rc,
-                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-  }
-  ::SetTextColor(dc, accent);
-  RECT name_rc = {icon_rc.right + Scaled(4), pill.top, pill.right - Scaled(6),
-                  pill.bottom};
-  PhiDrawTextAA(dc, g.name.c_str(), -1, &name_rc,
-              DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-  x += g.pill_w + g.gap;
-
-  // Middle-dot separators and the profile, dim like the Mac's secondary.
-  const RECT dot1 = {x, card.top, x + g.dot_w, card.bottom};
-  DrawGlyph(dc, dot1, L"·", palette.label_dim);
-  x += g.dot_w + g.gap;
-  ::SetTextColor(dc, palette.label_dim);
-  RECT profile_rc = {x, card.top, x + g.profile_w, card.bottom};
-  PhiDrawTextAA(dc, g.profile.c_str(), -1, &profile_rc,
-              DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-  x += g.profile_w;
-
-  // The switch shortcut as keycaps, tinted like the address tooltip's.
-  if (g.keys_w) {
-    x += g.gap;
-    const RECT dot2 = {x, card.top, x + g.dot_w, card.bottom};
-    DrawGlyph(dc, dot2, L"·", palette.label_dim);
-    x += g.dot_w + g.gap;
-    for (size_t i = 0; i < g.keycaps.size(); ++i) {
-      const RECT key = {x, mid_y - Scaled(7), x + g.key_widths[i],
-                        mid_y + Scaled(8)};
-      StrokeRounded(dc, key, BlendOver(accent, card_bg, 36),
-                    BlendOver(accent, card_bg, 140), Scaled(4));
-      DrawGlyph(dc, key, g.keycaps[i].c_str(), accent);
-      x += g.key_widths[i] + Scaled(2);
-    }
-  }
-}
-
-void PhiWindowController::SyncHoverCardPopup(HDC dc, const Layout& layout) {
-  HoverCardGeometry g;
-  if (!shell_hwnd_ || !MeasureHoverCard(dc, layout, &g)) {
-    if (hover_card_popup_ && ::IsWindowVisible(hover_card_popup_)) {
-      ::ShowWindow(hover_card_popup_, SW_HIDE);
-    }
-    return;
-  }
-  // Layout → screen. The floating sidebar's panel shows the expanded layout
-  // from floating_offset_y_ down at its own origin.
-  POINT origin = {g.card.left, g.card.top};
-  if (floating_layout_ && floating_sidebar_ && ::IsWindow(floating_sidebar_)) {
-    origin.y -= floating_offset_y_;
-    ::ClientToScreen(floating_sidebar_, &origin);
-  } else {
-    ::ClientToScreen(shell_hwnd_, &origin);
-  }
-  const int w = g.card.right - g.card.left;
-  const int h = g.card.bottom - g.card.top;
-  const RECT screen = {origin.x, origin.y, origin.x + w, origin.y + h};
-  if (!hover_card_popup_) {
-    static const ATOM atom = [] {
-      WNDCLASSW cls = {};
-      cls.lpfnWndProc = &PhiWindowController::HoverCardPopupProc;
-      cls.hInstance = ::GetModuleHandleW(nullptr);
-      cls.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
-      cls.lpszClassName = L"PhiSpaceHoverCard";
-      return ::RegisterClassW(&cls);
-    }();
-    (void)atom;
-    // Owned by the shell, so it stays above the shell and its children
-    // without WS_EX_TOPMOST; transparent to the pointer, so it never takes
-    // the hover it is showing for.
-    // Layered: the card's corners are alpha coverage (antialiased at any
-    // radius), where a window region cuts them on the pixel grid and DWM's
-    // own rounding is fixed at the pills' 8.
-    hover_card_popup_ = ::CreateWindowExW(
-        WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT |
-            WS_EX_LAYERED,
-        L"PhiSpaceHoverCard", L"", WS_POPUP, 0, 0, 0, 0, shell_hwnd_, nullptr,
-        ::GetModuleHandleW(nullptr), this);
-    if (!hover_card_popup_) {
-      return;
-    }
-  }
-  g.card = {0, 0, w, h};  // Painted at the popup's own origin.
-  hover_card_geom_ = std::move(g);
-  const bool moved = !::EqualRect(&screen, &hover_card_popup_rect_);
-  const int r = Scaled(kHoverCardRadius);
-  const bool layered =
-      (::GetWindowLongPtrW(hover_card_popup_, GWL_EXSTYLE) & WS_EX_LAYERED) !=
-      0;
-  if (moved && !layered) {
-    // The region path: the corners cut on the pixel grid.
-    ::SetWindowRgn(hover_card_popup_,
-                   ::CreateRoundRectRgn(0, 0, w + 1, h + 1, 2 * r, 2 * r),
-                   FALSE);
-  }
-  if (moved) {
-    hover_card_popup_rect_ = screen;
-  }
-  if (moved || !::IsWindowVisible(hover_card_popup_)) {
-    ::SetWindowPos(hover_card_popup_, HWND_TOP, screen.left, screen.top, w, h,
-                   SWP_NOACTIVATE | SWP_SHOWWINDOW);
-  }
-  // Recommitted with every shell frame so it rides the theme ramp too.
-  if (layered) {
-    if (PhiCommitShapedLayer(
-            hover_card_popup_, w, h,
-            [&](HDC dc) { PaintHoverCardPopup(hover_card_popup_, dc); },
-            [&](double px, double py) {
-              return PhiRoundRectCoverage(px, py, w, h, r);
-            })) {
-      return;
-    }
-    // No layer to be had: fall back to the region for good.
-    ::SetWindowLongPtrW(
-        hover_card_popup_, GWL_EXSTYLE,
-        ::GetWindowLongPtrW(hover_card_popup_, GWL_EXSTYLE) & ~WS_EX_LAYERED);
-    ::SetWindowRgn(hover_card_popup_,
-                   ::CreateRoundRectRgn(0, 0, w + 1, h + 1, 2 * r, 2 * r),
-                   FALSE);
-  }
-  ::InvalidateRect(hover_card_popup_, nullptr, FALSE);
-}
-
-void PhiWindowController::PaintHoverCardPopup(HWND popup, HDC dc) {
-  RECT rc = {};
-  ::GetClientRect(popup, &rc);
-  if (rc.right <= 0 || rc.bottom <= 0) {
-    return;
-  }
-  HDC mem = ::CreateCompatibleDC(dc);
-  HBITMAP bitmap = ::CreateCompatibleBitmap(dc, rc.right, rc.bottom);
-  HGDIOBJ old_bitmap = ::SelectObject(mem, bitmap);
-  HFONT card_font = small_font_ ? small_font_ : ui_font_;
-  HGDIOBJ old_font = card_font ? ::SelectObject(mem, card_font) : nullptr;
-  ::SetBkMode(mem, TRANSPARENT);
-  const PhiPalette palette = CurrentPalette();
-  HBRUSH ground = ::CreateSolidBrush(palette.card);
-  ::FillRect(mem, &rc, ground);  // Under the region's trimmed corners.
-  ::DeleteObject(ground);
-  PaintHoverCard(mem, hover_card_geom_, palette);
-  ::BitBlt(dc, 0, 0, rc.right, rc.bottom, mem, 0, 0, SRCCOPY);
-  if (old_font) {
-    ::SelectObject(mem, old_font);
-  }
-  ::SelectObject(mem, old_bitmap);
-  ::DeleteObject(bitmap);
-  ::DeleteDC(mem);
-}
-
-// static
-LRESULT CALLBACK PhiWindowController::HoverCardPopupProc(HWND hwnd,
-                                                         UINT msg,
-                                                         WPARAM wparam,
-                                                         LPARAM lparam) {
-  if (msg == WM_NCCREATE) {
-    auto* cs = reinterpret_cast<CREATESTRUCTW*>(lparam);
-    ::SetWindowLongPtrW(hwnd, GWLP_USERDATA,
-                        reinterpret_cast<LONG_PTR>(cs->lpCreateParams));
-    return ::DefWindowProcW(hwnd, msg, wparam, lparam);
-  }
-  if (msg == WM_NCDESTROY) {
-    ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);  // See ShellWndProc.
-    return ::DefWindowProcW(hwnd, msg, wparam, lparam);
-  }
-  auto* self = reinterpret_cast<PhiWindowController*>(
-      ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
-  switch (msg) {
-    case WM_NCHITTEST:
-      return HTTRANSPARENT;  // Never takes the pointer.
-    case WM_MOUSEACTIVATE:
-      return MA_NOACTIVATE;
-    case WM_ERASEBKGND:
-      return 1;  // PaintHoverCardPopup covers the whole client rect.
-    case WM_PAINT: {
-      PAINTSTRUCT ps = {};
-      HDC dc = ::BeginPaint(hwnd, &ps);
-      if (self) {
-        self->PaintHoverCardPopup(hwnd, dc);
-      }
-      ::EndPaint(hwnd, &ps);
-      return 0;
-    }
-  }
-  return ::DefWindowProcW(hwnd, msg, wparam, lparam);
 }
 
 // static
@@ -9049,7 +8020,7 @@ void PhiWindowController::PaintSidebarBand(HDC dc,
 void PhiWindowController::PaintBandOrSwipe(HDC dc,
                                            const Layout& layout,
                                            const PhiPalette& palette) {
-  if (!swap_start_ || layout.horizontal_tabs) {
+  if (!spaces_->swap_running() || layout.horizontal_tabs) {
     PaintSidebarBand(dc, layout, palette);
     return;
   }
@@ -9057,12 +8028,12 @@ void PhiWindowController::PaintBandOrSwipe(HDC dc,
   // Space's retained model paints shifted out at its frozen source palette,
   // the live (entering) model paints shifted in at the ramped palette, both
   // clipped to the band over the ramping ground.
-  const double t = SwapEasedProgress();
+  const double t = spaces_->SwapProgress();
+  const bool forward = spaces_->swap_forward();
   const int band_w = Scaled(sidebar_dip_);
-  const int leave_dx = swap_forward_ ? -static_cast<int>(t * band_w + 0.5)
-                                     : static_cast<int>(t * band_w + 0.5);
-  const int enter_dx =
-      swap_forward_ ? band_w + leave_dx : leave_dx - band_w;
+  const int leave_dx = forward ? -static_cast<int>(t * band_w + 0.5)
+                               : static_cast<int>(t * band_w + 0.5);
+  const int enter_dx = forward ? band_w + leave_dx : leave_dx - band_w;
   const int save = ::SaveDC(dc);
   ::IntersectClipRect(dc, 0, layout.favorites.top, band_w,
                       layout.tabs_limit);
@@ -9070,16 +8041,15 @@ void PhiWindowController::PaintBandOrSwipe(HDC dc,
   ::GetViewportOrgEx(dc, &origin);
   ::SetViewportOrgEx(dc, origin.x + leave_dx, origin.y, nullptr);
   SwapBandModel();
-  PaintSidebarBand(dc, layout, swap_source_palette_);
+  PaintSidebarBand(dc, layout, spaces_->swap_source_palette());
   SwapBandModel();
   ::SetViewportOrgEx(dc, origin.x + enter_dx, origin.y, nullptr);
   PaintSidebarBand(dc, layout, palette);
   ::SetViewportOrgEx(dc, origin.x, origin.y, nullptr);
   ::RestoreDC(dc, save);
   if (t >= 1.0) {
-    leaving_band_ = BandModel();
-    swap_start_ = 0;
-    RevealSwappedContent();  // The page flips only now, the Mac's order.
+    // The page flips only now, the Mac's order.
+    spaces_->NoteSlideLanded();
   }
 }
 
@@ -9136,7 +8106,7 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
       // window takes the click and decides where focus goes.
       const HWND page = self ? self->browsers_->content_hwnd() : nullptr;
       if (!in_chrome && self && !PhiGroupOverview::IsOpen() &&
-          !(self->new_tab_page_ && self->new_tab_page_->visible()) && page &&
+          !self->native_pages_->ntp_mounted() && page &&
           ::IsWindow(page)) {
         ::SetFocus(page);
         // The ACTIVE browser, never the slot's number: after a Space switch
@@ -9163,9 +8133,9 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
           self && page && ::IsWindow(page) &&
           !self->omnibox_->FieldHasFocus() &&
           !(msg == WM_ACTIVATE && LOWORD(wparam) == WA_INACTIVE)) {
-        if (self->new_tab_page_ && self->new_tab_page_->WantsFocus()) {
+        if (self->native_pages_->ntp_wants_focus()) {
           // The native new-tab page is up: its omnibox is the focus.
-          self->new_tab_page_->FocusField();
+          self->native_pages_->FocusNtpField();
           return 0;
         }
         ::SetFocus(page);
@@ -9323,8 +8293,7 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
       break;
     case kMsgPhiSyncNativePages:
       if (self) {
-        self->SyncBookmarkManager();
-        self->SyncNativeNtp();
+        self->native_pages_->Sync();
       }
       return 0;
     case kMsgPhiRebuildRows:
@@ -9361,9 +8330,9 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
       return 0;
     case PhiBrowserHost::kMsgRaiseCaps:
       if (self) {
-        if (self->new_tab_page_ && self->new_tab_page_->visible()) {
+        if (self->native_pages_->ntp_mounted()) {
           // Above the browser child; the bubble and caps go above it next.
-          ::SetWindowPos(self->new_tab_page_->hwnd(), HWND_TOP, 0, 0, 0, 0,
+          ::SetWindowPos(self->native_pages_->ntp_hwnd(), HWND_TOP, 0, 0, 0, 0,
                          SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         }
         if (self->host_) {
@@ -9496,24 +8465,12 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
         }
         return 0;
       }
-      if (self && wparam == kHoverCardTimer) {
-        self->PromoteHoverCard();  // Kills its own timer.
+      if (self && wparam == PhiSpacesStrip::kHoverCardTimer) {
+        self->spaces_->PromoteHoverCard();  // Kills its own timer.
         return 0;
       }
       if (self && wparam == PhiOmniboxSession::kCopyLinkTimer) {
         self->omnibox_->RevertCopyLinkFlash();
-        return 0;
-      }
-      if (self && wparam == kAddSpaceFadeTimer) {
-        // The "+" reveal fade: repaint ITS slot until it settles.
-        const RECT button = self->HoverRect(HoverKind::kAddSpace, 0);
-        ::InvalidateRect(hwnd, &button, FALSE);
-        if (!self->add_space_fade_start_ ||
-            ::GetTickCount64() - self->add_space_fade_start_ >=
-                static_cast<ULONGLONG>(kAddSpaceFadeMs)) {
-          ::KillTimer(hwnd, kAddSpaceFadeTimer);
-          self->add_space_fade_start_ = 0;
-        }
         return 0;
       }
       if (self && wparam == kDragSlideTimer) {
@@ -9525,22 +8482,11 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
         }
         return 0;
       }
-      if (self && wparam == kSpaceSwapTimer) {
-        // The whole chrome repaints per tick: the band slide advances and
-        // the theme ramp covers the statics. The caps ride the same ramp.
-        ::InvalidateRect(hwnd, nullptr, FALSE);
-        self->browsers_->RefreshCornerCaps();
-        self->omnibox_->Repaint();  // The EDIT rides the ramp too.
-        if (self->RampEasedProgress() >= 1.0 && !self->swap_start_) {
-          ::KillTimer(hwnd, kSpaceSwapTimer);
-          self->ramp_start_ = 0;
-        }
-        return 0;
-      }
       return ::DefWindowProcW(hwnd, msg, wparam, lparam);
     case WM_SIZE:
       if (self) {
-        self->CancelSpaceSwap();  // Band geometry changed under the slide.
+        // Band geometry changed under the slide.
+        self->spaces_->CancelSwap();
         self->LayoutContents();
       }
       return 0;
