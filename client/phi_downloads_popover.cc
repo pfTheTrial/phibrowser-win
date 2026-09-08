@@ -27,7 +27,9 @@
 #include "base/values.h"
 #include "chrome/browser/phinomenon/phi_framework/phi_framework_api.h"
 #include "phibrowser-win/client/phi_dwrite.h"
+#include "phibrowser-win/client/phi_i18n.h"
 #include "phibrowser-win/client/phi_popover.h"
+#include "phibrowser-win/client/phi_util.h"
 
 namespace phi_client {
 
@@ -50,16 +52,6 @@ constexpr UINT kPollIntervalMs = 500;  // Live refresh while open.
 constexpr int kKeyStride = 8;
 constexpr int kAllDownloadsKey = -1;
 
-COLORREF BlendOver(COLORREF base_color, COLORREF over, int alpha) {
-  const int r = (GetRValue(over) * alpha + GetRValue(base_color) *
-                 (255 - alpha)) / 255;
-  const int g = (GetGValue(over) * alpha + GetGValue(base_color) *
-                 (255 - alpha)) / 255;
-  const int b = (GetBValue(over) * alpha + GetBValue(base_color) *
-                 (255 - alpha)) / 255;
-  return RGB(r, g, b);
-}
-
 void FillRect(HDC dc, const RECT& r, COLORREF color) {
   HBRUSH brush = ::CreateSolidBrush(color);
   ::FillRect(dc, &r, brush);
@@ -71,10 +63,17 @@ void FillRounded(HDC dc, const RECT& r, COLORREF color, int radius) {
 }
 
 std::wstring FormatBytes(double bytes) {
-  static constexpr std::array<const wchar_t*, 4> kUnits = {L"B", L"KB",
-                                                           L"MB", L"GB"};
+  // The unit names are catalog keys rather than literals. The FIGURE is
+  // still built with std::to_wstring, which is C-locale: a German user reads
+  // "9.3 MB" where the system writes "9,3 MB". The fix is
+  // PhiFormatNumber(bytes, 1) — deliberately NOT made here, because
+  // GetNumberFormatEx also groups, so "1023 B" would become "1,023 B" and
+  // this change is required to render identically in English. It is on the
+  // list for the pass that converts the rest of this file.
+  static constexpr std::array<const char*, 4> kUnitKeys = {
+      "downloads.b", "downloads.kb", "downloads.mb", "downloads.gb"};
   size_t unit = 0;
-  while (bytes >= 1024.0 && unit + 1 < kUnits.size()) {
+  while (bytes >= 1024.0 && unit + 1 < kUnitKeys.size()) {
     bytes /= 1024.0;
     ++unit;
   }
@@ -85,38 +84,41 @@ std::wstring FormatBytes(double bytes) {
   if (dot != std::wstring::npos) {
     text.resize(unit == 0 ? dot : dot + 2);
   }
-  return text + L" " + kUnits[unit];
+  return text + L" " + PhiStr(kUnitKeys[unit]);
 }
 
-// DownloadItemRow's friendly completion time.
+// DownloadItemRow's friendly completion time. The ladder itself is
+// PhiRelativeSpanFor (phi_util.h) so its boundaries are pinned by a host
+// test; this function only names the strings. Before this change the sentence
+// was CONCATENATED — `n + L" days ago"` — which reads "1 days ago" at 48
+// hours, cannot be reordered by a translator, and made the string
+// untranslatable in any language whose number goes elsewhere.
 std::wstring FormatRelative(double unix_seconds) {
-  const time_t now = ::time(nullptr);
-  const double delta = now - unix_seconds;
-  if (delta < 60) {
-    return L"Just now";
+  const auto now = static_cast<double>(::time(nullptr));
+  const auto delta = static_cast<long long>(now - unix_seconds);
+  const PhiRelativeSpan span = PhiRelativeSpanFor(delta);
+  switch (span.unit) {
+    case PhiRelativeUnit::kJustNow:
+      return PhiStr("downloads.item.completedTime.justNow");
+    case PhiRelativeUnit::kMinutes:
+      return PhiStrN("downloads.item.completedTime.minutesAgo", span.count);
+    case PhiRelativeUnit::kHours:
+      return PhiStrN("downloads.item.completedTime.hoursAgo", span.count);
+    case PhiRelativeUnit::kToday:
+      return PhiStr("downloads.item.completedTime.today");
+    case PhiRelativeUnit::kYesterday:
+      return PhiStr("downloads.item.completedTime.yesterday");
+    case PhiRelativeUnit::kDays:
+      return PhiStrN("downloads.item.completedTime.daysAgo", span.count);
+    case PhiRelativeUnit::kAbsolute:
+      break;
   }
-  if (delta < 3600) {
-    return std::to_wstring(static_cast<int>(delta / 60)) + L" min ago";
-  }
-  if (delta < 12 * 3600) {
-    return std::to_wstring(static_cast<int>(delta / 3600)) + L" hour ago";
-  }
-  if (delta < 3 * 86400) {
-    const int days = static_cast<int>(delta / 86400);
-    if (days == 0) {
-      return L"Today";
-    }
-    if (days == 1) {
-      return L"Yesterday";
-    }
-    return std::to_wstring(days) + L" days ago";
-  }
-  const time_t when = static_cast<time_t>(unix_seconds);
-  tm parts;
-  ::localtime_s(&parts, &when);
-  wchar_t buffer[64];
-  ::wcsftime(buffer, 64, L"%b %d, %Y", &parts);
-  return buffer;
+  // "%b %d, %Y" was English wearing a format string's clothes: it puts the
+  // month first for every locale on earth and abbreviates it in English.
+  // The locale's own short date is both correct and narrower, which this
+  // 340pt row wants.
+  return PhiFormatDate(static_cast<int64_t>(unix_seconds) * 1000,
+                       PhiDateStyle::kShortDate);
 }
 
 struct DownloadRow {
@@ -447,7 +449,7 @@ class Popover : public PhiPopover {
     const PhiPalette& p = palette();
     FillRect(dc, client, p.window_bg);
     ::SetBkMode(dc, TRANSPARENT);
-    const COLORREF dim = BlendOver(p.window_bg, p.label, 128);
+    const COLORREF dim = PhiBlend(p.label, p.window_bg, 128);
 
     if (rows_.empty()) {
       RECT list = ListRect();
@@ -547,8 +549,9 @@ class Popover : public PhiPopover {
       ::SetTextColor(dc, dim);
       if (item.state == "in_progress") {
         if (hover_row_ == static_cast<int>(i)) {
-          std::wstring text = FormatBytes(item.received) + L" of " +
-                              FormatBytes(item.total);
+          std::wstring text =
+              PhiStrF("downloads.item.transfer.progressLabel",
+                      {FormatBytes(item.received), FormatBytes(item.total)});
           if (item.paused) {
             text += L" ・Paused";
           } else if (item.speed > 0) {
@@ -560,7 +563,7 @@ class Popover : public PhiPopover {
           const int bar_mid = (sub.top + sub.bottom) / 2;
           RECT track = {sub.left, bar_mid - Scaled(1), sub.right,
                         bar_mid + Scaled(2)};
-          FillRounded(dc, track, BlendOver(p.window_bg, p.accent, 51),
+          FillRounded(dc, track, PhiBlend(p.accent, p.window_bg, 51),
                       Scaled(3));
           if (item.total > 0) {
             RECT fill = track;
@@ -573,7 +576,7 @@ class Popover : public PhiPopover {
         const std::wstring text =
             item.state == "complete" && item.end_time > 0
                 ? FormatRelative(item.end_time)
-                : L"From " + item.host;
+                : PhiStrF("downloads.item.sourceHostLabel", {item.host});
         PhiDrawTextAA(dc, text.c_str(), -1, &sub,
                     DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
       }
@@ -597,7 +600,7 @@ class Popover : public PhiPopover {
       // Separator (not after the last row).
       if (i + 1 < rows_.size()) {
         RECT line = {row.left, row.bottom - 1, row.right, row.bottom};
-        FillRect(dc, line, BlendOver(p.window_bg, p.label, 26));
+        FillRect(dc, line, PhiBlend(p.label, p.window_bg, 26));
       }
     }
 
@@ -606,10 +609,10 @@ class Popover : public PhiPopover {
     bar.top = client.bottom - Scaled(kBottomBar);
     FillRect(dc, bar, p.window_bg);
     RECT divider = {bar.left, bar.top, bar.right, bar.top + 1};
-    FillRect(dc, divider, BlendOver(p.window_bg, p.label, 26));
+    FillRect(dc, divider, PhiBlend(p.label, p.window_bg, 26));
     const RECT button = AllDownloadsRect();
     if (hover_all_) {
-      FillRounded(dc, button, BlendOver(p.window_bg, p.accent, 15),
+      FillRounded(dc, button, PhiBlend(p.accent, p.window_bg, 15),
                   Scaled(6));
     }
     HGDIOBJ old = ::SelectObject(dc, SmallFont());

@@ -3,19 +3,15 @@
 //   performance  vertical tabs, address bar in the sidebar   (the default)
 //   balanced     vertical tabs, address bar above the content
 //   comfortable  horizontal tabs, no sidebar
-import { execFileSync } from 'node:child_process'
 import { test, run, assert, assertEq, sleep, openControl } from './phi-test.mjs'
+import { firstWindow } from './lib/window.mjs'
+import { capturePixel, isColoured } from './lib/pixels.mjs'
 
 // kSidebarWidth in phi_shell_window.cc, in DESIGN UNITS. The client lays
 // out in physical pixels, so every expectation here scales by the window's DPI
 // — the whole point of the scaling work.
 const SIDEBAR_DESIGN = 240
 const scaled = (design, dpi) => Math.round((design * dpi) / 96)
-
-async function firstWindow(ctl) {
-  const { windows } = await ctl.send('agentSpace.list')
-  return windows[0]
-}
 
 /** Sets the layout and returns the slot's content rect once it has applied. */
 async function useLayout(ctl, windowId, mode) {
@@ -137,7 +133,7 @@ test('layout: the sidebar really disappears in comfortable (pixels)', async () =
     const frame = { x: geo.frameLeft || 0, y: geo.frameTop || 0 }
     // A point deep in the sidebar band: painted blue while a sidebar exists,
     // and part of the (unpainted) content region once it is gone.
-    const probe = () => samplePixel(h.ok ? h.hwnd : 0, 100 + frame.x, 400 + frame.y)
+    const probe = () => capturePixel(h.ok ? h.hwnd : 0, 100, 400, { frame })
 
     await useLayout(ctl, windowId, 'performance')
     const withSidebar = probe()
@@ -156,30 +152,6 @@ test('layout: the sidebar really disappears in comfortable (pixels)', async () =
 // shell at all and captures neutral. So test for "is coloured", not for a
 // particular hue — Mint is yellow-green (b below r), Mist and Aqua are blue,
 // and a hue-specific check only works for whichever theme it was written for.
-const isSidebarGround = (s) => {
-  const c = s.split(',').map(Number)
-  return Math.max(...c) - Math.min(...c) > 15
-}
-
-function samplePixel(hwnd, x, y) {
-  const ps = [
-    `[Environment]::SetEnvironmentVariable('PHI_UICAP_POINTS','${x},${y}','User')`,
-    `[Environment]::SetEnvironmentVariable('PHI_UICAP_HWND','${hwnd}','User')`,
-    `Remove-Item C:\\Users\\jdxin\\uicap.txt -ErrorAction SilentlyContinue`,
-    `Start-ScheduledTask -TaskName PhiUiCap`,
-    `$deadline = (Get-Date).AddSeconds(20)`,
-    `do { Start-Sleep -Milliseconds 300; $t = (Get-Content C:\\Users\\jdxin\\uicap.txt -ErrorAction SilentlyContinue) } ` +
-      `until (($t -and ($t -contains 'DONE')) -or (Get-Date) -gt $deadline)`,
-    `$t`,
-  ].join('; ')
-  const out = execFileSync('powershell.exe',
-    ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', ps],
-    { encoding: 'utf8' })
-  for (const line of out.split(/\r?\n/)) {
-    const m = /^PX \S+ (\d+,\d+,\d+)$/.exec(line.trim())
-    if (m) return m[1]
-  }
-  throw new Error(`capture failed: ${out.trim().split(/\r?\n/)[0] || 'no output'}`)
-}
+const isSidebarGround = isColoured
 
 run()

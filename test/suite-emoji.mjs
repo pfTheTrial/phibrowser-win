@@ -2,18 +2,15 @@
 // file is the SAME artifact the Mac bundles (Resources/Emoji/emoji-catalog.json,
 // Unicode 17.0), and Space icons use the Mac's storage form so a Space means
 // the same thing on both clients.
-import { test, run, assert, assertEq, sleep, openControl, waitForSaves } from './phi-test.mjs'
+import { test, run, assert, assertEq, openControl } from './phi-test.mjs'
+import { restartApp } from './lib/app.mjs'
+import { firstWindow } from './lib/window.mjs'
 
 // EmojiCatalog's nine groups, in the catalog's own order.
 const MAC_GROUPS = [
   'Smileys & Emotion', 'People & Body', 'Animals & Nature', 'Food & Drink',
   'Travel & Places', 'Activities', 'Objects', 'Symbols', 'Flags',
 ]
-
-async function firstWindow(ctl) {
-  const { windows } = await ctl.send('agentSpace.list')
-  return windows[0]
-}
 
 test('emoji: the Mac catalog ships and parses', async () => {
   const ctl = await openControl()
@@ -98,26 +95,7 @@ test('emoji: a Space icon survives a restart', async () => {
              true, 'icon set')
   } finally { ctl.close() }
 
-  const { execFileSync } = await import('node:child_process')
-  await waitForSaves()  // Coalesced writes land before the kill.
-  execFileSync('powershell.exe', ['-NoProfile', '-Command', `
-Get-Process Phi -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-$deadline = (Get-Date).AddSeconds(20)
-while (((Get-Process Phi -ErrorAction SilentlyContinue) | Measure-Object).Count -gt 0 -and (Get-Date) -lt $deadline) {
-  Start-Sleep -Milliseconds 400
-}
-Start-Sleep 1
-Start-ScheduledTask -TaskName PhiFxLaunch
-`], { stdio: 'ignore' })
-  for (let i = 0; i < 40; i++) {
-    await sleep(1000)
-    try {
-      const probe = await openControl()
-      const r = await probe.send('agentSpace.ping')
-      probe.close()
-      if (r.ok) break
-    } catch { /* not up yet */ }
-  }
+  await restartApp()
 
   ctl = await openControl()
   try {

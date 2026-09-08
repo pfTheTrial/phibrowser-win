@@ -2,33 +2,20 @@
 // View, one indicator on the owning row whose minus closes the surface, one
 // lifecycle for both kinds. Runs ON the box (drives PhiDragCap for the
 // indicator click). Needs a vertical layout and an example.com pin.
-import { execSync } from 'node:child_process'
-import { writeFileSync, existsSync, unlinkSync } from 'node:fs'
-import { openControl, cdpHttp, sleep } from './phi-test.mjs'
+import { openControl, cdpHttp } from './phi-test.mjs'
+import { check, show, finish, failureCount } from './lib/check.mjs'
+import { runSteps as rig, clickBox } from './lib/dragrig.mjs'
+import { sleep } from './lib/wait.mjs'
+import { activeWindow } from './lib/window.mjs'
 
 const ctl = await openControl()
-const show = (l, v) => console.log(l, JSON.stringify(v))
-let failures = 0
-const check = (ok, what) => { console.log((ok ? 'PASS ' : 'FAIL ') + what); if (!ok) failures++ }
-
-const { spaces } = await ctl.send('agentSpace.spaces.list', {})
-const active = spaces.find(s => s.isActive && s.windowIds.length) || spaces.find(s => s.windowIds.length)
-const wid = active.windowIds[0]
+const wid = await activeWindow(ctl)
 const layout = async () => await ctl.send('agentSpace.window.layout', { windowId: wid })
 const tabs = async () => (await ctl.send('agentSpace.spaces.listTabs', { windowId: wid })).tabs
 const targets = async () => ((await cdpHttp('/json/list')) || []).filter(t => t.type === 'page').map(t => t.url)
-const rig = async (name, steps) => {
-  try { unlinkSync('C:\\Users\\jdxin\\drag.done') } catch {}
-  writeFileSync('C:\\Users\\jdxin\\drag.txt', steps.join('\r\n') + '\r\n')
-  execSync('schtasks /Run /TN PhiDragCap', { stdio: 'ignore' })
-  const deadline = Date.now() + 30000
-  while (Date.now() < deadline && !existsSync('C:\\Users\\jdxin\\drag.done')) await sleep(300)
-  await sleep(800)
-}
-const clickBox = async (name, b) => rig(name, ['park', `down,${Math.round((b.left + b.right) / 2)},${Math.round((b.top + b.bottom) / 2)}`, 'sleep,120', 'up', 'sleep,900'])
 const rowFor = (L, pred) => L.rows.find(pred)
 
-await rig('park', ['park'])
+await rig(['park'])
 let L = await layout()
 check(L.ok && L.mode !== 'comfortable', `vertical layout (${L.mode})`)
 
@@ -131,6 +118,6 @@ check(L.ok && L.mode !== 'comfortable', `vertical layout (${L.mode})`)
   }
 }
 
-console.log(failures ? `${failures} FAILED` : 'ALL PASS')
+finish()
 ctl.close()
-process.exit(failures ? 1 : 0)
+process.exit(failureCount() ? 1 : 0)

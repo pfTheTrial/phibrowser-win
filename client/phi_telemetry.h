@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <deque>
 #include <string>
+#include <string_view>
 
 namespace phi_client {
 
@@ -56,6 +57,10 @@ class PhiTelemetry {
   // caller is the UI thread delivering a framework callback. A no-op while
   // unconfigured or while the user has not consented (SetEnabled), so
   // neither state writes behavioural data to disk.
+  //
+  // Properties are filtered against the per-module allow-list below BEFORE
+  // the event is queued, so an unexpected key never reaches the spool file,
+  // let alone the collector.
   void RecordEvent(const std::string& module,
                    const std::string& name,
                    const std::string& properties_json);
@@ -70,7 +75,36 @@ class PhiTelemetry {
   // The endpoint is reported, the KEY never is.
   std::string StatusJson();
 
+  // The property keys `module` is allowed to attach, as a "|"-fenced list
+  // ("|enabled|aggressiveness|"), or an EMPTY view when the module is not
+  // registered — in which case its events carry no properties at all.
+  //
+  // WHY AN ALLOW-LIST AND NOT A DENY-LIST. Properties arrive from the
+  // framework as an opaque JSON object (phi_framework_api.h:389-405) and are
+  // forwarded verbatim today. The Chromium side's privacy contract — no
+  // URLs, origins, titles or search terms in a property — is enforced at
+  // REVIEW time by its own admission (analytics/README.md, "Privacy
+  // contract"). That is a fine rule for the component and a poor one for the
+  // egress: this client is where the bytes leave the machine, and a review
+  // that happens in another repository cannot be the last gate. So the
+  // egress names what it will carry, and drops the rest with a count.
+  //
+  // Adding a property is therefore two edits — the Chromium call site and
+  // this table — which is the point: the table is the list a privacy review
+  // can read without reading the browser.
+  static std::string_view AllowedProperties(std::string_view module);
+
+  // How many properties have been dropped for not being on the list. Read by
+  // StatusJson and by the host test; a non-zero count in the field means the
+  // two sides have drifted.
+  uint64_t ScrubbedPropertyCount();
+
  private:
+  // `properties_json` with every key not on `module`'s allow-list removed.
+  // A payload that is not a JSON object at all becomes "{}".
+  std::string ScrubProperties(const std::string& module,
+                              const std::string& properties_json);
+
   PhiTelemetry();
   ~PhiTelemetry();
 
@@ -122,6 +156,8 @@ class PhiTelemetry {
   std::deque<Event> queue_;
   uint64_t sent_ = 0;
   uint64_t dropped_ = 0;
+  // Properties removed because the module did not declare them.
+  uint64_t scrubbed_ = 0;
   uint64_t failures_ = 0;
   int last_status_ = 0;
   std::string last_error_;

@@ -4,14 +4,11 @@
 // OpenStoredSplit) and asserts that two live tabs come up tagged
 // "<guid>" and "<guid>#b" and share one live split.
 import { openControl } from './phi-test.mjs'
-const ctl = await openControl()
-const show = (l, v) => console.log(l, JSON.stringify(v))
-let failures = 0
-const check = (ok, what) => { console.log((ok ? 'PASS ' : 'FAIL ') + what); if (!ok) failures++ }
+import { check, show, finish, failureCount } from './lib/check.mjs'
+import { activeWindow } from './lib/window.mjs'
 
-const { spaces } = await ctl.send('agentSpace.spaces.list', {})
-const active = spaces.find(s => s.isActive && s.windowIds.length) || spaces.find(s => s.windowIds.length)
-const wid = active.windowIds[0]
+const ctl = await openControl()
+const wid = await activeWindow(ctl)
 const pinned = await ctl.send('agentSpace.pinned.list', { windowId: wid })
 show('pinned:', (pinned.pinned || []).map(p => ({ guid: p.guid.slice(0, 8), url: p.url, secondaryUrl: p.secondaryUrl, layout: p.layout })))
 check(pinned.ok && !pinned.pinned.some(p => 'splitPartnerGuid' in p), 'pinned.list carries no splitPartnerGuid')
@@ -69,6 +66,6 @@ for (const cell of cells) {
   check(again.ok && tagged.length === 2, `re-open focuses instead of duplicating (${tagged.length} tagged tabs)`)
   check(tagged.some(t => t.active), 'a pane of the cell is the active tab after re-open')
 }
-console.log(failures ? `${failures} FAILED` : 'ALL PASS')
+finish()
 ctl.close()
-process.exit(failures ? 1 : 0)
+process.exit(failureCount() ? 1 : 0)

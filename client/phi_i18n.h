@@ -5,8 +5,11 @@
 #ifndef PHIBROWSER_WIN_CLIENT_PHI_I18N_H_
 #define PHIBROWSER_WIN_CLIENT_PHI_I18N_H_
 
+#include <cstdint>
 #include <string>
 #include <vector>
+
+#include "phibrowser-win/client/phi_util.h"
 
 namespace phi_client {
 
@@ -64,6 +67,52 @@ const wchar_t* PhiStr(const char* key);
 // is left as-is rather than dropped, so a mistranslated pattern degrades to
 // something visible instead of silently losing data.
 std::wstring PhiStrF(const char* key, const std::vector<std::wstring>& args);
+
+// PhiStrF for a string that counts something. `key` names a FAMILY, not an
+// entry: the catalog carries `<key>.one` and `<key>.other` and PhiStrN picks
+// between them with the active locale's plural rule (PhiPluralFor).
+//
+//   "downloads.item.completedTime.daysAgo.one"   = "{0} day ago"
+//   "downloads.item.completedTime.daysAgo.other" = "{0} days ago"
+//   PhiStrN("downloads.item.completedTime.daysAgo", 1)  -> "1 day ago"
+//
+// THE COUNT IS ALWAYS {0}, already formatted for the locale by
+// PhiFormatNumber, and `args` fills {1}, {2}, … after it. That is the whole
+// convention; a plural pattern that wants the number somewhere other than
+// first still writes {0}, because the position is the translator's to choose
+// and the index is not.
+//
+// A locale with more CLDR categories than one/other (Polish, Russian, Arabic)
+// gets them by adding `few`/`many`/`zero`/`two` to PhiPlural and shipping the
+// extra keys; nothing here or in the catalog format has to change, because
+// the category name IS the suffix. The nine locales the client ships today
+// need only the two.
+//
+// A missing `<key>.other` degrades exactly as PhiStr does — the key comes
+// back visibly, with a WARNING — so a forgotten plural entry shows up in a
+// screenshot instead of reading as a singular.
+std::wstring PhiStrN(const char* key,
+                     long long count,
+                     const std::vector<std::wstring>& args = {});
+
+// A number in the ACTIVE LOCALE's conventions — digit grouping, the group
+// and decimal separators, and the locale's own digits where it has them.
+// Every std::to_wstring of a user-visible number is a bug against a German
+// or French user; there are 25 of them in the tree today.
+//
+// `decimals` for the floating form is the count of fraction digits to show
+// (the downloads popover wants 1 for "9.3 MB", 0 for whole units).
+std::wstring PhiFormatNumber(long long value);
+std::wstring PhiFormatNumber(double value, int decimals);
+
+// A date or a time in the active locale's conventions and the user's own
+// time zone. `unix_ms` is milliseconds since the Unix epoch (PhiNowUnixMs).
+//   kShortDate  8/29/2026        29.08.2026        2026/8/29
+//   kLongDate   August 29, 2026  29. August 2026   2026年8月29日
+//   kShortTime  2:41 PM          14:41
+// Never hand-roll one of these with wcsftime: "%b %d, %Y" is English.
+enum class PhiDateStyle { kShortDate, kLongDate, kShortTime };
+std::wstring PhiFormatDate(int64_t unix_ms, PhiDateStyle style);
 
 }  // namespace phi_client
 

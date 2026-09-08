@@ -644,9 +644,9 @@
    "comment": "downloads — used at phi_downloads_popover.cc:423",
    "en": "Scanning..."
   },
-  "downloads.bDY": {
-   "comment": "downloads — used in phi_downloads_popover.cc",
-   "en": "%b %d, %Y"
+  "downloads.b": {
+   "comment": "downloads — the bytes unit, beside a figure ('812 B'). Used at phi_downloads_popover.cc",
+   "en": "B"
   },
   "downloads.blockedByPolicy": {
    "comment": "downloads — used at phi_downloads_popover.cc:422",
@@ -656,29 +656,41 @@
    "comment": "downloads — used at phi_downloads_popover.cc:420",
    "en": "Dangerous"
   },
-  "downloads.daysAgo": {
-   "comment": "downloads — used at phi_downloads_popover.cc:114",
-   "en": " days ago"
-  },
-  "downloads.from": {
-   "comment": "downloads — used at phi_downloads_popover.cc:494",
-   "en": "From "
-  },
   "downloads.gb": {
    "comment": "downloads — used in phi_downloads_popover.cc",
    "en": "GB"
-  },
-  "downloads.hourAgo": {
-   "comment": "downloads — used at phi_downloads_popover.cc:104",
-   "en": " hour ago"
   },
   "downloads.item.completed.copyLinkButtonTooltip": {
    "comment": "bookmarkManager — used at phi_bookmark_manager.cc:759",
    "en": "Copy Link"
   },
+  "downloads.item.completedTime.daysAgo.one": {
+   "comment": "downloads — relative completion time, singular; the count is {0}. Used at phi_downloads_popover.cc",
+   "en": "{0} day ago"
+  },
+  "downloads.item.completedTime.daysAgo.other": {
+   "comment": "downloads — relative completion time, plural; the count is {0}. Used at phi_downloads_popover.cc",
+   "en": "{0} days ago"
+  },
+  "downloads.item.completedTime.hoursAgo.one": {
+   "comment": "downloads — relative completion time, singular; the count is {0}. Used at phi_downloads_popover.cc",
+   "en": "{0} hour ago"
+  },
+  "downloads.item.completedTime.hoursAgo.other": {
+   "comment": "downloads — relative completion time, plural; the count is {0}. Used at phi_downloads_popover.cc",
+   "en": "{0} hours ago"
+  },
   "downloads.item.completedTime.justNow": {
    "comment": "downloads — used at phi_downloads_popover.cc:98",
    "en": "Just now"
+  },
+  "downloads.item.completedTime.minutesAgo.one": {
+   "comment": "downloads — relative completion time, singular; the count is {0}. Used at phi_downloads_popover.cc",
+   "en": "{0} min ago"
+  },
+  "downloads.item.completedTime.minutesAgo.other": {
+   "comment": "downloads — relative completion time, plural; the count is {0}. Used at phi_downloads_popover.cc",
+   "en": "{0} min ago"
   },
   "downloads.item.completedTime.today": {
    "comment": "downloads — used at phi_downloads_popover.cc:109",
@@ -687,6 +699,10 @@
   "downloads.item.completedTime.yesterday": {
    "comment": "downloads — used at phi_downloads_popover.cc:112",
    "en": "Yesterday"
+  },
+  "downloads.item.sourceHostLabel": {
+   "comment": "downloads — the site a finished download came from; {0} is the host. Used at phi_downloads_popover.cc",
+   "en": "From {0}"
   },
   "downloads.item.status.cancelled": {
    "comment": "downloads — used at phi_downloads_popover.cc:424",
@@ -704,6 +720,10 @@
    "comment": "downloads — used at phi_downloads_popover.cc:471",
    "en": " ・Paused"
   },
+  "downloads.item.transfer.progressLabel": {
+   "comment": "downloads — bytes received of bytes total, both already formatted sizes. Used at phi_downloads_popover.cc",
+   "en": "{0} of {1}"
+  },
   "downloads.kb": {
    "comment": "downloads — used in phi_downloads_popover.cc",
    "en": "KB"
@@ -719,10 +739,6 @@
   "downloads.mb": {
    "comment": "downloads — used in phi_downloads_popover.cc",
    "en": "MB"
-  },
-  "downloads.minAgo": {
-   "comment": "downloads — used at phi_downloads_popover.cc:101",
-   "en": " min ago"
   },
   "extensions.noExtensionsInstalled": {
    "comment": "extensions — used at phi_extensions_popover.cc:273",
@@ -1747,6 +1763,10 @@
    "comment": "prompt — used at phi_prompt.cc:206",
    "en": "Backspace"
   },
+  "prompt.cancel": {
+   "comment": "prompt — PhiAlert's cancelling action, used at phi_prompt.cc",
+   "en": "Cancel"
+  },
   "prompt.ctrl": {
    "comment": "prompt — used in phi_prompt.cc",
    "en": "Ctrl+"
@@ -1794,6 +1814,10 @@
   "prompt.ok": {
    "comment": "prompt — used in phi_prompt.cc",
    "en": "OK"
+  },
+  "prompt.open": {
+   "comment": "prompt — PhiPromptChoose's confirming action (the 'ask first' Space chooser), used at phi_prompt.cc",
+   "en": "Open"
   },
   "prompt.pagedown": {
    "comment": "prompt — used at phi_prompt.cc:203",

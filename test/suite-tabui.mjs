@@ -1,7 +1,8 @@
 // Tab-bar UI suite: the client's sidebar rows are driven by live framework
 // state, verified in PIXELS from a PrintWindow capture of the shell window.
-import { execFileSync } from 'node:child_process'
 import { test, run, assert, assertEq, sleep, openControl } from './phi-test.mjs'
+import { firstWindow as slotZero, closeToOneTab } from './lib/window.mjs'
+import { capturePixels } from './lib/pixels.mjs'
 
 // Mirrors phi_shell_window.cc, in DESIGN UNITS (pixels at 100%). The
 // client lays out in PHYSICAL pixels and uicap captures in the same space, so
@@ -29,31 +30,7 @@ const scaleOne = (d) => scale(d)
 /** Samples pixels on the box via a scheduled task (only the interactive
  *  session can enumerate/capture desktop windows). [[x,y],…] -> ["r,g,b",…] */
 function samplePixels(points) {
-  // PrintWindow(PW_CLIENTONLY) renders from the WINDOW origin, so a client
-  // coordinate lands `frame` further in. The client publishes the insets.
-  const arg = points.map(([x, y]) => `${x + FRAME.x},${y + FRAME.y}`).join(';')
-  const ps = [
-    `[Environment]::SetEnvironmentVariable('PHI_UICAP_POINTS','${arg}','User')`,
-    `[Environment]::SetEnvironmentVariable('PHI_UICAP_HWND','${captureHwnd || 0}','User')`,
-    `Remove-Item C:\\Users\\jdxin\\uicap.txt -ErrorAction SilentlyContinue`,
-    `Start-ScheduledTask -TaskName PhiUiCap`,
-    `$deadline = (Get-Date).AddSeconds(25)`,
-    `do { Start-Sleep -Milliseconds 300; $t = (Get-Content C:\\Users\\jdxin\\uicap.txt -ErrorAction SilentlyContinue) } ` +
-      `until (($t -and ($t -contains 'DONE')) -or (Get-Date) -gt $deadline)`,
-    `$t`,
-  ].join('; ')
-  const out = execFileSync('powershell.exe',
-    ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', ps],
-    { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 })
-  const px = []
-  for (const line of out.split(/\r?\n/)) {
-    const m = /^PX \S+ (\d+,\d+,\d+)$/.exec(line.trim())
-    if (m) px.push(m[1])
-  }
-  if (px.length !== points.length) {
-    throw new Error(`capture failed: ${out.trim().split(/\r?\n/)[0] || 'no output'}`)
-  }
-  return px
+  return capturePixels(captureHwnd, points, { frame: FRAME, timeoutSec: 25 })
 }
 
 // The HWND of the slot under test; pixel captures target exactly this window
@@ -123,8 +100,7 @@ function chipRows() {
 }
 
 async function firstWindow(ctl) {
-  const { windows } = await ctl.send('agentSpace.list')
-  const slot = windows[0]
+  const slot = await slotZero(ctl)
   // Capture the window we drive: extra shell windows can exist (e.g. Chromium
   // opens one when a profile is created).
   const h = await ctl.send('agentSpace.window.handle', { windowId: slot })
@@ -152,13 +128,8 @@ async function firstWindow(ctl) {
 /** Normalizes the window to exactly two tabs with SHORT titles, first active.
  *  Makes these tests independent of whatever earlier suites left behind. */
 async function normalizeTabs(ctl, windowId) {
-  let { tabs } = await ctl.send('agentSpace.tabs.list', { windowId })
   // Close extras from the end so indices stay valid.
-  while (tabs.length > 1) {
-    await ctl.send('agentSpace.tabs.close', { windowId, index: tabs.length - 1 })
-    await sleep(200)
-    ;({ tabs } = await ctl.send('agentSpace.tabs.list', { windowId }))
-  }
+  let tabs = await closeToOneTab(ctl, windowId)
   await ctl.send('agentSpace.navigate',
                  { windowId, url: 'data:text/html,<title>A</title>' })
   await sleep(400)

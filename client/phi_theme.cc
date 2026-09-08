@@ -7,24 +7,23 @@
 #include <array>
 
 #include "base/no_destructor.h"
+#include "phibrowser-win/client/phi_util.h"
+
+#if defined(_WIN32)
 #include "base/win/registry.h"
+#endif
 
 namespace phi_client {
 
 namespace {
 
 // The Mac writes colours as 0xRRGGBB; Win32 wants COLORREF (0x00BBGGRR).
-constexpr COLORREF Hex(int rgb) {
-  return RGB((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF);
+constexpr PhiColor Hex(int rgb) {
+  return PhiRgb((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF);
 }
 
-// Mixes `over` onto `base`; `alpha` is 0..255 of `over`.
-COLORREF Blend(COLORREF over, COLORREF base, int alpha) {
-  auto mix = [&](int a, int b) { return (a * alpha + b * (255 - alpha)) / 255; };
-  return RGB(mix(GetRValue(over), GetRValue(base)),
-             mix(GetGValue(over), GetGValue(base)),
-             mix(GetBValue(over), GetBValue(base)));
-}
+// The one blend now lives in phi_util.h (PhiBlend); this file's private copy
+// was the original of the eight the review found.
 
 // How much of the overlay colour reaches the window. The Mac composites the
 // overlay at 0.8 and then scales it by the theme's saturation slider
@@ -104,6 +103,11 @@ const PhiTheme& PhiThemeById(const std::string& id) {
 }
 
 bool PhiSystemPrefersDark() {
+#if !defined(_WIN32)
+  // The host tests resolve palettes without a registry; "system" reads
+  // light there, which is what an unconfigured Windows reports too.
+  return false;
+#else
   // The same key the Windows shell uses for app appearance; 0 means dark.
   base::win::RegKey key(
       HKEY_CURRENT_USER,
@@ -115,12 +119,13 @@ bool PhiSystemPrefersDark() {
     return light == 0;
   }
   return false;
+#endif
 }
 
 PhiPalette PhiResolvePalette(const PhiTheme& theme,
                              PhiAppearance appearance,
                              int saturation) {
-  saturation = saturation < 0 ? 0 : (saturation > 100 ? 100 : saturation);
+  saturation = PhiClamp(saturation, 0, 100);
   const int top_alpha =
       kTintMinAlpha + (kTintMaxAlpha - kTintMinAlpha) * saturation / 100;
   const int bottom_alpha = top_alpha + kTintGradientSpread > 255
@@ -133,39 +138,71 @@ PhiPalette PhiResolvePalette(const PhiTheme& theme,
 
   PhiPalette palette;
   palette.dark = dark;
-  palette.ground_top = Blend(colors.overlay, colors.background, top_alpha);
+  palette.ground_top = PhiBlend(colors.overlay, colors.background, top_alpha);
   palette.ground_bottom =
-      Blend(colors.overlay, colors.background, bottom_alpha);
+      PhiBlend(colors.overlay, colors.background, bottom_alpha);
   palette.accent = colors.accent;
   palette.window_bg = colors.background;
   // The ink the Mac's percentage overlays are made of.
-  const COLORREF ink = dark ? RGB(0xFF, 0xFF, 0xFF) : RGB(0x00, 0x00, 0x00);
+  const PhiColor ink = dark ? PhiRgb(0xFF, 0xFF, 0xFF) : PhiRgb(0, 0, 0);
+  palette.ink = ink;
   // Alphas as /255: 4% ≈ 10, 6% ≈ 15, 8% ≈ 20, 30% ≈ 77, 80% ≈ 204, 85% ≈ 217.
-  palette.hover = Blend(ink, palette.ground_top, 10);
-  palette.hover_strong = Blend(ink, palette.ground_top, 20);
+  palette.hover = PhiBlend(ink, palette.ground_top, 10);
+  palette.hover_strong = PhiBlend(ink, palette.ground_top, 20);
   // The top bar's copies: same ink, its own ground.
-  palette.bar_hover = Blend(ink, palette.window_bg, 10);
-  palette.bar_hover_strong = Blend(ink, palette.window_bg, 20);
-  palette.label_tertiary = Blend(ink, palette.ground_top, 77);
-  palette.border = Blend(ink, palette.ground_bottom, 20);
-  palette.separator = Blend(ink, palette.ground_top, 15);
+  palette.bar_hover = PhiBlend(ink, palette.window_bg, 10);
+  palette.bar_hover_strong = PhiBlend(ink, palette.window_bg, 20);
+  palette.label_tertiary = PhiBlend(ink, palette.ground_top, 77);
+  palette.border = PhiBlend(ink, palette.ground_bottom, 20);
+  palette.separator = PhiBlend(ink, palette.ground_top, 15);
   if (dark) {
     // sidebar-tab-selectedColor dark = WHITE at 30%, not black — the pill
     // lifts off the ground (Assets.xcassets ColorSet).
-    palette.selected = Blend(RGB(0xFF, 0xFF, 0xFF), palette.ground_top, 77);
-    palette.card = Blend(RGB(0xFF, 0xFF, 0xFF), palette.ground_top, 26);
-    palette.label = Blend(RGB(0xFF, 0xFF, 0xFF), palette.ground_top, 204);
-    palette.label_dim = RGB(0x9A, 0x9A, 0x9A);
+    const PhiColor white = PhiRgb(0xFF, 0xFF, 0xFF);
+    palette.selected = PhiBlend(white, palette.ground_top, 77);
+    palette.card = PhiBlend(white, palette.ground_top, 26);
+    palette.label = PhiBlend(white, palette.ground_top, 204);
+    palette.label_dim = PhiRgb(0x9A, 0x9A, 0x9A);
   } else {
-    palette.selected = RGB(0xFF, 0xFF, 0xFF);
-    palette.card = RGB(0xFF, 0xFF, 0xFF);
-    palette.label = RGB(0x26, 0x26, 0x26);   // primary-label, 85% black
-    palette.label_dim = RGB(0x6E, 0x6E, 0x72);
+    palette.selected = PhiRgb(0xFF, 0xFF, 0xFF);
+    palette.card = PhiRgb(0xFF, 0xFF, 0xFF);
+    palette.label = PhiRgb(0x26, 0x26, 0x26);   // primary-label, 85% black
+    palette.label_dim = PhiRgb(0x6E, 0x6E, 0x72);
   }
+
+  // The roles the individual files were inventing. Values transcribed from
+  // where they already exist: phi_popup_chrome.h:26-44 (the fixed ground and
+  // the button ladder), phi_settings_window.cc:2441-2446 and :2491 (the
+  // parallel palette and the close-button red), phi_shell_window.cc (the
+  // second copy of that red).
+  palette.ground_fixed =
+      dark ? PhiRgb(0x25, 0x25, 0x25) : PhiRgb(0xEA, 0xEA, 0xEA);
+  // Legibility over the accent, not a fixed white: the light Amber accent
+  // (#D9B857) carries black text, everything darker carries white. The
+  // threshold is Rec. 601 luma, which is what the Mac's
+  // NSColor.usingColorSpace check comes out to for these eight accents.
+  const int luma = (PhiRed(palette.accent) * 299 +
+                    PhiGreen(palette.accent) * 587 +
+                    PhiBlue(palette.accent) * 114) / 1000;
+  palette.on_accent = luma > 150 ? PhiRgb(0x1A, 0x1A, 0x1A)
+                                 : PhiRgb(0xFF, 0xFF, 0xFF);
+  // Hover deepens the accent by pushing it a step toward the ink of the
+  // OPPOSITE appearance, the way PhiAlertButton's .primary does.
+  palette.accent_hover =
+      PhiBlend(dark ? PhiRgb(0xFF, 0xFF, 0xFF) : PhiRgb(0, 0, 0),
+               palette.accent, 26);
+  palette.destructive = PhiRgb(0xFF, 0x3B, 0x30);  // systemRed
+  palette.destructive_hover = PhiRgb(0xE0, 0x34, 0x2A);
+  palette.warning = dark ? PhiRgb(0xD9, 0xA5, 0x27) : PhiRgb(0xB0, 0x80, 0x00);
+  palette.error = dark ? PhiRgb(0xE8, 0x5D, 0x5D) : PhiRgb(0xC0, 0x1E, 0x1E);
+  // The dim behind a modal / the group overview: 40% black over the ground
+  // in light, 55% in dark (a dark ground needs more to read as "behind").
+  palette.overlay_scrim =
+      PhiBlend(PhiRgb(0, 0, 0), palette.ground_top, dark ? 140 : 102);
   return palette;
 }
 
-bool PhiParseColorHex(const std::string& hex, COLORREF* out) {
+bool PhiParseColorHex(const std::string& hex, PhiColor* out) {
   const size_t start = !hex.empty() && hex[0] == '#' ? 1 : 0;
   if (hex.size() - start != 6) {
     return false;
@@ -187,7 +224,7 @@ bool PhiParseColorHex(const std::string& hex, COLORREF* out) {
       channels[i] = channels[i] * 16 + value;
     }
   }
-  *out = RGB(channels[0], channels[1], channels[2]);
+  *out = PhiRgb(channels[0], channels[1], channels[2]);
   return true;
 }
 

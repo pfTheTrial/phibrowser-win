@@ -1,0 +1,3 @@
+# Chromium style, which this tree already follows — this file just makes it
+# checkable. Keep in step with the fork: it is the same base style.
+BasedOnStyle: Chromium

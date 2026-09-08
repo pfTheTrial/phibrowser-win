@@ -3,11 +3,7 @@
 // socket reads the bar as the user would see it (dynamic rows included) and
 // clicks items by their title path.
 import { test, run, assert, assertEq, sleep, openControl } from './phi-test.mjs'
-
-async function firstWindow(ctl) {
-  const { windows } = await ctl.send('agentSpace.list')
-  return windows[0]
-}
+import { firstWindow } from './lib/window.mjs'
 
 async function bar(ctl, windowId) {
   const r = await ctl.send('agentSpace.menu.list', { windowId })

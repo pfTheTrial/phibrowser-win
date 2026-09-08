@@ -11,6 +11,7 @@
 #include <utility>
 
 #include "phibrowser-win/client/phi_dwrite.h"
+#include "phibrowser-win/client/phi_i18n.h"
 #include "phibrowser-win/client/phi_icons.h"
 #include "phibrowser-win/client/phi_modal_scope.h"
 #include "phibrowser-win/client/phi_popup_chrome.h"
@@ -565,7 +566,8 @@ int PhiAlert(HWND owner,
 }
 
 void PhiNotice(HWND owner, const wchar_t* title, const wchar_t* message) {
-  PhiAlert(owner, title, message, {{L"OK", PhiAlertRole::kPrimary}}, 0, 0);
+  PhiAlert(owner, title, message,
+           {{PhiStr("prompt.ok"), PhiAlertRole::kPrimary}}, 0, 0);
 }
 
 bool PhiPromptText(HWND owner,
@@ -578,8 +580,8 @@ bool PhiPromptText(HWND owner,
   spec.message = message ? message : L"";
   spec.accessory = Accessory::kField;
   spec.field_text = value ? *value : std::wstring();
-  spec.actions = {{L"Cancel", PhiPopupButtonRole::kSecondary},
-                  {confirm_label ? confirm_label : L"OK",
+  spec.actions = {{PhiStr("prompt.cancel"), PhiPopupButtonRole::kSecondary},
+                  {confirm_label ? confirm_label : PhiStr("prompt.ok"),
                    PhiPopupButtonRole::kPrimary}};
   spec.default_index = 1;
   spec.cancel_index = 0;
@@ -606,8 +608,8 @@ bool PhiConfirm(HWND owner,
   // The confirming button answers Return only when it is not destructive —
   // an irreversible action wants a deliberate click, the Mac's noButton.
   return PhiAlert(owner, title, message,
-                  {{L"Cancel", PhiAlertRole::kSecondary},
-                   {confirm_label ? confirm_label : L"OK",
+                  {{PhiStr("prompt.cancel"), PhiAlertRole::kSecondary},
+                   {confirm_label ? confirm_label : PhiStr("prompt.ok"),
                     destructive ? PhiAlertRole::kDestructive
                                 : PhiAlertRole::kPrimary}},
                   destructive ? -1 : 1, 0) == 1;
@@ -672,7 +674,7 @@ bool PhiPromptShortcut(HWND owner,
   spec.message = message ? message : L"";
   spec.accessory = Accessory::kRecorder;
   spec.placeholder = kResting;
-  spec.actions = {{L"Cancel", PhiPopupButtonRole::kSecondary}};
+  spec.actions = {{PhiStr("prompt.cancel"), PhiPopupButtonRole::kSecondary}};
   spec.cancel_index = 0;
   Alert alert(owner, std::move(spec));
   if (!alert.Open()) {
@@ -761,9 +763,9 @@ int PhiPromptChoose(HWND owner,
   spec.accessory = Accessory::kList;
   spec.options = options;
   spec.selected = default_index;
-  spec.actions = {{cancel_label ? cancel_label : L"Keep Here",
+  spec.actions = {{cancel_label ? cancel_label : PhiStr("prompt.keepHere"),
                    PhiPopupButtonRole::kSecondary},
-                  {confirm_label ? confirm_label : L"Open",
+                  {confirm_label ? confirm_label : PhiStr("prompt.open"),
                    PhiPopupButtonRole::kPrimary}};
   spec.default_index = cancel_is_default ? 0 : 1;
   spec.cancel_index = 0;

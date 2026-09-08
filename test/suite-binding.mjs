@@ -3,24 +3,15 @@
 // row's guid as its tag (PhiTabData, session-persisted). Opening again focuses
 // instead of duplicating; removing the row clears the tag and releases the tab.
 import { test, run, assert, assertEq, sleep, openControl } from './phi-test.mjs'
-
-async function firstWindow(ctl) {
-  const { windows } = await ctl.send('agentSpace.list')
-  return windows[0]
-}
+import { firstWindow } from './lib/window.mjs'
+import { closeMatching } from './lib/window.mjs'
 
 const tabs = async (ctl, windowId) =>
   (await ctl.send('agentSpace.tabs.list', { windowId })).tabs
 
-async function closeByUrl(ctl, windowId, marker) {
-  const t = await tabs(ctl, windowId)
-  for (let i = t.length - 1; i >= 0; --i) {
-    if ((t[i].url || '').includes(marker)) {
-      await ctl.send('agentSpace.tabs.close', { windowId, index: t[i].index })
-      await sleep(300)
-    }
-  }
-}
+const closeByUrl = (ctl, windowId, marker) =>
+  closeMatching(ctl, windowId, (t) => (t.url || '').includes(marker),
+                { keep: 0 })
 
 test('binding: opening a pin creates ONE tagged tab, reopening focuses it', async () => {
   const ctl = await openControl()

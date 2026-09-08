@@ -1,0 +1,8 @@
+# Build and tool output that must never be committed.
+__pycache__/
+*.pyc
+compile_commands.json
+# Scratch the box runners leave behind.
+test/suite-out.txt
+test/suite-err.txt
+*.corrupt-*

@@ -1,16 +1,12 @@
 // Theme suite: the Mac client's theme model, ported — eight built-in themes
 // (Utilities/Theme/ThemedColors.swift) and the three-state appearance choice
 // (ThemeManager.UserAppearanceChoice), both persisted and applied client-wide.
-import { execFileSync } from 'node:child_process'
 import { test, run, assert, assertEq, sleep, openControl } from './phi-test.mjs'
+import { firstWindow } from './lib/window.mjs'
+import { capturePixel } from './lib/pixels.mjs'
 
 // The Mac's built-in order: Theme.builtInThemes.
 const MAC_THEMES = ['pure', 'mint', 'mist', 'aqua', 'iris', 'petal', 'coral', 'amber']
-
-async function firstWindow(ctl) {
-  const { windows } = await ctl.send('agentSpace.list')
-  return windows[0]
-}
 
 test('theme: the eight Mac built-ins are offered, in order', async () => {
   const ctl = await openControl()
@@ -70,8 +66,9 @@ test('theme: the chrome really repaints in the chosen theme (pixels)', async () 
     await ctl.send('agentSpace.theme.set', { appearance: 'light' })
     const h = await ctl.send('agentSpace.window.handle', { windowId })
     const geo = await ctl.send('agentSpace.window.layout', { windowId })
-    const probe = () => samplePixel(h.hwnd, 100 + (geo.frameLeft || 0),
-                                    400 + (geo.frameTop || 0))
+    // Captures render from the WINDOW origin; client coords need the insets.
+    const frame = { x: geo.frameLeft || 0, y: geo.frameTop || 0 }
+    const probe = () => capturePixel(h.hwnd, 100, 400, { frame })
 
     await ctl.send('agentSpace.theme.set', { themeId: 'mint' })
     await sleep(500)
@@ -100,27 +97,6 @@ test('theme: the settings window opens', async () => {
     assert(r.hwnd > 0, `and has a real window (${r.hwnd})`)
   } finally { ctl.close() }
 })
-
-function samplePixel(hwnd, x, y) {
-  const ps = [
-    `[Environment]::SetEnvironmentVariable('PHI_UICAP_POINTS','${x},${y}','User')`,
-    `[Environment]::SetEnvironmentVariable('PHI_UICAP_HWND','${hwnd}','User')`,
-    `Remove-Item C:\\Users\\jdxin\\uicap.txt -ErrorAction SilentlyContinue`,
-    `Start-ScheduledTask -TaskName PhiUiCap`,
-    `$deadline = (Get-Date).AddSeconds(20)`,
-    `do { Start-Sleep -Milliseconds 300; $t = (Get-Content C:\\Users\\jdxin\\uicap.txt -ErrorAction SilentlyContinue) } ` +
-      `until (($t -and ($t -contains 'DONE')) -or (Get-Date) -gt $deadline)`,
-    `$t`,
-  ].join('; ')
-  const out = execFileSync('powershell.exe',
-    ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', ps],
-    { encoding: 'utf8' })
-  for (const line of out.split(/\r?\n/)) {
-    const m = /^PX \S+ (\d+,\d+,\d+)$/.exec(line.trim())
-    if (m) return m[1]
-  }
-  throw new Error(`capture failed: ${out.trim().split(/\r?\n/)[0] || 'no output'}`)
-}
 
 test('theme: a Space can pin its own theme', async () => {
   const ctl = await openControl()
@@ -168,8 +144,9 @@ test('theme: a Space\'s pinned theme paints its window (pixels)', async () => {
     await ctl.send('agentSpace.theme.set', { themeId: 'mint', appearance: 'light' })
     const h = await ctl.send('agentSpace.window.handle', { windowId })
     const geo = await ctl.send('agentSpace.window.layout', { windowId })
-    const probe = () => samplePixel(h.hwnd, 100 + (geo.frameLeft || 0),
-                                    400 + (geo.frameTop || 0))
+    // Captures render from the WINDOW origin; client coords need the insets.
+    const frame = { x: geo.frameLeft || 0, y: geo.frameTop || 0 }
+    const probe = () => capturePixel(h.hwnd, 100, 400, { frame })
     const active = (await ctl.send('agentSpace.spaces.list', { windowId }))
                      .spaces.find((s) => s.active)
 

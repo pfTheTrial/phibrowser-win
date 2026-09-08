@@ -1,0 +1,51 @@
+# The ORDER test-box.sh runs the suites in, one per line. `#` comments and
+# blank lines are ignored. A trailing `!net` marks a suite that needs the
+# public internet; those run only with --network.
+#
+# Why a file and not `ls suite-*.mjs`: the glob is alphabetical, and
+# suite-persist has said "must run last" since it was written — alphabetical
+# order put it NINTH of nineteen (lane 6 §6 item 3). Order matters even with
+# a fresh profile per suite, because the tail of this list is the expensive
+# part (restarts, real mouse input) and a failure there is worth seeing after
+# the cheap checks have already reported.
+#
+# 1. The contract itself: if ping/list/CDP are broken nothing below means
+#    anything.
+suite-core
+# 2. Everything that drives one window and cleans up after itself.
+suite-window
+suite-tabs
+suite-binding
+suite-groups
+suite-split
+suite-nav !net
+suite-menu
+# 3. Layout, theme and the pixel suites. They pin the window size, the layout
+#    mode and the theme, so they follow the suites that move it around.
+suite-layout
+suite-theme
+suite-toolbar
+suite-tabui
+suite-settings
+# 4. The destructive ones. suite-pinned wipes every pin and bookmark in the
+#    profile; suite-spaces deletes every OTHER Space to test the last-space
+#    rule; suite-profiles creates a profile it never removes. With
+#    --isolation=fresh each gets its own profile and the order stops
+#    mattering; without it, this is the least damaging sequence.
+suite-emoji
+suite-profiles
+suite-pinned !net
+suite-spaces
+# 5. The sidebar rigs: real mouse input through PhiDragCap, so they need the
+#    interactive session and they are slow. They assert (lib/check.mjs), which
+#    is what promoted them out of test/probes/.
+sv-splitcell
+sv-drag
+sv-surface !net
+# 6. LAST, because it restarts the app three times and leaves Spaces behind.
+suite-persist
+# Not in the sweep: suite-feedback drives the form into its "only regular
+# files can be attached" notice on purpose, and since phase 0 a modal notice
+# parks every pipe verb until someone dismisses it (docs/architecture-review
+# .md §3.7). Run it by hand when someone can click:
+#   ./test-box.sh --suite suite-feedback

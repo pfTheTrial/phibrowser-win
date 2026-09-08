@@ -1,10 +1,6 @@
 // Window suite: client-owned shell geometry over the control socket.
 import { test, run, assert, assertEq, sleep, openControl } from './phi-test.mjs'
-
-async function firstWindow(ctl) {
-  const { windows } = await ctl.send('agentSpace.list')
-  return windows[0]
-}
+import { firstWindow } from './lib/window.mjs'
 
 test('window: bounds reports a sane rect', async () => {
   const ctl = await openControl()

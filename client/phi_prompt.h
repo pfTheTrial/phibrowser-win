@@ -76,16 +76,17 @@ void PhiNotice(HWND owner, const wchar_t* title, const wchar_t* message);
 // A modal one-line text prompt — the Mac's NSAlert with an accessory text
 // field (rename / create dialogs). `value` carries the initial text in and
 // the entered text out. False on Cancel or empty input. `confirm_label`
-// null reads "OK".
+// null reads the localized "OK" (prompt.ok); the cancelling button is always
+// prompt.cancel. A caller that passes its own label MUST have localized it.
 bool PhiPromptText(HWND owner,
                    const wchar_t* title,
                    const wchar_t* message,
                    std::wstring* value,
                    const wchar_t* confirm_label = nullptr);
 
-// A modal confirmation. The confirming button (`confirm_label`, null =
-// "OK") is destructive red by default — "Delete …?" — or the accent when
-// `destructive` is false. True when the user confirms.
+// A modal confirmation. The confirming button (`confirm_label`, null = the
+// localized prompt.ok) is destructive red by default — "Delete …?" — or the
+// accent when `destructive` is false. True when the user confirms.
 bool PhiConfirm(HWND owner,
                 const wchar_t* title,
                 const wchar_t* message,
@@ -119,7 +120,8 @@ bool PhiPromptShortcut(HWND owner,
 // shown when a navigation matches an "ask first" URL rule. `options` fills
 // a list with `default_index` preselected; the confirming button (or a
 // double-click) returns the selected index, the cancelling button / close
-// returns -1. The labels default to "Open" / "Keep Here".
+// returns -1. The labels default to the localized prompt.open /
+// prompt.keepHere.
 //
 // `cancel_is_default`: the security prompts (agent consent, credential
 // approval) must not be approvable by a reflex Enter — with it set, the

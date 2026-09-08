@@ -11,15 +11,25 @@
 // token every request must carry as X-Phi-Token, or the client answers 403
 // before it consults anything else.
 //
-// Usage:  node phi-test.mjs [--user-data-dir DIR] [suite ...]
+// This file is a LIBRARY, not an entry point: every suite imports it and
+// calls run() itself (test-box.sh runs the suites, in test/suites.txt order).
+// Flags a suite understands, because they are parsed here:
+//   --user-data-dir DIR   the profile to find the control pipe in
+//                         (or PHI_USER_DATA_DIR)
+//   --report FILE         write the machine-readable result there
+//                         (or PHI_TEST_REPORT)
 // Exit code 0 = all pass, 1 = any failure (so a runner can gate on it).
 
 import net from 'node:net'
 import crypto from 'node:crypto'
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync, existsSync, writeFileSync } from 'node:fs'
 
+// The profile under test. test/lib/box.mjs reads the SAME environment
+// variable, so a suite and its library never disagree about which profile
+// they are driving (test-box.sh sets it once per run).
 const USER_DATA_DIR =
-  argValue('--user-data-dir') || 'C:\\phi-fx-test'
+  argValue('--user-data-dir') || process.env.PHI_USER_DATA_DIR ||
+  'C:\\phi-fx-test'
 
 function argValue(flag) {
   const i = process.argv.indexOf(flag)
@@ -57,8 +67,11 @@ function connect() {
   })
 }
 
-/** Minimal RFC-6455 client over an already-connected socket. */
-class Ws {
+/** Minimal RFC-6455 client over an already-connected socket.
+ *  Exported for test/host/harness.test.mjs, which drives it against a fake
+ *  socket on the host — the framing is the one piece of this file that can
+ *  be tested without a box. */
+export class Ws {
   constructor(sock) {
     this.sock = sock
     this.buf = Buffer.alloc(0)
@@ -309,21 +322,65 @@ export function assertEq(actual, expected, msg) {
   }
 }
 
+/**
+ * Writes the machine-readable result of one suite, so test-box.sh can build
+ * a run report instead of scraping stdout. The path comes from
+ * `--report <file>` or PHI_TEST_REPORT; with neither, nothing is written and
+ * the suite behaves exactly as before. test/lib/check.mjs calls this too, so
+ * a rig and a test()-suite land in one shape.
+ */
+export function writeReport({ pass, fail, skip = 0, cases = [] }) {
+  const i = process.argv.indexOf('--report')
+  const path = (i > 0 ? process.argv[i + 1] : null) || process.env.PHI_TEST_REPORT
+  if (!path) return
+  const suite = (process.argv[1] || 'suite').split(/[\\/]/).pop()
+  try {
+    writeFileSync(path, JSON.stringify({ suite, pass, fail, skip, cases },
+                                       null, 1) + '\n')
+  } catch (e) {
+    console.log(`report: could not write ${path}: ${e.message}`)
+  }
+}
+
+// An optional ceiling per test() case, off by default so no suite changes
+// behaviour by being run through the new runner. test-box.sh sets it, which
+// turns "the run hung" into "this case timed out" without waiting for the
+// runner's whole-suite cap.
+const CASE_TIMEOUT_MS = Number(process.env.PHI_TEST_CASE_TIMEOUT_MS || 0)
+
+function withTimeout(promise, ms, name) {
+  if (!ms) return promise
+  let timer
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`case timed out after ${ms}ms`)), ms)
+    }),
+  ]).finally(() => clearTimeout(timer))
+}
+
 export async function run() {
   let pass = 0, fail = 0
+  const cases = []
   for (const t of tests) {
     const started = Date.now()
     try {
-      await t.fn()
-      console.log(`PASS  ${t.name}  (${Date.now() - started}ms)`)
+      await withTimeout(Promise.resolve(t.fn()), CASE_TIMEOUT_MS, t.name)
+      const ms = Date.now() - started
+      console.log(`PASS  ${t.name}  (${ms}ms)`)
+      cases.push({ name: t.name, status: 'pass', ms })
       pass++
     } catch (e) {
-      console.log(`FAIL  ${t.name}  (${Date.now() - started}ms)\n      ${e.message}`)
+      const ms = Date.now() - started
+      console.log(`FAIL  ${t.name}  (${ms}ms)\n      ${e.message}`)
+      cases.push({ name: t.name, status: 'fail', ms, error: e.message })
       fail++
     }
   }
   console.log(`\n${pass} passed, ${fail} failed`)
   process.exitCode = fail === 0 ? 0 : 1
+  writeReport({ pass, fail, skip: 0, cases })
 }
 
 /**

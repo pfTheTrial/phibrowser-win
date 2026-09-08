@@ -307,6 +307,55 @@ void PhiTelemetry::SetEnabled(bool enabled) {
   }
 }
 
+std::string_view PhiTelemetry::AllowedProperties(std::string_view module) {
+  // The registry is chrome/browser/phinomenon/analytics/README.md; a row
+  // there and a fence here are added in the same change. The fences are
+  // "|"-delimited so a lookup is one substring search with no allocation and
+  // no partial-name match ("count" cannot pass as "zombie_count").
+  if (module == "memory_saver") {
+    return "|enabled|aggressiveness|";
+  }
+  if (module == "renderer_health") {
+    return "|age_bucket|cpu_percent|process_uptime_minutes|zombie_count|"
+           "renderer_count|";
+  }
+  return std::string_view();
+}
+
+std::string PhiTelemetry::ScrubProperties(const std::string& module,
+                                          const std::string& properties_json) {
+  const std::string_view allowed = AllowedProperties(module);
+  if (allowed.empty()) {
+    // An unregistered module sends its name and its timing and nothing else.
+    // It is still counted and still uploaded: knowing an unknown module is
+    // firing is the signal that says the table needs a row.
+    return "{}";
+  }
+  std::optional<base::DictValue> props =
+      base::JSONReader::ReadDict(properties_json, base::JSON_PARSE_RFC);
+  if (!props) {
+    return "{}";
+  }
+  base::DictValue kept;
+  for (const auto [key, value] : *props) {
+    const std::string fenced = "|" + std::string(key) + "|";
+    if (allowed.find(fenced) == std::string_view::npos) {
+      ++scrubbed_;
+      continue;
+    }
+    kept.Set(key, value.Clone());
+  }
+  std::optional<std::string> json = base::WriteJson(kept);
+  return json ? *json : std::string("{}");
+}
+
+uint64_t PhiTelemetry::ScrubbedPropertyCount() {
+  ::EnterCriticalSection(&lock_);
+  const uint64_t count = scrubbed_;
+  ::LeaveCriticalSection(&lock_);
+  return count;
+}
+
 void PhiTelemetry::RecordEvent(const std::string& module,
                                const std::string& name,
                                const std::string& properties_json) {
@@ -319,8 +368,13 @@ void PhiTelemetry::RecordEvent(const std::string& module,
     Event event;
     event.module = module;
     event.name = name;
+    // The allow-list runs HERE, before the event is queued: an unexpected
+    // property must not reach the spool on disk, because the spool is
+    // exactly what a later crash-time inspection or a support bundle would
+    // pick up.
     event.properties_json =
-        properties_json.empty() ? std::string("{}") : properties_json;
+        properties_json.empty() ? std::string("{}")
+                                : ScrubProperties(module, properties_json);
     event.unix_ms = NowUnixMs();
     queue_.push_back(std::move(event));
     while (queue_.size() > kMaxQueuedEvents) {
@@ -357,6 +411,7 @@ std::string PhiTelemetry::StatusJson() {
   ::EnterCriticalSection(&lock_);
   out.Set("configured", !endpoint_.empty());
   out.Set("enabled", enabled_);  // The user's consent switch.
+  out.Set("scrubbedProperties", static_cast<double>(scrubbed_));
   out.Set("endpoint", endpoint_);  // The key is deliberately not reported.
   out.Set("queued", static_cast<int>(queue_.size()));
   out.Set("sent", static_cast<double>(sent_));

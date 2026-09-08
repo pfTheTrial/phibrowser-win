@@ -135,3 +135,15 @@ $CXX ../../client/phi_sidebar_model.cc sidebar_view_test.cc \
 $CXX ../../client/phi_sidebar_model.cc sidebar_drag_test.cc \
      -o /tmp/phi_sidebar_drag_test
 /tmp/phi_sidebar_drag_test
+# The Continuous track's cross-cutting foundations
+# (docs/architecture-review.md §3.9, lane 7 §5.5): phi_util's shared helpers
+# — the one blend, the one clamp, the one DPI scaler, the trims, the plural
+# rule, the digit grouping and the relative-time ladder — plus phi_log's
+# redactors and PhiFw::Must, and the theme tokens phi_theme resolves. Each
+# file is in two halves: everything the host compiles is pure, and the Win32
+# half (file I/O, UTF-16 conversion, GetNumberFormatEx, LOG) is behind
+# #if defined(_WIN32) and compiles away here. phi_theme.cc reaches
+# base::NoDestructor, which stubs/ shims.
+$CXX ../../client/phi_util.cc ../../client/phi_log.cc \
+     ../../client/phi_theme.cc util_test.cc -o /tmp/phi_util_test
+/tmp/phi_util_test

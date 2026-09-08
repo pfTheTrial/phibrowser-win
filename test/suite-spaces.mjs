@@ -2,11 +2,8 @@
 // with its own Browser (own tab set). A slot shows one at a time; switching
 // swaps which browser is visible in the shell window.
 import { test, run, assert, assertEq, sleep, openControl } from './phi-test.mjs'
-
-async function firstWindow(ctl) {
-  const { windows } = await ctl.send('agentSpace.list')
-  return windows[0]
-}
+import { firstWindow } from './lib/window.mjs'
+import { waitWindows, waitSpaces } from './lib/wait.mjs'
 
 test('spaces: list starts with the default space, active', async () => {
   const ctl = await openControl()
@@ -56,7 +53,9 @@ test('spaces: switching opens the space and isolates its tabs', async () => {
     const sw = await ctl.send('agentSpace.spaces.switch',
                               { windowId, spaceId: created.id })
     assertEq(sw.ok, true, 'switch ok')
-    await sleep(800)
+    await waitSpaces(ctl, windowId,
+                     (sp) => sp.some((x) => x.id === created.id && x.active),
+                     { timeout: 8000, what: 'the new Space to become active' })
 
     const listed = (await ctl.send('agentSpace.spaces.list', { windowId })).spaces
     const now = listed.find((s) => s.id === created.id)
@@ -89,7 +88,9 @@ test('spaces: switching back restores the original space tabs', async () => {
 
     assertEq((await ctl.send('agentSpace.spaces.switch',
                              { windowId, spaceId: home.id })).ok, true, 'switch home ok')
-    await sleep(700)
+    await waitSpaces(ctl, windowId,
+                     (sp) => sp.some((x) => x.id === home.id && x.active),
+                     { timeout: 8000, what: 'the home Space to become active' })
     const homeTabs = (await ctl.send('agentSpace.tabs.list', { windowId })).tabs
     assert(!homeTabs.some((t) => (t.title || '').includes(otherMark)),
            'home space does not show the other space page')
@@ -105,11 +106,9 @@ test('spaces: a window that visited two spaces still closes', async () => {
     // A fresh slot, so closing it cannot disturb the window the other tests use.
     const before = (await ctl.send('agentSpace.list')).windows
     await ctl.send('agentSpace.newWindow')
-    let windows = before
-    for (let i = 0; i < 24 && windows.length === before.length; i++) {
-      await sleep(250)
-      windows = (await ctl.send('agentSpace.list')).windows
-    }
+    const windows = await waitWindows(ctl, (w) => w.length > before.length,
+                                      { timeout: 6000,
+                                        what: 'the new window to be listed' })
     const slot = windows.find((w) => !before.includes(w))
     assert(slot, 'new window created')
 
@@ -119,16 +118,18 @@ test('spaces: a window that visited two spaces still closes', async () => {
     assertEq((await ctl.send('agentSpace.spaces.switch',
                              { windowId: slot, spaceId: created.id })).ok,
              true, 'switched the new window to a second space')
-    await sleep(800)
+    await waitSpaces(ctl, slot,
+                     (sp) => sp.some((x) => x.id === created.id && x.active),
+                     { timeout: 8000, what: 'the slot to enter the Space' })
 
     assertEq((await ctl.send('agentSpace.close', { windowId: slot })).ok, true,
              'close accepted')
     let live = windows
-    for (let i = 0; i < 24; i++) {
-      await sleep(250)
-      live = (await ctl.send('agentSpace.list')).windows
-      if (!live.includes(slot)) break
-    }
+    try {
+      live = await waitWindows(ctl, (w) => !w.includes(slot),
+                               { timeout: 6000,
+                                 what: 'the closed window to leave the list' })
+    } catch { live = (await ctl.send('agentSpace.list')).windows }
     assert(!live.includes(slot),
            `the window went away (still listed: ${JSON.stringify(live)})`)
   } finally { ctl.close() }
@@ -177,12 +178,13 @@ test('spaces: delete removes the space, its data, and its browser', async () => 
     // Open it in the slot so the delete also has a live browser to close.
     await ctl.send('agentSpace.spaces.switch',
                    { windowId, spaceId: created.id })
-    for (let i = 0; i < 40; i++) {
-      const { spaces } = await ctl.send('agentSpace.spaces.list', { windowId })
-      const s = spaces.find((x) => x.id === created.id)
-      if (s && s.active && s.open) break
-      await sleep(250)
-    }
+    try {
+      await waitSpaces(ctl, windowId,
+                       (sp) => sp.some((x) => x.id === created.id && x.active &&
+                                              x.open),
+                       { timeout: 10000,
+                         what: 'the Space to open in the slot' })
+    } catch { /* delete is asserted below either way */ }
     const gone = await ctl.send('agentSpace.spaces.delete',
                                 { spaceId: created.id })
     assertEq(gone.ok, true, 'delete accepted')
@@ -190,12 +192,13 @@ test('spaces: delete removes the space, its data, and its browser', async () => 
     assertEq(spaces.some((s) => s.id === created.id), false,
              'the space is gone from the list')
     // The window fell back to another open space rather than a dead one.
-    for (let i = 0; i < 20; i++) {
-      spaces = (await ctl.send('agentSpace.spaces.list', { windowId })).spaces
-      const active = spaces.find((s) => s.active)
-      if (active && active.id !== created.id) break
-      await sleep(250)
-    }
+    try {
+      spaces = await waitSpaces(ctl, windowId, (sp) => {
+        const a = sp.find((x) => x.active)
+        return a && a.id !== created.id
+      }, { timeout: 5000, what: 'another Space to take over' })
+    } catch { spaces = (await ctl.send('agentSpace.spaces.list',
+                                       { windowId })).spaces }
     const active = spaces.find((s) => s.active)
     assert(active && active.id !== created.id,
            `another space is active (${active && active.id})`)

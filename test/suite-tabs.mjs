@@ -3,23 +3,18 @@
 import {
   test, run, assert, assertEq, sleep, openControl, cdpHttp, openCdp,
 } from './phi-test.mjs'
+import { firstWindow as slotZero, closeMatching } from './lib/window.mjs'
+import { waitTabs as libWaitTabs } from './lib/wait.mjs'
 
 async function firstWindow(ctl) {
   const { windows } = await ctl.send('agentSpace.list')
   assert(windows.length >= 1, 'a window exists')
-  return windows[0]
+  return slotZero(ctl)
 }
 
 /** Polls tabs.list until `pred` holds, then returns the tabs. */
-async function waitTabs(ctl, windowId, pred, what) {
-  let tabs = []
-  for (let i = 0; i < 24; i++) {
-    tabs = (await ctl.send('agentSpace.tabs.list', { windowId })).tabs
-    if (pred(tabs)) return tabs
-    await sleep(250)
-  }
-  throw new Error(`timed out waiting for: ${what} (last: ${JSON.stringify(tabs)})`)
-}
+const waitTabs = (ctl, windowId, pred, what) =>
+  libWaitTabs(ctl, windowId, pred, { timeout: 6000, interval: 250, what })
 
 test('tabs: list shape', async () => {
   const ctl = await openControl()
@@ -194,14 +189,7 @@ test('tabs: move reorders the strip; split members are refused', async () => {
              false, 'split member refused')
     await ctl.send('agentSpace.tabs.unsplit', { windowId, index: member.index })
     await sleep(300)
-    t = await tabs()
-    for (let i = t.length - 1; i >= 0 && t.length > 1; --i) {
-      if ((t[i].url || '').includes('data:text/html')) {
-        await ctl.send('agentSpace.tabs.close', { windowId, index: t[i].index })
-        await sleep(200)
-        t = await tabs()
-      }
-    }
+    await closeMatching(ctl, windowId, (t) => (t.url || '').includes('data:text/html'))
   } finally { ctl.close() }
 })
 

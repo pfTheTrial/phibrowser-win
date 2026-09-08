@@ -1,35 +1,11 @@
 // Persistence suite: the Space list (id, name, profile) and the chosen
 // layout survive a restart.
-// This suite RESTARTS the app itself, so it must run last (alphabetically it
-// sorts before suite-profiles/spaces — the runner tolerates any order because
-// each suite is self-contained).
-import { execFileSync } from 'node:child_process'
-import { test, run, assert, assertEq, sleep, openControl, waitForSaves } from './phi-test.mjs'
+// This suite RESTARTS the app itself and leaves Spaces behind, so it runs
+// LAST — test/suites.txt says so and test-box.sh honours the file's order
+// (run-fx-all.sh used to glob alphabetically, which put it ninth of nineteen).
+import { test, run, assert, assertEq, openControl } from './phi-test.mjs'
+import { restartApp } from './lib/app.mjs'
 
-/** Restarts Phi and waits for its control socket to answer again. */
-async function restartApp() {
-  await waitForSaves()  // Coalesced writes land before the kill.
-  execFileSync('powershell.exe', ['-NoProfile', '-Command', `
-Get-Process Phi -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-$deadline = (Get-Date).AddSeconds(20)
-while (((Get-Process Phi -ErrorAction SilentlyContinue) | Measure-Object).Count -gt 0 -and (Get-Date) -lt $deadline) {
-  Start-Sleep -Milliseconds 400
-}
-Start-Sleep 1
-Start-ScheduledTask -TaskName PhiFxLaunch
-`], { stdio: 'ignore' })
-  // Wait for the control socket of the NEW instance.
-  for (let i = 0; i < 40; i++) {
-    await sleep(1000)
-    try {
-      const ctl = await openControl()
-      const r = await ctl.send('agentSpace.ping')
-      ctl.close()
-      if (r.ok) return
-    } catch { /* not up yet */ }
-  }
-  throw new Error('app did not come back up')
-}
 
 test('persist: a created space survives a restart', async () => {
   let ctl = await openControl()

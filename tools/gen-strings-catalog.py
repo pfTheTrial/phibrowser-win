@@ -23,6 +23,16 @@ docs/i18n/localization-guidelines.md). This script joins the two:
     reported and falls back to English at runtime, which is the same
     degradation the Mac has for a new key awaiting the translation repo.
 
+  * PLURALS. A string that counts something is not one key but a FAMILY:
+    `<key>.one` and `<key>.other` (the CLDR category name is the suffix, so
+    `few`/`many`/`zero`/`two` need no format change when a locale that has
+    them ships). PhiStrN picks the branch at runtime. The Mac spells the same
+    thing as an xcstrings `variations.plural` block on ONE key, so this
+    script splits that block: `downloads.….daysAgo.other` is joined against
+    the Mac's `downloads.….daysAgo` variation for `other`, by key or by that
+    branch's English. A family missing a branch is an ERROR, not a warning —
+    a missing `.other` reads as a singular in the UI and nobody notices.
+
 Usage:
     tools/gen-strings-catalog.py            # write resources/strings.json
     tools/gen-strings-catalog.py --check    # report only, touch nothing
@@ -47,6 +57,10 @@ MAC_CATALOG = os.path.join(
 # The locales the product ships. "en" leads: it is the source language and the
 # runtime fallback.
 LOCALES = ["en", "de", "es", "fr", "ja", "ko", "nl", "zh-Hans", "zh-Hant"]
+
+# CLDR's plural categories. A source key ending in one of these is a branch of
+# a plural family, not a key of its own (see the module docstring).
+PLURAL_CATEGORIES = ("zero", "one", "two", "few", "many", "other")
 
 
 # The Mac's values carry printf placeholders ("%d", "%@", "%1$@"); PhiStrF
@@ -73,7 +87,7 @@ def positionalize(text):
 
 
 def load_mac(path):
-    """(by_key, by_english) views of the Mac catalog's translations."""
+    """(by_key, by_english, by_plural, by_plural_english) views of the Mac."""
     if not os.path.exists(path):
         sys.exit(f"Mac catalog not found: {path}\n"
                  "It is the source of translations; clone phibrowser-mac beside "
@@ -81,16 +95,33 @@ def load_mac(path):
     with open(path, encoding="utf-8") as f:
         strings = json.load(f)["strings"]
     by_key, by_english = {}, {}
+    # (mac key, category) -> {locale: text}, and the same tables keyed by the
+    # branch's own English so a Windows plural family can join a Mac one whose
+    # key it does not share.
+    by_plural, by_plural_english = {}, defaultdict(dict)
     for key, entry in strings.items():
         table = {}
         for locale, value in (entry.get("localizations") or {}).items():
             unit = value.get("stringUnit") or {}
             text = positionalize(unit.get("value"))
-            # A "variations" entry is plural/device-specific; the Windows
-            # client has no such call sites, so those keys are skipped rather
-            # than flattened to an arbitrary branch.
             if text is not None:
                 table[locale] = text
+            # A "variations.plural" block is the Mac's plural family. Each
+            # category becomes its own table here, which is what lets a
+            # "<key>.other" on this side find "<key>"'s "other" branch.
+            plural = (value.get("variations") or {}).get("plural") or {}
+            for category, branch in plural.items():
+                branch_text = positionalize(
+                    (branch.get("stringUnit") or {}).get("value"))
+                if branch_text is not None:
+                    by_plural.setdefault((key, category), {})[locale] = (
+                        branch_text)
+        for (plural_key, category), branch_table in by_plural.items():
+            if plural_key != key:
+                continue
+            english = branch_table.get("en")
+            if english and english not in by_plural_english[category]:
+                by_plural_english[category][english] = branch_table
         if not table:
             continue
         by_key[key] = table
@@ -100,7 +131,7 @@ def load_mac(path):
         # source file names the key it wants explicitly in that case.
         if english and english not in by_english:
             by_english[english] = table
-    return by_key, by_english
+    return by_key, by_english, by_plural, by_plural_english
 
 
 def normalize(text):
@@ -108,7 +139,30 @@ def normalize(text):
     return text.split("\t")[0].replace("&", "").replace("…", "...").strip()
 
 
-def build(source, by_key, by_english):
+def plural_families(source):
+    """{family: {category, ...}} for every plural key in the source file."""
+    families = defaultdict(set)
+    for key in source["strings"]:
+        family, _, category = key.rpartition(".")
+        if family and category in PLURAL_CATEGORIES:
+            families[family].add(category)
+    return families
+
+
+def check_plural_families(families):
+    """A family without an "other" branch is an error, not a warning."""
+    broken = sorted(f for f, cats in families.items() if "other" not in cats)
+    if not broken:
+        return 0
+    print("\nPLURAL FAMILIES MISSING AN \"other\" BRANCH:")
+    for family in broken:
+        print(f"    {family}.{{{','.join(sorted(families[family]))}}}")
+    print("  PhiStrN falls back to the KEY when the branch it picks is "
+          "absent; \"other\" is the branch every locale can reach.")
+    return len(broken)
+
+
+def build(source, by_key, by_english, by_plural, by_plural_english):
     out, report = {}, defaultdict(list)
     for key, entry in source["strings"].items():
         english = entry["en"]
@@ -116,6 +170,16 @@ def build(source, by_key, by_english):
 
         mac = by_key.get(key)
         origin = "mac-key"
+        if mac is None:
+            # A plural branch joins the Mac's variation for the same
+            # category, by key first and then by that branch's English.
+            family, _, category = key.rpartition(".")
+            if family and category in PLURAL_CATEGORIES:
+                mac = by_plural.get((family, category))
+                if mac is None:
+                    mac = by_plural_english[category].get(normalize(english))
+                if mac is not None:
+                    origin = "mac-plural"
         if mac is None:
             mac = by_english.get(normalize(english))
             origin = "mac-english"
@@ -166,12 +230,16 @@ def main():
 
     with open(SOURCE, encoding="utf-8") as f:
         source = json.load(f)
-    by_key, by_english = load_mac(args.mac_catalog)
-    strings, report = build(source, by_key, by_english)
+    by_key, by_english, by_plural, by_plural_english = load_mac(
+        args.mac_catalog)
+    strings, report = build(source, by_key, by_english, by_plural,
+                            by_plural_english)
+    broken_families = check_plural_families(plural_families(source))
 
     total = len(strings)
     print(f"keys                    : {total}")
     print(f"  translated by Mac key : {len(report['mac-key'])}")
+    print(f"  plural branches joined: {len(report['mac-plural'])}")
     print(f"  translated by English : {len(report['mac-english'])}")
     print(f"  translated in source  : {len(report['own'])}")
     print(f"  ENGLISH ONLY          : {len(report['untranslated'])}")
@@ -182,6 +250,8 @@ def main():
         if len(report["untranslated"]) > 40:
             print(f"    … and {len(report['untranslated']) - 40} more")
 
+    if broken_families:
+        return 1
     if args.check:
         return 0
 

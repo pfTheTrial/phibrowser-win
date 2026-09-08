@@ -2,22 +2,17 @@
 import {
   test, run, assert, assertEq, sleep, openControl,
 } from './phi-test.mjs'
-
-async function firstWindow(ctl) {
-  const { windows } = await ctl.send('agentSpace.list')
-  return windows[0]
-}
+import { firstWindow } from './lib/window.mjs'
+import { waitFor } from './lib/wait.mjs'
 
 /** Navigates and waits until the committed url/title reflects the marker. */
 async function navigateAndSettle(ctl, windowId, marker) {
   const url = `data:text/html,<title>${marker}</title><h1>${marker}</h1>`
   await ctl.send('agentSpace.navigate', { windowId, url })
-  for (let i = 0; i < 24; i++) {
-    await sleep(250)
+  return waitFor(async () => {
     const st = await ctl.send('agentSpace.nav.state', { windowId })
-    if ((st.title || '').includes(marker) && !st.loading) return st
-  }
-  throw new Error(`page did not settle: ${marker}`)
+    return (st.title || '').includes(marker) && !st.loading ? st : null
+  }, { timeout: 6000, interval: 250, what: `the page to settle: ${marker}` })
 }
 
 /** Navigates to raw typed text and waits for whatever it resolves to. */

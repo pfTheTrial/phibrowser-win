@@ -2,12 +2,9 @@
 // LocalStore (Sources/LocalStorage). Same model: ONE row kind told apart by
 // type, and the Mac's THREE pinned-tab scopes (PinnedTabScope: space, profile,
 // app), which decide who owns a pinned row.
-import { test, run, assert, assertEq, sleep, openControl, waitForSaves } from './phi-test.mjs'
-
-async function firstWindow(ctl) {
-  const { windows } = await ctl.send('agentSpace.list')
-  return windows[0]
-}
+import { test, run, assert, assertEq, sleep, openControl } from './phi-test.mjs'
+import { restartApp } from './lib/app.mjs'
+import { firstWindow } from './lib/window.mjs'
 
 /** Clears whatever earlier tests left, so each case starts from a known store. */
 async function clearAll(ctl, windowId) {
@@ -185,26 +182,7 @@ test('pinned: pins and bookmarks survive a restart', async () => {
                    { windowId, title: 'KeptMark', url: 'https://example.com/mark' })
   } finally { ctl.close() }
 
-  const { execFileSync } = await import('node:child_process')
-  await waitForSaves()  // Coalesced writes land before the kill.
-  execFileSync('powershell.exe', ['-NoProfile', '-Command', `
-Get-Process Phi -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-$deadline = (Get-Date).AddSeconds(20)
-while (((Get-Process Phi -ErrorAction SilentlyContinue) | Measure-Object).Count -gt 0 -and (Get-Date) -lt $deadline) {
-  Start-Sleep -Milliseconds 400
-}
-Start-Sleep 1
-Start-ScheduledTask -TaskName PhiFxLaunch
-`], { stdio: 'ignore' })
-  for (let i = 0; i < 40; i++) {
-    await sleep(1000)
-    try {
-      const probe = await openControl()
-      const r = await probe.send('agentSpace.ping')
-      probe.close()
-      if (r.ok) break
-    } catch { /* not up yet */ }
-  }
+  await restartApp()
 
   ctl = await openControl()
   try {

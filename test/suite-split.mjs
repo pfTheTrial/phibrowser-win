@@ -1,11 +1,8 @@
 // Split view over Chromium's native side-by-side: tabs.split pairs the ACTIVE
 // tab with another (shared splitId in tabs.list), tabs.unsplit dissolves it.
 import { test, run, assert, assertEq, sleep, openControl } from './phi-test.mjs'
-
-async function firstWindow(ctl) {
-  const { windows } = await ctl.send('agentSpace.list')
-  return windows[0]
-}
+import { firstWindow } from './lib/window.mjs'
+import { closeMatching } from './lib/window.mjs'
 
 const tabs = async (ctl, windowId) =>
   (await ctl.send('agentSpace.tabs.list', { windowId })).tabs
@@ -22,20 +19,13 @@ async function ensureTabs(ctl, windowId, count) {
 }
 
 async function cleanup(ctl, windowId) {
-  let t = await tabs(ctl, windowId)
+  const t = await tabs(ctl, windowId)
   const member = t.find((x) => x.splitId)
   if (member) {
     await ctl.send('agentSpace.tabs.unsplit', { windowId, index: member.index })
     await sleep(400)
   }
-  t = await tabs(ctl, windowId)
-  for (let i = t.length - 1; i >= 0 && t.length > 1; --i) {
-    if ((t[i].url || '').includes('data:text/html')) {
-      await ctl.send('agentSpace.tabs.close', { windowId, index: t[i].index })
-      await sleep(250)
-      t = await tabs(ctl, windowId)
-    }
-  }
+  await closeMatching(ctl, windowId, (t) => (t.url || '').includes('data:text/html'))
 }
 
 test('split: pairing marks both tabs with one shared splitId', async () => {

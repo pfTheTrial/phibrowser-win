@@ -1,7 +1,9 @@
 // Toolbar suite: the client's own address field and back/forward/reload
 // affordances, driven by framework nav state and verified in pixels.
-import { execFileSync } from 'node:child_process'
 import { test, run, assert, assertEq, sleep, openControl } from './phi-test.mjs'
+import { firstWindow as slotZero } from './lib/window.mjs'
+import { capturePixels } from './lib/pixels.mjs'
+import { waitFor } from './lib/wait.mjs'
 
 // Mirrors phi_shell_window.cc, in DESIGN UNITS (pixels at 100%). The
 // client lays out in PHYSICAL pixels and uicap captures in the same space, so
@@ -17,31 +19,7 @@ function useLayout(l) {
 }
 
 function samplePixels(points) {
-  // PrintWindow(PW_CLIENTONLY) renders from the WINDOW origin, so a client
-  // coordinate lands `frame` further in. The client publishes the insets.
-  const arg = points.map(([x, y]) => `${x + FRAME.x},${y + FRAME.y}`).join(';')
-  const ps = [
-    `[Environment]::SetEnvironmentVariable('PHI_UICAP_POINTS','${arg}','User')`,
-    `[Environment]::SetEnvironmentVariable('PHI_UICAP_HWND','${captureHwnd || 0}','User')`,
-    `Remove-Item C:\\Users\\jdxin\\uicap.txt -ErrorAction SilentlyContinue`,
-    `Start-ScheduledTask -TaskName PhiUiCap`,
-    `$deadline = (Get-Date).AddSeconds(20)`,
-    `do { Start-Sleep -Milliseconds 300; $t = (Get-Content C:\\Users\\jdxin\\uicap.txt -ErrorAction SilentlyContinue) } ` +
-      `until (($t -and ($t -contains 'DONE')) -or (Get-Date) -gt $deadline)`,
-    `$t`,
-  ].join('; ')
-  const out = execFileSync('powershell.exe',
-    ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', ps],
-    { encoding: 'utf8' })
-  const px = []
-  for (const line of out.split(/\r?\n/)) {
-    const m = /^PX \S+ (\d+,\d+,\d+)$/.exec(line.trim())
-    if (m) px.push(m[1])
-  }
-  if (px.length !== points.length) {
-    throw new Error(`capture failed: ${out.trim().split(/\r?\n/)[0] || 'no output'}`)
-  }
-  return px
+  return capturePixels(captureHwnd, points, { frame: FRAME, timeoutSec: 20 })
 }
 
 // The HWND of the slot under test; pixel captures target exactly this window
@@ -76,8 +54,7 @@ function urlInkCount(offset) {
 }
 
 async function firstWindow(ctl) {
-  const { windows } = await ctl.send('agentSpace.list')
-  const slot = windows[0]
+  const slot = await slotZero(ctl)
   // Capture the window we drive: extra shell windows can exist (e.g. Chromium
   // opens one when a profile is created).
   const h = await ctl.send('agentSpace.window.handle', { windowId: slot })
@@ -101,12 +78,10 @@ async function firstWindow(ctl) {
 async function navigateAndSettle(ctl, windowId, marker) {
   await ctl.send('agentSpace.navigate',
                  { windowId, url: `data:text/html,<title>${marker}</title>` })
-  for (let i = 0; i < 24; i++) {
-    await sleep(250)
+  return waitFor(async () => {
     const st = await ctl.send('agentSpace.nav.state', { windowId })
-    if (!st.loading && (st.title || '').includes(marker)) return st
-  }
-  throw new Error(`did not settle: ${marker}`)
+    return !st.loading && (st.title || '').includes(marker) ? st : null
+  }, { timeout: 6000, interval: 250, what: `the page to settle: ${marker}` })
 }
 
 test('toolbar: url field renders text for the current page', async () => {

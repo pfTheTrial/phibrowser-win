@@ -1286,8 +1286,8 @@
    "zh-Hans": "正在扫描…",
    "zh-Hant": "掃描中…"
   },
-  "downloads.bDY": {
-   "en": "%b %d, %Y"
+  "downloads.b": {
+   "en": "B"
   },
   "downloads.blockedByPolicy": {
    "en": "Blocked by policy"
@@ -1295,17 +1295,8 @@
   "downloads.dangerous": {
    "en": "Dangerous"
   },
-  "downloads.daysAgo": {
-   "en": " days ago"
-  },
-  "downloads.from": {
-   "en": "From "
-  },
   "downloads.gb": {
    "en": "GB"
-  },
-  "downloads.hourAgo": {
-   "en": " hour ago"
   },
   "downloads.item.completed.copyLinkButtonTooltip": {
    "de": "Link kopieren",
@@ -1318,6 +1309,34 @@
    "zh-Hans": "拷贝链接",
    "zh-Hant": "拷貝連結"
   },
+  "downloads.item.completedTime.daysAgo.one": {
+   "en": "{0} day ago"
+  },
+  "downloads.item.completedTime.daysAgo.other": {
+   "de": "vor {0} Tagen",
+   "en": "{0} days ago",
+   "es": "hace {0} días",
+   "fr": "Il y a {0} jours",
+   "ja": "{0}日前",
+   "ko": "{0}일 전",
+   "nl": "{0} dagen geleden",
+   "zh-Hans": "{0} 天前",
+   "zh-Hant": "{0} 天前"
+  },
+  "downloads.item.completedTime.hoursAgo.one": {
+   "de": "vor {0} Stunde",
+   "en": "{0} hour ago",
+   "es": "hace {0} hora",
+   "fr": "Il y a {0} heure",
+   "ja": "{0}時間前",
+   "ko": "{0}시간 전",
+   "nl": "{0} uur geleden",
+   "zh-Hans": "{0} 小时前",
+   "zh-Hant": "{0} 小時前"
+  },
+  "downloads.item.completedTime.hoursAgo.other": {
+   "en": "{0} hours ago"
+  },
   "downloads.item.completedTime.justNow": {
    "de": "Gerade eben",
    "en": "Just now",
@@ -1328,6 +1347,28 @@
    "nl": "Zojuist",
    "zh-Hans": "刚刚",
    "zh-Hant": "剛剛"
+  },
+  "downloads.item.completedTime.minutesAgo.one": {
+   "de": "vor {0} Min.",
+   "en": "{0} min ago",
+   "es": "Hace {0} min",
+   "fr": "Il y a {0} min",
+   "ja": "{0}分前",
+   "ko": "{0}분 전",
+   "nl": "{0} min geleden",
+   "zh-Hans": "{0} 分钟前",
+   "zh-Hant": "{0} 分鐘前"
+  },
+  "downloads.item.completedTime.minutesAgo.other": {
+   "de": "vor {0} Min.",
+   "en": "{0} min ago",
+   "es": "Hace {0} min",
+   "fr": "Il y a {0} min",
+   "ja": "{0}分前",
+   "ko": "{0}분 전",
+   "nl": "{0} min geleden",
+   "zh-Hans": "{0} 分钟前",
+   "zh-Hant": "{0} 分鐘前"
   },
   "downloads.item.completedTime.today": {
    "de": "Heute",
@@ -1350,6 +1391,17 @@
    "nl": "Gisteren",
    "zh-Hans": "昨天",
    "zh-Hant": "昨天"
+  },
+  "downloads.item.sourceHostLabel": {
+   "de": "Von {0}",
+   "en": "From {0}",
+   "es": "De {0}",
+   "fr": "Depuis {0}",
+   "ja": "提供元: {0}",
+   "ko": "출처: {0}",
+   "nl": "Van {0}",
+   "zh-Hans": "来自 {0}",
+   "zh-Hant": "來自 {0}"
   },
   "downloads.item.status.cancelled": {
    "de": "Abgebrochen",
@@ -1395,6 +1447,9 @@
    "zh-Hans": "・已暂停",
    "zh-Hant": "・已暫停"
   },
+  "downloads.item.transfer.progressLabel": {
+   "en": "{0} of {1}"
+  },
   "downloads.kb": {
    "en": "KB"
   },
@@ -1422,9 +1477,6 @@
   },
   "downloads.mb": {
    "en": "MB"
-  },
-  "downloads.minAgo": {
-   "en": " min ago"
   },
   "extensions.noExtensionsInstalled": {
    "en": "No extensions installed"
@@ -2370,6 +2422,17 @@
   "prompt.backspace": {
    "en": "Backspace"
   },
+  "prompt.cancel": {
+   "de": "Abbrechen",
+   "en": "Cancel",
+   "es": "Cancelar",
+   "fr": "Annuler",
+   "ja": "キャンセル",
+   "ko": "취소",
+   "nl": "Annuleer",
+   "zh-Hans": "取消",
+   "zh-Hant": "取消"
+  },
   "prompt.ctrl": {
    "en": "Ctrl+"
   },
@@ -2421,6 +2484,9 @@
    "nl": "OK",
    "zh-Hans": "好",
    "zh-Hant": "好"
+  },
+  "prompt.open": {
+   "en": "Open"
   },
   "prompt.pagedown": {
    "en": "PageDown"

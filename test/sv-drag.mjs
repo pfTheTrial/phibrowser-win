@@ -4,38 +4,19 @@
 // scheduled task (C:\Users\jdxin\drag.txt), aims them with the rows that
 // agentSpace.window.layout reports, and asserts the outcome through the
 // control pipe. Layout must be a vertical one (performance/balanced).
-import { execSync } from 'node:child_process'
-import { writeFileSync, existsSync, statSync, unlinkSync } from 'node:fs'
 import { openControl } from './phi-test.mjs'
+import { check, show, finish, failureCount } from './lib/check.mjs'
+import { drag, park, mid } from './lib/dragrig.mjs'
+import { activeWindow } from './lib/window.mjs'
 
 const ctl = await openControl()
-const show = (l, v) => console.log(l, JSON.stringify(v))
-let failures = 0
-const check = (ok, what) => { console.log((ok ? 'PASS ' : 'FAIL ') + what); if (!ok) failures++ }
-const sleep = (ms) => new Promise(r => setTimeout(r, ms))
-
-const { spaces } = await ctl.send('agentSpace.spaces.list', {})
-const active = spaces.find(s => s.isActive && s.windowIds.length) || spaces.find(s => s.windowIds.length)
-const wid = active.windowIds[0]
+const wid = await activeWindow(ctl)
 const layout = async () => await ctl.send('agentSpace.window.layout', { windowId: wid })
 const tabs = async () => (await ctl.send('agentSpace.spaces.listTabs', { windowId: wid })).tabs
 const pins = async () => (await ctl.send('agentSpace.pinned.list', { windowId: wid })).pinned
-const mid = (r) => [Math.round((r.left + r.right) / 2), Math.round((r.top + r.bottom) / 2)]
-
-// One real drag: park the shell, press at `from`, glide to `to`, release.
-const drag = async (name, from, to) => {
-  const steps = ['park', `down,${from[0]},${from[1]}`, `move,${from[0]},${from[1] + 12}`,
-                 `move,${to[0]},${to[1]}`, `sleep,400`, `shot,${name}`, 'up', 'sleep,600']
-  try { unlinkSync('C:\\Users\\jdxin\\drag.done') } catch {}
-  writeFileSync('C:\\Users\\jdxin\\drag.txt', steps.join('\r\n') + '\r\n')
-  execSync('schtasks /Run /TN PhiDragCap', { stdio: 'ignore' })
-  const deadline = Date.now() + 30000
-  while (Date.now() < deadline && !existsSync('C:\\Users\\jdxin\\drag.done')) await sleep(300)
-  await sleep(800)
-}
 
 // Park first so the rows below are measured on the parked window.
-await drag('park', [5, 5], [5, 5])
+await park()
 let L = await layout()
 check(L.ok && L.mode !== 'comfortable', `vertical layout (${L.mode})`)
 const rowsOf = (band) => L.rows.filter(r => r.band === band && r.right > r.left)
@@ -110,6 +91,6 @@ show('rows:', L.rows.map(r => `${r.band}:${r.key.slice(0, 12)}@${r.top}`))
   }
 }
 
-console.log(failures ? `${failures} FAILED` : 'ALL PASS')
+finish()
 ctl.close()
-process.exit(failures ? 1 : 0)
+process.exit(failureCount() ? 1 : 0)

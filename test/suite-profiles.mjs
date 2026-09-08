@@ -1,23 +1,19 @@
 // Space↔profile binding: every Space has EXACTLY ONE profile, and several
 // Spaces may share one (the fork's model; the binding is immutable).
 import { test, run, assert, assertEq, sleep, openControl } from './phi-test.mjs'
-
-async function firstWindow(ctl) {
-  const { windows } = await ctl.send('agentSpace.list')
-  return windows[0]
-}
+import { firstWindow } from './lib/window.mjs'
+import { waitSpaces } from './lib/wait.mjs'
 
 /** Switches to a Space, waiting out an async profile load if needed. */
 async function switchSpace(ctl, windowId, spaceId) {
   const r = await ctl.send('agentSpace.spaces.switch', { windowId, spaceId })
   assertEq(r.ok, true, `switch to ${spaceId} accepted`)
-  for (let i = 0; i < 40; i++) {
-    const { spaces } = await ctl.send('agentSpace.spaces.list', { windowId })
-    const s = spaces.find((x) => x.id === spaceId)
-    if (s && s.active && s.open) return s
-    await sleep(250)
-  }
-  throw new Error(`space ${spaceId} never became active`)
+  const spaces = await waitSpaces(
+      ctl, windowId,
+      (sp) => sp.some((x) => x.id === spaceId && x.active && x.open),
+      { timeout: 10000, interval: 250,
+        what: `space ${spaceId} to become active` })
+  return spaces.find((x) => x.id === spaceId)
 }
 
 test('profiles: list reports at least the default profile', async () => {

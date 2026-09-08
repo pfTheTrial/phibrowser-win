@@ -1,7 +1,9 @@
 // Settings suite: the full settings surface — the Mac's Preferences panes
 // (Settings.swift) and its General rows (GeneralSettingView.swift), as far as
 // this client has state to back them.
-import { test, run, assert, assertEq, sleep, openControl, waitForSaves } from './phi-test.mjs'
+import { test, run, assert, assertEq, sleep, openControl } from './phi-test.mjs'
+import { capturePixel } from './lib/pixels.mjs'
+import { restartApp } from './lib/app.mjs'
 
 // The Mac's panes() list, in its order (AppController+Settings.swift):
 // Account, General, Profiles, Spaces, Navigation, AI, Shortcuts, Developer.
@@ -113,7 +115,6 @@ test('settings: saturation drives the tint, and clamps', async () => {
 })
 
 test('settings: saturation actually changes the painted tint (pixels)', async () => {
-  const { execFileSync } = await import('node:child_process')
   const ctl = await openControl()
   try {
     const { windows } = await ctl.send('agentSpace.list')
@@ -124,28 +125,9 @@ test('settings: saturation actually changes the painted tint (pixels)', async ()
     await ctl.send('agentSpace.theme.set', { themeId: 'coral', appearance: 'light' })
     const h = await ctl.send('agentSpace.window.handle', { windowId })
     const geo = await ctl.send('agentSpace.window.layout', { windowId })
-    const probe = () => {
-      const x = 100 + (geo.frameLeft || 0)
-      const y = 400 + (geo.frameTop || 0)
-      const ps = [
-        `[Environment]::SetEnvironmentVariable('PHI_UICAP_POINTS','${x},${y}','User')`,
-        `[Environment]::SetEnvironmentVariable('PHI_UICAP_HWND','${h.hwnd}','User')`,
-        `Remove-Item C:\\Users\\jdxin\\uicap.txt -ErrorAction SilentlyContinue`,
-        `Start-ScheduledTask -TaskName PhiUiCap`,
-        `$deadline = (Get-Date).AddSeconds(20)`,
-        `do { Start-Sleep -Milliseconds 300; $t = (Get-Content C:\\Users\\jdxin\\uicap.txt -ErrorAction SilentlyContinue) } ` +
-          `until (($t -and ($t -contains 'DONE')) -or (Get-Date) -gt $deadline)`,
-        `$t`,
-      ].join('; ')
-      const out = execFileSync('powershell.exe',
-        ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', ps],
-        { encoding: 'utf8' })
-      for (const line of out.split(/\r?\n/)) {
-        const m = /^PX \S+ (\d+,\d+,\d+)$/.exec(line.trim())
-        if (m) return m[1]
-      }
-      throw new Error('capture failed')
-    }
+    // Captures render from the WINDOW origin; client coords need the insets.
+    const frame = { x: geo.frameLeft || 0, y: geo.frameTop || 0 }
+    const probe = () => capturePixel(h.hwnd, 100, 400, { frame })
 
     await ctl.send('agentSpace.settings.set', { saturation: 5 })
     await sleep(600)
@@ -174,26 +156,7 @@ test('settings: the settings surface survives a restart', async () => {
                      newTabBehavior: 'omnibox' })
   } finally { ctl.close() }
 
-  const { execFileSync } = await import('node:child_process')
-  await waitForSaves()  // Coalesced writes land before the kill.
-  execFileSync('powershell.exe', ['-NoProfile', '-Command', `
-Get-Process Phi -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-$deadline = (Get-Date).AddSeconds(20)
-while (((Get-Process Phi -ErrorAction SilentlyContinue) | Measure-Object).Count -gt 0 -and (Get-Date) -lt $deadline) {
-  Start-Sleep -Milliseconds 400
-}
-Start-Sleep 1
-Start-ScheduledTask -TaskName PhiFxLaunch
-`], { stdio: 'ignore' })
-  for (let i = 0; i < 40; i++) {
-    await sleep(1000)
-    try {
-      const probe = await openControl()
-      const r = await probe.send('agentSpace.ping')
-      probe.close()
-      if (r.ok) break
-    } catch { /* not up yet */ }
-  }
+  await restartApp()
 
   ctl = await openControl()
   try {
