@@ -6,6 +6,8 @@
 
 #include <windowsx.h>
 
+#include <cstdlib>
+
 #include "phibrowser-win/client/phi_dwrite.h"
 #include "phibrowser-win/client/phi_menu_bar.h"
 
@@ -404,11 +406,99 @@ void PhiCaptionBand::ToggleAltReveal() {
 
 // --- Clicks ----------------------------------------------------------------
 
+bool PhiCaptionBand::OnPhiButton(const PhiCaptionRects& rects,
+                                 POINT client_pt) {
+  // Comfortable's leading logo, and the vertical layouts' first title (the
+  // logo and "Phi" as one button) — the same corner button either way.
+  if (::PtInRect(&rects.phi_menu, client_pt)) {
+    return true;
+  }
+  if (rects.horizontal_tabs || !::PtInRect(&rects.title_bar, client_pt)) {
+    return false;
+  }
+  return VisibleTitles(rects) > 0 &&
+         ::PtInRect(&titles_[0].second, client_pt) != 0;
+}
+
 bool PhiCaptionBand::OnClick(POINT client_pt) {
   if (!menu_bar_ || !shell_hwnd_) {
     return false;
   }
   const PhiCaptionRects rects = shell_->CaptionRects();
+  // The corner button is a menu AND a grip on the window: the press is only
+  // HELD here, and what it becomes is decided later — the menu when it comes
+  // up in place, a window move when the pointer walks off it first
+  // (OnPressMove / OnPressUp). Dropping the menu on the press itself made
+  // the window's leading corner the one spot in the band that could not
+  // drag the window.
+  if (OnPhiButton(rects, client_pt)) {
+    phi_pressed_ = true;
+    phi_press_pt_ = client_pt;
+    ::SetCapture(shell_hwnd_);
+    return true;
+  }
+  return OpenMenuAt(rects, client_pt);
+}
+
+bool PhiCaptionBand::OnPressMove(POINT client_pt) {
+  if (!phi_pressed_) {
+    return false;
+  }
+  if (::GetKeyState(VK_LBUTTON) >= 0) {
+    // The button came up somewhere the shell never saw it: drop the press
+    // rather than hand the frame a move loop with nothing held down, which
+    // would glue the window to the cursor until the next click.
+    CancelPress();
+    if (::GetCapture() == shell_hwnd_) {
+      ::ReleaseCapture();
+    }
+    return false;
+  }
+  if (std::abs(client_pt.x - phi_press_pt_.x) <
+          ::GetSystemMetrics(SM_CXDRAG) &&
+      std::abs(client_pt.y - phi_press_pt_.y) <
+          ::GetSystemMetrics(SM_CYDRAG)) {
+    return true;  // Still a click; nothing else may see the travel either.
+  }
+  phi_pressed_ = false;
+  if (::GetCapture() == shell_hwnd_) {
+    ::ReleaseCapture();  // The frame's own move loop takes the mouse now.
+  }
+  POINT screen = client_pt;
+  ::ClientToScreen(shell_hwnd_, &screen);
+  // Hand the still-held press to the frame exactly as if it had landed on
+  // the caption: DefWindowProc drags the window from this point until the
+  // button comes up (and unsnaps a maximized frame on the way, as a caption
+  // drag does). POSTED, not sent — the move loop must not run nested inside
+  // the mouse message that started it.
+  ::PostMessageW(shell_hwnd_, WM_NCLBUTTONDOWN, HTCAPTION,
+                 MAKELPARAM(screen.x, screen.y));
+  return true;
+}
+
+bool PhiCaptionBand::OnPressUp() {
+  if (!phi_pressed_) {
+    return false;
+  }
+  phi_pressed_ = false;
+  if (::GetCapture() == shell_hwnd_) {
+    ::ReleaseCapture();  // Before the popup: TrackPopupMenu wants the mouse.
+  }
+  if (!menu_bar_ || !shell_hwnd_) {
+    return true;
+  }
+  // The press never travelled far enough to be a drag, so it is still on the
+  // button: the menu drops from where it LANDED, not from the release point.
+  OpenMenuAt(shell_->CaptionRects(), phi_press_pt_);
+  return true;
+}
+
+void PhiCaptionBand::CancelPress() {
+  phi_pressed_ = false;
+}
+
+bool PhiCaptionBand::OpenMenuAt(const PhiCaptionRects& rects,
+                                POINT client_pt) {
   // Comfortable's Phi button. That band carries no titles, so the leading
   // logo drops the bar's first menu itself — the rest of the bar hangs off
   // the toolbar's overflow.

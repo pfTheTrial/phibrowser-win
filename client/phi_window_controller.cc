@@ -9272,6 +9272,12 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
     case WM_MOUSEMOVE:
       if (self) {
         POINT pt = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+        // The Phi button's held press: past the drag threshold it hands
+        // itself to the frame's move loop (phi_caption_band.h), and until it
+        // decides nothing else in the chrome may see the travel.
+        if (self->caption_band_ && self->caption_band_->OnPressMove(pt)) {
+          return 0;
+        }
         if (self->sidebar_collapsed_ && !self->floating_sidebar_) {
           const Layout collapsed = self->ComputeLayout();
           if (!collapsed.horizontal_tabs &&
@@ -9428,6 +9434,10 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
       return ::DefWindowProcW(hwnd, msg, wparam, lparam);
     case WM_LBUTTONUP:
       if (self) {
+        // A Phi-button press that never travelled: the menu drops here.
+        if (self->caption_band_ && self->caption_band_->OnPressUp()) {
+          return 0;
+        }
         if (self->sidebar_resizing_) {
           self->sidebar_resizing_ = false;
           if (::GetCapture() == hwnd) {
@@ -9443,6 +9453,9 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
       return ::DefWindowProcW(hwnd, msg, wparam, lparam);
     case WM_CAPTURECHANGED:
       if (self) {
+        if (self->caption_band_) {
+          self->caption_band_->CancelPress();
+        }
         if (self->sidebar_resizing_) {
           self->sidebar_resizing_ = false;
           if (self->host_) {

@@ -137,9 +137,18 @@ class PhiCaptionBand {
   // The Alt tap (kMsgPhiToggleMenuReveal).
   void ToggleAltReveal();
 
-  // A click in the chrome. True when the band took it: comfortable's Phi
-  // button, a menu title, or the band's drag space in a vertical layout.
+  // A click in the chrome. True when the band took it: the Phi button, a
+  // menu title, or the band's drag space in a vertical layout.
   bool OnClick(POINT client_pt);
+  // The Phi button's press, in flight. The corner button is a menu AND a
+  // grip: OnClick only HOLDS the press, the menu drops when it comes up in
+  // place (OnPressUp), and the press becomes the frame's own window move as
+  // soon as the pointer travels past the system drag threshold
+  // (OnPressMove). Each returns true when the held press took the message;
+  // CancelPress drops it when the capture goes somewhere else.
+  bool OnPressMove(POINT client_pt);
+  bool OnPressUp();
+  void CancelPress();
   // Comfortable's overflow button (Chrome's ⋮), anchored under the toolbar.
   void ShowOverflow(POINT client_anchor);
 
@@ -169,6 +178,12 @@ class PhiCaptionBand {
   // Same idea for the hot title: after a dropped menu closes the pointer may
   // be somewhere the shell never saw it move to.
   void UpdateHotTitleFromCursor();
+  // Is this point the leading Phi button — comfortable's logo, or the first
+  // title (logo + "Phi") in the vertical layouts?
+  bool OnPhiButton(const PhiCaptionRects& rects, POINT client_pt);
+  // Drops the menu that lives under `client_pt`, if any. The click path and
+  // the Phi button's release share it.
+  bool OpenMenuAt(const PhiCaptionRects& rects, POINT client_pt);
   void SetCaptionHot(int code);
   void SetHotTitle(int index);
   void InvalidateBand();
@@ -194,6 +209,10 @@ class PhiCaptionBand {
   // from under the menu the user is reading.
   bool menu_open_ = false;
   int hot_title_ = -1;
+  // The Phi button is held right now, and the client point the press landed
+  // on: what the press becomes is decided from there (OnPressMove).
+  bool phi_pressed_ = false;
+  POINT phi_press_pt_ = {};
   // Titles with their band rects, measured for `titles_dpi_`.
   std::vector<std::pair<std::wstring, RECT>> titles_;
   UINT titles_dpi_ = 0;
