@@ -240,6 +240,7 @@ class PhiCoordinator : public SidebarHost,
   // Mac's KioskSpaceMenuTargetResolver.primarySpace.
   std::string KioskTargetSpaceId() const;
   void RequestSettings() override;
+  void RequestUrlRulesEditor(HWND anchor) override;
   void RequestFeedback(int64_t slot,
                        const PhiFeedbackContext& context) override;
   void RequestSpaceIconPicker(const std::string& space_id) override;

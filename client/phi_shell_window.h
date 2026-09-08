@@ -344,6 +344,9 @@ class WindowHost {
   virtual void FocusWindowForBrowser(int64_t browser_window_id) = 0;
   // Opens the settings window (theme, appearance, layout).
   virtual void RequestSettings() = 0;
+  // Opens the universal URL Rules editor (Spaces ▸ URL Rules…), centred
+  // over `anchor`.
+  virtual void RequestUrlRulesEditor(HWND anchor) = 0;
   // Opens the feedback form for `slot`, about `context` (its focused
   // tab) — Help ▸ Report an Issue, the sidebar's Feedback capsule, and
   // Chromium's own feedback command all land here.

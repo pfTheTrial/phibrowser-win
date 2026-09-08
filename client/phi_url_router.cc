@@ -12,6 +12,7 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
 #include "chrome/browser/phinomenon/phi_framework/phi_framework_api.h"
+#include "phibrowser-win/client/phi_i18n.h"
 #include "phibrowser-win/client/phi_prompt.h"
 #include "phibrowser-win/client/phi_space_manager.h"
 #include "phibrowser-win/client/phi_shell_window.h"
@@ -77,6 +78,14 @@ void PhiUrlRouter::SetRuleTarget(int index,
 void PhiUrlRouter::RemoveRule(int index) {
   if (!RemoveUrlRuleFrom(&model_, index)) {
     return;
+  }
+  MarkDirty();
+  host_.SchedulePushRoutingTable();
+}
+
+void PhiUrlRouter::ReplaceRules(const std::vector<model::UrlRule>& rules) {
+  if (!ReplaceUrlRulesIn(&model_, rules)) {
+    return;  // Canonically what is stored already: nothing to write or push.
   }
   MarkDirty();
   host_.SchedulePushRoutingTable();
@@ -181,27 +190,58 @@ void PhiUrlRouter::RunPendingAsk() {
   PhiShellWindow* controller = registry_.ControllerForBrowser(source);
   const std::string current_space_id =
       controller ? controller->active_space() : std::string();
+  const bool current_is_incognito = controller && controller->is_incognito();
 
-  std::vector<std::wstring> options;
-  int default_index = 0;
-  for (size_t i = 0; i < model_.spaces.size(); ++i) {
-    std::wstring label = base::UTF8ToWide(model_.spaces[i].name);
-    if (model_.spaces[i].id == current_space_id) {
-      label += L"  (current)";
-    }
-    options.push_back(std::move(label));
-    if (model_.spaces[i].id == ask.default_space_id) {
-      default_index = static_cast<int>(i);
+  // The Mac chooser's order (PhiChromiumCoordinator.askSpace): the current
+  // Space first, then the rest in strip order, then ONE generic Incognito
+  // choice — leading instead when the navigation started off-the-record —
+  // and Kiosk last, in a section of its own: an action, not a Space.
+  std::vector<std::string> ids;
+  std::vector<PhiChoiceRow> rows;
+  auto add = [&](const std::string& id, std::wstring label,
+                 bool starts_section, bool current) {
+    ids.push_back(id);
+    rows.push_back({std::move(label), starts_section, current});
+  };
+  for (const model::Space& space : model_.spaces) {
+    if (space.id == current_space_id) {
+      add(space.id, base::UTF8ToWide(space.name), false, true);
     }
   }
-  const int chosen = PhiPromptChoose(
-      controller ? controller->shell_hwnd() : nullptr, L"Open in Space",
-      base::UTF8ToWide(ask.url).c_str(), options, default_index);
-  const std::string chosen_space =
-      chosen >= 0 && chosen < static_cast<int>(model_.spaces.size())
-          ? model_.spaces[static_cast<size_t>(chosen)].id
+  if (current_is_incognito) {
+    add(kPhiIncognitoRuleTargetId,
+        PhiStr("spaces.builtIn.incognito.routingTargetName"), false, true);
+  }
+  for (const model::Space& space : model_.spaces) {
+    if (space.id != current_space_id) {
+      add(space.id, base::UTF8ToWide(space.name), false, false);
+    }
+  }
+  if (!current_is_incognito) {
+    add(kPhiIncognitoRuleTargetId,
+        PhiStr("spaces.builtIn.incognito.routingTargetName"), false, false);
+  }
+  add(kPhiKioskRuleTargetId, PhiStr("sidebar.urlRulesEditor.target.kioskOption"),
+      true, false);
+  int default_index = 0;
+  for (size_t i = 0; i < ids.size(); ++i) {
+    if (ids[i] == ask.default_space_id) {
+      default_index = static_cast<int>(i);
+      break;
+    }
+  }
+  const int chosen = PhiPromptChooseRows(
+      controller ? controller->shell_hwnd() : nullptr,
+      PhiStr("app.openInSpace"), base::UTF8ToWide(ask.url).c_str(), rows,
+      default_index);
+  const std::string chosen_id =
+      chosen >= 0 && chosen < static_cast<int>(ids.size())
+          ? ids[static_cast<size_t>(chosen)]
           : std::string();
-  if (chosen_space.empty() || chosen_space == current_space_id) {
+  const bool keep_here =
+      chosen_id.empty() || chosen_id == current_space_id ||
+      (current_is_incognito && UrlRuleTargetIsIncognito(chosen_id));
+  if (keep_here) {
     // Keep it here. The cancelled navigation was replacing the active tab
     // when it started from a fresh new tab — re-issue it in place there;
     // otherwise open a fresh foreground tab (the Mac split). Both bypass
@@ -218,12 +258,54 @@ void PhiUrlRouter::RunPendingAsk() {
     }
     return;
   }
-  RouteUrlToSpace(chosen_space, ask.url, source);
+  // Leaving the source: a new tab stranded by the cancelled navigation goes
+  // back to a clean new-tab page (the Mac's refreshActiveNewTab) before the
+  // destination takes over.
+  if (ask.source_is_new_tab && controller) {
+    controller->ResetNativeNtp();
+  }
+  RouteUrlToSpace(chosen_id, ask.url, source);
 }
 
 void PhiUrlRouter::RouteUrlToSpace(const std::string& space_id,
                                    const std::string& url,
                                    BrowserId source_window) {
+  if (UrlRuleTargetIsKiosk(space_id)) {
+    // An ephemeral Kiosk in the source's profile; the framework announces
+    // it as WindowKind::kKiosk and the coordinator hosts it. A refusal
+    // (source gone, bad URL) keeps the URL in the source window rather
+    // than dropping it — the Mac's spawn-failure fallback.
+    if (!framework_.OpenUrlInKiosk(source_window.value, url.c_str())) {
+      framework_.OpenTabBypassingSpaceRouting(source_window.value,
+                                              url.c_str());
+    }
+    return;
+  }
+  if (UrlRuleTargetIsIncognito(space_id)) {
+    // The Mac's generic Incognito target resolves to a LIVE Incognito
+    // Space, created on demand. Here: the first open Incognito shell (the
+    // routing table aliases the same one), else the framework opens the
+    // source profile's off-the-record window — announced as an incognito
+    // user window, which the coordinator hosts as an Incognito shell.
+    for (PhiShellWindow* controller : registry_.Controllers()) {
+      if (!controller->is_incognito() || controller->is_agent() ||
+          !controller->active_browser_id().valid()) {
+        continue;
+      }
+      framework_.OpenTabBypassingSpaceRouting(
+          controller->active_browser_id().value, url.c_str());
+      if (controller->shell_hwnd()) {
+        ::SetForegroundWindow(controller->shell_hwnd());
+      }
+      controller->ScheduleRefresh();
+      return;
+    }
+    if (!framework_.OpenUrlOffTheRecord(source_window.value, url.c_str())) {
+      framework_.OpenTabBypassingSpaceRouting(source_window.value,
+                                              url.c_str());
+    }
+    return;
+  }
   // A slot that already holds the Space: switch to it there and open the
   // link (the Mac activates the Space's window and opens the tab). The open
   // bypasses URL routing — the URL may be the very navigation a rule just
@@ -292,7 +374,14 @@ void PhiUrlRouter::PushRoutingTableNow() {
   // into an off-screen browser.
   base::DictValue map;
   for (PhiShellWindow* controller : registry_.Controllers()) {
-    const std::string& space_id = controller->active_space();
+    if (controller->is_agent()) {
+      continue;
+    }
+    // An Incognito shell has no Space; it stands in for the generic
+    // Incognito target (the first one wins, the Mac's strip-order alias).
+    const std::string& space_id = controller->is_incognito()
+                                      ? std::string(kPhiIncognitoRuleTargetId)
+                                      : controller->active_space();
     const BrowserId browser_id = controller->active_browser_id();
     if (space_id.empty() || !browser_id.valid() || map.Find(space_id)) {
       continue;

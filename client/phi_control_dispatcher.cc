@@ -1246,9 +1246,9 @@ PhiControlDispatcher::Space* PhiControlDispatcher::FindSpace(
 }
 
 bool PhiControlDispatcher::SpaceExists(const std::string& id) {
-  // 'space.incognito' is the routing wire's Incognito target — always a
-  // legal rule target even though it is not a listed Space.
-  return id == "space.incognito" || FindSpace(id) != nullptr;
+  // The two action targets (Incognito, Kiosk) are legal rule targets even
+  // though neither is a listed Space.
+  return UrlRuleTargetIsAction(id) || FindSpace(id) != nullptr;
 }
 
 BrowserId PhiControlDispatcher::UserWindowOf(const Scope& scope,

@@ -297,7 +297,7 @@
    "en": "Next Space"
   },
   "app.openInSpace": {
-   "comment": "app — used at phi_coordinator.cc:982",
+   "comment": "app — the 'ask first' chooser's title (phi_url_router.cc) and the Kiosk hand-off",
    "en": "Open in Space"
   },
   "app.openLocation": {
@@ -417,7 +417,7 @@
    "en": "Toggle Sidebar"
   },
   "app.urlRulesEditor.windowTitle": {
-   "comment": "settings — used at phi_settings_window.cc:420",
+   "comment": "settings — used in phi_url_rules_window.cc",
    "en": "URL Rules"
   },
   "app.viewMenu.alwaysShowBookmarkBar": {
@@ -2613,6 +2613,10 @@
    "comment": "sidebar — used at phi_shell_window.cc:6356",
    "en": "Set Theme"
   },
+  "sidebar.spaceChooser.currentStatus": {
+   "comment": "Status shown on the Space the navigation started in, in the 'ask first' chooser (phi_prompt.cc)",
+   "en": "Current"
+  },
   "sidebar.switchToThisSpace": {
    "comment": "sidebar — used at phi_shell_window.cc:6351",
    "en": "Switch to this Space"
@@ -2706,32 +2710,92 @@
    "en": "Take Control"
   },
   "sidebar.urlRulesEditor.addRuleButton": {
-   "comment": "settings — used at phi_settings_window.cc:1549",
+   "comment": "settings — used in phi_url_rules_window.cc",
    "en": "Add Rule"
   },
+  "sidebar.urlRulesEditor.cancelButton": {
+   "comment": "Cancel button of the URL rules editor (phi_url_rules_window.cc)",
+   "en": "Cancel"
+  },
+  "sidebar.urlRulesEditor.emptyHint": {
+   "comment": "Empty state hint in the universal URL rules editor (phi_url_rules_window.cc)",
+   "en": "Pick a target Space and enter a host like “github.com”."
+  },
   "sidebar.urlRulesEditor.emptyTitle": {
-   "comment": "settings — used at phi_settings_window.cc:1470",
+   "comment": "settings — used in phi_url_rules_window.cc",
    "en": "No rules yet."
   },
   "sidebar.urlRulesEditor.matchType.domain": {
-   "comment": "settings — used at phi_settings_window.cc:1289",
+   "comment": "settings — used in phi_url_rules_window.cc",
    "en": "Domain"
   },
   "sidebar.urlRulesEditor.matchType.domainContains": {
-   "comment": "settings — used at phi_settings_window.cc:1291",
+   "comment": "settings — used in phi_url_rules_window.cc",
    "en": "Domain contains"
   },
   "sidebar.urlRulesEditor.matchType.domainSuffix": {
-   "comment": "settings — used at phi_settings_window.cc:1287",
+   "comment": "settings — used in phi_url_rules_window.cc",
    "en": "Domain suffix"
   },
+  "sidebar.urlRulesEditor.matchType.url": {
+   "comment": "URL rule match type: exact host plus a path prefix (phi_url_rules_window.cc)",
+   "en": "URL"
+  },
+  "sidebar.urlRulesEditor.matchValue.domainContainsPlaceholder": {
+   "comment": "URL rule value placeholder for Domain contains match (phi_url_rules_window.cc)",
+   "en": "example"
+  },
+  "sidebar.urlRulesEditor.matchValue.domainPlaceholder": {
+   "comment": "URL rule value placeholder for Domain match (phi_url_rules_window.cc)",
+   "en": "www.example.com"
+  },
+  "sidebar.urlRulesEditor.matchValue.domainSuffixPlaceholder": {
+   "comment": "URL rule value placeholder for Domain suffix match (phi_url_rules_window.cc)",
+   "en": "example.com"
+  },
+  "sidebar.urlRulesEditor.matchValue.urlPlaceholder": {
+   "comment": "URL rule value placeholder for URL (host + path) match (phi_url_rules_window.cc)",
+   "en": "https://example.com/path"
+  },
+  "sidebar.urlRulesEditor.removeRuleButton.tooltip": {
+   "comment": "Tooltip / accessible name of a URL rule row's remove button (phi_url_rules_window.cc)",
+   "en": "Remove rule"
+  },
+  "sidebar.urlRulesEditor.saveButton": {
+   "comment": "Save button of the URL rules editor (phi_url_rules_window.cc)",
+   "en": "Save"
+  },
+  "sidebar.urlRulesEditor.subtitle": {
+   "comment": "Subtitle of the universal URL rules editor (phi_url_rules_window.cc)",
+   "en": "URLs matching any rule will open in the selected destination, no matter where you click or type them."
+  },
   "sidebar.urlRulesEditor.target.askEveryTimeOption": {
-   "comment": "settings — used at phi_settings_window.cc:1519",
+   "comment": "settings — used in phi_url_rules_window.cc",
    "en": "Ask every time"
+  },
+  "sidebar.urlRulesEditor.target.kioskOption": {
+   "comment": "URL rules editor - Destination that opens matching URLs in a Kiosk window (phi_url_rules_window.cc, phi_url_router.cc)",
+   "en": "Kiosk"
+  },
+  "sidebar.urlRulesEditor.target.unavailablePlaceholder": {
+   "comment": "URL rule target whose Space no longer exists (phi_url_rules_window.cc)",
+   "en": "Target Space unavailable"
+  },
+  "sidebar.urlRulesEditor.targetSpaceLabel": {
+   "comment": "Label before the destination picker of a URL rule row (phi_url_rules_window.cc)",
+   "en": "Open in"
+  },
+  "sidebar.urlRulesEditor.title": {
+   "comment": "Title of the universal URL rules editor (phi_url_rules_window.cc)",
+   "en": "URL Rules"
   },
   "sidebar.willAlsoBeRemovedThis": {
    "comment": "sidebar — used at phi_shell_window.cc:6394",
    "en": "will also be removed. This action cannot be undone."
+  },
+  "spaces.builtIn.incognito.routingTargetName": {
+   "comment": "Built-in Incognito target name used by URL routing (phi_url_rules_window.cc, phi_url_router.cc)",
+   "en": "Incognito"
   },
   "tabs.tabGroup.colorName.blue": {
    "comment": "sidebar — used at phi_shell_window.cc:164",

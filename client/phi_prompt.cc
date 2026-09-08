@@ -71,6 +71,10 @@ struct Spec {
   std::wstring placeholder;     // kRecorder's resting line.
   std::vector<std::wstring> options;  // kList's rows.
   int selected = -1;                  // kList's preselected row.
+  // kList drawn by the alert instead of the LISTBOX: a divider above a
+  // section's first row and a trailing "Current" status. Parallel to
+  // `options` when non-empty.
+  std::vector<PhiChoiceRow> rows;
 };
 
 // One alert window: built from a Spec, run modally, read back.
@@ -319,9 +323,15 @@ class Alert : public PhiSecondaryWindow {
         RECT rc = {well_.left + Scaled(kListInset), well_.top + Scaled(kListInset),
                    well_.right - Scaled(kListInset),
                    well_.bottom - Scaled(kListInset)};
+        // Owner-drawn when the rows carry sections / status: the LISTBOX
+        // keeps the strings (LBS_HASSTRINGS) so keyboard search and the
+        // selection work unchanged; only the painting moves here.
+        const DWORD drawn = spec_.rows.empty()
+                                ? 0
+                                : (LBS_OWNERDRAWFIXED | LBS_HASSTRINGS);
         control_ = Child(L"LISTBOX", L"",
                          WS_TABSTOP | WS_VSCROLL | LBS_NOTIFY |
-                             LBS_NOINTEGRALHEIGHT,
+                             LBS_NOINTEGRALHEIGHT | drawn,
                          rc, kControlId, button_font_);
         if (!control_) {
           return;
@@ -473,13 +483,19 @@ class Alert : public PhiSecondaryWindow {
         }
         break;
       }
-      case WM_DRAWITEM:
-        if (PhiPopupDrawButton(*reinterpret_cast<DRAWITEMSTRUCT*>(lparam),
-                               colors(), button_font_)) {
+      case WM_DRAWITEM: {
+        const DRAWITEMSTRUCT& item = *reinterpret_cast<DRAWITEMSTRUCT*>(lparam);
+        if (item.CtlType == ODT_LISTBOX && item.CtlID == kControlId) {
+          DrawRow(item);
+          *handled = true;
+          return TRUE;
+        }
+        if (PhiPopupDrawButton(item, colors(), button_font_)) {
           *handled = true;
           return TRUE;
         }
         break;
+      }
       case WM_CTLCOLOREDIT:
       case WM_CTLCOLORLISTBOX:
       case WM_CTLCOLORSTATIC: {
@@ -498,6 +514,64 @@ class Alert : public PhiSecondaryWindow {
         break;
     }
     return PhiSecondaryWindow::OnWindowMessage(msg, wparam, lparam, handled);
+  }
+
+  // One owner-drawn chooser row: the selection as the Mac's accent wash,
+  // a hairline above a section's first row, the label, and the "Current"
+  // status in the secondary ink at the trailing edge.
+  void DrawRow(const DRAWITEMSTRUCT& item) {
+    if (item.itemID == static_cast<UINT>(-1) ||
+        item.itemID >= spec_.rows.size()) {
+      ::FillRect(item.hDC, &item.rcItem, card_brush_);
+      return;
+    }
+    const PhiChoiceRow& row = spec_.rows[item.itemID];
+    const bool selected = (item.itemState & ODS_SELECTED) != 0;
+    RECT rc = item.rcItem;
+    ::FillRect(item.hDC, &rc, card_brush_);
+    if (selected) {
+      RECT wash = rc;
+      wash.left += Scaled(2);
+      wash.right -= Scaled(2);
+      PhiFillRoundRectAA(item.hDC, wash, Scaled(4),
+                         PhiPopupBlend(colors().accent, colors().card, 46));
+    }
+    if (row.starts_section && item.itemID > 0) {
+      RECT line = {rc.left + Scaled(6), rc.top, rc.right - Scaled(6),
+                   rc.top + 1};
+      HBRUSH separator = ::CreateSolidBrush(colors().separator);
+      ::FillRect(item.hDC, &line, separator);
+      ::DeleteObject(separator);
+    }
+    ::SetBkMode(item.hDC, TRANSPARENT);
+    HGDIOBJ previous =
+        button_font_ ? ::SelectObject(item.hDC, button_font_) : nullptr;
+    RECT status = rc;
+    status.right -= Scaled(8);
+    int status_w = 0;
+    if (row.current) {
+      const wchar_t* current = PhiStr("sidebar.spaceChooser.currentStatus");
+      RECT measure = {0, 0, 0, 0};
+      ::DrawTextW(item.hDC, current, -1, &measure,
+                  DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX);
+      status_w = measure.right;
+      ::SetTextColor(item.hDC, colors().secondary);
+      ::DrawTextW(item.hDC, current, -1, &status,
+                  DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    }
+    RECT label = rc;
+    label.left += Scaled(8);
+    label.right -= Scaled(8) + status_w + (status_w ? Scaled(12) : 0);
+    ::SetTextColor(item.hDC, colors().label);
+    ::DrawTextW(item.hDC, row.label.c_str(), -1, &label,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX |
+                    DT_END_ELLIPSIS);
+    if (previous) {
+      ::SelectObject(item.hDC, previous);
+    }
+    if ((item.itemState & ODS_FOCUS) && selected) {
+      ::DrawFocusRect(item.hDC, &rc);
+    }
   }
 
   void OnColorsChanged() override {
@@ -762,6 +836,38 @@ int PhiPromptChoose(HWND owner,
   spec.message = message ? message : L"";
   spec.accessory = Accessory::kList;
   spec.options = options;
+  spec.selected = default_index;
+  spec.actions = {{cancel_label ? cancel_label : PhiStr("prompt.keepHere"),
+                   PhiPopupButtonRole::kSecondary},
+                  {confirm_label ? confirm_label : PhiStr("prompt.open"),
+                   PhiPopupButtonRole::kPrimary}};
+  spec.default_index = cancel_is_default ? 0 : 1;
+  spec.cancel_index = 0;
+  spec.list_activate_index = 1;
+  Alert alert(owner, std::move(spec));
+  if (!alert.Open()) {
+    return -1;
+  }
+  const bool accepted = alert.Run() == 1;
+  return accepted ? alert.ListSelection() : -1;
+}
+
+int PhiPromptChooseRows(HWND owner,
+                        const wchar_t* title,
+                        const wchar_t* message,
+                        const std::vector<PhiChoiceRow>& rows,
+                        int default_index,
+                        const wchar_t* confirm_label,
+                        const wchar_t* cancel_label,
+                        bool cancel_is_default) {
+  Spec spec;
+  spec.title = title ? title : L"";
+  spec.message = message ? message : L"";
+  spec.accessory = Accessory::kList;
+  spec.rows = rows;
+  for (const PhiChoiceRow& row : rows) {
+    spec.options.push_back(row.label);
+  }
   spec.selected = default_index;
   spec.actions = {{cancel_label ? cancel_label : PhiStr("prompt.keepHere"),
                    PhiPopupButtonRole::kSecondary},

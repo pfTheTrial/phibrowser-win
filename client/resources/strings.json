@@ -4037,6 +4037,17 @@
   "sidebar.setTheme": {
    "en": "Set Theme"
   },
+  "sidebar.spaceChooser.currentStatus": {
+   "de": "Aktuell",
+   "en": "Current",
+   "es": "Actual",
+   "fr": "Actuel",
+   "ja": "現在",
+   "ko": "현재",
+   "nl": "Huidig",
+   "zh-Hans": "当前",
+   "zh-Hant": "目前"
+  },
   "sidebar.switchToThisSpace": {
    "en": "Switch to this Space"
   },
@@ -4285,6 +4296,28 @@
    "zh-Hans": "添加规则",
    "zh-Hant": "新增規則"
   },
+  "sidebar.urlRulesEditor.cancelButton": {
+   "de": "Abbrechen",
+   "en": "Cancel",
+   "es": "Cancelar",
+   "fr": "Annuler",
+   "ja": "キャンセル",
+   "ko": "취소",
+   "nl": "Annuleer",
+   "zh-Hans": "取消",
+   "zh-Hant": "取消"
+  },
+  "sidebar.urlRulesEditor.emptyHint": {
+   "de": "Wähle einen Ziel-Space und gib einen Host wie „github.com“ ein.",
+   "en": "Pick a target Space and enter a host like “github.com”.",
+   "es": "Elige un Espacio de destino e introduce un host como “github.com”.",
+   "fr": "Choisissez un Espace cible et saisissez un hôte tel que « github.com ».",
+   "ja": "対象のスペースを選び、「github.com」のようなホスト名を入力してください。",
+   "ko": "대상 스페이스를 고르고 “github.com” 같은 호스트를 입력해 주세요.",
+   "nl": "Kies een doel-Space en voer een host in, bijvoorbeeld “github.com”.",
+   "zh-Hans": "选择目标空间，然后输入主机名，例如「github.com」。",
+   "zh-Hant": "選擇目標空間，然後輸入主機名稱，例如「github.com」。"
+  },
   "sidebar.urlRulesEditor.emptyTitle": {
    "de": "Noch keine Regeln.",
    "en": "No rules yet.",
@@ -4329,6 +4362,94 @@
    "zh-Hans": "域名后缀",
    "zh-Hant": "網域後綴"
   },
+  "sidebar.urlRulesEditor.matchType.url": {
+   "de": "URL",
+   "en": "URL",
+   "es": "URL",
+   "fr": "URL",
+   "ja": "URL",
+   "ko": "URL",
+   "nl": "URL",
+   "zh-Hans": "网址",
+   "zh-Hant": "網址"
+  },
+  "sidebar.urlRulesEditor.matchValue.domainContainsPlaceholder": {
+   "de": "example",
+   "en": "example",
+   "es": "ejemplo",
+   "fr": "exemple",
+   "ja": "example",
+   "ko": "example",
+   "nl": "voorbeeld",
+   "zh-Hans": "example",
+   "zh-Hant": "example"
+  },
+  "sidebar.urlRulesEditor.matchValue.domainPlaceholder": {
+   "de": "www.example.com",
+   "en": "www.example.com",
+   "es": "www.example.com",
+   "fr": "www.example.com",
+   "ja": "www.example.com",
+   "ko": "www.example.com",
+   "nl": "www.example.com",
+   "zh-Hans": "www.example.com",
+   "zh-Hant": "www.example.com"
+  },
+  "sidebar.urlRulesEditor.matchValue.domainSuffixPlaceholder": {
+   "de": "example.com",
+   "en": "example.com",
+   "es": "example.com",
+   "fr": "example.com",
+   "ja": "example.com",
+   "ko": "example.com",
+   "nl": "example.com",
+   "zh-Hans": "example.com",
+   "zh-Hant": "example.com"
+  },
+  "sidebar.urlRulesEditor.matchValue.urlPlaceholder": {
+   "de": "https://example.com/path",
+   "en": "https://example.com/path",
+   "es": "https://example.com/path",
+   "fr": "https://example.com/path",
+   "ja": "https://example.com/path",
+   "ko": "https://example.com/path",
+   "nl": "https://example.com/path",
+   "zh-Hans": "https://example.com/path",
+   "zh-Hant": "https://example.com/path"
+  },
+  "sidebar.urlRulesEditor.removeRuleButton.tooltip": {
+   "de": "Regel entfernen",
+   "en": "Remove rule",
+   "es": "Quitar regla",
+   "fr": "Supprimer la règle",
+   "ja": "ルールを削除",
+   "ko": "규칙 제거",
+   "nl": "Regel verwijderen",
+   "zh-Hans": "移除规则",
+   "zh-Hant": "移除規則"
+  },
+  "sidebar.urlRulesEditor.saveButton": {
+   "de": "Speichern",
+   "en": "Save",
+   "es": "Guardar",
+   "fr": "Enregistrer",
+   "ja": "保存",
+   "ko": "저장",
+   "nl": "Bewaar",
+   "zh-Hans": "保存",
+   "zh-Hant": "儲存"
+  },
+  "sidebar.urlRulesEditor.subtitle": {
+   "de": "URLs, die einer Regel entsprechen, werden im ausgewählten Ziel geöffnet, ganz gleich, wo du sie anklickst oder eingibst.",
+   "en": "URLs matching any rule will open in the selected destination, no matter where you click or type them.",
+   "es": "Las URL que coincidan con alguna regla se abrirán en el destino seleccionado, sin importar dónde hagas clic en ellas o dónde las escribas.",
+   "fr": "Les URL correspondant à une règle s'ouvriront dans la destination sélectionnée, quel que soit l'endroit où vous cliquez dessus ou les saisissez.",
+   "ja": "いずれかのルールに一致するURLは、どこでクリックまたは入力しても、選択した開き先で開きます。",
+   "ko": "규칙에 일치하는 URL은 어디에서 클릭하거나 입력하든 선택한 대상에서 열려요.",
+   "nl": "URL's die met een regel overeenkomen, worden geopend in de geselecteerde bestemming, waar je ze ook aanklikt of typt.",
+   "zh-Hans": "匹配任一规则的网址都会在所选目标中打开，无论你在哪里点按或输入它们。",
+   "zh-Hant": "符合任一規則的網址，不論你在哪裡點按或輸入，都會在所選的目的地開啟。"
+  },
   "sidebar.urlRulesEditor.target.askEveryTimeOption": {
    "de": "Jedes Mal fragen",
    "en": "Ask every time",
@@ -4340,8 +4461,63 @@
    "zh-Hans": "每次询问",
    "zh-Hant": "每次都詢問"
   },
+  "sidebar.urlRulesEditor.target.kioskOption": {
+   "de": "Kiosk",
+   "en": "Kiosk",
+   "es": "Kiosk",
+   "fr": "Kiosk",
+   "ja": "Kiosk",
+   "ko": "Kiosk",
+   "nl": "Kiosk",
+   "zh-Hans": "Kiosk",
+   "zh-Hant": "Kiosk"
+  },
+  "sidebar.urlRulesEditor.target.unavailablePlaceholder": {
+   "de": "Ziel-Space nicht verfügbar",
+   "en": "Target Space unavailable",
+   "es": "Espacio de destino no disponible",
+   "fr": "Espace cible indisponible",
+   "ja": "対象のスペースは利用できません",
+   "ko": "대상 스페이스를 사용할 수 없음",
+   "nl": "Doel-Space niet beschikbaar",
+   "zh-Hans": "目标空间不可用",
+   "zh-Hant": "目標空間無法使用"
+  },
+  "sidebar.urlRulesEditor.targetSpaceLabel": {
+   "de": "Öffnen in",
+   "en": "Open in",
+   "es": "Abrir en",
+   "fr": "Ouvrir dans",
+   "ja": "開く場所",
+   "ko": "열기 위치",
+   "nl": "Openen in",
+   "zh-Hans": "打开位置",
+   "zh-Hant": "開啟於"
+  },
+  "sidebar.urlRulesEditor.title": {
+   "de": "URL-Regeln",
+   "en": "URL Rules",
+   "es": "Reglas de URL",
+   "fr": "Règles d'URL",
+   "ja": "URLルール",
+   "ko": "URL 규칙",
+   "nl": "URL-regels",
+   "zh-Hans": "网址规则",
+   "zh-Hant": "網址規則"
+  },
   "sidebar.willAlsoBeRemovedThis": {
    "en": "will also be removed. This action cannot be undone."
+  },
+  "spaces.builtIn.incognito.routingTargetName": {
+   "de": "Inkognito",
+   "en": "Incognito",
+   "es": "Incógnito",
+   "fr": "Navigation privée",
+   "ja": "シークレット",
+   "ko": "시크릿 모드",
+   "nl": "Incognito",
+   "zh-Hans": "无痕",
+   "zh-Hant": "無痕"
   },
   "tabs.tabGroup.colorName.blue": {
    "de": "Blau",

@@ -36,6 +36,7 @@
 #include "phibrowser-win/client/phi_popup_chrome.h"
 #include "phibrowser-win/client/phi_prompt.h"
 #include "phibrowser-win/client/phi_telemetry.h"
+#include "phibrowser-win/client/phi_url_rules_window.h"
 
 namespace phi_client {
 
@@ -2370,6 +2371,12 @@ void PhiCoordinator::SetAppearance(PhiAppearance appearance) {
 
 void PhiCoordinator::RequestSettings() {
   PhiSettingsWindow::Open(this);
+}
+
+void PhiCoordinator::RequestUrlRulesEditor(HWND anchor) {
+  // The universal URL Rules editor: one app-global window over the router,
+  // the Space list and the profile names (all PhiSettingsHost reads).
+  PhiUrlRulesWindow::Open(this, anchor);
 }
 
 void PhiCoordinator::RequestFeedback(int64_t slot,

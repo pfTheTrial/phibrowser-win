@@ -302,19 +302,6 @@ std::wstring PickFolder(HWND owner, const wchar_t* title) {
   return result;
 }
 
-// The rule a WIRE ID names in the router's current generation, or null.
-// A row's position is not its identity: ids regenerate on every rule write,
-// so an id the pane read before an edit stops resolving rather than aiming
-// at whatever slid into that slot (lane 1 §5 D7).
-const model::UrlRule* FindRuleById(const PhiUrlRouter* router,
-                                   const std::string& rule_id) {
-  size_t index = 0;
-  if (!router->ResolveRuleIndex(rule_id, &index)) {
-    return nullptr;
-  }
-  return &router->rules()[index];
-}
-
 }  // namespace
 
 PhiSettingsWindow::~PhiSettingsWindow() {
@@ -342,8 +329,7 @@ PhiSettingsWindow::PhiSettingsWindow(PhiSettingsHost* host)
       spaces_(&host->SpaceList()),
       profiles_(&host->ProfileList()),
       credentials_(&host->Credentials()),
-      account_(&host->Account()),
-      rules_(&host->UrlRules()) {
+      account_(&host->Account()) {
   // Subscribed for the life of the object (the destructor unsubscribes),
   // whether or not the window below comes up.
   host_->AddSettingsObserver(this);
@@ -461,10 +447,6 @@ HFONT PhiSettingsWindow::IconFont(int size) {
 }
 
 void PhiSettingsWindow::SyncTitle() {
-  if (section_ == "urlrules") {
-    ::SetWindowTextW(hwnd(), L"URL Rules");
-    return;
-  }
   // The Mac library titles the window with the selected pane's title.
   for (const SectionDef& section : kSections) {
     if (section_ == section.id) {
@@ -1449,6 +1431,10 @@ void PhiSettingsWindow::BuildSpaces(int* y) {
     items_.push_back(std::move(pill));
   }
   EndSection(y);
+
+  // The routing rules belong with the Spaces they route into; the same row
+  // also sits on the Navigation pane beside the other link-opening controls.
+  AddUrlRulesSection(y);
 }
 
 // The Mac's Navigations pane (NavigationsSettingsView): the link-opening
@@ -1493,6 +1479,13 @@ void PhiSettingsWindow::BuildNavigation(int* y) {
                L"site open in a Peek panel instead of a new tab.");
   EndSection(y);
 
+  AddUrlRulesSection(y);
+}
+
+// The "URL Rules" section the Spaces and Navigation panes share: one row
+// that opens the universal editor (PhiUrlRulesWindow), as the Mac's
+// "Manage URL Rules…" row does.
+void PhiSettingsWindow::AddUrlRulesSection(int* y) {
   BeginSection(y, L"URL Rules");
   {
     // The whole row opens the editor, not just the trailing chevron —
@@ -1505,8 +1498,8 @@ void PhiSettingsWindow::BuildNavigation(int* y) {
     const size_t first = items_.size();
     const RECT area =
         AddRow(y, L"Manage URL Rules…", kRowLabelHeight, 20,
-               L"Route matching domains or URLs to a Space, or ask every "
-               L"time.");
+               L"Route matching domains or URLs to a Space, Incognito, or "
+               L"Kiosk.");
     Item chevron;
     chevron.kind = ItemKind::kIcon;
     chevron.text = std::wstring(1, wchar_t(0xE76C));  // ChevronRight
@@ -1518,294 +1511,6 @@ void PhiSettingsWindow::BuildNavigation(int* y) {
         items_[items_.size() - 2].bounds.bottom + Scaled(6)};
   }
   EndSection(y);
-}
-
-namespace {
-
-// The Mac editor's match modes, derived from / encoded into the stored
-// (host, pathPrefix) wire pair.
-enum class RuleMatchType { kDomainSuffix, kDomain, kDomainContains, kUrl };
-
-RuleMatchType RuleTypeOf(const std::string& host,
-                         const std::string& path_prefix) {
-  if (!path_prefix.empty()) {
-    return RuleMatchType::kUrl;
-  }
-  if (host.size() > 2 && host.front() == '*' && host.back() == '*') {
-    return RuleMatchType::kDomainContains;
-  }
-  if (host.rfind("*.", 0) == 0) {
-    return RuleMatchType::kDomainSuffix;
-  }
-  return RuleMatchType::kDomain;
-}
-
-const wchar_t* RuleTypeLabel(RuleMatchType type) {
-  switch (type) {
-    case RuleMatchType::kDomainSuffix:
-      return L"Domain suffix";
-    case RuleMatchType::kDomain:
-      return L"Domain";
-    case RuleMatchType::kDomainContains:
-      return L"Domain contains";
-    case RuleMatchType::kUrl:
-      return L"URL";
-  }
-  return L"";
-}
-
-// The user-facing value: the stored pair minus the wire sigils.
-std::string RuleDisplayValue(const std::string& host,
-                             const std::string& path_prefix) {
-  switch (RuleTypeOf(host, path_prefix)) {
-    case RuleMatchType::kDomainSuffix:
-      return host.substr(2);
-    case RuleMatchType::kDomainContains:
-      return host.substr(1, host.size() - 2);
-    case RuleMatchType::kUrl:
-      return host + path_prefix;
-    case RuleMatchType::kDomain:
-      break;
-  }
-  return host;
-}
-
-// Simplified Mac normalizedPathPrefix: trim, collapse trailing slashes,
-// treat a bare "/" as "any path", ensure the leading "/". (The Mac also
-// re-percent-encodes; typed ASCII prefixes — the practical case — match
-// GURL::path() without it.)
-std::string NormalizePathPrefix(std::string prefix) {
-  while (!prefix.empty() &&
-         (prefix.back() == ' ' || prefix.back() == '\t')) {
-    prefix.pop_back();
-  }
-  while (!prefix.empty() && prefix.front() == ' ') {
-    prefix.erase(prefix.begin());
-  }
-  while (prefix.size() > 1 && prefix.back() == '/') {
-    prefix.pop_back();
-  }
-  if (prefix == "/" || prefix.empty()) {
-    return std::string();
-  }
-  if (prefix.front() != '/') {
-    prefix.insert(prefix.begin(), '/');
-  }
-  return prefix;
-}
-
-// Drops a pasted ":8080" — GURL hosts never carry one. Only cuts when
-// everything after the last ':' is digits, leaving IPv6 "[::1]" alone.
-std::string StripPort(const std::string& host) {
-  const size_t colon = host.rfind(':');
-  if (colon == std::string::npos || colon + 1 >= host.size()) {
-    return host;
-  }
-  for (size_t i = colon + 1; i < host.size(); ++i) {
-    if (host[i] < '0' || host[i] > '9') {
-      return host;
-    }
-  }
-  return host.substr(0, colon);
-}
-
-// The Mac editor's encode(): translate (type, typed value) into the stored
-// (host, pathPrefix) pair. The type is the single source of truth — typed
-// sigils are stripped and the type's own form re-added. An input that
-// reduces to nothing yields an empty host, which the caller drops.
-void RuleEncode(RuleMatchType type,
-                std::string value,
-                std::string* host,
-                std::string* path_prefix) {
-  host->clear();
-  path_prefix->clear();
-  const size_t scheme = value.find("://");
-  if (scheme != std::string::npos) {
-    value = value.substr(scheme + 3);
-  }
-  if (type == RuleMatchType::kUrl) {
-    std::string host_part = value;
-    std::string path_part;
-    const size_t slash = value.find('/');
-    if (slash != std::string::npos) {
-      host_part = value.substr(0, slash);
-      path_part = value.substr(slash);
-    }
-    if (host_part.rfind("*.", 0) == 0) {
-      host_part = host_part.substr(2);
-    }
-    *host = StripPort(host_part);
-    *path_prefix = NormalizePathPrefix(path_part);
-    return;
-  }
-  const size_t slash = value.find('/');
-  if (slash != std::string::npos) {
-    value = value.substr(0, slash);
-  }
-  value = StripPort(value);
-  switch (type) {
-    case RuleMatchType::kDomainSuffix: {
-      const std::string bare =
-          value.rfind("*.", 0) == 0 ? value.substr(2) : value;
-      *host = bare.empty() ? std::string() : "*." + bare;
-      break;
-    }
-    case RuleMatchType::kDomain:
-      *host = value.rfind("*.", 0) == 0 ? value.substr(2) : value;
-      break;
-    case RuleMatchType::kDomainContains: {
-      std::string needle = value;
-      while (!needle.empty() && needle.front() == '*') {
-        needle.erase(needle.begin());
-      }
-      while (!needle.empty() && needle.back() == '*') {
-        needle.pop_back();
-      }
-      *host = needle.empty() ? std::string() : "*" + needle + "*";
-      break;
-    }
-    case RuleMatchType::kUrl:
-      break;  // Handled above.
-  }
-}
-
-// Derives the match type a typed pattern implies: an explicit path means
-// URL, explicit sigils keep their form, and a bare host defaults to the
-// Mac's domain-suffix (host + subdomains).
-RuleMatchType RuleTypeForInput(const std::string& value) {
-  std::string work = value;
-  const size_t scheme = work.find("://");
-  if (scheme != std::string::npos) {
-    work = work.substr(scheme + 3);
-  }
-  const size_t slash = work.find('/');
-  if (slash != std::string::npos && slash + 1 < work.size()) {
-    return RuleMatchType::kUrl;
-  }
-  if (slash != std::string::npos) {
-    work = work.substr(0, slash);
-  }
-  if (work.size() > 2 && work.front() == '*' && work.back() == '*') {
-    return RuleMatchType::kDomainContains;
-  }
-  if (work.rfind("*.", 0) == 0) {
-    return RuleMatchType::kDomainSuffix;
-  }
-  return RuleMatchType::kDomainSuffix;  // The Mac's default for a bare host.
-}
-
-}  // namespace
-
-void PhiSettingsWindow::BuildUrlRules(int* y) {
-  // Back link to the Navigation pane the editor drills out of.
-  {
-    Item back;
-    back.kind = ItemKind::kLink;
-    back.text = L"\u2039 Navigation";
-    back.action = "gonavigation";
-    back.bounds = {Scaled(kMargin), *y, Scaled(kMargin) + Scaled(110),
-                   *y + Scaled(kRowLabelHeight)};
-    items_.push_back(std::move(back));
-    *y += Scaled(kRowLabelHeight) + Scaled(8);
-  }
-  AddHint(y, L"URLs matching a rule always open in its Space, no matter "
-             L"where you click or type them.");
-  *y += Scaled(4);
-
-  const std::vector<PhiUrlRuleRow> rules = rules_->RulesWithIds();
-  // Space names for the target pills.
-  const std::vector<PhiSpaceSummary> space_names = spaces_->Summaries();
-
-  BeginSection(y, nullptr);
-  if (rules.empty()) {
-    Item hint;
-    hint.kind = ItemKind::kHint;
-    hint.text = L"No rules yet.";
-    hint.bounds = {Scaled(kMargin + kCardPadding), *y,
-                   Scaled(kWidth - kMargin - kCardPadding),
-                   *y + Scaled(kHintHeight)};
-    items_.push_back(std::move(hint));
-    *y += Scaled(kHintHeight) + Scaled(kRowPadding);
-  }
-  for (size_t i = 0; i < rules.size(); ++i) {
-    if (i > 0) {
-      AddDividerRow(y);
-    }
-    const model::UrlRule& rule = rules[i].rule;
-    const RuleMatchType type = RuleTypeOf(rule.host, rule.path_prefix);
-    // Every control on the row names the rule by its WIRE ID, so an edit
-    // made after the list moved is refused rather than aimed at whatever
-    // slid into that position.
-    const std::string& rule_id = rules[i].id;
-
-    const int row_height = Scaled(kPillHeight);
-    const int right = Scaled(kWidth - kMargin - kCardPadding);
-    // Trailing to leading: delete glyph, target pill, type pill; the
-    // pattern text takes the rest.
-    RECT del = {right - Scaled(24), *y, right, *y + row_height};
-    RECT target = {del.left - Scaled(8) - Scaled(120), *y, del.left -
-                   Scaled(8), *y + row_height};
-    RECT type_rect = {target.left - Scaled(8) - Scaled(110), *y,
-                      target.left - Scaled(8), *y + row_height};
-
-    Item pattern;
-    pattern.kind = ItemKind::kRowLabel;
-    pattern.text =
-        base::UTF8ToWide(RuleDisplayValue(rule.host, rule.path_prefix));
-    pattern.action = "editrule";
-    pattern.payload = rule_id;
-    pattern.bounds = {Scaled(kMargin + kCardPadding), *y,
-                      type_rect.left - Scaled(12), *y + row_height};
-    items_.push_back(std::move(pattern));
-
-    Item type_pill;
-    type_pill.kind = ItemKind::kPopup;
-    type_pill.text = RuleTypeLabel(type);
-    type_pill.action = "ruletype";
-    type_pill.payload = rule_id;
-    type_pill.bounds = type_rect;
-    items_.push_back(std::move(type_pill));
-
-    Item target_pill;
-    target_pill.kind = ItemKind::kPopup;
-    if (rule.ask) {
-      target_pill.text = L"Ask every time";
-    } else {
-      target_pill.text = L"?";
-      for (const PhiSpaceSummary& space : space_names) {
-        if (space.id == rule.space_id) {
-          target_pill.text = base::UTF8ToWide(space.name);
-          break;
-        }
-      }
-    }
-    target_pill.action = "ruletarget";
-    target_pill.payload = rule_id;
-    target_pill.bounds = target;
-    items_.push_back(std::move(target_pill));
-
-    Item remove;
-    remove.kind = ItemKind::kToolButton;
-    remove.text = L"\uE74D";  // MDL2 Delete.
-    remove.action = "delrule";
-    remove.payload = rule_id;
-    remove.bounds = del;
-    items_.push_back(std::move(remove));
-
-    *y += row_height + Scaled(kRowPadding);
-  }
-  EndSection(y);
-
-  {
-    Item add;
-    add.kind = ItemKind::kButton;
-    add.text = L"Add Rule";
-    add.action = "addrule";
-    add.bounds = {Scaled(kMargin), *y, Scaled(kMargin) + Scaled(96),
-                  *y + Scaled(26)};
-    items_.push_back(std::move(add));
-    *y += Scaled(26);
-  }
 }
 
 void PhiSettingsWindow::BuildProfiles(int* y) {
@@ -2596,11 +2301,7 @@ void PhiSettingsWindow::Rebuild() {
     entry.kind = ItemKind::kToolbarItem;
     entry.text = section.label;
     entry.payload = section.id;
-    // The URL Rules editor is a drill-in of the Navigation pane; its toolbar
-    // item stays lit.
-    entry.selected = section_ == section.id ||
-                     (section_ == "urlrules" &&
-                      std::string(section.id) == "navigation");
+    entry.selected = section_ == section.id;
     entry.action = "section";
     entry.bounds = {x, Scaled(kCaptionHeight + 8),
                     x + Scaled(kToolbarItemWidth),
@@ -2623,8 +2324,6 @@ void PhiSettingsWindow::Rebuild() {
     BuildSpaces(&y);
   } else if (section_ == "navigation") {
     BuildNavigation(&y);
-  } else if (section_ == "urlrules") {
-    BuildUrlRules(&y);
   } else if (section_ == "profiles") {
     BuildProfiles(&y);
   } else if (section_ == "shortcuts") {
@@ -3530,9 +3229,9 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
     scroll_ = 0;
     SyncTitle();
   } else if (item.action == "urlrules") {
-    section_ = "urlrules";
-    scroll_ = 0;
-    SyncTitle();
+    // Navigation ▸ "Manage URL Rules…": the universal editor window (the
+    // Mac's NavigationsSettingsView row over openURLRulesEditor).
+    host_->RequestUrlRulesEditor(hwnd());
   } else if (item.action == "shortcut") {
     PhiShortcutChord chord;
     const std::wstring message =
@@ -3548,120 +3247,6 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
     host_->RemoveAgentGrant(item.payload);
   } else if (item.action == "removecredgrant") {
     host_->RemoveCredentialGrant(item.payload);
-  } else if (item.action == "addrule") {
-    std::wstring value;
-    if (PhiPromptText(hwnd(), L"Add URL Rule",
-                      L"Enter a domain or URL (e.g. example.com or "
-                      L"example.com/path).",
-                      &value)) {
-      const std::string typed = base::WideToUTF8(value);
-      std::string host;
-      std::string prefix;
-      RuleEncode(RuleTypeForInput(typed), typed, &host, &prefix);
-      const std::vector<PhiSpaceSummary> spaces = spaces_->Summaries();
-      const std::string first_space =
-          spaces.empty() ? std::string() : spaces.front().id;
-      if (!host.empty() && !first_space.empty()) {
-        rules_->AddRule(first_space, host, prefix, false);
-      }
-    }
-  } else if (item.action == "editrule") {
-    // `payload` is the rule's wire id: it stops resolving the moment the
-    // list is rewritten, which is exactly what should happen.
-    if (const model::UrlRule* found = FindRuleById(rules_, item.payload)) {
-      const std::string old_host = found->host;
-      const std::string old_prefix = found->path_prefix;
-      std::wstring value =
-          base::UTF8ToWide(RuleDisplayValue(old_host, old_prefix));
-      if (PhiPromptText(hwnd(), L"Edit URL Rule",
-                        L"Enter a domain or URL for this rule.", &value)) {
-        const std::string typed = base::WideToUTF8(value);
-        // A typed path or explicit sigils re-derive the match type; a bare
-        // host keeps the rule's current one.
-        RuleMatchType type = RuleTypeOf(old_host, old_prefix);
-        const RuleMatchType derived = RuleTypeForInput(typed);
-        if (derived != RuleMatchType::kDomainSuffix ||
-            typed.rfind("*.", 0) == 0) {
-          type = derived;
-        }
-        std::string host;
-        std::string prefix;
-        RuleEncode(type, typed, &host, &prefix);
-        if (!host.empty()) {
-          rules_->SetRulePatternById(item.payload, host, prefix);
-        }
-      }
-    }
-  } else if (item.action == "ruletype") {
-    if (const model::UrlRule* found = FindRuleById(rules_, item.payload)) {
-      const std::string old_host = found->host;
-      const std::string old_prefix = found->path_prefix;
-      const RuleMatchType current = RuleTypeOf(old_host, old_prefix);
-      HMENU menu = ::CreatePopupMenu();
-      if (!menu) {
-        return;
-      }
-      const std::array<RuleMatchType, 4> kTypes = {
-          RuleMatchType::kDomainSuffix, RuleMatchType::kDomain,
-          RuleMatchType::kDomainContains, RuleMatchType::kUrl};
-      for (size_t i = 0; i < kTypes.size(); ++i) {
-        ::AppendMenuW(menu,
-                      MF_STRING | (kTypes[i] == current ? MF_CHECKED : 0),
-                      static_cast<UINT>(i) + 1, RuleTypeLabel(kTypes[i]));
-      }
-      POINT anchor = {item.bounds.left, item.bounds.bottom};
-      ::ClientToScreen(hwnd(), &anchor);
-      const UINT chosen = static_cast<UINT>(::TrackPopupMenu(
-          menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, anchor.x,
-          anchor.y, 0, hwnd(), nullptr));
-      ::DestroyMenu(menu);
-      if (chosen >= 1 && chosen <= kTypes.size()) {
-        // Re-encode the current display value into the new type's form.
-        std::string host;
-        std::string prefix;
-        RuleEncode(kTypes[chosen - 1],
-                   RuleDisplayValue(old_host, old_prefix), &host, &prefix);
-        if (!host.empty()) {
-          rules_->SetRulePatternById(item.payload, host, prefix);
-        }
-      }
-    }
-  } else if (item.action == "ruletarget") {
-    if (const model::UrlRule* found = FindRuleById(rules_, item.payload)) {
-      const std::string current_space = found->space_id;
-      const bool ask = found->ask;
-      std::vector<std::string> space_ids;
-      HMENU menu = ::CreatePopupMenu();
-      if (!menu) {
-        return;
-      }
-      for (const PhiSpaceSummary& space : spaces_->Summaries()) {
-        const bool checked = !ask && space.id == current_space;
-        ::AppendMenuW(menu, MF_STRING | (checked ? MF_CHECKED : 0),
-                      static_cast<UINT>(space_ids.size()) + 1,
-                      base::UTF8ToWide(space.name).c_str());
-        space_ids.push_back(space.id);
-      }
-      ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-      // "Ask every time" rides the rule's target Space as the prompt's
-      // suggested default, the Mac's askSpaceTag.
-      ::AppendMenuW(menu, MF_STRING | (ask ? MF_CHECKED : 0),
-                    static_cast<UINT>(space_ids.size()) + 1,
-                    L"Ask every time");
-      POINT anchor = {item.bounds.left, item.bounds.bottom};
-      ::ClientToScreen(hwnd(), &anchor);
-      const UINT chosen = static_cast<UINT>(::TrackPopupMenu(
-          menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, anchor.x,
-          anchor.y, 0, hwnd(), nullptr));
-      ::DestroyMenu(menu);
-      if (chosen >= 1 && chosen <= space_ids.size()) {
-        rules_->SetRuleTargetById(item.payload, space_ids[chosen - 1], false);
-      } else if (chosen == space_ids.size() + 1) {
-        rules_->SetRuleTargetById(item.payload, current_space, true);
-      }
-    }
-  } else if (item.action == "delrule") {
-    rules_->RemoveRuleById(item.payload);
   } else if (item.action == "goprofiles") {
     section_ = "profiles";
     scroll_ = 0;
@@ -3933,18 +3518,11 @@ void PhiSettingsWindow::OnWheel(int delta, POINT client_pt) {
 }
 
 void PhiSettingsWindow::OnEscape() {
-  // Esc walks back out, one step at a time — the filter, then the URL
-  // Rules drill-in, then the window (which only hides, as WM_CLOSE does).
+  // Esc walks back out, one step at a time — the filter, then the window
+  // (which only hides, as WM_CLOSE does).
   if (section_ == "shortcuts" && !shortcut_search_.empty()) {
     shortcut_search_.clear();
     scroll_ = 0;
-    ScheduleRebuild();
-    return;
-  }
-  if (section_ == "urlrules") {
-    section_ = "navigation";
-    scroll_ = 0;
-    SyncTitle();
     ScheduleRebuild();
     return;
   }

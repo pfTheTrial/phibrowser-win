@@ -519,7 +519,7 @@ one store, and one set of invariants (lane 1 §4.3, lane 4 §5):
 | `PhiFrameworkDispatcher` | nothing | every override ≤ 10 lines and ends in a post; captures `WindowCreation` into a value |
 | `PhiWindowRegistry` | `SlotId → PhiShellWindow`, `BrowserId → SlotId`, kiosks, pending creations as `{token, slot, space, urls}` | slot ids are allocated, never a browser id; pending creations are matched by token, never "next window" |
 | `PhiSpaceManager` | `spaces_`, default role, per-Space palettes, `PhiSpaces.json` v2 (rules inside) | only writer of the list; publishes `SpacesChanged`; `PushSpaceMenu`/`PushRoutingTable` once per turn |
-| `PhiUrlRouter` | rules, routing decisions, the ask prompt (deferred) | rule ids regenerated on write; incognito rules kept out of the live router |
+| `PhiUrlRouter` | rules, routing decisions, the ask prompt (deferred), the two action targets (Incognito, Kiosk) | rule ids regenerated on write; every write stores the canonical pattern; the editor (`PhiUrlRulesWindow`) writes the whole list at once on Save |
 | `PhiPreferences` | layout, theme, prefs, shortcuts, restore, peek, language; one `PhiSettings.json` | observers replace the 36 `PhiSettingsWindow::Refresh()` calls; framework mirrors are pushed on `OnProfileLoaded`, not by "the paths that load them" |
 | `PhiSidebarActions` | the existing command table plus `tab_store_` | row first, tag second; id-addressed framework calls only |
 | `PhiSurfaceCoordinator` | Peek/Reader registry, sweep, dismissal | panels hold `SlotId`/`BrowserId`, not controller pointers |

@@ -73,8 +73,8 @@ class PhiSettingsObserver {
 //   reach on its own: a framework push, a window, another store, a Chromium
 //   profile. The exception is PhiUrlRouter, handed over MUTABLE: it is the
 //   sole owner of the rules half of PhiSpaces.json and persists and
-//   re-pushes the routing table itself, so the coordinator added nothing but
-//   an index-shaped seam between the pane and it.
+//   re-pushes the routing table itself, so the coordinator added nothing
+//   between its editor (PhiUrlRulesWindow) and it.
 class PhiSettingsHost {
  public:
   virtual ~PhiSettingsHost() = default;
@@ -91,9 +91,12 @@ class PhiSettingsHost {
   virtual const PhiProfileService& ProfileList() const = 0;
   virtual const PhiCredentialService& Credentials() const = 0;
   virtual const PhiAccountAndFeedback& Account() const = 0;
-  // Mutable: see the class comment — the URL Rules editor IS this service's
-  // editor, and rules are addressed by wire id, never by row position.
+  // Mutable: see the class comment — the URL Rules editor (PhiUrlRulesWindow,
+  // opened through the host below) IS this service's editor.
   virtual PhiUrlRouter& UrlRules() = 0;
+  // Navigation ▸ "Manage URL Rules…": the universal editor window, over
+  // `anchor` (the settings window).
+  virtual void RequestUrlRulesEditor(HWND anchor) = 0;
 
   // --- Theme ----------------------------------------------------------------
   virtual void SetThemeId(const std::string& id) = 0;
@@ -324,9 +327,10 @@ class PhiSettingsWindow : public PhiSecondaryWindow,
   void BuildSpaces(int* y);
   // The Mac's Navigations pane: Kiosk, Peek and URL Rules.
   void BuildNavigation(int* y);
+  // The "URL Rules" section the Spaces and Navigation panes share.
+  void AddUrlRulesSection(int* y);
   // The URL Rules editor, a drill-in of the Navigation pane (the Mac's
   // universal editor window).
-  void BuildUrlRules(int* y);
   void BuildProfiles(int* y);
   void BuildAi(int* y);
   void BuildShortcuts(int* y);
@@ -423,7 +427,6 @@ class PhiSettingsWindow : public PhiSecondaryWindow,
   RAW_PTR_EXCLUSION const PhiProfileService* profiles_;
   RAW_PTR_EXCLUSION const PhiCredentialService* credentials_;
   RAW_PTR_EXCLUSION const PhiAccountAndFeedback* account_;
-  RAW_PTR_EXCLUSION PhiUrlRouter* rules_;
   HFONT font_ = nullptr;
   HFONT title_font_ = nullptr;
   HFONT small_font_ = nullptr;  // Section titles and toolbar labels.

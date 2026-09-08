@@ -137,6 +137,28 @@ int PhiPromptChoose(HWND owner,
                     const wchar_t* cancel_label = nullptr,
                     bool cancel_is_default = false);
 
+// One row of the sectioned chooser below. `starts_section` draws a divider
+// above the row (the Mac SpaceChooserView's Kiosk section); `current`
+// trails the row with the "Current" status the Mac shows on the Space the
+// navigation started in.
+struct PhiChoiceRow {
+  std::wstring label;
+  bool starts_section = false;
+  bool current = false;
+};
+
+// PhiPromptChoose with owner-drawn rows: the URL router's "ask first"
+// chooser, whose list mixes the user's Spaces with the two action
+// destinations. Same return contract as PhiPromptChoose.
+int PhiPromptChooseRows(HWND owner,
+                        const wchar_t* title,
+                        const wchar_t* message,
+                        const std::vector<PhiChoiceRow>& rows,
+                        int default_index,
+                        const wchar_t* confirm_label = nullptr,
+                        const wchar_t* cancel_label = nullptr,
+                        bool cancel_is_default = false);
+
 }  // namespace phi_client
 
 #endif  // PHIBROWSER_WIN_CLIENT_PHI_PROMPT_H_

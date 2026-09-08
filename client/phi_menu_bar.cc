@@ -668,7 +668,7 @@ void PhiMenuBar::RefreshSpaces() {
     }
   }
   Separator(spaces_);
-  Append(spaces_, kCmdUrlRules, PhiStr("menuBar.urlRules"), false);
+  Append(spaces_, kCmdUrlRules, PhiStr("menuBar.urlRules"));
   Separator(spaces_);
   Append(spaces_, kCmdNewProfile, PhiStr("app.spacesMenu.newProfile"),
          services_->MenuFramework() != nullptr);
@@ -880,6 +880,13 @@ bool PhiMenuBar::OnCommand(UINT id) {
     case kCmdPreferences:
       if (c->MenuWindowHost()) {
         c->MenuWindowHost()->RequestSettings();
+      }
+      return true;
+    case kCmdUrlRules:
+      // Spaces ▸ URL Rules…: the universal editor (the Mac's Spaces menu
+      // item over AppController.openURLRulesEditor).
+      if (c->MenuWindowHost()) {
+        c->MenuWindowHost()->RequestUrlRulesEditor(c->MenuShellWindow());
       }
       return true;
     case kCmdQuit:

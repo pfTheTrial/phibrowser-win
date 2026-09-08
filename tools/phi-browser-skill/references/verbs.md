@@ -804,7 +804,7 @@ Adds a routing rule.
 
 | field | type | required | also accepts | meaning |
 | --- | --- | --- | --- | --- |
-| `spaceId` | string | yes | `space` | Where matches are routed. |
+| `spaceId` | string | yes | `space` | Where matches are routed: a Space id, space.incognito (the profile's Incognito window) or __phi_kiosk__ (a new Kiosk window). |
 | `host` | string | yes | — | The host to match. |
 | `pathPrefix` | string | no | — | An optional path prefix. |
 | `ask` | boolean | no | — | Ask instead of routing silently. |
@@ -820,7 +820,7 @@ Changes a rule's pattern or target; absent fields keep their value.
 | field | type | required | also accepts | meaning |
 | --- | --- | --- | --- | --- |
 | `id` | string | no | — | The rule's wire id from urlRules.list; ids regenerate on every write. |
-| `spaceId` | string | no | `space` | A new target Space. |
+| `spaceId` | string | no | `space` | A new target: a Space id, space.incognito or __phi_kiosk__. |
 | `host` | string | no | — | A new host. |
 | `pathPrefix` | string | no | — | A new path prefix; present clears, absent keeps. |
 | `ask` | boolean | no | — | A new ask flag. |
