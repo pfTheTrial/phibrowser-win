@@ -50,7 +50,7 @@ void PhiAgentSpaceManager::Init(phi_framework::PhiFramework* framework) {
   });
 }
 
-PhiWindowController* PhiAgentSpaceManager::ControllerFor(
+PhiShellWindow* PhiAgentSpaceManager::ControllerFor(
     const std::string& task_id) {
   PhiAgentSpaces::Space* space = spaces_.Find(task_id);
   return space ? host_.ControllerForAgentWindow(space->window_id) : nullptr;
@@ -107,7 +107,7 @@ bool PhiAgentSpaceManager::RetireHiddenWindow(BrowserId browser) {
 }
 
 void PhiAgentSpaceManager::HideOverlayBoundTo(
-    const PhiWindowController* controller) {
+    const PhiShellWindow* controller) {
   PhiAgentOverlay::HideIfBoundTo(controller);
 }
 
@@ -151,17 +151,17 @@ void PhiAgentSpaceManager::RequestWatch(const std::string& task_id) {
   };
   // Clicking the watched pip again parks it; clicking a different one swaps.
   if (watched_task_ == task_id) {
-    if (PhiWindowController* c = controller_for(task_id)) {
+    if (PhiShellWindow* c = controller_for(task_id)) {
       c->SetAgentVisible(false);
     }
     watched_task_.clear();
   } else {
     if (!watched_task_.empty()) {
-      if (PhiWindowController* prev = controller_for(watched_task_)) {
+      if (PhiShellWindow* prev = controller_for(watched_task_)) {
         prev->SetAgentVisible(false);
       }
     }
-    if (PhiWindowController* c = controller_for(task_id)) {
+    if (PhiShellWindow* c = controller_for(task_id)) {
       c->SetAgentVisible(true);
     }
     watched_task_ = task_id;
@@ -180,7 +180,7 @@ void PhiAgentSpaceManager::RefreshOverlay() {
     PhiAgentOverlay::Hide();
     return;
   }
-  PhiWindowController* controller =
+  PhiShellWindow* controller =
       host_.ControllerForAgentWindow(space->window_id);
   if (!controller) {
     PhiAgentOverlay::Hide();
@@ -268,7 +268,7 @@ void PhiAgentSpaceManager::CloseAgentSpace(const std::string& task_id) {
   if (watched_task_ == task_id) {
     watched_task_.clear();
   }
-  if (PhiWindowController* shell = host_.ControllerForAgentWindow(window_id)) {
+  if (PhiShellWindow* shell = host_.ControllerForAgentWindow(window_id)) {
     shell->RequestClose();  // Fires OnBrowserWindowClosing → cleanup.
   } else if (framework_ && window_id.valid()) {
     framework_->CloseBrowserWindow(window_id.value);
@@ -297,7 +297,7 @@ void PhiAgentSpaceManager::CloseShadowWindow(const std::string& task_id,
   shadows_.erase(it);
   LOG(INFO) << "[PhiClient] shadow window closed (" << reason
             << "): " << task_id;
-  if (PhiWindowController* shell = host_.ControllerForAgentWindow(window_id)) {
+  if (PhiShellWindow* shell = host_.ControllerForAgentWindow(window_id)) {
     shell->RequestClose();  // Fires OnBrowserWindowClosing.
   } else if (framework_ && window_id.valid()) {
     framework_->CloseBrowserWindow(window_id.value);

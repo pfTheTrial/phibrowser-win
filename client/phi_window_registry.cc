@@ -11,13 +11,13 @@ namespace phi_client {
 PhiWindowRegistry::PhiWindowRegistry() = default;
 PhiWindowRegistry::~PhiWindowRegistry() = default;
 
-PhiWindowController* PhiWindowRegistry::AddOwned(
+PhiShellWindow* PhiWindowRegistry::AddOwned(
     SlotId slot,
     ControllerPtr controller,
-    void (*invalidate)(PhiWindowController*),
+    void (*invalidate)(PhiShellWindow*),
     bool agent,
     bool incognito) {
-  PhiWindowController* raw = controller.get();
+  PhiShellWindow* raw = controller.get();
   // insert_or_assign rather than operator[]: a Slot cannot be default
   // constructed (its deleter is a function pointer), and a repeated Add for
   // one slot id — which should not happen — replaces rather than leaks.
@@ -40,7 +40,7 @@ bool PhiWindowRegistry::Remove(SlotId slot) {
   return true;
 }
 
-PhiWindowController* PhiWindowRegistry::Get(SlotId slot) const {
+PhiShellWindow* PhiWindowRegistry::Get(SlotId slot) const {
   const Slot* found = Find(slot);
   return found ? found->controller.get() : nullptr;
 }
@@ -50,8 +50,8 @@ const PhiWindowRegistry::Slot* PhiWindowRegistry::Find(SlotId slot) const {
   return it == slots_.end() ? nullptr : &it->second;
 }
 
-std::vector<PhiWindowController*> PhiWindowRegistry::Controllers() const {
-  std::vector<PhiWindowController*> out;
+std::vector<PhiShellWindow*> PhiWindowRegistry::Controllers() const {
+  std::vector<PhiShellWindow*> out;
   out.reserve(slots_.size());
   for (const auto& [slot, entry] : slots_) {
     out.push_back(entry.controller.get());
@@ -59,8 +59,8 @@ std::vector<PhiWindowController*> PhiWindowRegistry::Controllers() const {
   return out;
 }
 
-std::vector<PhiWindowController*> PhiWindowRegistry::UserControllers() const {
-  std::vector<PhiWindowController*> out;
+std::vector<PhiShellWindow*> PhiWindowRegistry::UserControllers() const {
+  std::vector<PhiShellWindow*> out;
   for (const auto& [slot, entry] : slots_) {
     if (!entry.agent && !entry.incognito) {
       out.push_back(entry.controller.get());
@@ -78,7 +78,7 @@ SlotId PhiWindowRegistry::FirstUserSlot() const {
   return SlotId();
 }
 
-PhiWindowController* PhiWindowRegistry::FirstUserController() const {
+PhiShellWindow* PhiWindowRegistry::FirstUserController() const {
   return Get(FirstUserSlot());
 }
 
@@ -123,17 +123,17 @@ std::optional<SlotId> PhiWindowRegistry::SlotFor(BrowserId browser) const {
   return it->second;
 }
 
-PhiWindowController* PhiWindowRegistry::Resolve(int64_t window_id) const {
+PhiShellWindow* PhiWindowRegistry::Resolve(int64_t window_id) const {
   if (window_id == 0) {
     return FirstUserController();
   }
-  if (PhiWindowController* slot = Get(SlotId{window_id})) {
+  if (PhiShellWindow* slot = Get(SlotId{window_id})) {
     return slot;
   }
   return ControllerForBrowser(BrowserId{window_id});
 }
 
-PhiWindowController* PhiWindowRegistry::ControllerForBrowser(
+PhiShellWindow* PhiWindowRegistry::ControllerForBrowser(
     BrowserId browser) const {
   const std::optional<SlotId> slot = SlotFor(browser);
   return slot ? Get(*slot) : nullptr;

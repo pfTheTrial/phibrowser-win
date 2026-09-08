@@ -20,7 +20,7 @@
 #include "phibrowser-win/client/phi_reader.h"
 #include "phibrowser-win/client/phi_store.h"
 #include "phibrowser-win/client/phi_theme.h"
-#include "phibrowser-win/client/phi_window_controller.h"
+#include "phibrowser-win/client/phi_shell_window.h"
 
 // The on-disk codecs for the four model files and the one-shot import of
 // the files they replace. The legacy shapes here are EXACTLY what the

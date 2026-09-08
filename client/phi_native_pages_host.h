@@ -16,7 +16,7 @@ namespace phi_client {
 
 class PhiBookmarkManager;
 class PhiNewTabPage;
-class PhiWindowController;
+class PhiShellWindow;
 
 // THE two client-drawn pages that mount OVER the content card by URL
 // (docs/architecture-review.md §3.5, lane 1 cluster M): the bookmark
@@ -38,7 +38,7 @@ class PhiNativePagesShell {
   // shell's layout, palette and omnibox session through it. Kept as the
   // owner pointer rather than a fourth interface because the panels are
   // the next things to move onto ShellServices, not this component.
-  virtual PhiWindowController* NativePagesOwner() = 0;
+  virtual PhiShellWindow* NativePagesOwner() = 0;
   // Off-the-record: nothing persists, so there is no bookmark manager.
   virtual bool NativePagesIncognito() const = 0;
   // A hidden agent window keeps Chromium's web NTP (the agent drives it

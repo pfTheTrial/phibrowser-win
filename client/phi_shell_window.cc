@@ -3,7 +3,7 @@
 // found in the LICENSE file.
 
 #include "phibrowser-win/client/phi_features.h"
-#include "phibrowser-win/client/phi_window_controller.h"
+#include "phibrowser-win/client/phi_shell_window.h"
 
 #include <commctrl.h>
 #include <dwmapi.h>
@@ -159,7 +159,7 @@ constexpr UINT_PTR kFloatingTickTimer = 0x522;
 // the session, which owns the copy-link flash.
 // 0x524 was the Spaces strip's "+" fade; it rides PhiAnimator now.
 // Re-arms a kMsgPhiDeferredClose that found a nested loop still on the
-// stack (see PhiWindowController::RequestClose).
+// stack (see PhiShellWindow::RequestClose).
 constexpr UINT_PTR kDeferredCloseTimer = 0x525;
 constexpr UINT kDeferredCloseRetryMs = 50;
 
@@ -192,7 +192,7 @@ ATOM EnsureShellClass() {
     wc.cbSize = sizeof(wc);
     // CS_DBLCLKS: a group header's double-click opens the group overview.
     wc.style = CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS;
-    wc.lpfnWndProc = &PhiWindowController::ShellWndProc;
+    wc.lpfnWndProc = &PhiShellWindow::ShellWndProc;
     wc.hInstance = ::GetModuleHandleW(nullptr);
     wc.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
     // Phi's own icon in the taskbar and alt-tab — not Chromium's.
@@ -276,16 +276,16 @@ const std::vector<unsigned char>& PhiLogoBgra256() {
   return bgra;
 }
 
-int PhiWindowController::Scaled(int design_units) const {
+int PhiShellWindow::Scaled(int design_units) const {
   return ::MulDiv(design_units, static_cast<int>(dpi_), 96);
 }
 
-RECT PhiWindowController::Scaled(const RECT& design_units) const {
+RECT PhiShellWindow::Scaled(const RECT& design_units) const {
   return {Scaled(design_units.left), Scaled(design_units.top),
           Scaled(design_units.right), Scaled(design_units.bottom)};
 }
 
-void PhiWindowController::EnsureFont() {
+void PhiShellWindow::EnsureFont() {
   if (ui_font_ && ui_font_dpi_ == dpi_) {
     return;
   }
@@ -426,7 +426,7 @@ void PhiWindowController::EnsureFont() {
   }
 }
 
-void PhiWindowController::RebuildMenuBar() {
+void PhiShellWindow::RebuildMenuBar() {
   if (caption_band_) {
     caption_band_->Rebuild();
   }
@@ -434,7 +434,7 @@ void PhiWindowController::RebuildMenuBar() {
 
 // ShellLayout → the RECT-based Layout the paint and hit-test code reads.
 // static
-PhiWindowController::Layout PhiWindowController::ToLayout(
+PhiShellWindow::Layout PhiShellWindow::ToLayout(
     const ShellLayout& shell) {
   Layout out;
   out.mode = shell.mode;
@@ -482,7 +482,7 @@ PhiWindowController::Layout PhiWindowController::ToLayout(
   return out;
 }
 
-ShellLayoutInputs PhiWindowController::CurrentLayoutInputs() const {
+ShellLayoutInputs PhiShellWindow::CurrentLayoutInputs() const {
   ShellLayoutInputs in;
   in.mode = layout_mode_;
   if (shell_hwnd_) {
@@ -507,7 +507,7 @@ ShellLayoutInputs PhiWindowController::CurrentLayoutInputs() const {
   return in;
 }
 
-void PhiWindowController::RefreshLayoutInputs() {
+void PhiShellWindow::RefreshLayoutInputs() {
   // The sidebar width is the host's pref except while the user drags the
   // edge, when the live value wins until release persists it.
   if (!sidebar_resizing_ && services_.prefs) {
@@ -519,7 +519,7 @@ void PhiWindowController::RefreshLayoutInputs() {
   layout_reader_ = ActiveTabReaderOfferable();
 }
 
-PhiWindowController::Layout PhiWindowController::ComputeLayout() {
+PhiShellWindow::Layout PhiShellWindow::ComputeLayout() {
   // A value, cached by its inputs: the geometry is recomputed only when
   // something it depends on moved (a resize, a DPI change, a mode or pref
   // change, the rebuild's counts), never per read — the old getter derived
@@ -535,38 +535,38 @@ PhiWindowController::Layout PhiWindowController::ComputeLayout() {
   return layout_cache_;
 }
 
-RECT PhiWindowController::content_rect() {
+RECT PhiShellWindow::content_rect() {
   return ComputeLayout().content;
 }
 
-RECT PhiWindowController::url_field_rect() {
+RECT PhiShellWindow::url_field_rect() {
   return ComputeLayout().url_field;
 }
 
-RECT PhiWindowController::reader_button_rect() {
+RECT PhiShellWindow::reader_button_rect() {
   return ComputeLayout().reader;
 }
 
-bool PhiWindowController::ActiveTabExtensionOfferable() const {
+bool PhiShellWindow::ActiveTabExtensionOfferable() const {
   return services_.sidebar && active_tab_id().valid() &&
          services_.sidebar->IsReaderOfferable(active_tab_id().value,
                                               active_tab_url());
 }
 
-int PhiWindowController::tabs_top() {
+int PhiShellWindow::tabs_top() {
   return ComputeLayout().tabs_top;
 }
 
 
-int PhiWindowController::tab_row_height() const {
+int PhiShellWindow::tab_row_height() const {
   return Scaled(kTabRowHeight);
 }
 
-int PhiWindowController::tab_row_gap() const {
+int PhiShellWindow::tab_row_gap() const {
   return Scaled(kTabRowGap);
 }
 
-int PhiWindowController::title_bar_height() const {
+int PhiShellWindow::title_bar_height() const {
   // Comfortable's band carries the tab strip as well as the window controls,
   // so it is taller there — this is what the control socket reports, and a
   // fixed answer would put every caller's arithmetic 8pt out in that layout.
@@ -575,15 +575,15 @@ int PhiWindowController::title_bar_height() const {
                     : kTitleBarHeight);
 }
 
-int PhiWindowController::sidebar_width() const {
+int PhiShellWindow::sidebar_width() const {
   return Scaled(sidebar_dip_);
 }
 
-int PhiWindowController::content_margin() const {
+int PhiShellWindow::content_margin() const {
   return Scaled(kContentMargin);
 }
 
-POINT PhiWindowController::frame_offset() const {
+POINT PhiShellWindow::frame_offset() const {
   POINT origin = {0, 0};
   if (!shell_hwnd_ || !::IsWindow(shell_hwnd_)) {
     return origin;
@@ -594,11 +594,11 @@ POINT PhiWindowController::frame_offset() const {
   return {origin.x - window.left, origin.y - window.top};
 }
 
-void PhiWindowController::ApplyPalette() {
+void PhiShellWindow::ApplyPalette() {
   RefreshTabs();  // Every colour is read from the host at paint time.
 }
 
-void PhiWindowController::ApplyLayoutMode(PhiLayoutMode mode) {
+void PhiShellWindow::ApplyLayoutMode(PhiLayoutMode mode) {
   if (layout_mode_ == mode) {
     return;
   }
@@ -607,7 +607,7 @@ void PhiWindowController::ApplyLayoutMode(PhiLayoutMode mode) {
   RefreshTabs();
 }
 
-PhiWindowController::PhiWindowController(SlotId slot,
+PhiShellWindow::PhiShellWindow(SlotId slot,
                                         BrowserId browser,
                                         HWND browser_hwnd,
                                         phi_framework::PhiFramework* framework,
@@ -854,7 +854,7 @@ PhiWindowController::PhiWindowController(SlotId slot,
             << browser_hwnd;
 }
 
-PhiWindowController::~PhiWindowController() {
+PhiShellWindow::~PhiShellWindow() {
   // From here on the shell's own messages (DestroyWindow below still
   // delivers WM_ACTIVATE / WM_SIZE / WM_CAPTURECHANGED) find a controller
   // that must do nothing but die.
@@ -869,7 +869,7 @@ PhiWindowController::~PhiWindowController() {
   // comes down with the session: ~PhiSidebarDragSession IS AbortDrag.
   sidebar_->AbortDrag();
   // The process-wide satellites bound to this window: each keeps a bare
-  // PhiWindowController* and outlives its shell otherwise (the agent
+  // PhiShellWindow* and outlives its shell otherwise (the agent
   // overlay's Reposition runs from EVERY shell's LayoutContents, the
   // overview and the switcher answer keys, the search panel a click).
   PhiAgentOverlay::HideIfBoundTo(this);
@@ -935,80 +935,80 @@ PhiWindowController::~PhiWindowController() {
   }
 }
 
-HWND PhiWindowController::OmniboxShellWindow() const {
+HWND PhiShellWindow::OmniboxShellWindow() const {
   return shell_hwnd_;
 }
 
-bool PhiWindowController::OmniboxShellDestroying() const {
+bool PhiShellWindow::OmniboxShellDestroying() const {
   return destroying_;
 }
 
-int PhiWindowController::OmniboxScaled(int design_units) const {
+int PhiShellWindow::OmniboxScaled(int design_units) const {
   return Scaled(design_units);
 }
 
-HFONT PhiWindowController::OmniboxTextFont() const {
+HFONT PhiShellWindow::OmniboxTextFont() const {
   return ui_font_;
 }
 
-HFONT PhiWindowController::OmniboxIconFont() const {
+HFONT PhiShellWindow::OmniboxIconFont() const {
   return chip_icon_font_;
 }
 
-PhiPalette PhiWindowController::OmniboxPalette() const {
+PhiPalette PhiShellWindow::OmniboxPalette() const {
   // CurrentPalette, not the host's: incognito overrides to fixed-dark, and
   // a Space switch ramps.
   return CurrentPalette();
 }
 
-PhiLayoutMode PhiWindowController::OmniboxLayoutMode() const {
+PhiLayoutMode PhiShellWindow::OmniboxLayoutMode() const {
   return layout_mode_;
 }
 
-phi_framework::PhiFramework* PhiWindowController::OmniboxFramework() const {
+phi_framework::PhiFramework* PhiShellWindow::OmniboxFramework() const {
   return framework_;
 }
 
-BrowserId PhiWindowController::OmniboxBrowser() const {
+BrowserId PhiShellWindow::OmniboxBrowser() const {
   return active_browser_id();
 }
 
-void PhiWindowController::OmniboxFocusContent() {
+void PhiShellWindow::OmniboxFocusContent() {
   FocusActiveBrowser();
 }
 
-void PhiWindowController::OmniboxLeaveReader() {
+void PhiShellWindow::OmniboxLeaveReader() {
   LeaveReaderViewForNavigation();
 }
 
 // --- PhiCaptionShell: what the caption band asks of its shell -------------
 
-HWND PhiWindowController::CaptionShellWindow() const {
+HWND PhiShellWindow::CaptionShellWindow() const {
   return shell_hwnd_;
 }
 
-int PhiWindowController::CaptionScaled(int design_units) const {
+int PhiShellWindow::CaptionScaled(int design_units) const {
   return Scaled(design_units);
 }
 
-UINT PhiWindowController::CaptionDpi() const {
+UINT PhiShellWindow::CaptionDpi() const {
   return dpi_;
 }
 
-HFONT PhiWindowController::CaptionTextFont() {
+HFONT PhiShellWindow::CaptionTextFont() {
   EnsureFont();
   return ui_font_;
 }
 
-HFONT PhiWindowController::CaptionGlyphFont() const {
+HFONT PhiShellWindow::CaptionGlyphFont() const {
   return caption_font_;
 }
 
-PhiPalette PhiWindowController::CaptionPalette() const {
+PhiPalette PhiShellWindow::CaptionPalette() const {
   return CurrentPalette();
 }
 
-PhiCaptionRects PhiWindowController::CaptionRects() {
+PhiCaptionRects PhiShellWindow::CaptionRects() {
   const Layout layout = ComputeLayout();
   PhiCaptionRects rects;
   rects.mode = layout.mode;
@@ -1028,7 +1028,7 @@ PhiCaptionRects PhiWindowController::CaptionRects() {
   return rects;
 }
 
-bool PhiWindowController::CaptionStripTakesPoint(POINT client_pt) {
+bool PhiShellWindow::CaptionStripTakesPoint(POINT client_pt) {
   // Comfortable's band IS the tab strip, and the strip is the shell's: the
   // band asks whether anything drawn there is under the pointer.
   if (::PtInRect(&sidebar_->add_tab_button(), client_pt)) {
@@ -1050,12 +1050,12 @@ bool PhiWindowController::CaptionStripTakesPoint(POINT client_pt) {
   return false;
 }
 
-bool PhiWindowController::CaptionPhiMenuHovered() const {
+bool PhiShellWindow::CaptionPhiMenuHovered() const {
   // Its index in the band's hover table.
   return hover_kind_ == HoverKind::kNav && hover_index_ == 12;
 }
 
-void PhiWindowController::CaptionDrawLogo(HDC dc, int x, int y, int size) {
+void PhiShellWindow::CaptionDrawLogo(HDC dc, int x, int y, int size) {
   // The logo is loaded AT the size it draws (the multi-size ico has exact
   // entries per DPI), so no GDI rescale blurs it.
   const std::vector<unsigned char>& logo_bgra = PhiLogoBgra256();
@@ -1082,15 +1082,15 @@ void PhiWindowController::CaptionDrawLogo(HDC dc, int x, int y, int size) {
   }
 }
 
-void PhiWindowController::CaptionClearShellHover() {
+void PhiShellWindow::CaptionClearShellHover() {
   ClearHover();
 }
 
-bool PhiWindowController::CaptionContentFullscreen() const {
+bool PhiShellWindow::CaptionContentFullscreen() const {
   return browsers_->content_fullscreen();
 }
 
-PhiMenuBarShell* PhiWindowController::CaptionMenuServices() {
+PhiMenuBarShell* PhiShellWindow::CaptionMenuServices() {
   return this;
 }
 
@@ -1101,74 +1101,74 @@ PhiMenuBarShell* PhiWindowController::CaptionMenuServices() {
 // to keep the bar compiling. Nothing below hands out a reference into a
 // cache the bar could outlive.
 
-HWND PhiWindowController::MenuShellWindow() const {
+HWND PhiShellWindow::MenuShellWindow() const {
   return shell_hwnd_;
 }
 
-SlotId PhiWindowController::MenuSlot() const {
+SlotId PhiShellWindow::MenuSlot() const {
   return slot_;
 }
 
-bool PhiWindowController::MenuIncognito() const {
+bool PhiShellWindow::MenuIncognito() const {
   return incognito_;
 }
 
-SidebarHost* PhiWindowController::MenuSidebarHost() const {
+SidebarHost* PhiShellWindow::MenuSidebarHost() const {
   return services_.sidebar;
 }
 
-SpacesHost* PhiWindowController::MenuSpacesHost() const {
+SpacesHost* PhiShellWindow::MenuSpacesHost() const {
   return services_.spaces;
 }
 
-ChromePrefsHost* PhiWindowController::MenuPrefsHost() const {
+ChromePrefsHost* PhiShellWindow::MenuPrefsHost() const {
   return services_.prefs;
 }
 
-WindowHost* PhiWindowController::MenuWindowHost() const {
+WindowHost* PhiShellWindow::MenuWindowHost() const {
   return services_.window;
 }
 
-phi_framework::PhiFramework* PhiWindowController::MenuFramework() const {
+phi_framework::PhiFramework* PhiShellWindow::MenuFramework() const {
   return framework_;
 }
 
-const PhiWindowModel* PhiWindowController::MenuModel() const {
+const PhiWindowModel* PhiShellWindow::MenuModel() const {
   return model_;
 }
 
-BrowserId PhiWindowController::MenuActiveBrowser() const {
+BrowserId PhiShellWindow::MenuActiveBrowser() const {
   return active_browser_id();
 }
 
-TabId PhiWindowController::MenuActiveTab() const {
+TabId PhiShellWindow::MenuActiveTab() const {
   return active_tab_id();
 }
 
-std::string PhiWindowController::MenuActiveSpace() const {
+std::string PhiShellWindow::MenuActiveSpace() const {
   return active_space();
 }
 
-PhiPalette PhiWindowController::MenuPalette() const {
+PhiPalette PhiShellWindow::MenuPalette() const {
   return CurrentPalette();
 }
 
-int PhiWindowController::MenuScaled(int design_units) const {
+int PhiShellWindow::MenuScaled(int design_units) const {
   return Scaled(design_units);
 }
 
-HWND PhiWindowController::MenuAddressField() const {
+HWND PhiShellWindow::MenuAddressField() const {
   return omnibox_->field();
 }
 
-void PhiWindowController::MenuRefreshNavState() {
+void PhiShellWindow::MenuRefreshNavState() {
   // Re-reads nav from the window model and re-syncs the field. NOT a row
   // rebuild: the rows a menu shows are always the finished ones (phase 2
   // made rebuilds posted, and a menu opening is not a reason to rebuild).
   RebuildNavState();
 }
 
-PhiMenuBarNavState PhiWindowController::MenuNavState() const {
+PhiMenuBarNavState PhiShellWindow::MenuNavState() const {
   PhiMenuBarNavState nav;
   nav.url = omnibox_->nav_url();
   nav.can_go_back = omnibox_->can_go_back();
@@ -1177,7 +1177,7 @@ PhiMenuBarNavState PhiWindowController::MenuNavState() const {
   return nav;
 }
 
-std::vector<PhiMenuBarTab> PhiWindowController::MenuTabRows() const {
+std::vector<PhiMenuBarTab> PhiShellWindow::MenuTabRows() const {
   // A SNAPSHOT of the finished rows. The bar holds it for the length of one
   // menu build; a rebuild under an open menu cannot reach into it.
   std::vector<PhiMenuBarTab> rows;
@@ -1188,55 +1188,55 @@ std::vector<PhiMenuBarTab> PhiWindowController::MenuTabRows() const {
   return rows;
 }
 
-bool PhiWindowController::MenuReaderActive() const {
+bool PhiShellWindow::MenuReaderActive() const {
   return ActiveTabShowsReader();
 }
 
-bool PhiWindowController::MenuReaderOfferable() const {
+bool PhiShellWindow::MenuReaderOfferable() const {
   return ActiveTabCanUseReader();
 }
 
-bool PhiWindowController::MenuLeaveReaderForNavigation() {
+bool PhiShellWindow::MenuLeaveReaderForNavigation() {
   return LeaveReaderViewForNavigation();
 }
 
-bool PhiWindowController::MenuHasSpace(const std::string& space_id) const {
+bool PhiShellWindow::MenuHasSpace(const std::string& space_id) const {
   return HasSpace(space_id);
 }
 
-bool PhiWindowController::MenuShowSpace(const std::string& space_id) {
+bool PhiShellWindow::MenuShowSpace(const std::string& space_id) {
   return ShowSpace(space_id);
 }
 
-void PhiWindowController::MenuNewTab() {
+void PhiShellWindow::MenuNewTab() {
   StartNewTab();  // Honors the "New tab behavior" setting.
 }
 
-void PhiWindowController::MenuToggleSidebar() {
+void PhiShellWindow::MenuToggleSidebar() {
   ToggleSidebar();
 }
 
-void PhiWindowController::MenuToggleReader() {
+void PhiShellWindow::MenuToggleReader() {
   ToggleReaderView();
 }
 
-void PhiWindowController::MenuToggleDownloads() {
+void PhiShellWindow::MenuToggleDownloads() {
   ToggleDownloadsPopover();
 }
 
-void PhiWindowController::MenuToggleSearchTabs() {
+void PhiShellWindow::MenuToggleSearchTabs() {
   PhiSearchTabsPanel::Toggle(this);
 }
 
-void PhiWindowController::MenuOpenFeedback() {
+void PhiShellWindow::MenuOpenFeedback() {
   OpenFeedback();
 }
 
-void PhiWindowController::MenuCreateSpace() {
+void PhiShellWindow::MenuCreateSpace() {
   ShowCreateSpaceForm();  // The sidebar form, or at once without one.
 }
 
-void PhiWindowController::MenuEditSpaceTheme() {
+void PhiShellWindow::MenuEditSpaceTheme() {
   // The Mac's .windowTop placement: the menu bar has no trigger point to
   // hang the panel off, so it drops under the caption, centred on the window
   // (the panel centres itself in an anchor wider than it).
@@ -1251,73 +1251,73 @@ void PhiWindowController::MenuEditSpaceTheme() {
 
 // --- PhiBrowserHostShell: what the content host asks of its shell ---------
 
-HWND PhiWindowController::BrowserHostShellWindow() const {
+HWND PhiShellWindow::BrowserHostShellWindow() const {
   return shell_hwnd_;
 }
 
-int PhiWindowController::BrowserHostScaled(int design_units) const {
+int PhiShellWindow::BrowserHostScaled(int design_units) const {
   return Scaled(design_units);
 }
 
-PhiPalette PhiWindowController::BrowserHostPalette() const {
+PhiPalette PhiShellWindow::BrowserHostPalette() const {
   return CurrentPalette();
 }
 
-RECT PhiWindowController::BrowserHostContentRect() {
+RECT PhiShellWindow::BrowserHostContentRect() {
   return ComputeLayout().content;
 }
 
-RECT PhiWindowController::BrowserHostClientRect() {
+RECT PhiShellWindow::BrowserHostClientRect() {
   return ComputeLayout().client;
 }
 
-HFONT PhiWindowController::BrowserHostStatusFont() const {
+HFONT PhiShellWindow::BrowserHostStatusFont() const {
   return small_font_;
 }
 
-phi_framework::PhiFramework* PhiWindowController::BrowserHostFramework()
+phi_framework::PhiFramework* PhiShellWindow::BrowserHostFramework()
     const {
   return framework_;
 }
 
-bool PhiWindowController::BrowserHostIsAgent() const {
+bool PhiShellWindow::BrowserHostIsAgent() const {
   return agent_;
 }
 
-void PhiWindowController::BrowserHostRelayout() {
+void PhiShellWindow::BrowserHostRelayout() {
   LayoutContents();
 }
 
-void PhiWindowController::BrowserHostRefreshTabs() {
+void PhiShellWindow::BrowserHostRefreshTabs() {
   RefreshTabs();
 }
 
-void PhiWindowController::BrowserHostScheduleRefresh() {
+void PhiShellWindow::BrowserHostScheduleRefresh() {
   ScheduleRefresh();
 }
 
-void PhiWindowController::BrowserHostBeginSpaceSwap(
+void PhiShellWindow::BrowserHostBeginSpaceSwap(
     const std::string& space_id) {
   spaces_->BeginSwap(space_id);
 }
 
-bool PhiWindowController::BrowserHostSwapRunning() const {
+bool PhiShellWindow::BrowserHostSwapRunning() const {
   return spaces_->swap_running();
 }
 
-void PhiWindowController::BrowserHostNoteSwapChildren(HWND reveal,
+void PhiShellWindow::BrowserHostNoteSwapChildren(HWND reveal,
                                                       HWND conceal) {
   swap_reveal_ = reveal;
   swap_conceal_ = conceal;
 }
 
-void PhiWindowController::BrowserHostEndSpacePreview() {
+void PhiShellWindow::BrowserHostEndSpacePreview() {
   if (spaces_->preview_awaits_switch()) {
     spaces_->EndPreview();
   }
 }
 
-void PhiWindowController::BrowserHostNoteSpaceWindow(
+void PhiShellWindow::BrowserHostNoteSpaceWindow(
     const std::string& space_id,
     BrowserId browser) {
   if (services_.spaces) {
@@ -1325,26 +1325,26 @@ void PhiWindowController::BrowserHostNoteSpaceWindow(
   }
 }
 
-void PhiWindowController::BrowserHostNoteActiveSpace(
+void PhiShellWindow::BrowserHostNoteActiveSpace(
     const std::string& space_id) {
   if (services_.spaces && !agent_) {
     services_.spaces->NoteSlotActiveSpace(space_id);
   }
 }
 
-void PhiWindowController::BrowserHostAbandonTyping() {
+void PhiShellWindow::BrowserHostAbandonTyping() {
   omnibox_->ClosePopup(/*stop_query=*/true);
 }
 
-void PhiWindowController::BrowserHostRetintChrome() {
+void PhiShellWindow::BrowserHostRetintChrome() {
   omnibox_->Repaint();
 }
 
-void PhiWindowController::BrowserHostFocusAddressField() {
+void PhiShellWindow::BrowserHostFocusAddressField() {
   omnibox_->FocusFieldIfVisible();
 }
 
-bool PhiWindowController::BrowserHostFocusNativePage() {
+bool PhiShellWindow::BrowserHostFocusNativePage() {
   if (!native_pages_->ntp_wants_focus()) {
     return false;
   }
@@ -1352,7 +1352,7 @@ bool PhiWindowController::BrowserHostFocusNativePage() {
   return true;
 }
 
-bool PhiWindowController::BrowserHostDeferSpaceClose(
+bool PhiShellWindow::BrowserHostDeferSpaceClose(
     const std::string& space_id) {
   if (PhiModalDepth() == 0) {
     return false;
@@ -1364,52 +1364,52 @@ bool PhiWindowController::BrowserHostDeferSpaceClose(
 
 // --- The content area, forwarded to the component -------------------------
 
-void PhiWindowController::AttachSpaceBrowser(const std::string& space_id,
+void PhiShellWindow::AttachSpaceBrowser(const std::string& space_id,
                                              BrowserId browser,
                                              HWND browser_hwnd) {
   browsers_->AttachSpaceBrowser(space_id, browser, browser_hwnd);
 }
 
-bool PhiWindowController::ShowSpace(const std::string& space_id) {
+bool PhiShellWindow::ShowSpace(const std::string& space_id) {
   return browsers_->ShowSpace(space_id);
 }
 
-bool PhiWindowController::HasSpace(const std::string& space_id) const {
+bool PhiShellWindow::HasSpace(const std::string& space_id) const {
   return browsers_->spaces().Has(space_id);
 }
 
-void PhiWindowController::CloseSpaceBrowser(const std::string& space_id) {
+void PhiShellWindow::CloseSpaceBrowser(const std::string& space_id) {
   browsers_->CloseSpaceBrowser(space_id);
 }
 
-bool PhiWindowController::ForgetBrowser(BrowserId browser) {
+bool PhiShellWindow::ForgetBrowser(BrowserId browser) {
   return browsers_->ForgetBrowser(browser);
 }
 
-void PhiWindowController::FocusActiveBrowser() {
+void PhiShellWindow::FocusActiveBrowser() {
   browsers_->FocusActiveBrowser();
 }
 
-void PhiWindowController::RaiseCornerCaps() {
+void PhiShellWindow::RaiseCornerCaps() {
   browsers_->RequestRaiseCaps();
 }
 
-void PhiWindowController::OnTargetURLChanged(BrowserId browser_id,
+void PhiShellWindow::OnTargetURLChanged(BrowserId browser_id,
                                              const std::wstring& url) {
   browsers_->OnTargetURLChanged(browser_id, url);
 }
 
-void PhiWindowController::OnPlaceholderModeChanged(BrowserId browser_id,
+void PhiShellWindow::OnPlaceholderModeChanged(BrowserId browser_id,
                                                    bool entered) {
   browsers_->OnPlaceholderModeChanged(browser_id, entered);
 }
 
-void PhiWindowController::OnContentFullscreenChanged(BrowserId browser_id,
+void PhiShellWindow::OnContentFullscreenChanged(BrowserId browser_id,
                                                      bool fullscreen) {
   browsers_->OnContentFullscreenChanged(browser_id, fullscreen);
 }
 
-PhiOmniboxCapsule PhiWindowController::OmniboxCapsule() {
+PhiOmniboxCapsule PhiShellWindow::OmniboxCapsule() {
   const Layout layout = ComputeLayout();
   auto to_pure = [](const RECT& r) {
     return SidebarRect{r.left, r.top, r.right, r.bottom};
@@ -1424,23 +1424,23 @@ PhiOmniboxCapsule PhiWindowController::OmniboxCapsule() {
   return capsule;
 }
 
-bool PhiWindowController::OmniboxBrowserPlaceholding() const {
+bool PhiShellWindow::OmniboxBrowserPlaceholding() const {
   return browsers_->ActiveBrowserPlaceholding();
 }
 
-bool PhiWindowController::OmniboxNewTabFocusesField() const {
+bool PhiShellWindow::OmniboxNewTabFocusesField() const {
   return services_.prefs && services_.prefs->NewTabOpensOmnibox();
 }
 
-HWND PhiWindowController::OmniboxNativePageField() const {
+HWND PhiShellWindow::OmniboxNativePageField() const {
   return native_pages_->ntp_field();
 }
 
-bool PhiWindowController::OmniboxNativePageBox(RECT* out) const {
+bool PhiShellWindow::OmniboxNativePageBox(RECT* out) const {
   return native_pages_->NtpBoxScreenRect(out);
 }
 
-void PhiWindowController::OmniboxNativePageCommitting() {
+void PhiShellWindow::OmniboxNativePageCommitting() {
   // omniBoxDidClear: the native page blanks its controls now, so nothing of
   // the new-tab page lingers over the arriving one; the rebuild that sees
   // the new URL unmounts it.
@@ -1452,57 +1452,57 @@ void PhiWindowController::OmniboxNativePageCommitting() {
 
 // --- PhiNativePagesShell ----------------------------------------------------
 
-HWND PhiWindowController::NativePagesShellWindow() const {
+HWND PhiShellWindow::NativePagesShellWindow() const {
   return shell_hwnd_;
 }
 
-PhiWindowController* PhiWindowController::NativePagesOwner() {
+PhiShellWindow* PhiShellWindow::NativePagesOwner() {
   return this;
 }
 
-bool PhiWindowController::NativePagesIncognito() const {
+bool PhiShellWindow::NativePagesIncognito() const {
   return incognito_;
 }
 
-bool PhiWindowController::NativePagesIsAgent() const {
+bool PhiShellWindow::NativePagesIsAgent() const {
   return agent_;
 }
 
-bool PhiWindowController::NativePagesContentFullscreen() const {
+bool PhiShellWindow::NativePagesContentFullscreen() const {
   return browsers_->content_fullscreen();
 }
 
-bool PhiWindowController::NativePagesPlaceholding() const {
+bool PhiShellWindow::NativePagesPlaceholding() const {
   return browsers_->ActiveBrowserPlaceholding();
 }
 
-bool PhiWindowController::NativePagesSwapPending() const {
+bool PhiShellWindow::NativePagesSwapPending() const {
   return swap_reveal_ != nullptr;
 }
 
-const std::string& PhiWindowController::NativePagesActiveUrl() const {
+const std::string& PhiShellWindow::NativePagesActiveUrl() const {
   return active_tab_url();
 }
 
-void PhiWindowController::NativePagesRaiseCaps() {
+void PhiShellWindow::NativePagesRaiseCaps() {
   browsers_->RequestRaiseCaps();
 }
 
-void PhiWindowController::NativePagesFocusContent() {
+void PhiShellWindow::NativePagesFocusContent() {
   FocusActiveBrowser();
 }
 
-HWND PhiWindowController::NativePagesContentWindow() const {
+HWND PhiShellWindow::NativePagesContentWindow() const {
   return browsers_->content_hwnd();
 }
 
-bool PhiWindowController::NativePagesCommitPending() const {
+bool PhiShellWindow::NativePagesCommitPending() const {
   return active_tab_id() == ntp_commit_tab_id_ && omnibox_->nav_loading();
 }
 
 // --- PhiSidebarShell: what the sidebar asks of its shell --------------------
 
-PhiSidebarRects PhiWindowController::BandRects(const Layout& layout) const {
+PhiSidebarRects PhiShellWindow::BandRects(const Layout& layout) const {
   PhiSidebarRects rects;
   rects.sidebar = layout.sidebar;
   rects.title_bar = layout.title_bar;
@@ -1520,103 +1520,103 @@ PhiSidebarRects PhiWindowController::BandRects(const Layout& layout) const {
   return rects;
 }
 
-HWND PhiWindowController::SidebarShellWindow() const {
+HWND PhiShellWindow::SidebarShellWindow() const {
   return shell_hwnd_;
 }
 
-PhiWindowController* PhiWindowController::SidebarOwner() {
+PhiShellWindow* PhiShellWindow::SidebarOwner() {
   return this;
 }
 
-int PhiWindowController::SidebarScaled(int design_units) const {
+int PhiShellWindow::SidebarScaled(int design_units) const {
   return Scaled(design_units);
 }
 
-UINT PhiWindowController::SidebarDpi() const {
+UINT PhiShellWindow::SidebarDpi() const {
   return dpi_;
 }
 
-int PhiWindowController::SidebarWidthDip() const {
+int PhiShellWindow::SidebarWidthDip() const {
   return sidebar_dip_;
 }
 
-PhiSidebarRects PhiWindowController::SidebarRects() {
+PhiSidebarRects PhiShellWindow::SidebarRects() {
   return BandRects(ComputeLayout());
 }
 
-void PhiWindowController::SidebarSetRowCounts(int pinned_rows,
+void PhiShellWindow::SidebarSetRowCounts(int pinned_rows,
                                               int bookmark_rows) {
   pinned_row_count_ = pinned_rows;
   bookmark_row_count_ = bookmark_rows;
 }
 
-void PhiWindowController::SidebarRefreshLayoutInputs() {
+void PhiShellWindow::SidebarRefreshLayoutInputs() {
   RefreshLayoutInputs();
 }
 
-PhiPalette PhiWindowController::SidebarPalette() const {
+PhiPalette PhiShellWindow::SidebarPalette() const {
   return CurrentPalette();
 }
 
-BrowserId PhiWindowController::SidebarActiveBrowser() const {
+BrowserId PhiShellWindow::SidebarActiveBrowser() const {
   return active_browser_id();
 }
 
-bool PhiWindowController::SidebarPullSnapshot(
+bool PhiShellWindow::SidebarPullSnapshot(
     BrowserId browser,
     phi_framework::WindowSnapshot* out) const {
   return PullSnapshot(browser, out);
 }
 
-bool PhiWindowController::SidebarSplitIsStacked(TabId tab_id) const {
+bool PhiShellWindow::SidebarSplitIsStacked(TabId tab_id) const {
   return SplitIsStacked(tab_id);
 }
 
-HFONT PhiWindowController::SidebarGlyphFont() const {
+HFONT PhiShellWindow::SidebarGlyphFont() const {
   return caption_font_;
 }
 
-HFONT PhiWindowController::SidebarSemiboldFont() const {
+HFONT PhiShellWindow::SidebarSemiboldFont() const {
   return ui_semibold_font_;
 }
 
-PhiChromeHover PhiWindowController::SidebarHoverKind() const {
+PhiChromeHover PhiShellWindow::SidebarHoverKind() const {
   return hover_kind_;
 }
 
-int PhiWindowController::SidebarHoverIndex() const {
+int PhiShellWindow::SidebarHoverIndex() const {
   return hover_index_;
 }
 
-PhiSpacesStrip* PhiWindowController::SidebarSpacesStrip() {
+PhiSpacesStrip* PhiShellWindow::SidebarSpacesStrip() {
   return spaces_.get();
 }
 
-void PhiWindowController::SidebarScheduleRefresh() {
+void PhiShellWindow::SidebarScheduleRefresh() {
   ScheduleRefresh();
 }
 
-void PhiWindowController::SidebarSyncNativePages() {
+void PhiShellWindow::SidebarSyncNativePages() {
   native_pages_->SyncIfRouteChanged();
 }
 
-PhiDragBitmap PhiWindowController::SidebarCaptureChrome(
+PhiDragBitmap PhiShellWindow::SidebarCaptureChrome(
     const RECT& client_rect) {
   return CaptureChromeRect(client_rect);
 }
 
-HWND PhiWindowController::SidebarContentWindow() const {
+HWND PhiShellWindow::SidebarContentWindow() const {
   return browsers_->content_hwnd();
 }
 
-void PhiWindowController::SidebarStartNewTab() {
+void PhiShellWindow::SidebarStartNewTab() {
   StartNewTab();
 }
 
 // The rows, as assistive technology reads them. The list is THE data source
 // the UIA provider (phi_uia.h) walks — one fragment per hit, named, typed
 // and invokable through the same messages a mouse click sends.
-void PhiWindowController::SidebarPublishHits(std::vector<PhiHit> hits) {
+void PhiShellWindow::SidebarPublishHits(std::vector<PhiHit> hits) {
   hits_ = std::move(hits);
   ++hits_version_;
   // Cheap unless a provider was actually handed out: it tells a listening
@@ -1625,23 +1625,23 @@ void PhiWindowController::SidebarPublishHits(std::vector<PhiHit> hits) {
   PhiUiaHitsChanged(this);
 }
 
-HWND PhiWindowController::hwnd() const {
+HWND PhiShellWindow::hwnd() const {
   return shell_hwnd_;
 }
 
-const std::vector<PhiHit>& PhiWindowController::hits() const {
+const std::vector<PhiHit>& PhiShellWindow::hits() const {
   return hits_;
 }
 
-uint32_t PhiWindowController::hits_version() const {
+uint32_t PhiShellWindow::hits_version() const {
   return hits_version_;
 }
 
-int PhiWindowController::HitTest(POINT client_pt) const {
+int PhiShellWindow::HitTest(POINT client_pt) const {
   return PhiHitAt(hits_, client_pt.x, client_pt.y);
 }
 
-bool PhiWindowController::InvokeHit(int index) {
+bool PhiShellWindow::InvokeHit(int index) {
   // The mouse path, not a copy of it — the same clicks the sidebar handles.
   int x = 0;
   int y = 0;
@@ -1661,7 +1661,7 @@ bool PhiWindowController::InvokeHit(int index) {
 
 // --- PhiSpacesStripShell ----------------------------------------------------
 
-PhiSpacesStripRects PhiWindowController::StripRects(
+PhiSpacesStripRects PhiShellWindow::StripRects(
     const Layout& layout) const {
   PhiSpacesStripRects rects;
   rects.client = layout.client;
@@ -1678,68 +1678,68 @@ PhiSpacesStripRects PhiWindowController::StripRects(
   return rects;
 }
 
-HWND PhiWindowController::SpacesShellWindow() const {
+HWND PhiShellWindow::SpacesShellWindow() const {
   return shell_hwnd_;
 }
 
-PhiWindowController* PhiWindowController::SpacesOwner() {
+PhiShellWindow* PhiShellWindow::SpacesOwner() {
   return this;
 }
 
-SlotId PhiWindowController::SpacesSlot() const {
+SlotId PhiShellWindow::SpacesSlot() const {
   return slot_;
 }
 
-bool PhiWindowController::SpacesIncognito() const {
+bool PhiShellWindow::SpacesIncognito() const {
   return incognito_;
 }
 
-bool PhiWindowController::SpacesIsAgent() const {
+bool PhiShellWindow::SpacesIsAgent() const {
   return agent_;
 }
 
-int PhiWindowController::SpacesScaled(int design_units) const {
+int PhiShellWindow::SpacesScaled(int design_units) const {
   return Scaled(design_units);
 }
 
-PhiSpacesStripRects PhiWindowController::SpacesRects() {
+PhiSpacesStripRects PhiShellWindow::SpacesRects() {
   return StripRects(ComputeLayout());
 }
 
-const std::string& PhiWindowController::SpacesActiveSpace() const {
+const std::string& PhiShellWindow::SpacesActiveSpace() const {
   return active_space();
 }
 
-bool PhiWindowController::SpacesHasSpace(const std::string& space_id) const {
+bool PhiShellWindow::SpacesHasSpace(const std::string& space_id) const {
   return HasSpace(space_id);
 }
 
-PhiPalette PhiWindowController::SpacesPalette() const {
+PhiPalette PhiShellWindow::SpacesPalette() const {
   return CurrentPalette();
 }
 
-bool PhiWindowController::SpacesDragActive() const {
+bool PhiShellWindow::SpacesDragActive() const {
   return sidebar_ && sidebar_->drag_active();
 }
 
-int PhiWindowController::SpacesHoveredChip() const {
+int PhiShellWindow::SpacesHoveredChip() const {
   return hover_kind_ == HoverKind::kChip ? hover_index_ : -1;
 }
 
-bool PhiWindowController::SpacesAddSlotHovered() const {
+bool PhiShellWindow::SpacesAddSlotHovered() const {
   return hover_kind_ == HoverKind::kAddSpace;
 }
 
-RECT PhiWindowController::SpacesAddSlotDirtyRect() {
+RECT PhiShellWindow::SpacesAddSlotDirtyRect() {
   return HoverRect(HoverKind::kAddSpace, 0);
 }
 
-void PhiWindowController::SpacesForgetHover() {
+void PhiShellWindow::SpacesForgetHover() {
   hover_kind_ = HoverKind::kNone;
   hover_index_ = -1;
 }
 
-void PhiWindowController::SpacesRehoverAtCursor() {
+void PhiShellWindow::SpacesRehoverAtCursor() {
   POINT cursor = {};
   if (shell_hwnd_ && ::GetCursorPos(&cursor)) {
     ::ScreenToClient(shell_hwnd_, &cursor);
@@ -1747,68 +1747,68 @@ void PhiWindowController::SpacesRehoverAtCursor() {
   }
 }
 
-void PhiWindowController::SpacesScheduleRefresh() {
+void PhiShellWindow::SpacesScheduleRefresh() {
   ScheduleRefresh();
 }
 
-void PhiWindowController::SpacesApplyPalette() {
+void PhiShellWindow::SpacesApplyPalette() {
   ApplyPalette();
 }
 
-void PhiWindowController::SpacesRefreshTinted() {
+void PhiShellWindow::SpacesRefreshTinted() {
   native_pages_->Refresh();
   browsers_->RefreshCornerCaps();
 }
 
-void PhiWindowController::SpacesRepaintOmnibox() {
+void PhiShellWindow::SpacesRepaintOmnibox() {
   omnibox_->Repaint();
 }
 
-void PhiWindowController::SpacesFocusContent() {
+void PhiShellWindow::SpacesFocusContent() {
   FocusActiveBrowser();
 }
 
-void PhiWindowController::SpacesRevealSwappedContent() {
+void PhiShellWindow::SpacesRevealSwappedContent() {
   RevealSwappedContent();
 }
 
-void PhiWindowController::SpacesSwapBandModel() {
+void PhiShellWindow::SpacesSwapBandModel() {
   sidebar_->SwapBandModel();
 }
 
-void PhiWindowController::SpacesDropLeavingBand() {
+void PhiShellWindow::SpacesDropLeavingBand() {
   sidebar_->DropLeavingBand();
 }
 
-HFONT PhiWindowController::SpacesUiFont() const {
+HFONT PhiShellWindow::SpacesUiFont() const {
   return ui_font_;
 }
 
-HFONT PhiWindowController::SpacesSmallFont() const {
+HFONT PhiShellWindow::SpacesSmallFont() const {
   return small_font_;
 }
 
-HFONT PhiWindowController::SpacesEmojiFont() const {
+HFONT PhiShellWindow::SpacesEmojiFont() const {
   return emoji_font_;
 }
 
-HFONT PhiWindowController::SpacesChipIconFont() const {
+HFONT PhiShellWindow::SpacesChipIconFont() const {
   return chip_icon_font_;
 }
 
-HFONT PhiWindowController::SpacesPipIconFont() const {
+HFONT PhiShellWindow::SpacesPipIconFont() const {
   return pip_icon_font_;
 }
 
-HFONT PhiWindowController::SpacesPipEmojiFont() const {
+HFONT PhiShellWindow::SpacesPipEmojiFont() const {
   return pip_emoji_font_;
 }
 
-HFONT PhiWindowController::SpacesPipTextFont() const {
+HFONT PhiShellWindow::SpacesPipTextFont() const {
   return pip_text_font_;
 }
 
-bool PhiWindowController::SpacesSidebarCanHostForm(const RECT& form) const {
+bool PhiShellWindow::SpacesSidebarCanHostForm(const RECT& form) const {
   // CreateSpacePanel.requestCreation: the vertical layouts host the form
   // inline in the docked sidebar. The horizontal layout, a collapsed
   // sidebar (the floating panel does not host it here) and windows without
@@ -1819,7 +1819,7 @@ bool PhiWindowController::SpacesSidebarCanHostForm(const RECT& form) const {
          form.bottom - form.top > Scaled(200);
 }
 
-HWND PhiWindowController::SpacesFloatingPanel(int* offset_y) const {
+HWND PhiShellWindow::SpacesFloatingPanel(int* offset_y) const {
   if (floating_layout_ && floating_sidebar_ && ::IsWindow(floating_sidebar_)) {
     if (offset_y) {
       *offset_y = floating_offset_y_;
@@ -1829,31 +1829,31 @@ HWND PhiWindowController::SpacesFloatingPanel(int* offset_y) const {
   return nullptr;
 }
 
-void PhiWindowController::AttachOmniboxField(HWND edit) {
+void PhiShellWindow::AttachOmniboxField(HWND edit) {
   omnibox_->AttachField(edit);
 }
 
-void PhiWindowController::OnOmniboxFieldChanged(HWND field) {
+void PhiShellWindow::OnOmniboxFieldChanged(HWND field) {
   omnibox_->OnFieldChanged(field);
 }
 
-void PhiWindowController::OnOmniboxResults(BrowserId browser_id,
+void PhiShellWindow::OnOmniboxResults(BrowserId browser_id,
                                            const std::string& json) {
   omnibox_->OnResults(browser_id, json);
 }
 
-void PhiWindowController::StartNewTab() {
+void PhiShellWindow::StartNewTab() {
   omnibox_->StartNewTab();
 }
 
-void PhiWindowController::RebuildNavState() {
+void PhiShellWindow::RebuildNavState() {
   const BrowserId browser = active_browser_id();
   const phi_framework::WindowSnapshot* snapshot =
       model_ && browser.valid() ? model_->Get(browser) : nullptr;
   omnibox_->RebuildNavState(snapshot ? &snapshot->nav : nullptr);
 }
 
-void PhiWindowController::OpenFeedback() {
+void PhiShellWindow::OpenFeedback() {
   if (!services_.window) {
     return;
   }
@@ -1878,11 +1878,11 @@ void PhiWindowController::OpenFeedback() {
   services_.window->RequestFeedback(slot_.value, context);
 }
 
-RECT PhiWindowController::ContentRect() {
+RECT PhiShellWindow::ContentRect() {
   return ComputeLayout().content;
 }
 
-void PhiWindowController::ToggleSidebar() {
+void PhiShellWindow::ToggleSidebar() {
   if (ComputeLayout().horizontal_tabs) {
     return;  // Comfortable has no sidebar to collapse.
   }
@@ -1894,7 +1894,7 @@ void PhiWindowController::ToggleSidebar() {
   }
 }
 
-void PhiWindowController::ToggleDownloadsPopover() {
+void PhiShellWindow::ToggleDownloadsPopover() {
   // The menu / Ctrl+J entry to the same popover the sidebar button toggles.
   // The popover's own opening grace period absorbs the menu teardown's
   // activation churn, so this can run inline.
@@ -1910,7 +1910,7 @@ void PhiWindowController::ToggleDownloadsPopover() {
                               framework_, browser);
 }
 
-void PhiWindowController::LayoutContents() {
+void PhiShellWindow::LayoutContents() {
   if (destroying_) {
     return;  // The shell's own DestroyWindow sends WM_SIZE on the way down.
   }
@@ -1960,7 +1960,7 @@ void PhiWindowController::LayoutContents() {
   browsers_->PositionCornerCaps(content);
 }
 
-bool PhiWindowController::InSidebarResizeBand(POINT client_pt) {
+bool PhiShellWindow::InSidebarResizeBand(POINT client_pt) {
   if (!services_.prefs ||
       services_.prefs->LayoutMode() == PhiLayoutMode::kComfortable) {
     return false;
@@ -1976,7 +1976,7 @@ bool PhiWindowController::InSidebarResizeBand(POINT client_pt) {
 
 
 
-PhiDragBitmap PhiWindowController::CaptureChromeRect(const RECT& client_rect) {
+PhiDragBitmap PhiShellWindow::CaptureChromeRect(const RECT& client_rect) {
   PhiDragBitmap out;
   if (!shell_hwnd_) {
     return out;
@@ -2047,7 +2047,7 @@ PhiDragBitmap PhiWindowController::CaptureChromeRect(const RECT& client_rect) {
 
 
 
-std::array<RECT, 14> PhiWindowController::NavHoverTable(
+std::array<RECT, 14> PhiShellWindow::NavHoverTable(
     const Layout& layout) const {
   // The nav buttons' hover washes (back/forward/reload/search).
   // The first six MUST stay in the paint table's order — PaintChrome keys
@@ -2065,7 +2065,7 @@ std::array<RECT, 14> PhiWindowController::NavHoverTable(
 // hover change invalidates the old and the new element, not the whole
 // shell (lane 3 §7 item 3). The sidebar answers for its own rows; the
 // bands the shell still paints answer here.
-RECT PhiWindowController::HoverRect(HoverKind kind, int index) {
+RECT PhiShellWindow::HoverRect(HoverKind kind, int index) {
   RECT r = sidebar_->RowHoverRect(kind, index);
   switch (kind) {
     case HoverKind::kNone:
@@ -2103,7 +2103,7 @@ RECT PhiWindowController::HoverRect(HoverKind kind, int index) {
   return r;
 }
 
-void PhiWindowController::SetHover(HoverKind kind, int index) {
+void PhiShellWindow::SetHover(HoverKind kind, int index) {
   if (kind == hover_kind_ && index == hover_index_) {
     return;
   }
@@ -2125,7 +2125,7 @@ void PhiWindowController::SetHover(HoverKind kind, int index) {
   }
 }
 
-void PhiWindowController::OnChromeMouseMove(POINT client_pt) {
+void PhiShellWindow::OnChromeMouseMove(POINT client_pt) {
   HoverKind kind = HoverKind::kNone;
   int index = -1;
   {
@@ -2216,7 +2216,7 @@ void PhiWindowController::OnChromeMouseMove(POINT client_pt) {
   SetHover(kind, index);
 }
 
-void PhiWindowController::ClearHover() {
+void PhiShellWindow::ClearHover() {
   spaces_->DismissHoverCard(std::string());
   spaces_->SetRowHovered(false);
   if (tab_preview_) {
@@ -2225,34 +2225,34 @@ void PhiWindowController::ClearHover() {
   SetHover(HoverKind::kNone, -1);
 }
 
-void PhiWindowController::ShowCreateSpaceForm() {
+void PhiShellWindow::ShowCreateSpaceForm() {
   spaces_->ShowCreateForm();
 }
 
-void PhiWindowController::CommitCreateSpaceForm(const PhiNewSpaceSpec& spec) {
+void PhiShellWindow::CommitCreateSpaceForm(const PhiNewSpaceSpec& spec) {
   spaces_->CommitCreateForm(spec);
 }
 
-void PhiWindowController::CancelCreateSpaceForm() {
+void PhiShellWindow::CancelCreateSpaceForm() {
   spaces_->CancelCreateForm();
 }
 
-void PhiWindowController::PreviewCreateSpaceTheme(const std::string& theme_id,
+void PhiShellWindow::PreviewCreateSpaceTheme(const std::string& theme_id,
                                                   int saturation) {
   spaces_->PreviewTheme(theme_id, saturation);
 }
 
-void PhiWindowController::SetCreateSpaceIcon(const std::string& storage_value) {
+void PhiShellWindow::SetCreateSpaceIcon(const std::string& storage_value) {
   spaces_->SetFormIcon(storage_value);
 }
 
-void PhiWindowController::OnSpaceFormProfileCreated(
+void PhiShellWindow::OnSpaceFormProfileCreated(
     const std::string& profile_id) {
   spaces_->OnFormProfileCreated(profile_id);
 }
 
 // True when `tab_id`'s split stacks its panes.
-bool PhiWindowController::SplitIsStacked(TabId tab_id) const {
+bool PhiShellWindow::SplitIsStacked(TabId tab_id) const {
   const BrowserId browser = active_browser_id();
   const SplitSnapshot* split = model_ && browser.valid() && tab_id.valid()
                                    ? model_->SplitOfTab(browser, tab_id)
@@ -2260,7 +2260,7 @@ bool PhiWindowController::SplitIsStacked(TabId tab_id) const {
   return split && split->layout == phi_framework::SplitLayout::kHorizontal;
 }
 
-bool PhiWindowController::PullSnapshot(BrowserId browser,
+bool PhiShellWindow::PullSnapshot(BrowserId browser,
                                        WindowSnapshot* out) const {
   return framework_ && browser.valid() && framework_->Snapshot(browser, out);
 }
@@ -2269,11 +2269,11 @@ bool PhiWindowController::PullSnapshot(BrowserId browser,
 // which every tab surface installs on its cells). Eligibility is the Mac's:
 // the setting on, no drag in flight, and a LIVE tab behind the row. A split
 // row previews BOTH its panes in one card, the Mac's SplitTabPreview.
-void PhiWindowController::ResetNativeNtp() {
+void PhiShellWindow::ResetNativeNtp() {
   native_pages_->ResetNtp();
 }
 
-void PhiWindowController::NoteTabDistillable(TabId tab_id,
+void PhiShellWindow::NoteTabDistillable(TabId tab_id,
                                              bool distillable) {
   const bool changed = distillable ? distillable_tabs_.insert(tab_id).second
                                    : distillable_tabs_.erase(tab_id) > 0;
@@ -2288,7 +2288,7 @@ void PhiWindowController::NoteTabDistillable(TabId tab_id,
   }
 }
 
-bool PhiWindowController::ActiveTabDistillable() const {
+bool PhiShellWindow::ActiveTabDistillable() const {
   for (const TabRow& row : sidebar_->tabs()) {
     if (row.active) {
       return distillable_tabs_.count(row.id) > 0;
@@ -2297,7 +2297,7 @@ bool PhiWindowController::ActiveTabDistillable() const {
   return false;
 }
 
-bool PhiWindowController::ActiveTabReaderOfferable() const {
+bool PhiShellWindow::ActiveTabReaderOfferable() const {
   if (!active_tab_id().valid() || !CanOfferReaderForUrl(active_tab_url())) {
     return false;
   }
@@ -2311,18 +2311,18 @@ bool PhiWindowController::ActiveTabReaderOfferable() const {
                                             active_tab_url()));
 }
 
-bool PhiWindowController::ActiveTabShowsReader() const {
+bool PhiShellWindow::ActiveTabShowsReader() const {
   return services_.sidebar && active_tab_id().valid() &&
          services_.sidebar->IsReaderActive(active_tab_id().value,
                                            active_tab_url());
 }
 
-bool PhiWindowController::ActiveTabCanUseReader() const {
+bool PhiShellWindow::ActiveTabCanUseReader() const {
   return active_tab_id().valid() && CanOfferReaderForUrl(active_tab_url());
 }
 
 // static
-bool PhiWindowController::CanOfferReaderForUrl(const std::string& url) {
+bool PhiShellWindow::CanOfferReaderForUrl(const std::string& url) {
   // The Mac's ReaderExtractionService.canOfferReader: a real document, not
   // one of Phi's own pages, and never a PDF — the reader's extraction ladder
   // is a DOM one and a PDF has no DOM to walk (the migration plan lists PDFs
@@ -2352,7 +2352,7 @@ bool PhiWindowController::CanOfferReaderForUrl(const std::string& url) {
   return ext != "pdf";
 }
 
-RECT PhiWindowController::card_rect() {
+RECT PhiShellWindow::card_rect() {
   const Layout layout = ComputeLayout();
   RECT card = layout.content;
   // The top bar is the card's first band, so the card starts at ITS top —
@@ -2365,7 +2365,7 @@ RECT PhiWindowController::card_rect() {
   return card;
 }
 
-void PhiWindowController::CardRoundedCorners(bool* top, bool* bottom) const {
+void PhiShellWindow::CardRoundedCorners(bool* top, bool* bottom) const {
   const bool any = !browsers_->content_fullscreen();
   if (bottom) {
     *bottom = any;
@@ -2381,7 +2381,7 @@ void PhiWindowController::CardRoundedCorners(bool* top, bool* bottom) const {
 }
 
 
-void PhiWindowController::ToggleReaderView() {
+void PhiShellWindow::ToggleReaderView() {
   if (!services_.sidebar || !active_tab_id().valid()) {
     return;
   }
@@ -2389,7 +2389,7 @@ void PhiWindowController::ToggleReaderView() {
                                              active_tab_url());
 }
 
-bool PhiWindowController::LeaveReaderViewForNavigation() {
+bool PhiShellWindow::LeaveReaderViewForNavigation() {
   // Every surface attached to the active tab — the reader covering it, a
   // peek floating over it — closes before the page underneath changes.
   if (!services_.sidebar || !active_tab_id().valid()) {
@@ -2420,7 +2420,7 @@ bool PhiWindowController::LeaveReaderViewForNavigation() {
   return true;
 }
 
-void PhiWindowController::UpdateTabPreview() {
+void PhiShellWindow::UpdateTabPreview() {
   if (!services_.prefs || !services_.prefs->ShowTabPreviews() ||
       sidebar_->drag_active()) {
     if (tab_preview_) {
@@ -2536,7 +2536,7 @@ void PhiWindowController::UpdateTabPreview() {
   tab_preview_->PointerEntered(target);
 }
 
-void PhiWindowController::SetAgentVisible(bool visible) {
+void PhiShellWindow::SetAgentVisible(bool visible) {
   if (!agent_ || !shell_hwnd_ || visible == agent_visible_) {
     return;
   }
@@ -2565,13 +2565,13 @@ void PhiWindowController::SetAgentVisible(bool visible) {
 }
 
 
-COLORREF PhiWindowController::BackgroundFill() const {
+COLORREF PhiShellWindow::BackgroundFill() const {
   return services_.spaces
              ? services_.spaces->PaletteForSlot(slot_.value).window_bg
              : RGB(0xFF, 0xFF, 0xFF);
 }
 
-void PhiWindowController::RefreshTabs() {
+void PhiShellWindow::RefreshTabs() {
   // A structural view change (a Space switch, a layout mode, the DPI): the
   // rows must exist in the new geometry before the next frame, so the
   // rebuild runs here and the whole shell repaints. Never for a framework
@@ -2583,7 +2583,7 @@ void PhiWindowController::RefreshTabs() {
   }
 }
 
-void PhiWindowController::ScheduleRefresh() {
+void PhiShellWindow::ScheduleRefresh() {
   // Coalesced: one posted rebuild per burst of changes. The rebuild turn
   // invalidates only the bands whose rows changed; nothing is invalidated
   // here, because nothing has changed on screen yet.
@@ -2594,7 +2594,7 @@ void PhiWindowController::ScheduleRefresh() {
   }
 }
 
-void PhiWindowController::FlushPendingRebuild() {
+void PhiShellWindow::FlushPendingRebuild() {
   if (!rows_dirty_) {
     return;
   }
@@ -2604,7 +2604,7 @@ void PhiWindowController::FlushPendingRebuild() {
   // A posted kMsgPhiRebuildRows still in the queue finds the rows clean.
 }
 
-PhiWindowController::BandSignature PhiWindowController::CurrentBandSignature()
+PhiShellWindow::BandSignature PhiShellWindow::CurrentBandSignature()
     const {
   // Cheap but complete: everything a band paints from its rows — key,
   // place, title, state, and a fold of the favicon bytes so an icon that
@@ -2675,7 +2675,7 @@ PhiWindowController::BandSignature PhiWindowController::CurrentBandSignature()
   return out;
 }
 
-void PhiWindowController::InvalidateChangedBands(
+void PhiShellWindow::InvalidateChangedBands(
     const BandSignature& before) {
   if (!shell_hwnd_) {
     return;
@@ -2729,7 +2729,7 @@ void PhiWindowController::InvalidateChangedBands(
   }
 }
 
-PhiPalette PhiWindowController::CurrentPalette() const {
+PhiPalette PhiShellWindow::CurrentPalette() const {
   static const PhiPalette kFallback =
       PhiResolvePalette(PhiThemeById("pure"), PhiAppearance::kLight);
   if (incognito_) {
@@ -2746,12 +2746,12 @@ PhiPalette PhiWindowController::CurrentPalette() const {
                        : kFallback);
 }
 
-void PhiWindowController::ComposeFrame(HDC mem) {
+void PhiShellWindow::ComposeFrame(HDC mem) {
   PaintChrome(mem, ComputeLayout(), /*include_child_controls=*/false);
   sidebar_->DrawDragIndicator(mem);
 }
 
-void PhiWindowController::RevealSwappedContent() {
+void PhiShellWindow::RevealSwappedContent() {
   if (swap_reveal_ && ::IsWindow(swap_reveal_)) {
     const Layout layout = ComputeLayout();
     ::SetWindowPos(swap_reveal_, nullptr, layout.content.left,
@@ -2774,7 +2774,7 @@ void PhiWindowController::RevealSwappedContent() {
   }
 }
 
-void PhiWindowController::RequestClose() {
+void PhiShellWindow::RequestClose() {
   // A slot holds ONE BROWSER PER SPACE VISITED, not one per window: closing
   // only the slot's original browser (the one its window id names) leaves the
   // other Spaces' browsers alive, the slot survives ForgetBrowser, and the
@@ -2808,13 +2808,13 @@ void PhiWindowController::RequestClose() {
   }
 }
 
-void PhiWindowController::PostDeferredClose() {
+void PhiShellWindow::PostDeferredClose() {
   if (shell_hwnd_ && ::IsWindow(shell_hwnd_)) {
     ::PostMessageW(shell_hwnd_, kMsgPhiDeferredClose, 0, 0);
   }
 }
 
-void PhiWindowController::RunDeferredClose() {
+void PhiShellWindow::RunDeferredClose() {
   if (PhiModalDepth() > 0) {
     // Still inside the loop (a posted message is dispatched by it, and so
     // is this timer): try again once it has had a chance to unwind.
@@ -2839,7 +2839,7 @@ void PhiWindowController::RunDeferredClose() {
   }
 }
 
-bool PhiWindowController::GetBounds(int* x, int* y, int* w, int* h) const {
+bool PhiShellWindow::GetBounds(int* x, int* y, int* w, int* h) const {
   if (!shell_hwnd_ || !::IsWindow(shell_hwnd_)) {
     return false;
   }
@@ -2854,7 +2854,7 @@ bool PhiWindowController::GetBounds(int* x, int* y, int* w, int* h) const {
   return true;
 }
 
-bool PhiWindowController::SetBounds(int x, int y, int w, int h) {
+bool PhiShellWindow::SetBounds(int x, int y, int w, int h) {
   if (!shell_hwnd_ || !::IsWindow(shell_hwnd_)) {
     return false;
   }
@@ -2862,7 +2862,7 @@ bool PhiWindowController::SetBounds(int x, int y, int w, int h) {
                         SWP_NOZORDER | SWP_NOACTIVATE) != 0;
 }
 
-void PhiWindowController::RefreshFieldExtensions() {
+void PhiShellWindow::RefreshFieldExtensions() {
   std::vector<FieldExtension> next;
   const BrowserId browser = active_browser_id();
   if (framework_ && browser.valid()) {
@@ -2917,7 +2917,7 @@ void PhiWindowController::RefreshFieldExtensions() {
   }
 }
 
-RECT PhiWindowController::FieldExtRect(const Layout& layout, size_t i) const {
+RECT PhiShellWindow::FieldExtRect(const Layout& layout, size_t i) const {
   if (layout.field_ext_strip.right <= layout.field_ext_strip.left) {
     return RECT{};
   }
@@ -2928,14 +2928,14 @@ RECT PhiWindowController::FieldExtRect(const Layout& layout, size_t i) const {
           layout.field_ext_strip.bottom};
 }
 
-void PhiWindowController::RebuildChips() {
+void PhiShellWindow::RebuildChips() {
   spaces_->Rebuild();
 }
 
 // The rebuild turn (docs/architecture-review.md §3.1 principle 3): the
 // chrome's own caches first, then the sidebar's one pass over the model.
 // Nothing here paints, and nothing else writes a row.
-void PhiWindowController::RebuildTabs() {
+void PhiShellWindow::RebuildTabs() {
   // The floating panel shows the EXPANDED sidebar of a collapsed shell.
   // While it is up the rows are built in that geometry — the docked,
   // collapsed shell shows no rows of its own — so the panel paints them as
@@ -2955,32 +2955,32 @@ void PhiWindowController::RebuildTabs() {
 // the search palette, the agent dialect) already use; the rows themselves
 // live in the component.
 
-TabId PhiWindowController::active_tab_id() const {
+TabId PhiShellWindow::active_tab_id() const {
   return sidebar_->active_tab_id();
 }
 
-const std::string& PhiWindowController::active_tab_url() const {
+const std::string& PhiShellWindow::active_tab_url() const {
   return sidebar_->active_tab_url();
 }
 
-bool PhiWindowController::ShowsTab(TabId tab_id) const {
+bool PhiShellWindow::ShowsTab(TabId tab_id) const {
   return sidebar_->ShowsTab(tab_id);
 }
 
-const std::vector<TabId>& PhiWindowController::TabMruOrder() const {
+const std::vector<TabId>& PhiShellWindow::TabMruOrder() const {
   return sidebar_->mru();
 }
 
-void PhiWindowController::OpenOrFocusPinned(const std::string& guid,
+void PhiShellWindow::OpenOrFocusPinned(const std::string& guid,
                                             const std::string& url) {
   sidebar_->OpenOrFocusPinned(guid, url);
 }
 
-base::ListValue PhiWindowController::LayoutRowsJson() const {
+base::ListValue PhiShellWindow::LayoutRowsJson() const {
   return sidebar_->LayoutRowsJson();
 }
 
-void PhiWindowController::OnChromeMiddleClick(int x, int y) {
+void PhiShellWindow::OnChromeMiddleClick(int x, int y) {
   sidebar_->OnMiddleClick(POINT{x, y});
 }
 
@@ -2989,7 +2989,7 @@ void PhiWindowController::OnChromeMiddleClick(int x, int y) {
 
 
 
-void PhiWindowController::OnChromeClick(int x, int y) {
+void PhiShellWindow::OnChromeClick(int x, int y) {
   // Any press on the chrome is an interaction: the hover card goes down and
   // stays down until the pointer leaves the row it was pressed on.
   if (tab_preview_) {
@@ -3244,7 +3244,7 @@ void CopyTextToClipboard(HWND owner, const std::wstring& text) {
 // menu cannot leave a dangling row behind — by construction, not by
 // remembering to copy fields out first.
 
-PhiPopupMenuRequest PhiWindowController::PopupAt(POINT client_pt,
+PhiPopupMenuRequest PhiShellWindow::PopupAt(POINT client_pt,
                                                  UINT align) const {
   POINT screen = client_pt;
   ::ClientToScreen(shell_hwnd_, &screen);
@@ -3256,7 +3256,7 @@ PhiPopupMenuRequest PhiWindowController::PopupAt(POINT client_pt,
   return request;
 }
 
-std::vector<PhiMenuChoice> PhiWindowController::SpaceMenuChoices() const {
+std::vector<PhiMenuChoice> PhiShellWindow::SpaceMenuChoices() const {
   // Every Space but the one this slot shows — the Mac's
   // appendSpaceTransferMenuItems. Ids, never rows: the list may be rebuilt
   // while the menu is up.
@@ -3277,7 +3277,7 @@ std::vector<PhiMenuChoice> PhiWindowController::SpaceMenuChoices() const {
   return choices;
 }
 
-std::vector<PhiMenuChoice> PhiWindowController::BookmarkFolderChoices() const {
+std::vector<PhiMenuChoice> PhiShellWindow::BookmarkFolderChoices() const {
   // This Space's bookmark folders in outline order, nesting indented.
   std::vector<PhiMenuChoice> choices;
   if (!services_.sidebar) {
@@ -3303,7 +3303,7 @@ std::vector<PhiMenuChoice> PhiWindowController::BookmarkFolderChoices() const {
   return choices;
 }
 
-std::vector<PhiMenuChoice> PhiWindowController::GroupMenuChoices(
+std::vector<PhiMenuChoice> PhiShellWindow::GroupMenuChoices(
     const std::string& exclude) const {
   // A group's menu title: its name (or "Untitled") with its member count,
   // the Mac's displayTitle(memberCount:).
@@ -3327,7 +3327,7 @@ std::vector<PhiMenuChoice> PhiWindowController::GroupMenuChoices(
   return choices;
 }
 
-std::vector<PhiMenuChoice> PhiWindowController::SpaceSwitcherChoices() const {
+std::vector<PhiMenuChoice> PhiShellWindow::SpaceSwitcherChoices() const {
   // The FULL Space list, with each Space's glyph — the strip's chips only
   // mirror what fits.
   std::vector<PhiMenuChoice> choices;
@@ -3345,7 +3345,7 @@ std::vector<PhiMenuChoice> PhiWindowController::SpaceSwitcherChoices() const {
   return choices;
 }
 
-std::vector<PhiMenuBookmarkNode> PhiWindowController::BookmarkTreeSnapshot(
+std::vector<PhiMenuBookmarkNode> PhiShellWindow::BookmarkTreeSnapshot(
     const std::string& parent_guid,
     int depth) const {
   // The store's outline as a VALUE, read before the dropdown opens.
@@ -3368,7 +3368,7 @@ std::vector<PhiMenuBookmarkNode> PhiWindowController::BookmarkTreeSnapshot(
   return rows;
 }
 
-void PhiWindowController::ShowGroupHeaderMenu(POINT pt,
+void PhiShellWindow::ShowGroupHeaderMenu(POINT pt,
                                               std::string group_id,
                                               std::wstring title,
                                               COLORREF color) {
@@ -3402,7 +3402,7 @@ void PhiWindowController::ShowGroupHeaderMenu(POINT pt,
   }
 }
 
-void PhiWindowController::ShowTabRowMenu(POINT pt, const MenuRow& row) {
+void PhiShellWindow::ShowTabRowMenu(POINT pt, const MenuRow& row) {
   // The Mac tab menu (TabModel+Sidebar), in its order: pin, duplicate, copy,
   // the split block, bookmarks, groups, then close.
   const BrowserId opening_browser = active_browser_id();
@@ -3559,7 +3559,7 @@ void PhiWindowController::ShowTabRowMenu(POINT pt, const MenuRow& row) {
   }
 }
 
-void PhiWindowController::ShowPinnedCellMenu(POINT pt, const MenuRow& row) {
+void PhiShellWindow::ShowPinnedCellMenu(POINT pt, const MenuRow& row) {
   // The Mac pinned-cell menu: open, duplicate, copy, rename, unpin, and
   // close (the bound live tab or pair) when open.
   PhiPinnedMenuInputs in;
@@ -3624,7 +3624,7 @@ void PhiWindowController::ShowPinnedCellMenu(POINT pt, const MenuRow& row) {
   }
 }
 
-void PhiWindowController::ShowBookmarkRowMenu(POINT pt, const MenuRow& row) {
+void PhiShellWindow::ShowBookmarkRowMenu(POINT pt, const MenuRow& row) {
   // The Mac bookmark-row menu: open, open as split, copy, rename, delete
   // (folders keep rename / new-nested-folder / delete).
   PhiBookmarkMenuInputs in;
@@ -3726,7 +3726,7 @@ void PhiWindowController::ShowBookmarkRowMenu(POINT pt, const MenuRow& row) {
   }
 }
 
-void PhiWindowController::ShowTabAreaMenu(POINT pt) {
+void PhiShellWindow::ShowTabAreaMenu(POINT pt) {
   // The Mac tab-area menu (TabAreaContextMenuHelper): new tab, reopen, the
   // bookmark block, the layout switch, then the active Space's own controls
   // (the Spaces menu's rows, for the Space under the pointer).
@@ -3815,7 +3815,7 @@ void PhiWindowController::ShowTabAreaMenu(POINT pt) {
   }
 }
 
-void PhiWindowController::ShowAgentChipMenu(POINT pt, std::string task) {
+void PhiShellWindow::ShowAgentChipMenu(POINT pt, std::string task) {
   // The agent pip's own menu (the Mac agentContextMenu): the transcript
   // console and finishing the task. The Space menu below would misapply
   // rename/theme/delete to a task id.
@@ -3832,7 +3832,7 @@ void PhiWindowController::ShowAgentChipMenu(POINT pt, std::string task) {
   }
 }
 
-void PhiWindowController::ShowSpaceSwitcherMenu(POINT pt,
+void PhiShellWindow::ShowSpaceSwitcherMenu(POINT pt,
                                                 bool with_new_space) {
   // The full Space list as a popup: comfortable's compact pip opens it over
   // every Space (the Mac's SpacesStripView compact-chip behaviour), and the
@@ -3864,7 +3864,7 @@ void PhiWindowController::ShowSpaceSwitcherMenu(POINT pt,
   }
 }
 
-void PhiWindowController::OnChromeContextMenu(int x, int y) {
+void PhiShellWindow::OnChromeContextMenu(int x, int y) {
   if (!services_.sidebar || !shell_hwnd_) {
     return;
   }
@@ -3967,7 +3967,7 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
 // handlers with the band's y offset, so chips, tabs, pins, bookmarks and
 // menus all behave as in the docked sidebar.
 
-void PhiWindowController::ShowFloatingSidebar() {
+void PhiShellWindow::ShowFloatingSidebar() {
   if (floating_sidebar_ || !sidebar_collapsed_ || !shell_hwnd_) {
     return;
   }
@@ -3990,7 +3990,7 @@ void PhiWindowController::ShowFloatingSidebar() {
   if (!registered) {
     registered = true;
     WNDCLASSW cls = {};
-    cls.lpfnWndProc = &PhiWindowController::FloatingSidebarProc;
+    cls.lpfnWndProc = &PhiShellWindow::FloatingSidebarProc;
     cls.hInstance = ::GetModuleHandleW(nullptr);
     cls.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
     cls.lpszClassName = L"PhiFloatingSidebar";
@@ -4024,7 +4024,7 @@ void PhiWindowController::ShowFloatingSidebar() {
   floating_outside_tick_ = 0;
 }
 
-void PhiWindowController::HideFloatingSidebar(bool animated) {
+void PhiShellWindow::HideFloatingSidebar(bool animated) {
   if (!floating_sidebar_) {
     return;
   }
@@ -4038,7 +4038,7 @@ void PhiWindowController::HideFloatingSidebar(bool animated) {
   ScheduleRefresh();  // Back to the docked geometry on the next turn.
 }
 
-void PhiWindowController::FloatingSidebarTick() {
+void PhiShellWindow::FloatingSidebarTick() {
   if (!floating_sidebar_) {
     return;
   }
@@ -4075,7 +4075,7 @@ void PhiWindowController::FloatingSidebarTick() {
   }
 }
 
-void PhiWindowController::PaintFloatingSidebar(HDC dc) {
+void PhiShellWindow::PaintFloatingSidebar(HDC dc) {
   if (!floating_sidebar_) {
     return;
   }
@@ -4111,7 +4111,7 @@ void PhiWindowController::PaintFloatingSidebar(HDC dc) {
 }
 
 // static
-LRESULT CALLBACK PhiWindowController::FloatingSidebarProc(HWND hwnd,
+LRESULT CALLBACK PhiShellWindow::FloatingSidebarProc(HWND hwnd,
                                                           UINT msg,
                                                           WPARAM wparam,
                                                           LPARAM lparam) {
@@ -4119,7 +4119,7 @@ LRESULT CALLBACK PhiWindowController::FloatingSidebarProc(HWND hwnd,
     ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);  // See ShellWndProc.
     return ::DefWindowProcW(hwnd, msg, wparam, lparam);
   }
-  auto* self = reinterpret_cast<PhiWindowController*>(
+  auto* self = reinterpret_cast<PhiShellWindow*>(
       ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
   if (!self || self->destroying_) {
     return ::DefWindowProcW(hwnd, msg, wparam, lparam);
@@ -4207,7 +4207,7 @@ LRESULT CALLBACK PhiWindowController::FloatingSidebarProc(HWND hwnd,
   return ::DefWindowProcW(hwnd, msg, wparam, lparam);
 }
 
-bool PhiWindowController::BookmarkBarVisible() {
+bool PhiShellWindow::BookmarkBarVisible() {
   if (!services_.prefs || incognito_ || browsers_->content_fullscreen()) {
     return false;
   }
@@ -4226,7 +4226,7 @@ bool PhiWindowController::BookmarkBarVisible() {
          active_tab_url().rfind("chrome://new-tab-page", 0) == 0;
 }
 
-void PhiWindowController::PaintBookmarkBar(HDC dc,
+void PhiShellWindow::PaintBookmarkBar(HDC dc,
                                            const Layout& layout,
                                            const PhiPalette& palette) {
   bar_items_.clear();
@@ -4320,7 +4320,7 @@ void PhiWindowController::PaintBookmarkBar(HDC dc,
   }
 }
 
-void PhiWindowController::ShowBookmarkBarMenu(RECT anchor,
+void PhiShellWindow::ShowBookmarkBarMenu(RECT anchor,
                                               std::string parent_guid,
                                               size_t skip_first) {
   if (!services_.sidebar) {
@@ -4338,7 +4338,7 @@ void PhiWindowController::ShowBookmarkBarMenu(RECT anchor,
   }
 }
 
-void PhiWindowController::PaintChrome(HDC dc,
+void PhiShellWindow::PaintChrome(HDC dc,
                                      const Layout& layout,
                                      bool include_child_controls) {
   // The SLOT's palette (a Space may pin its own theme), ramped source →
@@ -4790,7 +4790,7 @@ void PhiWindowController::PaintChrome(HDC dc,
 
 
 
-LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
+LRESULT CALLBACK PhiShellWindow::ShellWndProc(HWND hwnd,
                                                    UINT msg,
                                                    WPARAM wparam,
                                                    LPARAM lparam) {
@@ -4804,7 +4804,7 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
     // Final message: unhook the controller so nothing delivered to a
     // recycled HWND value can reach it (every popup and child proc below
     // does the same).
-    if (auto* dying = reinterpret_cast<PhiWindowController*>(
+    if (auto* dying = reinterpret_cast<PhiShellWindow*>(
             ::GetWindowLongPtrW(hwnd, GWLP_USERDATA))) {
       PhiUiaWindowDestroyed(dying);  // Release any provider a client holds.
     }
@@ -4816,7 +4816,7 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
     // the hit source (PhiHitSource), so the provider needs no window of its
     // own. Every other object id falls through to DefWindowProc, which
     // keeps answering MSAA for the child controls as before.
-    auto* source = reinterpret_cast<PhiWindowController*>(
+    auto* source = reinterpret_cast<PhiShellWindow*>(
         ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
     bool handled = false;
     const LRESULT result =
@@ -4825,7 +4825,7 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
       return result;
     }
   }
-  auto* self = reinterpret_cast<PhiWindowController*>(
+  auto* self = reinterpret_cast<PhiShellWindow*>(
       ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
   if (self && self->destroying_) {
     // The destructor's DestroyWindow: the object is going, its members are

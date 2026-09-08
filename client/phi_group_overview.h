@@ -9,7 +9,7 @@
 
 namespace phi_client {
 
-class PhiWindowController;
+class PhiShellWindow;
 
 // The Mac Group Overview: a full-content grid of one tab group's tabs
 // (snapshot cards with favicon/title footers), opened by double-clicking
@@ -19,12 +19,12 @@ class PhiWindowController;
 class PhiGroupOverview {
  public:
   static bool IsOpen();
-  static void Open(PhiWindowController* controller,
+  static void Open(PhiShellWindow* controller,
                    const std::string& group_id);
   static void Close();
   // Close() only if the open overview belongs to `controller` (its shell is
-  // being destroyed; called from ~PhiWindowController).
-  static void CloseIfBoundTo(const PhiWindowController* controller);
+  // being destroyed; called from ~PhiShellWindow).
+  static void CloseIfBoundTo(const PhiShellWindow* controller);
 };
 
 }  // namespace phi_client

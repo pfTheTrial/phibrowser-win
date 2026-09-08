@@ -21,7 +21,7 @@
 #include "chrome/browser/phinomenon/phi_framework/phi_framework_api.h"
 #include "phibrowser-win/client/phi_coordinator.h"
 #include "phibrowser-win/client/phi_theme.h"
-#include "phibrowser-win/client/phi_window_controller.h"
+#include "phibrowser-win/client/phi_shell_window.h"
 #include "phibrowser-win/client/phi_window_model.h"
 
 namespace phi_client {
@@ -254,7 +254,7 @@ PhiPeekPanel::PhiPeekPanel(int64_t window_id,
                            HWND browser_hwnd,
                            int64_t opener_window_id,
                            int64_t opener_tab_id,
-                           PhiWindowController* opener,
+                           PhiShellWindow* opener,
                            phi_framework::PhiFramework* framework,
                            const PhiWindowModel* model,
                            PhiCoordinator* coordinator)

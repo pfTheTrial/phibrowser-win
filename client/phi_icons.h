@@ -73,7 +73,7 @@ bool PhiDrawCatalogIcon(HDC dc,
                         COLORREF ink);
 
 // The Phi app icon (resources\phi.ico beside the exe) at `size`, or null
-// when the artwork is missing. Defined in phi_window_controller.cc.
+// when the artwork is missing. Defined in phi_shell_window.cc.
 HICON PhiAppIcon(int size);
 
 // The Phi logo as premultiplied BGRA, extracted once from the ICO's 256px

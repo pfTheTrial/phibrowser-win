@@ -15,7 +15,7 @@
 
 namespace phi_client {
 
-class PhiWindowController;
+class PhiShellWindow;
 
 // The Mac's native new-tab page (UserInterface/WebContent/NativeNTP/
 // NewTabViewController.swift): the Phi mark, the "Incognito" caption in an
@@ -35,7 +35,7 @@ class PhiWindowController;
 // the controller subclasses the field exactly like its own address field.
 class PhiNewTabPage : public PhiPanel {
  public:
-  explicit PhiNewTabPage(PhiWindowController* controller);
+  explicit PhiNewTabPage(PhiShellWindow* controller);
   ~PhiNewTabPage() override;
 
   PhiNewTabPage(const PhiNewTabPage&) = delete;
@@ -105,7 +105,7 @@ class PhiNewTabPage : public PhiPanel {
   Geometry ComputeGeometry() const;
   void LayoutField();
 
-  RAW_PTR_EXCLUSION PhiWindowController* const controller_;
+  RAW_PTR_EXCLUSION PhiShellWindow* const controller_;
   HWND field_ = nullptr;
   // The EDIT's ground (WM_CTLCOLOREDIT must return a REAL brush).
   HBRUSH field_brush_ = nullptr;

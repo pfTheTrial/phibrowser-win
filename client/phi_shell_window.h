@@ -2,8 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef PHIBROWSER_WIN_CLIENT_PHI_WINDOW_CONTROLLER_H_
-#define PHIBROWSER_WIN_CLIENT_PHI_WINDOW_CONTROLLER_H_
+#ifndef PHIBROWSER_WIN_CLIENT_PHI_SHELL_WINDOW_H_
+#define PHIBROWSER_WIN_CLIENT_PHI_SHELL_WINDOW_H_
 
 #include <windows.h>
 
@@ -421,13 +421,13 @@ enum : UINT {
 
 // The shell window (docs/architecture-review.md §3.5): a window procedure,
 // the layout cache, the DPI and fonts, focus routing, and dispatch to the
-// components that own the rest. It keeps the name PhiWindowController while
+// components that own the rest. It keeps the name PhiShellWindow while
 // the components are extracted one at a time — the rename to PhiShellWindow
 // would touch every other file and lands with the last of them.
 //
 // Each component's needs reach it through a narrow interface implemented
 // PRIVATELY here, so none of them widen the shell's public surface.
-class PhiWindowController : public PhiHitSource,
+class PhiShellWindow : public PhiHitSource,
                             private PhiOmniboxShell,
                             private PhiBrowserHostShell,
                             private PhiCaptionShell,
@@ -452,7 +452,7 @@ class PhiWindowController : public PhiHitSource,
   // §3.3): every row, nav state and split this shell shows is read from
   // it, never parsed from the framework's JSON. Owned by the coordinator,
   // which outlives every controller.
-  PhiWindowController(SlotId slot,
+  PhiShellWindow(SlotId slot,
                       BrowserId browser,
                       HWND browser_hwnd,
                       phi_framework::PhiFramework* framework,
@@ -462,11 +462,11 @@ class PhiWindowController : public PhiHitSource,
                       bool incognito = false);
   // Virtual because the shell now implements its components' interfaces:
   // the class has virtual functions, and PhiWindowRegistry deletes it
-  // through a PhiWindowController* (its test stand-ins subclass it).
-  ~PhiWindowController() override;
+  // through a PhiShellWindow* (its test stand-ins subclass it).
+  ~PhiShellWindow() override;
 
-  PhiWindowController(const PhiWindowController&) = delete;
-  PhiWindowController& operator=(const PhiWindowController&) = delete;
+  PhiShellWindow(const PhiShellWindow&) = delete;
+  PhiShellWindow& operator=(const PhiShellWindow&) = delete;
 
   // The slot's identity — what every host interface's `slot` takes.
   // Never a browser: see active_browser_id() for the one the slot shows.
@@ -1250,7 +1250,7 @@ class PhiWindowController : public PhiHitSource,
 
   // --- PhiNativePagesShell: what the native pages ask of their shell -------
   HWND NativePagesShellWindow() const override;
-  PhiWindowController* NativePagesOwner() override;
+  PhiShellWindow* NativePagesOwner() override;
   bool NativePagesIncognito() const override;
   bool NativePagesIsAgent() const override;
   bool NativePagesContentFullscreen() const override;
@@ -1264,7 +1264,7 @@ class PhiWindowController : public PhiHitSource,
 
   // --- PhiSidebarShell: what the sidebar asks of its shell -----------------
   HWND SidebarShellWindow() const override;
-  PhiWindowController* SidebarOwner() override;
+  PhiShellWindow* SidebarOwner() override;
   int SidebarScaled(int design_units) const override;
   UINT SidebarDpi() const override;
   int SidebarWidthDip() const override;
@@ -1303,7 +1303,7 @@ class PhiWindowController : public PhiHitSource,
 
   // --- PhiSpacesStripShell: what the Spaces strip asks of its shell --------
   HWND SpacesShellWindow() const override;
-  PhiWindowController* SpacesOwner() override;
+  PhiShellWindow* SpacesOwner() override;
   SlotId SpacesSlot() const override;
   bool SpacesIncognito() const override;
   bool SpacesIsAgent() const override;
@@ -1422,4 +1422,4 @@ class PhiWindowController : public PhiHitSource,
 
 }  // namespace phi_client
 
-#endif  // PHIBROWSER_WIN_CLIENT_PHI_WINDOW_CONTROLLER_H_
+#endif  // PHIBROWSER_WIN_CLIENT_PHI_SHELL_WINDOW_H_

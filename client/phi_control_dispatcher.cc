@@ -42,7 +42,7 @@
 #include "phibrowser-win/client/phi_theme.h"
 #include "phibrowser-win/client/phi_transcript_panel.h"
 #include "phibrowser-win/client/phi_window_capture.h"
-#include "phibrowser-win/client/phi_window_controller.h"
+#include "phibrowser-win/client/phi_shell_window.h"
 #include "phibrowser-win/client/phi_window_registry.h"
 
 namespace phi_client {
@@ -405,7 +405,7 @@ bool PhiControlDispatcher::AuthorizeAgentPeerOnUi(uint64_t connection_id,
   }
   message += L"\nThis approval lasts until Phi quits.";
   HWND owner = nullptr;
-  for (PhiWindowController* controller :
+  for (PhiShellWindow* controller :
        coordinator_->registry().Controllers()) {
     if (controller->shell_hwnd()) {
       owner = controller->shell_hwnd();
@@ -805,7 +805,7 @@ PhiControlDispatcher::Scope PhiControlDispatcher::ResolveScope(
   // An agent shell is agent territory, with its task from the record; the
   // rest is the user's.
   if (window_id) {
-    PhiWindowController* controller =
+    PhiShellWindow* controller =
         coordinator_->registry().Resolve(window_id);
     if (!controller) {
       scope.error = "window_not_open";
@@ -855,7 +855,7 @@ PhiControlDispatcher::Scope PhiControlDispatcher::ResolveScope(
   }
   scope.kind = Scope::Kind::kUser;
   if (fallback == ScopeFallback::kFirstUserWindow) {
-    if (PhiWindowController* first =
+    if (PhiShellWindow* first =
             coordinator_->registry().FirstUserController()) {
       scope.controller = first;
       scope.browser = first->active_browser_id();
@@ -991,7 +991,7 @@ std::set<int64_t> PhiControlDispatcher::VisibleWindows(
                     record->granted_spaces.end());
     }
     for (const std::string& space_id : spaces) {
-      for (PhiWindowController* controller :
+      for (PhiShellWindow* controller :
            coordinator_->registry().Controllers()) {
         if (controller->is_agent()) {
           continue;
@@ -1287,7 +1287,7 @@ bool PhiControlDispatcher::DialectOwner(const std::string& profile_id_or_empty,
     // Prefer a window whose active Space runs this profile (its space is the
     // natural owner under space scope); fall back to the profile's first
     // Space, then to no Space (profile/app-scoped pins still resolve).
-    for (PhiWindowController* controller :
+    for (PhiShellWindow* controller :
          coordinator_->registry().Controllers()) {
       if (controller->is_agent()) {
         continue;
@@ -1308,7 +1308,7 @@ bool PhiControlDispatcher::DialectOwner(const std::string& profile_id_or_empty,
     space_id->clear();
     return true;
   }
-  PhiWindowController* focused = coordinator_->FocusedUserController();
+  PhiShellWindow* focused = coordinator_->FocusedUserController();
   return focused &&
          coordinator_->OwnerForSlot(focused->slot(), profile_id, space_id);
 }

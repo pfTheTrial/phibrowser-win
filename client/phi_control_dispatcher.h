@@ -30,7 +30,7 @@ class PhiFramework;
 namespace phi_client {
 
 class PhiCoordinator;
-class PhiWindowController;
+class PhiShellWindow;
 
 // One request marshalled from the control server's I/O thread to the UI
 // thread (a control verb or a peer-consent decision). Defined in the .cc;
@@ -126,7 +126,7 @@ class PhiControlDispatcher : public PhiControlDelegate {
   struct Scope {
     enum class Kind { kAgent, kShadow, kUser };
     // The shell hosting `browser`; null when the id names nothing live.
-    RAW_PTR_EXCLUSION PhiWindowController* controller = nullptr;
+    RAW_PTR_EXCLUSION PhiShellWindow* controller = nullptr;
     BrowserId browser;
     Kind kind = Kind::kUser;
     // The skill's taskId for an agent/shadow scope (from the payload, or

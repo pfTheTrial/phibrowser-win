@@ -16,7 +16,7 @@
 #include "phibrowser-win/client/phi_modal_scope.h"
 #include "phibrowser-win/client/phi_popover.h"
 #include "phibrowser-win/client/phi_theme.h"
-#include "phibrowser-win/client/phi_window_controller.h"
+#include "phibrowser-win/client/phi_shell_window.h"
 
 namespace phi_client {
 
@@ -39,7 +39,7 @@ constexpr int kItemRadius = 10;
 // (lane 3 §4.4 — one of the two this phase deletes).
 class Picker : public PhiPopover {
  public:
-  Picker(PhiWindowController* controller,
+  Picker(PhiShellWindow* controller,
          std::string selected,
          PhiFolderIconChosen on_chosen)
       : controller_(controller),
@@ -175,7 +175,7 @@ class Picker : public PhiPopover {
   }
 
   // The controller outlives the picker (it owns the shell that owns it).
-  RAW_PTR_EXCLUSION PhiWindowController* const controller_;
+  RAW_PTR_EXCLUSION PhiShellWindow* const controller_;
   std::string selected_;
   std::string chosen_;
   PhiFolderIconChosen on_chosen_;
@@ -183,7 +183,7 @@ class Picker : public PhiPopover {
 
 }  // namespace
 
-void PhiOpenFolderIconPicker(PhiWindowController* controller,
+void PhiOpenFolderIconPicker(PhiShellWindow* controller,
                              const RECT& anchor_screen,
                              const std::string& selected,
                              PhiFolderIconChosen on_chosen) {
@@ -203,7 +203,7 @@ void PhiOpenFolderIconPicker(PhiWindowController* controller,
   }
 }
 
-std::string PhiPickFolderIcon(PhiWindowController* controller,
+std::string PhiPickFolderIcon(PhiShellWindow* controller,
                               const RECT& anchor_screen,
                               const std::string& selected) {
   std::string chosen;

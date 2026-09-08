@@ -23,7 +23,7 @@ class PhiFramework;
 namespace phi_client {
 
 class PhiCoordinator;
-class PhiWindowController;
+class PhiShellWindow;
 class PhiWindowModel;
 
 // The Mac's Reader View overlay (UserInterface/Reader/ReaderPanelController):
@@ -52,7 +52,7 @@ class PhiReaderPanel : public PhiSurfacePanel, public PhiPanel {
                  HWND browser_hwnd,
                  int64_t origin_window_id,
                  int64_t origin_tab_id,
-                 PhiWindowController* origin,
+                 PhiShellWindow* origin,
                  phi_framework::PhiFramework* framework,
                  const PhiWindowModel* model,
                  PhiCoordinator* coordinator);
@@ -76,7 +76,7 @@ class PhiReaderPanel : public PhiSurfacePanel, public PhiPanel {
   void BindSurfaceTab(int64_t surface_tab_id) override;
 
   // Puts the panel above the origin's browser child, without disturbing the
-  // corner caps that have to sit above IT (see PhiWindowController::
+  // corner caps that have to sit above IT (see PhiShellWindow::
   // RaiseCornerCaps) — raising this window alone squares the card's corners.
   void Raise() override;
   // The origin window moved or resized: re-fit to its content rect.
@@ -111,7 +111,7 @@ class PhiReaderPanel : public PhiSurfacePanel, public PhiPanel {
   HWND browser_hwnd_ = nullptr;
   BrowserId origin_window_id_;  // The browser whose tab the reader covers.
   int64_t origin_tab_id_ = 0;
-  RAW_PTR_EXCLUSION PhiWindowController* origin_ = nullptr;
+  RAW_PTR_EXCLUSION PhiShellWindow* origin_ = nullptr;
   RAW_PTR_EXCLUSION phi_framework::PhiFramework* framework_ = nullptr;
   RAW_PTR_EXCLUSION const PhiWindowModel* model_ = nullptr;
   RAW_PTR_EXCLUSION PhiCoordinator* coordinator_ = nullptr;

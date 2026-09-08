@@ -163,7 +163,7 @@ struct PhiMenuBarNavState {
 };
 
 // WHAT THE BAR ASKS OF ITS SHELL (docs/architecture-review.md §3.5, lane 1
-// §2.1 item 3). Until phase 6 the bar was a `friend` of PhiWindowController
+// §2.1 item 3). Until phase 6 the bar was a `friend` of PhiShellWindow
 // and read seventeen private members by name — `host_`, `framework_`,
 // `tabs_`, `url_field_`, `nav_url_`, `active_space_`, `active_tab_id_` and
 // the rest — which is why the shell had to keep const reference VIEWS onto

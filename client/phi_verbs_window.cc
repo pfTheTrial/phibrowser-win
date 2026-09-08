@@ -23,7 +23,7 @@
 #include "phibrowser-win/client/phi_settings_window.h"
 #include "phibrowser-win/client/phi_tab_store.h"
 #include "phibrowser-win/client/phi_theme.h"
-#include "phibrowser-win/client/phi_window_controller.h"
+#include "phibrowser-win/client/phi_shell_window.h"
 #include "phibrowser-win/client/phi_window_registry.h"
 
 // Windows, tabs, navigation, tab groups, split view, downloads, and the
@@ -108,7 +108,7 @@ PhiVerbResult PhiControlDispatcher::VerbClose(const PhiVerbContext& ctx) {
   // browser its id names — same reason the shell window's close box does.
   const int64_t window_id = ctx.params.Int64("windowId", 0);
   bool ok = false;
-  if (PhiWindowController* controller = ctx.scope.controller) {
+  if (PhiShellWindow* controller = ctx.scope.controller) {
     ok = true;  // Set first: the call below may destroy the controller.
     controller->RequestClose();
   } else if (framework_ && window_id) {
@@ -145,7 +145,7 @@ PhiVerbResult PhiControlDispatcher::VerbWindowLayout(
     const PhiVerbContext& ctx) {
   // The chrome geometry a slot is rendering, so layout can be asserted
   // without going through pixels.
-  PhiWindowController* shell = ctx.scope.controller;
+  PhiShellWindow* shell = ctx.scope.controller;
   if (!shell) {
     return PhiVerbOk(false);
   }
@@ -187,7 +187,7 @@ PhiVerbResult PhiControlDispatcher::VerbWindowLayout(
 
 PhiVerbResult PhiControlDispatcher::VerbWindowBounds(
     const PhiVerbContext& ctx) {
-  PhiWindowController* shell = ctx.scope.controller;
+  PhiShellWindow* shell = ctx.scope.controller;
   int x = 0, y = 0, w = 0, h = 0;
   if (!shell || !shell->GetBounds(&x, &y, &w, &h)) {
     return PhiVerbOk(false);
@@ -206,7 +206,7 @@ PhiVerbResult PhiControlDispatcher::VerbWindowSetBounds(
   const int y = static_cast<int>(ctx.params.Double("y", 0));
   const int w = static_cast<int>(ctx.params.Double("width", 0));
   const int h = static_cast<int>(ctx.params.Double("height", 0));
-  PhiWindowController* shell = ctx.scope.controller;
+  PhiShellWindow* shell = ctx.scope.controller;
   return PhiVerbOk(shell && w > 0 && h > 0 && shell->SetBounds(x, y, w, h));
 }
 
@@ -214,7 +214,7 @@ PhiVerbResult PhiControlDispatcher::VerbWindowHandle(
     const PhiVerbContext& ctx) {
   // The slot's shell HWND, so a test/screenshot tool can capture exactly
   // the window it is driving (several slots may exist).
-  PhiWindowController* shell =
+  PhiShellWindow* shell =
       coordinator_->registry().Resolve(ctx.params.Int64("windowId", 0));
   if (!shell || !shell->shell_hwnd()) {
     return PhiVerbOk(false);
@@ -228,7 +228,7 @@ PhiVerbResult PhiControlDispatcher::VerbWindowHandle(
 PhiVerbResult PhiControlDispatcher::VerbMenuList(const PhiVerbContext& ctx) {
   // The shell window's menu bar as the user would see it, dynamic rows
   // included — the automated stand-in for opening each menu by hand.
-  PhiWindowController* controller = ctx.scope.controller;
+  PhiShellWindow* controller = ctx.scope.controller;
   if (!controller || !controller->menu_bar()) {
     return PhiVerbOk(false);
   }
@@ -247,7 +247,7 @@ PhiVerbResult PhiControlDispatcher::VerbMenuClick(const PhiVerbContext& ctx) {
   // ["Spaces","Edit Theme","Mint"]. Disabled items refuse, as a real click
   // would.
   const std::vector<std::string> path = ctx.params.StringList("path");
-  PhiWindowController* controller = ctx.scope.controller;
+  PhiShellWindow* controller = ctx.scope.controller;
   return PhiVerbOk(controller && controller->menu_bar() && !path.empty() &&
                    controller->menu_bar()->InvokePath(path));
 }
@@ -1065,7 +1065,7 @@ PhiVerbResult PhiControlDispatcher::VerbFeedbackOpen(
     const PhiVerbContext& ctx) {
   // Opens the form for {windowId} (a slot), else the focused window —
   // exactly what Help ▸ Report an Issue does.
-  PhiWindowController* controller = nullptr;
+  PhiShellWindow* controller = nullptr;
   if (ctx.params.Has("windowId")) {
     controller =
         coordinator_->registry().Resolve(ctx.params.Int64("windowId", 0));

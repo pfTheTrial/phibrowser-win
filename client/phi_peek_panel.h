@@ -24,7 +24,7 @@ class PhiFramework;
 namespace phi_client {
 
 class PhiCoordinator;
-class PhiWindowController;
+class PhiShellWindow;
 class PhiWindowModel;
 
 // The peek's two helper surfaces, both PhiPanels of their own (defined in
@@ -59,7 +59,7 @@ class PhiPeekPanel : public PhiSurfacePanel, public PhiPanel {
                HWND browser_hwnd,
                int64_t opener_window_id,
                int64_t opener_tab_id,
-               PhiWindowController* opener,
+               PhiShellWindow* opener,
                phi_framework::PhiFramework* framework,
                const PhiWindowModel* model,
                PhiCoordinator* coordinator);
@@ -136,7 +136,7 @@ class PhiPeekPanel : public PhiSurfacePanel, public PhiPanel {
   std::unique_ptr<PhiPeekControls> controls_;
   BrowserId opener_window_id_;  // The browser the peek was opened FROM.
   int64_t opener_tab_id_ = 0;
-  RAW_PTR_EXCLUSION PhiWindowController* opener_ = nullptr;
+  RAW_PTR_EXCLUSION PhiShellWindow* opener_ = nullptr;
   RAW_PTR_EXCLUSION phi_framework::PhiFramework* framework_ = nullptr;
   RAW_PTR_EXCLUSION const PhiWindowModel* model_ = nullptr;
   RAW_PTR_EXCLUSION PhiCoordinator* coordinator_ = nullptr;

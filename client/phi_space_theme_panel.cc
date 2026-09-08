@@ -19,7 +19,7 @@
 #include "phibrowser-win/client/phi_modal_scope.h"
 #include "phibrowser-win/client/phi_popover.h"
 #include "phibrowser-win/client/phi_theme.h"
-#include "phibrowser-win/client/phi_window_controller.h"
+#include "phibrowser-win/client/phi_shell_window.h"
 
 namespace phi_client {
 
@@ -99,7 +99,7 @@ COLORREF HsvToRgb(double h, double s, double v) {
 // of the two this phase deletes).
 class Panel : public PhiPopover {
  public:
-  Panel(PhiWindowController* controller,
+  Panel(PhiShellWindow* controller,
         std::string space_id,
         std::function<void()> on_closed)
       : controller_(controller),
@@ -454,7 +454,7 @@ class Panel : public PhiPopover {
   }
 
   // The controller outlives the panel (it owns the shell that owns it).
-  RAW_PTR_EXCLUSION PhiWindowController* const controller_;
+  RAW_PTR_EXCLUSION PhiShellWindow* const controller_;
   std::string space_id_;
   std::function<void()> on_closed_;
   Capture capture_;
@@ -464,7 +464,7 @@ class Panel : public PhiPopover {
 
 }  // namespace
 
-void PhiOpenSpaceThemePanel(PhiWindowController* controller,
+void PhiOpenSpaceThemePanel(PhiShellWindow* controller,
                             const RECT& anchor_screen,
                             const std::string& space_id,
                             std::function<void()> on_closed) {
@@ -482,7 +482,7 @@ void PhiOpenSpaceThemePanel(PhiWindowController* controller,
   }
 }
 
-void PhiShowSpaceThemePanel(PhiWindowController* controller,
+void PhiShowSpaceThemePanel(PhiShellWindow* controller,
                             const RECT& anchor_screen,
                             const std::string& space_id) {
   bool done = false;

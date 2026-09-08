@@ -15,7 +15,7 @@
 #include "phibrowser-win/client/phi_new_tab_page.h"
 #include "phibrowser-win/client/phi_sidebar_view.h"
 #include "phibrowser-win/client/phi_spaces_strip.h"
-#include "phibrowser-win/client/phi_window_controller.h"
+#include "phibrowser-win/client/phi_shell_window.h"
 
 namespace phi_client {
 

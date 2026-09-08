@@ -10,7 +10,7 @@
 #include "phibrowser-win/client/phi_coordinator.h"
 #include "phibrowser-win/client/phi_reader.h"
 #include "phibrowser-win/client/phi_theme.h"
-#include "phibrowser-win/client/phi_window_controller.h"
+#include "phibrowser-win/client/phi_shell_window.h"
 #include "phibrowser-win/client/phi_window_model.h"
 
 namespace phi_client {
@@ -19,7 +19,7 @@ namespace {
 
 constexpr wchar_t kReaderPanelClassName[] = L"PhiReaderPanel";
 
-// The page card's corner radius (PhiWindowController's kContentRadius,
+// The page card's corner radius (PhiShellWindow's kContentRadius,
 // webContentContainerCornerRadius on macOS 26) — the reading surface wears
 // the same corners as the page it covers.
 constexpr int kContentRadius = 14;
@@ -30,7 +30,7 @@ PhiReaderPanel::PhiReaderPanel(int64_t window_id,
                                HWND browser_hwnd,
                                int64_t origin_window_id,
                                int64_t origin_tab_id,
-                               PhiWindowController* origin,
+                               PhiShellWindow* origin,
                                phi_framework::PhiFramework* framework,
                                const PhiWindowModel* model,
                                PhiCoordinator* coordinator)

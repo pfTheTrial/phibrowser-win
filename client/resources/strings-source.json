@@ -5,7 +5,7 @@
    "en": "Cancel"
   },
   "accountDataExport.closeButton": {
-   "comment": "sidebar — used at phi_window_controller.cc:5700",
+   "comment": "sidebar — used at phi_shell_window.cc:5700",
    "en": "Close"
   },
   "accountRequired.phiAI.loginButton": {
@@ -13,7 +13,7 @@
    "en": "Sign in"
   },
   "addressBar.configuration.defaultPlaceholder": {
-   "comment": "sidebar — used at phi_window_controller.cc:1116",
+   "comment": "sidebar — used at phi_shell_window.cc:1116",
    "en": "Search or Enter URL"
   },
   "agentControl.connectionApproval.agentLabel": {
@@ -153,11 +153,11 @@
    "en": "Extensions"
   },
   "app.changeSpaceProfileConfirmation.profileScopedMessage": {
-   "comment": "spaces — Change Profile confirmation body; used at phi_window_controller.cc, phi_menu_bar.cc",
+   "comment": "spaces — Change Profile confirmation body; used at phi_shell_window.cc, phi_menu_bar.cc",
    "en": "This Space's window will be reopened with the new profile and its open tabs will be reloaded there. Site logins won't carry over. Bookmarks stay with the Space; pinned tabs will be the new profile's."
   },
   "app.changeSpaceProfileConfirmation.title": {
-   "comment": "spaces — Change Profile confirmation title. {0} is the profile name; used at phi_window_controller.cc, phi_menu_bar.cc",
+   "comment": "spaces — Change Profile confirmation title. {0} is the profile name; used at phi_shell_window.cc, phi_menu_bar.cc",
    "en": "Change Profile to “{0}”?"
   },
   "app.closeTab": {
@@ -453,7 +453,7 @@
    "en": ") wants to control Phi — tabs, navigation, and page content."
   },
   "bookmarkBar.folderContextMenu.renameAction": {
-   "comment": "sidebar — used at phi_window_controller.cc:6353",
+   "comment": "sidebar — used at phi_shell_window.cc:6353",
    "en": "Rename…"
   },
   "bookmarkManager.deleteBookmarks": {
@@ -513,7 +513,7 @@
    "en": "Downloads\tCtrl+J"
   },
   "browser.headerMoreMenu.feedbackAction": {
-   "comment": "sidebar — used at phi_window_controller.cc:7312",
+   "comment": "sidebar — used at phi_shell_window.cc:7312",
    "en": "Feedback"
   },
   "browser.newTabPage.incognitoLabel": {
@@ -577,11 +577,11 @@
    "en": "Stop\tEsc"
   },
   "common.bookmarkEditor.editTitle": {
-   "comment": "sidebar — used at phi_window_controller.cc:6094",
+   "comment": "sidebar — used at phi_shell_window.cc:6094",
    "en": "Edit Bookmark"
   },
   "common.bookmarkEditor.folderPicker.newFolderAction": {
-   "comment": "sidebar — used at phi_window_controller.cc:5592",
+   "comment": "sidebar — used at phi_shell_window.cc:5592",
    "en": "New Folder..."
   },
   "common.bookmarkFolder.defaultName": {
@@ -597,11 +597,11 @@
    "en": "Icon"
   },
   "common.newTabPage.incognitoTitle": {
-   "comment": "sidebar — used at phi_window_controller.cc (incognito new-tab row title)",
+   "comment": "sidebar — used at phi_shell_window.cc (incognito new-tab row title)",
    "en": "New Incognito Tab"
   },
   "common.pinnedTabEditor.editTitle": {
-   "comment": "sidebar — used at phi_window_controller.cc:5959",
+   "comment": "sidebar — used at phi_shell_window.cc:5959",
    "en": "Edit Pinned Tab"
   },
   "common.tabAreaContextMenu.bookmarkAllTabsAction": {
@@ -613,27 +613,27 @@
    "en": "Reopen Closed Tab\tCtrl+Shift+T"
   },
   "common.tabMultiSelectionContextMenu.addToBookmarksAction": {
-   "comment": "sidebar — used at phi_window_controller.cc:5563",
+   "comment": "sidebar — used at phi_shell_window.cc:5563",
    "en": "Add to Bookmark"
   },
   "common.tabMultiSelectionContextMenu.addToFolderSubmenu": {
-   "comment": "sidebar — used at phi_window_controller.cc:5595",
+   "comment": "sidebar — used at phi_shell_window.cc:5595",
    "en": "Add to Folder"
   },
   "common.tabMultiSelectionContextMenu.cloneToSpaceSubmenu": {
-   "comment": "sidebar — used at phi_window_controller.cc:5672",
+   "comment": "sidebar — used at phi_shell_window.cc:5672",
    "en": "Clone to Space"
   },
   "common.tabMultiSelectionContextMenu.closeOtherTabsAction": {
-   "comment": "sidebar — used at phi_window_controller.cc:5701",
+   "comment": "sidebar — used at phi_shell_window.cc:5701",
    "en": "Close Other Tabs"
   },
   "common.tabMultiSelectionContextMenu.moveToSpaceSubmenu": {
-   "comment": "sidebar — used at phi_window_controller.cc:5669",
+   "comment": "sidebar — used at phi_shell_window.cc:5669",
    "en": "Move to Space"
   },
   "common.tabMultiSelectionContextMenu.openAsSplitAction": {
-   "comment": "sidebar — used at phi_window_controller.cc:5560",
+   "comment": "sidebar — used at phi_shell_window.cc:5560",
    "en": "Open as Split"
   },
   "download.safety.short.blocked": {
@@ -2418,7 +2418,7 @@
    "en": "Each Space has its own pinned tabs."
   },
   "settings.spaces.pinnedTabScope.spaceOption": {
-   "comment": "sidebar — used at phi_window_controller.cc:3807",
+   "comment": "sidebar — used at phi_shell_window.cc:3807",
    "en": "Space "
   },
   "settings.spaces.pinnedTabScope.title": {
@@ -2462,15 +2462,15 @@
    "en": "You have more than one profile, so each "
   },
   "sidebar.address": {
-   "comment": "sidebar — used at phi_window_controller.cc:5959",
+   "comment": "sidebar — used at phi_shell_window.cc:5959",
    "en": "Address:"
   },
   "sidebar.agentContextMenu.showTranscriptAction": {
-   "comment": "sidebar — used at phi_window_controller.cc:6295",
+   "comment": "sidebar — used at phi_shell_window.cc:6295",
    "en": "Show Transcript"
   },
   "sidebar.bookmarkContextMenu.changeIconAction": {
-   "comment": "sidebar — used at phi_window_controller.cc:6354",
+   "comment": "sidebar — used at phi_shell_window.cc:6354",
    "en": "Change Icon…"
   },
   "sidebar.bookmarkContextMenu.copyLeftPrimaryUrl": {
@@ -2490,15 +2490,15 @@
    "en": "New Nested Folder..."
   },
   "sidebar.bookmarkContextMenu.openInNewTabAction": {
-   "comment": "sidebar — used at phi_window_controller.cc:6005",
+   "comment": "sidebar — used at phi_shell_window.cc:6005",
    "en": "Open in New Tab"
   },
   "sidebar.bookmarksYouAddAppearHere": {
-   "comment": "sidebar — used at phi_window_controller.cc:6686",
+   "comment": "sidebar — used at phi_shell_window.cc:6686",
    "en": "Bookmarks you add appear here"
   },
   "sidebar.chat": {
-   "comment": "sidebar — used in phi_window_controller.cc",
+   "comment": "sidebar — used in phi_shell_window.cc",
    "en": "Chat"
   },
   "sidebar.chatButton.title": {
@@ -2506,7 +2506,7 @@
    "en": "Chat\tCtrl+Shift+C"
   },
   "sidebar.chromeNewtab": {
-   "comment": "sidebar — used in phi_window_controller.cc",
+   "comment": "sidebar — used in phi_shell_window.cc",
    "en": "chrome://newtab"
   },
   "sidebar.createSpace.cancelButton": {
@@ -2542,143 +2542,143 @@
    "en": "Create a Space"
   },
   "sidebar.ctrl": {
-   "comment": "sidebar — used in phi_window_controller.cc",
+   "comment": "sidebar — used in phi_shell_window.cc",
    "en": "Ctrl"
   },
   "sidebar.deleteFolder": {
-   "comment": "sidebar — used at phi_window_controller.cc:6066",
+   "comment": "sidebar — used at phi_shell_window.cc:6066",
    "en": "Delete Folder"
   },
   "sidebar.editUrl": {
-   "comment": "sidebar — used at phi_window_controller.cc:5889",
+   "comment": "sidebar — used at phi_shell_window.cc:5889",
    "en": "Edit URL..."
   },
   "sidebar.enterANewNameFor": {
-   "comment": "sidebar — used at phi_window_controller.cc:5940",
+   "comment": "sidebar — used at phi_shell_window.cc:5940",
    "en": "Enter a new name for this pinned tab."
   },
   "sidebar.finishTask": {
-   "comment": "sidebar — used at phi_window_controller.cc:6297",
+   "comment": "sidebar — used at phi_shell_window.cc:6297",
    "en": "Finish Task"
   },
   "sidebar.groupName": {
-   "comment": "sidebar — used at phi_window_controller.cc:5466",
+   "comment": "sidebar — used at phi_shell_window.cc:5466",
    "en": "Group name:"
   },
   "sidebar.handBackToAgent": {
-   "comment": "sidebar — used at phi_window_controller.cc:5536",
+   "comment": "sidebar — used at phi_shell_window.cc:5536",
    "en": "Hand Back to Agent"
   },
   "sidebar.newSpaceWithNewProfile": {
-   "comment": "sidebar — used at phi_window_controller.cc:5158",
+   "comment": "sidebar — used at phi_shell_window.cc:5158",
    "en": "New Space with New Profile..."
   },
   "sidebar.rename": {
-   "comment": "sidebar — used in phi_window_controller.cc",
+   "comment": "sidebar — used in phi_shell_window.cc",
    "en": "Rename..."
   },
   "sidebar.renameGroup": {
-   "comment": "sidebar — used at phi_window_controller.cc:5445",
+   "comment": "sidebar — used at phi_shell_window.cc:5445",
    "en": "Rename Group..."
   },
   "sidebar.renamePinnedTab": {
-   "comment": "sidebar — used at phi_window_controller.cc:5939",
+   "comment": "sidebar — used at phi_shell_window.cc:5939",
    "en": "Rename Pinned Tab"
   },
   "sidebar.setTheme": {
-   "comment": "sidebar — used at phi_window_controller.cc:6356",
+   "comment": "sidebar — used at phi_shell_window.cc:6356",
    "en": "Set Theme"
   },
   "sidebar.switchToThisSpace": {
-   "comment": "sidebar — used at phi_window_controller.cc:6351",
+   "comment": "sidebar — used at phi_shell_window.cc:6351",
    "en": "Switch to this Space"
   },
   "sidebar.tabContextMenu.addSplitToBookmarks": {
-   "comment": "sidebar — used at phi_window_controller.cc:5697",
+   "comment": "sidebar — used at phi_shell_window.cc:5697",
    "en": "Add Split to Bookmark"
   },
   "sidebar.tabContextMenu.addToGroupSubmenu": {
-   "comment": "sidebar — used at phi_window_controller.cc:5617",
+   "comment": "sidebar — used at phi_shell_window.cc:5617",
    "en": "Add to Group"
   },
   "sidebar.tabContextMenu.convertToHorizontalSplit": {
-   "comment": "sidebar — used at phi_window_controller.cc:5692",
+   "comment": "sidebar — used at phi_shell_window.cc:5692",
    "en": "Convert to Horizontal Split"
   },
   "sidebar.tabContextMenu.convertToVerticalSplit": {
-   "comment": "sidebar — used at phi_window_controller.cc:5693",
+   "comment": "sidebar — used at phi_shell_window.cc:5693",
    "en": "Convert to Vertical Split"
   },
   "sidebar.tabContextMenu.duplicateSplit": {
-   "comment": "sidebar — used at phi_window_controller.cc:5682",
+   "comment": "sidebar — used at phi_shell_window.cc:5682",
    "en": "Duplicate Split"
   },
   "sidebar.tabContextMenu.duplicateTab": {
-   "comment": "sidebar — used at phi_window_controller.cc:5541",
+   "comment": "sidebar — used at phi_shell_window.cc:5541",
    "en": "Duplicate"
   },
   "sidebar.tabContextMenu.moveToGroupSubmenu": {
-   "comment": "sidebar — used at phi_window_controller.cc:5636",
+   "comment": "sidebar — used at phi_shell_window.cc:5636",
    "en": "Move to Group"
   },
   "sidebar.tabContextMenu.moveToNewGroup": {
-   "comment": "sidebar — used at phi_window_controller.cc:5640",
+   "comment": "sidebar — used at phi_shell_window.cc:5640",
    "en": "Move to New Group"
   },
   "sidebar.tabContextMenu.newTabGroup": {
-   "comment": "sidebar — used at phi_window_controller.cc:5602",
+   "comment": "sidebar — used at phi_shell_window.cc:5602",
    "en": "New Tab Group"
   },
   "sidebar.tabContextMenu.pinSplit": {
-   "comment": "sidebar — used at phi_window_controller.cc:5681",
+   "comment": "sidebar — used at phi_shell_window.cc:5681",
    "en": "Pin Split"
   },
   "sidebar.tabContextMenu.pinTab": {
-   "comment": "sidebar — used at phi_window_controller.cc:5540",
+   "comment": "sidebar — used at phi_shell_window.cc:5540",
    "en": "Pin"
   },
   "sidebar.tabContextMenu.removeFromGroup": {
-   "comment": "sidebar — used at phi_window_controller.cc:5641",
+   "comment": "sidebar — used at phi_shell_window.cc:5641",
    "en": "Remove from Group"
   },
   "sidebar.tabContextMenu.removeFromSplit": {
-   "comment": "sidebar — used at phi_window_controller.cc:5694",
+   "comment": "sidebar — used at phi_shell_window.cc:5694",
    "en": "Remove from Split"
   },
   "sidebar.tabContextMenu.reverseSplitPanes": {
-   "comment": "sidebar — used at phi_window_controller.cc:5687",
+   "comment": "sidebar — used at phi_shell_window.cc:5687",
    "en": "Reverse Panes"
   },
   "sidebar.tabContextMenu.splitWithCurrent": {
-   "comment": "sidebar — used at phi_window_controller.cc:5559",
+   "comment": "sidebar — used at phi_shell_window.cc:5559",
    "en": "Split with Current"
   },
   "sidebar.tabContextMenu.unpinClosedSplit": {
-   "comment": "sidebar — used at phi_window_controller.cc:5900",
+   "comment": "sidebar — used at phi_shell_window.cc:5900",
    "en": "Unpin Split"
   },
   "sidebar.tabContextMenu.unpinTab": {
-   "comment": "sidebar — used at phi_window_controller.cc:5900",
+   "comment": "sidebar — used at phi_shell_window.cc:5900",
    "en": "Unpin"
   },
   "sidebar.tabGroupContextMenu.changeColorSubmenu": {
-   "comment": "sidebar — used at phi_window_controller.cc:5447",
+   "comment": "sidebar — used at phi_shell_window.cc:5447",
    "en": "Change Color"
   },
   "sidebar.tabGroupContextMenu.closeGroupAction": {
-   "comment": "sidebar — used at phi_window_controller.cc:5450",
+   "comment": "sidebar — used at phi_shell_window.cc:5450",
    "en": "Close Group"
   },
   "sidebar.tabGroupContextMenu.renameAction": {
-   "comment": "sidebar — used at phi_window_controller.cc:5466",
+   "comment": "sidebar — used at phi_shell_window.cc:5466",
    "en": "Rename Group"
   },
   "sidebar.tabGroupContextMenu.ungroupAction": {
-   "comment": "sidebar — used at phi_window_controller.cc:5449",
+   "comment": "sidebar — used at phi_shell_window.cc:5449",
    "en": "Ungroup"
   },
   "sidebar.takeControl": {
-   "comment": "sidebar — used at phi_window_controller.cc:5536",
+   "comment": "sidebar — used at phi_shell_window.cc:5536",
    "en": "Take Control"
   },
   "sidebar.urlRulesEditor.addRuleButton": {
@@ -2706,43 +2706,43 @@
    "en": "Ask every time"
   },
   "sidebar.willAlsoBeRemovedThis": {
-   "comment": "sidebar — used at phi_window_controller.cc:6394",
+   "comment": "sidebar — used at phi_shell_window.cc:6394",
    "en": "will also be removed. This action cannot be undone."
   },
   "tabs.tabGroup.colorName.blue": {
-   "comment": "sidebar — used at phi_window_controller.cc:164",
+   "comment": "sidebar — used at phi_shell_window.cc:164",
    "en": "Blue"
   },
   "tabs.tabGroup.colorName.cyan": {
-   "comment": "sidebar — used at phi_window_controller.cc:170",
+   "comment": "sidebar — used at phi_shell_window.cc:170",
    "en": "Cyan"
   },
   "tabs.tabGroup.colorName.green": {
-   "comment": "sidebar — used at phi_window_controller.cc:167",
+   "comment": "sidebar — used at phi_shell_window.cc:167",
    "en": "Green"
   },
   "tabs.tabGroup.colorName.grey": {
-   "comment": "sidebar — used at phi_window_controller.cc:163",
+   "comment": "sidebar — used at phi_shell_window.cc:163",
    "en": "Grey"
   },
   "tabs.tabGroup.colorName.orange": {
-   "comment": "sidebar — used at phi_window_controller.cc:171",
+   "comment": "sidebar — used at phi_shell_window.cc:171",
    "en": "Orange"
   },
   "tabs.tabGroup.colorName.pink": {
-   "comment": "sidebar — used at phi_window_controller.cc:168",
+   "comment": "sidebar — used at phi_shell_window.cc:168",
    "en": "Pink"
   },
   "tabs.tabGroup.colorName.purple": {
-   "comment": "sidebar — used at phi_window_controller.cc:169",
+   "comment": "sidebar — used at phi_shell_window.cc:169",
    "en": "Purple"
   },
   "tabs.tabGroup.colorName.red": {
-   "comment": "sidebar — used at phi_window_controller.cc:165",
+   "comment": "sidebar — used at phi_shell_window.cc:165",
    "en": "Red"
   },
   "tabs.tabGroup.colorName.yellow": {
-   "comment": "sidebar — used at phi_window_controller.cc:166",
+   "comment": "sidebar — used at phi_shell_window.cc:166",
    "en": "Yellow"
   },
   "tabs.tabGroup.summaryWithTabCount": {

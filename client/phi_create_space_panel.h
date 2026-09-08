@@ -17,7 +17,7 @@
 
 namespace phi_client {
 
-class PhiWindowController;
+class PhiShellWindow;
 
 // The Mac's CreateSpacePanel in its sidebar style (UserInterface/Sidebar/
 // Spaces/CreateSpacePanel.swift, mounted by SidebarViewController.
@@ -34,7 +34,7 @@ class PhiWindowController;
 // the icon on the strip's dashed placeholder pip.
 class PhiCreateSpacePanel : public PhiPanel {
  public:
-  explicit PhiCreateSpacePanel(PhiWindowController* controller);
+  explicit PhiCreateSpacePanel(PhiShellWindow* controller);
   ~PhiCreateSpacePanel() override;
 
   PhiCreateSpacePanel(const PhiCreateSpacePanel&) = delete;
@@ -130,7 +130,7 @@ class PhiCreateSpacePanel : public PhiPanel {
 
   static LRESULT CALLBACK FieldProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l);
 
-  RAW_PTR_EXCLUSION PhiWindowController* const controller_;
+  RAW_PTR_EXCLUSION PhiShellWindow* const controller_;
   HWND field_ = nullptr;
   WNDPROC field_base_proc_ = nullptr;
   HBRUSH field_brush_ = nullptr;

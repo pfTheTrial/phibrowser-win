@@ -24,7 +24,7 @@ class PhiFramework;
 
 namespace phi_client {
 
-class PhiWindowController;
+class PhiShellWindow;
 class PhiWindowModel;
 
 // Attached surfaces (docs/architecture-review.md §3.4, lane 1 §1.2 cluster
@@ -46,7 +46,7 @@ class PhiSurfaceCoordinator {
     virtual ~Host() = default;
     // The window whose ON-SCREEN browser holds `tab_id` (by the model, so a
     // tab hidden in a pin or bookmark cell still counts), or null.
-    virtual PhiWindowController* WindowShowingTab(TabId tab_id) = 0;
+    virtual PhiShellWindow* WindowShowingTab(TabId tab_id) = 0;
     // The reader affordance for `tab_id` may have changed — repaint the
     // window showing it, at the next idle.
     virtual void ScheduleRefreshForTab(TabId tab_id) = 0;
@@ -96,7 +96,7 @@ class PhiSurfaceCoordinator {
   // App -> extensions. False when the broadcast reached nobody.
   bool BroadcastToExtensions(const std::string& type,
                              const std::string& payload_json);
-  PhiWindowController* WindowShowingTab(TabId tab_id);
+  PhiShellWindow* WindowShowingTab(TabId tab_id);
   // A reader style axis moved: persist it.
   void OnReaderStyleChanged();
   // Seeds the live style from the loaded settings.

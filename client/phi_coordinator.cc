@@ -416,7 +416,7 @@ void PhiCoordinator::CompleteProfileReply(int reply_id, std::string json) {
 
 void PhiCoordinator::FillSpaceFormProfile(SlotId slot,
                                           const std::string& profile_id) {
-  if (PhiWindowController* controller = ControllerForSlot(slot)) {
+  if (PhiShellWindow* controller = ControllerForSlot(slot)) {
     controller->OnSpaceFormProfileCreated(profile_id);
   }
 }
@@ -493,7 +493,7 @@ bool PhiCoordinator::RemoveCredentialGrant(const std::string& scope) {
 }
 
 HWND PhiCoordinator::CredentialPromptOwner() {
-  for (PhiWindowController* controller : registry_.Controllers()) {
+  for (PhiShellWindow* controller : registry_.Controllers()) {
     if (controller->shell_hwnd()) {
       return controller->shell_hwnd();
     }
@@ -559,7 +559,7 @@ void PhiCoordinator::RequestSpaceBrowser(const std::string& profile_id,
 
 bool PhiCoordinator::OwnerForSlot(SlotId slot, std::string* profile_id,
                                   std::string* space_id) const {
-  PhiWindowController* controller = registry_.Get(slot);
+  PhiShellWindow* controller = registry_.Get(slot);
   if (!controller) {
     return false;
   }
@@ -1329,7 +1329,7 @@ void PhiCoordinator::NoteActiveSpace(const std::string& space_id) {
 
 // The live user window's Space, for the restore service's LastActiveSpaceId.
 std::string PhiCoordinator::ActiveSpaceOfLiveWindow() const {
-  for (PhiWindowController* controller : registry_.Controllers()) {
+  for (PhiShellWindow* controller : registry_.Controllers()) {
     if (controller->is_agent()) {
       continue;
     }
@@ -1418,7 +1418,7 @@ void PhiCoordinator::OnTabDistillable(int64_t window_id, int tab_id,
                                      bool distillable) {
   // Route to the shell hosting this browser (every browser a slot shows,
   // its original included, is bound in the registry).
-  PhiWindowController* controller =
+  PhiShellWindow* controller =
       registry_.ControllerForBrowser(BrowserId{window_id});
   LOG(INFO) << "[PhiClient] Distillable win=" << window_id << " tab=" << tab_id
             << " d=" << distillable << " routed=" << (controller != nullptr);
@@ -1453,12 +1453,12 @@ void PhiCoordinator::OnExtensionMessage(const char* request_id,
   }
 }
 
-PhiWindowController* PhiCoordinator::WindowShowingTab(TabId tab_id) {
+PhiShellWindow* PhiCoordinator::WindowShowingTab(TabId tab_id) {
   const std::optional<BrowserId> browser = window_model_.BrowserOfTab(tab_id);
   if (!browser) {
     return nullptr;
   }
-  PhiWindowController* window = registry_.ControllerForBrowser(*browser);
+  PhiShellWindow* window = registry_.ControllerForBrowser(*browser);
   // A slot hosts N Space browsers; only the one on screen "shows" the tab.
   return window && window->active_browser_id() == *browser ? window : nullptr;
 }
@@ -1467,7 +1467,7 @@ void PhiCoordinator::ScheduleRefreshForTab(TabId tab_id) {
   // The reader button is laid out from this verdict, so the window showing
   // the tab has to repaint. At the next idle: the report can arrive during a
   // navigation the strip has not caught up with yet.
-  if (PhiWindowController* window = WindowShowingTab(tab_id)) {
+  if (PhiShellWindow* window = WindowShowingTab(tab_id)) {
     window->ScheduleRefresh();
   }
 }
@@ -1827,7 +1827,7 @@ void PhiCoordinator::RestoreAllShortcuts() {
 
 void PhiCoordinator::FocusWindowForBrowser(int64_t browser_window_id) {
   const BrowserId browser{browser_window_id};
-  PhiWindowController* controller = registry_.ControllerForBrowser(browser);
+  PhiShellWindow* controller = registry_.ControllerForBrowser(browser);
   if (!controller) {
     return;
   }
@@ -1850,7 +1850,7 @@ void PhiCoordinator::RequestTabToSpace(SlotId slot,
                                        TabId tab,
                                        const std::string& space_id,
                                        bool move) {
-  PhiWindowController* source = registry_.Get(slot);
+  PhiShellWindow* source = registry_.Get(slot);
   if (!source || !framework_) {
     return;
   }
@@ -1866,7 +1866,7 @@ void PhiCoordinator::RequestTabToSpace(SlotId slot,
   }
   // An open target Space (any slot) gets the real move.
   BrowserId target_browser;
-  for (PhiWindowController* controller : registry_.UserControllers()) {
+  for (PhiShellWindow* controller : registry_.UserControllers()) {
     target_browser = controller->BrowserIdForSpace(space_id);
     if (target_browser.valid()) {
       break;
@@ -2219,7 +2219,7 @@ void PhiCoordinator::OnPreferencesChanged(
     case PreferenceChange::kLayoutMode:
       // Every slot re-lays out: the layout is a client-wide setting, so two
       // windows side by side must never disagree.
-      for (PhiWindowController* controller : registry_.Controllers()) {
+      for (PhiShellWindow* controller : registry_.Controllers()) {
         controller->ApplyLayoutMode(preferences_.LayoutMode());
       }
       return;
@@ -2227,7 +2227,7 @@ void PhiCoordinator::OnPreferencesChanged(
     case PreferenceChange::kBookmarkBar:
       // The sidebar, or the bar's band, takes/releases part of the content
       // rect in every window.
-      for (PhiWindowController* controller : registry_.Controllers()) {
+      for (PhiShellWindow* controller : registry_.Controllers()) {
         controller->LayoutContents();
       }
       registry_.InvalidateAll();
@@ -2237,7 +2237,7 @@ void PhiCoordinator::OnPreferencesChanged(
       // The app-wide palette is re-resolved; the per-Space overrides follow
       // it, and every slot repaints with the result.
       space_manager_->RebuildSpacePalettes();
-      for (PhiWindowController* controller : registry_.Controllers()) {
+      for (PhiShellWindow* controller : registry_.Controllers()) {
         controller->ApplyPalette();
       }
       break;
@@ -2257,7 +2257,7 @@ void PhiCoordinator::OnPreferencesChanged(
       // Every piece of chrome caches the strings it was built with, so the
       // whole UI is rebuilt: menu bars are recreated from their (new)
       // titles.
-      for (PhiWindowController* controller : registry_.Controllers()) {
+      for (PhiShellWindow* controller : registry_.Controllers()) {
         controller->RebuildMenuBar();
         if (HWND shell = controller->shell_hwnd()) {
           ::InvalidateRect(shell, nullptr, TRUE);
@@ -2292,7 +2292,7 @@ void PhiCoordinator::OnSpacesChanged(PhiSpaceManager::SpacesChange what) {
       registry_.InvalidateAll();
       break;
     case SpacesChange::kTheme:
-      for (PhiWindowController* controller : registry_.Controllers()) {
+      for (PhiShellWindow* controller : registry_.Controllers()) {
         controller->ApplyPalette();
       }
       break;
@@ -2315,7 +2315,7 @@ void PhiCoordinator::OpenUrlInMainWindow(const std::string& url) {
   // The focused user window; a Kiosk has no Space of its own to prefer, so
   // the page lands wherever the user's browsing already lives — in the
   // browser that slot is SHOWING, never its original.
-  PhiWindowController* main = FocusedUserController();
+  PhiShellWindow* main = FocusedUserController();
   if (!main) {
     return;
   }
@@ -2374,7 +2374,7 @@ void PhiCoordinator::RequestSettings() {
 
 void PhiCoordinator::RequestFeedback(int64_t slot,
                                      const PhiFeedbackContext& context) {
-  PhiWindowController* controller = registry_.Resolve(slot);
+  PhiShellWindow* controller = registry_.Resolve(slot);
   account_.OpenFeedback(controller ? controller->shell_hwnd() : nullptr,
                         context);
 }
@@ -2382,7 +2382,7 @@ void PhiCoordinator::RequestFeedback(int64_t slot,
 void PhiCoordinator::OnShowFeedbackRequested() {
   // Chromium's IDC_FEEDBACK (Help ▸ Report an Issue via the framework, the
   // sad tab's Send feedback, …): the window the user is looking at.
-  if (PhiWindowController* controller = FocusedUserController()) {
+  if (PhiShellWindow* controller = FocusedUserController()) {
     controller->OpenFeedback();
   }
 }
@@ -2400,7 +2400,7 @@ int64_t PhiCoordinator::SlotAtScreenPoint(POINT screen,
   if (!at) {
     return 0;
   }
-  for (PhiWindowController* controller : registry_.Controllers()) {
+  for (PhiShellWindow* controller : registry_.Controllers()) {
     if (controller->slot() != SlotId{exclude_slot} &&
         controller->shell_hwnd() == at) {
       return controller->slot().value;
@@ -2497,8 +2497,8 @@ bool PhiCoordinator::RequestDropTabOnWindow(int64_t source_slot,
                                             int tab_a,
                                             int tab_b,
                                             int64_t target_slot) {
-  PhiWindowController* source = registry_.Resolve(source_slot);
-  PhiWindowController* target = registry_.Resolve(target_slot);
+  PhiShellWindow* source = registry_.Resolve(source_slot);
+  PhiShellWindow* target = registry_.Resolve(target_slot);
   if (!source || !target || !framework_) {
     return false;
   }
@@ -2608,13 +2608,13 @@ void PhiCoordinator::RequestAgentFinish(const std::string& task_id) {
   agent_manager_.RequestFinish(task_id);
 }
 
-PhiWindowController* PhiCoordinator::ControllerForAgentWindow(
+PhiShellWindow* PhiCoordinator::ControllerForAgentWindow(
     BrowserId window_id) {
   return registry_.Resolve(window_id.value);
 }
 
-PhiWindowController* PhiCoordinator::FirstUserController() {
-  for (PhiWindowController* controller : registry_.Controllers()) {
+PhiShellWindow* PhiCoordinator::FirstUserController() {
+  for (PhiShellWindow* controller : registry_.Controllers()) {
     if (!controller->is_agent() && controller->shell_hwnd()) {
       return controller;
     }
@@ -2666,7 +2666,7 @@ void PhiCoordinator::RequestShowTranscript(const std::string& task_id) {
   }
   // Own the panel from the first USER window's shell — the panel floats, so
   // any live shell serves as its owner.
-  if (PhiWindowController* controller = FirstUserController()) {
+  if (PhiShellWindow* controller = FirstUserController()) {
     PhiTranscriptPanel::Toggle(controller->shell_hwnd(),
                                PaletteForSlot(controller->slot().value),
                                task_id, &agent_manager_);
@@ -2703,7 +2703,7 @@ void PhiCoordinator::RequestSwitchSpace(int64_t slot,
 void PhiCoordinator::RequestCreateSpace(int64_t slot, bool new_profile) {
   // Same profile as the slot's current Space unless a new one was asked for.
   std::string profile_id = "Default";
-  if (PhiWindowController* controller = registry_.Resolve(slot)) {
+  if (PhiShellWindow* controller = registry_.Resolve(slot)) {
     if (const Space* s = space_manager_->Find(controller->active_space())) {
       profile_id = s->profile_id;
     }
@@ -2790,7 +2790,7 @@ std::string PhiCoordinator::RequestCreateSpaceWithOptions(
   return new_id;
 }
 
-PhiWindowController* PhiCoordinator::ControllerForSlot(SlotId slot) {
+PhiShellWindow* PhiCoordinator::ControllerForSlot(SlotId slot) {
   // Wire windowIds may name a slot, a browser bound to one (what
   // spaces.list reports), or 0 for "the window": one resolver for all.
   return registry_.Resolve(slot.value);
@@ -2802,7 +2802,7 @@ BrowserId PhiCoordinator::ResolveBrowser(int64_t slot_or_browser) const {
 }
 
 BrowserId PhiCoordinator::ResolveBrowser(SlotId slot) const {
-  PhiWindowController* controller = registry_.Resolve(slot.value);
+  PhiShellWindow* controller = registry_.Resolve(slot.value);
   return controller ? controller->active_browser_id() : BrowserId();
 }
 
@@ -2926,7 +2926,7 @@ bool PhiCoordinator::HostSurfacePanel(
   const HWND hwnd = reinterpret_cast<HWND>(creation.hwnd);
   // The opener is named by BROWSER id; the controller is filed under its
   // slot, and the two only coincide until that slot switches Space.
-  PhiWindowController* opener =
+  PhiShellWindow* opener =
       registry_.ControllerForBrowser(creation.opener_window);
   if (!opener) {
     LOG(WARNING) << "[PhiClient] surface " << browser.value
@@ -2969,9 +2969,9 @@ void PhiCoordinator::HostAgentWindow(BrowserId browser,
   // Hosted with the agent chrome whether or not the session is off the
   // record: nobody sees it, and the incognito shell's registry opt-out is
   // the agent path's already. The flag lives on the shadow record.
-  PhiWindowController* controller = registry_.Add(
+  PhiShellWindow* controller = registry_.Add(
       slot,
-      std::make_unique<PhiWindowController>(slot, browser, hwnd, framework_,
+      std::make_unique<PhiShellWindow>(slot, browser, hwnd, framework_,
                                             SlotServices(), &window_model_,
                                             /*agent=*/true),
       /*agent=*/true, incognito);
@@ -3000,7 +3000,7 @@ bool PhiCoordinator::AttachRequestedSpaceBrowser(
     BrowserId browser,
     HWND hwnd,
     const PendingCreation& pending) {
-  PhiWindowController* target = registry_.Get(pending.slot);
+  PhiShellWindow* target = registry_.Get(pending.slot);
   if (!target) {
     if (pending.slot.valid()) {
       LOG(WARNING) << "[PhiClient] Space browser " << browser.value
@@ -3047,7 +3047,7 @@ bool PhiCoordinator::AttachRestoredGhost(BrowserId browser,
     space_id = *space;
     slot = registry_.FirstUserSlot();
   }
-  PhiWindowController* target = registry_.Get(slot);
+  PhiShellWindow* target = registry_.Get(slot);
   if (space_id.empty() || !target) {
     return false;
   }
@@ -3066,9 +3066,9 @@ void PhiCoordinator::HostUserShell(BrowserId browser, HWND hwnd,
   // off-the-record browser (IDC_NEW_INCOGNITO_WINDOW) becomes an INCOGNITO
   // shell: fixed-dark, no Spaces/pins/bookmarks, unrouted.
   const SlotId slot = SlotId::OpenedBy(browser);
-  PhiWindowController* controller = registry_.Add(
+  PhiShellWindow* controller = registry_.Add(
       slot,
-      std::make_unique<PhiWindowController>(slot, browser, hwnd, framework_,
+      std::make_unique<PhiShellWindow>(slot, browser, hwnd, framework_,
                                             SlotServices(), &window_model_,
                                             /*agent=*/false, incognito),
       /*agent=*/false, incognito);
@@ -3108,7 +3108,7 @@ HWND PhiCoordinator::ShellForFocus() const {
     return nullptr;
   }
   HWND root = ::GetAncestor(focus, GA_ROOT);
-  for (PhiWindowController* controller : registry_.Controllers()) {
+  for (PhiShellWindow* controller : registry_.Controllers()) {
     if (controller->shell_hwnd() == root) {
       return root;
     }
@@ -3128,7 +3128,7 @@ void PhiCoordinator::OnExtensionsChanged(int64_t window_id) {
   PhiExtensionsPopover::RefreshOpen();
   // The address capsule's pinned-extension icons follow the same change
   // notification (a pin toggle, an install, an icon decode).
-  for (PhiWindowController* controller : registry_.Controllers()) {
+  for (PhiShellWindow* controller : registry_.Controllers()) {
     controller->RefreshFieldExtensions();
   }
 }
@@ -3136,27 +3136,27 @@ void PhiCoordinator::OnExtensionsChanged(int64_t window_id) {
 void PhiCoordinator::OnContentFullscreenChanged(int64_t window_id,
                                                 bool fullscreen) {
   const BrowserId browser{window_id};
-  if (PhiWindowController* shell = registry_.ControllerForBrowser(browser)) {
+  if (PhiShellWindow* shell = registry_.ControllerForBrowser(browser)) {
     shell->OnContentFullscreenChanged(browser, fullscreen);
   }
 }
 
 void PhiCoordinator::OnTargetURLChanged(int64_t window_id, const char* url) {
   const BrowserId browser{window_id};
-  if (PhiWindowController* shell = registry_.ControllerForBrowser(browser)) {
+  if (PhiShellWindow* shell = registry_.ControllerForBrowser(browser)) {
     shell->OnTargetURLChanged(browser, base::UTF8ToWide(url ? url : ""));
   }
 }
 
 void PhiCoordinator::OnOmniboxResults(int64_t window_id, const char* json) {
   const BrowserId browser{window_id};
-  if (PhiWindowController* shell = registry_.ControllerForBrowser(browser)) {
+  if (PhiShellWindow* shell = registry_.ControllerForBrowser(browser)) {
     shell->OnOmniboxResults(browser, json ? json : "");
   }
 }
 
 void PhiCoordinator::OnImportCompleted(const char* source, bool success) {
-  PhiWindowController* focused = FocusedUserController();
+  PhiShellWindow* focused = FocusedUserController();
   HWND owner = focused ? focused->shell_hwnd() : nullptr;
   if (!success) {
     PhiNotice(owner, L"Import",
@@ -3236,7 +3236,7 @@ void PhiCoordinator::OnPlaceholderModeChanged(int64_t window_id,
   if (surface_coordinator_.DeferRetireOnPlaceholder(browser, entered)) {
     return;
   }
-  if (PhiWindowController* shell = registry_.ControllerForBrowser(browser)) {
+  if (PhiShellWindow* shell = registry_.ControllerForBrowser(browser)) {
     shell->OnPlaceholderModeChanged(browser, entered);
   }
 }
@@ -3245,7 +3245,7 @@ void PhiCoordinator::OnRefreshNewTab(int64_t window_id) {
   // A Space URL rule re-homed a navigation that began on this window's new
   // tab: the tab is a new tab again, so its native page goes back to its
   // clean state (the Mac's resetToInitialState).
-  if (PhiWindowController* shell =
+  if (PhiShellWindow* shell =
           registry_.ControllerForBrowser(BrowserId{window_id})) {
     shell->ResetNativeNtp();
   }
@@ -3277,7 +3277,7 @@ void PhiCoordinator::NoteWindowSnapshot(
     ApplyLegacyTagAliases(browser);
     surface_coordinator_.UpdateReaderPanelsForWindow(browser);
   }
-  if (PhiWindowController* shell = registry_.ControllerForBrowser(browser)) {
+  if (PhiShellWindow* shell = registry_.ControllerForBrowser(browser)) {
     // Coalesced: the sidebar repaints once per turn.
     shell->ScheduleRefresh();
     // The shell switches Spaces on its own (ShowSpace) without telling the
@@ -3335,10 +3335,10 @@ void PhiCoordinator::RetireClosingBrowser(BrowserId browser) {
     // Repaint by the origin WINDOW: the origin tab may be hidden in a pin or
     // bookmark cell, which no visible-row lookup would find — and when it
     // was already active, re-activating it raises no tab notification.
-    if (PhiWindowController* origin =
+    if (PhiShellWindow* origin =
             registry_.ControllerForBrowser(gone->origin_window_id)) {
       origin->ScheduleRefresh();
-    } else if (PhiWindowController* shown =
+    } else if (PhiShellWindow* shown =
                    WindowShowingTab(gone->origin_tab_id)) {
       shown->ScheduleRefresh();
     }
@@ -3367,7 +3367,7 @@ void PhiCoordinator::RetireClosingBrowser(BrowserId browser) {
   if (agent_manager_.RetireHiddenWindow(browser)) {
     // The watch overlay may be bound to this shell: unhook it BEFORE the
     // controller (and its HWND) goes, or it keeps a dangling binding.
-    if (PhiWindowController* shell = registry_.Get(agent_slot)) {
+    if (PhiShellWindow* shell = registry_.Get(agent_slot)) {
       agent_manager_.HideOverlayBoundTo(shell);
     }
     registry_.Remove(agent_slot);  // Drops the browser's binding with it.
@@ -3380,7 +3380,7 @@ void PhiCoordinator::RetireClosingBrowser(BrowserId browser) {
     return;  // A browser no slot ever hosted (an unrequested stray).
   }
   registry_.Unbind(browser);
-  PhiWindowController* shell = registry_.Get(*slot);
+  PhiShellWindow* shell = registry_.Get(*slot);
   if (!shell) {
     return;
   }
@@ -3402,7 +3402,7 @@ bool PhiCoordinator::SwitchSlotToSpace(
     bool* pending,
     bool* cold,
     const std::vector<std::string>* reopen_urls) {
-  PhiWindowController* shell = ControllerForSlot(slot);
+  PhiShellWindow* shell = ControllerForSlot(slot);
   const Space* space = space_manager_->Find(space_id);
   if (!shell || !space) {
     return false;
@@ -3497,7 +3497,7 @@ BrowserId PhiCoordinator::BrowserForSpace(const std::string& space_id) const {
   if (space_id.empty()) {
     return BrowserId();
   }
-  for (PhiWindowController* controller : registry_.Controllers()) {
+  for (PhiShellWindow* controller : registry_.Controllers()) {
     const BrowserId browser = controller->BrowserIdForSpace(space_id);
     if (browser.valid()) {
       return browser;
@@ -3506,10 +3506,10 @@ BrowserId PhiCoordinator::BrowserForSpace(const std::string& space_id) const {
   return BrowserId();
 }
 
-PhiWindowController* PhiCoordinator::FocusedUserController() {
+PhiShellWindow* PhiCoordinator::FocusedUserController() {
   const HWND foreground = ::GetForegroundWindow();
-  PhiWindowController* first_user = nullptr;
-  for (PhiWindowController* controller : registry_.Controllers()) {
+  PhiShellWindow* first_user = nullptr;
+  for (PhiShellWindow* controller : registry_.Controllers()) {
     if (controller->is_agent()) {
       continue;
     }

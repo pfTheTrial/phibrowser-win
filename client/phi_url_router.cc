@@ -14,7 +14,7 @@
 #include "chrome/browser/phinomenon/phi_framework/phi_framework_api.h"
 #include "phibrowser-win/client/phi_prompt.h"
 #include "phibrowser-win/client/phi_space_manager.h"
-#include "phibrowser-win/client/phi_window_controller.h"
+#include "phibrowser-win/client/phi_shell_window.h"
 
 namespace phi_client {
 
@@ -178,7 +178,7 @@ void PhiUrlRouter::RunPendingAsk() {
   // The source slot's shell owns the (modal) chooser; its active Space is
   // the "keep here" target.
   const BrowserId source{ask.source_window_id};
-  PhiWindowController* controller = registry_.ControllerForBrowser(source);
+  PhiShellWindow* controller = registry_.ControllerForBrowser(source);
   const std::string current_space_id =
       controller ? controller->active_space() : std::string();
 
@@ -228,7 +228,7 @@ void PhiUrlRouter::RouteUrlToSpace(const std::string& space_id,
   // link (the Mac activates the Space's window and opens the tab). The open
   // bypasses URL routing — the URL may be the very navigation a rule just
   // re-homed, and re-matching it would loop.
-  for (PhiWindowController* controller : registry_.Controllers()) {
+  for (PhiShellWindow* controller : registry_.Controllers()) {
     if (!controller->HasSpace(space_id)) {
       continue;
     }
@@ -291,7 +291,7 @@ void PhiUrlRouter::PushRoutingTableNow() {
   // OnRouteURLToSpace (which re-enters ShowSpace) instead of a direct open
   // into an off-screen browser.
   base::DictValue map;
-  for (PhiWindowController* controller : registry_.Controllers()) {
+  for (PhiShellWindow* controller : registry_.Controllers()) {
     const std::string& space_id = controller->active_space();
     const BrowserId browser_id = controller->active_browser_id();
     if (space_id.empty() || !browser_id.valid() || map.Find(space_id)) {

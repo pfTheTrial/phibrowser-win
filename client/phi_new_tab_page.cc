@@ -14,7 +14,7 @@
 #include "phibrowser-win/client/phi_i18n.h"
 #include "phibrowser-win/client/phi_mac_icons.h"
 #include "phibrowser-win/client/phi_theme.h"
-#include "phibrowser-win/client/phi_window_controller.h"
+#include "phibrowser-win/client/phi_shell_window.h"
 
 namespace phi_client {
 
@@ -61,7 +61,7 @@ COLORREF BlendInk(COLORREF ink, COLORREF over, int alpha255) {
 
 }  // namespace
 
-PhiNewTabPage::PhiNewTabPage(PhiWindowController* controller)
+PhiNewTabPage::PhiNewTabPage(PhiShellWindow* controller)
     : controller_(controller) {}
 
 PhiNewTabPage::~PhiNewTabPage() {

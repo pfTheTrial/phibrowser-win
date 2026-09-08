@@ -16,7 +16,7 @@
 
 namespace phi_client {
 
-class PhiWindowController;
+class PhiShellWindow;
 struct PhiPalette;
 
 // The Mac's TabPreviewController (UserInterface/Common/TabPreview): the hover
@@ -74,7 +74,7 @@ class PhiTabPreview : public PhiPopover {
     Placement placement = Placement::kRightTopAttached;
   };
 
-  explicit PhiTabPreview(PhiWindowController* controller);
+  explicit PhiTabPreview(PhiShellWindow* controller);
   ~PhiTabPreview() override;
 
   PhiTabPreview(const PhiTabPreview&) = delete;
@@ -91,7 +91,7 @@ class PhiTabPreview : public PhiPopover {
   void Cancel();
 
   // DEAD SEAM, kept only so the shell's WM_TIMER branch
-  // (phi_window_controller.cc) keeps compiling: the card used to arm its
+  // (phi_shell_window.cc) keeps compiling: the card used to arm its
   // three timers on the SHELL's HWND — a window it does not own — and the
   // shell dispatched them here first (lane 3 §4.1, ranked finding 9). It
   // owns its own window and its own timer ids now, so this always returns
@@ -157,7 +157,7 @@ class PhiTabPreview : public PhiPopover {
   HFONT TitleFont();
   HFONT UrlFont();
 
-  RAW_PTR_EXCLUSION PhiWindowController* const controller_;
+  RAW_PTR_EXCLUSION PhiShellWindow* const controller_;
 
   // The card on screen, and the one the armed timer will promote to.
   Target shown_;

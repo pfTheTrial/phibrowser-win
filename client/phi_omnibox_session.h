@@ -202,7 +202,7 @@ class PhiOmniboxSession {
   // reports its EN_CHANGE here.
   void AttachField(HWND edit);
   // By const REFERENCE, so the shell can publish a view of it (PhiMenuBar
-  // still reads the field by member name — see phi_window_controller.h).
+  // still reads the field by member name — see phi_shell_window.h).
   const HWND& field() const { return field_; }
   // The session's field, or the native page's, whichever holds keyboard
   // focus — the query, the dropdown and the arrow fills all act on this one.

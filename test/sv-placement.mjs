@@ -1,7 +1,7 @@
 // First-frame placement probe (the layouts canvas's one open check): after a
 // fresh launch, Chromium's window bounds must equal the placement it saved
 // last session — the shell anchors its content region there, per layout mode
-// (the `wr.right > wr.left` conversion in phi_window_controller.cc). Run it
+// (the `wr.right > wr.left` conversion in phi_shell_window.cc). Run it
 // right after PhiFxLaunch; prints saved vs live and the delta, all DIP.
 //
 //   node sv-placement.mjs <mode-label>

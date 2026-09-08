@@ -12,7 +12,7 @@
 
 namespace phi_client {
 
-class PhiWindowController;
+class PhiShellWindow;
 
 // The Mac's SpaceThemeEditorView (ThemeOpacitySlider.swift), shown from a
 // Space menu's "Set Theme" item: one Color row of theme swatches over one
@@ -23,17 +23,17 @@ class PhiWindowController;
 // The panel is a PhiPopover (docs/architecture-review.md §3.6): it does
 // NOT run a message loop. `on_closed` runs once, after the window is gone
 // (Escape, or focus leaving the panel).
-void PhiOpenSpaceThemePanel(PhiWindowController* controller,
+void PhiOpenSpaceThemePanel(PhiShellWindow* controller,
                             const RECT& anchor_screen,
                             const std::string& space_id,
                             std::function<void()> on_closed);
 
 // TRANSITIONAL synchronous wrapper, exactly as for the folder icon picker:
 // it drives the asynchronous panel through a short local message loop so
-// the existing call site (in phi_window_controller.cc, a file phase 5 does
+// the existing call site (in phi_shell_window.cc, a file phase 5 does
 // not own) keeps compiling. Phase 6 moves that call site onto
 // PhiOpenSpaceThemePanel and deletes this.
-void PhiShowSpaceThemePanel(PhiWindowController* controller,
+void PhiShowSpaceThemePanel(PhiShellWindow* controller,
                             const RECT& anchor_screen,
                             const std::string& space_id);
 

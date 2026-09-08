@@ -20,7 +20,7 @@
 #include "phibrowser-win/client/phi_ids.h"
 #include "phibrowser-win/client/phi_popover.h"
 #include "phibrowser-win/client/phi_theme.h"
-#include "phibrowser-win/client/phi_window_controller.h"
+#include "phibrowser-win/client/phi_shell_window.h"
 #include "phibrowser-win/client/phi_window_model.h"
 
 namespace phi_client {
@@ -51,7 +51,7 @@ struct Card {
 // belongs to PhiPopover now (lane 3 §6.2).
 class Hud : public PhiPopover {
  public:
-  explicit Hud(PhiWindowController* controller) : controller_(controller) {
+  explicit Hud(PhiShellWindow* controller) : controller_(controller) {
     ClassSpec spec;
     spec.name = L"PhiTabSwitch";
     spec.cursor = nullptr;
@@ -113,7 +113,7 @@ class Hud : public PhiPopover {
 
   static Hud* instance;
 
-  PhiWindowController* controller() const { return controller_; }
+  PhiShellWindow* controller() const { return controller_; }
 
  protected:
   // The HUD follows the shell's live palette, so a theme switch (or an OS
@@ -246,7 +246,7 @@ class Hud : public PhiPopover {
     }
   }
 
-  RAW_PTR_EXCLUSION PhiWindowController* const controller_;
+  RAW_PTR_EXCLUSION PhiShellWindow* const controller_;
   std::vector<Card> cards_;
   int selected_ = 0;
 };
@@ -261,7 +261,7 @@ bool PhiTabSwitcher::IsActive() {
 }
 
 // static
-void PhiTabSwitcher::Cycle(PhiWindowController* controller, int direction) {
+void PhiTabSwitcher::Cycle(PhiShellWindow* controller, int direction) {
   if (!Hud::instance) {
     if (!controller) {
       return;
@@ -289,7 +289,7 @@ void PhiTabSwitcher::Cancel() {
 }
 
 // static
-void PhiTabSwitcher::CancelIfBoundTo(const PhiWindowController* controller) {
+void PhiTabSwitcher::CancelIfBoundTo(const PhiShellWindow* controller) {
   if (Hud::instance && Hud::instance->controller() == controller) {
     Cancel();
   }

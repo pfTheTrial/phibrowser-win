@@ -997,6 +997,41 @@ In order of seam cleanliness: `PhiOmniboxSession`, `PhiBrowserHost`,
 `phi_shell_menus`. `PhiShellWindow` ends as WndProc plus component dispatch.
 Settings rebuilds off-paint with typed host structs.
 
+**Phase 5 status (2026-09-08, committed).** Landed: `PhiWindow` — one
+atom-cached registration path, `this` bound at `WM_NCCREATE` and cleared at
+`WM_NCDESTROY`, a cached back buffer, DPI written only in `WM_DPICHANGED`
+with a font set, palette from a theme bus that listens for the OS
+light/dark switch, a hit-rect list driving hover with old∪new invalidation,
+per-window timer allocation, RAII capture, and `DeleteWhenDestroyed`. On it:
+`PhiPopover` (one anchor-placement implementation replacing five copies, and
+the eight standalone popovers), `PhiPanel` (a card-stack z-order list and the
+ten panels), `PhiSecondaryWindow` (one caption frame replacing three copies,
+and the five windows). Plus `PhiAnimator` for the easing loops, one GDI+
+initializer for four, and a Direct2D rasterizer inside `phi_dwrite` behind a
+runtime probe that falls back to the software field. Two of the three nested
+message loops became async popovers with completion callbacks; the prompt's
+is the one that remains, documented. Settings rebuilds off the paint path.
+**Accessibility, the review's second-ranked finding, is closed**: a UI
+Automation provider reads each surface's hit list, so no surface carries
+accessibility code of its own, and it takes a `PhiHitSource` interface that
+both `PhiWindow` and the hand-registered shell implement — which is how the
+sidebar's rows reach a screen reader.
+
+**Phase 6 status (2026-09-08, committed).** `PhiWindowController` is now
+`PhiShellWindow` and went from 13,142 lines to ~5,200: out of it came
+`PhiOmniboxSession`, `PhiBrowserHost`, `PhiCaptionBand`, pure
+`phi_shell_menus` (a `MenuSpec` built from a snapshot, a `MenuAction`
+re-resolved by key — so no reference can survive a modal loop by
+construction), `PhiNativePagesHost`, `PhiSpacesStrip`, `PhiSidebarView` and
+`PhiSidebarDragSession` (whose destructor IS `AbortDrag`, so a drag comes
+down by ownership). `friend class PhiMenuBar` is retired, the settings host
+passes typed structs instead of tab-separated rows (75 virtuals down to 46,
+setters addressed by identity rather than list position), and the combined
+`PhiSlotHost` is replaced by the five `ShellServices` interfaces, each
+component holding only what it calls. NOT yet verified on the box: the
+sweep, the two rigs and a fingerprint diff against the phase-4 baseline are
+owed, and two agents moved antialiased corner pixels deliberately.
+
 ### Continuous — tests, tooling, cross-cutting (alongside phases 1 to 6)
 
 `test-host.sh` with the codec, WebSocket, verb-table, URL-rule, i18n, theme,

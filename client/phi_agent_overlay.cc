@@ -23,7 +23,7 @@
 #include "phibrowser-win/client/phi_dwrite.h"
 #include "phibrowser-win/client/phi_gdiplus.h"
 #include "phibrowser-win/client/phi_panel.h"
-#include "phibrowser-win/client/phi_window_controller.h"
+#include "phibrowser-win/client/phi_shell_window.h"
 
 namespace phi_client {
 
@@ -203,7 +203,7 @@ class Overlay : public OverlayHost {
  public:
   static Overlay* instance;
 
-  Overlay(PhiWindowController* controller, const std::string& task_id)
+  Overlay(PhiShellWindow* controller, const std::string& task_id)
       : controller_(controller),
         shell_(controller->shell_hwnd()),
         task_id_(task_id) {
@@ -226,7 +226,7 @@ class Overlay : public OverlayHost {
   }
 
   const std::string& task_id() const { return task_id_; }
-  PhiWindowController* controller() const { return controller_; }
+  PhiShellWindow* controller() const { return controller_; }
 
   void Update(const std::wstring& agent_label,
               const std::wstring& caption,
@@ -787,7 +787,7 @@ class Overlay : public OverlayHost {
     }
   }
 
-  RAW_PTR_EXCLUSION PhiWindowController* controller_;
+  RAW_PTR_EXCLUSION PhiShellWindow* controller_;
   const HWND shell_;  // controller_'s shell at construction.
   std::string task_id_;
   std::wstring agent_label_;
@@ -816,7 +816,7 @@ Overlay* Overlay::instance = nullptr;
 }  // namespace
 
 // static
-void PhiAgentOverlay::Show(PhiWindowController* controller,
+void PhiAgentOverlay::Show(PhiShellWindow* controller,
                            const std::string& task_id,
                            const std::wstring& agent_label,
                            const std::wstring& caption,
@@ -842,7 +842,7 @@ void PhiAgentOverlay::Hide() {
 }
 
 // static
-void PhiAgentOverlay::HideIfBoundTo(const PhiWindowController* controller) {
+void PhiAgentOverlay::HideIfBoundTo(const PhiShellWindow* controller) {
   if (Overlay::instance && Overlay::instance->controller() == controller) {
     Hide();
   }

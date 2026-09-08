@@ -15,7 +15,7 @@ namespace phi_client {
 //   * the "Phi & AI" pane in Settings (phi_settings_window.cc), including the
 //     control channel's agentSpace.settings.set section;
 //   * the Chat capsule in the sidebar's bottom bar and, in the balanced
-//     layout, in the header (phi_window_controller.cc);
+//     layout, in the header (phi_shell_window.cc);
 //   * the browser-memory chip beside it.
 //
 // NOT the agent Space, the skill relay, or anything else under agentSpace.*:

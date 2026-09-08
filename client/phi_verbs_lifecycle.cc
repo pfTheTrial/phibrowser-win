@@ -25,7 +25,7 @@
 #include "phibrowser-win/client/phi_telemetry.h"
 #include "phibrowser-win/client/phi_transcript_panel.h"
 #include "phibrowser-win/client/phi_window_capture.h"
-#include "phibrowser-win/client/phi_window_controller.h"
+#include "phibrowser-win/client/phi_shell_window.h"
 #include "phibrowser-win/client/phi_window_registry.h"
 
 // The agent-Space lifecycle, shadow windows, the reader, the task-less
@@ -75,7 +75,7 @@ PhiVerbResult PhiControlDispatcher::VerbPing(const PhiVerbContext& ctx) {
 PhiVerbResult PhiControlDispatcher::VerbList(const PhiVerbContext& ctx) {
   base::DictValue out;
   base::ListValue list;
-  for (PhiWindowController* controller :
+  for (PhiShellWindow* controller :
        coordinator_->registry().Controllers()) {
     list.Append(static_cast<double>(controller->slot().value));
   }
@@ -509,7 +509,7 @@ PhiVerbResult PhiControlDispatcher::VerbAgentCaptureWindow(
   if (!space || !space->window_id.valid()) {
     return PhiVerbResult::Fail("unknown_task");
   }
-  PhiWindowController* shell =
+  PhiShellWindow* shell =
       coordinator_->registry().Resolve(space->window_id.value);
   if (!shell || !shell->shell_hwnd()) {
     return PhiVerbResult::Fail("no_window");

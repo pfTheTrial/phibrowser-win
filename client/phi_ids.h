@@ -18,7 +18,7 @@ using BrowserId = phi_framework::WindowId;  // one Chromium Browser
 using TabId = phi_framework::TabId;
 using RequestToken = phi_framework::RequestToken;
 
-// A shell SLOT: one PhiWindowController, one top-level HWND, N Space
+// A shell SLOT: one PhiShellWindow, one top-level HWND, N Space
 // browsers reparented into it over time. This is the client's own axis —
 // the framework has no idea of it (docs/architecture-review.md §3.1
 // principle 1).

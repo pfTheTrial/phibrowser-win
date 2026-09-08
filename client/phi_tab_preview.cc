@@ -16,7 +16,7 @@
 #include "phibrowser-win/client/phi_animator.h"
 #include "phibrowser-win/client/phi_dwrite.h"
 #include "phibrowser-win/client/phi_theme.h"
-#include "phibrowser-win/client/phi_window_controller.h"
+#include "phibrowser-win/client/phi_shell_window.h"
 
 namespace phi_client {
 
@@ -74,7 +74,7 @@ std::wstring MiddleElide(HDC dc, const std::wstring& text, int width) {
 
 }  // namespace
 
-PhiTabPreview::PhiTabPreview(PhiWindowController* controller)
+PhiTabPreview::PhiTabPreview(PhiShellWindow* controller)
     : controller_(controller) {}
 
 PhiTabPreview::~PhiTabPreview() {

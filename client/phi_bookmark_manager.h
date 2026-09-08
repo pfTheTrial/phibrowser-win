@@ -17,7 +17,7 @@
 
 namespace phi_client {
 
-class PhiWindowController;
+class PhiShellWindow;
 
 // The Mac's native bookmark manager (UserInterface/WebContent/BookmarkManager,
 // docs/plans/2026-08-12-native-bookmark-manager.md): the Space's bookmark tree
@@ -35,7 +35,7 @@ class PhiWindowController;
 // bookmark's URL, or "primary | secondary" for a split.
 class PhiBookmarkManager : public PhiPanel {
  public:
-  explicit PhiBookmarkManager(PhiWindowController* controller);
+  explicit PhiBookmarkManager(PhiShellWindow* controller);
   ~PhiBookmarkManager() override;
 
   PhiBookmarkManager(const PhiBookmarkManager&) = delete;
@@ -131,7 +131,7 @@ class PhiBookmarkManager : public PhiPanel {
   // derive them at invocation time.
   std::vector<std::string> SelectedGuids() const;
 
-  RAW_PTR_EXCLUSION PhiWindowController* const controller_;
+  RAW_PTR_EXCLUSION PhiShellWindow* const controller_;
   HWND search_ = nullptr;
   // Cached background for the search EDIT: WM_CTLCOLOREDIT must hand back a
   // REAL brush — a null one leaves the field unpainted (it renders black).

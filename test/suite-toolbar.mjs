@@ -3,7 +3,7 @@
 import { execFileSync } from 'node:child_process'
 import { test, run, assert, assertEq, sleep, openControl } from './phi-test.mjs'
 
-// Mirrors phi_window_controller.cc, in DESIGN UNITS (pixels at 100%). The
+// Mirrors phi_shell_window.cc, in DESIGN UNITS (pixels at 100%). The
 // client lays out in PHYSICAL pixels and uicap captures in the same space, so
 // every constant here goes through scale() first.
 // The address field's rect comes FROM THE CLIENT (agentSpace.window.layout),

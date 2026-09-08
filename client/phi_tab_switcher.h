@@ -7,7 +7,7 @@
 
 namespace phi_client {
 
-class PhiWindowController;
+class PhiShellWindow;
 
 // The Mac Ctrl+Tab MRU switcher HUD: a centered card strip in most-recently-
 // used order. Ctrl+Tab opens it selecting the previous tab; further presses
@@ -16,13 +16,13 @@ class PhiTabSwitcher {
  public:
   static bool IsActive();
   // Opens the HUD (when inactive) or advances the selection by `direction`.
-  static void Cycle(PhiWindowController* controller, int direction);
+  static void Cycle(PhiShellWindow* controller, int direction);
   // Activates the selection and closes.
   static void Commit();
   static void Cancel();
   // Cancel() only if the HUD is cycling `controller`'s tabs (its shell is
-  // being destroyed; called from ~PhiWindowController).
-  static void CancelIfBoundTo(const PhiWindowController* controller);
+  // being destroyed; called from ~PhiShellWindow).
+  static void CancelIfBoundTo(const PhiShellWindow* controller);
 };
 
 }  // namespace phi_client

@@ -137,7 +137,7 @@ class PhiSpacesStrip;
 class SidebarHost;
 class SpacesHost;
 class WindowHost;
-class PhiWindowController;
+class PhiShellWindow;
 class PhiWindowModel;
 
 // The sidebar's paint constants — design units (points at 100%), from the
@@ -417,7 +417,7 @@ class PhiSidebarShell {
   virtual HWND SidebarShellWindow() const = 0;
   // The controller the split-drop overlay and the tear-off hit test are
   // addressed against, as with the native pages and the Spaces strip.
-  virtual PhiWindowController* SidebarOwner() = 0;
+  virtual PhiShellWindow* SidebarOwner() = 0;
   virtual int SidebarScaled(int design_units) const = 0;
   virtual UINT SidebarDpi() const = 0;
   // The sidebar's width in DIP — the shell owns the resize band.

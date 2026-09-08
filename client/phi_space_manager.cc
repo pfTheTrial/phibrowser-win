@@ -14,7 +14,7 @@
 #include "phibrowser-win/client/phi_preferences.h"
 #include "phibrowser-win/client/phi_store.h"
 #include "phibrowser-win/client/phi_theme.h"
-#include "phibrowser-win/client/phi_window_controller.h"
+#include "phibrowser-win/client/phi_shell_window.h"
 
 namespace phi_client {
 
@@ -90,7 +90,7 @@ bool PhiSpaceManager::CanDeleteSpace(const std::string& space_id) const {
 }
 
 std::string PhiSpaceManager::KioskTargetSpaceId() const {
-  if (PhiWindowController* main = registry_.FirstUserController()) {
+  if (PhiShellWindow* main = registry_.FirstUserController()) {
     const std::string& active = main->active_space();
     if (!active.empty()) {
       return active;
@@ -161,7 +161,7 @@ bool PhiSpaceManager::DeleteSpace(const std::string& space_id) {
   // Now reachable for the default Space itself, whose browser is usually the
   // slot's original one.
   const std::string retreat = DefaultSpaceId();
-  for (PhiWindowController* controller : registry_.Controllers()) {
+  for (PhiShellWindow* controller : registry_.Controllers()) {
     if (controller->is_agent() || !controller->HasSpace(space_id) ||
         retreat == space_id) {
       continue;
@@ -179,7 +179,7 @@ bool PhiSpaceManager::DeleteSpace(const std::string& space_id) {
   }
   // Close the Space's browser wherever it is open; each controller switches
   // away first so a live window never keeps showing a deleted Space.
-  for (PhiWindowController* controller : registry_.Controllers()) {
+  for (PhiShellWindow* controller : registry_.Controllers()) {
     controller->CloseSpaceBrowser(space_id);
   }
   // The Space's bookmarks and space-scoped pins go with it (the Mac's
@@ -298,7 +298,7 @@ bool PhiSpaceManager::SetSpaceProfile(const std::string& space_id,
   // open tabs reopened there (the Mac's changeProfile promise).
   std::vector<std::string> urls;
   SlotId respawn_slot;
-  for (PhiWindowController* controller : registry_.Controllers()) {
+  for (PhiShellWindow* controller : registry_.Controllers()) {
     if (controller->is_agent() || !controller->HasSpace(space_id)) {
       continue;
     }
@@ -327,7 +327,7 @@ bool PhiSpaceManager::SetSpaceProfile(const std::string& space_id,
       host_.SurfaceSpaceInSlot(controller->slot(), retreat, nullptr);
     }
   }
-  for (PhiWindowController* controller : registry_.Controllers()) {
+  for (PhiShellWindow* controller : registry_.Controllers()) {
     controller->CloseSpaceBrowser(space_id);
   }
   it->profile_id = profile_id;
@@ -392,7 +392,7 @@ const PhiPalette& PhiSpaceManager::PaletteForSpace(
 }
 
 const PhiPalette& PhiSpaceManager::PaletteForSlot(int64_t slot) const {
-  if (PhiWindowController* window = registry_.Resolve(slot)) {
+  if (PhiShellWindow* window = registry_.Resolve(slot)) {
     return PaletteForSpace(window->active_space());
   }
   return preferences_.palette();
@@ -409,7 +409,7 @@ void PhiSpaceManager::PushSpaceMenuNow() {
     // The session id of the Space's open browser (any slot), so the menu
     // can exclude the Space the user is already looking at.
     BrowserId browser_id;
-    for (PhiWindowController* controller : registry_.Controllers()) {
+    for (PhiShellWindow* controller : registry_.Controllers()) {
       browser_id = controller->BrowserIdForSpace(space.id);
       if (browser_id.valid()) {
         break;

@@ -17,10 +17,10 @@ namespace phi_client {
 int g_controllers_destroyed = 0;
 int g_kiosks_destroyed = 0;
 
-class PhiWindowController {
+class PhiShellWindow {
  public:
-  explicit PhiWindowController(int tag) : tag_(tag) {}
-  ~PhiWindowController() { ++g_controllers_destroyed; }
+  explicit PhiShellWindow(int tag) : tag_(tag) {}
+  ~PhiShellWindow() { ++g_controllers_destroyed; }
   int tag() const { return tag_; }
 
  private:
@@ -57,8 +57,8 @@ void TestSlotsAndBindings() {
     CHECK(!registry.FirstUserSlot().valid());
     CHECK(registry.FirstUserController() == nullptr);
 
-    PhiWindowController* a = registry.Add(
-        SlotId{10}, std::make_unique<PhiWindowController>(10), false, false);
+    PhiShellWindow* a = registry.Add(
+        SlotId{10}, std::make_unique<PhiShellWindow>(10), false, false);
     CHECK(a && a->tag() == 10);
     CHECK(registry.Get(SlotId{10}) == a);
     CHECK(registry.Has(SlotId{10}));
@@ -98,7 +98,7 @@ void TestSlotsAndBindings() {
     CHECK(!registry.Remove(SlotId{10}));
     CHECK(registry.empty());
 
-    registry.Add(SlotId{20}, std::make_unique<PhiWindowController>(20), false,
+    registry.Add(SlotId{20}, std::make_unique<PhiShellWindow>(20), false,
                  false);
   }
   // The registry's destructor owns the rest.
@@ -110,17 +110,17 @@ void TestFirstUserSlot() {
   // Lowest id wins among USER slots: an agent window (which usually has the
   // lowest id when the skill opened first) and an incognito shell never
   // answer for "the window".
-  registry.Add(SlotId{3}, std::make_unique<PhiWindowController>(3),
+  registry.Add(SlotId{3}, std::make_unique<PhiShellWindow>(3),
                /*agent=*/true, false);
-  registry.Add(SlotId{5}, std::make_unique<PhiWindowController>(5), false,
+  registry.Add(SlotId{5}, std::make_unique<PhiShellWindow>(5), false,
                /*incognito=*/true);
   CHECK(!registry.FirstUserSlot().valid());
   CHECK(registry.UserControllers().empty());
   CHECK(registry.Controllers().size() == 2);
 
-  registry.Add(SlotId{9}, std::make_unique<PhiWindowController>(9), false,
+  registry.Add(SlotId{9}, std::make_unique<PhiShellWindow>(9), false,
                false);
-  registry.Add(SlotId{7}, std::make_unique<PhiWindowController>(7), false,
+  registry.Add(SlotId{7}, std::make_unique<PhiShellWindow>(7), false,
                false);
   CHECK(registry.FirstUserSlot() == SlotId{7});
   CHECK(registry.FirstUserController()->tag() == 7);
@@ -133,7 +133,7 @@ void TestFirstUserSlot() {
   CHECK(!registry.IsIncognitoSlot(SlotId{3}));
 
   // Iteration is in slot order, whatever the insertion order was.
-  std::vector<PhiWindowController*> all = registry.Controllers();
+  std::vector<PhiShellWindow*> all = registry.Controllers();
   CHECK(all.size() == 4);
   CHECK(all[0]->tag() == 3 && all[1]->tag() == 5 && all[2]->tag() == 7 &&
         all[3]->tag() == 9);

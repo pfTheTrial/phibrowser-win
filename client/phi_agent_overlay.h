@@ -13,7 +13,7 @@
 
 namespace phi_client {
 
-class PhiWindowController;
+class PhiShellWindow;
 
 // The watch-mode overlay for an agent Space's content area — the Windows twin
 // of the Mac AgentSpaceOverlayView. Two sibling child windows above the
@@ -34,7 +34,7 @@ class PhiAgentOverlay {
  public:
   // Mounts (or updates) the overlay over `controller`'s content area.
   // `agent_owns` drives both the barrier and the button set.
-  static void Show(PhiWindowController* controller,
+  static void Show(PhiShellWindow* controller,
                    const std::string& task_id,
                    const std::wstring& agent_label,
                    const std::wstring& caption,
@@ -42,9 +42,9 @@ class PhiAgentOverlay {
   // Tears the overlay down (watch mode ended, or the task is gone).
   static void Hide();
   // Hide() only if the overlay is bound to `controller` — its shell is being
-  // destroyed (called from ~PhiWindowController; a different window's
+  // destroyed (called from ~PhiShellWindow; a different window's
   // overlay is left alone).
-  static void HideIfBoundTo(const PhiWindowController* controller);
+  static void HideIfBoundTo(const PhiShellWindow* controller);
   // The agent's virtual cursor (agentSpace.cursor): `x`/`y` in page CSS px.
   // The overlay converts to device px and GLIDES to the point — the Mac
   // AgentSpaceOverlayView's distance-scaled travel — teleporting only on

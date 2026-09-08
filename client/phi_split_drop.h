@@ -11,7 +11,7 @@
 
 namespace phi_client {
 
-class PhiWindowController;
+class PhiShellWindow;
 
 // Dropping a dragged sidebar row onto the PAGE to form (or re-pane) a split —
 // the Windows twin of the Mac's SplitTabDropContainer.
@@ -81,7 +81,7 @@ class PhiSplitDropOverlay {
  public:
   // Mounts or updates the cards over `controller`'s page area. Cheap to call
   // on every pointer move — a repaint only happens when something changed.
-  static void Show(PhiWindowController* controller,
+  static void Show(PhiShellWindow* controller,
                    const PhiSplitDropHints& hints);
   // Takes the cards down (the drag left the page, was dropped, or cancelled).
   static void Hide();

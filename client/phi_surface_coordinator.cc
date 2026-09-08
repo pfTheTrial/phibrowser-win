@@ -14,7 +14,7 @@
 #include "base/strings/escape.h"
 #include "base/values.h"
 #include "chrome/browser/phinomenon/phi_framework/phi_framework_api.h"
-#include "phibrowser-win/client/phi_window_controller.h"
+#include "phibrowser-win/client/phi_shell_window.h"
 #include "phibrowser-win/client/phi_window_model.h"
 
 namespace phi_client {
@@ -45,7 +45,7 @@ bool PhiSurfaceCoordinator::BroadcastToExtensions(
          framework_->BroadcastToExtensions(type.c_str(), payload_json.c_str());
 }
 
-PhiWindowController* PhiSurfaceCoordinator::WindowShowingTab(TabId tab_id) {
+PhiShellWindow* PhiSurfaceCoordinator::WindowShowingTab(TabId tab_id) {
   return host_.WindowShowingTab(tab_id);
 }
 
@@ -255,7 +255,7 @@ bool PhiSurfaceCoordinator::PanelizeReaderSurface(TabId origin_tab_id) {
   if (!framework_ || HasReaderPanelForOrigin(origin_tab_id)) {
     return false;
   }
-  PhiWindowController* window = host_.WindowShowingTab(origin_tab_id);
+  PhiShellWindow* window = host_.WindowShowingTab(origin_tab_id);
   if (!window) {
     return false;
   }

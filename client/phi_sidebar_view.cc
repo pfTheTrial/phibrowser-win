@@ -23,7 +23,7 @@
 #include "phibrowser-win/client/phi_shell_layout.h"
 #include "phibrowser-win/client/phi_sidebar_drag_session.h"
 #include "phibrowser-win/client/phi_spaces_strip.h"
-#include "phibrowser-win/client/phi_window_controller.h"
+#include "phibrowser-win/client/phi_shell_window.h"
 #include "phibrowser-win/client/phi_window_model.h"
 
 namespace phi_client {

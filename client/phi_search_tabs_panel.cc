@@ -24,7 +24,7 @@
 #include "chrome/browser/phinomenon/phi_framework/phi_framework_api.h"
 #include "phibrowser-win/client/phi_popover.h"
 #include "phibrowser-win/client/phi_theme.h"
-#include "phibrowser-win/client/phi_window_controller.h"
+#include "phibrowser-win/client/phi_shell_window.h"
 
 namespace phi_client {
 
@@ -87,7 +87,7 @@ bool Matches(const std::wstring& haystack_lower, const std::wstring& query) {
 // lifetime belong to PhiPopover (lane 3 §6.2).
 class Panel : public PhiPopover {
  public:
-  explicit Panel(PhiWindowController* controller) : controller_(controller) {}
+  explicit Panel(PhiShellWindow* controller) : controller_(controller) {}
 
   ~Panel() override {
     if (field_brush_) {
@@ -153,7 +153,7 @@ class Panel : public PhiPopover {
     return true;
   }
 
-  PhiWindowController* controller() const { return controller_; }
+  PhiShellWindow* controller() const { return controller_; }
 
   static Panel* instance;
 
@@ -417,7 +417,7 @@ class Panel : public PhiPopover {
       return;
     }
     const Row row = rows_[static_cast<size_t>(selected_)];
-    PhiWindowController* controller = controller_;
+    PhiShellWindow* controller = controller_;
     // First — the action may refocus other windows. Everything below runs
     // on locals: `this` is gone once the window is.
     Destroy();
@@ -657,7 +657,7 @@ class Panel : public PhiPopover {
   }
 
   // The controller owns the shell that owns this popup.
-  RAW_PTR_EXCLUSION PhiWindowController* const controller_;
+  RAW_PTR_EXCLUSION PhiShellWindow* const controller_;
   HWND field_ = nullptr;
   WNDPROC field_base_proc_ = nullptr;
   HBRUSH field_brush_ = nullptr;
@@ -676,7 +676,7 @@ Panel* Panel::instance = nullptr;
 }  // namespace
 
 // static
-void PhiSearchTabsPanel::Toggle(PhiWindowController* controller) {
+void PhiSearchTabsPanel::Toggle(PhiShellWindow* controller) {
   if (Panel::instance) {
     Panel::instance->Dismiss();
     return;
@@ -692,7 +692,7 @@ void PhiSearchTabsPanel::Toggle(PhiWindowController* controller) {
 }
 
 // static
-void PhiSearchTabsPanel::CloseIfBoundTo(const PhiWindowController* controller) {
+void PhiSearchTabsPanel::CloseIfBoundTo(const PhiShellWindow* controller) {
   if (Panel::instance && Panel::instance->controller() == controller) {
     // WM_NCDESTROY clears the singleton and deletes the panel.
     Panel::instance->Dismiss();

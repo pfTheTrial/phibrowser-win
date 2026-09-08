@@ -16,7 +16,7 @@
 #include "phibrowser-win/client/phi_settings_types.h"
 #include "phibrowser-win/client/phi_store.h"
 #include "phibrowser-win/client/phi_theme.h"
-#include "phibrowser-win/client/phi_window_controller.h"
+#include "phibrowser-win/client/phi_shell_window.h"
 
 namespace phi_client {
 

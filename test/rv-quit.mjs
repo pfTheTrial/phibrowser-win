@@ -3,7 +3,7 @@
 // A deploy cannot overwrite Phi.exe while it is running (Windows locks the
 // image), and the working log's "dest open ... Failure" is exactly that. This
 // closes every shell window the way the close box does — agentSpace.close
-// routes to PhiWindowController::RequestClose — so the browser shuts itself
+// routes to PhiShellWindow::RequestClose — so the browser shuts itself
 // down instead of being killed out from under its own cleanup.
 import { openControl, cdpHttp, openCdp, sleep } from './phi-test.mjs'
 

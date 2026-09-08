@@ -20,7 +20,7 @@
 #include "phibrowser-win/client/phi_gdiplus.h"
 #include "phibrowser-win/client/phi_i18n.h"
 #include "phibrowser-win/client/phi_panel.h"
-#include "phibrowser-win/client/phi_window_controller.h"
+#include "phibrowser-win/client/phi_shell_window.h"
 
 namespace phi_client {
 
@@ -121,7 +121,7 @@ class Cards : public PhiPanel {
  public:
   static Cards* instance;
 
-  explicit Cards(PhiWindowController* controller) : controller_(controller) {
+  explicit Cards(PhiShellWindow* controller) : controller_(controller) {
     ClassSpec spec;
     spec.name = kCardsClass;
     spec.cursor = nullptr;
@@ -137,7 +137,7 @@ class Cards : public PhiPanel {
 
   ~Cards() override { Destroy(); }
 
-  PhiWindowController* controller() const { return controller_; }
+  PhiShellWindow* controller() const { return controller_; }
 
   void Update(const PhiSplitDropHints& hints) {
     const bool same =
@@ -358,7 +358,7 @@ class Cards : public PhiPanel {
     graphics->DrawString(text, -1, &font, box, &format, &brush);
   }
 
-  RAW_PTR_EXCLUSION PhiWindowController* controller_ = nullptr;
+  RAW_PTR_EXCLUSION PhiShellWindow* controller_ = nullptr;
   bool shown_ = false;
   PhiSplitDropHints hints_;
 };
@@ -440,7 +440,7 @@ PhiSplitDropZone PhiSplitReplaceZoneAt(const RECT& area,
 }
 
 // static
-void PhiSplitDropOverlay::Show(PhiWindowController* controller,
+void PhiSplitDropOverlay::Show(PhiShellWindow* controller,
                                const PhiSplitDropHints& hints) {
   if (!controller || !controller->shell_hwnd()) {
     return;

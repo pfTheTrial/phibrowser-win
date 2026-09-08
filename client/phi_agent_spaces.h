@@ -18,7 +18,7 @@ namespace phi_client {
 
 // The client-side model of the phi-browser skill's AGENT SPACES — the Windows
 // twin of the Mac AgentSpaceManager's bookkeeping. An agent Space is a hidden
-// browser window (hosted off-screen by a PhiWindowController) keyed by the
+// browser window (hosted off-screen by a PhiShellWindow) keyed by the
 // skill's `taskId`, with an ownership state (agent vs the user who took
 // control), a keep-alive deadline, a transcript log, and a queue of user
 // console messages.

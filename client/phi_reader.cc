@@ -16,7 +16,7 @@
 #include "phibrowser-win/client/phi_surface_coordinator.h"
 #include "phibrowser-win/client/phi_i18n.h"
 #include "phibrowser-win/client/phi_toast.h"
-#include "phibrowser-win/client/phi_window_controller.h"
+#include "phibrowser-win/client/phi_shell_window.h"
 
 namespace phi_client {
 
@@ -422,7 +422,7 @@ std::string PhiReaderBridge::TabPayload(int tab_id, const std::string& extra) {
   // background Space from being handed to the wrong profile's extension.
   // Unresolvable (a tab in no visible strip) falls back to the active window,
   // which is the Mac's only routing.
-  if (PhiWindowController* window = owner_->WindowShowingTab(TabId{tab_id})) {
+  if (PhiShellWindow* window = owner_->WindowShowingTab(TabId{tab_id})) {
     // The browser, never the slot: a slot whose opening browser has closed
     // would name a window the extension cannot find.
     const BrowserId browser = window->active_browser_id();
@@ -458,7 +458,7 @@ bool PhiReaderBridge::Broadcast(const std::string& type,
 }
 
 void PhiReaderBridge::ShowRefusalToast(int tab_id, const std::string& error) {
-  PhiWindowController* window = owner_->WindowShowingTab(TabId{tab_id});
+  PhiShellWindow* window = owner_->WindowShowingTab(TabId{tab_id});
   if (!window) {
     return;
   }

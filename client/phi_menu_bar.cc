@@ -31,7 +31,7 @@
 // The four narrow host interfaces and PhiWindowModel still live in the
 // shell's header. The bar reaches nothing else in it — no `friend`, no
 // private member: everything else comes through PhiMenuBarShell.
-#include "phibrowser-win/client/phi_window_controller.h"
+#include "phibrowser-win/client/phi_shell_window.h"
 
 namespace phi_client {
 

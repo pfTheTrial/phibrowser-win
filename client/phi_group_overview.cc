@@ -20,7 +20,7 @@
 #include "phibrowser-win/client/phi_ids.h"
 #include "phibrowser-win/client/phi_panel.h"
 #include "phibrowser-win/client/phi_theme.h"
-#include "phibrowser-win/client/phi_window_controller.h"
+#include "phibrowser-win/client/phi_shell_window.h"
 #include "phibrowser-win/client/phi_window_model.h"
 
 namespace phi_client {
@@ -57,7 +57,7 @@ struct Card {
 // nothing can reach it after the HWND is gone.
 class Overview : public PhiPanel {
  public:
-  Overview(PhiWindowController* controller, const std::string& group_id)
+  Overview(PhiShellWindow* controller, const std::string& group_id)
       : controller_(controller), group_id_(group_id) {
     ClassSpec spec;
     spec.name = L"PhiGroupOverview";
@@ -84,7 +84,7 @@ class Overview : public PhiPanel {
 
   static Overview* instance;
 
-  PhiWindowController* controller() const { return controller_; }
+  PhiShellWindow* controller() const { return controller_; }
 
  protected:
   void Paint(HDC dc, const RECT& dirty) override;
@@ -307,7 +307,7 @@ class Overview : public PhiPanel {
     }
   }
 
-  RAW_PTR_EXCLUSION PhiWindowController* const controller_;
+  RAW_PTR_EXCLUSION PhiShellWindow* const controller_;
   const std::string group_id_;
   std::vector<Card> cards_;
 };
@@ -326,7 +326,7 @@ bool PhiGroupOverview::IsOpen() {
 }
 
 // static
-void PhiGroupOverview::Open(PhiWindowController* controller,
+void PhiGroupOverview::Open(PhiShellWindow* controller,
                             const std::string& group_id) {
   Close();
   if (controller) {
@@ -335,7 +335,7 @@ void PhiGroupOverview::Open(PhiWindowController* controller,
 }
 
 // static
-void PhiGroupOverview::CloseIfBoundTo(const PhiWindowController* controller) {
+void PhiGroupOverview::CloseIfBoundTo(const PhiShellWindow* controller) {
   if (Overview::instance && Overview::instance->controller() == controller) {
     Close();
   }

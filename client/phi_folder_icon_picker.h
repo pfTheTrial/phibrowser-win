@@ -12,7 +12,7 @@
 
 namespace phi_client {
 
-class PhiWindowController;
+class PhiShellWindow;
 
 // The Mac's BookmarkFolderIconPicker, shown from a bookmark folder's
 // "Change Icon..." menu item: the 24 catalog symbols in a 6-column grid,
@@ -24,18 +24,18 @@ class PhiWindowController;
 // dismissed (Escape, or focus leaving it).
 using PhiFolderIconChosen = std::function<void(const std::string& icon_id)>;
 
-void PhiOpenFolderIconPicker(PhiWindowController* controller,
+void PhiOpenFolderIconPicker(PhiShellWindow* controller,
                              const RECT& anchor_screen,
                              const std::string& selected,
                              PhiFolderIconChosen on_chosen);
 
 // TRANSITIONAL synchronous wrapper. It drives the asynchronous picker
 // above through a short local message loop so the existing call site (in
-// phi_window_controller.cc, a file phase 5 does not own) keeps compiling.
+// phi_shell_window.cc, a file phase 5 does not own) keeps compiling.
 // Phase 6 moves that call site onto PhiOpenFolderIconPicker and deletes
 // this — it is the last nested GetMessage loop the picker has, and the
 // only reason one survives here at all.
-std::string PhiPickFolderIcon(PhiWindowController* controller,
+std::string PhiPickFolderIcon(PhiShellWindow* controller,
                               const RECT& anchor_screen,
                               const std::string& selected);
 

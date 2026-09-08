@@ -19,7 +19,7 @@
 #include "phibrowser-win/client/phi_mac_icons.h"
 #include "phibrowser-win/client/phi_prompt.h"
 #include "phibrowser-win/client/phi_theme.h"
-#include "phibrowser-win/client/phi_window_controller.h"
+#include "phibrowser-win/client/phi_shell_window.h"
 
 namespace phi_client {
 
@@ -101,7 +101,7 @@ void CopyToClipboard(HWND owner, const std::wstring& text) {
 
 }  // namespace
 
-PhiBookmarkManager::PhiBookmarkManager(PhiWindowController* controller)
+PhiBookmarkManager::PhiBookmarkManager(PhiShellWindow* controller)
     : controller_(controller) {}
 
 PhiBookmarkManager::~PhiBookmarkManager() {

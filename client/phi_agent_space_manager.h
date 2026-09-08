@@ -17,7 +17,7 @@
 #include "phibrowser-win/client/phi_agent_spaces.h"
 #include "phibrowser-win/client/phi_ids.h"
 #include "phibrowser-win/client/phi_transcript_panel.h"
-#include "phibrowser-win/client/phi_window_controller.h"
+#include "phibrowser-win/client/phi_shell_window.h"
 
 namespace phi_framework {
 class PhiFramework;
@@ -61,11 +61,11 @@ class PhiAgentSpaceManager : public PhiTranscriptHost {
     virtual ~Host() = default;
     // The controller hosting `window_id` (agent windows live in a slot of
     // their own, keyed by the browser that opened them), or null.
-    virtual PhiWindowController* ControllerForAgentWindow(
+    virtual PhiShellWindow* ControllerForAgentWindow(
         BrowserId window_id) = 0;
     // The first USER window's shell, for the floating transcript panel, with
     // its palette. Null when no user window is up.
-    virtual PhiWindowController* FirstUserController() = 0;
+    virtual PhiShellWindow* FirstUserController() = 0;
     // The agent pips live in the user windows' switchers.
     virtual void InvalidateUserSlots() = 0;
     // The operating mask changed: every window repaints its rows.
@@ -125,7 +125,7 @@ class PhiAgentSpaceManager : public PhiTranscriptHost {
   // Mounts / updates / tears down the watch-mode overlay for the watched task.
   void RefreshOverlay();
   // Hide() only if the overlay is bound to the shell that is going.
-  void HideOverlayBoundTo(const PhiWindowController* controller);
+  void HideOverlayBoundTo(const PhiShellWindow* controller);
 
   // --- Ownership -----------------------------------------------------------
   void RequestTakeControl(const std::string& task_id);
@@ -158,7 +158,7 @@ class PhiAgentSpaceManager : public PhiTranscriptHost {
 
  private:
   // The controller of the agent Space `task_id`'s window, or null.
-  PhiWindowController* ControllerFor(const std::string& task_id);
+  PhiShellWindow* ControllerFor(const std::string& task_id);
 
   RAW_PTR_EXCLUSION Host& host_;
   // Non-owning, across a module boundary, so not a raw_ptr. Null until Init.

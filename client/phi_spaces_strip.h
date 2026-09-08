@@ -21,7 +21,7 @@ namespace phi_client {
 class AgentHost;
 class ChromePrefsHost;
 class PhiCreateSpacePanel;
-class PhiWindowController;
+class PhiShellWindow;
 class SpacesHost;
 struct PhiNewSpaceSpec;
 
@@ -59,7 +59,7 @@ class PhiSpacesStripShell {
   virtual HWND SpacesShellWindow() const = 0;
   // The controller the create-Space form is constructed against (it reads
   // the shell's layout and palette through it), as with the native pages.
-  virtual PhiWindowController* SpacesOwner() = 0;
+  virtual PhiShellWindow* SpacesOwner() = 0;
   virtual SlotId SpacesSlot() const = 0;
   virtual bool SpacesIncognito() const = 0;
   virtual bool SpacesIsAgent() const = 0;

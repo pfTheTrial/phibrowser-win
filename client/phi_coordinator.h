@@ -41,7 +41,7 @@
 #include "phibrowser-win/client/phi_store.h"
 #include "phibrowser-win/client/phi_tab_store.h"
 #include "phibrowser-win/client/phi_theme.h"
-#include "phibrowser-win/client/phi_window_controller.h"
+#include "phibrowser-win/client/phi_shell_window.h"
 #include "phibrowser-win/client/phi_window_model.h"
 #include "phibrowser-win/client/phi_window_registry.h"
 
@@ -168,7 +168,7 @@ class PhiCoordinator : public SidebarHost,
   // tab hidden in a pin or bookmark cell still counts), or null when the
   // tab is not on screen anywhere (a background Space, or a tab already
   // gone). PhiSurfaceCoordinator::Host.
-  PhiWindowController* WindowShowingTab(TabId tab_id) override;
+  PhiShellWindow* WindowShowingTab(TabId tab_id) override;
   // Closes every surface of `kind` (kContent = all kinds) attached to the
   // tab: the panel browsers close, and OnBrowserWindowClosing forgets them.
   void CloseSurfacesForOrigin(TabId origin_tab_id,
@@ -518,13 +518,13 @@ class PhiCoordinator : public SidebarHost,
   // The slot's controller; an invalid slot (the wire's 0 / no windowId)
   // falls back to the first USER window — the verb convention for "the
   // window". Null when none exists.
-  PhiWindowController* ControllerForSlot(SlotId slot);
+  PhiShellWindow* ControllerForSlot(SlotId slot);
   // The browser hosting `space_id`'s tabs (possibly hidden behind a sibling
   // Space), or invalid when the Space has no open window.
   BrowserId BrowserForSpace(const std::string& space_id) const;
   // The USER window the user is looking at: the foreground shell when it is
   // one of ours, the first user window otherwise. Null without windows.
-  PhiWindowController* FocusedUserController();
+  PhiShellWindow* FocusedUserController();
   // Surfaces `space_id` in `slot` (invalid: the first user window),
   // requesting its browser in the Space's profile when the slot has none —
   // the spaces.switch body, shared with the skill's spaces.activate.
@@ -978,8 +978,8 @@ class PhiCoordinator : public SidebarHost,
   // (docs/architecture-review.md §3.4, lane 1 §1.2 clusters 12 and 18.)
   PhiAgentSpaceManager agent_manager_{*this};
   // PhiAgentSpaceManager::Host:
-  PhiWindowController* ControllerForAgentWindow(BrowserId window_id) override;
-  PhiWindowController* FirstUserController() override;
+  PhiShellWindow* ControllerForAgentWindow(BrowserId window_id) override;
+  PhiShellWindow* FirstUserController() override;
   void InvalidateUserSlots() override;
   void InvalidateAll() override;
   void BroadcastControlEvent(const std::string& type,

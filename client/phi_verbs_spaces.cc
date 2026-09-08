@@ -24,7 +24,7 @@
 #include "phibrowser-win/client/phi_icons.h"
 #include "phibrowser-win/client/phi_tab_store.h"
 #include "phibrowser-win/client/phi_theme.h"
-#include "phibrowser-win/client/phi_window_controller.h"
+#include "phibrowser-win/client/phi_shell_window.h"
 #include "phibrowser-win/client/phi_window_registry.h"
 
 // The user's own state: Spaces, profiles, url routing rules, pins,
@@ -67,7 +67,7 @@ std::vector<std::string> SplitTabRow(const std::string& value) {
 // --- Spaces ---------------------------------------------------------------------
 
 PhiVerbResult PhiControlDispatcher::VerbSpacesList(const PhiVerbContext& ctx) {
-  PhiWindowController* shell =
+  PhiShellWindow* shell =
       coordinator_->registry().Resolve(ctx.params.Int64("windowId", 0));
   base::ListValue list;
   int sort_order = 0;
@@ -95,7 +95,7 @@ PhiVerbResult PhiControlDispatcher::VerbSpacesList(const PhiVerbContext& ctx) {
     // browser in each slot) — what the skill pins a binding to
     // (enterContext({kind:'user', window})); empty when it is not open.
     base::ListValue window_ids;
-    for (PhiWindowController* other :
+    for (PhiShellWindow* other :
          coordinator_->registry().Controllers()) {
       if (other->is_agent()) {
         continue;
@@ -143,7 +143,7 @@ PhiVerbResult PhiControlDispatcher::VerbSpacesCreate(
   if (ctx.params.Bool("activate", false)) {
     // Surface it in the user's focused window — explicit opt-in only (the
     // skill's default create never yanks the user's window).
-    PhiWindowController* focused = coordinator_->FocusedUserController();
+    PhiShellWindow* focused = coordinator_->FocusedUserController();
     bool pending = false, cold = false;
     coordinator_->SwitchSlotToSpace(focused ? focused->slot() : SlotId(), id,
                                     &pending, &cold);
@@ -286,7 +286,7 @@ PhiVerbResult PhiControlDispatcher::VerbSpacesFocus(
     const PhiVerbContext& ctx) {
   // A surfaced agent window in the foreground answers as the agent Space.
   const HWND foreground = ::GetForegroundWindow();
-  for (PhiWindowController* controller :
+  for (PhiShellWindow* controller :
        coordinator_->registry().Controllers()) {
     if (!controller->is_agent() || !foreground ||
         controller->shell_hwnd() != foreground) {
@@ -309,7 +309,7 @@ PhiVerbResult PhiControlDispatcher::VerbSpacesFocus(
                 coordinator_->ResolveBrowser(controller->slot()).value));
     return PhiVerbResult::Ok(std::move(out));
   }
-  PhiWindowController* controller = coordinator_->FocusedUserController();
+  PhiShellWindow* controller = coordinator_->FocusedUserController();
   if (!controller) {
     return PhiVerbResult::Fail("no_window");
   }
@@ -338,7 +338,7 @@ PhiVerbResult PhiControlDispatcher::VerbSpacesActivate(
   const std::string space_id = ctx.params.String("spaceId");
   // A slot already hosting the Space surfaces it there; otherwise the
   // user's focused window takes it (cold-spawning the browser).
-  for (PhiWindowController* controller :
+  for (PhiShellWindow* controller :
        coordinator_->registry().Controllers()) {
     if (controller->is_agent() || !controller->HasSpace(space_id)) {
       continue;
@@ -353,7 +353,7 @@ PhiVerbResult PhiControlDispatcher::VerbSpacesActivate(
     }
     return PhiVerbOk(ok);
   }
-  PhiWindowController* focused = coordinator_->FocusedUserController();
+  PhiShellWindow* focused = coordinator_->FocusedUserController();
   if (!focused) {
     return PhiVerbResult::Fail("no_window");
   }
@@ -390,7 +390,7 @@ PhiVerbResult PhiControlDispatcher::VerbSpacesUpdate(
     coordinator_->ScheduleSave(PhiCoordinator::StoreDomain::kSpaces);
     // The hex drives the Space's tint when no theme is pinned.
     coordinator_->RebuildSpacePalettes();
-    for (PhiWindowController* controller :
+    for (PhiShellWindow* controller :
          coordinator_->registry().Controllers()) {
       controller->ApplyPalette();
     }
@@ -646,7 +646,7 @@ PhiVerbResult PhiControlDispatcher::VerbPinnedOpen(
   // The Mac's openOrFocusPinnedTab, the same path a sidebar pin click
   // takes: focus the pin's bound live tab, or open one bound to the pin.
   const std::string guid = ctx.params.String("guid");
-  PhiWindowController* controller = ctx.scope.controller;
+  PhiShellWindow* controller = ctx.scope.controller;
   std::string profile_id, space_id, url;
   bool known = false;
   if (controller &&

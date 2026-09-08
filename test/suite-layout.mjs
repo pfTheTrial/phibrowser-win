@@ -6,7 +6,7 @@
 import { execFileSync } from 'node:child_process'
 import { test, run, assert, assertEq, sleep, openControl } from './phi-test.mjs'
 
-// kSidebarWidth in phi_window_controller.cc, in DESIGN UNITS. The client lays
+// kSidebarWidth in phi_shell_window.cc, in DESIGN UNITS. The client lays
 // out in physical pixels, so every expectation here scales by the window's DPI
 // — the whole point of the scaling work.
 const SIDEBAR_DESIGN = 240

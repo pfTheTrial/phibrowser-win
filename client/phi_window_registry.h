@@ -17,7 +17,7 @@
 
 namespace phi_client {
 
-class PhiWindowController;
+class PhiShellWindow;
 class PhiKioskWindow;
 
 // What the client asked the framework for and has not yet been handed
@@ -59,7 +59,7 @@ struct PendingCreation {
 class PhiWindowRegistry {
  public:
   using ControllerPtr =
-      std::unique_ptr<PhiWindowController, void (*)(PhiWindowController*)>;
+      std::unique_ptr<PhiShellWindow, void (*)(PhiShellWindow*)>;
   using KioskPtr = std::unique_ptr<PhiKioskWindow, void (*)(PhiKioskWindow*)>;
 
   // One slot. `agent` / `incognito` are fixed at construction, so they are
@@ -69,7 +69,7 @@ class PhiWindowRegistry {
   // without knowing the controller.
   struct Slot {
     ControllerPtr controller;
-    void (*invalidate)(PhiWindowController*) = nullptr;
+    void (*invalidate)(PhiShellWindow*) = nullptr;
     bool agent = false;
     bool incognito = false;
   };
@@ -84,16 +84,16 @@ class PhiWindowRegistry {
   // A template so the delete is instantiated where `Controller` is complete
   // (the coordinator, or a test stub), never in this header.
   template <typename Controller>
-  PhiWindowController* Add(SlotId slot,
+  PhiShellWindow* Add(SlotId slot,
                            std::unique_ptr<Controller> controller,
                            bool agent,
                            bool incognito) {
     return AddOwned(slot,
                     ControllerPtr(controller.release(),
-                                  [](PhiWindowController* c) {
+                                  [](PhiShellWindow* c) {
                                     delete static_cast<Controller*>(c);
                                   }),
-                    [](PhiWindowController* c) {
+                    [](PhiShellWindow* c) {
                       // A test stand-in has no ScheduleRefresh; the real
                       // controller's is the ONLY refresh the registry posts.
                       if constexpr (requires(Controller* r) {
@@ -107,7 +107,7 @@ class PhiWindowRegistry {
   // Destroys the slot's controller and drops every browser bound to it.
   // False when no such slot.
   bool Remove(SlotId slot);
-  PhiWindowController* Get(SlotId slot) const;
+  PhiShellWindow* Get(SlotId slot) const;
   const Slot* Find(SlotId slot) const;
   bool Has(SlotId slot) const { return slots_.count(slot) > 0; }
   bool empty() const { return slots_.empty(); }
@@ -116,16 +116,16 @@ class PhiWindowRegistry {
   const std::map<SlotId, Slot>& slots() const { return slots_; }
   // Every controller, lowest slot first — a COPY, because callers routinely
   // close a slot (and so destroy its controller) mid-walk.
-  std::vector<PhiWindowController*> Controllers() const;
+  std::vector<PhiShellWindow*> Controllers() const;
   // The USER's shells: neither agent nor incognito, lowest slot first.
-  std::vector<PhiWindowController*> UserControllers() const;
+  std::vector<PhiShellWindow*> UserControllers() const;
   // The lowest-id user slot — THE place the "slot 0 / no windowId means the
   // window" convention resolves. Invalid when the user has no shell.
   SlotId FirstUserSlot() const;
-  PhiWindowController* FirstUserController() const;
+  PhiShellWindow* FirstUserController() const;
   bool IsAgentSlot(SlotId slot) const;
   bool IsIncognitoSlot(SlotId slot) const;
-  // Posts a coalesced row rebuild (PhiWindowController::ScheduleRefresh) —
+  // Posts a coalesced row rebuild (PhiShellWindow::ScheduleRefresh) —
   // the one way anything outside a controller asks it to repaint
   // (docs/architecture-review.md §3.1 principle 3). Nothing here rebuilds
   // synchronously.
@@ -140,13 +140,13 @@ class PhiWindowRegistry {
   // is a kiosk / surface panel, or was never bound.
   std::optional<SlotId> SlotFor(BrowserId browser) const;
   // SlotFor + Get in one step.
-  PhiWindowController* ControllerForBrowser(BrowserId browser) const;
+  PhiShellWindow* ControllerForBrowser(BrowserId browser) const;
   // The one resolver for a `windowId` that came over the wire or from a
   // record that predates the slot/browser split: a slot id, else the id of
   // a browser bound to a slot (a Space browser attached after the slot
   // opened — what spaces.list reports as windowIds), else 0 = the first
   // user slot. Null when nothing matches.
-  PhiWindowController* Resolve(int64_t window_id) const;
+  PhiShellWindow* Resolve(int64_t window_id) const;
   void Bind(BrowserId browser, SlotId slot);
   void Unbind(BrowserId browser);
   bool IsBound(BrowserId browser) const;
@@ -188,9 +188,9 @@ class PhiWindowRegistry {
   std::vector<PendingCreation> ExpirePending(uint64_t now_tick);
 
  private:
-  PhiWindowController* AddOwned(SlotId slot,
+  PhiShellWindow* AddOwned(SlotId slot,
                                 ControllerPtr controller,
-                                void (*invalidate)(PhiWindowController*),
+                                void (*invalidate)(PhiShellWindow*),
                                 bool agent,
                                 bool incognito);
   PhiKioskWindow* AddKioskOwned(BrowserId browser, KioskPtr kiosk);

@@ -20,7 +20,7 @@
 #include "phibrowser-win/client/phi_i18n.h"
 #include "phibrowser-win/client/phi_icons.h"
 #include "phibrowser-win/client/phi_prompt.h"
-#include "phibrowser-win/client/phi_window_controller.h"
+#include "phibrowser-win/client/phi_shell_window.h"
 
 namespace phi_client {
 
@@ -198,7 +198,7 @@ struct PhiCreateSpacePanel::Geometry {
   int grid_content_height = 0;  // Every cell row, for the grid's scroll.
 };
 
-PhiCreateSpacePanel::PhiCreateSpacePanel(PhiWindowController* controller)
+PhiCreateSpacePanel::PhiCreateSpacePanel(PhiShellWindow* controller)
     : controller_(controller) {}
 
 PhiCreateSpacePanel::~PhiCreateSpacePanel() {
