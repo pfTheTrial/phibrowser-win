@@ -20,7 +20,7 @@
 // up at all.
 //
 // It is nearly free because the substrate already keeps the data. Every
-// PhiWindow rebuilds `hits_` — a std::vector<PhiHit> of {bounds, key, name,
+// PhiHitSource rebuilds `hits_` — a std::vector<PhiHit> of {bounds, key, name,
 // role, selected, enabled} — from its layout pass, and hover and click
 // routing read nothing else. This file turns THAT LIST, unchanged, into a
 // UI Automation fragment root: one child fragment per hit, named by
@@ -31,7 +31,7 @@
 //
 // SHAPE
 //
-//   PhiWindow's HWND  ── WM_GETOBJECT / UiaRootObjectId ──▶ fragment root
+//   PhiHitSource's HWND  ── WM_GETOBJECT / UiaRootObjectId ──▶ fragment root
 //     │                    IRawElementProviderSimple
 //     │                    IRawElementProviderFragment
 //     │                    IRawElementProviderFragmentRoot
@@ -57,7 +57,7 @@
 //
 // LIFETIME. A UIA client is a separate process holding COM references that
 // can outlive the HWND by any amount. The fragment root is therefore
-// reference-counted, NOT owned by PhiWindow: WM_NCDESTROY detaches it
+// reference-counted, NOT owned by PhiHitSource: WM_NCDESTROY detaches it
 // (PhiUiaWindowDestroyed) rather than freeing it, and after that every
 // method answers UIA_E_ELEMENTNOTAVAILABLE. UiaDisconnectProvider tells the
 // UIA core to drop its own cached references at the same moment.
@@ -205,7 +205,7 @@ bool PhiUiaShouldRaise(bool clients_are_listening, const PhiUiaChanges& changes)
 #if defined(_WIN32)
 
 // ---------------------------------------------------------------------------
-// Win32 — the three seams PhiWindow calls. UI THREAD ONLY (see the
+// Win32 — the three seams PhiHitSource calls. UI THREAD ONLY (see the
 // threading note at the top).
 
 // WM_GETOBJECT. Answers UiaRootObjectId with this window's fragment root,
@@ -213,7 +213,7 @@ bool PhiUiaShouldRaise(bool clients_are_listening, const PhiUiaChanges& changes)
 // root on first ask. Leaves *handled false for every other object id —
 // OBJID_CLIENT included — so DefWindowProcW keeps answering MSAA for the
 // child controls exactly as it does today.
-LRESULT PhiUiaOnGetObject(PhiWindow* window,
+LRESULT PhiUiaOnGetObject(PhiHitSource* window,
                           WPARAM wparam,
                           LPARAM lparam,
                           bool* handled);
@@ -221,12 +221,12 @@ LRESULT PhiUiaOnGetObject(PhiWindow* window,
 // hits_ may have been rebuilt. Cheap and safe to call on every repaint: it
 // returns immediately unless this window has actually handed out a
 // provider AND hits_version() moved since the last announcement.
-void PhiUiaHitsChanged(PhiWindow* window);
+void PhiUiaHitsChanged(PhiHitSource* window);
 
 // The HWND is going away (WM_NCDESTROY). Detaches the fragment root and
 // calls UiaDisconnectProvider; the root itself lives until the last client
 // reference goes, answering UIA_E_ELEMENTNOTAVAILABLE.
-void PhiUiaWindowDestroyed(PhiWindow* window);
+void PhiUiaWindowDestroyed(PhiHitSource* window);
 
 #endif  // defined(_WIN32)
 

@@ -391,7 +391,7 @@ class PhiUiaElement final : public IRawElementProviderSimple,
   // The live PhiHit, or null when the window is gone or the hit was
   // dropped by a rebuild. Refreshes index_ when the hit merely moved.
   const PhiHit* Resolve();
-  PhiWindow* window() const;
+  PhiHitSource* window() const;
 
   ULONG ref_ = 1;
   ComPtr<PhiUiaRoot> root_;
@@ -406,7 +406,7 @@ class PhiUiaRoot final : public IRawElementProviderSimple,
                          public IRawElementProviderFragment,
                          public IRawElementProviderFragmentRoot {
  public:
-  explicit PhiUiaRoot(PhiWindow* window)
+  explicit PhiUiaRoot(PhiHitSource* window)
       : window_(window), hwnd_(window->hwnd()) {}
 
   // IUnknown.
@@ -444,7 +444,7 @@ class PhiUiaRoot final : public IRawElementProviderSimple,
   // returns UIA_E_ELEMENTNOTAVAILABLE, however long a client holds on.
   void Detach();
 
-  PhiWindow* window() const { return window_; }
+  PhiHitSource* window() const { return window_; }
   HWND hwnd() const { return hwnd_; }
   bool attached() const { return window_ != nullptr; }
 
@@ -465,7 +465,7 @@ class PhiUiaRoot final : public IRawElementProviderSimple,
   // Cleared by Detach(); never dereferenced afterwards. Not a raw_ptr: the
   // client's smart pointers do not reach this file's COM objects, and the
   // window explicitly outlives the pointer by detaching at WM_NCDESTROY.
-  RAW_PTR_EXCLUSION PhiWindow* window_ = nullptr;
+  RAW_PTR_EXCLUSION PhiHitSource* window_ = nullptr;
   HWND hwnd_ = nullptr;
   std::vector<PhiUiaHitState> announced_;
   uint32_t announced_version_ = 0;
@@ -517,12 +517,12 @@ IFACEMETHODIMP_(ULONG) PhiUiaElement::Release() {
   return count;
 }
 
-PhiWindow* PhiUiaElement::window() const {
+PhiHitSource* PhiUiaElement::window() const {
   return root_ ? root_->window() : nullptr;
 }
 
 const PhiHit* PhiUiaElement::Resolve() {
-  PhiWindow* owner = window();
+  PhiHitSource* owner = window();
   if (!owner) {
     return nullptr;
   }
@@ -595,12 +595,12 @@ IFACEMETHODIMP PhiUiaElement::GetPropertyValue(PROPERTYID property,
       return VariantBool(value, PhiUiaIsContent(hit->role));
     case UIA_HasKeyboardFocusPropertyId:
     case UIA_IsKeyboardFocusablePropertyId:
-      // No PhiWindow surface moves keyboard focus between its hits yet —
+      // No PhiHitSource surface moves keyboard focus between its hits yet —
       // the base has no focus ring and no arrow-key traversal — so this is
       // false everywhere rather than a claim the surface cannot honour.
       return VariantBool(value, false);
     case UIA_IsOffscreenPropertyId: {
-      PhiWindow* owner = window();
+      PhiHitSource* owner = window();
       RECT client = {};
       if (owner && owner->hwnd()) {
         ::GetClientRect(owner->hwnd(), &client);
@@ -694,7 +694,7 @@ IFACEMETHODIMP PhiUiaElement::get_BoundingRectangle(UiaRect* rect) {
   }
   *rect = {};
   const PhiHit* hit = Resolve();
-  PhiWindow* owner = window();
+  PhiHitSource* owner = window();
   if (!hit || !owner || !owner->hwnd()) {
     return UIA_E_ELEMENTNOTAVAILABLE;
   }
@@ -713,7 +713,7 @@ IFACEMETHODIMP PhiUiaElement::GetEmbeddedFragmentRoots(SAFEARRAY** roots) {
 }
 
 IFACEMETHODIMP PhiUiaElement::SetFocus() {
-  PhiWindow* owner = window();
+  PhiHitSource* owner = window();
   if (!owner || !owner->hwnd()) {
     return UIA_E_ELEMENTNOTAVAILABLE;
   }
@@ -738,14 +738,14 @@ IFACEMETHODIMP PhiUiaElement::get_FragmentRoot(
 
 IFACEMETHODIMP PhiUiaElement::Invoke() {
   const PhiHit* hit = Resolve();
-  PhiWindow* owner = window();
+  PhiHitSource* owner = window();
   if (!hit || !owner) {
     return UIA_E_ELEMENTNOTAVAILABLE;
   }
   if (!(PhiUiaPatterns(hit->role) & kPhiUiaInvokePattern)) {
     return UIA_E_INVALIDOPERATION;
   }
-  // THE mouse path, not a copy of it: PhiWindow::InvokeHit sends the same
+  // THE mouse path, not a copy of it: PhiHitSource::InvokeHit sends the same
   // WM_LBUTTONDOWN / WM_LBUTTONUP pair a click sends, through the same
   // wndproc, the same hit test and the same OnMouseDown/OnClick overrides.
   // The surface cannot tell the difference and cannot drift from it.
@@ -1118,18 +1118,18 @@ void PhiUiaRoot::Detach() {
 // ---------------------------------------------------------------------------
 // The window → root table.
 //
-// PhiWindow holds NO reference to its provider (and phi_window.h therefore
+// PhiHitSource holds NO reference to its provider (and phi_window.h therefore
 // pulls in no COM header): a window that no assistive client has ever
 // asked about has no entry here at all, and the three seams below are an
 // empty-map lookup. UI thread only.
 
-std::map<PhiWindow*, ComPtr<PhiUiaRoot>>& Roots() {
-  static base::NoDestructor<std::map<PhiWindow*, ComPtr<PhiUiaRoot>>> roots;
+std::map<PhiHitSource*, ComPtr<PhiUiaRoot>>& Roots() {
+  static base::NoDestructor<std::map<PhiHitSource*, ComPtr<PhiUiaRoot>>> roots;
   return *roots;
 }
 
-PhiUiaRoot* FindRoot(PhiWindow* window) {
-  std::map<PhiWindow*, ComPtr<PhiUiaRoot>>& roots = Roots();
+PhiUiaRoot* FindRoot(PhiHitSource* window) {
+  std::map<PhiHitSource*, ComPtr<PhiUiaRoot>>& roots = Roots();
   const auto it = roots.find(window);
   return it == roots.end() ? nullptr : it->second.Get();
 }
@@ -1137,9 +1137,9 @@ PhiUiaRoot* FindRoot(PhiWindow* window) {
 }  // namespace
 
 // ---------------------------------------------------------------------------
-// The seams PhiWindow calls.
+// The seams PhiHitSource calls.
 
-LRESULT PhiUiaOnGetObject(PhiWindow* window,
+LRESULT PhiUiaOnGetObject(PhiHitSource* window,
                           WPARAM wparam,
                           LPARAM lparam,
                           bool* handled) {
@@ -1151,7 +1151,7 @@ LRESULT PhiUiaOnGetObject(PhiWindow* window,
   if (!api.ready) {
     return 0;
   }
-  std::map<PhiWindow*, ComPtr<PhiUiaRoot>>& roots = Roots();
+  std::map<PhiHitSource*, ComPtr<PhiUiaRoot>>& roots = Roots();
   ComPtr<PhiUiaRoot>& root = roots[window];
   if (!root) {
     root.Attach(new PhiUiaRoot(window));
@@ -1169,7 +1169,7 @@ LRESULT PhiUiaOnGetObject(PhiWindow* window,
   return result;
 }
 
-void PhiUiaHitsChanged(PhiWindow* window) {
+void PhiUiaHitsChanged(PhiHitSource* window) {
   if (!window) {
     return;
   }
@@ -1178,11 +1178,11 @@ void PhiUiaHitsChanged(PhiWindow* window) {
   }
 }
 
-void PhiUiaWindowDestroyed(PhiWindow* window) {
+void PhiUiaWindowDestroyed(PhiHitSource* window) {
   if (!window) {
     return;
   }
-  std::map<PhiWindow*, ComPtr<PhiUiaRoot>>& roots = Roots();
+  std::map<PhiHitSource*, ComPtr<PhiUiaRoot>>& roots = Roots();
   const auto it = roots.find(window);
   if (it == roots.end()) {
     return;
@@ -1191,7 +1191,7 @@ void PhiUiaWindowDestroyed(PhiWindow* window) {
   roots.erase(it);
   // The map's reference goes here; the client's may not. Whatever it still
   // holds now answers UIA_E_ELEMENTNOTAVAILABLE instead of reading a freed
-  // PhiWindow — the whole reason the provider is reference-counted and not
+  // PhiHitSource — the whole reason the provider is reference-counted and not
   // a member of the window.
   root->Detach();
 }

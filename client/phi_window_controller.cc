@@ -55,6 +55,7 @@
 #include "phibrowser-win/client/phi_i18n.h"
 #include "phibrowser-win/client/phi_new_tab_page.h"
 #include "phibrowser-win/client/phi_reader.h"
+#include "phibrowser-win/client/phi_uia.h"
 #include "phibrowser-win/client/phi_prompt.h"
 
 namespace phi_client {
@@ -1596,6 +1597,45 @@ void PhiWindowController::SidebarStartNewTab() {
 // and invokable through the same messages a mouse click sends.
 void PhiWindowController::SidebarPublishHits(std::vector<PhiHit> hits) {
   hits_ = std::move(hits);
+  ++hits_version_;
+  // Cheap unless a provider was actually handed out: it tells a listening
+  // screen reader the tab list changed shape rather than leaving it on a
+  // stale tree.
+  PhiUiaHitsChanged(this);
+}
+
+HWND PhiWindowController::hwnd() const {
+  return shell_hwnd_;
+}
+
+const std::vector<PhiHit>& PhiWindowController::hits() const {
+  return hits_;
+}
+
+uint32_t PhiWindowController::hits_version() const {
+  return hits_version_;
+}
+
+int PhiWindowController::HitTest(POINT client_pt) const {
+  return PhiHitAt(hits_, client_pt.x, client_pt.y);
+}
+
+bool PhiWindowController::InvokeHit(int index) {
+  // The mouse path, not a copy of it — the same clicks the sidebar handles.
+  int x = 0;
+  int y = 0;
+  if (!shell_hwnd_ || !PhiUiaInvokePoint(hits_, index, &x, &y)) {
+    return false;
+  }
+  // LOCALS ONLY below: a click can close this Space and destroy the shell.
+  const HWND hwnd = shell_hwnd_;
+  const LPARAM point =
+      MAKELPARAM(static_cast<WORD>(x), static_cast<WORD>(y));
+  ::SendMessageW(hwnd, WM_LBUTTONDOWN, 0, point);
+  if (::IsWindow(hwnd)) {
+    ::SendMessageW(hwnd, WM_LBUTTONUP, 0, point);
+  }
+  return true;
 }
 
 // --- PhiSpacesStripShell ----------------------------------------------------
@@ -4735,8 +4775,26 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
     // Final message: unhook the controller so nothing delivered to a
     // recycled HWND value can reach it (every popup and child proc below
     // does the same).
+    if (auto* dying = reinterpret_cast<PhiWindowController*>(
+            ::GetWindowLongPtrW(hwnd, GWLP_USERDATA))) {
+      PhiUiaWindowDestroyed(dying);  // Release any provider a client holds.
+    }
     ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
     return ::DefWindowProcW(hwnd, msg, wparam, lparam);
+  }
+  if (msg == WM_GETOBJECT) {
+    // The sidebar's rows reach assistive technology from here: the shell is
+    // the hit source (PhiHitSource), so the provider needs no window of its
+    // own. Every other object id falls through to DefWindowProc, which
+    // keeps answering MSAA for the child controls as before.
+    auto* source = reinterpret_cast<PhiWindowController*>(
+        ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    bool handled = false;
+    const LRESULT result =
+        source ? PhiUiaOnGetObject(source, wparam, lparam, &handled) : 0;
+    if (handled) {
+      return result;
+    }
   }
   auto* self = reinterpret_cast<PhiWindowController*>(
       ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));

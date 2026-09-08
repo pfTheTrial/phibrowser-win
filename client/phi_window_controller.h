@@ -439,7 +439,8 @@ enum : UINT {
 //
 // Each component's needs reach it through a narrow interface implemented
 // PRIVATELY here, so none of them widen the shell's public surface.
-class PhiWindowController : private PhiOmniboxShell,
+class PhiWindowController : public PhiHitSource,
+                            private PhiOmniboxShell,
                             private PhiBrowserHostShell,
                             private PhiCaptionShell,
                             private PhiMenuBarShell,
@@ -474,7 +475,7 @@ class PhiWindowController : private PhiOmniboxShell,
   // Virtual because the shell now implements its components' interfaces:
   // the class has virtual functions, and PhiWindowRegistry deletes it
   // through a PhiWindowController* (its test stand-ins subclass it).
-  virtual ~PhiWindowController();
+  ~PhiWindowController() override;
 
   PhiWindowController(const PhiWindowController&) = delete;
   PhiWindowController& operator=(const PhiWindowController&) = delete;
@@ -738,16 +739,17 @@ class PhiWindowController : private PhiOmniboxShell,
   bool SetBounds(int x, int y, int w, int h);
   HWND shell_hwnd() const { return shell_hwnd_; }
 
-  // THE rect list assistive technology reads (phi_window.h): the sidebar
-  // publishes its rows into it on every rebuild — a stable key per row, the
-  // row's title as the name, and a role of list item, button or group.
-  //
-  // NOT YET REACHABLE by a screen reader: answering WM_GETOBJECT means
-  // handing this list to PhiUiaOnGetObject(PhiWindow*), and this window is
-  // still hand-registered rather than a PhiWindow, so it has no PhiWindow
-  // to be. The list is here, correct and rebuilt with the rows, so the
-  // adoption is a wiring step and not a data one.
-  const std::vector<PhiHit>& hits() const { return hits_; }
+  // PhiHitSource — THE rect list assistive technology reads (phi_window.h).
+  // The sidebar publishes its rows into it on every rebuild (a stable key
+  // per row, the row's title as the name, and a role of list item, button
+  // or group), and the shell answers WM_GETOBJECT from it. The shell is
+  // hand-registered rather than a PhiWindow, which is exactly why the
+  // provider takes this interface instead of a window.
+  HWND hwnd() const override;
+  const std::vector<PhiHit>& hits() const override;
+  uint32_t hits_version() const override;
+  int HitTest(POINT client_pt) const override;
+  bool InvokeHit(int index) override;
 
   // Window procedure for the client shell window.
   static LRESULT CALLBACK ShellWndProc(HWND hwnd,
@@ -1301,6 +1303,7 @@ class PhiWindowController : private PhiOmniboxShell,
   // PhiWindow, so this list is filled and ready but not yet reachable by a
   // screen reader (see the report).
   std::vector<PhiHit> hits_;
+  uint32_t hits_version_ = 0;
 
   // --- PhiSpacesStripShell: what the Spaces strip asks of its shell --------
   HWND SpacesShellWindow() const override;

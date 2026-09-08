@@ -754,6 +754,18 @@ LRESULT PhiWindow::OnGetObject(WPARAM wparam, LPARAM lparam, bool* handled) {
   return PhiUiaOnGetObject(this, wparam, lparam, handled);
 }
 
+HWND PhiWindow::hwnd() const {
+  return hwnd_;
+}
+
+const std::vector<PhiHit>& PhiWindow::hits() const {
+  return hits_;
+}
+
+uint32_t PhiWindow::hits_version() const {
+  return hits_version_;
+}
+
 bool PhiWindow::InvokeHit(int index) {
   int x = 0;
   int y = 0;

@@ -135,6 +135,23 @@ struct PhiHit {
   bool enabled = true;
 };
 
+// What the accessibility provider needs from a surface, and nothing more.
+// PhiWindow implements it, and so does the shell — which owns a hand-rolled
+// window procedure of its own and is therefore not a PhiWindow, yet holds
+// the one hit list a screen reader most needs to see (the tab list). The
+// provider talks to this, so neither surface has to pretend to be the other.
+class PhiHitSource {
+ public:
+  virtual ~PhiHitSource() = default;
+  virtual HWND hwnd() const = 0;
+  virtual const std::vector<PhiHit>& hits() const = 0;
+  virtual uint32_t hits_version() const = 0;
+  // Index of the hit under a CLIENT point, or -1.
+  virtual int HitTest(POINT client_pt) const = 0;
+  // Acts on hits()[index] exactly as a mouse click on it would.
+  virtual bool InvokeHit(int index) = 0;
+};
+
 // The index of the hit under (x, y), or -1. LAST match wins: hits are
 // added in paint order, so a child rect added after its row's rect takes
 // the pointer, exactly as the pixels do.
@@ -293,7 +310,7 @@ class PhiFontSet {
   std::vector<Entry> fonts_;
 };
 
-class PhiWindow {
+class PhiWindow : public PhiHitSource {
  public:
   // What a window class IS. `name` is spelled ONCE, here.
   struct ClassSpec {
@@ -352,7 +369,7 @@ class PhiWindow {
   };
 
   PhiWindow();
-  virtual ~PhiWindow();
+  ~PhiWindow() override;
   PhiWindow(const PhiWindow&) = delete;
   PhiWindow& operator=(const PhiWindow&) = delete;
 
@@ -367,7 +384,7 @@ class PhiWindow {
               HWND owner_or_parent,
               const wchar_t* window_name = L"");
 
-  HWND hwnd() const { return hwnd_; }
+  HWND hwnd() const override;
   bool alive() const { return hwnd_ != nullptr; }
   UINT dpi() const { return dpi_; }
   int Scaled(int design) const;
@@ -379,16 +396,16 @@ class PhiWindow {
 
   // THE hit list. Hover, clicks and — once a later agent lands the
   // provider — UIA all read this and nothing else.
-  const std::vector<PhiHit>& hits() const { return hits_; }
+  const std::vector<PhiHit>& hits() const override;
   // The index of the hovered hit, or -1.
   int hovered() const { return hover_; }
-  int HitTest(POINT client_pt) const;
+  int HitTest(POINT client_pt) const override;
   // The first hit carrying `key`, or null.
   const PhiHit* HitByKey(int key) const;
   // Bumped every time hits_ is replaced through ClearHits(); the UIA
   // provider uses it to know when to raise a structure-changed event
   // (phi_uia.cc, PhiUiaHitsChanged).
-  uint32_t hits_version() const { return hits_version_; }
+  uint32_t hits_version() const override;
 
   // Acts on hits()[index] exactly as a mouse click on it would: the same
   // WM_LBUTTONDOWN / WM_LBUTTONUP pair, through the same wndproc, the same
@@ -406,7 +423,7 @@ class PhiWindow {
   // commits and closes on the button-down): this returns without touching
   // any member afterwards, and the caller must not touch the object
   // either.
-  bool InvokeHit(int index);
+  bool InvokeHit(int index) override;
 
   // Tooltips, from the same hit list (lane 3 §2 "Tooltips", §7 item 15).
   // OFF by default and opt-in per surface: hovering a hit whose name is

@@ -113,6 +113,9 @@ class PhiCreateSpacePanel : public PhiPanel {
   Geometry ComputeGeometry() const;
   RECT CellRect(const Geometry& g, size_t index) const;
   void ClampScroll(const Geometry& g);
+  // The form's own richer hit test; the base's one-argument HitTest (the
+  // accessibility hit list) stays visible beside it.
+  using PhiWindow::HitTest;
   Hit HitTest(const Geometry& g, POINT pt, int* index) const;
   void SelectTheme(size_t index);
   void SelectIcon(size_t index);
