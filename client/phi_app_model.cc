@@ -43,7 +43,6 @@ constexpr const wchar_t* kLegacyLayout = L"PhiLayout.json";
 constexpr const wchar_t* kLegacyTheme = L"PhiTheme.json";
 constexpr const wchar_t* kLegacyUrlRules = L"PhiUrlRules.json";
 constexpr const wchar_t* kLegacyGhosts = L"PhiGhostSpaces.json";
-constexpr const wchar_t* kLegacyAgentGrants = L"PhiAgentGrants.json";
 constexpr const wchar_t* kLegacyCredentialGrants = L"PhiCredentialGrants.json";
 // Read for one field (pinScope), never renamed: the tab store still owns it.
 constexpr const wchar_t* kTabStoreFile = L"PhiTabData.json";
@@ -119,6 +118,8 @@ void DecodePrefsFields(const base::DictValue& dict, PhiSettings* out) {
                                      .value_or(out->bookmark_bar_on_new_tab);
   out->developer_mode =
       dict.FindBool("developerMode").value_or(out->developer_mode);
+  out->allow_agent_control =
+      dict.FindBool("allowAgentControl").value_or(out->allow_agent_control);
   out->allow_agent_user_spaces = dict.FindBool("allowAgentUserSpaces")
                                      .value_or(out->allow_agent_user_spaces);
   if (const base::ListValue* blocked =
@@ -323,33 +324,6 @@ std::optional<std::string> LegacyLastActiveSpaceId(const std::wstring& dir) {
 
 // --- Consent ----------------------------------------------------------------
 
-void DecodeAgentPaths(const base::ListValue& list,
-                      std::set<std::wstring>* out) {
-  for (const base::Value& v : list) {
-    if (!v.is_string()) {
-      continue;
-    }
-    std::wstring key = base::UTF8ToWide(v.GetString());
-    // Image paths are matched case-insensitively; stored lowercased so the
-    // set lookup is a plain compare.
-    for (wchar_t& c : key) {
-      c = static_cast<wchar_t>(std::towlower(c));
-    }
-    out->insert(std::move(key));
-  }
-}
-
-void DecodeCredentialGrants(const base::DictValue& grants,
-                            std::map<std::string, model::CredentialAccessKind>* out) {
-  for (const auto [scope, value] : grants) {
-    if (value.is_string()) {
-      (*out)[scope] = value.GetString() == "reveal"
-                          ? model::CredentialAccessKind::kReveal
-                          : model::CredentialAccessKind::kFill;
-    }
-  }
-}
-
 void DecodeAudit(const base::ListValue& list, std::vector<std::string>* out) {
   for (const base::Value& v : list) {
     if (v.is_string()) {
@@ -395,6 +369,7 @@ base::DictValue PhiStoreTraits<PhiSettings>::Encode(const PhiSettings& value) {
   root.Set("reader", EncodeReader(value.reader));
   root.Set("language", value.language);
   root.Set("developerMode", value.developer_mode);
+  root.Set("allowAgentControl", value.allow_agent_control);
   root.Set("allowAgentUserSpaces", value.allow_agent_user_spaces);
   base::ListValue blocked;
   for (const std::string& id : value.disallowed_agent_profile_ids) {
@@ -621,17 +596,6 @@ bool PhiStoreTraits<PhiRestoreModel>::Import(const std::wstring& dir,
 base::DictValue PhiStoreTraits<PhiConsentModel>::Encode(
     const PhiConsentModel& value) {
   base::DictValue root;
-  base::ListValue always;
-  for (const std::wstring& path : value.agent_always_paths) {
-    always.Append(base::WideToUTF8(path));
-  }
-  root.Set("agentAlways", std::move(always));
-  base::DictValue grants;
-  for (const auto& [scope, kind] : value.credential_grants) {
-    grants.Set(scope, kind == model::CredentialAccessKind::kReveal ? "reveal"
-                                                                   : "fill");
-  }
-  root.Set("credentialGrants", std::move(grants));
   base::ListValue audit;
   for (const std::string& line : value.credential_audit) {
     audit.Append(line);
@@ -644,12 +608,9 @@ base::DictValue PhiStoreTraits<PhiConsentModel>::Encode(
 bool PhiStoreTraits<PhiConsentModel>::Decode(const base::DictValue& dict,
                                              int /*schema*/,
                                              PhiConsentModel* out) {
-  if (const base::ListValue* always = dict.FindList("agentAlways")) {
-    DecodeAgentPaths(*always, &out->agent_always_paths);
-  }
-  if (const base::DictValue* grants = dict.FindDict("credentialGrants")) {
-    DecodeCredentialGrants(*grants, &out->credential_grants);
-  }
+  // "agentAlways" (per-image agent grants) and "credentialGrants" (standing
+  // credential approvals) are ignored: neither kind of standing grant
+  // exists any more — agent admission is the allowAgentControl setting.
   if (const base::ListValue* audit = dict.FindList("credentialAudit")) {
     DecodeAudit(*audit, &out->credential_audit);
   }
@@ -661,19 +622,8 @@ bool PhiStoreTraits<PhiConsentModel>::Import(const std::wstring& dir,
                                              PhiConsentModel* out) {
   bool imported = false;
   base::DictValue dict;
-  if (ReadLegacy(dir, kLegacyAgentGrants, &dict) == PhiJsonFileStatus::kOk) {
-    if (const base::ListValue* always = dict.FindList("always")) {
-      DecodeAgentPaths(*always, &out->agent_always_paths);
-    }
-    MarkImported(dir, kLegacyAgentGrants);
-    imported = true;
-  }
-  dict = base::DictValue();
   if (ReadLegacy(dir, kLegacyCredentialGrants, &dict) ==
       PhiJsonFileStatus::kOk) {
-    if (const base::DictValue* grants = dict.FindDict("grants")) {
-      DecodeCredentialGrants(*grants, &out->credential_grants);
-    }
     if (const base::ListValue* audit = dict.FindList("audit")) {
       DecodeAudit(*audit, &out->credential_audit);
     }

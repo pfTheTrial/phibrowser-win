@@ -80,13 +80,6 @@ struct PhiShortcutRow {
   bool rebindable() const { return !name.empty(); }
 };
 
-// One standing credential approval. The scope IS the identity — the pane
-// revokes by scope, never by position.
-struct PhiCredentialGrantRow {
-  std::string scope;
-  model::CredentialAccessKind kind = model::CredentialAccessKind::kFill;
-};
-
 // One line of the credential approval audit trail, newest first.
 struct PhiCredentialAuditRow {
   std::string stamp;  // "YYYY-MM-DD HH:MM", local time.

@@ -470,29 +470,6 @@ void PhiCoordinator::UpdateSweepTimer() {
   }
 }
 
-std::vector<std::string> PhiCoordinator::AgentGrantPaths() const {
-  std::vector<std::string> rows;
-  for (const std::wstring& path : consent_.agent_always_paths) {
-    rows.push_back(base::WideToUTF8(path));
-  }
-  return rows;
-}
-
-bool PhiCoordinator::RemoveAgentGrant(const std::string& path) {
-  // By PATH, not by row position: the set is ordered by the collating of
-  // whatever paths it holds, and the pane re-reads it between the paint
-  // that drew the button and the click that presses it.
-  if (consent_.agent_always_paths.erase(base::UTF8ToWide(path)) == 0) {
-    return false;
-  }
-  ScheduleSave(StoreDomain::kConsent);
-  return true;
-}
-
-bool PhiCoordinator::RemoveCredentialGrant(const std::string& scope) {
-  return credentials_.RemoveGrant(scope);
-}
-
 HWND PhiCoordinator::CredentialPromptOwner() {
   for (PhiShellWindow* controller : registry_.Controllers()) {
     if (controller->shell_hwnd()) {
@@ -2078,6 +2055,14 @@ bool PhiCoordinator::AllowAgentUserSpaces() const {
   return preferences_.AllowAgentUserSpaces();
 }
 
+bool PhiCoordinator::AllowAgentControl() const {
+  return preferences_.AllowAgentControl();
+}
+
+void PhiCoordinator::SetAllowAgentControl(bool enabled) {
+  preferences_.SetAllowAgentControl(enabled);
+}
+
 void PhiCoordinator::SetAllowAgentUserSpaces(bool enabled) {
   preferences_.SetAllowAgentUserSpaces(enabled);
 }
@@ -2158,10 +2143,6 @@ const PhiSpaceManager& PhiCoordinator::SpaceList() const {
 
 const PhiProfileService& PhiCoordinator::ProfileList() const {
   return *profile_service_;
-}
-
-const PhiCredentialService& PhiCoordinator::Credentials() const {
-  return credentials_;
 }
 
 const PhiAccountAndFeedback& PhiCoordinator::Account() const {
@@ -2273,6 +2254,13 @@ void PhiCoordinator::OnPreferencesChanged(
       return;  // The keyboard hook reads the effective chords live.
     case PreferenceChange::kNewTab:
     case PreferenceChange::kPreviews:
+    case PreferenceChange::kAgentControl:
+      // A "Deny" at the connection prompt stands only until the user next
+      // touches the switch; the next connection asks again (or is admitted).
+      if (dispatcher_) {
+        dispatcher_->ForgetAgentControlDenial();
+      }
+      break;
     case PreferenceChange::kDeveloper:
     case PreferenceChange::kAgentUserSpaces:
     case PreferenceChange::kPinScope:

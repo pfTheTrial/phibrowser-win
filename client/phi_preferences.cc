@@ -295,6 +295,19 @@ void PhiPreferences::SetDeveloperMode(bool enabled) {
   Notify(PreferenceChange::kDeveloper);
 }
 
+void PhiPreferences::SetAllowAgentControl(bool enabled) {
+  // The Settings window, or the connection prompt's Allow — never a verb
+  // (see agentSpace.settings.set), so an agent cannot admit itself.
+  if (settings_.allow_agent_control == enabled) {
+    return;
+  }
+  settings_.allow_agent_control = enabled;
+  LOG(INFO) << "[PhiAgent] agent control "
+            << (enabled ? "enabled" : "disabled");
+  MarkDirty();
+  Notify(PreferenceChange::kAgentControl);
+}
+
 void PhiPreferences::SetAllowAgentUserSpaces(bool enabled) {
   // Only the Settings window reaches here — never a verb (see
   // agentSpace.settings.set), so a connected agent cannot widen its own

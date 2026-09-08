@@ -310,42 +310,4 @@ void PhiCredentialService::AppendCredentialAudit(const std::string& scope,
   host_.NoteCredentialConsentChanged();
 }
 
-std::vector<PhiCredentialGrantRow> PhiCredentialService::GrantRows() const {
-  std::vector<PhiCredentialGrantRow> rows;
-  rows.reserve(consent_.credential_grants.size());
-  for (const auto& [scope, kind] : consent_.credential_grants) {
-    rows.push_back({scope, kind});
-  }
-  return rows;
-}
-
-bool PhiCredentialService::RemoveGrant(const std::string& scope) {
-  const auto it = consent_.credential_grants.find(scope);
-  if (it == consent_.credential_grants.end()) {
-    return false;
-  }
-  // Drop any live timed grant under the same scope too (their keys are
-  // "<scope>|<page host>") — revoking must not leave a ten-minute window
-  // standing behind the removed row.
-  std::erase_if(timed_grants_, [&](const auto& entry) {
-    return entry.first == scope ||
-           entry.first.compare(0, scope.size() + 1, scope + "|") == 0;
-  });
-  consent_.credential_grants.erase(it);
-  dirty_();
-  return true;
-}
-
-std::vector<PhiCredentialAuditRow> PhiCredentialService::AuditRows() const {
-  std::vector<PhiCredentialAuditRow> rows;
-  rows.reserve(consent_.credential_audit.size());
-  for (const std::string& line : consent_.credential_audit) {
-    PhiCredentialAuditRow row;
-    if (PhiParseCredentialAuditWireRow(line, &row)) {
-      rows.push_back(std::move(row));
-    }
-  }
-  return rows;
-}
-
 }  // namespace phi_client

@@ -29,15 +29,13 @@ namespace phi_client {
 // Invariant: the grant key is "<item scope>|<page host>" for a fill and the
 // item scope for a reveal — grants are all-agents, as on Mac, but never
 // wider than one page host; only a LIVE TIMED grant ever covers a request
-// (the persisted "always" rows are loaded for the Settings display only —
-// a standing password grant plus an agent-chosen page was the exfil path,
-// lane 5 F2); and every decision, allowed or not, is written to the audit.
+// (there are no standing credential grants at all — a standing password
+// grant plus an agent-chosen page was the exfil path, lane 5 F2); and every
+// decision, allowed or not, is written to the audit.
 //
-// It is the only writer of the consent model's credential half
-// (`credential_grants`, `credential_audit`); the agent-peer half
-// (`agent_always_paths`) belongs to the control plane's consent ladder and
-// this service never touches it. Both mark the one consent file dirty
-// through their own callback.
+// It is the only writer of the consent model (`credential_audit`); agent
+// admission is a plain setting (allowAgentControl) and keeps nothing in
+// this file. It marks the consent file dirty through its own callback.
 class PhiCredentialService {
  public:
   // What the service needs from the app: a window to parent the modal to,
@@ -106,19 +104,6 @@ class PhiCredentialService {
                              model::CredentialAccessKind kind,
                              const char* decision);
 
-  // --- The Settings pane's rows -------------------------------------------
-  // The persisted grants, scope and exposure, in scope order.
-  std::vector<PhiCredentialGrantRow> GrantRows() const;
-  // Drops the grant held under `scope` AND any live timed grant standing
-  // under it — revoking must not leave a ten-minute window open. Addressed
-  // by SCOPE, never by row position: the pane re-reads the list between
-  // paint and click, and a reordered list would revoke a neighbour (lane 1
-  // §5 D7). False when no such grant is held.
-  bool RemoveGrant(const std::string& scope);
-  // The audit trail, newest first. Decoded from the consent file's line
-  // format (PhiCredentialAuditWireRow); an undecodable line is dropped
-  // rather than shown half-parsed.
-  std::vector<PhiCredentialAuditRow> AuditRows() const;
 
  private:
   // Looks a query up through the helper. Returns the reply's `result` dict,

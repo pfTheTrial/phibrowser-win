@@ -72,16 +72,15 @@ struct PhiPrincipal {
   std::vector<uint64_t> devtools_sessions;
 };
 
-// The agent capability behind X-Phi-Agent-Capability (lane 5 §4.1): minted
-// on a connection's first consented upgrade, presented by the agent's later
-// connections and its delegated helpers to skip the prompt and join the
-// same principal. IN-MEMORY for this phase — records die with the process
-// (the sealed consent file keeps only image-path grants); an interpreter
-// image's "Always Allow" is therefore exactly this record's lifetime.
+// The agent capability behind X-Phi-Agent-Capability (lane 5 §4.1): the
+// principal a connection acts as, echoed on its 101 and presented by the
+// agent's later connections and its delegated helpers to join the same
+// principal. Windows cannot tell one local program from another (no
+// code-signature identity — see AuthorizeAgentPeerOnUi), so there is ONE
+// capability per Phi session for every admitted connection that presents
+// none; task ownership and window scoping then separate agents from the
+// user, not agents from each other. IN-MEMORY: records die with the process.
 struct PhiAgentCapability {
-  // The lowercased image path the capability was minted for (logged when a
-  // different image presents it — delegation is allowed, silence is not).
-  std::wstring image_key;
   uint64_t minted_tick = 0;   // GetTickCount64 ms
   uint64_t expires_tick = 0;  // minted + 24 h
   // Union of the tasks and user Spaces across the connections that hold it.
@@ -166,6 +165,10 @@ class PhiControlDispatcher : public PhiControlDelegate {
   bool AuthorizeAgentPeer(uint64_t connection_id,
                           const PhiAgentPeer& peer,
                           std::string* capability_id) override;
+  // The user changed "Allow agents to control Phi": drop this session's
+  // remembered "Deny" so the next connection asks (or is admitted) afresh.
+  // UI thread.
+  void ForgetAgentControlDenial() { agent_control_denied_ = false; }
   void OnControlProtocol(uint64_t connection_id, int protocol) override;
   void OnDevToolsSessionOpened(uint64_t connection_id,
                                uint64_t session_id) override;
@@ -235,12 +238,13 @@ class PhiControlDispatcher : public PhiControlDelegate {
                         ControlCaller caller,
                         uint64_t connection_id);
 
-  // Agent-peer consent (C1): the UI-thread half of AuthorizeAgentPeer —
-  // a presented live capability first, then the grant store, then the
-  // session's remembered choices, then the consent dialog. On success the
-  // connection's principal is registered under the capability it now
-  // holds (returned in `capability_id`). Grants persist in the sealed
-  // consent file by IMAGE PATH (lowercased for comparison).
+  // Agent admission: the UI-thread half of AuthorizeAgentPeer. A presented
+  // live capability joins its principal; otherwise the "Allow agents to
+  // control Phi" setting (or the test rig) admits the connection outright,
+  // and when it is off the user is asked ONCE whether to turn it on. No
+  // identity check: the peer's image path is shown and logged, never
+  // judged. On success the connection's principal is registered under the
+  // capability it now holds (returned in `capability_id`).
   bool AuthorizeAgentPeerOnUi(uint64_t connection_id,
                               const PhiAgentPeer& peer,
                               std::string* capability_id);
@@ -529,17 +533,16 @@ class PhiControlDispatcher : public PhiControlDelegate {
   // it returns, so two prompts never stack and a verb never runs under a
   // prompt's nested loop. UI thread only.
   bool prompt_in_flight_ = false;
-  // The session-scoped agent consent memory (allow-once / deny-for-now per
-  // lowercased image path); the standing "Always Allow" set is the
-  // coordinator's consent().agent_always_paths.
-  std::set<std::wstring> session_allowed_peers_;
-  std::set<std::wstring> session_denied_peers_;
-  // The agent capabilities minted this session, by id, and the live one
-  // per image key — every connection an image opens in one session joins
-  // the same capability, so its CDP session and its control channel share
-  // one identity. UI thread only.
+  // The user answered "Deny" to the turn-on prompt this session: later
+  // connections are refused without another dialog until the user touches
+  // the switch in Settings (ForgetAgentControlDenial). UI thread only.
+  bool agent_control_denied_ = false;
+  // The agent capabilities live this session, by id, and the one every
+  // admitted connection that presents none is issued — the skill's CDP
+  // session, its control channel, and its next round all act as this one
+  // principal. UI thread only.
   std::map<std::string, PhiAgentCapability> capabilities_;
-  std::map<std::wstring, std::string> capability_of_image_;
+  std::string session_capability_id_;
   // taskId → the capability that created it. UI thread only; pruned of
   // dead tasks lazily (PruneTaskOwners).
   std::map<std::string, std::string> task_owners_;

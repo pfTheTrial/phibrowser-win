@@ -37,10 +37,18 @@ That pipe is the only way to reach the protocol: Phi does not open a
 loopback DevTools port. Three gates sit in front of it — the pipe's ACL
 (owner + SYSTEM + administrators, medium integrity, no remote clients), the
 token, which every request must carry as `X-Phi-Token` (a missing or wrong
-token is answered `403` before anything else happens), and the user's consent
-prompt for the connecting process. The skill reads the token from the pointer
-file and sends it on every request automatically; the pointer file itself is
-readable only by the user Phi runs as.
+token is answered `403` before anything else happens), and the user's switch
+**Settings ▸ Developer ▸ "Allow agents to control Phi"**. The skill reads the
+token from the pointer file and sends it on every request automatically; the
+pointer file itself is readable only by the user Phi runs as.
+
+There is no per-program approval on Windows. Phi cannot verify what a pipe
+client is (no code-signature identity, and the skill always arrives as
+`node.exe`), so it does not pretend to: with the switch on, every local
+program holding the token is admitted without a prompt; with it off, the
+first connection raises a prompt that offers to turn the switch on (Allow
+persists it; Deny refuses connections until the user touches the switch
+again). A refused connection reads `403 … agent control is off`.
 
 **Discovery.** The skill searches these user-data directories, first hit wins:
 

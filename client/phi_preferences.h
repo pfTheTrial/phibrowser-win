@@ -55,6 +55,7 @@ class PhiPreferences : public ChromePrefsHost {
     kLocaleStrings,  // The ACTIVE catalog changed: rebuild every string.
     kShortcuts,      // The override table (the hook reads chords live).
     kDeveloper,
+    kAgentControl,    // The master agent switch (Developer ▸ Agent control).
     kAgentUserSpaces,
     kAnalytics,      // The telemetry consent.
     kPinScope,       // The write-through mirror of the tab store's scope.
@@ -133,6 +134,8 @@ class PhiPreferences : public ChromePrefsHost {
   void SetRestoreLastSession(bool enabled);
   bool DeveloperMode() const { return settings_.developer_mode; }
   void SetDeveloperMode(bool enabled);
+  bool AllowAgentControl() const { return settings_.allow_agent_control; }
+  void SetAllowAgentControl(bool enabled);
   bool AllowAgentUserSpaces() const {
     return settings_.allow_agent_user_spaces;
   }

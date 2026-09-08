@@ -99,7 +99,8 @@ than lost; a verb that waits longer than three minutes fails `timeout`.
 On Windows every connection to Phi acts as a *principal* with a set of
 capabilities, and each verb is checked against them BEFORE it runs:
 
-- Consent grants the agent-Space capability: its own agent Spaces and
+- Admission (the "Allow agents to control Phi" switch) grants the
+  agent-Space capability: its own agent Spaces and
   shadow windows, `listSpaces`, `userFocus`, `listProfiles`, and
   credentials (with their own prompts). The toggle above adds reading and
   operating the user's Spaces; developer mode adds app settings
@@ -115,15 +116,15 @@ capabilities, and each verb is checked against them BEFORE it runs:
   window (`{taskId}`, or the windowId of an agent/shadow window) needs
   only the agent-Space capability, aimed at a user window (a `spaceId`, a
   user windowId, or no scope at all) needs the user-Space one.
-- **The capability header.** The first consented connection of a process
-  is issued an opaque capability, echoed on the upgrade response as
-  `X-Phi-Agent-Capability`; `cdp.mjs` remembers it for the process and
-  presents it on every later connection, so the browser-target WebSocket
-  and the `/phi-agent` channel act as ONE principal, and a delegated
-  helper (the mirror tailer) joins it without a second prompt. The record
-  lives in Phi's memory until Phi quits — that is what "Allow Once" now
-  means for an interpreter such as `node.exe`, which is never remembered
-  on disk.
+- **The capability header.** Every admitted connection that presents no
+  capability is issued the session's one agent capability, echoed on the
+  upgrade response as `X-Phi-Agent-Capability`; `cdp.mjs` remembers it for
+  the process and presents it on every later connection, so the
+  browser-target WebSocket and the `/phi-agent` channel act as ONE
+  principal, and a delegated helper (the mirror tailer) joins it. The
+  record lives in Phi's memory until Phi quits. Because Windows has no
+  identity for a pipe client, that principal is shared by every local
+  agent connected to the same Phi, not just this process.
 - **Driving the user's windows arms the mask.** Every mutating verb whose
   scope is a user window (`openSpaceTab`, `activateSpace`, tab layout,
   navigation, closing tabs, …) is reported to the browser as agent-driven

@@ -378,11 +378,10 @@ class PhiCoordinator : public SidebarHost,
                       bool shift,
                       bool alt) override;
   void RestoreAllShortcuts() override;
-  std::vector<std::string> AgentGrantPaths() const override;
-  bool RemoveAgentGrant(const std::string& path) override;
-  bool RemoveCredentialGrant(const std::string& scope) override;
   bool DeveloperMode() const;
   void SetDeveloperMode(bool enabled) override;
+  bool AllowAgentControl() const;
+  void SetAllowAgentControl(bool enabled) override;
   bool AllowAgentUserSpaces() const;
   void SetAllowAgentUserSpaces(bool enabled) override;
   void SetAgentProfileAllowed(const std::string& profile_id,
@@ -428,7 +427,6 @@ class PhiCoordinator : public SidebarHost,
   const PhiPreferences& Preferences() const override;
   const PhiSpaceManager& SpaceList() const override;
   const PhiProfileService& ProfileList() const override;
-  const PhiCredentialService& Credentials() const override;
   const PhiAccountAndFeedback& Account() const override;
   PhiUrlRouter& UrlRules() override;
 

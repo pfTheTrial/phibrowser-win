@@ -845,7 +845,10 @@ void PhiControlServer::HandleConnection(HANDLE pipe) {
     consented = delegate_ && delegate_->AuthorizeAgentPeer(connection_id, peer,
                                                            &capability_id);
     if (!consented) {
-      conn.Write(HttpText("403 Forbidden", "Phi denied this agent.\n"));
+      conn.Write(HttpText(
+          "403 Forbidden",
+          "Phi refused this connection: agent control is off. Turn on "
+          "\"Allow agents to control Phi\" in Settings > Developer.\n"));
     }
   }
   if (consented) {

@@ -30,7 +30,6 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "phibrowser-win/client/phi_account_feedback.h"
-#include "phibrowser-win/client/phi_credential_service.h"
 #include "phibrowser-win/client/phi_emoji.h"
 #include "phibrowser-win/client/phi_features.h"
 #include "phibrowser-win/client/phi_dwrite.h"
@@ -328,7 +327,6 @@ PhiSettingsWindow::PhiSettingsWindow(PhiSettingsHost* host)
       prefs_(&host->Preferences()),
       spaces_(&host->SpaceList()),
       profiles_(&host->ProfileList()),
-      credentials_(&host->Credentials()),
       account_(&host->Account()) {
   // Subscribed for the life of the object (the destructor unsubscribes),
   // whether or not the window below comes up.
@@ -2147,10 +2145,17 @@ void PhiSettingsWindow::BuildDeveloper(int* y) {
   // approved agent may touch. Both are chip-led, which is the visual
   // language the whole Mac Developer pane shares.
   BeginSection(y, L"Agent control");
-  AddToggleRow(y, L"Allow agents to control Phi (CDP)", /*on=*/true,
-               /*enabled=*/false, std::string(),
+  // The master switch. Windows has no code-signature identity for a pipe
+  // client, so there is no per-program approval list under it: on, every
+  // local program holding the launch token is admitted without a prompt;
+  // off, the first one to connect asks the user to turn this on.
+  AddToggleRow(y, L"Allow agents to control Phi (CDP)",
+               prefs_->AllowAgentControl(), /*enabled=*/true, "agentcontrol",
                L"Agent tools drive Phi over the DevTools Protocol through "
-               L"a private socket only this machine's processes can reach.",
+               L"a private pipe only this machine's processes can reach. "
+               L"On, any program running as you that can read Phi\u2019s "
+               L"profile folder is admitted without asking; off, the first "
+               L"one to connect asks you to turn this on.",
                kChipIndent, 0xE735, kChipIndigo);  // sparkles (filled)
   EndSection(y);
 
@@ -2192,81 +2197,6 @@ void PhiSettingsWindow::BuildDeveloper(int* y) {
       }
     }
   }
-  EndSection(y);
-  BeginSection(y, L"Approved agents");
-  const std::vector<std::string> grants = host_->AgentGrantPaths();
-  if (grants.empty()) {
-    AddSubHint(y, L"No program holds \u201CAlways Allow\u201D. Anything "
-                  L"connecting to control Phi is approved per connection.");
-  } else {
-    for (size_t i = 0; i < grants.size(); ++i) {
-      const std::wstring path = base::UTF8ToWide(grants[i]);
-      const RECT control = AddRow(y, path.c_str(), 22, 22);
-      Item remove;
-      remove.kind = ItemKind::kToolButton;
-      remove.text = L"\uE74D";  // Delete — revokes the standing grant.
-      remove.action = "removegrant";
-      // The PATH is the grant's identity; a row index would revoke a
-      // neighbour if the set moved between this build and the click.
-      remove.payload = grants[i];
-      remove.bounds = control;
-      items_.push_back(std::move(remove));
-      if (i + 1 < grants.size()) {
-        AddDividerRow(y);
-      }
-    }
-  }
-  EndSection(y);
-  BeginSection(y, L"Credential approvals");
-  const std::vector<PhiCredentialGrantRow> creds = credentials_->GrantRows();
-  if (creds.empty()) {
-    AddSubHint(y, L"No standing approvals. Every credential request is "
-                  L"approved individually.");
-  } else {
-    for (size_t i = 0; i < creds.size(); ++i) {
-      // The exposure is part of the row: "reveal" means the secret is handed
-      // to the agent, "fill" means it never leaves Phi.
-      const bool reveal =
-          creds[i].kind == model::CredentialAccessKind::kReveal;
-      const std::wstring label =
-          base::UTF8ToWide(creds[i].scope) +
-          (reveal ? L"  \u2014 reveal to agent" : L"  \u2014 fill only");
-      const RECT control = AddRow(y, label.c_str(), 22, 22);
-      Item remove;
-      remove.kind = ItemKind::kToolButton;
-      remove.text = L"\uE74D";
-      remove.action = "removecredgrant";
-      // The SCOPE is the grant's identity, for the same reason.
-      remove.payload = creds[i].scope;
-      remove.bounds = control;
-      items_.push_back(std::move(remove));
-      if (i + 1 < creds.size()) {
-        AddDividerRow(y);
-      }
-    }
-  }
-  EndSection(y);
-  BeginSection(y, L"Credential activity");
-  const std::vector<PhiCredentialAuditRow> audit = credentials_->AuditRows();
-  if (audit.empty()) {
-    AddSubHint(y, L"No credential requests yet.");
-  } else {
-    // Newest first; the pane shows the most recent ten.
-    const size_t shown = std::min<size_t>(audit.size(), 10);
-    for (size_t i = 0; i < shown; ++i) {
-      AddSubHint(y, (base::UTF8ToWide(audit[i].stamp) + L"  " +
-                     base::UTF8ToWide(PhiCredentialKindName(audit[i].kind)) +
-                     L"  " + base::UTF8ToWide(audit[i].scope) + L"  \u2014  " +
-                     base::UTF8ToWide(audit[i].decision))
-                        .c_str());
-    }
-  }
-  EndSection(y);
-  BeginSection(y, L"Agent Password Manager");
-  AddToggleRow(y, L"Bitwarden password manager", /*on=*/false,
-               /*enabled=*/false, std::string(),
-               L"Logins for Phi and agent requests, held by a separate "
-               L"helper — passwords never touch the browser process.");
   EndSection(y);
 }
 
@@ -3218,6 +3148,8 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
     host_->SetDeveloperMode(!item.on);
   } else if (item.action == "agentprofile") {
     host_->SetAgentProfileAllowed(item.payload, !item.on);
+  } else if (item.action == "agentcontrol") {
+    host_->SetAllowAgentControl(!item.on);
   } else if (item.action == "agentuserspaces") {
     host_->SetAllowAgentUserSpaces(!item.on);
   } else if (item.action == "gospaces") {
@@ -3243,10 +3175,6 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
     }
   } else if (item.action == "restoreshortcuts") {
     host_->RestoreAllShortcuts();
-  } else if (item.action == "removegrant") {
-    host_->RemoveAgentGrant(item.payload);
-  } else if (item.action == "removecredgrant") {
-    host_->RemoveCredentialGrant(item.payload);
   } else if (item.action == "goprofiles") {
     section_ = "profiles";
     scroll_ = 0;

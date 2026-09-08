@@ -180,8 +180,14 @@ struct PhiSettings {
   ReaderStyle reader;
   std::string language;  // Empty = follow the system.
   bool developer_mode = false;
-  // The two runtime gates. Never settable over the control channel; this
-  // file, hand-edited or seeded by the box runner, is their only source.
+  // The runtime gates. Never settable over the control channel; this file,
+  // hand-edited or seeded by the box runner, is their only source.
+  // Developer ▸ "Allow agents to control Phi": the master switch. On, any
+  // process that reaches the pipe with the launch token is admitted with
+  // no further check — Windows has no code-signature identity for the
+  // peer, so there is nothing meaningful to ask the user about it. Off,
+  // the first connection raises a prompt that offers to turn it on.
+  bool allow_agent_control = false;
   bool allow_agent_user_spaces = false;
   // Profiles an agent may NOT bind a new agent Space to (the Mac's
   // AgentSpaces.disallowedAgentProfileIds). Stored as the refusals rather
@@ -254,22 +260,16 @@ struct PhiRestoreModel {
 
 // --- PhiConsent.json (schema 1, DPAPI + HMAC) ------------------------------
 //
-// TRUTH OWNER: client Consent (PhiCredentialService and the agent-image
-// grants) — the "Always Allow" set exists nowhere else; the framework never
-// sees it. RULE: standing decisions the user made once and expects to hold
-// — so the file is wrapped for the user (DPAPI) and sealed against a
-// same-user edit (HMAC, lane 5 §4.6); a file that fails either check is
-// quarantined and the model falls back to NO grants, the safe side, and
-// every prompt behaves as on a first run. The TIMED credential grants are
-// session memory by design and are not in the file.
+// TRUTH OWNER: client Consent (PhiCredentialService) — the credential
+// audit trail exists nowhere else; the framework never sees it. Standing
+// grants of any kind are gone (agent admission is the allowAgentControl
+// setting; a credential approval is once or ten minutes, in memory), so
+// the file holds only the audit. It stays wrapped for the user (DPAPI) and
+// sealed against a same-user edit (HMAC, lane 5 §4.6); a file that fails
+// either check is quarantined and the model falls back to an empty trail.
 enum class CredentialAccessKind { kFill, kReveal };
 
 struct PhiConsentModel {
-  // "Always allow" agent image paths, lowercased.
-  std::set<std::wstring> agent_always_paths;
-  // Credential grant key (scope) -> kind. Kept for the Settings display
-  // only (since lane 5 F2); CredentialGrantCovers no longer reads them.
-  std::map<std::string, CredentialAccessKind> credential_grants;
   // Audit lines (tab-separated), append-only.
   std::vector<std::string> credential_audit;
   bool operator==(const PhiConsentModel&) const = default;

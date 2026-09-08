@@ -898,6 +898,7 @@ PhiVerbResult PhiControlDispatcher::VerbSettingsGet(
   }
   out.Set("sections", std::move(sections));
   out.Set("developerMode", coordinator_->settings().developer_mode);
+  out.Set("allowAgentControl", coordinator_->settings().allow_agent_control);
   out.Set("allowAgentUserSpaces",
           coordinator_->settings().allow_agent_user_spaces);
   // Developer ▸ "Profiles agents can use", as the refusals the pane
@@ -941,12 +942,13 @@ PhiVerbResult PhiControlDispatcher::VerbSettingsSet(
     const PhiVerbContext& ctx) {
   // The keys that decide what an agent may reach — or what the user has
   // agreed to share — are never the agent's to set: developerMode unlocks
-  // the pane that holds the toggle, allowAgentUserSpaces IS the toggle,
-  // testRig unlocks the harness verbs, analyticsEnabled is the telemetry
-  // consent. Refused whole — a payload that carries one gets none of its
-  // keys.
+  // the pane that holds the toggles, allowAgentControl admits agents at
+  // all, allowAgentUserSpaces widens their reach, testRig unlocks the
+  // harness verbs, analyticsEnabled is the telemetry consent. Refused
+  // whole — a payload that carries one gets none of its keys.
   if (ctx.caller == ControlCaller::kPipe &&
       (ctx.params.Has("developerMode") ||
+       ctx.params.Has("allowAgentControl") ||
        ctx.params.Has("allowAgentUserSpaces") || ctx.params.Has("testRig") ||
        ctx.params.Has("analyticsEnabled") ||
        ctx.params.Has("disallowedAgentProfileIds"))) {

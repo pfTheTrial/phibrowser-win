@@ -24,12 +24,15 @@ class PhiFramework;
 
 namespace phi_client {
 
-// The identity of a pipe client, resolved at connection accept — the
-// Windows analogue of the Mac's process-tree peer identification.
+// Who is on the other end of a pipe connection, resolved at accept. FOR
+// DISPLAY AND LOGGING ONLY: Windows has no code-signature identity for a
+// pipe client (the Mac walks the process tree to a signed agent), so
+// nothing is decided on these fields — admission is the "Allow agents to
+// control Phi" setting plus the launch token.
 struct PhiAgentPeer {
   DWORD pid = 0;
   // Full image path of the connecting process; empty when the process died
-  // or could not be opened (treated as unidentified).
+  // or could not be opened.
   std::wstring image_path;
   // The `X-Phi-Agent-Capability` the request carried (lane 5 §4.1): an
   // opaque id Phi minted for an earlier consented connection, which a
@@ -63,10 +66,10 @@ class PhiControlDelegate {
                                              base::DictValue payload) = 0;
   // Called ONCE per accepted connection, BEFORE any request is served —
   // control channel and CDP session alike (CDP grants browser control, so
-  // both families sit behind the same consent). Only connections that
+  // both families sit behind the same gate). Only connections that
   // already presented the launch token reach this; the implementation
-  // marshals to the UI thread and may block on a consent dialog. False
-  // refuses the connection. On success `capability_id` receives the agent
+  // marshals to the UI thread and may block on the turn-on prompt when
+  // agent control is off. False refuses the connection. On success `capability_id` receives the agent
   // capability the connection now holds (minted here, or the one the peer
   // presented), which the server echoes on the 101 as
   // `X-Phi-Agent-Capability`; empty when the delegate issued none.
@@ -119,12 +122,15 @@ class PhiControlDelegate {
 //      request must carry `X-Phi-Token: <hex>`; a missing or wrong token is
 //      answered 403 before anything else happens — no delegate call, no UI —
 //      so a process that cannot read the profile directory cannot even make
-//      the consent prompt appear.
-//   3. Consent: PhiControlDelegate::AuthorizeAgentPeer with the peer's image
-//      path and the agent capability it presented (if any), which the
-//      control dispatcher turns into the Allow/Deny dialog, its grant
-//      memory, and a per-connection principal; the capability the
-//      connection ends up holding is echoed on the 101.
+//      the turn-on prompt appear.
+//   3. The switch: PhiControlDelegate::AuthorizeAgentPeer admits the
+//      connection when Developer ▸ "Allow agents to control Phi" is on (or
+//      the test rig is), asks the user once to turn it on when it is off,
+//      and registers a per-connection principal under the session's agent
+//      capability (or the one the peer presented); that capability is
+//      echoed on the 101. The peer's pid and image path are shown and
+//      logged, never judged — Windows has no signature identity to key a
+//      per-program grant on.
 // Plus a cap of kMaxConnections concurrent connections (429 beyond it, no
 // delegate call) so a prompt cannot be spammed.
 //

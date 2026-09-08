@@ -266,13 +266,12 @@ PhiVerbResult PhiControlDispatcher::HandleControlCommand(
 bool PhiControlDispatcher::AuthorizeAgentPeer(uint64_t connection_id,
                                               const PhiAgentPeer& peer,
                                               std::string* capability_id) {
-  // I/O thread; the decision (and any consent dialog) runs on the UI thread,
-  // posted like a verb so it never lands inside a nested loop. While one
-  // consent dialog is up every later request waits in the deferred queue,
-  // and a request for the same image path then finds that dialog's answer
-  // in the session memory (AuthorizeAgentPeerOnUi) instead of raising a
-  // second dialog — one prompt per program, however many connections it
-  // opens at once.
+  // I/O thread; the decision (and the turn-on prompt) runs on the UI
+  // thread, posted like a verb so it never lands inside a nested loop.
+  // While the prompt is up every later request waits in the deferred
+  // queue and then finds the setting the answer flipped (or the session's
+  // "Deny") instead of raising a second dialog — one prompt, however many
+  // connections arrive at once.
   capability_id->clear();
   if (!msg_hwnd_) {
     return false;
@@ -301,109 +300,81 @@ bool PhiControlDispatcher::AuthorizeAgentPeer(uint64_t connection_id,
   return allowed;
 }
 
-namespace {
-// Programs whose image path names an INTERPRETER, not a program: a grant on
-// node.exe would pre-approve every Node script that ever runs, including
-// one dropped by a bad package. Those get Allow Once / Deny only.
-bool IsInterpreterImage(const std::wstring& lowercased_path) {
-  static constexpr std::wstring_view kInterpreters[] = {
-      L"node.exe",   L"python.exe",     L"python3.exe", L"pwsh.exe",
-      L"powershell.exe", L"cmd.exe",    L"bun.exe",     L"deno.exe",
-  };
-  const size_t cut = lowercased_path.find_last_of(L"\\/");
-  const std::wstring_view base =
-      cut == std::wstring::npos
-          ? std::wstring_view(lowercased_path)
-          : std::wstring_view(lowercased_path).substr(cut + 1);
-  for (std::wstring_view name : kInterpreters) {
-    if (base == name) {
-      return true;
-    }
-  }
-  return false;
-}
-}  // namespace
-
 bool PhiControlDispatcher::AuthorizeAgentPeerOnUi(uint64_t connection_id,
                                                   const PhiAgentPeer& peer,
                                                   std::string* capability_id) {
-  // An unidentifiable peer (no pid, or the process died before it could be
-  // opened) is refused outright: consent must name WHO is asking — a
-  // presented capability does not stand in for that.
-  if (peer.image_path.empty()) {
-    LOG(WARNING) << "[PhiAgent] refused unidentified pipe peer (pid "
-                 << peer.pid << ")";
-    return false;
-  }
-  std::wstring key = peer.image_path;
-  for (wchar_t& c : key) {
-    c = towlower(c);
-  }
+  // NO IDENTITY CHECK. The Mac keys consent on the peer's code signature
+  // (team + signing id, walked up to the responsible agent process); the
+  // only thing Windows can attach to a pipe client is its pid and image
+  // path, and an image path names nothing — the skill always arrives as
+  // node.exe, and any program can be renamed. So the peer's path is shown
+  // in the prompt and written to the log for the user's benefit, and the
+  // decision is the one switch: Developer ▸ "Allow agents to control Phi".
+  // The launch token (a process that can read the profile folder) and the
+  // pipe ACL are the whole admission test once that switch is on.
+  const std::string who = base::WideToUTF8(
+      peer.image_path.empty() ? std::wstring(L"<unknown image>")
+                              : peer.image_path) +
+      " (pid " + std::to_string(peer.pid) + ")";
   // A live capability the peer presented (lane 5 §4.1): the agent's own
   // later connection, or a helper it delegated to, joins the principal the
-  // capability names — no prompt, and the tasks that principal created are
-  // its tasks. Any image may present it: the id is a secret Phi handed to
-  // a consented process over the pipe, and delegation to a helper under a
-  // different runtime is the point. Logged when the image differs so a
-  // leaked id is at least visible.
+  // capability names. The id is a secret Phi handed to an admitted process
+  // over the pipe, so presenting it is admission in itself.
   if (!peer.presented_capability.empty()) {
-    if (PhiAgentCapability* record =
-            FindCapability(peer.presented_capability)) {
-      if (record->image_key != key) {
-        LOG(INFO) << "[PhiAgent] capability presented by a different image: "
-                  << base::WideToUTF8(peer.image_path) << " (pid " << peer.pid
-                  << ") joins the principal of "
-                  << base::WideToUTF8(record->image_key);
-      }
+    if (FindCapability(peer.presented_capability)) {
       *capability_id = peer.presented_capability;
       RegisterPrincipal(connection_id, peer, *capability_id);
       return true;
     }
-    LOG(INFO) << "[PhiAgent] unknown or expired capability presented by pid "
-              << peer.pid << "; falling back to consent";
+    LOG(INFO) << "[PhiAgent] unknown or expired capability presented by "
+              << who << "; admitting on the setting instead";
   }
-  // The capability every consented connection of this image shares this
-  // session — minted on its first consented upgrade, reused by the rest
-  // (the skill's CDP session and control channel are two connections of
-  // one agent, and one must see the other's tasks).
-  auto issue = [&]() {
-    auto existing = capability_of_image_.find(key);
-    if (existing != capability_of_image_.end() &&
-        FindCapability(existing->second)) {
-      *capability_id = existing->second;
-    } else {
-      *capability_id = base::HexEncodeLower(base::RandBytesAsVector(32));
-      PhiAgentCapability& record = capabilities_[*capability_id];
-      record.image_key = key;
+  // The one capability every admitted connection of this session shares —
+  // minted on the first, reused by the rest (the skill's CDP session and
+  // control channel are two connections of one agent, and a later round
+  // is a new process that must still see the tasks the last one created).
+  auto admit = [&]() {
+    if (session_capability_id_.empty() ||
+        !FindCapability(session_capability_id_)) {
+      session_capability_id_ =
+          base::HexEncodeLower(base::RandBytesAsVector(32));
+      PhiAgentCapability& record = capabilities_[session_capability_id_];
       record.minted_tick = ::GetTickCount64();
       record.expires_tick = record.minted_tick + kCapabilityTtlMs;
-      capability_of_image_[key] = *capability_id;
     }
+    *capability_id = session_capability_id_;
+    LOG(INFO) << "[PhiAgent] admitted " << who;
     RegisterPrincipal(connection_id, peer, *capability_id);
     return true;
   };
-  if (coordinator_->consent().agent_always_paths.count(key) ||
-      session_allowed_peers_.count(key)) {
-    return issue();
+  const model::PhiSettings& settings = coordinator_->settings();
+  if (settings.allow_agent_control || settings.test_rig) {
+    return admit();
   }
-  if (session_denied_peers_.count(key)) {
-    return false;  // Asked and denied this run — no dialog spam per request.
+  if (agent_control_denied_) {
+    LOG(INFO) << "[PhiAgent] refused " << who
+              << " (agent control off, denied this session)";
+    return false;
   }
-  // The consent dialog — the Mac's AgentAccessApprovalAlert. Owned by a
-  // shell window when one exists; a MessageBox fallback (allow-once only)
-  // covers the pre-window startup connection. The text says what the
-  // grant actually covers: the agent's own Spaces always, the user's own
-  // ONLY while the Developer-pane toggle is on — and how long the answer
-  // lasts: the agent capability minted on approval lives until Phi quits
-  // (an interpreter image is never remembered on disk).
+  // The switch is off: ask once whether to turn it on — the Mac's consent
+  // prompt "offers to turn it on" the same way, so the skill never has to
+  // send the user into Settings first. Allow flips the setting (persisted,
+  // shown in Developer ▸ Agent control); Deny refuses this and every later
+  // connection until the user touches the switch. Owned by a shell window
+  // when one exists; a MessageBox fallback covers the pre-window startup
+  // connection.
   std::wstring message =
-      peer.image_path + L"\n(process " + std::to_wstring(peer.pid) +
-      L") wants to connect to Phi as an agent. It can open its own agent "
-      L"Spaces and drive them.";
-  if (coordinator_->settings().allow_agent_user_spaces) {
-    message += L"\nIt can also read and change your own Spaces.";
+      L"A program wants to connect to Phi as an agent:\n" +
+      base::UTF8ToWide(who) +
+      L"\n\nAllowing turns on \u201CAllow agents to control Phi\u201D in "
+      L"Settings \u25B8 Developer. Any program running as you that can "
+      L"read Phi\u2019s profile folder may then open its own agent Spaces "
+      L"and drive them";
+  if (settings.allow_agent_user_spaces) {
+    message += L", and read and change your own Spaces";
   }
-  message += L"\nThis approval lasts until Phi quits.";
+  message += L". Phi cannot tell such programs apart, so this stays on "
+             L"for every one of them until you turn it off.";
   HWND owner = nullptr;
   for (PhiShellWindow* controller :
        coordinator_->registry().Controllers()) {
@@ -412,43 +383,31 @@ bool PhiControlDispatcher::AuthorizeAgentPeerOnUi(uint64_t connection_id,
       break;
     }
   }
-  // An interpreter never gets "Always Allow" (see IsInterpreterImage).
-  // Deny is the default action either way, so a stray Enter refuses.
-  const bool interpreter = IsInterpreterImage(key);
-  std::vector<std::wstring> options = {L"Allow Once"};
-  if (!interpreter) {
-    options.push_back(L"Always Allow");
-  }
-  options.push_back(L"Deny");
-  const int deny_index = static_cast<int>(options.size()) - 1;
-  int chosen = -1;
+  // Deny is the default action, so a stray Enter refuses.
+  const std::vector<std::wstring> options = {L"Allow", L"Deny"};
+  const int deny_index = 1;
+  int chosen = deny_index;
   if (owner) {
-    // Deny preselected AND Cancel holding Return: Enter refuses; only a
-    // deliberate click on Continue (or a row double-click) approves.
     chosen = PhiPromptChoose(owner, L"Agent access request", message.c_str(),
                              options, deny_index, L"Continue", L"Cancel",
                              /*cancel_is_default=*/true);
   } else {
     PhiModalScope modal;
     chosen = ::MessageBoxW(nullptr,
-                           (message + L"\n\nAllow this connection?").c_str(),
-                           L"Phi — Agent access request",
+                           (message + L"\n\nAllow agents to control Phi?")
+                               .c_str(),
+                           L"Phi \u2014 Agent access request",
                            MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2 |
                                MB_SETFOREGROUND) == IDYES
                  ? 0
                  : deny_index;
   }
   if (chosen == 0) {
-    session_allowed_peers_.insert(key);
-    return issue();
+    coordinator_->SetAllowAgentControl(true);  // Persists; Settings refreshes.
+    return admit();
   }
-  if (chosen == 1 && !interpreter) {
-    coordinator_->consent().agent_always_paths.insert(key);
-    coordinator_->ScheduleSave(PhiCoordinator::StoreDomain::kConsent);
-    PhiSettingsWindow::Refresh();
-    return issue();
-  }
-  session_denied_peers_.insert(key);
+  LOG(INFO) << "[PhiAgent] user denied " << who;
+  agent_control_denied_ = true;
   return false;
 }
 
@@ -669,10 +628,6 @@ PhiAgentCapability* PhiControlDispatcher::FindCapability(
     return nullptr;
   }
   if (::GetTickCount64() >= it->second.expires_tick) {
-    auto by_image = capability_of_image_.find(it->second.image_key);
-    if (by_image != capability_of_image_.end() && by_image->second == id) {
-      capability_of_image_.erase(by_image);
-    }
     capabilities_.erase(it);
     return nullptr;
   }

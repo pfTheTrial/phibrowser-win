@@ -29,10 +29,11 @@ test('settings: every Mac pane is offered, in order', async () => {
 test('settings: the security prefs are not agent-settable', async () => {
   const ctl = await openControl()
   try {
-    // docs/architecture-review.md §3.7: developerMode, allowAgentUserSpaces
-    // and testRig can only be changed by the user (Settings) or by editing
-    // PhiPrefs.json — never over the pipe.
-    for (const key of ['developerMode', 'allowAgentUserSpaces', 'testRig',
+    // docs/architecture-review.md §3.7: developerMode, allowAgentControl,
+    // allowAgentUserSpaces and testRig can only be changed by the user
+    // (Settings) or by editing PhiPrefs.json — never over the pipe.
+    for (const key of ['developerMode', 'allowAgentControl',
+                       'allowAgentUserSpaces', 'testRig',
                        'disallowedAgentProfileIds']) {
       const r = await ctl.send('agentSpace.settings.set', { [key]: false })
       assertEq(r.ok, false, `${key} refused`)
@@ -40,6 +41,7 @@ test('settings: the security prefs are not agent-settable', async () => {
     }
     const r = await ctl.send('agentSpace.settings.get')
     assertEq(r.developerMode, true, 'developer mode untouched')
+    assertEq(r.allowAgentControl, true, 'agent-control switch untouched')
     assertEq(r.allowAgentUserSpaces, true, 'user-space toggle untouched')
     assertEq(r.sections.includes('developer'), true, 'the pane is still there')
   } finally { ctl.close() }

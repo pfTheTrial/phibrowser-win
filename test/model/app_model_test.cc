@@ -60,6 +60,7 @@ void TestSettingsDefaults() {
   CHECK(s.reader.highlights_links);
   CHECK(s.language.empty());
   CHECK(!s.developer_mode);
+  CHECK(!s.allow_agent_control);
   CHECK(!s.allow_agent_user_spaces);
   CHECK(!s.test_rig);
   CHECK(s.pin_scope == PhiPinScope::kProfile);
@@ -92,8 +93,6 @@ void TestRestoreAndConsentDefaults() {
   const RememberedWindow w;
   CHECK(w.window_id == 0);
   const PhiConsentModel c;
-  CHECK(c.agent_always_paths.empty());
-  CHECK(c.credential_grants.empty());
   CHECK(c.credential_audit.empty());
 }
 

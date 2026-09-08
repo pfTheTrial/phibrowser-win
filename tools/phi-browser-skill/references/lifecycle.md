@@ -50,9 +50,13 @@ longer agent-callable on Windows (`test_rig_only`) — the console prompt
 and Phi's own mirror deliver the user's commands, `readUserMessages` drains
 them.
 
-The consent prompt states how long an approval lasts: until Phi quits.
-There is no standing "Always Allow" for an interpreter image (`node.exe`);
-its approval IS the capability above.
+There is no per-program approval on Windows: the prompt a first connection
+raises asks only whether to turn on "Allow agents to control Phi", and once
+that switch is on every connection is admitted without asking. All admitted
+connections that present no capability share ONE principal for the Phi
+session, so a later round (a new `node` process) still owns the tasks the
+last one created — but so does any other local agent connected to the same
+Phi; Windows cannot tell them apart.
 
 ## Persistent Spaces
 

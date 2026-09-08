@@ -23,7 +23,6 @@
 namespace phi_client {
 
 class PhiAccountAndFeedback;
-class PhiCredentialService;
 class PhiPreferences;
 class PhiProfileService;
 class PhiSpaceManager;
@@ -64,8 +63,8 @@ class PhiSettingsObserver {
 // it in two:
 //
 //   READS go to the service that owns the domain. PhiPreferences,
-//   PhiSpaceManager, PhiProfileService, PhiCredentialService and
-//   PhiAccountAndFeedback are handed to the window CONST — it can see the
+//   PhiSpaceManager, PhiProfileService and PhiAccountAndFeedback are
+//   handed to the window CONST — it can see the
 //   values, it cannot write behind the coordinator's back — and every row
 //   they answer is a struct (phi_settings_types.h).
 //
@@ -89,7 +88,6 @@ class PhiSettingsHost {
   virtual const PhiPreferences& Preferences() const = 0;
   virtual const PhiSpaceManager& SpaceList() const = 0;
   virtual const PhiProfileService& ProfileList() const = 0;
-  virtual const PhiCredentialService& Credentials() const = 0;
   virtual const PhiAccountAndFeedback& Account() const = 0;
   // Mutable: see the class comment — the URL Rules editor (PhiUrlRulesWindow,
   // opened through the host below) IS this service's editor.
@@ -183,23 +181,14 @@ class PhiSettingsHost {
                               bool alt) = 0;
   virtual void RestoreAllShortcuts() = 0;
 
-  // --- Consent --------------------------------------------------------------
-  // The persisted "Always Allow" agent grants (C1 consent) as displayable
-  // UTF-8 image paths. This half of the consent file belongs to the control
-  // plane's ladder, not to PhiCredentialService, so it is read and revoked
-  // here. Revoking is by PATH — the identity — never by row position: the
-  // pane re-reads the list between paint and click (lane 1 §5 D7). Future
-  // connections are affected; live sessions keep their allow-once.
-  virtual std::vector<std::string> AgentGrantPaths() const = 0;
-  virtual bool RemoveAgentGrant(const std::string& path) = 0;
-  // Revokes the standing credential approval held under `scope`, and with
-  // it any live timed grant beneath it. Also by identity, for the same
-  // reason.
-  virtual bool RemoveCredentialGrant(const std::string& scope) = 0;
-
   // --- Developer ------------------------------------------------------------
   // Developer mode gates the Developer pane, as on Mac (default off).
   virtual void SetDeveloperMode(bool enabled) = 0;
+  // Developer ▸ "Allow agents to control Phi": the master switch. On, any
+  // local program holding the launch token is admitted with no prompt and
+  // no identity check (there is none to make on Windows); off, the first
+  // connection asks the user to turn it on. Never agent-settable.
+  virtual void SetAllowAgentControl(bool enabled) = 0;
   // Developer ▸ "Allow agents to operate your Spaces": lets a connected
   // agent read and change the user's OWN Spaces, tabs, bookmarks, URL rules
   // and profiles. Default off; agent Spaces are never affected, and the
@@ -425,7 +414,6 @@ class PhiSettingsWindow : public PhiSecondaryWindow,
   RAW_PTR_EXCLUSION const PhiPreferences* prefs_;
   RAW_PTR_EXCLUSION const PhiSpaceManager* spaces_;
   RAW_PTR_EXCLUSION const PhiProfileService* profiles_;
-  RAW_PTR_EXCLUSION const PhiCredentialService* credentials_;
   RAW_PTR_EXCLUSION const PhiAccountAndFeedback* account_;
   HFONT font_ = nullptr;
   HFONT title_font_ = nullptr;
