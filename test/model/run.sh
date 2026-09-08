@@ -118,3 +118,20 @@ $CXX ../../client/phi_shell_menus.cc shell_menus_test.cc \
 # pane's row order. Header-only, so the test needs no client .cc.
 $CXX settings_rows_test.cc -o /tmp/phi_settings_rows_test
 /tmp/phi_settings_rows_test
+# Phase 6's sidebar (§3.5, lane 1 clusters H and J): the pure half of the
+# view — the MRU order the Ctrl+Tab switcher walks, the bookmark outline's
+# disclosure rule, and the key -> row resolution that lets drag state
+# survive a rebuild. The row pipeline's placement, the band's paint and the
+# hit tests are Win32 and stay on the target; the test defines
+# PHI_SIDEBAR_VIEW_MODEL_ONLY to skip them, and needs no client .cc because
+# the pure half is inline in the header (the key type comes from the model).
+$CXX ../../client/phi_sidebar_model.cc sidebar_view_test.cc \
+     -o /tmp/phi_sidebar_view_test
+/tmp/phi_sidebar_view_test
+# The same for the drag session (cluster I): what arming a drag on a
+# SidebarKey drags, when a press becomes a drag, and the reorder slide's
+# easing. The capture, the drag image and the drop resolution stay on the
+# target and are driven end to end on the box by test/sv-drag.mjs.
+$CXX ../../client/phi_sidebar_model.cc sidebar_drag_test.cc \
+     -o /tmp/phi_sidebar_drag_test
+/tmp/phi_sidebar_drag_test

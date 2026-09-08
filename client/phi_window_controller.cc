@@ -63,6 +63,10 @@ namespace {
 
 constexpr wchar_t kShellClassName[] = L"PhiClientShell";
 
+using phi_framework::SplitSnapshot;
+using phi_framework::TabSnapshot;
+using phi_framework::WindowSnapshot;
+
 // --- Metrics -----------------------------------------------------------------
 // Design units (points at 100%), taken from the Mac client so the two look the
 // same: WebContentConstant, SidebarHeaderView, SpacesStripView,
@@ -140,37 +144,15 @@ constexpr int kSpaceIconVertical = 14;
 // them. (The 24pt pip draws both in the UI font, which is already this
 // relation to its 13pt glyphs.)
 constexpr int kSpaceTextVertical = 14;
-constexpr int kRowPad = 2;            // 36pt row → 32pt pill (vertical inset).
-constexpr int kCornerRadius = 8;      // The pill radius, everywhere.
 // How far a shell with no placement to inherit sits off the work area's
 // top-left corner (see the first-run placement in the constructor).
 constexpr int kDefaultPlacementMargin = 24;
 constexpr int kContentRadius = 14;  // webContentContainerCornerRadius (macOS 26)
-constexpr int kFaviconSize = 14;    // The 16pt slot holds a 14pt icon.
-constexpr int kBookmarkIndent = 10;   // SideBarOutlineView.indentation.
-constexpr int kFolderIconSize = 20;   // BookmarkFaviconView.folderSize.
-RECT ToRect(const SidebarRect& r);  // Defined with the snapshot readers.
-// Pinned tabs: PinnedTabLayout — column limit by width breakpoint (3 at
-// this sidebar width), 53pt minimum width.
-constexpr int kPinnedMinWidth = 53;
-constexpr int kPinnedFavicon = 18;
-// The horizontal strip's pinned section (TabStripMetrics.PinnedTab): fixed
-// 28pt square cells, 2pt spacing, leading the normal tabs.
-constexpr int kStripPinSize = 28;
-constexpr int kStripPinGap = 2;
-constexpr int kStripPinToTabs = 6;
-constexpr int kStripPinFavicon = 16;
 // 0x515 and 0x516 belonged to the Space swap and hover-card clocks; the
 // swap now rides PhiAnimator and the card's dwell timer is
 // PhiSpacesStrip::kHoverCardTimer (still 0x516), which the strip owns.
-// Drag-reorder slide: Chrome's vertical-tab layout animation (200ms,
-// EASE_IN_OUT) — sibling rows glide to open the insertion gap.
-constexpr int kDragSlideMs = 200;
-constexpr UINT_PTR kDragSlideTimer = 0x518;
-// A reserved row_slide key: how far everything BELOW the bookmark outline
-// ("+ New Tab", group headers, the tab rows) is pushed while a drag opens a
-// row-sized gap in the outline. Rides the same clock as the row slides.
-constexpr char kBandShiftKey[] = "\x01" "band";
+// 0x518 is PhiSidebarDragSession::kSlideTimer — the reorder slide, whose
+// clock the drag session owns and whose timer rides this window.
 constexpr UINT_PTR kFloatingTickTimer = 0x522;
 // 0x523 is PhiOmniboxSession::kCopyLinkTimer — the shell routes it back to
 // the session, which owns the copy-link flash.
@@ -180,49 +162,16 @@ constexpr UINT_PTR kFloatingTickTimer = 0x522;
 constexpr UINT_PTR kDeferredCloseTimer = 0x525;
 constexpr UINT kDeferredCloseRetryMs = 50;
 
-// Tab groups: the Mac's 32pt TabGroupHeaderView on TabGroupCellView's card —
-// the hover wash under a 1pt border hairline, radius 8; the group colour
-// lives only in the header's dot. Members sit 4pt in from the header and
-// the card's bottom (innerTableTop/BottomInset), 8pt in from its leading
-// edge (the member cell's own edgesSpacing) and 4pt from its trailing one.
-constexpr int kGroupHeaderHeight = 32;
-constexpr int kGroupInnerInset = 4;
-constexpr int kGroupMemberLeadInset = 8;
-constexpr int kGroupMemberTrailInset = 4;
-struct PhiGroupColor {
-  const char* name;
-  COLORREF color;
-};
-// Chromium's TabGroupColorId palette (the Mac's GroupColor set is the same
-// nine); the name keys the localized colour label (tabs.tabGroup.colorName.*)
-// that titles an unnamed group.
-constexpr std::array<PhiGroupColor, 9> kGroupColors = {{
-    {"grey", RGB(0x80, 0x86, 0x8B)},
-    {"blue", RGB(0x1A, 0x73, 0xE8)},
-    {"red", RGB(0xD9, 0x30, 0x25)},
-    {"yellow", RGB(0xF9, 0xAB, 0x00)},
-    {"green", RGB(0x18, 0x80, 0x38)},
-    {"pink", RGB(0xD0, 0x18, 0x84)},
-    {"purple", RGB(0xA1, 0x42, 0xF4)},
-    {"cyan", RGB(0x00, 0x7B, 0x83)},
-    {"orange", RGB(0xFA, 0x90, 0x3E)},
-}};
-// kGroupColors follows phi_framework::TabGroupColor's declaration order —
-// that is what makes the enum an index into it.
-const PhiGroupColor& GroupColorFor(phi_framework::TabGroupColor color) {
-  const size_t index = static_cast<size_t>(color);
-  return index < kGroupColors.size() ? kGroupColors[index] : kGroupColors[0];
-}
-
-// The comfortable layout's tabs (the strip's band metrics are in
-// phi_shell_layout.h): a tab runs from the strip's top inset all the way to
-// the band's bottom edge — where the active one merges into the toolbar.
-constexpr int kHTabHeight = 34;        // kTitleBarHeightTabs − kHTabStripTop
-constexpr int kHTabWidth = 200;        // Tab.idealWidth (a resting tab)
-constexpr int kHTabActiveWidth = 240;  // The active tab takes more room.
-constexpr int kHTabMinWidth = 56;      // Favicon, a breath, and the close box.
-constexpr int kHTabGap = 0;            // Tabs abut; a hairline divides them.
-constexpr int kCloseBoxSize = 24;      // UnifiedTabCloseButton frame.
+// The row metrics the sidebar owns and the chrome below shares — the pill
+// radius, the favicon and close-box sizes, the outline's indent
+// (phi_sidebar_view.h). The tab-group and strip-tab constants went with the
+// rows they belong to.
+using sidebar_metrics::kBookmarkIndent;
+using sidebar_metrics::kCloseBoxSize;
+using sidebar_metrics::kCornerRadius;
+using sidebar_metrics::kFaviconSize;
+using sidebar_metrics::kFolderIconSize;
+using sidebar_metrics::kRowPad;
 // The bottom bar's two capsules (Feedback bordered, Chat on the accent).
 // The sidebar bottom bar is the only place Feedback has a band now: the
 // comfortable header that carried the labelled variant is gone, and its
@@ -488,39 +437,39 @@ PhiWindowController::Layout PhiWindowController::ToLayout(
     const ShellLayout& shell) {
   Layout out;
   out.mode = shell.mode;
-  out.client = ToRect(shell.client);
-  out.title_bar = ToRect(shell.title_bar);
-  out.caption_min = ToRect(shell.caption_min);
-  out.caption_max = ToRect(shell.caption_max);
-  out.caption_close = ToRect(shell.caption_close);
+  out.client = PhiToRect(shell.client);
+  out.title_bar = PhiToRect(shell.title_bar);
+  out.caption_min = PhiToRect(shell.caption_min);
+  out.caption_max = PhiToRect(shell.caption_max);
+  out.caption_close = PhiToRect(shell.caption_close);
   out.band_limit = shell.band_limit;
-  out.sidebar = ToRect(shell.sidebar);
-  out.top_bar = ToRect(shell.top_bar);
-  out.content = ToRect(shell.content);
-  out.bookmark_bar = ToRect(shell.bookmark_bar);
-  out.search_tabs = ToRect(shell.search_tabs);
-  out.band_divider = ToRect(shell.band_divider);
-  out.back = ToRect(shell.back);
-  out.forward = ToRect(shell.forward);
-  out.reload = ToRect(shell.reload);
-  out.spaces_strip = ToRect(shell.spaces_strip);
-  out.url_field = ToRect(shell.url_field);
-  out.favorites = ToRect(shell.favorites);
-  out.bookmark_separator = ToRect(shell.bookmark_separator);
-  out.new_tab_row = ToRect(shell.new_tab_row);
-  out.bottom_bar = ToRect(shell.bottom_bar);
-  out.downloads = ToRect(shell.downloads);
-  out.memory = ToRect(shell.memory);
-  out.feedback = ToRect(shell.feedback);
-  out.chat = ToRect(shell.chat);
-  out.extensions = ToRect(shell.extensions);
-  out.overflow = ToRect(shell.overflow);
-  out.phi_menu = ToRect(shell.phi_menu);
-  out.page_icon = ToRect(shell.page_icon);
-  out.copy_link = ToRect(shell.copy_link);
-  out.reader = ToRect(shell.reader);
-  out.field_ext_strip = ToRect(shell.field_ext_strip);
-  out.add_space = ToRect(shell.add_space);
+  out.sidebar = PhiToRect(shell.sidebar);
+  out.top_bar = PhiToRect(shell.top_bar);
+  out.content = PhiToRect(shell.content);
+  out.bookmark_bar = PhiToRect(shell.bookmark_bar);
+  out.search_tabs = PhiToRect(shell.search_tabs);
+  out.band_divider = PhiToRect(shell.band_divider);
+  out.back = PhiToRect(shell.back);
+  out.forward = PhiToRect(shell.forward);
+  out.reload = PhiToRect(shell.reload);
+  out.spaces_strip = PhiToRect(shell.spaces_strip);
+  out.url_field = PhiToRect(shell.url_field);
+  out.favorites = PhiToRect(shell.favorites);
+  out.bookmark_separator = PhiToRect(shell.bookmark_separator);
+  out.new_tab_row = PhiToRect(shell.new_tab_row);
+  out.bottom_bar = PhiToRect(shell.bottom_bar);
+  out.downloads = PhiToRect(shell.downloads);
+  out.memory = PhiToRect(shell.memory);
+  out.feedback = PhiToRect(shell.feedback);
+  out.chat = PhiToRect(shell.chat);
+  out.extensions = PhiToRect(shell.extensions);
+  out.overflow = PhiToRect(shell.overflow);
+  out.phi_menu = PhiToRect(shell.phi_menu);
+  out.page_icon = PhiToRect(shell.page_icon);
+  out.copy_link = PhiToRect(shell.copy_link);
+  out.reader = PhiToRect(shell.reader);
+  out.field_ext_strip = PhiToRect(shell.field_ext_strip);
+  out.add_space = PhiToRect(shell.add_space);
   out.chip_size = shell.chip_size;
   out.chips_left = shell.chips_left;
   out.chips_top = shell.chips_top;
@@ -598,80 +547,14 @@ RECT PhiWindowController::reader_button_rect() {
 }
 
 bool PhiWindowController::ActiveTabExtensionOfferable() const {
-  return host_ && active_tab_id_.valid() &&
-         host_->IsReaderOfferable(active_tab_id_.value, active_tab_url_);
+  return host_ && active_tab_id().valid() &&
+         host_->IsReaderOfferable(active_tab_id().value, active_tab_url());
 }
 
 int PhiWindowController::tabs_top() {
   return ComputeLayout().tabs_top;
 }
 
-base::ListValue PhiWindowController::LayoutRowsJson() const {
-  base::ListValue rows;
-  const auto surface_name = [](SidebarSurface kind) {
-    return kind == SidebarSurface::kPeek     ? "peek"
-           : kind == SidebarSurface::kReader ? "reader"
-                                             : "";
-  };
-  const auto box = [](const RECT& r) {
-    base::DictValue d;
-    d.Set("left", static_cast<int>(r.left));
-    d.Set("top", static_cast<int>(r.top));
-    d.Set("right", static_cast<int>(r.right));
-    d.Set("bottom", static_cast<int>(r.bottom));
-    return d;
-  };
-  const auto emit = [&](const char* band, const SidebarKey& key,
-                        const RECT& r, base::DictValue extra) {
-    base::DictValue row = std::move(extra);
-    row.Set("band", band);
-    row.Set("key", key.ToString());
-    row.Set("left", static_cast<int>(r.left));
-    row.Set("top", static_cast<int>(r.top));
-    row.Set("right", static_cast<int>(r.right));
-    row.Set("bottom", static_cast<int>(r.bottom));
-    rows.Append(std::move(row));
-  };
-  for (const ShortcutRow& pin : pinned_) {
-    base::DictValue extra;
-    extra.Set("guid", pin.guid);
-    extra.Set("open", pin.open);
-    extra.Set("tabId", pin.tab_id.value);
-    extra.Set("surface", surface_name(pin.attached_surface));
-    extra.Set("surfaceBox", box(pin.surface_box));
-    emit("pinned", pin.key, pin.bounds, std::move(extra));
-  }
-  for (const ShortcutRow& bookmark : bookmarks_) {
-    base::DictValue extra;
-    extra.Set("guid", bookmark.guid);
-    extra.Set("folder", bookmark.folder);
-    extra.Set("expanded", bookmark.expanded);
-    extra.Set("depth", bookmark.depth);
-    extra.Set("parentGuid", bookmark.parent_guid);
-    extra.Set("open", bookmark.open);
-    extra.Set("tabId", bookmark.tab_id.value);
-    extra.Set("surface", surface_name(bookmark.attached_surface));
-    extra.Set("surfaceBox", box(bookmark.surface_box));
-    emit("bookmarks", bookmark.key, bookmark.bounds, std::move(extra));
-  }
-  for (const GroupHeader& header : group_headers_) {
-    base::DictValue extra;
-    extra.Set("groupId", header.id);
-    extra.Set("collapsed", header.collapsed);
-    emit("tabs", SidebarKey::Group(header.id), header.bounds, std::move(extra));
-  }
-  for (const TabRow& tab : tabs_) {
-    base::DictValue extra;
-    extra.Set("tabId", tab.id.value);
-    extra.Set("tabIdB", tab.b_id.value);
-    extra.Set("groupId", tab.group_id);
-    extra.Set("active", tab.active);
-    extra.Set("surface", surface_name(tab.attached_surface));
-    extra.Set("surfaceBox", box(tab.surface_box));
-    emit("tabs", tab.key, tab.bounds, std::move(extra));
-  }
-  return rows;
-}
 
 int PhiWindowController::tab_row_height() const {
   return Scaled(kTabRowHeight);
@@ -751,6 +634,14 @@ PhiWindowController::PhiWindowController(SlotId slot,
       // The Spaces strip: pips, hover card, create form, switch animation.
       spaces_(std::make_unique<PhiSpacesStrip>(
           static_cast<PhiSpacesStripShell*>(this))),
+      // The sidebar: the row pipeline, its band's paint and its drags.
+      sidebar_(std::make_unique<PhiSidebarView>(
+          static_cast<PhiSidebarShell*>(this),
+          slot,
+          framework,
+          host,
+          model,
+          incognito)),
       agent_(agent),
       incognito_(incognito) {
   if (!browser_hwnd || !::IsWindow(browser_hwnd)) {
@@ -958,11 +849,15 @@ PhiWindowController::~PhiWindowController() {
   // delivers WM_ACTIVATE / WM_SIZE / WM_CAPTURECHANGED) find a controller
   // that must do nothing but die.
   destroying_ = true;
-  // A window closing under a live drag would leave the split-drop cards
-  // holding this controller. Only one drag runs at a time (it owns the
-  // mouse capture), so taking them down unconditionally is safe.
-  PhiSplitDropOverlay::Hide();
+  // A drag image that is sliding home has OUTLIVED its session (the slide
+  // is the image window's own animation), so the window it was lifted out
+  // of disowns it here — and BEFORE the drag is aborted below, so a window
+  // closing under a live drag takes the image straight down rather than
+  // animating it home over a shell that is going away.
   PhiDragImage::OwnerGone(shell_hwnd_);
+  // The drag itself — the split-drop cards, the capture, the slide clock —
+  // comes down with the session: ~PhiSidebarDragSession IS AbortDrag.
+  sidebar_->AbortDrag();
   // The process-wide satellites bound to this window: each keeps a bare
   // PhiWindowController* and outlives its shell otherwise (the agent
   // overlay's Reposition runs from EVERY shell's LayoutContents, the
@@ -975,6 +870,7 @@ PhiWindowController::~PhiWindowController() {
   // back into a controller that is still whole, rather than running as a
   // side effect of the shell's DestroyWindow on one that is half gone.
   tab_preview_.reset();
+  sidebar_.reset();
   native_pages_->Shutdown();
   spaces_->Shutdown();
   caption_band_.reset();
@@ -1125,10 +1021,10 @@ PhiCaptionRects PhiWindowController::CaptionRects() {
 bool PhiWindowController::CaptionStripTakesPoint(POINT client_pt) {
   // Comfortable's band IS the tab strip, and the strip is the shell's: the
   // band asks whether anything drawn there is under the pointer.
-  if (::PtInRect(&add_tab_button_, client_pt)) {
+  if (::PtInRect(&sidebar_->add_tab_button(), client_pt)) {
     return true;
   }
-  for (const TabRow& row : tabs_) {
+  for (const TabRow& row : sidebar_->tabs()) {
     if (::PtInRect(&row.bounds, client_pt)) {
       return true;
     }
@@ -1136,7 +1032,7 @@ bool PhiWindowController::CaptionStripTakesPoint(POINT client_pt) {
   if (spaces_->ChipAt(client_pt) >= 0) {
     return true;
   }
-  for (const ShortcutRow& pin : pinned_) {
+  for (const ShortcutRow& pin : sidebar_->pinned()) {
     if (::PtInRect(&pin.bounds, client_pt)) {
       return true;
     }
@@ -1224,7 +1120,7 @@ BrowserId PhiWindowController::MenuActiveBrowser() const {
 }
 
 TabId PhiWindowController::MenuActiveTab() const {
-  return active_tab_id_;
+  return active_tab_id();
 }
 
 std::string PhiWindowController::MenuActiveSpace() const {
@@ -1263,8 +1159,8 @@ std::vector<PhiMenuBarTab> PhiWindowController::MenuTabRows() const {
   // A SNAPSHOT of the finished rows. The bar holds it for the length of one
   // menu build; a rebuild under an open menu cannot reach into it.
   std::vector<PhiMenuBarTab> rows;
-  rows.reserve(tabs_.size());
-  for (const TabRow& row : tabs_) {
+  rows.reserve(sidebar_->tabs().size());
+  for (const TabRow& row : sidebar_->tabs()) {
     rows.push_back({row.id, row.title, row.active});
   }
   return rows;
@@ -1526,7 +1422,7 @@ void PhiWindowController::OmniboxNativePageCommitting() {
   // omniBoxDidClear: the native page blanks its controls now, so nothing of
   // the new-tab page lingers over the arriving one; the rebuild that sees
   // the new URL unmounts it.
-  const TabId committing = active_tab_id_;
+  const TabId committing = active_tab_id();
   if (native_pages_->HideNtpControls()) {
     ntp_commit_tab_id_ = committing;
   }
@@ -1563,7 +1459,7 @@ bool PhiWindowController::NativePagesSwapPending() const {
 }
 
 const std::string& PhiWindowController::NativePagesActiveUrl() const {
-  return active_tab_url_;
+  return active_tab_url();
 }
 
 void PhiWindowController::NativePagesRaiseCaps() {
@@ -1579,7 +1475,127 @@ HWND PhiWindowController::NativePagesContentWindow() const {
 }
 
 bool PhiWindowController::NativePagesCommitPending() const {
-  return active_tab_id_ == ntp_commit_tab_id_ && omnibox_->nav_loading();
+  return active_tab_id() == ntp_commit_tab_id_ && omnibox_->nav_loading();
+}
+
+// --- PhiSidebarShell: what the sidebar asks of its shell --------------------
+
+PhiSidebarRects PhiWindowController::BandRects(const Layout& layout) const {
+  PhiSidebarRects rects;
+  rects.sidebar = layout.sidebar;
+  rects.title_bar = layout.title_bar;
+  rects.content = layout.content;
+  rects.favorites = layout.favorites;
+  rects.bookmark_separator = layout.bookmark_separator;
+  rects.new_tab_row = layout.new_tab_row;
+  rects.bottom_bar = layout.bottom_bar;
+  rects.spaces_strip = layout.spaces_strip;
+  rects.search_tabs = layout.search_tabs;
+  rects.tabs_left = layout.tabs_left;
+  rects.tabs_top = layout.tabs_top;
+  rects.tabs_limit = layout.tabs_limit;
+  rects.horizontal_tabs = layout.horizontal_tabs;
+  return rects;
+}
+
+HWND PhiWindowController::SidebarShellWindow() const {
+  return shell_hwnd_;
+}
+
+PhiWindowController* PhiWindowController::SidebarOwner() {
+  return this;
+}
+
+int PhiWindowController::SidebarScaled(int design_units) const {
+  return Scaled(design_units);
+}
+
+UINT PhiWindowController::SidebarDpi() const {
+  return dpi_;
+}
+
+int PhiWindowController::SidebarWidthDip() const {
+  return sidebar_dip_;
+}
+
+PhiSidebarRects PhiWindowController::SidebarRects() {
+  return BandRects(ComputeLayout());
+}
+
+void PhiWindowController::SidebarSetRowCounts(int pinned_rows,
+                                              int bookmark_rows) {
+  pinned_row_count_ = pinned_rows;
+  bookmark_row_count_ = bookmark_rows;
+}
+
+void PhiWindowController::SidebarRefreshLayoutInputs() {
+  RefreshLayoutInputs();
+}
+
+PhiPalette PhiWindowController::SidebarPalette() const {
+  return CurrentPalette();
+}
+
+BrowserId PhiWindowController::SidebarActiveBrowser() const {
+  return active_browser_id();
+}
+
+bool PhiWindowController::SidebarPullSnapshot(
+    BrowserId browser,
+    phi_framework::WindowSnapshot* out) const {
+  return PullSnapshot(browser, out);
+}
+
+bool PhiWindowController::SidebarSplitIsStacked(TabId tab_id) const {
+  return SplitIsStacked(tab_id);
+}
+
+HFONT PhiWindowController::SidebarGlyphFont() const {
+  return caption_font_;
+}
+
+HFONT PhiWindowController::SidebarSemiboldFont() const {
+  return ui_semibold_font_;
+}
+
+PhiChromeHover PhiWindowController::SidebarHoverKind() const {
+  return hover_kind_;
+}
+
+int PhiWindowController::SidebarHoverIndex() const {
+  return hover_index_;
+}
+
+PhiSpacesStrip* PhiWindowController::SidebarSpacesStrip() {
+  return spaces_.get();
+}
+
+void PhiWindowController::SidebarScheduleRefresh() {
+  ScheduleRefresh();
+}
+
+void PhiWindowController::SidebarSyncNativePages() {
+  native_pages_->SyncIfRouteChanged();
+}
+
+PhiDragBitmap PhiWindowController::SidebarCaptureChrome(
+    const RECT& client_rect) {
+  return CaptureChromeRect(client_rect);
+}
+
+HWND PhiWindowController::SidebarContentWindow() const {
+  return browsers_->content_hwnd();
+}
+
+void PhiWindowController::SidebarStartNewTab() {
+  StartNewTab();
+}
+
+// The rows, as assistive technology reads them. The list is THE data source
+// the UIA provider (phi_uia.h) walks — one fragment per hit, named, typed
+// and invokable through the same messages a mouse click sends.
+void PhiWindowController::SidebarPublishHits(std::vector<PhiHit> hits) {
+  hits_ = std::move(hits);
 }
 
 // --- PhiSpacesStripShell ----------------------------------------------------
@@ -1646,7 +1662,7 @@ PhiPalette PhiWindowController::SpacesPalette() const {
 }
 
 bool PhiWindowController::SpacesDragActive() const {
-  return drag_active_;
+  return sidebar_ && sidebar_->drag_active();
 }
 
 int PhiWindowController::SpacesHoveredChip() const {
@@ -1700,11 +1716,11 @@ void PhiWindowController::SpacesRevealSwappedContent() {
 }
 
 void PhiWindowController::SpacesSwapBandModel() {
-  SwapBandModel();
+  sidebar_->SwapBandModel();
 }
 
 void PhiWindowController::SpacesDropLeavingBand() {
-  DropLeavingBand();
+  sidebar_->DropLeavingBand();
 }
 
 HFONT PhiWindowController::SpacesUiFont() const {
@@ -1792,7 +1808,7 @@ void PhiWindowController::OpenFeedback() {
   }
   PhiFeedbackContext context;
   context.window_id = browser.value;
-  for (const TabRow& row : tabs_) {
+  for (const TabRow& row : sidebar_->tabs()) {
     if (row.active) {
       context.url = base::WideToUTF8(row.url);
       context.title = base::WideToUTF8(row.title);
@@ -1800,85 +1816,10 @@ void PhiWindowController::OpenFeedback() {
     }
   }
   if (context.url.empty()) {
-    context.url = active_tab_url_;
+    context.url = active_tab_url();
   }
   host_->RequestFeedback(slot_.value, context);
 }
-
-namespace {
-
-using phi_framework::SplitSnapshot;
-using phi_framework::TabSnapshot;
-using phi_framework::WindowSnapshot;
-
-// Readers over a WindowSnapshot — the model's copy or a freshly pulled one
-// (PullSnapshot) alike. The split-drop paths map ids to tags and back
-// several times inside a single drop, so they read the window ONCE and walk
-// this instead.
-const TabSnapshot* FindTabIn(const WindowSnapshot& snapshot, TabId id) {
-  if (!id.valid()) {
-    return nullptr;
-  }
-  for (const TabSnapshot& tab : snapshot.tabs) {
-    if (tab.id == id) {
-      return &tab;
-    }
-  }
-  return nullptr;
-}
-
-const TabSnapshot* FindTagIn(const WindowSnapshot& snapshot,
-                             const std::string& tag) {
-  if (tag.empty()) {
-    return nullptr;
-  }
-  for (const TabSnapshot& tab : snapshot.tabs) {
-    if (tab.tag == tag) {
-      return &tab;
-    }
-  }
-  return nullptr;
-}
-
-const SplitSnapshot* FindSplitIn(const WindowSnapshot& snapshot,
-                                 const std::string& split_id) {
-  if (split_id.empty()) {
-    return nullptr;
-  }
-  for (const SplitSnapshot& split : snapshot.splits) {
-    if (split.id == split_id) {
-      return &split;
-    }
-  }
-  return nullptr;
-}
-
-// The live tab bound to a stored row, or `fallback` when the row has none.
-// A pinned tab or bookmark is OPENED by the very press that arms its drag, so
-// the view row the drag was armed from can still say "closed" when the drop
-// lands — and opening its url a second time would leave a duplicate tab
-// beside the pane.
-TabId LiveTabForStoredRow(const WindowSnapshot& snapshot,
-                          const std::string& guid,
-                          TabId fallback) {
-  const TabSnapshot* tab = FindTagIn(snapshot, guid);
-  return tab ? tab->id : fallback;
-}
-
-// The framework names surfaces (a reader page recognised from what it
-// shows, committed or not); the client parses no reader URLs.
-SidebarSurface SurfaceOf(const TabSnapshot& tab) {
-  return tab.surface == phi_framework::TabSurface::kReader
-             ? SidebarSurface::kReader
-             : SidebarSurface::kContent;
-}
-
-RECT ToRect(const SidebarRect& r) {
-  return RECT{r.left, r.top, r.right, r.bottom};
-}
-
-
-}  // namespace
 
 RECT PhiWindowController::ContentRect() {
   return ComputeLayout().content;
@@ -1972,847 +1913,10 @@ bool PhiWindowController::InSidebarResizeBand(POINT client_pt) {
          client_pt.x <= Scaled(sidebar_dip_);
 }
 
-void PhiWindowController::ArmDrag(const SidebarKey& key, POINT pt) {
-  drag_key_ = key;
-  switch (key.kind) {
-    case SidebarKey::Kind::kTab:
-    case SidebarKey::Kind::kSplit:
-      drag_kind_ = DragKind::kTab;
-      break;
-    case SidebarKey::Kind::kCell:
-    case SidebarKey::Kind::kFolder:
-      drag_kind_ = std::any_of(pinned_.begin(), pinned_.end(),
-                               [&](const ShortcutRow& p) { return p.key == key; })
-                       ? DragKind::kPin
-                       : DragKind::kBookmark;
-      break;
-    case SidebarKey::Kind::kSpace:
-      drag_kind_ = DragKind::kChip;
-      break;
-    case SidebarKey::Kind::kGroup:
-    case SidebarKey::Kind::kNone:
-      drag_kind_ = DragKind::kNone;
-      break;
-  }
-  // Read BEFORE the caller acts on the press: every arming site activates the
-  // row it grabbed (a tab) or opens it (a pinned tab, a bookmark), so this is
-  // the last moment the page the user is actually looking at is still the
-  // active one. A split drop pairs the dragged row with THAT page.
-  drag_focus_tab_id_ = active_tab_id_;
-  drag_origin_ = pt;
-  drag_point_ = pt;
-  drag_active_ = false;
-  drag_insert_ = -1;
-  drag_place_valid_ = false;
-  drag_folder_key_ = {};
-}
 
-int PhiWindowController::DragIndex() const {
-  switch (drag_kind_) {
-    case DragKind::kTab:
-      for (size_t i = 0; i < tabs_.size(); ++i) {
-        if (tabs_[i].key == drag_key_) return static_cast<int>(i);
-      }
-      return -1;
-    case DragKind::kPin:
-      for (size_t i = 0; i < pinned_.size(); ++i) {
-        if (pinned_[i].key == drag_key_) return static_cast<int>(i);
-      }
-      return -1;
-    case DragKind::kBookmark:
-      for (size_t i = 0; i < bookmarks_.size(); ++i) {
-        if (bookmarks_[i].key == drag_key_) return static_cast<int>(i);
-      }
-      return -1;
-    case DragKind::kChip:
-      for (size_t i = 0; i < spaces_->chips().size(); ++i) {
-        if (spaces_->chips()[i].id == drag_key_.id) {
-          return static_cast<int>(i);
-        }
-      }
-      return -1;
-    case DragKind::kNone:
-      break;
-  }
-  return -1;
-}
 
-bool PhiWindowController::Apply(const SidebarCommand& command) {
-  return host_ && host_->Apply(slot_.value, command, sidebar_tree_);
-}
 
-std::vector<DropRow> PhiWindowController::TabDropRows() const {
-  // The tree's content order with each node's placed rect (empty when it is
-  // hidden or scrolled out), headers included so group runs are visible.
-  std::vector<DropRow> rows;
-  for (const SidebarContentNode& node : sidebar_tree_.content) {
-    DropRow row;
-    row.key = node.key;
-    row.group_id = node.group_id;
-    row.group_header = node.kind == SidebarNodeKind::kGroup;
-    if (row.group_header) {
-      for (const GroupHeader& header : group_headers_) {
-        if (header.id == node.group_id) {
-          row.bounds = {header.bounds.left, header.bounds.top,
-                        header.bounds.right, header.bounds.bottom};
-        }
-      }
-    } else {
-      for (const TabRow& tab : tabs_) {
-        if (tab.key == node.key) {
-          row.bounds = {tab.bounds.left, tab.bounds.top, tab.bounds.right,
-                        tab.bounds.bottom};
-        }
-      }
-    }
-    rows.push_back(std::move(row));
-  }
-  return rows;
-}
 
-std::vector<DropRow> PhiWindowController::PinnedDropRows() const {
-  std::vector<DropRow> rows;
-  for (const ShortcutRow& pin : pinned_) {
-    DropRow row;
-    row.key = pin.key;
-    row.bounds = {pin.bounds.left, pin.bounds.top, pin.bounds.right,
-                  pin.bounds.bottom};
-    rows.push_back(std::move(row));
-  }
-  return rows;
-}
-
-std::vector<DropRow> PhiWindowController::BookmarkDropRows() const {
-  std::vector<DropRow> rows;
-  for (const ShortcutRow& bookmark : bookmarks_) {
-    DropRow row;
-    row.key = bookmark.key;
-    row.bounds = {bookmark.bounds.left, bookmark.bounds.top,
-                  bookmark.bounds.right, bookmark.bounds.bottom};
-    row.depth = bookmark.depth;
-    row.folder = bookmark.folder;
-    row.expanded = bookmark.expanded;
-    row.parent_guid = bookmark.parent_guid;
-    rows.push_back(std::move(row));
-  }
-  return rows;
-}
-
-PhiWindowController::SlideVec PhiWindowController::RowSlideOffset(
-    const std::string& guid) const {
-  const auto to = row_slide_to_.find(guid);
-  if (to == row_slide_to_.end()) {
-    return SlideVec{};
-  }
-  SlideVec from;
-  if (const auto f = row_slide_from_.find(guid);
-      f != row_slide_from_.end()) {
-    from = f->second;
-  }
-  if (!drag_slide_start_) {
-    return to->second;
-  }
-  const double linear = std::min(
-      1.0, static_cast<double>(::GetTickCount64() - drag_slide_start_) /
-               kDragSlideMs);
-  const double eased = linear * linear * (3.0 - 2.0 * linear);
-  return SlideVec{from.dx + (to->second.dx - from.dx) * eased,
-                  from.dy + (to->second.dy - from.dy) * eased};
-}
-
-double PhiWindowController::DragSlideOffset(TabId tab_id) const {
-  const auto to = drag_slide_to_.find(tab_id);
-  if (to == drag_slide_to_.end()) {
-    return 0.0;
-  }
-  double from = 0.0;
-  if (const auto f = drag_slide_from_.find(tab_id);
-      f != drag_slide_from_.end()) {
-    from = f->second;
-  }
-  if (!drag_slide_start_) {
-    return to->second;
-  }
-  const double linear = std::min(
-      1.0, static_cast<double>(::GetTickCount64() - drag_slide_start_) /
-               kDragSlideMs);
-  const double eased = linear * linear * (3.0 - 2.0 * linear);
-  return from + (to->second - from) * eased;
-}
-
-void PhiWindowController::RetargetDragSlide() {
-  // The new leg starts wherever every element currently is (mid-flight
-  // retargeting, as Chromium's animating layout manager does).
-  std::map<TabId, double> from;
-  for (const auto& [id, target] : drag_slide_to_) {
-    from[id] = DragSlideOffset(id);
-  }
-  std::map<std::string, SlideVec> row_from;
-  for (const auto& [guid, target] : row_slide_to_) {
-    row_from[guid] = RowSlideOffset(guid);
-  }
-  std::map<TabId, double> to;
-  std::map<std::string, SlideVec> row_to;
-  const Layout layout = ComputeLayout();
-  const int pitch = Scaled(kTabRowHeight + kTabRowGap);
-
-  if (drag_active_ && !layout.horizontal_tabs && drag_insert_ >= 0) {
-    if (drag_kind_ == DragKind::kTab && DragIndex() >= 0 &&
-        DragIndex() < static_cast<int>(tabs_.size())) {
-      // The dragged row vacates its list slot in EVERY band; where the gap
-      // reopens depends on the target under the cursor.
-      std::vector<const TabRow*> visible;
-      int dragged_pos = -1;
-      for (const TabRow& row : tabs_) {
-        if (row.bounds.right <= row.bounds.left) {
-          continue;
-        }
-        if (static_cast<int>(&row - tabs_.data()) == DragIndex()) {
-          dragged_pos = static_cast<int>(visible.size());
-        }
-        visible.push_back(&row);
-      }
-      if (dragged_pos >= 0) {
-        for (int i = 0; i < static_cast<int>(visible.size()); ++i) {
-          if (i == dragged_pos) {
-            continue;
-          }
-          double dy = 0.0;
-          if (drag_band_ == DropBand::kTabs) {
-            const int to_pos = drag_insert_ > dragged_pos ? drag_insert_ - 1
-                                                          : drag_insert_;
-            if (i > dragged_pos && i <= to_pos) {
-              dy = -pitch;
-            } else if (i >= to_pos && i < dragged_pos) {
-              dy = pitch;
-            }
-          } else {
-            // Leaving the list: later rows close the vacated slot. (The
-            // outline gap a bookmark conversion opens pushes the whole band
-            // below it — the band shift, below.)
-            if (i > dragged_pos) {
-              dy = -pitch;
-            }
-          }
-          if (dy != 0.0) {
-            to[visible[static_cast<size_t>(i)]->id] = dy;
-          }
-        }
-      }
-      if (drag_band_ == DropBand::kPins && !pinned_.empty()) {
-        // A phantom one-slot cell opens the grid gap at the insertion
-        // slot; every displaced cell glides to its previewed position.
-        std::vector<int> units;
-        for (const ShortcutRow& pin : pinned_) {
-          units.push_back(pin.url_b.empty() ? 1 : 2);
-        }
-        const int at =
-            std::min(drag_insert_, static_cast<int>(units.size()));
-        std::vector<int> preview = units;
-        preview.insert(preview.begin() + at, 1);
-        const std::vector<RECT> target = PinnedGridWalk(preview, layout);
-        for (int i = 0; i < static_cast<int>(pinned_.size()); ++i) {
-          const size_t j = static_cast<size_t>(i < at ? i : i + 1);
-          const SlideVec v = {
-              static_cast<double>(target[j].left - pinned_[i].bounds.left),
-              static_cast<double>(target[j].top - pinned_[i].bounds.top)};
-          if (v.dx != 0.0 || v.dy != 0.0) {
-            row_to[pinned_[static_cast<size_t>(i)].guid] = v;
-          }
-        }
-      } else if (drag_band_ == DropBand::kBookmarks) {
-        for (int i = 0; i < static_cast<int>(bookmarks_.size()); ++i) {
-          if (i >= drag_insert_) {
-            row_to[bookmarks_[static_cast<size_t>(i)].guid] =
-                SlideVec{0.0, static_cast<double>(pitch)};
-          }
-        }
-      }
-    } else if (drag_kind_ == DragKind::kPin &&
-               drag_band_ != DropBand::kPins && DragIndex() >= 0 &&
-               DragIndex() < static_cast<int>(pinned_.size())) {
-      // The cell has left the grid (unpinning into the list, or becoming a
-      // bookmark): the grid closes its slot, and over the outline the
-      // bookmark rows part at the target — unless the drop goes INTO a
-      // collapsed folder, which highlights instead of opening a gap.
-      std::vector<int> units;
-      for (int i = 0; i < static_cast<int>(pinned_.size()); ++i) {
-        if (i != DragIndex()) {
-          units.push_back(
-              pinned_[static_cast<size_t>(i)].url_b.empty() ? 1 : 2);
-        }
-      }
-      const std::vector<RECT> target = PinnedGridWalk(units, layout);
-      for (int i = 0; i < static_cast<int>(pinned_.size()); ++i) {
-        if (i == DragIndex()) {
-          continue;
-        }
-        const size_t j = static_cast<size_t>(i > DragIndex() ? i - 1 : i);
-        if (j >= target.size()) {
-          continue;
-        }
-        const SlideVec v = {
-            static_cast<double>(target[j].left - pinned_[i].bounds.left),
-            static_cast<double>(target[j].top - pinned_[i].bounds.top)};
-        if (v.dx != 0.0 || v.dy != 0.0) {
-          row_to[pinned_[static_cast<size_t>(i)].guid] = v;
-        }
-      }
-      if (drag_band_ == DropBand::kBookmarks &&
-          bookmark_drop_folder_row_ < 0) {
-        for (int i = 0; i < static_cast<int>(bookmarks_.size()); ++i) {
-          if (i >= drag_insert_) {
-            row_to[bookmarks_[static_cast<size_t>(i)].guid] =
-                SlideVec{0.0, static_cast<double>(pitch)};
-          }
-        }
-      }
-    } else if (drag_kind_ == DragKind::kBookmark &&
-               drag_band_ == DropBand::kPins && DragIndex() >= 0 &&
-               DragIndex() < static_cast<int>(bookmarks_.size())) {
-      // A bookmark over the grid (the Mac's moveBookmarkOut(toPinnedTabs:)):
-      // a phantom cell of the width it will take opens the grid slot, and
-      // the outline closes the row it is leaving.
-      const ShortcutRow& dragged = bookmarks_[static_cast<size_t>(DragIndex())];
-      std::vector<int> units;
-      for (const ShortcutRow& pin : pinned_) {
-        units.push_back(pin.url_b.empty() ? 1 : 2);
-      }
-      const int at = std::max(
-          0, std::min(drag_insert_, static_cast<int>(units.size())));
-      std::vector<int> preview = units;
-      preview.insert(preview.begin() + at, dragged.url_b.empty() ? 1 : 2);
-      const std::vector<RECT> target = PinnedGridWalk(preview, layout);
-      for (int i = 0; i < static_cast<int>(pinned_.size()); ++i) {
-        const size_t j = static_cast<size_t>(i < at ? i : i + 1);
-        if (j >= target.size()) {
-          continue;
-        }
-        const SlideVec v = {
-            static_cast<double>(target[j].left - pinned_[i].bounds.left),
-            static_cast<double>(target[j].top - pinned_[i].bounds.top)};
-        if (v.dx != 0.0 || v.dy != 0.0) {
-          row_to[pinned_[static_cast<size_t>(i)].guid] = v;
-        }
-      }
-      for (int i = DragIndex() + 1; i < static_cast<int>(bookmarks_.size());
-           ++i) {
-        row_to[bookmarks_[static_cast<size_t>(i)].guid] =
-            SlideVec{0.0, static_cast<double>(-pitch)};
-      }
-    } else if (drag_kind_ == DragKind::kPin &&
-               drag_band_ == DropBand::kPins && DragIndex() >= 0 &&
-               DragIndex() < static_cast<int>(pinned_.size())) {
-      // Grid reorder: the dragged cell floats; a phantom of its own width
-      // holds the target slot open.
-      std::vector<int> units;
-      for (int i = 0; i < static_cast<int>(pinned_.size()); ++i) {
-        if (i == DragIndex()) {
-          continue;
-        }
-        units.push_back(
-            pinned_[static_cast<size_t>(i)].url_b.empty() ? 1 : 2);
-      }
-      const int dragged_units =
-          pinned_[static_cast<size_t>(DragIndex())].url_b.empty() ? 1 : 2;
-      int to_pos = drag_insert_ > DragIndex() ? drag_insert_ - 1
-                                              : drag_insert_;
-      to_pos = std::max(0, std::min(to_pos, static_cast<int>(units.size())));
-      std::vector<int> preview = units;
-      preview.insert(preview.begin() + to_pos, dragged_units);
-      const std::vector<RECT> target = PinnedGridWalk(preview, layout);
-      for (int i = 0; i < static_cast<int>(pinned_.size()); ++i) {
-        if (i == DragIndex()) {
-          continue;
-        }
-        const int j = i > DragIndex() ? i - 1 : i;
-        const size_t jj = static_cast<size_t>(j >= to_pos ? j + 1 : j);
-        const SlideVec v = {
-            static_cast<double>(target[jj].left - pinned_[i].bounds.left),
-            static_cast<double>(target[jj].top - pinned_[i].bounds.top)};
-        if (v.dx != 0.0 || v.dy != 0.0) {
-          row_to[pinned_[static_cast<size_t>(i)].guid] = v;
-        }
-      }
-    } else if (drag_kind_ == DragKind::kBookmark && DragIndex() >= 0 &&
-               DragIndex() < static_cast<int>(bookmarks_.size()) &&
-               bookmark_drop_folder_row_ < 0) {
-      // A drop INTO a collapsed folder opens no gap — the folder row
-      // highlights instead and every displaced row settles home.
-      const int to_pos = drag_insert_ > DragIndex() ? drag_insert_ - 1
-                                                    : drag_insert_;
-      for (int i = 0; i < static_cast<int>(bookmarks_.size()); ++i) {
-        if (i == DragIndex()) {
-          continue;
-        }
-        double dy = 0.0;
-        if (i > DragIndex() && i <= to_pos) {
-          dy = -pitch;
-        } else if (i >= to_pos && i < DragIndex()) {
-          dy = pitch;
-        }
-        if (dy != 0.0) {
-          row_to[bookmarks_[static_cast<size_t>(i)].guid] =
-              SlideVec{0.0, dy};
-        }
-      }
-    }
-  }
-  // A gap opening in the outline pushes everything under it down by a row:
-  // "+ New Tab", the group headers and the tab rows all ride the band shift.
-  if (drag_active_ && !layout.horizontal_tabs && drag_insert_ >= 0 &&
-      drag_band_ == DropBand::kBookmarks && bookmark_drop_folder_row_ < 0 &&
-      (drag_kind_ == DragKind::kTab || drag_kind_ == DragKind::kPin)) {
-    row_to[kBandShiftKey] = SlideVec{0.0, static_cast<double>(pitch)};
-  }
-  // Displaced elements whose displacement ended slide home; settled ones
-  // drop out of the books entirely.
-  for (const auto& [id, start] : from) {
-    if (!to.count(id) && start != 0.0) {
-      to[id] = 0.0;
-    }
-  }
-  for (const auto& [id, target] : to) {
-    if (!from.count(id)) {
-      from[id] = 0.0;
-    }
-  }
-  for (const auto& [guid, start] : row_from) {
-    if (!row_to.count(guid) && (start.dx != 0.0 || start.dy != 0.0)) {
-      row_to[guid] = SlideVec{};
-    }
-  }
-  for (const auto& [guid, target] : row_to) {
-    if (!row_from.count(guid)) {
-      row_from[guid] = SlideVec{};
-    }
-  }
-  drag_slide_from_ = std::move(from);
-  drag_slide_to_ = std::move(to);
-  row_slide_from_ = std::move(row_from);
-  row_slide_to_ = std::move(row_to);
-  drag_slide_start_ = ::GetTickCount64();
-  if (shell_hwnd_ &&
-      (!drag_slide_to_.empty() || !row_slide_to_.empty())) {
-    ::SetTimer(shell_hwnd_, kDragSlideTimer, 16, nullptr);
-  }
-}
-
-PhiWindowController::DropBand PhiWindowController::DropBandAt(
-    POINT client_pt) {
-  // Outside the shell window entirely = tear-off (the Mac's pure
-  // boundary hit-test — no distance threshold).
-  POINT screen = client_pt;
-  ::ClientToScreen(shell_hwnd_, &screen);
-  RECT window_rect = {};
-  ::GetWindowRect(shell_hwnd_, &window_rect);
-  if (!::PtInRect(&window_rect, screen)) {
-    return DropBand::kOutside;
-  }
-  const Layout layout = ComputeLayout();
-  // The PAGE first, and before the incognito and horizontal-layout exits
-  // below: a split drop is offered in every layout and off the record too
-  // (it forms no stored row, so there is nothing to keep).
-  if (::PtInRect(&layout.content, client_pt)) {
-    return DropBand::kContent;
-  }
-  if (incognito_) {
-    return DropBand::kTabs;  // No pin/bookmark conversions off the record.
-  }
-  if (layout.horizontal_tabs) {
-    return DropBand::kTabs;  // The strip has no sidebar bands.
-  }
-  if (::PtInRect(&layout.favorites, client_pt)) {
-    return DropBand::kPins;
-  }
-  if (!bookmarks_.empty() && client_pt.x < layout.sidebar.right &&
-      client_pt.y >= bookmarks_.front().bounds.top &&
-      client_pt.y <= bookmarks_.back().bounds.bottom) {
-    return DropBand::kBookmarks;
-  }
-  return DropBand::kTabs;
-}
-
-void PhiWindowController::UpdateDrag(POINT pt) {
-  if (drag_kind_ == DragKind::kNone) {
-    return;
-  }
-  if (!drag_active_) {
-    if (std::abs(pt.x - drag_origin_.x) < ::GetSystemMetrics(SM_CXDRAG) &&
-        std::abs(pt.y - drag_origin_.y) < ::GetSystemMetrics(SM_CYDRAG)) {
-      return;
-    }
-    drag_active_ = true;
-    ::SetCapture(shell_hwnd_);
-    BeginDragImage(pt);  // The element lifts off into its own window.
-  }
-  // Tab and pin drags can cross bands (conversions, tear-off); a bookmark
-  // drag stays in its own outline EXCEPT over the page, where it can form a
-  // split like the other two (the Mac's bookmark DragSource), and outside
-  // the window, where its live tab tears off like theirs.
-  drag_point_ = pt;
-  DropBand band = DropBand::kTabs;
-  if (drag_kind_ == DragKind::kTab || drag_kind_ == DragKind::kPin) {
-    band = DropBandAt(pt);
-  } else if (drag_kind_ == DragKind::kBookmark) {
-    band = DropBand::kBookmarks;
-    POINT screen = pt;
-    ::ClientToScreen(shell_hwnd_, &screen);
-    RECT window_rect = {};
-    ::GetWindowRect(shell_hwnd_, &window_rect);
-    const Layout bookmark_layout = ComputeLayout();
-    const bool folder =
-        DragIndex() >= 0 && DragIndex() < static_cast<int>(bookmarks_.size()) &&
-        bookmarks_[static_cast<size_t>(DragIndex())].folder;
-    if (!::PtInRect(&window_rect, screen)) {
-      band = DropBand::kOutside;
-    } else if (::PtInRect(&bookmark_layout.content, pt)) {
-      band = DropBand::kContent;
-    } else if (!folder && !incognito_ && !bookmark_layout.horizontal_tabs &&
-               ::PtInRect(&bookmark_layout.favorites, pt)) {
-      band = DropBand::kPins;  // The Mac's moveBookmarkOut(toPinnedTabs:).
-    }
-  }
-  const bool band_changed = band != drag_band_;
-  drag_band_ = band;
-  // The image first: crossing out of the sidebar swaps the row for the page
-  // card, which captures the page BEFORE the hint cards go up over it.
-  SyncDragImage(pt);
-  if (band == DropBand::kContent) {
-    // The page has no insertion slot: the drop is described by the split
-    // zone under the cursor, and the hint cards are the whole feedback.
-    ResolveSplitDrop(pt, /*rebuild=*/band_changed);
-    if (drag_insert_ != -1 || band_changed) {
-      drag_insert_ = -1;
-      RetargetDragSlide();  // The row leaves the list while it hovers here.
-      if (shell_hwnd_) {
-        ::InvalidateRect(shell_hwnd_, nullptr, FALSE);
-      }
-    }
-    return;
-  }
-  PhiSplitDropOverlay::Hide();
-  split_drop_valid_ = false;
-  split_drop_zone_ = PhiSplitDropZone::kNone;
-  // The pure resolvers describe the drop as a SidebarPlace and the gap slot
-  // the animation opens; a change between INTO-a-folder and a gap repaints
-  // even at the same slot.
-  const int folder_before = bookmark_drop_folder_row_;
-  const int slot = DragInsertSlot(pt);
-  const bool folder_target_changed = folder_before != bookmark_drop_folder_row_;
-  const bool animated_kind = drag_kind_ == DragKind::kTab ||
-                             drag_kind_ == DragKind::kPin ||
-                             drag_kind_ == DragKind::kBookmark;
-  if (slot != drag_insert_ || band_changed || folder_target_changed) {
-    drag_insert_ = slot;
-    if (animated_kind) {
-      RetargetDragSlide();  // The gap moved: siblings glide to the new slot.
-    }
-    if (shell_hwnd_) {
-      ::InvalidateRect(shell_hwnd_, nullptr, FALSE);
-    }
-  }
-  // A plain move repaints nothing: the dragged element rides the drag image
-  // window, and the chrome only changes when the gap does.
-}
-
-void PhiWindowController::CommitDrag() {
-  // Read before the drop clears them: whether the image slides home or just
-  // goes depends on where the pointer was and whether anything happened.
-  const bool active = drag_active_;
-  const bool inside = drag_image_inside_;
-  const bool acted = CommitDragImpl();
-  if (active) {
-    EndDragImage(acted, inside);
-  }
-}
-
-bool PhiWindowController::CommitDragImpl() {
-  const DragKind kind = drag_kind_;
-  const DropBand band = drag_band_;
-  const SidebarKey key = drag_key_;
-  const int slot = drag_insert_;
-  const bool active = drag_active_;
-  const POINT release = drag_point_;
-  const SidebarPlace place = drag_place_;
-  const bool place_valid = drag_place_valid_;
-  // What a drop on the page would do (CancelDrag clears these too).
-  const PhiSplitDropZone split_zone = split_drop_zone_;
-  const bool split_replace = split_drop_replace_;
-  const std::string split_id = split_drop_split_id_;
-  const TabId split_focus = drag_focus_tab_id_;
-  const TabId click_tab = drag_click_tab_id_;
-  const int chip_pos = DragIndex();
-  CancelDrag();
-  if (!active && kind == DragKind::kTab && click_tab.valid()) {
-    // A plain click on a tab row: the deferred activation.
-    Apply(SidebarActivate{SidebarKey::Tab(click_tab.value), 0});
-    return false;
-  }
-  // The page band lands before the slot paths below: a split drop has no
-  // insertion slot at all, and the dead middle band is a no-op.
-  if (band == DropBand::kContent) {
-    if (active && split_zone != PhiSplitDropZone::kNone) {
-      CommitSplitDrop(kind, key, split_focus, split_zone, split_replace,
-                      split_id);
-      return true;
-    }
-    return false;
-  }
-  if (!active) {
-    return false;
-  }
-  if (band == DropBand::kOutside) {
-    // Released outside the window: the live tab(s) join the shell under the
-    // cursor or tear off into a new window (the Mac's live-wrapper
-    // tear-off). A stored row stays behind as a closed cell.
-    if (kind == DragKind::kPin || kind == DragKind::kBookmark) {
-      return TearOffStoredRow(kind, key, release);
-    }
-    if (kind != DragKind::kTab || !framework_) {
-      return false;
-    }
-    const TabId tab_a(TabOfKey(sidebar_tree_, key, 0));
-    const TabId tab_b(TabOfKey(sidebar_tree_, key, 1));
-    if (!tab_a.valid()) {
-      return false;
-    }
-    // The drag image comes down first so the hit test cannot land on it.
-    PhiDragImage::Hide();
-    POINT screen = release;
-    ::ClientToScreen(shell_hwnd_, &screen);
-    const int64_t target =
-        host_ ? host_->SlotAtScreenPoint(screen, slot_.value) : 0;
-    if (!target || !host_ ||
-        !host_->RequestDropTabOnWindow(slot_.value, tab_a.value, tab_b.value,
-                                       target)) {
-      // No browser attached: an empty strip, and nothing tears off.
-      const BrowserId browser = active_browser_id();
-      if (browser.valid()) {
-        if (host_) {
-          host_->NoteTearOffDrop(screen);
-        }
-        const TabId ids[] = {tab_a, tab_b};
-        framework_->MoveTabsToNewWindowByIds(browser, ids,
-                                             tab_b.valid() ? 2 : 1);
-      }
-    }
-    return true;
-  }
-  if (kind == DragKind::kChip) {
-    if (slot < 0 || chip_pos < 0 ||
-        chip_pos >= static_cast<int>(spaces_->chips().size()) || !host_) {
-      return false;
-    }
-    // Insert-before `slot` becomes the final position by removing the
-    // dragged pip first; the slot counts the WINDOWED pips, the row index
-    // adds those scrolled out of the viewport ahead of it.
-    const int to_pos = slot > chip_pos ? slot - 1 : slot;
-    if (to_pos == chip_pos) {
-      return false;
-    }
-    host_->ReorderSpace(spaces_->chips()[static_cast<size_t>(chip_pos)].id,
-                        to_pos + spaces_->first_index());
-    return true;
-  }
-  // Everything else is ONE verb: the item goes to the resolved place — a
-  // reorder, a tree move, a pin, an unpin, a bookmark, a conversion between
-  // the two stored sections (docs/sidebar-architecture.md §5.2).
-  if (!place_valid) {
-    return false;
-  }
-  return Apply(SidebarMove{key, place});
-}
-
-void PhiWindowController::CancelDrag() {
-  const bool was_active = drag_active_;
-  drag_kind_ = DragKind::kNone;
-  drag_band_ = DropBand::kNone;
-  drag_key_ = {};
-  drag_active_ = false;
-  drag_insert_ = -1;
-  drag_place_valid_ = false;
-  drag_folder_key_ = {};
-  bookmark_drop_folder_row_ = -1;
-  drag_focus_tab_id_ = TabId();
-  drag_click_tab_id_ = TabId();
-  split_drop_valid_ = false;
-  split_drop_zone_ = PhiSplitDropZone::kNone;
-  split_drop_replace_ = false;
-  split_drop_split_id_.clear();
-  PhiSplitDropOverlay::Hide();
-  drag_slide_from_.clear();
-  drag_slide_to_.clear();
-  row_slide_from_.clear();
-  row_slide_to_.clear();
-  drag_slide_start_ = 0;
-  if (shell_hwnd_) {
-    ::KillTimer(shell_hwnd_, kDragSlideTimer);
-  }
-  if (was_active) {
-    if (::GetCapture() == shell_hwnd_) {
-      ::ReleaseCapture();
-    }
-    if (shell_hwnd_) {
-      ::InvalidateRect(shell_hwnd_, nullptr, FALSE);
-    }
-  }
-}
-
-void PhiWindowController::AbortDrag() {
-  const bool active = drag_active_;
-  const bool inside = drag_image_inside_;
-  CancelDrag();
-  if (active) {
-    EndDragImage(/*acted=*/false, inside);
-  }
-}
-
-// --- The drag image ----------------------------------------------------------
-//
-// The Mac's NSDraggingSession image with TabDraggingSession's switching on
-// top of it. See PhiDragImage for the window; this is the shell's side —
-// what to lift, where the boundary runs, and what the page card shows.
-
-RECT PhiWindowController::DragSourceRect() {
-  const Layout layout = ComputeLayout();
-  RECT r = {};
-  switch (drag_kind_) {
-    case DragKind::kTab:
-      if (DragIndex() >= 0 && DragIndex() < static_cast<int>(tabs_.size())) {
-        r = tabs_[static_cast<size_t>(DragIndex())].bounds;
-        if (!layout.horizontal_tabs) {
-          r.top += Scaled(kRowPad);  // The pill inside the row.
-          r.bottom -= Scaled(kRowPad);
-        }
-      }
-      break;
-    case DragKind::kPin:
-      if (DragIndex() >= 0 &&
-          DragIndex() < static_cast<int>(pinned_.size())) {
-        r = pinned_[static_cast<size_t>(DragIndex())].bounds;
-      }
-      break;
-    case DragKind::kBookmark:
-      if (DragIndex() >= 0 &&
-          DragIndex() < static_cast<int>(bookmarks_.size())) {
-        const ShortcutRow& row = bookmarks_[static_cast<size_t>(DragIndex())];
-        r = row.bounds;
-        r.top += Scaled(kRowPad);
-        r.bottom -= Scaled(kRowPad);
-        r.left += row.depth * Scaled(kBookmarkIndent);
-      }
-      break;
-    case DragKind::kChip:
-    case DragKind::kNone:
-      break;
-  }
-  return r;
-}
-
-bool PhiWindowController::DragImageInside(POINT pt) {
-  if (drag_kind_ == DragKind::kBookmark && DragIndex() >= 0 &&
-      DragIndex() < static_cast<int>(bookmarks_.size()) &&
-      bookmarks_[static_cast<size_t>(DragIndex())].folder) {
-    return true;  // A folder has no page to show (shouldTrackDraggingImage).
-  }
-  const Layout layout = ComputeLayout();
-  RECT band = layout.sidebar;
-  if (layout.horizontal_tabs) {
-    band = layout.title_bar;  // The strip lives in the caption band.
-  } else {
-    // The Mac's boundary is the vertical tab list's view: pins, bookmarks,
-    // "+ New Tab" and the tabs — not the header above them.
-    band.top = layout.favorites.top;
-    if (layout.bottom_bar.bottom > layout.bottom_bar.top) {
-      band.bottom = layout.bottom_bar.top;
-    }
-  }
-  if (::PtInRect(&band, pt)) {
-    return true;
-  }
-  POINT screen = pt;
-  ::ClientToScreen(shell_hwnd_, &screen);
-  RECT window_rect = {};
-  ::GetWindowRect(shell_hwnd_, &window_rect);
-  if (::PtInRect(&window_rect, screen)) {
-    return false;  // The page, the header, the caption band.
-  }
-  // Another shell window under the cursor takes the row into its strip, so
-  // the row is what shows there (isInsideAnyOtherBrowserTabDragBoundary).
-  return host_ && host_->SlotAtScreenPoint(screen, slot_.value) != 0;
-}
-
-void PhiWindowController::BeginDragImage(POINT pt) {
-  if (drag_kind_ == DragKind::kChip || drag_kind_ == DragKind::kNone ||
-      !shell_hwnd_) {
-    return;  // A chip drag paints its own pill in the strip.
-  }
-  const RECT source = DragSourceRect();
-  if (source.right <= source.left || source.bottom <= source.top) {
-    return;
-  }
-  // Lift the element's pixels straight out of the frame, painted at home in
-  // its lifted style — the Mac's createDraggingSnapshot of the cell.
-  drag_capture_ = true;
-  const PhiDragBitmap row = CaptureChromeRect(source);
-  drag_capture_ = false;
-  if (row.empty()) {
-    return;
-  }
-  POINT corners[2] = {{source.left, source.top}, {source.right, source.bottom}};
-  ::MapWindowPoints(shell_hwnd_, nullptr, corners, 2);
-  drag_home_screen_ = {corners[0].x, corners[0].y, corners[1].x, corners[1].y};
-  drag_image_inside_ = true;
-  drag_card_built_ = false;
-  drag_card_ = PhiDragCard();
-  POINT screen = pt;
-  ::ClientToScreen(shell_hwnd_, &screen);
-  PhiDragImage::Begin(shell_hwnd_, dpi_, row, Scaled(kCornerRadius),
-                      POINT{pt.x - source.left, pt.y - source.top}, screen);
-  // The element leaves the chrome: its slot is the gap from here on.
-  ::InvalidateRect(shell_hwnd_, nullptr, FALSE);
-}
-
-void PhiWindowController::SyncDragImage(POINT pt) {
-  if (!drag_active_ || !shell_hwnd_ || !PhiDragImage::active()) {
-    return;
-  }
-  POINT screen = pt;
-  ::ClientToScreen(shell_hwnd_, &screen);
-  const bool inside = DragImageInside(pt);
-  if (inside == drag_image_inside_) {
-    PhiDragImage::MoveTo(screen);
-    return;
-  }
-  drag_image_inside_ = inside;
-  if (inside) {
-    PhiDragImage::ShowRow(screen);  // Back in: the row again.
-    return;
-  }
-  if (!drag_card_built_) {
-    // Composed once per drag, the first time the cursor leaves — the Mac's
-    // cachedTabSnapshotImage. Out of sight first: the card may read the
-    // page off the screen, and the row image is hanging over its edge.
-    drag_card_built_ = true;
-    PhiDragImage::Conceal();
-    drag_card_ = BuildDragCard();
-  }
-  PhiDragImage::ShowCard(drag_card_, CurrentPalette(), screen);
-}
-
-void PhiWindowController::EndDragImage(bool acted, bool inside) {
-  if (!PhiDragImage::active()) {
-    return;
-  }
-  // AppKit's animatesToStartingPositionsOnCancelOrFail: true inside the
-  // sidebar, false once the drag has left it (a tear-off must not bounce).
-  if (!acted && inside) {
-    PhiDragImage::SlideBack(drag_home_screen_);
-  } else {
-    PhiDragImage::Hide();
-  }
-}
 
 PhiDragBitmap PhiWindowController::CaptureChromeRect(const RECT& client_rect) {
   PhiDragBitmap out;
@@ -2883,751 +1987,7 @@ PhiDragBitmap PhiWindowController::CaptureChromeRect(const RECT& client_rect) {
   return out;
 }
 
-PhiDragBitmap PhiWindowController::CaptureContentFromScreen() {
-  PhiDragBitmap out;
-  const HWND content = browsers_->content_hwnd();
-  if (!content || !::IsWindow(content) || !::IsWindowVisible(content) ||
-      !shell_hwnd_ ||
-      ::IsIconic(shell_hwnd_)) {
-    return out;
-  }
-  // The child paints through DirectComposition, which PrintWindow cannot
-  // read (the same blindness captureWindow works around over CDP) — but
-  // the screen itself can be read back, and the page is on it right now.
-  RECT page = {};
-  ::GetWindowRect(browsers_->content_hwnd(), &page);
-  MONITORINFO monitor = {sizeof(monitor)};
-  if (!::GetMonitorInfoW(
-          ::MonitorFromWindow(browsers_->content_hwnd(), MONITOR_DEFAULTTONULL),
-          &monitor)) {
-    return out;
-  }
-  RECT visible = {};
-  if (!::IntersectRect(&visible, &page, &monitor.rcMonitor)) {
-    return out;
-  }
-  const int w = visible.right - visible.left;
-  const int h = visible.bottom - visible.top;
-  if (w < 32 || h < 32) {
-    return out;
-  }
-  // Downscale on the way in: the card is 220 DIPs wide, and four times that
-  // keeps the bicubic pass sharp without dragging a 4K frame around.
-  const int limit = Scaled(PhiDragImage::kCardWidth * 4);
-  const double scale =
-      std::min(1.0, static_cast<double>(limit) / std::max(w, h));
-  const int tw = std::max(1, static_cast<int>(w * scale));
-  const int th = std::max(1, static_cast<int>(h * scale));
-  BITMAPINFO info = {};
-  info.bmiHeader.biSize = sizeof(info.bmiHeader);
-  info.bmiHeader.biWidth = tw;
-  info.bmiHeader.biHeight = -th;
-  info.bmiHeader.biPlanes = 1;
-  info.bmiHeader.biBitCount = 32;
-  info.bmiHeader.biCompression = BI_RGB;
-  void* bits = nullptr;
-  HDC screen = ::GetDC(nullptr);
-  HDC mem = ::CreateCompatibleDC(screen);
-  HBITMAP dib =
-      ::CreateDIBSection(mem, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
-  if (!dib || !bits) {
-    if (dib) {
-      ::DeleteObject(dib);
-    }
-    ::DeleteDC(mem);
-    ::ReleaseDC(nullptr, screen);
-    return out;
-  }
-  HGDIOBJ old = ::SelectObject(mem, dib);
-  ::SetStretchBltMode(mem, HALFTONE);
-  ::SetBrushOrgEx(mem, 0, 0, nullptr);
-  const bool copied = ::StretchBlt(mem, 0, 0, tw, th, screen, visible.left,
-                                   visible.top, w, h, SRCCOPY) != FALSE;
-  ::GdiFlush();
-  if (copied) {
-    const size_t bytes = static_cast<size_t>(tw) * static_cast<size_t>(th) * 4;
-    // SAFETY: the DIB is tw x th at 32bpp, top-down — exactly `bytes`.
-    const auto pixels = UNSAFE_BUFFERS(base::span<const unsigned char>(
-        static_cast<const unsigned char*>(bits), bytes));
-    out.bgra.assign(pixels.begin(), pixels.end());
-    // Screen pixels carry no alpha; the card composes them premultiplied.
-    for (size_t i = 3; i < out.bgra.size(); i += 4) {
-      out.bgra[i] = 0xFF;
-    }
-    out.width = tw;
-    out.height = th;
-  }
-  ::SelectObject(mem, old);
-  ::DeleteObject(dib);
-  ::DeleteDC(mem);
-  ::ReleaseDC(nullptr, screen);
-  if (PhiDragBitmapIsUniform(out)) {
-    out = PhiDragBitmap();  // A page that has not painted yet is no page.
-  }
-  return out;
-}
 
-PhiDragCard PhiWindowController::BuildDragCard() {
-  PhiDragCard card;
-  const BrowserId browser = active_browser_id();
-  WindowSnapshot strip;  // Pulled: the press opened the row this turn.
-  if (!PullSnapshot(browser, &strip)) {
-    strip = WindowSnapshot();
-  }
-  const auto copy_favicon = [](const std::vector<unsigned char>& bgra,
-                               int width, int height, PhiDragBitmap* out) {
-    if (!bgra.empty() && width > 0 && height > 0) {
-      out->bgra = bgra;
-      out->width = width;
-      out->height = height;
-    }
-  };
-  TabId tab_a;
-  TabId tab_b;
-  switch (drag_kind_) {
-    case DragKind::kTab: {
-      if (DragIndex() < 0 || DragIndex() >= static_cast<int>(tabs_.size())) {
-        return card;
-      }
-      const TabRow& row = tabs_[static_cast<size_t>(DragIndex())];
-      tab_a = row.id;
-      card.a.title = row.title;
-      copy_favicon(row.favicon, row.favicon_width, row.favicon_height,
-                   &card.a.favicon);
-      if (row.b_index >= 0) {
-        card.split = true;
-        card.stacked = SplitIsStacked(row.id);
-        tab_b = row.b_id;
-        card.b.title = row.b_title;
-        copy_favicon(row.b_favicon, row.b_favicon_width, row.b_favicon_height,
-                     &card.b.favicon);
-      }
-      break;
-    }
-    case DragKind::kPin:
-    case DragKind::kBookmark: {
-      const std::vector<ShortcutRow>& rows =
-          drag_kind_ == DragKind::kPin ? pinned_ : bookmarks_;
-      if (DragIndex() < 0 || DragIndex() >= static_cast<int>(rows.size())) {
-        return card;
-      }
-      const ShortcutRow& row = rows[static_cast<size_t>(DragIndex())];
-      card.a.title = row.title;
-      copy_favicon(row.favicon, row.favicon_width, row.favicon_height,
-                   &card.a.favicon);
-      // The press that armed the drag opened the row: its live tab is found
-      // by tag, which the cached view row may not know yet.
-      tab_a = LiveTabForStoredRow(strip, row.guid,
-                                  row.open ? row.tab_id : TabId());
-      if (!row.url_b.empty()) {
-        card.split = true;
-        card.stacked = row.layout == "horizontal";
-        card.b.title = row.title_b;
-        copy_favicon(row.favicon_b, row.favicon_b_width, row.favicon_b_height,
-                     &card.b.favicon);
-        tab_b = LiveTabForStoredRow(strip, TagFor(row.guid, true),
-                                    row.tab_id_b);
-      }
-      break;
-    }
-    case DragKind::kChip:
-    case DragKind::kNone:
-      return card;
-  }
-  // What is on screen beats the cache (the Mac's live capture for the
-  // active tab): after the press, the dragged row's page is the one showing
-  // — and a split shows both panes at once, so the capture IS the composite.
-  bool showing = false;
-  for (const TabSnapshot& tab : strip.tabs) {
-    if (tab.active && (tab.id == tab_a || (tab_b.valid() && tab.id == tab_b))) {
-      showing = true;
-      break;
-    }
-  }
-  if (showing) {
-    card.whole = CaptureContentFromScreen();
-  }
-  if (card.whole.empty() && framework_) {
-    const auto thumbnail = [&](TabId tab_id, PhiDragBitmap* out) {
-      if (!tab_id.valid()) {
-        return;
-      }
-      int width = 0;
-      int height = 0;
-      const unsigned char* pixels = framework_->TabThumbnailBgra(
-          browser.value, tab_id.value, &width, &height);
-      if (!pixels || width <= 0 || height <= 0) {
-        return;
-      }
-      // SAFETY: TabThumbnailBgra reports the dimensions of the buffer it
-      // just returned, the same contract TabFaviconBgra carries.
-      const auto copy = UNSAFE_BUFFERS(base::span<const unsigned char>(
-          pixels, static_cast<size_t>(width) * static_cast<size_t>(height) * 4));
-      out->bgra.assign(copy.begin(), copy.end());
-      out->width = width;
-      out->height = height;
-    };
-    thumbnail(tab_a, &card.a.snapshot);
-    if (card.split) {
-      thumbnail(tab_b, &card.b.snapshot);
-    }
-  }
-  return card;
-}
-
-bool PhiWindowController::TearOffStoredRow(DragKind kind,
-                                           const SidebarKey& key,
-                                           POINT release) {
-  const std::vector<ShortcutRow>& rows =
-      kind == DragKind::kPin ? pinned_ : bookmarks_;
-  const auto found = std::find_if(rows.begin(), rows.end(),
-                                  [&](const ShortcutRow& r) { return r.key == key; });
-  if (!framework_ || found == rows.end()) {
-    return false;
-  }
-  const ShortcutRow row = *found;
-  if (row.folder) {
-    return false;  // Nothing to open.
-  }
-  const BrowserId browser = active_browser_id();
-  WindowSnapshot strip;  // Pulled: the press opened the row this turn.
-  if (!PullSnapshot(browser, &strip)) {
-    return false;  // No browser attached: nothing is open to tear off.
-  }
-  // The press that armed the drag opened the row, so its live tab(s) are
-  // found by tag — the Mac's live-wrapper path. A row that failed to open
-  // has nothing to tear off.
-  const TabId id_a = LiveTabForStoredRow(strip, row.guid,
-                                         row.open ? row.tab_id : TabId());
-  TabId id_b;
-  if (!row.url_b.empty()) {
-    id_b = LiveTabForStoredRow(strip, TagFor(row.guid, true), row.tab_id_b);
-  }
-  if (!id_a.valid()) {
-    return false;
-  }
-  // The stored row stays behind as an unopened placeholder: the Mac clears
-  // custom_value on every pane before the move, or the panes would snap
-  // back into the cell in the new window.
-  UnbindStoredTab(browser, id_a);
-  if (id_b.valid()) {
-    UnbindStoredTab(browser, id_b);
-  }
-  // The drag image comes down first so the hit test cannot land on it.
-  PhiDragImage::Hide();
-  POINT screen = release;
-  ::ClientToScreen(shell_hwnd_, &screen);
-  const int64_t target =
-      host_ ? host_->SlotAtScreenPoint(screen, slot_.value) : 0;
-  if (!target || !host_ ||
-      !host_->RequestDropTabOnWindow(slot_.value, id_a.value, id_b.value,
-                                     target)) {
-    if (host_) {
-      host_->NoteTearOffDrop(screen);
-    }
-    const TabId ids[] = {id_a, id_b};
-    framework_->MoveTabsToNewWindowByIds(browser, ids, id_b.valid() ? 2 : 1);
-  }
-  return true;
-}
-
-// --- Drop on the page: form or re-pane a split -----------------------------
-//
-// The Mac's SplitTabDropContainer, whose three drag sources (a tab, a pinned
-// tab, a bookmark) are this client's kTab / kPin / kBookmark drags.
-
-bool PhiWindowController::SplitDragSource(DragKind kind,
-                                          const SidebarKey& key,
-                                          TabId* tab_id,
-                                          std::string* url,
-                                          std::string* guid) const {
-  *tab_id = TabId();
-  url->clear();
-  guid->clear();
-  if (key.empty()) {
-    return false;
-  }
-  if (kind == DragKind::kTab) {
-    const auto found = std::find_if(tabs_.begin(), tabs_.end(),
-                                    [&](const TabRow& r) { return r.key == key; });
-    if (found == tabs_.end()) {
-      return false;
-    }
-    const TabRow& row = *found;
-    // A split row is never a source — the page cannot nest a split inside a
-    // split (the Mac's isSourceASplit).
-    if (!row.split_id.empty() || row.b_index >= 0) {
-      return false;
-    }
-    *tab_id = row.id;
-    return row.id.valid();
-  }
-  if (kind != DragKind::kPin && kind != DragKind::kBookmark) {
-    return false;
-  }
-  const std::vector<ShortcutRow>& rows =
-      kind == DragKind::kPin ? pinned_ : bookmarks_;
-  const auto found = std::find_if(rows.begin(), rows.end(),
-                                  [&](const ShortcutRow& r) { return r.key == key; });
-  if (found == rows.end()) {
-    return false;
-  }
-  const ShortcutRow& row = *found;
-  // A folder holds no page, and a STORED split cell cannot become one pane
-  // of another split.
-  if (row.folder || !row.url_b.empty()) {
-    return false;
-  }
-  // Both are answered: an OPEN row can hand over its live tab, and the url is
-  // what a closed one (or a self-drop) opens instead.
-  *tab_id = row.open ? row.tab_id : TabId();
-  *url = row.url;
-  *guid = row.guid;
-  return tab_id->valid() || !url->empty();
-}
-
-bool PhiWindowController::ResolveSplitDrop(POINT pt, bool rebuild) {
-  const auto no_drop = [&] {
-    split_drop_valid_ = false;
-    split_drop_zone_ = PhiSplitDropZone::kNone;
-    split_drop_replace_ = false;
-    split_drop_split_id_.clear();
-    PhiSplitDropOverlay::Hide();
-    return false;
-  };
-  const RECT area = ComputeLayout().content;
-  if (!::PtInRect(&area, pt)) {
-    return no_drop();
-  }
-  if (!rebuild) {
-    // Mid-hover: nothing the mode depends on can change while the button is
-    // down, so only the zone under the pointer is recomputed.
-    if (!split_drop_valid_) {
-      return false;
-    }
-    split_drop_zone_ =
-        split_drop_replace_
-            ? PhiSplitReplaceZoneAt(area, pt, split_drop_stacked_,
-                                    split_drop_ratio_)
-            : PhiSplitCreateZoneAt(area, pt, split_drop_zone_);
-    PhiSplitDropHints hints;
-    hints.area = area;
-    hints.replace = split_drop_replace_;
-    hints.stacked = split_drop_stacked_;
-    hints.ratio = split_drop_ratio_;
-    hints.active = split_drop_zone_;
-    PhiSplitDropOverlay::Show(this, hints);
-    return true;
-  }
-  const TabId focused_id =
-      drag_focus_tab_id_.valid() ? drag_focus_tab_id_ : active_tab_id_;
-  if (!framework_ || !focused_id.valid()) {
-    return no_drop();
-  }
-  TabId source_id;
-  std::string source_url;
-  std::string source_guid;
-  if (!SplitDragSource(drag_kind_, drag_key_, &source_id, &source_url,
-                       &source_guid)) {
-    return no_drop();
-  }
-  const BrowserId browser = active_browser_id();
-  // Pulled, not the model's copy: the press that armed this drag opened the
-  // stored row it grabbed, and the drop must see that tab's tag. Once per
-  // page entry — the pointer moves after this only re-hit-test the zone.
-  WindowSnapshot strip;
-  if (!PullSnapshot(browser, &strip)) {
-    return no_drop();
-  }
-  source_id = LiveTabForStoredRow(strip, source_guid, source_id);
-  const TabSnapshot* focused = FindTabIn(strip, focused_id);
-  if (!focused) {
-    return no_drop();  // The page the drag started from has closed.
-  }
-  // A live pinned tab or bookmark tab that is already a pane cannot be
-  // dragged into another split either.
-  if (const TabSnapshot* source = FindTabIn(strip, source_id);
-      source && !source->split_id.empty()) {
-    return no_drop();
-  }
-
-  PhiSplitDropHints hints;
-  hints.area = area;
-  if (focused->split_id.empty()) {
-    // CREATE: the four edge thirds, the middle a no-drop band.
-    split_drop_replace_ = false;
-    split_drop_split_id_.clear();
-    split_drop_zone_ = PhiSplitCreateZoneAt(area, pt, split_drop_zone_);
-  } else {
-    // REPLACE: the page maps onto the focused split's two panes.
-    const auto stored_is_pinned = [&](const std::string& tag) {
-      SidebarTag parsed;
-      if (!ParseTag(tag, &parsed)) {
-        return false;
-      }
-      for (const ShortcutRow& row : pinned_) {
-        if (row.guid == parsed.guid) {
-          return true;
-        }
-      }
-      return false;
-    };
-    for (const TabSnapshot& tab : strip.tabs) {
-      if (tab.split_id != focused->split_id) {
-        continue;
-      }
-      // Replacing a pane with itself (or with its own sibling) is a no-op,
-      // and a PINNED split persists as a guid pair the swap would strand —
-      // the evicted pane would stay flagged pinned while the incoming one
-      // is not. Neither offers a drop.
-      if (tab.id == source_id || stored_is_pinned(tab.tag)) {
-        return no_drop();
-      }
-    }
-    bool stacked = false;
-    double ratio = 0.5;
-    if (const SplitSnapshot* split = FindSplitIn(strip, focused->split_id)) {
-      stacked = split->layout == phi_framework::SplitLayout::kHorizontal;
-      ratio = split->ratio;
-    }
-    split_drop_replace_ = true;
-    split_drop_split_id_ = focused->split_id;
-    split_drop_stacked_ = stacked;
-    split_drop_ratio_ = ratio;
-    split_drop_zone_ = PhiSplitReplaceZoneAt(area, pt, stacked, ratio);
-    hints.replace = true;
-    hints.stacked = stacked;
-    hints.ratio = ratio;
-  }
-  hints.active = split_drop_zone_;
-  split_drop_valid_ = true;
-  PhiSplitDropOverlay::Show(this, hints);
-  return true;
-}
-
-std::string PhiWindowController::FormSplitOrdered(BrowserId browser,
-                                                  TabId primary_id,
-                                                  TabId secondary_id,
-                                                  const char* layout) {
-  if (!framework_ || !primary_id.valid() || !secondary_id.valid() ||
-      primary_id == secondary_id) {
-    return std::string();
-  }
-  std::string split(framework_->CreateSplitViewForTabs(
-      browser.value, primary_id.value, secondary_id.value, layout));
-  if (split.empty()) {
-    return split;
-  }
-  // Chromium normalizes the primary pane to the LOWER-indexed tab, so the
-  // pair can land the other way round from what the drop asked for. Reversing
-  // only reorders the strip — no tab is re-activated, so no pane blinks. The
-  // split was created a line ago, so the model cannot know it yet: pull.
-  WindowSnapshot fresh;
-  if (!PullSnapshot(browser, &fresh)) {
-    return split;
-  }
-  if (const SplitSnapshot* made = FindSplitIn(fresh, split);
-      made && made->primary != primary_id) {
-    framework_->SwapSplitView(browser.value, split.c_str());
-  }
-  return split;
-}
-
-void PhiWindowController::UnbindStoredTab(BrowserId browser, TabId tab_id) {
-  if (!framework_ || !tab_id.valid()) {
-    return;
-  }
-  // The stored row keeps its place and its url — it simply stops being
-  // "open", which is the Mac's placeholder left behind by
-  // demotePinnedTabLeavingPlaceholder. Unconditional: the tag may have been
-  // set by this very gesture, before the model heard of it, so "is it
-  // tagged?" cannot be answered from the model and clearing an empty tag is
-  // harmless.
-  framework_->SetTabTagById(browser.value, tab_id.value, "");
-}
-
-bool PhiWindowController::SplitTabsNormalized(BrowserId browser,
-                                              TabId primary,
-                                              TabId secondary) {
-  if (!framework_ || !primary.valid() || !secondary.valid() ||
-      primary == secondary) {
-    return false;
-  }
-  UnbindStoredTab(browser, primary);
-  UnbindStoredTab(browser, secondary);
-  // Ids carry across the unbinding (a cleared tag moves nothing); Chromium
-  // picks the leading pane, as SplitActiveWith did.
-  const char* split = framework_->CreateSplitViewForTabs(
-      browser.value, primary.value, secondary.value, "vertical");
-  return split && *split;
-}
-
-void PhiWindowController::CommitSplitDrop(DragKind kind,
-                                          const SidebarKey& source,
-                                          TabId focused_id,
-                                          PhiSplitDropZone zone,
-                                          bool replace,
-                                          const std::string& split_id) {
-  if (!framework_ || zone == PhiSplitDropZone::kNone || !focused_id.valid()) {
-    return;
-  }
-  TabId source_id;
-  std::string source_url;
-  std::string source_guid;
-  if (!SplitDragSource(kind, source, &source_id, &source_url,
-                       &source_guid)) {
-    return;
-  }
-  const BrowserId browser = active_browser_id();
-  WindowSnapshot strip;  // Pulled: see ResolveSplitDrop.
-  if (!PullSnapshot(browser, &strip)) {
-    return;
-  }
-  source_id = LiveTabForStoredRow(strip, source_guid, source_id);
-  // The dragged item lands in the pane the cursor was over; the layout names
-  // the divider, not the arrangement.
-  const bool dropped_primary = PhiSplitZoneIsPrimary(zone);
-  const char* layout = PhiSplitZoneLayout(zone);
-
-  // A fresh tab on `url`, by its STABLE id — nothing to re-read afterwards.
-  const auto open_tab = [&](const std::string& url) {
-    return framework_->OpenTab(browser, url.c_str());
-  };
-
-  if (replace) {
-    if (split_id.empty()) {
-      return;
-    }
-    // Which pane the drop targets, and which tab it evicts.
-    const int slot = dropped_primary ? 0 : 1;
-    const SplitSnapshot* target = FindSplitIn(strip, split_id);
-    const TabId evicted_id =
-        target ? (slot == 0 ? target->primary : target->secondary) : TabId();
-    if (!evicted_id.valid()) {
-      return;  // The split went away mid-drag.
-    }
-    // The evicted pane is kept as a standalone tab beside the split, unless
-    // it is an empty new-tab page — closing that beats littering the strip
-    // (the Mac's splitPaneReplacementKeepsEvicted).
-    const TabSnapshot* evicted = FindTabIn(strip, evicted_id);
-    const bool keep_evicted =
-        !evicted || !PhiNewTabPage::IsNewTabUrl(evicted->url);
-    TabId incoming_id = source_id;
-    if (incoming_id.valid()) {
-      // A live pinned tab or bookmark tab keeps its page: drop the binding
-      // and let the tab itself take the pane. Unconditional, because the
-      // COMFORTABLE layout leaves bookmark-bound tabs on the strip, so even
-      // a plain tab drag can be carrying a binding.
-      UnbindStoredTab(browser, incoming_id);
-    } else {
-      if (source_url.empty()) {
-        return;
-      }
-      incoming_id = open_tab(source_url);
-    }
-    if (!incoming_id.valid() || incoming_id == evicted_id) {
-      return;
-    }
-    framework_->SwapTabIntoSplitById(browser, split_id.c_str(), slot,
-                                     incoming_id, keep_evicted);
-    return;
-  }
-
-  // CREATE. Each source keeps the Mac's own rule for what happens when it
-  // resolves to the focused tab itself.
-  TabId dragged_id;
-  if (kind == DragKind::kTab) {
-    if (source_id == focused_id) {
-      // Dragged = focused: a fresh new-tab page becomes the partner and takes
-      // the slot OPPOSITE the drop, since the dragged tab visually lands
-      // where the cursor is.
-      UnbindStoredTab(browser, focused_id);
-      const TabId fresh = open_tab(std::string());
-      if (!fresh.valid()) {
-        return;
-      }
-      FormSplitOrdered(browser, dropped_primary ? focused_id : fresh,
-                       dropped_primary ? fresh : focused_id, layout);
-      return;
-    }
-    dragged_id = source_id;
-  } else if (source_id.valid() && source_id != focused_id) {
-    // A live stored row: the tab joins the split and its row stays behind as
-    // an unopened one.
-    dragged_id = source_id;
-  } else if (kind == DragKind::kBookmark && source_id == focused_id) {
-    // The bookmark's live tab IS the focused pane. Opening its url again
-    // would just duplicate what the user is looking at, so the partner is a
-    // fresh new-tab page in the opposite slot.
-    UnbindStoredTab(browser, focused_id);
-    const TabId fresh = open_tab(std::string());
-    if (!fresh.valid()) {
-      return;
-    }
-    FormSplitOrdered(browser, dropped_primary ? focused_id : fresh,
-                     dropped_primary ? fresh : focused_id, layout);
-    return;
-  } else {
-    // A closed row — or a pinned one whose live tab is the focused pane:
-    // its url opens as the new pane and the stored row is left intact, so
-    // the slot still exists for next time.
-    if (source_url.empty()) {
-      return;
-    }
-    dragged_id = open_tab(source_url);
-  }
-  if (!dragged_id.valid() || dragged_id == focused_id) {
-    return;
-  }
-  // NEITHER pane may carry a stored binding: a split never lives inside a
-  // pinned cell or a bookmark cell, it shows as one merged row in the normal
-  // tab list. Each stored row stays where it is, as an unopened placeholder
-  // (the Mac's makeTabNormalOpened /
-  // demotePinnedTabLeavingPlaceholder, which every one of its
-  // split-formation paths runs over both panes).
-  UnbindStoredTab(browser, focused_id);
-  UnbindStoredTab(browser, dragged_id);
-  FormSplitOrdered(browser, dropped_primary ? dragged_id : focused_id,
-                   dropped_primary ? focused_id : dragged_id, layout);
-}
-
-int PhiWindowController::DragInsertSlot(POINT pt) {
-  // Resolves WHERE the drag lands (drag_place_) with the pure resolvers and
-  // answers the gap slot the slide animation opens (-1 = no gap).
-  drag_place_valid_ = false;
-  drag_folder_key_ = {};
-  bookmark_drop_folder_row_ = -1;
-  const auto take = [&](const DropResolution& r) {
-    drag_place_ = r.place;
-    drag_place_valid_ = true;
-    drag_folder_key_ = r.folder_key;
-    if (!r.folder_key.empty()) {
-      for (size_t i = 0; i < bookmarks_.size(); ++i) {
-        if (bookmarks_[i].key == r.folder_key) {
-          bookmark_drop_folder_row_ = static_cast<int>(i);
-        }
-      }
-    }
-    return r.gap_slot;
-  };
-  const Layout layout = ComputeLayout();
-  switch (drag_kind_) {
-    case DragKind::kTab:
-      switch (drag_band_) {
-        case DropBand::kOutside:
-          return 0;  // Tear-off: any non-negative slot commits.
-        case DropBand::kPins:
-          return take(ResolvePinnedDrop(PinnedDropRows(), pt.x, pt.y, {}));
-        case DropBand::kBookmarks:
-          return take(ResolveBookmarkDrop(BookmarkDropRows(), pt.y, {}));
-        default:
-          return take(ResolveTabDrop(TabDropRows(), pt.x, pt.y,
-                                     layout.horizontal_tabs, drag_key_));
-      }
-    case DragKind::kPin:
-      switch (drag_band_) {
-        case DropBand::kTabs:
-          // Unpin into the list: the anchor says where; the list itself
-          // opens no gap for a cell.
-          take(ResolveTabDrop(TabDropRows(), pt.x, pt.y,
-                              layout.horizontal_tabs, {}));
-          return 0;
-        case DropBand::kOutside:
-          return -1;  // The release tears off; there is no slot.
-        case DropBand::kBookmarks:
-          take(ResolveBookmarkDrop(BookmarkDropRows(), pt.y, {}));
-          return -1;  // The outline gap rides bookmark_drop_folder_row_.
-        default:
-          return take(ResolvePinnedDrop(PinnedDropRows(), pt.x, pt.y, drag_key_));
-      }
-    case DragKind::kBookmark:
-      switch (drag_band_) {
-        case DropBand::kOutside:
-          return -1;  // The release tears off; there is no outline slot.
-        case DropBand::kPins:
-          return take(ResolvePinnedDrop(PinnedDropRows(), pt.x, pt.y, {}));
-        case DropBand::kTabs:
-          take(ResolveTabDrop(TabDropRows(), pt.x, pt.y,
-                              layout.horizontal_tabs, {}));
-          return -1;
-        default:
-          return take(ResolveBookmarkDrop(BookmarkDropRows(), pt.y, drag_key_));
-      }
-    case DragKind::kChip:
-      return spaces_->InsertSlotAt(pt);
-    case DragKind::kNone:
-      break;
-  }
-  return -1;
-}
-
-void PhiWindowController::DrawDragIndicator(HDC dc) {
-  if (!drag_active_ || drag_insert_ < 0 || !host_) {
-    return;
-  }
-  const PhiPalette& palette = host_->PaletteForSlot(slot_.value);
-  // The 2px accent insertion line, horizontal for vertical lists and
-  // vertical for horizontal ones.
-  RECT line{};
-  const auto before_edge = [&](const RECT& r, bool horizontal_list) {
-    if (horizontal_list) {
-      line = {r.left - Scaled(2), r.top, r.left, r.bottom};
-    } else {
-      line = {r.left, r.top - Scaled(2), r.right, r.top};
-    }
-  };
-  const auto after_edge = [&](const RECT& r, bool horizontal_list) {
-    if (horizontal_list) {
-      line = {r.right, r.top, r.right + Scaled(2), r.bottom};
-    } else {
-      line = {r.left, r.bottom, r.right, r.bottom + Scaled(2)};
-    }
-  };
-  const auto pick = [&](const auto& rows, bool horizontal_list) {
-    if (rows.empty()) {
-      return false;
-    }
-    if (drag_insert_ < static_cast<int>(rows.size())) {
-      before_edge(rows[static_cast<size_t>(drag_insert_)].bounds,
-                  horizontal_list);
-    } else {
-      after_edge(rows.back().bounds, horizontal_list);
-    }
-    return true;
-  };
-  bool have = false;
-  const Layout layout = ComputeLayout();
-  switch (drag_kind_) {
-    case DragKind::kTab:
-      // Every vertical target animates its own gap now (Chrome's vertical
-      // tabs draw no line either); only the horizontal strip keeps one.
-      have = layout.horizontal_tabs && drag_band_ == DropBand::kTabs
-                 ? pick(tabs_, /*horizontal_list=*/true)
-                 : false;
-      break;
-    case DragKind::kPin:
-      // The grid gap is the indicator in the sidebar; the horizontal
-      // strip's pinned section keeps the line.
-      have = layout.horizontal_tabs && drag_band_ == DropBand::kPins
-                 ? pick(pinned_, /*horizontal_list=*/true)
-                 : false;
-      break;
-    case DragKind::kBookmark:
-      have = false;  // The row gap is the indicator.
-      break;
-    case DragKind::kChip:
-      have = pick(spaces_->chips(), /*horizontal_list=*/true);
-      break;
-    case DragKind::kNone:
-      break;
-  }
-  if (!have) {
-    return;
-  }
-  HBRUSH accent = ::CreateSolidBrush(palette.accent);
-  ::FillRect(dc, &line, accent);
-  ::DeleteObject(accent);
-}
 
 std::array<RECT, 14> PhiWindowController::NavHoverTable(
     const Layout& layout) const {
@@ -3637,33 +1997,24 @@ std::array<RECT, 14> PhiWindowController::NavHoverTable(
   // APPEND ONLY: PaintChrome keys a button's hover wash on its index here,
   // so inserting into the middle silently moves someone else's wash.
   return {layout.back,        layout.forward,    layout.reload,
-          layout.search_tabs, add_tab_button_,   layout.overflow,
+          layout.search_tabs, sidebar_->add_tab_button(),   layout.overflow,
           layout.downloads,   layout.memory,     layout.feedback,
           layout.chat,        layout.extensions, layout.copy_link,
           layout.phi_menu,    layout.reader};
 }
 
+// The client rect a hovered element's wash covers, empty for none — so a
+// hover change invalidates the old and the new element, not the whole
+// shell (lane 3 §7 item 3). The sidebar answers for its own rows; the
+// bands the shell still paints answer here.
 RECT PhiWindowController::HoverRect(HoverKind kind, int index) {
-  const auto at = [&](const auto& rows) {
-    return index >= 0 && index < static_cast<int>(rows.size())
-               ? rows[static_cast<size_t>(index)].bounds
-               : RECT{};
-  };
-  RECT r = {};
+  RECT r = sidebar_->RowHoverRect(kind, index);
   switch (kind) {
     case HoverKind::kNone:
-      return r;
     case HoverKind::kTab:
-      r = at(tabs_);
-      break;
     case HoverKind::kPin:
-      r = at(pinned_);
-      break;
     case HoverKind::kBookmark:
-      r = at(bookmarks_);
-      break;
     case HoverKind::kGroupHeader:
-      r = at(group_headers_);
       break;
     case HoverKind::kChip:
       r = spaces_->ChipBounds(index);
@@ -3755,21 +2106,23 @@ void PhiWindowController::OnChromeMouseMove(POINT client_pt) {
     }
     spaces_->SetRowHovered(row_hovered);
   }
-  for (size_t i = 0; i < pinned_.size() && kind == HoverKind::kNone; ++i) {
-    if (::PtInRect(&pinned_[i].bounds, client_pt)) {
+  const std::vector<ShortcutRow>& pins = sidebar_->pinned();
+  for (size_t i = 0; i < pins.size() && kind == HoverKind::kNone; ++i) {
+    if (::PtInRect(&pins[i].bounds, client_pt)) {
       kind = HoverKind::kPin;
       index = static_cast<int>(i);
     }
   }
-  for (size_t i = 0; i < bookmarks_.size() && kind == HoverKind::kNone; ++i) {
-    if (::PtInRect(&bookmarks_[i].bounds, client_pt)) {
+  const std::vector<ShortcutRow>& marks = sidebar_->bookmarks();
+  for (size_t i = 0; i < marks.size() && kind == HoverKind::kNone; ++i) {
+    if (::PtInRect(&marks[i].bounds, client_pt)) {
       kind = HoverKind::kBookmark;
       index = static_cast<int>(i);
     }
   }
-  for (size_t i = 0; i < group_headers_.size() && kind == HoverKind::kNone;
-       ++i) {
-    if (::PtInRect(&group_headers_[i].bounds, client_pt)) {
+  const std::vector<GroupHeader>& headers = sidebar_->group_headers();
+  for (size_t i = 0; i < headers.size() && kind == HoverKind::kNone; ++i) {
+    if (::PtInRect(&headers[i].bounds, client_pt)) {
       kind = HoverKind::kGroupHeader;
       index = static_cast<int>(i);
     }
@@ -3795,8 +2148,9 @@ void PhiWindowController::OnChromeMouseMove(POINT client_pt) {
       }
     }
   }
-  for (size_t i = 0; i < tabs_.size() && kind == HoverKind::kNone; ++i) {
-    if (::PtInRect(&tabs_[i].bounds, client_pt)) {
+  const std::vector<TabRow>& rows = sidebar_->tabs();
+  for (size_t i = 0; i < rows.size() && kind == HoverKind::kNone; ++i) {
+    if (::PtInRect(&rows[i].bounds, client_pt)) {
       kind = HoverKind::kTab;
       index = static_cast<int>(i);
     }
@@ -3811,10 +2165,6 @@ void PhiWindowController::ClearHover() {
     tab_preview_->PointerExited();
   }
   SetHover(HoverKind::kNone, -1);
-}
-
-RECT PhiWindowController::CreateSpaceFormRect() {
-  return spaces_->FormRect();
 }
 
 void PhiWindowController::ShowCreateSpaceForm() {
@@ -3881,7 +2231,7 @@ void PhiWindowController::NoteTabDistillable(TabId tab_id,
 }
 
 bool PhiWindowController::ActiveTabDistillable() const {
-  for (const TabRow& row : tabs_) {
+  for (const TabRow& row : sidebar_->tabs()) {
     if (row.active) {
       return distillable_tabs_.count(row.id) > 0;
     }
@@ -3890,24 +2240,24 @@ bool PhiWindowController::ActiveTabDistillable() const {
 }
 
 bool PhiWindowController::ActiveTabReaderOfferable() const {
-  if (!active_tab_id_.valid() || !CanOfferReaderForUrl(active_tab_url_)) {
+  if (!active_tab_id().valid() || !CanOfferReaderForUrl(active_tab_url())) {
     return false;
   }
   if (ActiveTabDistillable()) {
     return true;
   }
   return host_ &&
-         (host_->IsReaderOfferable(active_tab_id_.value, active_tab_url_) ||
-          host_->IsReaderActive(active_tab_id_.value, active_tab_url_));
+         (host_->IsReaderOfferable(active_tab_id().value, active_tab_url()) ||
+          host_->IsReaderActive(active_tab_id().value, active_tab_url()));
 }
 
 bool PhiWindowController::ActiveTabShowsReader() const {
-  return host_ && active_tab_id_.valid() &&
-         host_->IsReaderActive(active_tab_id_.value, active_tab_url_);
+  return host_ && active_tab_id().valid() &&
+         host_->IsReaderActive(active_tab_id().value, active_tab_url());
 }
 
 bool PhiWindowController::ActiveTabCanUseReader() const {
-  return active_tab_id_.valid() && CanOfferReaderForUrl(active_tab_url_);
+  return active_tab_id().valid() && CanOfferReaderForUrl(active_tab_url());
 }
 
 // static
@@ -3969,42 +2319,34 @@ void PhiWindowController::CardRoundedCorners(bool* top, bool* bottom) const {
   }
 }
 
-bool PhiWindowController::ShowsTab(TabId tab_id) const {
-  for (const TabRow& row : tabs_) {
-    if (row.id == tab_id) {
-      return true;
-    }
-  }
-  return false;
-}
 
 void PhiWindowController::ToggleReaderView() {
-  if (!host_ || !active_tab_id_.valid()) {
+  if (!host_ || !active_tab_id().valid()) {
     return;
   }
-  host_->RequestToggleReaderView(active_tab_id_.value, active_tab_url_);
+  host_->RequestToggleReaderView(active_tab_id().value, active_tab_url());
 }
 
 bool PhiWindowController::LeaveReaderViewForNavigation() {
   // Every surface attached to the active tab — the reader covering it, a
   // peek floating over it — closes before the page underneath changes.
-  if (!host_ || !active_tab_id_.valid()) {
+  if (!host_ || !active_tab_id().valid()) {
     return false;
   }
   const bool reader =
-      host_->IsReaderActive(active_tab_id_.value, active_tab_url_);
+      host_->IsReaderActive(active_tab_id().value, active_tab_url());
   bool peek = false;
-  for (const SidebarContentNode& node : sidebar_tree_.content) {
+  for (const SidebarContentNode& node : sidebar_->tree().content) {
     if (node.active && node.attached_surface != SidebarSurface::kContent) {
       peek = true;
     }
   }
-  for (const SidebarCell& cell : sidebar_tree_.pins) {
+  for (const SidebarCell& cell : sidebar_->tree().pins) {
     if (cell.binding.active && cell.attached_surface != SidebarSurface::kContent) {
       peek = true;
     }
   }
-  for (const SidebarCell& cell : sidebar_tree_.bookmarks) {
+  for (const SidebarCell& cell : sidebar_->tree().bookmarks) {
     if (cell.binding.active && cell.attached_surface != SidebarSurface::kContent) {
       peek = true;
     }
@@ -4012,12 +2354,12 @@ bool PhiWindowController::LeaveReaderViewForNavigation() {
   if (!reader && !peek) {
     return false;
   }
-  host_->RequestCloseSurfaces(active_tab_id_.value);
+  host_->RequestCloseSurfaces(active_tab_id().value);
   return true;
 }
 
 void PhiWindowController::UpdateTabPreview() {
-  if (!host_ || !host_->ShowTabPreviews() || drag_active_) {
+  if (!host_ || !host_->ShowTabPreviews() || sidebar_->drag_active()) {
     if (tab_preview_) {
       tab_preview_->PointerExited();
     }
@@ -4027,9 +2369,11 @@ void PhiWindowController::UpdateTabPreview() {
   PhiTabPreview::Target target;
   bool eligible = false;
   switch (hover_kind_) {
-    case HoverKind::kTab:
-      if (hover_index_ >= 0 && hover_index_ < static_cast<int>(tabs_.size())) {
-        const TabRow& row = tabs_[static_cast<size_t>(hover_index_)];
+    case HoverKind::kTab: {
+      const std::vector<TabRow>& tab_rows = sidebar_->tabs();
+      if (hover_index_ >= 0 &&
+          hover_index_ < static_cast<int>(tab_rows.size())) {
+        const TabRow& row = tab_rows[static_cast<size_t>(hover_index_)];
         if (row.id.valid()) {
           target.key = "tab:" + base::NumberToString(row.id.value);
           target.tab_id = row.id;
@@ -4049,10 +2393,12 @@ void PhiWindowController::UpdateTabPreview() {
         }
       }
       break;
+    }
     case HoverKind::kPin:
     case HoverKind::kBookmark: {
       const std::vector<ShortcutRow>& rows =
-          hover_kind_ == HoverKind::kPin ? pinned_ : bookmarks_;
+          hover_kind_ == HoverKind::kPin ? sidebar_->pinned()
+                                         : sidebar_->bookmarks();
       if (hover_index_ >= 0 && hover_index_ < static_cast<int>(rows.size())) {
         const ShortcutRow& row = rows[static_cast<size_t>(hover_index_)];
         // Folders have no page, and an unopened row has no live tab to
@@ -4154,29 +2500,6 @@ void PhiWindowController::SetAgentVisible(bool visible) {
   }
 }
 
-bool PhiWindowController::OnSidebarWheel(POINT client_pt, int wheel_delta) {
-  if (!host_ || host_->LayoutMode() == PhiLayoutMode::kComfortable) {
-    return false;
-  }
-  const Layout layout = ComputeLayout();
-  if (::PtInRect(&layout.spaces_strip, client_pt)) {
-    // Over the strip the wheel slides the pip viewport by whole pips, one
-    // per notch (the Mac's SpacesStripWheelTracker): a notch toward the
-    // user reveals later pips, the direction a vertical list would scroll.
-    return spaces_->OnWheel(wheel_delta);
-  }
-  if (!::PtInRect(&layout.sidebar, client_pt) || tabs_scroll_max_ <= 0) {
-    return false;
-  }
-  const int step = Scaled(kTabRowHeight + kTabRowGap);
-  int next = scroll_offset_ - wheel_delta * step / WHEEL_DELTA;
-  next = std::max(0, std::min(next, tabs_scroll_max_));
-  if (next != scroll_offset_) {
-    scroll_offset_ = next;
-    ScheduleRefresh();
-  }
-  return true;
-}
 
 COLORREF PhiWindowController::BackgroundFill() const {
   return host_ ? host_->PaletteForSlot(slot_.value).window_bg
@@ -4233,7 +2556,7 @@ PhiWindowController::BandSignature PhiWindowController::CurrentBandSignature()
            std::to_string(r.right) + "," + std::to_string(r.bottom);
   };
   BandSignature out;
-  for (const TabRow& row : tabs_) {
+  for (const TabRow& row : sidebar_->tabs()) {
     out.rows.emplace_back(
         row.key.ToString() + "|" + base::WideToUTF8(row.title) + "|" +
             base::WideToUTF8(row.b_title) + "|" + (row.active ? "a" : "") +
@@ -4243,7 +2566,7 @@ PhiWindowController::BandSignature PhiWindowController::CurrentBandSignature()
             std::to_string(fold(row.b_favicon)) + "|" + rect_key(row.pane_b),
         row.bounds);
   }
-  for (const GroupHeader& header : group_headers_) {
+  for (const GroupHeader& header : sidebar_->group_headers()) {
     out.rows.emplace_back("g:" + header.id + "|" +
                               base::WideToUTF8(header.title) + "|" +
                               std::to_string(header.color) +
@@ -4262,10 +2585,10 @@ PhiWindowController::BandSignature PhiWindowController::CurrentBandSignature()
             std::to_string(fold(row.favicon_b)),
         row.bounds);
   };
-  for (const ShortcutRow& pin : pinned_) {
+  for (const ShortcutRow& pin : sidebar_->pinned()) {
     stored("p:", pin);
   }
-  for (const ShortcutRow& bookmark : bookmarks_) {
+  for (const ShortcutRow& bookmark : sidebar_->bookmarks()) {
     stored("b:", bookmark);
   }
   for (const PhiSpaceChip& chip : spaces_->chips()) {
@@ -4359,7 +2682,7 @@ PhiPalette PhiWindowController::CurrentPalette() const {
 
 void PhiWindowController::ComposeFrame(HDC mem) {
   PaintChrome(mem, ComputeLayout(), /*include_child_controls=*/false);
-  DrawDragIndicator(mem);
+  sidebar_->DrawDragIndicator(mem);
 }
 
 void PhiWindowController::RevealSwappedContent() {
@@ -4543,306 +2866,9 @@ void PhiWindowController::RebuildChips() {
   spaces_->Rebuild();
 }
 
-namespace {
-
-// The Mac's TabDiscardedFaviconOutline: a 1px dashed ring around the favicon
-// of a tab whose renderer is gone — restored-but-never-loaded (unloaded) or
-// discarded. The Mac aligned both states on this ring (dda300c6) after a
-// short-lived dimmed-favicon treatment; the dimmed TITLE stays, as before.
-void DrawDormantRing(HDC dc, const RECT& icon, COLORREF color) {
-  // 2px of air around a 16px icon; scales with the icon at higher DPI. The
-  // dashes scale the same way (2 on, 2 off at 16px).
-  const int inset = std::max(2, static_cast<int>(icon.right - icon.left) / 8);
-  PhiStrokeEllipseDashedAA(dc,
-                           {icon.left - inset, icon.top - inset,
-                            icon.right + inset, icon.bottom + inset},
-                           color, 1, inset, inset);
-}
-
-}  // namespace
-
-void PhiWindowController::DrawFavicon(HDC dc,
-                                     const RECT& dest,
-                                     const unsigned char* bgra,
-                                     int width,
-                                     int height,
-                                     COLORREF background) {
-  // NEVER upscale: a 16px favicon inflated to a larger slot only blurs —
-  // 1:1 native pixels centred in the slot are the sharpest a small source
-  // can look (the driver rarely holds more than 16px). Downscaling larger
-  // art is fine and goes through the high-quality path.
-  RECT draw_rc = dest;
-  const int dest_w = dest.right - dest.left;
-  const int dest_h = dest.bottom - dest.top;
-  if (width < dest_w && height < dest_h) {
-    draw_rc.left = dest.left + (dest_w - width) / 2;
-    draw_rc.top = dest.top + (dest_h - height) / 2;
-    draw_rc.right = draw_rc.left + width;
-    draw_rc.bottom = draw_rc.top + height;
-  }
-  // Premultiplied BGRA — exactly what the DirectWrite path draws with
-  // high-quality interpolation. GDI's stretch below is the fallback.
-  if (PhiDrawBgra(dc, draw_rc, bgra, width, height)) {
-    return;
-  }
-
-  if (!bgra || width <= 0 || height <= 0) {
-    return;
-  }
-  BITMAPINFO info = {};
-  info.bmiHeader.biSize = sizeof(info.bmiHeader);
-  info.bmiHeader.biWidth = width;
-  info.bmiHeader.biHeight = -height;  // Top-down, the order Skia gave us.
-  info.bmiHeader.biPlanes = 1;
-  info.bmiHeader.biBitCount = 32;
-  info.bmiHeader.biCompression = BI_RGB;
-
-  // Composite over the known background. The pixels are PREMULTIPLIED, so the
-  // source contribution is already scaled: dst = src + bg * (1 - a).
-  std::vector<unsigned char> composited(static_cast<size_t>(width) *
-                                        static_cast<size_t>(height) * 4);
-  const int br = GetRValue(background);
-  const int bg_g = GetGValue(background);
-  const int bb = GetBValue(background);
-  // SAFETY: the framework's contract is that `bgra` holds width*height*4 bytes
-  // (phi_framework_api.h). A raw pointer and a size is all a C++ ABI across the
-  // module boundary can carry, so bounding it here is the first safe moment.
-  const auto source = UNSAFE_BUFFERS(base::span<const unsigned char>(
-      bgra, static_cast<size_t>(width) * static_cast<size_t>(height) * 4));
-  for (size_t i = 0; i + 3 < composited.size(); i += 4) {
-    const int sb = source[i], sg = source[i + 1], sr = source[i + 2],
-              sa = source[i + 3];
-    const int inv = 255 - sa;
-    composited[i] = static_cast<unsigned char>(sb + bb * inv / 255);
-    composited[i + 1] = static_cast<unsigned char>(sg + bg_g * inv / 255);
-    composited[i + 2] = static_cast<unsigned char>(sr + br * inv / 255);
-    composited[i + 3] = 255;
-  }
-  const int prev_mode = ::SetStretchBltMode(dc, HALFTONE);
-  ::StretchDIBits(dc, dest.left, dest.top, dest.right - dest.left,
-                  dest.bottom - dest.top, 0, 0, width, height,
-                  composited.data(), &info, DIB_RGB_COLORS, SRCCOPY);
-  ::SetStretchBltMode(dc, prev_mode);
-}
-
-PinnedGridMetrics PhiWindowController::GridMetrics(
-    const Layout& layout) const {
-  PinnedGridMetrics m;
-  m.sidebar_dip = sidebar_dip_;
-  m.edge_inset_dip = kEdgeInset;
-  m.gap_dip = kPinnedGap;
-  m.min_cell_width_dip = kPinnedMinWidth;
-  m.origin_x = layout.favorites.left + Scaled(kEdgeInset);
-  m.origin_y = layout.favorites.top;
-  m.sidebar_px = Scaled(sidebar_dip_);
-  m.edge_inset_px = Scaled(kEdgeInset);
-  m.gap_px = Scaled(kPinnedGap);
-  m.cell_height_px = Scaled(kPinnedCellHeight);
-  return m;
-}
-
-std::vector<RECT> PhiWindowController::PinnedGridWalk(
-    const std::vector<int>& units, const Layout& layout) {
-  // The pinned grid's placement (LayoutPinnedGrid), shared with the drag
-  // previews so a phantom cell lands where the real one will.
-  std::vector<RECT> rects;
-  for (const SidebarRect& cell : LayoutPinnedGrid(units, GridMetrics(layout)).cells) {
-    rects.push_back(ToRect(cell));
-  }
-  return rects;
-}
-
-std::vector<const SidebarCell*> PhiWindowController::VisibleBookmarkCells()
-    const {
-  // The outline: a collapsed folder hides its whole subtree. The tree is
-  // depth-first, so a collapsed folder's descendants are the cells that
-  // follow it while their depth stays greater than its own.
-  std::vector<const SidebarCell*> visible;
-  int collapsed_at = -1;
-  for (const SidebarCell& cell : sidebar_tree_.bookmarks) {
-    if (collapsed_at >= 0 && cell.depth > collapsed_at) {
-      continue;
-    }
-    collapsed_at = -1;
-    visible.push_back(&cell);
-    if (cell.kind == SidebarStoredKind::kFolder &&
-        !expanded_bookmarks_.count(cell.guid)) {
-      collapsed_at = cell.depth;
-    }
-  }
-  return visible;
-}
-
-void PhiWindowController::RebuildShortcuts(const Layout& layout) {
-  pinned_.clear();
-  bookmarks_.clear();
-  if (!host_ || incognito_) {
-    return;  // Nothing persists from an incognito window.
-  }
-  const auto consume = [](PhiStoredRowView view) {
-    ShortcutRow row;
-    row.title =
-        base::UTF8ToWide(!view.title.empty() ? view.title : view.url);
-    row.guid = std::move(view.guid);
-    row.url = std::move(view.url);
-    row.folder = view.folder;
-    row.favicon = std::move(view.favicon_bgra);
-    row.favicon_width = view.favicon_width;
-    row.favicon_height = view.favicon_height;
-    row.url_b = std::move(view.url_b);
-    row.title_b = base::UTF8ToWide(view.title_b);
-    row.favicon_b = std::move(view.favicon_b_bgra);
-    row.favicon_b_width = view.favicon_b_width;
-    row.favicon_b_height = view.favicon_b_height;
-    row.icon = std::move(view.icon);
-    row.layout = std::move(view.layout);
-    return row;
-  };
-  // The tree decides what a cell IS (open, active, which live panes); the
-  // store view only supplies what it looks like.
-  const auto bind = [](const SidebarCell& cell, ShortcutRow* row) {
-    row->open = cell.binding.open();
-    row->active = cell.binding.active;
-    row->tab_id = TabId(cell.binding.tab_a);
-    row->tab_id_b = TabId(cell.binding.tab_b);
-    row->attached_surface = cell.attached_surface;
-  };
-  std::map<std::string, PhiStoredRowView> pin_views;
-  for (PhiStoredRowView& view : host_->PinnedRows(slot_.value)) {
-    pin_views.emplace(view.guid, std::move(view));
-  }
-  for (const SidebarCell& cell : sidebar_tree_.pins) {
-    const auto view = pin_views.find(cell.guid);
-    if (view == pin_views.end()) {
-      continue;
-    }
-    ShortcutRow row = consume(std::move(view->second));
-    row.key = cell.key;
-    bind(cell, &row);
-    pinned_.push_back(std::move(row));
-  }
-  // The outline (the Mac's NSOutlineView): the tree's depth-first order,
-  // only the cells an expanded chain reveals. Views come per parent.
-  std::map<std::string, std::map<std::string, PhiStoredRowView>> by_parent;
-  for (const SidebarCell* cell : VisibleBookmarkCells()) {
-    auto& siblings = by_parent[cell->parent_guid];
-    if (siblings.empty()) {
-      for (PhiStoredRowView& view :
-           host_->BookmarkRows(slot_.value, cell->parent_guid)) {
-        siblings.emplace(view.guid, std::move(view));
-      }
-    }
-    const auto view = siblings.find(cell->guid);
-    if (view == siblings.end()) {
-      continue;
-    }
-    ShortcutRow row = consume(std::move(view->second));
-    row.key = cell->key;
-    row.depth = cell->depth;
-    row.parent_guid = cell->parent_guid;
-    row.expanded = row.folder && expanded_bookmarks_.count(row.guid) > 0;
-    bind(*cell, &row);
-    bookmarks_.push_back(std::move(row));
-  }
-
-  // A split cell stores pane B's favicon since schema 2; rows folded from
-  // older files may lack it — those fall back to the history cache (misses
-  // schedule an async load that repaints on arrival).
-  const int64_t icon_browser = active_browser_id().value;
-  if (framework_ && icon_browser) {
-    const auto fill_favicon_b = [&](ShortcutRow& row) {
-      if (row.url_b.empty() || !row.favicon_b.empty()) {
-        return;
-      }
-      int width = 0, height = 0;
-      const unsigned char* pixels = framework_->FaviconForUrlBgra(
-          icon_browser, row.url_b.c_str(), &width, &height);
-      if (pixels && width > 0 && height > 0) {
-        const size_t bytes =
-            static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
-        // SAFETY: FaviconForUrlBgra reports its own buffer's dimensions.
-        const auto view =
-            UNSAFE_BUFFERS(base::span<const unsigned char>(pixels, bytes));
-        row.favicon_b.assign(view.begin(), view.end());
-        row.favicon_b_width = width;
-        row.favicon_b_height = height;
-      }
-    };
-    for (ShortcutRow& pin : pinned_) {
-      fill_favicon_b(pin);
-    }
-    for (ShortcutRow& bookmark : bookmarks_) {
-      fill_favicon_b(bookmark);
-    }
-  }
-
-  if (layout.horizontal_tabs) {
-    // No sidebar: pins become the strip's leading pinned section — fixed
-    // 28pt cells, 2pt apart, centred on the strip row (the Mac's
-    // TabStripMetrics.PinnedTab). Normal chips start after them.
-    const int cell = Scaled(kStripPinSize);
-    const int mid_y = layout.tabs_top + Scaled(kHTabHeight) / 2;
-    int x = layout.tabs_left;
-    for (ShortcutRow& pin : pinned_) {
-      // A merged split cell takes two strip slots.
-      const int w = pin.url_b.empty() ? cell : 2 * cell + Scaled(kStripPinGap);
-      pin.bounds = {x, mid_y - cell / 2, x + w, mid_y + cell / 2};
-      x += w + Scaled(kStripPinGap);
-    }
-    const int by = layout.favorites.bottom;
-    for (ShortcutRow& row : bookmarks_) {
-      row.bounds = {0, by, 0, by};  // Off-strip; bookmarks live in the menu.
-    }
-    return;
-  }
-
-  // The pinned grid (the Mac's PinnedTabLayout) — LayoutPinnedGrid, shared
-  // with the drag previews. A split cell spans two units.
-  {
-    std::vector<int> units;
-    units.reserve(pinned_.size());
-    for (const ShortcutRow& pin : pinned_) {
-      units.push_back(pin.url_b.empty() ? 1 : 2);
-    }
-    const PinnedGridPlacement grid = LayoutPinnedGrid(units, GridMetrics(layout));
-    for (size_t i = 0; i < pinned_.size(); ++i) {
-      ShortcutRow& pin = pinned_[i];
-      pin.bounds = ToRect(grid.cells[i]);
-      if (pin.attached_surface != SidebarSurface::kContent) {
-        // The Mac's PinnedPeekBadgeView: a plate on the cell's top-right.
-        const int badge = Scaled(16);
-        pin.surface_box = {pin.bounds.right - badge - Scaled(2),
-                           pin.bounds.top + Scaled(2), pin.bounds.right - Scaled(2),
-                           pin.bounds.top + Scaled(2) + badge};
-      }
-    }
-  }
-
-  // Bookmarks are ordinary rows above the open tabs (36pt + the 2pt gap).
-  {
-    ListMetrics m;
-    m.left = layout.tabs_left;
-    m.right = Scaled(sidebar_dip_ - kEdgeInset);
-    m.top = layout.favorites.bottom +
-            (pinned_row_count_ > 0 ? Scaled(kFavoritesSpacer) : 0);
-    m.row_height = Scaled(kTabRowHeight);
-    m.row_gap = Scaled(kTabRowGap);
-    const std::vector<ListItem> items(bookmarks_.size(), ListItem{});
-    const ListPlacement placed = LayoutList(items, m);
-    for (size_t i = 0; i < bookmarks_.size(); ++i) {
-      ShortcutRow& row = bookmarks_[i];
-      row.bounds = ToRect(placed.rects[i]);
-      if (row.attached_surface != SidebarSurface::kContent &&
-          row.bounds.right > row.bounds.left) {
-        const int box = Scaled(kCloseBoxSize);
-        const int mid = (row.bounds.top + row.bounds.bottom) / 2;
-        row.surface_box = {row.bounds.right - box - Scaled(4), mid - box / 2,
-                           row.bounds.right - Scaled(4), mid + box / 2};
-      }
-    }
-  }
-}
-
+// The rebuild turn (docs/architecture-review.md §3.1 principle 3): the
+// chrome's own caches first, then the sidebar's one pass over the model.
+// Nothing here paints, and nothing else writes a row.
 void PhiWindowController::RebuildTabs() {
   // The floating panel shows the EXPANDED sidebar of a collapsed shell.
   // While it is up the rows are built in that geometry — the docked,
@@ -4854,508 +2880,48 @@ void PhiWindowController::RebuildTabs() {
   RebuildNavState();
   RefreshFieldExtensions();
   RebuildChips();
-  tabs_.clear();
-  group_headers_.clear();
   rows_dirty_ = false;
-  // Re-captured from the active row below; empty when the strip is
-  // (placeholder mode), so no stale URL keeps a native page mounted.
-  active_tab_url_.clear();
-  active_tab_id_ = TabId();
-  if (!framework_) {
-    return;
-  }
-  const BrowserId browser = active_browser_id();
-  if (!browser.valid()) {
-    return;  // Between the last browser going and teardown: no rows.
-  }
-  // ONE window read per rebuild — the model's copy of the last committed
-  // snapshot (docs/architecture-review.md §3.3); every row below derives
-  // from it and the tree. A browser the model has not heard of yet (adopted
-  // before its first push) has an empty strip for this turn: the stored
-  // cells still render, the push that follows fills the rest.
-  const WindowSnapshot empty;
-  const WindowSnapshot* known = model_ ? model_->Get(browser) : nullptr;
-  const WindowSnapshot& snapshot = known ? *known : empty;
+  sidebar_->Rebuild();
+}
 
-  // Group visuals for the header rows (title/color/collapsed by id).
-  std::map<std::string, GroupHeader> group_info;
-  std::map<std::string, std::wstring> group_color_labels;
-  for (const phi_framework::GroupSnapshot& group : snapshot.groups) {
-    GroupHeader info;
-    info.id = group.id;
-    const PhiGroupColor& palette_entry = GroupColorFor(group.color);
-    info.color = palette_entry.color;
-    info.name = base::UTF8ToWide(group.title);
-    // An unnamed group is titled by its colour and member count
-    // ("Grey · 2 tabs", displayTitle(memberCount:)); the count is filled
-    // in once the strip has been walked.
-    info.title = info.name;
-    group_color_labels[info.id] =
-        PhiStr((std::string("tabs.tabGroup.colorName.") +
-                palette_entry.name).c_str());
-    info.collapsed = group.collapsed;
-    group_info[info.id] = std::move(info);
-  }
+// --- The sidebar's public surface, forwarded --------------------------------
+// The shell keeps the spellings its callers (the coordinator, the switcher,
+// the search palette, the agent dialect) already use; the rows themselves
+// live in the component.
 
-  // The model: what every live tab IS — plain, pin-bound, bookmark-bound,
-  // split pane, surface, grouped (docs/sidebar-architecture.md §4.5). A
-  // reading surface still in the strip is never a row; an active one hands
-  // the selection, and the address bar, to the tab it is covering.
-  {
-    SidebarInputs in;
-    if (host_) {
-      in.stored = host_->SidebarStoredItems(slot_.value);
-      in.surfaces = host_->AttachedSurfaces(browser.value);
-      in.policy.horizontal_layout =
-          host_->LayoutMode() == PhiLayoutMode::kComfortable;
-    }
-    in.policy.incognito = incognito_;
-    for (const TabSnapshot& tab : snapshot.tabs) {
-      in.strip.push_back({tab.id.value, tab.index, tab.tag, tab.split_id,
-                          tab.group_id, tab.active, SurfaceOf(tab),
-                          tab.origin.value});
-    }
-    for (const auto& [id, info] : group_info) {
-      in.groups.push_back({id, info.collapsed});
-    }
-    sidebar_tree_ = BuildSidebar(in);
-  }
-  active_tab_id_ = TabId(sidebar_tree_.active_tab);
-  if (const TabSnapshot* active = FindTabIn(snapshot, active_tab_id_)) {
-    // The bookmark bar's "show on new tab" and the native new-tab page
-    // read this.
-    active_tab_url_ = active->url;
-  }
-  // The bookmark bar and the reader slot follow the active tab: re-read
-  // them once here, before the layout the rows are placed in is derived.
-  RefreshLayoutInputs();
+TabId PhiWindowController::active_tab_id() const {
+  return sidebar_->active_tab_id();
+}
 
-  // The two stored bands' sizes feed the layout, and they come from the
-  // tree — the pinned grid's row count and the outline's visible rows — so
-  // ComputeLayout runs ONCE here, before any row is placed. (It used to be
-  // called from inside the shortcut rebuild it depended on.)
-  const bool comfortable =
-      host_ && host_->LayoutMode() == PhiLayoutMode::kComfortable;
-  {
-    std::vector<int> units;
-    units.reserve(sidebar_tree_.pins.size());
-    for (const SidebarCell& pin : sidebar_tree_.pins) {
-      units.push_back(pin.split ? 2 : 1);
-    }
-    pinned_row_count_ =
-        comfortable || incognito_
-            ? 0
-            : LayoutPinnedGrid(units, GridMetrics(Layout{})).rows;
-    bookmark_row_count_ =
-        incognito_ ? 0 : static_cast<int>(VisibleBookmarkCells().size());
-  }
-  const Layout layout = ComputeLayout();
-  RebuildShortcuts(layout);
+const std::string& PhiWindowController::active_tab_url() const {
+  return sidebar_->active_tab_url();
+}
 
-  // One paint row per content node; a split node is ONE merged row.
-  const auto fill_pane = [&](const TabSnapshot& tab, std::wstring* title,
-                             std::wstring* url,
-                             std::vector<unsigned char>* favicon, int* fw,
-                             int* fh) {
-    std::string label = !tab.title.empty()
-                            ? tab.title
-                            : (!tab.url.empty() ? tab.url
-                                                : std::string("(untitled)"));
-    if (PhiBookmarkManager::IsManagerUrl(tab.url)) {
-      // The Chromium view behind the native page has no WebUI to load, so
-      // its title would be the failed URL; the tab shows the page's name.
-      label = "Bookmarks";
-    }
-    *title = base::UTF8ToWide(label);
-    if (incognito_ && PhiNewTabPage::IsNewTabUrl(tab.url)) {
-      // The Mac's incognito new-tab title (Tab.incognitoNewTabTitle) in
-      // place of Chromium's plain "New Tab".
-      *title = PhiStr("common.newTabPage.incognitoTitle");
-    }
-    *url = base::UTF8ToWide(tab.url);
-    int w = 0, h = 0;
-    const unsigned char* pixels =
-        framework_->TabFaviconBgraById(browser.value, tab.id.value, &w, &h);
-    if (pixels && w > 0 && h > 0) {
-      // The framework's buffer is scratch — valid only until its next call.
-      const size_t bytes = static_cast<size_t>(w) * static_cast<size_t>(h) * 4;
-      // SAFETY: TabFaviconBgraById reports the dimensions of the buffer it
-      // just returned.
-      const auto copy =
-          UNSAFE_BUFFERS(base::span<const unsigned char>(pixels, bytes));
-      favicon->assign(copy.begin(), copy.end());
-      *fw = w;
-      *fh = h;
-    }
-  };
-  const auto make_row = [&](const SidebarContentNode& node) {
-    TabRow row;
-    const TabSnapshot* a = FindTabIn(snapshot, TabId(node.tab_a));
-    if (!a) {
-      return row;
-    }
-    row.key = node.key;
-    row.attached_surface = node.attached_surface;
-    row.index = a->index;
-    row.id = a->id;
-    row.active = node.active;
-    row.split_id = a->split_id;
-    row.group_id = node.group_id;
-    row.tag = a->tag;
-    row.internal_page = a->url.rfind("chrome://", 0) == 0;
-    row.unloaded = a->unloaded;
-    fill_pane(*a, &row.title, &row.url, &row.favicon, &row.favicon_width,
-              &row.favicon_height);
-    if (node.kind == SidebarNodeKind::kSplit) {
-      if (const TabSnapshot* b = FindTabIn(snapshot, TabId(node.tab_b))) {
-        row.b_index = b->index;
-        row.b_id = b->id;
-        row.b_active = b->active;
-        fill_pane(*b, &row.b_title, &row.b_url, &row.b_favicon,
-                  &row.b_favicon_width, &row.b_favicon_height);
-      }
-    }
-    return row;
-  };
+bool PhiWindowController::ShowsTab(TabId tab_id) const {
+  return sidebar_->ShowsTab(tab_id);
+}
 
-  // The native-page routes (bookmark manager, new-tab page) can only be
-  // entered or left by a rebuild; mounting a page here would run inside
-  // WM_PAINT, so post and do it after.
-  native_pages_->SyncIfRouteChanged();
-
-  // Geometry for the content nodes.
-  int x = layout.tabs_left;
-  int y = layout.tabs_top;
-  if (layout.horizontal_tabs && !pinned_.empty()) {
-    // The strip's pinned section leads; normal chips start after it.
-    x = pinned_.back().bounds.right + Scaled(kStripPinToTabs);
-  }
-  // Chrome's strip shares its room out: tabs take their ideal width while
-  // they fit and shrink toward the minimum as more open. Fixed widths meant
-  // the tabs past the edge were simply dropped — and the ACTIVE tab was
-  // among them as soon as a fourth opened, which is not a strip at all.
-  // Resting tabs give up their width first; the active one keeps its wider
-  // slot until they are all at the floor.
-  StripWidths strip_widths{Scaled(kHTabWidth), Scaled(kHTabActiveWidth)};
-  if (layout.horizontal_tabs) {
-    int resting = 0;
-    bool has_active = false;
-    for (const SidebarContentNode& node : sidebar_tree_.content) {
-      if (node.kind == SidebarNodeKind::kGroup) {
-        continue;  // No headers on the strip.
-      }
-      if (node.active) {
-        has_active = true;
-      } else {
-        ++resting;
-      }
-    }
-    strip_widths = SolveStripWidths(resting, has_active, layout.tabs_limit - x,
-                                    Scaled(kHTabWidth),
-                                    Scaled(kHTabActiveWidth),
-                                    Scaled(kHTabMinWidth));
-  }
-  const auto finish_row = [&](TabRow* row) {
-    const int close_box = Scaled(kCloseBoxSize);
-    const int box_mid = (row->bounds.top + row->bounds.bottom) / 2;
-    row->close_box = {row->bounds.right - close_box - Scaled(4),
-                      box_mid - close_box / 2, row->bounds.right - Scaled(4),
-                      box_mid + close_box / 2};
-    if (row->attached_surface != SidebarSurface::kContent) {
-      // The indicator takes the trailing slot; the row's own close box is
-      // withheld while a surface is attached (its minus closes the surface).
-      // A row scrolled out of the viewport has no slot to take.
-      row->surface_box = row->bounds.right > row->bounds.left ? row->close_box
-                                                              : RECT{};
-      row->close_box = RECT{};
-    }
-    if (row->b_index >= 0) {
-      // Right half of the merged row activates pane B (clicks in the close
-      // box still win — it is tested first).
-      row->pane_b = {(row->bounds.left + row->bounds.right) / 2,
-                     row->bounds.top, row->bounds.right, row->bounds.bottom};
-    }
-  };
-  int list_scroll_max = 0;
-  if (layout.horizontal_tabs) {
-    // The strip: chips abut left to right; no headers, no collapse.
-    for (const SidebarContentNode& node : sidebar_tree_.content) {
-      if (node.kind == SidebarNodeKind::kGroup) {
-        continue;
-      }
-      TabRow row = make_row(node);
-      if (!row.id.valid()) {
-        continue;
-      }
-      // The active tab takes the wider slot — it is the one carrying the
-      // page, and the extra room is what separates it from its neighbours
-      // now that the tabs abut instead of standing apart.
-      const int tab_w = row.active ? strip_widths.active : strip_widths.rest;
-      if (x + tab_w > layout.tabs_limit) {
-        break;  // Strip is full; overflow handling is future work.
-      }
-      // The tab runs from the strip's top inset to the band's bottom edge,
-      // where the active one merges into the toolbar.
-      row.bounds = {x, y, x + tab_w, y + Scaled(kHTabHeight)};
-      x += tab_w + Scaled(kHTabGap);
-      finish_row(&row);
-      tabs_.push_back(std::move(row));
-    }
-  } else {
-    // The list: a header row before each group's members, members hidden
-    // under a collapsed header, everything scrolled and clipped to the
-    // tab-list viewport (LayoutList).
-    std::vector<ListItem> items;
-    std::vector<const SidebarContentNode*> placed;
-    std::map<std::string, int> member_counts;
-    for (const SidebarContentNode& node : sidebar_tree_.content) {
-      if (node.kind == SidebarNodeKind::kGroup) {
-        if (!group_info.count(node.group_id)) {
-          continue;  // No visuals for it yet: members render flat.
-        }
-        items.push_back({ListItem::Kind::kHeader, false});
-      } else {
-        items.push_back({ListItem::Kind::kRow, node.hidden});
-        if (!node.group_id.empty()) {
-          ++member_counts[node.group_id];
-        }
-      }
-      placed.push_back(&node);
-    }
-    // The card's inner insets: an expanded header opens the top inset
-    // (less the row gap already there) below itself, the group's last
-    // visible member the bottom one. A collapsed card is its header.
-    for (size_t i = 0; i < placed.size(); ++i) {
-      const SidebarContentNode& node = *placed[i];
-      if (node.kind == SidebarNodeKind::kGroup) {
-        if (!node.collapsed) {
-          items[i].pad_below =
-              std::max(0, Scaled(kGroupInnerInset) - Scaled(kTabRowGap));
-        }
-        continue;
-      }
-      if (node.group_id.empty() || node.hidden) {
-        continue;
-      }
-      const bool last_member =
-          i + 1 == placed.size() ||
-          placed[i + 1]->kind == SidebarNodeKind::kGroup ||
-          placed[i + 1]->group_id != node.group_id;
-      if (last_member) {
-        items[i].pad_below = Scaled(kGroupInnerInset);
-      }
-    }
-    ListMetrics m;
-    m.left = layout.tabs_left;
-    m.right = Scaled(sidebar_dip_ - kEdgeInset);
-    m.top = layout.tabs_top;
-    m.row_height = Scaled(kTabRowHeight);
-    m.row_gap = Scaled(kTabRowGap);
-    m.header_height = Scaled(kGroupHeaderHeight);
-    m.scroll = scroll_offset_;
-    m.clip = true;
-    m.viewport_top = layout.tabs_top;
-    m.viewport_bottom = layout.tabs_limit;
-    const ListPlacement list = LayoutList(items, m);
-    list_scroll_max = list.scroll_max;
-    for (size_t i = 0; i < placed.size(); ++i) {
-      const SidebarContentNode& node = *placed[i];
-      if (node.kind == SidebarNodeKind::kGroup) {
-        GroupHeader header = group_info.at(node.group_id);
-        if (header.name.empty()) {
-          header.title = PhiStrF(
-              "tabs.tabGroup.summaryWithTabCount",
-              {group_color_labels[node.group_id],
-               std::to_wstring(member_counts[node.group_id])});
-        }
-        header.bounds = ToRect(list.rects[i]);
-        // The tinted card starts at the header's placed edge even when the
-        // header itself is scrolled out; member rows extend it below.
-        header.container = ToRect(list.unclipped[i]);
-        group_headers_.push_back(std::move(header));
-        continue;
-      }
-      if (node.hidden) {
-        continue;  // Hidden under a collapsed header.
-      }
-      TabRow row = make_row(node);
-      if (!row.id.valid()) {
-        continue;
-      }
-      row.bounds = ToRect(list.rects[i]);
-      const bool in_card = !row.group_id.empty() && !group_headers_.empty() &&
-                           group_headers_.back().id == row.group_id;
-      if (in_card && row.bounds.right > row.bounds.left) {
-        // A member row sits inside the card: its own edgesSpacing from the
-        // card's leading edge, the inner table's inset from the trailing.
-        row.bounds.left += Scaled(kGroupMemberLeadInset);
-        row.bounds.right -= Scaled(kGroupMemberTrailInset);
-      }
-      finish_row(&row);
-      if (in_card && row.bounds.right > row.bounds.left) {
-        group_headers_.back().container.bottom =
-            row.bounds.bottom + items[i].pad_below;
-      }
-      tabs_.push_back(std::move(row));
-    }
-  }
-  if (layout.horizontal_tabs) {
-    // The "+" follows the last tab, centred on the strip's line — the tabs
-    // run from tabs_top to the band's bottom edge, and the band's other
-    // controls are centred on that same line. It only exists once the
-    // strip's width is known, which is here and not in the layout.
-    const int btn = Scaled(kNavButton);
-    const int gap = Scaled(kTopBarSpacing);
-    const int left = x + gap;
-    const int strip_mid = (layout.tabs_top + layout.title_bar.bottom) / 2;
-    // tabs_limit already held this button's room back from the strip, so it
-    // fits unless the tabs overran — clamp rather than draw under search.
-    add_tab_button_ = left + btn + gap <= layout.search_tabs.left
-                          ? RECT{left, strip_mid - btn / 2, left + btn,
-                                 strip_mid + btn / 2}
-                          : RECT{};
-  } else {
-    add_tab_button_ = RECT{};
-    // Overflow bookkeeping for the wheel handler; the tinted group cards are
-    // clamped to the viewport so they never bleed into the fixed bands.
-    tabs_scroll_max_ = list_scroll_max;
-    if (scroll_offset_ > tabs_scroll_max_) {
-      scroll_offset_ = tabs_scroll_max_;
-    }
-    for (GroupHeader& gh : group_headers_) {
-      gh.container.top =
-          std::max(gh.container.top, static_cast<LONG>(layout.tabs_top));
-      gh.container.bottom =
-          std::min(gh.container.bottom, static_cast<LONG>(layout.tabs_limit));
-      if (gh.container.bottom <= gh.container.top) {
-        gh.container = RECT{};
-      }
-    }
-  }
-  // MRU bookkeeping for the Ctrl+Tab switcher: the active tab moves to the
-  // front; ids that left the strip fall out.
-  {
-    TabId active_id;
-    for (const TabRow& row : tabs_) {
-      if (row.active) {
-        active_id = row.id;
-        break;
-      }
-    }
-    std::erase_if(tab_mru_, [&](TabId id) {
-      return std::none_of(tabs_.begin(), tabs_.end(), [&](const TabRow& row) {
-        return row.id == id || (row.b_index >= 0 && row.b_id == id);
-      });
-    });
-    if (active_id.valid()) {
-      std::erase(tab_mru_, active_id);
-      tab_mru_.insert(tab_mru_.begin(), active_id);
-    }
-  }
-  rows_dirty_ = false;
+const std::vector<TabId>& PhiWindowController::TabMruOrder() const {
+  return sidebar_->mru();
 }
 
 void PhiWindowController::OpenOrFocusPinned(const std::string& guid,
                                             const std::string& url) {
-  if (!framework_ || guid.empty()) {
-    return;
-  }
-  // Split rows route through their own open path (the Mac's
-  // openOrFocusPinnedTab pair branch / openBookmark secondary branch).
-  for (const ShortcutRow& pin : pinned_) {
-    if (!pin.url_b.empty() && pin.guid == guid) {
-      OpenStoredSplit(pin);
-      return;
-    }
-  }
-  for (const ShortcutRow& bookmark : bookmarks_) {
-    if (!bookmark.url_b.empty() && bookmark.guid == guid) {
-      OpenStoredSplit(bookmark);
-      return;
-    }
-  }
-  const BrowserId browser = active_browser_id();
-  if (!browser.valid()) {
-    return;
-  }
-  // The strip as it IS, not as the model last heard it: the row may have
-  // been opened a moment ago by this very gesture, and a second open would
-  // leave a duplicate bound tab beside the first.
-  WindowSnapshot strip;
-  if (const TabSnapshot* bound =
-          PullSnapshot(browser, &strip) ? FindTagIn(strip, guid) : nullptr) {
-    framework_->ActivateTabById(browser.value, bound->id.value);
-    return;  // The framework's push schedules the rebuild.
-  }
-  if (url.empty()) {
-    return;
-  }
-  const TabId created = framework_->OpenTab(browser, url.c_str());
-  if (created.valid()) {
-    // The Mac's createTab(customGuid:): the new tab carries the row's guid
-    // as its identity, and session restore carries it across restarts.
-    framework_->SetTabTagById(browser.value, created.value, guid.c_str());
-  }
+  sidebar_->OpenOrFocusPinned(guid, url);
 }
 
-void PhiWindowController::OpenStoredSplit(const ShortcutRow& row) {
-  const BrowserId browser = active_browser_id();
-  WindowSnapshot strip;
-  if (!framework_ || !browser.valid() || !PullSnapshot(browser, &strip)) {
-    return;
-  }
-  // Each pane binds by tag: TagFor(guid, false) for pane A, TagFor(guid,
-  // true) for pane B — the same for a pinned cell and a split bookmark. The
-  // strip is pulled fresh for the reason OpenOrFocusPinned pulls it.
-  const auto lookup = [&](const std::string& tag, TabId* id,
-                          std::string* split) {
-    *id = TabId();
-    split->clear();
-    if (const TabSnapshot* tab = FindTagIn(strip, tag)) {
-      *id = tab->id;
-      *split = tab->split_id;
-    }
-  };
-  TabId id_a, id_b;
-  std::string split_a, split_b;
-  lookup(TagFor(row.guid, false), &id_a, &split_a);
-  lookup(TagFor(row.guid, true), &id_b, &split_b);
-  // Ensure BOTH panes live (a created pane binds by its own pane tag), then
-  // marry them if Chromium lost the split — the Mac's openPinnedSplit /
-  // openTwoURLsAsSplit in one path. A pane already in a DIFFERENT split is
-  // left alone: the cell reads as partial and nothing is torn apart here.
-  // OpenTab answers with the STABLE id, so nothing is re-read between the
-  // two opens.
-  if (!id_a.valid() && !row.url.empty()) {
-    id_a = framework_->OpenTab(browser, row.url.c_str());
-    if (id_a.valid()) {
-      framework_->SetTabTagById(browser.value, id_a.value,
-                                TagFor(row.guid, false).c_str());
-    }
-  }
-  if (!id_b.valid() && !row.url_b.empty()) {
-    id_b = framework_->OpenTab(browser, row.url_b.c_str());
-    if (id_b.valid()) {
-      framework_->SetTabTagById(browser.value, id_b.value,
-                                TagFor(row.guid, true).c_str());
-    }
-  }
-  if (!id_a.valid() || !id_b.valid()) {
-    if (id_a.valid() || id_b.valid()) {
-      framework_->ActivateTabById(browser.value,
-                                  (id_a.valid() ? id_a : id_b).value);
-    }
-    return;
-  }
-  framework_->ActivateTabById(browser.value, id_a.value);
-  if (split_a.empty() && split_b.empty()) {
-    // Married in the axis the cell remembers; the framework's default is
-    // side-by-side, and Chromium picks the leading pane itself.
-    framework_->CreateSplitViewForTabs(
-        browser.value, id_a.value, id_b.value,
-        row.layout == "horizontal" ? "horizontal" : "vertical");
-  }
+base::ListValue PhiWindowController::LayoutRowsJson() const {
+  return sidebar_->LayoutRowsJson();
 }
+
+void PhiWindowController::OnChromeMiddleClick(int x, int y) {
+  sidebar_->OnMiddleClick(POINT{x, y});
+}
+
+
+
+
+
 
 void PhiWindowController::OnChromeClick(int x, int y) {
   // Any press on the chrome is an interaction: the hover card goes down and
@@ -5475,8 +3041,9 @@ void PhiWindowController::OnChromeClick(int x, int y) {
       ShowBookmarkBarMenu(item.bounds, std::string(),
                           static_cast<size_t>(item.bookmark));
     } else if (item.bookmark >= 0 &&
-               item.bookmark < static_cast<int>(bookmarks_.size())) {
-      const ShortcutRow& row = bookmarks_[static_cast<size_t>(item.bookmark)];
+               item.bookmark < static_cast<int>(sidebar_->bookmarks().size())) {
+      const ShortcutRow& row =
+          sidebar_->bookmarks()[static_cast<size_t>(item.bookmark)];
       if (row.folder) {
         ShowBookmarkBarMenu(item.bounds, row.guid, 0);
       } else if (!row.url.empty()) {
@@ -5485,45 +3052,14 @@ void PhiWindowController::OnChromeClick(int x, int y) {
     }
     return;
   }
-  for (const ShortcutRow& pin : pinned_) {
-    if (::PtInRect(&pin.bounds, pt)) {
-      if (pin.attached_surface != SidebarSurface::kContent &&
-          ::PtInRect(&pin.surface_box, pt)) {
-        Apply(SidebarCloseSurface{pin.key});
-        return;
-      }
-      ArmDrag(pin.key, pt);
-      OpenOrFocusPinned(pin.guid, pin.url);
-      return;
-    }
-  }
-  for (const ShortcutRow& bookmark : bookmarks_) {
-    if (::PtInRect(&bookmark.bounds, pt)) {
-      if (bookmark.attached_surface != SidebarSurface::kContent &&
-          ::PtInRect(&bookmark.surface_box, pt)) {
-        Apply(SidebarCloseSurface{bookmark.key});
-        return;
-      }
-      ArmDrag(bookmark.key, pt);
-      if (bookmark.folder) {
-        // A folder click discloses/collapses its children (the Mac's
-        // toggleItemExpanded). The armed drag is keyed, so the rebuild
-        // cannot invalidate it.
-        const std::string guid = bookmark.guid;
-        if (!expanded_bookmarks_.erase(guid)) {
-          expanded_bookmarks_.insert(guid);
-        }
-        ScheduleRefresh();  // View state of this shell alone: no push comes.
-      } else if (!bookmark.url.empty()) {
-        // Sidebar bookmark rows bind like pins (bookmarkGuidBacking); the
-        // Bookmarks menu keeps opening plain tabs.
-        OpenOrFocusPinned(bookmark.guid, bookmark.url);
-      }
-      return;
-    }
+  // The stored bands are the sidebar's own (phi_sidebar_view.h): the pinned
+  // grid and the bookmark outline, hit-tested here so the bookmark BAR's
+  // pills above still take their clicks first.
+  if (sidebar_->OnStoredRowClick(pt)) {
+    return;
   }
   if (framework_ && (::PtInRect(&layout.new_tab_row, pt) ||
-                     ::PtInRect(&add_tab_button_, pt))) {
+                     ::PtInRect(&sidebar_->add_tab_button(), pt))) {
     StartNewTab();
     return;
   }
@@ -5553,7 +3089,7 @@ void PhiWindowController::OnChromeClick(int x, int y) {
     spaces_->DismissHoverCard(chip.id);
     if (!layout.horizontal_tabs) {
       // Vertical strips show every pip: reorderable by drag.
-      ArmDrag(SidebarKey::Space(chip.id), pt);
+      sidebar_->ArmDrag(SidebarKey::Space(chip.id), pt);
     }
     if (layout.horizontal_tabs) {
       // Comfortable draws ONE compact pip — the active Space. Clicking it
@@ -5595,191 +3131,12 @@ void PhiWindowController::OnChromeClick(int x, int y) {
     ShowSpaceSwitcherMenu(anchor, /*with_new_space=*/true);
     return;
   }
-  for (const GroupHeader& gh : group_headers_) {
-    if (::PtInRect(&gh.bounds, pt)) {
-      const BrowserId browser = active_browser_id();
-      if (framework_ && browser.valid()) {
-        framework_->SetTabGroupCollapsed(browser.value, gh.id.c_str(),
-                                         !gh.collapsed);
-      }
-      return;
-    }
-  }
-  for (const TabRow& row : tabs_) {
-    if (!::PtInRect(&row.bounds, pt)) {
-      continue;
-    }
-    if (framework_) {
-      if (row.attached_surface != SidebarSurface::kContent &&
-          ::PtInRect(&row.surface_box, pt)) {
-        Apply(SidebarCloseSurface{row.key});  // The indicator's minus.
-      } else if (::PtInRect(&row.close_box, pt)) {
-        Apply(SidebarClose{row.key, -1});  // A merged row: both panes.
-      } else if (row.split_id.empty() && (::GetKeyState(VK_MENU) & 0x8000)) {
-        // Alt-click, the Mac's option-click: split this tab with the active
-        // one (performSplitAction). Either pane may be bound to a pinned tab
-        // or a bookmark — the split takes both into the normal list.
-        Apply(SidebarFormSplit{SidebarKey::Tab(sidebar_tree_.active_tab),
-                               row.key, "vertical"});
-      } else if (row.b_index >= 0 && ::PtInRect(&row.pane_b, pt)) {
-        Apply(SidebarActivate{row.key, 1});
-      } else {
-        // The press only ARMS: a tab activates on the release of a plain
-        // click (CommitDragImpl), never because it was dragged — the Mac's
-        // outline selects on click, not on mouse-down, so dragging a
-        // background tab leaves the page the user was reading in place.
-        ArmDrag(row.key, pt);
-        drag_click_tab_id_ = row.id;
-      }
-    }
-    return;
-  }
+  // The content rows last, as the pixels stack: a group header or a tab row.
+  sidebar_->OnContentRowClick(pt);
 }
 
-void PhiWindowController::OnChromeMiddleClick(int x, int y) {
-  // Middle-click closes a tab row anywhere on the row (the Mac tab list's
-  // otherMouseDown), merged split rows included. Pins and bookmarks are
-  // persistent — a middle-click must not delete them, so only tab rows react.
-  const POINT pt = {x, y};
-  if (!framework_) {
-    return;
-  }
-  for (const TabRow& row : tabs_) {
-    if (!::PtInRect(&row.bounds, pt)) {
-      continue;
-    }
-    Apply(SidebarClose{row.key, -1});
-    return;
-  }
-}
 
 namespace {
-
-// A filled rounded rect, the Mac client's selection/field shape.
-// A fill rounded on its TOP corners only, square along the bottom — the
-// comfortable tab's shape, which has to sit flush on the toolbar it merges
-// into. Drawing the round rect a radius taller and clipping to `r` puts the
-// arcs where they belong and leaves the bottom edge straight.
-// Every rounded shape here is antialiased and takes the TRUE corner radius
-// (phi_dwrite.h). The GDI RoundRect these replaced took the corner
-// ellipse's diameter, so a pill asked for kCornerRadius came out at half
-// of it — and the active pin's ring, which passed 2 * kCornerRadius, was
-// the one shape that drew the radius the constant names.
-void FillRoundedTop(HDC dc, const RECT& r, COLORREF fill, int radius) {
-  if (r.right <= r.left || r.bottom <= r.top) {
-    return;
-  }
-  const int save = ::SaveDC(dc);
-  ::IntersectClipRect(dc, r.left, r.top, r.right, r.bottom);
-  PhiFillRoundRectAA(dc, {r.left, r.top, r.right, r.bottom + radius}, radius,
-                     fill);
-  ::RestoreDC(dc, save);
-}
-
-void FillRounded(HDC dc, const RECT& r, COLORREF fill, int radius) {
-  PhiFillRoundRectAA(dc, r, radius, fill);
-}
-
-void StrokeRounded(HDC dc, const RECT& r, COLORREF fill, COLORREF border,
-                   int radius) {
-  PhiFillRoundRectAA(dc, r, radius, fill);
-  PhiStrokeRoundRectAA(dc, r, radius, border, 1);
-}
-
-// Reader View's icon: SF Symbol `doc.plaintext`, which is what BOTH Mac
-// address bars draw (SideAddressBar's HoverableButtonConfig and
-// ReaderButtonView). Segoe MDL2's nearest neighbour is ReadingMode (E736), an
-// OPEN BOOK — a different picture altogether — so the symbol is drawn instead
-// of substituted: a rounded page outline with lines of text in it.
-//
-// Proportions are the symbol's own, in units of the glyph box: the page is
-// 0.72 wide by 0.90 tall, corner radius 0.14, stroke 0.085, and the text runs
-// as three lines inset 0.17 from each side, the last one short — four lines
-// at this size close up into a smudge.
-void DrawReaderGlyph(HDC dc, const RECT& button, COLORREF ink, UINT dpi) {
-  if (button.right <= button.left || button.bottom <= button.top) {
-    return;
-  }
-  const auto scaled = [dpi](double units, double box) {
-    return static_cast<int>(units * box * dpi / 96.0 + 0.5);
-  };
-  // The glyph box the symbol is laid out in: the Mac draws a 12pt image in a
-  // 24pt button, so half the button, and never bigger than it fits.
-  const double box = (std::min)(button.right - button.left,
-                                button.bottom - button.top) * 96.0 / dpi / 2.0;
-  const int page_w = scaled(0.72, box);
-  const int page_h = scaled(0.90, box);
-  if (page_w <= 2 || page_h <= 2) {
-    return;
-  }
-  const int cx = (button.left + button.right) / 2;
-  const int cy = (button.top + button.bottom) / 2;
-  RECT page = {cx - page_w / 2, cy - page_h / 2, cx - page_w / 2 + page_w,
-               cy - page_h / 2 + page_h};
-  const int stroke = (std::max)(1, scaled(0.085, box));
-  PhiStrokeRoundRectAA(dc, page, (std::max)(1, scaled(0.14, box)), ink, stroke);
-
-  const int inset = scaled(0.17, box);
-  const int line_left = page.left + inset;
-  const int line_right = page.right - inset;
-  if (line_right - line_left <= 1) {
-    return;
-  }
-  // Evenly spaced across the page's inner height, so the block of text sits
-  // optically centred rather than crowding either edge.
-  const int rows = 3;
-  const int top = page.top + inset;
-  const int bottom = page.bottom - inset;
-  // Solid fills, not the AA helper: a one-pixel bar antialiases to about half
-  // coverage and the text would read lighter than the outline around it.
-  HBRUSH text_ink = ::CreateSolidBrush(ink);
-  for (int i = 0; i < rows; ++i) {
-    const int y = top + (bottom - top - stroke) * i / (rows - 1);
-    // The last line is short, as the symbol's is.
-    const int right = i == rows - 1
-                          ? line_left + (line_right - line_left) * 3 / 5
-                          : line_right;
-    RECT line = {line_left, y, right, y + stroke};
-    ::FillRect(dc, &line, text_ink);
-  }
-  ::DeleteObject(text_ink);
-}
-
-void DrawGlyph(HDC dc, const RECT& r, const wchar_t* glyph, COLORREF ink) {
-  if (r.right <= r.left) {
-    return;
-  }
-  ::SetTextColor(dc, ink);
-  // An MDL2 icon under an MDL2 font goes through DirectWrite (grayscale
-  // antialiasing both ways); text takes GDI as before.
-  PhiDrawTextAA(dc, glyph, -1, const_cast<RECT*>(&r),
-                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-}
-
-// The same, for an MDL2 ICON: rasterized by DirectWrite at `pixel_size`
-// (the em the caller's GDI font was built at, so the glyph lands the same
-// size in the same place) and alpha-blended over what is already painted.
-// GDI renders these with ClearType — horizontal smoothing only, plus a
-// grid-fit per stem — which is what stepped the magnifier's arc and fringed
-// every diagonal in colour. Falls back to GDI whenever DirectWrite or the
-// glyph is missing, so nothing depends on it being there.
-void DrawIconGlyph(HDC dc, const RECT& r, const wchar_t* glyph,
-                   int pixel_size, COLORREF ink) {
-  if (r.right <= r.left) {
-    return;
-  }
-  if (!PhiDrawIconGlyph(dc, r, glyph, pixel_size, ink)) {
-    DrawGlyph(dc, r, glyph, ink);
-  }
-}
-
-// `over` at `alpha`/255 on `base` — the Mac's translucent overlays, opaque.
-COLORREF BlendOver(COLORREF over, COLORREF base, int alpha) {
-  auto mix = [&](int a, int b) { return (a * alpha + b * (255 - alpha)) / 255; };
-  return RGB(mix(GetRValue(over), GetRValue(base)),
-             mix(GetGValue(over), GetGValue(base)),
-             mix(GetBValue(over), GetBValue(base)));
-}
 
 // Puts `text` on the clipboard — the context menus' Copy Link.
 void CopyTextToClipboard(HWND owner, const std::wstring& text) {
@@ -5809,57 +3166,14 @@ void CopyTextToClipboard(HWND owner, const std::wstring& text) {
 
 }  // namespace
 
-// A bookmark folder's icon slot: the catalog symbol it wears, or the plain
-// folder glyph for the catalog's "default" (the Mac's BookmarkFolderIcon).
-void PhiWindowController::DrawFolderIcon(HDC dc,
-                                         const RECT& slot,
-                                         const std::string& icon_id,
-                                         COLORREF ink,
-                                         bool expanded) {
-  const std::string resolved = PhiResolveFolderIcon(icon_id);
-  const bool plain = resolved == PhiFolderIconDefaultId();
-  const int px = std::min(slot.right - slot.left, slot.bottom - slot.top);
-  if (px > 0) {
-    RECT art = {slot.left + ((slot.right - slot.left) - px) / 2,
-                slot.top + ((slot.bottom - slot.top) - px) / 2, 0, 0};
-    art.right = art.left + px;
-    art.bottom = art.top + px;
-    // "default" wears the plain folder, open or closed, in the Mac's
-    // two-tone accent-derived palette; anything else is its catalog symbol
-    // in the row's ink.
-    std::vector<unsigned char> bgra;
-    if (plain) {
-      const PhiPalette palette = CurrentPalette();
-      bgra = PhiPlainFolderBgra(expanded, px, palette.accent, palette.dark,
-                                palette.window_bg);
-    }
-    if (bgra.empty()) {
-      const PhiMacIcon* mask = plain ? PhiPlainFolderMask(expanded)
-                                     : PhiFolderIconMask(resolved);
-      if (mask) {
-        bgra = PhiTintedIconBgra(*mask, ink, px);
-      }
-    }
-    if (!bgra.empty()) {
-      PhiBlendBgra(dc, art, bgra.data(), px, px);
-      return;
-    }
-  }
-  HGDIOBJ previous = caption_font_ ? ::SelectObject(dc, caption_font_)
-                                   : nullptr;
-  DrawGlyph(dc, slot, L"", ink);  // Folder.
-  if (previous) {
-    ::SelectObject(dc, previous);
-  }
-}
 
 // --- Context menus (phi_shell_menus.h) -------------------------------------
 // Every menu below is DATA (docs/architecture-review.md §3.1 principle 4,
 // §3.5, lane 1 §3.2): the row's identity is copied into a snapshot, a pure
 // builder turns that snapshot plus the live prefs into a PhiMenuSpec, the
 // popup runs under a PhiModalScope, and the answer comes back as a key plus
-// the target it names. Nothing here holds a reference into tabs_, pinned_,
-// bookmarks_, group_headers_ or chips_ across the popup's nested message
+// the target it names. Nothing here holds a reference into the sidebar's
+// rows or the strip's chips across the popup's nested message
 // loop, so the rebuild a title or favicon notification posts under an open
 // menu cannot leave a dangling row behind — by construction, not by
 // remembering to copy fields out first.
@@ -5928,12 +3242,12 @@ std::vector<PhiMenuChoice> PhiWindowController::GroupMenuChoices(
   // A group's menu title: its name (or "Untitled") with its member count,
   // the Mac's displayTitle(memberCount:).
   std::vector<PhiMenuChoice> choices;
-  for (const GroupHeader& gh : group_headers_) {
+  for (const GroupHeader& gh : sidebar_->group_headers()) {
     if (gh.id == exclude || choices.size() >= 99u) {
       continue;
     }
     int members = 0;
-    for (const TabRow& tab : tabs_) {
+    for (const TabRow& tab : sidebar_->tabs()) {
       if (tab.group_id == gh.id) {
         ++members;
       }
@@ -5993,8 +3307,8 @@ void PhiWindowController::ShowGroupHeaderMenu(POINT pt,
                                               std::wstring title,
                                               COLORREF color) {
   std::vector<PhiMenuColorOption> colors;
-  colors.reserve(kGroupColors.size());
-  for (const PhiGroupColor& option : kGroupColors) {
+  colors.reserve(kPhiGroupColors.size());
+  for (const PhiGroupColor& option : kPhiGroupColors) {
     colors.push_back({option.name, option.color == color});
   }
   const PhiMenuAction action =
@@ -6043,7 +3357,7 @@ void PhiWindowController::ShowTabRowMenu(POINT pt, const MenuRow& row) {
     // "Split with Current" pairs this row with the FOCUSED tab; on the
     // focused row itself — or when the focused tab is already split — it
     // becomes "Open as Split", a fresh pane (the Mac's two labels).
-    for (const TabRow& other : tabs_) {
+    for (const TabRow& other : sidebar_->tabs()) {
       if (other.key != row.key && other.active && other.b_index < 0 &&
           other.split_id.empty()) {
         in.current_can_pair = true;
@@ -6075,9 +3389,11 @@ void PhiWindowController::ShowTabRowMenu(POINT pt, const MenuRow& row) {
     return;
   }
   if (action.is("tab.moveToSpace")) {
-    Apply(SidebarMoveToSpace{row.key, action.target.id, /*clone=*/false});
+    sidebar_->Apply(
+        SidebarMoveToSpace{row.key, action.target.id, /*clone=*/false});
   } else if (action.is("tab.cloneToSpace")) {
-    Apply(SidebarMoveToSpace{row.key, action.target.id, /*clone=*/true});
+    sidebar_->Apply(
+        SidebarMoveToSpace{row.key, action.target.id, /*clone=*/true});
   } else if (action.is("tab.addToFolder") && host_) {
     host_->AddBookmarkRow(slot_.value, action.target.id,
                           base::WideToUTF8(row.title), row.url);
@@ -6094,19 +3410,19 @@ void PhiWindowController::ShowTabRowMenu(POINT pt, const MenuRow& row) {
   } else if (action.is("tab.joinGroup")) {
     // Joining (or moving to) an existing group: the model takes the tab out
     // of its current group atomically, so one call covers both.
-    Apply(SidebarJoinGroup{row.key, action.target.id});
+    sidebar_->Apply(SidebarJoinGroup{row.key, action.target.id});
   } else if (action.is("tab.moveNewGroup") || action.is("tab.newGroup")) {
-    Apply(SidebarJoinGroup{row.key, std::string()});
+    sidebar_->Apply(SidebarJoinGroup{row.key, std::string()});
   } else if (action.is("tab.reversePanes")) {
-    Apply(SidebarSwapPanes{row.key});
+    sidebar_->Apply(SidebarSwapPanes{row.key});
   } else if (action.is("tab.pin")) {
     // Pinning MOVES the tab (or the pair) into a cell at the grid's end.
     SidebarPlace grid;
     grid.section = SidebarPlace::Section::kPinned;
-    Apply(SidebarMove{row.key, grid});
+    sidebar_->Apply(SidebarMove{row.key, grid});
   } else if (action.is("tab.bookmark")) {
     // The menu's bookmark is an unbound copy (the drag path binds).
-    Apply(SidebarBookmarkCopy{row.key});
+    sidebar_->Apply(SidebarBookmarkCopy{row.key});
   } else if (action.is("tab.duplicate") && framework_) {
     // A split duplicates as a fresh split (both panes), as on Mac — in the
     // same arrangement as the one it came from. Ids all the way: OpenTab
@@ -6129,8 +3445,9 @@ void PhiWindowController::ShowTabRowMenu(POINT pt, const MenuRow& row) {
   } else if (action.is("tab.copyRight")) {
     CopyTextToClipboard(shell_hwnd_, base::UTF8ToWide(row.url_b));
   } else if (action.is("tab.splitCurrent")) {
-    Apply(SidebarFormSplit{SidebarKey::Tab(sidebar_tree_.active_tab), row.key,
-                           "vertical"});
+    sidebar_->Apply(
+        SidebarFormSplit{SidebarKey::Tab(sidebar_->tree().active_tab),
+                         row.key, "vertical"});
   } else if (action.is("tab.openAsSplit") && framework_) {
     // A fresh blank pane beside this tab, the Mac's openAsSplit. The row
     // becomes the active pane first; everything is by stable id, so the new
@@ -6138,7 +3455,7 @@ void PhiWindowController::ShowTabRowMenu(POINT pt, const MenuRow& row) {
     const TabId fresh = framework_->OpenTab(browser, "");
     if (fresh.valid()) {
       framework_->ActivateTabById(browser.value, row.id.value);
-      SplitTabsNormalized(browser, row.id, fresh);
+      sidebar_->SplitTabsNormalized(browser, row.id, fresh);
     }
   } else if (action.is("tab.takeControl") && host_) {
     host_->RequestReclaimTab(row.id.value);
@@ -6147,14 +3464,14 @@ void PhiWindowController::ShowTabRowMenu(POINT pt, const MenuRow& row) {
   } else if (action.is("tab.convertSplit")) {
     // Toggle the divider axis; the stored cell a pane is bound to remembers
     // it so the split reopens the same way.
-    Apply(SidebarSetLayout{row.key,
+    sidebar_->Apply(SidebarSetLayout{row.key,
                            SplitIsStacked(row.id) ? "vertical" : "horizontal"});
   } else if (action.is("tab.removeSplit")) {
-    Apply(SidebarBreakSplit{row.key});
+    sidebar_->Apply(SidebarBreakSplit{row.key});
   } else if (action.is("tab.leaveGroup")) {
-    Apply(SidebarLeaveGroup{row.key});
+    sidebar_->Apply(SidebarLeaveGroup{row.key});
   } else if (action.is("tab.close")) {
-    Apply(SidebarClose{row.key, -1});
+    sidebar_->Apply(SidebarClose{row.key, -1});
   } else if (action.is("tab.closeOthers") && framework_ && model_) {
     // Every UNBOUND tab except this row (both panes of a merged one);
     // pin/bookmark-bound tabs live in their cells and stay. Closed by stable
@@ -6221,7 +3538,7 @@ void PhiWindowController::ShowPinnedCellMenu(POINT pt, const MenuRow& row) {
   } else if (action.is("pin.convertSplit")) {
     // Flip what the cell REMEMBERS, and the live split too when it is
     // currently open — the Mac's convertClosedPinnedSplitLayout.
-    Apply(SidebarSetLayout{SidebarKey::Cell(row.guid),
+    sidebar_->Apply(SidebarSetLayout{SidebarKey::Cell(row.guid),
                            in.horizontal ? "vertical" : "horizontal"});
   } else if (action.is("pin.editUrl") && host_ && !row.guid.empty()) {
     std::wstring edited = base::UTF8ToWide(row.url);
@@ -6232,10 +3549,10 @@ void PhiWindowController::ShowPinnedCellMenu(POINT pt, const MenuRow& row) {
   } else if (action.is("pin.unpin") && !row.guid.empty()) {
     // The cell goes; a live bound tab returns to the tab list as a normal
     // tab (the tags are cleared).
-    Apply(SidebarRemoveCell{SidebarKey::Cell(row.guid)});
+    sidebar_->Apply(SidebarRemoveCell{SidebarKey::Cell(row.guid)});
   } else if (action.is("pin.close")) {
     // Close the bound live tab(s); the pinned cell stays, as on Mac.
-    Apply(SidebarClose{SidebarKey::Cell(row.guid), -1});
+    sidebar_->Apply(SidebarClose{SidebarKey::Cell(row.guid), -1});
   }
 }
 
@@ -6261,11 +3578,11 @@ void PhiWindowController::ShowBookmarkRowMenu(POINT pt, const MenuRow& row) {
     return;  // The slot lost its last browser under the menu.
   }
   if (action.is("bm.moveToSpace")) {
-    Apply(SidebarMoveToSpace{SidebarKey::Cell(row.guid), action.target.id,
-                             /*clone=*/false});
+    sidebar_->Apply(SidebarMoveToSpace{SidebarKey::Cell(row.guid),
+                                       action.target.id, /*clone=*/false});
   } else if (action.is("bm.cloneToSpace")) {
-    Apply(SidebarMoveToSpace{SidebarKey::Cell(row.guid), action.target.id,
-                             /*clone=*/true});
+    sidebar_->Apply(SidebarMoveToSpace{SidebarKey::Cell(row.guid),
+                                       action.target.id, /*clone=*/true});
   } else if (action.is("bm.editUrl") && host_) {
     std::wstring edited = base::UTF8ToWide(row.url);
     if (PhiPromptText(shell_hwnd_, L"Edit Bookmark", L"Address:", &edited) &&
@@ -6281,7 +3598,7 @@ void PhiWindowController::ShowBookmarkRowMenu(POINT pt, const MenuRow& row) {
     } else {
       // Pair the bookmark with the currently focused tab (the Mac's
       // openAsSplit on a bookmark row → formSplitFromBookmark). The partner
-      // is the MODEL's active tab, not tabs_'s: a focused tab bound to a
+      // is the MODEL's active tab, not a paint row's: a focused tab bound to a
       // pinned cell or another bookmark is not a row there, and skipping it
       // would silently do nothing. It is unbound with the new pane below, so
       // the pair lands in the normal tab list.
@@ -6291,7 +3608,7 @@ void PhiWindowController::ShowBookmarkRowMenu(POINT pt, const MenuRow& row) {
       const TabId fresh = framework_->OpenTab(browser, row.url.c_str());
       if (partner_id.valid() && fresh.valid()) {
         framework_->ActivateTabById(browser.value, partner_id.value);
-        SplitTabsNormalized(browser, partner_id, fresh);
+        sidebar_->SplitTabsNormalized(browser, partner_id, fresh);
       }
     }
   } else if (action.is("bm.copyUrl") || action.is("bm.copyLeft")) {
@@ -6308,7 +3625,7 @@ void PhiWindowController::ShowBookmarkRowMenu(POINT pt, const MenuRow& row) {
       host_->RenameStoredRow(row.guid, base::WideToUTF8(name));
     }
   } else if (action.is("bm.convertSplit")) {
-    Apply(SidebarSetLayout{SidebarKey::Cell(row.guid),
+    sidebar_->Apply(SidebarSetLayout{SidebarKey::Cell(row.guid),
                            in.horizontal ? "vertical" : "horizontal"});
   } else if (action.is("bm.changeIcon") && row.folder && host_) {
     // The picker hangs off the row, as the Mac's popover does.
@@ -6330,12 +3647,12 @@ void PhiWindowController::ShowBookmarkRowMenu(POINT pt, const MenuRow& row) {
     std::wstring name = L"Untitled";
     if (PhiPromptText(shell_hwnd_, L"New Folder", L"Folder name:", &name)) {
       // Disclose the parent so the new child is visible where it lands.
-      expanded_bookmarks_.insert(row.guid);
+      sidebar_->Expand(row.guid);
       host_->AddBookmarkFolder(slot_.value, row.guid, base::WideToUTF8(name));
     }
   } else if (action.is("bm.remove") && !row.guid.empty()) {
     // A folder takes its subtree.
-    Apply(SidebarRemoveCell{row.folder ? SidebarKey::Folder(row.guid)
+    sidebar_->Apply(SidebarRemoveCell{row.folder ? SidebarKey::Folder(row.guid)
                                        : SidebarKey::Cell(row.guid)});
   }
 }
@@ -6349,7 +3666,7 @@ void PhiWindowController::ShowTabAreaMenu(POINT pt) {
   }
   PhiTabAreaMenuInputs in;
   in.incognito = incognito_;
-  in.tabs_empty = tabs_.empty();
+  in.tabs_empty = sidebar_->tabs().empty();
   in.mode = layout_mode_;
   if (!incognito_) {
     in.can_delete_space = host_->CanDeleteSpace(active_space());
@@ -6498,14 +3815,14 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
     return;
   }
   // Not a chip: the row context menus. Tab rows work in both orientations
-  // (the strip's horizontal tabs share tabs_).
-  for (const GroupHeader& gh : group_headers_) {
+  // (the strip's horizontal tabs share sidebar_->tabs()).
+  for (const GroupHeader& gh : sidebar_->group_headers()) {
     if (::PtInRect(&gh.bounds, pt)) {
       ShowGroupHeaderMenu(pt, gh.id, gh.name, gh.color);
       return;
     }
   }
-  for (const TabRow& row : tabs_) {
+  for (const TabRow& row : sidebar_->tabs()) {
     if (!::PtInRect(&row.bounds, pt)) {
       continue;
     }
@@ -6523,7 +3840,7 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
     ShowTabRowMenu(pt, snapshot);
     return;
   }
-  for (const ShortcutRow& pin : pinned_) {
+  for (const ShortcutRow& pin : sidebar_->pinned()) {
     if (!::PtInRect(&pin.bounds, pt)) {
       continue;
     }
@@ -6538,7 +3855,7 @@ void PhiWindowController::OnChromeContextMenu(int x, int y) {
     ShowPinnedCellMenu(pt, snapshot);
     return;
   }
-  for (const ShortcutRow& bookmark : bookmarks_) {
+  for (const ShortcutRow& bookmark : sidebar_->bookmarks()) {
     if (!::PtInRect(&bookmark.bounds, pt)) {
       continue;
     }
@@ -6779,7 +4096,7 @@ LRESULT CALLBACK PhiWindowController::FloatingSidebarProc(HWND hwnd,
           self->OnChromeClick(GET_X_LPARAM(lparam),
                               GET_Y_LPARAM(lparam) +
                                   self->floating_offset_y_);
-          self->AbortDrag();  // Drags never start from the panel.
+          self->sidebar_->AbortDrag();  // Drags never start from the panel.
         });
         return 0;
       }
@@ -6800,7 +4117,7 @@ LRESULT CALLBACK PhiWindowController::FloatingSidebarProc(HWND hwnd,
           POINT pt = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
           ::ScreenToClient(hwnd, &pt);
           pt.y += self->floating_offset_y_;
-          self->OnSidebarWheel(pt, GET_WHEEL_DELTA_WPARAM(wparam));
+          self->sidebar_->OnWheel(pt, GET_WHEEL_DELTA_WPARAM(wparam));
         });
         return 0;
       }
@@ -6835,9 +4152,9 @@ bool PhiWindowController::BookmarkBarVisible() {
   if (browsers_->ActiveBrowserPlaceholding()) {
     return true;
   }
-  return active_tab_url_.empty() || active_tab_url_ == "about:blank" ||
-         active_tab_url_.rfind("chrome://newtab", 0) == 0 ||
-         active_tab_url_.rfind("chrome://new-tab-page", 0) == 0;
+  return active_tab_url().empty() || active_tab_url() == "about:blank" ||
+         active_tab_url().rfind("chrome://newtab", 0) == 0 ||
+         active_tab_url().rfind("chrome://new-tab-page", 0) == 0;
 }
 
 void PhiWindowController::PaintBookmarkBar(HDC dc,
@@ -6851,8 +4168,8 @@ void PhiWindowController::PaintBookmarkBar(HDC dc,
   // Root rows only — the sidebar outline's spliced children (depth > 0)
   // belong to the sidebar's disclosure state, not the bar.
   std::vector<int> roots;
-  for (size_t i = 0; i < bookmarks_.size(); ++i) {
-    if (bookmarks_[i].depth == 0) {
+  for (size_t i = 0; i < sidebar_->bookmarks().size(); ++i) {
+    if (sidebar_->bookmarks()[i].depth == 0) {
       roots.push_back(static_cast<int>(i));
     }
   }
@@ -6878,7 +4195,7 @@ void PhiWindowController::PaintBookmarkBar(HDC dc,
   int x = band.left + pad;
   size_t shown = 0;
   for (const int index : roots) {
-    const ShortcutRow& row = bookmarks_[static_cast<size_t>(index)];
+    const ShortcutRow& row = sidebar_->bookmarks()[static_cast<size_t>(index)];
     SIZE extent = {0, 0};
     ::GetTextExtentPoint32W(dc, row.title.c_str(),
                             static_cast<int>(row.title.size()), &extent);
@@ -6891,14 +4208,14 @@ void PhiWindowController::PaintBookmarkBar(HDC dc,
     RECT icon = {pill.left + pad, mid - icon_px / 2, pill.left + pad + icon_px,
                  mid + icon_px / 2};
     if (row.folder) {
-      DrawFolderIcon(dc, icon, row.icon, palette.label_dim, false);
+      sidebar_->DrawFolderIcon(dc, icon, row.icon, palette.label_dim, false);
     } else if (!row.favicon.empty()) {
-      DrawFavicon(dc, icon, row.favicon.data(), row.favicon_width,
+      sidebar_->DrawFavicon(dc, icon, row.favicon.data(), row.favicon_width,
                   row.favicon_height, palette.ground_top);
     } else {
       HGDIOBJ previous = caption_font_ ? ::SelectObject(dc, caption_font_)
                                        : nullptr;
-      DrawGlyph(dc, icon, L"", palette.label_dim);  // Globe.
+      PhiDrawGlyph(dc, icon, L"", palette.label_dim);  // Globe.
       if (previous) {
         ::SelectObject(dc, previous);
       }
@@ -6922,7 +4239,7 @@ void PhiWindowController::PaintBookmarkBar(HDC dc,
                        mid + pill_h / 2};
     HGDIOBJ previous = caption_font_ ? ::SelectObject(dc, caption_font_)
                                      : nullptr;
-    DrawGlyph(dc, more, L"", palette.label_dim);  // Chevron right.
+    PhiDrawGlyph(dc, more, L"", palette.label_dim);  // Chevron right.
     if (previous) {
       ::SelectObject(dc, previous);
     }
@@ -7091,7 +4408,7 @@ void PhiWindowController::PaintChrome(HDC dc,
         {layout.reload, omnibox_->nav_loading() ? L"\uE711" : L"\uE72C", true},
         {layout.search_tabs, L"\uE721", true},
         // Comfortable only: the strip's "+" and the toolbar's overflow.
-        {add_tab_button_, L"\uE710", true},
+        {sidebar_->add_tab_button(), L"\uE710", true},
         {layout.overflow, L"\uE712", true},
     }};
     for (size_t i = 0; i < nav_buttons.size(); ++i) {
@@ -7103,9 +4420,9 @@ void PhiWindowController::PaintChrome(HDC dc,
                        hover_index_ == static_cast<int>(i);
       if (hot && button.enabled) {
         // The Mac header buttons: cornerRadius 4 on the plain hover wash.
-        FillRounded(dc, button.rect, palette.hover, Scaled(4));
+        PhiFillRounded(dc, button.rect, palette.hover, Scaled(4));
       }
-      DrawIconGlyph(dc, button.rect, button.glyph, Scaled(kSpaceIcon),
+      PhiDrawGlyphIcon(dc, button.rect, button.glyph, Scaled(kSpaceIcon),
                     button.enabled ? kLabel : kLabelDim);
     }
     if (previous_nav_font) {
@@ -7149,7 +4466,7 @@ void PhiWindowController::PaintChrome(HDC dc,
   if (layout.mode == PhiLayoutMode::kPerformance) {
     // Resting 4% wash, brightening to the emphasized 8% under the cursor
     // (SideAddressBar's hoveredColor).
-    FillRounded(dc, layout.url_field, field_hot ? kFieldBgHot : kFieldBg,
+    PhiFillRounded(dc, layout.url_field, field_hot ? kFieldBgHot : kFieldBg,
                 Scaled(kCornerRadius));
   } else if (layout.mode == PhiLayoutMode::kComfortable) {
     // Chrome's omnibox: a full pill standing on the toolbar, on the same 4%
@@ -7157,13 +4474,13 @@ void PhiWindowController::PaintChrome(HDC dc,
     // field stays bare — it has the card's own ground behind it; this one
     // has only the flat toolbar, and would vanish into it.
     const int pill_r = (layout.url_field.bottom - layout.url_field.top) / 2;
-    FillRounded(dc, layout.url_field, field_hot ? kFieldBgHot : kFieldBg,
+    PhiFillRounded(dc, layout.url_field, field_hot ? kFieldBgHot : kFieldBg,
                 pill_r);
     // The page's globe leads the pill, where Chrome puts its site chip.
     if (layout.page_icon.right > layout.page_icon.left) {
       HGDIOBJ previous_icon_font =
           caption_font_ ? ::SelectObject(dc, caption_font_) : nullptr;
-      DrawGlyph(dc, layout.page_icon, L"\uE774", kLabelDim);
+      PhiDrawGlyph(dc, layout.page_icon, L"\uE774", kLabelDim);
       if (previous_icon_font) {
         ::SelectObject(dc, previous_icon_font);
       }
@@ -7172,7 +4489,7 @@ void PhiWindowController::PaintChrome(HDC dc,
              layout.url_field.right > layout.url_field.left) {
     // The top-bar field rests BARE and takes the wash only under the
     // cursor (the Mac top bar's transparent-until-hovered field).
-    FillRounded(dc, layout.url_field, kFieldBg, Scaled(kCornerRadius));
+    PhiFillRounded(dc, layout.url_field, kFieldBg, Scaled(kCornerRadius));
   }
   if (include_child_controls) {
     // What the user actually sees, mid-edit.
@@ -7210,7 +4527,7 @@ void PhiWindowController::PaintChrome(HDC dc,
       }
       if (hover_kind_ == HoverKind::kFieldExt &&
           hover_index_ == static_cast<int>(i)) {
-        FillRounded(dc, slot, palette.hover, Scaled(4));
+        PhiFillRounded(dc, slot, palette.hover, Scaled(4));
       }
       const FieldExtension& ext = field_extensions_[i];
       const int mid_x = (slot.left + slot.right) / 2;
@@ -7218,13 +4535,13 @@ void PhiWindowController::PaintChrome(HDC dc,
       RECT icon = {mid_x - Scaled(8), mid_y - Scaled(8), mid_x + Scaled(8),
                    mid_y + Scaled(8)};
       if (!ext.icon.empty()) {
-        DrawFavicon(dc, icon, ext.icon.data(), ext.icon_w, ext.icon_h,
+        sidebar_->DrawFavicon(dc, icon, ext.icon.data(), ext.icon_w, ext.icon_h,
                     field_fill);
       } else {
         // Icon not decoded yet: the puzzle stands in.
         HGDIOBJ previous_ext_font =
             chip_icon_font_ ? ::SelectObject(dc, chip_icon_font_) : nullptr;
-        DrawGlyph(dc, slot, L"", kLabelDim);
+        PhiDrawGlyph(dc, slot, L"", kLabelDim);
         if (previous_ext_font) {
           ::SelectObject(dc, previous_ext_font);
         }
@@ -7240,18 +4557,18 @@ void PhiWindowController::PaintChrome(HDC dc,
     // Washed on hover, and held lit while the reader is UP — the Mac's
     // ReaderButtonView shows its circle for `isButtonHovering || isActive`.
     if (accessory_hot(13, layout.reader) || ActiveTabShowsReader()) {
-      FillRounded(dc, layout.reader, accessory_wash(layout.reader), Scaled(4));
+      PhiFillRounded(dc, layout.reader, accessory_wash(layout.reader), Scaled(4));
     }
-    DrawReaderGlyph(dc, layout.reader, kLabel, dpi_);
+    PhiDrawReaderGlyph(dc, layout.reader, kLabel, dpi_);
   }
   if (layout.copy_link.right > layout.copy_link.left) {
     HGDIOBJ previous_link_font =
         chip_icon_font_ ? ::SelectObject(dc, chip_icon_font_) : nullptr;
     if (accessory_hot(11, layout.copy_link)) {
-      FillRounded(dc, layout.copy_link, accessory_wash(layout.copy_link),
+      PhiFillRounded(dc, layout.copy_link, accessory_wash(layout.copy_link),
                   Scaled(4));
     }
-    DrawGlyph(dc, layout.copy_link,
+    PhiDrawGlyph(dc, layout.copy_link,
               omnibox_->copy_link_flash() ? L"" : L"", kLabel);
     if (previous_link_font) {
       ::SelectObject(dc, previous_link_font);
@@ -7266,7 +4583,7 @@ void PhiWindowController::PaintChrome(HDC dc,
   // anything else.
   spaces_->Paint(dc, StripRects(layout), palette);
 
-  PaintBandOrSwipe(dc, layout, palette);
+  sidebar_->Paint(dc, BandRects(layout), palette);
 
   // Bottom bar — SidebarBottomBar, inch for inch: a 24pt row where the
   // download and memory icon buttons lead (24pt, rounded-6 hover wash),
@@ -7283,7 +4600,7 @@ void PhiWindowController::PaintChrome(HDC dc,
         chip_icon_font_ ? ::SelectObject(dc, chip_icon_font_) : nullptr;
     if (layout.downloads.right > layout.downloads.left) {
       if (bottom_hot(0)) {
-        FillRounded(dc, layout.downloads, palette.hover, Scaled(6));
+        PhiFillRounded(dc, layout.downloads, palette.hover, Scaled(6));
       }
       // The Mac's download icon (sidebar-download.imageset), textPrimary
       // as DownloadButtonView tints its Lottie.
@@ -7295,7 +4612,7 @@ void PhiWindowController::PaintChrome(HDC dc,
     }
     if (layout.memory.right > layout.memory.left) {
       if (bottom_hot(1)) {
-        FillRounded(dc, layout.memory, palette.hover, Scaled(6));
+        PhiFillRounded(dc, layout.memory, palette.hover, Scaled(6));
       }
       // The Mac's memory icon (memory-icon.imageset), black/white by
       // appearance as its two PDF variants are.
@@ -7312,11 +4629,11 @@ void PhiWindowController::PaintChrome(HDC dc,
       // In-field (performance) it wears the header buttons' radius-4 wash;
       // in the bottom bar (balanced) the bar buttons' radius 6.
       if (bottom_hot(4)) {
-        FillRounded(dc, layout.extensions, palette.hover,
+        PhiFillRounded(dc, layout.extensions, palette.hover,
                     Scaled(layout.mode == PhiLayoutMode::kPerformance ? 4
                                                                       : 6));
       }
-      DrawGlyph(dc, layout.extensions, L"", kLabel);  // Puzzle.
+      PhiDrawGlyph(dc, layout.extensions, L"", kLabel);  // Puzzle.
     }
     if (previous_icon_font) {
       ::SelectObject(dc, previous_icon_font);
@@ -7367,7 +4684,7 @@ void PhiWindowController::PaintChrome(HDC dc,
   if (layout.chat.right > layout.chat.left) {
     // themeColorOnHover: the accent, darkened.
     const COLORREF chat_bg =
-        bottom_hot(3) ? BlendOver(RGB(0x00, 0x00, 0x00), palette.accent, 40)
+        bottom_hot(3) ? PhiBlendOver(RGB(0x00, 0x00, 0x00), palette.accent, 40)
                       : palette.accent;
     PhiFillCapsuleAA(dc, layout.chat, chat_bg);
     // 22pt glyph box flush left (ChatButton's leadingPadding 0).
@@ -7401,664 +4718,8 @@ void PhiWindowController::PaintChrome(HDC dc,
   }
 }
 
-// static
-void PhiWindowController::DrawSurfaceBadge(HDC dc,
-                                           const RECT& box,
-                                           SidebarSurface kind,
-                                           bool hovered,
-                                           COLORREF ground) {
-  if (box.right <= box.left || kind == SidebarSurface::kContent || !host_) {
-    return;
-  }
-  const PhiPalette& palette = host_->PaletteForSlot(slot_.value);
-  // A small plate the accent tints, so it reads as "something is attached"
-  // whether or not the row is selected.
-  FillRounded(dc, box, BlendOver(palette.accent, ground, 46),
-              Scaled(kCornerRadius) / 2);
-  HGDIOBJ previous_font = caption_font_ ? ::SelectObject(dc, caption_font_)
-                                        : nullptr;
-  if (hovered) {
-    DrawGlyph(dc, box, L"\u2212", palette.accent);  // Minus: close it.
-  } else if (kind == SidebarSurface::kReader) {
-    DrawReaderGlyph(dc, box, palette.accent, dpi_);
-  } else {
-    DrawGlyph(dc, box, L"\uE8A7", palette.accent);  // A window floating over.
-  }
-  if (previous_font) {
-    ::SelectObject(dc, previous_font);
-  }
-}
-
-void PhiWindowController::PaintSidebarBand(HDC dc,
-                                           const Layout& layout,
-                                           const PhiPalette& palette) {
-  // Palette-derived locals the band rows use (same derivations as
-  // PaintChrome's own).
-  const COLORREF kTintTop = palette.ground_top;
-  const COLORREF kRowSelectedBg = palette.selected;
-  const COLORREF kLabel = palette.label;
-  const COLORREF kLabelDim = palette.label_dim;
-  const COLORREF kBorder = palette.border;
-  const COLORREF kActivePillBorder =
-      palette.dark ? BlendOver(RGB(0xFF, 0xFF, 0xFF), kRowSelectedBg, 51)
-                   : kRowSelectedBg;
-
-  // Pinned tabs: PinnedTabItem cells -- resting on the 4% wash, an 18pt
-  // favicon centred, radius 8. The ACTIVE pin (its bound live tab is the
-  // active tab) gets the selected wash and the Mac's 2pt accent ring; in the
-  // horizontal strip the cells are the 28pt pinned section and the active one
-  // reads like the neighbouring strip tabs (selected wash, no ring).
-  const bool pin_sliding = drag_active_ && drag_kind_ == DragKind::kPin &&
-                           !layout.horizontal_tabs && DragIndex() >= 0 &&
-                           DragIndex() < static_cast<int>(pinned_.size());
-  std::vector<size_t> pin_order;
-  pin_order.reserve(pinned_.size());
-  for (size_t i = 0; i < pinned_.size(); ++i) {
-    if (!pin_sliding || static_cast<int>(i) != DragIndex()) {
-      pin_order.push_back(i);
-    }
-  }
-  if (pin_sliding) {
-    pin_order.push_back(static_cast<size_t>(DragIndex()));
-  }
-  for (const size_t pin_order_index : pin_order) {
-    const ShortcutRow& pin = pinned_[pin_order_index];
-    const bool pin_dragged =
-        pin_sliding && static_cast<int>(pin_order_index) == DragIndex();
-    if (pin_dragged && !drag_capture_) {
-      continue;  // It rides the drag image window; its slot is the gap.
-    }
-    // Siblings glide by their slide offsets (both axes — a grid gap wraps
-    // rows); the dragged cell is only ever painted here at home, lifted,
-    // for its snapshot.
-    RECT cell = pin.bounds;
-    if (!pin_dragged && drag_active_ && !layout.horizontal_tabs) {
-      const SlideVec offset = RowSlideOffset(pin.guid);
-      ::OffsetRect(&cell, static_cast<int>(offset.dx),
-                   static_cast<int>(offset.dy));
-    }
-    const bool pin_hovered =
-        hover_kind_ == HoverKind::kPin &&
-        hover_index_ == static_cast<int>(&pin - pinned_.data());
-    const COLORREF pin_bg = pin_dragged ? palette.hover_strong
-                            : pin.active
-                                ? palette.selected
-                                : (pin_hovered ? palette.hover_strong
-                                               : palette.hover);
-    FillRounded(dc, cell, pin_bg, Scaled(kCornerRadius));
-    if (pin_dragged) {
-      StrokeRounded(dc, cell, pin_bg, palette.border, Scaled(kCornerRadius));
-    }
-    if (pin.active && !layout.horizontal_tabs) {
-      RECT rr = cell;
-      ::InflateRect(&rr, -Scaled(1), -Scaled(1));
-      PhiStrokeRoundRectAA(dc, rr, Scaled(kCornerRadius), palette.accent,
-                           Scaled(2));
-    }
-    if (!pin.url_b.empty()) {
-      // A merged split cell: two 16pt favicons side by side, the Mac's
-      // PinnedSplitItem (16 + 4 + 16 centred in the double-width cell).
-      const int size = Scaled(16);
-      const int cx = (cell.left + cell.right) / 2;
-      const int cy = (cell.top + cell.bottom) / 2;
-      const RECT icon_a = {cx - Scaled(2) - size, cy - size / 2,
-                           cx - Scaled(2), cy + size / 2};
-      const RECT icon_b = {cx + Scaled(2), cy - size / 2,
-                           cx + Scaled(2) + size, cy + size / 2};
-      const auto pane_icon = [&](const RECT& slot,
-                                 const std::vector<unsigned char>& bgra,
-                                 int width, int height) {
-        if (!bgra.empty()) {
-          DrawFavicon(dc, slot, bgra.data(), width, height, pin_bg);
-        } else {
-          HGDIOBJ previous_glyph_font =
-              caption_font_ ? ::SelectObject(dc, caption_font_) : nullptr;
-          DrawGlyph(dc, slot, L"", kLabelDim);
-          if (previous_glyph_font) {
-            ::SelectObject(dc, previous_glyph_font);
-          }
-        }
-      };
-      pane_icon(icon_a, pin.favicon, pin.favicon_width, pin.favicon_height);
-      pane_icon(icon_b, pin.favicon_b, pin.favicon_b_width,
-                pin.favicon_b_height);
-    } else if (!pin.favicon.empty()) {
-      const int size = Scaled(layout.horizontal_tabs ? kStripPinFavicon
-                                                     : kPinnedFavicon);
-      const int cx = (cell.left + cell.right) / 2;
-      const int cy = (cell.top + cell.bottom) / 2;
-      const RECT icon = {cx - size / 2, cy - size / 2, cx + size / 2,
-                         cy + size / 2};
-      DrawFavicon(dc, icon, pin.favicon.data(), pin.favicon_width,
-                  pin.favicon_height, pin_bg);
-    } else {
-      ::SetTextColor(dc, kLabel);
-      const std::wstring initial =
-          pin.title.empty() ? std::wstring(L"?") : pin.title.substr(0, 1);
-      PhiDrawTextAA(dc, initial.c_str(), -1, &cell,
-                  DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-    }
-    if (pin.attached_surface != SidebarSurface::kContent &&
-        pin.surface_box.right > pin.surface_box.left) {
-      RECT badge = pin.surface_box;
-      ::OffsetRect(&badge, cell.left - pin.bounds.left,
-                   cell.top - pin.bounds.top);
-      DrawSurfaceBadge(dc, badge, pin.attached_surface,
-                       pin_hovered && !pin_dragged, pin_bg);
-    }
-  }
-
-  // Bookmarks: rows shaped like tab rows (BookmarkCellView) -- primary-label
-  // titles, folders marked with the disclosure glyph.
-  const bool bookmark_sliding =
-      drag_active_ && drag_kind_ == DragKind::kBookmark &&
-      !layout.horizontal_tabs && DragIndex() >= 0 &&
-      DragIndex() < static_cast<int>(bookmarks_.size());
-  std::vector<size_t> bookmark_order;
-  bookmark_order.reserve(bookmarks_.size());
-  for (size_t i = 0; i < bookmarks_.size(); ++i) {
-    if (!bookmark_sliding || static_cast<int>(i) != DragIndex()) {
-      bookmark_order.push_back(i);
-    }
-  }
-  if (bookmark_sliding) {
-    bookmark_order.push_back(static_cast<size_t>(DragIndex()));
-  }
-  for (const size_t bookmark_order_index : bookmark_order) {
-    const ShortcutRow& bookmark = bookmarks_[bookmark_order_index];
-    if (bookmark.bounds.right <= bookmark.bounds.left) {
-      continue;  // Parked: comfortable keeps its bookmarks in the menu, and
-                 // an unguarded row here painted its favicon at (0,0) — in
-                 // the window's top-left corner, over the tab strip.
-    }
-    const bool bookmark_dragged =
-        bookmark_sliding &&
-        static_cast<int>(bookmark_order_index) == DragIndex();
-    if (bookmark_dragged && !drag_capture_) {
-      continue;  // It rides the drag image window; its slot is the gap.
-    }
-    RECT pill = bookmark.bounds;
-    if (!bookmark_dragged && drag_active_ && !layout.horizontal_tabs) {
-      const SlideVec offset = RowSlideOffset(bookmark.guid);
-      ::OffsetRect(&pill, static_cast<int>(offset.dx),
-                   static_cast<int>(offset.dy));
-    }
-    pill.top += Scaled(kRowPad);
-    pill.bottom -= Scaled(kRowPad);
-    // Outline depth indents the pill itself, as the Mac outline rows do.
-    pill.left += bookmark.depth * Scaled(kBookmarkIndent);
-    const bool bookmark_hovered =
-        hover_kind_ == HoverKind::kBookmark &&
-        hover_index_ == static_cast<int>(&bookmark - bookmarks_.data());
-    if (bookmark_dragged) {
-      // Lifted, like the dragged tab row.
-      FillRounded(dc, pill, palette.hover_strong, Scaled(kCornerRadius));
-      StrokeRounded(dc, pill, palette.hover_strong, palette.border,
-                    Scaled(kCornerRadius));
-    } else if (drag_active_ &&
-               (drag_kind_ == DragKind::kBookmark ||
-                drag_kind_ == DragKind::kPin) &&
-               bookmark_drop_folder_row_ ==
-                   static_cast<int>(bookmark_order_index)) {
-      // The Mac resolver's folder highlight: this drop lands INSIDE.
-      FillRounded(dc, pill, palette.hover_strong, Scaled(kCornerRadius));
-      StrokeRounded(dc, pill, palette.hover_strong, palette.accent,
-                    Scaled(kCornerRadius));
-    } else if (bookmark.active) {
-      // Its bound live tab is the active tab: the row IS the tab, so it
-      // reads exactly like the active tab row.
-      FillRounded(dc, pill, kRowSelectedBg, Scaled(kCornerRadius));
-      if (palette.dark) {
-        StrokeRounded(dc, pill, kRowSelectedBg, kActivePillBorder,
-                      Scaled(kCornerRadius));
-      }
-    } else if (bookmark_hovered) {
-      FillRounded(dc, pill, palette.hover, Scaled(kCornerRadius));
-    }
-    RECT text = pill;
-    const int mid = (pill.top + pill.bottom) / 2;
-    // A 14pt favicon centred in its 16pt slot 6pt in; a folder's 20pt art
-    // 4pt in — both leave the title at 30pt (BookmarkCellView's leading
-    // padding and spacing differ by exactly the slot difference).
-    RECT icon = {pill.left + Scaled(6) +
-                     (Scaled(kFaviconSlot) - Scaled(kFaviconSize)) / 2,
-                 mid - Scaled(kFaviconSize) / 2, 0, 0};
-    icon.right = icon.left + Scaled(kFaviconSize);
-    icon.bottom = icon.top + Scaled(kFaviconSize);
-    if (bookmark.folder) {
-      icon = {pill.left + Scaled(4), mid - Scaled(kFolderIconSize) / 2,
-              pill.left + Scaled(4) + Scaled(kFolderIconSize),
-              mid - Scaled(kFolderIconSize) / 2 + Scaled(kFolderIconSize)};
-    }
-    if (bookmark.folder) {
-      // The Mac paints a Lottie folder carrying the chosen symbol on its
-      // face; with no Lottie runtime here the symbol itself IS the row icon,
-      // drawn from the same imageset artwork the Mac's picker uses. The
-      // catalog's "default" keeps the plain folder glyph.
-      DrawFolderIcon(dc, icon, bookmark.icon, kLabelDim, bookmark.expanded);
-    } else if (!bookmark.favicon.empty()) {
-      DrawFavicon(dc, icon, bookmark.favicon.data(), bookmark.favicon_width,
-                  bookmark.favicon_height,
-                  bookmark.active ? kRowSelectedBg : kTintTop);
-    } else {
-      HGDIOBJ previous_glyph_font =
-          caption_font_ ? ::SelectObject(dc, caption_font_) : nullptr;
-      DrawGlyph(dc, icon, L"\uE774", kLabelDim);
-      if (previous_glyph_font) {
-        ::SelectObject(dc, previous_glyph_font);
-      }
-    }
-    text.left = pill.left + Scaled(6) + Scaled(kFaviconSlot) + Scaled(8);
-    const bool split_row = !bookmark.url_b.empty();
-    if (split_row) {
-      // A split bookmark shows BOTH panes' favicons (the Mac's
-      // BookmarkCellView secondary favicon, 24pt after the primary).
-      RECT icon_b = icon;
-      ::OffsetRect(&icon_b, Scaled(24), 0);
-      if (!bookmark.favicon_b.empty()) {
-        DrawFavicon(dc, icon_b, bookmark.favicon_b.data(),
-                    bookmark.favicon_b_width, bookmark.favicon_b_height,
-                    bookmark.active ? kRowSelectedBg : kTintTop);
-      } else {
-        HGDIOBJ previous_glyph_font =
-            caption_font_ ? ::SelectObject(dc, caption_font_) : nullptr;
-        DrawGlyph(dc, icon_b, L"\uE774", kLabelDim);
-        if (previous_glyph_font) {
-          ::SelectObject(dc, previous_glyph_font);
-        }
-      }
-      text.left += Scaled(24);
-    }
-    ::SetTextColor(dc, kLabel);
-    // No disclosure glyph: the outline hides its triangles
-    // (frameOfOutlineCell is zero) and the folder art alone says open or
-    // closed. Folder titles are one weight up (.medium).
-    std::wstring label = bookmark.title;
-    if (split_row) {
-      // "primary \u2022 secondary" \u2014 the secondary title, or its www.-stripped
-      // host when the title duplicates the primary's (the Mac's fallback).
-      std::wstring second = bookmark.title_b;
-      if (second.empty()) {
-        std::string host = bookmark.url_b;
-        const size_t scheme = host.find("://");
-        if (scheme != std::string::npos) {
-          host = host.substr(scheme + 3);
-        }
-        const size_t slash = host.find('/');
-        if (slash != std::string::npos) {
-          host = host.substr(0, slash);
-        }
-        if (host.rfind("www.", 0) == 0) {
-          host = host.substr(4);
-        }
-        second = base::UTF8ToWide(host);
-      }
-      if (!second.empty()) {
-        label += L" \u2022 " + second;
-      }
-    }
-    RECT bookmark_badge = bookmark.surface_box;
-    const bool bookmark_attached =
-        bookmark.attached_surface != SidebarSurface::kContent &&
-        bookmark_badge.right > bookmark_badge.left;
-    if (bookmark_attached) {
-      const SlideVec offset = !bookmark_dragged && drag_active_
-                                  ? RowSlideOffset(bookmark.guid)
-                                  : SlideVec{};
-      ::OffsetRect(&bookmark_badge, static_cast<int>(offset.dx),
-                   static_cast<int>(offset.dy));
-      text.right = bookmark_badge.left - Scaled(4);
-    }
-    HGDIOBJ folder_font_previous =
-        bookmark.folder && ui_semibold_font_
-            ? ::SelectObject(dc, ui_semibold_font_)
-            : nullptr;
-    PhiDrawTextAA(dc, label.c_str(), -1, &text,
-                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-    if (folder_font_previous) {
-      ::SelectObject(dc, folder_font_previous);
-    }
-    if (bookmark_attached) {
-      DrawSurfaceBadge(dc, bookmark_badge, bookmark.attached_surface,
-                       bookmark_hovered && !bookmark_dragged,
-                       bookmark.active ? kRowSelectedBg : kTintTop);
-    }
-  }
-
-  // "New Tab": the row heading the tab list -- a 16pt "+" 6pt in, an 8pt
-  // gap, the title in textTertiary (NewTabButtonCellView). Hover raises the
-  // Mac cell's radius-8 wash on the 2pt-inset pill.
-  // Everything from here down to the tab rows rides the band shift while a
-  // drag holds a gap open in the bookmark outline above it.
-  const int band_shift = drag_active_ && !layout.horizontal_tabs
-                             ? static_cast<int>(RowSlideOffset(kBandShiftKey).dy)
-                             : 0;
-  // The separator row: a 1pt `separator` hairline centred in its 16pt row,
-  // spanning the rows' width (SeparatorCellView).
-  if (layout.bookmark_separator.right > layout.bookmark_separator.left) {
-    RECT sep = layout.bookmark_separator;
-    ::OffsetRect(&sep, 0, band_shift);
-    const int line_y = (sep.top + sep.bottom) / 2;
-    const RECT line = {sep.left, line_y, sep.right, line_y + Scaled(1)};
-    HBRUSH sep_brush = ::CreateSolidBrush(palette.separator);
-    ::FillRect(dc, &line, sep_brush);
-    ::DeleteObject(sep_brush);
-  }
-  if (layout.new_tab_row.right > layout.new_tab_row.left) {
-    RECT row = layout.new_tab_row;
-    ::OffsetRect(&row, 0, band_shift);
-    if (hover_kind_ == HoverKind::kNewTabRow) {
-      RECT pill = row;
-      pill.top += Scaled(kRowPad);
-      pill.bottom -= Scaled(kRowPad);
-      FillRounded(dc, pill, palette.hover, Scaled(kCornerRadius));
-    }
-    const int mid = (row.top + row.bottom) / 2;
-    const RECT icon = {row.left + Scaled(6), mid - Scaled(8),
-                       row.left + Scaled(6) + Scaled(16), mid + Scaled(8)};
-    DrawGlyph(dc, icon, L"+", palette.label_tertiary);
-    RECT text = row;
-    text.left = icon.right + Scaled(8);
-    ::SetTextColor(dc, palette.label_tertiary);
-    PhiDrawTextAA(dc, L"New Tab", -1, &text,
-                DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-  }
-
-  // The scrolling tab-list band (groups + tab rows) clips to its viewport:
-  // a row straddling the bottom edge must not bleed into the bottom bar.
-  const bool clip_rows = !layout.horizontal_tabs;
-  int rows_clip_save = 0;
-  if (clip_rows) {
-    rows_clip_save = ::SaveDC(dc);
-    ::IntersectClipRect(dc, 0, layout.tabs_top, layout.sidebar.right,
-                        layout.tabs_limit);
-  }
-
-  // Tab groups: TabGroupCellView — the whole group cell rests on an 18%
-  // tint of the group color; the 32pt header row carries the chevron, the
-  // color dot (white ring) and the title. Clicking the header collapses.
-  // The headers are drawn through a shifted viewport rather than by
-  // offsetting each of their rects (the band shift, see above).
-  POINT viewport_before = {};
-  ::OffsetViewportOrgEx(dc, 0, band_shift, &viewport_before);
-  for (const GroupHeader& gh : group_headers_) {
-    if (gh.container.right > gh.container.left) {
-      // The card: the hover wash under the 1pt `border` hairline.
-      StrokeRounded(dc, gh.container, palette.hover, palette.border,
-                    Scaled(kCornerRadius));
-    }
-    if (gh.bounds.right <= gh.bounds.left) {
-      continue;  // Header scrolled out of the viewport.
-    }
-    if (hover_kind_ == HoverKind::kGroupHeader &&
-        hover_index_ == static_cast<int>(&gh - group_headers_.data())) {
-      FillRounded(dc, gh.bounds, palette.hover_strong, Scaled(kCornerRadius));
-    }
-    // TabGroupHeaderView: 4pt leading, the 10pt chevron in a 20pt frame, the
-    // 10pt dot, a 6pt gap, the semibold title.
-    const int mid = (gh.bounds.top + gh.bounds.bottom) / 2;
-    RECT chevron = {gh.bounds.left + Scaled(4), mid - Scaled(10),
-                    gh.bounds.left + Scaled(4) + Scaled(20), mid + Scaled(10)};
-    HGDIOBJ previous_glyph_font =
-        caption_font_ ? ::SelectObject(dc, caption_font_) : nullptr;
-    DrawGlyph(dc, chevron, gh.collapsed ? L"\uE76C" : L"\uE70D", kLabelDim);
-    if (previous_glyph_font) {
-      ::SelectObject(dc, previous_glyph_font);
-    }
-    // The dot: colored centre in a 1pt white ring, 10pt over all
-    // (TabGroupHeaderColorIndicator).
-    const int cx = chevron.right + Scaled(5);
-    PhiFillEllipseAA(dc,
-                     {cx - Scaled(5), mid - Scaled(5), cx + Scaled(5),
-                      mid + Scaled(5)},
-                     RGB(0xFF, 0xFF, 0xFF));
-    PhiFillEllipseAA(dc,
-                     {cx - Scaled(4), mid - Scaled(4), cx + Scaled(4),
-                      mid + Scaled(4)},
-                     gh.color);
-    ::SetTextColor(dc, kLabel);
-    RECT title_rc = {cx + Scaled(5) + Scaled(6), gh.bounds.top,
-                     gh.bounds.right - Scaled(6), gh.bounds.bottom};
-    HGDIOBJ previous_title_font =
-        ui_semibold_font_ ? ::SelectObject(dc, ui_semibold_font_) : nullptr;
-    PhiDrawTextAA(dc, gh.title.c_str(), -1, &title_rc,
-                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-    if (previous_title_font) {
-      ::SelectObject(dc, previous_title_font);
-    }
-  }
-  ::SetViewportOrgEx(dc, viewport_before.x, viewport_before.y, nullptr);
-
-  // Tab rows: a 32pt pill inside the 36pt row (2pt vertical padding), radius
-  // 8. The title is textPrimary whether active or not (SideTabView); only the
-  // pill marks the active tab. The close box rides the ACTIVE row -- the Mac
-  // shows it on hover, which GDI has no notion of yet.
-  //
-  // During a drag-reorder (Chrome's vertical-tab model) the DRAGGED row
-  // floats with the cursor and paints LAST (on top); its siblings paint at
-  // their slide offsets, gliding around the insertion gap.
-  const bool sliding = drag_active_ && drag_kind_ == DragKind::kTab &&
-                       !layout.horizontal_tabs && DragIndex() >= 0 &&
-                       DragIndex() < static_cast<int>(tabs_.size());
-  std::vector<size_t> draw_order;
-  draw_order.reserve(tabs_.size());
-  for (size_t i = 0; i < tabs_.size(); ++i) {
-    if (!sliding || static_cast<int>(i) != DragIndex()) {
-      draw_order.push_back(i);
-    }
-  }
-  if (sliding) {
-    draw_order.push_back(static_cast<size_t>(DragIndex()));
-  }
-  bool rows_clip_active = clip_rows;
-  for (const size_t order_index : draw_order) {
-    const TabRow& row = tabs_[order_index];
-    if (row.bounds.right <= row.bounds.left) {
-      continue;  // Scrolled out of the viewport.
-    }
-    const bool is_dragged =
-        sliding && static_cast<int>(order_index) == DragIndex();
-    if (is_dragged && !drag_capture_) {
-      continue;  // It rides the drag image window; its slot is the gap.
-    }
-    // Siblings glide by their slide offsets; the dragged row is only ever
-    // painted here at home, lifted, for its snapshot.
-    int dy = band_shift;
-    if (!is_dragged && sliding) {
-      dy += static_cast<int>(DragSlideOffset(row.id));
-    }
-    RECT pill = row.bounds;
-    ::OffsetRect(&pill, 0, dy);
-    RECT close_box = row.close_box;
-    ::OffsetRect(&close_box, 0, dy);
-    if (!layout.horizontal_tabs) {
-      pill.top += Scaled(kRowPad);
-      pill.bottom -= Scaled(kRowPad);
-    }
-    const bool row_hovered =
-        hover_kind_ == HoverKind::kTab &&
-        hover_index_ == static_cast<int>(&row - tabs_.data());
-    if (layout.horizontal_tabs) {
-      // Chrome's strip. The active tab is the toolbar's own ground carried
-      // up into the band, rounded on top and flush at the bottom so the two
-      // read as one surface; a resting tab shows only the window tint it
-      // sits on, divided from its neighbour by a hairline. Nothing here
-      // rounds the bottom — that is the whole point of the merge.
-      if (row.active) {
-        FillRoundedTop(dc, pill, palette.window_bg, Scaled(kCornerRadius));
-      } else {
-        if (row_hovered) {
-          FillRoundedTop(dc, pill, palette.hover, Scaled(kCornerRadius));
-        }
-        // The divider rides the tab's trailing edge, inset vertically so it
-        // reads as a separator and not as a full-height rule.
-        RECT divider = {pill.right - 1, pill.top + Scaled(6), pill.right,
-                        pill.bottom - Scaled(6)};
-        HBRUSH divider_brush = ::CreateSolidBrush(palette.separator);
-        ::FillRect(dc, &divider, divider_brush);
-        ::DeleteObject(divider_brush);
-      }
-    } else if (is_dragged) {
-      // Lifted: the emphasized wash plus a hairline, Chrome's elevated
-      // dragged view.
-      FillRounded(dc, pill, palette.hover_strong, Scaled(kCornerRadius));
-      StrokeRounded(dc, pill, palette.hover_strong, palette.border,
-                    Scaled(kCornerRadius));
-    } else if (row.active) {
-      // Dark: the Mac's white-20% active border. Light: a hairline stands
-      // in for the Mac's drop shadow — the same trade the Space chip makes,
-      // or the white pill disappears on a white ground.
-      StrokeRounded(dc, pill, kRowSelectedBg,
-                    palette.dark ? kActivePillBorder : kBorder,
-                    Scaled(kCornerRadius));
-    } else if (row_hovered) {
-      FillRounded(dc, pill, palette.hover, Scaled(kCornerRadius));
-    }
-    // A 14pt icon centred in the 16pt slot, 6pt from the pill's edge. A
-    // merged split row draws the same shape once per pane around a hairline
-    // divider (the Mac's single merged row with two panes).
-    const int mid = (pill.top + pill.bottom) / 2;
-    // Inside a group card the row rests on the card's wash, not the tint.
-    const COLORREF ground = row.group_id.empty() ? kTintTop : palette.hover;
-    const COLORREF row_bg =
-        layout.horizontal_tabs
-            ? (row.active ? palette.window_bg : ground)
-            : (is_dragged ? palette.hover_strong
-                          : row.active ? kRowSelectedBg : ground);
-    const auto draw_pane = [&](int left, int right, const TabRow& r,
-                               bool pane_b) {
-      RECT slot = {left + Scaled(6), mid - Scaled(kFaviconSlot) / 2,
-                   left + Scaled(6) + Scaled(kFaviconSlot),
-                   mid + Scaled(kFaviconSlot) / 2};
-      RECT icon = {
-          slot.left + (Scaled(kFaviconSlot) - Scaled(kFaviconSize)) / 2,
-          mid - Scaled(kFaviconSize) / 2, 0, 0};
-      icon.right = icon.left + Scaled(kFaviconSize);
-      icon.bottom = icon.top + Scaled(kFaviconSize);
-      const auto& favicon = pane_b ? r.b_favicon : r.favicon;
-      const std::vector<unsigned char>& logo = PhiLogoBgra256();
-      if (!favicon.empty()) {
-        DrawFavicon(dc, icon, favicon.data(),
-                    pane_b ? r.b_favicon_width : r.favicon_width,
-                    pane_b ? r.b_favicon_height : r.favicon_height, row_bg);
-      } else if (r.internal_page && !logo.empty() &&
-                 PhiDrawBgra(dc, icon, logo.data(), 256, 256)) {
-        // Internal pages (chrome://newtab and friends) carry the Phi mark,
-        // as the Mac shows its own logo there — not the generic globe.
-      } else {
-        // The Mac's no-favicon placeholder: the globe (FaviconProvider).
-        HGDIOBJ previous_glyph_font =
-            caption_font_ ? ::SelectObject(dc, caption_font_) : nullptr;
-        DrawGlyph(dc, icon, L"\uE774", kLabelDim);
-        if (previous_glyph_font) {
-          ::SelectObject(dc, previous_glyph_font);
-        }
-      }
-      // A DORMANT tab (restored but never loaded, or discarded) wears the
-      // Mac's dashed favicon ring and reads dimmer than a live one. The
-      // active row is never dormant, so this never fights the selected pill.
-      if (r.unloaded && !r.active) {
-        DrawDormantRing(dc, icon, kLabelDim);
-      }
-      ::SetTextColor(dc, r.unloaded && !r.active ? kLabelDim : kLabel);
-      RECT title_rc = {slot.right + Scaled(8), pill.top, right - Scaled(4),
-                       pill.bottom};
-      PhiDrawTextAA(dc, (pane_b ? r.b_title : r.title).c_str(), -1, &title_rc,
-                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-    };
-    // The close box shows on HOVER only (SideTabView) \u2014 the active row
-    // included; the title reclaims its slot the rest of the time. A row with
-    // a surface attached has no close box: the indicator holds the slot.
-    const bool attached = row.attached_surface != SidebarSurface::kContent;
-    const bool show_close = row_hovered && !is_dragged && !attached;
-    RECT surface_box = row.surface_box;
-    ::OffsetRect(&surface_box, 0, dy);
-    const int trailing = show_close ? close_box.left
-                         : attached ? surface_box.left
-                                    : pill.right;
-    if (row.b_index >= 0) {
-      const int div_x = (pill.left + pill.right) / 2;
-      draw_pane(pill.left, div_x, row, /*pane_b=*/false);
-      draw_pane(div_x, trailing, row, /*pane_b=*/true);
-      RECT divider = {div_x, pill.top + Scaled(6), div_x + 1,
-                      pill.bottom - Scaled(6)};
-      HBRUSH sep = ::CreateSolidBrush(palette.separator);
-      ::FillRect(dc, &divider, sep);
-      ::DeleteObject(sep);
-    } else {
-      draw_pane(pill.left, trailing, row, /*pane_b=*/false);
-    }
-    if (show_close) {
-      DrawGlyph(dc, close_box, L"\u00D7", kLabelDim);
-    }
-    if (attached) {
-      DrawSurfaceBadge(dc, surface_box, row.attached_surface,
-                       row_hovered && !is_dragged, row_bg);
-    }
-    // The agent operating mask: a badge on rows an agent is holding. Accent
-    // while the agent drives; dimmed once the user has taken the tab back
-    // (the row keeps the badge so "Hand Back" stays discoverable).
-    if (host_ && row.id.valid() && host_->IsTabAgentDriven(row.id.value)) {
-      const bool reclaimed = host_->IsTabReclaimed(row.id.value);
-      const int dot = Scaled(8);
-      const int cx = trailing - Scaled(10);
-      const int cy = (pill.top + pill.bottom) / 2;
-      const COLORREF ink =
-          reclaimed ? palette.label_tertiary : palette.accent;
-      PhiFillEllipseAA(
-          dc, {cx - dot / 2, cy - dot / 2, cx + dot / 2, cy + dot / 2}, ink);
-    }
-  }
-
-  if (rows_clip_active) {
-    ::RestoreDC(dc, rows_clip_save);
-  }
 
 
-}
-
-void PhiWindowController::PaintBandOrSwipe(HDC dc,
-                                           const Layout& layout,
-                                           const PhiPalette& palette) {
-  if (!spaces_->swap_running() || layout.horizontal_tabs) {
-    PaintSidebarBand(dc, layout, palette);
-    return;
-  }
-  // The Space switch slides the REAL rows (no snapshots): the leaving
-  // Space's retained model paints shifted out at its frozen source palette,
-  // the live (entering) model paints shifted in at the ramped palette, both
-  // clipped to the band over the ramping ground.
-  const double t = spaces_->SwapProgress();
-  const bool forward = spaces_->swap_forward();
-  const int band_w = Scaled(sidebar_dip_);
-  const int leave_dx = forward ? -static_cast<int>(t * band_w + 0.5)
-                               : static_cast<int>(t * band_w + 0.5);
-  const int enter_dx = forward ? band_w + leave_dx : leave_dx - band_w;
-  const int save = ::SaveDC(dc);
-  ::IntersectClipRect(dc, 0, layout.favorites.top, band_w,
-                      layout.tabs_limit);
-  POINT origin = {};
-  ::GetViewportOrgEx(dc, &origin);
-  ::SetViewportOrgEx(dc, origin.x + leave_dx, origin.y, nullptr);
-  SwapBandModel();
-  PaintSidebarBand(dc, layout, spaces_->swap_source_palette());
-  SwapBandModel();
-  ::SetViewportOrgEx(dc, origin.x + enter_dx, origin.y, nullptr);
-  PaintSidebarBand(dc, layout, palette);
-  ::SetViewportOrgEx(dc, origin.x, origin.y, nullptr);
-  ::RestoreDC(dc, save);
-  if (t >= 1.0) {
-    // The page flips only now, the Mac's order.
-    spaces_->NoteSlideLanded();
-  }
-}
-
-void PhiWindowController::SwapBandModel() {
-  tabs_.swap(leaving_band_.tabs);
-  pinned_.swap(leaving_band_.pinned);
-  bookmarks_.swap(leaving_band_.bookmarks);
-  group_headers_.swap(leaving_band_.headers);
-}
 
 LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
                                                    UINT msg,
@@ -8274,8 +4935,8 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
           }
           return 0;
         }
-        if ((wparam & MK_LBUTTON) && self->drag_kind_ != DragKind::kNone) {
-          self->UpdateDrag(pt);
+        if ((wparam & MK_LBUTTON) && self->sidebar_->drag_armed()) {
+          self->sidebar_->UpdateDrag(pt);
         } else {
           self->OnChromeMouseMove(pt);
         }
@@ -8391,7 +5052,7 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
         // A group header's double-click opens the group overview; anywhere
         // else the second press behaves like a plain click.
         const POINT pt = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
-        for (const GroupHeader& gh : self->group_headers_) {
+        for (const GroupHeader& gh : self->sidebar_->group_headers()) {
           if (::PtInRect(&gh.bounds, pt)) {
             PhiGroupOverview::Open(self, gh.id);
             return 0;
@@ -8417,7 +5078,7 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
           }
           return 0;
         }
-        self->CommitDrag();
+        self->sidebar_->CommitDrag();
       }
       return ::DefWindowProcW(hwnd, msg, wparam, lparam);
     case WM_CAPTURECHANGED:
@@ -8431,7 +5092,7 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
             self->host_->RequestSidebarWidth(self->sidebar_dip_);
           }
         }
-        self->AbortDrag();
+        self->sidebar_->AbortDrag();
       }
       return ::DefWindowProcW(hwnd, msg, wparam, lparam);
     case WM_SETCURSOR:
@@ -8449,7 +5110,7 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
       if (self) {
         POINT pt = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
         ::ScreenToClient(hwnd, &pt);
-        if (self->OnSidebarWheel(pt, GET_WHEEL_DELTA_WPARAM(wparam))) {
+        if (self->sidebar_->OnWheel(pt, GET_WHEEL_DELTA_WPARAM(wparam))) {
           return 0;
         }
       }
@@ -8473,12 +5134,12 @@ LRESULT CALLBACK PhiWindowController::ShellWndProc(HWND hwnd,
         self->omnibox_->RevertCopyLinkFlash();
         return 0;
       }
-      if (self && wparam == kDragSlideTimer) {
-        // The reorder slide: repaint until the current leg settles.
-        ::InvalidateRect(hwnd, nullptr, FALSE);
-        if (!self->drag_slide_start_ ||
-            ::GetTickCount64() - self->drag_slide_start_ >= kDragSlideMs) {
-          ::KillTimer(hwnd, kDragSlideTimer);
+      if (self && wparam == PhiSidebarDragSession::kSlideTimer) {
+        // The reorder slide: repaint until the current leg settles. The
+        // session owns the clock; the timer is the shell's because the
+        // window is.
+        if (!self->sidebar_->OnSlideTimer()) {
+          ::KillTimer(hwnd, PhiSidebarDragSession::kSlideTimer);
         }
         return 0;
       }
