@@ -57,12 +57,9 @@ void TestClamp() {
   CHECK_EQ(PhiClamp01(1.5), 1.0);
   CHECK_EQ(PhiClamp01(0.25), 0.25);
 
-  CHECK_EQ(PhiLerpInt(0, 10, 0.0), 0);
-  CHECK_EQ(PhiLerpInt(0, 10, 1.0), 10);
-  CHECK_EQ(PhiLerpInt(0, 10, 0.5), 5);
-  CHECK_EQ(PhiLerpInt(0, 10, 0.45), 5);   // Rounds, never truncates.
-  CHECK_EQ(PhiLerpInt(10, 0, 0.25), 8);
-  CHECK_EQ(PhiLerpInt(0, 10, 2.0), 10);   // t is clamped.
+  // PhiLerpInt is not here: it lives in phi_window.h, where its rounding is
+  // away from `from` so a one-pixel animation moves on the first tick. That
+  // curve is the tab preview's, and ui_substrate_test owns its cases.
 }
 
 void TestDip() {
