@@ -504,6 +504,11 @@ class PhiControlDispatcher : public PhiControlDelegate {
   PhiVerbResult VerbFeedbackOpen(const PhiVerbContext& ctx);
   PhiVerbResult VerbFeedbackForm(const PhiVerbContext& ctx);
   PhiVerbResult VerbFeedbackSetAccount(const PhiVerbContext& ctx);
+  // phi_verbs_account.cc: the Auth0 session (test rig only).
+  PhiVerbResult VerbAccountStatus(const PhiVerbContext& ctx);
+  PhiVerbResult VerbAccountSignIn(const PhiVerbContext& ctx);
+  PhiVerbResult VerbAccountCancelSignIn(const PhiVerbContext& ctx);
+  PhiVerbResult VerbAccountSignOut(const PhiVerbContext& ctx);
   // phi_verbs_credentials.cc: the vault.
   PhiVerbResult VerbCredentialsStatus(const PhiVerbContext& ctx);
   PhiVerbResult VerbCredentialsGet(const PhiVerbContext& ctx);

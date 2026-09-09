@@ -20,33 +20,46 @@ struct PhiAuthUser {
   std::string sub;      // The Auth0 subject — the Mac Account's userID.
   std::string name;
   std::string email;
-  std::string picture;  // Avatar URL (unfetched here).
+  std::string picture;  // Avatar URL; PhiAccountProfile fetches it.
 };
 
 // The Windows twin of the Mac AuthManager's core: Auth0 sign-in and the
-// session it leaves behind. Scope of this stage: the AUTH MECHANISM ONLY —
-// no guest-migration journal, no onboarding phases, no account-scoped local
-// stores (those stay bucket-D work on both platforms' terms).
+// session it leaves behind (docs/login-port.md). The account is OPTIONAL
+// here — there is no login wall, no onboarding gate and no guest journal;
+// Windows is the Mac's Guest Mode with an account on top.
 //
-// The sign-in is RFC 8252's native-app flow: authorization code + PKCE
-// through a LOOPBACK redirect. Phi is a browser, so the authorize URL opens
-// in Phi itself; a one-shot listener on 127.0.0.1:<ephemeral> catches the
-// code and the token exchange happens over WinHTTP. The refresh token (and
-// the cached identity) persist DPAPI-encrypted in PhiAuth.dat — the
-// PhiCredentials.dat pattern; access tokens live in memory only.
+// The sign-in is the Mac's: Auth0's hosted login with authorization code +
+// PKCE, redirecting to the SAME callback the Mac app registers as a URL
+// scheme — `com.phibrowser.Mac://<tenant>/macos/com.phibrowser.Mac/callback`
+// — so the tenant's application needs no Windows-specific entry. Phi is a
+// browser: the hosted page opens in a Phi tab, and the redirect to that
+// scheme is a navigation the framework intercepts
+// (phi_auth_callback_navigation_throttle → PhiFrameworkDelegate::
+// OnAuthCallbackUrl → HandleCallbackUrl here) before Chromium would try to
+// launch an external app for it. The code exchange happens over WinHTTP.
+// The refresh token (and the cached identity) persist DPAPI-encrypted in
+// PhiAuth.dat — the PhiCredentials.dat pattern; access tokens live in
+// memory only.
+//
+// Tenant: the staging application for the canary channel, production for
+// stable (the Mac's Nightly/Release split, PHI_WIN_CHANNEL). A dev-hooks
+// build (kPhiDevHooks) also honours PHI_AUTH0_DOMAIN / _CLIENT_ID /
+// _AUDIENCE and PHI_ACCOUNT_BASE_URL.
 //
 // Threading: SINGLE WRITER. The session (signed_in_, user_, refresh_token_)
 // is UI-thread state, read by the coordinator and written only by
-// ApplyOutcome on the UI thread. The listener and refresh threads never
+// ApplyOutcome on the UI thread. The exchange and refresh threads never
 // touch it: they run the network round trip, then post an Outcome to
 // PhiAuth's own message-only window, whose WndProc applies it, persists,
 // and forwards `notify_msg` to the coordinator. What a worker needs to do
 // its job (is there a session, which refresh token, the cached access
 // token) lives in a lock-protected copy the UI thread keeps in step.
 //
-// The Auth0 application must list http://127.0.0.1:*/callback among its
-// allowed callback URLs (a dashboard setting; the Mac app's entry is its
-// bundle scheme).
+// Session death: when the tenant refuses the refresh token (invalid_grant —
+// revoked, expired, rotated away) the session enters REAUTHENTICATION
+// REQUIRED rather than vanishing: the identity stays for the UI, no bearer
+// is handed out, and the next sign-in must return the SAME subject (the
+// Mac's AuthenticatedAccountIdentityPolicy) or is refused.
 class PhiAuth {
  public:
   PhiAuth();
@@ -56,52 +69,79 @@ class PhiAuth {
   PhiAuth& operator=(const PhiAuth&) = delete;
 
   // Loads the persisted session (if any) and kicks a BACKGROUND refresh to
-  // validate it — an invalid_grant (revoked/expired session) signs out and
-  // notifies, the Mac's refreshAuthStatus-at-launch. `notify_hwnd` gets
-  // `notify_msg` posted after any state change, always from the UI thread
-  // and only after the change has been applied. UI thread.
+  // validate it — an invalid_grant (revoked/expired session) enters the
+  // reauthentication state and notifies, the Mac's refreshAuthStatus-at-
+  // launch. `notify_hwnd` gets `notify_msg` posted after any state change,
+  // always from the UI thread and only after the change has been applied.
+  // UI thread.
   void Load(const std::wstring& user_data_dir,
             HWND notify_hwnd,
             UINT notify_msg);
 
-  // Starts the interactive sign-in: builds the PKCE authorize URL, opens it
-  // through `open_url` (a Phi tab), and waits on the loopback listener in a
-  // worker thread. No-op while one is already in flight. Completion (either
-  // way) posts the notify message. UI thread.
+  // Starts the interactive sign-in: builds the PKCE authorize URL and opens
+  // it through `open_url` (a Phi tab), then waits for HandleCallbackUrl.
+  // No-op while one is already in flight. Completion (either way) posts the
+  // notify message. UI thread.
   void BeginSignIn(std::function<void(const std::string& url)> open_url);
+  // Abandons the sign-in in flight: a callback arriving later is ignored.
+  // No-op when none is in flight. UI thread.
+  void CancelSignIn();
+  // A navigation reached the callback scheme (the framework's throttle,
+  // synchronously inside it — no UI here). True when the URL is this
+  // tenant's callback: a code for the sign-in in flight starts the exchange
+  // on a worker, a refusal ends the attempt, and the bare callback (the
+  // logout page's return) is simply acknowledged. False for anything else,
+  // which Chromium then treats as any unknown scheme. UI thread.
+  bool HandleCallbackUrl(const std::string& url);
 
-  // Drops the local session (PhiAuth.dat and memory). Local-only, like the
-  // Mac's clearCachedAccount — the remote Auth0 session is not touched. UI
-  // thread.
+  // Drops the local session (PhiAuth.dat and memory) and revokes the
+  // refresh token at the tenant (fire-and-forget, the Mac's
+  // startRefreshTokenRevocationForLogout). The tenant's SSO cookie is the
+  // caller's business: open LogoutUrl() in a tab. UI thread.
   void SignOut();
+  // https://<domain>/v2/logout?client_id=…&returnTo=<callback> — ends the
+  // hosted-login session so the next sign-in asks for credentials again,
+  // and returns to the callback, which HandleCallbackUrl acknowledges (and
+  // the framework's throttle then retires the tab).
+  std::string LogoutUrl() const;
+  // "https://<domain>/": where the hosted login and the logout page live.
+  std::string TenantOrigin() const;
 
   // The bearer token for an account-service call, for a WORKER thread: the
   // cached access token, or a fresh one from a refresh round trip when none
-  // is cached — the Mac's getAccessTokenSyncly. Empty when signed out or the
-  // refresh fails. Blocks on the network, so never from the UI thread.
+  // is cached — the Mac's getAccessTokenSyncly. Empty when signed out,
+  // reauthentication is required, or the refresh fails. Blocks on the
+  // network, so never from the UI thread.
   std::string AccessTokenBlocking();
   // Forgets the cached access token so the next AccessTokenBlocking refreshes
   // — a caller's answer to a 401. Any thread.
   void InvalidateAccessToken();
   // The account service this tenant's tokens are for — the Mac APIClient's
-  // accountBaseURL: the staging host for the staging Auth0 tenant, the
-  // production host otherwise. PHI_ACCOUNT_BASE_URL overrides (no trailing
-  // slash).
+  // accountBaseURL (no trailing slash).
   static std::string AccountBaseUrl();
 
   bool signed_in() const { return signed_in_; }
   bool signing_in() const { return signing_in_; }
+  // Signed in, but the tenant no longer honours the session: the identity
+  // is shown, no token is served, and Sign in again is the way out.
+  bool reauth_required() const { return reauth_required_; }
   const PhiAuthUser& user() const { return user_; }
+  // Why the last sign-in attempt did not land, for the Account pane:
+  // "account_mismatch" (a reauthentication returned another subject),
+  // "refused" (the tenant said no), "incomplete" (abandoned / offline /
+  // a malformed exchange). Empty after a successful sign-in or a fresh
+  // attempt.
+  const std::string& last_error() const { return last_error_; }
 
  private:
-  struct SignInJob;
+  struct ExchangeJob;
   // A worker's result, applied on the UI thread.
   struct Outcome;
 
   // Worker side. Exchanges `code`; posts kSignedIn or kSignInFailed.
   void CompleteSignIn(const std::string& code,
                       const std::string& verifier,
-                      const std::string& redirect_uri);
+                      uint32_t attempt);
   // Worker side, under refresh_lock_: the grant_type=refresh_token round
   // trip. Posts kRefreshed or kSessionDead; nothing on a transport failure.
   // True when the session survives.
@@ -113,8 +153,9 @@ class PhiAuth {
   void Persist();
   void NotifyChanged();
 
-  static DWORD WINAPI ListenerThread(void* param);
+  static DWORD WINAPI ExchangeThread(void* param);
   static DWORD WINAPI RefreshThread(void* param);
+  static DWORD WINAPI RevokeThread(void* param);
   static LRESULT CALLBACK OutcomeWndProc(HWND hwnd,
                                          UINT msg,
                                          WPARAM wparam,
@@ -130,8 +171,17 @@ class PhiAuth {
   // UI-thread-owned session. Written by ApplyOutcome and SignOut only.
   bool signed_in_ = false;
   bool signing_in_ = false;
+  bool reauth_required_ = false;
   PhiAuthUser user_;
   std::string refresh_token_;
+  std::string last_error_;
+  // The sign-in in flight: the PKCE verifier and the state the callback
+  // must echo. Cleared when the callback lands or the attempt is cancelled.
+  std::string pending_verifier_;
+  std::string pending_state_;
+  // Which attempt a posted exchange belongs to; a result for an earlier,
+  // cancelled attempt is dropped.
+  uint32_t attempt_ = 0;
   // Bumped on every sign-in and sign-out so an Outcome computed against an
   // earlier session (a refresh that was in flight when the user signed out)
   // is recognised and dropped rather than applied to the next one.

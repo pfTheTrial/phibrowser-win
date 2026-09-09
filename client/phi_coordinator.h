@@ -435,7 +435,7 @@ class PhiCoordinator : public SidebarHost,
   const PhiPreferences& Preferences() const override;
   const PhiSpaceManager& SpaceList() const override;
   const PhiProfileService& ProfileList() const override;
-  const PhiAccountAndFeedback& Account() const override;
+  PhiAccountAndFeedback& Account() override;
   PhiUrlRouter& UrlRules() override;
 
   // --- The control plane's view of the app ----------------------------------

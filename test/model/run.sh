@@ -147,3 +147,11 @@ $CXX ../../client/phi_sidebar_model.cc sidebar_drag_test.cc \
 $CXX ../../client/phi_util.cc ../../client/phi_log.cc \
      ../../client/phi_theme.cc util_test.cc -o /tmp/phi_util_test
 /tmp/phi_util_test
+# Bucket D's auth (docs/login-port.md): the pure half of the Auth0 sign-in —
+# base64url, SHA-256 and the PKCE challenge (RFC 7636's vectors), the
+# loopback callback's request line, the JWT payload split and the tenant ->
+# account-service rule. The sockets, WinHTTP, DPAPI and the message window
+# stay in phi_auth.cc and are proved by a real sign-in on the box.
+$CXX ../../client/phi_auth_codec.cc auth_codec_test.cc \
+     -o /tmp/phi_auth_codec_test
+/tmp/phi_auth_codec_test

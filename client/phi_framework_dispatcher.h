@@ -58,6 +58,7 @@ class PhiFrameworkDispatcher : public phi_framework::PhiFrameworkDelegate {
   void OnTargetURLChanged(int64_t window_id, const char* url) override;
   void OnOmniboxResults(int64_t window_id, const char* json) override;
   void OnImportCompleted(const char* source, bool success) override;
+  void OnAuthCallbackUrl(const char* url, bool* taken) override;
   void OnPlaceholderModeChanged(int64_t window_id, bool entered) override;
   void OnRefreshNewTab(int64_t window_id) override;
   void OnContentFullscreenChanged(int64_t window_id, bool fullscreen) override;

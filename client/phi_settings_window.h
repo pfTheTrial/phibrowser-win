@@ -88,7 +88,9 @@ class PhiSettingsHost {
   virtual const PhiPreferences& Preferences() const = 0;
   virtual const PhiSpaceManager& SpaceList() const = 0;
   virtual const PhiProfileService& ProfileList() const = 0;
-  virtual const PhiAccountAndFeedback& Account() const = 0;
+  // Mutable too: the Account pane drives sign-in, rename and the avatar
+  // editor on the service itself.
+  virtual PhiAccountAndFeedback& Account() = 0;
   // Mutable: see the class comment — the URL Rules editor (PhiUrlRulesWindow,
   // opened through the host below) IS this service's editor.
   virtual PhiUrlRouter& UrlRules() = 0;
@@ -282,6 +284,7 @@ class PhiSettingsWindow : public PhiSecondaryWindow,
     kKeycap,         // Shortcuts' bordered key pill (min width 80, r6).
     kSearchField,    // Shortcuts' in-card filter field.
     kIconChip,       // The Mac's 24pt SettingsIconChip leading a row.
+    kAvatar,         // The account's picture as a circle; `text` = fallback glyph.
   };
   struct Item {
     ItemKind kind = ItemKind::kRowLabel;
@@ -417,7 +420,7 @@ class PhiSettingsWindow : public PhiSecondaryWindow,
   RAW_PTR_EXCLUSION const PhiPreferences* prefs_;
   RAW_PTR_EXCLUSION const PhiSpaceManager* spaces_;
   RAW_PTR_EXCLUSION const PhiProfileService* profiles_;
-  RAW_PTR_EXCLUSION const PhiAccountAndFeedback* account_;
+  RAW_PTR_EXCLUSION PhiAccountAndFeedback* account_;
   HFONT font_ = nullptr;
   HFONT title_font_ = nullptr;
   HFONT small_font_ = nullptr;  // Section titles and toolbar labels.

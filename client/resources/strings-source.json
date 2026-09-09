@@ -1775,6 +1775,10 @@
    "comment": "agentOverlay — used at phi_agent_overlay.cc:661",
    "en": "Finish"
   },
+  "oobe.reauthentication.confirmButton": {
+   "comment": "account — Mac key (translations by key)",
+   "en": "Reauthenticate"
+  },
   "prompt.alt": {
    "comment": "prompt — used in phi_prompt.cc",
    "en": "Alt+"
@@ -1887,6 +1891,18 @@
    "comment": "settings — used at phi_settings_window.cc:2172",
    "en": "a private socket only this machine's processes can reach."
   },
+  "settings.account.cancelSignIn": {
+   "comment": "account — Windows-only",
+   "en": "Cancel"
+  },
+  "settings.account.changeName": {
+   "comment": "account — Windows-only",
+   "en": "Change Name…"
+  },
+  "settings.account.changePicture": {
+   "comment": "account — Windows-only",
+   "en": "Change Picture…"
+  },
   "settings.account.defaultBrowser.defaultStatus": {
    "comment": "Account settings - Status text when Phi is the default browser",
    "en": "Phi is your default browser"
@@ -1902,6 +1918,94 @@
   "settings.account.displayName.fallback": {
    "comment": "settings — used at phi_settings_window.cc:112",
    "en": "You"
+  },
+  "settings.account.error.accountMismatch": {
+   "comment": "account — Windows-only",
+   "en": "That sign-in belongs to a different account. Sign out first to switch accounts."
+  },
+  "settings.account.error.incomplete": {
+   "comment": "account — Windows-only",
+   "en": "The sign-in did not complete."
+  },
+  "settings.account.error.profile": {
+   "comment": "account — Windows-only",
+   "en": "Your profile could not be loaded. Check your connection and try again."
+  },
+  "settings.account.error.refused": {
+   "comment": "account — Windows-only",
+   "en": "The sign-in was refused."
+  },
+  "settings.account.error.update": {
+   "comment": "account — Windows-only",
+   "en": "Your name could not be saved. Check your connection and try again."
+  },
+  "settings.account.guest.loginButton": {
+   "comment": "account — Mac key (translations by key)",
+   "en": "Sign in"
+  },
+  "settings.account.logoutButton": {
+   "comment": "account — Mac key (translations by key)",
+   "en": "Sign out"
+  },
+  "settings.account.logoutConfirmation.body": {
+   "comment": "account — Windows-only",
+   "en": "Your Phi account will be disconnected from this browser. Your tabs, Spaces and bookmarks stay."
+  },
+  "settings.account.logoutConfirmation.logoutButton": {
+   "comment": "account — Mac key (translations by key)",
+   "en": "Sign out"
+  },
+  "settings.account.logoutConfirmation.title": {
+   "comment": "account — Mac key (translations by key)",
+   "en": "Sign out of Phi?"
+  },
+  "settings.account.profile.nameRow": {
+   "comment": "account — Windows-only",
+   "en": "Name"
+  },
+  "settings.account.profile.pictureRow": {
+   "comment": "account — Windows-only",
+   "en": "Picture"
+  },
+  "settings.account.reauthentication.tooltip": {
+   "comment": "account — Mac key (translations by key)",
+   "en": "Please reauthenticate to restore account features."
+  },
+  "settings.account.reauthentication.warning": {
+   "comment": "account — Mac key (translations by key)",
+   "en": "Reauthentication needed."
+  },
+  "settings.account.renameDialog.emptyNameError.message": {
+   "comment": "account — Mac key (translations by key)",
+   "en": "Name cannot be empty"
+  },
+  "settings.account.renameDialog.emptyNameError.title": {
+   "comment": "account — Mac key (translations by key)",
+   "en": "Invalid Input"
+  },
+  "settings.account.renameDialog.nameTooLongError.message": {
+   "comment": "account — Mac key (translations by key)",
+   "en": "Name cannot exceed {0} characters"
+  },
+  "settings.account.renameDialog.nameTooLongError.title": {
+   "comment": "account — Mac key (translations by key)",
+   "en": "Invalid Input"
+  },
+  "settings.account.renameDialog.saveButton": {
+   "comment": "account — Mac key (translations by key)",
+   "en": "Save"
+  },
+  "settings.account.renameDialog.title": {
+   "comment": "account — Mac key (translations by key)",
+   "en": "Change Name"
+  },
+  "settings.account.saving": {
+   "comment": "account — Windows-only",
+   "en": "Updating your account…"
+  },
+  "settings.account.signedInAs": {
+   "comment": "account — Windows-only",
+   "en": "Signed in as {0}"
   },
   "settings.addUrlRule": {
    "comment": "settings — used at phi_settings_window.cc:3010",
@@ -2289,10 +2393,6 @@
    "comment": "settings — used at phi_settings_window.cc:2252",
    "en": "Logins for Phi and agent requests, held by a separate "
   },
-  "settings.logout": {
-   "comment": "settings — used at phi_settings_window.cc:1903",
-   "en": "Logout"
-  },
   "settings.msSettingsDefaultapps": {
    "comment": "settings — used in phi_settings_window.cc",
    "en": "ms-settings:defaultapps"
@@ -2496,10 +2596,6 @@
   "settings.signInToUseYour": {
    "comment": "settings — used at phi_settings_window.cc:1878",
    "en": "Sign in to use your Phi account."
-  },
-  "settings.signedInAs": {
-   "comment": "settings — used at phi_settings_window.cc:1893",
-   "en": "Signed in as "
   },
   "settings.spaces": {
    "comment": "settings — used at phi_settings_window.cc:1230",

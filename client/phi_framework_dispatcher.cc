@@ -117,6 +117,13 @@ void PhiFrameworkDispatcher::OnRouteURLToSpace(const char* space_id,
   coordinator_.url_router().OnRouteURLToSpace(space_id, url, source_window_id);
 }
 
+void PhiFrameworkDispatcher::OnAuthCallbackUrl(const char* url,
+                                               bool* taken) {
+  // Inside a navigation throttle: the account service checks the URL and
+  // starts the exchange on a worker; the tab is closed on a posted turn.
+  *taken = coordinator_.account().HandleAuthCallbackUrl(url ? url : "");
+}
+
 // --- Reader View and extensions -------------------------------------------
 
 void PhiFrameworkDispatcher::OnReaderArticleExtracted(int request_id,

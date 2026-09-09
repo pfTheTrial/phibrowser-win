@@ -1683,6 +1683,24 @@ base::span<const PhiVerbSpec> PhiControlDispatcher::Registry() {
        &Call<&PhiControlDispatcher::VerbFeedbackSetAccount>, "test_rig_only",
        "Stands a signed-in account in on a box without one."},
 
+      // --- Account (the Auth0 session; docs/login-port.md) ------------------------
+      {"agentSpace.account.status", "", kScopeNone, kHost, kVerbPlain, {},
+       false, false, &Call<&PhiControlDispatcher::VerbAccountStatus>,
+       "test_rig_only",
+       "The session: signedIn, signingIn, reauthRequired, the identity, the "
+       "cached profile and the last error."},
+      {"agentSpace.account.signIn", "", kScopeNone, kHost, kVerbPlain, {},
+       false, false, &Call<&PhiControlDispatcher::VerbAccountSignIn>,
+       "test_rig_only window_not_open",
+       "Starts the hosted sign-in in the first user window, as Settings ▸ "
+       "You ▸ Sign in does."},
+      {"agentSpace.account.cancelSignIn", "", kScopeNone, kHost, kVerbPlain,
+       {}, false, false, &Call<&PhiControlDispatcher::VerbAccountCancelSignIn>,
+       "test_rig_only", "Abandons the sign-in in flight."},
+      {"agentSpace.account.signOut", "", kScopeNone, kHost, kVerbPlain, {},
+       false, false, &Call<&PhiControlDispatcher::VerbAccountSignOut>,
+       "test_rig_only", "Signs out without the pane's confirmation."},
+
       // --- Credentials -------------------------------------------------------------
       {"credentials.status", "", kScopeNone, kAgentSpace, kVerbPlain, {},
        false, false, &Call<&PhiControlDispatcher::VerbCredentialsStatus>,

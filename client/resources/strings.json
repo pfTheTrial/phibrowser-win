@@ -2471,6 +2471,17 @@
    "zh-Hans": "完成",
    "zh-Hant": "完成"
   },
+  "oobe.reauthentication.confirmButton": {
+   "de": "Erneut authentifizieren",
+   "en": "Reauthenticate",
+   "es": "Volver a autenticarse",
+   "fr": "S'authentifier à nouveau",
+   "ja": "再認証",
+   "ko": "다시 인증",
+   "nl": "Verifieer opnieuw",
+   "zh-Hans": "重新验证身份",
+   "zh-Hant": "重新驗證身分"
+  },
   "prompt.alt": {
    "en": "Alt+"
   },
@@ -2619,6 +2630,23 @@
   "settings.aPrivateSocketOnlyThis": {
    "en": "a private socket only this machine's processes can reach."
   },
+  "settings.account.cancelSignIn": {
+   "de": "Abbrechen",
+   "en": "Cancel",
+   "es": "Cancelar",
+   "fr": "Annuler",
+   "ja": "キャンセル",
+   "ko": "취소",
+   "nl": "Annuleer",
+   "zh-Hans": "取消",
+   "zh-Hant": "取消"
+  },
+  "settings.account.changeName": {
+   "en": "Change Name…"
+  },
+  "settings.account.changePicture": {
+   "en": "Change Picture…"
+  },
   "settings.account.defaultBrowser.defaultStatus": {
    "de": "Phi ist dein Standardbrowser",
    "en": "Phi is your default browser",
@@ -2662,6 +2690,184 @@
    "nl": "Jij",
    "zh-Hans": "你",
    "zh-Hant": "你"
+  },
+  "settings.account.error.accountMismatch": {
+   "en": "That sign-in belongs to a different account. Sign out first to switch accounts."
+  },
+  "settings.account.error.incomplete": {
+   "en": "The sign-in did not complete."
+  },
+  "settings.account.error.profile": {
+   "en": "Your profile could not be loaded. Check your connection and try again."
+  },
+  "settings.account.error.refused": {
+   "en": "The sign-in was refused."
+  },
+  "settings.account.error.update": {
+   "en": "Your name could not be saved. Check your connection and try again."
+  },
+  "settings.account.guest.loginButton": {
+   "de": "Anmelden",
+   "en": "Sign in",
+   "es": "Iniciar sesión",
+   "fr": "Se connecter",
+   "ja": "ログイン",
+   "ko": "로그인",
+   "nl": "Inloggen",
+   "zh-Hans": "登录",
+   "zh-Hant": "登入"
+  },
+  "settings.account.logoutButton": {
+   "de": "Abmelden",
+   "en": "Sign out",
+   "es": "Cerrar sesión",
+   "fr": "Se déconnecter",
+   "ja": "ログアウト",
+   "ko": "로그아웃",
+   "nl": "Uitloggen",
+   "zh-Hans": "退出登录",
+   "zh-Hant": "登出"
+  },
+  "settings.account.logoutConfirmation.body": {
+   "en": "Your Phi account will be disconnected from this browser. Your tabs, Spaces and bookmarks stay."
+  },
+  "settings.account.logoutConfirmation.logoutButton": {
+   "de": "Abmelden",
+   "en": "Sign out",
+   "es": "Cerrar sesión",
+   "fr": "Se déconnecter",
+   "ja": "ログアウト",
+   "ko": "로그아웃",
+   "nl": "Uitloggen",
+   "zh-Hans": "退出登录",
+   "zh-Hant": "登出"
+  },
+  "settings.account.logoutConfirmation.title": {
+   "de": "Von Phi abmelden?",
+   "en": "Sign out of Phi?",
+   "es": "¿Cerrar sesión en Phi?",
+   "fr": "Se déconnecter de Phi ?",
+   "ja": "Phiからログアウトしますか?",
+   "ko": "Phi에서 로그아웃할까요?",
+   "nl": "Uitloggen bij Phi?",
+   "zh-Hans": "要退出 Phi 登录吗？",
+   "zh-Hant": "要登出 Phi 嗎？"
+  },
+  "settings.account.profile.nameRow": {
+   "de": "Name",
+   "en": "Name",
+   "es": "Nombre",
+   "fr": "Nom",
+   "ja": "名前",
+   "ko": "이름",
+   "nl": "Naam",
+   "zh-Hans": "名称",
+   "zh-Hant": "名稱"
+  },
+  "settings.account.profile.pictureRow": {
+   "en": "Picture"
+  },
+  "settings.account.reauthentication.tooltip": {
+   "de": "Authentifiziere dich erneut, um die Kontofunktionen wiederherzustellen.",
+   "en": "Please reauthenticate to restore account features.",
+   "es": "Vuelve a autenticarte para restaurar las funciones de la cuenta.",
+   "fr": "Authentifiez-vous à nouveau pour rétablir les fonctionnalités du compte.",
+   "ja": "アカウント機能を復元するには、再認証してください。",
+   "ko": "계정 기능을 복구하려면 다시 인증해 주세요.",
+   "nl": "Verifieer je opnieuw om de accountfuncties te herstellen.",
+   "zh-Hans": "请重新验证身份以恢复账号功能。",
+   "zh-Hant": "請重新驗證身分以恢復帳號功能。"
+  },
+  "settings.account.reauthentication.warning": {
+   "de": "Erneute Authentifizierung erforderlich.",
+   "en": "Reauthentication needed.",
+   "es": "Se requiere volver a autenticarse.",
+   "fr": "Nouvelle authentification requise.",
+   "ja": "再認証が必要です。",
+   "ko": "다시 인증해야 해요.",
+   "nl": "Opnieuw verifiëren is nodig.",
+   "zh-Hans": "需要重新验证身份。",
+   "zh-Hant": "需要重新驗證身分。"
+  },
+  "settings.account.renameDialog.emptyNameError.message": {
+   "de": "Der Name darf nicht leer sein",
+   "en": "Name cannot be empty",
+   "es": "El nombre no puede estar vacío",
+   "fr": "Le nom ne peut pas être vide",
+   "ja": "名前を入力してください",
+   "ko": "이름은 비워 둘 수 없어요",
+   "nl": "Naam mag niet leeg zijn",
+   "zh-Hans": "名称不能为空",
+   "zh-Hant": "名稱不能為空白"
+  },
+  "settings.account.renameDialog.emptyNameError.title": {
+   "de": "Ungültige Eingabe",
+   "en": "Invalid Input",
+   "es": "Entrada no válida",
+   "fr": "Saisie non valide",
+   "ja": "入力が無効です",
+   "ko": "잘못된 입력",
+   "nl": "Ongeldige invoer",
+   "zh-Hans": "输入无效",
+   "zh-Hant": "輸入無效"
+  },
+  "settings.account.renameDialog.nameTooLongError.message": {
+   "de": "Der Name darf höchstens {0} Zeichen lang sein",
+   "en": "Name cannot exceed {0} characters",
+   "es": "El nombre no puede superar los {0} caracteres",
+   "fr": "Le nom ne peut pas dépasser {0} caractères",
+   "ja": "名前は{0}文字以内で入力してください",
+   "ko": "이름은 {0}자를 넘을 수 없어요",
+   "nl": "Naam mag niet langer zijn dan {0} tekens",
+   "zh-Hans": "名称不能超过 {0} 个字符",
+   "zh-Hant": "名稱不能超過 {0} 個字元"
+  },
+  "settings.account.renameDialog.nameTooLongError.title": {
+   "de": "Ungültige Eingabe",
+   "en": "Invalid Input",
+   "es": "Entrada no válida",
+   "fr": "Saisie non valide",
+   "ja": "入力が無効です",
+   "ko": "잘못된 입력",
+   "nl": "Ongeldige invoer",
+   "zh-Hans": "输入无效",
+   "zh-Hant": "輸入無效"
+  },
+  "settings.account.renameDialog.saveButton": {
+   "de": "Speichern",
+   "en": "Save",
+   "es": "Guardar",
+   "fr": "Enregistrer",
+   "ja": "保存",
+   "ko": "저장",
+   "nl": "Bewaar",
+   "zh-Hans": "保存",
+   "zh-Hant": "儲存"
+  },
+  "settings.account.renameDialog.title": {
+   "de": "Namen ändern",
+   "en": "Change Name",
+   "es": "Cambiar nombre",
+   "fr": "Modifier le nom",
+   "ja": "名前を変更",
+   "ko": "이름 변경",
+   "nl": "Wijzig naam",
+   "zh-Hans": "更改名称",
+   "zh-Hant": "變更名稱"
+  },
+  "settings.account.saving": {
+   "en": "Updating your account…"
+  },
+  "settings.account.signedInAs": {
+   "de": "Angemeldet als {0}",
+   "en": "Signed in as {0}",
+   "es": "Sesión iniciada como {0}",
+   "fr": "Connecté en tant que {0}",
+   "ja": "{0}としてログイン中",
+   "ko": "{0}(으)로 로그인됨",
+   "nl": "Ingelogd als {0}",
+   "zh-Hans": "已登录为 {0}",
+   "zh-Hant": "已以 {0} 的身分登入"
   },
   "settings.addUrlRule": {
    "en": "Add URL Rule"
@@ -3394,9 +3600,6 @@
   "settings.loginsForPhiAndAgent": {
    "en": "Logins for Phi and agent requests, held by a separate "
   },
-  "settings.logout": {
-   "en": "Logout"
-  },
   "settings.msSettingsDefaultapps": {
    "en": "ms-settings:defaultapps"
   },
@@ -3885,9 +4088,6 @@
   },
   "settings.signInToUseYour": {
    "en": "Sign in to use your Phi account."
-  },
-  "settings.signedInAs": {
-   "en": "Signed in as "
   },
   "settings.spaces": {
    "en": "Spaces."

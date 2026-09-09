@@ -2177,7 +2177,7 @@ const PhiProfileService& PhiCoordinator::ProfileList() const {
   return *profile_service_;
 }
 
-const PhiAccountAndFeedback& PhiCoordinator::Account() const {
+PhiAccountAndFeedback& PhiCoordinator::Account() {
   return account_;
 }
 

@@ -31,6 +31,7 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "phibrowser-win/client/phi_account_feedback.h"
+#include "phibrowser-win/client/phi_account_profile.h"
 #include "phibrowser-win/client/phi_emoji.h"
 #include "phibrowser-win/client/phi_features.h"
 #include "phibrowser-win/client/phi_dwrite.h"
@@ -1802,9 +1803,10 @@ void PhiSettingsWindow::BuildProfileDetail(int* y, int left, int right,
 
 void PhiSettingsWindow::BuildAccount(int* y) {
   // The Mac pane's frame: a profile card on the LEFT (264 wide at x=24),
-  // the account card and the Default Browser section stacked on the right.
-  // Sign-in does not exist on this build, so the account side is inert;
-  // the default-browser button IS live (Windows' default-apps page).
+  // the account card, the profile actions and the Default Browser section
+  // stacked on the right. The account is OPTIONAL on Windows
+  // (docs/login-port.md): signed out, the pane offers Sign in and nothing
+  // else is withheld.
   const int top = *y;
   // The Mac's `offset(24)` is 36 minus the 12pt of shadow padding its card
   // view carries INSIDE its frame ("36 - 12(inner padding for shadow)"), and
@@ -1821,67 +1823,167 @@ void PhiSettingsWindow::BuildAccount(int* y) {
   const bool signed_in =
       account_->AccountInfo(&account_name, &account_email);
   const bool signing_in = account_->AccountSigningIn();
+  const bool reauth = account_->AccountReauthRequired();
+  const bool busy = account_->AccountBusy();
+  const std::string error = account_->AccountLastError();
   {
     Item card;
     card.kind = ItemKind::kCard;
     card.bounds = {left, top, left + card_w, top + Scaled(186)};
     items_.push_back(std::move(card));
+    // The avatar: the account's picture as a 72pt circle, the Contact
+    // glyph until there is one. Clicking it opens the avatar editor.
     Item avatar;
-    avatar.kind = ItemKind::kIcon;
+    avatar.kind = ItemKind::kAvatar;
     avatar.text = std::wstring(1, wchar_t(0xE77B));  // Contact
-    avatar.value = 56;  // Glyph size.
-    avatar.bounds = {left, top + Scaled(28), left + card_w,
-                     top + Scaled(28) + Scaled(72)};
+    avatar.value = 56;  // Fallback glyph size.
+    const int avatar_px = Scaled(72);
+    const int avatar_left = left + (card_w - avatar_px) / 2;
+    avatar.bounds = {avatar_left, top + Scaled(28), avatar_left + avatar_px,
+                     top + Scaled(28) + avatar_px};
+    if (signed_in && !reauth) {
+      avatar.action = "avatar";
+      avatar.enabled = !busy;
+    }
     items_.push_back(std::move(avatar));
     Item name;
     name.kind = ItemKind::kToolButton;  // Centered plain text.
     name.text = signed_in && !account_name.empty()
                     ? base::UTF8ToWide(account_name)
-                    : L"You";
+                    : PhiStr("settings.account.displayName.fallback");
     name.bounds = {left, top + Scaled(108), left + card_w,
                    top + Scaled(108) + Scaled(22)};
     items_.push_back(std::move(name));
     Item hint;
     hint.kind = ItemKind::kHint;
-    hint.text = signed_in ? base::UTF8ToWide(account_email)
-                : signing_in
-                    ? L"Finish signing in from the opened tab…"
-                    : L"Sign in to use your Phi account.";
+    hint.text = reauth ? PhiStr("settings.account.reauthentication.warning")
+                : signed_in ? base::UTF8ToWide(account_email)
+                : signing_in ? PhiStr("settings.finishSigningInFromThe")
+                             : PhiStr("settings.signInToUseYour");
     hint.bounds = {left + Scaled(30), top + Scaled(134),
                    left + card_w - Scaled(10),
                    top + Scaled(134) + Scaled(kHintHeight)};
     items_.push_back(std::move(hint));
   }
   {
-    // The account card (the Mac's 92pt row): status + Sign in / Logout.
+    // The account card (the Mac's 92pt row): status + the one action —
+    // Sign in / Cancel (while the hosted login is up) / Sign out /
+    // Reauthenticate — and, under the status, why the last attempt failed.
     Item card;
     card.kind = ItemKind::kCard;
     card.bounds = {right_left, top, right_edge, top + Scaled(92)};
     items_.push_back(std::move(card));
+    std::wstring error_text;
+    if (error == "account_mismatch") {
+      error_text = PhiStr("settings.account.error.accountMismatch");
+    } else if (error == "refused") {
+      error_text = PhiStr("settings.account.error.refused");
+    } else if (error == "incomplete") {
+      error_text = PhiStr("settings.account.error.incomplete");
+    } else if (error == "profile") {
+      error_text = PhiStr("settings.account.error.profile");
+    } else if (error == "update") {
+      error_text = PhiStr("settings.account.error.update");
+    }
     Item label;
     label.kind = ItemKind::kRowLabel;
-    label.text = signed_in
-                     ? L"Signed in as " + base::UTF8ToWide(
-                           account_email.empty() ? account_name
-                                                 : account_email)
-                     : L"You are not signed in.";
+    label.text =
+        reauth ? PhiStr("settings.account.reauthentication.tooltip")
+        : signed_in
+            ? PhiStrF("settings.account.signedInAs",
+                      {base::UTF8ToWide(account_email.empty() ? account_name
+                                                              : account_email)})
+        : signing_in ? PhiStr("settings.finishSigningInFromThe")
+                     : PhiStr("settings.youAreNotSignedIn");
+    if (busy) {
+      label.text = PhiStr("settings.account.saving");
+    }
+    const int label_bottom =
+        error_text.empty() ? top + Scaled(92) : top + Scaled(58);
     label.bounds = {right_left + Scaled(kCardPadding), top,
-                    right_edge - Scaled(kCardPadding + 100),
-                    top + Scaled(92)};
+                    right_edge - Scaled(kCardPadding + 124), label_bottom};
     items_.push_back(std::move(label));
+    if (!error_text.empty()) {
+      Item failure;
+      failure.kind = ItemKind::kHint;
+      failure.text = error_text;
+      failure.bounds = {right_left + Scaled(kCardPadding), top + Scaled(56),
+                        right_edge - Scaled(kCardPadding + 124),
+                        top + Scaled(56) + Scaled(kHintHeight)};
+      items_.push_back(std::move(failure));
+    }
     Item button;
     button.kind = ItemKind::kButton;
-    button.text = signed_in ? L"Logout" : L"Sign in";
-    button.action = signed_in ? "signout" : "signin";
-    button.enabled = !signing_in;
-    button.bounds = {right_edge - Scaled(kCardPadding) - Scaled(84),
+    if (reauth) {
+      button.text = PhiStr("oobe.reauthentication.confirmButton");
+      button.action = "signin";
+    } else if (signed_in) {
+      button.text = PhiStr("settings.account.logoutButton");
+      button.action = "signout";
+    } else if (signing_in) {
+      button.text = PhiStr("settings.account.cancelSignIn");
+      button.action = "cancelsignin";
+    } else {
+      button.text = PhiStr("settings.account.guest.loginButton");
+      button.action = "signin";
+    }
+    button.enabled = !busy;
+    button.bounds = {right_edge - Scaled(kCardPadding) - Scaled(108),
                      top + Scaled(34), right_edge - Scaled(kCardPadding),
                      top + Scaled(58)};
     items_.push_back(std::move(button));
   }
+  int section_top = top + Scaled(92) + Scaled(20);
+  if (signed_in && !reauth) {
+    // The profile actions: the Mac's rename dialog and its avatar editor
+    // (a web page on the account service), two rows of a 74pt card.
+    const int row_h = Scaled(37);
+    Item card;
+    card.kind = ItemKind::kCard;
+    card.bounds = {right_left, section_top, right_edge,
+                   section_top + 2 * row_h};
+    items_.push_back(std::move(card));
+    struct Row {
+      const char* label;
+      const char* link;
+      const char* action;
+    };
+    const std::array<Row, 2> rows = {{
+        {"settings.account.profile.nameRow", "settings.account.changeName",
+         "rename"},
+        {"settings.account.profile.pictureRow",
+         "settings.account.changePicture", "avatar"},
+    }};
+    for (size_t i = 0; i < rows.size(); ++i) {
+      const int row_top = section_top + static_cast<int>(i) * row_h;
+      Item label;
+      label.kind = ItemKind::kRowLabel;
+      label.text = PhiStr(rows[i].label);
+      label.bounds = {right_left + Scaled(kCardPadding), row_top,
+                      right_edge - Scaled(kCardPadding + 160),
+                      row_top + row_h};
+      items_.push_back(std::move(label));
+      Item link;
+      link.kind = ItemKind::kLink;
+      link.text = PhiStr(rows[i].link);
+      link.action = rows[i].action;
+      link.enabled = !busy;
+      link.bounds = {right_edge - Scaled(kCardPadding + 160), row_top,
+                     right_edge - Scaled(kCardPadding), row_top + row_h};
+      items_.push_back(std::move(link));
+      if (i == 0) {
+        Item divider;
+        divider.kind = ItemKind::kDivider;
+        divider.bounds = {right_left + Scaled(kCardPadding), row_top + row_h,
+                          right_edge - Scaled(kCardPadding),
+                          row_top + row_h + 1};
+        items_.push_back(std::move(divider));
+      }
+    }
+    section_top += 2 * row_h + Scaled(20);
+  }
   {
     // Default Browser (the Mac's 74pt section), with a LIVE button.
-    const int section_top = top + Scaled(92) + Scaled(20);
     Item card;
     card.kind = ItemKind::kCard;
     card.bounds = {right_left, section_top, right_edge,
@@ -1913,7 +2015,8 @@ void PhiSettingsWindow::BuildAccount(int* y) {
                      section_top + Scaled(49)};
     items_.push_back(std::move(button));
   }
-  *y = top + Scaled(186) + Scaled(kSectionGap);
+  *y = std::max(top + Scaled(186), section_top + Scaled(74)) +
+       Scaled(kSectionGap);
 }
 
 void PhiSettingsWindow::BuildAi(int* y) {
@@ -3048,6 +3151,28 @@ void PhiSettingsWindow::Paint(HDC dc, const RECT&) {
         }
         break;
       }
+      case ItemKind::kAvatar: {
+        // The account's picture as a circle (premultiplied BGRA from the
+        // profile service, decoded once per size), the Contact glyph
+        // until there is one.
+        const int px = bounds.right - bounds.left;
+        const std::vector<uint8_t>& circle = account_->AccountAvatarCircle(px);
+        if (!circle.empty()) {
+          PhiBlendBgra(dc, bounds, circle.data(), px, px);
+          break;
+        }
+        HFONT icon_font = item.value > 0 ? IconFont(item.value) : mdl2_font_;
+        if (icon_font) {
+          ::SelectObject(dc, icon_font);
+        }
+        ::SetTextColor(dc, item.enabled ? secondary : tertiary);
+        PhiDrawTextAA(dc, item.text.c_str(), -1, &bounds,
+                      DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        if (font_) {
+          ::SelectObject(dc, font_);
+        }
+        break;
+      }
       case ItemKind::kIconChip: {
         // The Mac's SettingsIconChip: a 24pt rounded square filled with
         // `color.gradient` — SwiftUI's subtle lighter-top, darker-bottom
@@ -3349,9 +3474,52 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
       host_->RequestSignIn();
     }
   } else if (item.action == "signout") {
-    if (host_) {
+    // The Mac asks first (settings.account.logoutConfirmation); its message
+    // promises the sign-in screen, which Windows has none of.
+    if (host_ &&
+        PhiConfirm(hwnd(), PhiStr("settings.account.logoutConfirmation.title"),
+                   PhiStr("settings.account.logoutConfirmation.body"),
+                   PhiStr("settings.account.logoutConfirmation.logoutButton"),
+                   /*destructive=*/false)) {
       host_->RequestSignOut();
     }
+  } else if (item.action == "cancelsignin") {
+    account_->RequestCancelSignIn();
+  } else if (item.action == "rename") {
+    // The Mac's rename dialog: one field, Save, and its two validations.
+    std::string current;
+    account_->AccountInfo(&current, nullptr);
+    std::wstring value = base::UTF8ToWide(current);
+    if (!PhiPromptText(hwnd(), PhiStr("settings.account.renameDialog.title"),
+                       nullptr, &value,
+                       PhiStr("settings.account.renameDialog.saveButton"))) {
+      return;
+    }
+    // Trim; PhiPromptText already refuses an empty entry, a blank one
+    // gets the Mac's empty-name alert.
+    const size_t first = value.find_first_not_of(L" \t\r\n");
+    const size_t last = value.find_last_not_of(L" \t\r\n");
+    value = first == std::wstring::npos ? std::wstring()
+                                        : value.substr(first, last - first + 1);
+    if (value.empty()) {
+      PhiNotice(hwnd(),
+                PhiStr("settings.account.renameDialog.emptyNameError.title"),
+                PhiStr("settings.account.renameDialog.emptyNameError.message"));
+      return;
+    }
+    if (value.size() > static_cast<size_t>(
+                           PhiAccountProfileService::kMaxNameLength)) {
+      PhiNotice(
+          hwnd(),
+          PhiStr("settings.account.renameDialog.nameTooLongError.title"),
+          PhiStrF("settings.account.renameDialog.nameTooLongError.message",
+                  {std::to_wstring(PhiAccountProfileService::kMaxNameLength)})
+              .c_str());
+      return;
+    }
+    account_->RequestRenameAccount(base::WideToUTF8(value));
+  } else if (item.action == "avatar") {
+    account_->RequestEditAvatar();
   } else if (item.action == "language") {
     // System default, then every locale the catalog carries, each named in
     // its own language.
@@ -3670,6 +3838,9 @@ LRESULT PhiSettingsWindow::OnWindowMessage(UINT msg,
       // DefWindowProc still see the activation.
       if (LOWORD(wparam) != WA_INACTIVE) {
         is_default_browser_.reset();
+        // The avatar editor and the hosted login are tabs; coming back is
+        // the cue to re-read the profile (rate-limited in the service).
+        account_->RefreshAccountProfile(/*force=*/false);
         ScheduleRebuild();
       }
       break;
