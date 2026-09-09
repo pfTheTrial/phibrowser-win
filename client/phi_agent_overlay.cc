@@ -41,6 +41,10 @@ constexpr int kPillHeight = 44;
 constexpr int kPillMaxWidth = 560;
 constexpr int kPillBottomGap = 24;
 constexpr int kButtonHeight = 26;
+// The minimise chevron at the pill's trailing edge (the Mac's 44861119):
+// folds the caption and the buttons away and parks the pill, label-only,
+// in the pane's bottom-right corner; a click on the parked pill unfolds it.
+constexpr int kChevronWidth = 22;
 void FillRounded(HDC dc, const RECT& r, COLORREF color, int radius) {
   PhiFillRoundRectAA(dc, r, radius, color);
 }
@@ -270,9 +274,18 @@ class Overlay : public OverlayHost {
     sprite_.SetPanelBounds(content);
     sprite_.ShowPanel();
     ComposeSprite();
-    const int pill_w = std::min(Scaled(kPillMaxWidth), width - Scaled(32));
     const int pill_h = Scaled(kPillHeight);
-    const int pill_x = content.left + (width - pill_w) / 2;
+    int pill_w = std::min(Scaled(kPillMaxWidth), width - Scaled(32));
+    int pill_x = content.left + (width - pill_w) / 2;
+    if (collapsed_) {
+      // Parked bottom-right, 24dip in, wide enough for the label and the
+      // chevron — a deliberate user choice that survives every update and
+      // ownership flip until they unfold it.
+      pill_w = Scaled(16) + LabelWidth() + Scaled(12) + Scaled(kChevronWidth) +
+               Scaled(10);
+      pill_w = std::min(pill_w, width - Scaled(32));
+      pill_x = content.right - Scaled(kPillBottomGap) - pill_w;
+    }
     const int pill_y = content.bottom - pill_h - Scaled(kPillBottomGap);
     const RECT pill_rect = {pill_x, pill_y, pill_x + pill_w, pill_y + pill_h};
     pill_.SetPanelBounds(pill_rect);
@@ -701,6 +714,14 @@ class Overlay : public OverlayHost {
     const int mid = pill_h / 2;
     const int bh = Scaled(kButtonHeight);
     int right = pill_w - Scaled(10);
+    chevron_ = {right - Scaled(kChevronWidth), mid - bh / 2, right,
+                mid + bh / 2};
+    right = chevron_.left - Scaled(6);
+    if (collapsed_) {
+      primary_ = RECT{};
+      secondary_ = RECT{};
+      return;
+    }
     if (!agent_owns_) {
       // User holds control: Finish trails, Hand back leads it.
       const int finish_w = Scaled(72);
@@ -711,6 +732,41 @@ class Overlay : public OverlayHost {
     }
     const int primary_w = Scaled(agent_owns_ ? 104 : 92);
     primary_ = {right - primary_w, mid - bh / 2, right, mid + bh / 2};
+  }
+
+  // The agent label's ink width in the label font (the collapsed pill is
+  // sized to it).
+  int LabelWidth() {
+    if (!label_font_ || !pill_.hwnd()) {
+      return Scaled(80);
+    }
+    HDC dc = ::GetDC(pill_.hwnd());
+    HGDIOBJ old = ::SelectObject(dc, label_font_);
+    RECT measured = {0, 0, 0, 0};
+    ::DrawTextW(dc, agent_label_.c_str(), -1, &measured,
+                DT_LEFT | DT_SINGLELINE | DT_CALCRECT | DT_NOPREFIX);
+    ::SelectObject(dc, old);
+    ::ReleaseDC(pill_.hwnd(), dc);
+    return measured.right;
+  }
+
+  // The fold chevron: a two-stroke "v" (unfolded, pointing down) or "^"
+  // (folded, pointing up), drawn as lines so it stays crisp at any DPI.
+  void PaintChevron(HDC dc, COLORREF ink) {
+    if (chevron_.right <= chevron_.left) {
+      return;
+    }
+    const int cx = (chevron_.left + chevron_.right) / 2;
+    const int cy = (chevron_.top + chevron_.bottom) / 2;
+    const int half = Scaled(4);
+    const int dy = collapsed_ ? -Scaled(2) : Scaled(2);
+    HPEN pen = ::CreatePen(PS_SOLID, std::max(1, Scaled(2)), ink);
+    HGDIOBJ old = ::SelectObject(dc, pen);
+    ::MoveToEx(dc, cx - half, cy - dy, nullptr);
+    ::LineTo(dc, cx, cy + dy);
+    ::LineTo(dc, cx + half + 1, cy - dy - 1);
+    ::SelectObject(dc, old);
+    ::DeleteObject(pen);
   }
 
   void PaintPill(HDC dc) override {
@@ -731,6 +787,18 @@ class Overlay : public OverlayHost {
     ::DeleteObject(plate);
     ::SetBkMode(dc, TRANSPARENT);
 
+    if (collapsed_) {
+      // Folded: the label and the chevron, nothing else.
+      RECT text = {Scaled(16), client.top, chevron_.left - Scaled(8),
+                   client.bottom};
+      ::SelectObject(dc, label_font_);
+      ::SetTextColor(dc, ink);
+      ::DrawTextW(dc, agent_label_.c_str(), -1, &text,
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
+                      DT_NOPREFIX);
+      PaintChevron(dc, dim);
+      return;
+    }
     // Leading: who is driving, then the status caption.
     RECT text = {Scaled(16), client.top, primary_.left - Scaled(12),
                  client.bottom};
@@ -764,12 +832,23 @@ class Overlay : public OverlayHost {
       ::DrawTextW(dc, L"Finish", -1, &secondary_,
                   DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     }
+    PaintChevron(dc, dim);
   }
 
   void PillClicked(int x, int y) override {
     const POINT pt = {x, y};
     AgentHost* host = controller_ ? controller_->agent_host() : nullptr;
     if (!host) {
+      return;
+    }
+    if (collapsed_) {
+      collapsed_ = false;  // Anywhere on the parked pill unfolds it.
+      Reposition();
+      return;
+    }
+    if (::PtInRect(&chevron_, pt)) {
+      collapsed_ = true;
+      Reposition();
       return;
     }
     // Copy what the handlers need: they can destroy this overlay.
@@ -793,6 +872,8 @@ class Overlay : public OverlayHost {
   std::wstring agent_label_;
   std::wstring caption_;
   bool agent_owns_ = true;
+  bool collapsed_ = false;  // The user folded the pill (see kChevronWidth).
+  RECT chevron_{};
   Fog fog_;
   Sprite sprite_{this};
   Pill pill_{this};

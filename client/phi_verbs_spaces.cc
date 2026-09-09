@@ -19,6 +19,7 @@
 #include "phibrowser-win/client/phi_agent_spaces.h"
 #include "phibrowser-win/client/phi_control_dispatcher.h"
 #include "phibrowser-win/client/phi_coordinator.h"
+#include "phibrowser-win/client/phi_sidebar_model.h"
 #include "phibrowser-win/client/phi_emoji.h"
 #include "phibrowser-win/client/phi_folder_icons.h"
 #include "phibrowser-win/client/phi_icons.h"
@@ -231,9 +232,16 @@ PhiVerbResult PhiControlDispatcher::VerbSpacesListTabs(
   if (!browser.valid() || !framework_) {
     return PhiVerbResult::Fail(error.empty() ? "space_not_open" : error);
   }
+  // The window exists but its state has not attached yet (a fresh
+  // window's first push is still in flight): a transient worth retrying,
+  // never a silent empty list — the Mac's window_not_ready.
+  const phi_framework::WindowSnapshot* window =
+      coordinator_->window_model().Get(browser);
+  if (!window) {
+    return PhiVerbResult::Fail("window_not_ready");
+  }
   base::ListValue rows;
-  if (const phi_framework::WindowSnapshot* window =
-          coordinator_->window_model().Get(browser)) {
+  {
     for (const phi_framework::TabSnapshot& tab : window->tabs) {
       base::DictValue row;
       row.Set("tabId", tab.id.value);
@@ -241,6 +249,19 @@ PhiVerbResult PhiControlDispatcher::VerbSpacesListTabs(
       row.Set("url", tab.url);
       row.Set("title", tab.title);
       row.Set("active", tab.active);
+      // The full listable inventory (the Mac's agentTabInventory): normal,
+      // open pinned and bookmark-opened tabs alike, `kind` saying which —
+      // a bound tab's tag is the stored row's guid (TagFor).
+      const char* kind = "normal";
+      SidebarTag parsed;
+      if (!tab.tag.empty() && ParseTag(tab.tag, &parsed)) {
+        if (const PhiRow* stored =
+                coordinator_->tab_store().Find(parsed.guid)) {
+          kind = stored->type == PhiRowType::kPinnedTab ? "pinned"
+                                                        : "bookmark";
+        }
+      }
+      row.Set("kind", kind);
       // Present only when set: the stored-cell binding tag (TagFor) and
       // the live split, so a probe can assert bindings without pixels.
       if (!tab.tag.empty()) {
