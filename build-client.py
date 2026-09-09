@@ -251,6 +251,11 @@ def main():
         shutil.copy2(os.path.join(CLIENT_DIR, "resources", name),
                      resources_dir)
     sync_tree(SKILL_DIR, os.path.join(resources_dir, "phi-browser-skill"))
+    # The You pane's profile card: the Mac's conch frames and dot pattern
+    # (client/resources/profile-card, decoded at run time by
+    # phi_profile_card.cc).
+    sync_tree(os.path.join(CLIENT_DIR, "resources", "profile-card"),
+              os.path.join(resources_dir, "profile-card"))
     # Stage the vendored WinSparkle.dll beside the client: the sync ships
     # every top-level DLL, and the updater loads it from the exe's own dir.
     winsparkle = os.path.join(os.path.dirname(os.path.abspath(__file__)),

@@ -2641,12 +2641,6 @@
    "zh-Hans": "取消",
    "zh-Hant": "取消"
   },
-  "settings.account.changeName": {
-   "en": "Change Name…"
-  },
-  "settings.account.changePicture": {
-   "en": "Change Picture…"
-  },
   "settings.account.defaultBrowser.defaultStatus": {
    "de": "Phi ist dein Standardbrowser",
    "en": "Phi is your default browser",
@@ -2753,20 +2747,6 @@
    "zh-Hans": "要退出 Phi 登录吗？",
    "zh-Hant": "要登出 Phi 嗎？"
   },
-  "settings.account.profile.nameRow": {
-   "de": "Name",
-   "en": "Name",
-   "es": "Nombre",
-   "fr": "Nom",
-   "ja": "名前",
-   "ko": "이름",
-   "nl": "Naam",
-   "zh-Hans": "名称",
-   "zh-Hant": "名稱"
-  },
-  "settings.account.profile.pictureRow": {
-   "en": "Picture"
-  },
   "settings.account.reauthentication.tooltip": {
    "de": "Authentifiziere dich erneut, um die Kontofunktionen wiederherzustellen.",
    "en": "Please reauthenticate to restore account features.",
@@ -2857,6 +2837,17 @@
   },
   "settings.account.saving": {
    "en": "Updating your account…"
+  },
+  "settings.account.sharing.downloadImageButton": {
+   "de": "Bild herunterladen",
+   "en": "Download image",
+   "es": "Descargar imagen",
+   "fr": "Télécharger l'image",
+   "ja": "画像をダウンロード",
+   "ko": "이미지 다운로드",
+   "nl": "Download afbeelding",
+   "zh-Hans": "下载图片",
+   "zh-Hant": "下載圖片"
   },
   "settings.account.signedInAs": {
    "de": "Angemeldet als {0}",

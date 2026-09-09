@@ -14,6 +14,7 @@
 
 #include "base/memory/raw_ptr_exclusion.h"
 #include "phibrowser-win/client/phi_popup_chrome.h"
+#include "phibrowser-win/client/phi_profile_card.h"
 #include "phibrowser-win/client/phi_secondary_window.h"
 #include "phibrowser-win/client/phi_settings_types.h"
 #include "phibrowser-win/client/phi_tab_store.h"
@@ -257,6 +258,7 @@ class PhiSettingsWindow : public PhiSecondaryWindow,
                           bool* handled) override;
   void OnDpiChanged(UINT old_dpi) override;
   void OnTimerFired(UINT_PTR id) override;
+  void OnCaptureLost() override;
   void OnNcDestroy() override;
 
   // One drawn thing. Rows are built per section and hit-tested from the same
@@ -285,6 +287,8 @@ class PhiSettingsWindow : public PhiSecondaryWindow,
     kSearchField,    // Shortcuts' in-card filter field.
     kIconChip,       // The Mac's 24pt SettingsIconChip leading a row.
     kAvatar,         // The account's picture as a circle; `text` = fallback glyph.
+    kEditableLabel,  // A 13pt semibold label trailed by a pencil; click edits.
+    kProfileCard,    // The Mac's draggable conch card (PhiProfileCard).
   };
   struct Item {
     ItemKind kind = ItemKind::kRowLabel;
@@ -482,6 +486,11 @@ class PhiSettingsWindow : public PhiSecondaryWindow,
   // rebuild; the id comes from the window's own pool, not the hand-picked
   // 0x517 (lane 3 §4.1).
   Timer profile_poll_;
+  // The You pane's profile card: its frame animation timer and the drag
+  // through its grid (which holds the capture like the slider does).
+  PhiProfileCard profile_card_;
+  Timer card_timer_;
+  bool card_drag_ = false;
 };
 
 }  // namespace phi_client

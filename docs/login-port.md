@@ -315,3 +315,35 @@ a navigation Phi sees before anything else.
 - The codec grew `PhiMacCallbackUri` and `PhiParseCallbackUrl` (host-tested,
   incl. GURL's lower-cased scheme/host); the loopback listener, its reply
   page and the `auth.callback.*` strings are gone.
+
+## 7. The You pane, the Mac's (2026-09-09, after the first real sign-in)
+
+Jixiang signed in on the box (exchange → profile → avatar all landed), and
+asked for the pane to match the Mac: the profile card, and the name where
+"You" was.
+
+- `client/phi_profile_card.{h,cc}` — the Mac's ProfileCardViewController +
+  ConchFrameAnimationBaseViewController: a 240×380 card, a 10×10 grid of
+  conch renders the user drags through (20 dips a step, spring-back to the
+  centre in 150 ms, ease-out cubic), a 24-frame intro played once, all
+  colourised to the theme (black → white, ≥10% grey → HSB(hue, .85, .75);
+  Pure = grey), a 10% tint and the dot pattern at 7.5% over it, the
+  sign-up date in Impact (70 → 20 dips until it fits) hanging 12 dips off
+  the top and fading out over its lower 40%, the name (20 chars + "…") in
+  the accent (HSB(hue, 1, .37); Pure = black) 32 dips up. "Download image"
+  renders the card at 2× centred on an accent canvas twice its size and
+  saves a PNG (the Mac's snapshotAndExport). Frames decode on a worker at
+  the card's pixel size — centre, intro, then by distance from the centre.
+- Assets: `client/resources/profile-card/` — the Mac's
+  `setting_<r>-<c>.jpg` (→ `frame-<r>-<c>.jpg`), `setting-pre-<n>.jpg`
+  (→ `pre-<n>.jpg`) and `setting-dot-bg` (a PDF, rasterised at 144 dpi to
+  `dot-bg.png`); 9 MB, copied by build-client.py beside the exe.
+- The pane: signed in, the card on the left with the button under it; the
+  right column is the Mac's AccountView row — the avatar with its pencil
+  badge (click = avatar editor), the name with a trailing pencil (click =
+  rename), the email, a status line (reauthentication / saving / error),
+  Sign out — then Default Browser. Signed out, the card is hidden and the
+  column takes the width, as the Mac's Guest presentation does. The
+  Change Name / Change Picture rows went (the pencils are those).
+- The Share section (invitation codes) is not ported — invitations are
+  bucket D backend work.

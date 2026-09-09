@@ -102,6 +102,9 @@ constexpr int kToolbarIcon = 22;
 // Page insets 36 on every side; 24 between sections; 16 title -> card.
 constexpr int kMargin = 36;
 constexpr int kSectionGap = 24;
+// Posted by the profile card's decode worker when a frame worth repainting
+// for has landed.
+constexpr UINT kMsgProfileCardFrame = WM_APP + 0x3A1;
 constexpr int kTitleToCard = 16;
 constexpr int kCardPadding = 12;   // Inner horizontal padding of a card.
 constexpr int kRowPadding = 12;    // Vertical padding around a row's content.
@@ -359,6 +362,8 @@ bool PhiSettingsWindow::OpenWindow() {
     return false;
   }
   profile_poll_ = NewTimer();
+  card_timer_ = NewTimer();
+  profile_card_.SetNotify(hwnd(), kMsgProfileCardFrame);
   // Content 680x561 under the caption strip and toolbar band — fixed,
   // non-resizable. WM_NCCALCSIZE keeps only the thin side/bottom borders,
   // so the window size is the content plus exactly those.
@@ -1802,21 +1807,19 @@ void PhiSettingsWindow::BuildProfileDetail(int* y, int left, int right,
 }
 
 void PhiSettingsWindow::BuildAccount(int* y) {
-  // The Mac pane's frame: a profile card on the LEFT (264 wide at x=24),
-  // the account card, the profile actions and the Default Browser section
-  // stacked on the right. The account is OPTIONAL on Windows
-  // (docs/login-port.md): signed out, the pane offers Sign in and nothing
-  // else is withheld.
+  // The Mac pane's frame: the profile card on the LEFT (264 wide at x=24,
+  // holding a 240x380 card with "Download image" under it), the account
+  // row and the Default Browser section stacked on the right. Signed out
+  // (the Mac's Guest presentation) the card is hidden and the right column
+  // takes the whole width. The account is OPTIONAL on Windows
+  // (docs/login-port.md): nothing else is withheld.
   const int top = *y;
   // The Mac's `offset(24)` is 36 minus the 12pt of shadow padding its card
-  // view carries INSIDE its frame ("36 - 12(inner padding for shadow)"), and
-  // that 264pt frame holds a 240pt card. Ported literally, this pane drew a
-  // 264-wide card whose VISIBLE edge sat at 24 — twelve points left of every
-  // other pane's content and of the toolbar above it. These are the Mac's
-  // visible metrics: card 36..276, right column 292..644.
+  // view carries INSIDE its frame; the card's VISIBLE edge sits at 36 like
+  // every other pane's content: card 36..276, right column 292..644.
   const int left = Scaled(kMargin);
   const int card_w = Scaled(240);
-  const int right_left = left + card_w + Scaled(16);
+  const int card_h = Scaled(380);
   const int right_edge = Scaled(kWidth - kMargin);
   std::string account_name;
   std::string account_email;
@@ -1826,53 +1829,52 @@ void PhiSettingsWindow::BuildAccount(int* y) {
   const bool reauth = account_->AccountReauthRequired();
   const bool busy = account_->AccountBusy();
   const std::string error = account_->AccountLastError();
-  {
+  const bool show_card = signed_in && !reauth;
+  int bottom = top;
+  if (show_card) {
     Item card;
-    card.kind = ItemKind::kCard;
-    card.bounds = {left, top, left + card_w, top + Scaled(186)};
+    card.kind = ItemKind::kProfileCard;
+    card.action = "card";  // Hit-tested for the drag; Apply ignores it.
+    card.bounds = {left, top, left + card_w, top + card_h};
     items_.push_back(std::move(card));
-    // The avatar: the account's picture as a 72pt circle, the Contact
-    // glyph until there is one. Clicking it opens the avatar editor.
-    Item avatar;
-    avatar.kind = ItemKind::kAvatar;
-    avatar.text = std::wstring(1, wchar_t(0xE77B));  // Contact
-    avatar.value = 56;  // Fallback glyph size.
-    const int avatar_px = Scaled(72);
-    const int avatar_left = left + (card_w - avatar_px) / 2;
-    avatar.bounds = {avatar_left, top + Scaled(28), avatar_left + avatar_px,
-                     top + Scaled(28) + avatar_px};
-    if (signed_in && !reauth) {
-      avatar.action = "avatar";
-      avatar.enabled = !busy;
-    }
-    items_.push_back(std::move(avatar));
-    Item name;
-    name.kind = ItemKind::kToolButton;  // Centered plain text.
-    name.text = signed_in && !account_name.empty()
-                    ? base::UTF8ToWide(account_name)
-                    : PhiStr("settings.account.displayName.fallback");
-    name.bounds = {left, top + Scaled(108), left + card_w,
-                   top + Scaled(108) + Scaled(22)};
-    items_.push_back(std::move(name));
-    Item hint;
-    hint.kind = ItemKind::kHint;
-    hint.text = reauth ? PhiStr("settings.account.reauthentication.warning")
-                : signed_in ? base::UTF8ToWide(account_email)
-                : signing_in ? PhiStr("settings.finishSigningInFromThe")
-                             : PhiStr("settings.signInToUseYour");
-    hint.bounds = {left + Scaled(30), top + Scaled(134),
-                   left + card_w - Scaled(10),
-                   top + Scaled(134) + Scaled(kHintHeight)};
-    items_.push_back(std::move(hint));
+    // The Mac's rounded "Download image" button, centred under the card
+    // (shadow padding 10 + 4).
+    Item download;
+    download.kind = ItemKind::kButton;
+    download.text = PhiStr("settings.account.sharing.downloadImageButton");
+    download.action = "downloadcard";
+    const int button_w = Scaled(150);
+    download.bounds = {left + (card_w - button_w) / 2, top + card_h + Scaled(14),
+                       left + (card_w + button_w) / 2,
+                       top + card_h + Scaled(14) + Scaled(24)};
+    bottom = download.bounds.bottom;
+    items_.push_back(std::move(download));
   }
+  const int right_left = show_card ? left + card_w + Scaled(16) : left;
   {
-    // The account card (the Mac's 92pt row): status + the one action —
-    // Sign in / Cancel (while the hosted login is up) / Sign out /
-    // Reauthenticate — and, under the status, why the last attempt failed.
+    // The account row (the Mac's 92pt AccountView): the avatar with its
+    // edit badge, the name with its pencil, the email, a status line, and
+    // the one action — Sign out / Reauthenticate / Cancel / Sign in.
     Item card;
     card.kind = ItemKind::kCard;
     card.bounds = {right_left, top, right_edge, top + Scaled(92)};
     items_.push_back(std::move(card));
+    const int button_w = Scaled(108);
+    const int text_right = right_edge - Scaled(kCardPadding) - button_w - Scaled(8);
+    Item avatar;
+    avatar.kind = ItemKind::kAvatar;
+    avatar.text = std::wstring(1, wchar_t(0xE77B));  // Contact
+    avatar.value = 36;  // Fallback glyph size.
+    const int avatar_px = Scaled(56);
+    avatar.bounds = {right_left + Scaled(12), top + (Scaled(92) - avatar_px) / 2,
+                     right_left + Scaled(12) + avatar_px,
+                     top + (Scaled(92) - avatar_px) / 2 + avatar_px};
+    if (show_card) {
+      avatar.action = "avatar";
+      avatar.enabled = !busy;
+    }
+    items_.push_back(std::move(avatar));
+    const int text_left = right_left + Scaled(12) + avatar_px + Scaled(12);
     std::wstring error_text;
     if (error == "account_mismatch") {
       error_text = PhiStr("settings.account.error.accountMismatch");
@@ -1885,32 +1887,57 @@ void PhiSettingsWindow::BuildAccount(int* y) {
     } else if (error == "update") {
       error_text = PhiStr("settings.account.error.update");
     }
-    Item label;
-    label.kind = ItemKind::kRowLabel;
-    label.text =
-        reauth ? PhiStr("settings.account.reauthentication.tooltip")
-        : signed_in
-            ? PhiStrF("settings.account.signedInAs",
-                      {base::UTF8ToWide(account_email.empty() ? account_name
-                                                              : account_email)})
-        : signing_in ? PhiStr("settings.finishSigningInFromThe")
-                     : PhiStr("settings.youAreNotSignedIn");
-    if (busy) {
-      label.text = PhiStr("settings.account.saving");
-    }
-    const int label_bottom =
-        error_text.empty() ? top + Scaled(92) : top + Scaled(58);
-    label.bounds = {right_left + Scaled(kCardPadding), top,
-                    right_edge - Scaled(kCardPadding + 124), label_bottom};
-    items_.push_back(std::move(label));
-    if (!error_text.empty()) {
-      Item failure;
-      failure.kind = ItemKind::kHint;
-      failure.text = error_text;
-      failure.bounds = {right_left + Scaled(kCardPadding), top + Scaled(56),
-                        right_edge - Scaled(kCardPadding + 124),
-                        top + Scaled(56) + Scaled(kHintHeight)};
-      items_.push_back(std::move(failure));
+    if (signed_in) {
+      Item name;
+      name.kind = ItemKind::kEditableLabel;
+      name.text = !account_name.empty()
+                      ? base::UTF8ToWide(account_name)
+                      : PhiStr("settings.account.displayName.fallback");
+      if (show_card) {
+        name.action = "rename";
+        name.enabled = !busy;
+      }
+      name.bounds = {text_left, top + Scaled(16), text_right, top + Scaled(46)};
+      items_.push_back(std::move(name));
+      Item email;
+      email.kind = ItemKind::kHint;
+      email.text = base::UTF8ToWide(account_email);
+      email.bounds = {text_left, top + Scaled(47), text_right,
+                      top + Scaled(47) + Scaled(kHintHeight)};
+      items_.push_back(std::move(email));
+      std::wstring status;
+      if (reauth) {
+        status = PhiStr("settings.account.reauthentication.warning");
+      } else if (busy) {
+        status = PhiStr("settings.account.saving");
+      } else {
+        status = error_text;
+      }
+      if (!status.empty()) {
+        Item line;
+        line.kind = ItemKind::kHint;
+        line.text = status;
+        line.bounds = {text_left, top + Scaled(63), text_right,
+                       top + Scaled(63) + Scaled(kHintHeight)};
+        items_.push_back(std::move(line));
+      }
+    } else {
+      Item label;
+      label.kind = ItemKind::kRowLabel;
+      label.text = signing_in ? PhiStr("settings.finishSigningInFromThe")
+                              : PhiStr("settings.youAreNotSignedIn");
+      const bool has_error = !signing_in && !error_text.empty();
+      label.bounds = {text_left, top, text_right,
+                      has_error ? top + Scaled(58) : top + Scaled(92)};
+      items_.push_back(std::move(label));
+      if (has_error) {
+        Item failure;
+        failure.kind = ItemKind::kHint;
+        failure.text = error_text;
+        failure.bounds = {text_left, top + Scaled(56), text_right,
+                          top + Scaled(56) + Scaled(kHintHeight)};
+        items_.push_back(std::move(failure));
+      }
     }
     Item button;
     button.kind = ItemKind::kButton;
@@ -1928,60 +1955,12 @@ void PhiSettingsWindow::BuildAccount(int* y) {
       button.action = "signin";
     }
     button.enabled = !busy;
-    button.bounds = {right_edge - Scaled(kCardPadding) - Scaled(108),
+    button.bounds = {right_edge - Scaled(kCardPadding) - button_w,
                      top + Scaled(34), right_edge - Scaled(kCardPadding),
                      top + Scaled(58)};
     items_.push_back(std::move(button));
   }
-  int section_top = top + Scaled(92) + Scaled(20);
-  if (signed_in && !reauth) {
-    // The profile actions: the Mac's rename dialog and its avatar editor
-    // (a web page on the account service), two rows of a 74pt card.
-    const int row_h = Scaled(37);
-    Item card;
-    card.kind = ItemKind::kCard;
-    card.bounds = {right_left, section_top, right_edge,
-                   section_top + 2 * row_h};
-    items_.push_back(std::move(card));
-    struct Row {
-      const char* label;
-      const char* link;
-      const char* action;
-    };
-    const std::array<Row, 2> rows = {{
-        {"settings.account.profile.nameRow", "settings.account.changeName",
-         "rename"},
-        {"settings.account.profile.pictureRow",
-         "settings.account.changePicture", "avatar"},
-    }};
-    for (size_t i = 0; i < rows.size(); ++i) {
-      const int row_top = section_top + static_cast<int>(i) * row_h;
-      Item label;
-      label.kind = ItemKind::kRowLabel;
-      label.text = PhiStr(rows[i].label);
-      label.bounds = {right_left + Scaled(kCardPadding), row_top,
-                      right_edge - Scaled(kCardPadding + 160),
-                      row_top + row_h};
-      items_.push_back(std::move(label));
-      Item link;
-      link.kind = ItemKind::kLink;
-      link.text = PhiStr(rows[i].link);
-      link.action = rows[i].action;
-      link.enabled = !busy;
-      link.bounds = {right_edge - Scaled(kCardPadding + 160), row_top,
-                     right_edge - Scaled(kCardPadding), row_top + row_h};
-      items_.push_back(std::move(link));
-      if (i == 0) {
-        Item divider;
-        divider.kind = ItemKind::kDivider;
-        divider.bounds = {right_left + Scaled(kCardPadding), row_top + row_h,
-                          right_edge - Scaled(kCardPadding),
-                          row_top + row_h + 1};
-        items_.push_back(std::move(divider));
-      }
-    }
-    section_top += 2 * row_h + Scaled(20);
-  }
+  const int section_top = top + Scaled(92) + Scaled(20);
   {
     // Default Browser (the Mac's 74pt section), with a LIVE button.
     Item card;
@@ -2015,8 +1994,7 @@ void PhiSettingsWindow::BuildAccount(int* y) {
                      section_top + Scaled(49)};
     items_.push_back(std::move(button));
   }
-  *y = std::max(top + Scaled(186), section_top + Scaled(74)) +
-       Scaled(kSectionGap);
+  *y = std::max(bottom, section_top + Scaled(74)) + Scaled(kSectionGap);
 }
 
 void PhiSettingsWindow::BuildAi(int* y) {
@@ -3154,22 +3132,89 @@ void PhiSettingsWindow::Paint(HDC dc, const RECT&) {
       case ItemKind::kAvatar: {
         // The account's picture as a circle (premultiplied BGRA from the
         // profile service, decoded once per size), the Contact glyph
-        // until there is one.
+        // until there is one; the Mac's 16pt pencil badge at the bottom
+        // right when the picture can be edited.
         const int px = bounds.right - bounds.left;
         const std::vector<uint8_t>& circle = account_->AccountAvatarCircle(px);
         if (!circle.empty()) {
           PhiBlendBgra(dc, bounds, circle.data(), px, px);
-          break;
+        } else {
+          HFONT icon_font =
+              item.value > 0 ? IconFont(item.value) : mdl2_font_;
+          if (icon_font) {
+            ::SelectObject(dc, icon_font);
+          }
+          ::SetTextColor(dc, item.enabled ? secondary : tertiary);
+          PhiDrawTextAA(dc, item.text.c_str(), -1, &bounds,
+                        DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         }
-        HFONT icon_font = item.value > 0 ? IconFont(item.value) : mdl2_font_;
-        if (icon_font) {
-          ::SelectObject(dc, icon_font);
+        if (!item.action.empty()) {
+          const int badge = Scaled(16);
+          RECT badge_rc = {bounds.right - badge, bounds.bottom - badge,
+                           bounds.right, bounds.bottom};
+          PhiFillEllipseAA(dc, badge_rc, card_bg);
+          PhiStrokeEllipseAA(dc, badge_rc, card_border, std::max(1, Scaled(1)));
+          if (HFONT pencil = IconFont(9)) {
+            ::SelectObject(dc, pencil);
+          }
+          ::SetTextColor(dc, item.enabled ? secondary : tertiary);
+          PhiDrawTextAA(dc, L"\uE70F", -1, &badge_rc,
+                        DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         }
-        ::SetTextColor(dc, item.enabled ? secondary : tertiary);
-        PhiDrawTextAA(dc, item.text.c_str(), -1, &bounds,
-                      DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         if (font_) {
           ::SelectObject(dc, font_);
+        }
+        break;
+      }
+      case ItemKind::kEditableLabel: {
+        // The Mac's name label: 13pt semibold, a pencil trailing the text
+        // (nameEditIconButton, 11pt, 4pt gap); the whole row edits.
+        if (title_font_) {
+          ::SelectObject(dc, title_font_);
+        }
+        ::SetTextColor(dc, item.enabled ? row_ink : tertiary);
+        RECT measure = bounds;
+        PhiDrawTextAA(dc, item.text.c_str(), -1, &measure,
+                      DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX);
+        const int pencil_w = Scaled(11);
+        const int text_w = std::min<int>(measure.right - measure.left,
+                                         bounds.right - bounds.left - pencil_w -
+                                             Scaled(4));
+        RECT text_rc = {bounds.left, bounds.top, bounds.left + text_w,
+                        bounds.bottom};
+        PhiDrawTextAA(dc, item.text.c_str(), -1, &text_rc,
+                      DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
+                          DT_NOPREFIX);
+        if (!item.action.empty()) {
+          RECT pencil_rc = {text_rc.right + Scaled(4), bounds.top,
+                            text_rc.right + Scaled(4) + pencil_w, bounds.bottom};
+          if (HFONT pencil = IconFont(11)) {
+            ::SelectObject(dc, pencil);
+          }
+          ::SetTextColor(dc, hot ? row_ink : secondary);
+          PhiDrawTextAA(dc, L"\uE70F", -1, &pencil_rc,
+                        DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        }
+        if (font_) {
+          ::SelectObject(dc, font_);
+        }
+        break;
+      }
+      case ItemKind::kProfileCard: {
+        // The conch card, themed like the Mac's ProfileCardViewController:
+        // the theme's overlay colour for the appearance in force.
+        const PhiTheme& theme = PhiThemeById(prefs_->ThemeId());
+        profile_card_.SetTheme(dark ? theme.dark.overlay : theme.light.overlay,
+                               prefs_->ThemeId() == "pure", dark);
+        std::string name;
+        account_->AccountInfo(&name, nullptr);
+        const std::optional<PhiAccountProfile>& profile =
+            account_->Profile().profile();
+        profile_card_.SetIdentity(name, profile ? profile->created_at
+                                                : std::string());
+        profile_card_.Paint(dc, bounds);
+        if (profile_card_.animating() && !card_timer_.running()) {
+          card_timer_.Start(16, /*coalescable=*/true);
         }
         break;
       }
@@ -3520,6 +3565,10 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
     account_->RequestRenameAccount(base::WideToUTF8(value));
   } else if (item.action == "avatar") {
     account_->RequestEditAvatar();
+  } else if (item.action == "downloadcard") {
+    profile_card_.ExportPng(hwnd());
+  } else if (item.action == "card") {
+    // The card's click is its drag (OnMouseDown); nothing on release.
   } else if (item.action == "language") {
     // System default, then every locale the catalog carries, each named in
     // its own language.
@@ -3710,6 +3759,12 @@ void PhiSettingsWindow::OnMouseDown(int hit, POINT client_pt) {
     drag_ = Capture(this);
     Apply(item, client_pt.x);
     ScheduleRebuild();
+  } else if (item.kind == ItemKind::kProfileCard) {
+    // The card is dragged through its grid, and springs back on release.
+    card_drag_ = true;
+    drag_ = Capture(this);
+    profile_card_.BeginDrag(client_pt);
+    Invalidate();
   }
 }
 
@@ -3719,6 +3774,15 @@ void PhiSettingsWindow::OnClick(int hit, POINT client_pt) {
   if (dragging_) {
     dragging_ = false;
     drag_.Release();
+    return;
+  }
+  if (card_drag_) {
+    card_drag_ = false;
+    drag_.Release();
+    profile_card_.EndDrag();
+    if (profile_card_.animating() && !card_timer_.running()) {
+      card_timer_.Start(16, /*coalescable=*/true);
+    }
     return;
   }
   // Press and release must land on the SAME control: the old handler fired
@@ -3788,7 +3852,22 @@ LRESULT PhiSettingsWindow::OnWindowMessage(UINT msg,
         *handled = true;
         return 0;
       }
+      if (card_drag_ && (wparam & MK_LBUTTON)) {
+        if (profile_card_.Drag({GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)})) {
+          Invalidate();
+        }
+        *handled = true;
+        return 0;
+      }
       break;
+    case kMsgProfileCardFrame:
+      // A frame decoded: repaint, and let the intro start if it can.
+      Invalidate();
+      if (profile_card_.animating() && !card_timer_.running()) {
+        card_timer_.Start(16, /*coalescable=*/true);
+      }
+      *handled = true;
+      return 0;
     case WM_SETCURSOR: {
       // The house rule (phi_popup_chrome.cc): a hand for links, the arrow
       // for everything else — the hover wash is the cue there.
@@ -3861,6 +3940,15 @@ void PhiSettingsWindow::OnDpiChanged(UINT old_dpi) {
 }
 
 void PhiSettingsWindow::OnTimerFired(UINT_PTR id) {
+  if (id == card_timer_.id()) {
+    if (profile_card_.Tick()) {
+      Invalidate();
+    }
+    if (!profile_card_.animating()) {
+      card_timer_.Stop();
+    }
+    return;
+  }
   if (id != profile_poll_.id()) {
     return;
   }
@@ -3869,8 +3957,21 @@ void PhiSettingsWindow::OnTimerFired(UINT_PTR id) {
   ScheduleRebuild();
 }
 
+void PhiSettingsWindow::OnCaptureLost() {
+  // A stolen capture ends the card drag where the release would have.
+  if (card_drag_) {
+    card_drag_ = false;
+    profile_card_.EndDrag();
+    if (profile_card_.animating() && !card_timer_.running()) {
+      card_timer_.Start(16, /*coalescable=*/true);
+    }
+  }
+  dragging_ = false;
+}
+
 void PhiSettingsWindow::OnNcDestroy() {
   profile_poll_.Stop();
+  card_timer_.Stop();
   PhiSecondaryWindow::OnNcDestroy();
 }
 

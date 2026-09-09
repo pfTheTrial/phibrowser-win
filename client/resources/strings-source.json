@@ -1895,14 +1895,6 @@
    "comment": "account — Windows-only",
    "en": "Cancel"
   },
-  "settings.account.changeName": {
-   "comment": "account — Windows-only",
-   "en": "Change Name…"
-  },
-  "settings.account.changePicture": {
-   "comment": "account — Windows-only",
-   "en": "Change Picture…"
-  },
   "settings.account.defaultBrowser.defaultStatus": {
    "comment": "Account settings - Status text when Phi is the default browser",
    "en": "Phi is your default browser"
@@ -1959,14 +1951,6 @@
    "comment": "account — Mac key (translations by key)",
    "en": "Sign out of Phi?"
   },
-  "settings.account.profile.nameRow": {
-   "comment": "account — Windows-only",
-   "en": "Name"
-  },
-  "settings.account.profile.pictureRow": {
-   "comment": "account — Windows-only",
-   "en": "Picture"
-  },
   "settings.account.reauthentication.tooltip": {
    "comment": "account — Mac key (translations by key)",
    "en": "Please reauthenticate to restore account features."
@@ -2002,6 +1986,10 @@
   "settings.account.saving": {
    "comment": "account — Windows-only",
    "en": "Updating your account…"
+  },
+  "settings.account.sharing.downloadImageButton": {
+   "comment": "account — Mac key (translations by key)",
+   "en": "Download image"
   },
   "settings.account.signedInAs": {
    "comment": "account — Windows-only",
