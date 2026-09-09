@@ -118,6 +118,9 @@ class PhiSettingsHost {
   // GeneralSettings.showTabPreviews — the hover cards on tab, pin and
   // bookmark rows. On by default, as on Mac.
   virtual void SetShowTabPreviews(bool enabled) = 0;
+  // GeneralSettings.showOpenTabIndicators — the dot on inactive open pins
+  // and bookmarks. Off by default, as on Mac.
+  virtual void SetShowOpenTabIndicators(bool enabled) = 0;
   // The UI language. An EMPTY tag means "follow the operating system", which
   // is the default and the only value that tracks a later OS change.
   virtual void SetLanguagePreference(const std::string& tag) = 0;

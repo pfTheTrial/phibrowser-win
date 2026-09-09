@@ -30,6 +30,7 @@
 #include "phibrowser-win/client/phi_i18n.h"
 #include "phibrowser-win/client/phi_icons.h"
 #include "phibrowser-win/client/phi_extensions_popover.h"
+#include "phibrowser-win/client/phi_agent_handoff_prompt.h"
 #include "phibrowser-win/client/phi_features.h"
 #include "phibrowser-win/client/phi_file_io.h"
 #include "phibrowser-win/client/phi_modal_scope.h"
@@ -93,6 +94,10 @@ constexpr UINT WM_PHI_PUSH_SPACES = WM_APP + 8;
 // throttle callback it is requested from (a modal loop there is the lane 1
 // §3.1 hazard); the router runs one queued ask per message.
 constexpr UINT WM_PHI_ASK_SPACE = WM_APP + 9;
+// Agent Autoview's re-evaluation, DEFERRED out of the verb handler or the
+// teardown that reported the run-state edge: a window swap must not start
+// inside either.
+constexpr UINT WM_PHI_AUTOVIEW = WM_APP + 10;
 }  // namespace
 
 void PhiCoordinator::OnFrameworkReady(phi_framework::PhiFramework* framework,
@@ -241,6 +246,14 @@ LRESULT CALLBACK PhiCoordinator::MsgWndProc(HWND hwnd,
       self->FlushForShutdown();
     }
     return msg == WM_QUERYENDSESSION ? TRUE : 0;
+  }
+  if (msg == WM_PHI_AUTOVIEW) {
+    auto* self = reinterpret_cast<PhiCoordinator*>(
+        ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    if (self) {
+      self->AutoViewReevaluate();
+    }
+    return 0;
   }
   if (msg == WM_PHI_READER_RETIRE) {
     auto* self = reinterpret_cast<PhiCoordinator*>(
@@ -1930,6 +1943,14 @@ void PhiCoordinator::SetShowTabPreviews(bool enabled) {
   preferences_.SetShowTabPreviews(enabled);
 }
 
+bool PhiCoordinator::ShowOpenTabIndicators() const {
+  return preferences_.ShowOpenTabIndicators();
+}
+
+void PhiCoordinator::SetShowOpenTabIndicators(bool enabled) {
+  preferences_.SetShowOpenTabIndicators(enabled);
+}
+
 bool PhiCoordinator::PeekViewEnabled() const {
   return preferences_.PeekViewEnabled();
 }
@@ -2053,6 +2074,14 @@ void PhiCoordinator::SetDeveloperMode(bool enabled) {
 
 bool PhiCoordinator::AllowAgentUserSpaces() const {
   return preferences_.AllowAgentUserSpaces();
+}
+
+bool PhiCoordinator::AgentAutoView() const {
+  return preferences_.AgentAutoView();
+}
+
+void PhiCoordinator::RequestAgentAutoView(bool enabled) {
+  preferences_.SetAgentAutoView(enabled);
 }
 
 bool PhiCoordinator::AllowAgentControl() const {
@@ -2226,6 +2255,9 @@ void PhiCoordinator::OnPreferencesChanged(
     case PreferenceChange::kFullUrl:
       registry_.InvalidateAll();  // The address fields repaint.
       break;
+    case PreferenceChange::kOpenIndicators:
+      registry_.InvalidateAll();  // The sidebars repaint their dots.
+      break;
     case PreferenceChange::kPeek:
       PushPeekPreferences();  // The framework owns both decisions it gates.
       break;
@@ -2260,6 +2292,9 @@ void PhiCoordinator::OnPreferencesChanged(
       if (dispatcher_) {
         dispatcher_->ForgetAgentControlDenial();
       }
+      break;
+    case PreferenceChange::kAgentAutoView:
+      AgentRunStateChanged();  // Turning it on surfaces a running agent now.
       break;
     case PreferenceChange::kDeveloper:
     case PreferenceChange::kAgentUserSpaces:
@@ -2587,8 +2622,22 @@ std::vector<PhiAgentPipView> PhiCoordinator::AgentSpaces() const {
   return agent_manager_.Pips();
 }
 
-void PhiCoordinator::RequestWatchAgentSpace(const std::string& task_id) {
-  agent_manager_.RequestWatch(task_id);
+void PhiCoordinator::RequestWatchAgentSpace(const std::string& task_id,
+                                            int64_t watcher_slot) {
+  agent_manager_.RequestWatch(task_id, watcher_slot);
+}
+
+void PhiCoordinator::RequestLeaveWatchedAgentSpace(
+    const std::string& space_id) {
+  // The watcher comes back first; then it shows the Space the user picked
+  // inside the agent window (attached already, or requested cold).
+  const int64_t slot = agent_manager_.EndWatch(/*park_agent=*/true);
+  if (slot == 0 || space_id.empty()) {
+    return;
+  }
+  bool pending = false;
+  bool cold = false;
+  SwitchSlotToSpace(SlotId(slot), space_id, &pending, &cold);
 }
 
 void PhiCoordinator::RequestAgentTakeControl(const std::string& task_id) {
@@ -2606,6 +2655,58 @@ void PhiCoordinator::RequestAgentFinish(const std::string& task_id) {
 PhiShellWindow* PhiCoordinator::ControllerForAgentWindow(
     BrowserId window_id) {
   return registry_.Resolve(window_id.value);
+}
+
+PhiShellWindow* PhiCoordinator::ControllerForSlot(int64_t slot) {
+  return registry_.Resolve(slot);
+}
+
+void PhiCoordinator::ShowAgentHandoffPrompt(const std::string& task_id,
+                                            const std::string& message) {
+  PhiAgentHandoffPrompt::Show(FirstUserController(), task_id, message, this);
+}
+
+void PhiCoordinator::DismissAgentHandoffPrompt(const std::string& task_id) {
+  PhiAgentHandoffPrompt::DismissFor(task_id);
+}
+
+void PhiCoordinator::AgentRunStateChanged() {
+  if (msg_hwnd_) {
+    ::PostMessageW(msg_hwnd_, WM_PHI_AUTOVIEW, 0, 0);
+  }
+}
+
+void PhiCoordinator::AutoViewReevaluate() {
+  if (!preferences_.AgentAutoView() || !preferences_.AllowAgentControl()) {
+    return;
+  }
+  PhiAgentSpaces& spaces = agent_manager_.spaces();
+  const std::string watched = agent_manager_.watched_task();
+  if (!watched.empty()) {
+    if (const PhiAgentSpaces::Space* current = spaces.Find(watched)) {
+      // Watching a running agent, or holding control of one — stay put.
+      if (current->status == "running" ||
+          current->ownership == PhiAgentSpaces::Ownership::kUser) {
+        return;
+      }
+    }
+  }
+  const PhiAgentSpaces::Space* next = nullptr;
+  for (const auto& [task_id, space] : spaces.entries()) {
+    if (space.status == "running" &&
+        space.ownership == PhiAgentSpaces::Ownership::kAgent &&
+        space.window_id.valid() && (!next || space.number < next->number)) {
+      next = &space;
+    }
+  }
+  if (!next || next->task_id == watched) {
+    return;
+  }
+  LOG(INFO) << "[PhiAgent] autoview: surfacing running task "
+            << next->task_id;
+  PhiShellWindow* watcher = FirstUserController();
+  agent_manager_.RequestWatch(next->task_id,
+                              watcher ? watcher->slot().value : 0);
 }
 
 PhiShellWindow* PhiCoordinator::FirstUserController() {
@@ -2656,7 +2757,7 @@ void PhiCoordinator::SweepAgentSpaces() {
 }
 
 void PhiCoordinator::RequestShowTranscript(const std::string& task_id) {
-  if (!agent_manager_.spaces().Find(task_id)) {
+  if (!kPhiTranscriptEnabled || !agent_manager_.spaces().Find(task_id)) {
     return;
   }
   // Own the panel from the first USER window's shell — the panel floats, so

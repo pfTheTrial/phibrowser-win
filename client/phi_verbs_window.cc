@@ -920,6 +920,8 @@ PhiVerbResult PhiControlDispatcher::VerbSettingsGet(
               : "newTabPage");
   out.Set("alwaysShowFullUrl", coordinator_->settings().always_show_full_url);
   out.Set("showTabPreviews", coordinator_->settings().show_tab_previews);
+  out.Set("showOpenTabIndicators",
+          coordinator_->settings().show_open_tab_indicators);
   out.Set("restoreLastSession", coordinator_->settings().restore_last_session);
   out.Set("analyticsEnabled", coordinator_->settings().analytics_enabled);
   out.Set("peekViewEnabled", coordinator_->settings().peek_view_enabled);
@@ -966,6 +968,10 @@ PhiVerbResult PhiControlDispatcher::VerbSettingsSet(
   }
   if (std::optional<bool> previews = ctx.params.FindBool("showTabPreviews")) {
     coordinator_->SetShowTabPreviews(*previews);
+    ok = true;
+  }
+  if (std::optional<bool> dots = ctx.params.FindBool("showOpenTabIndicators")) {
+    coordinator_->SetShowOpenTabIndicators(*dots);
     ok = true;
   }
   if (std::optional<bool> restore =
@@ -1022,6 +1028,8 @@ PhiVerbResult PhiControlDispatcher::VerbSettingsSet(
   out.Set("saturation", coordinator_->settings().saturation);
   out.Set("alwaysShowFullUrl", coordinator_->settings().always_show_full_url);
   out.Set("showTabPreviews", coordinator_->settings().show_tab_previews);
+  out.Set("showOpenTabIndicators",
+          coordinator_->settings().show_open_tab_indicators);
   out.Set("restoreLastSession", coordinator_->settings().restore_last_session);
   out.Set("peekViewEnabled", coordinator_->settings().peek_view_enabled);
   out.Set("autoPeekViewEnabled",

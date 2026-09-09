@@ -897,6 +897,12 @@ void PhiSettingsWindow::BuildGeneral(int* y) {
   AddToggleRow(y, L"Show tab preview cards", prefs_->ShowTabPreviews(),
                /*enabled=*/true, "tabpreviews");
   AddDividerRow(y);
+  AddToggleRow(y, L"Show open tab indicators",
+               prefs_->ShowOpenTabIndicators(),
+               /*enabled=*/true, "openindicators",
+               L"Show a dot on inactive pinned tabs and bookmarks that are "
+               L"currently open.");
+  AddDividerRow(y);
   {
     const size_t first = items_.size();
     const RECT area = AddRow(
@@ -3129,6 +3135,8 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
     host_->SetNewTabBehavior(static_cast<PhiNewTabBehavior>(item.value));
   } else if (item.action == "tabpreviews") {
     host_->SetShowTabPreviews(!item.on);
+  } else if (item.action == "openindicators") {
+    host_->SetShowOpenTabIndicators(!item.on);
   } else if (item.action == "fullurl") {
     host_->SetAlwaysShowFullUrl(!item.on);
   } else if (item.action == "restoresession") {

@@ -1949,6 +1949,7 @@ Changes app settings. developerMode / allowAgentUserSpaces / testRig / analytics
 | `saturation` | integer | no | — | Tint strength (clamped). |
 | `alwaysShowFullUrl` | boolean | no | — | Omnibox url display. |
 | `showTabPreviews` | boolean | no | — | Hover previews. |
+| `showOpenTabIndicators` | boolean | no | — | Open-tab dots. |
 | `restoreLastSession` | boolean | no | — | Session restore. |
 | `peekViewEnabled` | boolean | no | — | Peek's master switch. |
 | `autoPeekViewEnabled` | boolean | no | — | Automatic peek. |

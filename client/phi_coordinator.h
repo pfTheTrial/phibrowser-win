@@ -209,7 +209,9 @@ class PhiCoordinator : public SidebarHost,
   void RequestSwitchSpace(int64_t slot, const std::string& space_id) override;
   void RequestNewWindow(int64_t slot) override;
   std::vector<PhiAgentPipView> AgentSpaces() const override;
-  void RequestWatchAgentSpace(const std::string& task_id) override;
+  void RequestWatchAgentSpace(const std::string& task_id,
+                              int64_t watcher_slot) override;
+  void RequestLeaveWatchedAgentSpace(const std::string& space_id) override;
   void RequestAgentTakeControl(const std::string& task_id) override;
   void RequestAgentHandBack(const std::string& task_id) override;
   void RequestAgentFinish(const std::string& task_id) override;
@@ -305,6 +307,7 @@ class PhiCoordinator : public SidebarHost,
   bool AlwaysShowFullUrl() const;
   void SetAlwaysShowFullUrl(bool enabled) override;
   bool ShowTabPreviews() const override;
+  bool ShowOpenTabIndicators() const override;
   void NoteSlotActiveSpace(const std::string& space_id) override;
   void NoteSpaceWindow(const std::string& space_id,
                        int64_t browser_window_id) override;
@@ -321,6 +324,7 @@ class PhiCoordinator : public SidebarHost,
   void RequestReclaimTab(int tab_id) override;
   void RequestReleaseTab(int tab_id) override;
   void SetShowTabPreviews(bool enabled) override;
+  void SetShowOpenTabIndicators(bool enabled) override;
   std::string LanguagePreference() const;
   void SetLanguagePreference(const std::string& tag) override;
   bool RestoreLastSession() const;
@@ -380,8 +384,10 @@ class PhiCoordinator : public SidebarHost,
   void RestoreAllShortcuts() override;
   bool DeveloperMode() const;
   void SetDeveloperMode(bool enabled) override;
-  bool AllowAgentControl() const;
+  bool AllowAgentControl() const override;
   void SetAllowAgentControl(bool enabled) override;
+  bool AgentAutoView() const override;
+  void RequestAgentAutoView(bool enabled) override;
   bool AllowAgentUserSpaces() const;
   void SetAllowAgentUserSpaces(bool enabled) override;
   void SetAgentProfileAllowed(const std::string& profile_id,
@@ -479,6 +485,14 @@ class PhiCoordinator : public SidebarHost,
     agent_manager_.PushOwnershipChanged(task_id);
   }
   void RefreshAgentOverlay() { agent_manager_.RefreshOverlay(); }
+  // The verb ladder's seams onto the agent host (the overrides below are
+  // private): the pips repaint, the Autoview edge, the shells.
+  void InvalidateAgentPips() { registry_.InvalidateUserSlots(); }
+  void NoteAgentRunStateChanged() { AgentRunStateChanged(); }
+  PhiShellWindow* AgentWindowShell(BrowserId window_id) {
+    return ControllerForAgentWindow(window_id);
+  }
+  PhiShellWindow* FirstUserShell() { return FirstUserController(); }
   // The profile service (docs/architecture-review.md §3.4) and the seams the
   // verb ladder reaches it through. `PendingProfile` keeps its old spelling
   // here so the ladder's `PhiCoordinator::PendingProfile` still names it.
@@ -979,6 +993,16 @@ class PhiCoordinator : public SidebarHost,
   PhiAgentSpaceManager agent_manager_{*this};
   // PhiAgentSpaceManager::Host:
   PhiShellWindow* ControllerForAgentWindow(BrowserId window_id) override;
+  PhiShellWindow* ControllerForSlot(int64_t slot) override;
+  void ShowAgentHandoffPrompt(const std::string& task_id,
+                              const std::string& message) override;
+  void DismissAgentHandoffPrompt(const std::string& task_id) override;
+  void AgentRunStateChanged() override;
+  // View ▸ Agent Autoview's rule (the Mac's autoViewReevaluate): stay put
+  // while the watched task is running or the user holds it; otherwise
+  // surface the lowest-numbered running, agent-owned task. Runs on the
+  // posted turn after every run-state edge, never inside one.
+  void AutoViewReevaluate();
   PhiShellWindow* FirstUserController() override;
   void InvalidateUserSlots() override;
   void InvalidateAll() override;

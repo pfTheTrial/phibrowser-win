@@ -48,6 +48,7 @@ class PhiPreferences : public ChromePrefsHost {
     kNewTab,
     kFullUrl,        // The address fields repaint.
     kPreviews,
+    kOpenIndicators,  // The sidebar's open-tab dots: every sidebar repaints.
     kPeek,           // Both peek switches: the framework mirror is due.
     kRestore,        // The per-profile framework mirror is due.
     kBookmarkBar,    // Either bar flag: every slot re-fits its content.
@@ -56,6 +57,7 @@ class PhiPreferences : public ChromePrefsHost {
     kShortcuts,      // The override table (the hook reads chords live).
     kDeveloper,
     kAgentControl,    // The master agent switch (Developer ▸ Agent control).
+    kAgentAutoView,   // View ▸ Agent Autoview: the coordinator re-evaluates.
     kAgentUserSpaces,
     kAnalytics,      // The telemetry consent.
     kPinScope,       // The write-through mirror of the tab store's scope.
@@ -96,6 +98,7 @@ class PhiPreferences : public ChromePrefsHost {
   PhiLayoutMode LayoutMode() const override;
   void RequestLayoutMode(PhiLayoutMode mode) override;
   bool ShowTabPreviews() const override;
+  bool ShowOpenTabIndicators() const override;
   bool NewTabOpensOmnibox() const override;
   int SidebarWidth() const override;
   void RequestSidebarWidth(int dip) override;
@@ -126,6 +129,7 @@ class PhiPreferences : public ChromePrefsHost {
   bool AlwaysShowFullUrl() const { return settings_.always_show_full_url; }
   void SetAlwaysShowFullUrl(bool enabled);
   void SetShowTabPreviews(bool enabled);
+  void SetShowOpenTabIndicators(bool enabled);
   bool PeekViewEnabled() const { return settings_.peek_view_enabled; }
   void SetPeekViewEnabled(bool enabled);
   bool AutoPeekViewEnabled() const { return settings_.auto_peek_view_enabled; }
@@ -134,8 +138,11 @@ class PhiPreferences : public ChromePrefsHost {
   void SetRestoreLastSession(bool enabled);
   bool DeveloperMode() const { return settings_.developer_mode; }
   void SetDeveloperMode(bool enabled);
-  bool AllowAgentControl() const { return settings_.allow_agent_control; }
+  bool AllowAgentControl() const override;
   void SetAllowAgentControl(bool enabled);
+  bool AgentAutoView() const override;
+  void SetAgentAutoView(bool enabled);
+  void RequestAgentAutoView(bool enabled) override;
   bool AllowAgentUserSpaces() const {
     return settings_.allow_agent_user_spaces;
   }

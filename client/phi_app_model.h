@@ -170,6 +170,9 @@ struct PhiSettings {
   NewTabBehavior new_tab_behavior = NewTabBehavior::kNewTabPage;
   bool always_show_full_url = false;
   bool show_tab_previews = true;
+  // The Mac's GeneralSettings.showOpenTabIndicators: a dot on inactive
+  // pinned tabs and bookmarks whose tab is open. Off by default, as on Mac.
+  bool show_open_tab_indicators = false;
   bool peek_view_enabled = true;
   bool auto_peek_view_enabled = true;
   bool restore_last_session = false;
@@ -189,6 +192,11 @@ struct PhiSettings {
   // the first connection raises a prompt that offers to turn it on.
   bool allow_agent_control = false;
   bool allow_agent_user_spaces = false;
+  // View ▸ Agent Autoview (the Mac's AgentSpaces.autoViewEnabled): while
+  // on, the focused window follows the operating agent — a running,
+  // agent-owned Space is surfaced when the user is not already watching
+  // one. Off by default.
+  bool agent_auto_view = false;
   // Profiles an agent may NOT bind a new agent Space to (the Mac's
   // AgentSpaces.disallowedAgentProfileIds). Stored as the refusals rather
   // than the permissions so a profile created later is allowed by default,

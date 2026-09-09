@@ -44,6 +44,7 @@ void TestSettingsDefaults() {
   CHECK(s.new_tab_behavior == NewTabBehavior::kNewTabPage);
   CHECK(!s.always_show_full_url);
   CHECK(s.show_tab_previews);
+  CHECK(!s.show_open_tab_indicators);
   CHECK(s.peek_view_enabled);
   CHECK(s.auto_peek_view_enabled);
   CHECK(!s.restore_last_session);

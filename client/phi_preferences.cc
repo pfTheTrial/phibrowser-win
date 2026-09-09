@@ -128,6 +128,10 @@ bool PhiPreferences::ShowTabPreviews() const {
   return settings_.show_tab_previews;
 }
 
+bool PhiPreferences::ShowOpenTabIndicators() const {
+  return settings_.show_open_tab_indicators;
+}
+
 bool PhiPreferences::NewTabOpensOmnibox() const {
   return settings_.new_tab_behavior == model::NewTabBehavior::kOmnibox;
 }
@@ -259,6 +263,15 @@ void PhiPreferences::SetShowTabPreviews(bool enabled) {
   Notify(PreferenceChange::kPreviews);
 }
 
+void PhiPreferences::SetShowOpenTabIndicators(bool enabled) {
+  if (enabled == settings_.show_open_tab_indicators) {
+    return;
+  }
+  settings_.show_open_tab_indicators = enabled;
+  MarkDirty();
+  Notify(PreferenceChange::kOpenIndicators);
+}
+
 void PhiPreferences::SetPeekViewEnabled(bool enabled) {
   if (enabled == settings_.peek_view_enabled) {
     return;
@@ -306,6 +319,27 @@ void PhiPreferences::SetAllowAgentControl(bool enabled) {
             << (enabled ? "enabled" : "disabled");
   MarkDirty();
   Notify(PreferenceChange::kAgentControl);
+}
+
+bool PhiPreferences::AllowAgentControl() const {
+  return settings_.allow_agent_control;
+}
+
+bool PhiPreferences::AgentAutoView() const {
+  return settings_.agent_auto_view;
+}
+
+void PhiPreferences::RequestAgentAutoView(bool enabled) {
+  SetAgentAutoView(enabled);
+}
+
+void PhiPreferences::SetAgentAutoView(bool enabled) {
+  if (settings_.agent_auto_view == enabled) {
+    return;
+  }
+  settings_.agent_auto_view = enabled;
+  MarkDirty();
+  Notify(PreferenceChange::kAgentAutoView);
 }
 
 void PhiPreferences::SetAllowAgentUserSpaces(bool enabled) {

@@ -88,6 +88,13 @@ struct PhiNewSpaceSpec {
 struct PhiAgentPipView {
   std::string task_id;   // The skill's taskId; also the pip's identity.
   std::string caption;   // The agent's current status line (may be empty).
+  std::string agent_name;  // "Claude Code", "Codex", … or empty.
+  int number = 0;        // The Mac's task ordinal ("R1").
+  // What the corner badge shows (the Mac's agentBadge, in precedence):
+  // error (failed, or an error the user has not seen yet), completed,
+  // the user holding control, idle, else running.
+  enum class Badge { kRunning, kIdle, kUserHolds, kCompleted, kError };
+  Badge badge = Badge::kRunning;
   bool watched = false;  // Its window is currently surfaced on-screen.
 };
 
@@ -279,6 +286,15 @@ class ChromePrefsHost {
   // The Mac's GeneralSettings.showTabPreviews: whether a settled hover on a
   // tab, pin or bookmark row raises its page-snapshot card.
   virtual bool ShowTabPreviews() const = 0;
+  // The Mac's GeneralSettings.showOpenTabIndicators: a dot on an inactive
+  // pinned tab or bookmark whose tab is open. Off by default.
+  virtual bool ShowOpenTabIndicators() const = 0;
+  // Developer ▸ "Allow agents to control Phi": gates the View menu's agent
+  // items, as the Mac's cdpAgentAccessEnabled does.
+  virtual bool AllowAgentControl() const = 0;
+  // View ▸ Agent Autoview (the Mac's autoViewEnabled).
+  virtual bool AgentAutoView() const = 0;
+  virtual void RequestAgentAutoView(bool enabled) = 0;
   // "New tab behavior = Omnibox": a new tab focuses the address field
   // instead of opening a page (the tab is born on commit).
   virtual bool NewTabOpensOmnibox() const = 0;
@@ -307,9 +323,18 @@ class AgentHost {
  public:
   virtual ~AgentHost() = default;
   // Live agent Spaces to show as pips (empty when none). The user watches one
-  // by clicking its pip, which toggles its hidden window on/off screen.
+  // by clicking its pip: the agent's hidden window takes the frame of the
+  // window the pip was clicked in (`watcher_slot`) and that window is
+  // concealed until the watch ends — the Mac's slot.activate, ONE window on
+  // screen, not the agent's beside the user's. Clicking the watched pip
+  // again ends the watch.
   virtual std::vector<PhiAgentPipView> AgentSpaces() const = 0;
-  virtual void RequestWatchAgentSpace(const std::string& task_id) = 0;
+  virtual void RequestWatchAgentSpace(const std::string& task_id,
+                                      int64_t watcher_slot) = 0;
+  // A user-Space pip clicked INSIDE the watched agent window: the watch
+  // ends, the concealed window comes back and shows `space_id` (empty:
+  // just comes back). The agent's hidden browser never switches Space.
+  virtual void RequestLeaveWatchedAgentSpace(const std::string& space_id) = 0;
   // Watch-mode control pill (C3): ownership transfers ONLY through these —
   // the fog barrier is what makes that true. Finish ends the task.
   virtual void RequestAgentTakeControl(const std::string& task_id) = 0;
@@ -554,7 +579,20 @@ class PhiShellWindow : public PhiHitSource,
   bool OmniboxFieldHidden() const;
   // Surfaces (visible=true) or parks off-screen (visible=false) an agent
   // window so the user can watch it live. No-op on a non-agent window.
-  void SetAgentVisible(bool visible);
+  // `frame` (screen px) is the watching window's frame, which the agent
+  // window takes over exactly; null centres it on the work area.
+  void SetAgentVisible(bool visible, const RECT* frame = nullptr);
+  // Hides (concealed=true) or brings back (false) a USER window while an
+  // agent window stands in its frame — the Mac's ordering the slot's
+  // previous window out. No-op on an agent window.
+  void SetConcealedForWatch(bool concealed);
+  // Whether the agent holds this (agent) window: the owner tells it on
+  // every ownership change. While it does, the window refuses what the
+  // Mac's refuses under agent ownership — New Tab, closing tabs, the tab
+  // menus, Back/Forward — so a stray keystroke never moves the agent's
+  // page; the pill's Take control is the one way in.
+  void SetAgentOwned(bool agent_owned);
+  bool AgentHoldsInput() const { return agent_ && agent_owned_; }
 
   // Click on a pin or a sidebar bookmark row (cell click, context-menu
   // Open, or the pinned.open verb): focus the bound live tab if it still
@@ -1213,6 +1251,7 @@ class PhiShellWindow : public PhiHitSource,
   void MenuNewTab() override;
   void MenuToggleSidebar() override;
   void MenuToggleReader() override;
+  bool MenuAgentHoldsInput() const override;
   void MenuToggleDownloads() override;
   void MenuToggleSearchTabs() override;
   void MenuOpenFeedback() override;
@@ -1423,6 +1462,7 @@ class PhiShellWindow : public PhiHitSource,
   bool incognito_ = false;
   // For an agent window: whether it is currently surfaced (being watched).
   bool agent_visible_ = false;
+  bool agent_owned_ = false;
   bool floating_layout_ = false;
   HWND floating_sidebar_ = nullptr;
   int floating_offset_y_ = 0;

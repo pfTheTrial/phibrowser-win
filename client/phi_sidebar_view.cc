@@ -66,18 +66,39 @@ using sidebar_metrics::kStripPinGap;
 using sidebar_metrics::kStripPinSize;
 using sidebar_metrics::kStripPinToTabs;
 
-// The Mac's TabDiscardedFaviconOutline: a 1px dashed ring around the favicon
-// of a tab whose renderer is gone — restored-but-never-loaded (unloaded) or
-// discarded. The Mac aligned both states on this ring (dda300c6) after a
-// short-lived dimmed-favicon treatment; the dimmed TITLE stays, as before.
-void DrawDormantRing(HDC dc, const RECT& icon, COLORREF color) {
-  // 2px of air around a 16px icon; scales with the icon at higher DPI. The
-  // dashes scale the same way (2 on, 2 off at 16px).
-  const int inset = std::max(2, static_cast<int>(icon.right - icon.left) / 8);
-  PhiStrokeEllipseDashedAA(dc,
-                           {icon.left - inset, icon.top - inset,
-                            icon.right + inset, icon.bottom + inset},
-                           color, 1, inset, inset);
+// A RECLAIMED tab — restored-but-never-loaded (unloaded) or discarded —
+// draws its favicon at 30% (the Mac's TabFaviconPresentation.reclaimedOpacity,
+// a700125c, which replaced the short-lived dashed ring); the dimmed TITLE on
+// tab rows stays, as before.
+constexpr float kReclaimedOpacity = 0.3f;
+
+// The Mac's TabOpenIndicatorView (a700125c): a 2pt dot — black in light,
+// white in dark — marking an inactive pinned tab or bookmark whose tab is
+// open, behind "Show open tab indicators" (off by default). It hangs 3pt
+// under a pinned favicon (2pt on the Comfortable strip, where the cell is
+// shorter) and leads a bookmark's favicon by 2pt. A reclaimed tab dims the
+// dot with its favicon.
+constexpr int kOpenDotDiameter = 2;
+constexpr int kOpenDotPinnedSpacing = 3;
+constexpr int kOpenDotStripSpacing = 2;
+constexpr int kOpenDotBookmarkSpacing = 2;
+
+COLORREF OpenDotInk(const PhiPalette& palette) {
+  return palette.dark ? RGB(255, 255, 255) : RGB(0, 0, 0);
+}
+
+// `ink` at `opacity` over `ground` — the dot has no alpha channel of its own.
+COLORREF FadeInk(COLORREF ink, COLORREF ground, float opacity) {
+  const auto mix = [&](int a, int b) {
+    return static_cast<int>(b + (a - b) * opacity + 0.5f);
+  };
+  return RGB(mix(GetRValue(ink), GetRValue(ground)),
+             mix(GetGValue(ink), GetGValue(ground)),
+             mix(GetBValue(ink), GetBValue(ground)));
+}
+
+void DrawOpenDot(HDC dc, int left, int top, int diameter, COLORREF ink) {
+  PhiFillEllipseAA(dc, {left, top, left + diameter, top + diameter}, ink);
 }
 
 }  // namespace
@@ -283,6 +304,7 @@ PhiSidebarView::PhiSidebarView(PhiSidebarShell* shell,
                                AgentHost* agent_host,
                                WindowHost* window_host,
                                const PhiWindowModel* model,
+                               bool agent,
                                bool incognito)
     : shell_(shell),
       slot_(slot),
@@ -293,7 +315,8 @@ PhiSidebarView::PhiSidebarView(PhiSidebarShell* shell,
       agent_host_(agent_host),
       window_host_(window_host),
       model_(model),
-      incognito_(incognito) {}
+      incognito_(incognito),
+      agent_(agent) {}
 
 // A live drag goes with the view: the session's destructor IS AbortDrag, so
 // the drag image and the split-drop overlay come down by ownership rather
@@ -373,7 +396,9 @@ bool PhiSidebarView::OnContentRowClick(POINT pt) {
           ::PtInRect(&row.surface_box, pt)) {
         Apply(SidebarCloseSurface{row.key});  // The indicator's minus.
       } else if (::PtInRect(&row.close_box, pt)) {
-        Apply(SidebarClose{row.key, -1});  // A merged row: both panes.
+        if (!agent_holds_input_) {  // The Mac refuses ✕ under the agent.
+          Apply(SidebarClose{row.key, -1});  // A merged row: both panes.
+        }
       } else if (row.split_id.empty() && (::GetKeyState(VK_MENU) & 0x8000)) {
         // Alt-click, the Mac's option-click: split this tab with the active
         // one (performSplitAction). Either pane may be bound to a pinned tab
@@ -653,15 +678,17 @@ void PhiSidebarView::Rebuild() {
       units.push_back(pin.split ? 2 : 1);
     }
     pinned_grid_rows_ =
-        comfortable || incognito_
+        comfortable || incognito_ || agent_
             ? 0
             : LayoutPinnedGrid(units, GridMetrics(PhiSidebarRects{})).rows;
     shell_->SidebarSetRowCounts(
         pinned_grid_rows_,
-        incognito_ ? 0 : static_cast<int>(VisibleBookmarkCells().size()));
+        incognito_ || agent_
+            ? 0
+            : static_cast<int>(VisibleBookmarkCells().size()));
   }
   const PhiSidebarRects layout = shell_->SidebarRects();
-  RebuildShortcuts(layout);
+  RebuildShortcuts(layout, snapshot);
 
   // One paint row per content node; a split node is ONE merged row.
   const auto fill_pane = [&](const TabSnapshot& tab, std::wstring* title,
@@ -965,11 +992,12 @@ void PhiSidebarView::Rebuild() {
   PublishHits(layout);
 }
 
-void PhiSidebarView::RebuildShortcuts(const PhiSidebarRects& layout) {
+void PhiSidebarView::RebuildShortcuts(const PhiSidebarRects& layout,
+                                      const WindowSnapshot& snapshot) {
   pinned_.clear();
   bookmarks_.clear();
-  if (!sidebar_host_ || incognito_) {
-    return;  // Nothing persists from an incognito window.
+  if (!sidebar_host_ || incognito_ || agent_) {
+    return;  // Nothing persists from an incognito or agent window.
   }
   const auto consume = [](PhiStoredRowView view) {
     ShortcutRow row;
@@ -991,12 +1019,20 @@ void PhiSidebarView::RebuildShortcuts(const PhiSidebarRects& layout) {
     return row;
   };
   // The tree decides what a cell IS (open, active, which live panes); the
-  // store view only supplies what it looks like.
-  const auto bind = [](const SidebarCell& cell, ShortcutRow* row) {
+  // store view only supplies what it looks like. Whether a bound pane is
+  // dormant is the live tab's own state, read from the snapshot the tree
+  // was built from.
+  const auto dormant = [&](int tab_id) {
+    const TabSnapshot* tab = PhiFindTabIn(snapshot, TabId(tab_id));
+    return tab && tab->unloaded;
+  };
+  const auto bind = [&](const SidebarCell& cell, ShortcutRow* row) {
     row->open = cell.binding.open();
     row->active = cell.binding.active;
     row->tab_id = TabId(cell.binding.tab_a);
     row->tab_id_b = TabId(cell.binding.tab_b);
+    row->unloaded = dormant(cell.binding.tab_a);
+    row->unloaded_b = dormant(cell.binding.tab_b);
     row->attached_surface = cell.attached_surface;
   };
   std::map<std::string, PhiStoredRowView> pin_views;
@@ -1286,6 +1322,8 @@ base::ListValue PhiSidebarView::LayoutRowsJson() const {
     extra.Set("guid", pin.guid);
     extra.Set("open", pin.open);
     extra.Set("tabId", pin.tab_id.value);
+    extra.Set("unloaded", pin.unloaded);
+    extra.Set("unloadedB", pin.unloaded_b);
     extra.Set("surface", surface_name(pin.attached_surface));
     extra.Set("surfaceBox", box(pin.surface_box));
     emit("pinned", pin.key, pin.bounds, std::move(extra));
@@ -1299,6 +1337,8 @@ base::ListValue PhiSidebarView::LayoutRowsJson() const {
     extra.Set("parentGuid", bookmark.parent_guid);
     extra.Set("open", bookmark.open);
     extra.Set("tabId", bookmark.tab_id.value);
+    extra.Set("unloaded", bookmark.unloaded);
+    extra.Set("unloadedB", bookmark.unloaded_b);
     extra.Set("surface", surface_name(bookmark.attached_surface));
     extra.Set("surfaceBox", box(bookmark.surface_box));
     emit("bookmarks", bookmark.key, bookmark.bounds, std::move(extra));
@@ -1315,6 +1355,7 @@ base::ListValue PhiSidebarView::LayoutRowsJson() const {
     extra.Set("tabIdB", tab.b_id.value);
     extra.Set("groupId", tab.group_id);
     extra.Set("active", tab.active);
+    extra.Set("unloaded", tab.unloaded);
     extra.Set("surface", surface_name(tab.attached_surface));
     extra.Set("surfaceBox", box(tab.surface_box));
     emit("tabs", tab.key, tab.bounds, std::move(extra));
@@ -1515,7 +1556,26 @@ void PhiSidebarView::DrawFavicon(HDC dc,
                                      const unsigned char* bgra,
                                      int width,
                                      int height,
-                                     COLORREF background) {
+                                     COLORREF background,
+                                     float opacity) {
+  // A faded icon (a reclaimed tab): the pixels are PREMULTIPLIED, so
+  // scaling all four channels is the whole blend — both paths below then
+  // composite it over the DC exactly as they would a translucent icon.
+  std::vector<unsigned char> faded;
+  if (opacity < 1.0f && bgra && width > 0 && height > 0) {
+    const size_t bytes =
+        static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
+    // SAFETY: the framework's contract is that `bgra` holds width*height*4
+    // bytes (phi_framework_api.h).
+    const auto source =
+        UNSAFE_BUFFERS(base::span<const unsigned char>(bgra, bytes));
+    faded.resize(bytes);
+    const int scale = static_cast<int>(std::clamp(opacity, 0.0f, 1.0f) * 256);
+    for (size_t i = 0; i < bytes; ++i) {
+      faded[i] = static_cast<unsigned char>(source[i] * scale / 256);
+    }
+    bgra = faded.data();
+  }
   // NEVER upscale: a 16px favicon inflated to a larger slot only blurs —
   // 1:1 native pixels centred in the slot are the sharpest a small source
   // can look (the driver rarely holds more than 16px). Downscaling larger
@@ -1687,6 +1747,9 @@ void PhiSidebarView::PaintBand(HDC dc,
   const bool pin_sliding = drag_active && drag_kind == PhiDragKind::kPin &&
                            !layout.horizontal_tabs && drag_index >= 0 &&
                            drag_index < static_cast<int>(pinned_.size());
+  // The open-tab dots (preference, off by default).
+  const bool show_dots = prefs_host_ && prefs_host_->ShowOpenTabIndicators();
+  const COLORREF dot_ink = OpenDotInk(palette);
   std::vector<size_t> pin_order;
   pin_order.reserve(pinned_.size());
   for (size_t i = 0; i < pinned_.size(); ++i) {
@@ -1731,21 +1794,32 @@ void PhiSidebarView::PaintBand(HDC dc,
       PhiStrokeRoundRectAA(dc, rr, Scaled(kCornerRadius), palette.accent,
                            Scaled(2));
     }
+    // A bound pane whose tab is dormant fades its favicon. The active cell
+    // is never dormant (its page is showing).
+    const bool dormant_a = pin.unloaded && !pin.active;
+    const bool dormant_b = pin.unloaded_b && !pin.active;
+    const int cx = (cell.left + cell.right) / 2;
+    const int cy = (cell.top + cell.bottom) / 2;
+    // The favicon's row: the open dot hangs under it.
+    const int icon_size =
+        Scaled(!pin.url_b.empty()        ? 16
+               : layout.horizontal_tabs ? kStripPinFavicon
+                                        : kPinnedFavicon);
+    const int icon_bottom = cy + icon_size / 2;
     if (!pin.url_b.empty()) {
       // A merged split cell: two 16pt favicons side by side, the Mac's
       // PinnedSplitItem (16 + 4 + 16 centred in the double-width cell).
-      const int size = Scaled(16);
-      const int cx = (cell.left + cell.right) / 2;
-      const int cy = (cell.top + cell.bottom) / 2;
+      const int size = icon_size;
       const RECT icon_a = {cx - Scaled(2) - size, cy - size / 2,
                            cx - Scaled(2), cy + size / 2};
       const RECT icon_b = {cx + Scaled(2), cy - size / 2,
                            cx + Scaled(2) + size, cy + size / 2};
       const auto pane_icon = [&](const RECT& slot,
                                  const std::vector<unsigned char>& bgra,
-                                 int width, int height) {
+                                 int width, int height, bool dormant) {
         if (!bgra.empty()) {
-          DrawFavicon(dc, slot, bgra.data(), width, height, pin_bg);
+          DrawFavicon(dc, slot, bgra.data(), width, height, pin_bg,
+                      dormant ? kReclaimedOpacity : 1.0f);
         } else {
           HGDIOBJ previous_glyph_font =
               glyph_font ? ::SelectObject(dc, glyph_font) : nullptr;
@@ -1755,24 +1829,35 @@ void PhiSidebarView::PaintBand(HDC dc,
           }
         }
       };
-      pane_icon(icon_a, pin.favicon, pin.favicon_width, pin.favicon_height);
+      pane_icon(icon_a, pin.favicon, pin.favicon_width, pin.favicon_height,
+                dormant_a);
       pane_icon(icon_b, pin.favicon_b, pin.favicon_b_width,
-                pin.favicon_b_height);
+                pin.favicon_b_height, dormant_b);
     } else if (!pin.favicon.empty()) {
-      const int size = Scaled(layout.horizontal_tabs ? kStripPinFavicon
-                                                     : kPinnedFavicon);
-      const int cx = (cell.left + cell.right) / 2;
-      const int cy = (cell.top + cell.bottom) / 2;
+      const int size = icon_size;
       const RECT icon = {cx - size / 2, cy - size / 2, cx + size / 2,
                          cy + size / 2};
       DrawFavicon(dc, icon, pin.favicon.data(), pin.favicon_width,
-                  pin.favicon_height, pin_bg);
+                  pin.favicon_height, pin_bg,
+                  dormant_a ? kReclaimedOpacity : 1.0f);
     } else {
       ::SetTextColor(dc, kLabel);
       const std::wstring initial =
           pin.title.empty() ? std::wstring(L"?") : pin.title.substr(0, 1);
       PhiDrawTextAA(dc, initial.c_str(), -1, &cell,
                   DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    }
+    // The open dot: an inactive cell whose tab is open, centred under the
+    // favicon (under the PAIR for a split cell), faded when a pane is
+    // dormant — the Mac's PinnedTabItem/PinnedSplitItem openIndicatorHost.
+    if (show_dots && pin.open && !pin.active) {
+      const int dot = Scaled(kOpenDotDiameter);
+      const int gap = Scaled(layout.horizontal_tabs ? kOpenDotStripSpacing
+                                                    : kOpenDotPinnedSpacing);
+      DrawOpenDot(dc, cx - dot / 2, icon_bottom + gap, dot,
+                  dormant_a || dormant_b
+                      ? FadeInk(dot_ink, pin_bg, kReclaimedOpacity)
+                      : dot_ink);
     }
     if (pin.attached_surface != SidebarSurface::kContent &&
         pin.surface_box.right > pin.surface_box.left) {
@@ -1866,6 +1951,11 @@ void PhiSidebarView::PaintBand(HDC dc,
               pill.left + Scaled(4) + Scaled(kFolderIconSize),
               mid - Scaled(kFolderIconSize) / 2 + Scaled(kFolderIconSize)};
     }
+    // A bound pane whose tab is dormant fades its favicon and the title,
+    // like a dormant tab row; the active row is never dormant.
+    const bool dormant_a = bookmark.unloaded && !bookmark.active;
+    const bool dormant_b = bookmark.unloaded_b && !bookmark.active;
+    const COLORREF bookmark_bg = bookmark.active ? kRowSelectedBg : kTintTop;
     if (bookmark.folder) {
       // The Mac paints a Lottie folder carrying the chosen symbol on its
       // face; with no Lottie runtime here the symbol itself IS the row icon,
@@ -1874,8 +1964,8 @@ void PhiSidebarView::PaintBand(HDC dc,
       DrawFolderIcon(dc, icon, bookmark.icon, kLabelDim, bookmark.expanded);
     } else if (!bookmark.favicon.empty()) {
       DrawFavicon(dc, icon, bookmark.favicon.data(), bookmark.favicon_width,
-                  bookmark.favicon_height,
-                  bookmark.active ? kRowSelectedBg : kTintTop);
+                  bookmark.favicon_height, bookmark_bg,
+                  dormant_a ? kReclaimedOpacity : 1.0f);
     } else {
       HGDIOBJ previous_glyph_font =
           glyph_font ? ::SelectObject(dc, glyph_font) : nullptr;
@@ -1894,7 +1984,7 @@ void PhiSidebarView::PaintBand(HDC dc,
       if (!bookmark.favicon_b.empty()) {
         DrawFavicon(dc, icon_b, bookmark.favicon_b.data(),
                     bookmark.favicon_b_width, bookmark.favicon_b_height,
-                    bookmark.active ? kRowSelectedBg : kTintTop);
+                    bookmark_bg, dormant_b ? kReclaimedOpacity : 1.0f);
       } else {
         HGDIOBJ previous_glyph_font =
             glyph_font ? ::SelectObject(dc, glyph_font) : nullptr;
@@ -1905,7 +1995,18 @@ void PhiSidebarView::PaintBand(HDC dc,
       }
       text.left += Scaled(24);
     }
-    ::SetTextColor(dc, kLabel);
+    // The open dot leads the favicon (the Mac's BookmarkCellView leading
+    // overlay), decorative so the title never moves; faded when a bound
+    // pane is dormant.
+    if (show_dots && !bookmark.folder && bookmark.open && !bookmark.active) {
+      const int dot = Scaled(kOpenDotDiameter);
+      DrawOpenDot(dc, icon.left - Scaled(kOpenDotBookmarkSpacing) - dot,
+                  mid - dot / 2, dot,
+                  dormant_a || dormant_b
+                      ? FadeInk(dot_ink, bookmark_bg, kReclaimedOpacity)
+                      : dot_ink);
+    }
+    ::SetTextColor(dc, dormant_a || dormant_b ? kLabelDim : kLabel);
     // No disclosure glyph: the outline hides its triangles
     // (frameOfOutlineCell is zero) and the folder art alone says open or
     // closed. Folder titles are one weight up (.medium).
@@ -2175,10 +2276,15 @@ void PhiSidebarView::PaintBand(HDC dc,
       icon.bottom = icon.top + Scaled(kFaviconSize);
       const auto& favicon = pane_b ? r.b_favicon : r.favicon;
       const std::vector<unsigned char>& logo = PhiLogoBgra256();
+      // A DORMANT tab (restored but never loaded, or discarded) draws its
+      // favicon at the Mac's 30% and reads dimmer than a live one. The
+      // active row is never dormant, so this never fights the selected pill.
+      const bool dormant = r.unloaded && !r.active;
       if (!favicon.empty()) {
         DrawFavicon(dc, icon, favicon.data(),
                     pane_b ? r.b_favicon_width : r.favicon_width,
-                    pane_b ? r.b_favicon_height : r.favicon_height, row_bg);
+                    pane_b ? r.b_favicon_height : r.favicon_height, row_bg,
+                    dormant ? kReclaimedOpacity : 1.0f);
       } else if (r.internal_page && !logo.empty() &&
                  PhiDrawBgra(dc, icon, logo.data(), 256, 256)) {
         // Internal pages (chrome://newtab and friends) carry the Phi mark,
@@ -2192,13 +2298,7 @@ void PhiSidebarView::PaintBand(HDC dc,
           ::SelectObject(dc, previous_glyph_font);
         }
       }
-      // A DORMANT tab (restored but never loaded, or discarded) wears the
-      // Mac's dashed favicon ring and reads dimmer than a live one. The
-      // active row is never dormant, so this never fights the selected pill.
-      if (r.unloaded && !r.active) {
-        DrawDormantRing(dc, icon, kLabelDim);
-      }
-      ::SetTextColor(dc, r.unloaded && !r.active ? kLabelDim : kLabel);
+      ::SetTextColor(dc, dormant ? kLabelDim : kLabel);
       RECT title_rc = {slot.right + Scaled(8), pill.top, right - Scaled(4),
                        pill.bottom};
       PhiDrawTextAA(dc, (pane_b ? r.b_title : r.title).c_str(), -1, &title_rc,

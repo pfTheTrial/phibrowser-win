@@ -526,8 +526,17 @@ constexpr PhiParamField kAgentCreate[] = {
 };
 constexpr PhiParamField kAgentComplete[] = {
     {"taskId", kParamString, kRequired, "", "The task to complete."},
+    {"status", kParamString, kOptional, "",
+     "\"success\" (default) or anything else for a failure."},
     {"keep", kParamBool, kOptional, "",
      "Keep a persistent Space's window (default true)."},
+    {"message", kParamString, kOptional, "",
+     "A closing line for the transcript (a failure's reason)."},
+};
+constexpr PhiParamField kAgentHandoff[] = {
+    {"taskId", kParamString, kRequired, "", "The task."},
+    {"message", kParamString, kOptional, "",
+     "Why the user is needed; shown in the prompt and the transcript."},
 };
 constexpr PhiParamField kAgentSetState[] = {
     {"taskId", kParamString, kRequired, "", "The task."},
@@ -537,9 +546,18 @@ constexpr PhiParamField kAgentSetState[] = {
 constexpr PhiParamField kAgentLog[] = {
     {"taskId", kParamString, kRequired, "", "The task."},
     {"text", kParamString, kOptional, "", "One transcript line."},
-    {"entries", kParamList, kOptional, "", "Many lines, as [{text}]."},
+    {"entries", kParamList, kOptional, "",
+     "Many lines, oldest first (max 200), each {text, kind?, detail?, "
+     "agent?, ts?, sourceId?, toolState?}. kind: action | narration | "
+     "error | user | assistant | thinking | tool (status and round are "
+     "the app's own and downgrade to action); kind \"activity\" is a "
+     "driver's live tail row (codex: activity working|waiting; claude: "
+     "phase working|idle), never history."},
+    {"kind", kParamString, kOptional, "", "The single line's kind."},
+    {"detail", kParamString, kOptional, "", "The single line's detail."},
+    {"agent", kParamString, kOptional, "", "The single line's agent."},
     {"touch", kParamBool, kOptional, "",
-     "Refresh the keep-alive too (default true)."},
+     "Refresh the keep-alive too (default true); a mirror passes false."},
 };
 constexpr PhiParamField kAgentMarkError[] = {
     {"taskId", kParamString, kRequired, "", "The task."},
@@ -929,6 +947,7 @@ constexpr PhiParamField kSettingsSet[] = {
     {"saturation", kParamInt, kOptional, "", "Tint strength (clamped)."},
     {"alwaysShowFullUrl", kParamBool, kOptional, "", "Omnibox url display."},
     {"showTabPreviews", kParamBool, kOptional, "", "Hover previews."},
+    {"showOpenTabIndicators", kParamBool, kOptional, "", "Open-tab dots."},
     {"restoreLastSession", kParamBool, kOptional, "", "Session restore."},
     {"peekViewEnabled", kParamBool, kOptional, "", "Peek's master switch."},
     {"autoPeekViewEnabled", kParamBool, kOptional, "", "Automatic peek."},
@@ -1012,7 +1031,7 @@ base::span<const PhiVerbSpec> PhiControlDispatcher::Registry() {
        kTaskOptional, false, false,
        &Call<&PhiControlDispatcher::VerbAgentGetOwnership>, "",
        "Who drives a task — agent, user, or none for a task nobody knows."},
-      {"agentSpace.handoff", "", kTask, kAgentSpace, kVerbPlain, kTaskOnly,
+      {"agentSpace.handoff", "", kTask, kAgentSpace, kVerbPlain, kAgentHandoff,
        false, false, &Call<&PhiControlDispatcher::VerbAgentHandoff>,
        "unknown_task not_owner", "Hands a task's Space to the user."},
       {"agentSpace.takeover", "", kTask, kAgentSpace, kVerbPlain, kTaskOnly,

@@ -393,6 +393,14 @@ struct ShortcutRow {
   // this row's own tab, `tab_id_b` its partner's.
   TabId tab_id;
   TabId tab_id_b;
+  // DORMANT bound panes (the tab row's `unloaded`): the pane's live tab
+  // holds history it has not loaded — restored with the session and never
+  // visited, or discarded. Its favicon, and the cell's open dot, draw at
+  // the Mac's 30% (TabFaviconPresentation.reclaimedOpacity) so an open
+  // cell whose page is not really there reads apart from a loaded one. A
+  // closed cell has no tab and so is never dormant.
+  bool unloaded = false;
+  bool unloaded_b = false;
   RECT bounds{};
   // The favicon stored with the row (a pinned tab has no live tab to ask).
   std::vector<unsigned char> favicon;
@@ -513,6 +521,7 @@ class PhiSidebarView {
                  AgentHost* agent_host,
                  WindowHost* window_host,
                  const PhiWindowModel* model,
+                 bool agent,
                  bool incognito);
   ~PhiSidebarView();
 
@@ -620,8 +629,10 @@ class PhiSidebarView {
   // Draws a favicon's BGRA pixels into `dest`, composited over `background`
   // (GDI has no alpha blit without msimg32, and we always know what is
   // behind the icon).
+  // `opacity` < 1 draws the icon faded over `background` (a reclaimed tab).
   void DrawFavicon(HDC dc, const RECT& dest, const unsigned char* bgra,
-                   int width, int height, COLORREF background);
+                   int width, int height, COLORREF background,
+                   float opacity = 1.0f);
   // A bookmark folder's icon slot: the catalog symbol it wears, or the
   // plain folder glyph for the catalog's "default".
   void DrawFolderIcon(HDC dc, const RECT& slot, const std::string& icon_id,
@@ -658,6 +669,8 @@ class PhiSidebarView {
   WindowHost* window_host() const { return window_host_; }
   SlotId slot() const { return slot_; }
   bool incognito() const { return incognito_; }
+  // The agent holds this (agent) window: the rows' close boxes are inert.
+  void set_agent_holds_input(bool holds) { agent_holds_input_ = holds; }
 
  private:
   // Every constant in this class is a DESIGN UNIT — a pixel at 100%
@@ -671,7 +684,8 @@ class PhiSidebarView {
   // Pinned cells and the bookmark outline as paint rows, from the tree's
   // cells (order, depth, bindings) and the store's views (titles, urls,
   // favicons), placed within `layout`. The tree must be built first.
-  void RebuildShortcuts(const PhiSidebarRects& layout);
+  void RebuildShortcuts(const PhiSidebarRects& layout,
+                        const phi_framework::WindowSnapshot& snapshot);
   // The pinned grid's metrics for LayoutPinnedGrid, from the sidebar width
   // and `layout.favorites`.
   PinnedGridMetrics GridMetrics(const PhiSidebarRects& layout) const;
@@ -707,6 +721,10 @@ class PhiSidebarView {
   // groups. It owns the instance and outlives every shell.
   RAW_PTR_EXCLUSION const PhiWindowModel* const model_;
   const bool incognito_;
+  // An agent Space's sidebar: isolated like incognito's — no pinned tabs,
+  // no bookmarks persist there (the Mac's BrowserState agent-Space rule).
+  const bool agent_;
+  bool agent_holds_input_ = false;
 
   std::vector<TabRow> tabs_;
   // The model — what every live tab IS (docs/sidebar-architecture.md §4.5).
