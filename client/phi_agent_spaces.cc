@@ -63,6 +63,7 @@ PhiAgentSpaces::Space& PhiAgentSpaces::Create(const std::string& task_id,
   Space space;
   space.task_id = task_id;
   space.space_id = "agentspace-" + base::NumberToString(next_ordinal_++);
+  space.number = NextNumber();
   space.window_id = window_id;
   space.profile_id = profile_id;
   space.persistent = persistent;
@@ -79,6 +80,23 @@ void PhiAgentSpaces::Remove(const std::string& task_id) {
   spaces_.erase(task_id);
 }
 
+int PhiAgentSpaces::NextNumber() const {
+  int number = 1;
+  for (bool taken = true; taken; ++number) {
+    taken = false;
+    for (const auto& [task_id, space] : spaces_) {
+      if (space.number == number) {
+        taken = true;
+        break;
+      }
+    }
+    if (!taken) {
+      return number;
+    }
+  }
+  return number;
+}
+
 void PhiAgentSpaces::Ping(const std::string& task_id,
                           int ttl_seconds,
                           uint64_t now_ms) {
@@ -87,12 +105,29 @@ void PhiAgentSpaces::Ping(const std::string& task_id,
       space->ownership == Ownership::kUser) {
     return;
   }
-  int ttl = ttl_seconds > 0 ? ttl_seconds : kDefaultTtlSeconds;
-  ttl = std::max(1, std::min(ttl, kMaxTtlSeconds));
-  const uint64_t deadline = now_ms + static_cast<uint64_t>(ttl) * 1000;
-  // A bare ping only ever EXTENDS; an explicit ttl is authoritative up.
+  if (ttl_seconds > 0) {
+    // Explicit: authoritative, shorter or longer than what stands.
+    const int ttl = std::max(1, std::min(ttl_seconds, kMaxTtlSeconds));
+    space->keepalive_deadline_ms =
+        now_ms + static_cast<uint64_t>(ttl) * 1000;
+    return;
+  }
+  // A bare touch only ever EXTENDS.
   space->keepalive_deadline_ms =
-      std::max(space->keepalive_deadline_ms, deadline);
+      std::max(space->keepalive_deadline_ms,
+               now_ms + static_cast<uint64_t>(kDefaultTtlSeconds) * 1000);
+}
+
+void PhiAgentSpaces::ResetTtl(const std::string& task_id,
+                              int seconds,
+                              uint64_t now_ms) {
+  Space* space = Find(task_id);
+  if (!space || space->persistent ||
+      space->ownership == Ownership::kUser) {
+    return;
+  }
+  const int ttl = std::max(1, std::min(seconds, kMaxTtlSeconds));
+  space->keepalive_deadline_ms = now_ms + static_cast<uint64_t>(ttl) * 1000;
 }
 
 void PhiAgentSpaces::SetState(const std::string& task_id,
@@ -129,19 +164,7 @@ void PhiAgentSpaces::SetOwnership(const std::string& task_id,
     space->keepalive_deadline_ms = 0;  // The clock pauses under user control.
   } else if (!space->persistent) {
     space->keepalive_deadline_ms =
-        now_ms + static_cast<uint64_t>(kDefaultTtlSeconds) * 1000;
-  }
-}
-
-void PhiAgentSpaces::AppendLog(const std::string& task_id,
-                               const std::string& line) {
-  Space* space = Find(task_id);
-  if (!space) {
-    return;
-  }
-  space->log.push_back(line);
-  while (space->log.size() > kMaxLog) {
-    space->log.pop_front();
+        now_ms + static_cast<uint64_t>(kInterRoundTtlSeconds) * 1000;
   }
 }
 
@@ -187,6 +210,7 @@ base::ListValue PhiAgentSpaces::TasksJson(uint64_t now_ms) const {
     base::DictValue t;
     t.Set("taskId", space.task_id);
     t.Set("spaceId", space.space_id);
+    t.Set("number", space.number);
     t.Set("windowId", static_cast<double>(space.window_id.value));
     t.Set("ownership", OwnershipWire(space.ownership));
     t.Set("status", space.status);

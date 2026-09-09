@@ -2,7 +2,14 @@
 
 ## 1. Install the skill
 
-Link the skill into your agent's skills folder (Claude Code shown; swap the
+**From Phi:** Settings ▸ Developer ▸ Agent control ▸ **Add skill to…** (the row
+appears once "Allow agents to control Phi" is on) lists every supported agent;
+picking one makes the junction below for you, pointing at the skill shipped
+beside `Phi.exe` (`resources\phi-browser-skill`), so an update of Phi updates
+the skill. "All agents" links them all. A tick marks an agent already linked
+to this build.
+
+**By hand:** link the skill into your agent's skills folder (Claude Code shown; swap the
 destination for another agent — Codex `~/.codex/skills`, Cursor
 `~/.cursor/skills`, etc.). PowerShell, from the repository root:
 

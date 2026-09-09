@@ -251,9 +251,13 @@ class PhiBrowserHost {
                   HWND browser_hwnd);
   // Adopts an additional browser as `space_id`'s content and shows it,
   // hiding the previous one.
+  // `agent`: the browser is an agent Space's, hosted here for a watch — it
+  // is never noted as the Space's window nor registered with the
+  // framework's Space registry (it stays "space.agent" there).
   void AttachSpaceBrowser(const std::string& space_id,
                           BrowserId browser,
-                          HWND browser_hwnd);
+                          HWND browser_hwnd,
+                          bool agent = false);
   // Shows the Space's browser, hiding the current one. False if unknown.
   bool ShowSpace(const std::string& space_id);
   // Closes the browser this slot holds for `space_id` (a Space being
@@ -267,6 +271,14 @@ class PhiBrowserHost {
   // WS_CHILD it never gets WM_ACTIVATE, so without this the keyboard still
   // goes to the browser that was visible before a Space switch.
   void FocusActiveBrowser();
+  // The watch's two hand-overs of an agent browser between shells. The
+  // agent shell RELEASES its child keeping every record (the browser is
+  // still its Space; it merely has no window in it for now), the user
+  // shell DETACHES the hosted agent Space (record and all; the child is
+  // hidden and handed back) and the agent shell READOPTS it.
+  HWND ReleaseContentChildKeepRecord();
+  HWND DetachSpaceBrowser(const std::string& space_id);
+  void ReadoptContentChild(HWND browser_hwnd);
   // Detaches the content child before the shell's window goes, so its
   // teardown is not entangled with ours.
   void ReleaseContentChild();

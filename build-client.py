@@ -40,6 +40,38 @@ DEFAULT_OUT = "/home/jx/Phi/chromuim/src/out/PhiFxWin"
 KIT = "phi_clientkit/kit.json"
 OBJ_DIR = "phi_clientkit/obj"
 RESOURCES = ("emoji-catalog.json", "phi.ico", "strings.json")
+# The phi-browser skill ships beside the exe as resources/phi-browser-skill:
+# the tree Settings > Developer > "Add skill to..." junctions into an agent's
+# skills folder (the Mac bundles the same folder under Contents/Resources).
+SKILL_DIR = os.path.join(REPO_DIR, "tools", "phi-browser-skill")
+
+
+def sync_tree(src, dst):
+    """Mirrors src into dst: copies changed files (mtime preserved, so the
+    box sync's manifest diff stays quiet), removes files src no longer has."""
+    wanted = set()
+    for root, _dirs, files in os.walk(src):
+        rel = os.path.relpath(root, src)
+        out = dst if rel == "." else os.path.join(dst, rel)
+        os.makedirs(out, exist_ok=True)
+        for name in files:
+            s_path = os.path.join(root, name)
+            d_path = os.path.join(out, name)
+            wanted.add(os.path.normpath(d_path))
+            s_stat = os.stat(s_path)
+            if (not os.path.exists(d_path) or
+                    os.stat(d_path).st_size != s_stat.st_size or
+                    abs(os.stat(d_path).st_mtime - s_stat.st_mtime) > 2):
+                shutil.copy2(s_path, d_path)
+    for root, dirs, files in os.walk(dst, topdown=False):
+        for name in files:
+            path = os.path.join(root, name)
+            if os.path.normpath(path) not in wanted:
+                os.remove(path)
+        for name in dirs:
+            path = os.path.join(root, name)
+            if not os.listdir(path):
+                os.rmdir(path)
 
 
 def stem_of(path):
@@ -218,6 +250,7 @@ def main():
     for name in RESOURCES:
         shutil.copy2(os.path.join(CLIENT_DIR, "resources", name),
                      resources_dir)
+    sync_tree(SKILL_DIR, os.path.join(resources_dir, "phi-browser-skill"))
     # Stage the vendored WinSparkle.dll beside the client: the sync ships
     # every top-level DLL, and the updater loads it from the exe's own dir.
     winsparkle = os.path.join(os.path.dirname(os.path.abspath(__file__)),

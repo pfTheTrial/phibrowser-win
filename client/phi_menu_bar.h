@@ -142,6 +142,7 @@ enum : UINT {
   // WM_COMMAND numbers, so renumbering an existing entry silently rewires
   // their clicks.
   kCmdToggleReader,  // View — Reader View for the active tab.
+  kCmdAgentAutoview,  // View — Agent Autoview (follows the working agent).
 };
 
 // One finished sidebar row, as the Tab menu lists it. A SNAPSHOT of what the
@@ -217,6 +218,9 @@ class PhiMenuBarShell {
   virtual bool MenuLeaveReaderForNavigation() = 0;
 
   // --- Commands the bar hands back ----------------------------------------
+  // True while an agent holds this (agent) window: the tab, navigation
+  // and bookmark commands are refused (see PhiShellWindow::AgentHoldsInput).
+  virtual bool MenuAgentHoldsInput() const = 0;
   virtual bool MenuHasSpace(const std::string& space_id) const = 0;
   virtual bool MenuShowSpace(const std::string& space_id) = 0;
   virtual void MenuNewTab() = 0;

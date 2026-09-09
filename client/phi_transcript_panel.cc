@@ -129,14 +129,27 @@ class Panel : public PhiSecondaryWindow {
     if (!feed_ || !host_) {
       return;
     }
-    const std::vector<std::string> lines = host_->TranscriptLines(task_id_);
+    std::vector<std::string> lines;
+    for (const PhiTranscriptEntry& entry : host_->TranscriptEntries(task_id_)) {
+      lines.push_back(PhiRenderTranscriptEntry(entry));
+    }
+    const std::string activity = host_->TranscriptActivity(task_id_);
+    if (!activity.empty()) {
+      lines.push_back("· " + activity);
+    }
     if (lines.size() == last_line_count_) {
       return;  // Nothing new; leave the user's scroll/selection alone.
     }
     last_line_count_ = lines.size();
     std::wstring text;
     for (const std::string& line : lines) {
-      text += base::UTF8ToWide(line);
+      std::string one = line;
+      size_t pos = 0;
+      while ((pos = one.find('\n', pos)) != std::string::npos) {
+        one.replace(pos, 1, "\r\n");
+        pos += 2;
+      }
+      text += base::UTF8ToWide(one);
       text += L"\r\n";
     }
     ::SetWindowTextW(feed_, text.c_str());

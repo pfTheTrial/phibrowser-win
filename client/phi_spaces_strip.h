@@ -32,7 +32,13 @@ struct PhiSpaceChip {
   std::wstring label;
   std::wstring icon;  // The Space's emoji, empty when it has none.
   bool open = false;
-  bool is_agent = false;  // A live agent Space pip; `id` is its taskId.
+  // A live agent Space pip: `id` is its Space id ("agentspace-N", what the
+  // slot hosts it under, so the active pill and the swap slide find it
+  // like any Space's), `task_id` the skill's taskId the watch is asked by.
+  bool is_agent = false;
+  std::string task_id;
+  // An agent pip's corner badge (PhiAgentPipView::Badge + 1; 0 = none).
+  int badge = 0;
   RECT bounds{};
 };
 

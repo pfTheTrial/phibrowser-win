@@ -87,6 +87,7 @@ struct PhiNewSpaceSpec {
 // The user clicks it to watch the (normally hidden) agent Space live.
 struct PhiAgentPipView {
   std::string task_id;   // The skill's taskId; also the pip's identity.
+  std::string space_id;  // "agentspace-N": what a slot hosts it under.
   std::string caption;   // The agent's current status line (may be empty).
   std::string agent_name;  // "Claude Code", "Codex", … or empty.
   int number = 0;        // The Mac's task ordinal ("R1").
@@ -331,10 +332,15 @@ class AgentHost {
   virtual std::vector<PhiAgentPipView> AgentSpaces() const = 0;
   virtual void RequestWatchAgentSpace(const std::string& task_id,
                                       int64_t watcher_slot) = 0;
-  // A user-Space pip clicked INSIDE the watched agent window: the watch
-  // ends, the concealed window comes back and shows `space_id` (empty:
-  // just comes back). The agent's hidden browser never switches Space.
+  // A user-Space pip clicked while the agent Space is up: the watch ends
+  // and the window shows `space_id` (empty: the Space it came from) — in
+  // the slot hosting the agent Space this IS the normal Space swap back.
   virtual void RequestLeaveWatchedAgentSpace(const std::string& space_id) = 0;
+  // The slot hosting an agent Space for a watch has let its browser go
+  // (the swap back landed, or the window is closing): `child` goes back
+  // to its own hidden agent shell.
+  virtual void OnAgentBrowserReturned(const std::string& task_id,
+                                      HWND child) = 0;
   // Watch-mode control pill (C3): ownership transfers ONLY through these —
   // the fog barrier is what makes that true. Finish ends the task.
   virtual void RequestAgentTakeControl(const std::string& task_id) = 0;
@@ -580,11 +586,18 @@ class PhiShellWindow : public PhiHitSource,
   // Surfaces (visible=true) or parks off-screen (visible=false) an agent
   // window so the user can watch it live. No-op on a non-agent window.
   // `frame` (screen px) is the watching window's frame, which the agent
-  // window takes over exactly; null centres it on the work area.
-  void SetAgentVisible(bool visible, const RECT* frame = nullptr);
-  // Hides (concealed=true) or brings back (false) a USER window while an
-  // agent window stands in its frame — the Mac's ordering the slot's
-  // previous window out. No-op on an agent window.
+  // window takes over exactly, and `owner` that window: the agent window
+  // becomes its OWNED window for the watch — kept above it by the system,
+  // minimized with it, no taskbar button of its own — so the user window
+  // never has to be hidden and nothing blinks when the watch ends. Null
+  // frame centres it on the work area, unowned.
+  void SetAgentVisible(bool visible,
+                       const RECT* frame = nullptr,
+                       HWND owner = nullptr);
+  // The USER window's side of a watch. It stays shown and painted under
+  // the agent window (hiding it made the desktop flash through when the
+  // watch ended, then a cold repaint); `concealed=false` only takes the
+  // focus back. No-op on an agent window.
   void SetConcealedForWatch(bool concealed);
   // Whether the agent holds this (agent) window: the owner tells it on
   // every ownership change. While it does, the window refuses what the
@@ -592,7 +605,28 @@ class PhiShellWindow : public PhiHitSource,
   // menus, Back/Forward — so a stray keystroke never moves the agent's
   // page; the pill's Take control is the one way in.
   void SetAgentOwned(bool agent_owned);
-  bool AgentHoldsInput() const { return agent_ && agent_owned_; }
+  // The agent holds the page on screen: this is an agent window, or a user
+  // window whose ACTIVE Space is the agent Space it hosts for a watch.
+  bool AgentHoldsInput() const;
+
+  // --- An agent Space hosted in a USER slot for a watch ---------------------
+  // The Mac's slot.activate for an agent Space: its browser is attached to
+  // THIS slot under `space_id` and shown with the slot's own Space swap
+  // (band slide, pill slide, content reveal), exactly as any Space. The
+  // agent shell keeps the browser's record and gets the child back when
+  // the watch ends (LeaveHostedAgentSpace: the swap back to a user Space,
+  // then, once it lands, OnAgentBrowserReturned on the agent host).
+  void HostAgentSpace(const std::string& space_id,
+                      BrowserId browser,
+                      HWND browser_hwnd,
+                      const std::string& task_id);
+  bool HostsAgentSpace() const { return !hosted_agent_task_.empty(); }
+  const std::string& hosted_agent_task() const { return hosted_agent_task_; }
+  // `space_id` empty: the user Space the slot showed before.
+  void LeaveHostedAgentSpace(const std::string& space_id);
+  // The agent shell's two sides of the hand-over.
+  HWND ReleaseAgentBrowserForHosting();
+  void ReadoptAgentBrowser(HWND browser_hwnd);
 
   // Click on a pin or a sidebar bookmark row (cell click, context-menu
   // Open, or the pinned.open verb): focus the bound live tab if it still
@@ -1329,6 +1363,7 @@ class PhiShellWindow : public PhiHitSource,
   void SidebarRefreshLayoutInputs() override;
   PhiPalette SidebarPalette() const override;
   BrowserId SidebarActiveBrowser() const override;
+  std::string SidebarActiveSpace() const override;
   bool SidebarPullSnapshot(
       BrowserId browser,
       phi_framework::WindowSnapshot* out) const override;
@@ -1463,6 +1498,12 @@ class PhiShellWindow : public PhiHitSource,
   // For an agent window: whether it is currently surfaced (being watched).
   bool agent_visible_ = false;
   bool agent_owned_ = false;
+  // The agent Space this USER slot hosts for a watch (see HostAgentSpace).
+  std::string hosted_agent_task_;
+  std::string hosted_agent_space_;
+  std::string hosted_return_space_;  // The user Space to swap back to.
+  bool unhost_at_landing_ = false;
+  void FinishUnhost();
   bool floating_layout_ = false;
   HWND floating_sidebar_ = nullptr;
   int floating_offset_y_ = 0;

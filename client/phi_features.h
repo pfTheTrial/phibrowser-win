@@ -21,6 +21,11 @@ namespace phi_client {
 // NOT the agent Space, the skill relay, or anything else under agentSpace.*:
 // those are automation, not the AI suite, and they stay live.
 inline constexpr bool kPhiAiEnabled = false;
+// The Agent Transcript console (the Mac's View ▸ Agent Transcript and the
+// pip's Show Transcript). Decided OFF for Windows (Jixiang, 2026-09-09);
+// the store behind agentSpace.log stays, the panel is never opened and the
+// skill's transcriptMirror reads false so no mirror daemon is spawned.
+inline constexpr bool kPhiTranscriptEnabled = false;
 
 // Developer-only hooks. A release build NEVER defines PHI_DEV_HOOKS
 // (build-client.py --dev-hooks is the only way to set it), so everything

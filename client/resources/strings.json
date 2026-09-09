@@ -55,6 +55,50 @@
    "zh-Hans": "搜索或输入网址",
    "zh-Hant": "搜尋或輸入網址"
   },
+  "agent.handoffPrompt.laterButton": {
+   "de": "Später",
+   "en": "Later",
+   "es": "Más tarde",
+   "fr": "Plus tard",
+   "ja": "後で",
+   "ko": "나중에",
+   "nl": "Later",
+   "zh-Hans": "稍后",
+   "zh-Hant": "稍後"
+  },
+  "agent.handoffPrompt.message": {
+   "de": "Der Agent hat die Steuerung an dich zurückgegeben, damit du einen Schritt abschließt, zum Beispiel eine Anmeldung.",
+   "en": "The agent handed control back to you to finish a step — for example, signing in.",
+   "es": "El agente te devolvió el control para que completes un paso, por ejemplo, iniciar sesión.",
+   "fr": "L'agent vous a rendu la main pour terminer une étape, par exemple une connexion.",
+   "ja": "ログインなど、一部の手順を完了する必要があるため、エージェントが操作を戻しました。",
+   "ko": "에이전트가 로그인처럼 사용자가 직접 마무리해야 하는 단계가 있어 제어권을 넘겼어요.",
+   "nl": "De agent heeft de besturing aan jou teruggegeven om een stap af te ronden, bijvoorbeeld inloggen.",
+   "zh-Hans": "智能体已把控制权交还给你，以便你完成某个步骤，例如登录。",
+   "zh-Hant": "AI 代理已將控制權交還給你，以完成某個步驟，例如登入。"
+  },
+  "agent.handoffPrompt.switchToAgentSpaceButton": {
+   "de": "Zum Agent-Space wechseln",
+   "en": "Switch to Agent Space",
+   "es": "Cambiar al Espacio del agente",
+   "fr": "Passer à l'Espace de l'agent",
+   "ja": "エージェントのスペースに切り替える",
+   "ko": "에이전트 스페이스로 전환",
+   "nl": "Ga naar agent-Space",
+   "zh-Hans": "切换到智能体空间",
+   "zh-Hant": "切換至 AI 代理空間"
+  },
+  "agent.handoffPrompt.title": {
+   "de": "Der Agent braucht dich",
+   "en": "The agent needs you",
+   "es": "El agente te necesita",
+   "fr": "L'agent a besoin de vous",
+   "ja": "エージェントが操作を待っています",
+   "ko": "에이전트가 도움을 요청해요",
+   "nl": "De agent heeft je nodig",
+   "zh-Hans": "智能体需要你",
+   "zh-Hant": "AI 代理需要你協助"
+  },
   "agentControl.connectionApproval.agentLabel": {
    "de": "Agent",
    "en": "Agent",
@@ -781,6 +825,17 @@
    "nl": "URL-regels",
    "zh-Hans": "网址规则",
    "zh-Hant": "網址規則"
+  },
+  "app.viewMenu.agentAutoview": {
+   "de": "Automatische Agentenansicht",
+   "en": "Agent Autoview",
+   "es": "Vista automática del agente",
+   "fr": "Suivi automatique des agents",
+   "ja": "エージェント自動表示",
+   "ko": "에이전트 자동 보기",
+   "nl": "Automatische agentweergave",
+   "zh-Hans": "智能体自动视图",
+   "zh-Hant": "AI 代理自動檢視"
   },
   "app.viewMenu.alwaysShowBookmarkBar": {
    "de": "Lesezeichenleiste immer einblenden\tCtrl+Shift+B",
@@ -2817,6 +2872,174 @@
    "nl": "Wachtwoordmanager voor agents",
    "zh-Hans": "智能体密码管理器",
    "zh-Hant": "AI 代理密碼管理員"
+  },
+  "settings.developer.skillInstall.all.failureTitle": {
+   "de": "Skill konnte nicht installiert werden",
+   "en": "Couldn’t install the skill",
+   "es": "No se pudo instalar la habilidad",
+   "fr": "Impossible d'installer le Skill",
+   "ja": "スキルをインストールできませんでした",
+   "ko": "스킬을 설치할 수 없음",
+   "nl": "Kan de skill niet installeren",
+   "zh-Hans": "无法安装 Skill",
+   "zh-Hant": "無法安裝 Skill"
+  },
+  "settings.developer.skillInstall.all.successMessage": {
+   "de": "{0} kann jetzt den phi-browser-Skill verwenden. Starte neu konfigurierte Agenten neu; in Pi genügt /reload.",
+   "en": "{0} can now use the phi-browser skill. Restart newly configured agents; in Pi, /reload is enough.",
+   "es": "{0} ya puede usar la habilidad phi-browser. Reinicia los agentes recién configurados; en Pi, basta con /reload.",
+   "fr": "{0} peut désormais utiliser le skill phi-browser. Redémarrez les agents nouvellement configurés ; dans Pi, /reload suffit.",
+   "ja": "{0}がphi-browserスキルを使用できるようになりました。新しく設定したエージェントは再起動してください。Piでは/reloadだけで十分です。",
+   "ko": "{0}이(가) 이제 phi-browser 스킬을 사용할 수 있어요. 새로 구성된 에이전트는 재시작해 주세요. Pi에서는 /reload로 충분해요.",
+   "nl": "{0} kan nu de phi-browser-skill gebruiken. Start nieuw geconfigureerde agents opnieuw; in Pi is /reload voldoende.",
+   "zh-Hans": "{0} 现在可以使用 phi-browser Skill 了。请重启新配置的智能体；在 Pi 中，执行 /reload 即可。",
+   "zh-Hant": "{0} 現在可以使用 phi-browser Skill。請重新啟動新設定的 AI 代理；在 Pi 中，執行 /reload 即可。"
+  },
+  "settings.developer.skillInstall.all.successTitle": {
+   "de": "Skill installiert",
+   "en": "Skill installed",
+   "es": "Habilidad instalada",
+   "fr": "Skill installé",
+   "ja": "スキルをインストールしました",
+   "ko": "스킬 설치됨",
+   "nl": "Skill geïnstalleerd",
+   "zh-Hans": "Skill 已安装",
+   "zh-Hant": "Skill 已安裝"
+  },
+  "settings.developer.skillInstall.allAgentsAction": {
+   "de": "Alle Agenten",
+   "en": "All agents",
+   "es": "Todos los agentes",
+   "fr": "Tous les agents",
+   "ja": "すべてのエージェント",
+   "ko": "모든 에이전트",
+   "nl": "Alle agents",
+   "zh-Hans": "所有智能体",
+   "zh-Hant": "所有 AI 代理"
+  },
+  "settings.developer.skillInstall.description": {
+   "de": "Verknüpft den in dieser App enthaltenen Skill mit dem Skills-Ordner eines KI-Coding-Agenten, damit dieser Phi über das DevTools-Protokoll steuern kann. Pi erhält außerdem eine Begleiterweiterung, die inaktive Sitzungen über Agent-Transcript-Befehle aufweckt. Erfordert Node 22+.",
+   "en": "Links the skill bundled in this app into an AI coding agent’s skills folder so it can drive Phi over the DevTools Protocol. Pi also gets a companion extension that wakes idle sessions from Agent Transcript commands. Requires Node 22+.",
+   "es": "Vincula la habilidad incluida en esta app a la carpeta de habilidades de un agente de programación con IA para que pueda controlar Phi mediante el protocolo DevTools. Pi también recibe una extensión complementaria que reactiva las sesiones inactivas con comandos de Transcripción del agente. Requiere Node 22 o posterior.",
+   "fr": "Ajoute le Skill intégré à cette app au dossier de Skills d'un agent de codage IA pour qu'il puisse piloter Phi via le protocole DevTools. Phi reçoit aussi une extension compagnon qui réveille les sessions inactives depuis les commandes Agent Transcript. Nécessite Node 22+.",
+   "ja": "このアプリに同梱されているスキルをAIコーディングエージェントのスキルフォルダにリンクし、DevTools ProtocolでPhiを操作できるようにします。あわせて、アイドル状態のセッションをAgent Transcriptのコマンドから復帰させるコンパニオン拡張機能もPhiに追加されます。Node 22以降が必要です。",
+   "ko": "이 앱에 포함된 스킬을 AI 코딩 에이전트의 스킬 폴더에 연결해 DevTools 프로토콜로 Phi를 제어할 수 있게 해요. Pi에는 Agent Transcript 명령으로 유휴 세션을 깨우는 컴패니언 확장 프로그램도 함께 제공돼요. Node 22 이상이 필요해요.",
+   "nl": "Koppelt de skill die met deze app wordt meegeleverd aan de skills-map van een AI-coding-agent, zodat die Phi via het DevTools Protocol kan aansturen. Pi krijgt ook een bijbehorende extensie die inactieve sessies wekt via Agent Transcript-opdrachten. Vereist Node 22+.",
+   "zh-Hans": "将此应用内置的 Skill 链接到 AI 编程智能体的 skills 文件夹中，使其能够通过 DevTools 协议驱动 Phi。Pi 还会获得一个配套扩展程序，可通过智能体转录命令唤醒空闲会话。需要 Node 22+。",
+   "zh-Hant": "將此 App 內建的 Skill 連結到 AI 程式開發代理的 Skill 資料夾，讓它能透過 DevTools Protocol 操控 Phi。同時也會安裝一個附屬擴充功能，能從 AI 代理逐字稿的指令喚醒閒置的工作階段。需要 Node 22 或更新版本。"
+  },
+  "settings.developer.skillInstall.linkError": {
+   "en": "Couldn’t link {0}: {1}"
+  },
+  "settings.developer.skillInstall.missingCompanionError": {
+   "de": "Dieser Build enthält die Pi-Begleiterweiterung nicht. Erstelle Phi Browser neu und versuche es erneut.",
+   "en": "This build doesn’t include the Pi companion extension. Rebuild Phi Browser and try again.",
+   "es": "Esta compilación no incluye la extensión complementaria de Pi. Vuelve a compilar Phi Browser e inténtalo de nuevo.",
+   "fr": "Cette version ne contient pas l'extension compagnon Pi. Recompilez Phi Browser et réessayez.",
+   "ja": "このビルドにはPiコンパニオン拡張機能が含まれていません。Phi Browserを再ビルドして、もう一度お試しください。",
+   "ko": "이 빌드에는 Pi 컴패니언 확장 프로그램이 없어요. Phi Browser를 다시 빌드하고 다시 시도해 주세요.",
+   "nl": "Deze build bevat de Pi-companionextensie niet. Bouw Phi Browser opnieuw en probeer het opnieuw.",
+   "zh-Hans": "此版本不包含 Pi 配套扩展程序。请重新构建 Phi Browser 后重试。",
+   "zh-Hant": "此版本未包含 Pi 隨附擴充功能。請重新建置 Phi Browser 後再試一次。"
+  },
+  "settings.developer.skillInstall.missingResourcesError": {
+   "de": "Dieser Build enthält die Ressourcen des phi-browser-Skills nicht. Erstelle Phi Browser neu und versuche es erneut.",
+   "en": "This build doesn’t include the phi-browser skill resources. Rebuild Phi Browser and try again.",
+   "es": "Esta compilación no incluye los recursos de la habilidad phi-browser. Vuelve a compilar Phi Browser e inténtalo de nuevo.",
+   "fr": "Cette version ne contient pas les ressources du Skill phi-browser. Recompilez Phi Browser et réessayez.",
+   "ja": "このビルドにはphi-browserスキルのリソースが含まれていません。Phi Browserを再ビルドして、もう一度お試しください。",
+   "ko": "이 빌드에는 phi-browser 스킬 리소스가 없어요. Phi Browser를 다시 빌드하고 다시 시도해 주세요.",
+   "nl": "Deze build bevat de skillbronnen van phi-browser niet. Bouw Phi Browser opnieuw en probeer het opnieuw.",
+   "zh-Hans": "此版本不包含 phi-browser Skill 资源。请重新构建 Phi Browser 后重试。",
+   "zh-Hant": "此版本未包含 phi-browser Skill 資源。請重新建置 Phi Browser 後再試一次。"
+  },
+  "settings.developer.skillInstall.overwriteConfirmation.message": {
+   "de": "„{0}“ existiert bereits und ist kein von Phi Browser erstellter Link. Durch einen Link auf den in dieser App enthaltenen Skill ersetzen?",
+   "en": "“{0}” already exists and isn’t a link created by Phi Browser. Replace it with a link to this app’s bundled skill?",
+   "es": "“{0}” ya existe y no es un enlace creado por Phi Browser. ¿Reemplazarlo por un enlace a la habilidad incluida en esta app?",
+   "fr": "« {0} » existe déjà et n'est pas un lien créé par Phi Browser. Le remplacer par un lien vers le skill fourni avec cette app ?",
+   "ja": "「{0}」はすでに存在し、Phi Browserが作成したリンクではありません。このアプリに同梱されているスキルへのリンクに置き換えますか？",
+   "ko": "“{0}”이(가) 이미 존재하지만 Phi Browser가 만든 링크가 아니에요. 이 앱에 포함된 스킬로 연결되는 링크로 교체할까요?",
+   "nl": "“{0}” bestaat al en is geen koppeling die door Phi Browser is aangemaakt. Wil je deze vervangen door een koppeling naar de meegeleverde skill van deze app?",
+   "zh-Hans": "「{0}」已存在，且不是由 Phi Browser 创建的链接。要将其替换为指向本应用内置 Skill 的链接吗？",
+   "zh-Hant": "「{0}」已存在，且不是 Phi Browser 建立的連結。要將它取代為指向此 App 內建 Skill 的連結嗎？"
+  },
+  "settings.developer.skillInstall.overwriteConfirmation.replaceButton": {
+   "de": "Ersetzen",
+   "en": "Replace",
+   "es": "Reemplazar",
+   "fr": "Remplacer",
+   "ja": "置き換える",
+   "ko": "바꾸기",
+   "nl": "Vervang",
+   "zh-Hans": "替换",
+   "zh-Hant": "取代"
+  },
+  "settings.developer.skillInstall.overwriteConfirmation.title": {
+   "de": "Vorhandenen Skill ersetzen?",
+   "en": "Replace the existing skill?",
+   "es": "¿Reemplazar la habilidad existente?",
+   "fr": "Remplacer le Skill existant ?",
+   "ja": "既存のスキルを置き換えますか？",
+   "ko": "기존 스킬을 바꿀까요?",
+   "nl": "De bestaande skill vervangen?",
+   "zh-Hans": "要替换现有的 Skill 吗？",
+   "zh-Hant": "要取代現有的 Skill 嗎？"
+  },
+  "settings.developer.skillInstall.sectionTitle": {
+   "de": "phi-browser-Skill installieren",
+   "en": "Install the phi-browser skill",
+   "es": "Instalar la habilidad phi-browser",
+   "fr": "Installer le Skill phi-browser",
+   "ja": "phi-browserスキルをインストール",
+   "ko": "phi-browser 스킬 설치",
+   "nl": "De phi-browser-skill installeren",
+   "zh-Hans": "安装 phi-browser Skill",
+   "zh-Hant": "安裝 phi-browser Skill"
+  },
+  "settings.developer.skillInstall.single.failureTitle": {
+   "de": "Skill konnte nicht installiert werden",
+   "en": "Couldn’t install the skill",
+   "es": "No se pudo instalar la habilidad",
+   "fr": "Impossible d'installer le Skill",
+   "ja": "スキルをインストールできませんでした",
+   "ko": "스킬을 설치할 수 없음",
+   "nl": "Kan de skill niet installeren",
+   "zh-Hans": "无法安装 Skill",
+   "zh-Hant": "無法安裝 Skill"
+  },
+  "settings.developer.skillInstall.single.successMessage": {
+   "de": "{0} kann jetzt den phi-browser-Skill verwenden. Starte neu konfigurierte Agenten neu; in Pi genügt /reload.",
+   "en": "{0} can now use the phi-browser skill. Restart newly configured agents; in Pi, /reload is enough.",
+   "es": "{0} ya puede usar la habilidad phi-browser. Reinicia los agentes recién configurados; en Pi, basta con /reload.",
+   "fr": "{0} peut désormais utiliser le skill phi-browser. Redémarrez les agents nouvellement configurés ; dans Pi, /reload suffit.",
+   "ja": "{0}がphi-browserスキルを使用できるようになりました。新しく設定したエージェントは再起動してください。Piでは/reloadだけで十分です。",
+   "ko": "{0}이(가) 이제 phi-browser 스킬을 사용할 수 있어요. 새로 구성된 에이전트는 재시작해 주세요. Pi에서는 /reload로 충분해요.",
+   "nl": "{0} kan nu de phi-browser-skill gebruiken. Start nieuw geconfigureerde agents opnieuw; in Pi is /reload voldoende.",
+   "zh-Hans": "{0} 现在可以使用 phi-browser Skill 了。请重启新配置的智能体；在 Pi 中，执行 /reload 即可。",
+   "zh-Hant": "{0} 現在可以使用 phi-browser Skill。請重新啟動新設定的 AI 代理；在 Pi 中，執行 /reload 即可。"
+  },
+  "settings.developer.skillInstall.single.successTitle": {
+   "de": "Skill installiert",
+   "en": "Skill installed",
+   "es": "Habilidad instalada",
+   "fr": "Skill installé",
+   "ja": "スキルをインストールしました",
+   "ko": "스킬 설치됨",
+   "nl": "Skill geïnstalleerd",
+   "zh-Hans": "Skill 已安装",
+   "zh-Hant": "Skill 已安裝"
+  },
+  "settings.developer.skillInstall.targetMenuButton": {
+   "de": "Skill hinzufügen zu…",
+   "en": "Add skill to…",
+   "es": "Agregar habilidad a…",
+   "fr": "Ajouter le skill à…",
+   "ja": "スキルを追加…",
+   "ko": "스킬 추가 대상…",
+   "nl": "Skill toevoegen aan…",
+   "zh-Hans": "将 Skill 添加到…",
+   "zh-Hant": "將 Skill 加入至…"
   },
   "settings.displayLanguage": {
    "de": "Anzeigesprache",

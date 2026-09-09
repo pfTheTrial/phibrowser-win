@@ -108,8 +108,10 @@ void PhiWindowRegistry::InvalidateAll() const {
 }
 
 void PhiWindowRegistry::InvalidateUserSlots() const {
+  // The agent pips live in the user windows' switchers AND in an agent
+  // window's own strip (the watched one selected there), so both repaint.
   for (const auto& [slot, entry] : slots_) {
-    if (!entry.agent && !entry.incognito && entry.invalidate) {
+    if (!entry.incognito && entry.invalidate) {
       entry.invalidate(entry.controller.get());
     }
   }

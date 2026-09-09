@@ -4,6 +4,8 @@
 
 #include "phibrowser-win/client/phi_sidebar_view.h"
 
+#include "phibrowser-win/client/phi_agent_spaces.h"
+
 #include <algorithm>
 #include <map>
 #include <string>
@@ -677,15 +679,15 @@ void PhiSidebarView::Rebuild() {
     for (const SidebarCell& pin : sidebar_tree_.pins) {
       units.push_back(pin.split ? 2 : 1);
     }
+    const bool isolated =
+        incognito_ || agent_ || PhiIsAgentSpaceId(shell_->SidebarActiveSpace());
     pinned_grid_rows_ =
-        comfortable || incognito_ || agent_
+        comfortable || isolated
             ? 0
             : LayoutPinnedGrid(units, GridMetrics(PhiSidebarRects{})).rows;
     shell_->SidebarSetRowCounts(
         pinned_grid_rows_,
-        incognito_ || agent_
-            ? 0
-            : static_cast<int>(VisibleBookmarkCells().size()));
+        isolated ? 0 : static_cast<int>(VisibleBookmarkCells().size()));
   }
   const PhiSidebarRects layout = shell_->SidebarRects();
   RebuildShortcuts(layout, snapshot);
@@ -996,8 +998,9 @@ void PhiSidebarView::RebuildShortcuts(const PhiSidebarRects& layout,
                                       const WindowSnapshot& snapshot) {
   pinned_.clear();
   bookmarks_.clear();
-  if (!sidebar_host_ || incognito_ || agent_) {
-    return;  // Nothing persists from an incognito or agent window.
+  if (!sidebar_host_ || incognito_ || agent_ ||
+      PhiIsAgentSpaceId(shell_->SidebarActiveSpace())) {
+    return;  // Nothing persists from an incognito window or an agent Space.
   }
   const auto consume = [](PhiStoredRowView view) {
     ShortcutRow row;

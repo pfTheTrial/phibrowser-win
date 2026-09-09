@@ -16,6 +16,22 @@
    "comment": "sidebar — used at phi_shell_window.cc:1116",
    "en": "Search or Enter URL"
   },
+  "agent.handoffPrompt.laterButton": {
+   "comment": "agent — handoff prompt cancel button; used at phi_agent_handoff_prompt.cc",
+   "en": "Later"
+  },
+  "agent.handoffPrompt.message": {
+   "comment": "agent — handoff prompt default body; used at phi_agent_handoff_prompt.cc",
+   "en": "The agent handed control back to you to finish a step — for example, signing in."
+  },
+  "agent.handoffPrompt.switchToAgentSpaceButton": {
+   "comment": "agent — handoff prompt default button; used at phi_agent_handoff_prompt.cc",
+   "en": "Switch to Agent Space"
+  },
+  "agent.handoffPrompt.title": {
+   "comment": "agent — handoff prompt title; used at phi_agent_handoff_prompt.cc",
+   "en": "The agent needs you"
+  },
   "agentControl.connectionApproval.agentLabel": {
    "comment": "app — used at phi_coordinator.cc:3108",
    "en": "Agent"
@@ -419,6 +435,10 @@
   "app.urlRulesEditor.windowTitle": {
    "comment": "settings — used in phi_url_rules_window.cc",
    "en": "URL Rules"
+  },
+  "app.viewMenu.agentAutoview": {
+   "comment": "menuBar — View menu item; used at phi_menu_bar.cc",
+   "en": "Agent Autoview"
   },
   "app.viewMenu.alwaysShowBookmarkBar": {
    "comment": "menuBar — used at phi_menu_bar.cc:359",
@@ -2002,6 +2022,70 @@
   "settings.developer.passwordManager.sectionTitle": {
    "comment": "settings — used at phi_settings_window.cc:2248",
    "en": "Agent Password Manager"
+  },
+  "settings.developer.skillInstall.all.failureTitle": {
+   "comment": "settings — Developer ▸ phi-browser skill installer; used at phi_settings_window.cc",
+   "en": "Couldn’t install the skill"
+  },
+  "settings.developer.skillInstall.all.successMessage": {
+   "comment": "settings — Developer ▸ phi-browser skill installer; used at phi_settings_window.cc; {0} is the agent names",
+   "en": "{0} can now use the phi-browser skill. Restart newly configured agents; in Pi, /reload is enough."
+  },
+  "settings.developer.skillInstall.all.successTitle": {
+   "comment": "settings — Developer ▸ phi-browser skill installer; used at phi_settings_window.cc",
+   "en": "Skill installed"
+  },
+  "settings.developer.skillInstall.allAgentsAction": {
+   "comment": "settings — Developer ▸ phi-browser skill installer; used at phi_settings_window.cc",
+   "en": "All agents"
+  },
+  "settings.developer.skillInstall.description": {
+   "comment": "settings — Developer ▸ phi-browser skill installer; used at phi_settings_window.cc",
+   "en": "Links the skill bundled in this app into an AI coding agent’s skills folder so it can drive Phi over the DevTools Protocol. Pi also gets a companion extension that wakes idle sessions from Agent Transcript commands. Requires Node 22+."
+  },
+  "settings.developer.skillInstall.linkError": {
+   "comment": "settings — WINDOWS-ONLY: the junction could not be made; {0} is the path, {1} the system’s reason; used at phi_skill_installer.cc",
+   "en": "Couldn’t link {0}: {1}"
+  },
+  "settings.developer.skillInstall.missingCompanionError": {
+   "comment": "settings — Developer ▸ phi-browser skill installer; used at phi_settings_window.cc",
+   "en": "This build doesn’t include the Pi companion extension. Rebuild Phi Browser and try again."
+  },
+  "settings.developer.skillInstall.missingResourcesError": {
+   "comment": "settings — Developer ▸ phi-browser skill installer; used at phi_settings_window.cc",
+   "en": "This build doesn’t include the phi-browser skill resources. Rebuild Phi Browser and try again."
+  },
+  "settings.developer.skillInstall.overwriteConfirmation.message": {
+   "comment": "settings — Developer ▸ phi-browser skill installer; used at phi_settings_window.cc; {0} is the path",
+   "en": "“{0}” already exists and isn’t a link created by Phi Browser. Replace it with a link to this app’s bundled skill?"
+  },
+  "settings.developer.skillInstall.overwriteConfirmation.replaceButton": {
+   "comment": "settings — Developer ▸ phi-browser skill installer; used at phi_settings_window.cc",
+   "en": "Replace"
+  },
+  "settings.developer.skillInstall.overwriteConfirmation.title": {
+   "comment": "settings — Developer ▸ phi-browser skill installer; used at phi_settings_window.cc",
+   "en": "Replace the existing skill?"
+  },
+  "settings.developer.skillInstall.sectionTitle": {
+   "comment": "settings — Developer ▸ phi-browser skill installer; used at phi_settings_window.cc",
+   "en": "Install the phi-browser skill"
+  },
+  "settings.developer.skillInstall.single.failureTitle": {
+   "comment": "settings — Developer ▸ phi-browser skill installer; used at phi_settings_window.cc",
+   "en": "Couldn’t install the skill"
+  },
+  "settings.developer.skillInstall.single.successMessage": {
+   "comment": "settings — Developer ▸ phi-browser skill installer; used at phi_settings_window.cc; {0} is the agent name",
+   "en": "{0} can now use the phi-browser skill. Restart newly configured agents; in Pi, /reload is enough."
+  },
+  "settings.developer.skillInstall.single.successTitle": {
+   "comment": "settings — Developer ▸ phi-browser skill installer; used at phi_settings_window.cc",
+   "en": "Skill installed"
+  },
+  "settings.developer.skillInstall.targetMenuButton": {
+   "comment": "settings — Developer ▸ phi-browser skill installer; used at phi_settings_window.cc",
+   "en": "Add skill to…"
   },
   "settings.displayLanguage": {
    "comment": "General settings - label of the row that picks the UI language",

@@ -27,6 +27,14 @@ namespace phi_client {
 // framework. The coordinator creates/tears down the backing window and passes
 // the current monotonic tick (GetTickCount64) into every method that touches
 // the keep-alive clock, so the whole thing is deterministic and testable.
+// An agent Space's id ("agentspace-N"). While the user watches one, the
+// slot hosts its browser under this id exactly like a user Space — so
+// nothing that persists a Space (session restore, the routing table, the
+// last-active note) may take it for one.
+inline bool PhiIsAgentSpaceId(const std::string& space_id) {
+  return space_id.rfind("agentspace-", 0) == 0;
+}
+
 // Everything runs on the browser UI thread; no locking.
 class PhiAgentSpaces {
  public:
@@ -46,6 +54,9 @@ class PhiAgentSpaces {
   struct Space {
     std::string task_id;
     std::string space_id;
+    // The Mac's task number: the lowest unused ordinal (1, 2, 3…), reused
+    // once a Space closes — the pip's "R1" and the transcript's label.
+    int number = 0;
     // The hidden browser; its value is what CDP's Browser.getWindowForTarget
     // reports, so the skill correlates tabs to it unchanged.
     BrowserId window_id;
@@ -55,12 +66,16 @@ class PhiAgentSpaces {
     // starting | running | idle | completed | failed
     std::string status = "running";
     std::string caption;
+    // markError's message — the pill shows it red while status is failed.
+    std::string error_message;
+    // markError set it; the user surfacing the Space (watching) clears it.
+    // The pip wears the red badge while it stands.
+    bool unseen_error = false;
     bool persistent = false;
     // Absolute keep-alive deadline in GetTickCount64 ms; 0 = no deadline
     // (persistent, or while the user holds control).
     uint64_t keepalive_deadline_ms = 0;
     std::deque<UserMessage> pending_messages;  // capped kMaxQueued
-    std::deque<std::string> log;               // rendered lines, capped kMaxLog
   };
 
   PhiAgentSpaces();
@@ -85,10 +100,14 @@ class PhiAgentSpaces {
 
   void Remove(const std::string& task_id);
 
-  // Extends the keep-alive to max(existing, now + ttl). `ttl_seconds <= 0`
-  // uses kDefaultTtlSeconds; the value is clamped to [1, kMaxTtlSeconds].
+  // The Mac's touchKeepAlive: a plain touch (`ttl_seconds <= 0`) only
+  // EXTENDS, to max(existing, now + default); an explicit ttl is
+  // authoritative in BOTH directions, clamped to [1, kMaxTtlSeconds].
   // Persistent and user-owned spaces have no deadline and are untouched.
   void Ping(const std::string& task_id, int ttl_seconds, uint64_t now_ms);
+  // Sets the deadline to exactly now + seconds (the round-start reset, the
+  // agent's resume after a hand-back), subject to the same exemptions.
+  void ResetTtl(const std::string& task_id, int seconds, uint64_t now_ms);
 
   // setState: `caption` and `state` are independent and optional. `state`
   // "running" resets the keep-alive to kDefaultTtlSeconds; "idle" leaves it.
@@ -98,12 +117,12 @@ class PhiAgentSpaces {
                 uint64_t now_ms);
 
   // Flips ownership. Handing to the user clears the deadline (their control
-  // pauses the clock); handing back to the agent re-arms it to the default.
+  // pauses the clock); handing back to the agent re-arms it with the
+  // INTER-ROUND grace (kInterRoundTtlSeconds) — the agent may take a while
+  // to notice — which the next round start resets to the driving clock.
   void SetOwnership(const std::string& task_id,
                     Ownership owner,
                     uint64_t now_ms);
-
-  void AppendLog(const std::string& task_id, const std::string& line);
 
   // Drains the message queue into a JSON list `[{"id","text","ts"}]`.
   base::ListValue DrainMessages(const std::string& task_id);
@@ -120,8 +139,9 @@ class PhiAgentSpaces {
   std::vector<std::string> Expired(uint64_t now_ms) const;
 
  private:
-  static constexpr size_t kMaxLog = 500;
   static constexpr size_t kMaxQueued = 50;
+  // The lowest ordinal no live Space holds.
+  int NextNumber() const;
 
   std::map<std::string, Space> spaces_;
   int next_ordinal_ = 1;

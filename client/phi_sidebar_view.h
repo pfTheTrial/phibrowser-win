@@ -444,6 +444,9 @@ class PhiSidebarShell {
   // The browser this slot SHOWS; invalid between the last browser going and
   // teardown.
   virtual BrowserId SidebarActiveBrowser() const = 0;
+  // The slot's active Space id — an agent Space hosted for a watch shows
+  // no pinned tabs or bookmarks, like an agent window's own sidebar.
+  virtual std::string SidebarActiveSpace() const = 0;
   // The framework's CURRENT state for `browser`, pulled typed — for the
   // gesture paths that just mutated the strip and act on the result inside
   // the same turn. Never for rows or paint: those read the window model.

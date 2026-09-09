@@ -195,7 +195,12 @@ PhiMenuSpec PhiBuildAgentChipMenu();
 
 // The full Space switcher: the compact pip's (with_new_space false) and the
 // overflow "…" button's (true, which adds the two creation rows).
+// `agents` are the live agent Spaces (the Mac draws them in the switcher
+// with the driver's icon), each row an "agent.watch" of its taskId;
+// `watched_agent` is ticked.
 PhiMenuSpec PhiBuildSpaceSwitcherMenu(const std::vector<PhiMenuChoice>& spaces,
+                                      const std::vector<PhiMenuChoice>& agents,
+                                      const std::string& watched_agent,
                                       const std::string& active_space,
                                       bool with_new_space);
 

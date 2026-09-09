@@ -4,6 +4,8 @@
 
 #include "phibrowser-win/client/phi_shell_menus.h"
 
+#include "phibrowser-win/client/phi_features.h"
+
 #include <utility>
 
 #include "phibrowser-win/client/phi_i18n.h"
@@ -389,14 +391,18 @@ PhiMenuSpec PhiBuildTabAreaMenu(const PhiTabAreaMenuInputs& in) {
 
 PhiMenuSpec PhiBuildAgentChipMenu() {
   PhiMenuSpec spec;
-  spec.items.push_back(
-      PhiMenuItem::Command("agent.transcript", L"Show Transcript"));
-  spec.items.push_back(PhiMenuItem::Separator());
+  if (kPhiTranscriptEnabled) {
+    spec.items.push_back(
+        PhiMenuItem::Command("agent.transcript", L"Show Transcript"));
+    spec.items.push_back(PhiMenuItem::Separator());
+  }
   spec.items.push_back(PhiMenuItem::Command("agent.finish", L"Finish Task"));
   return spec;
 }
 
 PhiMenuSpec PhiBuildSpaceSwitcherMenu(const std::vector<PhiMenuChoice>& spaces,
+                                      const std::vector<PhiMenuChoice>& agents,
+                                      const std::string& watched_agent,
                                       const std::string& active_space,
                                       bool with_new_space) {
   PhiMenuSpec spec;
@@ -407,6 +413,19 @@ PhiMenuSpec PhiBuildSpaceSwitcherMenu(const std::vector<PhiMenuChoice>& spaces,
       // shows no check mark.
       item.checked = true;
       item.default_item = true;
+    }
+  }
+  if (!agents.empty()) {
+    // The agent Spaces after the user's, past a rule, as the strip groups
+    // them — the compact pip's only road to watch mode.
+    spec.items.push_back(PhiMenuItem::Separator());
+    std::vector<PhiMenuItem> rows = ChoiceRows(agents, "agent.watch");
+    for (PhiMenuItem& item : rows) {
+      if (item.target.id == watched_agent) {
+        item.checked = true;
+        item.default_item = true;
+      }
+      spec.items.push_back(std::move(item));
     }
   }
   if (!with_new_space) {

@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include "phibrowser-win/client/phi_agent_transcript.h"
 #include "phibrowser-win/client/phi_theme.h"
 
 namespace phi_client {
@@ -19,16 +20,28 @@ namespace phi_client {
 class PhiTranscriptHost {
  public:
   virtual ~PhiTranscriptHost() = default;
-  // The rendered transcript lines for `task_id`, oldest first (empty when
-  // the task is unknown or has logged nothing).
-  virtual std::vector<std::string> TranscriptLines(
+  // The task's transcript, oldest first (empty when unknown). An empty
+  // `task_id` means every task, interleaved by seq (the "All tasks" filter).
+  virtual std::vector<PhiTranscriptEntry> TranscriptEntries(
       const std::string& task_id) = 0;
+  // The driver's live tail row ("working…"), or empty.
+  virtual std::string TranscriptActivity(const std::string& task_id) = 0;
+  // Every buffered task, for the filter menu: live ones first.
+  virtual std::vector<PhiTranscriptTaskInfo> TranscriptTasks() = 0;
   // The driving agent's display name, for the panel title.
   virtual std::string TranscriptAgentName(const std::string& task_id) = 0;
+  // Whether the task is live; `running` reports its run state (the console
+  // hints that an idle agent only sees a command at its next round).
+  virtual bool TranscriptTaskLive(const std::string& task_id,
+                                  bool* running) = 0;
   // Queues a console message from the user (the driver drains it on its
   // next poll). False when the task is gone.
   virtual bool PushTranscriptMessage(const std::string& task_id,
                                      const std::string& text) = 0;
+  // The console's Clear: one task's buffer, or all when empty.
+  virtual void ClearTranscript(const std::string& task_id) = 0;
+  // The console closed: ended buffers it was keeping alive may go.
+  virtual void TranscriptConsoleClosed() = 0;
 };
 
 // The live transcript console for one agent Space — the Windows shape of the

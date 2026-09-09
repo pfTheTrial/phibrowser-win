@@ -48,7 +48,16 @@ the user quits Phi every task is gone anyway.
 The transcript's "You:" line is the user's: `agentSpace.userMessage` is no
 longer agent-callable on Windows (`test_rig_only`) — the console prompt
 and Phi's own mirror deliver the user's commands, `readUserMessages` drains
-them.
+them. There is NO Agent Transcript console on Windows: `agentSpace.list`
+always reports `transcriptMirror: false`, so never spawn the mirror tailer
+there; `agentSpace.log` is still accepted (the lines are kept for the
+pill and the badges), and every user-facing result must go through
+`say()`/`narrate` or the task's caption.
+
+`agentSpace.handoff{message}` on Windows raises the same floating "The
+agent needs you" prompt as on Mac (Switch to Agent Space / Later) and
+flashes Phi in the taskbar; hand back, `takeover`, completion or the Space
+closing take it down. View ▸ Agent Autoview exists on Windows too.
 
 There is no per-program approval on Windows: the prompt a first connection
 raises asks only whether to turn on "Allow agents to control Phi", and once

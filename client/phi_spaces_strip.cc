@@ -170,9 +170,10 @@ void PhiSpacesStrip::Rebuild() {
   }
   const std::string& active = shell_->SpacesActiveSpace();
   // The full pip row in strip order (the Mac's stripOrderedSpaces): the
-  // user Spaces, then — only in a real user window; the agent's own hidden
-  // window never lists them — the live agent Spaces as robot pips. Clicking
-  // one surfaces its window so the user can watch the agent work live.
+  // user Spaces, then the live agent Spaces as robot pips — in an agent
+  // window too, where the watched one wears the selection pill exactly as
+  // the Mac's agent Space does in its own window's strip. Clicking one
+  // surfaces its window so the user can watch the agent work live.
   std::vector<PhiSpaceChip> row;
   for (const PhiSpaceView& space : spaces_host_->Spaces()) {
     // Comfortable shows a single compact pip — the ACTIVE Space; the rest
@@ -188,14 +189,18 @@ void PhiSpacesStrip::Rebuild() {
     chip.open = shell_->SpacesHasSpace(space.id);
     row.push_back(std::move(chip));
   }
-  if (agent_host_ && !shell_->SpacesIsAgent() && !rects.horizontal_tabs) {
+  if (agent_host_ && !rects.horizontal_tabs) {
     for (const PhiAgentPipView& pip : agent_host_->AgentSpaces()) {
       PhiSpaceChip chip;
-      chip.id = pip.task_id;
+      chip.id = pip.space_id;
+      chip.task_id = pip.task_id;
       chip.is_agent = true;
       chip.open = pip.watched;
-      chip.label =
-          pip.caption.empty() ? L"Agent" : base::UTF8ToWide(pip.caption);
+      chip.badge = static_cast<int>(pip.badge) + 1;
+      // The Mac names the Space "R<number>"; the driving agent follows.
+      chip.label = L"R" + std::to_wstring(pip.number) + L" · " +
+                   (pip.agent_name.empty() ? L"Agent"
+                                           : base::UTF8ToWide(pip.agent_name));
       chip.icon = L"\U0001F916";  // 🤖
       row.push_back(std::move(chip));
     }
@@ -252,8 +257,7 @@ void PhiSpacesStrip::Rebuild() {
     anchor_visible_ = count_mid;
     int index = 0;
     for (int i = 0; i < total; ++i) {
-      if (!row[static_cast<size_t>(i)].is_agent &&
-          row[static_cast<size_t>(i)].id == active) {
+      if (row[static_cast<size_t>(i)].id == active) {
         index = i;
         break;
       }
@@ -728,6 +732,15 @@ void PhiSpacesStrip::BeginSwap(const std::string& entering_space_id) {
     }
     ++at;
   }
+  // An agent Space is past every user Space in strip order (the Mac sorts
+  // them to the end): a switch into one slides forward, back out of one
+  // slides backward.
+  if (to < 0) {
+    to = at + 1;
+  }
+  if (from < 0) {
+    from = at + 1;
+  }
   swap_forward_ = to >= from;
   swap_source_palette_ = shell_->SpacesPalette();
   // The strip's selected pill slides from the leaving pip to the entering
@@ -835,6 +848,11 @@ void PhiSpacesStrip::Paint(HDC dc,
     if (chip.id != active_space && !(chip.is_agent && chip.open)) {
       continue;
     }
+    if (shell_->SpacesIsAgent() && !chip.is_agent) {
+      // In an agent window the agent Space IS the active one: the user
+      // Space the slot came from wears no pill there (the Mac's strip).
+      continue;
+    }
     if (creating_ && !chip.is_agent) {
       // The dashed placeholder is the Space in focus while the form is up;
       // the source Space must not keep reading as active beside it.
@@ -928,6 +946,50 @@ void PhiSpacesStrip::Paint(HDC dc,
       if (previous_initial_font) {
         ::SelectObject(dc, previous_initial_font);
       }
+    }
+    if (chip.is_agent) {
+      // The Mac's agent grouping: a 1×14 rule in the gap before the first
+      // agent pip, and the corner badge — red on an error the user has not
+      // seen, green tick when completed, orange when the user holds it,
+      // grey when idle, green while running. 8pt, inside the pip frame.
+      const RECT pip_rc = PaintedChip(chip.bounds, scaled(kSpaceChip));
+      const size_t index = static_cast<size_t>(&chip - chips_.data());
+      if (index > 0 && !chips_[index - 1].is_agent) {
+        const int mid = (pip_rc.top + pip_rc.bottom) / 2;
+        const int half = scaled(7);
+        const RECT rule = {chip.bounds.left - scaled(kSpaceChipGap) / 2 - 1,
+                           mid - half, chip.bounds.left -
+                                           scaled(kSpaceChipGap) / 2,
+                           mid + half};
+        HBRUSH rule_brush =
+            ::CreateSolidBrush(BlendOver(kLabel, palette.ground_top, 64));
+        ::FillRect(dc, &rule, rule_brush);
+        ::DeleteObject(rule_brush);
+      }
+      COLORREF badge = RGB(0x34, 0xC7, 0x59);  // running: systemGreen
+      switch (chip.badge - 1) {
+        case 1:  // idle
+          badge = RGB(0x8E, 0x8E, 0x93);
+          break;
+        case 2:  // the user holds control
+          badge = RGB(0xFF, 0x95, 0x00);
+          break;
+        case 3:  // completed
+          badge = RGB(0x34, 0xC7, 0x59);
+          break;
+        case 4:  // error
+          badge = RGB(0xFF, 0x3B, 0x30);
+          break;
+        default:
+          break;
+      }
+      RECT dot = {pip_rc.right - scaled(10), pip_rc.bottom - scaled(10),
+                  pip_rc.right - scaled(1), pip_rc.bottom - scaled(1)};
+      // A ground-coloured ring lifts the dot off the pip, the Mac's
+      // shadowed badge.
+      FillRounded(dc, dot, palette.ground_top, scaled(5));
+      ::InflateRect(&dot, -scaled(1), -scaled(1));
+      FillRounded(dc, dot, badge, scaled(4));
     }
   }
   ::RestoreDC(dc, clip_save);

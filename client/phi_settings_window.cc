@@ -23,6 +23,7 @@
 #include <cstdlib>
 #include <cwctype>
 #include <limits>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -38,6 +39,7 @@
 #include "phibrowser-win/client/phi_preferences.h"
 #include "phibrowser-win/client/phi_profile_service.h"
 #include "phibrowser-win/client/phi_prompt.h"
+#include "phibrowser-win/client/phi_skill_installer.h"
 #include "phibrowser-win/client/phi_space_manager.h"
 #include "phibrowser-win/client/phi_url_router.h"
 
@@ -154,10 +156,11 @@ constexpr int kChipRadius = 6;
 constexpr int kChipGap = 12;
 constexpr int kChipIndent = kChipSize + kChipGap;
 // Apple's system colours, which the Mac pane names directly (.indigo,
-// .orange, .blue).
+// .orange, .blue, .teal).
 constexpr COLORREF kChipIndigo = RGB(0x58, 0x56, 0xD6);
 constexpr COLORREF kChipOrange = RGB(0xFF, 0x95, 0x00);
 constexpr COLORREF kChipBlue = RGB(0x00, 0x7A, 0xFF);
+constexpr COLORREF kChipTeal = RGB(0x30, 0xB0, 0xC7);
 // Icon picker grid (IconPicker): 26pt cells, 4pt gaps, r10 cells.
 constexpr int kEmojiCell = 26;
 constexpr int kEmojiGap = 4;
@@ -2163,6 +2166,24 @@ void PhiSettingsWindow::BuildDeveloper(int* y) {
                L"profile folder is admitted without asking; off, the first "
                L"one to connect asks you to turn this on.",
                kChipIndent, 0xE735, kChipIndigo);  // sparkles (filled)
+  if (prefs_->AllowAgentControl()) {
+    // Under the gate, the Mac's SkillInstallRowView: the phi-browser
+    // skill shipped beside the exe, linked into an agent's skills folder
+    // from a menu of agents ("Add skill to…"). Shown only while agents
+    // are allowed in, as on Mac.
+    AddDividerRow(y);
+    const RECT area = AddRow(
+        y, PhiStr("settings.developer.skillInstall.sectionTitle"),
+        kPillHeight, kPillWidth,
+        PhiStr("settings.developer.skillInstall.description"), kChipIndent,
+        0xEA86, kChipTeal);  // Puzzle — puzzlepiece.extension.fill
+    Item pill;
+    pill.kind = ItemKind::kPopup;
+    pill.text = PhiStr("settings.developer.skillInstall.targetMenuButton");
+    pill.action = "installskill";
+    pill.bounds = area;
+    items_.push_back(std::move(pill));
+  }
   EndSection(y);
 
   BeginSection(y, nullptr);
@@ -3119,6 +3140,92 @@ void PhiSettingsWindow::Paint(HDC dc, const RECT&) {
   }
 }
 
+namespace {
+
+// Settings ▸ Developer ▸ "Add skill to…": the Mac's installSkill(for:) and
+// installAll(). Every real folder in the way is asked about first; each
+// outcome is presented once — one alert per agent from the menu, ONE
+// aggregate alert for "All agents".
+bool ConfirmSkillOverwrite(HWND owner, const std::wstring& path) {
+  return PhiConfirm(
+      owner,
+      PhiStr("settings.developer.skillInstall.overwriteConfirmation.title"),
+      PhiStrF("settings.developer.skillInstall.overwriteConfirmation.message",
+              {path})
+          .c_str(),
+      PhiStr("settings.developer.skillInstall.overwriteConfirmation."
+             "replaceButton"),
+      /*destructive=*/false);
+}
+
+void InstallSkillFor(HWND owner, const PhiSkillTarget& target) {
+  const PhiSkillInstallResult result = PhiInstallSkill(
+      target, [owner](const std::wstring& path) {
+        return ConfirmSkillOverwrite(owner, path);
+      });
+  switch (result.outcome) {
+    case PhiSkillInstallOutcome::kSuccess:
+      PhiNotice(
+          owner,
+          PhiStr("settings.developer.skillInstall.single.successTitle"),
+          PhiStrF("settings.developer.skillInstall.single.successMessage",
+                  {target.name})
+              .c_str());
+      break;
+    case PhiSkillInstallOutcome::kCancelled:
+      break;
+    case PhiSkillInstallOutcome::kFailure:
+      PhiNotice(owner,
+                PhiStr("settings.developer.skillInstall.single.failureTitle"),
+                result.error.c_str());
+      break;
+  }
+}
+
+void InstallSkillForAllAgents(HWND owner) {
+  std::vector<std::wstring> succeeded;
+  std::vector<std::wstring> failed;
+  for (const PhiSkillTarget& target : PhiSkillTargets()) {
+    const PhiSkillInstallResult result = PhiInstallSkill(
+        target, [owner](const std::wstring& path) {
+          return ConfirmSkillOverwrite(owner, path);
+        });
+    switch (result.outcome) {
+      case PhiSkillInstallOutcome::kSuccess:
+        succeeded.push_back(target.name);
+        break;
+      case PhiSkillInstallOutcome::kCancelled:
+        break;
+      case PhiSkillInstallOutcome::kFailure:
+        failed.push_back(std::wstring(target.name) + L": " + result.error);
+        break;
+    }
+  }
+  if (succeeded.empty() && failed.empty()) {
+    return;
+  }
+  if (failed.empty()) {
+    std::wstring names;
+    for (const std::wstring& name : succeeded) {
+      names += (names.empty() ? L"" : L", ") + name;
+    }
+    PhiNotice(owner,
+              PhiStr("settings.developer.skillInstall.all.successTitle"),
+              PhiStrF("settings.developer.skillInstall.all.successMessage",
+                      {names})
+                  .c_str());
+    return;
+  }
+  std::wstring body;
+  for (const std::wstring& line : failed) {
+    body += (body.empty() ? L"" : L"\n") + line;
+  }
+  PhiNotice(owner, PhiStr("settings.developer.skillInstall.all.failureTitle"),
+            body.c_str());
+}
+
+}  // namespace
+
 void PhiSettingsWindow::Apply(const Item& item, int x) {
   if (item.action == "section") {
     section_ = item.payload;
@@ -3273,6 +3380,38 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
       host_->SetLanguagePreference(std::string());
     } else if (chosen >= 2 && chosen < 2 + locales.size()) {
       host_->SetLanguagePreference(locales[chosen - 2]);
+    }
+  } else if (item.action == "installskill") {
+    // The Mac's Menu: "All agents", then every agent with its skills
+    // folder, ticked when that folder already links to THIS build's skill
+    // (picking it again refreshes the link).
+    HMENU menu = ::CreatePopupMenu();
+    if (!menu) {
+      return;
+    }
+    const std::vector<PhiSkillTarget>& targets = PhiSkillTargets();
+    const std::set<std::string> installed = PhiInstalledSkillTargetIds();
+    ::AppendMenuW(menu, MF_STRING, 1,
+                  PhiStr("settings.developer.skillInstall.allAgentsAction"));
+    ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    for (size_t i = 0; i < targets.size(); ++i) {
+      const std::wstring label = std::wstring(targets[i].name) + L"    " +
+                                 PhiSkillDisplayPath(targets[i]);
+      ::AppendMenuW(menu,
+                    MF_STRING | (installed.count(targets[i].id) ? MF_CHECKED
+                                                                : 0),
+                    static_cast<UINT>(i) + 2, label.c_str());
+    }
+    POINT anchor = {item.bounds.left, item.bounds.bottom};
+    ::ClientToScreen(hwnd(), &anchor);
+    const UINT chosen = static_cast<UINT>(::TrackPopupMenu(
+        menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, anchor.x,
+        anchor.y, 0, hwnd(), nullptr));
+    ::DestroyMenu(menu);
+    if (chosen == 1) {
+      InstallSkillForAllAgents(hwnd());
+    } else if (chosen >= 2 && chosen < 2 + targets.size()) {
+      InstallSkillFor(hwnd(), targets[chosen - 2]);
     }
   } else if (item.action == "pinscope") {
     // The Mac's popup: Space / Profile / App.

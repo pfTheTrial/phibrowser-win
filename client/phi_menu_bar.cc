@@ -354,6 +354,10 @@ void PhiMenuBar::BuildStatic() {
   // Reader View — the Mirage extension's reading surface for the active tab.
   Append(view_, kCmdToggleReader, PhiStr("app.viewMenu.toggleReaderView"));
   Separator(view_);
+  // The Mac's agent item under View (Agent Transcript is not on Windows):
+  // live only while agents may control Phi; ticked while on.
+  Append(view_, kCmdAgentAutoview, PhiStr("app.viewMenu.agentAutoview"));
+  Separator(view_);
   HMENU developer = ::CreatePopupMenu();
   Append(developer, kCmdViewSource, PhiStr("menuBar.viewSource"), false);
   Append(developer, kCmdDevTools, PhiStr("menuBar.developerTools"), false);
@@ -507,6 +511,12 @@ void PhiMenuBar::RefreshView() {
                           : kCmdLayoutPerformance;
   ::CheckMenuRadioItem(view_, kCmdLayoutBalanced, kCmdLayoutComfortable,
                        chosen, MF_BYCOMMAND);
+  if (ChromePrefsHost* prefs = services_->MenuPrefsHost()) {
+    SetEnabled(view_, kCmdAgentAutoview, prefs->AllowAgentControl());
+    ::CheckMenuItem(view_, kCmdAgentAutoview,
+                    MF_BYCOMMAND | (prefs->AgentAutoView() ? MF_CHECKED
+                                                           : MF_UNCHECKED));
+  }
   if (services_->MenuPrefsHost()) {
     ::CheckMenuItem(view_, kCmdAlwaysShowBookmarkBar,
                     MF_BYCOMMAND |
@@ -784,6 +794,29 @@ bool PhiMenuBar::OnCommand(UINT id) {
   // principle 3).
   const BrowserId target = c->MenuActiveBrowser();
 
+  // Under agent ownership the window is the agent's page: the Mac refuses
+  // New Tab, closing, reopening and duplicating tabs, Back/Forward/Home and
+  // the bookmark commands; only Space navigation stays live.
+  if (c->MenuAgentHoldsInput()) {
+    switch (id) {
+      case kCmdNewTab:
+      case kCmdNewTabToRight:
+      case kCmdCloseTab:
+      case kCmdReopenClosedTab:
+      case kCmdDuplicateTab:
+      case kCmdOpenFile:
+      case kCmdOpenLocation:
+      case kCmdBack:
+      case kCmdForward:
+      case kCmdHome:
+      case kCmdBookmarkThisTab:
+      case kCmdBookmarkAllTabs:
+        return true;
+      default:
+        break;
+    }
+  }
+
   // Dynamic ranges first.
   if (id >= kSpaceFirst && id <= kSpaceLast) {
     const size_t i = id - kSpaceFirst;
@@ -999,6 +1032,12 @@ bool PhiMenuBar::OnCommand(UINT id) {
     case kCmdForceReload:
       if (c->MenuFramework() && target.valid()) {
         c->MenuFramework()->Reload(target.value, id == kCmdForceReload);
+      }
+      return true;
+    case kCmdAgentAutoview:
+      if (c->MenuPrefsHost()) {
+        c->MenuPrefsHost()->RequestAgentAutoView(
+            !c->MenuPrefsHost()->AgentAutoView());
       }
       return true;
     case kCmdLayoutBalanced:

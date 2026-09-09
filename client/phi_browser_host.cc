@@ -191,6 +191,39 @@ void PhiBrowserHost::AdoptFirst(const std::string& space_id,
   hwnds_[browser] = browser_hwnd;
 }
 
+HWND PhiBrowserHost::ReleaseContentChildKeepRecord() {
+  HWND child = content_hwnd_;
+  content_hwnd_ = nullptr;
+  return child;
+}
+
+HWND PhiBrowserHost::DetachSpaceBrowser(const std::string& space_id) {
+  if (!spaces_.Has(space_id)) {
+    return nullptr;
+  }
+  const BrowserId browser = spaces_.ForSpace(space_id);
+  auto it = hwnds_.find(browser);
+  HWND child = it != hwnds_.end() ? it->second : nullptr;
+  if (child && ::IsWindow(child)) {
+    ::ShowWindow(child, SW_HIDE);
+  }
+  if (content_hwnd_ == child) {
+    content_hwnd_ = nullptr;
+  }
+  hwnds_.erase(browser);
+  spaces_.Forget(browser);
+  return child;
+}
+
+void PhiBrowserHost::ReadoptContentChild(HWND browser_hwnd) {
+  if (!browser_hwnd || !::IsWindow(browser_hwnd)) {
+    return;
+  }
+  content_hwnd_ = browser_hwnd;
+  AdoptContentChild();
+  shell_->BrowserHostRelayout();  // Shows + positions it in this shell.
+}
+
 void PhiBrowserHost::ReleaseContentChild() {
   if (content_hwnd_ && ::IsWindow(content_hwnd_)) {
     ::SetParent(content_hwnd_, nullptr);
@@ -590,7 +623,8 @@ void PhiBrowserHost::RequestRaiseCaps() {
 
 void PhiBrowserHost::AttachSpaceBrowser(const std::string& space_id,
                                         BrowserId browser,
-                                        HWND browser_hwnd) {
+                                        HWND browser_hwnd,
+                                        bool agent) {
   if (!browser_hwnd || !::IsWindow(browser_hwnd)) {
     return;
   }
@@ -612,11 +646,13 @@ void PhiBrowserHost::AttachSpaceBrowser(const std::string& space_id,
                    SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
   }
   spaces_.Attach(space_id, browser);
-  shell_->BrowserHostNoteSpaceWindow(space_id, browser);
+  if (!agent) {
+    shell_->BrowserHostNoteSpaceWindow(space_id, browser);
+  }
   hwnds_[browser] = browser_hwnd;
   shell_->BrowserHostEndSpacePreview();
   if (phi_framework::PhiFramework* framework =
-          shell_->BrowserHostFramework()) {
+          agent ? nullptr : shell_->BrowserHostFramework()) {
     framework->SetWindowSpace(browser.value, space_id.c_str());
   }
   shell_->BrowserHostRelayout();

@@ -1315,6 +1315,9 @@ std::string PhiCoordinator::LastActiveSpaceId() const {
 }
 
 void PhiCoordinator::NoteActiveSpace(const std::string& space_id) {
+  if (PhiIsAgentSpaceId(space_id)) {
+    return;  // A hosted agent Space is never the one to restore first.
+  }
   session_restore_->NoteActiveSpace(space_id);
 }
 
@@ -2629,10 +2632,19 @@ void PhiCoordinator::RequestWatchAgentSpace(const std::string& task_id,
 
 void PhiCoordinator::RequestLeaveWatchedAgentSpace(
     const std::string& space_id) {
-  // The watcher comes back first; then it shows the Space the user picked
-  // inside the agent window (attached already, or requested cold).
-  const int64_t slot = agent_manager_.EndWatch(/*park_agent=*/true);
-  if (slot == 0 || space_id.empty()) {
+  // Slot-hosted: the swap back IS the leave (EndWatch runs it, to the
+  // Space the user picked). Fallback: the watcher comes back first, then
+  // shows the Space the user picked (attached already, or requested cold).
+  const bool hosting = agent_manager_.hosting();
+  const int64_t slot = agent_manager_.EndWatch(/*park_agent=*/true, space_id);
+  if (hosting || slot == 0 || space_id.empty()) {
+    return;
+  }
+  // The Space the window already shows needs no swap — running one
+  // anyway re-slid the band over a page that never changed (part of the
+  // "whole window blinked" on the way back from an agent Space).
+  if (PhiShellWindow* shell = ControllerForSlot(slot);
+      shell && shell->active_space() == space_id) {
     return;
   }
   bool pending = false;
@@ -2659,6 +2671,24 @@ PhiShellWindow* PhiCoordinator::ControllerForAgentWindow(
 
 PhiShellWindow* PhiCoordinator::ControllerForSlot(int64_t slot) {
   return registry_.Resolve(slot);
+}
+
+void PhiCoordinator::RebindAgentBrowser(BrowserId browser, int64_t slot) {
+  if (slot != 0) {
+    registry_.Bind(browser, SlotId(slot));
+    return;
+  }
+  const SlotId own = SlotId::OpenedBy(browser);
+  if (registry_.Get(own)) {
+    registry_.Bind(browser, own);
+  } else {
+    registry_.Unbind(browser);
+  }
+}
+
+void PhiCoordinator::OnAgentBrowserReturned(const std::string& task_id,
+                                            HWND child) {
+  agent_manager_.OnAgentBrowserReturned(task_id, child);
 }
 
 void PhiCoordinator::ShowAgentHandoffPrompt(const std::string& task_id,
