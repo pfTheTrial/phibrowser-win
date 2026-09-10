@@ -51,7 +51,6 @@ constexpr int kCardRadius = 14;
 constexpr int kCardPad = 24;
 constexpr int kCheckSize = 18;
 constexpr int kCheckGap = 10;
-constexpr int kSigningInHeader = 48;
 constexpr int kNameFieldWidth = 398;
 constexpr int kNameFieldHeight = 54;
 constexpr int kNameFieldRadius = 10;
@@ -445,8 +444,8 @@ void PhiOnboardingWindow::Layout() {
       break;
     }
     case Page::kSigningIn:
-      AddControl(Control::kCancelSignIn, 0, ContentDip(24, 12, 80, 24),
-                 PhiStr("prompt.cancel"), PhiHitRole::kButton, false, true);
+      // No header row: the hosted login fills the window (Escape and the
+      // window's close button still cancel).
       break;
     case Page::kGuestPrivacy:
     case Page::kNextSteps: {
@@ -924,38 +923,15 @@ void PhiOnboardingWindow::PaintLogin(HDC dc, const RECT& content) {
 }
 
 void PhiOnboardingWindow::PaintSigningIn(HDC dc, const RECT& content) {
-  // The header strip above the embedded hosted login: the page title and
-  // Cancel. The browser child paints the rest itself.
-  RECT header = {content.left, content.top, content.right,
-                 content.top + Scaled(kSigningInHeader)};
-  HBRUSH ground = ::CreateSolidBrush(RGB(0x1E, 0x1E, 0x1E));
-  ::FillRect(dc, &header, ground);
-  ::DeleteObject(ground);
-  HGDIOBJ old_font = ::SelectObject(dc, fonts().Get(13, FW_SEMIBOLD));
-  ::SetTextColor(dc, RGB(0xF0, 0xF0, 0xF0));
-  PhiDrawTextAA(dc, PhiStr("oobe.login.loginButton"), -1, &header,
-                DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-  for (size_t i = 0; i < hits_.size(); ++i) {
-    if (hits_[i].control == Control::kCancelSignIn) {
-      ::SelectObject(dc, fonts().Get(13, FW_NORMAL));
-      ::SetTextColor(dc, hovered() == static_cast<int>(i)
-                             ? RGB(0xFF, 0xFF, 0xFF)
-                             : RGB(0xA6, 0xA6, 0xA6));
-      RECT rc = hits_[i].bounds;
-      PhiDrawTextAA(dc, PhiStr("prompt.cancel"), -1, &rc,
-                    DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-    }
-  }
-  ::SelectObject(dc, old_font);
+  // The embedded hosted login fills the content and paints itself.
   if (!browser_hwnd_) {
     // Waiting for the browser: the Mac's "Finish signing in in your
     // browser" over the dark ground.
-    RECT rest = {content.left, header.bottom, content.right, content.bottom};
     HBRUSH dark = ::CreateSolidBrush(RGB(0x12, 0x12, 0x12));
-    ::FillRect(dc, &rest, dark);
+    ::FillRect(dc, &content, dark);
     ::DeleteObject(dark);
     HFONT font = BrandTitleFont(PhiStr("oobe.login.progressTitle"), 40);
-    old_font = ::SelectObject(dc, font);
+    HGDIOBJ old_font = ::SelectObject(dc, font);
     ::SetTextColor(dc, RGB(255, 255, 255));
     RECT rc = {content.left + Scaled(40), content.top, content.right - Scaled(40),
                content.bottom};
@@ -1528,10 +1504,8 @@ void PhiOnboardingWindow::PlaceEmbeddedBrowser() {
   }
   const RECT content = ContentRect();
   if (page_ == Page::kSigningIn) {
-    ::SetWindowPos(browser_hwnd_, HWND_TOP, content.left,
-                   content.top + Scaled(kSigningInHeader),
-                   content.right - content.left,
-                   content.bottom - content.top - Scaled(kSigningInHeader),
+    ::SetWindowPos(browser_hwnd_, HWND_TOP, content.left, content.top,
+                   content.right - content.left, content.bottom - content.top,
                    SWP_NOACTIVATE | SWP_SHOWWINDOW);
     FocusEmbeddedBrowser();
   } else {
