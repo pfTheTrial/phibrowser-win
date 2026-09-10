@@ -234,6 +234,7 @@ std::string PhiFeedbackWindow::StateJson() {
       attachments.Append(std::move(row));
     }
     out.Set("attachments", std::move(attachments));
+    out.Set("attachmentError", g_window->attachment_error_);
   }
   std::optional<std::string> json = base::WriteJson(out);
   return json ? *json : std::string("{}");
@@ -258,7 +259,7 @@ std::string PhiFeedbackWindow::Drive(const std::string& description,
     ::SetWindowTextW(g_window->url_, Widen(url).c_str());
   }
   if (!attach_files.empty()) {
-    g_window->AddFiles(attach_files);
+    g_window->AddFiles(attach_files, /*interactive=*/false);
   }
   if (send) {
     if (Trim(g_window->DescriptionText()).empty()) {
@@ -554,7 +555,8 @@ std::string PhiFeedbackWindow::UrlText() const {
   return Trim(Narrow(WindowText(url_)));
 }
 
-bool PhiFeedbackWindow::AddFiles(const std::vector<std::wstring>& paths) {
+bool PhiFeedbackWindow::AddFiles(const std::vector<std::wstring>& paths,
+                                 bool interactive) {
   std::vector<std::string> errors;
   for (const std::wstring& path : paths) {
     int64_t size = 0;
@@ -582,8 +584,12 @@ bool PhiFeedbackWindow::AddFiles(const std::vector<std::wstring>& paths) {
     if (errors.size() > 3) {
       shown += "\n+" + std::to_string(errors.size() - 3) + " more";
     }
-    PhiNotice(hwnd(), PhiStr("feedback.form.attachmentFailure.title"),
-              Widen(shown).c_str());
+    if (interactive) {
+      PhiNotice(hwnd(), PhiStr("feedback.form.attachmentFailure.title"),
+                Widen(shown).c_str());
+    } else {
+      attachment_error_ = shown;
+    }
     return false;
   }
   return true;
@@ -621,7 +627,7 @@ void PhiFeedbackWindow::ChooseFiles() {
       ::CoTaskMemFree(path);
     }
   }
-  AddFiles(paths);
+  AddFiles(paths, /*interactive=*/true);
 }
 
 void PhiFeedbackWindow::PasteImage() {

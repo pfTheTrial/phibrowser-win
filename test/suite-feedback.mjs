@@ -3,12 +3,14 @@
 // form through the control socket — the same code path the Send button
 // takes — and reads the outbox's manifests back through the status verb.
 //
-// Network-free by design: the account service is not reachable from the
-// test box's dev account, so a job is expected to reach "failedWaitingRetry"
-// (prepared, could not upload) rather than "submitted". What IS asserted is
-// everything up to the wire: the form's state, the outbox job, its
-// attachment preparation (logs.zip + images + others.zip within the five-slot
-// limit) and the backoff bookkeeping.
+// Two outcomes, decided by whether the box has a real Auth0 session
+// (agentSpace.account.status signedIn): WITH one the job must reach
+// "submitted" — the report really lands on the staging account service
+// (verified 2026-09-10, feedback id 19) — and the directory is gone;
+// WITHOUT one the stand-in account files the job, everything up to the
+// wire is asserted (the form's state, the outbox job, its attachment
+// preparation — logs.zip + images + others.zip within the five-slot limit —
+// and the backoff bookkeeping) and the upload fails for want of a token.
 import { test, run, assert, assertEq, sleep, openControl } from './phi-test.mjs'
 import { writeFileSync, mkdirSync } from 'node:fs'
 
@@ -71,6 +73,8 @@ test('feedback: Send files a job with logs, images and files prepared',
   writeFileSync(text, 'a note for the report\n'.repeat(100))
   const ctl = await openControl()
   try {
+    // A real session uploads for real; the stand-in only files.
+    const { signedIn } = await ctl.send('agentSpace.account.status')
     await ctl.send('agentSpace.feedback.open')
     const before = await ctl.send('agentSpace.feedback.status')
     const known = new Set(before.jobs.map(j => j.id))
@@ -101,28 +105,41 @@ test('feedback: Send files a job with logs, images and files prepared',
     assertEq(job.metadata.client_context.trace_id, job.id, 'trace id')
     assertEq(job.metadata.browser.version.length > 0, true, 'client version')
 
-    // The worker prepares the archives before it can fail on the wire.
+    // The worker prepares the archives before it goes on the wire. With a
+    // real session the whole job can be through and gone in a few seconds,
+    // so a vanished job is accepted there and checked below.
     status = await waitFor(ctl, s => {
       const j = s.jobs.find(x => x.id === job.id)
-      return j && j.prepared > 0 && j.status !== 'preparing'
+      return (signedIn && !j) || (j && j.prepared > 0 && j.status !== 'preparing')
     }, 60000)
     const prepared = status.jobs.find(x => x.id === job.id)
-    assert(prepared, 'job still present (not discarded)')
-    const types = prepared.preparedAttachments.map(a => `${a.type}:${a.filename}`)
-    assert(types.includes('log:logs.zip'), `logs.zip prepared (${types})`)
-    assert(types.includes('other:others.zip'), `others.zip prepared (${types})`)
-    assert(prepared.prepared <= 5, 'within the five-attachment limit')
-    // No reachable account service on the box: the attempt fails and the
-    // job waits on its backoff with the error recorded.
-    status = await waitFor(ctl, s => {
-      const j = s.jobs.find(x => x.id === job.id)
-      return j && j.status === 'failedWaitingRetry'
-    }, 90000)
-    const failed = status.jobs.find(x => x.id === job.id)
-    assertEq(failed.status, 'failedWaitingRetry', 'waiting on backoff')
-    assertEq(failed.retryCount, 1, 'one attempt counted')
-    assert(failed.nextAttemptAtMs > Date.now() - 1000, 'next attempt scheduled')
-    assert(failed.lastError.length > 0, `error recorded: ${failed.lastError}`)
+    if (prepared) {
+      const types = prepared.preparedAttachments.map(a => `${a.type}:${a.filename}`)
+      assert(types.includes('log:logs.zip'), `logs.zip prepared (${types})`)
+      assert(types.includes('other:others.zip'), `others.zip prepared (${types})`)
+      assert(prepared.prepared <= 5, 'within the five-attachment limit')
+    } else {
+      assert(signedIn, 'job still present (not discarded)')
+    }
+    if (signedIn) {
+      // A real account: presign, upload, submit, and the job directory is
+      // removed once the service has the report.
+      status = await waitFor(ctl, s => !s.jobs.find(x => x.id === job.id), 90000)
+      const left = status.jobs.find(x => x.id === job.id)
+      assert(!left, `job submitted and removed (${left && left.status}: ${left && left.lastError})`)
+    } else {
+      // No token behind the stand-in account: the attempt fails and the
+      // job waits on its backoff with the error recorded.
+      status = await waitFor(ctl, s => {
+        const j = s.jobs.find(x => x.id === job.id)
+        return j && j.status === 'failedWaitingRetry'
+      }, 90000)
+      const failed = status.jobs.find(x => x.id === job.id)
+      assertEq(failed.status, 'failedWaitingRetry', 'waiting on backoff')
+      assertEq(failed.retryCount, 1, 'one attempt counted')
+      assert(failed.nextAttemptAtMs > Date.now() - 1000, 'next attempt scheduled')
+      assert(failed.lastError.length > 0, `error recorded: ${failed.lastError}`)
+    }
   } finally { ctl.close() }
 })
 

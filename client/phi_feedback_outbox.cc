@@ -7,6 +7,7 @@
 #include <objbase.h>
 
 #include <algorithm>
+#include <climits>
 #include <functional>
 #include <utility>
 
@@ -1032,6 +1033,14 @@ HttpResult HttpRequest(const wchar_t* method,
   return PhiHttpRequest(method, url, headers, body);
 }
 
+// An attachment size for the wire. The Mac sends an integer; base::Value's
+// double would serialise as "4614.0", which the account service refuses as
+// an invalid body (box-verified 2026-09-10). Every attachment is capped at
+// 20 MB, so int always fits.
+base::Value WireSize(int64_t size) {
+  return base::Value(static_cast<int>(std::min<int64_t>(size, INT_MAX)));
+}
+
 // A call against the account service. `auth` supplies the bearer; a 401
 // invalidates the cached token so the retry fetches a fresh one. Returns
 // the error, or empty with `data` holding the envelope's `data` object.
@@ -1060,6 +1069,10 @@ std::string AccountPost(PhiAuth* auth,
     auth->InvalidateAccessToken();
   }
   if (result.status < 200 || result.status >= 300) {
+    // The service's own words, for the log: a 400 says WHICH field it
+    // refused, and nothing else does.
+    LOG(ERROR) << "[Feedback] " << path << " -> HTTP " << result.status
+               << ": " << result.body.substr(0, 600);
     return "HTTP error " + std::to_string(result.status) + ".";
   }
   std::optional<base::DictValue> envelope =
@@ -1099,7 +1112,7 @@ std::string PresignAttachments(PhiAuth* auth,
     base::DictValue d;
     d.Set("filename", a.filename);
     d.Set("mime_type", a.mime_type);
-    d.Set("size", static_cast<double>(a.size));
+    d.Set("size", WireSize(a.size));
     d.Set("attachment_type", a.attachment_type);
     list.Append(std::move(d));
   }
@@ -1188,7 +1201,7 @@ std::string SubmitFeedback(PhiAuth* auth,
     d.Set("object_key", a.object_key);
     d.Set("filename", a.filename);
     d.Set("mime_type", a.mime_type);
-    d.Set("size", static_cast<double>(a.size));
+    d.Set("size", WireSize(a.size));
     d.Set("attachment_type", a.attachment_type);
     attachments.Append(std::move(d));
   }

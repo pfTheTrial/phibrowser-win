@@ -111,7 +111,10 @@ class PhiFeedbackWindow : public PhiSecondaryWindow {
   void RefreshAttachmentList();
   void RefreshSendState();
   void RefreshCounter();
-  bool AddFiles(const std::vector<std::wstring>& paths);
+  // `interactive` shows the "Could Not Add Attachment" notice for refused
+  // files; a driven call (the harness, on the control socket) records the
+  // message in `attachment_error_` instead — a modal there wedges the call.
+  bool AddFiles(const std::vector<std::wstring>& paths, bool interactive);
   void ChooseFiles();
   void PasteImage();
   void RemoveSelected();
@@ -161,6 +164,8 @@ class PhiFeedbackWindow : public PhiSecondaryWindow {
   // used to pick (lane 3 §4.1).
   Timer logs_timer_;
   std::vector<Attachment> attachments_;
+  // The last refused-attachment message on a driven path (StateJson).
+  std::string attachment_error_;
   bool submitting_ = false;
   int pending_request_ = 0;
 };

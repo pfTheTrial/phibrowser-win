@@ -171,7 +171,11 @@ void PhiAccountAndFeedback::SetTestFeedbackAccount(const std::string& user_id,
 }
 
 void PhiAccountAndFeedback::SyncFeedbackAccount() {
-  if (auth_.signed_in()) {
+  // A session that needs reauthentication has no bearer to upload with:
+  // the outbox keeps its jobs (they are the account's) but stops trying,
+  // and the form asks for a sign-in instead of filing a report that would
+  // burn its retries on "no account".
+  if (auth_.signed_in() && !auth_.reauth_required()) {
     PhiFeedbackOutbox::Get().SetAccount(auth_.user().sub, auth_.user().email);
     return;
   }
@@ -190,7 +194,7 @@ void PhiAccountAndFeedback::OnFeedbackSystemLogs(int request_id,
 }
 
 bool PhiAccountAndFeedback::FeedbackAccount(std::string* email) {
-  if (auth_.signed_in()) {
+  if (auth_.signed_in() && !auth_.reauth_required()) {
     *email = auth_.user().email;
     return true;
   }
