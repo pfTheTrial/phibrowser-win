@@ -214,6 +214,17 @@ void TabDrop() {
   CHECK(r.gap_slot == 3 && r.place.before == SidebarKey::Tab(4) && r.place.group_id.empty());
   r = ResolveTabDrop(rows, 10, 400, false, {});  // End.
   CHECK(r.gap_slot == 4 && r.place.before.empty() && r.place.group_id.empty());
+  // The card's bottom inset (members carry the card's bottom edge): past
+  // g2's midpoint but above the card's bottom is G's LAST slot; below the
+  // card it is after the group. The horizontal strip has no such zone.
+  rows[2].group_bottom = rows[3].group_bottom = 154;
+  r = ResolveTabDrop(rows, 10, 140, false, {});
+  CHECK(r.gap_slot == 3 && r.place.before == SidebarKey::Tab(4) && r.place.group_id == "G");
+  r = ResolveTabDrop(rows, 10, 160, false, {});
+  CHECK(r.gap_slot == 3 && r.place.before == SidebarKey::Tab(4) && r.place.group_id.empty());
+  r = ResolveTabDrop(rows, 10, 140, false, SidebarKey::Tab(3));  // The last member itself.
+  CHECK(r.gap_slot == 3 && r.place.before == SidebarKey::Tab(4) && r.place.group_id == "G");
+  rows[2].group_bottom = rows[3].group_bottom = 0;
   r = ResolveTabDrop(rows, 10, 110, false, SidebarKey::Tab(3));  // Anchor is the dragged row.
   CHECK(r.place.before == SidebarKey::Tab(4));
   CHECK(r.place.group_explicit);

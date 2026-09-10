@@ -223,6 +223,100 @@ void PhiSidebarDragSession::RetargetDragSlide() {
             to[visible[static_cast<size_t>(i)]->id] = dy;
           }
         }
+        // The group headers and their cards ride the member rows: the
+        // header sits above whichever comes first of its first remaining
+        // member and — when the drop lands in the group — the gap's
+        // phantom slot; the card's bottom sits under the later of its last
+        // remaining member and that phantom. So a gap opening inside the
+        // group (under the header, between members, or as its last slot)
+        // grows the card around the gliding rows instead of sliding them
+        // out under its edge, and a member dragged out shrinks it.
+        const auto final_top = [&](int pos) {
+          const auto it = to.find(visible[static_cast<size_t>(pos)]->id);
+          return static_cast<double>(visible[static_cast<size_t>(pos)]->bounds.top) +
+                 (it == to.end() ? 0.0 : it->second);
+        };
+        // Where the gap's phantom slot sits once the rows have glided:
+        // dragged from below, the row at the slot slid down and the
+        // phantom takes its old place; from above, the rows before the
+        // slot slid up and the phantom sits one pitch above the row at it
+        // (the dragged row's own slot when the two coincide).
+        const bool gap_in_list = band_ == PhiDropBand::kTabs && insert_ >= 0;
+        double phantom_top = 0.0;
+        if (gap_in_list) {
+          const int size = static_cast<int>(visible.size());
+          if (insert_ < size) {
+            phantom_top = visible[static_cast<size_t>(insert_)]->bounds.top -
+                          (insert_ > dragged_pos ? pitch : 0);
+          } else {
+            phantom_top = visible[static_cast<size_t>(size - 1)]->bounds.top;
+          }
+        }
+        for (const GroupHeader& header : view_->group_headers()) {
+          const bool gap_in_group = gap_in_list && gap_group_ == header.id;
+          int first = -1, last = -1, first_kept = -1, last_kept = -1;
+          for (int i = 0; i < static_cast<int>(visible.size()); ++i) {
+            if (visible[static_cast<size_t>(i)]->group_id != header.id) {
+              continue;
+            }
+            if (first < 0) {
+              first = i;
+            }
+            last = i;
+            if (i != dragged_pos) {
+              if (first_kept < 0) {
+                first_kept = i;
+              }
+              last_kept = i;
+            }
+          }
+          double top_dy = 0.0;
+          double bottom_dy = 0.0;
+          if (first < 0) {
+            // Collapsed (or every member scrolled out): the header is a row
+            // of its own, riding the row that follows it — above the gap
+            // when the drop lands in the collapsed group.
+            int next = -1;
+            for (int i = 0; i < static_cast<int>(visible.size()); ++i) {
+              if (visible[static_cast<size_t>(i)]->bounds.top >
+                  header.bounds.top) {
+                next = i;
+                break;
+              }
+            }
+            if (next >= 0) {
+              double below = final_top(next);
+              if (gap_in_group) {
+                below = std::min(below, phantom_top);
+              }
+              top_dy = below - visible[static_cast<size_t>(next)]->bounds.top;
+            } else if (!visible.empty()) {
+              const int tail = static_cast<int>(visible.size()) - 1;
+              top_dy = final_top(tail) -
+                       visible[static_cast<size_t>(tail)]->bounds.top;
+            }
+          } else {
+            // The element under the header, and the one closing the card.
+            double below = first_kept >= 0 ? final_top(first_kept)
+                                           : phantom_top;
+            double closing = last_kept >= 0 ? final_top(last_kept)
+                                            : phantom_top;
+            if (gap_in_group) {
+              below = std::min(below, phantom_top);
+              closing = std::max(closing, phantom_top);
+            } else if (first_kept < 0) {
+              // Its only member is being dragged out: the card is the header.
+              below = visible[static_cast<size_t>(first)]->bounds.top;
+              closing = below - pitch;
+            }
+            top_dy = below - visible[static_cast<size_t>(first)]->bounds.top;
+            bottom_dy = closing - visible[static_cast<size_t>(last)]->bounds.top;
+          }
+          const SlideVec v{0.0, top_dy, 0.0, bottom_dy - top_dy};
+          if (v.moved()) {
+            row_to[SidebarKey::Group(header.id).ToString()] = v;
+          }
+        }
       }
       if (band_ == PhiDropBand::kPins && !view_->pinned().empty()) {
         // A phantom one-slot cell opens the grid gap at the insertion
@@ -602,10 +696,20 @@ void PhiSidebarDragSession::Update(POINT pt) {
   const int folder_before = bookmark_drop_folder_row_;
   const int slot = DragInsertSlot(pt);
   const bool folder_target_changed = folder_before != bookmark_drop_folder_row_;
+  // The same gap slot is "under the header" or "before the group" by which
+  // side of the header's midpoint the pointer is on; the group headers
+  // slide differently for the two, so crossing it retargets as a slot
+  // change does.
+  const std::string gap_group =
+      band == PhiDropBand::kTabs && place_valid_ ? place_.group_id
+                                                  : std::string();
+  const bool gap_group_changed = gap_group != gap_group_;
+  gap_group_ = gap_group;
   const bool animated_kind = kind_ == PhiDragKind::kTab ||
                              kind_ == PhiDragKind::kPin ||
                              kind_ == PhiDragKind::kBookmark;
-  if (slot != insert_ || band_changed || folder_target_changed) {
+  if (slot != insert_ || band_changed || folder_target_changed ||
+      gap_group_changed) {
     insert_ = slot;
     if (animated_kind) {
       RetargetDragSlide();  // The gap moved: siblings glide to the new slot.

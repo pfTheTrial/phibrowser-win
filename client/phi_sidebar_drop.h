@@ -30,6 +30,10 @@ struct DropRow {
   // Tab list context.
   std::string group_id;
   bool group_header = false;   // kGroup rows.
+  // A member row: the group card's bottom edge (0 = none). A pointer past
+  // the last member's midpoint but still above it drops INTO the group as
+  // its last member; below it, after the group.
+  int group_bottom = 0;
 };
 
 struct DropResolution {

@@ -1491,6 +1491,15 @@ std::vector<DropRow> PhiSidebarView::TabDropRows() const {
                         tab.bounds.bottom};
         }
       }
+      if (!node.group_id.empty()) {
+        // The card's bottom edge: the zone under the last member that still
+        // drops into the group (vertical lists only; a chip has no card).
+        for (const GroupHeader& header : group_headers_) {
+          if (header.id == node.group_id && !header.chip) {
+            row.group_bottom = static_cast<int>(header.container.bottom);
+          }
+        }
+      }
     }
     rows.push_back(std::move(row));
   }
@@ -2474,9 +2483,23 @@ void PhiSidebarView::PaintBand(HDC dc,
   // offsetting each of their rects (the band shift, see above).
   POINT viewport_before = {};
   ::OffsetViewportOrgEx(dc, 0, band_shift, &viewport_before);
-  for (const GroupHeader& gh : group_headers_) {
-    if (gh.chip) {
+  for (const GroupHeader& header : group_headers_) {
+    if (header.chip) {
       continue;  // The strip's chips paint after the tabs (PaintStripGroups).
+    }
+    // During a tab drag the header rides its first member and the card's
+    // bottom its last (the session's group slide), so a gap opening inside
+    // the group grows the card around the gliding rows.
+    GroupHeader gh = header;
+    if (drag_active && drag_kind == PhiDragKind::kTab) {
+      const SlideVec slide = RowSlide(SidebarKey::Group(gh.id).ToString());
+      const int dy = static_cast<int>(slide.dy);
+      const int dh = static_cast<int>(slide.dh);
+      ::OffsetRect(&gh.bounds, 0, dy);
+      if (gh.container.right > gh.container.left) {
+        gh.container.top += dy;
+        gh.container.bottom += dy + dh;
+      }
     }
     if (gh.container.right > gh.container.left) {
       // The card: the hover wash under the 1pt `border` hairline.
@@ -2487,7 +2510,7 @@ void PhiSidebarView::PaintBand(HDC dc,
       continue;  // Header scrolled out of the viewport.
     }
     if (hover_kind == HoverKind::kGroupHeader &&
-        hover_index == static_cast<int>(&gh - group_headers_.data())) {
+        hover_index == static_cast<int>(&header - group_headers_.data())) {
       PhiFillRounded(dc, gh.bounds, palette.hover_strong,
                      Scaled(kCornerRadius));
     }

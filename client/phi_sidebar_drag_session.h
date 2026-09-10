@@ -285,6 +285,10 @@ class PhiSidebarDragSession {
   bool active_ = false;
   bool finished_ = false;  // Committed or cancelled: the destructor is a no-op.
   int insert_ = -1;        // The gap slot for the slide animation, -1 = none.
+  // The group the resolved drop lands IN (empty: none) — the same gap slot
+  // reads as "under the header" or "before the group" depending on it, and
+  // the header and its card slide differently for the two.
+  std::string gap_group_;
   bool zones_reserved_ = false;  // ReserveDropZones took a zone.
   // The grid preview's rows beyond the real band, in pixels (a phantom
   // that wraps onto a new row): everything under the band slides down by

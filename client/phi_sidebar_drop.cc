@@ -160,6 +160,13 @@ DropResolution ResolveTabDrop(const std::vector<DropRow>& rows,
   if (previous && !previous->group_header && !previous->group_id.empty() &&
       anchor && !anchor->group_header && anchor->group_id == previous->group_id) {
     out.place.group_id = previous->group_id;
+  } else if (previous && !previous->group_header &&
+             !previous->group_id.empty() && !horizontal &&
+             previous->group_bottom > 0 &&
+             pointer_y < previous->group_bottom) {
+    // Past the last member's midpoint but still inside the card (its
+    // bottom inset): the group's LAST slot, not the row after the group.
+    out.place.group_id = previous->group_id;
   } else if (previous && previous->group_header) {
     out.place.group_id = previous->group_id;  // Right under the header.
   }

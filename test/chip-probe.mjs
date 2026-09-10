@@ -1,5 +1,5 @@
 // Strip group-chip probe (Mac TabGroupChipView port). Runs ON the box from
-// C:\Users\jdxin\phitest: node chip-probe.mjs setup|rows|title <t>|collapse <0|1>|activate <n>|teardown
+// C:\Users\jdxin\phitest: node chip-probe.mjs setup|rows|layout <mode>|title <t>|collapse <0|1>|activate <n>|teardown
 import { openControl, sleep } from './phi-test.mjs'
 const [step, arg] = process.argv.slice(2)
 const ctl = await openControl()
@@ -39,6 +39,9 @@ try {
       say('color', await ctl.send('agentSpace.groups.color', { windowId, groupId: token, color: 'blue' }))
     }
     say('activate', await ctl.send('agentSpace.tabs.activate', { windowId, index: 0 }))
+    await sleep(600)
+  } else if (step === 'layout') {
+    say('layout', await ctl.send('agentSpace.layout.set', { mode: arg || 'performance' }))
     await sleep(600)
   } else if (step === 'title') {
     const gid = (await groups())[0].id
