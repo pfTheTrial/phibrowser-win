@@ -1816,7 +1816,8 @@ void PhiSidebarView::PaintBand(HDC dc,
 
   // Pinned tabs: PinnedTabItem cells -- resting on the 4% wash, an 18pt
   // favicon centred, radius 8. The ACTIVE pin (its bound live tab is the
-  // active tab) gets the selected wash and the Mac's 2pt accent ring; in the
+  // active tab) gets the selected wash alone — no accent ring, the white
+  // cell reads as active by itself (Jixiang, 2026-09-10); in the
   // horizontal strip the cells are the 28pt pinned section and the active one
   // reads like the neighbouring strip tabs (selected wash, no ring).
   const bool pin_sliding = drag_active && drag_kind == PhiDragKind::kPin &&
@@ -1888,12 +1889,6 @@ void PhiSidebarView::PaintBand(HDC dc,
     PhiFillRounded(dc, cell, pin_bg, Scaled(kCornerRadius));
     if (pin_dragged) {
       PhiStrokeRounded(dc, cell, pin_bg, palette.border, Scaled(kCornerRadius));
-    }
-    if (pin.active && !layout.horizontal_tabs) {
-      RECT rr = cell;
-      ::InflateRect(&rr, -Scaled(1), -Scaled(1));
-      PhiStrokeRoundRectAA(dc, rr, Scaled(kCornerRadius), palette.accent,
-                           Scaled(2));
     }
     // A bound pane whose tab is dormant fades its favicon. The active cell
     // is never dormant (its page is showing).
