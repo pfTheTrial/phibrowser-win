@@ -361,6 +361,16 @@ class Image : public PhiWindow {
     Present(row_, Origin(cursor));
   }
 
+  void ShowCell(const PhiDragBitmap& cell, int radius, POINT cursor) {
+    cell_ = ComposeRow(cell, radius);
+    if (cell_.empty()) {
+      ShowRow(cursor);  // Nothing to show instead; the row stays.
+      return;
+    }
+    mode_ = Mode::kCell;
+    Present(cell_, Origin(cursor));
+  }
+
   void ShowCard(const PhiDragCard& card,
                 const PhiPalette& palette,
                 POINT cursor) {
@@ -436,7 +446,7 @@ class Image : public PhiWindow {
   }
 
  private:
-  enum class Mode { kRow, kCard };
+  enum class Mode { kRow, kCell, kCard };
 
   // Where the image's top-left goes for `cursor`: the row keeps the grip
   // the cursor lifted it by; the card hangs mostly ABOVE the cursor — the
@@ -445,6 +455,9 @@ class Image : public PhiWindow {
   POINT Origin(POINT cursor) const {
     if (mode_ == Mode::kCard && !card_.empty()) {
       return {cursor.x - card_.width / 2, cursor.y - card_.height * 3 / 4};
+    }
+    if (mode_ == Mode::kCell && !cell_.empty()) {
+      return {cursor.x - cell_.width / 2, cursor.y - cell_.height / 2};
     }
     return {cursor.x - grip_.x, cursor.y - grip_.y};
   }
@@ -474,6 +487,7 @@ class Image : public PhiWindow {
   Mode mode_ = Mode::kRow;
   Surface row_;
   Surface card_;  // Composed on first use, then cached for the drag.
+  Surface cell_;  // The pinned cell, recomposed when its size changes.
   POINT grip_{};
   bool sliding_ = false;
 };
@@ -506,6 +520,13 @@ void PhiDragImage::ShowRow(POINT cursor) {
 }
 
 // static
+void PhiDragImage::ShowCell(const PhiDragBitmap& cell, int radius,
+                            POINT cursor) {
+  if (Image::instance) {
+    Image::instance->ShowCell(cell, radius, cursor);
+  }
+}
+
 void PhiDragImage::ShowCard(const PhiDragCard& card,
                             const PhiPalette& palette,
                             POINT cursor) {

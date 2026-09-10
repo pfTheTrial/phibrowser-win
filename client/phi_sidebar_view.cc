@@ -1192,11 +1192,16 @@ PinnedGridMetrics PhiSidebarView::GridMetrics(
 }
 
 std::vector<RECT> PhiSidebarView::PinnedGridWalk(
-    const std::vector<int>& units, const PhiSidebarRects& layout) const {
+    const std::vector<int>& units, const PhiSidebarRects& layout,
+    int* rows) const {
   // The pinned grid's placement (LayoutPinnedGrid), shared with the drag
   // previews so a phantom cell lands where the real one will.
+  const PinnedGridPlacement grid = LayoutPinnedGrid(units, GridMetrics(layout));
+  if (rows) {
+    *rows = grid.rows;
+  }
   std::vector<RECT> rects;
-  for (const SidebarRect& cell : LayoutPinnedGrid(units, GridMetrics(layout)).cells) {
+  for (const SidebarRect& cell : grid.cells) {
     rects.push_back(PhiToRect(cell));
   }
   return rects;
@@ -1824,6 +1829,13 @@ void PhiSidebarView::PaintBand(HDC dc,
   // zone (the layout keeps the band's rect only then): the Mac's
   // PinnedTabViewController.emptyView, and a one-row twin for bookmarks.
   const PhiDropBand drag_band = drag_ ? drag_->band() : PhiDropBand::kNone;
+  // Everything under the pinned grid rides the band shift: the outline's
+  // rows carry it in their own slides, the empty outline's zone, the
+  // separator, "+ New Tab" and the tab rows take it here. It opens a gap
+  // in the outline, or the row a grid preview grew (a phantom that wraps).
+  const int band_shift = drag_active && !layout.horizontal_tabs
+                             ? static_cast<int>(RowSlide(band_key).dy)
+                             : 0;
   if (drag_active && !layout.horizontal_tabs && pinned_.empty() &&
       layout.favorites.bottom > layout.favorites.top) {
     RECT zone = layout.favorites;
@@ -1857,9 +1869,13 @@ void PhiSidebarView::PaintBand(HDC dc,
     // for its snapshot.
     RECT cell = pin.bounds;
     if (!pin_dragged && drag_active && !layout.horizontal_tabs) {
+      // The cell glides AND resizes toward its previewed slot: a phantom
+      // entering its row shrinks it, one leaving lets it widen.
       const SlideVec offset = RowSlide(pin.guid);
       ::OffsetRect(&cell, static_cast<int>(offset.dx),
                    static_cast<int>(offset.dy));
+      cell.right += static_cast<int>(offset.dw);
+      cell.bottom += static_cast<int>(offset.dh);
     }
     const bool pin_hovered =
         hover_kind == HoverKind::kPin &&
@@ -1946,8 +1962,8 @@ void PhiSidebarView::PaintBand(HDC dc,
     }
     if (pin.attached_surface != SidebarSurface::kContent &&
         pin.surface_box.right > pin.surface_box.left) {
-      RECT badge = pin.surface_box;
-      ::OffsetRect(&badge, cell.left - pin.bounds.left,
+      RECT badge = pin.surface_box;  // Pinned to the cell's top-right.
+      ::OffsetRect(&badge, cell.right - pin.bounds.right,
                    cell.top - pin.bounds.top);
       DrawSurfaceBadge(dc, badge, pin.attached_surface,
                        pin_hovered && !pin_dragged, pin_bg);
@@ -1963,6 +1979,7 @@ void PhiSidebarView::PaintBand(HDC dc,
   if (drag_active && !layout.horizontal_tabs && bookmarks_.empty() &&
       layout.bookmarks.bottom > layout.bookmarks.top) {
     RECT zone = layout.bookmarks;  // The one reserved row, pill-inset.
+    ::OffsetRect(&zone, 0, band_shift);
     zone.top += Scaled(kRowPad);
     zone.bottom = zone.top + Scaled(kTabRowHeight) - 2 * Scaled(kRowPad);
     PaintDropZone(dc, zone, drag_band == PhiDropBand::kBookmarks, L"\uE8A4",
@@ -2159,12 +2176,8 @@ void PhiSidebarView::PaintBand(HDC dc,
   // "New Tab": the row heading the tab list -- a 16pt "+" 6pt in, an 8pt
   // gap, the title in textTertiary (NewTabButtonCellView). Hover raises the
   // Mac cell's radius-8 wash on the 2pt-inset pill.
-  // Everything from here down to the tab rows rides the band shift while a
-  // drag holds a gap open in the bookmark outline above it.
-  const int band_shift = drag_active && !layout.horizontal_tabs
-                             ? static_cast<int>(
-                                   RowSlide(band_key).dy)
-                             : 0;
+  // Everything from here down to the tab rows rides the band shift (read
+  // above).
   // The separator row: a 1pt `separator` hairline centred in its 16pt row,
   // spanning the rows' width (SeparatorCellView).
   if (layout.bookmark_separator.right > layout.bookmark_separator.left) {

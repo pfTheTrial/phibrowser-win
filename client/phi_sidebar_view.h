@@ -671,8 +671,12 @@ class PhiSidebarView {
   // The pinned grid's placement walk over arbitrary cell widths (1 or 2
   // slots) — layout uses it for the real cells, the drag preview with a
   // phantom cell spliced in at the insertion slot.
+  // `rows`, when given, receives the grid's row count for `units`.
   std::vector<RECT> PinnedGridWalk(const std::vector<int>& units,
-                                   const PhiSidebarRects& layout) const;
+                                   const PhiSidebarRects& layout,
+                                   int* rows = nullptr) const;
+  // The REAL grid's row count — what the layout's pinned band is sized to.
+  int pinned_grid_rows() const { return pinned_grid_rows_; }
   // The bookmark cells an expanded chain reveals, in outline order.
   std::vector<const SidebarCell*> VisibleBookmarkCells() const;
   // The sections as the pure drop resolvers see them.

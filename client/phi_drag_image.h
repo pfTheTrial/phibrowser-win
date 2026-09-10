@@ -84,6 +84,12 @@ class PhiDragImage {
                     POINT cursor);
   // Back inside the sidebar: the row's snapshot again.
   static void ShowRow(POINT cursor);
+  // Over the pinned grid: the CELL the dragged row is about to become
+  // (`cell`, painted by the caller at the grid's cell size, alpha ignored),
+  // rounded at `radius` and centred under the cursor — the Mac's temporary
+  // drag image sits on the drag frame's midpoint. Composed on every call;
+  // the caller only calls on a mode or size change.
+  static void ShowCell(const PhiDragBitmap& cell, int radius, POINT cursor);
   // Outside it: the page card, composed once per drag and cached.
   static void ShowCard(const PhiDragCard& card,
                        const PhiPalette& palette,

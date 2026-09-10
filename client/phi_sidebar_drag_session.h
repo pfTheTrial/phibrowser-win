@@ -35,11 +35,19 @@ enum class PhiDragKind { kNone, kTab, kPin, kBookmark, kChip };
 // (tear-off to a new window). Chip drags stay in their own band.
 enum class PhiDropBand { kNone, kTabs, kPins, kBookmarks, kOutside, kContent };
 
-// How far a sliding element has moved from its home. Pinned cells glide in
-// BOTH axes (a grid gap wraps rows); bookmark rows glide vertically.
+// How far a sliding element has moved from its home, and how much it has
+// grown. Pinned cells glide in BOTH axes (a grid gap wraps rows) AND
+// resize — the grid stretches its cells to fill the row, so a phantom
+// entering a row shrinks its neighbours and one leaving lets them widen;
+// bookmark rows glide vertically.
 struct PhiSlideVec {
   double dx = 0.0;
   double dy = 0.0;
+  double dw = 0.0;
+  double dh = 0.0;
+  bool moved() const {
+    return dx != 0.0 || dy != 0.0 || dw != 0.0 || dh != 0.0;
+  }
 };
 
 // What arming a drag on `key` drags. A stored key (a cell or a folder) is a
@@ -103,6 +111,7 @@ inline double PhiDragSlideEase(double from, double to,
 namespace phi_client {
 
 class PhiSidebarShell;
+struct PhiSidebarRects;
 class PhiSidebarView;
 class PhiSpacesStrip;
 class SpacesHost;
@@ -187,6 +196,8 @@ class PhiSidebarDragSession {
   PhiSpacesStrip* strip() const;
 
   DropBand DropBandAt(POINT client_pt);
+  // Inside the pinned band, the grid preview's extra row included.
+  bool InPinnedBand(const PhiSidebarRects& layout, POINT client_pt) const;
   // A drag that could land in an EMPTY stored band reserves that band's
   // drop zone in the layout for its duration (the Mac's 100pt drag-time
   // pinned container and its "Drag tabs here" view): the pinned zone for
@@ -212,6 +223,13 @@ class PhiSidebarDragSession {
   // After the drop: slides home when nothing happened and the pointer was
   // still inside the sidebar; otherwise just takes the image down.
   void EndDragImage(bool acted, bool inside);
+  // Over the pinned grid a tab or bookmark row is shown as the CELL it is
+  // about to become: the phantom cell's size in the grid preview (capped
+  // at a full row's third, so an only pin's sidebar-wide cell does not
+  // bury the target), painted as a lifted cell — the wash, the favicon(s)
+  // or the title's initial.
+  bool DragCellSize(int* width, int* height);
+  PhiDragBitmap BuildDragCell(int width, int height);
   // The page card's model for this drag: the dragged row's live page as
   // seen on screen, else its cached thumbnail(s), else favicon + title.
   PhiDragCard BuildDragCard();
@@ -263,6 +281,11 @@ class PhiSidebarDragSession {
   bool finished_ = false;  // Committed or cancelled: the destructor is a no-op.
   int insert_ = -1;        // The gap slot for the slide animation, -1 = none.
   bool zones_reserved_ = false;  // ReserveDropZones took a zone.
+  // The grid preview's rows beyond the real band, in pixels (a phantom
+  // that wraps onto a new row): everything under the band slides down by
+  // it, and the pinned band's hit region grows by it so the pointer can
+  // follow the previewed row without leaving the band.
+  int grid_extra_ = 0;
   // WHERE it lands (docs/sidebar-architecture.md §5), resolved by the pure
   // drop resolvers on every move; consumed by the commit as a SidebarMove.
   SidebarPlace place_;
@@ -288,6 +311,8 @@ class PhiSidebarDragSession {
   // cursor is inside the sidebar, the page card once it leaves.
   bool capture_ = false;
   bool image_inside_ = true;  // Last boundary verdict: row or card.
+  bool image_cell_ = false;   // Inside, over the grid: the cell.
+  int image_cell_width_ = 0;  // The cell shown, to recompose on a change.
   bool card_built_ = false;   // The card is composed once per drag.
   PhiDragCard card_;
   RECT home_screen_{};  // The element's rect at lift-off, for the slide.

@@ -12,6 +12,7 @@
 
 #include "base/compiler_specific.h"
 #include "base/containers/span.h"
+#include "phibrowser-win/client/phi_dwrite.h"
 #include "phibrowser-win/client/phi_new_tab_page.h"
 #include "phibrowser-win/client/phi_sidebar_view.h"
 #include "phibrowser-win/client/phi_spaces_strip.h"
@@ -124,7 +125,9 @@ PhiSlideVec PhiSidebarDragSession::RowSlideOffset(
   const ULONGLONG elapsed = ::GetTickCount64() - drag_slide_start_;
   return SlideVec{
       PhiDragSlideEase(from.dx, to->second.dx, elapsed, kSlideMs),
-      PhiDragSlideEase(from.dy, to->second.dy, elapsed, kSlideMs)};
+      PhiDragSlideEase(from.dy, to->second.dy, elapsed, kSlideMs),
+      PhiDragSlideEase(from.dw, to->second.dw, elapsed, kSlideMs),
+      PhiDragSlideEase(from.dh, to->second.dh, elapsed, kSlideMs)};
 }
 
 double PhiSidebarDragSession::DragSlideOffset(TabId tab_id) const {
@@ -144,6 +147,22 @@ double PhiSidebarDragSession::DragSlideOffset(TabId tab_id) const {
                           ::GetTickCount64() - drag_slide_start_, kSlideMs);
 }
 
+namespace {
+
+// A grid cell's leg: from where it sits to the previewed cell — offset AND
+// size, since the grid re-solves widths whenever a unit enters or leaves a
+// row (a lone pin spans the sidebar; two split it).
+PhiSlideVec GridSlide(const RECT& from, const RECT& to) {
+  return PhiSlideVec{static_cast<double>(to.left - from.left),
+                     static_cast<double>(to.top - from.top),
+                     static_cast<double>((to.right - to.left) -
+                                         (from.right - from.left)),
+                     static_cast<double>((to.bottom - to.top) -
+                                         (from.bottom - from.top))};
+}
+
+}  // namespace
+
 void PhiSidebarDragSession::RetargetDragSlide() {
   // The new leg starts wherever every element currently is (mid-flight
   // retargeting, as Chromium's animating layout manager does).
@@ -160,6 +179,7 @@ void PhiSidebarDragSession::RetargetDragSlide() {
   const PhiSidebarRects layout = shell_->SidebarRects();
   const std::vector<ShortcutRow>& pins = view_->pinned();
   const int pitch = Scaled(kTabRowHeight + kTabRowGap);
+  int preview_rows = -1;  // The grid preview's rows, when one was walked.
 
   if (active_ && !layout.horizontal_tabs && insert_ >= 0) {
     if (kind_ == PhiDragKind::kTab && Index() >= 0 &&
@@ -215,13 +235,11 @@ void PhiSidebarDragSession::RetargetDragSlide() {
             std::min(insert_, static_cast<int>(units.size()));
         std::vector<int> preview = units;
         preview.insert(preview.begin() + at, 1);
-        const std::vector<RECT> target = view_->PinnedGridWalk(preview, layout);
+        const std::vector<RECT> target = view_->PinnedGridWalk(preview, layout, &preview_rows);
         for (int i = 0; i < static_cast<int>(view_->pinned().size()); ++i) {
           const size_t j = static_cast<size_t>(i < at ? i : i + 1);
-          const SlideVec v = {
-              static_cast<double>(target[j].left - pins[i].bounds.left),
-              static_cast<double>(target[j].top - pins[i].bounds.top)};
-          if (v.dx != 0.0 || v.dy != 0.0) {
+          const SlideVec v = GridSlide(pins[i].bounds, target[j]);
+          if (v.moved()) {
             row_to[view_->pinned()[static_cast<size_t>(i)].guid] = v;
           }
         }
@@ -247,7 +265,7 @@ void PhiSidebarDragSession::RetargetDragSlide() {
               view_->pinned()[static_cast<size_t>(i)].url_b.empty() ? 1 : 2);
         }
       }
-      const std::vector<RECT> target = view_->PinnedGridWalk(units, layout);
+      const std::vector<RECT> target = view_->PinnedGridWalk(units, layout, &preview_rows);
       for (int i = 0; i < static_cast<int>(view_->pinned().size()); ++i) {
         if (i == Index()) {
           continue;
@@ -256,10 +274,8 @@ void PhiSidebarDragSession::RetargetDragSlide() {
         if (j >= target.size()) {
           continue;
         }
-        const SlideVec v = {
-            static_cast<double>(target[j].left - pins[i].bounds.left),
-            static_cast<double>(target[j].top - pins[i].bounds.top)};
-        if (v.dx != 0.0 || v.dy != 0.0) {
+        const SlideVec v = GridSlide(pins[i].bounds, target[j]);
+        if (v.moved()) {
           row_to[view_->pinned()[static_cast<size_t>(i)].guid] = v;
         }
       }
@@ -288,16 +304,14 @@ void PhiSidebarDragSession::RetargetDragSlide() {
           0, std::min(insert_, static_cast<int>(units.size())));
       std::vector<int> preview = units;
       preview.insert(preview.begin() + at, dragged.url_b.empty() ? 1 : 2);
-      const std::vector<RECT> target = view_->PinnedGridWalk(preview, layout);
+      const std::vector<RECT> target = view_->PinnedGridWalk(preview, layout, &preview_rows);
       for (int i = 0; i < static_cast<int>(view_->pinned().size()); ++i) {
         const size_t j = static_cast<size_t>(i < at ? i : i + 1);
         if (j >= target.size()) {
           continue;
         }
-        const SlideVec v = {
-            static_cast<double>(target[j].left - pins[i].bounds.left),
-            static_cast<double>(target[j].top - pins[i].bounds.top)};
-        if (v.dx != 0.0 || v.dy != 0.0) {
+        const SlideVec v = GridSlide(pins[i].bounds, target[j]);
+        if (v.moved()) {
           row_to[view_->pinned()[static_cast<size_t>(i)].guid] = v;
         }
       }
@@ -326,17 +340,15 @@ void PhiSidebarDragSession::RetargetDragSlide() {
       to_pos = std::max(0, std::min(to_pos, static_cast<int>(units.size())));
       std::vector<int> preview = units;
       preview.insert(preview.begin() + to_pos, dragged_units);
-      const std::vector<RECT> target = view_->PinnedGridWalk(preview, layout);
+      const std::vector<RECT> target = view_->PinnedGridWalk(preview, layout, &preview_rows);
       for (int i = 0; i < static_cast<int>(view_->pinned().size()); ++i) {
         if (i == Index()) {
           continue;
         }
         const int j = i > Index() ? i - 1 : i;
         const size_t jj = static_cast<size_t>(j >= to_pos ? j + 1 : j);
-        const SlideVec v = {
-            static_cast<double>(target[jj].left - pins[i].bounds.left),
-            static_cast<double>(target[jj].top - pins[i].bounds.top)};
-        if (v.dx != 0.0 || v.dy != 0.0) {
+        const SlideVec v = GridSlide(pins[i].bounds, target[jj]);
+        if (v.moved()) {
           row_to[view_->pinned()[static_cast<size_t>(i)].guid] = v;
         }
       }
@@ -364,6 +376,22 @@ void PhiSidebarDragSession::RetargetDragSlide() {
       }
     }
   }
+  // A grid preview with more rows than the real band (a phantom that
+  // wrapped) — or fewer (a pin leaving) — moves everything under the band:
+  // the outline's rows in their own slides, the rest by the band shift.
+  grid_extra_ = 0;
+  if (preview_rows >= 0 && !pins.empty()) {
+    const int dy = (preview_rows - view_->pinned_grid_rows()) *
+                   Scaled(shell_metrics::kPinnedCellHeight +
+                          shell_metrics::kPinnedGap);
+    if (dy != 0) {
+      grid_extra_ = std::max(0, dy);
+      for (const ShortcutRow& row : view_->bookmarks()) {
+        row_to[row.guid].dy += dy;
+      }
+      row_to[kBandShiftKey].dy += dy;
+    }
+  }
   // A gap opening in the outline pushes everything under it down by a row:
   // "+ New Tab", the group headers and the tab rows all ride the band shift.
   // (An EMPTY outline's reserved drop zone IS the gap: nothing shifts.)
@@ -371,7 +399,7 @@ void PhiSidebarDragSession::RetargetDragSlide() {
       band_ == PhiDropBand::kBookmarks && bookmark_drop_folder_row_ < 0 &&
       !view_->bookmarks().empty() &&
       (kind_ == PhiDragKind::kTab || kind_ == PhiDragKind::kPin)) {
-    row_to[kBandShiftKey] = SlideVec{0.0, static_cast<double>(pitch)};
+    row_to[kBandShiftKey].dy += pitch;
   }
   // Displaced elements whose displacement ended slide home; settled ones
   // drop out of the books entirely.
@@ -386,7 +414,7 @@ void PhiSidebarDragSession::RetargetDragSlide() {
     }
   }
   for (const auto& [guid, start] : row_from) {
-    if (!row_to.count(guid) && (start.dx != 0.0 || start.dy != 0.0)) {
+    if (!row_to.count(guid) && start.moved()) {
       row_to[guid] = SlideVec{};
     }
   }
@@ -430,7 +458,7 @@ PhiDropBand PhiSidebarDragSession::DropBandAt(
   if (layout.horizontal_tabs) {
     return PhiDropBand::kTabs;  // The strip has no sidebar bands.
   }
-  if (::PtInRect(&layout.favorites, client_pt)) {
+  if (InPinnedBand(layout, client_pt)) {
     return PhiDropBand::kPins;
   }
   // The outline's whole band — its rows (or the reserved drop zone) AND the
@@ -443,6 +471,20 @@ PhiDropBand PhiSidebarDragSession::DropBandAt(
     return PhiDropBand::kBookmarks;
   }
   return PhiDropBand::kTabs;
+}
+
+bool PhiSidebarDragSession::InPinnedBand(const PhiSidebarRects& layout,
+                                         POINT client_pt) const {
+  if (::PtInRect(&layout.favorites, client_pt)) {
+    return true;
+  }
+  // While the preview holds an extra row under the band, the pointer may
+  // follow the phantom onto it without the band flipping to the outline.
+  return band_ == PhiDropBand::kPins && grid_extra_ > 0 &&
+         client_pt.x >= layout.favorites.left &&
+         client_pt.x < layout.favorites.right &&
+         client_pt.y >= layout.favorites.bottom &&
+         client_pt.y < layout.favorites.bottom + grid_extra_;
 }
 
 void PhiSidebarDragSession::ReserveDropZones() {
@@ -529,7 +571,7 @@ void PhiSidebarDragSession::Update(POINT pt) {
     } else if (::PtInRect(&bookmark_layout.content, pt)) {
       band = PhiDropBand::kContent;
     } else if (!folder && !incognito_ && !bookmark_layout.horizontal_tabs &&
-               ::PtInRect(&bookmark_layout.favorites, pt)) {
+               InPinnedBand(bookmark_layout, pt)) {
       band = PhiDropBand::kPins;  // The Mac's moveBookmarkOut(toPinnedTabs:).
     }
   }
@@ -690,6 +732,7 @@ bool PhiSidebarDragSession::CommitDragImpl() {
 void PhiSidebarDragSession::CancelDrag() {
   const bool was_active = active_;
   ReleaseDropZones();
+  grid_extra_ = 0;
   kind_ = PhiDragKind::kNone;
   band_ = PhiDropBand::kNone;
   key_ = {};
@@ -852,11 +895,28 @@ void PhiSidebarDragSession::SyncDragImage(POINT pt) {
   POINT screen = pt;
   ::ClientToScreen(shell_hwnd(), &screen);
   const bool inside = DragImageInside(pt);
-  if (inside == image_inside_) {
+  // Over the pinned grid a row shows as the cell it becomes (the Mac's
+  // temporary drag image over the pinned collection); a folder never
+  // reaches that band (Update keeps it out of kPins).
+  int cell_w = 0;
+  int cell_h = 0;
+  const bool as_cell =
+      inside && band_ == PhiDropBand::kPins &&
+      (kind_ == PhiDragKind::kTab || kind_ == PhiDragKind::kBookmark) &&
+      DragCellSize(&cell_w, &cell_h);
+  if (inside == image_inside_ && as_cell == image_cell_ &&
+      (!as_cell || cell_w == image_cell_width_)) {
     PhiDragImage::MoveTo(screen);
     return;
   }
   image_inside_ = inside;
+  image_cell_ = as_cell;
+  if (as_cell) {
+    image_cell_width_ = cell_w;
+    PhiDragImage::ShowCell(BuildDragCell(cell_w, cell_h),
+                           Scaled(kCornerRadius), screen);
+    return;
+  }
   if (inside) {
     PhiDragImage::ShowRow(screen);  // Back in: the row again.
     return;
@@ -967,6 +1027,189 @@ PhiDragBitmap PhiSidebarDragSession::CaptureContentFromScreen() {
   if (PhiDragBitmapIsUniform(out)) {
     out = PhiDragBitmap();  // A page that has not painted yet is no page.
   }
+  return out;
+}
+
+bool PhiSidebarDragSession::DragCellSize(int* width, int* height) {
+  const PhiSidebarRects layout = shell_->SidebarRects();
+  if (layout.horizontal_tabs) {
+    return false;
+  }
+  bool split = false;
+  if (kind_ == PhiDragKind::kTab && Index() >= 0 &&
+      Index() < static_cast<int>(view_->tabs().size())) {
+    split = view_->tabs()[static_cast<size_t>(Index())].b_index >= 0;
+  } else if (kind_ == PhiDragKind::kBookmark && Index() >= 0 &&
+             Index() < static_cast<int>(view_->bookmarks().size())) {
+    split = !view_->bookmarks()[static_cast<size_t>(Index())].url_b.empty();
+  } else {
+    return false;
+  }
+  // The phantom cell of the grid preview the slide animation opens.
+  std::vector<int> units;
+  for (const ShortcutRow& pin : view_->pinned()) {
+    units.push_back(pin.url_b.empty() ? 1 : 2);
+  }
+  const int at = std::max(0, std::min(insert_, static_cast<int>(units.size())));
+  units.insert(units.begin() + at, split ? 2 : 1);
+  const std::vector<RECT> cells = view_->PinnedGridWalk(units, layout);
+  if (static_cast<size_t>(at) >= cells.size()) {
+    return false;
+  }
+  const RECT& cell = cells[static_cast<size_t>(at)];
+  // A full three-column row's cell is the widest the image gets: an only
+  // pin's sidebar-wide cell would hide the very zone it hovers.
+  const int row_w = layout.sidebar.right - layout.sidebar.left -
+                    2 * Scaled(shell_metrics::kEdgeInset) -
+                    2 * Scaled(shell_metrics::kPinnedGap);
+  const int cap = std::max(Scaled(shell_metrics::kPinnedCellHeight),
+                           row_w / 3 * (split ? 2 : 1));
+  *width = std::min(static_cast<int>(cell.right - cell.left), cap);
+  *height = cell.bottom - cell.top;
+  return *width > 0 && *height > 0;
+}
+
+PhiDragBitmap PhiSidebarDragSession::BuildDragCell(int width, int height) {
+  PhiDragBitmap out;
+  if (width <= 0 || height <= 0) {
+    return out;
+  }
+  // What the cell carries: favicon(s) and the title's initial as fallback.
+  const std::vector<unsigned char>* icon_a = nullptr;
+  int icon_a_w = 0;
+  int icon_a_h = 0;
+  const std::vector<unsigned char>* icon_b = nullptr;
+  int icon_b_w = 0;
+  int icon_b_h = 0;
+  std::wstring title;
+  bool split = false;
+  if (kind_ == PhiDragKind::kTab && Index() >= 0 &&
+      Index() < static_cast<int>(view_->tabs().size())) {
+    const TabRow& row = view_->tabs()[static_cast<size_t>(Index())];
+    icon_a = &row.favicon;
+    icon_a_w = row.favicon_width;
+    icon_a_h = row.favicon_height;
+    title = row.title;
+    if (row.b_index >= 0) {
+      split = true;
+      icon_b = &row.b_favicon;
+      icon_b_w = row.b_favicon_width;
+      icon_b_h = row.b_favicon_height;
+    }
+  } else if (kind_ == PhiDragKind::kBookmark && Index() >= 0 &&
+             Index() < static_cast<int>(view_->bookmarks().size())) {
+    const ShortcutRow& row = view_->bookmarks()[static_cast<size_t>(Index())];
+    icon_a = &row.favicon;
+    icon_a_w = row.favicon_width;
+    icon_a_h = row.favicon_height;
+    title = row.title;
+    if (!row.url_b.empty()) {
+      split = true;
+      icon_b = &row.favicon_b;
+      icon_b_w = row.favicon_b_width;
+      icon_b_h = row.favicon_b_height;
+    }
+  } else {
+    return out;
+  }
+  BITMAPINFO info = {};
+  info.bmiHeader.biSize = sizeof(info.bmiHeader);
+  info.bmiHeader.biWidth = width;
+  info.bmiHeader.biHeight = -height;  // Top-down.
+  info.bmiHeader.biPlanes = 1;
+  info.bmiHeader.biBitCount = 32;
+  info.bmiHeader.biCompression = BI_RGB;
+  void* bits = nullptr;
+  HDC screen = ::GetDC(nullptr);
+  HDC mem = ::CreateCompatibleDC(screen);
+  HBITMAP dib =
+      ::CreateDIBSection(mem, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
+  ::ReleaseDC(nullptr, screen);
+  if (!dib || !bits) {
+    if (dib) {
+      ::DeleteObject(dib);
+    }
+    ::DeleteDC(mem);
+    return out;
+  }
+  HGDIOBJ old = ::SelectObject(mem, dib);
+  const PhiPalette palette = shell_->SidebarPalette();
+  const RECT cell = {0, 0, width, height};
+  // The lifted cell, as the pinned painter draws the one being dragged:
+  // the strong wash under the border hairline. The image rounds the
+  // corners afterwards.
+  HBRUSH wash = ::CreateSolidBrush(palette.hover_strong);
+  ::FillRect(mem, &cell, wash);
+  ::DeleteObject(wash);
+  PhiStrokeRoundRectAA(mem, cell, Scaled(kCornerRadius), palette.border,
+                       Scaled(1));
+  ::SetBkMode(mem, TRANSPARENT);
+  // A favicon never upscales (1:1 centred when smaller than its slot).
+  const auto draw_icon = [&](const RECT& slot,
+                             const std::vector<unsigned char>* bgra, int w,
+                             int h) {
+    if (!bgra || bgra->empty() || w <= 0 || h <= 0) {
+      return false;
+    }
+    RECT draw = slot;
+    if (w < slot.right - slot.left && h < slot.bottom - slot.top) {
+      draw.left = slot.left + (slot.right - slot.left - w) / 2;
+      draw.top = slot.top + (slot.bottom - slot.top - h) / 2;
+      draw.right = draw.left + w;
+      draw.bottom = draw.top + h;
+    }
+    PhiDrawBgra(mem, draw, bgra->data(), w, h);
+    return true;
+  };
+  const int cx = width / 2;
+  const int cy = height / 2;
+  bool drawn = false;
+  if (split) {
+    // Two 16pt favicons side by side (the Mac's PinnedSplitItem).
+    const int size = Scaled(16);
+    const RECT slot_a = {cx - Scaled(2) - size, cy - size / 2, cx - Scaled(2),
+                         cy + size / 2};
+    const RECT slot_b = {cx + Scaled(2), cy - size / 2, cx + Scaled(2) + size,
+                         cy + size / 2};
+    drawn = draw_icon(slot_a, icon_a, icon_a_w, icon_a_h);
+    drawn = draw_icon(slot_b, icon_b, icon_b_w, icon_b_h) || drawn;
+  } else {
+    const int size = Scaled(sidebar_metrics::kPinnedFavicon);
+    const RECT slot = {cx - size / 2, cy - size / 2, cx + size / 2,
+                       cy + size / 2};
+    drawn = draw_icon(slot, icon_a, icon_a_w, icon_a_h);
+  }
+  if (!drawn) {
+    HFONT font = shell_->SidebarSemiboldFont();
+    HGDIOBJ previous_font = font ? ::SelectObject(mem, font) : nullptr;
+    ::SetTextColor(mem, palette.label);
+    const std::wstring initial =
+        title.empty() ? std::wstring(L"?") : title.substr(0, 1);
+    RECT text = cell;
+    PhiDrawTextAA(mem, initial.c_str(), -1, &text,
+                  DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    if (previous_font) {
+      ::SelectObject(mem, previous_font);
+    }
+  }
+  ::GdiFlush();
+  const size_t bytes =
+      static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
+  out.width = width;
+  out.height = height;
+  // SAFETY: the DIB section was created top-down at 32bpp with exactly
+  // width*height*4 bytes and no stride padding.
+  out.bgra.assign(UNSAFE_BUFFERS(base::span<const unsigned char>(
+                                     static_cast<const unsigned char*>(bits),
+                                     bytes))
+                      .begin(),
+                  UNSAFE_BUFFERS(base::span<const unsigned char>(
+                                     static_cast<const unsigned char*>(bits),
+                                     bytes))
+                      .end());
+  ::SelectObject(mem, old);
+  ::DeleteObject(dib);
+  ::DeleteDC(mem);
   return out;
 }
 
