@@ -385,6 +385,13 @@ base::DictValue PhiStoreTraits<PhiSettings>::Encode(const PhiSettings& value) {
   root.Set("testRig", value.test_rig);
   root.Set("pinScope", PhiPinScopeName(value.pin_scope));
   root.Set("analyticsEnabled", value.analytics_enabled);
+  root.Set("guestModeEnabled", value.guest_mode_enabled);
+  base::DictValue phases;
+  for (const auto& [sub, phase] : value.onboarding_phases) {
+    phases.Set(sub, phase);
+  }
+  root.Set("onboardingPhases", std::move(phases));
+  root.Set("skipOnboarding", value.skip_onboarding);
   return root;
 }
 
@@ -403,6 +410,18 @@ bool PhiStoreTraits<PhiSettings>::Decode(const base::DictValue& dict,
   }
   out->analytics_enabled =
       dict.FindBool("analyticsEnabled").value_or(out->analytics_enabled);
+  out->guest_mode_enabled =
+      dict.FindBool("guestModeEnabled").value_or(out->guest_mode_enabled);
+  if (const base::DictValue* phases = dict.FindDict("onboardingPhases")) {
+    out->onboarding_phases.clear();
+    for (const auto [sub, phase] : *phases) {
+      if (phase.is_int()) {
+        out->onboarding_phases[sub] = phase.GetInt();
+      }
+    }
+  }
+  out->skip_onboarding =
+      dict.FindBool("skipOnboarding").value_or(out->skip_onboarding);
   return true;
 }
 

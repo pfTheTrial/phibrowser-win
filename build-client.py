@@ -256,6 +256,12 @@ def main():
     # phi_profile_card.cc).
     sync_tree(os.path.join(CLIENT_DIR, "resources", "profile-card"),
               os.path.join(resources_dir, "profile-card"))
+    # The onboarding window's pages (login still, conch frames, tiles) and
+    # the brand faces it registers privately (phi_fonts.cc).
+    sync_tree(os.path.join(CLIENT_DIR, "resources", "onboarding"),
+              os.path.join(resources_dir, "onboarding"))
+    sync_tree(os.path.join(CLIENT_DIR, "resources", "fonts"),
+              os.path.join(resources_dir, "fonts"))
     # Stage the vendored WinSparkle.dll beside the client: the sync ships
     # every top-level DLL, and the updater loads it from the exe's own dir.
     winsparkle = os.path.join(os.path.dirname(os.path.abspath(__file__)),

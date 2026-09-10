@@ -509,6 +509,8 @@ class PhiControlDispatcher : public PhiControlDelegate {
   PhiVerbResult VerbAccountSignIn(const PhiVerbContext& ctx);
   PhiVerbResult VerbAccountCancelSignIn(const PhiVerbContext& ctx);
   PhiVerbResult VerbAccountSignOut(const PhiVerbContext& ctx);
+  PhiVerbResult VerbOnboardingStatus(const PhiVerbContext& ctx);
+  PhiVerbResult VerbOnboardingDrive(const PhiVerbContext& ctx);
   // phi_verbs_credentials.cc: the vault.
   PhiVerbResult VerbCredentialsStatus(const PhiVerbContext& ctx);
   PhiVerbResult VerbCredentialsGet(const PhiVerbContext& ctx);

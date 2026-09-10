@@ -493,7 +493,14 @@ class PhiShellWindow : public PhiHitSource,
                       const ShellServices& services,
                       const PhiWindowModel* model,
                       bool agent = false,
-                      bool incognito = false);
+                      bool incognito = false,
+                      bool start_hidden = false);
+  // A shell created behind the onboarding gate (start_hidden) comes on
+  // screen here once access is granted; a no-op for a visible shell.
+  void ShowHeldShell();
+  // The reverse (a sign-out re-arms the gate): off screen, browser alive.
+  void HideShell();
+  bool shell_hidden() const { return shell_hidden_; }
   // Virtual because the shell now implements its components' interfaces:
   // the class has virtual functions, and PhiWindowRegistry deletes it
   // through a PhiShellWindow* (its test stand-ins subclass it).
@@ -1495,6 +1502,8 @@ class PhiShellWindow : public PhiHitSource,
   bool agent_ = false;
   // Off-the-record shell: fixed-dark, no Spaces/pins/bookmarks, unrouted.
   bool incognito_ = false;
+  // Behind the onboarding gate: created but not shown (see ShowHeldShell).
+  bool shell_hidden_ = false;
   // For an agent window: whether it is currently surfaced (being watched).
   bool agent_visible_ = false;
   bool agent_owned_ = false;

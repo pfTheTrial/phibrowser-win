@@ -34,7 +34,13 @@ namespace phi_client {
 // the Mac's preload order. UI thread except where noted.
 class PhiProfileCard {
  public:
-  PhiProfileCard();
+  // `resource_subdir` names the frame set under resources/ ("profile-card"
+  // — the Settings card — or "onboarding", the Welcome page's wider conch);
+  // `card_chrome` draws the card as a card: rounded corners, the border,
+  // the date and the name. Off, it is the bare colourised conch with its
+  // tint and dots, filling `bounds` (the Mac's OnboardingWelcome ground).
+  explicit PhiProfileCard(const wchar_t* resource_subdir = L"profile-card",
+                          bool card_chrome = true);
   ~PhiProfileCard();
 
   PhiProfileCard(const PhiProfileCard&) = delete;
@@ -97,10 +103,15 @@ class PhiProfileCard {
   // Draws the date and the name over a composed card on `dc` at `bounds`,
   // for a card `scale` pixels per dip.
   void DrawLabels(HDC dc, const RECT& bounds, double scale) const;
+  // Pixels per dip for the current width (240 dips of card, or the
+  // Welcome page's 640).
+  double Scale() const;
   void ResetColorCache();
   void StartIntroIfReady();
   static uint64_t Now();
 
+  const std::wstring resource_subdir_;
+  const bool card_chrome_;
   HWND notify_hwnd_ = nullptr;
   UINT notify_msg_ = 0;
   int width_ = 0;

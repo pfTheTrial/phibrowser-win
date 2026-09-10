@@ -308,6 +308,29 @@ void PhiPreferences::SetDeveloperMode(bool enabled) {
   Notify(PreferenceChange::kDeveloper);
 }
 
+void PhiPreferences::SetGuestModeEnabled(bool enabled) {
+  if (settings_.guest_mode_enabled == enabled) {
+    return;
+  }
+  settings_.guest_mode_enabled = enabled;
+  MarkDirty();
+  Notify(PreferenceChange::kAccess);
+}
+
+int PhiPreferences::OnboardingPhase(const std::string& sub) const {
+  const auto found = settings_.onboarding_phases.find(sub);
+  return found == settings_.onboarding_phases.end() ? 0 : found->second;
+}
+
+void PhiPreferences::SetOnboardingPhase(const std::string& sub, int phase) {
+  if (sub.empty() || OnboardingPhase(sub) == phase) {
+    return;
+  }
+  settings_.onboarding_phases[sub] = phase;
+  MarkDirty();
+  Notify(PreferenceChange::kAccess);
+}
+
 void PhiPreferences::SetAllowAgentControl(bool enabled) {
   // The Settings window, or the connection prompt's Allow — never a verb
   // (see agentSpace.settings.set), so an agent cannot admit itself.

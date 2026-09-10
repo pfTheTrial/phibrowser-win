@@ -964,6 +964,11 @@ constexpr PhiParamField kFeedbackForm[] = {
     {"attachFiles", kParamStringList, kOptional, "", "Paths to attach."},
     {"send", kParamBool, kOptional, "", "Press Send."},
 };
+constexpr PhiParamField kOnboardingDrive[] = {
+    {"action", kParamString, kRequired, "",
+     "signIn, guest, cancel, legal, metrics, name, swatch, layout, next, close."},
+    {"value", kParamString, kOptional, "", "The name / theme id / layout."},
+};
 constexpr PhiParamField kFeedbackAccount[] = {
     {"userId", kParamString, kOptional, "", "A stand-in account id."},
     {"email", kParamString, kOptional, "", "Its email."},
@@ -1700,6 +1705,14 @@ base::span<const PhiVerbSpec> PhiControlDispatcher::Registry() {
       {"agentSpace.account.signOut", "", kScopeNone, kHost, kVerbPlain, {},
        false, false, &Call<&PhiControlDispatcher::VerbAccountSignOut>,
        "test_rig_only", "Signs out without the pane's confirmation."},
+      {"agentSpace.onboarding.status", "", kScopeNone, kHost, kVerbPlain, {},
+       false, false, &Call<&PhiControlDispatcher::VerbOnboardingStatus>,
+       "test_rig_only", "The onboarding gate and the window's page."},
+      {"agentSpace.onboarding.drive", "", kScopeNone, kHost, kVerbPlain,
+       kOnboardingDrive, false, false,
+       &Call<&PhiControlDispatcher::VerbOnboardingDrive>,
+       "test_rig_only not_open wrong_page unknown_action",
+       "Presses a control of the onboarding window by name."},
 
       // --- Credentials -------------------------------------------------------------
       {"credentials.status", "", kScopeNone, kAgentSpace, kVerbPlain, {},

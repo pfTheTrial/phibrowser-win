@@ -41,6 +41,10 @@ struct PendingCreation {
   std::string task_id;     // kAgent / kShadow: the skill's taskId.
   std::string agent_name;  // kAgent: the driver's name for the watch pill.
   bool persistent = false;  // kAgent
+  // kShadow: the onboarding window's embedded browser — hosted by that
+  // window (the hosted login rides in it), never by a shell or the agent
+  // manager.
+  bool onboarding = false;
   // A deferred control reply (PhiCoordinator::RegisterPendingReply) that
   // the announcement completes; 0 when nobody is waiting.
   int pending_reply_id = 0;

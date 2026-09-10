@@ -347,3 +347,55 @@ asked for the pane to match the Mac: the profile card, and the name where
   Change Name / Change Picture rows went (the pencils are those).
 - The Share section (invitation codes) is not ported — invitations are
   bucket D backend work.
+
+## 8. The first-launch flow and the gate (2026-09-10)
+
+Jixiang: "migrate the first install login step, gate the browser like
+mac." Decision 2 (optional account, no wall) is therefore reversed;
+decision 3 (flat stores, no guest→account migration) stands — a guest who
+signs in keeps the same stores.
+
+**Access** (`PhiCoordinator::Access`, the Mac's BrowserAccessState):
+`kLoginRequired | kGuest | kSignedIn`. Persisted: `guestModeEnabled` and
+`onboardingPhases{sub: phase}` in PhiSettings.json (the Mac's
+`guestModeEnabled` and per-account `loginPhase`), plus `skipOnboarding`
+(test rig; also `--skip-onboarding`). Resolved in `ResolveInitialAccess`
+after the stores and the session load, before any window: a session whose
+phase is 6 ⇒ signed in; else the guest choice (an unfinished session is
+discarded, the Mac's discardUncommittedLoginCredentials); else skip; else
+login required.
+
+**The gate**: `PhiShellWindow(…, start_hidden)` — shells announced while
+login is required are built and laid out but not shown (`ShowHeldShell` on
+grant, `HideShell` on a sign-out, which re-arms the gate). The default-shell
+rescue defers behind the gate. `GrantAccess` shows the held shells, closes
+the onboarding window and its browser, and opens a shell if none exists.
+Closing the onboarding window behind the gate quits (every browser is
+closed); over a usable browser (a guest signing in) it is just dismissed.
+
+**The window**: `client/phi_onboarding_window.{h,cc}`, a 640×800
+PhiSecondaryWindow with the Mac's pages — Login (the video's resting frame
+as a still, the brand, the gradient-ring "Sign in" pill, "Explore Phi
+without signing in"), SigningIn (the hosted login EMBEDDED: a plain
+browser requested by the coordinator, reparented into the window; a shadow
+browser was tried first and cannot take the keyboard because its view skips
+activation), Before we begin (guest consents; metrics default off in
+Europe), What should I call you? (an EDIT; PUT only when changed),
+Welcome (the OOBE conch grid over the page — PhiProfileCard chrome-less —
+with the eight theme swatches applied live), Layout selection, Next steps
+(the four steps + consents + Let's Begin). Phase 4 (Passwords Manager)
+is skipped. Titles use IvyPresto Display SemiBold Italic, registered
+privately from resources/fonts (Latin only; Segoe UI otherwise).
+
+**Chromium's first run**: the client main now passes `--no-first-run` and
+`--no-default-browser-check` — the "set as default" welcome page has no
+place behind the onboarding.
+
+**Lesson**: opening the window from inside OnFrameworkReady starved
+Chromium's startup window (it never got created); the open is posted to a
+turn of its own (`WM_PHI_OPEN_ONBOARDING`).
+
+**Harness**: `agentSpace.onboarding.status` / `.drive {action, value}`
+(test rig). Rig: `PhiFxLaunchOobe` launches a fresh profile at
+`C:\phi-fx-oobe`; `set-shot.ps1` takes `PHI_SETSHOT_CLASS` / `_HWND`.
+`seed-fx-prefs.sh` seeds `skipOnboarding` so the suites run ungated.

@@ -53,7 +53,7 @@ constexpr double kTintAlpha = 0.10;
 constexpr double kDotAlpha = 0.15 * 0.5;
 constexpr size_t kComposedCacheCap = 24;
 
-std::wstring ResourceDir() {
+std::wstring ResourceDir(const std::wstring& subdir) {
   wchar_t exe_path[MAX_PATH] = {};
   ::GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
   std::wstring path(exe_path);
@@ -62,7 +62,7 @@ std::wstring ResourceDir() {
     return std::wstring();
   }
   path.resize(slash + 1);
-  return path + L"resources\\profile-card\\";
+  return path + L"resources\\" + subdir + L"\\";
 }
 
 ComPtr<IWICImagingFactory> WicFactory() {
@@ -349,11 +349,13 @@ struct PhiProfileCard::Frames {
 
 struct PhiProfileCard::Job {
   std::shared_ptr<Frames> frames;
+  std::wstring dir;
   HWND notify_hwnd = nullptr;
   UINT notify_msg = 0;
 };
 
-PhiProfileCard::PhiProfileCard() = default;
+PhiProfileCard::PhiProfileCard(const wchar_t* resource_subdir, bool card_chrome)
+    : resource_subdir_(resource_subdir), card_chrome_(card_chrome) {}
 
 PhiProfileCard::~PhiProfileCard() {
   if (frames_) {
@@ -396,6 +398,7 @@ void PhiProfileCard::SetPixelSize(int width, int height) {
   intro_playing_ = false;
   auto* job = new Job();
   job->frames = frames;
+  job->dir = ResourceDir(resource_subdir_);
   job->notify_hwnd = notify_hwnd_;
   job->notify_msg = notify_msg_;
   HANDLE thread =
@@ -413,7 +416,7 @@ DWORD WINAPI PhiProfileCard::DecodeThread(void* param) {
   const HRESULT com = ::CoInitializeEx(nullptr, COINIT_MULTITHREADED);
   ComPtr<IWICImagingFactory> factory = WicFactory();
   Frames& frames = *job->frames;
-  const std::wstring dir = ResourceDir();
+  const std::wstring dir = job->dir;
   const auto retired = [&] {
     ::EnterCriticalSection(&frames.lock);
     const bool r = frames.retired;
@@ -655,6 +658,9 @@ std::vector<uint8_t> PhiProfileCard::Compose(
     out[i * 4 + 1] = static_cast<uint8_t>(std::lround(g));
     out[i * 4 + 2] = static_cast<uint8_t>(std::lround(r));
   }
+  if (!card_chrome_) {
+    return out;
+  }
   // The rounded corners, into the alpha (premultiplied: every channel).
   const double radius = kCornerDip * (width / static_cast<double>(kCardWidthDip));
   const int span = static_cast<int>(std::ceil(radius)) + 1;
@@ -764,6 +770,11 @@ void PhiProfileCard::DrawLabels(HDC dc, const RECT& bounds, double scale) const 
   (void)height;
 }
 
+double PhiProfileCard::Scale() const {
+  const int dips = card_chrome_ ? kCardWidthDip : 640;
+  return width_ > 0 ? width_ / static_cast<double>(dips) : 1.0;
+}
+
 void PhiProfileCard::Paint(HDC dc, const RECT& bounds) {
   const int width = bounds.right - bounds.left;
   const int height = bounds.bottom - bounds.top;
@@ -772,7 +783,7 @@ void PhiProfileCard::Paint(HDC dc, const RECT& bounds) {
   }
   SetPixelSize(width, height);
   StartIntroIfReady();
-  const double scale = width / static_cast<double>(kCardWidthDip);
+  const double scale = Scale();
   const int radius = static_cast<int>(std::lround(kCornerDip * scale));
   if (!dots_loaded_ && frames_) {
     ::EnterCriticalSection(&frames_->lock);
@@ -797,7 +808,11 @@ void PhiProfileCard::Paint(HDC dc, const RECT& bounds) {
     PhiBlendBgra(dc, bounds, found->second.data(), width, height);
   } else {
     // Nothing decoded yet: the card's white ground.
-    PhiFillRoundRectAA(dc, bounds, radius, RGB(255, 255, 255));
+    PhiFillRoundRectAA(dc, bounds, card_chrome_ ? radius : 0,
+                       RGB(255, 255, 255));
+  }
+  if (!card_chrome_) {
+    return;
   }
   DrawLabels(dc, bounds, scale);
   // The 1px border: black 13% light / white 22% dark, over the ground.
@@ -823,9 +838,8 @@ bool PhiProfileCard::Drag(POINT pt) {
   if (!dragging_) {
     return false;
   }
-  const double scale = width_ > 0 ? width_ / static_cast<double>(kCardWidthDip)
-                                  : 1.0;
-  const int step = std::max(1, static_cast<int>(std::lround(kDragStepDip * scale)));
+  const int step =
+      std::max(1, static_cast<int>(std::lround(kDragStepDip * Scale())));
   const int dx = pt.x - drag_origin_.x;
   const int dy = pt.y - drag_origin_.y;
   bool changed = false;
@@ -918,7 +932,7 @@ void PhiProfileCard::ExportPng(HWND owner) {
   ComPtr<IWICImagingFactory> factory = WicFactory();
   std::vector<uint8_t> gray;
   std::vector<uint8_t> dots;
-  const std::wstring dir = ResourceDir();
+  const std::wstring dir = ResourceDir(resource_subdir_);
   if (!factory ||
       !DecodeGray(factory.Get(),
                   dir + L"frame-" + std::to_wstring(row) + L"-" +

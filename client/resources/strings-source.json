@@ -1759,6 +1759,42 @@
     "zh-Hant": "縮小"
    }
   },
+  "oobe.guestPrivacy.aiFeaturesUnavailable": {
+   "comment": "onboarding — Mac key (translations by key)",
+   "en": "No AI features until you sign in"
+  },
+  "oobe.guestPrivacy.beginButton": {
+   "comment": "onboarding — Mac key (translations by key)",
+   "en": "Let's Begin"
+  },
+  "oobe.guestPrivacy.browserMemoryUnavailable": {
+   "comment": "onboarding — Mac key (translations by key)",
+   "en": "No Browser Memory either"
+  },
+  "oobe.guestPrivacy.legalAgreement": {
+   "comment": "onboarding — Mac key (translations by key)",
+   "en": "I agree to the {0} and {1}"
+  },
+  "oobe.guestPrivacy.metricsConsent": {
+   "comment": "onboarding — Mac key (translations by key)",
+   "en": "Help make Phi better by sharing usage metrics and crash reports"
+  },
+  "oobe.guestPrivacy.privacyPolicyLink": {
+   "comment": "onboarding — Mac key (translations by key)",
+   "en": "Privacy Policy"
+  },
+  "oobe.guestPrivacy.signInAnytime": {
+   "comment": "onboarding — Mac key (translations by key)",
+   "en": "Sign in whenever you're ready"
+  },
+  "oobe.guestPrivacy.termsOfServiceLink": {
+   "comment": "onboarding — Mac key (translations by key)",
+   "en": "Terms of Service"
+  },
+  "oobe.guestPrivacy.title": {
+   "comment": "onboarding — Mac key (translations by key)",
+   "en": "Before we begin"
+  },
   "oobe.layoutSelection.balancedOption": {
    "comment": "menuBar — used at phi_menu_bar.cc:354",
    "en": "Balanced"
@@ -1771,6 +1807,66 @@
    "comment": "menuBar — used at phi_menu_bar.cc:355",
    "en": "Performance"
   },
+  "oobe.layoutSelection.title": {
+   "comment": "onboarding — Mac key (translations by key)",
+   "en": "Layout selection"
+  },
+  "oobe.login.continueAsGuestButton": {
+   "comment": "onboarding — Mac key (translations by key)",
+   "en": "Explore Phi without signing in"
+  },
+  "oobe.login.loginButton": {
+   "comment": "onboarding — Mac key (translations by key)",
+   "en": "Sign in"
+  },
+  "oobe.login.progressTitle": {
+   "comment": "onboarding — Mac key (translations by key)",
+   "en": "Finish signing in in your browser"
+  },
+  "oobe.navigation.continueButton": {
+   "comment": "onboarding — Mac key (translations by key)",
+   "en": "Next"
+  },
+  "oobe.nextSteps.beginButton": {
+   "comment": "onboarding — Mac key (translations by key)",
+   "en": "Let's Begin"
+  },
+  "oobe.nextSteps.enjoyPhi": {
+   "comment": "onboarding — Mac key (translations by key)",
+   "en": "Enjoy using Phi Browser 🎉"
+  },
+  "oobe.nextSteps.importBrowserData": {
+   "comment": "onboarding — Mac key (translations by key)",
+   "en": "Import data from another browser"
+  },
+  "oobe.nextSteps.legalAgreement": {
+   "comment": "onboarding — Mac key (translations by key)",
+   "en": "I agree to the {0} and {1}"
+  },
+  "oobe.nextSteps.metricsConsent": {
+   "comment": "onboarding — Mac key (translations by key)",
+   "en": "Help make Phi better by sharing usage metrics and crash reports"
+  },
+  "oobe.nextSteps.onboardAssistant": {
+   "comment": "onboarding — Mac key (translations by key)",
+   "en": "Onboard your AI assistant"
+  },
+  "oobe.nextSteps.privacyLink": {
+   "comment": "onboarding — Mac key (translations by key)",
+   "en": "Privacy"
+  },
+  "oobe.nextSteps.termsLink": {
+   "comment": "onboarding — Mac key (translations by key)",
+   "en": "Terms"
+  },
+  "oobe.nextSteps.title": {
+   "comment": "onboarding — Mac key (translations by key)",
+   "en": "Next steps"
+  },
+  "oobe.nextSteps.understandFinePrint": {
+   "comment": "onboarding — Mac key (translations by key)",
+   "en": "Have your AI assistant help you understand the fine print 👇"
+  },
   "oobe.passwordManager.finishButton": {
    "comment": "agentOverlay — used at phi_agent_overlay.cc:661",
    "en": "Finish"
@@ -1778,6 +1874,30 @@
   "oobe.reauthentication.confirmButton": {
    "comment": "account — Mac key (translations by key)",
    "en": "Reauthenticate"
+  },
+  "oobe.setName.promptForEmpty": {
+   "comment": "onboarding — Mac key (translations by key)",
+   "en": "Name cannot be empty"
+  },
+  "oobe.setName.promptForTooLong": {
+   "comment": "onboarding — Mac key (translations by key)",
+   "en": "Name is too long (maximum 100 characters)"
+  },
+  "oobe.setName.title": {
+   "comment": "onboarding — Mac key (translations by key)",
+   "en": "What should I call you?"
+  },
+  "oobe.welcome.nextButton": {
+   "comment": "onboarding — Mac key (translations by key)",
+   "en": "Next"
+  },
+  "oobe.welcome.personalizedTitle": {
+   "comment": "onboarding — Mac key (translations by key)",
+   "en": "Welcome {0}"
+  },
+  "oobe.welcome.title": {
+   "comment": "onboarding — Mac key (translations by key)",
+   "en": "Welcome"
   },
   "prompt.alt": {
    "comment": "prompt — used in phi_prompt.cc",

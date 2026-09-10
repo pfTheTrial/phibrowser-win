@@ -289,6 +289,15 @@ int main() {
     base::CommandLine::ForCurrentProcess()->AppendSwitchASCII(
         "profile-directory", "Default");
   }
+  // Chromium's own first run — the "make Phi your default browser" welcome
+  // page and the default-browser check — has no place on Windows: Phi's
+  // first launch is the onboarding window (docs/login-port.md §8), and the
+  // default-browser choice lives in Settings ▸ You.
+  if (process_type.empty()) {
+    base::CommandLine::ForCurrentProcess()->AppendSwitch("no-first-run");
+    base::CommandLine::ForCurrentProcess()->AppendSwitch(
+        "no-default-browser-check");
+  }
 
 #if !defined(COMPONENT_BUILD) && DCHECK_IS_ON()
   // In non-component mode, chrome.exe contains its own base::FeatureList

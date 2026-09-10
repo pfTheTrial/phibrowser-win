@@ -6,6 +6,8 @@
 
 #include <windows.h>
 
+#include <shellapi.h>
+
 #include <algorithm>
 #include <optional>
 #include <string_view>
@@ -17,6 +19,7 @@
 #include "base/json/json_reader.h"
 #include "third_party/abseil-cpp/absl/functional/overload.h"
 #include "base/json/json_writer.h"
+#include "base/command_line.h"
 #include "base/logging.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/escape.h"
@@ -33,6 +36,7 @@
 #include "phibrowser-win/client/phi_agent_handoff_prompt.h"
 #include "phibrowser-win/client/phi_features.h"
 #include "phibrowser-win/client/phi_file_io.h"
+#include "phibrowser-win/client/phi_fonts.h"
 #include "phibrowser-win/client/phi_modal_scope.h"
 #include "phibrowser-win/client/phi_popup_chrome.h"
 #include "phibrowser-win/client/phi_prompt.h"
@@ -98,6 +102,10 @@ constexpr UINT WM_PHI_ASK_SPACE = WM_APP + 9;
 // teardown that reported the run-state edge: a window swap must not start
 // inside either.
 constexpr UINT WM_PHI_AUTOVIEW = WM_APP + 10;
+// Opens the onboarding window on a turn of its own: OnFrameworkReady runs
+// inside Chromium's startup, before its first window, and a window shown
+// from there sits in front of that startup.
+constexpr UINT WM_PHI_OPEN_ONBOARDING = WM_APP + 11;
 }  // namespace
 
 void PhiCoordinator::OnFrameworkReady(phi_framework::PhiFramework* framework,
@@ -193,6 +201,12 @@ void PhiCoordinator::OnFrameworkReady(phi_framework::PhiFramework* framework,
 
   // The Auth0 session and the feedback outbox (PhiAccountAndFeedback).
   account_.Init(framework_, user_data_dir, msg_hwnd_, WM_PHI_AUTH_CHANGED);
+  // The brand faces for the onboarding titles (and the profile card).
+  PhiLoadPrivateFonts();
+  // The onboarding gate: decided here, with the stores and the session
+  // loaded and no window announced yet (Chromium's startup window follows
+  // this callback).
+  ResolveInitialAccess();
 }
 
 // static
@@ -270,6 +284,15 @@ LRESULT CALLBACK PhiCoordinator::MsgWndProc(HWND hwnd,
     if (self) {
       self->surface_coordinator_.FinishReaderPanelExpand(
           BrowserId{static_cast<int64_t>(wparam)});
+    }
+    return 0;
+  }
+  if (msg == WM_PHI_OPEN_ONBOARDING) {
+    auto* self = reinterpret_cast<PhiCoordinator*>(
+        ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    if (self && !self->CanUseBrowser()) {
+      self->OpenOnboarding(
+          static_cast<PhiOnboardingWindow::Page>(static_cast<int>(wparam)));
     }
     return 0;
   }
@@ -1383,6 +1406,13 @@ void PhiCoordinator::OpenDefaultShellIfNoUserWindow(const char* reason) {
   if (registry_.FirstUserSlot().valid() || !framework_) {
     return;  // The user has a window; nothing to rescue.
   }
+  if (!CanUseBrowser()) {
+    // Behind the onboarding gate: GrantAccess asks again once the user is
+    // through (a shell opened now would only sit hidden).
+    LOG(INFO) << "[PhiClient] default-shell rescue deferred by the gate ("
+              << reason << ")";
+    return;
+  }
   // A restore that produced no window would leave the process alive with
   // nothing on screen (lane 4 §6 item 6). Ask for a browser in the default
   // Space's profile with NO slot to attach to, which is how a request says
@@ -2230,6 +2260,8 @@ void PhiCoordinator::OnPreferencesChanged(
     PhiPreferences::PreferenceChange what) {
   using PreferenceChange = PhiPreferences::PreferenceChange;
   switch (what) {
+    case PreferenceChange::kAccess:
+      return;  // Read at the next resolve; nothing live to redo.
     case PreferenceChange::kLayoutMode:
       // Every slot re-lays out: the layout is a client-wide setting, so two
       // windows side by side must never disagree.
@@ -2591,6 +2623,240 @@ void PhiCoordinator::RequestSignIn() {
 
 void PhiCoordinator::RequestSignOut() {
   account_.RequestSignOut();
+  if (access_ == Access::kSignedIn) {
+    RequireLogin();  // The Mac's requireLogin: never silently to guest.
+  }
+}
+
+// --- The onboarding gate ------------------------------------------------------
+
+void PhiCoordinator::ResolveInitialAccess() {
+  const bool skip =
+      preferences_.SkipOnboarding() ||
+      base::CommandLine::ForCurrentProcess()->HasSwitch("skip-onboarding");
+  const PhiAuth& auth = account_.auth();
+  const bool session = auth.signed_in();
+  const int phase = session ? preferences_.OnboardingPhase(auth.user().sub) : 0;
+  // The Mac's resolveInitialAccess: a finished account, else the persisted
+  // guest choice, else the sign-in screen.
+  if (session && phase >= 6) {
+    access_ = Access::kSignedIn;
+    preferences_.SetGuestModeEnabled(false);
+    LOG(INFO) << "[PhiClient] access: signed in";
+    return;
+  }
+  if (preferences_.GuestModeEnabled()) {
+    if (session) {
+      // A persisted Guest choice never revives an unfinished session (the
+      // Mac's discardUncommittedLoginCredentials).
+      account_.DiscardSession();
+    }
+    access_ = Access::kGuest;
+    LOG(INFO) << "[PhiClient] access: guest";
+    return;
+  }
+  if (skip) {
+    access_ = session ? Access::kSignedIn : Access::kGuest;
+    LOG(INFO) << "[PhiClient] access: onboarding skipped (test rig)";
+    return;
+  }
+  access_ = Access::kLoginRequired;
+  LOG(INFO) << "[PhiClient] access: login required (session=" << session
+            << " phase=" << phase << ")";
+  PhiOnboardingWindow::Page page = PhiOnboardingWindow::Page::kLogin;
+  if (session) {
+    if (phase == 0) {
+      preferences_.SetOnboardingPhase(auth.user().sub, 1);
+    }
+    page = PhiOnboardingWindow::PageForPhase(std::max(1, phase));
+  }
+  // Deferred a turn (see WM_PHI_OPEN_ONBOARDING).
+  ::PostMessageW(msg_hwnd_, WM_PHI_OPEN_ONBOARDING,
+                 static_cast<WPARAM>(static_cast<int>(page)), 0);
+}
+
+void PhiCoordinator::GrantAccess(Access access) {
+  access_ = access;
+  for (PhiShellWindow* controller : registry_.Controllers()) {
+    controller->ShowHeldShell();
+  }
+  CloseOnboarding();
+  if (!registry_.FirstUserSlot().valid()) {
+    OpenDefaultShellIfNoUserWindow("access granted");
+  }
+  PushSpaceMenu();
+  NotifySettingsObservers(PhiSettingsChange::kAccount);
+}
+
+void PhiCoordinator::RequireLogin() {
+  access_ = Access::kLoginRequired;
+  preferences_.SetGuestModeEnabled(false);
+  for (PhiShellWindow* controller : registry_.UserControllers()) {
+    controller->HideShell();
+  }
+  OpenOnboarding(PhiOnboardingWindow::Page::kLogin);
+}
+
+void PhiCoordinator::OpenOnboarding(PhiOnboardingWindow::Page page) {
+  if (onboarding_) {
+    onboarding_->ShowPage(page);
+    ::SetForegroundWindow(onboarding_->hwnd());
+    return;
+  }
+  onboarding_ =
+      std::make_unique<PhiOnboardingWindow>(this, &preferences_, &account_);
+  onboarding_->SetNavigator([this](BrowserId browser, const std::string& url) {
+    if (framework_ && browser.valid()) {
+      framework_->OpenTab(browser, url.c_str());
+    }
+  });
+  if (!onboarding_->Open(page)) {
+    onboarding_.reset();
+    return;
+  }
+  if (onboarding_browser_.valid()) {
+    // A browser from an earlier opening is still alive: nothing to attach
+    // (it went back to the desktop when that window closed) — ask anew.
+    if (framework_) {
+      framework_->CloseBrowserWindow(onboarding_browser_.value);
+    }
+    onboarding_browser_ = BrowserId();
+  }
+}
+
+void PhiCoordinator::CloseOnboarding() {
+  if (!onboarding_) {
+    return;
+  }
+  onboarding_->DetachBrowser();
+  const HWND hwnd = onboarding_->hwnd();
+  if (hwnd) {
+    ::DestroyWindow(hwnd);
+  }
+  onboarding_.reset();
+  if (onboarding_browser_.valid() && framework_) {
+    // Only ever after GrantAccess showed a shell (or on quit): with no
+    // other browser alive this would be the last one and Chromium would
+    // start shutting down.
+    framework_->CloseBrowserWindow(onboarding_browser_.value);
+    onboarding_browser_ = BrowserId();
+  }
+}
+
+void PhiCoordinator::RequestOnboardingBrowser() {
+  if (onboarding_browser_.valid() || onboarding_browser_pending_ ||
+      !framework_) {
+    return;
+  }
+  PendingCreation pending;
+  pending.onboarding = true;
+  onboarding_browser_pending_ =
+      // kSpace: a plain NewEmptyWindow in the named profile (kUser needs a
+      // source window to take the profile from, and there is none behind
+      // the gate). The pending marker, not the kind, decides the hosting.
+      RequestCreation(phi_framework::WindowKind::kSpace, "Default",
+                      /*incognito=*/false, BrowserId(), std::move(pending))
+          .valid();
+}
+
+void PhiCoordinator::ReconcileAccessAfterAuth() {
+  const PhiAuth& auth = account_.auth();
+  if (auth.signing_in() || !auth.signed_in() || auth.reauth_required()) {
+    return;
+  }
+  if (access_ != Access::kGuest) {
+    return;  // Signed in already, or the onboarding window is driving.
+  }
+  // A sign-in from Guest Mode (Settings ▸ You): a finished account is in
+  // at once; a new one runs its remaining onboarding over the browser.
+  const std::string& sub = auth.user().sub;
+  int phase = preferences_.OnboardingPhase(sub);
+  if (phase >= 6) {
+    preferences_.SetGuestModeEnabled(false);
+    access_ = Access::kSignedIn;
+    NotifySettingsObservers(PhiSettingsChange::kAccount);
+    return;
+  }
+  if (phase == 0) {
+    phase = 1;
+    preferences_.SetOnboardingPhase(sub, phase);
+  }
+  if (!onboarding_) {
+    OpenOnboarding(PhiOnboardingWindow::PageForPhase(phase));
+  }
+}
+
+void PhiCoordinator::OnboardingSignIn() {
+  RequestOnboardingBrowser();
+  account_.RequestSignInVia([this](const std::string& url) {
+    if (onboarding_) {
+      onboarding_->NavigateEmbedded(url);
+    }
+  });
+}
+
+void PhiCoordinator::OnboardingCancelSignIn() {
+  account_.RequestCancelSignIn();
+}
+
+void PhiCoordinator::OnboardingContinueAsGuest(bool share_metrics) {
+  preferences_.SetAnalyticsEnabled(share_metrics);
+  preferences_.SetGuestModeEnabled(true);
+  // Guests get the Comfortable layout (the Mac's completeGuestOOBE).
+  preferences_.RequestLayoutMode(PhiLayoutMode::kComfortable);
+  GrantAccess(Access::kGuest);
+}
+
+void PhiCoordinator::OnboardingSetPhase(int phase) {
+  const PhiAuth& auth = account_.auth();
+  if (auth.signed_in()) {
+    preferences_.SetOnboardingPhase(auth.user().sub, phase);
+  }
+}
+
+void PhiCoordinator::OnboardingFinished(bool share_metrics) {
+  preferences_.SetAnalyticsEnabled(share_metrics);
+  const PhiAuth& auth = account_.auth();
+  if (auth.signed_in()) {
+    preferences_.SetOnboardingPhase(auth.user().sub, 6);
+  }
+  preferences_.SetGuestModeEnabled(false);
+  GrantAccess(auth.signed_in() ? Access::kSignedIn : Access::kGuest);
+}
+
+void PhiCoordinator::OnboardingClosed() {
+  if (CanUseBrowser()) {
+    CloseOnboarding();  // Onboarding over a usable browser: just dismissed.
+    return;
+  }
+  // Behind the gate the window IS the app: closing it quits. Every browser
+  // goes, the onboarding one last; Chromium exits with its last Browser.
+  LOG(INFO) << "[PhiClient] onboarding closed behind the gate; quitting";
+  if (onboarding_) {
+    onboarding_->DetachBrowser();
+  }
+  if (framework_) {
+    for (const BrowserId browser : window_model_.Browsers()) {
+      if (browser != onboarding_browser_) {
+        framework_->CloseBrowserWindow(browser.value);
+      }
+    }
+    if (onboarding_browser_.valid()) {
+      framework_->CloseBrowserWindow(onboarding_browser_.value);
+      onboarding_browser_ = BrowserId();
+    }
+  }
+}
+
+void PhiCoordinator::OnboardingFocusBrowser(BrowserId browser) {
+  if (framework_ && browser.valid()) {
+    framework_->FocusBrowserWindow(browser.value);
+  }
+}
+
+void PhiCoordinator::OnboardingOpenLink(const std::string& url) {
+  ::ShellExecuteW(nullptr, L"open", base::UTF8ToWide(url).c_str(), nullptr,
+                  nullptr, SW_SHOWNORMAL);
 }
 
 void PhiCoordinator::OpenUrlInFirstUserSlot(const std::string& url) {
@@ -2601,6 +2867,10 @@ void PhiCoordinator::OpenUrlInFirstUserSlot(const std::string& url) {
 
 void PhiCoordinator::NoteAccountChanged() {
   NotifySettingsObservers(PhiSettingsChange::kAccount);
+  if (onboarding_) {
+    onboarding_->OnAccountChanged();
+  }
+  ReconcileAccessAfterAuth();
 }
 
 void PhiCoordinator::RequestDefaultBrowser() {
@@ -3007,6 +3277,23 @@ void PhiCoordinator::AdoptCreatedWindow(
                  << static_cast<int>(kind) << " without a token";
     kind = WindowKind::kUser;
   }
+  if (pending && pending->onboarding) {
+    // The onboarding window's embedded browser — a plain browser (a shadow
+    // one skips activation and could never take the keyboard), reparented
+    // into that window here (inside the announcement: nothing else) and
+    // navigated on a later turn. Its bounds are a child's inside a dialog:
+    // "space.agent" keeps them out of the profile's saved placement, as an
+    // agent window's are.
+    onboarding_browser_pending_ = false;
+    onboarding_browser_ = browser;
+    if (framework_) {
+      framework_->SetWindowSpace(browser.value, "space.agent");
+    }
+    if (onboarding_) {
+      onboarding_->AttachBrowser(hwnd, browser);
+    }
+    return;
+  }
   switch (kind) {
     case WindowKind::kKiosk:
       // Ephemeral, single-tab, no Space and no slot.
@@ -3196,7 +3483,8 @@ void PhiCoordinator::HostUserShell(BrowserId browser, HWND hwnd,
       slot,
       std::make_unique<PhiShellWindow>(slot, browser, hwnd, framework_,
                                             SlotServices(), &window_model_,
-                                            /*agent=*/false, incognito),
+                                            /*agent=*/false, incognito,
+                                            /*start_hidden=*/!CanUseBrowser()),
       /*agent=*/false, incognito);
   registry_.Bind(browser, slot);
   controller->ScheduleRefresh();  // After registration (lane 1 D12).
@@ -3432,6 +3720,12 @@ void PhiCoordinator::NoteWindowSnapshot(
 
 void PhiCoordinator::RetireBrowserWindow(BrowserId browser) {
   LOG(INFO) << "[PhiClient] OnBrowserWindowClosing windowId=" << browser.value;
+  if (browser == onboarding_browser_) {
+    onboarding_browser_ = BrowserId();
+    if (onboarding_) {
+      onboarding_->DetachBrowser();
+    }
+  }
   window_model_.Remove(browser);
   RetireClosingBrowser(browser);
   MaybeEnterClosing();

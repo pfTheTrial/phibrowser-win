@@ -615,7 +615,8 @@ PhiShellWindow::PhiShellWindow(SlotId slot,
                                         const ShellServices& services,
                                         const PhiWindowModel* model,
                                         bool agent,
-                                        bool incognito)
+                               bool incognito,
+                               bool start_hidden)
     : // The URL-driven client-drawn pages (bookmark manager, new-tab page).
       // First, so the early return below still leaves a usable host.
       native_pages_(std::make_unique<PhiNativePagesHost>(
@@ -849,7 +850,15 @@ PhiShellWindow::PhiShellWindow(SlotId slot,
     framework_->SetWindowSpace(browser.value, default_space.c_str());
   }
   LayoutContents();
-  ::ShowWindow(shell_hwnd_, agent_ ? SW_SHOWNOACTIVATE : SW_SHOW);
+  if (start_hidden && !agent_) {
+    // The onboarding gate: the shell exists (its browser is alive and laid
+    // out) but stays off screen until access is granted. Chromium shows the
+    // browser HWND itself right after creation, so the child stays parked
+    // where LayoutContents put it — inside a window that is not shown.
+    shell_hidden_ = true;
+  } else {
+    ::ShowWindow(shell_hwnd_, agent_ ? SW_SHOWNOACTIVATE : SW_SHOW);
+  }
   LOG(INFO) << "[PhiClient] " << (agent_ ? "agent " : "") << "shell window "
             << slot_.value << " browser=" << browser.value
             << " shell_hwnd=" << shell_hwnd_ << " browser_hwnd="
@@ -1237,6 +1246,25 @@ void PhiShellWindow::MenuToggleDownloads() {
 
 void PhiShellWindow::MenuToggleSearchTabs() {
   PhiSearchTabsPanel::Toggle(this);
+}
+
+void PhiShellWindow::ShowHeldShell() {
+  if (!shell_hidden_ || !shell_hwnd_) {
+    return;
+  }
+  shell_hidden_ = false;
+  ::ShowWindow(shell_hwnd_, SW_SHOW);
+  ::SetForegroundWindow(shell_hwnd_);
+  LayoutContents();
+  browsers_->FocusActiveBrowser();
+}
+
+void PhiShellWindow::HideShell() {
+  if (shell_hidden_ || !shell_hwnd_ || agent_) {
+    return;
+  }
+  shell_hidden_ = true;
+  ::ShowWindow(shell_hwnd_, SW_HIDE);
 }
 
 void PhiShellWindow::MenuOpenFeedback() {

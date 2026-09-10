@@ -9,12 +9,14 @@
 #include <optional>
 #include <string>
 
+#include "base/json/json_reader.h"
 #include "base/values.h"
 #include "phibrowser-win/client/phi_account_feedback.h"
 #include "phibrowser-win/client/phi_account_profile.h"
 #include "phibrowser-win/client/phi_auth.h"
 #include "phibrowser-win/client/phi_control_dispatcher.h"
 #include "phibrowser-win/client/phi_coordinator.h"
+#include "phibrowser-win/client/phi_onboarding_window.h"
 #include "phibrowser-win/client/phi_window_registry.h"
 
 namespace phi_client {
@@ -79,10 +81,48 @@ PhiVerbResult PhiControlDispatcher::VerbAccountCancelSignIn(
 
 PhiVerbResult PhiControlDispatcher::VerbAccountSignOut(
     const PhiVerbContext& ctx) {
-  coordinator_->account().RequestSignOut();
+  coordinator_->RequestSignOut();  // Re-arms the onboarding gate too.
   base::DictValue out;
   out.Set("signedIn", coordinator_->auth().signed_in());
   return PhiVerbResult::Ok(std::move(out));
+}
+
+PhiVerbResult PhiControlDispatcher::VerbOnboardingStatus(
+    const PhiVerbContext& ctx) {
+  // The gate and the onboarding window, for the box: which page is up
+  // and what it holds.
+  base::DictValue out;
+  const PhiCoordinator::Access access = coordinator_->access();
+  out.Set("access", access == PhiCoordinator::Access::kLoginRequired
+                        ? "loginRequired"
+                    : access == PhiCoordinator::Access::kGuest ? "guest"
+                                                               : "signedIn");
+  out.Set("open", coordinator_->onboarding() != nullptr);
+  if (PhiOnboardingWindow* window = coordinator_->onboarding()) {
+    if (std::optional<base::Value> state = base::JSONReader::Read(
+            window->StateJson(), base::JSON_PARSE_RFC)) {
+      if (base::DictValue* dict = state->GetIfDict()) {
+        out.Merge(std::move(*dict));
+      }
+    }
+    out.Set("hwnd", static_cast<double>(
+                        reinterpret_cast<uintptr_t>(window->hwnd())));
+  }
+  return PhiVerbResult::Ok(std::move(out));
+}
+
+PhiVerbResult PhiControlDispatcher::VerbOnboardingDrive(
+    const PhiVerbContext& ctx) {
+  PhiOnboardingWindow* window = coordinator_->onboarding();
+  if (!window) {
+    return PhiVerbResult::Fail(PhiErrorCode::kInvalidPayload, "not_open");
+  }
+  const std::string error =
+      window->Drive(ctx.params.String("action"), ctx.params.String("value"));
+  if (!error.empty()) {
+    return PhiVerbResult::Fail(PhiErrorCode::kInvalidPayload, error);
+  }
+  return VerbOnboardingStatus(ctx);
 }
 
 }  // namespace phi_client

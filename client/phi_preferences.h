@@ -41,6 +41,7 @@ class PhiPreferences : public ChromePrefsHost {
   // Which preference domain a notification is about. One value per
   // fan-out the coordinator used to hand-write after each setter.
   enum class PreferenceChange {
+    kAccess,         // Guest choice / onboarding phase (the gate re-reads).
     kLayoutMode,     // Every slot re-lays out (ApplyLayoutMode).
     kSidebarWidth,   // Every slot re-fits its content.
     kTheme,          // Theme id or appearance: the palette was re-resolved.
@@ -138,6 +139,13 @@ class PhiPreferences : public ChromePrefsHost {
   void SetRestoreLastSession(bool enabled);
   bool DeveloperMode() const { return settings_.developer_mode; }
   void SetDeveloperMode(bool enabled);
+  // --- Browser access (the onboarding gate, docs/login-port.md §8) ------
+  bool GuestModeEnabled() const { return settings_.guest_mode_enabled; }
+  void SetGuestModeEnabled(bool enabled);
+  // The account's onboarding phase (0 = unknown / brand new).
+  int OnboardingPhase(const std::string& sub) const;
+  void SetOnboardingPhase(const std::string& sub, int phase);
+  bool SkipOnboarding() const { return settings_.skip_onboarding; }
   bool AllowAgentControl() const override;
   void SetAllowAgentControl(bool enabled);
   bool AgentAutoView() const override;

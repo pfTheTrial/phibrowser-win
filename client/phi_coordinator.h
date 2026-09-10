@@ -27,6 +27,7 @@
 #include "phibrowser-win/client/phi_reader_panel.h"
 #include "phibrowser-win/client/phi_surface_coordinator.h"
 #include "phibrowser-win/client/phi_account_feedback.h"
+#include "phibrowser-win/client/phi_onboarding_window.h"
 #include "phibrowser-win/client/phi_feedback_window.h"
 #include "phibrowser-win/client/phi_settings_window.h"
 #include "phibrowser-win/client/phi_transcript_panel.h"
@@ -71,6 +72,7 @@ class PhiCoordinator : public SidebarHost,
                        public PhiUrlRouter::Host,
                        public PhiKeyboardAccelerators::Host,
                        public PhiAccountAndFeedback::Host,
+                       public PhiOnboardingWindow::Host,
                        public PhiCredentialService::Host,
                        public PhiSessionRestore::Host,
                        public PhiProfileService::Host,
@@ -224,6 +226,23 @@ class PhiCoordinator : public SidebarHost,
   bool AccountSigningIn() const;
   void RequestSignIn() override;
   void RequestSignOut() override;
+
+  // --- Browser access: the onboarding gate (docs/login-port.md §8) --------
+  // The Mac's BrowserAccessState. Login required = no shell is shown; the
+  // onboarding window is the only window up.
+  enum class Access { kLoginRequired, kGuest, kSignedIn };
+  Access access() const { return access_; }
+  PhiOnboardingWindow* onboarding() { return onboarding_.get(); }
+  bool CanUseBrowser() const { return access_ != Access::kLoginRequired; }
+  // PhiOnboardingWindow::Host:
+  void OnboardingSignIn() override;
+  void OnboardingCancelSignIn() override;
+  void OnboardingContinueAsGuest(bool share_metrics) override;
+  void OnboardingSetPhase(int phase) override;
+  void OnboardingFinished(bool share_metrics) override;
+  void OnboardingClosed() override;
+  void OnboardingOpenLink(const std::string& url) override;
+  void OnboardingFocusBrowser(BrowserId browser) override;
   void RequestDefaultBrowser() override;
   PhiLayoutMode LayoutMode() const override;
   void RequestLayoutMode(PhiLayoutMode mode) override;
@@ -844,6 +863,25 @@ class PhiCoordinator : public SidebarHost,
   // construction; Init (OnFrameworkReady) hands it the framework and the
   // user data dir.
   PhiAccountAndFeedback account_{*this};
+  // The onboarding gate (see Access): resolved once the stores and the
+  // session are loaded, before any window is announced.
+  Access access_ = Access::kLoginRequired;
+  std::unique_ptr<PhiOnboardingWindow> onboarding_;
+  // The shadow browser the onboarding window embeds the hosted login in.
+  BrowserId onboarding_browser_;
+  bool onboarding_browser_pending_ = false;
+  // Resolves access at startup (session + phase, guest choice, skip).
+  void ResolveInitialAccess();
+  // Access moved to guest / signed in: held shells show, onboarding goes.
+  void GrantAccess(Access access);
+  // A sign-out re-arms the gate: shells hide, onboarding shows at Login.
+  void RequireLogin();
+  void OpenOnboarding(PhiOnboardingWindow::Page page);
+  void CloseOnboarding();
+  void RequestOnboardingBrowser();
+  // After every auth change: a sign-in from Guest Mode routes through the
+  // account's onboarding phase; the onboarding window advances.
+  void ReconcileAccessAfterAuth();
 
   // PhiAccountAndFeedback::Host:
   void OpenUrlInFirstUserSlot(const std::string& url) override;

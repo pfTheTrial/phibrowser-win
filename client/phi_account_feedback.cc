@@ -108,6 +108,12 @@ void PhiAccountAndFeedback::RequestSignIn() {
   host_.NoteAccountChanged();
 }
 
+void PhiAccountAndFeedback::RequestSignInVia(
+    std::function<void(const std::string& url)> open_url) {
+  auth_.BeginSignIn(std::move(open_url));
+  host_.NoteAccountChanged();
+}
+
 void PhiAccountAndFeedback::RequestCancelSignIn() {
   auth_.CancelSignIn();  // Notifies; the hosted-login tab is the user's.
 }
@@ -129,6 +135,13 @@ void PhiAccountAndFeedback::RequestSignOut() {
     host_.OpenUrlInFirstUserSlot(logout_url);
   }
   host_.NoteAccountChanged();
+  SyncFeedbackAccount();
+}
+
+void PhiAccountAndFeedback::DiscardSession() {
+  auth_.SignOut();
+  profile_.Clear();
+  avatar_edit_pending_ = false;
   SyncFeedbackAccount();
 }
 

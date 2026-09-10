@@ -2427,6 +2427,105 @@
    "zh-Hans": "缩小\tCtrl+-",
    "zh-Hant": "縮小\tCtrl+-"
   },
+  "oobe.guestPrivacy.aiFeaturesUnavailable": {
+   "de": "KI-Funktionen erst nach der Anmeldung",
+   "en": "No AI features until you sign in",
+   "es": "Sin funciones de IA hasta que inicies sesión",
+   "fr": "Aucune fonctionnalité IA sans connexion",
+   "ja": "ログインするまでAI機能は利用できません",
+   "ko": "로그인하기 전에는 AI 기능을 사용할 수 없어요",
+   "nl": "Geen AI-functies totdat je inlogt",
+   "zh-Hans": "登录后才能使用 AI 功能",
+   "zh-Hant": "登入後才能使用 AI 功能"
+  },
+  "oobe.guestPrivacy.beginButton": {
+   "de": "Los geht’s",
+   "en": "Let's Begin",
+   "es": "Empecemos",
+   "fr": "Commencer",
+   "ja": "はじめる",
+   "ko": "시작하기",
+   "nl": "Aan de slag",
+   "zh-Hans": "开始使用",
+   "zh-Hant": "開始使用"
+  },
+  "oobe.guestPrivacy.browserMemoryUnavailable": {
+   "de": "Auch keine Browser-Erinnerung",
+   "en": "No Browser Memory either",
+   "es": "Tampoco habrá Memoria del navegador",
+   "fr": "Pas de Mémoire de navigation non plus",
+   "ja": "ブラウザメモリも利用できません",
+   "ko": "브라우저 메모리도 사용할 수 없어요",
+   "nl": "Ook geen Browsergeheugen",
+   "zh-Hans": "浏览器记忆也无法使用",
+   "zh-Hant": "瀏覽器記憶也無法使用"
+  },
+  "oobe.guestPrivacy.legalAgreement": {
+   "de": "Ich stimme der {0} und den {1} zu",
+   "en": "I agree to the {0} and {1}",
+   "es": "Acepto la {0} y los {1}",
+   "fr": "J'accepte la {0} et les {1}",
+   "ja": "{0}と{1}に同意します",
+   "ko": "{0} 및 {1}에 동의해요",
+   "nl": "Ik ga akkoord met het {0} en de {1}",
+   "zh-Hans": "我同意 {0} 和 {1}",
+   "zh-Hant": "我同意 {0} 和 {1}"
+  },
+  "oobe.guestPrivacy.metricsConsent": {
+   "de": "Hilf mit, Phi zu verbessern, indem du Nutzungsstatistiken und Absturzberichte teilst",
+   "en": "Help make Phi better by sharing usage metrics and crash reports",
+   "es": "Ayuda a mejorar Phi compartiendo métricas de uso e informes de errores",
+   "fr": "Contribuer à améliorer Phi en partageant les statistiques d'utilisation et les rapports d'erreur",
+   "ja": "使用状況データとクラッシュレポートを共有してPhiの改善に協力する",
+   "ko": "사용 통계 및 오류 보고서를 공유해 Phi 개선에 참여하기",
+   "nl": "Help Phi te verbeteren door gebruiksstatistieken en crashrapporten te delen",
+   "zh-Hans": "分享使用统计信息和崩溃报告，帮助改进 Phi",
+   "zh-Hant": "分享使用統計資料和當機報告，協助改善 Phi"
+  },
+  "oobe.guestPrivacy.privacyPolicyLink": {
+   "de": "Datenschutzerklärung",
+   "en": "Privacy Policy",
+   "es": "Política de Privacidad",
+   "fr": "Politique de confidentialité",
+   "ja": "プライバシーポリシー",
+   "ko": "개인정보 처리방침",
+   "nl": "Privacybeleid",
+   "zh-Hans": "隐私政策",
+   "zh-Hant": "隱私權政策"
+  },
+  "oobe.guestPrivacy.signInAnytime": {
+   "de": "Melde dich an, wann immer du bereit bist",
+   "en": "Sign in whenever you're ready",
+   "es": "Inicia sesión cuando quieras",
+   "fr": "Connectez-vous quand vous le souhaitez",
+   "ja": "準備ができたらいつでもログインできます",
+   "ko": "준비되면 언제든지 로그인하세요",
+   "nl": "Log in wanneer je er klaar voor bent",
+   "zh-Hans": "准备好后随时登录",
+   "zh-Hant": "等你準備好，隨時都能登入"
+  },
+  "oobe.guestPrivacy.termsOfServiceLink": {
+   "de": "Nutzungsbedingungen",
+   "en": "Terms of Service",
+   "es": "Términos del Servicio",
+   "fr": "Conditions d'utilisation",
+   "ja": "利用規約",
+   "ko": "서비스 이용약관",
+   "nl": "Servicevoorwaarden",
+   "zh-Hans": "服务条款",
+   "zh-Hant": "服務條款"
+  },
+  "oobe.guestPrivacy.title": {
+   "de": "Bevor es losgeht",
+   "en": "Before we begin",
+   "es": "Antes de empezar",
+   "fr": "Avant de commencer",
+   "ja": "はじめる前に",
+   "ko": "시작하기 전에",
+   "nl": "Voordat we beginnen",
+   "zh-Hans": "开始之前",
+   "zh-Hant": "開始之前"
+  },
   "oobe.layoutSelection.balancedOption": {
    "de": "Ausgewogen",
    "en": "Balanced",
@@ -2460,6 +2559,171 @@
    "zh-Hans": "性能",
    "zh-Hant": "效能"
   },
+  "oobe.layoutSelection.title": {
+   "de": "Layout auswählen",
+   "en": "Layout selection",
+   "es": "Selección de diseño",
+   "fr": "Choix de la disposition",
+   "ja": "レイアウトの選択",
+   "ko": "레이아웃 선택",
+   "nl": "Lay-outkeuze",
+   "zh-Hans": "布局选择",
+   "zh-Hant": "選擇版面配置"
+  },
+  "oobe.login.continueAsGuestButton": {
+   "de": "Phi ohne Anmeldung erkunden",
+   "en": "Explore Phi without signing in",
+   "es": "Explora Phi sin iniciar sesión",
+   "fr": "Découvrir Phi sans se connecter",
+   "ja": "ログインせずにPhiを試す",
+   "ko": "로그인 없이 Phi 둘러보기",
+   "nl": "Phi verkennen zonder in te loggen",
+   "zh-Hans": "不登录也能体验 Phi",
+   "zh-Hant": "不登入，直接探索 Phi"
+  },
+  "oobe.login.loginButton": {
+   "de": "Anmelden",
+   "en": "Sign in",
+   "es": "Iniciar sesión",
+   "fr": "Se connecter",
+   "ja": "ログイン",
+   "ko": "로그인",
+   "nl": "Inloggen",
+   "zh-Hans": "登录",
+   "zh-Hant": "登入"
+  },
+  "oobe.login.progressTitle": {
+   "de": "Schließe die Anmeldung in deinem Browser ab",
+   "en": "Finish signing in in your browser",
+   "es": "Termina de iniciar sesión en tu navegador",
+   "fr": "Terminez la connexion dans votre navigateur",
+   "ja": "ブラウザでログインを完了してください",
+   "ko": "브라우저에서 로그인을 완료해 주세요",
+   "nl": "Rond het inloggen af in je browser",
+   "zh-Hans": "请在浏览器中完成登录",
+   "zh-Hant": "請在瀏覽器中完成登入"
+  },
+  "oobe.navigation.continueButton": {
+   "de": "Weiter",
+   "en": "Next",
+   "es": "Siguiente",
+   "fr": "Suivant",
+   "ja": "次へ",
+   "ko": "다음",
+   "nl": "Volgende",
+   "zh-Hans": "下一步",
+   "zh-Hant": "下一步"
+  },
+  "oobe.nextSteps.beginButton": {
+   "de": "Los geht’s",
+   "en": "Let's Begin",
+   "es": "Empecemos",
+   "fr": "Commencer",
+   "ja": "はじめる",
+   "ko": "시작하기",
+   "nl": "Aan de slag",
+   "zh-Hans": "开始使用",
+   "zh-Hant": "開始使用"
+  },
+  "oobe.nextSteps.enjoyPhi": {
+   "de": "Viel Spaß mit Phi Browser 🎉",
+   "en": "Enjoy using Phi Browser 🎉",
+   "es": "Disfruta de Phi Browser 🎉",
+   "fr": "Profitez de Phi Browser 🎉",
+   "ja": "Phi Browserをお楽しみください🎉",
+   "ko": "Phi Browser를 즐겁게 사용해 보세요 🎉",
+   "nl": "Veel plezier met Phi Browser 🎉",
+   "zh-Hans": "祝你使用 Phi Browser 愉快 🎉",
+   "zh-Hant": "盡情使用 Phi Browser 🎉"
+  },
+  "oobe.nextSteps.importBrowserData": {
+   "de": "Daten aus einem anderen Browser importieren",
+   "en": "Import data from another browser",
+   "es": "Importa datos de otro navegador",
+   "fr": "Importez les données d'un autre navigateur",
+   "ja": "他のブラウザからデータをインポートしましょう",
+   "ko": "다른 브라우저에서 데이터 가져오기",
+   "nl": "Importeer gegevens uit een andere browser",
+   "zh-Hans": "从其他浏览器导入数据",
+   "zh-Hant": "從其他瀏覽器匯入資料"
+  },
+  "oobe.nextSteps.legalAgreement": {
+   "de": "Ich stimme der {0} und den {1} zu",
+   "en": "I agree to the {0} and {1}",
+   "es": "Acepto la {0} y los {1}",
+   "fr": "J'accepte la {0} et les {1}",
+   "ja": "{0}と{1}に同意します",
+   "ko": "{0} 및 {1}에 동의해요",
+   "nl": "Ik ga akkoord met {0} en {1}",
+   "zh-Hans": "我同意 {0} 和 {1}",
+   "zh-Hant": "我同意 {0} 和 {1}"
+  },
+  "oobe.nextSteps.metricsConsent": {
+   "de": "Hilf mit, Phi zu verbessern, indem du Nutzungsstatistiken und Absturzberichte teilst",
+   "en": "Help make Phi better by sharing usage metrics and crash reports",
+   "es": "Ayuda a mejorar Phi compartiendo métricas de uso e informes de errores",
+   "fr": "Contribuer à améliorer Phi en partageant les statistiques d'utilisation et les rapports d'erreur",
+   "ja": "使用状況データとクラッシュレポートを共有してPhiの改善に協力する",
+   "ko": "사용 통계 및 오류 보고서를 공유해 Phi 개선에 참여하기",
+   "nl": "Help Phi te verbeteren door gebruiksstatistieken en crashrapporten te delen",
+   "zh-Hans": "分享使用统计信息和崩溃报告，帮助改进 Phi",
+   "zh-Hant": "分享使用統計資料和當機報告，協助改善 Phi"
+  },
+  "oobe.nextSteps.onboardAssistant": {
+   "de": "Deinen KI-Assistenten einrichten",
+   "en": "Onboard your AI assistant",
+   "es": "Configura tu asistente de IA",
+   "fr": "Configurez votre assistant IA",
+   "ja": "AIアシスタントをセットアップしましょう",
+   "ko": "AI 어시스턴트 설정하기",
+   "nl": "Stel je AI-assistent in",
+   "zh-Hans": "设置你的 AI 助手",
+   "zh-Hant": "設定你的 AI 助理"
+  },
+  "oobe.nextSteps.privacyLink": {
+   "de": "Datenschutzerklärung",
+   "en": "Privacy",
+   "es": "Privacidad",
+   "fr": "Politique de confidentialité",
+   "ja": "プライバシー",
+   "ko": "개인정보 처리방침",
+   "nl": "Privacy",
+   "zh-Hans": "隐私政策",
+   "zh-Hant": "隱私權政策"
+  },
+  "oobe.nextSteps.termsLink": {
+   "de": "Nutzungsbedingungen",
+   "en": "Terms",
+   "es": "Términos",
+   "fr": "Conditions d'utilisation",
+   "ja": "利用規約",
+   "ko": "이용약관",
+   "nl": "Voorwaarden",
+   "zh-Hans": "条款",
+   "zh-Hant": "服務條款"
+  },
+  "oobe.nextSteps.title": {
+   "de": "Nächste Schritte",
+   "en": "Next steps",
+   "es": "Próximos pasos",
+   "fr": "Prochaines étapes",
+   "ja": "次のステップ",
+   "ko": "다음 단계",
+   "nl": "Volgende stappen",
+   "zh-Hans": "后续步骤",
+   "zh-Hant": "後續步驟"
+  },
+  "oobe.nextSteps.understandFinePrint": {
+   "de": "Lass dir von deinem KI-Assistenten das Kleingedruckte erklären 👇",
+   "en": "Have your AI assistant help you understand the fine print 👇",
+   "es": "Deja que tu asistente de IA te ayude a entender la letra pequeña 👇",
+   "fr": "Laissez votre assistant IA vous aider à comprendre les petits caractères 👇",
+   "ja": "細かい注意書きはAIアシスタントに読み解いてもらいましょう👇",
+   "ko": "작은 글씨로 된 세부 내용도 AI 어시스턴트의 도움을 받아 이해해 보세요 👇",
+   "nl": "Laat je AI-assistent je helpen de kleine lettertjes te begrijpen 👇",
+   "zh-Hans": "让你的 AI 助手帮你读懂细则 👇",
+   "zh-Hant": "讓 AI 助理協助你看懂條款細節 👇"
+  },
   "oobe.passwordManager.finishButton": {
    "de": "Fertig",
    "en": "Finish",
@@ -2481,6 +2745,72 @@
    "nl": "Verifieer opnieuw",
    "zh-Hans": "重新验证身份",
    "zh-Hant": "重新驗證身分"
+  },
+  "oobe.setName.promptForEmpty": {
+   "de": "Der Name darf nicht leer sein",
+   "en": "Name cannot be empty",
+   "es": "El nombre no puede estar vacío",
+   "fr": "Le nom ne peut pas être vide",
+   "ja": "名前を入力してください",
+   "ko": "이름은 비워 둘 수 없어요",
+   "nl": "Naam mag niet leeg zijn",
+   "zh-Hans": "名称不能为空",
+   "zh-Hant": "名稱不能為空白"
+  },
+  "oobe.setName.promptForTooLong": {
+   "de": "Der Name ist zu lang (maximal 100 Zeichen)",
+   "en": "Name is too long (maximum 100 characters)",
+   "es": "El nombre es demasiado largo (máximo 100 caracteres)",
+   "fr": "Le nom est trop long (100 caractères maximum)",
+   "ja": "名前が長すぎます（最大100文字）",
+   "ko": "이름이 너무 길어요 (최대 100자)",
+   "nl": "Naam is te lang (maximaal 100 tekens)",
+   "zh-Hans": "名称过长（最多 100 个字符）",
+   "zh-Hant": "名稱太長（最多 100 個字元）"
+  },
+  "oobe.setName.title": {
+   "de": "Wie soll ich dich nennen?",
+   "en": "What should I call you?",
+   "es": "¿Cómo quieres que te llame?",
+   "fr": "Comment dois-je vous appeler ?",
+   "ja": "何とお呼びすればよいですか？",
+   "ko": "어떻게 불러 드릴까요?",
+   "nl": "Hoe mag ik je noemen?",
+   "zh-Hans": "我该怎么称呼你？",
+   "zh-Hant": "我該怎麼稱呼你？"
+  },
+  "oobe.welcome.nextButton": {
+   "de": "Weiter",
+   "en": "Next",
+   "es": "Siguiente",
+   "fr": "Suivant",
+   "ja": "次へ",
+   "ko": "다음",
+   "nl": "Volgende",
+   "zh-Hans": "下一步",
+   "zh-Hant": "下一步"
+  },
+  "oobe.welcome.personalizedTitle": {
+   "de": "Willkommen, {0}",
+   "en": "Welcome {0}",
+   "es": "Te damos la bienvenida, {0}",
+   "fr": "Bienvenue {0}",
+   "ja": "ようこそ、{0}さん",
+   "ko": "{0}님, 환영해요",
+   "nl": "Welkom {0}",
+   "zh-Hans": "欢迎 {0}",
+   "zh-Hant": "歡迎，{0}"
+  },
+  "oobe.welcome.title": {
+   "de": "Willkommen",
+   "en": "Welcome",
+   "es": "Te damos la bienvenida",
+   "fr": "Bienvenue",
+   "ja": "ようこそ",
+   "ko": "환영해요",
+   "nl": "Welkom",
+   "zh-Hans": "欢迎",
+   "zh-Hant": "歡迎"
   },
   "prompt.alt": {
    "en": "Alt+"

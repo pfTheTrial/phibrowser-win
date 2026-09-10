@@ -8,6 +8,7 @@
 #include <windows.h>
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
@@ -89,6 +90,9 @@ class PhiAccountAndFeedback : public PhiFeedbackHost {
   // The avatar as a `px` circle (premultiplied BGRA), empty when none.
   const std::vector<uint8_t>& AccountAvatarCircle(int px);
   void RequestSignIn();
+  // The same, with the hosted login opened through `open_url` instead of
+  // a tab of the first user window — the onboarding window embeds it.
+  void RequestSignInVia(std::function<void(const std::string& url)> open_url);
   void RequestCancelSignIn();
   // The framework's auth-callback throttle saw a navigation to the callback
   // scheme (PhiFrameworkDelegate::OnAuthCallbackUrl, inside the throttle —
@@ -99,6 +103,9 @@ class PhiAccountAndFeedback : public PhiFeedbackHost {
   // logout page in a tab so the hosted-login session ends too. The
   // confirmation is the caller's (the pane asks; the harness does not).
   void RequestSignOut();
+  // Drops the local session without the tenant's logout page — the
+  // persisted Guest choice discarding an unfinished sign-in at launch.
+  void DiscardSession();
   // PUT the display name (validated by the caller: non-empty, at most
   // PhiAccountProfileService::kMaxNameLength).
   void RequestRenameAccount(const std::string& name);

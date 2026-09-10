@@ -214,6 +214,18 @@ struct PhiSettings {
   // Telemetry consent (phase 3 "telemetry consent pref"). OFF by default:
   // nothing leaves the machine until the user opts in.
   bool analytics_enabled = false;
+  // Browser access (docs/login-port.md §8, the Mac's ApplicationState):
+  // the user's explicit "Explore Phi without signing in" choice — the ONE
+  // access state that persists; signed-in access is derived from the Auth0
+  // session plus the account's finished onboarding.
+  bool guest_mode_enabled = false;
+  // The onboarding phase reached per account (the Mac's per-account
+  // `loginPhase`, keyed by the Auth0 subject): 1 setName, 2 setTheme,
+  // 3 layoutSelection, 5 nextStep, 6 done. Absent = a brand-new account.
+  std::map<std::string, int> onboarding_phases;
+  // Test rig: never gate the browser and never show onboarding (the Mac's
+  // -skip-onboarding). Never agent-settable.
+  bool skip_onboarding = false;
   bool operator==(const PhiSettings&) const = default;
 };
 
