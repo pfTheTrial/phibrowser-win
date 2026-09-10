@@ -13,6 +13,7 @@
 #include <string>
 #include <vector>
 
+#include "phi_features.h"
 #include "phi_shell_menus.h"
 
 using namespace phi_client;
@@ -164,7 +165,7 @@ void MergedTabMenuActsOnThePair() {
   CHECK(Joined(spec) ==
         "tab.pin tab.duplicate tab.copyLeft tab.copyRight - "
         "tab.reversePanes tab.convertSplit tab.removeSplit - "
-        "tab.bookmark - tab.close tab.closeOthers ");
+        "tab.bookmark - tab.newGroup - tab.close tab.closeOthers ");
   // One key, two labels: pinning a split is still "pin this row".
   CHECK(spec.Find("tab.pin")->label == L"Pin Split");
   CHECK(spec.Find("tab.bookmark")->label == L"Add Split to Bookmark");
@@ -173,6 +174,27 @@ void MergedTabMenuActsOnThePair() {
   in.split_stacked = true;
   CHECK(PhiBuildTabRowMenu(in).Find("tab.convertSplit")->label ==
         L"Convert to Horizontal Split");
+}
+
+void MergedTabMenuGroupsThePair() {
+  // The split row carries the same group block as a plain tab: it starts or
+  // joins a group as one row, and a grouped pair may move or leave.
+  PhiTabMenuInputs in;
+  in.merged = true;
+  in.groups = {Choice("g1", L"Research (2)")};
+  const PhiMenuSpec loose = PhiBuildTabRowMenu(in);
+  CHECK(loose.Find("tab.newGroup")->label == L"New Tab Group");
+  CHECK(loose.Find("tab.joinGroup")->target.id == "g1");
+  CHECK(loose.Find("tab.moveNewGroup") == nullptr);
+  CHECK(loose.Find("tab.leaveGroup") == nullptr);
+  in.grouped = true;
+  const PhiMenuSpec member = PhiBuildTabRowMenu(in);
+  CHECK(Joined(member) ==
+        "tab.pin tab.duplicate tab.copyLeft tab.copyRight - "
+        "tab.reversePanes tab.convertSplit tab.removeSplit - "
+        "tab.bookmark - . tab.joinGroup tab.moveNewGroup tab.leaveGroup - "
+        "tab.close tab.closeOthers ");
+  CHECK(member.Find("tab.newGroup") == nullptr);
 }
 
 void AgentDrivenTabLeadsWithTheTakeover() {
@@ -294,21 +316,24 @@ void SpaceSwitcherMarksTheActiveSpace() {
   std::vector<PhiMenuChoice> spaces = {Choice("2", L"Work"),
                                        Choice("5", L"Home")};
   spaces[1].glyph = L"\U0001F3E0";
-  const PhiMenuSpec compact = PhiBuildSpaceSwitcherMenu(spaces, "5", false);
+  const PhiMenuSpec compact = PhiBuildSpaceSwitcherMenu(spaces, {}, "", "5", false);
   CHECK(Joined(compact) == "space.switch space.switch ");
   CHECK(!compact.items[0].checked);
   CHECK(compact.items[1].checked);
   CHECK(compact.items[1].default_item);
   CHECK(compact.items[1].glyph == L"\U0001F3E0");
 
-  const PhiMenuSpec overflow = PhiBuildSpaceSwitcherMenu(spaces, "5", true);
+  const PhiMenuSpec overflow = PhiBuildSpaceSwitcherMenu(spaces, {}, "", "5", true);
   CHECK(Joined(overflow) ==
         "space.switch space.switch - space.new space.newWithProfile ");
 }
 
 void AgentChipMenuHasTwoRows() {
+  // The transcript row rides the feature flag (off on Windows for now).
   const PhiMenuSpec spec = PhiBuildAgentChipMenu();
-  CHECK(Joined(spec) == "agent.transcript - agent.finish ");
+  CHECK(Joined(spec) == (kPhiTranscriptEnabled
+                             ? "agent.transcript - agent.finish "
+                             : "agent.finish "));
 }
 
 // --- The bookmark bar ------------------------------------------------------
@@ -394,6 +419,7 @@ int main() {
   TabMenuSwitchesBlocksOnGroupMembership();
   TabMenuCarriesSpaceTargetsByIdNotIndex();
   MergedTabMenuActsOnThePair();
+  MergedTabMenuGroupsThePair();
   AgentDrivenTabLeadsWithTheTakeover();
   PinnedCellMenuTracksItsCell();
   BookmarkRowMenuSplitsLeavesFromFolders();

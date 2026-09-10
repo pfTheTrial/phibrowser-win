@@ -127,6 +127,33 @@ PhiMenuSpec PhiBuildGroupHeaderMenu(
 
 // --- Tab row ---------------------------------------------------------------
 
+namespace {
+
+// The Mac's group block: an ungrouped row may start a group or join one that
+// exists; a grouped row may move to another, to a new one, or leave. A
+// merged split row takes the same block — the pair moves as one.
+void AppendGroupBlock(const PhiTabMenuInputs& in,
+                      std::vector<PhiMenuItem>& items) {
+  if (!in.grouped) {
+    items.push_back(PhiMenuItem::Command("tab.newGroup", L"New Tab Group"));
+    if (!in.groups.empty()) {
+      items.push_back(PhiMenuItem::Submenu(
+          L"Add to Group", ChoiceRows(in.groups, "tab.joinGroup")));
+    }
+  } else {
+    if (!in.groups.empty()) {
+      items.push_back(PhiMenuItem::Submenu(
+          L"Move to Group", ChoiceRows(in.groups, "tab.joinGroup")));
+    }
+    items.push_back(
+        PhiMenuItem::Command("tab.moveNewGroup", L"Move to New Group"));
+    items.push_back(
+        PhiMenuItem::Command("tab.leaveGroup", L"Remove from Group"));
+  }
+}
+
+}  // namespace
+
 PhiMenuSpec PhiBuildTabRowMenu(const PhiTabMenuInputs& in) {
   PhiMenuSpec spec;
   std::vector<PhiMenuItem>& items = spec.items;
@@ -169,24 +196,7 @@ PhiMenuSpec PhiBuildTabRowMenu(const PhiTabMenuInputs& in) {
           PhiMenuItem::Submenu(L"Add to Folder", std::move(folder_items)));
     }
     items.push_back(PhiMenuItem::Separator());
-    // The Mac's group block: an ungrouped tab may start a group or join one
-    // that exists; a grouped tab may move to another, to a new one, or leave.
-    if (!in.grouped) {
-      items.push_back(PhiMenuItem::Command("tab.newGroup", L"New Tab Group"));
-      if (!in.groups.empty()) {
-        items.push_back(PhiMenuItem::Submenu(
-            L"Add to Group", ChoiceRows(in.groups, "tab.joinGroup")));
-      }
-    } else {
-      if (!in.groups.empty()) {
-        items.push_back(PhiMenuItem::Submenu(
-            L"Move to Group", ChoiceRows(in.groups, "tab.joinGroup")));
-      }
-      items.push_back(
-          PhiMenuItem::Command("tab.moveNewGroup", L"Move to New Group"));
-      items.push_back(
-          PhiMenuItem::Command("tab.leaveGroup", L"Remove from Group"));
-    }
+    AppendGroupBlock(in, items);
     items.push_back(PhiMenuItem::Separator());
     // Move/Clone to Space — the Mac's cross-Space submenus (the tab's own
     // Space skipped; nothing persists from incognito).
@@ -218,6 +228,10 @@ PhiMenuSpec PhiBuildTabRowMenu(const PhiTabMenuInputs& in) {
     items.push_back(PhiMenuItem::Separator());
     items.push_back(PersistCommand("tab.bookmark", L"Add Split to Bookmark",
                                    in.incognito));
+    items.push_back(PhiMenuItem::Separator());
+    // The pair groups as one: both panes join (or leave) together, as the
+    // Mac's per-tab group block does for a split member.
+    AppendGroupBlock(in, items);
     items.push_back(PhiMenuItem::Separator());
   }
   items.push_back(PhiMenuItem::Command("tab.close", L"Close"));

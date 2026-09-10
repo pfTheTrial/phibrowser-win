@@ -3705,12 +3705,13 @@ void PhiShellWindow::ShowTabRowMenu(POINT pt, const MenuRow& row) {
       }
     }
   }
+  // Groups take a split row whole (both panes), so every row gets the list.
+  in.groups = GroupMenuChoices(row.group_id);
   if (!row.merged) {
     in.bookmark_folders = !incognito_ && services_.sidebar != nullptr;
     if (in.bookmark_folders) {
       in.folders = BookmarkFolderChoices();
     }
-    in.groups = GroupMenuChoices(row.group_id);
     if (!incognito_) {
       in.spaces = SpaceMenuChoices();
     }
