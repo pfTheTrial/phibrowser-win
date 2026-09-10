@@ -104,6 +104,69 @@ StripWidths SolveStripWidths(int resting_count,
                              int ideal_active,
                              int floor);
 
+// ---- The horizontal strip's group chips (the Mac's TabGroupChipView) -------
+// A group on the strip is a CHIP standing before its first member: the
+// colour dot, the title, then — trailing — the collapse chevron, and before
+// it either the member-count badge (expanded and user-titled), the 2x2
+// favicon mosaic (collapsed) or nothing. The chip's width is measured up
+// front so the tabs share only what the chips leave (TabStripLayoutInput.
+// chipFullWidths), and its parts are placed by one rule the paint and the
+// hit tests both read.
+struct StripChipMetrics {
+  int leading = 0;           // leadingPadding
+  int dot = 0;               // dotSize
+  int dot_to_label = 0;      // dotToLabelGap
+  int label_slack = 0;       // labelSafetyMargin (text measures narrow)
+  int label_right_pad = 0;   // labelRightPadding
+  int count_to_label = 0;    // countToLabelGap; the mosaic takes the same
+  int count_h_pad = 0;       // countHorizontalPadding
+  int count_v_pad = 0;       // countVerticalPadding
+  int mosaic = 0;            // TabGroupChipMosaicView.mosaicSize
+  int collapse_gap = 0;      // collapseControlGap
+  int collapse_control = 0;  // collapseControlSize
+  int max_width = 0;         // maxFullWidth
+};
+// The chip's full width for a title `label_px` wide and a count badge whose
+// digits are `count_px` wide. Collapsed reserves the mosaic whether or not
+// the group is titled; expanded reserves the badge only for a user title
+// (an auto-name already carries the count). Capped at `max_width`.
+int SolveStripChipWidth(int label_px,
+                        int count_px,
+                        bool collapsed,
+                        bool user_titled,
+                        const StripChipMetrics& m);
+struct StripChipPlacement {
+  SidebarRect dot;
+  SidebarRect label;
+  SidebarRect count;     // Empty unless expanded and user-titled.
+  SidebarRect mosaic;    // Empty unless collapsed.
+  SidebarRect collapse;  // The chevron's frame.
+};
+// The parts inside a placed chip rect; `count_px` / `count_height_px` size
+// the badge (digits plus padding).
+StripChipPlacement PlaceStripChip(const SidebarRect& chip,
+                                  int count_px,
+                                  int count_height_px,
+                                  bool collapsed,
+                                  bool user_titled,
+                                  const StripChipMetrics& m);
+// The 2x2 mosaic's cells (top-left, top-right, bottom-left, bottom-right)
+// inside `mosaic`: `cell` squares `gap` apart, `margin` in from the frame.
+std::vector<SidebarRect> StripMosaicCells(const SidebarRect& mosaic,
+                                          int cell,
+                                          int gap,
+                                          int margin);
+// What each mosaic slot shows for a group of `member_count` tabs
+// (TabGroupChipMosaicView.fillCells): the favicon of member i, an empty
+// plate, or — at five and more — the "+N" overflow in the last slot.
+enum class StripMosaicCell { kEmpty, kFavicon, kOverflow };
+struct StripMosaicSlot {
+  StripMosaicCell kind = StripMosaicCell::kEmpty;
+  int favicon_index = -1;  // kFavicon: which member.
+  int overflow = 0;        // kOverflow: how many more than the three shown.
+};
+std::vector<StripMosaicSlot> StripMosaicFill(int member_count);
+
 }  // namespace phi_client
 
 #endif  // PHIBROWSER_WIN_CLIENT_PHI_SIDEBAR_LAYOUT_H_

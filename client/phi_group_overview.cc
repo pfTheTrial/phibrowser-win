@@ -85,6 +85,7 @@ class Overview : public PhiPanel {
   static Overview* instance;
 
   PhiShellWindow* controller() const { return controller_; }
+  const std::string& group_id() const { return group_id_; }
 
  protected:
   void Paint(HDC dc, const RECT& dirty) override;
@@ -323,6 +324,11 @@ void Overview::Paint(HDC dc, const RECT&) {
 // static
 bool PhiGroupOverview::IsOpen() {
   return Overview::instance != nullptr;
+}
+
+// static
+std::string PhiGroupOverview::OpenGroupId() {
+  return Overview::instance ? Overview::instance->group_id() : std::string();
 }
 
 // static

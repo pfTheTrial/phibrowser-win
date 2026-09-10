@@ -1058,6 +1058,11 @@ bool PhiShellWindow::CaptionStripTakesPoint(POINT client_pt) {
       return true;
     }
   }
+  for (const GroupHeader& chip : sidebar_->group_headers()) {
+    if (::PtInRect(&chip.bounds, client_pt)) {
+      return true;  // The strip's group chips.
+    }
+  }
   if (spaces_->ChipAt(client_pt) >= 0) {
     return true;
   }

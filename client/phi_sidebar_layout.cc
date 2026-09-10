@@ -102,4 +102,86 @@ StripWidths SolveStripWidths(int resting_count,
   return w;
 }
 
+int SolveStripChipWidth(int label_px,
+                        int count_px,
+                        bool collapsed,
+                        bool user_titled,
+                        const StripChipMetrics& m) {
+  int width = m.leading + m.dot + m.dot_to_label + label_px + m.label_slack +
+              m.label_right_pad;
+  if (collapsed) {
+    // The mosaic always reserves its room when collapsed, titled or not: it
+    // is the preview of what the chip hides.
+    width += m.count_to_label + m.mosaic;
+  } else if (user_titled) {
+    width += m.count_to_label + count_px + 2 * m.count_h_pad;
+  }
+  width += m.collapse_gap + m.collapse_control;
+  return std::min(width, m.max_width);
+}
+
+StripChipPlacement PlaceStripChip(const SidebarRect& chip,
+                                  int count_px,
+                                  int count_height_px,
+                                  bool collapsed,
+                                  bool user_titled,
+                                  const StripChipMetrics& m) {
+  StripChipPlacement out;
+  const int mid = (chip.top + chip.bottom) / 2;
+  out.dot = {chip.left + m.leading, mid - m.dot / 2,
+             chip.left + m.leading + m.dot, mid - m.dot / 2 + m.dot};
+  const int collapse_left =
+      chip.right - m.label_right_pad - m.collapse_control;
+  out.collapse = {collapse_left, mid - m.collapse_control / 2,
+                  collapse_left + m.collapse_control,
+                  mid - m.collapse_control / 2 + m.collapse_control};
+  const int trailing = collapse_left - m.collapse_gap;
+  int label_right = trailing;
+  if (collapsed) {
+    out.mosaic = {trailing - m.mosaic, mid - m.mosaic / 2, trailing,
+                  mid - m.mosaic / 2 + m.mosaic};
+    label_right = out.mosaic.left - m.count_to_label;
+  } else if (user_titled) {
+    const int w = count_px + 2 * m.count_h_pad;
+    const int h = count_height_px + 2 * m.count_v_pad;
+    out.count = {trailing - w, mid - h / 2, trailing, mid - h / 2 + h};
+    label_right = out.count.left - m.count_to_label;
+  }
+  const int label_left = chip.left + m.leading + m.dot + m.dot_to_label;
+  out.label = {label_left, chip.top, std::max(label_left, label_right),
+               chip.bottom};
+  return out;
+}
+
+std::vector<SidebarRect> StripMosaicCells(const SidebarRect& mosaic,
+                                          int cell,
+                                          int gap,
+                                          int margin) {
+  std::vector<SidebarRect> cells;
+  for (int i = 0; i < 4; ++i) {
+    const int left = mosaic.left + margin + (i % 2) * (cell + gap);
+    const int top = mosaic.top + margin + (i / 2) * (cell + gap);
+    cells.push_back({left, top, left + cell, top + cell});
+  }
+  return cells;
+}
+
+std::vector<StripMosaicSlot> StripMosaicFill(int member_count) {
+  std::vector<StripMosaicSlot> slots(4);
+  if (member_count <= 0) {
+    return slots;
+  }
+  if (member_count <= 4) {
+    for (int i = 0; i < member_count; ++i) {
+      slots[static_cast<size_t>(i)] = {StripMosaicCell::kFavicon, i, 0};
+    }
+    return slots;
+  }
+  for (int i = 0; i < 3; ++i) {
+    slots[static_cast<size_t>(i)] = {StripMosaicCell::kFavicon, i, 0};
+  }
+  slots[3] = {StripMosaicCell::kOverflow, -1, member_count - 3};
+  return slots;
+}
+
 }  // namespace phi_client

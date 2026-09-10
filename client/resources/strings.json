@@ -5018,6 +5018,28 @@
    "zh-Hans": "关闭标签页组",
    "zh-Hant": "關閉群組"
   },
+  "sidebar.tabGroupContextMenu.collapseAction": {
+   "de": "Gruppe einklappen",
+   "en": "Collapse Group",
+   "es": "Contraer grupo",
+   "fr": "Réduire le groupe",
+   "ja": "グループを折りたたむ",
+   "ko": "그룹 접기",
+   "nl": "Klap groep in",
+   "zh-Hans": "折叠标签页组",
+   "zh-Hant": "收合群組"
+  },
+  "sidebar.tabGroupContextMenu.expandAction": {
+   "de": "Gruppe erweitern",
+   "en": "Expand Group",
+   "es": "Expandir grupo",
+   "fr": "Développer le groupe",
+   "ja": "グループを展開",
+   "ko": "그룹 펼치기",
+   "nl": "Vouw groep uit",
+   "zh-Hans": "展开分组",
+   "zh-Hant": "展開群組"
+  },
   "sidebar.tabGroupContextMenu.renameAction": {
    "de": "Gruppe umbenennen",
    "en": "Rename Group",

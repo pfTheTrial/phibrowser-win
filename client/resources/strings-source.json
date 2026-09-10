@@ -2993,6 +2993,14 @@
    "comment": "sidebar — used at phi_shell_window.cc:5450",
    "en": "Close Group"
   },
+  "sidebar.tabGroupContextMenu.collapseAction": {
+   "comment": "sidebar — the strip group chip's chevron, announced to a screen reader; collapses an expanded group",
+   "en": "Collapse Group"
+  },
+  "sidebar.tabGroupContextMenu.expandAction": {
+   "comment": "sidebar — the strip group chip's chevron, announced to a screen reader; expands a collapsed group",
+   "en": "Expand Group"
+  },
   "sidebar.tabGroupContextMenu.renameAction": {
    "comment": "sidebar — used at phi_shell_window.cc:5466",
    "en": "Rename Group"

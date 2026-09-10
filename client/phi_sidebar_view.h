@@ -183,6 +183,37 @@ inline constexpr int kHTabActiveWidth = 240;  // The active tab takes more room.
 inline constexpr int kHTabMinWidth = 56;
 inline constexpr int kHTabGap = 0;        // Tabs abut; a hairline divides them.
 inline constexpr int kCloseBoxSize = 24;  // UnifiedTabCloseButton frame.
+// The strip's group chips (the Mac's TabGroupChipView, 32pt, radius 8 like
+// the tabs): the 16pt colour dot 6pt in, a 6pt gap, the semibold title,
+// then trailing the 16pt chevron 6pt from the edge and, 4pt before it, the
+// count badge (10pt bold digits, 6pt/1pt padding, on the colour's 28%
+// tint) or the 28pt favicon mosaic (10pt cells, 2pt apart, 3pt in).
+inline constexpr int kChipHeight = 32;
+inline constexpr int kChipLeading = 6;
+inline constexpr int kChipDot = 16;
+inline constexpr int kChipDotToLabel = 6;
+inline constexpr int kChipLabelSlack = 4;
+inline constexpr int kChipLabelRightPad = 6;
+inline constexpr int kChipCountToLabel = 6;
+inline constexpr int kChipCountHPad = 6;
+inline constexpr int kChipCountVPad = 1;
+inline constexpr int kChipCountFont = 10;
+inline constexpr int kChipMosaic = 28;
+inline constexpr int kChipMosaicCell = 10;
+inline constexpr int kChipMosaicGap = 2;
+inline constexpr int kChipMosaicMargin = 3;
+inline constexpr int kChipMosaicFont = 8;
+inline constexpr int kChipCollapseGap = 4;
+inline constexpr int kChipCollapseControl = 16;
+inline constexpr int kChipChevron = 10;  // The chevron's point size.
+inline constexpr int kChipMaxWidth = 180;
+// The chip stands 2pt off the tab before it (the Mac's tab spacing) and
+// 4pt off the one after, the hairline between them halfway.
+inline constexpr int kChipLeadGap = 2;
+inline constexpr int kChipTrailGap = 4;
+// The group's underline runs 2pt in from the chip's leading edge and the
+// last member's trailing one.
+inline constexpr int kChipUnderlineInset = 2;
 
 }  // namespace sidebar_metrics
 
@@ -354,14 +385,40 @@ struct TabRow {
 
 // Sidebar tab-group headers (TabGroupHeaderView): chevron + color dot +
 // title on the group's 18% color tint, clicking collapses/expands.
+//
+// On the comfortable strip the same vector holds the group CHIPS (the
+// Mac's TabGroupChipView) — `chip` is set, `bounds` is the chip, and the
+// part rects below place what it shows. Clicking the chip's body opens the
+// group overview; the chevron (and a collapsed chip's mosaic) toggles.
 struct GroupHeader {
   std::string id;
   std::wstring name;   // The stored title; empty for an unnamed group.
   std::wstring title;  // What the row shows: the name, or "Grey · 2 tabs".
   COLORREF color = 0;
   bool collapsed = false;
-  RECT bounds{};     // The header row (the collapse toggle).
-  RECT container{};  // Header plus visible members — the tinted card.
+  RECT bounds{};     // The header row (the collapse toggle); the chip.
+  // Vertical: header plus visible members — the tinted card. Strip: the
+  // group's run, chip through its last visible member (the underline).
+  RECT container{};
+
+  // --- Strip chips only ---------------------------------------------------
+  bool chip = false;
+  bool user_titled = false;    // A stored title: the count badge shows.
+  int member_count = 0;        // Tabs, both panes of a split counted.
+  bool contains_active = false;
+  RECT dot{};
+  RECT label{};
+  RECT count{};         // The count badge (expanded, user-titled).
+  RECT mosaic{};        // The favicon mosaic (collapsed).
+  RECT collapse_box{};  // The chevron.
+  // The first four members' favicons, strip order, for the mosaic.
+  struct MosaicIcon {
+    std::vector<unsigned char> bgra;
+    int width = 0;
+    int height = 0;
+    bool internal_page = false;  // chrome:// — the Phi mark stands in.
+  };
+  std::vector<MosaicIcon> icons;
 };
 
 // Pinned tabs (the band under the header) and bookmarks (the section above
@@ -724,6 +781,15 @@ class PhiSidebarView {
   // The band, once, at one palette.
   void PaintBand(HDC dc, const PhiSidebarRects& layout,
                  const PhiPalette& palette);
+  // The strip's group chips and each expanded group's coloured underline —
+  // after the tab rows, since the underline wraps the active tab's fill.
+  void PaintStripGroups(HDC dc, const PhiSidebarRects& layout,
+                        const PhiPalette& palette);
+  // The chip's two small faces (the count badge's 10pt bold, the mosaic's
+  // 8pt semibold), derived from the shell's text face at the current DPI.
+  void EnsureChipFonts();
+  // `text`'s width in `font`, for the chip widths measured at rebuild.
+  int MeasureText(HFONT font, const std::wstring& text) const;
   // The dragged element's slide offsets, zero with no drag in flight.
   PhiSlideVec RowSlide(const std::string& guid) const;
   double TabSlide(TabId tab_id) const;
@@ -777,6 +843,10 @@ class PhiSidebarView {
   bool stored_bands_isolated_ = false;
   // Tab ids of the ACTIVE browser, most-recently-used first.
   PhiTabMru tab_mru_;
+  // The strip chips' own faces (EnsureChipFonts), rebuilt on a DPI change.
+  HFONT chip_count_font_ = nullptr;
+  HFONT chip_mosaic_font_ = nullptr;
+  UINT chip_fonts_dpi_ = 0;
   // The rows as accessibility and tooltips read them.
   std::vector<PhiHit> hits_;
 

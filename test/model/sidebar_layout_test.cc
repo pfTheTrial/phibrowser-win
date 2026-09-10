@@ -150,6 +150,93 @@ void StripWidthsRule() {
   CHECK(w.active == 0 && w.rest == 160);
 }
 
+// The Mac's TabGroupChipView constants at 100%.
+StripChipMetrics Chip100() {
+  StripChipMetrics m;
+  m.leading = 6;
+  m.dot = 16;
+  m.dot_to_label = 6;
+  m.label_slack = 4;
+  m.label_right_pad = 6;
+  m.count_to_label = 6;
+  m.count_h_pad = 6;
+  m.count_v_pad = 1;
+  m.mosaic = 28;
+  m.collapse_gap = 4;
+  m.collapse_control = 16;
+  m.max_width = 180;
+  return m;
+}
+
+void StripChipWidthRule() {
+  std::printf("strip chip: dot + label + badge|mosaic + chevron, capped\n");
+  const StripChipMetrics m = Chip100();
+  // Expanded, auto-named: no badge (the name carries the count).
+  CHECK(SolveStripChipWidth(50, 7, false, false, m) == 108);
+  // Expanded, user-titled: the badge (digits + 2 * 6).
+  CHECK(SolveStripChipWidth(50, 7, false, true, m) == 133);
+  // Collapsed: the mosaic, titled or not.
+  CHECK(SolveStripChipWidth(50, 7, true, false, m) == 142);
+  CHECK(SolveStripChipWidth(50, 7, true, true, m) == 142);
+  // A long title truncates rather than growing past the cap.
+  CHECK(SolveStripChipWidth(300, 7, false, false, m) == 180);
+}
+
+void StripChipPlacementRule() {
+  std::printf("strip chip: parts placed from both edges, label fills\n");
+  const StripChipMetrics m = Chip100();
+  {
+    const StripChipPlacement p =
+        PlaceStripChip({0, 0, 108, 32}, 7, 10, false, false, m);
+    CHECK((p.dot == SidebarRect{6, 8, 22, 24}));
+    CHECK((p.collapse == SidebarRect{86, 8, 102, 24}));
+    CHECK(p.count.empty() && p.mosaic.empty());
+    CHECK((p.label == SidebarRect{28, 0, 82, 32}));
+  }
+  {
+    const StripChipPlacement p =
+        PlaceStripChip({0, 0, 133, 32}, 7, 10, false, true, m);
+    CHECK((p.collapse == SidebarRect{111, 8, 127, 24}));
+    CHECK((p.count == SidebarRect{88, 10, 107, 22}));  // 19 x 12
+    CHECK((p.label == SidebarRect{28, 0, 82, 32}));
+  }
+  {
+    const StripChipPlacement p =
+        PlaceStripChip({0, 0, 142, 32}, 7, 10, true, true, m);
+    CHECK(p.count.empty());
+    CHECK((p.mosaic == SidebarRect{88, 2, 116, 30}));
+    CHECK((p.label == SidebarRect{28, 0, 82, 32}));
+  }
+  // A chip narrower than its parts never hands the label a negative width.
+  {
+    const StripChipPlacement p =
+        PlaceStripChip({0, 0, 40, 32}, 7, 10, false, false, m);
+    CHECK(p.label.left == 28 && p.label.right == 28);
+  }
+}
+
+void StripMosaicRule() {
+  std::printf("strip mosaic: four 10pt cells, favicons then +N\n");
+  const std::vector<SidebarRect> cells =
+      StripMosaicCells({100, 2, 128, 30}, 10, 2, 3);
+  CHECK(cells.size() == 4);
+  CHECK((cells[0] == SidebarRect{103, 5, 113, 15}));
+  CHECK((cells[1] == SidebarRect{115, 5, 125, 15}));
+  CHECK((cells[2] == SidebarRect{103, 17, 113, 27}));
+  CHECK((cells[3] == SidebarRect{115, 17, 125, 27}));
+  std::vector<StripMosaicSlot> fill = StripMosaicFill(0);
+  CHECK(fill.size() == 4 && fill[3].kind == StripMosaicCell::kEmpty);
+  fill = StripMosaicFill(2);
+  CHECK(fill[0].kind == StripMosaicCell::kFavicon && fill[0].favicon_index == 0);
+  CHECK(fill[1].kind == StripMosaicCell::kFavicon && fill[1].favicon_index == 1);
+  CHECK(fill[2].kind == StripMosaicCell::kEmpty);
+  fill = StripMosaicFill(4);
+  CHECK(fill[3].kind == StripMosaicCell::kFavicon && fill[3].favicon_index == 3);
+  fill = StripMosaicFill(7);
+  CHECK(fill[2].kind == StripMosaicCell::kFavicon);
+  CHECK(fill[3].kind == StripMosaicCell::kOverflow && fill[3].overflow == 4);
+}
+
 }  // namespace
 
 int main() {
@@ -158,6 +245,9 @@ int main() {
   ListBasics();
   ListScrollAndClip();
   StripWidthsRule();
+  StripChipWidthRule();
+  StripChipPlacementRule();
+  StripMosaicRule();
   if (g_failures) {
     std::printf("%d FAILED\n", g_failures);
     return 1;

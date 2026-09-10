@@ -19,6 +19,9 @@ class PhiShellWindow;
 class PhiGroupOverview {
  public:
   static bool IsOpen();
+  // The group the open overview shows, empty when none is open — the strip
+  // chip of that group wears its selected ring.
+  static std::string OpenGroupId();
   static void Open(PhiShellWindow* controller,
                    const std::string& group_id);
   static void Close();

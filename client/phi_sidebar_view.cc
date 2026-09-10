@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <map>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -18,6 +19,7 @@
 #include "phibrowser-win/client/phi_bookmark_manager.h"
 #include "phibrowser-win/client/phi_dwrite.h"
 #include "phibrowser-win/client/phi_folder_icons.h"
+#include "phibrowser-win/client/phi_group_overview.h"
 #include "phibrowser-win/client/phi_i18n.h"
 #include "phibrowser-win/client/phi_icons.h"
 #include "phibrowser-win/client/phi_mac_icons.h"
@@ -47,6 +49,27 @@ using shell_metrics::kTabRowHeight;
 using shell_metrics::kTopBarSpacing;
 
 using sidebar_metrics::kBookmarkIndent;
+using sidebar_metrics::kChipCollapseControl;
+using sidebar_metrics::kChipCollapseGap;
+using sidebar_metrics::kChipCountFont;
+using sidebar_metrics::kChipCountHPad;
+using sidebar_metrics::kChipCountToLabel;
+using sidebar_metrics::kChipCountVPad;
+using sidebar_metrics::kChipDot;
+using sidebar_metrics::kChipDotToLabel;
+using sidebar_metrics::kChipHeight;
+using sidebar_metrics::kChipLabelRightPad;
+using sidebar_metrics::kChipLabelSlack;
+using sidebar_metrics::kChipLeadGap;
+using sidebar_metrics::kChipLeading;
+using sidebar_metrics::kChipMaxWidth;
+using sidebar_metrics::kChipMosaic;
+using sidebar_metrics::kChipMosaicCell;
+using sidebar_metrics::kChipMosaicFont;
+using sidebar_metrics::kChipMosaicGap;
+using sidebar_metrics::kChipMosaicMargin;
+using sidebar_metrics::kChipTrailGap;
+using sidebar_metrics::kChipUnderlineInset;
 using sidebar_metrics::kCloseBoxSize;
 using sidebar_metrics::kCornerRadius;
 using sidebar_metrics::kFaviconSize;
@@ -324,7 +347,71 @@ PhiSidebarView::PhiSidebarView(PhiSidebarShell* shell,
 // the drag image and the split-drop overlay come down by ownership rather
 // than by two ad-hoc calls in the shell's own destructor
 // (docs/architecture-review.md §3.5).
-PhiSidebarView::~PhiSidebarView() = default;
+PhiSidebarView::~PhiSidebarView() {
+  for (HFONT font : {chip_count_font_, chip_mosaic_font_}) {
+    if (font) {
+      ::DeleteObject(font);
+    }
+  }
+}
+
+void PhiSidebarView::EnsureChipFonts() {
+  if (chip_count_font_ && chip_mosaic_font_ && chip_fonts_dpi_ == dpi()) {
+    return;
+  }
+  LOGFONTW base = {};
+  const HFONT text_font = shell_->SidebarTextFont();
+  if (!text_font || !::GetObjectW(text_font, sizeof(base), &base)) {
+    return;
+  }
+  const auto build = [&](int height_px, int weight) -> HFONT {
+    LOGFONTW lf = base;
+    lf.lfHeight = -height_px;
+    lf.lfWeight = weight;
+    // GDI keeps Segoe UI's semibold as a family of its own (the shell's
+    // rule for its own semibold face): asking "Segoe UI" for weight 600
+    // rounds up to Bold, so name the face when that is the system font.
+    if (weight == FW_SEMIBOLD &&
+        std::wstring_view(lf.lfFaceName) == L"Segoe UI") {
+      const std::wstring face = L"Segoe UI Semibold";
+      std::fill(std::begin(lf.lfFaceName), std::end(lf.lfFaceName), L'\0');
+      std::copy_n(face.begin(),
+                  std::min(face.size(), std::size(lf.lfFaceName) - 1),
+                  std::begin(lf.lfFaceName));
+    }
+    return ::CreateFontIndirectW(&lf);
+  };
+  if (HFONT built = build(Scaled(kChipCountFont), FW_BOLD)) {
+    if (chip_count_font_) {
+      ::DeleteObject(chip_count_font_);
+    }
+    chip_count_font_ = built;
+  }
+  if (HFONT built = build(Scaled(kChipMosaicFont), FW_SEMIBOLD)) {
+    if (chip_mosaic_font_) {
+      ::DeleteObject(chip_mosaic_font_);
+    }
+    chip_mosaic_font_ = built;
+  }
+  chip_fonts_dpi_ = dpi();
+}
+
+int PhiSidebarView::MeasureText(HFONT font, const std::wstring& text) const {
+  const HWND hwnd = shell_hwnd();
+  const HDC dc = ::GetDC(hwnd);
+  if (!dc) {
+    return 0;
+  }
+  HGDIOBJ previous = font ? ::SelectObject(dc, font) : nullptr;
+  RECT rc = {};
+  ::DrawTextW(dc, text.c_str(), -1, &rc,
+              DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX);
+  if (previous) {
+    ::SelectObject(dc, previous);
+  }
+  ::ReleaseDC(hwnd, dc);
+  return static_cast<int>(rc.right - rc.left);
+}
 
 HWND PhiSidebarView::shell_hwnd() const {
   return shell_->SidebarShellWindow();
@@ -382,9 +469,26 @@ bool PhiSidebarView::OnContentRowClick(POINT pt) {
   for (const GroupHeader& gh : group_headers_) {
     if (::PtInRect(&gh.bounds, pt)) {
       const BrowserId browser = shell_->SidebarActiveBrowser();
-      if (framework_ && browser.valid()) {
+      bool toggle = true;
+      bool overview = false;
+      if (gh.chip) {
+        // The strip chip (TabGroupChipView.mouseUp): the chevron — its
+        // frame grown 4pt by 6pt, the Mac's collapseControlRect — and a
+        // collapsed chip's mosaic toggle the group; Ctrl-click (the Mac's
+        // Cmd) only ever EXPANDS; the body opens the group overview.
+        RECT control = gh.collapse_box;
+        ::InflateRect(&control, Scaled(4), Scaled(6));
+        const bool on_control = ::PtInRect(&control, pt) ||
+                                (gh.collapsed && ::PtInRect(&gh.mosaic, pt));
+        const bool ctrl = (::GetKeyState(VK_CONTROL) & 0x8000) != 0;
+        toggle = on_control || (ctrl && gh.collapsed);
+        overview = !on_control && !ctrl;
+      }
+      if (toggle && framework_ && browser.valid()) {
         framework_->SetTabGroupCollapsed(browser.value, gh.id.c_str(),
                                          !gh.collapsed);
+      } else if (overview) {
+        PhiGroupOverview::Open(shell_->SidebarOwner(), gh.id);
       }
       return true;
     }
@@ -515,8 +619,16 @@ RECT PhiSidebarView::RowHoverRect(HoverKind kind, int index) const {
       return at(pinned_);
     case HoverKind::kBookmark:
       return at(bookmarks_);
-    case HoverKind::kGroupHeader:
-      return at(group_headers_);
+    case HoverKind::kGroupHeader: {
+      RECT r = at(group_headers_);
+      if (index >= 0 && index < static_cast<int>(group_headers_.size()) &&
+          group_headers_[static_cast<size_t>(index)].chip) {
+        // The hairlines on either side of a chip hide while it is hovered:
+        // they repaint with it.
+        ::InflateRect(&r, Scaled(kChipTrailGap) + 1, 0);
+      }
+      return r;
+    }
     default:
       return RECT{};  // Not one of the sidebar's own rows.
   }
@@ -566,6 +678,15 @@ void PhiSidebarView::PublishHits(const PhiSidebarRects& layout) {
     const GroupHeader& header = group_headers_[i];
     add(header.bounds, kHeaderKey + static_cast<int>(i), header.title,
         PhiHitRole::kGroup, !header.collapsed);
+    if (header.chip) {
+      // The chip's chevron is its own button: the body opens the overview,
+      // so a screen reader needs the toggle by name.
+      add(header.collapse_box, kHeaderKey + static_cast<int>(i) + 0x800,
+          PhiStr(header.collapsed
+                     ? "sidebar.tabGroupContextMenu.expandAction"
+                     : "sidebar.tabGroupContextMenu.collapseAction"),
+          PhiHitRole::kButton, false);
+    }
   }
   for (size_t i = 0; i < tabs_.size(); ++i) {
     const TabRow& row = tabs_[i];
@@ -778,12 +899,93 @@ void PhiSidebarView::Rebuild() {
   // Resting tabs give up their width first; the active one keeps its wider
   // slot until they are all at the floor.
   StripWidths strip_widths{Scaled(kHTabWidth), Scaled(kHTabActiveWidth)};
+  // The strip's group chips (the Mac's TabGroupChipView, placed by
+  // TabStripLayoutEngine.layoutNormalWithGroups): a chip stands before each
+  // group's first member, measured BEFORE the tabs so they share only the
+  // room the chips leave, and a collapsed group's members take no slot at
+  // all — the chip's favicon mosaic is what stands for them.
+  std::map<std::string, GroupHeader> strip_chips;
+  StripChipMetrics chip_metrics;
+  chip_metrics.leading = Scaled(kChipLeading);
+  chip_metrics.dot = Scaled(kChipDot);
+  chip_metrics.dot_to_label = Scaled(kChipDotToLabel);
+  chip_metrics.label_slack = Scaled(kChipLabelSlack);
+  chip_metrics.label_right_pad = Scaled(kChipLabelRightPad);
+  chip_metrics.count_to_label = Scaled(kChipCountToLabel);
+  chip_metrics.count_h_pad = Scaled(kChipCountHPad);
+  chip_metrics.count_v_pad = Scaled(kChipCountVPad);
+  chip_metrics.mosaic = Scaled(kChipMosaic);
+  chip_metrics.collapse_gap = Scaled(kChipCollapseGap);
+  chip_metrics.collapse_control = Scaled(kChipCollapseControl);
+  chip_metrics.max_width = Scaled(kChipMaxWidth);
   if (layout.horizontal_tabs) {
+    EnsureChipFonts();
+    const HFONT semibold_font = shell_->SidebarSemiboldFont();
+    std::map<std::string, int> member_counts;
+    for (const SidebarContentNode& node : sidebar_tree_.content) {
+      if (node.kind == SidebarNodeKind::kGroup || node.group_id.empty()) {
+        continue;
+      }
+      GroupHeader* chip = nullptr;
+      if (const auto visuals = group_info.find(node.group_id);
+          visuals != group_info.end()) {
+        chip = &strip_chips.try_emplace(node.group_id, visuals->second)
+                    .first->second;
+      }
+      for (const int id : {node.tab_a, node.tab_b}) {
+        if (!id) {
+          continue;
+        }
+        ++member_counts[node.group_id];
+        if (!chip || chip->icons.size() >= 4) {
+          continue;
+        }
+        // The mosaic previews the first four members (collectMosaic-
+        // FaviconData): the favicon, or the Phi mark for an internal page.
+        GroupHeader::MosaicIcon icon;
+        if (const TabSnapshot* tab = PhiFindTabIn(snapshot, TabId(id))) {
+          icon.internal_page = tab->url.rfind("chrome://", 0) == 0;
+          int w = 0, h = 0;
+          const unsigned char* pixels =
+              framework_->TabFaviconBgraById(browser.value, id, &w, &h);
+          if (pixels && w > 0 && h > 0) {
+            const size_t bytes =
+                static_cast<size_t>(w) * static_cast<size_t>(h) * 4;
+            // SAFETY: TabFaviconBgraById reports the dimensions of the
+            // buffer it just returned.
+            const auto copy = UNSAFE_BUFFERS(
+                base::span<const unsigned char>(pixels, bytes));
+            icon.bgra.assign(copy.begin(), copy.end());
+            icon.width = w;
+            icon.height = h;
+          }
+        }
+        chip->icons.push_back(std::move(icon));
+      }
+    }
+    int chips_room = 0;
+    for (auto& [id, chip] : strip_chips) {
+      chip.chip = true;
+      chip.member_count = member_counts[id];
+      chip.user_titled = !chip.name.empty();
+      if (!chip.user_titled) {
+        chip.title = PhiStrF("tabs.tabGroup.summaryWithTabCount",
+                             {group_color_labels[id],
+                              std::to_wstring(chip.member_count)});
+      }
+      const int width = SolveStripChipWidth(
+          MeasureText(semibold_font, chip.title),
+          MeasureText(chip_count_font_, std::to_wstring(chip.member_count)),
+          chip.collapsed, chip.user_titled, chip_metrics);
+      // Placed below; until then the rect carries the measured width.
+      chip.bounds = {0, 0, width, 0};
+      chips_room += Scaled(kChipLeadGap) + width + Scaled(kChipTrailGap);
+    }
     int resting = 0;
     bool has_active = false;
     for (const SidebarContentNode& node : sidebar_tree_.content) {
-      if (node.kind == SidebarNodeKind::kGroup) {
-        continue;  // No headers on the strip.
+      if (node.kind == SidebarNodeKind::kGroup || node.hidden) {
+        continue;  // Chips are measured; a collapsed group's members hide.
       }
       if (node.active) {
         has_active = true;
@@ -791,10 +993,9 @@ void PhiSidebarView::Rebuild() {
         ++resting;
       }
     }
-    strip_widths = SolveStripWidths(resting, has_active, layout.tabs_limit - x,
-                                    Scaled(kHTabWidth),
-                                    Scaled(kHTabActiveWidth),
-                                    Scaled(kHTabMinWidth));
+    strip_widths = SolveStripWidths(
+        resting, has_active, layout.tabs_limit - x - chips_room,
+        Scaled(kHTabWidth), Scaled(kHTabActiveWidth), Scaled(kHTabMinWidth));
   }
   const auto finish_row = [&](TabRow* row) {
     const int close_box = Scaled(kCloseBoxSize);
@@ -819,10 +1020,45 @@ void PhiSidebarView::Rebuild() {
   };
   int list_scroll_max = 0;
   if (layout.horizontal_tabs) {
-    // The strip: chips abut left to right; no headers, no collapse.
+    // The strip: a chip before each group's first member, the tabs abutting
+    // left to right after it, a collapsed group's members hidden under its
+    // chip. The tabs' widths are already solved around the chips.
     for (const SidebarContentNode& node : sidebar_tree_.content) {
       if (node.kind == SidebarNodeKind::kGroup) {
+        const auto measured = strip_chips.find(node.group_id);
+        if (measured == strip_chips.end()) {
+          continue;  // No visuals for it yet: members render flat.
+        }
+        GroupHeader chip = measured->second;
+        const int width = static_cast<int>(chip.bounds.right);
+        const int left = x + Scaled(kChipLeadGap);
+        if (left + width > layout.tabs_limit) {
+          break;  // Strip is full; overflow handling is future work.
+        }
+        // 32pt, centred on the 34pt tab cell (chipY).
+        const int top = y + (Scaled(kHTabHeight) - Scaled(kChipHeight)) / 2;
+        const SidebarRect placed = {left, top, left + width,
+                                    top + Scaled(kChipHeight)};
+        chip.bounds = PhiToRect(placed);
+        const StripChipPlacement parts = PlaceStripChip(
+            placed,
+            MeasureText(chip_count_font_, std::to_wstring(chip.member_count)),
+            Scaled(kChipCountFont), chip.collapsed, chip.user_titled,
+            chip_metrics);
+        chip.dot = PhiToRect(parts.dot);
+        chip.label = PhiToRect(parts.label);
+        chip.count = PhiToRect(parts.count);
+        chip.mosaic = PhiToRect(parts.mosaic);
+        chip.collapse_box = PhiToRect(parts.collapse);
+        // The group's run — the chip alone until a member extends it.
+        chip.container = {chip.bounds.left, y, chip.bounds.right,
+                          y + Scaled(kHTabHeight)};
+        x = static_cast<int>(chip.bounds.right) + Scaled(kChipTrailGap);
+        group_headers_.push_back(std::move(chip));
         continue;
+      }
+      if (node.hidden) {
+        continue;  // Under a collapsed chip.
       }
       TabRow row = make_row(node);
       if (!row.id.valid()) {
@@ -840,6 +1076,13 @@ void PhiSidebarView::Rebuild() {
       row.bounds = {x, y, x + tab_w, y + Scaled(kHTabHeight)};
       x += tab_w + Scaled(kHTabGap);
       finish_row(&row);
+      if (!row.group_id.empty() && !group_headers_.empty() &&
+          group_headers_.back().id == row.group_id) {
+        // A member: the group's underline reaches its trailing edge.
+        GroupHeader& chip = group_headers_.back();
+        chip.container.right = row.bounds.right;
+        chip.contains_active = chip.contains_active || row.active;
+      }
       tabs_.push_back(std::move(row));
     }
   } else {
@@ -1356,6 +1599,16 @@ base::ListValue PhiSidebarView::LayoutRowsJson() const {
     base::DictValue extra;
     extra.Set("groupId", header.id);
     extra.Set("collapsed", header.collapsed);
+    if (header.chip) {
+      // The strip chip's parts, so a probe can aim at the chevron or the
+      // mosaic rather than guess from pixels.
+      extra.Set("chip", true);
+      extra.Set("memberCount", header.member_count);
+      extra.Set("containsActive", header.contains_active);
+      extra.Set("collapseBox", box(header.collapse_box));
+      extra.Set("mosaic", box(header.mosaic));
+      extra.Set("run", box(header.container));
+    }
     emit("tabs", SidebarKey::Group(header.id), header.bounds, std::move(extra));
   }
   for (const TabRow& tab : tabs_) {
@@ -2222,6 +2475,9 @@ void PhiSidebarView::PaintBand(HDC dc,
   POINT viewport_before = {};
   ::OffsetViewportOrgEx(dc, 0, band_shift, &viewport_before);
   for (const GroupHeader& gh : group_headers_) {
+    if (gh.chip) {
+      continue;  // The strip's chips paint after the tabs (PaintStripGroups).
+    }
     if (gh.container.right > gh.container.left) {
       // The card: the hover wash under the 1pt `border` hairline.
       PhiStrokeRounded(dc, gh.container, palette.hover, palette.border,
@@ -2292,6 +2548,15 @@ void PhiSidebarView::PaintBand(HDC dc,
     draw_order.push_back(static_cast<size_t>(drag_index));
   }
   bool rows_clip_active = clip_rows;
+  // A hovered strip chip hides the hairlines on both its sides (the Mac's
+  // hoveredChipToken rule): the tab standing before it drops its divider.
+  LONG hovered_chip_left = -1;
+  if (hover_kind == HoverKind::kGroupHeader && hover_index >= 0 &&
+      hover_index < static_cast<int>(group_headers_.size()) &&
+      group_headers_[static_cast<size_t>(hover_index)].chip) {
+    hovered_chip_left =
+        group_headers_[static_cast<size_t>(hover_index)].bounds.left;
+  }
   for (const size_t order_index : draw_order) {
     const TabRow& row = tabs_[order_index];
     if (row.bounds.right <= row.bounds.left) {
@@ -2333,11 +2598,16 @@ void PhiSidebarView::PaintBand(HDC dc,
         }
         // The divider rides the tab's trailing edge, inset vertically so it
         // reads as a separator and not as a full-height rule.
-        RECT divider = {pill.right - 1, pill.top + Scaled(6), pill.right,
-                        pill.bottom - Scaled(6)};
-        HBRUSH divider_brush = ::CreateSolidBrush(palette.separator);
-        ::FillRect(dc, &divider, divider_brush);
-        ::DeleteObject(divider_brush);
+        const bool chip_after_hovered =
+            hovered_chip_left >= pill.right &&
+            hovered_chip_left <= pill.right + Scaled(kChipLeadGap);
+        if (!chip_after_hovered) {
+          RECT divider = {pill.right - 1, pill.top + Scaled(6), pill.right,
+                          pill.bottom - Scaled(6)};
+          HBRUSH divider_brush = ::CreateSolidBrush(palette.separator);
+          ::FillRect(dc, &divider, divider_brush);
+          ::DeleteObject(divider_brush);
+        }
       }
     } else if (is_dragged) {
       // Lifted: the emphasized wash plus a hairline, Chrome's elevated
@@ -2454,8 +2724,215 @@ void PhiSidebarView::PaintBand(HDC dc,
   if (rows_clip_active) {
     ::RestoreDC(dc, rows_clip_save);
   }
+  if (layout.horizontal_tabs) {
+    PaintStripGroups(dc, layout, palette);
+  }
+}
 
-
+void PhiSidebarView::PaintStripGroups(HDC dc,
+                                      const PhiSidebarRects& layout,
+                                      const PhiPalette& palette) {
+  const HFONT glyph_font = shell_->SidebarGlyphFont();
+  const HFONT semibold_font = shell_->SidebarSemiboldFont();
+  const HoverKind hover_kind = shell_->SidebarHoverKind();
+  const int hover_index = shell_->SidebarHoverIndex();
+  const int hovered_tab = hover_kind == HoverKind::kTab ? hover_index : -1;
+  const std::string overview_group = PhiGroupOverview::OpenGroupId();
+  const int radius = Scaled(kCornerRadius);
+  const int strip_bottom = layout.tabs_top + Scaled(kHTabHeight);
+  ::SetBkMode(dc, TRANSPARENT);
+  for (size_t i = 0; i < group_headers_.size(); ++i) {
+    const GroupHeader& gh = group_headers_[i];
+    if (!gh.chip || gh.bounds.right <= gh.bounds.left) {
+      continue;
+    }
+    const bool hovered = hover_kind == HoverKind::kGroupHeader &&
+                         hover_index == static_cast<int>(i);
+    // The chip rests on the band's ground; hovered, on the same 4% wash the
+    // tabs take (ThemedColor.hover), at the tabs' radius.
+    const COLORREF ground = hovered ? palette.hover : palette.ground_top;
+    if (hovered) {
+      PhiFillRounded(dc, gh.bounds, palette.hover, radius);
+    }
+    if (overview_group == gh.id) {
+      // The overview is open on this group: a 1pt ring in its colour
+      // (setOverviewSelected).
+      PhiStrokeRoundRectAA(dc, gh.bounds, radius, gh.color, 1);
+    }
+    PhiFillEllipseAA(dc, gh.dot, gh.color);
+    {
+      // The title: semibold, the row label colour (labelColor), truncated
+      // with an ellipsis inside the chip's cap.
+      HGDIOBJ previous =
+          semibold_font ? ::SelectObject(dc, semibold_font) : nullptr;
+      ::SetTextColor(dc, palette.label);
+      RECT label = gh.label;
+      PhiDrawTextAA(dc, gh.title.c_str(), -1, &label,
+                    DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
+                        DT_NOPREFIX);
+      if (previous) {
+        ::SelectObject(dc, previous);
+      }
+    }
+    {
+      // The chevron points left while the members follow the chip, right
+      // once they are folded under it (chevron.left / chevron.right).
+      HGDIOBJ previous = glyph_font ? ::SelectObject(dc, glyph_font) : nullptr;
+      PhiDrawGlyph(dc, gh.collapse_box, gh.collapsed ? L"\uE76C" : L"\uE76B",
+                   palette.label_dim);
+      if (previous) {
+        ::SelectObject(dc, previous);
+      }
+    }
+    if (gh.collapsed) {
+      // The 2x2 favicon mosaic (TabGroupChipMosaicView): the first members'
+      // favicons, empty plates at 4% ink, and past four members "+N" — an
+      // ellipsis from ten on, the 10pt cell being too small for the number.
+      const std::vector<SidebarRect> cells = StripMosaicCells(
+          {static_cast<int>(gh.mosaic.left), static_cast<int>(gh.mosaic.top),
+           static_cast<int>(gh.mosaic.right),
+           static_cast<int>(gh.mosaic.bottom)},
+          Scaled(kChipMosaicCell), Scaled(kChipMosaicGap),
+          Scaled(kChipMosaicMargin));
+      const std::vector<StripMosaicSlot> slots =
+          StripMosaicFill(gh.member_count);
+      const COLORREF empty_plate = PhiBlendOver(palette.ink, ground, 10);
+      const std::vector<unsigned char>& logo = PhiLogoBgra256();
+      for (size_t slot_index = 0; slot_index < cells.size(); ++slot_index) {
+        const RECT cell = PhiToRect(cells[slot_index]);
+        const StripMosaicSlot& slot = slots[slot_index];
+        if (slot.kind == StripMosaicCell::kFavicon &&
+            slot.favicon_index >= 0 &&
+            static_cast<size_t>(slot.favicon_index) < gh.icons.size()) {
+          const GroupHeader::MosaicIcon& icon =
+              gh.icons[static_cast<size_t>(slot.favicon_index)];
+          if (!icon.bgra.empty()) {
+            DrawFavicon(dc, cell, icon.bgra.data(), icon.width, icon.height,
+                        ground);
+            continue;
+          }
+          if (icon.internal_page && !logo.empty() &&
+              PhiDrawBgra(dc, cell, logo.data(), 256, 256)) {
+            continue;
+          }
+          PhiFillRounded(dc, cell, empty_plate, Scaled(2));
+        } else if (slot.kind == StripMosaicCell::kOverflow) {
+          const std::wstring text =
+              slot.overflow <= 9 ? L"+" + std::to_wstring(slot.overflow)
+                                 : std::wstring(L"...");
+          HGDIOBJ previous =
+              chip_mosaic_font_ ? ::SelectObject(dc, chip_mosaic_font_)
+                                : nullptr;
+          ::SetTextColor(dc, PhiBlendOver(palette.ink, ground, 77));
+          RECT rc = cell;
+          PhiDrawTextAA(dc, text.c_str(), -1, &rc,
+                        DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+          if (previous) {
+            ::SelectObject(dc, previous);
+          }
+        } else {
+          PhiFillRounded(dc, cell, empty_plate, Scaled(2));
+        }
+      }
+    } else if (gh.user_titled && gh.count.right > gh.count.left) {
+      // The count badge: the digits, bold and secondary, on the colour's
+      // 28% tint (chipHoverTintColor) — only a titled group shows it, an
+      // auto-name already carries the count.
+      PhiFillCapsuleAA(dc, gh.count, PhiBlendOver(gh.color, ground, 71));
+      HGDIOBJ previous =
+          chip_count_font_ ? ::SelectObject(dc, chip_count_font_) : nullptr;
+      ::SetTextColor(dc, palette.label_dim);
+      RECT rc = gh.count;
+      PhiDrawTextAA(dc, std::to_wstring(gh.member_count).c_str(), -1, &rc,
+                    DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+      if (previous) {
+        ::SelectObject(dc, previous);
+      }
+    }
+    {
+      // The hairline between the chip and what follows it
+      // (updateChipRightSeparators): hidden while the chip is hovered, or
+      // while its neighbour — the first member, or past a collapsed chip
+      // the next tab or chip — is hovered or is the active tab.
+      bool has_neighbour = false;
+      bool neighbour_hides = false;
+      for (size_t t = 0; t < tabs_.size(); ++t) {
+        const TabRow& tab = tabs_[t];
+        if (tab.bounds.right <= tab.bounds.left ||
+            tab.bounds.left < gh.bounds.right) {
+          continue;
+        }
+        if (tab.bounds.left - gh.bounds.right <= Scaled(kChipTrailGap)) {
+          has_neighbour = true;
+          neighbour_hides = tab.active || hovered_tab == static_cast<int>(t);
+        }
+        break;
+      }
+      if (!has_neighbour && i + 1 < group_headers_.size()) {
+        const GroupHeader& next = group_headers_[i + 1];
+        if (next.chip && next.bounds.left >= gh.bounds.right &&
+            next.bounds.left - gh.bounds.right <=
+                Scaled(kChipTrailGap) + Scaled(kChipLeadGap)) {
+          has_neighbour = true;
+          neighbour_hides = hover_kind == HoverKind::kGroupHeader &&
+                            hover_index == static_cast<int>(i + 1);
+        }
+      }
+      if (has_neighbour && !hovered && !neighbour_hides) {
+        const int sep_x =
+            static_cast<int>(gh.bounds.right) + Scaled(kChipTrailGap) / 2;
+        RECT hairline = {sep_x, layout.tabs_top + Scaled(6), sep_x + 1,
+                         strip_bottom - Scaled(6)};
+        HBRUSH brush = ::CreateSolidBrush(palette.separator);
+        ::FillRect(dc, &hairline, brush);
+        ::DeleteObject(brush);
+      }
+    }
+    if (!gh.collapsed && gh.container.right > gh.bounds.right) {
+      // The underline (updateGroupBoundaryLayers): an expanded group's
+      // colour runs along the strip's bottom edge from the chip to its last
+      // member and, where the group holds the active tab, climbs over that
+      // tab's outline — one path, so the line and the outline meet without
+      // a seam. The Windows tab has no inverse corners: the outline is its
+      // top-rounded shape, cut off at the strip's bottom edge so its sides
+      // run straight into the line.
+      const int line_y = strip_bottom - 1;
+      const int inset = Scaled(kChipUnderlineInset);
+      const int left = static_cast<int>(gh.container.left) + inset;
+      const int right = static_cast<int>(gh.container.right) - inset;
+      HBRUSH ink = ::CreateSolidBrush(gh.color);
+      const TabRow* active = nullptr;
+      if (gh.contains_active) {
+        for (const TabRow& row : tabs_) {
+          if (row.active && row.group_id == gh.id &&
+              row.bounds.right > row.bounds.left) {
+            active = &row;
+            break;
+          }
+        }
+      }
+      const auto line = [&](int from, int to) {
+        if (to > from) {
+          RECT r = {from, line_y, to, line_y + 1};
+          ::FillRect(dc, &r, ink);
+        }
+      };
+      if (active) {
+        line(left, static_cast<int>(active->bounds.left));
+        line(static_cast<int>(active->bounds.right), right);
+        const int save = ::SaveDC(dc);
+        ::IntersectClipRect(dc, active->bounds.left - 1, active->bounds.top - 1,
+                            active->bounds.right + 1, line_y + 1);
+        RECT outline = active->bounds;
+        outline.bottom += radius;
+        PhiStrokeRoundRectAA(dc, outline, radius, gh.color, 1);
+        ::RestoreDC(dc, save);
+      } else {
+        line(left, right);
+      }
+      ::DeleteObject(ink);
+    }
+  }
 }
 
 void PhiSidebarView::Paint(HDC dc,
