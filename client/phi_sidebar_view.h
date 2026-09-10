@@ -465,6 +465,9 @@ class PhiSidebarShell {
   // The chrome fonts the rows draw with, all built and owned by the shell.
   virtual HFONT SidebarGlyphFont() const = 0;
   virtual HFONT SidebarSemiboldFont() const = 0;
+  // The rows' text face (the DC's font while the band paints), for a
+  // painter drawing a row off-screen.
+  virtual HFONT SidebarTextFont() const = 0;
   // The hover cursor (see PhiChromeHover): which element, and where in its
   // own vector.
   virtual PhiChromeHover SidebarHoverKind() const = 0;

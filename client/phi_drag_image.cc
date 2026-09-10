@@ -361,14 +361,14 @@ class Image : public PhiWindow {
     Present(row_, Origin(cursor));
   }
 
-  void ShowCell(const PhiDragBitmap& cell, int radius, POINT cursor) {
-    cell_ = ComposeRow(cell, radius);
-    if (cell_.empty()) {
+  void ShowMorph(const PhiDragBitmap& shape, int radius, POINT cursor) {
+    morph_ = ComposeRow(shape, radius);
+    if (morph_.empty()) {
       ShowRow(cursor);  // Nothing to show instead; the row stays.
       return;
     }
-    mode_ = Mode::kCell;
-    Present(cell_, Origin(cursor));
+    mode_ = Mode::kMorph;
+    Present(morph_, Origin(cursor));
   }
 
   void ShowCard(const PhiDragCard& card,
@@ -446,7 +446,7 @@ class Image : public PhiWindow {
   }
 
  private:
-  enum class Mode { kRow, kCell, kCard };
+  enum class Mode { kRow, kMorph, kCard };
 
   // Where the image's top-left goes for `cursor`: the row keeps the grip
   // the cursor lifted it by; the card hangs mostly ABOVE the cursor — the
@@ -456,8 +456,8 @@ class Image : public PhiWindow {
     if (mode_ == Mode::kCard && !card_.empty()) {
       return {cursor.x - card_.width / 2, cursor.y - card_.height * 3 / 4};
     }
-    if (mode_ == Mode::kCell && !cell_.empty()) {
-      return {cursor.x - cell_.width / 2, cursor.y - cell_.height / 2};
+    if (mode_ == Mode::kMorph && !morph_.empty()) {
+      return {cursor.x - morph_.width / 2, cursor.y - morph_.height / 2};
     }
     return {cursor.x - grip_.x, cursor.y - grip_.y};
   }
@@ -487,7 +487,7 @@ class Image : public PhiWindow {
   Mode mode_ = Mode::kRow;
   Surface row_;
   Surface card_;  // Composed on first use, then cached for the drag.
-  Surface cell_;  // The pinned cell, recomposed when its size changes.
+  Surface morph_;  // The other band's shape, recomposed on a size change.
   POINT grip_{};
   bool sliding_ = false;
 };
@@ -520,10 +520,10 @@ void PhiDragImage::ShowRow(POINT cursor) {
 }
 
 // static
-void PhiDragImage::ShowCell(const PhiDragBitmap& cell, int radius,
-                            POINT cursor) {
+void PhiDragImage::ShowMorph(const PhiDragBitmap& shape, int radius,
+                             POINT cursor) {
   if (Image::instance) {
-    Image::instance->ShowCell(cell, radius, cursor);
+    Image::instance->ShowMorph(shape, radius, cursor);
   }
 }
 

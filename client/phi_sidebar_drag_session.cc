@@ -895,26 +895,36 @@ void PhiSidebarDragSession::SyncDragImage(POINT pt) {
   POINT screen = pt;
   ::ClientToScreen(shell_hwnd(), &screen);
   const bool inside = DragImageInside(pt);
-  // Over the pinned grid a row shows as the cell it becomes (the Mac's
-  // temporary drag image over the pinned collection); a folder never
-  // reaches that band (Update keeps it out of kPins).
-  int cell_w = 0;
-  int cell_h = 0;
-  const bool as_cell =
-      inside && band_ == PhiDropBand::kPins &&
+  // Over another band the element shows as what it becomes there (the
+  // Mac's temporary drag image over the pinned collection): a row over the
+  // grid as a cell, a cell over the outline or the list as a row. A folder
+  // never reaches the grid (Update keeps it out of kPins).
+  Morph morph = Morph::kNone;
+  int shape_w = 0;
+  int shape_h = 0;
+  if (inside && band_ == PhiDropBand::kPins &&
       (kind_ == PhiDragKind::kTab || kind_ == PhiDragKind::kBookmark) &&
-      DragCellSize(&cell_w, &cell_h);
-  if (inside == image_inside_ && as_cell == image_cell_ &&
-      (!as_cell || cell_w == image_cell_width_)) {
+      DragCellSize(&shape_w, &shape_h)) {
+    morph = Morph::kCell;
+  } else if (inside && kind_ == PhiDragKind::kPin &&
+             (band_ == PhiDropBand::kTabs ||
+              band_ == PhiDropBand::kBookmarks) &&
+             DragRowSize(&shape_w, &shape_h)) {
+    morph = Morph::kRow;
+  }
+  if (inside == image_inside_ && morph == image_morph_ &&
+      (morph == Morph::kNone || shape_w == image_morph_width_)) {
     PhiDragImage::MoveTo(screen);
     return;
   }
   image_inside_ = inside;
-  image_cell_ = as_cell;
-  if (as_cell) {
-    image_cell_width_ = cell_w;
-    PhiDragImage::ShowCell(BuildDragCell(cell_w, cell_h),
-                           Scaled(kCornerRadius), screen);
+  image_morph_ = morph;
+  if (morph != Morph::kNone) {
+    image_morph_width_ = shape_w;
+    PhiDragImage::ShowMorph(morph == Morph::kCell
+                                ? BuildDragCell(shape_w, shape_h)
+                                : BuildDragRow(shape_w, shape_h),
+                            Scaled(kCornerRadius), screen);
     return;
   }
   if (inside) {
@@ -1067,6 +1077,111 @@ bool PhiSidebarDragSession::DragCellSize(int* width, int* height) {
   *width = std::min(static_cast<int>(cell.right - cell.left), cap);
   *height = cell.bottom - cell.top;
   return *width > 0 && *height > 0;
+}
+
+bool PhiSidebarDragSession::DragRowSize(int* width, int* height) {
+  const PhiSidebarRects layout = shell_->SidebarRects();
+  if (layout.horizontal_tabs) {
+    return false;
+  }
+  // The rows' pill: the list's width, a row less the pad above and below.
+  *width = layout.sidebar.right - layout.sidebar.left - 2 * layout.tabs_left;
+  *height = Scaled(kTabRowHeight) - 2 * Scaled(kRowPad);
+  return *width > 0 && *height > 0;
+}
+
+PhiDragBitmap PhiSidebarDragSession::BuildDragRow(int width, int height) {
+  PhiDragBitmap out;
+  if (width <= 0 || height <= 0 || kind_ != PhiDragKind::kPin ||
+      Index() < 0 || Index() >= static_cast<int>(view_->pinned().size())) {
+    return out;
+  }
+  const ShortcutRow& row = view_->pinned()[static_cast<size_t>(Index())];
+  BITMAPINFO info = {};
+  info.bmiHeader.biSize = sizeof(info.bmiHeader);
+  info.bmiHeader.biWidth = width;
+  info.bmiHeader.biHeight = -height;  // Top-down.
+  info.bmiHeader.biPlanes = 1;
+  info.bmiHeader.biBitCount = 32;
+  info.bmiHeader.biCompression = BI_RGB;
+  void* bits = nullptr;
+  HDC screen = ::GetDC(nullptr);
+  HDC mem = ::CreateCompatibleDC(screen);
+  HBITMAP dib =
+      ::CreateDIBSection(mem, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
+  ::ReleaseDC(nullptr, screen);
+  if (!dib || !bits) {
+    if (dib) {
+      ::DeleteObject(dib);
+    }
+    ::DeleteDC(mem);
+    return out;
+  }
+  HGDIOBJ old = ::SelectObject(mem, dib);
+  const PhiPalette palette = shell_->SidebarPalette();
+  const RECT pill = {0, 0, width, height};
+  // The lifted row, as the list paints the one being dragged: the strong
+  // wash under the border hairline; the image rounds the corners.
+  HBRUSH wash = ::CreateSolidBrush(palette.hover_strong);
+  ::FillRect(mem, &pill, wash);
+  ::DeleteObject(wash);
+  PhiStrokeRoundRectAA(mem, pill, Scaled(kCornerRadius), palette.border,
+                       Scaled(1));
+  ::SetBkMode(mem, TRANSPARENT);
+  // The favicon in its 16pt slot, 6 in; the title 8 after the slot.
+  const int mid = height / 2;
+  const int slot_px = Scaled(shell_metrics::kFaviconSlot);
+  const int icon_px = Scaled(sidebar_metrics::kFaviconSize);
+  const RECT slot = {Scaled(6), mid - slot_px / 2, Scaled(6) + slot_px,
+                     mid + slot_px / 2};
+  const RECT icon = {slot.left + (slot_px - icon_px) / 2, mid - icon_px / 2,
+                     slot.left + (slot_px - icon_px) / 2 + icon_px,
+                     mid + icon_px / 2};
+  bool drawn = false;
+  if (!row.favicon.empty() && row.favicon_width > 0 &&
+      row.favicon_height > 0) {
+    RECT draw = icon;
+    if (row.favicon_width < icon_px && row.favicon_height < icon_px) {
+      draw.left = icon.left + (icon_px - row.favicon_width) / 2;
+      draw.top = icon.top + (icon_px - row.favicon_height) / 2;
+      draw.right = draw.left + row.favicon_width;
+      draw.bottom = draw.top + row.favicon_height;
+    }
+    drawn = PhiDrawBgra(mem, draw, row.favicon.data(), row.favicon_width,
+                        row.favicon_height);
+  }
+  HFONT font = shell_->SidebarTextFont();
+  HGDIOBJ previous_font = font ? ::SelectObject(mem, font) : nullptr;
+  if (!drawn) {
+    ::SetTextColor(mem, palette.label_dim);
+    const std::wstring initial =
+        row.title.empty() ? std::wstring(L"?") : row.title.substr(0, 1);
+    RECT text = slot;
+    PhiDrawTextAA(mem, initial.c_str(), -1, &text,
+                  DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+  }
+  ::SetTextColor(mem, palette.label);
+  RECT title = {slot.right + Scaled(8), 0, width - Scaled(4), height};
+  PhiDrawTextAA(mem, row.title.c_str(), -1, &title,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
+                    DT_NOPREFIX);
+  if (previous_font) {
+    ::SelectObject(mem, previous_font);
+  }
+  ::GdiFlush();
+  const size_t bytes =
+      static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
+  out.width = width;
+  out.height = height;
+  // SAFETY: the DIB section was created top-down at 32bpp with exactly
+  // width*height*4 bytes and no stride padding.
+  const auto pixels = UNSAFE_BUFFERS(base::span<const unsigned char>(
+      static_cast<const unsigned char*>(bits), bytes));
+  out.bgra.assign(pixels.begin(), pixels.end());
+  ::SelectObject(mem, old);
+  ::DeleteObject(dib);
+  ::DeleteDC(mem);
+  return out;
 }
 
 PhiDragBitmap PhiSidebarDragSession::BuildDragCell(int width, int height) {

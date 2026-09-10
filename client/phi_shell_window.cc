@@ -1694,6 +1694,10 @@ HFONT PhiShellWindow::SidebarSemiboldFont() const {
   return ui_semibold_font_;
 }
 
+HFONT PhiShellWindow::SidebarTextFont() const {
+  return ui_font_;
+}
+
 PhiChromeHover PhiShellWindow::SidebarHoverKind() const {
   return hover_kind_;
 }

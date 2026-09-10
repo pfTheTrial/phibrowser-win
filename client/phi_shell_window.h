@@ -1383,6 +1383,7 @@ class PhiShellWindow : public PhiHitSource,
   bool SidebarSplitIsStacked(TabId tab_id) const override;
   HFONT SidebarGlyphFont() const override;
   HFONT SidebarSemiboldFont() const override;
+  HFONT SidebarTextFont() const override;
   PhiChromeHover SidebarHoverKind() const override;
   int SidebarHoverIndex() const override;
   PhiSpacesStrip* SidebarSpacesStrip() override;

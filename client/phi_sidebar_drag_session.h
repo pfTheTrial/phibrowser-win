@@ -230,6 +230,11 @@ class PhiSidebarDragSession {
   // or the title's initial.
   bool DragCellSize(int* width, int* height);
   PhiDragBitmap BuildDragCell(int width, int height);
+  // The mirror: a pinned cell over the outline or the tab list is shown as
+  // the ROW it becomes — the lifted pill at the rows' width, favicon and
+  // title (a split cell: pane A's, the row is merged anyway).
+  bool DragRowSize(int* width, int* height);
+  PhiDragBitmap BuildDragRow(int width, int height);
   // The page card's model for this drag: the dragged row's live page as
   // seen on screen, else its cached thumbnail(s), else favicon + title.
   PhiDragCard BuildDragCard();
@@ -311,8 +316,12 @@ class PhiSidebarDragSession {
   // cursor is inside the sidebar, the page card once it leaves.
   bool capture_ = false;
   bool image_inside_ = true;  // Last boundary verdict: row or card.
-  bool image_cell_ = false;   // Inside, over the grid: the cell.
-  int image_cell_width_ = 0;  // The cell shown, to recompose on a change.
+  // Inside, over ANOTHER band: the element morphs into that band's shape
+  // (a row into a cell over the grid, a cell into a row over the outline
+  // or the list). The width shown, to recompose on a change.
+  enum class Morph { kNone, kCell, kRow };
+  Morph image_morph_ = Morph::kNone;
+  int image_morph_width_ = 0;
   bool card_built_ = false;   // The card is composed once per drag.
   PhiDragCard card_;
   RECT home_screen_{};  // The element's rect at lift-off, for the slide.
