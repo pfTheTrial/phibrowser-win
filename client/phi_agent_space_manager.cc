@@ -142,9 +142,39 @@ void PhiAgentSpaceManager::Sweep(uint64_t now_ms) {
   }
 }
 
-std::vector<PhiAgentPipView> PhiAgentSpaceManager::Pips() const {
+int64_t PhiAgentSpaceManager::HostingSlotFor(const std::string& task_id,
+                                             bool* in_flight) const {
+  *in_flight = false;
+  if (PhiShellWindow* shell = host_.SlotHostingAgentTask(task_id)) {
+    // Hosting for the live watch — or the watch is over and the browser
+    // is still in that frame until the swap back lands (FinishUnhost).
+    *in_flight = !(hosting_ && watched_task_ == task_id);
+    return shell->slot().value;
+  }
+  if (!hosting_ && watched_task_ == task_id) {
+    return watcher_slot_;  // The fallback: standing over its watcher.
+  }
+  return 0;
+}
+
+PhiAgentSpaceSwitchRoute PhiAgentSpaceManager::RouteFor(
+    const std::string& task_id,
+    int64_t slot) const {
+  bool in_flight = false;
+  const int64_t host = HostingSlotFor(task_id, &in_flight);
+  const bool elsewhere = host != 0 && host != slot;
+  return PhiAgentSpaceSwitchRouteFor(
+      /*hosts_browser_here=*/host != 0 && host == slot,
+      /*another_slot_hosts_browser=*/elsewhere && !in_flight,
+      /*another_slot_holds_in_flight=*/elsewhere && in_flight);
+}
+
+std::vector<PhiAgentPipView> PhiAgentSpaceManager::Pips(int64_t slot) const {
   std::vector<PhiAgentPipView> out;
   for (const auto& [task_id, space] : spaces_.entries()) {
+    if (slot != 0 && !Presents(task_id, slot)) {
+      continue;  // On screen in another window: that window's pip alone.
+    }
     PhiAgentPipView pip;
     pip.task_id = task_id;
     pip.space_id = space.space_id;
@@ -183,6 +213,25 @@ void PhiAgentSpaceManager::RequestWatch(const std::string& task_id,
   if (PhiShellWindow* from = host_.ControllerForSlot(watcher_slot);
       from && from->is_agent() && watcher_slot_ != 0) {
     watcher_slot = watcher_slot_;
+  }
+  // The route, ahead of every side effect (phi_agent_space_route.h): a
+  // Space another window has on screen is surfaced there — ending that
+  // window's watch to host it here used to pull the page out of the
+  // user's frame, and its toggle-off from the wrong window was the "click
+  // did nothing" report — and one still in flight back to its shell is
+  // left alone. Only the hosting window's own click toggles below.
+  switch (RouteFor(task_id, watcher_slot)) {
+    case PhiAgentSpaceSwitchRoute::kLocal:
+      break;
+    case PhiAgentSpaceSwitchRoute::kSurfaceInHost:
+      LOG(INFO) << "[PhiAgent] watch " << task_id
+                << ": on screen in another window, surfacing it there";
+      SurfaceInHost(task_id);
+      return;
+    case PhiAgentSpaceSwitchRoute::kDropWhileInFlight:
+      LOG(INFO) << "[PhiAgent] watch " << task_id
+                << ": browser still in flight back to its shell, ignoring";
+      return;
   }
   if (!watched_task_.empty()) {
     EndWatch(/*park_agent=*/true);
@@ -229,6 +278,25 @@ void PhiAgentSpaceManager::RequestWatch(const std::string& task_id,
   watched_task_ = task_id;
   RefreshOverlay();
   host_.InvalidateUserSlots();
+}
+
+void PhiAgentSpaceManager::SurfaceInHost(const std::string& task_id) {
+  // The window the Space is on screen in: the hosting user slot, or — in
+  // the fallback — the agent window standing over its watcher.
+  PhiShellWindow* shell = host_.SlotHostingAgentTask(task_id);
+  if (!shell) {
+    shell = ControllerFor(task_id);
+  }
+  if (shell) {
+    shell->BringToFront();
+  }
+  // The user surfaced it (the Mac's userDidSurface): an error they had
+  // not seen is seen now.
+  if (PhiAgentSpaces::Space* space = spaces_.Find(task_id);
+      space && space->unseen_error) {
+    space->unseen_error = false;
+    host_.InvalidateUserSlots();  // The pip's badge.
+  }
 }
 
 int64_t PhiAgentSpaceManager::EndWatch(bool park_agent,
@@ -283,8 +351,11 @@ void PhiAgentSpaceManager::OnAgentBrowserReturned(const std::string& task_id,
     watcher_slot_ = 0;
     hosting_ = false;
     PhiAgentOverlay::Hide();
-    host_.InvalidateUserSlots();
   }
+  // The browser is nobody's again: every window's strip offers the pip
+  // once more (Presents — while it was in flight only the hosting window
+  // did).
+  host_.InvalidateUserSlots();
 }
 
 void PhiAgentSpaceManager::RefreshOverlay() {

@@ -323,13 +323,17 @@ class ChromePrefsHost {
 class AgentHost {
  public:
   virtual ~AgentHost() = default;
-  // Live agent Spaces to show as pips (empty when none). The user watches one
-  // by clicking its pip: the agent's hidden window takes the frame of the
-  // window the pip was clicked in (`watcher_slot`) and that window is
-  // concealed until the watch ends — the Mac's slot.activate, ONE window on
-  // screen, not the agent's beside the user's. Clicking the watched pip
-  // again ends the watch.
-  virtual std::vector<PhiAgentPipView> AgentSpaces() const = 0;
+  // Live agent Spaces to show as pips in `slot`'s switchers (empty when
+  // none): every live agent Space minus those another user slot has on
+  // screen — an agent Space is offered only by the window hosting it
+  // (PhiAgentSpaceManager::Presents); 0 lists them all, for an agent
+  // window's own strip. The user watches one by clicking its pip: the
+  // agent's hidden window takes the frame of the window the pip was
+  // clicked in (`watcher_slot`) and that window is concealed until the
+  // watch ends — the Mac's slot.activate, ONE window on screen, not the
+  // agent's beside the user's. Clicking the watched pip again ends the
+  // watch; a pip for a Space another window hosts surfaces that window.
+  virtual std::vector<PhiAgentPipView> AgentSpaces(int64_t slot) const = 0;
   virtual void RequestWatchAgentSpace(const std::string& task_id,
                                       int64_t watcher_slot) = 0;
   // A user-Space pip clicked while the agent Space is up: the watch ends
@@ -606,6 +610,9 @@ class PhiShellWindow : public PhiHitSource,
   // watch ended, then a cold repaint); `concealed=false` only takes the
   // focus back. No-op on an agent window.
   void SetConcealedForWatch(bool concealed);
+  // Brings the shell window to the front (restored if minimised): an agent
+  // Space asked for from another window is surfaced where it already is.
+  void BringToFront();
   // Whether the agent holds this (agent) window: the owner tells it on
   // every ownership change. While it does, the window refuses what the
   // Mac's refuses under agent ownership — New Tab, closing tabs, the tab

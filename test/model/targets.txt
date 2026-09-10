@@ -40,6 +40,11 @@ url_router_test.cc
 # and the last-active Space); the ghost store and the framework calls stay
 # on the target.
 session_restore_test.cc      
+# The agent Space switch route (phibrowser-mac 3a9fc111 ported): which user
+# window offers an agent Space's pip and where a switch asked from another
+# window lands. Header-only; the manager that consults it needs the shells
+# and stays on the target.
+agent_space_route_test.cc    
 # Phase 5's UI substrate (docs/architecture-review.md §3.6): the PURE half
 # of phi_window.cc — popover placement with monitor clamping, hit-rect
 # resolution, timer id allocation, easing. The Win32 half of the same file

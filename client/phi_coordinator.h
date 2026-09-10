@@ -210,7 +210,7 @@ class PhiCoordinator : public SidebarHost,
   std::vector<PhiSpaceView> Spaces() const override;
   void RequestSwitchSpace(int64_t slot, const std::string& space_id) override;
   void RequestNewWindow(int64_t slot) override;
-  std::vector<PhiAgentPipView> AgentSpaces() const override;
+  std::vector<PhiAgentPipView> AgentSpaces(int64_t slot) const override;
   void RequestWatchAgentSpace(const std::string& task_id,
                               int64_t watcher_slot) override;
   void RequestLeaveWatchedAgentSpace(const std::string& space_id) override;
@@ -1034,6 +1034,7 @@ class PhiCoordinator : public SidebarHost,
   // PhiAgentSpaceManager::Host:
   PhiShellWindow* ControllerForAgentWindow(BrowserId window_id) override;
   PhiShellWindow* ControllerForSlot(int64_t slot) override;
+  PhiShellWindow* SlotHostingAgentTask(const std::string& task_id) override;
   void RebindAgentBrowser(BrowserId browser, int64_t slot) override;
   void ShowAgentHandoffPrompt(const std::string& task_id,
                               const std::string& message) override;

@@ -190,7 +190,12 @@ void PhiSpacesStrip::Rebuild() {
     row.push_back(std::move(chip));
   }
   if (agent_host_ && !rects.horizontal_tabs) {
-    for (const PhiAgentPipView& pip : agent_host_->AgentSpaces()) {
+    // This slot's own list (the Mac's slot.presentedSpaces): an agent Space
+    // another window has on screen is not offered here — only the window
+    // hosting it shows the pip. An agent window's strip lists them all; it
+    // never hosts one itself.
+    for (const PhiAgentPipView& pip : agent_host_->AgentSpaces(
+             shell_->SpacesIsAgent() ? 0 : shell_->SpacesSlot().value)) {
       PhiSpaceChip chip;
       chip.id = pip.space_id;
       chip.task_id = pip.task_id;

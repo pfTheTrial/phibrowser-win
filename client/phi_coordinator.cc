@@ -2891,8 +2891,9 @@ std::vector<PhiSpaceView> PhiCoordinator::Spaces() const {
   return space_manager_->Spaces();
 }
 
-std::vector<PhiAgentPipView> PhiCoordinator::AgentSpaces() const {
-  return agent_manager_.Pips();
+std::vector<PhiAgentPipView> PhiCoordinator::AgentSpaces(
+    int64_t slot) const {
+  return agent_manager_.Pips(slot);
 }
 
 void PhiCoordinator::RequestWatchAgentSpace(const std::string& task_id,
@@ -2941,6 +2942,21 @@ PhiShellWindow* PhiCoordinator::ControllerForAgentWindow(
 
 PhiShellWindow* PhiCoordinator::ControllerForSlot(int64_t slot) {
   return registry_.Resolve(slot);
+}
+
+PhiShellWindow* PhiCoordinator::SlotHostingAgentTask(
+    const std::string& task_id) {
+  // A browser sits in one frame, so at most one shell answers. Agent
+  // shells never host (a watch asked from one is remapped to its
+  // watcher); incognito windows have no strip to ask from but are walked
+  // for the same reason the handoff prompt may anchor on one.
+  for (PhiShellWindow* controller : registry_.Controllers()) {
+    if (!controller->is_agent() &&
+        controller->hosted_agent_task() == task_id) {
+      return controller;
+    }
+  }
+  return nullptr;
 }
 
 void PhiCoordinator::RebindAgentBrowser(BrowserId browser, int64_t slot) {

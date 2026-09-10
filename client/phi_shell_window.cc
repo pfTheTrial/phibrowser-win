@@ -2805,6 +2805,16 @@ void PhiShellWindow::SetConcealedForWatch(bool concealed) {
   ::SetForegroundWindow(shell_hwnd_);
 }
 
+void PhiShellWindow::BringToFront() {
+  if (!shell_hwnd_) {
+    return;
+  }
+  if (::IsIconic(shell_hwnd_)) {
+    ::ShowWindow(shell_hwnd_, SW_RESTORE);
+  }
+  ::SetForegroundWindow(shell_hwnd_);
+}
+
 
 COLORREF PhiShellWindow::BackgroundFill() const {
   return services_.spaces
@@ -4114,7 +4124,10 @@ void PhiShellWindow::ShowSpaceSwitcherMenu(POINT pt,
   std::vector<PhiMenuChoice> agents;
   std::string watched_agent;
   if (services_.agent && !agent_) {
-    for (const PhiAgentPipView& pip : services_.agent->AgentSpaces()) {
+    // This window's own list: an agent Space on screen in another window
+    // is not offered here (PhiAgentSpaceManager::Presents).
+    for (const PhiAgentPipView& pip :
+         services_.agent->AgentSpaces(slot_.value)) {
       PhiMenuChoice choice;
       choice.id = pip.task_id;
       choice.label = L"R" + std::to_wstring(pip.number) + L" · " +

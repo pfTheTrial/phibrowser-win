@@ -48,6 +48,11 @@ $CXX url_router_test.cc -o /tmp/phi_url_router_test
 # on the target.
 $CXX session_restore_test.cc -o /tmp/phi_session_restore_test
 /tmp/phi_session_restore_test
+# The agent Space switch route (phibrowser-mac 3a9fc111 ported): which user
+# window offers an agent Space's pip and where a switch asked from another
+# window lands. Header-only; the manager that consults it stays on the target.
+$CXX agent_space_route_test.cc -o /tmp/phi_agent_space_route_test
+/tmp/phi_agent_space_route_test
 # Phase 5's UI substrate (docs/architecture-review.md §3.6): the PURE half
 # of phi_window.cc — popover placement with monitor clamping, hit-rect
 # resolution, timer id allocation, easing. The Win32 half of the same file

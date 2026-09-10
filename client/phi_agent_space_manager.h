@@ -14,6 +14,7 @@
 
 #include "base/memory/raw_ptr_exclusion.h"
 #include "phibrowser-win/client/phi_agent_drive_registry.h"
+#include "phibrowser-win/client/phi_agent_space_route.h"
 #include "phibrowser-win/client/phi_agent_spaces.h"
 #include "phibrowser-win/client/phi_agent_transcript.h"
 #include "phibrowser-win/client/phi_ids.h"
@@ -66,6 +67,12 @@ class PhiAgentSpaceManager : public PhiTranscriptHost {
         BrowserId window_id) = 0;
     // The shell in `slot` (a user window's slot id), or null.
     virtual PhiShellWindow* ControllerForSlot(int64_t slot) = 0;
+    // The user shell whose frame holds the agent Space `task_id`'s browser
+    // (PhiShellWindow::hosted_agent_task) — hosting it for a live watch, or
+    // still handing it back after one — or null when its own agent shell
+    // has it.
+    virtual PhiShellWindow* SlotHostingAgentTask(
+        const std::string& task_id) = 0;
     // While a user slot hosts an agent browser for a watch, the browser's
     // model pushes must reach THAT shell: rebinds the browser to `slot`
     // (0: back to its own agent slot, or unbound if that shell is gone).
@@ -144,12 +151,29 @@ class PhiAgentSpaceManager : public PhiTranscriptHost {
   bool RetireHiddenWindow(BrowserId browser);
 
   // --- Pips, watch mode and the overlay ------------------------------------
-  std::vector<PhiAgentPipView> Pips() const;
+  // The pips `slot`'s switchers offer: every live agent Space minus those
+  // another user slot hosts (Presents). 0 lists them all — an agent window's
+  // own strip, which is never a host.
+  std::vector<PhiAgentPipView> Pips(int64_t slot) const;
+  // Where a switch to `task_id` asked from `slot` lands, and whether `slot`
+  // presents the Space at all (offered iff kLocal) — the rule in
+  // phi_agent_space_route.h. Every user Space is offered everywhere; an
+  // agent Space only by the window it is on screen in (or, unwatched, by
+  // every window). Strips re-evaluate this through InvalidateUserSlots when
+  // the hosting map changes: a watch starting or ending, and the browser
+  // landing back in its shell (OnAgentBrowserReturned).
+  PhiAgentSpaceSwitchRoute RouteFor(const std::string& task_id,
+                                    int64_t slot) const;
+  bool Presents(const std::string& task_id, int64_t slot) const {
+    return RouteFor(task_id, slot) == PhiAgentSpaceSwitchRoute::kLocal;
+  }
   const std::string& watched_task() const { return watched_task_; }
   // Watch mode: the agent's window takes the frame of the user window in
   // `watcher_slot` (the one whose pip was clicked) and that window is
   // concealed — one window on screen, the Mac's slot.activate. Clicking
-  // the watched pip again ends the watch; a different pip swaps.
+  // the watched pip again ends the watch; a different pip swaps. Asked
+  // for a Space another window hosts, it surfaces that window instead
+  // (RouteFor: the browser never moves between user slots).
   void RequestWatch(const std::string& task_id, int64_t watcher_slot);
   // Ends the watch, if any. In the slot-hosted form (the normal one) the
   // hosting user window swaps back to `leave_to` (empty: the Space it came
@@ -228,6 +252,14 @@ class PhiAgentSpaceManager : public PhiTranscriptHost {
  private:
   // The controller of the agent Space `task_id`'s window, or null.
   PhiShellWindow* ControllerFor(const std::string& task_id);
+  // The user slot whose window the agent Space is on screen in: the slot
+  // hosting its browser (live, or `in_flight` — the swap back has not
+  // landed), or the one the fallback's agent window stands over; 0 when
+  // the browser is parked in its shell and nobody watches it.
+  int64_t HostingSlotFor(const std::string& task_id, bool* in_flight) const;
+  // RouteFor said kSurfaceInHost: bring the window the Space is on screen
+  // in to the front.
+  void SurfaceInHost(const std::string& task_id);
   // The Mac's terminalNudgeHint: a detail line for an idle Codex.
   static std::string TerminalNudgeHint(const PhiAgentSpaces::Space& space);
 
