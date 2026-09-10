@@ -232,7 +232,7 @@ void OutlineRounded(HDC dc, const RECT& r, COLORREF border, int radius,
 }
 
 // RGB <-> HSV, for the saturation slider's track gradient — the Mac ramps the
-// theme overlay's HSB saturation 0.1 -> 0.9 across the bar (and, for Pure,
+// theme overlay's HSB saturation 0.1 -> 0.5 across the bar (and, for Pure,
 // its brightness instead).
 void RgbToHsv(COLORREF c, double* h, double* s, double* v) {
   const double r = GetRValue(c) / 255.0, g = GetGValue(c) / 255.0,
@@ -2831,7 +2831,7 @@ void PhiSettingsWindow::Paint(HDC dc, const RECT&) {
       }
       case ItemKind::kSliderTrack: {
         // The Mac bar: 10pt tall, full width, rounded r5, a horizontal
-        // gradient of the theme overlay's HSB saturation 0.1 -> 0.9 (Pure
+        // gradient of the theme overlay's HSB saturation 0.1 -> 0.5 (Pure
         // ramps brightness instead, brightest at the LEFT); a 1pt border;
         // an 18pt white knob whose travel is width - knob.
         const int mid = (bounds.top + bounds.bottom) / 2;
@@ -2855,7 +2855,7 @@ void PhiSettingsWindow::Paint(HDC dc, const RECT&) {
             const double lo = dark ? 0.0 : 0.84;
             tint = HsvToRgb(hue, sat, hi + (lo - hi) * t);
           } else {
-            tint = HsvToRgb(hue, 0.1 + 0.8 * t, val);
+            tint = HsvToRgb(hue, 0.1 + 0.4 * t, val);
           }
           HBRUSH brush = ::CreateSolidBrush(item.enabled
                                                 ? tint

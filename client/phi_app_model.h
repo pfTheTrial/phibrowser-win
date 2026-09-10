@@ -166,7 +166,7 @@ struct PhiSettings {
   std::string theme_id = "pure";
   Appearance appearance = Appearance::kSystem;
   // General (PhiPrefs.json).
-  int saturation = 50;
+  int saturation = 10;  // A light wash (Jixiang, 2026-09-10).
   NewTabBehavior new_tab_behavior = NewTabBehavior::kNewTabPage;
   bool always_show_full_url = false;
   bool show_tab_previews = true;

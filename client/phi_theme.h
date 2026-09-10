@@ -160,7 +160,7 @@ inline constexpr PhiMetrics kPhiMetrics = {};
 // overlay colour reaches the window (OverlaySaturationScale).
 PhiPalette PhiResolvePalette(const PhiTheme& theme,
                              PhiAppearance appearance,
-                             int saturation = 50);
+                             int saturation = 10);
 // True when Windows is currently set to a dark app appearance.
 bool PhiSystemPrefersDark();
 

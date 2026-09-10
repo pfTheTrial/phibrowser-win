@@ -40,7 +40,7 @@ void TestSettingsDefaults() {
   CHECK(s.sidebar_width == 240);
   CHECK(s.theme_id == "pure");
   CHECK(s.appearance == Appearance::kSystem);
-  CHECK(s.saturation == 50);
+  CHECK(s.saturation == 10);
   CHECK(s.new_tab_behavior == NewTabBehavior::kNewTabPage);
   CHECK(!s.always_show_full_url);
   CHECK(s.show_tab_previews);

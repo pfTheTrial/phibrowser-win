@@ -1079,7 +1079,7 @@ void PhiCreateSpacePanel::PaintSlider(HDC dc,
                                       const RECT& bounds,
                                       const PhiPalette& palette) {
   // ThemeOpacitySliderView, as the Settings pane draws it: a 10pt rounded
-  // bar ramping the theme overlay's saturation 0.1 → 0.9 (Pure ramps
+  // bar ramping the theme overlay's saturation 0.1 → 0.5 (Pure ramps
   // brightness, brightest at the left), a 1pt border, an 18pt white knob.
   const PhiTheme& theme = PhiThemeById(theme_id_);
   const COLORREF overlay = palette.dark ? theme.dark.overlay : theme.light.overlay;
@@ -1103,7 +1103,7 @@ void PhiCreateSpacePanel::PaintSlider(HDC dc,
       const double lo = palette.dark ? 0.0 : 0.84;
       tint = HsvToRgb(hue, sat, hi + (lo - hi) * t);
     } else {
-      tint = HsvToRgb(hue, 0.1 + 0.8 * t, val);
+      tint = HsvToRgb(hue, 0.1 + 0.4 * t, val);
     }
     HBRUSH brush = ::CreateSolidBrush(tint);
     ::FillRect(dc, &band, brush);

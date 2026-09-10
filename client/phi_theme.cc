@@ -28,10 +28,12 @@ constexpr PhiColor Hex(int rgb) {
 // How much of the overlay colour reaches the window. The Mac composites the
 // overlay at 0.8 and then scales it by the theme's saturation slider
 // (OverlaySaturationScale, 0.1...0.9), so the slider — not the 0.8 — is what
-// the user actually feels. Mapped here onto the same span: slider 0 is barely
-// tinted, 100 is heavily tinted, and the default sits where the Mac's does.
+// the user actually feels. Mapped here onto HALF that span (Jixiang,
+// 2026-09-10: the top of the slider was too heavy; the ceiling is half of
+// what it was, and the default sits at 10, a light wash): slider 0 is
+// barely tinted, 100 is a moderate tint.
 constexpr int kTintMinAlpha = 20;
-constexpr int kTintMaxAlpha = 160;
+constexpr int kTintMaxAlpha = 80;
 // The gradient's foot is a little stronger than its head.
 constexpr int kTintGradientSpread = 36;
 
