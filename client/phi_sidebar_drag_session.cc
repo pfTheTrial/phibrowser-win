@@ -366,8 +366,10 @@ void PhiSidebarDragSession::RetargetDragSlide() {
   }
   // A gap opening in the outline pushes everything under it down by a row:
   // "+ New Tab", the group headers and the tab rows all ride the band shift.
+  // (An EMPTY outline's reserved drop zone IS the gap: nothing shifts.)
   if (active_ && !layout.horizontal_tabs && insert_ >= 0 &&
       band_ == PhiDropBand::kBookmarks && bookmark_drop_folder_row_ < 0 &&
+      !view_->bookmarks().empty() &&
       (kind_ == PhiDragKind::kTab || kind_ == PhiDragKind::kPin)) {
     row_to[kBandShiftKey] = SlideVec{0.0, static_cast<double>(pitch)};
   }
@@ -431,12 +433,62 @@ PhiDropBand PhiSidebarDragSession::DropBandAt(
   if (::PtInRect(&layout.favorites, client_pt)) {
     return PhiDropBand::kPins;
   }
-  if (!view_->bookmarks().empty() && client_pt.x < layout.sidebar.right &&
-      client_pt.y >= view_->bookmarks().front().bounds.top &&
-      client_pt.y <= view_->bookmarks().back().bounds.bottom) {
+  // The outline's whole band — its rows (or the reserved drop zone) AND the
+  // separator row under them, so a pointer below the last row still lands
+  // in the outline (at the root's end), as the Mac's bookmarkSectionEnd
+  // row does, instead of falling through to the tab list.
+  if (client_pt.x < layout.sidebar.right &&
+      client_pt.y >= layout.bookmarks.top &&
+      client_pt.y < layout.bookmarks.bottom) {
     return PhiDropBand::kBookmarks;
   }
   return PhiDropBand::kTabs;
+}
+
+void PhiSidebarDragSession::ReserveDropZones() {
+  const PhiSidebarRects layout = shell_->SidebarRects();
+  if (incognito_ || layout.horizontal_tabs ||
+      view_->stored_bands_isolated()) {
+    return;  // No stored bands to land in.
+  }
+  bool pinned = false;
+  bool bookmark = false;
+  switch (kind_) {
+    case PhiDragKind::kTab:
+      pinned = view_->pinned().empty();
+      bookmark = view_->bookmarks().empty();
+      break;
+    case PhiDragKind::kPin:
+      bookmark = view_->bookmarks().empty();
+      break;
+    case PhiDragKind::kBookmark: {
+      // A folder cannot become a pin (the Mac's emptyView refuses it).
+      const bool folder =
+          Index() >= 0 &&
+          Index() < static_cast<int>(view_->bookmarks().size()) &&
+          view_->bookmarks()[static_cast<size_t>(Index())].folder;
+      pinned = !folder && view_->pinned().empty();
+      break;
+    }
+    case PhiDragKind::kChip:
+    case PhiDragKind::kNone:
+      break;
+  }
+  if (!pinned && !bookmark) {
+    return;
+  }
+  zones_reserved_ = true;
+  shell_->SidebarSetDropZones(pinned, bookmark);
+  shell_->SidebarScheduleRefresh();
+}
+
+void PhiSidebarDragSession::ReleaseDropZones() {
+  if (!zones_reserved_) {
+    return;
+  }
+  zones_reserved_ = false;
+  shell_->SidebarSetDropZones(false, false);
+  shell_->SidebarScheduleRefresh();
 }
 
 void PhiSidebarDragSession::Update(POINT pt) {
@@ -452,6 +504,7 @@ void PhiSidebarDragSession::Update(POINT pt) {
     active_ = true;
     ::SetCapture(shell_hwnd());
     BeginDragImage(pt);  // The element lifts off into its own window.
+    ReserveDropZones();  // After the lift: the rows move under the zone.
   }
   // Tab and pin drags can cross bands (conversions, tear-off); a bookmark
   // drag stays in its own outline EXCEPT over the page, where it can form a
@@ -636,6 +689,7 @@ bool PhiSidebarDragSession::CommitDragImpl() {
 
 void PhiSidebarDragSession::CancelDrag() {
   const bool was_active = active_;
+  ReleaseDropZones();
   kind_ = PhiDragKind::kNone;
   band_ = PhiDropBand::kNone;
   key_ = {};

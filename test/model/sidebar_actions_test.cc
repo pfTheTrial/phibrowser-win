@@ -156,6 +156,11 @@ void BookmarkDrop() {
   CHECK(r.place.parent_guid.empty() && r.place.before.empty() && r.gap_slot == 5);
   r = ResolveBookmarkDrop(rows, 120, SidebarKey::Folder("g"));  // A folder over itself.
   CHECK(r.folder_key.empty());
+  // An EMPTY outline (the reserved drop zone): the root's end, gap 0.
+  r = ResolveBookmarkDrop({}, 20, {});
+  CHECK(r.place.section == SidebarPlace::Section::kBookmarks);
+  CHECK(r.place.parent_guid.empty() && r.place.before.empty());
+  CHECK(r.gap_slot == 0 && r.folder_key.empty());
 }
 
 void PinnedDrop() {
@@ -182,6 +187,10 @@ void PinnedDrop() {
   CHECK(r.gap_slot == 3 && r.place.before.empty());
   r = ResolvePinnedDrop(cells, 20, 20, SidebarKey::Cell("a"));  // Anchor skips itself.
   CHECK(r.place.before == SidebarKey::Cell("b"));
+  // An EMPTY grid (the reserved drop zone): slot 0, no anchor = the end.
+  r = ResolvePinnedDrop({}, 20, 20, {});
+  CHECK(r.place.section == SidebarPlace::Section::kPinned);
+  CHECK(r.place.before.empty() && r.gap_slot == 0);
 }
 
 void TabDrop() {

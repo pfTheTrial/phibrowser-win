@@ -2805,6 +2805,10 @@
    "comment": "sidebar — used at phi_shell_window.cc:6005",
    "en": "Open in New Tab"
   },
+  "sidebar.bookmarks.dropHint": {
+   "comment": "sidebar — the empty bookmark band's one-row drop zone while a tab or pin drags (no Mac counterpart); used at phi_sidebar_view.cc",
+   "en": "Drop here to bookmark"
+  },
   "sidebar.bookmarksYouAddAppearHere": {
    "comment": "sidebar — used at phi_shell_window.cc:6686",
    "en": "Bookmarks you add appear here"
@@ -2884,6 +2888,10 @@
   "sidebar.newSpaceWithNewProfile": {
    "comment": "sidebar — used at phi_shell_window.cc:5158",
    "en": "New Space with New Profile..."
+  },
+  "sidebar.pinnedTabs.emptyHint": {
+   "comment": "sidebar — the empty pinned band's drop zone while a tab drags (the Mac's emptyView hint); used at phi_sidebar_view.cc",
+   "en": "Drag tabs here or pin them from the tab list"
   },
   "sidebar.rename": {
    "comment": "sidebar — used in phi_shell_window.cc",

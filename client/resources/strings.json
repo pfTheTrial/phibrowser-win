@@ -4621,6 +4621,9 @@
    "zh-Hans": "在新标签页中打开",
    "zh-Hant": "在新分頁中開啟"
   },
+  "sidebar.bookmarks.dropHint": {
+   "en": "Drop here to bookmark"
+  },
   "sidebar.bookmarksYouAddAppearHere": {
    "en": "Bookmarks you add appear here"
   },
@@ -4760,6 +4763,17 @@
   },
   "sidebar.newSpaceWithNewProfile": {
    "en": "New Space with New Profile..."
+  },
+  "sidebar.pinnedTabs.emptyHint": {
+   "de": "Ziehe Tabs hierher oder hefte sie aus der Tab-Liste an",
+   "en": "Drag tabs here or pin them from the tab list",
+   "es": "Arrastra pestañas aquí o fíjalas desde la lista de pestañas",
+   "fr": "Faites glisser des onglets ici ou épinglez-les depuis la liste des onglets",
+   "ja": "タブをここにドラッグするか、タブリストから固定してください",
+   "ko": "탭을 여기로 드래그하거나 탭 목록에서 고정하세요",
+   "nl": "Sleep tabbladen hierheen of zet ze vast vanuit de tabbladenlijst",
+   "zh-Hans": "将标签页拖到这里，或从标签页列表中固定",
+   "zh-Hant": "將分頁拖曳到這裡，或從分頁列表釘選"
   },
   "sidebar.rename": {
    "de": "Umbenennen…",

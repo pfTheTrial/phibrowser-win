@@ -891,7 +891,8 @@ class PhiShellWindow : public PhiHitSource,
     RECT back{}, forward{}, reload{};
     RECT spaces_strip{};   // The band the Space chips live in.
     RECT url_field{};
-    RECT favorites{};      // Pinned-tab band; empty until the feature lands.
+    RECT favorites{};      // Pinned-tab band (or its reserved drop zone).
+    RECT bookmarks{};      // The outline band: rows (or zone) + separator.
     // The 16pt separator row between the bookmark outline and "+ New Tab"
     // (the Mac's SeparatorItem); empty without bookmarks.
     RECT bookmark_separator{};
@@ -1173,6 +1174,10 @@ class PhiShellWindow : public PhiHitSource,
   // everything below them down.
   int pinned_row_count_ = 0;
   int bookmark_row_count_ = 0;
+  // A drag in flight that could land in an empty stored band: the layout
+  // reserves that band's drop zone (SidebarSetDropZones).
+  bool pinned_drop_zone_ = false;
+  bool bookmark_drop_zone_ = false;
 
   // The page changes AFTER the band slide completes (the Mac reveals the
   // target on completion): the entering child stays hidden and the leaving
@@ -1367,6 +1372,7 @@ class PhiShellWindow : public PhiHitSource,
   int SidebarWidthDip() const override;
   PhiSidebarRects SidebarRects() override;
   void SidebarSetRowCounts(int pinned_rows, int bookmark_rows) override;
+  void SidebarSetDropZones(bool pinned, bool bookmark) override;
   void SidebarRefreshLayoutInputs() override;
   PhiPalette SidebarPalette() const override;
   BrowserId SidebarActiveBrowser() const override;

@@ -92,6 +92,11 @@ inline constexpr int kFaviconSlot = 16;  // The 16pt slot in the row.
 // The Mac's SeparatorItem row between the bookmark outline and the tab list.
 inline constexpr int kBookmarkSeparatorHeight = 16;
 inline constexpr int kNewTabRowHeight = 36;
+// The empty pinned band's drop zone while a tab drag is in flight: the
+// Mac's SidebarViewController.updateFavoriteHeight clamps a sub-20pt
+// container to 100pt for the duration of the drag, so the "Drag tabs here"
+// view has room under the cursor.
+inline constexpr int kPinnedDropZoneHeight = 100;
 // Pinned tabs: PinnedTabLayout — 45pt cells, 8pt gaps and insets.
 inline constexpr int kPinnedCellHeight = 45;
 inline constexpr int kPinnedGap = 8;
@@ -142,6 +147,11 @@ struct ShellLayoutInputs {
   int field_ext_count = 0;   // Pinned-extension icons inside the capsule.
   int pinned_row_count = 0;  // The pinned grid's rows (0 = no band).
   int bookmark_row_count = 0;  // Visible outline rows (0 = no separator).
+  // A drag that could land in an EMPTY stored band is in flight: the band
+  // reserves a drop zone (kPinnedDropZoneHeight / one outline row) so the
+  // drag has somewhere to go. Ignored while the band has rows of its own.
+  bool pinned_drop_zone = false;
+  bool bookmark_drop_zone = false;
 
   friend bool operator==(const ShellLayoutInputs& a,
                          const ShellLayoutInputs& b) {
@@ -155,7 +165,9 @@ struct ShellLayoutInputs {
            a.ai_enabled == b.ai_enabled &&
            a.field_ext_count == b.field_ext_count &&
            a.pinned_row_count == b.pinned_row_count &&
-           a.bookmark_row_count == b.bookmark_row_count;
+           a.bookmark_row_count == b.bookmark_row_count &&
+           a.pinned_drop_zone == b.pinned_drop_zone &&
+           a.bookmark_drop_zone == b.bookmark_drop_zone;
   }
   friend bool operator!=(const ShellLayoutInputs& a,
                          const ShellLayoutInputs& b) {
@@ -188,6 +200,11 @@ struct ShellLayout {
   SidebarRect spaces_strip;  // The band the Space chips live in.
   SidebarRect url_field;
   SidebarRect favorites;  // Pinned-tab band; empty without pins.
+  // The bookmark outline's band — its rows (or the reserved drop zone)
+  // and the separator row under them — empty without bookmarks. A drag
+  // over any of it lands in the outline; below the last row means the
+  // root's end.
+  SidebarRect bookmarks;
   // The 16pt separator row between the bookmark outline and "+ New Tab".
   SidebarRect bookmark_separator;
   SidebarRect new_tab_row;  // The sidebar's "+ New Tab" row.

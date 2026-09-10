@@ -681,6 +681,7 @@ void PhiSidebarView::Rebuild() {
     }
     const bool isolated =
         incognito_ || agent_ || PhiIsAgentSpaceId(shell_->SidebarActiveSpace());
+    stored_bands_isolated_ = isolated;
     pinned_grid_rows_ =
         comfortable || isolated
             ? 0
@@ -1682,6 +1683,72 @@ void PhiSidebarView::DrawFolderIcon(HDC dc,
   }
 }
 
+void PhiSidebarView::PaintDropZone(HDC dc,
+                                   const RECT& zone,
+                                   bool hot,
+                                   const wchar_t* glyph,
+                                   int glyph_dip,
+                                   const wchar_t* hint,
+                                   bool stacked,
+                                   const PhiPalette& palette) {
+  if (zone.right <= zone.left || zone.bottom <= zone.top) {
+    return;
+  }
+  const int radius = Scaled(kCornerRadius);
+  // Resting: the 4% wash under a dashed hairline. Hovered by the drag: the
+  // strong wash and the accent ring (the Mac's selectedControlColor at 40%
+  // on the emptyView; the folder-highlight look here).
+  PhiFillRounded(dc, zone, hot ? palette.hover_strong : palette.hover, radius);
+  if (hot) {
+    RECT ring = zone;
+    ::InflateRect(&ring, -Scaled(1), -Scaled(1));
+    PhiStrokeRoundRectAA(dc, ring, radius, palette.accent, Scaled(2));
+  } else {
+    PhiStrokeRoundRectDashedAA(dc, zone, radius, palette.border, Scaled(1),
+                               Scaled(4), Scaled(3));
+  }
+  const COLORREF ink = hot ? palette.accent : palette.label_tertiary;
+  const HFONT glyph_font = shell_->SidebarGlyphFont();
+  const int glyph_px = Scaled(glyph_dip);
+  RECT icon{};
+  RECT text{};
+  UINT format = 0;
+  if (stacked) {
+    // The glyph over the wrapped hint, the pair centred in the zone.
+    const int pad = Scaled(12);
+    RECT measure = {zone.left + pad, 0, zone.right - pad, 0};
+    ::DrawTextW(dc, hint, -1, &measure,
+                DT_CENTER | DT_WORDBREAK | DT_NOPREFIX | DT_CALCRECT);
+    const int text_h = measure.bottom - measure.top;
+    const int gap = Scaled(6);
+    const int total = glyph_px + gap + text_h;
+    const int top = (zone.top + zone.bottom - total) / 2;
+    const int mid_x = (zone.left + zone.right) / 2;
+    icon = {mid_x - glyph_px / 2, top, mid_x + glyph_px / 2, top + glyph_px};
+    text = {zone.left + pad, top + glyph_px + gap, zone.right - pad,
+            top + total};
+    format = DT_CENTER | DT_WORDBREAK | DT_NOPREFIX;
+  } else {
+    // A row: the glyph 6 in, an 8 gap, the hint (the "+ New Tab" row's
+    // arrangement).
+    const int mid = (zone.top + zone.bottom) / 2;
+    icon = {zone.left + Scaled(6), mid - glyph_px / 2,
+            zone.left + Scaled(6) + glyph_px, mid + glyph_px / 2};
+    text = zone;
+    text.left = icon.right + Scaled(8);
+    text.right -= Scaled(6);
+    format = DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
+             DT_NOPREFIX;
+  }
+  HGDIOBJ previous = glyph_font ? ::SelectObject(dc, glyph_font) : nullptr;
+  PhiDrawGlyphIcon(dc, icon, glyph, glyph_px, ink);
+  if (previous) {
+    ::SelectObject(dc, previous);
+  }
+  ::SetTextColor(dc, ink);
+  PhiDrawTextAA(dc, hint, -1, &text, format);
+}
+
 // static
 void PhiSidebarView::DrawSurfaceBadge(HDC dc,
                                       const RECT& box,
@@ -1753,6 +1820,21 @@ void PhiSidebarView::PaintBand(HDC dc,
   // The open-tab dots (preference, off by default).
   const bool show_dots = prefs_host_ && prefs_host_->ShowOpenTabIndicators();
   const COLORREF dot_ink = OpenDotInk(palette);
+  // An EMPTY stored band while a drag is in flight shows its reserved drop
+  // zone (the layout keeps the band's rect only then): the Mac's
+  // PinnedTabViewController.emptyView, and a one-row twin for bookmarks.
+  const PhiDropBand drag_band = drag_ ? drag_->band() : PhiDropBand::kNone;
+  if (drag_active && !layout.horizontal_tabs && pinned_.empty() &&
+      layout.favorites.bottom > layout.favorites.top) {
+    RECT zone = layout.favorites;
+    zone.left += Scaled(16);  // The emptyView's leading/trailing 16.
+    zone.right -= Scaled(16);
+    zone.top += Scaled(kPinnedGap);
+    zone.bottom -= Scaled(kPinnedGap);
+    PaintDropZone(dc, zone, drag_band == PhiDropBand::kPins, L"\uE734", 28,
+                  PhiStr("sidebar.pinnedTabs.emptyHint"), /*stacked=*/true,
+                  palette);
+  }
   std::vector<size_t> pin_order;
   pin_order.reserve(pinned_.size());
   for (size_t i = 0; i < pinned_.size(); ++i) {
@@ -1878,6 +1960,15 @@ void PhiSidebarView::PaintBand(HDC dc,
       drag_active && drag_kind == PhiDragKind::kBookmark &&
       !layout.horizontal_tabs && drag_index >= 0 &&
       drag_index < static_cast<int>(bookmarks_.size());
+  if (drag_active && !layout.horizontal_tabs && bookmarks_.empty() &&
+      layout.bookmarks.bottom > layout.bookmarks.top) {
+    RECT zone = layout.bookmarks;  // The one reserved row, pill-inset.
+    zone.top += Scaled(kRowPad);
+    zone.bottom = zone.top + Scaled(kTabRowHeight) - 2 * Scaled(kRowPad);
+    PaintDropZone(dc, zone, drag_band == PhiDropBand::kBookmarks, L"\uE8A4",
+                  16, PhiStr("sidebar.bookmarks.dropHint"), /*stacked=*/false,
+                  palette);
+  }
   std::vector<size_t> bookmark_order;
   bookmark_order.reserve(bookmarks_.size());
   for (size_t i = 0; i < bookmarks_.size(); ++i) {

@@ -289,7 +289,10 @@ struct PhiSidebarRects {
   RECT sidebar{};    // The whole band. Empty in Comfortable.
   RECT title_bar{};  // Where the horizontal strip's rows live instead.
   RECT content{};    // The page: a drag over it is a split drop.
-  RECT favorites{};  // The pinned grid.
+  RECT favorites{};  // The pinned grid (or its reserved drop zone).
+  // The bookmark outline's band: its rows (or the reserved drop zone) and
+  // the separator row under them. Empty without bookmarks.
+  RECT bookmarks{};
   RECT bookmark_separator{};
   RECT new_tab_row{};
   RECT bottom_bar{};
@@ -436,6 +439,10 @@ class PhiSidebarShell {
   // The two band sizes the LAYOUT is derived from, counted from the tree
   // before any row is placed.
   virtual void SidebarSetRowCounts(int pinned_rows, int bookmark_rows) = 0;
+  // A drag that could land in an EMPTY stored band is in flight (or has
+  // ended): the layout reserves (releases) the band's drop zone. The
+  // caller schedules the rebuild that re-places the rows under it.
+  virtual void SidebarSetDropZones(bool pinned, bool bookmark) = 0;
   // The bookmark-bar and reader inputs the layout caches, re-read once per
   // rebuild after the active tab is known.
   virtual void SidebarRefreshLayoutInputs() = 0;
@@ -541,6 +548,9 @@ class PhiSidebarView {
   const std::vector<TabRow>& tabs() const { return tabs_; }
   const std::vector<ShortcutRow>& pinned() const { return pinned_; }
   const std::vector<ShortcutRow>& bookmarks() const { return bookmarks_; }
+  // No stored bands at all: incognito, an agent Space. A drag reserves no
+  // drop zone here.
+  bool stored_bands_isolated() const { return stored_bands_isolated_; }
   const std::vector<GroupHeader>& group_headers() const {
     return group_headers_;
   }
@@ -642,6 +652,14 @@ class PhiSidebarView {
                       COLORREF ink, bool expanded);
   // The attached-surface indicator: a plate with the kind's glyph, or the
   // minus that closes it while its row is hovered.
+  // An empty stored band's drop zone while a drag is in flight (the Mac's
+  // PinnedTabViewController.emptyView): a dashed pill carrying a glyph and
+  // a hint, washed with the accent while the drag hovers it. `stacked`
+  // puts the glyph above the hint (the tall pinned zone); otherwise the
+  // two sit in a row.
+  void PaintDropZone(HDC dc, const RECT& zone, bool hot, const wchar_t* glyph,
+                     int glyph_dip, const wchar_t* hint, bool stacked,
+                     const PhiPalette& palette);
   void DrawSurfaceBadge(HDC dc, const RECT& box, SidebarSurface kind,
                         bool hovered, COLORREF ground);
   // leaving_band_ <-> the live row vectors. The Space slide paints both
@@ -749,6 +767,7 @@ class PhiSidebarView {
   // derived (the band it occupies pushes everything below it down) and read
   // back when the outline is placed under it.
   int pinned_grid_rows_ = 0;
+  bool stored_bands_isolated_ = false;
   // Tab ids of the ACTIVE browser, most-recently-used first.
   PhiTabMru tab_mru_;
   // The rows as accessibility and tooltips read them.

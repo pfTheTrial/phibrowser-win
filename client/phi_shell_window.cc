@@ -457,6 +457,7 @@ PhiShellWindow::Layout PhiShellWindow::ToLayout(
   out.spaces_strip = PhiToRect(shell.spaces_strip);
   out.url_field = PhiToRect(shell.url_field);
   out.favorites = PhiToRect(shell.favorites);
+  out.bookmarks = PhiToRect(shell.bookmarks);
   out.bookmark_separator = PhiToRect(shell.bookmark_separator);
   out.new_tab_row = PhiToRect(shell.new_tab_row);
   out.bottom_bar = PhiToRect(shell.bottom_bar);
@@ -505,6 +506,8 @@ ShellLayoutInputs PhiShellWindow::CurrentLayoutInputs() const {
   in.field_ext_count = field_ext_count_;
   in.pinned_row_count = pinned_row_count_;
   in.bookmark_row_count = bookmark_row_count_;
+  in.pinned_drop_zone = pinned_drop_zone_;
+  in.bookmark_drop_zone = bookmark_drop_zone_;
   return in;
 }
 
@@ -1609,6 +1612,7 @@ PhiSidebarRects PhiShellWindow::BandRects(const Layout& layout) const {
   rects.title_bar = layout.title_bar;
   rects.content = layout.content;
   rects.favorites = layout.favorites;
+  rects.bookmarks = layout.bookmarks;
   rects.bookmark_separator = layout.bookmark_separator;
   rects.new_tab_row = layout.new_tab_row;
   rects.bottom_bar = layout.bottom_bar;
@@ -1649,6 +1653,11 @@ void PhiShellWindow::SidebarSetRowCounts(int pinned_rows,
                                               int bookmark_rows) {
   pinned_row_count_ = pinned_rows;
   bookmark_row_count_ = bookmark_rows;
+}
+
+void PhiShellWindow::SidebarSetDropZones(bool pinned, bool bookmark) {
+  pinned_drop_zone_ = pinned;
+  bookmark_drop_zone_ = bookmark;
 }
 
 void PhiShellWindow::SidebarRefreshLayoutInputs() {

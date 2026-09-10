@@ -187,6 +187,14 @@ class PhiSidebarDragSession {
   PhiSpacesStrip* strip() const;
 
   DropBand DropBandAt(POINT client_pt);
+  // A drag that could land in an EMPTY stored band reserves that band's
+  // drop zone in the layout for its duration (the Mac's 100pt drag-time
+  // pinned container and its "Drag tabs here" view): the pinned zone for
+  // a tab or a plain bookmark, the bookmark zone for a tab or a pin. The
+  // rows re-place under the zone on the posted rebuild; the release on
+  // commit or cancel posts the one that closes it again.
+  void ReserveDropZones();
+  void ReleaseDropZones();
   int DragInsertSlot(POINT pt);
   void RetargetDragSlide();  // New targets for the current gap slot.
   bool CommitDragImpl();     // True when the drop changed something.
@@ -254,6 +262,7 @@ class PhiSidebarDragSession {
   bool active_ = false;
   bool finished_ = false;  // Committed or cancelled: the destructor is a no-op.
   int insert_ = -1;        // The gap slot for the slide animation, -1 = none.
+  bool zones_reserved_ = false;  // ReserveDropZones took a zone.
   // WHERE it lands (docs/sidebar-architecture.md §5), resolved by the pure
   // drop resolvers on every move; consumed by the commit as a SidebarMove.
   SidebarPlace place_;

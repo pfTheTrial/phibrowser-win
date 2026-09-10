@@ -26,6 +26,7 @@ using shell_metrics::kContentTopGap;
 using shell_metrics::kEdgeInset;
 using shell_metrics::kFaviconSlot;
 using shell_metrics::kFavoritesSpacer;
+using shell_metrics::kPinnedDropZoneHeight;
 using shell_metrics::kFeedbackIconWidth;
 using shell_metrics::kHTabStripLeading;
 using shell_metrics::kHTabStripTop;
@@ -381,26 +382,37 @@ ShellLayout ComputeShellLayout(const ShellLayoutInputs& in) {
   // The pinned band, then the bookmark rows, then "+ New Tab" and the open
   // tabs — the Mac sidebar's order. A non-empty band carries the grid's own
   // 8pt top/bottom insets (PinnedTabLayout.insets).
+  // A drag in flight reserves a drop zone in an EMPTY band (the Mac's
+  // 100pt drag-time container for pins; one outline row for bookmarks),
+  // so a tab can be pinned or bookmarked before the band has a first row.
   const int pinned_rows = in.pinned_row_count;
   const int pinned_height =
       pinned_rows > 0 ? 2 * scaled(kPinnedGap) +
                             pinned_rows * scaled(kPinnedCellHeight) +
                             (pinned_rows - 1) * scaled(kPinnedGap)
-                      : 0;
+      : in.pinned_drop_zone ? scaled(kPinnedDropZoneHeight)
+                            : 0;
   out.favorites = {0, out.tabs_top, sidebar, out.tabs_top + pinned_height};
   const int bookmarks_top = out.favorites.bottom +
                             (pinned_height > 0 ? scaled(kFavoritesSpacer) : 0);
-  const int bookmarks_height =
-      in.bookmark_row_count * scaled(kTabRowHeight + kTabRowGap);
+  const int bookmark_rows =
+      in.bookmark_row_count > 0 ? in.bookmark_row_count
+      : in.bookmark_drop_zone   ? 1
+                                : 0;
+  const int bookmarks_height = bookmark_rows * scaled(kTabRowHeight + kTabRowGap);
   // A non-empty outline is parted from the tab list by the Mac's 16pt
   // separator row (makeAllItems).
   const int separator_h =
-      in.bookmark_row_count > 0 ? scaled(kBookmarkSeparatorHeight) : 0;
+      bookmark_rows > 0 ? scaled(kBookmarkSeparatorHeight) : 0;
   const int separator_top = bookmarks_top + bookmarks_height;
   out.bookmark_separator =
       separator_h > 0 ? SidebarRect{inset, separator_top, sidebar - inset,
                                     separator_top + separator_h}
                       : SidebarRect{};
+  out.bookmarks =
+      bookmark_rows > 0 ? SidebarRect{inset, bookmarks_top, sidebar - inset,
+                                      separator_top + separator_h}
+                        : SidebarRect{};
   out.new_tab_row = {inset, separator_top + separator_h, sidebar - inset,
                      separator_top + separator_h + scaled(kNewTabRowHeight)};
   out.tabs_top = out.new_tab_row.bottom + scaled(kTabRowGap);
@@ -444,6 +456,7 @@ ShellLayout ComputeShellLayout(const ShellLayoutInputs& in) {
   if (hide_sidebar) {
     const SidebarRect zero = {};
     out.favorites = zero;
+    out.bookmarks = zero;
     out.bookmark_separator = zero;
     out.new_tab_row = zero;
     out.bottom_bar = zero;

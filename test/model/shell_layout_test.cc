@@ -256,12 +256,55 @@ void InputsKey() {
   CHECK(a != b);
 }
 
+void DropZones() {
+  std::printf("drop zones: empty bands reserve room only while asked\n");
+  ShellLayoutInputs in = Base(PhiLayoutMode::kPerformance);
+  const ShellLayout none = ComputeShellLayout(in);
+  CHECK(none.favorites.empty() && none.bookmarks.empty());
+  CHECK(none.bookmark_separator.empty());
+  // A drag in flight over an empty profile: the Mac's 100pt drag-time
+  // pinned container, then the 3pt spacer, one outline row (38) and the
+  // 16pt separator, all before "+ New Tab".
+  in.pinned_drop_zone = true;
+  in.bookmark_drop_zone = true;
+  const ShellLayout zones = ComputeShellLayout(in);
+  CHECK(zones.favorites.top == 32 + 93);
+  CHECK(zones.favorites.bottom - zones.favorites.top == 100);
+  CHECK((zones.bookmarks == SidebarRect{8, zones.favorites.bottom + 3, 232,
+                                        zones.favorites.bottom + 3 + 38 + 16}));
+  CHECK(zones.bookmark_separator.top == zones.bookmarks.top + 38);
+  CHECK(zones.bookmark_separator.bottom == zones.bookmarks.bottom);
+  CHECK(zones.new_tab_row.top == zones.bookmarks.bottom);
+  // Bands with rows of their own ignore the flags: the outline band spans
+  // its rows and the separator.
+  in.pinned_row_count = 1;
+  in.bookmark_row_count = 2;
+  const ShellLayout rows = ComputeShellLayout(in);
+  CHECK(rows.favorites.bottom - rows.favorites.top == 8 + 45 + 8);
+  CHECK(rows.bookmarks.top == rows.favorites.bottom + 3);
+  CHECK(rows.bookmarks.bottom - rows.bookmarks.top == 2 * 38 + 16);
+  CHECK(rows.bookmark_separator.bottom == rows.bookmarks.bottom);
+  // Collapsed: nothing is reserved.
+  in.sidebar_hidden = true;
+  const ShellLayout hidden = ComputeShellLayout(in);
+  CHECK(hidden.favorites.empty() && hidden.bookmarks.empty());
+  // The cache key sees the flags.
+  ShellLayoutInputs a = Base(PhiLayoutMode::kPerformance);
+  ShellLayoutInputs b = a;
+  b.pinned_drop_zone = true;
+  CHECK(a != b);
+  b = a;
+  b.bookmark_drop_zone = true;
+  CHECK(a != b);
+}
+
 }  // namespace
 
 int main() {
   Scaling();
   Performance();
   PerformanceExtras();
+  DropZones();
   Balanced();
   Comfortable();
   Collapsed();
