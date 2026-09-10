@@ -45,7 +45,12 @@ constexpr int kDateFontMinDip = 20;
 constexpr size_t kMaxNameChars = 20;
 constexpr double kReturnSeconds = 0.15;
 constexpr double kIntroSeconds = 1.0;
-// The colour map: black -> white, and the theme colour from 10% up.
+// The colour map: black -> white, and the theme colour from 10% up. The
+// Mac's CIColorMap runs in Core Image's LINEAR working space, so the 10%
+// is 10% linear light (sRGB grey ~89), not sRGB 10% (grey 26): the conch
+// frames sit mostly at grey 26..90, which is the whole white->colour ramp
+// on the Mac (the pale, watercolour look) and solid colour if the knee is
+// taken in sRGB. Compose() linearises the grey before the knee.
 constexpr double kColorMapKnee = 0.1;
 // The overlays: the tint view's alpha and the dot image's (0.15 over a
 // tint of the accent at 50%).
@@ -628,7 +633,11 @@ std::vector<uint8_t> PhiProfileCard::Compose(
   // blending into the conch colour.
   std::array<uint8_t, 256 * 3> map;
   for (int v = 0; v < 256; ++v) {
-    const double t = std::min(1.0, (v / 255.0) / kColorMapKnee);
+    const double srgb = v / 255.0;
+    const double linear = srgb <= 0.04045
+                              ? srgb / 12.92
+                              : std::pow((srgb + 0.055) / 1.055, 2.4);
+    const double t = std::min(1.0, linear / kColorMapKnee);
     map[static_cast<size_t>(v) * 3] =
         static_cast<uint8_t>(std::lround(255 + (GetBValue(conch_) - 255) * t));
     map[static_cast<size_t>(v) * 3 + 1] =
