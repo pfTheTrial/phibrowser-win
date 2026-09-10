@@ -585,6 +585,12 @@ bool PhiSidebarView::drag_active() const {
   return drag_ && drag_->active();
 }
 
+void PhiSidebarView::OnHoverExpandTimer() {
+  if (drag_) {
+    drag_->FireHoverExpand();
+  }
+}
+
 bool PhiSidebarView::OnSlideTimer() {
   if (const HWND shell = shell_hwnd()) {
     ::InvalidateRect(shell, nullptr, FALSE);
@@ -1236,6 +1242,10 @@ void PhiSidebarView::Rebuild() {
   }
   // The rows the pointer, the keyboard and a screen reader all address.
   PublishHits(layout);
+  // A drag in flight re-resolves against the rows it now sees.
+  if (drag_) {
+    drag_->OnRowsRebuilt();
+  }
 }
 
 void PhiSidebarView::RebuildShortcuts(const PhiSidebarRects& layout,
@@ -2472,8 +2482,11 @@ void PhiSidebarView::PaintBand(HDC dc,
   int rows_clip_save = 0;
   if (clip_rows) {
     rows_clip_save = ::SaveDC(dc);
-    ::IntersectClipRect(dc, 0, layout.tabs_top, layout.sidebar.right,
-                        layout.tabs_limit);
+    // The band shift moves the viewport with the rows: an outline row
+    // leaving for the list pulls them UP, and the first must not be cut
+    // off at the band's resting top.
+    ::IntersectClipRect(dc, 0, layout.tabs_top + std::min(0, band_shift),
+                        layout.sidebar.right, layout.tabs_limit);
   }
 
   // Tab groups: TabGroupCellView — the whole group cell rests on an 18%
@@ -2487,11 +2500,12 @@ void PhiSidebarView::PaintBand(HDC dc,
     if (header.chip) {
       continue;  // The strip's chips paint after the tabs (PaintStripGroups).
     }
-    // During a tab drag the header rides its first member and the card's
+    // During a drag the header rides its first member and the card's
     // bottom its last (the session's group slide), so a gap opening inside
-    // the group grows the card around the gliding rows.
+    // the group grows the card around the gliding rows — for a tab reorder
+    // and for a pinned cell or a bookmark entering the list alike.
     GroupHeader gh = header;
-    if (drag_active && drag_kind == PhiDragKind::kTab) {
+    if (drag_active && !layout.horizontal_tabs) {
       const SlideVec slide = RowSlide(SidebarKey::Group(gh.id).ToString());
       const int dy = static_cast<int>(slide.dy);
       const int dh = static_cast<int>(slide.dh);
@@ -2593,7 +2607,10 @@ void PhiSidebarView::PaintBand(HDC dc,
     // Siblings glide by their slide offsets; the dragged row is only ever
     // painted here at home, lifted, for its snapshot.
     int dy = band_shift;
-    if (!is_dragged && sliding) {
+    // The rows glide for ANY drag that opens a gap in the list — a tab
+    // reorder, and a pinned cell or a bookmark entering it (the Mac's
+    // movePinnedTabOut / moveBookmarkOut(toNormalTabs:)).
+    if (!is_dragged && drag_active && !layout.horizontal_tabs) {
       dy += static_cast<int>(TabSlide(row.id));
     }
     RECT pill = row.bounds;

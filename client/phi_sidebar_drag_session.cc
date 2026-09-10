@@ -182,21 +182,130 @@ void PhiSidebarDragSession::RetargetDragSlide() {
   int preview_rows = -1;  // The grid preview's rows, when one was walked.
 
   if (active_ && !layout.horizontal_tabs && insert_ >= 0) {
+    // The visible tab rows, and the dragged one's position among them (-1:
+    // what is dragged is not a tab row — a pinned cell or a bookmark
+    // entering the list from a stored band).
+    std::vector<const TabRow*> visible;
+    int dragged_pos = -1;
+    for (const TabRow& row : view_->tabs()) {
+      if (row.bounds.right <= row.bounds.left) {
+        continue;
+      }
+      if (kind_ == PhiDragKind::kTab &&
+          static_cast<int>(&row - view_->tabs().data()) == Index()) {
+        dragged_pos = static_cast<int>(visible.size());
+      }
+      visible.push_back(&row);
+    }
+    // A foreign row entering the list: the rows at and past the slot make
+    // room for it, one pitch each.
+    const auto open_list_gap = [&]() {
+      for (int i = std::max(0, insert_); i < static_cast<int>(visible.size());
+           ++i) {
+        to[visible[static_cast<size_t>(i)]->id] = pitch;
+      }
+    };
+    // The group headers and their cards ride the member rows: the header
+    // sits above whichever comes first of its first remaining member and —
+    // when the drop lands in the group — the gap's phantom slot; the card's
+    // bottom sits under the later of its last remaining member and that
+    // phantom. So a gap opening inside the group (under the header, between
+    // members, or as its last slot) grows the card around the gliding rows
+    // instead of sliding them out under its edge, and a member dragged out
+    // shrinks it. Runs after `to` holds the tab rows' slides.
+    const auto slide_headers = [&]() {
+      const auto final_top = [&](int pos) {
+        const auto it = to.find(visible[static_cast<size_t>(pos)]->id);
+        return static_cast<double>(
+                   visible[static_cast<size_t>(pos)]->bounds.top) +
+               (it == to.end() ? 0.0 : it->second);
+      };
+      // Where the gap's phantom slot sits once the rows have glided: the
+      // rows before the slot slid up only when the dragged row came from
+      // above them (then the phantom sits one pitch above the row at the
+      // slot — the dragged row's own slot when the two coincide); otherwise
+      // the row at the slot slid down and the phantom takes its old place.
+      const bool gap_in_list = band_ == PhiDropBand::kTabs && insert_ >= 0;
+      const bool from_above = dragged_pos >= 0 && insert_ > dragged_pos;
+      double phantom_top = 0.0;
+      if (gap_in_list && !visible.empty()) {
+        const int size = static_cast<int>(visible.size());
+        if (insert_ < size) {
+          phantom_top = visible[static_cast<size_t>(insert_)]->bounds.top -
+                        (from_above ? pitch : 0);
+        } else {
+          phantom_top = visible[static_cast<size_t>(size - 1)]->bounds.top +
+                        (from_above ? 0 : pitch);
+        }
+      }
+      for (const GroupHeader& header : view_->group_headers()) {
+        const bool gap_in_group = gap_in_list && gap_group_ == header.id;
+        int first = -1, last = -1, first_kept = -1, last_kept = -1;
+        for (int i = 0; i < static_cast<int>(visible.size()); ++i) {
+          if (visible[static_cast<size_t>(i)]->group_id != header.id) {
+            continue;
+          }
+          if (first < 0) {
+            first = i;
+          }
+          last = i;
+          if (i != dragged_pos) {
+            if (first_kept < 0) {
+              first_kept = i;
+            }
+            last_kept = i;
+          }
+        }
+        double top_dy = 0.0;
+        double bottom_dy = 0.0;
+        if (first < 0) {
+          // Collapsed (or every member scrolled out): the header is a row
+          // of its own, riding the row that follows it — above the gap
+          // when the drop lands in the collapsed group.
+          int next = -1;
+          for (int i = 0; i < static_cast<int>(visible.size()); ++i) {
+            if (visible[static_cast<size_t>(i)]->bounds.top >
+                header.bounds.top) {
+              next = i;
+              break;
+            }
+          }
+          if (next >= 0) {
+            double below = final_top(next);
+            if (gap_in_group) {
+              below = std::min(below, phantom_top);
+            }
+            top_dy = below - visible[static_cast<size_t>(next)]->bounds.top;
+          } else if (!visible.empty()) {
+            const int tail = static_cast<int>(visible.size()) - 1;
+            top_dy = final_top(tail) -
+                     visible[static_cast<size_t>(tail)]->bounds.top;
+          }
+        } else {
+          // The element under the header, and the one closing the card.
+          double below = first_kept >= 0 ? final_top(first_kept) : phantom_top;
+          double closing = last_kept >= 0 ? final_top(last_kept) : phantom_top;
+          if (gap_in_group) {
+            below = std::min(below, phantom_top);
+            closing = std::max(closing, phantom_top);
+          } else if (first_kept < 0) {
+            // Its only member is being dragged out: the card is the header.
+            below = visible[static_cast<size_t>(first)]->bounds.top;
+            closing = below - pitch;
+          }
+          top_dy = below - visible[static_cast<size_t>(first)]->bounds.top;
+          bottom_dy = closing - visible[static_cast<size_t>(last)]->bounds.top;
+        }
+        const SlideVec v{0.0, top_dy, 0.0, bottom_dy - top_dy};
+        if (v.moved()) {
+          row_to[SidebarKey::Group(header.id).ToString()] = v;
+        }
+      }
+    };
     if (kind_ == PhiDragKind::kTab && Index() >= 0 &&
         Index() < static_cast<int>(view_->tabs().size())) {
       // The dragged row vacates its list slot in EVERY band; where the gap
       // reopens depends on the target under the cursor.
-      std::vector<const TabRow*> visible;
-      int dragged_pos = -1;
-      for (const TabRow& row : view_->tabs()) {
-        if (row.bounds.right <= row.bounds.left) {
-          continue;
-        }
-        if (static_cast<int>(&row - view_->tabs().data()) == Index()) {
-          dragged_pos = static_cast<int>(visible.size());
-        }
-        visible.push_back(&row);
-      }
       if (dragged_pos >= 0) {
         for (int i = 0; i < static_cast<int>(visible.size()); ++i) {
           if (i == dragged_pos) {
@@ -223,100 +332,7 @@ void PhiSidebarDragSession::RetargetDragSlide() {
             to[visible[static_cast<size_t>(i)]->id] = dy;
           }
         }
-        // The group headers and their cards ride the member rows: the
-        // header sits above whichever comes first of its first remaining
-        // member and — when the drop lands in the group — the gap's
-        // phantom slot; the card's bottom sits under the later of its last
-        // remaining member and that phantom. So a gap opening inside the
-        // group (under the header, between members, or as its last slot)
-        // grows the card around the gliding rows instead of sliding them
-        // out under its edge, and a member dragged out shrinks it.
-        const auto final_top = [&](int pos) {
-          const auto it = to.find(visible[static_cast<size_t>(pos)]->id);
-          return static_cast<double>(visible[static_cast<size_t>(pos)]->bounds.top) +
-                 (it == to.end() ? 0.0 : it->second);
-        };
-        // Where the gap's phantom slot sits once the rows have glided:
-        // dragged from below, the row at the slot slid down and the
-        // phantom takes its old place; from above, the rows before the
-        // slot slid up and the phantom sits one pitch above the row at it
-        // (the dragged row's own slot when the two coincide).
-        const bool gap_in_list = band_ == PhiDropBand::kTabs && insert_ >= 0;
-        double phantom_top = 0.0;
-        if (gap_in_list) {
-          const int size = static_cast<int>(visible.size());
-          if (insert_ < size) {
-            phantom_top = visible[static_cast<size_t>(insert_)]->bounds.top -
-                          (insert_ > dragged_pos ? pitch : 0);
-          } else {
-            phantom_top = visible[static_cast<size_t>(size - 1)]->bounds.top;
-          }
-        }
-        for (const GroupHeader& header : view_->group_headers()) {
-          const bool gap_in_group = gap_in_list && gap_group_ == header.id;
-          int first = -1, last = -1, first_kept = -1, last_kept = -1;
-          for (int i = 0; i < static_cast<int>(visible.size()); ++i) {
-            if (visible[static_cast<size_t>(i)]->group_id != header.id) {
-              continue;
-            }
-            if (first < 0) {
-              first = i;
-            }
-            last = i;
-            if (i != dragged_pos) {
-              if (first_kept < 0) {
-                first_kept = i;
-              }
-              last_kept = i;
-            }
-          }
-          double top_dy = 0.0;
-          double bottom_dy = 0.0;
-          if (first < 0) {
-            // Collapsed (or every member scrolled out): the header is a row
-            // of its own, riding the row that follows it — above the gap
-            // when the drop lands in the collapsed group.
-            int next = -1;
-            for (int i = 0; i < static_cast<int>(visible.size()); ++i) {
-              if (visible[static_cast<size_t>(i)]->bounds.top >
-                  header.bounds.top) {
-                next = i;
-                break;
-              }
-            }
-            if (next >= 0) {
-              double below = final_top(next);
-              if (gap_in_group) {
-                below = std::min(below, phantom_top);
-              }
-              top_dy = below - visible[static_cast<size_t>(next)]->bounds.top;
-            } else if (!visible.empty()) {
-              const int tail = static_cast<int>(visible.size()) - 1;
-              top_dy = final_top(tail) -
-                       visible[static_cast<size_t>(tail)]->bounds.top;
-            }
-          } else {
-            // The element under the header, and the one closing the card.
-            double below = first_kept >= 0 ? final_top(first_kept)
-                                           : phantom_top;
-            double closing = last_kept >= 0 ? final_top(last_kept)
-                                            : phantom_top;
-            if (gap_in_group) {
-              below = std::min(below, phantom_top);
-              closing = std::max(closing, phantom_top);
-            } else if (first_kept < 0) {
-              // Its only member is being dragged out: the card is the header.
-              below = visible[static_cast<size_t>(first)]->bounds.top;
-              closing = below - pitch;
-            }
-            top_dy = below - visible[static_cast<size_t>(first)]->bounds.top;
-            bottom_dy = closing - visible[static_cast<size_t>(last)]->bounds.top;
-          }
-          const SlideVec v{0.0, top_dy, 0.0, bottom_dy - top_dy};
-          if (v.moved()) {
-            row_to[SidebarKey::Group(header.id).ToString()] = v;
-          }
-        }
+        slide_headers();
       }
       if (band_ == PhiDropBand::kPins && !view_->pinned().empty()) {
         // A phantom one-slot cell opens the grid gap at the insertion
@@ -381,6 +397,10 @@ void PhiSidebarDragSession::RetargetDragSlide() {
                 SlideVec{0.0, static_cast<double>(pitch)};
           }
         }
+      } else if (band_ == PhiDropBand::kTabs) {
+        // Unpinning into the list: the rows part at the slot for it.
+        open_list_gap();
+        slide_headers();
       }
     } else if (kind_ == PhiDragKind::kBookmark &&
                band_ == PhiDropBand::kPins && Index() >= 0 &&
@@ -446,7 +466,21 @@ void PhiSidebarDragSession::RetargetDragSlide() {
           row_to[view_->pinned()[static_cast<size_t>(i)].guid] = v;
         }
       }
-    } else if (kind_ == PhiDragKind::kBookmark && Index() >= 0 &&
+    } else if (kind_ == PhiDragKind::kBookmark &&
+               band_ == PhiDropBand::kTabs && Index() >= 0 &&
+               Index() < static_cast<int>(view_->bookmarks().size())) {
+      // A bookmark over the list (the Mac's moveBookmarkOut(toTabList:)):
+      // the rows part at the slot for the tab it becomes, and the outline
+      // closes the row it is leaving.
+      open_list_gap();
+      slide_headers();
+      for (int i = Index() + 1; i < static_cast<int>(view_->bookmarks().size());
+           ++i) {
+        row_to[view_->bookmarks()[static_cast<size_t>(i)].guid] =
+            SlideVec{0.0, static_cast<double>(-pitch)};
+      }
+    } else if (kind_ == PhiDragKind::kBookmark &&
+               band_ == PhiDropBand::kBookmarks && Index() >= 0 &&
                Index() < static_cast<int>(view_->bookmarks().size()) &&
                bookmark_drop_folder_row_ < 0) {
       // A drop INTO a collapsed folder opens no gap — the folder row
@@ -494,6 +528,15 @@ void PhiSidebarDragSession::RetargetDragSlide() {
       !view_->bookmarks().empty() &&
       (kind_ == PhiDragKind::kTab || kind_ == PhiDragKind::kPin)) {
     row_to[kBandShiftKey].dy += pitch;
+  }
+  // The reverse: a bookmark leaving the outline for the list or the grid
+  // pulls everything under the band up by the row it vacates — unless it
+  // is the last one, when the band stays as the reserved drop zone.
+  if (active_ && !layout.horizontal_tabs && insert_ >= 0 &&
+      kind_ == PhiDragKind::kBookmark &&
+      (band_ == PhiDropBand::kTabs || band_ == PhiDropBand::kPins) &&
+      view_->bookmarks().size() > 1) {
+    row_to[kBandShiftKey].dy -= pitch;
   }
   // Displaced elements whose displacement ended slide home; settled ones
   // drop out of the books entirely.
@@ -642,32 +685,23 @@ void PhiSidebarDragSession::Update(POINT pt) {
     BeginDragImage(pt);  // The element lifts off into its own window.
     ReserveDropZones();  // After the lift: the rows move under the zone.
   }
-  // Tab and pin drags can cross bands (conversions, tear-off); a bookmark
-  // drag stays in its own outline EXCEPT over the page, where it can form a
-  // split like the other two (the Mac's bookmark DragSource), and outside
-  // the window, where its live tab tears off like theirs.
+  // Every drag can cross bands (conversions, tear-off, a split over the
+  // page): a bookmark leaves its outline for the grid (the Mac's
+  // moveBookmarkOut(toPinnedTabs:)) or the tab list (moveBookmarkOut(
+  // toNormalTabs:)) — a FOLDER cannot become a pin or a tab, so it stays
+  // in the outline wherever it hovers inside the sidebar.
   point_ = pt;
-  PhiDropBand band = PhiDropBand::kTabs;
-  if (kind_ == PhiDragKind::kTab || kind_ == PhiDragKind::kPin) {
-    band = DropBandAt(pt);
-  } else if (kind_ == PhiDragKind::kBookmark) {
-    band = PhiDropBand::kBookmarks;
-    POINT screen = pt;
-    ::ClientToScreen(shell_hwnd(), &screen);
-    RECT window_rect = {};
-    ::GetWindowRect(shell_hwnd(), &window_rect);
-    const PhiSidebarRects bookmark_layout = shell_->SidebarRects();
+  PhiDropBand band = DropBandAt(pt);
+  if (kind_ == PhiDragKind::kBookmark) {
     const bool folder =
         Index() >= 0 && Index() < static_cast<int>(view_->bookmarks().size()) &&
         view_->bookmarks()[static_cast<size_t>(Index())].folder;
-    if (!::PtInRect(&window_rect, screen)) {
-      band = PhiDropBand::kOutside;
-    } else if (::PtInRect(&bookmark_layout.content, pt)) {
-      band = PhiDropBand::kContent;
-    } else if (!folder && !incognito_ && !bookmark_layout.horizontal_tabs &&
-               InPinnedBand(bookmark_layout, pt)) {
-      band = PhiDropBand::kPins;  // The Mac's moveBookmarkOut(toPinnedTabs:).
+    if (folder &&
+        (band == PhiDropBand::kPins || band == PhiDropBand::kTabs)) {
+      band = PhiDropBand::kBookmarks;
     }
+  } else if (kind_ != PhiDragKind::kTab && kind_ != PhiDragKind::kPin) {
+    band = PhiDropBand::kTabs;
   }
   const bool band_changed = band != band_;
   band_ = band;
@@ -675,6 +709,7 @@ void PhiSidebarDragSession::Update(POINT pt) {
   // card, which captures the page BEFORE the hint cards go up over it.
   SyncDragImage(pt);
   if (band == PhiDropBand::kContent) {
+    CancelHoverExpand();
     // The page has no insertion slot: the drop is described by the split
     // zone under the cursor, and the hint cards are the whole feedback.
     ResolveSplitDrop(pt, /*rebuild=*/band_changed);
@@ -705,6 +740,7 @@ void PhiSidebarDragSession::Update(POINT pt) {
                                                   : std::string();
   const bool gap_group_changed = gap_group != gap_group_;
   gap_group_ = gap_group;
+  SyncHoverExpand(pt);
   const bool animated_kind = kind_ == PhiDragKind::kTab ||
                              kind_ == PhiDragKind::kPin ||
                              kind_ == PhiDragKind::kBookmark;
@@ -833,8 +869,71 @@ bool PhiSidebarDragSession::CommitDragImpl() {
   return view_->Apply(SidebarMove{key, place});
 }
 
+void PhiSidebarDragSession::SyncHoverExpand(POINT pt) {
+  SidebarKey target;
+  if (band_ == PhiDropBand::kBookmarks && bookmark_drop_folder_row_ >= 0 &&
+      bookmark_drop_folder_row_ <
+          static_cast<int>(view_->bookmarks().size())) {
+    // A drop INTO a collapsed folder: resting there opens it.
+    target = view_->bookmarks()[static_cast<size_t>(bookmark_drop_folder_row_)]
+                 .key;
+  } else if (band_ == PhiDropBand::kTabs) {
+    for (const GroupHeader& header : view_->group_headers()) {
+      if (header.collapsed && ::PtInRect(&header.bounds, pt)) {
+        target = SidebarKey::Group(header.id);
+        break;
+      }
+    }
+  }
+  if (target == hover_expand_key_) {
+    return;  // Same target (or none): the dwell keeps running.
+  }
+  CancelHoverExpand();
+  if (target.empty() || !shell_hwnd()) {
+    return;
+  }
+  hover_expand_key_ = target;
+  ::SetTimer(shell_hwnd(), kHoverExpandTimer, kHoverExpandMs, nullptr);
+}
+
+void PhiSidebarDragSession::CancelHoverExpand() {
+  if (hover_expand_key_.empty()) {
+    return;
+  }
+  hover_expand_key_ = {};
+  if (shell_hwnd()) {
+    ::KillTimer(shell_hwnd(), kHoverExpandTimer);
+  }
+}
+
+void PhiSidebarDragSession::FireHoverExpand() {
+  const SidebarKey key = hover_expand_key_;
+  hover_expand_key_ = {};
+  if (!active_ || key.empty()) {
+    return;
+  }
+  if (key.kind == SidebarKey::Kind::kFolder) {
+    // Outline disclosure is view state: the folder opens and stays open
+    // after the drop, as the Mac's spring-loaded folders do.
+    view_->Expand(key.id);
+    shell_->SidebarScheduleRefresh();
+  } else if (key.kind == SidebarKey::Kind::kGroup && framework_) {
+    const BrowserId browser = shell_->SidebarActiveBrowser();
+    if (browser.valid()) {
+      framework_->SetTabGroupCollapsed(browser.value, key.id.c_str(), false);
+    }
+  }
+}
+
+void PhiSidebarDragSession::OnRowsRebuilt() {
+  if (active_ && kind_ != PhiDragKind::kChip) {
+    Update(point_);
+  }
+}
+
 void PhiSidebarDragSession::CancelDrag() {
   const bool was_active = active_;
+  CancelHoverExpand();
   ReleaseDropZones();
   grid_extra_ = 0;
   kind_ = PhiDragKind::kNone;
@@ -1940,16 +2039,18 @@ int PhiSidebarDragSession::DragInsertSlot(POINT pt) {
     case PhiDragKind::kPin:
       switch (band_) {
         case PhiDropBand::kTabs:
-          // Unpin into the list: the anchor says where; the list itself
-          // opens no gap for a cell.
-          take(ResolveTabDrop(view_->TabDropRows(), pt.x, pt.y,
-                              layout.horizontal_tabs, {}));
-          return 0;
+          // Unpin into the list: the rows part at the slot for the cell's
+          // tab (the vertical list; the strip keeps its line).
+          return take(ResolveTabDrop(view_->TabDropRows(), pt.x, pt.y,
+                                     layout.horizontal_tabs, {}));
         case PhiDropBand::kOutside:
           return -1;  // The release tears off; there is no slot.
         case PhiDropBand::kBookmarks:
-          take(ResolveBookmarkDrop(view_->BookmarkDropRows(), pt.y, {}));
-          return -1;  // The outline gap rides bookmark_drop_folder_row_.
+          // The cell becomes a bookmark at the outline slot: the rows part
+          // for it (a drop INTO a collapsed folder answers no slot and
+          // highlights the folder instead).
+          return take(
+              ResolveBookmarkDrop(view_->BookmarkDropRows(), pt.y, {}));
         default:
           return take(
               ResolvePinnedDrop(view_->PinnedDropRows(), pt.x, pt.y, key_));
@@ -1962,9 +2063,9 @@ int PhiSidebarDragSession::DragInsertSlot(POINT pt) {
           return take(
               ResolvePinnedDrop(view_->PinnedDropRows(), pt.x, pt.y, {}));
         case PhiDropBand::kTabs:
-          take(ResolveTabDrop(view_->TabDropRows(), pt.x, pt.y,
-                              layout.horizontal_tabs, {}));
-          return -1;
+          // The bookmark becomes a tab at the slot: the rows part for it.
+          return take(ResolveTabDrop(view_->TabDropRows(), pt.x, pt.y,
+                                     layout.horizontal_tabs, {}));
         default:
           return take(
               ResolveBookmarkDrop(view_->BookmarkDropRows(), pt.y, key_));

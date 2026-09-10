@@ -688,6 +688,9 @@ class PhiSidebarView {
   PhiSidebarDragSession* drag() const { return drag_.get(); }
   // The reorder slide's clock tick; false once the leg has settled.
   bool OnSlideTimer();
+  // The hover-to-expand dwell elapsed (PhiSidebarDragSession::
+  // kHoverExpandTimer, routed by the shell).
+  void OnHoverExpandTimer();
   // The 2px accent insertion line, over the composed frame.
   void DrawDragIndicator(HDC dc);
 

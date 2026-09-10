@@ -154,7 +154,8 @@ constexpr int kContentRadius = 14;  // webContentContainerCornerRadius (macOS 26
 // swap now rides PhiAnimator and the card's dwell timer is
 // PhiSpacesStrip::kHoverCardTimer (still 0x516), which the strip owns.
 // 0x518 is PhiSidebarDragSession::kSlideTimer — the reorder slide, whose
-// clock the drag session owns and whose timer rides this window.
+// clock the drag session owns and whose timer rides this window; 0x519 is
+// its kHoverExpandTimer (a drag resting on a collapsed folder or group).
 constexpr UINT_PTR kFloatingTickTimer = 0x522;
 // 0x523 is PhiOmniboxSession::kCopyLinkTimer — the shell routes it back to
 // the session, which owns the copy-link flash.
@@ -5530,6 +5531,11 @@ LRESULT CALLBACK PhiShellWindow::ShellWndProc(HWND hwnd,
       }
       if (self && wparam == PhiOmniboxSession::kCopyLinkTimer) {
         self->omnibox_->RevertCopyLinkFlash();
+        return 0;
+      }
+      if (self && wparam == PhiSidebarDragSession::kHoverExpandTimer) {
+        ::KillTimer(hwnd, PhiSidebarDragSession::kHoverExpandTimer);
+        self->sidebar_->OnHoverExpandTimer();
         return 0;
       }
       if (self && wparam == PhiSidebarDragSession::kSlideTimer) {

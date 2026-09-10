@@ -154,6 +154,11 @@ class PhiSidebarDragSession {
   // EASE_IN_OUT) — sibling rows glide to open the insertion gap.
   static constexpr int kSlideMs = 200;
   static constexpr UINT_PTR kSlideTimer = 0x518;
+  // Hover-to-expand: a drag resting on a collapsed bookmark folder or a
+  // collapsed tab group opens it after this dwell (the strip's chip rule,
+  // collapsedChipExpandTimer; the Mac's outline spring-loads groups too).
+  static constexpr UINT_PTR kHoverExpandTimer = 0x519;
+  static constexpr UINT kHoverExpandMs = 400;
   // A reserved row-slide key: how far everything BELOW the bookmark
   // outline ("+ New Tab", the group headers, the tab rows) is pushed while
   // a drag opens a row-sized gap in the outline. Rides the same clock.
@@ -188,8 +193,19 @@ class PhiSidebarDragSession {
   // The 2px accent insertion line, horizontal for vertical lists and
   // vertical for horizontal ones.
   void DrawIndicator(HDC dc);
+  // The hover-to-expand dwell elapsed (the shell's kHoverExpandTimer): the
+  // folder or group the pointer has rested on opens.
+  void FireHoverExpand();
+  // The rows were rebuilt under the drag (a folder or group opened, a tab
+  // arrived): the drop re-resolves against the new rows at the pointer's
+  // last position, and the gap moves with it.
+  void OnRowsRebuilt();
 
  private:
+  // The collapsed folder or group under the pointer, armed with the dwell
+  // timer; a different target (or none) re-arms or cancels it.
+  void SyncHoverExpand(POINT pt);
+  void CancelHoverExpand();
   // Everything below is the body of the drag, in the order it runs.
   int Scaled(int design_units) const;
   HWND shell_hwnd() const;
@@ -300,6 +316,7 @@ class PhiSidebarDragSession {
   SidebarPlace place_;
   bool place_valid_ = false;
   SidebarKey folder_key_;  // A drop INTO this collapsed folder.
+  SidebarKey hover_expand_key_;  // Armed hover-to-expand target.
   int bookmark_drop_folder_row_ = -1;
   // The tab that was FOCUSED when this drag was armed — the split drop's
   // other pane. It has to be captured at arming time: the same mouse-down
