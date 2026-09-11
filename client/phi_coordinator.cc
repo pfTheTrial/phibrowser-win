@@ -2112,6 +2112,21 @@ bool PhiCoordinator::DeveloperMode() const {
 
 void PhiCoordinator::SetDeveloperMode(bool enabled) {
   preferences_.SetDeveloperMode(enabled);
+  if (enabled) {
+    return;
+  }
+  // The Mac's setDeveloperModeEnabled(false), a kill switch for everything
+  // the mode governs: agent control goes off — its own change handler
+  // severs every live connection and revokes the session capabilities —
+  // and so does every credential approval. Idempotent when the switch was
+  // already off: the revoke still runs, in case anything is connected. (The
+  // Mac also forgets its per-agent grants and locks the password manager;
+  // Windows keeps no grants, and its vault helper has no lock verb.)
+  SetAllowAgentControl(false);
+  if (dispatcher_) {
+    dispatcher_->RevokeAgentAccess();
+  }
+  credentials_.RevokeAllGrants();
 }
 
 bool PhiCoordinator::AllowAgentUserSpaces() const {

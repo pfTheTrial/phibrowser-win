@@ -207,6 +207,14 @@ bool PhiCredentialService::ResolveCredentialItem(const std::string& domain,
   return true;
 }
 
+void PhiCredentialService::RevokeAllGrants() {
+  if (!timed_grants_.empty()) {
+    LOG(INFO) << "[PhiCredentials] " << timed_grants_.size()
+              << " credential grant(s) revoked";
+  }
+  timed_grants_.clear();
+}
+
 bool PhiCredentialService::GrantCovers(const std::string& grant_key) const {
   // Only a live TIMED grant counts. The persisted "always" rows are display
   // only (LoadCredentialGrants), and the kind is not consulted: a fill is a

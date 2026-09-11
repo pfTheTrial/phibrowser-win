@@ -1020,8 +1020,9 @@ void PhiSettingsWindow::BuildAdvanced(int* y) {
                    ? L"Agent access, permissions, and the password manager "
                      L"live in the Developer tab."
                    : L"Turning developer mode off turns off agent access "
-                     L"and the agent password manager. An agent that "
-                     L"connects later can ask you to turn it back on.");
+                     L"and the agent password manager, and revokes every "
+                     L"allowed agent and credential approval. An agent "
+                     L"that connects later can ask you to turn it back on.");
   EndSection(y);
 
   BeginSection(y, nullptr);

@@ -103,6 +103,10 @@ class PhiCredentialService {
   void AppendCredentialAudit(const std::string& scope,
                              model::CredentialAccessKind kind,
                              const char* decision);
+  // Ends every live timed grant at once — the Mac's
+  // CredentialGrantStore.revokeAll, which Developer mode going OFF runs. The
+  // next request for any credential prompts afresh.
+  void RevokeAllGrants();
 
 
  private:
