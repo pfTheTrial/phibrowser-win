@@ -262,6 +262,11 @@ def main():
               os.path.join(resources_dir, "onboarding"))
     sync_tree(os.path.join(CLIENT_DIR, "resources", "fonts"),
               os.path.join(resources_dir, "fonts"))
+    # The agent brand marks leading the "Add skill to…" menu rows (the
+    # Mac's Assets ▸ agents imagesets, tinted at run time by
+    # phi_glyph_bitmap.cc).
+    sync_tree(os.path.join(CLIENT_DIR, "resources", "agents"),
+              os.path.join(resources_dir, "agents"))
     # Stage the vendored WinSparkle.dll beside the client: the sync ships
     # every top-level DLL, and the updater loads it from the exe's own dir.
     winsparkle = os.path.join(os.path.dirname(os.path.abspath(__file__)),

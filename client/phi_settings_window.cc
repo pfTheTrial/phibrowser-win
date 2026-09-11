@@ -35,6 +35,7 @@
 #include "phibrowser-win/client/phi_emoji.h"
 #include "phibrowser-win/client/phi_features.h"
 #include "phibrowser-win/client/phi_dwrite.h"
+#include "phibrowser-win/client/phi_glyph_bitmap.h"
 #include "phibrowser-win/client/phi_i18n.h"
 #include "phibrowser-win/client/phi_icons.h"
 #include "phibrowser-win/client/phi_preferences.h"
@@ -3598,9 +3599,11 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
       host_->SetLanguagePreference(locales[chosen - 2]);
     }
   } else if (item.action == "installskill") {
-    // The Mac's Menu: "All agents", then every agent with its skills
-    // folder, ticked when that folder already links to THIS build's skill
-    // (picking it again refreshes the link).
+    // The Mac's Menu: "All agents", then every agent with its brand mark
+    // and skills folder, ticked when that folder already links to THIS
+    // build's skill (picking it again refreshes the link). The mark is the
+    // row's bitmap, which hides a menu's own check glyph, so the tick is
+    // the Mac's trailing ✓ in the label.
     HMENU menu = ::CreatePopupMenu();
     if (!menu) {
       return;
@@ -3610,13 +3613,24 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
     ::AppendMenuW(menu, MF_STRING, 1,
                   PhiStr("settings.developer.skillInstall.allAgentsAction"));
     ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    std::vector<HBITMAP> bitmaps;
+    // 14 dip: the Mac's 15 pt frame around a 14/18 ink fill, so the mark
+    // sits a little under the menu text's height rather than over it.
+    const int icon_px = Scaled(14);
     for (size_t i = 0; i < targets.size(); ++i) {
+      const bool ticked = installed.count(targets[i].id) > 0;
       const std::wstring label = std::wstring(targets[i].name) + L"    " +
-                                 PhiSkillDisplayPath(targets[i]);
-      ::AppendMenuW(menu,
-                    MF_STRING | (installed.count(targets[i].id) ? MF_CHECKED
-                                                                : 0),
-                    static_cast<UINT>(i) + 2, label.c_str());
+                                 PhiSkillDisplayPath(targets[i]) +
+                                 (ticked ? L"    \u2713" : L"");
+      const UINT id = static_cast<UINT>(i) + 2;
+      ::AppendMenuW(menu, MF_STRING | (ticked ? MF_CHECKED : 0), id,
+                    label.c_str());
+      if (HBITMAP bitmap = PhiTemplateImageBitmap(
+              PhiSkillTargetIconPath(targets[i], icon_px), icon_px,
+              ::GetSysColor(COLOR_MENUTEXT))) {
+        bitmaps.push_back(bitmap);
+        PhiSetMenuItemBitmap(menu, id, bitmap);
+      }
     }
     POINT anchor = {item.bounds.left, item.bounds.bottom};
     ::ClientToScreen(hwnd(), &anchor);
@@ -3624,6 +3638,9 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
         menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, anchor.x,
         anchor.y, 0, hwnd(), nullptr));
     ::DestroyMenu(menu);
+    for (HBITMAP bitmap : bitmaps) {
+      ::DeleteObject(bitmap);
+    }
     if (chosen == 1) {
       InstallSkillForAllAgents(hwnd());
     } else if (chosen >= 2 && chosen < 2 + targets.size()) {

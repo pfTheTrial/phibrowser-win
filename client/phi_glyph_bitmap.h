@@ -21,6 +21,12 @@ namespace phi_client {
 // owns the bitmap (DeleteObject) and keeps it alive while a menu holds it.
 HBITMAP PhiSpaceGlyphBitmap(const std::wstring& glyph, int px, COLORREF ink);
 
+// A template image — a PNG whose alpha is the shape and whose colour is
+// ignored, as the Mac's template-rendering imagesets — decoded and scaled
+// `px` square, its coverage filled with `ink`, as the same kind of bitmap.
+// Null when the file is missing or does not decode. The caller owns it.
+HBITMAP PhiTemplateImageBitmap(const std::wstring& path, int px, COLORREF ink);
+
 // Sets `bitmap` as the picture of the item with command `id` (MIIM_BITMAP).
 void PhiSetMenuItemBitmap(HMENU menu, UINT id, HBITMAP bitmap);
 
