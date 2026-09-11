@@ -115,6 +115,34 @@ void PerformanceExtras() {
   CHECK(narrow.field_ext_strip.empty());
 }
 
+void SingleSpace() {
+  std::printf("single space: no strip row, no compact pip; bands reclaim it\n");
+  ShellLayoutInputs in = Base(PhiLayoutMode::kPerformance);
+  in.spaces_switch = false;
+  ShellLayout l = ComputeShellLayout(in);
+  CHECK(l.spaces_strip.empty() && l.add_space.empty());
+  CHECK(!l.spaces_switch);
+  // The address bar re-pins to the band (52 - 40) and the header shrinks
+  // by the row and its gap (88 - 40).
+  CHECK((l.url_field == SidebarRect{8, 32 + 12, 232, 32 + 44}));
+  CHECK(l.new_tab_row.top == 32 + 48 + 5);
+  in = Base(PhiLayoutMode::kBalanced);
+  in.spaces_switch = false;
+  l = ComputeShellLayout(in);
+  CHECK(l.spaces_strip.empty());
+  CHECK(l.new_tab_row.top == 36 + 5);  // The card's top edge, then the spacer.
+  in = Base(PhiLayoutMode::kComfortable);
+  in.spaces_switch = false;
+  l = ComputeShellLayout(in);
+  CHECK(l.chips_limit == l.chips_left);  // No pip.
+  CHECK(l.tabs_left == l.phi_menu.right + 8);
+  // The cache key sees the flag.
+  ShellLayoutInputs a = Base(PhiLayoutMode::kPerformance);
+  ShellLayoutInputs b = a;
+  b.spaces_switch = false;
+  CHECK(a != b);
+}
+
 void Balanced() {
   std::printf("balanced: top bar with the address field, strip on its line\n");
   const ShellLayout l = ComputeShellLayout(Base(PhiLayoutMode::kBalanced));
@@ -301,6 +329,7 @@ void DropZones() {
 }  // namespace
 
 int main() {
+  SingleSpace();
   Scaling();
   Performance();
   PerformanceExtras();

@@ -946,6 +946,7 @@ class PhiShellWindow : public PhiHitSource,
     int tabs_left = 0, tabs_top = 0;
     int tabs_limit = 0;   // Bottom (vertical) or right (horizontal) edge.
     bool horizontal_tabs = false;
+    bool spaces_switch = true;  // The Spaces strip / compact pip exists.
   };
   Layout ComputeLayout();
   // The cache behind ComputeLayout: the inputs the last layout was derived
@@ -1185,6 +1186,10 @@ class PhiShellWindow : public PhiHitSource,
   // reserves that band's drop zone (SidebarSetDropZones).
   bool pinned_drop_zone_ = false;
   bool bookmark_drop_zone_ = false;
+  // The Spaces-switch state the chrome was last laid out for: a Space
+  // count crossing the single-Space line moves every band, so the rebuild
+  // that notices it re-lays the children and repaints the whole shell.
+  bool laid_out_spaces_switch_ = true;
 
   // The page changes AFTER the band slide completes (the Mac reveals the
   // target on completion): the entering child stays hidden and the leaving

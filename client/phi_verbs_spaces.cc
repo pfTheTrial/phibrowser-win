@@ -141,6 +141,10 @@ PhiVerbResult PhiControlDispatcher::VerbSpacesCreate(
   coordinator_->ScheduleSave(PhiCoordinator::StoreDomain::kSpaces);
   // A wire colorHex tints the new Space.
   coordinator_->RebuildSpacePalettes();
+  // The list changed under every window: the strips rebuild their pips
+  // (and a lone Space's hidden strip comes back), Settings relists — the
+  // same broadcast a rename or a delete makes from the manager.
+  coordinator_->NoteSpaceListChanged();
   if (ctx.params.Bool("activate", false)) {
     // Surface it in the user's focused window — explicit opt-in only (the
     // skill's default create never yanks the user's window).

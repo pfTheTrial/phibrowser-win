@@ -332,6 +332,7 @@ struct PhiSidebarRects {
   int tabs_left = 0, tabs_top = 0;
   int tabs_limit = 0;  // Bottom (vertical) or right (horizontal) edge.
   bool horizontal_tabs = false;
+  bool spaces_switch = true;  // The Spaces strip / compact pip exists.
 };
 
 // One rendered tab row: what to draw and what a click at that row does.

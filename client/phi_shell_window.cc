@@ -482,6 +482,7 @@ PhiShellWindow::Layout PhiShellWindow::ToLayout(
   out.tabs_top = shell.tabs_top;
   out.tabs_limit = shell.tabs_limit;
   out.horizontal_tabs = shell.horizontal_tabs;
+  out.spaces_switch = shell.spaces_switch;
   return out;
 }
 
@@ -509,6 +510,11 @@ ShellLayoutInputs PhiShellWindow::CurrentLayoutInputs() const {
   in.bookmark_row_count = bookmark_row_count_;
   in.pinned_drop_zone = pinned_drop_zone_;
   in.bookmark_drop_zone = bookmark_drop_zone_;
+  // The Mac's updateSpaceSwitchVisibility: the switch shows only with more
+  // than one Space to switch between — or while the create form is up,
+  // whose placeholder pip lives in the strip (forcesSpaceSwitchVisible).
+  in.spaces_switch =
+      spaces_ && (spaces_->SwitchTargets() > 1 || spaces_->creating());
   return in;
 }
 
@@ -1628,6 +1634,7 @@ PhiSidebarRects PhiShellWindow::BandRects(const Layout& layout) const {
   rects.tabs_top = layout.tabs_top;
   rects.tabs_limit = layout.tabs_limit;
   rects.horizontal_tabs = layout.horizontal_tabs;
+  rects.spaces_switch = layout.spaces_switch;
   return rects;
 }
 
@@ -1799,6 +1806,7 @@ PhiSpacesStripRects PhiShellWindow::StripRects(
   rects.chips_top = layout.chips_top;
   rects.chips_limit = layout.chips_limit;
   rects.horizontal_tabs = layout.horizontal_tabs;
+  rects.spaces_switch = layout.spaces_switch;
   return rects;
 }
 
@@ -3209,6 +3217,14 @@ void PhiShellWindow::RebuildTabs() {
   RebuildChips();
   rows_dirty_ = false;
   sidebar_->Rebuild();
+  // The strip row came or went (a second Space created, the last other one
+  // deleted): the address bar and every band under it moved, and nothing
+  // else repaints a band that was empty a moment ago.
+  const bool spaces_switch = ComputeLayout().spaces_switch;
+  if (spaces_switch != laid_out_spaces_switch_) {
+    laid_out_spaces_switch_ = spaces_switch;
+    LayoutContents();
+  }
 }
 
 // --- The sidebar's public surface, forwarded --------------------------------

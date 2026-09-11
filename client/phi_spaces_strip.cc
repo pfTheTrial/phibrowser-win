@@ -156,6 +156,21 @@ void PhiSpacesStrip::Shutdown() {
 // ---------------------------------------------------------------------------
 // The pip row.
 
+int PhiSpacesStrip::SwitchTargets() const {
+  if (!spaces_host_ || shell_->SpacesIncognito()) {
+    return 0;
+  }
+  int count = static_cast<int>(spaces_host_->Spaces().size());
+  if (agent_host_) {
+    count += static_cast<int>(
+        agent_host_
+            ->AgentSpaces(shell_->SpacesIsAgent() ? 0
+                                                  : shell_->SpacesSlot().value)
+            .size());
+  }
+  return count;
+}
+
 void PhiSpacesStrip::Rebuild() {
   chips_.clear();
   overflow_ = false;
@@ -164,8 +179,10 @@ void PhiSpacesStrip::Rebuild() {
   creating_pip_ = RECT{};
   const PhiSpacesStripRects rects = shell_->SpacesRects();
   add_slot_ = rects.add_space;
-  if (!spaces_host_ || shell_->SpacesIncognito()) {
-    add_slot_ = RECT{};  // Incognito has no Spaces strip.
+  if (!spaces_host_ || shell_->SpacesIncognito() || !rects.spaces_switch) {
+    // Incognito has no Spaces strip; nor does a window with nothing to
+    // switch to (the layout dropped the row).
+    add_slot_ = RECT{};
     return;
   }
   const std::string& active = shell_->SpacesActiveSpace();

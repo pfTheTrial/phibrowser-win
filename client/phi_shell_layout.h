@@ -152,6 +152,12 @@ struct ShellLayoutInputs {
   // drag has somewhere to go. Ignored while the band has rows of its own.
   bool pinned_drop_zone = false;
   bool bookmark_drop_zone = false;
+  // There is something to switch TO: more than one Space (agent pips
+  // included), or a Space is being created. With a single Space the strip
+  // row is pure noise (the Mac's updateSpaceSwitchVisibility): the vertical
+  // layouts drop the row and reclaim its 40pt, comfortable drops the
+  // compact pip.
+  bool spaces_switch = true;
 
   friend bool operator==(const ShellLayoutInputs& a,
                          const ShellLayoutInputs& b) {
@@ -167,7 +173,8 @@ struct ShellLayoutInputs {
            a.pinned_row_count == b.pinned_row_count &&
            a.bookmark_row_count == b.bookmark_row_count &&
            a.pinned_drop_zone == b.pinned_drop_zone &&
-           a.bookmark_drop_zone == b.bookmark_drop_zone;
+           a.bookmark_drop_zone == b.bookmark_drop_zone &&
+           a.spaces_switch == b.spaces_switch;
   }
   friend bool operator!=(const ShellLayoutInputs& a,
                          const ShellLayoutInputs& b) {
@@ -235,6 +242,8 @@ struct ShellLayout {
   int tabs_left = 0, tabs_top = 0;
   int tabs_limit = 0;  // Bottom (vertical) or right (horizontal) edge.
   bool horizontal_tabs = false;
+  // The Spaces switch exists in this layout (see ShellLayoutInputs).
+  bool spaces_switch = true;
 };
 
 ShellLayout ComputeShellLayout(const ShellLayoutInputs& in);

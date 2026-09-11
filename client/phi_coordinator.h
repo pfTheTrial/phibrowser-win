@@ -472,6 +472,12 @@ class PhiCoordinator : public SidebarHost,
   PhiSpaceManager& space_manager() { return *space_manager_; }
   PhiUrlRouter& url_router() { return *url_router_; }
   const model::PhiSettings& settings() const { return preferences_.settings(); }
+  // A verb edited the Space LIST in the model directly (spaces.create):
+  // the broadcast the manager makes for its own list edits — every
+  // window's strip rebuilds, Settings relists.
+  void NoteSpaceListChanged() {
+    OnSpacesChanged(PhiSpaceManager::SpacesChange::kList);
+  }
   model::PhiSpacesModel& spaces_model() {
     return space_manager_->mutable_model();
   }

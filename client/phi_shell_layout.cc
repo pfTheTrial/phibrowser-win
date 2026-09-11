@@ -213,8 +213,10 @@ ShellLayout ComputeShellLayout(const ShellLayoutInputs& in) {
                     strip_mid + btn / 2};
     out.chips_left = out.phi_menu.right + scaled(kTopBarSpacing);
     out.chips_top = strip_mid - scaled(kSpaceChip) / 2;
-    // One compact pip.
-    out.chips_limit = out.chips_left + scaled(kSpaceChip);
+    // One compact pip — none with nothing to switch to, and the tabs take
+    // its room.
+    out.chips_limit = in.spaces_switch ? out.chips_left + scaled(kSpaceChip)
+                                       : out.chips_left;
     // search-tabs keeps the trailing spot the vertical layouts park it in,
     // so the button does not move when the layout does — on the strip's
     // line here, the band's there.
@@ -225,7 +227,8 @@ ShellLayout ComputeShellLayout(const ShellLayoutInputs& in) {
     // The "+" follows the last tab; the strip is full when the next tab
     // would need the room the button is holding.
     const int new_tab_gap = scaled(kTopBarSpacing);
-    out.tabs_left = out.chips_limit + scaled(kHTabStripLeading);
+    out.tabs_left = (in.spaces_switch ? out.chips_limit : out.phi_menu.right) +
+                    scaled(kHTabStripLeading);
     out.tabs_top = scaled(kHTabStripTop);
     out.tabs_limit = out.search_tabs.left - new_tab_gap - btn - new_tab_gap;
     out.horizontal_tabs = true;
@@ -277,7 +280,7 @@ ShellLayout ComputeShellLayout(const ShellLayoutInputs& in) {
     place_band_divider(out.search_tabs);
     out.band_limit = out.search_tabs.left;
     const int gap = tb + scaled(kContentTopGap);
-    if (!hide_sidebar) {
+    if (!hide_sidebar && in.spaces_switch) {
       // The strip starts on the card's own top edge, so the sidebar's Spaces
       // row and the card's address row read as ONE 32pt band across the
       // window rather than two rows that nearly line up.
@@ -316,7 +319,9 @@ ShellLayout ComputeShellLayout(const ShellLayoutInputs& in) {
       const int rr = out.extensions.left - scaled(2);
       out.reader = {rr - fbtn, fmid - fbtn / 2, rr, fmid + fbtn / 2};
     }
-    out.tabs_top = out.spaces_strip.bottom + scaled(kHeaderSpacer);
+    // Without the strip the sidebar's bands start at the card's top edge.
+    out.tabs_top = (in.spaces_switch ? out.spaces_strip.bottom : gap) +
+                   scaled(kHeaderSpacer);
   } else {
     // Performance: back / forward / reload and search-tabs trail the caption
     // band, before the caption buttons — the sidebar has no header row at
@@ -333,10 +338,18 @@ ShellLayout ComputeShellLayout(const ShellLayoutInputs& in) {
     r = out.forward.left - scaled(kNavGroupSpacing);
     out.back = band_control(r);
     out.band_limit = out.back.left;
+    // Without the strip the address bar re-pins to the band and the header
+    // reclaims the row and its gap (the Mac's 80pt base against 120).
+    const int strip_room =
+        in.spaces_switch ? 0 : scaled(kSpacesStripHeight + kSpacesStripTop);
     if (!hide_sidebar) {
-      place_spaces(0, sidebar, tb + scaled(kSpacesStripTop));
-      out.url_field = {inset, tb + scaled(kAddressBarTop), sidebar - inset,
-                       tb + scaled(kAddressBarTop + kAddressBarHeight)};
+      if (in.spaces_switch) {
+        place_spaces(0, sidebar, tb + scaled(kSpacesStripTop));
+      }
+      out.url_field = {inset, tb + scaled(kAddressBarTop) - strip_room,
+                       sidebar - inset,
+                       tb + scaled(kAddressBarTop + kAddressBarHeight) -
+                           strip_room};
       // SideAddressBar's trailing stack INSIDE the capsule: the copy-link
       // button then the extensions-menu button, 24pt each, spacing 2,
       // trailing inset 2 (rightStackView metrics).
@@ -374,8 +387,9 @@ ShellLayout ComputeShellLayout(const ShellLayoutInputs& in) {
     out.content = {hide_sidebar ? m : sidebar, tb + scaled(kContentTopGap),
                    w - m, h - m};
     carve_bookmark_bar(&out);
-    out.tabs_top = tb + scaled(kHeaderHeight + kHeaderSpacer);
+    out.tabs_top = tb + scaled(kHeaderHeight + kHeaderSpacer) - strip_room;
   }
+  out.spaces_switch = in.spaces_switch;
 
   // The pinned-tab band sits between the header and the tab list. Empty until
   // favourites exist, exactly as on Mac (which mounts a zero-height container).

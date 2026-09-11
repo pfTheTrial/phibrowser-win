@@ -57,6 +57,9 @@ struct PhiSpacesStripRects {
   int chips_top = 0;
   int chips_limit = 0;  // Right edge the pips may not cross.
   bool horizontal_tabs = false;
+  // False with nothing to switch to (one Space, no agent pips, no form):
+  // the strip lays out no pips and no "+".
+  bool spaces_switch = true;
 };
 
 // What the Spaces strip asks of its shell.
@@ -208,6 +211,10 @@ class PhiSpacesStrip {
   void SetFormIcon(const std::string& storage_value);
   void OnFormProfileCreated(const std::string& profile_id);
   bool creating() const { return creating_; }
+  // How many pips the strip would offer: the user Spaces plus the agent
+  // Spaces this slot lists. The layout drops the strip (and comfortable's
+  // compact pip) when there is only one and no form is up.
+  int SwitchTargets() const;
   const std::wstring& creating_icon_text() const { return creating_icon_; }
   // Where the form mounts: the sidebar below the strip.
   RECT FormRect();
