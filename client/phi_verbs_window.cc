@@ -163,6 +163,11 @@ PhiVerbResult PhiControlDispatcher::VerbWindowLayout(
   out.Set("readerProbe", shell->ActiveTabExtensionOfferable());
   out.Set("readerDistillable", shell->ActiveTabDistillable());
   out.Set("readerActive", shell->ActiveTabShowsReader());
+  // The caption band's sidebar toggle (the vertical layouts), and the
+  // collapse it drives — the floating panel's trigger is the collapsed
+  // card's left margin.
+  out.Set("sidebarToggle", RectDict(shell->sidebar_toggle_rect()));
+  out.Set("sidebarCollapsed", shell->sidebar_collapsed());
   out.Set("tabsTop", shell->tabs_top());
   out.Set("rowHeight", shell->tab_row_height());
   out.Set("rowGap", shell->tab_row_gap());

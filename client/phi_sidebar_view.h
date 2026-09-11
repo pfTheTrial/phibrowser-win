@@ -706,6 +706,9 @@ class PhiSidebarView {
   static constexpr int kLandingMs = 180;
 
   // --- Paint --------------------------------------------------------------
+  // The band is collapsed out of the shell (the vertical layouts'
+  // sidebar_hidden): its rows keep no geometry and nothing paints.
+  static bool BandHidden(const PhiSidebarRects& layout);
   // The band (pinned grid through tab list): once normally, or the two-pass
   // slide while a Space switch animates.
   void Paint(HDC dc, const PhiSidebarRects& layout, const PhiPalette& palette);

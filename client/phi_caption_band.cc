@@ -18,9 +18,11 @@ namespace {
 // Each title's horizontal padding.
 constexpr int kMenuTitlePad = 10;
 // The Phi title's leading pad: its rect starts kPhiTitlePad short of the
-// sidebar's edge inset, so the logo lands ON kEdgeInset — the left edge the
-// Spaces pips, the pinned card and the tab rows below all share.
+// logo, which lands kToggleGap after the sidebar toggle — the toggle is
+// what sits ON kEdgeInset now, the left edge the Spaces pips, the pinned
+// card and the tab rows below all share (phi_shell_layout.h sidebar_toggle).
 constexpr int kPhiTitlePad = 4;
+constexpr int kToggleGap = 4;
 // The logo's drawn edge, and the gap between it and the "Phi" label.
 constexpr int kLogoSize = 18;
 constexpr int kLogoTextGap = 6;
@@ -93,7 +95,12 @@ void PhiCaptionBand::EnsureTitleRects() {
   }
   HGDIOBJ previous = font ? ::SelectObject(dc, font) : nullptr;
   titles_.clear();
-  int x = shell_->CaptionScaled(shell_metrics::kEdgeInset) -
+  // After the toggle (its rect is the layout's; its width is the header
+  // button's). Comfortable shows no titles at all, so measuring them past a
+  // toggle it does not lay out costs nothing.
+  int x = shell_->CaptionScaled(shell_metrics::kEdgeInset) +
+          shell_->CaptionScaled(shell_metrics::kNavButton) +
+          shell_->CaptionScaled(kToggleGap) -
           shell_->CaptionScaled(kPhiTitlePad);
   const int band = shell_->CaptionScaled(shell_metrics::kTitleBarHeight);
   bool first = true;
@@ -230,6 +237,7 @@ int PhiCaptionBand::HitTest(POINT client_pt) {
       ::PtInRect(&rects.forward, client_pt) ||
       ::PtInRect(&rects.reload, client_pt) ||
       ::PtInRect(&rects.search_tabs, client_pt) ||
+      ::PtInRect(&rects.sidebar_toggle, client_pt) ||
       ::PtInRect(&rects.phi_menu, client_pt)) {
     return HTCLIENT;
   }
@@ -517,7 +525,8 @@ bool PhiCaptionBand::OpenMenuAt(const PhiCaptionRects& rects,
       ::PtInRect(&rects.back, client_pt) ||
       ::PtInRect(&rects.forward, client_pt) ||
       ::PtInRect(&rects.reload, client_pt) ||
-      ::PtInRect(&rects.search_tabs, client_pt)) {
+      ::PtInRect(&rects.search_tabs, client_pt) ||
+      ::PtInRect(&rects.sidebar_toggle, client_pt)) {
     return false;
   }
   const size_t titles = VisibleTitles(rects);

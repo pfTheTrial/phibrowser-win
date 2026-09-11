@@ -204,6 +204,10 @@ class PhiMenuBarShell {
   // The address field's EDIT (null before the shell has one): Open Location
   // and the Edit menu's text commands operate on it.
   virtual HWND MenuAddressField() const = 0;
+  // Open Location: focuses the field, selected whole — raising the floating
+  // sidebar first when the collapsed performance shell has no field of its
+  // own (the panel's is the one to type in).
+  virtual void MenuFocusAddressField() = 0;
   // Re-reads navigation state from the window model. NOT a row rebuild —
   // the rows a menu shows are always the finished ones.
   virtual void MenuRefreshNavState() = 0;

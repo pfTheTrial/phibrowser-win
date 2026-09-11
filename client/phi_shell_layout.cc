@@ -136,6 +136,14 @@ ShellLayout ComputeShellLayout(const ShellLayoutInputs& in) {
   // Where the menu titles have to stop: the trailing cluster's left edge.
   // Filled in by the modes that build one; the caption buttons otherwise.
   out.band_limit = out.caption_min.left;
+  if (in.mode != PhiLayoutMode::kComfortable) {
+    // The sidebar toggle leads the band, ON the sidebar's edge inset — the
+    // left edge the pips, the pinned card and the tab rows below share
+    // (the Phi button used to land there; it now follows the toggle, see
+    // PhiCaptionBand::EnsureTitleRects). Laid out collapsed too: it is the
+    // one control that must not vanish with the sidebar it brings back.
+    out.sidebar_toggle = {inset, (tb - btn) / 2, inset + btn, (tb + btn) / 2};
+  }
   // The seam between the band's last control and the caption buttons, set
   // by each mode once it knows what ends its cluster (search-tabs, in all
   // three). It centres in kBandTrailingGap and rides the cluster's own

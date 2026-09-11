@@ -203,20 +203,54 @@ void PhiOmniboxSession::Position() {
   // and the EDIT is a real child window, so a stale width paints straight
   // over whatever just appeared beside it. Moving only on a real change
   // keeps that call from feeding itself more paints.
+  // Hosted: the capsule is in the shell's space, the EDIT in the host's.
+  RECT placed = target;
+  const HWND parent = host_ ? host_ : shell_->OmniboxShellWindow();
+  if (host_) {
+    ::OffsetRect(&placed, -host_offset_.x, -host_offset_.y);
+  }
   RECT current = {};
   if (::GetWindowRect(field_, &current) &&
-      ::MapWindowPoints(HWND_DESKTOP, shell_->OmniboxShellWindow(),
+      ::MapWindowPoints(HWND_DESKTOP, parent,
                         reinterpret_cast<POINT*>(&current), 2) &&
-      ::EqualRect(&current, &target)) {
+      ::EqualRect(&current, &placed)) {
     return;
   }
-  ::MoveWindow(field_, target.left, target.top, target.right - target.left,
-               target.bottom - target.top, TRUE);
+  ::MoveWindow(field_, placed.left, placed.top, placed.right - placed.left,
+               placed.bottom - placed.top, TRUE);
 }
 
 void PhiOmniboxSession::SetFieldVisible(bool visible) {
   if (field_) {
     ::ShowWindow(field_, visible ? SW_SHOW : SW_HIDE);
+  }
+}
+
+void PhiOmniboxSession::HostField(HWND host, POINT offset) {
+  if (!field_ || !host || host == host_) {
+    return;
+  }
+  ClosePopup(/*stop_query=*/true);  // Anchored to the old place.
+  host_ = host;
+  host_offset_ = offset;
+  ::SetParent(field_, host);
+  Position();
+  ::ShowWindow(field_, SW_SHOW);
+}
+
+void PhiOmniboxSession::UnhostField() {
+  if (!host_) {
+    return;
+  }
+  ClosePopup(/*stop_query=*/true);
+  host_ = nullptr;
+  host_offset_ = {};
+  if (field_) {
+    // Down first: the shell's own turn shows it again if its layout has a
+    // field, and a reparented EDIT must not flash at the host's position.
+    ::ShowWindow(field_, SW_HIDE);
+    ::SetParent(field_, shell_->OmniboxShellWindow());
+    Position();
   }
 }
 

@@ -49,6 +49,8 @@ struct PhiCaptionRects {
   // The band's own controls: they take their own clicks, so the drag space
   // must not swallow them.
   RECT back{}, forward{}, reload{}, search_tabs{};
+  // The vertical layouts' leading sidebar toggle; the titles start after it.
+  RECT sidebar_toggle{};
   // Comfortable's leading Phi button (the logo alone). Empty elsewhere.
   RECT phi_menu{};
   // The x the menu titles may not cross.

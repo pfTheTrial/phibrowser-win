@@ -474,6 +474,7 @@ PhiShellWindow::Layout PhiShellWindow::ToLayout(
   out.page_icon = PhiToRect(shell.page_icon);
   out.copy_link = PhiToRect(shell.copy_link);
   out.reader = PhiToRect(shell.reader);
+  out.sidebar_toggle = PhiToRect(shell.sidebar_toggle);
   out.field_ext_strip = PhiToRect(shell.field_ext_strip);
   out.add_space = PhiToRect(shell.add_space);
   out.chip_size = shell.chip_size;
@@ -558,6 +559,10 @@ RECT PhiShellWindow::url_field_rect() {
 
 RECT PhiShellWindow::reader_button_rect() {
   return ComputeLayout().reader;
+}
+
+RECT PhiShellWindow::sidebar_toggle_rect() {
+  return ComputeLayout().sidebar_toggle;
 }
 
 bool PhiShellWindow::ActiveTabExtensionOfferable() const {
@@ -1060,6 +1065,7 @@ PhiCaptionRects PhiShellWindow::CaptionRects() {
   rects.forward = layout.forward;
   rects.reload = layout.reload;
   rects.search_tabs = layout.search_tabs;
+  rects.sidebar_toggle = layout.sidebar_toggle;
   rects.phi_menu = layout.phi_menu;
   rects.band_limit = layout.band_limit;
   rects.tabs_top = layout.tabs_top;
@@ -1203,6 +1209,10 @@ int PhiShellWindow::MenuScaled(int design_units) const {
 
 HWND PhiShellWindow::MenuAddressField() const {
   return omnibox_->field();
+}
+
+void PhiShellWindow::MenuFocusAddressField() {
+  FocusAddressField();
 }
 
 void PhiShellWindow::MenuRefreshNavState() {
@@ -1421,7 +1431,7 @@ void PhiShellWindow::BrowserHostRetintChrome() {
 }
 
 void PhiShellWindow::BrowserHostFocusAddressField() {
-  omnibox_->FocusFieldIfVisible();
+  FocusAddressField();
 }
 
 bool PhiShellWindow::BrowserHostFocusNativePage() {
@@ -1560,6 +1570,10 @@ void PhiShellWindow::ActivatePaneTab(int tab_id) {
 }
 
 PhiOmniboxCapsule PhiShellWindow::OmniboxCapsule() {
+  // A field hosted in the floating panel is laid out where the panel
+  // paints it: the expanded layout of the collapsed shell.
+  const base::AutoReset<bool> floating_scope(
+      &floating_layout_, floating_layout_ || omnibox_->field_hosted());
   const Layout layout = ComputeLayout();
   auto to_pure = [](const RECT& r) {
     return SidebarRect{r.left, r.top, r.right, r.bottom};
@@ -1984,9 +1998,26 @@ bool PhiShellWindow::OmniboxFieldHidden() const {
   // While the comfortable Space slide runs the EDIT is down and the frame
   // paints the address itself (include_child_controls): a real child window
   // moves a frame apart from the parent's paint and would ghost.
+  // The collapsed performance shell has no address bar of its own — but
+  // the floating panel shows the sidebar's, and while the EDIT is hosted
+  // there (ShowFloatingSidebar) it is that panel's live field.
   return browsers_->content_fullscreen() ||
-         (sidebar_collapsed_ && layout_mode_ == PhiLayoutMode::kPerformance) ||
+         (sidebar_collapsed_ && layout_mode_ == PhiLayoutMode::kPerformance &&
+          !omnibox_->field_hosted()) ||
          spaces_->creating() || (content_slide_ && content_slide_->running());
+}
+
+void PhiShellWindow::FocusAddressField() {
+  // Ctrl+L / Open Location / placeholder mode's way in. The collapsed
+  // performance shell has no field of its own: the floating panel's is the
+  // one to focus, so the panel comes up first (the Mac's Cmd+L raises its
+  // omnibox overlay wherever the sidebar is; this is the panel's turn at
+  // that). The focused field pins the panel open (FloatingSidebarTick).
+  if (sidebar_collapsed_ && !floating_sidebar_ &&
+      layout_mode_ == PhiLayoutMode::kPerformance && OmniboxFieldHidden()) {
+    ShowFloatingSidebar();
+  }
+  omnibox_->FocusFieldIfVisible();
 }
 
 void PhiShellWindow::SpacesRevealSwappedContent() {
@@ -2465,7 +2496,7 @@ PhiDragBitmap PhiShellWindow::CaptureChromeRect(const RECT& client_rect) {
 
 
 
-std::array<RECT, 14> PhiShellWindow::NavHoverTable(
+std::array<RECT, 15> PhiShellWindow::NavHoverTable(
     const Layout& layout) const {
   // The nav buttons' hover washes (back/forward/reload/search).
   // The first six MUST stay in the paint table's order — PaintChrome keys
@@ -2476,7 +2507,7 @@ std::array<RECT, 14> PhiShellWindow::NavHoverTable(
           layout.search_tabs, sidebar_->add_tab_button(),   layout.overflow,
           layout.downloads,   layout.memory,     layout.feedback,
           layout.chat,        layout.extensions, layout.copy_link,
-          layout.phi_menu,    layout.reader};
+          layout.phi_menu,    layout.reader,     layout.sidebar_toggle};
 }
 
 // The client rect a hovered element's wash covers, empty for none — so a
@@ -2496,7 +2527,7 @@ RECT PhiShellWindow::HoverRect(HoverKind kind, int index) {
       r = spaces_->ChipBounds(index);
       break;
     case HoverKind::kNav: {
-      const std::array<RECT, 14> nav = NavHoverTable(ComputeLayout());
+      const std::array<RECT, 15> nav = NavHoverTable(ComputeLayout());
       r = index >= 0 && index < static_cast<int>(nav.size())
               ? nav[static_cast<size_t>(index)]
               : RECT{};
@@ -2546,9 +2577,14 @@ void PhiShellWindow::SetHover(HoverKind kind, int index) {
 void PhiShellWindow::OnChromeMouseMove(POINT client_pt) {
   HoverKind kind = HoverKind::kNone;
   int index = -1;
+  // The band's chips and rows are hit-tested as they are — and while the
+  // floating panel is up they are built for ITS geometry, not the collapsed
+  // shell's (RebuildTabs). The shell then owns no band: a pointer over its
+  // collapsed card must not land on a pip or a row the panel is showing.
+  const bool band = BandOnShell();
   {
     const Layout layout = ComputeLayout();
-    const std::array<RECT, 14> nav = NavHoverTable(layout);
+    const std::array<RECT, 15> nav = NavHoverTable(layout);
     for (size_t i = 0; i < nav.size() && kind == HoverKind::kNone; ++i) {
       if (::PtInRect(&nav[i], client_pt)) {
         kind = HoverKind::kNav;
@@ -2556,13 +2592,13 @@ void PhiShellWindow::OnChromeMouseMove(POINT client_pt) {
       }
     }
   }
-  if (kind == HoverKind::kNone) {
+  if (band && kind == HoverKind::kNone) {
     if (const int chip = spaces_->ChipAt(client_pt); chip >= 0) {
       kind = HoverKind::kChip;
       index = chip;
     }
   }
-  {
+  if (band) {
     // The strip's trailing slot ("+" / "…"), and — tracked apart from the
     // hover kind, since resting on a pip is both a pip hover and a row
     // hover — the strip's ROW: inside its 10pt padding, pips and the empty
@@ -2581,29 +2617,34 @@ void PhiShellWindow::OnChromeMouseMove(POINT client_pt) {
       row_hovered = ::PtInRect(&row, client_pt) != FALSE;
     }
     spaces_->SetRowHovered(row_hovered);
+  } else {
+    spaces_->SetRowHovered(false);
   }
   const std::vector<ShortcutRow>& pins = sidebar_->pinned();
-  for (size_t i = 0; i < pins.size() && kind == HoverKind::kNone; ++i) {
+  for (size_t i = 0; band && i < pins.size() && kind == HoverKind::kNone;
+       ++i) {
     if (::PtInRect(&pins[i].bounds, client_pt)) {
       kind = HoverKind::kPin;
       index = static_cast<int>(i);
     }
   }
   const std::vector<ShortcutRow>& marks = sidebar_->bookmarks();
-  for (size_t i = 0; i < marks.size() && kind == HoverKind::kNone; ++i) {
+  for (size_t i = 0; band && i < marks.size() && kind == HoverKind::kNone;
+       ++i) {
     if (::PtInRect(&marks[i].bounds, client_pt)) {
       kind = HoverKind::kBookmark;
       index = static_cast<int>(i);
     }
   }
   const std::vector<GroupHeader>& headers = sidebar_->group_headers();
-  for (size_t i = 0; i < headers.size() && kind == HoverKind::kNone; ++i) {
+  for (size_t i = 0; band && i < headers.size() && kind == HoverKind::kNone;
+       ++i) {
     if (::PtInRect(&headers[i].bounds, client_pt)) {
       kind = HoverKind::kGroupHeader;
       index = static_cast<int>(i);
     }
   }
-  if (kind == HoverKind::kNone) {
+  if (band && kind == HoverKind::kNone) {
     const RECT new_tab = ComputeLayout().new_tab_row;
     if (::PtInRect(&new_tab, client_pt)) {
       kind = HoverKind::kNewTabRow;
@@ -2625,13 +2666,20 @@ void PhiShellWindow::OnChromeMouseMove(POINT client_pt) {
     }
   }
   const std::vector<TabRow>& rows = sidebar_->tabs();
-  for (size_t i = 0; i < rows.size() && kind == HoverKind::kNone; ++i) {
+  for (size_t i = 0; band && i < rows.size() && kind == HoverKind::kNone;
+       ++i) {
     if (::PtInRect(&rows[i].bounds, client_pt)) {
       kind = HoverKind::kTab;
       index = static_cast<int>(i);
     }
   }
   SetHover(kind, index);
+}
+
+bool PhiShellWindow::BandOnShell() const {
+  // The floating panel's events and paint run under floating_layout_, and
+  // the band is theirs then; the collapsed shell's own turns see no band.
+  return !sidebar_collapsed_ || floating_layout_;
 }
 
 void PhiShellWindow::ClearHover() {
@@ -3693,6 +3741,10 @@ void PhiShellWindow::OnChromeClick(int x, int y) {
     PhiSearchTabsPanel::Toggle(this);  // The header's magnifier.
     return;
   }
+  if (::PtInRect(&layout.sidebar_toggle, pt)) {
+    ToggleSidebar();  // The band's leading control, View ▸ Toggle Sidebar.
+    return;
+  }
   if (::PtInRect(&layout.downloads, pt)) {
     // The Mac DownloadButtonView's popover toggle — and its
     // feature_entry_tapped: the button lives in the sidebar's bottom bar,
@@ -3784,6 +3836,9 @@ void PhiShellWindow::OnChromeClick(int x, int y) {
   // The stored bands are the sidebar's own (phi_sidebar_view.h): the pinned
   // grid and the bookmark outline, hit-tested here so the bookmark BAR's
   // pills above still take their clicks first.
+  if (!BandOnShell()) {
+    return;  // The band's rows are the floating panel's (OnChromeMouseMove).
+  }
   if (sidebar_->OnStoredRowClick(pt)) {
     return;
   }
@@ -4549,8 +4604,8 @@ void PhiShellWindow::ShowSpaceSwitcherMenu(POINT pt, bool overflow) {
 }
 
 void PhiShellWindow::OnChromeContextMenu(int x, int y) {
-  if (!services_.sidebar || !shell_hwnd_) {
-    return;
+  if (!services_.sidebar || !shell_hwnd_ || !BandOnShell()) {
+    return;  // Collapsed: every row here is the floating panel's.
   }
   const POINT pt = {x, y};
   // The chips and rows are hit-tested as the last frame showed them; what a
@@ -4711,6 +4766,16 @@ void PhiShellWindow::ShowFloatingSidebar() {
   ::SetTimer(floating_sidebar_, kFloatingTickTimer, 100, nullptr);
   floating_shown_tick_ = ::GetTickCount64();
   floating_outside_tick_ = 0;
+  // Performance keeps its address bar IN the sidebar, so a collapsed shell
+  // has none: the panel's is the real thing — the shell's EDIT moves in
+  // for the panel's lifetime (typing, IME, the dropdown all follow it). The
+  // panel's client origin is the band's own x at the band offset (the blit
+  // in PaintFloatingSidebar). After the slide: the slide paints the address
+  // by hand (include_child_controls), the hosted EDIT paints itself.
+  if (layout_mode_ == PhiLayoutMode::kPerformance && OmniboxFieldHidden()) {
+    omnibox_->HostField(floating_sidebar_, {0, floating_offset_y_});
+    omnibox_->SetFieldVisible(!OmniboxFieldHidden());
+  }
 }
 
 void PhiShellWindow::HideFloatingSidebar(bool animated) {
@@ -4718,7 +4783,18 @@ void PhiShellWindow::HideFloatingSidebar(bool animated) {
     return;
   }
   HWND panel = floating_sidebar_;
+  // The EDIT leaves BEFORE its host goes down — DestroyWindow takes a
+  // window's children with it — and the keyboard goes back to the page.
+  if (omnibox_->field_hosted()) {
+    if (omnibox_->FieldHasFocus()) {
+      FocusActiveBrowser();
+    }
+    omnibox_->UnhostField();
+  }
   floating_sidebar_ = nullptr;
+  if (omnibox_->field()) {
+    omnibox_->SetFieldVisible(!OmniboxFieldHidden());
+  }
   ::KillTimer(panel, kFloatingTickTimer);
   if (animated) {
     ::AnimateWindow(panel, 140, AW_SLIDE | AW_HOR_NEGATIVE | AW_HIDE);
@@ -4747,6 +4823,13 @@ void PhiShellWindow::FloatingSidebarTick() {
                   origin.x + layout.content.left,
                   origin.y + layout.client.bottom};
     inside = ::PtInRect(&strip, cursor) != FALSE;
+  }
+  // The hosted address field with the keyboard pins the panel open: a
+  // pointer excursion must not tear the field down mid-typing (the way the
+  // Mac's create-Space form pins its panel). The pin lifts when the field
+  // commits or is abandoned, both of which hand focus back to the page.
+  if (omnibox_->field_hosted() && omnibox_->FieldHasFocus()) {
+    inside = true;
   }
   const ULONGLONG now = ::GetTickCount64();
   if (inside) {
@@ -4779,9 +4862,11 @@ void PhiShellWindow::PaintFloatingSidebar(HDC dc) {
   HBITMAP bitmap = ::CreateCompatibleBitmap(dc, layout.client.right,
                                             layout.client.bottom);
   HGDIOBJ old = ::SelectObject(mem, bitmap);
-  // include_child_controls: the panel has no live EDIT child, so the
-  // address text is painted by hand (the capture path's contract).
-  PaintChrome(mem, layout, /*include_child_controls=*/true);
+  // include_child_controls: with no live EDIT in the panel the address
+  // text is painted by hand (the capture path's contract); once the
+  // shell's EDIT is hosted here (performance) it paints itself.
+  PaintChrome(mem, layout,
+              /*include_child_controls=*/!omnibox_->field_hosted());
   ::BitBlt(dc, 0, 0, panel_rc.right, panel_rc.bottom, mem, 0,
            floating_offset_y_, SRCCOPY);
   ::SelectObject(mem, old);
@@ -4824,6 +4909,21 @@ LRESULT CALLBACK PhiShellWindow::FloatingSidebarProc(HWND hwnd,
   switch (msg) {
     case WM_MOUSEACTIVATE:
       return MA_NOACTIVATE;  // Focus stays with the page.
+    case WM_COMMAND:
+      // The hosted address field's EN_CHANGE arrives at ITS parent.
+      if (self && self->omnibox_->OnShellCommand(wparam, lparam)) {
+        return 0;
+      }
+      break;
+    case WM_CTLCOLOREDIT:
+      if (self) {
+        if (HBRUSH brush = self->omnibox_->OnCtlColorEdit(
+                reinterpret_cast<HDC>(wparam),
+                reinterpret_cast<HWND>(lparam))) {
+          return reinterpret_cast<LRESULT>(brush);
+        }
+      }
+      break;
     case WM_PAINT: {
       PAINTSTRUCT ps = {};
       HDC dc = ::BeginPaint(hwnd, &ps);
@@ -5187,6 +5287,21 @@ void PhiShellWindow::PaintChrome(HDC dc,
       ::SelectObject(dc, previous_nav_font);
     }
   }
+  // The sidebar toggle (nav-hover ordinal 14): the Mac's own
+  // left-sidebar-toggle artwork, a template image tinted like the header
+  // buttons, on the same radius-4 wash. It paints in the docked AND the
+  // collapsed band — the collapsed shell's one visible control.
+  if (layout.sidebar_toggle.right > layout.sidebar_toggle.left) {
+    if (hover_kind_ == HoverKind::kNav && hover_index_ == 14) {
+      PhiFillRounded(dc, layout.sidebar_toggle, palette.hover, Scaled(4));
+    }
+    const int toggle_px =
+        layout.sidebar_toggle.right - layout.sidebar_toggle.left;
+    const std::vector<unsigned char> toggle_bgra =
+        PhiTintedIconBgra(PhiSidebarToggleIcon(), kLabel, toggle_px);
+    PhiBlendBgra(dc, layout.sidebar_toggle, toggle_bgra.data(), toggle_px,
+                 toggle_px);
+  }
 
   // Address field. In the sidebar it is a pill on the 4% wash with no border
   // (SideAddressBar); in the top bar it is bare -- transparent until hovered on
@@ -5199,8 +5314,13 @@ void PhiShellWindow::PaintChrome(HDC dc,
   // reads as lit is the button rather than the whole bar: the Mac lights the
   // button's own circle, not the address bar behind it.
   // The EDIT must give the accessories their room back the moment one
-  // appears; nothing else re-fits it between layout changes.
-  omnibox_->Position();
+  // appears; nothing else re-fits it between layout changes. NOT from the
+  // floating panel's paint: that runs against the expanded layout of a
+  // collapsed shell, and re-seating the shell's live EDIT there dragged it
+  // to the docked field's place on the collapsed card.
+  if (!floating_layout_) {
+    omnibox_->Position();
+  }
   const auto on_field = [&](const RECT& r) {
     return layout.url_field.right > layout.url_field.left && r.right > r.left &&
            r.left >= layout.url_field.left && r.right <= layout.url_field.right;
@@ -5339,9 +5459,13 @@ void PhiShellWindow::PaintChrome(HDC dc,
   // The pips, the create form's placeholder and the trailing "+" / "…"
   // (phi_spaces_strip.h). Only the strip paints them, and it never paints
   // anything else.
-  spaces_->Paint(dc, StripRects(layout), palette);
-
-  sidebar_->Paint(dc, BandRects(layout), palette);
+  // Not on the collapsed shell: with the floating panel up the chips and
+  // rows are built for the panel's expanded geometry, and painted here they
+  // would land on the widened card (the balanced top bar's own buttons).
+  if (BandOnShell()) {
+    spaces_->Paint(dc, StripRects(layout), palette);
+    sidebar_->Paint(dc, BandRects(layout), palette);
+  }
 
   // Bottom bar — SidebarBottomBar, inch for inch: a 24pt row where the
   // download and memory icon buttons lead (24pt, rounded-6 hover wash),

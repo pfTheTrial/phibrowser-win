@@ -213,6 +213,27 @@ void Comfortable() {
   CHECK(!r.reader.empty() && r.reader.right == r.url_field.right - 2);
 }
 
+void SidebarToggle() {
+  std::printf("sidebar toggle: leads the band in the vertical layouts, "
+              "stays through a collapse, absent in comfortable\n");
+  const ShellLayout p = ComputeShellLayout(Base(PhiLayoutMode::kPerformance));
+  // A 24pt control on the sidebar's 8pt edge inset, centred in the band.
+  CHECK((p.sidebar_toggle == SidebarRect{8, 4, 32, 28}));
+  const ShellLayout b = ComputeShellLayout(Base(PhiLayoutMode::kBalanced));
+  CHECK(b.sidebar_toggle == p.sidebar_toggle);
+  ShellLayoutInputs collapsed = Base(PhiLayoutMode::kPerformance);
+  collapsed.sidebar_hidden = true;
+  CHECK(ComputeShellLayout(collapsed).sidebar_toggle == p.sidebar_toggle);
+  CHECK(ComputeShellLayout(Base(PhiLayoutMode::kComfortable))
+            .sidebar_toggle.empty());
+  ShellLayoutInputs fullscreen = Base(PhiLayoutMode::kBalanced);
+  fullscreen.content_fullscreen = true;
+  CHECK(ComputeShellLayout(fullscreen).sidebar_toggle.empty());
+  // It scales with the band.
+  const ShellLayout hi = ComputeShellLayout(Base(PhiLayoutMode::kPerformance, 144));
+  CHECK((hi.sidebar_toggle == SidebarRect{12, 6, 48, 42}));
+}
+
 void Collapsed() {
   std::printf("collapsed: the card widens to the margin, the bands empty\n");
   ShellLayoutInputs in = Base(PhiLayoutMode::kPerformance);
@@ -344,6 +365,7 @@ int main() {
   DropZones();
   Balanced();
   Comfortable();
+  SidebarToggle();
   Collapsed();
   Fullscreen();
   Dpi();

@@ -641,6 +641,9 @@ class PhiShellWindow : public PhiHitSource,
   // fullscreen content, a collapsed performance sidebar, or the create-Space
   // form covering the sidebar's address row.
   bool OmniboxFieldHidden() const;
+  // Focuses the address field, raising the floating panel first when the
+  // collapsed performance shell has no field of its own.
+  void FocusAddressField();
   // Surfaces (visible=true) or parks off-screen (visible=false) an agent
   // window so the user can watch it live. No-op on a non-agent window.
   // `frame` (screen px) is the watching window's frame, which the agent
@@ -877,6 +880,10 @@ class PhiShellWindow : public PhiHitSource,
   // reason as the field: a test asserting the button appeared should read the
   // layout, not count pixels.
   RECT reader_button_rect();
+  // The caption band's sidebar toggle (empty in comfortable), and whether
+  // the sidebar is collapsed behind it — for the layout verb.
+  RECT sidebar_toggle_rect();
+  bool sidebar_collapsed() const { return sidebar_collapsed_; }
   // The two signals behind that offer, separately — a test needs to know
   // WHICH one lit the button (upstream's distiller, or the reader
   // extension's own in-page probe and site rules).
@@ -1005,6 +1012,8 @@ class PhiShellWindow : public PhiHitSource,
     // ACTIVE tab is distillable — the Mac shows the reader button only where
     // Reader View has something to offer.
     RECT reader{};
+    // The vertical layouts' leading sidebar toggle (phi_shell_layout.h).
+    RECT sidebar_toggle{};
     // The pinned-extension icon strip leading the copy-link button inside
     // the capsule. Empty when nothing is pinned OR the icons would squeeze
     // the text below the Mac's 84pt minimum (they hide, as on Mac).
@@ -1203,7 +1212,7 @@ class PhiShellWindow : public PhiHitSource,
   RECT HoverRect(HoverKind kind, int index);
   void SetHover(HoverKind kind, int index);
   // The chrome buttons a kNav hover indexes, in PaintChrome's order.
-  std::array<RECT, 14> NavHoverTable(const Layout& layout) const;
+  std::array<RECT, 15> NavHoverTable(const Layout& layout) const;
 
   // The hovered row's page-snapshot card (the Mac's TabPreviewController).
   // Unlike the Space card above it floats in its own popup, so it can hang
@@ -1417,6 +1426,7 @@ class PhiShellWindow : public PhiHitSource,
   PhiPalette MenuPalette() const override;
   int MenuScaled(int design_units) const override;
   HWND MenuAddressField() const override;
+  void MenuFocusAddressField() override;
   void MenuRefreshNavState() override;
   PhiMenuBarNavState MenuNavState() const override;
   std::vector<PhiMenuBarTab> MenuTabRows() const override;
@@ -1662,6 +1672,10 @@ class PhiShellWindow : public PhiHitSource,
   int floating_offset_y_ = 0;
   ULONGLONG floating_shown_tick_ = 0;
   ULONGLONG floating_outside_tick_ = 0;
+  // The band (chips, pinned grid, outline, tab rows) belongs to this
+  // shell's own paint and pointer: false while the sidebar is collapsed and
+  // the turn is not the floating panel's.
+  bool BandOnShell() const;
   void ShowFloatingSidebar();
   void HideFloatingSidebar(bool animated);
   void FloatingSidebarTick();

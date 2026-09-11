@@ -1312,6 +1312,35 @@ void PhiSidebarView::Rebuild() {
     }
     tab_mru_.Sync(live, active_id);
   }
+  if (BandHidden(layout)) {
+    // A COLLAPSED sidebar has no rows on the shell. The model above still
+    // runs (the active tab, the native pages and the row counts come from
+    // it), but the placement it was given is the hidden band's — an empty
+    // favorites rect put every pinned cell at the window's corner, painted
+    // over the caption band and hit-tested there. Blank the geometry: the
+    // rows exist, nothing paints or lands on them. (The floating panel is
+    // not this case: while it is up the shell rebuilds in the EXPANDED
+    // layout, see PhiShellWindow::RebuildTabs.)
+    const RECT none = {};
+    for (ShortcutRow& pin : pinned_) {
+      pin.bounds = none;
+      pin.surface_box = none;
+    }
+    for (ShortcutRow& row : bookmarks_) {
+      row.bounds = none;
+      row.surface_box = none;
+    }
+    for (GroupHeader& header : group_headers_) {
+      header.bounds = none;
+      header.container = none;
+    }
+    for (TabRow& row : tabs_) {
+      row.bounds = none;
+      row.pane_b = none;
+      row.close_box = none;
+      row.surface_box = none;
+    }
+  }
   // The rows the pointer, the keyboard and a screen reader all address.
   PublishHits(layout);
   // A drag in flight re-resolves against the rows it now sees.
@@ -3141,9 +3170,21 @@ void PhiSidebarView::PaintStripGroups(HDC dc,
   }
 }
 
+// static
+bool PhiSidebarView::BandHidden(const PhiSidebarRects& layout) {
+  // The vertical layouts with the sidebar collapsed: the band has no width
+  // (ShellLayoutInputs::sidebar_hidden). Comfortable's band is the strip in
+  // the title bar and has no sidebar rect at all, so it never counts.
+  return !layout.horizontal_tabs &&
+         layout.sidebar.right <= layout.sidebar.left;
+}
+
 void PhiSidebarView::Paint(HDC dc,
                            const PhiSidebarRects& layout,
                            const PhiPalette& palette) {
+  if (BandHidden(layout)) {
+    return;  // Collapsed: the band is the floating panel's to paint.
+  }
   PhiSpacesStrip* const strip = shell_->SidebarSpacesStrip();
   if (!strip->swap_running() || layout.horizontal_tabs) {
     PaintBand(dc, layout, palette);

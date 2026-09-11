@@ -201,6 +201,12 @@ struct ShellLayout {
   // The bookmark bar band, carved off the content's top when visible.
   SidebarRect bookmark_bar;
   SidebarRect search_tabs;
+  // The sidebar toggle (the Mac SidebarHeaderView's leftSidebarToggle): the
+  // caption band's LEADING control in the vertical layouts, at the window's
+  // top-left corner, docked or collapsed alike — so a collapsed sidebar is
+  // always one click from coming back. The Phi button follows it. Empty in
+  // comfortable, which has no sidebar to toggle.
+  SidebarRect sidebar_toggle;
   // The hairline closing the band's trailing cluster.
   SidebarRect band_divider;
   SidebarRect back, forward, reload;

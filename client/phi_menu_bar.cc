@@ -936,10 +936,7 @@ bool PhiMenuBar::OnCommand(UINT id, bool from_accelerator) {
       }
       return true;
     case kCmdOpenLocation:
-      if (c->MenuAddressField()) {
-        ::SetFocus(c->MenuAddressField());
-        ::SendMessageW(c->MenuAddressField(), EM_SETSEL, 0, -1);
-      }
+      c->MenuFocusAddressField();
       return true;
     case kCmdCloseTab:
       // The TREE's active tab, not the active ROW: a tab bound to a pinned
