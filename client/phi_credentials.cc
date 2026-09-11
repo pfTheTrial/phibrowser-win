@@ -137,9 +137,23 @@ std::string PhiCredentialVault::HostOfUri(const std::string& uri) {
   size_t at = authority.rfind('@');
   std::string host =
       at != std::string::npos ? authority.substr(at + 1) : authority;
-  size_t colon = host.find(':');
-  if (colon != std::string::npos) {
-    host = host.substr(0, colon);
+  if (!host.empty() && host.front() == '[') {
+    // A bracketed IPv6 literal keeps its brackets and every colon inside
+    // them; the port, if any, follows the ']'. Cutting at the first ':' the
+    // way a name's port is cut would fold every address sharing a leading
+    // group into one host ("[2001", or "[" for anything starting "::"),
+    // and the origin binding would then pass a credential saved for one
+    // address to a page on another. No closing bracket is no host.
+    const size_t close = host.find(']');
+    if (close == std::string::npos) {
+      return std::string();
+    }
+    host = host.substr(0, close + 1);
+  } else {
+    size_t colon = host.find(':');
+    if (colon != std::string::npos) {
+      host = host.substr(0, colon);
+    }
   }
   return ToLower(host);
 }

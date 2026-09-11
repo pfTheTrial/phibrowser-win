@@ -49,10 +49,15 @@ class PhiTelemetry {
   void Start(const std::wstring& user_data_dir);
 
   // The user's consent (Settings ▸ General ▸ "Share anonymous usage
-  // analytics", PhiPrefs.json analyticsEnabled). Off until set: an event
+  // analytics", PhiSettings.json analyticsEnabled). Off until set: an event
   // recorded while disabled is DROPPED, not spooled — nothing the user did
-  // not agree to share ever reaches disk, let alone the collector. The
-  // uploader thread may run regardless; it simply has nothing to send.
+  // not agree to share ever reaches disk, let alone the collector — and
+  // the uploader sends nothing while consent is off, whatever the queue
+  // holds. Withdrawing it is the end of the line for what is queued too:
+  // a live opt-out gets ONE final pass (what was captured under consent,
+  // the opt-out event itself last; no retry), then the queue and the spool
+  // file are purged; consent found off at startup discards, unsent, any
+  // spool the previous run left behind.
   void SetEnabled(bool enabled);
 
   // Queues one event. Safe from any thread, never blocks on the network: the
@@ -119,10 +124,14 @@ class PhiTelemetry {
 
   static DWORD WINAPI UploadThread(void* self);
   void RunUploadLoop();
-  // Takes up to kBatchEvents off the front of the queue. Empty when idle.
+  // Takes up to kBatchEvents off the front of the queue. Empty when idle,
+  // and empty without consent (except during the opt-out's final pass).
   std::deque<Event> TakeBatch();
   // Puts a failed batch back at the FRONT, preserving capture order.
   void ReturnBatch(std::deque<Event> batch);
+  // Consent is gone: drops `in_flight` undelivered events and the whole
+  // queue, counted as dropped, and ends any final pass.
+  void DiscardQueue(size_t in_flight);
   // The request body for one batch. THE ONE PLACE a collector's ingest shape
   // lives: a JSON object with a "batch" array of {module,event,properties,ts}.
   std::string BuildBatchBody(const std::deque<Event>& batch) const;
@@ -144,6 +153,10 @@ class PhiTelemetry {
   bool started_ = false;
   // The consent switch (SetEnabled). Defaults to no consent.
   bool enabled_ = false;
+  // A live opt-out's final pass is under way: the uploader may still take
+  // what was queued under consent, once, with no retry. Cleared when the
+  // queue empties or a batch fails.
+  bool draining_ = false;
 
   std::string endpoint_;   // Empty == unconfigured == the whole thing is off.
   std::string api_key_;

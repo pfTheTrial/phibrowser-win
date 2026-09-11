@@ -107,6 +107,18 @@ def check_sources():
             if "kPhiDevHooks" not in window:
                 rc |= fail(f"{name}: {env} is read without a kPhiDevHooks "
                            "gate nearby (review §4 items 3, 4)")
+    # The update feed must be signed: with kEdDsaPublicKey empty the client
+    # turns its updater off (phi_updater.cc), so a release built this way
+    # ships without updates — mint the key (installer/make-appcast.sh says
+    # how) before cutting one.
+    updater_cc = os.path.join(CLIENT, "phi_updater.cc")
+    with open(updater_cc, errors="replace") as f:
+        m = re.search(r'kEdDsaPublicKey\[\]\s*=\s*"([^"]*)"', f.read())
+    if not m:
+        rc |= fail("phi_updater.cc: kEdDsaPublicKey not found")
+    elif not m.group(1):
+        rc |= fail("phi_updater.cc: kEdDsaPublicKey is empty — the updater "
+                   "stays off without the appcast signing key")
     # Analytics ship opt-in: the model's default must be off (review §3.9).
     model_h = os.path.join(CLIENT, "phi_app_model.h")
     if os.path.isfile(model_h):

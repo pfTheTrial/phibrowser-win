@@ -24,9 +24,14 @@ constexpr char kDefaultAppcastUrl[] =
     "https://ota.phibrowser.com/win-nightly/appcast/PhiBrowserWinUpdate.xml";
 
 // The appcast's EdDSA (Ed25519) public key, base64 — the counterpart of the
-// key winsparkle-tool generate-key emits. EMPTY until the release key is
-// minted; WinSparkle then relies on HTTPS alone, which is acceptable for the
-// nightly ring but MUST be set before a public ring ships.
+// key installer/make-appcast.sh signs with (`openssl genpkey -algorithm
+// ed25519`; derive this value with `openssl pkey -in key.pem -pubout
+// -outform DER | tail -c32 | base64`). EMPTY until the release key is
+// minted, and WITHOUT IT THE UPDATER STAYS OFF: HTTPS authenticates the
+// server, not the feed — anyone who can write to the OTA bucket, or sit on
+// a proxy the box trusts, would otherwise hand every install an executable
+// that runs as the user. tools/release-gate.py refuses a release while this
+// is empty.
 constexpr char kEdDsaPublicKey[] = "";
 
 // The WinSparkle C surface we use, resolved by hand: the DLL is optional.
@@ -102,7 +107,8 @@ bool Load() {
   sparkle.check_update_with_ui = reinterpret_cast<VoidFn>(
       proc("win_sparkle_check_update_with_ui"));
   sparkle.cleanup = reinterpret_cast<VoidFn>(proc("win_sparkle_cleanup"));
-  if (!sparkle.set_appcast_url || !sparkle.set_app_details || !sparkle.init ||
+  if (!sparkle.set_appcast_url || !sparkle.set_app_details ||
+      !sparkle.set_eddsa_public_key || !sparkle.init ||
       !sparkle.check_update_with_ui || !sparkle.cleanup) {
     LOG(ERROR) << "[PhiUpdater] WinSparkle.dll is missing exports; ignored";
     ::FreeLibrary(dll);
@@ -131,7 +137,7 @@ std::string AppcastUrl() {
 }
 
 // The built-in key, or in a --dev-hooks build the PHI_APPCAST_ED25519
-// override (signature testing against a dev feed).
+// override (signature testing against a dev feed). Empty means no updater.
 std::string EdDsaPublicKey() {
   if constexpr (kPhiDevHooks) {
     char value[128] = {};
@@ -149,19 +155,31 @@ std::string EdDsaPublicKey() {
 
 // static
 void PhiUpdater::Init() {
-  if (g_initialized || !Load()) {
+  if (g_initialized) {
+    return;
+  }
+  // No key, no updater — in every build. A feed that cannot be verified is
+  // never fetched, let alone installed; the menu item goes dark
+  // (Available) rather than offering an unsigned download.
+  const std::string eddsa_key = EdDsaPublicKey();
+  if (eddsa_key.empty()) {
+    LOG(ERROR) << "[PhiUpdater] no appcast signing key built in; updater off";
+    return;
+  }
+  if (!Load()) {
+    return;
+  }
+  // The key goes in BEFORE the feed is named and before init, so there is
+  // no window in which WinSparkle could check keyless; a rejected key keeps
+  // it uninitialised for the same reason.
+  if (!g_sparkle.set_eddsa_public_key(eddsa_key.c_str())) {
+    LOG(ERROR) << "[PhiUpdater] EdDSA public key rejected; updater off";
     return;
   }
   const std::string url = AppcastUrl();
   g_sparkle.set_appcast_url(url.c_str());
   g_sparkle.set_app_details(L"Fyde Innovations", L"Phi Browser",
                             PHI_WIN_VERSION_WIDE);
-  const std::string eddsa_key = EdDsaPublicKey();
-  if (!eddsa_key.empty() && g_sparkle.set_eddsa_public_key) {
-    if (!g_sparkle.set_eddsa_public_key(eddsa_key.c_str())) {
-      LOG(ERROR) << "[PhiUpdater] EdDSA public key rejected";
-    }
-  }
   if (g_sparkle.set_automatic_check) {
     g_sparkle.set_automatic_check(1);  // Default daily background checks.
   }
@@ -185,7 +203,7 @@ bool PhiUpdater::CheckForUpdateWithUi() {
 
 // static
 bool PhiUpdater::Available() {
-  return g_sparkle.dll != nullptr || Load();
+  return !EdDsaPublicKey().empty() && (g_sparkle.dll != nullptr || Load());
 }
 
 // static

@@ -17,7 +17,7 @@ capture site ──▶ PhiCoordinator::CaptureAnalytics (client events)
                    ▼
                  PhiTelemetry::RecordEvent
                    │  consent gate: Settings ▸ General ▸ "Share anonymous
-                   │  usage analytics" (PhiPrefs.json analyticsEnabled)
+                   │  usage analytics" (PhiSettings.json analyticsEnabled)
                    │  allow-list: PhiTelemetry::AllowedProperties, per module
                    ▼
                  spool (phi_telemetry_spool.json) ──▶ POST <endpoint>/batch/
@@ -28,6 +28,13 @@ user data directory (`analytics_endpoint`, `analytics_key`,
 `analytics_format: "posthog"`), read once at startup. Without it the client
 spools nothing and sends nothing. Uploads go in batches of up to 64, after
 30 s idle; a failed batch is retried with backoff, a 4xx is dropped.
+
+Consent gates the uploader as well as the capture: nothing leaves while the
+switch is off, whatever the queue holds. Flipping it off gets one final pass
+(what was queued under consent, the `metrics_reporting_changed` event last;
+no retry), after which the queue and `phi_telemetry_spool.json` are purged;
+a launch that finds the switch off discards, unsent, whatever spool the
+previous run left. The spool file exists only under consent.
 
 Every event carries, stamped at send time (`PhiTelemetry::SenderProperties`):
 `$lib` = `phibrowser-win`, `$lib_version` / `$app_version` (the client
@@ -93,7 +100,7 @@ module is the allow-list row.
 | `user_logged_in` | `account` | — | A sign-in the user started settles as a session (`PhiAccountAndFeedback::OnAuthChanged`); a background refresh or a restored session is not one |
 | `user_logged_out` | `account` | — | Settings ▸ You ▸ Sign out (`RequestSignOut`), before the session clears |
 | `login_retried` | `account` | — | "Sign in" pressed again on the onboarding's login page while a failed or abandoned attempt's note is showing |
-| `metrics_reporting_changed` | `settings` | `enabled` | Settings ▸ General ▸ "Share anonymous usage analytics" flips. Captured BEFORE the switch moves, so an opt-out is the last event this install sends; an opt-in is dropped at the gate (the launch snapshot then says the new state) |
+| `metrics_reporting_changed` | `settings` | `enabled` | Settings ▸ General ▸ "Share anonymous usage analytics" flips. Captured BEFORE the switch moves, so an opt-out is the last event this install sends — in the uploader's final pass, after which nothing queued or spooled survives; an opt-in is dropped at the gate (the launch snapshot then says the new state) |
 | `language_changed` | `settings` | `from`, `to` (the stored preference; `system` for follow-the-OS) | Settings ▸ General's language picker commits a different value |
 | `feature_entry_tapped` | `feature` | `button` (only `download` exists here), `surface` (`sidebar` — the bottom bar; `web_content_header` — Comfortable's toolbar) | The downloads button's click (not the Window menu or Ctrl+J) |
 | `import_viewed` | `import` | `entry_point` (always `menu`) | File ▸ "Import from Google Chrome…" shows its confirm — this client's import window |

@@ -62,6 +62,8 @@ class PhiCredentialVault {
   static bool HostMatches(const std::string& page_host,
                           const std::string& cred_host);
   // Lowercased host of a URL/URI, tolerating a missing scheme (hostOfUri).
+  // A bracketed IPv6 literal comes back whole, brackets on ("[::1]"), the
+  // way GURL spells it; empty when there is no host to be had.
   static std::string HostOfUri(const std::string& uri);
 
  private:

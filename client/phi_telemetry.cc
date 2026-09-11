@@ -301,13 +301,45 @@ void PhiTelemetry::Start(const std::wstring& user_data_dir) {
 }
 
 void PhiTelemetry::SetEnabled(bool enabled) {
+  bool drain = false;
+  size_t discarded = 0;
   ::EnterCriticalSection(&lock_);
   const bool changed = enabled_ != enabled;
   enabled_ = enabled;
+  if (!enabled) {
+    if (changed && !queue_.empty()) {
+      // A live opt-out. Everything queued was captured under consent, and
+      // the last of it is the opt-out itself (metrics_reporting_changed is
+      // captured before the switch moves): the uploader sends it in one
+      // pass, no retry, and purges whatever does not go. From here on
+      // RecordEvent drops, TakeBatch takes nothing, WriteSpool deletes.
+      draining_ = true;
+      drain = true;
+    } else if (!changed) {
+      // Consent is off and has not been on this run. The queue is the
+      // backlog LoadSpool reloaded from the previous run — captured under
+      // a consent the user has since withdrawn (or a final pass a crash
+      // cut short). Their answer today is no: it goes unsent.
+      discarded = queue_.size();
+      dropped_ += discarded;
+      queue_.clear();
+      draining_ = false;
+    }
+  }
   ::LeaveCriticalSection(&lock_);
   if (changed) {
     LOG(INFO) << "[telemetry] analytics " << (enabled ? "enabled" : "disabled")
               << " by the user";
+  }
+  if (discarded) {
+    LOG(INFO) << "[telemetry] discarded " << discarded
+              << " spooled events unsent; consent is off.";
+  }
+  if (!enabled && !drain) {
+    WriteSpool();  // Deletes the file; the uploader does so after a pass.
+  }
+  if (drain && wake_) {
+    ::SetEvent(wake_);
   }
 }
 
@@ -537,6 +569,7 @@ void PhiTelemetry::RunUploadLoop() {
     ::EnterCriticalSection(&lock_);
     last_status_ = status;
     last_error_ = error;
+    const bool consented = enabled_;
     if (ok) {
       sent_ += batch.size();
     } else {
@@ -558,6 +591,16 @@ void PhiTelemetry::RunUploadLoop() {
       WriteSpool();
       continue;
     }
+    if (!consented) {
+      // Consent went away while this batch was out (or this is the
+      // opt-out's final pass): there is no retry to schedule. What could
+      // not be delivered now is not kept for later — not in memory, not on
+      // disk.
+      DiscardQueue(batch.size());
+      WriteSpool();
+      backoff = 0;
+      continue;
+    }
     ReturnBatch(std::move(batch));
     WriteSpool();
     backoff = backoff ? (backoff * 2 > kBackoffMaxMs ? kBackoffMaxMs
@@ -569,12 +612,29 @@ void PhiTelemetry::RunUploadLoop() {
 std::deque<PhiTelemetry::Event> PhiTelemetry::TakeBatch() {
   std::deque<Event> batch;
   ::EnterCriticalSection(&lock_);
-  while (!queue_.empty() && batch.size() < kBatchEvents) {
-    batch.push_back(std::move(queue_.front()));
-    queue_.pop_front();
+  // Nothing leaves without consent. The queue is not empty in that state
+  // only between Start (which reloads the spool) and the settings arriving
+  // (SetEnabled): that backlog waits for a yes and is discarded on a no.
+  // The one exception is the opt-out's final pass.
+  if (enabled_ || draining_) {
+    while (!queue_.empty() && batch.size() < kBatchEvents) {
+      batch.push_back(std::move(queue_.front()));
+      queue_.pop_front();
+    }
+  }
+  if (queue_.empty()) {
+    draining_ = false;  // The pass took its last batch; nothing follows.
   }
   ::LeaveCriticalSection(&lock_);
   return batch;
+}
+
+void PhiTelemetry::DiscardQueue(size_t in_flight) {
+  ::EnterCriticalSection(&lock_);
+  dropped_ += in_flight + queue_.size();
+  queue_.clear();
+  draining_ = false;
+  ::LeaveCriticalSection(&lock_);
 }
 
 void PhiTelemetry::ReturnBatch(std::deque<Event> batch) {
@@ -790,7 +850,14 @@ void PhiTelemetry::WriteSpool() {
   std::deque<Event> snapshot;
   ::EnterCriticalSection(&lock_);
   path = spool_path_;
-  snapshot = queue_;
+  // The spool exists only under consent. Without it the queue is empty
+  // anyway (SetEnabled purged it), except during a final pass, whose
+  // remainder is deliberately never written down, and in the window before
+  // the settings are read — a quit inside it loses the reloaded backlog,
+  // which is the right way round to lose.
+  if (enabled_) {
+    snapshot = queue_;
+  }
   ::LeaveCriticalSection(&lock_);
   if (path.empty()) {
     return;
