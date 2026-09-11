@@ -418,7 +418,8 @@ PhiMenuSpec PhiBuildSpaceSwitcherMenu(const std::vector<PhiMenuChoice>& spaces,
                                       const std::vector<PhiMenuChoice>& agents,
                                       const std::string& watched_agent,
                                       const std::string& active_space,
-                                      bool with_new_space) {
+                                      bool with_new_space,
+                                      bool with_new_profile) {
   PhiMenuSpec spec;
   spec.items = ChoiceRows(spaces, "space.switch");
   for (PhiMenuItem& item : spec.items) {
@@ -445,8 +446,16 @@ PhiMenuSpec PhiBuildSpaceSwitcherMenu(const std::vector<PhiMenuChoice>& spaces,
   if (!with_new_space) {
     return spec;
   }
+  // "New Space…" after a rule, wearing the plus (the Mac's spaceSwitcherMenu
+  // newSpaceItem): it opens the create form — inline in a docked sidebar,
+  // else in the standalone window.
   spec.items.push_back(PhiMenuItem::Separator());
-  spec.items.push_back(PhiMenuItem::Command("space.new", L"New Space"));
+  PhiMenuItem new_space = PhiMenuItem::Command("space.new", L"New Space\u2026");
+  new_space.glyph = L"\uE710";  // MDL2 Add.
+  spec.items.push_back(std::move(new_space));
+  if (!with_new_profile) {
+    return spec;
+  }
   // The Mac's create panel offers a fresh Profile for the new Space; here it
   // is the second row (profile creation is asynchronous — the Space follows
   // once the profile exists).

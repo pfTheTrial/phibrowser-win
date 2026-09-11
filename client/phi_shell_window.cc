@@ -43,6 +43,7 @@
 #include "phibrowser-win/client/phi_space_theme_panel.h"
 #include "phibrowser-win/client/phi_bookmark_manager.h"
 #include "phibrowser-win/client/phi_create_space_panel.h"
+#include "phibrowser-win/client/phi_create_space_window.h"
 #include "phibrowser-win/client/phi_folder_icon_picker.h"
 #include "phibrowser-win/client/phi_folder_icons.h"
 #include "phibrowser-win/client/phi_tab_preview.h"
@@ -902,6 +903,7 @@ PhiShellWindow::~PhiShellWindow() {
   // overlay's Reposition runs from EVERY shell's LayoutContents, the
   // overview and the switcher answer keys, the search panel a click).
   PhiAgentOverlay::HideIfBoundTo(this);
+  PhiCreateSpaceWindow::CloseIfBoundTo(this);
   PhiGroupOverview::CloseIfBoundTo(this);
   PhiTabSwitcher::CancelIfBoundTo(this);
   PhiSearchTabsPanel::CloseIfBoundTo(this);
@@ -2604,6 +2606,7 @@ void PhiShellWindow::SetCreateSpaceIcon(const std::string& storage_value) {
 void PhiShellWindow::OnSpaceFormProfileCreated(
     const std::string& profile_id) {
   spaces_->OnFormProfileCreated(profile_id);
+  PhiCreateSpaceWindow::NoteProfileCreated(this, profile_id);
 }
 
 // True when `tab_id`'s split stacks its panes.
@@ -3733,9 +3736,9 @@ void PhiShellWindow::OnChromeClick(int x, int y) {
     }
     if (layout.horizontal_tabs) {
       // Comfortable draws ONE compact pip — the active Space. Clicking it
-      // opens the switcher popup over the FULL Space list, the Mac's
-      // SpacesStripView compact-chip behaviour.
-      ShowSpaceSwitcherMenu(pt, /*with_new_space=*/false);
+      // opens the switcher popup over the FULL Space list with "New Space…"
+      // after a rule, the Mac's spaceSwitcherMenu on its compact chip.
+      ShowSpaceSwitcherMenu(pt, /*overflow=*/false);
       return;
     }
     if (spaces_->creating()) {
@@ -3768,7 +3771,7 @@ void PhiShellWindow::OnChromeClick(int x, int y) {
     // "New Space" row (the Mac moreButton's menu). Anchored under the
     // button, not at the pointer.
     const POINT anchor = {layout.add_space.left, layout.add_space.bottom};
-    ShowSpaceSwitcherMenu(anchor, /*with_new_space=*/true);
+    ShowSpaceSwitcherMenu(anchor, /*overflow=*/true);
     return;
   }
   // The content rows last, as the pixels stack: a group header or a tab row.
@@ -4407,18 +4410,15 @@ void PhiShellWindow::ShowAgentChipMenu(POINT pt, std::string task) {
   }
 }
 
-void PhiShellWindow::ShowSpaceSwitcherMenu(POINT pt,
-                                                bool with_new_space) {
-  // The full Space list as a popup: comfortable's compact pip opens it over
-  // every Space (the Mac's SpacesStripView compact-chip behaviour), and the
-  // overflow "…" adds the two creation rows (the moreButton's menu).
+void PhiShellWindow::ShowSpaceSwitcherMenu(POINT pt, bool overflow) {
+  // The full Space list as a popup, then "New Space…": comfortable's
+  // compact pip opens it over every Space (the Mac's spaceSwitcherMenu on
+  // its compact chip), and the overflow "…" adds the new-profile row too
+  // (the moreButton's menu).
   if (!services_.spaces) {
     return;
   }
   const std::vector<PhiMenuChoice> spaces = SpaceSwitcherChoices();
-  if (spaces.empty() && !with_new_space) {
-    return;
-  }
   PhiPopupMenuRequest request = PopupAt(pt, TPM_LEFTALIGN | TPM_TOPALIGN);
   // Each row wears its Space's icon as a bitmap — the strip's artwork or
   // colour emoji, which menu text cannot render.
@@ -4445,7 +4445,8 @@ void PhiShellWindow::ShowSpaceSwitcherMenu(POINT pt,
   }
   const PhiMenuAction action = PhiRunPopupMenu(
       PhiBuildSpaceSwitcherMenu(spaces, agents, watched_agent, active_space(),
-                                with_new_space),
+                                /*with_new_space=*/true,
+                                /*with_new_profile=*/overflow),
       request);
   if (action.is("agent.watch")) {
     if (services_.agent) {

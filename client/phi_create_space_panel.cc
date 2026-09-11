@@ -33,6 +33,10 @@ constexpr UINT_PTR kFieldId = 1;
 constexpr int kContentWidth = 320;  // sidebarContentWidth
 constexpr int kColumnPad = 10;      // .padding(.horizontal, 10)
 constexpr int kColumnVPad = 20;     // .padding(.vertical, 20)
+// The standalone window's column (CreateSpacePanel.Style.window).
+constexpr int kWindowContentWidth = 280;  // windowContentWidth
+constexpr int kWindowColumnPad = 20;      // .padding(.horizontal, 20)
+constexpr int kWindowColumnVPad = 24;     // .padding(.vertical, 24)
 constexpr int kSectionGap = 28;     // formStack VStack(spacing: 28)
 constexpr int kHeaderGap = 12;      // header VStack(spacing: 12)
 constexpr int kTitleSize = 18;      // .medium
@@ -198,8 +202,10 @@ struct PhiCreateSpacePanel::Geometry {
   int grid_content_height = 0;  // Every cell row, for the grid's scroll.
 };
 
-PhiCreateSpacePanel::PhiCreateSpacePanel(PhiShellWindow* controller)
-    : controller_(controller) {}
+PhiCreateSpacePanel::PhiCreateSpacePanel(PhiShellWindow* controller,
+                                         HWND host_hwnd,
+                                         PhiCreateSpaceFormHost* host)
+    : controller_(controller), host_hwnd_(host_hwnd), host_(host) {}
 
 PhiCreateSpacePanel::~PhiCreateSpacePanel() {
   Destroy();  // Takes the field with it; the base drops its fonts.
@@ -216,7 +222,8 @@ void PhiCreateSpacePanel::EnsureWindow() {
   if (hwnd() && ::IsWindow(hwnd())) {
     return;
   }
-  HWND owner = controller_ ? controller_->shell_hwnd() : nullptr;
+  HWND owner = host_hwnd_ ? host_hwnd_
+                          : controller_ ? controller_->shell_hwnd() : nullptr;
   if (!owner) {
     return;
   }
@@ -400,17 +407,24 @@ void PhiCreateSpacePanel::Show(const RECT& bounds,
   }
   Reposition(bounds);
   // Preview at once, so the arriving surface already carries the new
-  // Space's colour and the strip shows its icon.
-  if (controller_) {
+  // Space's colour and the strip shows its icon. The standalone window
+  // has neither: it just shows the selection (the Mac's .window style).
+  if (controller_ && !standalone()) {
     controller_->SetCreateSpaceIcon(icon_);
   }
   PushPreview();
   RaisePanel();
-  // The Space-switch push-in: the form arrives from the right.
-  if (!::AnimateWindow(hwnd(), kSlideMs, AW_SLIDE | AW_HOR_NEGATIVE)) {
+  // The Space-switch push-in: the form arrives from the right. In its own
+  // window it is simply there.
+  if (standalone() ||
+      !::AnimateWindow(hwnd(), kSlideMs, AW_SLIDE | AW_HOR_NEGATIVE)) {
     ::ShowWindow(hwnd(), SW_SHOWNA);
   }
   Invalidate();
+}
+
+int PhiCreateSpacePanel::ContentHeight() const {
+  return hwnd() ? ComputeGeometry().content_height : 0;
 }
 
 void PhiCreateSpacePanel::Hide(bool animated) {
@@ -489,9 +503,13 @@ PhiCreateSpacePanel::Geometry PhiCreateSpacePanel::ComputeGeometry() const {
   const int w = rc.right - rc.left;
   const int h = rc.bottom - rc.top;
   // One bounded, centred column: the sidebar's width minus the slim
-  // padding, up to 320.
-  const int column_w =
-      std::max(1, std::min(Scaled(kContentWidth), w - 2 * Scaled(kColumnPad)));
+  // padding, up to 320 — or the window's 280 inside its wider padding.
+  const int content_width =
+      Scaled(standalone() ? kWindowContentWidth : kContentWidth);
+  const int column_pad = Scaled(standalone() ? kWindowColumnPad : kColumnPad);
+  const int column_vpad =
+      Scaled(standalone() ? kWindowColumnVPad : kColumnVPad);
+  const int column_w = std::max(1, std::min(content_width, w - 2 * column_pad));
   const int left = (w - column_w) / 2;
   const int right = left + column_w;
 
@@ -523,7 +541,7 @@ PhiCreateSpacePanel::Geometry PhiCreateSpacePanel::ComputeGeometry() const {
     ::ReleaseDC(hwnd(), dc);
   }
 
-  int y = Scaled(kColumnVPad);
+  int y = column_vpad;
   g.title = {left, y, right, y + title_h};
   y += title_h + Scaled(kHeaderGap);
   g.subtitle = {left, y, right, y + subtitle_h};
@@ -608,7 +626,7 @@ PhiCreateSpacePanel::Geometry PhiCreateSpacePanel::ComputeGeometry() const {
     y += button_h + Scaled(kActionGap);
     g.cancel_button = {cx - cancel_w / 2, y, cx - cancel_w / 2 + cancel_w,
                        y + Scaled(kButtonTextHeight)};
-    y += Scaled(kButtonTextHeight) + Scaled(kColumnVPad);
+    y += Scaled(kButtonTextHeight) + column_vpad;
   }
   g.content_height = y;
   g.column = {left, 0, right, y};
@@ -762,7 +780,7 @@ void PhiCreateSpacePanel::SetSliderFromPoint(const Geometry& g, int x) {
 }
 
 void PhiCreateSpacePanel::PushPreview() {
-  if (controller_) {
+  if (controller_ && !standalone()) {
     controller_->PreviewCreateSpaceTheme(theme_id_, slider_);
   }
 }
@@ -796,7 +814,7 @@ void PhiCreateSpacePanel::ShowProfileMenu(const Geometry& g) {
     // The Mac's promptCreateProfile: a name, then the profile; the picker
     // selects it once the host reports it (OnProfileCreated).
     std::wstring name;
-    if (PhiPromptText(controller_->shell_hwnd(),
+    if (PhiPromptText(host_hwnd_ ? host_hwnd_ : controller_->shell_hwnd(),
                       PhiStr("settings.profiles.createDialog.title"),
                       PhiStr("settings.profiles.createDialog.message"),
                       &name)) {
@@ -846,11 +864,17 @@ void PhiCreateSpacePanel::Create() {
   const PhiTheme& theme = PhiThemeById(theme_id_);
   const bool dark = controller_->CurrentPalette().dark;
   spec.color_hex = HexOf(dark ? theme.dark.overlay : theme.light.overlay);
-  controller_->CommitCreateSpaceForm(spec);
+  if (host_) {
+    host_->FormCommit(spec);
+  } else {
+    controller_->CommitCreateSpaceForm(spec);
+  }
 }
 
 void PhiCreateSpacePanel::Cancel() {
-  if (controller_) {
+  if (host_) {
+    host_->FormCancel();
+  } else if (controller_) {
     controller_->CancelCreateSpaceForm();
   }
 }
@@ -868,8 +892,13 @@ void PhiCreateSpacePanel::PaintForm(HDC dc) {
   const PhiPalette palette = controller_->CurrentPalette();
   // The sidebar's own tint under the form (the Mac's themed backdrop): the
   // same top-to-bottom ramp the shell paints, continued at this window's
-  // offset so the two never seam.
-  {
+  // offset so the two never seam. The standalone window's form sits on
+  // that window's flat ground instead.
+  if (host_) {
+    HBRUSH brush = ::CreateSolidBrush(host_->FormGround());
+    ::FillRect(dc, &rc, brush);
+    ::DeleteObject(brush);
+  } else {
     RECT shell = {};
     POINT origin = {0, 0};
     if (HWND owner = controller_->shell_hwnd()) {
@@ -894,7 +923,7 @@ void PhiCreateSpacePanel::PaintForm(HDC dc) {
   const Geometry g = ComputeGeometry();
   ::SetBkMode(dc, TRANSPARENT);
   const COLORREF ink = palette.dark ? RGB(0xFF, 0xFF, 0xFF) : RGB(0, 0, 0);
-  const COLORREF ground = palette.ground_top;
+  const COLORREF ground = host_ ? host_->FormGround() : palette.ground_top;
   const COLORREF fill4 = Blend(ink, ground, 10);    // primary 4%
   const COLORREF fill6 = Blend(ink, ground, 15);    // primary 6%
   const COLORREF fill10 = Blend(ink, ground, 25);   // hover / selected
@@ -1243,7 +1272,11 @@ LRESULT PhiCreateSpacePanel::OnMessage(UINT message,
         const PhiPalette colors = QueryPalette();
         const COLORREF ink =
             colors.dark ? RGB(0xFF, 0xFF, 0xFF) : RGB(0, 0, 0);
-        const COLORREF fill = Blend(ink, colors.ground_top, 10);
+        // The row's own wash: over the sidebar tint, or the standalone
+        // window's ground.
+        const COLORREF ground =
+            host_ ? host_->FormGround() : colors.ground_top;
+        const COLORREF fill = Blend(ink, ground, 10);
         HDC edit_dc = reinterpret_cast<HDC>(wparam);
         ::SetTextColor(edit_dc, colors.label);
         ::SetBkColor(edit_dc, fill);  // Seamless with the row's wash.

@@ -202,7 +202,8 @@ PhiMenuSpec PhiBuildSpaceSwitcherMenu(const std::vector<PhiMenuChoice>& spaces,
                                       const std::vector<PhiMenuChoice>& agents,
                                       const std::string& watched_agent,
                                       const std::string& active_space,
-                                      bool with_new_space);
+                                      bool with_new_space,
+                                      bool with_new_profile);
 
 // --- The bookmark bar's dropdown ------------------------------------------
 

@@ -316,14 +316,25 @@ void SpaceSwitcherMarksTheActiveSpace() {
   std::vector<PhiMenuChoice> spaces = {Choice("2", L"Work"),
                                        Choice("5", L"Home")};
   spaces[1].glyph = L"\U0001F3E0";
-  const PhiMenuSpec compact = PhiBuildSpaceSwitcherMenu(spaces, {}, "", "5", false);
-  CHECK(Joined(compact) == "space.switch space.switch ");
+  // The compact pip's menu: every Space, a rule, "New Space…" (the Mac's
+  // spaceSwitcherMenu).
+  const PhiMenuSpec compact =
+      PhiBuildSpaceSwitcherMenu(spaces, {}, "", "5", true, false);
+  CHECK(Joined(compact) == "space.switch space.switch - space.new ");
   CHECK(!compact.items[0].checked);
   CHECK(compact.items[1].checked);
   CHECK(compact.items[1].default_item);
   CHECK(compact.items[1].glyph == L"\U0001F3E0");
+  CHECK(compact.items[3].glyph == L"\uE710");  // The plus.
 
-  const PhiMenuSpec overflow = PhiBuildSpaceSwitcherMenu(spaces, {}, "", "5", true);
+  // Bare: the list alone.
+  const PhiMenuSpec bare =
+      PhiBuildSpaceSwitcherMenu(spaces, {}, "", "5", false, false);
+  CHECK(Joined(bare) == "space.switch space.switch ");
+
+  // The overflow "…": the new-profile row as well.
+  const PhiMenuSpec overflow =
+      PhiBuildSpaceSwitcherMenu(spaces, {}, "", "5", true, true);
   CHECK(Joined(overflow) ==
         "space.switch space.switch - space.new space.newWithProfile ");
 }

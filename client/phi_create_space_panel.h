@@ -18,6 +18,26 @@
 namespace phi_client {
 
 class PhiShellWindow;
+struct PhiNewSpaceSpec;
+
+// Where a form hosted OUTSIDE the shell reports — the standalone window
+// (phi_create_space_window.h), the Mac's CreateSpacePanel.Style.window. A
+// sidebar-hosted form reports to the shell instead (CommitCreateSpaceForm
+// and company), which previews its theme and mirrors its icon on the
+// strip; the standalone form has no live preview and no strip, so this
+// host hears only the outcome.
+class PhiCreateSpaceFormHost {
+ public:
+  virtual void FormCommit(const PhiNewSpaceSpec& spec) = 0;
+  virtual void FormCancel() = 0;
+  // The ground the form paints on — the host window's, in place of the
+  // sidebar's tint ramp.
+  virtual COLORREF FormGround() const = 0;
+
+ protected:
+  // The window owns the form, never the reverse.
+  ~PhiCreateSpaceFormHost() = default;
+};
 
 // The Mac's CreateSpacePanel in its sidebar style (UserInterface/Sidebar/
 // Spaces/CreateSpacePanel.swift, mounted by SidebarViewController.
@@ -34,7 +54,13 @@ class PhiShellWindow;
 // the icon on the strip's dashed placeholder pip.
 class PhiCreateSpacePanel : public PhiPanel {
  public:
-  explicit PhiCreateSpacePanel(PhiShellWindow* controller);
+  // A child of `controller`'s shell reporting to it — or, with `host`, a
+  // child of `host_hwnd` reporting to `host` (the standalone window): the
+  // Mac's .window style — the narrower column with the wider padding, the
+  // host's flat ground, no slide-in, no theme preview, no icon mirror.
+  explicit PhiCreateSpacePanel(PhiShellWindow* controller,
+                               HWND host_hwnd = nullptr,
+                               PhiCreateSpaceFormHost* host = nullptr);
   ~PhiCreateSpacePanel() override;
 
   PhiCreateSpacePanel(const PhiCreateSpacePanel&) = delete;
@@ -58,6 +84,10 @@ class PhiCreateSpacePanel : public PhiPanel {
   void Reposition(const RECT& bounds);
   void Refresh();
   void FocusField();
+  // The form's full height at its current width, in pixels — what the
+  // standalone window sizes itself to (the Mac's fittingSize).
+  int ContentHeight() const;
+  bool standalone() const { return host_ != nullptr; }
 
   // A profile created from the form's "New Profile…" row has appeared: the
   // picker selects it (the Mac's promptCreateProfile completion).
@@ -131,6 +161,8 @@ class PhiCreateSpacePanel : public PhiPanel {
   static LRESULT CALLBACK FieldProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l);
 
   RAW_PTR_EXCLUSION PhiShellWindow* const controller_;
+  const HWND host_hwnd_;
+  RAW_PTR_EXCLUSION PhiCreateSpaceFormHost* const host_;
   HWND field_ = nullptr;
   WNDPROC field_base_proc_ = nullptr;
   HBRUSH field_brush_ = nullptr;

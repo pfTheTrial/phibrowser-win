@@ -11,6 +11,7 @@
 #include "base/strings/utf_string_conversions.h"
 #include "phibrowser-win/client/phi_animator.h"
 #include "phibrowser-win/client/phi_create_space_panel.h"
+#include "phibrowser-win/client/phi_create_space_window.h"
 #include "phibrowser-win/client/phi_dwrite.h"
 #include "phibrowser-win/client/phi_emoji.h"
 #include "phibrowser-win/client/phi_icons.h"
@@ -585,26 +586,6 @@ void PhiSpacesStrip::ShowCreateForm() {
   if (!spaces_host_ || !prefs_host_) {
     return;
   }
-  // CreateSpacePanel.requestCreation: the vertical layouts host the form
-  // inline in the docked sidebar. The horizontal layout, a collapsed
-  // sidebar (the floating panel does not host it here) and windows without
-  // a Spaces strip create at once instead — the Mac's standalone window has
-  // no Windows counterpart yet.
-  const RECT form = FormRect();
-  if (!shell_->SpacesSidebarCanHostForm(form)) {
-    spaces_host_->RequestCreateSpace(shell_->SpacesSlot().value,
-                                     /*new_profile=*/false);
-    return;  // The owner attaches the new Space's browser, which refreshes.
-  }
-  if (creating_) {
-    if (form_) {
-      form_->FocusField();
-    }
-    return;
-  }
-  if (!form_) {
-    form_ = std::make_unique<PhiCreateSpacePanel>(shell_->SpacesOwner());
-  }
   // Seeded from the Space the "+" was pressed in: its profile opens the
   // picker, its theme is what the random pick must differ from.
   const std::string& active = shell_->SpacesActiveSpace();
@@ -618,6 +599,25 @@ void PhiSpacesStrip::ShowCreateForm() {
   std::string theme_id = spaces_host_->SpaceThemeId(active);
   if (theme_id.empty()) {
     theme_id = prefs_host_->ThemeId();
+  }
+  // CreateSpacePanel.requestCreation: the vertical layouts host the form
+  // inline in the docked sidebar. The horizontal layout, a collapsed
+  // sidebar (the floating panel does not host it here) and windows without
+  // a Spaces strip open the Mac's standalone window instead.
+  const RECT form = FormRect();
+  if (!shell_->SpacesSidebarCanHostForm(form)) {
+    PhiCreateSpaceWindow::Open(shell_->SpacesOwner(), profile_id, theme_id,
+                               prefs_host_->Saturation());
+    return;
+  }
+  if (creating_) {
+    if (form_) {
+      form_->FocusField();
+    }
+    return;
+  }
+  if (!form_) {
+    form_ = std::make_unique<PhiCreateSpacePanel>(shell_->SpacesOwner());
   }
   creating_ = true;
   preview_until_switch_ = false;

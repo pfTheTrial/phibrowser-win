@@ -583,8 +583,9 @@ class PhiShellWindow : public PhiHitSource,
   // sidebar (SidebarViewController.showCreateSpaceOverlay). Every "New
   // Space" entry point (the strip's "+", the switcher menus, the menu bar)
   // routes through ShowCreateSpaceForm; where a docked vertical sidebar
-  // cannot host the form it creates at once instead (the Mac opens a
-  // standalone window there).
+  // cannot host the form — comfortable, a collapsed sidebar — it opens in
+  // the standalone window instead (phi_create_space_window.h, the Mac's
+  // CreateSpacePanel.present).
   void ShowCreateSpaceForm();
   void CommitCreateSpaceForm(const PhiNewSpaceSpec& spec);
   void CancelCreateSpaceForm();
@@ -1041,7 +1042,7 @@ class PhiShellWindow : public PhiHitSource,
   void ShowAgentChipMenu(POINT pt, std::string task);
   // The compact pip's switcher (with_new_space false) and the overflow "…"
   // button's (true, which adds the two creation rows).
-  void ShowSpaceSwitcherMenu(POINT pt, bool with_new_space);
+  void ShowSpaceSwitcherMenu(POINT pt, bool overflow);
 
   // Collapses/restores the sidebar (View > Toggle Sidebar, Ctrl+S). The
   // content card widens to the left margin; the margin becomes the hover
