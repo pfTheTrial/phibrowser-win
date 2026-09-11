@@ -1498,6 +1498,11 @@ void PhiShellWindow::SwitchToSpace(const std::string& space_id) {
     }
     return;
   }
+  // Below here the user is switching Spaces (a pip, the menu, Ctrl+N): the
+  // Mac's space_switched, counted whichever way the browser arrives.
+  if (services_.window) {
+    services_.window->NoteUserSpaceSwitched();
+  }
   if (HasSpace(space_id)) {
     ShowSpace(space_id);
   } else if (services_.spaces) {
@@ -5492,6 +5497,14 @@ LRESULT CALLBACK PhiShellWindow::ShellWndProc(HWND hwnd,
     return ::DefWindowProcW(hwnd, msg, wparam, lparam);
   }
   switch (msg) {
+    case WM_ACTIVATEAPP:
+      // Phi as a whole gained or lost the foreground (every top-level
+      // window hears it; the host keeps the one edge). The Mac SDK's
+      // Application Opened / Backgrounded pair, for the analytics.
+      if (self && self->services_.window) {
+        self->services_.window->NoteAppActivation(wparam != FALSE);
+      }
+      break;
     case WM_MOUSEACTIVATE: {
       // Let clicks activate without being eaten, and drive Chromium's own
       // activation across the boundary so input/focus/IME reach the page.

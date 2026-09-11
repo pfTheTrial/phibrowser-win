@@ -275,6 +275,10 @@ class PhiControlDispatcher : public PhiControlDelegate {
   // is owned by its capability, or nobody owns the task (an orphan of an
   // expired capability, adoptable by whoever touches it first).
   bool OwnsTask(const PhiPrincipal& principal, const std::string& task_id);
+  // The driving agent's name for the analytics: the agentName of a task
+  // the principal opened, else its process image's file stem. Raw — the
+  // capture site reduces it to a brand label (PhiAgentTelemetryName).
+  std::string AgentNameFor(const PhiPrincipal& principal);
   // Records `task_id` as created by `principal` (its connection, its
   // capability, and the owner map).
   void RecordTask(const PhiPrincipal& principal, const std::string& task_id);

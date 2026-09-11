@@ -162,6 +162,11 @@ class PhiCoordinator : public SidebarHost,
   void RecordAnalyticsEvent(const char* module,
                             const char* event_name,
                             const char* properties_json);
+  // The client's OWN events (phi_client_analytics.h): the same path as the
+  // framework's, so the harness ring and the collector see one stream.
+  void CaptureAnalytics(const char* module,
+                        const char* event_name,
+                        base::DictValue properties);
   // The framework delegate itself: the client's ONE entry point from the
   // browser, handed to the framework by PhiClientCreateDelegate.
   PhiFrameworkDispatcher& framework_dispatcher() {
@@ -217,6 +222,8 @@ class PhiCoordinator : public SidebarHost,
   std::vector<PhiSpaceView> Spaces() const override;
   void RequestSwitchSpace(int64_t slot, const std::string& space_id) override;
   void RequestNewWindow(int64_t slot) override;
+  void NoteAppActivation(bool active) override;
+  void NoteUserSpaceSwitched() override;
   std::vector<PhiAgentPipView> AgentSpaces(int64_t slot) const override;
   void RequestWatchAgentSpace(const std::string& task_id,
                               int64_t watcher_slot) override;
@@ -696,6 +703,11 @@ class PhiCoordinator : public SidebarHost,
  private:
   static constexpr size_t kAnalyticsRingSize = 256;
   std::deque<AnalyticsEvent> analytics_events_;
+  // Whether Phi is the foreground application, as WM_ACTIVATEAPP last said
+  // (NoteAppActivation). Every top-level window hears each transition, so
+  // the edge is detected here, once. Starts true: the launch is the first
+  // "Application Opened", captured from LoadStores.
+  bool app_active_ = true;
 
   // The model's value types under the names this file has always used
   // (docs/architecture-review.md §3.4: one definition, in phi_app_model.h).

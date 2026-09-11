@@ -29,6 +29,12 @@ class PhiProfileService;
 class PhiSpaceManager;
 class PhiUrlRouter;
 
+// Is Phi the browser Windows launches for an http: URL? A registry read
+// (AssocQueryString through the user's choice, compared to this exe's
+// path) — the settings pane's Default Browser row, and the launch-time
+// settings snapshot the analytics report.
+bool PhiThisExeIsDefaultBrowser();
+
 // What the New Tab shortcut opens — the Mac's NewTabShortcutBehavior. The
 // windows-free model header carries the enum (phi_app_model.h); this is the
 // UI side's spelling of the SAME type, not a second one to cast between.

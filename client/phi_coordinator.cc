@@ -28,6 +28,7 @@
 #include "base/time/time.h"
 #include "base/values.h"
 #include "phibrowser-win/client/phi_agent_overlay.h"
+#include "phibrowser-win/client/phi_client_analytics.h"
 #include "phibrowser-win/client/phi_control_dispatcher.h"
 #include "phibrowser-win/client/phi_create_space_window.h"
 #include "phibrowser-win/client/phi_updater.h"
@@ -1627,6 +1628,38 @@ void PhiCoordinator::RecordAnalyticsEvent(const char* module,
   }
 }
 
+void PhiCoordinator::CaptureAnalytics(const char* module,
+                                      const char* event_name,
+                                      base::DictValue properties) {
+  std::string json;
+  base::JSONWriter::Write(properties, &json);
+  RecordAnalyticsEvent(module, event_name, json.c_str());
+}
+
+void PhiCoordinator::NoteAppActivation(bool active) {
+  // WM_ACTIVATEAPP reaches every top-level window of the process on each
+  // transition; only the edge is an event. The pair is the Mac SDK's
+  // didBecomeActive / didResignActive, which is what its DAU counts.
+  if (active == app_active_) {
+    return;
+  }
+  app_active_ = active;
+  if (active) {
+    CaptureAnalytics(kAnalyticsModuleApp, kEventAppOpened,
+                     PhiAppOpenedProperties(preferences_.settings(),
+                                            /*from_background=*/true));
+  } else {
+    CaptureAnalytics(kAnalyticsModuleApp, kEventAppBackgrounded,
+                     base::DictValue());
+  }
+}
+
+void PhiCoordinator::NoteUserSpaceSwitched() {
+  CaptureAnalytics(kAnalyticsModuleSpaces, kEventSpaceSwitched,
+                   PhiSpaceSwitchedProperties(
+                       static_cast<int>(space_manager_->spaces().size())));
+}
+
 bool PhiCoordinator::SetStoredRowLayout(const std::string& guid,
                                        const std::string& layout) {
   if (!tab_store_.SetRowLayout(guid, layout)) {
@@ -1789,6 +1822,19 @@ void PhiCoordinator::LoadStores(const std::wstring& user_data_dir) {
   // The consent reaches the pipeline the moment it is known: Start() ran
   // before this file was read, and every event until now was dropped.
   PhiTelemetry::Get().SetEnabled(settings.analytics_enabled);
+  // The launch's events, now that both the settings they describe and the
+  // consent that gates them are in: the Mac SDK's install / update /
+  // opened lifecycle, then the settings snapshot AppController takes.
+  if (PhiVersionTransition transition = PhiNoteAppVersion(user_data_dir);
+      transition.event) {
+    CaptureAnalytics(kAnalyticsModuleApp, transition.event,
+                     std::move(transition.properties));
+  }
+  CaptureAnalytics(kAnalyticsModuleApp, kEventAppOpened,
+                   PhiAppOpenedProperties(settings, /*from_background=*/false));
+  CaptureAnalytics(
+      kAnalyticsModuleSettings, kEventUserDefaultsSnapshot,
+      PhiUserDefaultsSnapshotProperties(settings, PhiThisExeIsDefaultBrowser()));
 }
 
 void PhiCoordinator::MirrorPinScope() {
@@ -3464,6 +3510,13 @@ void PhiCoordinator::HostAgentWindow(BrowserId browser,
       pending.kind == phi_framework::WindowKind::kAgent, pending.task_id,
       browser, pending.profile_id, pending.agent_name, pending.persistent,
       incognito, now_ms, &reply);
+  if (pending.kind == phi_framework::WindowKind::kAgent) {
+    // The Mac's "agent task record is created" — its window is up. A
+    // shadow window is a surface without a task and counts as nothing.
+    CaptureAnalytics(kAnalyticsModuleAgent, kEventAgentTaskStarted,
+                     PhiAgentTaskProperties("phi_agent", pending.persistent,
+                                            pending.agent_name));
+  }
   UpdateSweepTimer();  // The keep-alive sweep, while anything needs it.
   if (pending.pending_reply_id) {
     std::string json;

@@ -53,6 +53,8 @@ namespace {
 
 constexpr wchar_t kClassName[] = L"PhiSettingsWindow";
 
+}  // namespace
+
 // Is Phi the browser Windows launches for an http: URL?
 //
 // The Mac asks LaunchServices for the handler of "http://example.com" and
@@ -64,7 +66,7 @@ constexpr wchar_t kClassName[] = L"PhiSettingsWindow";
 //
 // A registry read, not file I/O, so it does not need the raw-Win32 dance the
 // rest of the client does to stay off the UI thread's blocking check.
-bool ThisExeIsDefaultBrowser() {
+bool PhiThisExeIsDefaultBrowser() {
   wchar_t handler[MAX_PATH * 2] = {};
   DWORD length = static_cast<DWORD>(std::size(handler));
   if (FAILED(::AssocQueryStringW(
@@ -86,6 +88,8 @@ bool ThisExeIsDefaultBrowser() {
             << (ours ? " (ours)" : " (not ours)");
   return ours;
 }
+
+namespace {
 
 // The Mac window: content is a FIXED 680x561 in every pane
 // (each pane pins view.snp to that size); the toolbar rides above it.
@@ -2005,7 +2009,7 @@ void PhiSettingsWindow::BuildAccount(int* y) {
                    section_top + Scaled(74)};
     items_.push_back(std::move(card));
     if (!is_default_browser_.has_value()) {
-      is_default_browser_ = ThisExeIsDefaultBrowser();
+      is_default_browser_ = PhiThisExeIsDefaultBrowser();
     }
     const bool is_default = *is_default_browser_;
     Item label;

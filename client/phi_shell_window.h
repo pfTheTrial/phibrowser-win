@@ -395,6 +395,11 @@ class WindowHost {
   // switching it to that browser's Space when it is hidden) — the search
   // palette's cross-window jump.
   virtual void FocusWindowForBrowser(int64_t browser_window_id) = 0;
+  // Observations the analytics count (phi_client_analytics.h): the process
+  // gained or lost the foreground (WM_ACTIVATEAPP, every shell reports it,
+  // the host keeps the edge), and the user switched Space in this shell.
+  virtual void NoteAppActivation(bool active) = 0;
+  virtual void NoteUserSpaceSwitched() = 0;
   // Opens the settings window (theme, appearance, layout).
   virtual void RequestSettings() = 0;
   // Opens the universal URL Rules editor (Spaces ▸ URL Rules…), centred

@@ -25,6 +25,7 @@
 #include "chrome/browser/phinomenon/phi_framework/phi_framework_api.h"
 #include "phibrowser-win/client/phi_agent_overlay.h"
 #include "phibrowser-win/client/phi_agent_spaces.h"
+#include "phibrowser-win/client/phi_client_analytics.h"
 #include "phibrowser-win/client/phi_coordinator.h"
 #include "phibrowser-win/client/phi_credentials.h"
 #include "phibrowser-win/client/phi_emoji.h"
@@ -679,6 +680,28 @@ bool PhiControlDispatcher::OwnsTask(const PhiPrincipal& principal,
   return false;
 }
 
+std::string PhiControlDispatcher::AgentNameFor(const PhiPrincipal& principal) {
+  // The name an agent declared when it opened a Space (agentName on
+  // create) is the one the Mac's badge shows; a principal that has none
+  // live is named by its process image, which the brand resolver reduces
+  // to a label or "other" — the raw path never leaves the machine.
+  for (const std::string& task_id : principal.tasks) {
+    if (const PhiAgentSpaces::Space* space =
+            coordinator_->agent_spaces().Find(task_id);
+        space && !space->agent_name.empty()) {
+      return space->agent_name;
+    }
+  }
+  const std::wstring& image = principal.peer.image_path;
+  const size_t slash = image.find_last_of(L"\\/");
+  std::wstring stem =
+      slash == std::wstring::npos ? image : image.substr(slash + 1);
+  if (const size_t dot = stem.rfind(L'.'); dot != std::wstring::npos) {
+    stem.erase(dot);
+  }
+  return base::WideToUTF8(stem);
+}
+
 void PhiControlDispatcher::RecordTask(const PhiPrincipal& principal,
                                       const std::string& task_id) {
   task_owners_[task_id] = principal.capability_id;
@@ -1176,6 +1199,20 @@ PhiVerbResult PhiControlDispatcher::Execute(const std::string& type,
       return PhiVerbResult::Fail(code);
     }
     drive.Arm(drive_tag);
+    // The Mac's agent_user_space_command: an agent's command that passed
+    // the gate INTO the user's own Spaces — one aimed at a user window, or
+    // an app-wide one that needs the user-Space capability (spaces.create,
+    // a switch). Agent-Space work is the agent's own and is not counted;
+    // neither is the box (kHost is the user, not an agent).
+    const bool user_space_verb =
+        (spec->scopes != kScopeNone && scope.kind == Scope::Kind::kUser) ||
+        (spec->required & (kUserSpaceRead | kUserSpaceWrite));
+    if (user_space_verb && !(principal.caps & kHost)) {
+      coordinator_->CaptureAnalytics(
+          kAnalyticsModuleAgent, kEventAgentUserSpaceCommand,
+          PhiAgentUserSpaceCommandProperties(std::string(spec->name),
+                                             AgentNameFor(principal)));
+    }
   }
   // The schema, after the gate: a caller that may not ask at all learns
   // nothing about the shape of what it asked for.

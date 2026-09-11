@@ -20,6 +20,7 @@
 #include "chrome/browser/phinomenon/phi_framework/phi_framework_api.h"
 #include "phibrowser-win/client/phi_agent_overlay.h"
 #include "phibrowser-win/client/phi_agent_spaces.h"
+#include "phibrowser-win/client/phi_client_analytics.h"
 #include "phibrowser-win/client/phi_control_dispatcher.h"
 #include "phibrowser-win/client/phi_coordinator.h"
 #include "phibrowser-win/client/phi_features.h"
@@ -200,6 +201,12 @@ PhiVerbResult PhiControlDispatcher::VerbAgentCreate(
                                           existing->profile_id,
                                           existing->persistent, ctx.now_ms);
       RecordTask(ctx.principal, task_id);  // A re-bind (or an adoption).
+      // The Mac counts a re-bind as a task start too (its record is
+      // "created or rebound").
+      coordinator_->CaptureAnalytics(
+          kAnalyticsModuleAgent, kEventAgentTaskStarted,
+          PhiAgentTaskProperties("phi_agent", existing->persistent,
+                                 existing->agent_name));
       base::DictValue out;
       out.Set("spaceId", existing->space_id);
       out.Set("windowId", static_cast<double>(existing->window_id.value));
@@ -276,9 +283,17 @@ PhiVerbResult PhiControlDispatcher::VerbAgentComplete(
   // The Mac's taskDidComplete: `status` "success" (default) or a failure,
   // `message` the closing transcript line, `keep` (default true) whether a
   // persistent Space survives — see PhiAgentSpaceManager::CompleteTask.
+  const bool success = ctx.params.String("status", "success") == "success";
+  // Captured BEFORE CompleteTask, which may free the record. Only this
+  // path counts (the Mac's "ends through the completion path"): a Space
+  // the user closes under a task is not a completion.
+  coordinator_->CaptureAnalytics(
+      kAnalyticsModuleAgent, kEventAgentTaskCompleted,
+      PhiAgentTaskCompletedProperties("phi_agent", space->persistent,
+                                      space->agent_name, success));
   coordinator_->agent_manager().CompleteTask(
-      task_id, ctx.params.String("status", "success") == "success",
-      ctx.params.Bool("keep", true), ctx.params.String("message"));
+      task_id, success, ctx.params.Bool("keep", true),
+      ctx.params.String("message"));
   return PhiVerbResult::Ok();
 }
 

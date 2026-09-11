@@ -12,6 +12,8 @@
 #include <string>
 #include <string_view>
 
+#include "base/values.h"
+
 namespace phi_client {
 
 // The client's outbound telemetry: product-analytics events produced anywhere
@@ -130,6 +132,8 @@ class PhiTelemetry {
   // Reads the install id beside the spool, generating and persisting one on
   // first run.
   void EnsureDistinctId(const std::wstring& user_data_dir);
+  // The "$lib" / "$os" / version stamps every PostHog event carries.
+  static base::DictValue SenderProperties();
 
   // Guards every member below except the thread handle and the config, which
   // are written once by Start() before the thread exists.
@@ -151,6 +155,11 @@ class PhiTelemetry {
   // requires a distinct_id per event; anonymous-but-stable is the honest
   // default, and nothing here ever ties it to an account.
   std::string distinct_id_;
+  // What every PostHog event carries about the sender ($lib, $os, the app
+  // version and namespace): computed once in Start, cloned into each event
+  // at send time. The Mac SDK stamps the same keys, and they are what tells
+  // a Windows event from a Mac one in a shared insight.
+  base::DictValue sender_props_;
   std::wstring spool_path_;
 
   std::deque<Event> queue_;

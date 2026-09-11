@@ -19,6 +19,9 @@
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
+#include "base/win/windows_version.h"
+#include "phibrowser-win/client/phi_feedback_outbox.h"
+#include "phibrowser-win/client/phi_version.h"
 
 #pragma comment(lib, "winhttp.lib")
 
@@ -287,6 +290,7 @@ void PhiTelemetry::Start(const std::wstring& user_data_dir) {
   api_key_ = key;
   format_ = format;
   spool_path_ = user_data_dir + L"\\phi_telemetry_spool.json";
+  sender_props_ = SenderProperties();
   ::LeaveCriticalSection(&lock_);
 
   EnsureDistinctId(user_data_dir);
@@ -308,10 +312,12 @@ void PhiTelemetry::SetEnabled(bool enabled) {
 }
 
 std::string_view PhiTelemetry::AllowedProperties(std::string_view module) {
-  // The registry is chrome/browser/phinomenon/analytics/README.md; a row
-  // there and a fence here are added in the same change. The fences are
-  // "|"-delimited so a lookup is one substring search with no allocation and
-  // no partial-name match ("count" cannot pass as "zombie_count").
+  // Two registries, one table. The Chromium-originated modules are
+  // chrome/browser/phinomenon/analytics/README.md; the client's own are
+  // docs/analytics.md in this repository (built in phi_client_analytics.cc).
+  // A row there and a fence here are added in the same change. The fences
+  // are "|"-delimited so a lookup is one substring search with no allocation
+  // and no partial-name match ("count" cannot pass as "zombie_count").
   if (module == "memory_saver") {
     return "|enabled|aggressiveness|";
   }
@@ -319,7 +325,52 @@ std::string_view PhiTelemetry::AllowedProperties(std::string_view module) {
     return "|age_bucket|cpu_percent|process_uptime_minutes|zombie_count|"
            "renderer_count|";
   }
+  if (module == "app") {
+    return "|from_background|version|build|previous_version|layout_mode|"
+           "ai_enabled|is_guest_mode|";
+  }
+  if (module == "settings") {
+    return "|new_tab_behavior|layout_mode|app_language|appearance|"
+           "is_phi_default_browser|peek_view_enabled|always_show_full_url|"
+           "show_tab_previews|show_open_tab_indicators|"
+           "dim_unloaded_tab_icons|restore_last_session_enabled|"
+           "developer_mode_enabled|cdp_agent_access_enabled|"
+           "agent_user_spaces_enabled|always_show_bookmark_bar|";
+  }
+  if (module == "spaces") {
+    return "|total_spaces|non_default_profile|";
+  }
+  if (module == "agent") {
+    return "|origin|persistent|agent_name|success|command|";
+  }
   return std::string_view();
+}
+
+base::DictValue PhiTelemetry::SenderProperties() {
+  // PostHog's own keys, as its SDKs set them, so the Activity view's
+  // Library column and the OS / version breakdowns work for this client the
+  // way they do for the Mac's. The namespace carries the channel the way
+  // the Mac bundle id does (".canary." in it for a canary build), which is
+  // how docs/analytics.md there splits the channels in dashboards.
+  base::DictValue props;
+  props.Set("$lib", "phibrowser-win");
+  props.Set("$lib_version", PHI_WIN_VERSION_STRING);
+  props.Set("$app_version", PHI_WIN_VERSION_STRING);
+  props.Set("$app_build", PHI_WIN_VERSION_BUILD);
+  // The channel the feedback form reports ("canary", or "debug" for a
+  // DCHECK build), spelled into the namespace the way the Mac bundle id
+  // carries it; the stable channel is the bare name.
+  const std::string channel = PhiFeedbackOutbox::BrowserChannelName();
+  props.Set("$app_namespace", channel == "stable"
+                                  ? "com.phibrowser.win"
+                                  : "com.phibrowser." + channel + ".win");
+  props.Set("$os", "Windows");
+  const base::win::OSInfo::VersionNumber& v =
+      base::win::OSInfo::GetInstance()->version_number();
+  props.Set("$os_version", base::StringPrintf("%u.%u.%u", v.major, v.minor,
+                                              v.build));
+  props.Set("$device_type", "Desktop");
+  return props;
 }
 
 std::string PhiTelemetry::ScrubProperties(const std::string& module,
@@ -522,9 +573,11 @@ std::string PhiTelemetry::BuildBatchBody(const std::deque<Event>& batch) const {
       // PostHog's capture API: one object per event, distinct_id inside
       // properties, ISO-8601 timestamp. The module is not a PostHog concept,
       // so it rides along as a property rather than being dropped.
-      base::DictValue properties;
+      // The sender stamps go on first so an event's own key of the same
+      // name (none today; the allow-list has no "$" keys) would win.
+      base::DictValue properties = sender_props_.Clone();
       if (props && props->is_dict()) {
-        properties = std::move(*props).TakeDict();
+        properties.Merge(std::move(*props).TakeDict());
       }
       properties.Set("distinct_id", distinct_id_);
       properties.Set("phi_module", event.module);

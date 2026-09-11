@@ -17,6 +17,7 @@
 #include "base/values.h"
 #include "chrome/browser/phinomenon/phi_framework/phi_framework_api.h"
 #include "phibrowser-win/client/phi_agent_spaces.h"
+#include "phibrowser-win/client/phi_client_analytics.h"
 #include "phibrowser-win/client/phi_control_dispatcher.h"
 #include "phibrowser-win/client/phi_coordinator.h"
 #include "phibrowser-win/client/phi_sidebar_model.h"
@@ -139,6 +140,15 @@ PhiVerbResult PhiControlDispatcher::VerbSpacesCreate(
   space.color_hex = ctx.params.String("colorHex");
   coordinator_->spaces_model().spaces.push_back(std::move(space));
   coordinator_->ScheduleSave(PhiCoordinator::StoreDomain::kSpaces);
+  if (ctx.caller == ControlCaller::kInternal) {
+    // The user's own create form (the Mac's space_created is the panel's,
+    // never an agent's spaces.create): counts, not the Space.
+    coordinator_->CaptureAnalytics(
+        kAnalyticsModuleSpaces, kEventSpaceCreated,
+        PhiSpaceCreatedProperties(
+            static_cast<int>(coordinator_->spaces_model().spaces.size()),
+            profile_id != "Default"));
+  }
   // A wire colorHex tints the new Space.
   coordinator_->RebuildSpacePalettes();
   // The list changed under every window: the strips rebuild their pips
