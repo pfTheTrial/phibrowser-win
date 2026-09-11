@@ -19,6 +19,7 @@
 #include "chrome/browser/phinomenon/phi_framework/phi_framework_api.h"
 #include "phibrowser-win/client/phi_agent_space_manager.h"
 #include "phibrowser-win/client/phi_control_server.h"
+#include "phibrowser-win/client/phi_client_analytics.h"
 #include "phibrowser-win/client/phi_credential_service.h"
 #include "phibrowser-win/client/phi_kiosk_window.h"
 #include "phibrowser-win/client/phi_peek_panel.h"
@@ -166,7 +167,12 @@ class PhiCoordinator : public SidebarHost,
   // framework's, so the harness ring and the collector see one stream.
   void CaptureAnalytics(const char* module,
                         const char* event_name,
-                        base::DictValue properties);
+                        base::DictValue properties) override;
+  // The Mac's first_time_action: `action` succeeded — captured the FIRST
+  // time only, per user data directory (PhiFirstTimeActions).
+  void NoteFirstTimeAction(const char* action);
+  void NoteImportPrompted() override;
+  void NoteImportStarted() override;
   // The framework delegate itself: the client's ONE entry point from the
   // browser, handed to the framework by PhiClientCreateDelegate.
   PhiFrameworkDispatcher& framework_dispatcher() {
@@ -186,8 +192,10 @@ class PhiCoordinator : public SidebarHost,
   // Closes every surface of `kind` (kContent = all kinds) attached to the
   // tab: the panel browsers close, and OnBrowserWindowClosing forgets them.
   void CloseSurfacesForOrigin(TabId origin_tab_id,
-                              SidebarSurface kind = SidebarSurface::kContent) {
-    surface_coordinator_.CloseSurfacesForOrigin(origin_tab_id, kind);
+                              SidebarSurface kind = SidebarSurface::kContent,
+                              const char* peek_end_reason = "closed") {
+    surface_coordinator_.CloseSurfacesForOrigin(origin_tab_id, kind,
+                                                peek_end_reason);
   }
   // A link inside the reading surface navigated it away from reader.html:
   // hand `url` back to the origin window as a normal tab and drop the panel.
@@ -351,7 +359,9 @@ class PhiCoordinator : public SidebarHost,
                           bool distillable) override;
   bool IsReaderOfferable(int tab_id, const std::string& url) const override;
   bool IsReaderActive(int tab_id, const std::string& url) const override;
-  void RequestToggleReaderView(int tab_id, const std::string& url) override;
+  void RequestToggleReaderView(int tab_id,
+                               const std::string& url,
+                               const char* entry_point) override;
   void RequestCloseSurfaces(int tab_id) override;
   void NoteContentLayoutChanged(int64_t slot) override;
   void RaiseReaderPanels(int64_t slot) override;
@@ -657,9 +667,10 @@ class PhiCoordinator : public SidebarHost,
   bool PromptCredentialApproval(const std::wstring& detail,
                                 model::CredentialAccessKind kind,
                                 const std::string& grant_key,
-                                bool once_only) {
+                                bool once_only,
+                                PhiCredentialService::Decision* decision) {
     return credentials_.PromptCredentialApproval(detail, kind, grant_key,
-                                                 once_only);
+                                                 once_only, decision);
   }
   void AppendCredentialAudit(const std::string& scope,
                              model::CredentialAccessKind kind,
@@ -880,6 +891,9 @@ class PhiCoordinator : public SidebarHost,
   // the framework is known — after the members they reference, and
   // declared after them so they are destroyed first.
   PhiPreferences preferences_{[this] { ScheduleSave(StoreDomain::kSettings); }};
+  PhiFirstTimeActions first_time_actions_;
+  // GetTickCount64 when the running Chrome import began; 0 when none is.
+  uint64_t import_started_tick_ = 0;
   std::unique_ptr<PhiSpaceManager> space_manager_;
   std::unique_ptr<PhiUrlRouter> url_router_;
   // The menu-bar accelerators (lane 1 §1.2 cluster 17): the WH_KEYBOARD

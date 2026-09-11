@@ -11,6 +11,7 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
 #include "chrome/browser/phinomenon/phi_framework/phi_framework_api.h"
+#include "phibrowser-win/client/phi_client_analytics.h"
 #include "phibrowser-win/client/phi_control_dispatcher.h"
 #include "phibrowser-win/client/phi_coordinator.h"
 #include "phibrowser-win/client/phi_credentials.h"
@@ -64,6 +65,23 @@ std::string FieldOf(const base::DictValue& item, const std::string& key) {
 }
 
 }  // namespace
+
+void PhiControlDispatcher::CaptureCredentialDecision(
+    const PhiVerbContext& ctx,
+    const char* kind,
+    const PhiCredentialService::Decision& decision) {
+  const std::string agent_name = AgentNameFor(ctx.principal);
+  coordinator_->CaptureAnalytics(
+      kAnalyticsModuleAgent, kEventAgentCredentialRequested,
+      PhiCredentialRequestedProperties(kind, decision.approved,
+                                       decision.prompted, agent_name));
+  if (decision.approved && decision.approval_type) {
+    coordinator_->CaptureAnalytics(
+        kAnalyticsModuleAgent, kEventAgentCredentialApproved,
+        PhiCredentialApprovedProperties(kind, decision.approval_type,
+                                        agent_name));
+  }
+}
 
 PhiVerbResult PhiControlDispatcher::VerbCredentialsStatus(
     const PhiVerbContext& ctx) {
@@ -165,9 +183,12 @@ PhiVerbResult PhiControlDispatcher::VerbCredentialsGet(
   // A read hands the secret TO the agent — the reveal exposure. No page
   // is involved, so the grant key is the item scope alone; it never
   // covers a fill (those are keyed by page host).
-  if (!coordinator_->PromptCredentialApproval(
-          detail, CredentialAccessKind::kReveal, scope,
-          /*once_only=*/false)) {
+  PhiCredentialService::Decision decision;
+  const bool allowed = coordinator_->PromptCredentialApproval(
+      detail, CredentialAccessKind::kReveal, scope,
+      /*once_only=*/false, &decision);
+  CaptureCredentialDecision(ctx, "reveal", decision);
+  if (!allowed) {
     return PhiVerbResult::Fail(PhiErrorCode::kUserDenied);
   }
   // Build the credential by the requested (or type-default) field set.
@@ -272,10 +293,12 @@ PhiVerbResult PhiControlDispatcher::VerbCredentialsAutofill(
   // Grants are per page host: an approval for site A's password on host A
   // never carries to a page the agent navigated to afterwards.
   const std::string grant_key = scope + "|" + page_host;
-  if (!coordinator_->PromptCredentialApproval(base::UTF8ToWide(detail_utf8),
-                                              CredentialAccessKind::kFill,
-                                              grant_key,
-                                              /*once_only=*/cross_origin)) {
+  PhiCredentialService::Decision decision;
+  const bool allowed = coordinator_->PromptCredentialApproval(
+      base::UTF8ToWide(detail_utf8), CredentialAccessKind::kFill, grant_key,
+      /*once_only=*/cross_origin, &decision);
+  CaptureCredentialDecision(ctx, "fill", decision);
+  if (!allowed) {
     return PhiVerbResult::Fail(PhiErrorCode::kUserDenied);
   }
   // The dialog sat open for a while; the page may have navigated under

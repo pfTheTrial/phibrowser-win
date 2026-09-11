@@ -166,17 +166,20 @@ LRESULT PhiKeyboardAccelerators::OnKey(WPARAM wparam, LPARAM lparam) {
   }
   // The REBINDABLE shortcuts first (their effective chords carry the user's
   // overrides), so a custom chord shadows any fixed one it collides with.
+  // Posted with HIWORD 1, Win32's own "this WM_COMMAND is an accelerator"
+  // mark, so a handler that cares (the reader's usage metric) can tell a
+  // chord from the menu row that shares its id.
   if (const UINT command = preferences_.MatchRebindableChord(
           static_cast<UINT>(wparam), ctrl, shift, alt)) {
     if (HWND shell = host_.FocusedShellHwnd()) {
-      ::PostMessageW(shell, WM_COMMAND, MAKEWPARAM(command, 0), 0);
+      ::PostMessageW(shell, WM_COMMAND, MAKEWPARAM(command, 1), 0);
       return 1;
     }
   }
   if (const UINT command =
           MatchFixedAccelerator(static_cast<UINT>(wparam), ctrl, shift, alt)) {
     if (HWND shell = host_.FocusedShellHwnd()) {
-      ::PostMessageW(shell, WM_COMMAND, MAKEWPARAM(command, 0), 0);
+      ::PostMessageW(shell, WM_COMMAND, MAKEWPARAM(command, 1), 0);
       return 1;  // Swallow: Chromium must not double-handle it.
     }
   }

@@ -12,6 +12,7 @@
 #include <string>
 
 #include "base/memory/raw_ptr_exclusion.h"
+#include "base/values.h"
 #include "phibrowser-win/client/phi_app_model.h"
 #include "phibrowser-win/client/phi_ids.h"
 #include "phibrowser-win/client/phi_reader.h"
@@ -65,6 +66,11 @@ class PhiSurfaceCoordinator {
     // WM_PHI_READER_RETIRE (a panel lost its only tab).
     virtual void PostReaderExpand(BrowserId panel) = 0;
     virtual void PostReaderRetire(BrowserId panel) = 0;
+    // The client's one analytics capture path (phi_client_analytics.h):
+    // the harness ring, then the collector's consent gate and allow-list.
+    virtual void CaptureAnalytics(const char* module,
+                                  const char* event_name,
+                                  base::DictValue properties) = 0;
   };
 
   PhiSurfaceCoordinator(const PhiWindowModel& model, Host& host);
@@ -90,6 +96,10 @@ class PhiSurfaceCoordinator {
   PhiReaderBridge& reader() { return reader_; }
 
   // --- The bridge's seams (PhiReaderBridge calls these) --------------------
+  // The app's capture path, for the reader's usage metric.
+  void CaptureAnalytics(const char* module,
+                        const char* event_name,
+                        base::DictValue properties);
   // Answers one extension request (PhiFramework::RespondToExtensionMessage).
   void RespondToExtension(const std::string& request_id,
                           const std::string& response_json);
@@ -114,8 +124,13 @@ class PhiSurfaceCoordinator {
   void CloseReaderPanelForOrigin(TabId origin_tab_id);
   // Closes every surface of `kind` (kContent = all kinds) attached to the
   // tab: the panel browsers close, and OnBrowserWindowClosing forgets them.
+  // `peek_end_reason` is what a closing Peek reports as its end — the
+  // user's own close by default ("closed": the sidebar's surface badge,
+  // Back/Forward, an address-bar navigation), "replaced" from a second
+  // peek on the same opener.
   void CloseSurfacesForOrigin(TabId origin_tab_id,
-                              SidebarSurface kind = SidebarSurface::kContent);
+                              SidebarSurface kind = SidebarSurface::kContent,
+                              const char* peek_end_reason = "closed");
   // A link inside the reading surface navigated it away from reader.html:
   // hand `url` back to the origin window as a normal tab and drop the panel.
   void ExpandReaderPanelIntoTab(int64_t panel_window_id,
@@ -136,7 +151,9 @@ class PhiSurfaceCoordinator {
   // --- The sidebar's reader affordance --------------------------------------
   bool IsReaderOfferable(int tab_id, const std::string& url) const;
   bool IsReaderActive(int tab_id, const std::string& url) const;
-  void RequestToggleReaderView(int tab_id, const std::string& url);
+  void RequestToggleReaderView(int tab_id,
+                               const std::string& url,
+                               const char* entry_point);
   // Right-click "Open in Reading Mode": ENTERS rather than toggles.
   void OnOpenReaderView(int64_t window_id, int64_t tab_id);
   // The reader's half of OnExtensionMessage. False leaves the message for

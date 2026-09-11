@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "base/memory/raw_ptr_exclusion.h"
+#include "base/values.h"
 #include "phibrowser-win/client/phi_ids.h"
 #include "phibrowser-win/client/phi_settings_types.h"
 
@@ -74,6 +75,11 @@ class PhiProfileService {
     // Something joined or left the "in flight" set: re-arm (or stop) the
     // coordinator's sweep.
     virtual void UpdateSweepTimer() = 0;
+    // The client's one analytics capture path (phi_client_analytics.h):
+    // the harness ring, then the collector's consent gate and allow-list.
+    virtual void CaptureAnalytics(const char* module,
+                                  const char* event_name,
+                                  base::DictValue properties) = 0;
   };
 
   PhiProfileService(phi_framework::PhiFramework& framework, Host& host);

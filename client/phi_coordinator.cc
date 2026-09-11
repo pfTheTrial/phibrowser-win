@@ -328,6 +328,11 @@ LRESULT CALLBACK PhiCoordinator::MsgWndProc(HWND hwnd,
 }
 
 void PhiCoordinator::FlushForShutdown() {
+  // An onboarding still up is the funnel's app_terminated interruption
+  // (the Mac's recordOOBEAppTermination); before the spool closes below.
+  if (onboarding_) {
+    onboarding_->NoteAppTerminating();
+  }
   // Coalesced saves land now rather than on a timer that will never fire.
   // The restore file is written whether or not it is dirty: the last-active
   // Space is re-derived here from the live window, and the write is cheap
@@ -1541,8 +1546,9 @@ bool PhiCoordinator::IsReaderActive(int tab_id, const std::string& url) const {
 }
 
 void PhiCoordinator::RequestToggleReaderView(int tab_id,
-                                             const std::string& url) {
-  surface_coordinator_.RequestToggleReaderView(tab_id, url);
+                                             const std::string& url,
+                                             const char* entry_point) {
+  surface_coordinator_.RequestToggleReaderView(tab_id, url, entry_point);
 }
 
 void PhiCoordinator::RequestCloseSurfaces(int tab_id) {
@@ -1634,6 +1640,29 @@ void PhiCoordinator::CaptureAnalytics(const char* module,
   std::string json;
   base::JSONWriter::Write(properties, &json);
   RecordAnalyticsEvent(module, event_name, json.c_str());
+}
+
+void PhiCoordinator::NoteFirstTimeAction(const char* action) {
+  base::DictValue props;
+  if (first_time_actions_.Record(action, PhiNowUnixMs(), &props)) {
+    CaptureAnalytics(kAnalyticsModuleApp, kEventFirstTimeAction,
+                     std::move(props));
+  }
+}
+
+void PhiCoordinator::NoteImportPrompted() {
+  CaptureAnalytics(kAnalyticsModuleImport, kEventImportViewed,
+                   PhiImportViewedProperties());
+}
+
+void PhiCoordinator::NoteImportStarted() {
+  // The Mac captures the selection as the user commits it and the start
+  // as the importer accepts the run; this client's one confirm is both.
+  CaptureAnalytics(kAnalyticsModuleImport, kEventImportTypesSelected,
+                   PhiImportTypesSelectedProperties());
+  CaptureAnalytics(kAnalyticsModuleImport, kEventImportStarted,
+                   PhiImportStartedProperties());
+  import_started_tick_ = ::GetTickCount64();
 }
 
 void PhiCoordinator::NoteAppActivation(bool active) {
@@ -1835,6 +1864,8 @@ void PhiCoordinator::LoadStores(const std::wstring& user_data_dir) {
   CaptureAnalytics(
       kAnalyticsModuleSettings, kEventUserDefaultsSnapshot,
       PhiUserDefaultsSnapshotProperties(settings, PhiThisExeIsDefaultBrowser()));
+  // The first-time-action record, beside the version file it pairs with.
+  first_time_actions_.Load(user_data_dir, PhiNowUnixMs());
 }
 
 void PhiCoordinator::MirrorPinScope() {
@@ -2094,7 +2125,15 @@ bool PhiCoordinator::RenameSpace(const std::string& space_id,
 }
 
 bool PhiCoordinator::DeleteSpace(const std::string& space_id) {
-  return space_manager_->DeleteSpace(space_id);
+  // The hosts' spelling — the menu bar's and Settings' confirmed deletes.
+  // The agent's spaces.delete reaches the manager directly and is not the
+  // Mac's space_deleted (which its two confirm dialogs capture).
+  if (!space_manager_->DeleteSpace(space_id)) {
+    return false;
+  }
+  CaptureAnalytics(kAnalyticsModuleSpaces, kEventSpaceDeleted,
+                   base::DictValue());
+  return true;
 }
 
 std::string PhiCoordinator::DefaultSpaceId() const {
@@ -2107,7 +2146,16 @@ bool PhiCoordinator::CanDeleteSpace(const std::string& space_id) const {
 
 bool PhiCoordinator::SetSpaceProfile(const std::string& space_id,
                                      const std::string& profile_id) {
-  return space_manager_->SetSpaceProfile(space_id, profile_id);
+  if (!space_manager_->SetSpaceProfile(space_id, profile_id)) {
+    return false;
+  }
+  // The Mac's space_profile_changed: a validated change began. The
+  // profile COUNT, never which.
+  CaptureAnalytics(
+      kAnalyticsModuleSpaces, kEventSpaceProfileChanged,
+      PhiProfileCountProperties(
+          static_cast<int>(profile_service_->Profiles().size())));
+  return true;
 }
 
 // PhiSpaceManager::Host -------------------------------------------------------
@@ -2867,6 +2915,9 @@ void PhiCoordinator::ReconcileAccessAfterAuth() {
   const std::string& sub = auth.user().sub;
   int phase = preferences_.OnboardingPhase(sub);
   if (phase >= 6) {
+    // The Mac's guest_mode_exited: the account is in, from Settings ▸ You.
+    CaptureAnalytics(kAnalyticsModuleAccount, kEventGuestModeExited,
+                     PhiGuestModeExitedProperties("account_setting"));
     preferences_.SetGuestModeEnabled(false);
     access_ = Access::kSignedIn;
     NotifySettingsObservers(PhiSettingsChange::kAccount);
@@ -2914,6 +2965,12 @@ void PhiCoordinator::OnboardingFinished(bool share_metrics) {
   const PhiAuth& auth = account_.auth();
   if (auth.signed_in()) {
     preferences_.SetOnboardingPhase(auth.user().sub, 6);
+    if (preferences_.GuestModeEnabled()) {
+      // A guest who signed in from Settings ▸ You and finished the rest of
+      // the onboarding over the browser: the Mac's guest_mode_exited.
+      CaptureAnalytics(kAnalyticsModuleAccount, kEventGuestModeExited,
+                       PhiGuestModeExitedProperties("account_setting"));
+    }
   }
   preferences_.SetGuestModeEnabled(false);
   GrantAccess(auth.signed_in() ? Access::kSignedIn : Access::kGuest);
@@ -3410,6 +3467,10 @@ void PhiCoordinator::AdoptCreatedWindow(
       registry_.AddKiosk(browser, std::make_unique<PhiKioskWindow>(
                                       browser.value, hwnd, framework_,
                                       &window_model_, this));
+      // The Mac's kiosk_opened (its window is up with its one tab; this
+      // client has no profile-replacement Kiosk to exclude).
+      CaptureAnalytics(kAnalyticsModuleKiosk, kEventKioskOpened,
+                       base::DictValue());
       return;
     case WindowKind::kPeek:
     case WindowKind::kReaderPanel:
@@ -3475,10 +3536,18 @@ bool PhiCoordinator::HostSurfacePanel(
   LOG(INFO) << "[PhiClient] peek " << browser.value << " over tab "
             << creation.opener_tab.value << " in window "
             << creation.opener_window.value;
-  CloseSurfacesForOrigin(creation.opener_tab, SidebarSurface::kPeek);
+  CloseSurfacesForOrigin(creation.opener_tab, SidebarSurface::kPeek,
+                         "replaced");
   surfaces().Attach(std::make_unique<PhiPeekPanel>(
       browser.value, hwnd, creation.opener_window.value,
       creation.opener_tab.value, opener, framework_, &window_model_, this));
+  // The Mac's peek_view_opened: the panel actually presented. "restored"
+  // never happens here — a peek is omitted from session restore.
+  CaptureAnalytics(
+      kAnalyticsModulePeek, kEventPeekOpened,
+      PhiPeekOpenedProperties(
+          creation.peek_explicit ? "explicit" : "auto",
+          opener->PeekOpenerKind(creation.opener_tab.value)));
   return true;
 }
 
@@ -3511,11 +3580,16 @@ void PhiCoordinator::HostAgentWindow(BrowserId browser,
       browser, pending.profile_id, pending.agent_name, pending.persistent,
       incognito, now_ms, &reply);
   if (pending.kind == phi_framework::WindowKind::kAgent) {
-    // The Mac's "agent task record is created" — its window is up. A
-    // shadow window is a surface without a task and counts as nothing.
+    // The Mac's "agent task record is created" — its window is up.
     CaptureAnalytics(kAnalyticsModuleAgent, kEventAgentTaskStarted,
                      PhiAgentTaskProperties("phi_agent", pending.persistent,
                                             pending.agent_name));
+    NoteFirstTimeAction(kFirstTimeActionAgentTask);
+  } else {
+    // A shadow window is a surface without a task: the Mac's
+    // agent_shadow_window_opened, whose origin here is always the pipe.
+    CaptureAnalytics(kAnalyticsModuleAgent, kEventAgentShadowWindowOpened,
+                     PhiAgentShadowWindowProperties("phi_agent", incognito));
   }
   UpdateSweepTimer();  // The keep-alive sweep, while anything needs it.
   if (pending.pending_reply_id) {
@@ -3707,6 +3781,19 @@ void PhiCoordinator::OnOmniboxResults(int64_t window_id, const char* json) {
 void PhiCoordinator::OnImportCompleted(const char* source, bool success) {
   PhiShellWindow* focused = FocusedUserController();
   HWND owner = focused ? focused->shell_hwnd() : nullptr;
+  // The Mac's import_finished: the aggregate outcome and the wall time
+  // since the run was accepted; the first success is a first-time action.
+  const uint64_t started = import_started_tick_;
+  import_started_tick_ = 0;
+  CaptureAnalytics(
+      kAnalyticsModuleImport, kEventImportFinished,
+      PhiImportFinishedProperties(
+          success,
+          started ? static_cast<int>((::GetTickCount64() - started) / 1000)
+                  : 0));
+  if (success) {
+    NoteFirstTimeAction(kFirstTimeActionImportFinished);
+  }
   if (!success) {
     PhiNotice(owner, L"Import",
               L"The import did not finish. Close Google Chrome and try "
@@ -3881,6 +3968,21 @@ void PhiCoordinator::RetireClosingBrowser(BrowserId browser) {
   // surface tab removed, click-outside) is the whole teardown. Hand the
   // strip back to the origin, the way the Mac reveals the page the overlay
   // was covering, and repaint the row that carried the indicator.
+  if (PhiSurfacePanel* panel = surfaces().Find(browser);
+      panel && panel->kind() == SidebarSurface::kPeek &&
+      phase_ < AppPhase::kClosing) {
+    // The Mac's peek_view_ended: how it ended and how long it lived. A
+    // close nobody announced is the page's own (window.close()); window
+    // teardown reports nothing — the orphan sweep below detaches those
+    // before their browsers close, and the app's own exit is gated out.
+    const auto* peek = static_cast<const PhiPeekPanel*>(panel);
+    const char* reason = peek->end_reason() ? peek->end_reason() : "page_closed";
+    CaptureAnalytics(
+        kAnalyticsModulePeek, kEventPeekEnded,
+        PhiPeekEndedProperties(
+            reason, static_cast<int>((::GetTickCount64() - peek->opened_tick()) /
+                                     1000)));
+  }
   if (const std::optional<PhiSurfaceRegistry::Origin> gone =
           surfaces().Detach(browser)) {
     if (framework_) {

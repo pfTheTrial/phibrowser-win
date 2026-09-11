@@ -92,6 +92,11 @@ class PhiPeekPanel : public PhiSurfacePanel, public PhiPanel {
 
   // Shadow first, then the card over it — both above the opener's page.
   void Raise() override;
+  void NoteEndReason(const char* reason) override;
+  // The metric's two readings: the reason a closer announced (null when
+  // none did) and when the card came up (GetTickCount64).
+  const char* end_reason() const { return end_reason_; }
+  uint64_t opened_tick() const { return opened_tick_; }
 
  protected:
   // PhiPanel: the peek keeps its layout, its ground fill and its commands.
@@ -143,6 +148,8 @@ class PhiPeekPanel : public PhiSurfacePanel, public PhiPanel {
 
   std::wstring url_;
   int hot_ = -1;
+  const char* end_reason_ = nullptr;
+  uint64_t opened_tick_ = 0;
 };
 
 }  // namespace phi_client

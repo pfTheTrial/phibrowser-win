@@ -13,6 +13,7 @@
 #include "base/logging.h"
 #include "base/strings/escape.h"
 #include "base/strings/string_number_conversions.h"
+#include "phibrowser-win/client/phi_client_analytics.h"
 #include "phibrowser-win/client/phi_surface_coordinator.h"
 #include "phibrowser-win/client/phi_i18n.h"
 #include "phibrowser-win/client/phi_toast.h"
@@ -279,6 +280,10 @@ bool PhiReaderBridge::HandleExtensionMessage(const std::string& request_id,
         // BEFORE the pending flag is dropped, so the restored-husk sweep
         // cannot mistake the surface for a leftover in the gap.
         owner_->PanelizeReaderSurface(TabId{*tab_id});
+        // The Mac's reader_view_opened: the surface actually mounted.
+        owner_->CaptureAnalytics(
+            kAnalyticsModuleReader, kEventReaderOpened,
+            PhiReaderOpenedProperties(TakeEntryPoint(*tab_id)));
       }
       pending_opens_.erase(*tab_id);
       if (!active) {
@@ -290,11 +295,16 @@ bool PhiReaderBridge::HandleExtensionMessage(const std::string& request_id,
         // every navigation site having to remember to.
         owner_->CloseReaderPanelForOrigin(TabId{*tab_id});
         // A refused open never creates a surface — say so where the Mac does,
-        // with the same two messages.
+        // with the same two messages, and count it with its reason.
         if (error) {
           LOG(INFO) << "[Reader] open refused tab=" << *tab_id << ": "
                     << *error;
           ShowRefusalToast(*tab_id, *error);
+          owner_->CaptureAnalytics(
+              kAnalyticsModuleReader, kEventReaderOpenFailed,
+              PhiReaderOpenFailedProperties(TakeEntryPoint(*tab_id), *error));
+        } else {
+          pending_entry_points_.erase(*tab_id);
         }
       }
       owner_->OnReaderOfferabilityChanged(TabId{*tab_id});
@@ -381,7 +391,9 @@ bool PhiReaderBridge::HasPendingOpen(int tab_id) const {
          ::GetTickCount64() - it->second < kOpenRetryMs;
 }
 
-void PhiReaderBridge::Toggle(int tab_id, const std::string& url) {
+void PhiReaderBridge::Toggle(int tab_id,
+                             const std::string& url,
+                             const char* entry_point) {
   // On the reading surface itself the toggle can only mean "leave": ask for
   // the ORIGIN tab, which is the id the extension filed the surface under.
   if (std::optional<int> origin = OriginTabIdOfReaderPage(url)) {
@@ -392,10 +404,10 @@ void PhiReaderBridge::Toggle(int tab_id, const std::string& url) {
     Close(tab_id);
     return;
   }
-  Open(tab_id);
+  Open(tab_id, entry_point);
 }
 
-void PhiReaderBridge::Open(int tab_id) {
+void PhiReaderBridge::Open(int tab_id, const char* entry_point) {
   // Swallow a repeat press while an open is still extracting — a second
   // request would spawn a duplicate surface tab.
   const unsigned long long now = ::GetTickCount64();
@@ -404,14 +416,30 @@ void PhiReaderBridge::Open(int tab_id) {
     return;
   }
   pending_opens_[tab_id] = now;
+  pending_entry_points_[tab_id] = entry_point ? entry_point : "unknown";
   if (!Broadcast(kMsgOpen, TabPayload(tab_id))) {
     pending_opens_.erase(tab_id);
     ShowRefusalToast(tab_id, "transport_unavailable");
+    owner_->CaptureAnalytics(
+        kAnalyticsModuleReader, kEventReaderOpenFailed,
+        PhiReaderOpenFailedProperties(TakeEntryPoint(tab_id),
+                                      "transport_unavailable"));
   }
+}
+
+const char* PhiReaderBridge::TakeEntryPoint(int tab_id) {
+  auto it = pending_entry_points_.find(tab_id);
+  if (it == pending_entry_points_.end()) {
+    return "unknown";
+  }
+  const char* entry_point = it->second;
+  pending_entry_points_.erase(it);
+  return entry_point;
 }
 
 void PhiReaderBridge::Close(int tab_id) {
   pending_opens_.erase(tab_id);
+  pending_entry_points_.erase(tab_id);
   Broadcast(kMsgClose, TabPayload(tab_id));
 }
 

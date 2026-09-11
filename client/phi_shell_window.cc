@@ -42,6 +42,7 @@
 #include "phibrowser-win/client/phi_search_tabs_panel.h"
 #include "phibrowser-win/client/phi_space_theme_panel.h"
 #include "phibrowser-win/client/phi_bookmark_manager.h"
+#include "phibrowser-win/client/phi_client_analytics.h"
 #include "phibrowser-win/client/phi_create_space_panel.h"
 #include "phibrowser-win/client/phi_create_space_window.h"
 #include "phibrowser-win/client/phi_folder_icon_picker.h"
@@ -1268,8 +1269,8 @@ bool PhiShellWindow::MenuAgentHoldsInput() const {
   return AgentHoldsInput();
 }
 
-void PhiShellWindow::MenuToggleReader() {
-  ToggleReaderView();
+void PhiShellWindow::MenuToggleReader(bool from_accelerator) {
+  ToggleReaderView(from_accelerator ? "shortcut" : "view_menu");
 }
 
 void PhiShellWindow::MenuToggleDownloads() {
@@ -2799,12 +2800,12 @@ void PhiShellWindow::CardRoundedCorners(bool* top, bool* bottom) const {
 }
 
 
-void PhiShellWindow::ToggleReaderView() {
+void PhiShellWindow::ToggleReaderView(const char* entry_point) {
   if (!services_.sidebar || !active_tab_id().valid()) {
     return;
   }
   services_.sidebar->RequestToggleReaderView(active_tab_id().value,
-                                             active_tab_url());
+                                             active_tab_url(), entry_point);
 }
 
 bool PhiShellWindow::LeaveReaderViewForNavigation() {
@@ -2836,6 +2837,20 @@ bool PhiShellWindow::LeaveReaderViewForNavigation() {
   }
   services_.sidebar->RequestCloseSurfaces(active_tab_id().value);
   return true;
+}
+
+const char* PhiShellWindow::PeekOpenerKind(int tab_id) const {
+  const SidebarTree& tree = sidebar_->tree();
+  const auto owner = tree.owner_of.find(tab_id);
+  if (owner == tree.owner_of.end() ||
+      owner->second.kind != SidebarKey::Kind::kCell) {
+    return "normal";
+  }
+  const SidebarCell* cell = tree.CellFor(owner->second.id);
+  if (!cell) {
+    return "normal";
+  }
+  return cell->kind == SidebarStoredKind::kPin ? "pinned" : "bookmark";
 }
 
 void PhiShellWindow::UpdateTabPreview() {
@@ -3679,7 +3694,17 @@ void PhiShellWindow::OnChromeClick(int x, int y) {
     return;
   }
   if (::PtInRect(&layout.downloads, pt)) {
-    // The Mac DownloadButtonView's popover toggle.
+    // The Mac DownloadButtonView's popover toggle — and its
+    // feature_entry_tapped: the button lives in the sidebar's bottom bar,
+    // or in Comfortable's toolbar (the Mac's WebContentHeader).
+    if (services_.window) {
+      services_.window->CaptureAnalytics(
+          kAnalyticsModuleFeature, kEventFeatureEntryTapped,
+          PhiFeatureEntryProperties(
+              "download", layout_mode_ == PhiLayoutMode::kComfortable
+                              ? "web_content_header"
+                              : "sidebar"));
+    }
     const BrowserId browser = active_browser_id();
     if (services_.spaces && framework_ && browser.valid()) {
       RECT anchor = layout.downloads;
@@ -3727,7 +3752,7 @@ void PhiShellWindow::OnChromeClick(int x, int y) {
     }
   }
   if (::PtInRect(&layout.reader, pt)) {
-    ToggleReaderView();
+    ToggleReaderView("address_bar");  // The in-field reader button.
     return;
   }
   if (::PtInRect(&layout.copy_link, pt)) {
@@ -5775,9 +5800,13 @@ LRESULT CALLBACK PhiShellWindow::ShellWndProc(HWND hwnd,
       break;
     case WM_COMMAND:
       // lparam == 0 filters out child-control notifications (the address
-      // field's EN_* arrive here too, carrying its HWND).
-      if (self && lparam == 0 && HIWORD(wparam) == 0 && self->caption_band_ &&
-          self->caption_band_->OnCommand(LOWORD(wparam))) {
+      // field's EN_* arrive here too, carrying its HWND). HIWORD 0 is a
+      // menu pick, 1 an accelerator — Win32's own convention, which the
+      // keyboard service follows when it posts a chord (the reader's usage
+      // metric tells the two apart; nothing else does).
+      if (self && lparam == 0 && HIWORD(wparam) <= 1 && self->caption_band_ &&
+          self->caption_band_->OnCommand(LOWORD(wparam),
+                                         HIWORD(wparam) == 1)) {
         return 0;
       }
       if (self && self->omnibox_->OnShellCommand(wparam, lparam)) {

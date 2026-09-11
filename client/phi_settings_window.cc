@@ -33,6 +33,7 @@
 #include "phibrowser-win/client/phi_account_feedback.h"
 #include "phibrowser-win/client/phi_account_profile.h"
 #include "phibrowser-win/client/phi_agent_icons.h"
+#include "phibrowser-win/client/phi_client_analytics.h"
 #include "phibrowser-win/client/phi_emoji.h"
 #include "phibrowser-win/client/phi_features.h"
 #include "phibrowser-win/client/phi_dwrite.h"
@@ -3493,15 +3494,32 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
   } else if (item.action == "restoresession") {
     host_->SetRestoreLastSession(!item.on);
   } else if (item.action == "analytics") {
+    // The Mac's metrics_reporting_changed: the consent transition itself,
+    // captured BEFORE the switch moves so an opt-out is the last event the
+    // collector sees from this install (an opt-in follows the same order
+    // and is simply dropped at the gate, as on Mac before identify).
+    host_->CaptureAnalytics(kAnalyticsModuleSettings,
+                            kEventMetricsReportingChanged,
+                            PhiFlagProperties("enabled", !item.on));
     host_->SetAnalyticsEnabled(!item.on);
   } else if (item.action == "peekview") {
     const bool on = !item.on;
+    host_->CaptureAnalytics(kAnalyticsModulePeek, kEventPeekSettingChanged,
+                            PhiFlagProperties("enabled", on));
     host_->SetPeekViewEnabled(on);
     // The automatic sub-switch follows the master's transitions: switching
     // Peek on re-arms it, switching Peek off stands it down (the Mac's
-    // NavigationsSettingsView does exactly this).
+    // NavigationsSettingsView does exactly this — and its onChange reports
+    // the follow-on flip too, when it is one).
+    if (prefs_->AutoPeekViewEnabled() != on) {
+      host_->CaptureAnalytics(kAnalyticsModulePeek,
+                              kEventPeekAutoSettingChanged,
+                              PhiFlagProperties("enabled", on));
+    }
     host_->SetAutoPeekViewEnabled(on);
   } else if (item.action == "autopeek") {
+    host_->CaptureAnalytics(kAnalyticsModulePeek, kEventPeekAutoSettingChanged,
+                            PhiFlagProperties("enabled", !item.on));
     host_->SetAutoPeekViewEnabled(!item.on);
   } else if (item.action == "devmode") {
     host_->SetDeveloperMode(!item.on);
@@ -3667,10 +3685,19 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
         menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, anchor.x,
         anchor.y, 0, hwnd(), nullptr));
     ::DestroyMenu(menu);
-    if (chosen == 1) {
-      host_->SetLanguagePreference(std::string());
-    } else if (chosen >= 2 && chosen < 2 + locales.size()) {
-      host_->SetLanguagePreference(locales[chosen - 2]);
+    const bool picked =
+        chosen == 1 || (chosen >= 2 && chosen < 2 + locales.size());
+    if (picked) {
+      const std::string chosen_tag =
+          chosen == 1 ? std::string() : locales[chosen - 2];
+      if (chosen_tag != current) {
+        // The Mac's language_changed: this picker only, the two stored
+        // preferences ("system" for follow-the-OS).
+        host_->CaptureAnalytics(
+            kAnalyticsModuleSettings, kEventLanguageChanged,
+            PhiLanguageChangedProperties(current, chosen_tag));
+      }
+      host_->SetLanguagePreference(chosen_tag);
     }
   } else if (item.action == "installskill") {
     // The Mac's Menu: "All agents", then every agent with its brand mark

@@ -102,9 +102,14 @@ class PhiReaderBridge {
   bool HasPendingOpen(int tab_id) const;
 
   // Entry points. `url` is the tab's current URL, which is what tells a live
-  // page apart from the reading surface standing in for one.
-  void Toggle(int tab_id, const std::string& url);
-  void Open(int tab_id);
+  // page apart from the reading surface standing in for one. `entry_point`
+  // is which control asked — the Mac's ReaderViewAnalytics.EntryPoint:
+  // "address_bar", "view_menu", "shortcut", "context_menu" — recorded here
+  // and reported by the `reader.state` report that answers the request
+  // (reader_view_opened / reader_view_open_failed), so the metric says what
+  // the surface DID, not what was asked.
+  void Toggle(int tab_id, const std::string& url, const char* entry_point);
+  void Open(int tab_id, const char* entry_point);
   void Close(int tab_id);
 
   // The agent API's readerArticle / readerDocument, extracted WITHOUT
@@ -135,6 +140,9 @@ class PhiReaderBridge {
   // The toast the Mac shows for a refused open, in the window displaying the
   // tab (nothing when the tab is not on screen anywhere).
   void ShowRefusalToast(int tab_id, const std::string& error);
+  // The entry point recorded for the tab's open request, consumed; "unknown"
+  // when none was.
+  const char* TakeEntryPoint(int tab_id);
 
   RAW_PTR_EXCLUSION PhiSurfaceCoordinator* const owner_;  // Owns this.
   PhiReaderStyle style_;
@@ -150,6 +158,10 @@ class PhiReaderBridge {
   // the request — and, failing that, by age: an extension that crashed
   // mid-extraction must not lock a tab out of Reader View for the session.
   std::map<int, unsigned long long> pending_opens_;
+  // The most recent open request's entry point per origin tab, consumed
+  // by the state report that answers it; a report with none recorded is
+  // attributed to "unknown" rather than dropped.
+  std::map<int, const char*> pending_entry_points_;
   // reader.extract requests in flight: our request id -> the coordinator's
   // deferred-reply slot.
   std::map<std::string, int> pending_extractions_;

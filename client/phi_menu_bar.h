@@ -231,7 +231,9 @@ class PhiMenuBarShell {
   virtual void MenuSwitchSpace(const std::string& space_id) = 0;
   virtual void MenuNewTab() = 0;
   virtual void MenuToggleSidebar() = 0;
-  virtual void MenuToggleReader() = 0;
+  // `from_accelerator`: the chord rather than the View menu row (the
+  // reader's usage metric names the two differently).
+  virtual void MenuToggleReader(bool from_accelerator) = 0;
   virtual void MenuToggleDownloads() = 0;
   virtual void MenuToggleSearchTabs() = 0;
   virtual void MenuOpenFeedback() = 0;
@@ -286,7 +288,8 @@ class PhiMenuBar {
   // fires it too, so dropped-down menus refresh exactly like attached ones.
   void OnMenuOpening(HMENU menu);
   // WM_COMMAND with lparam == 0. True when `id` was a menu command.
-  bool OnCommand(UINT id);
+  // `from_accelerator` is WM_COMMAND's HIWORD 1: the chord, not the row.
+  bool OnCommand(UINT id, bool from_accelerator = false);
 
   // The whole bar as JSON (refreshing dynamic menus first), for the control
   // socket: [{"title","items":[{"id","title","enabled","checked","items"?}]}].

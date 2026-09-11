@@ -4,8 +4,12 @@
 
 #include "phibrowser-win/client/phi_client_analytics.h"
 
+#include <algorithm>
+#include <string_view>
 #include <utility>
 
+#include "base/strings/string_number_conversions.h"
+#include "base/strings/string_split.h"
 #include "phibrowser-win/client/phi_agent_icons.h"
 #include "phibrowser-win/client/phi_file_io.h"
 #include "phibrowser-win/client/phi_i18n.h"
@@ -14,17 +18,37 @@
 
 namespace phi_client {
 
+namespace {
+
+base::ListValue StringList(std::initializer_list<const char*> items) {
+  base::ListValue list;
+  for (const char* item : items) {
+    list.Append(item);
+  }
+  return list;
+}
+
+}  // namespace
+
 base::DictValue PhiAppOpenedProperties(const model::PhiSettings& settings,
                                        bool from_background) {
   base::DictValue props;
   props.Set("from_background", from_background);
   props.Set("version", PHI_WIN_VERSION_STRING);
   props.Set("layout_mode", PhiLayoutModeName(settings.layout_mode));
-  // The Mac's beforeSend enrichment. Neither AI features nor Guest Mode
-  // exist in this client yet, so both are reported false rather than
-  // omitted: an insight that filters on them keeps counting Windows.
+  // The Mac's beforeSend enrichment. AI features do not exist in this
+  // client yet, so that one is reported false rather than omitted: an
+  // insight that filters on it keeps counting Windows. Guest Mode is the
+  // onboarding's "Explore Phi without signing in" (the Mac's
+  // ApplicationState.isGuest).
   props.Set("ai_enabled", false);
-  props.Set("is_guest_mode", false);
+  props.Set("is_guest_mode", settings.guest_mode_enabled);
+  return props;
+}
+
+base::DictValue PhiFlagProperties(const char* key, bool value) {
+  base::DictValue props;
+  props.Set(key, value);
   return props;
 }
 
@@ -150,6 +174,217 @@ base::DictValue PhiAgentUserSpaceCommandProperties(
   props.Set("command", command);
   props.Set("agent_name", PhiAgentTelemetryName(agent_name));
   return props;
+}
+
+base::DictValue PhiAgentShadowWindowProperties(const std::string& origin,
+                                               bool incognito) {
+  base::DictValue props;
+  props.Set("origin", origin);
+  props.Set("incognito", incognito);
+  return props;
+}
+
+base::DictValue PhiCredentialRequestedProperties(
+    const char* kind,
+    bool approved,
+    bool prompted,
+    const std::string& agent_name) {
+  base::DictValue props;
+  props.Set("kind", kind);
+  props.Set("approved", approved);
+  props.Set("prompted", prompted);
+  props.Set("agent_name", PhiAgentTelemetryName(agent_name));
+  return props;
+}
+
+base::DictValue PhiCredentialApprovedProperties(const char* kind,
+                                                const char* approval_type,
+                                                const std::string& agent_name) {
+  base::DictValue props;
+  props.Set("kind", kind);
+  props.Set("approval_type", approval_type);
+  props.Set("agent_name", PhiAgentTelemetryName(agent_name));
+  return props;
+}
+
+base::DictValue PhiProfileCountProperties(int total_profiles) {
+  base::DictValue props;
+  props.Set("total_profiles", total_profiles);
+  return props;
+}
+
+base::DictValue PhiPeekOpenedProperties(const char* entry_point,
+                                        const char* opener_kind) {
+  base::DictValue props;
+  props.Set("entry_point", entry_point);
+  props.Set("opener_kind", opener_kind);
+  return props;
+}
+
+base::DictValue PhiPeekEndedProperties(const char* reason,
+                                       int duration_seconds) {
+  base::DictValue props;
+  props.Set("reason", reason);
+  props.Set("duration_seconds", duration_seconds);
+  return props;
+}
+
+base::DictValue PhiReaderOpenedProperties(const char* entry_point) {
+  base::DictValue props;
+  props.Set("entry_point", entry_point);
+  return props;
+}
+
+base::DictValue PhiReaderOpenFailedProperties(const char* entry_point,
+                                              const std::string& reason) {
+  base::DictValue props = PhiReaderOpenedProperties(entry_point);
+  props.Set("reason", reason);
+  return props;
+}
+
+base::DictValue PhiOobeEventProperties(
+    const PhiOobeAnalyticsSession::Event& event) {
+  base::DictValue props;
+  const std::string_view name = event.name ? event.name : "";
+  if (name == "oobe_finished") {
+    props.Set("is_guest", event.is_guest);
+    props.Set("steps_completed", event.steps_completed);
+    props.Set("total_duration_seconds", event.total_duration_seconds);
+    return props;
+  }
+  if (name == "oobe_interrupted") {
+    props.Set("last_step", event.step);
+    props.Set("step_index", event.step_index);
+    props.Set("is_guest", event.is_guest);
+    props.Set("total_duration_seconds", event.total_duration_seconds);
+    props.Set("reason", event.reason);
+    return props;
+  }
+  props.Set("step", event.step);
+  props.Set("step_index", event.step_index);
+  props.Set("is_guest", event.is_guest);
+  if (name == "oobe_step_completed") {
+    props.Set("duration_seconds", event.duration_seconds);
+  }
+  return props;
+}
+
+base::DictValue PhiGuestModeExitedProperties(const char* trigger) {
+  base::DictValue props;
+  props.Set("trigger", trigger);
+  return props;
+}
+
+base::DictValue PhiLanguageChangedProperties(const std::string& from,
+                                             const std::string& to) {
+  base::DictValue props;
+  props.Set("from", from.empty() ? std::string("system") : from);
+  props.Set("to", to.empty() ? std::string("system") : to);
+  return props;
+}
+
+base::DictValue PhiFeatureEntryProperties(const char* button,
+                                          const char* surface) {
+  base::DictValue props;
+  props.Set("button", button);
+  props.Set("surface", surface);
+  return props;
+}
+
+base::DictValue PhiImportViewedProperties() {
+  base::DictValue props;
+  props.Set("entry_point", "menu");
+  return props;
+}
+
+base::DictValue PhiImportTypesSelectedProperties() {
+  base::DictValue props;
+  props.Set("source_browser", "chrome");
+  // What StartChromeImport takes, in the Mac's normalised vocabulary and
+  // its sorted order (passwords are not a type the Mac reports).
+  props.Set("types", StringList({"bookmarks", "cookies", "extensions",
+                                 "history"}));
+  return props;
+}
+
+base::DictValue PhiImportStartedProperties() {
+  base::DictValue props;
+  props.Set("source_browsers", StringList({"chrome"}));
+  return props;
+}
+
+base::DictValue PhiImportFinishedProperties(bool success,
+                                            int duration_seconds) {
+  base::DictValue props = PhiImportStartedProperties();
+  props.Set("success", success);
+  props.Set("failed_sources",
+            success ? base::ListValue() : StringList({"chrome"}));
+  props.Set("duration_seconds", std::max(0, duration_seconds));
+  if (!success) {
+    // The framework reports one bit; the Mac's code for "a source's
+    // importer failed" is the one it maps to.
+    props.Set("error_code", "source_import_failed");
+  }
+  return props;
+}
+
+PhiFirstTimeActions::PhiFirstTimeActions() = default;
+PhiFirstTimeActions::~PhiFirstTimeActions() = default;
+
+void PhiFirstTimeActions::Load(const std::wstring& user_data_dir,
+                               int64_t now_unix_ms) {
+  if (user_data_dir.empty()) {
+    return;
+  }
+  path_ = user_data_dir + L"\\phi_first_time_actions";
+  std::string bytes;
+  PhiReadFileBytes(path_, &bytes);
+  recorded_.clear();
+  installed_unix_ms_ = 0;
+  for (std::string_view line : base::SplitStringPiece(
+           bytes, "\r\n", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY)) {
+    if (installed_unix_ms_ == 0) {
+      // The first line is the install moment; anything unparsable there
+      // means a record this build does not understand — start over.
+      if (!base::StringToInt64(line, &installed_unix_ms_) ||
+          installed_unix_ms_ <= 0) {
+        break;
+      }
+      continue;
+    }
+    recorded_.emplace_back(line);
+  }
+  if (installed_unix_ms_ <= 0) {
+    // A profile from before this record existed counts from now, as the
+    // Mac's launchContext.firstLaunchDate does on its first run.
+    installed_unix_ms_ = now_unix_ms;
+    recorded_.clear();
+    PhiWriteFileAtomic(path_, base::NumberToString(installed_unix_ms_) + "\n");
+  }
+}
+
+bool PhiFirstTimeActions::Record(const char* action,
+                                 int64_t now_unix_ms,
+                                 base::DictValue* properties) {
+  if (path_.empty() || !action || !*action ||
+      std::find(recorded_.begin(), recorded_.end(), action) !=
+          recorded_.end()) {
+    return false;
+  }
+  recorded_.emplace_back(action);
+  std::string bytes = base::NumberToString(installed_unix_ms_) + "\n";
+  for (const std::string& recorded : recorded_) {
+    bytes += recorded + "\n";
+  }
+  // Recorded BEFORE the event is built, as the version file is: a launch
+  // that dies between here and the upload reports the action once.
+  PhiWriteFileAtomic(path_, bytes);
+  properties->Set("action", action);
+  properties->Set(
+      "seconds_since_install",
+      static_cast<int>(std::max<int64_t>(
+          0, (now_unix_ms - installed_unix_ms_) / 1000)));
+  return true;
 }
 
 }  // namespace phi_client

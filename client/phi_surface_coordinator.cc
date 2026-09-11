@@ -29,6 +29,12 @@ void PhiSurfaceCoordinator::Init(phi_framework::PhiFramework* framework) {
   framework_ = framework;
 }
 
+void PhiSurfaceCoordinator::CaptureAnalytics(const char* module,
+                                             const char* event_name,
+                                             base::DictValue properties) {
+  host_.CaptureAnalytics(module, event_name, std::move(properties));
+}
+
 void PhiSurfaceCoordinator::RespondToExtension(
     const std::string& request_id,
     const std::string& response_json) {
@@ -69,7 +75,7 @@ void PhiSurfaceCoordinator::OnOpenReaderView(int64_t window_id,
   if (reader_.HasSurface(tab)) {
     return;
   }
-  reader_.Open(tab);
+  reader_.Open(tab, "context_menu");
 }
 
 bool PhiSurfaceCoordinator::HasPeek() const {
@@ -305,7 +311,8 @@ void PhiSurfaceCoordinator::CloseReaderPanelForOrigin(TabId origin_tab_id) {
 }
 
 void PhiSurfaceCoordinator::CloseSurfacesForOrigin(TabId origin_tab_id,
-                                                   SidebarSurface kind) {
+                                                   SidebarSurface kind,
+                                                   const char* peek_end_reason) {
   if (!framework_) {
     return;
   }
@@ -315,6 +322,7 @@ void PhiSurfaceCoordinator::CloseSurfacesForOrigin(TabId origin_tab_id,
   surfaces_.ForEach([&](PhiSurfacePanel& panel) {
     if (panel.origin_tab_id() == origin_tab_id.value &&
         (kind == SidebarSurface::kContent || panel.kind() == kind)) {
+      panel.NoteEndReason(peek_end_reason);
       doomed.push_back(BrowserId{panel.window_id()});
     }
   });
@@ -393,6 +401,7 @@ void PhiSurfaceCoordinator::UpdateReaderPanelsForWindow(BrowserId window_id) {
   for (PhiSurfacePanel* panel : surfaces_.OverWindow(window_id)) {
     if (!window_model_.FindTab(
             window_id, TabId{static_cast<int32_t>(panel->origin_tab_id())})) {
+      panel->NoteEndReason("opener_closed");
       orphaned.push_back(BrowserId{panel->window_id()});
       continue;
     }
@@ -426,8 +435,9 @@ bool PhiSurfaceCoordinator::IsReaderActive(int tab_id,
 }
 
 void PhiSurfaceCoordinator::RequestToggleReaderView(int tab_id,
-                                                    const std::string& url) {
-  reader_.Toggle(tab_id, url);
+                                                    const std::string& url,
+                                                    const char* entry_point) {
+  reader_.Toggle(tab_id, url, entry_point);
 }
 
 void PhiSurfaceCoordinator::RaiseReaderPanels(SlotId slot) {
@@ -462,6 +472,7 @@ bool PhiSurfaceCoordinator::DismissPeeksForShell(HWND shell, HWND inside) {
     if (inside && (inside == card || ::IsChild(card, inside))) {
       return;  // A click INSIDE the card is the card's own business.
     }
+    panel.NoteEndReason("closed");  // Esc / a click outside: the user's.
     to_dismiss.push_back(BrowserId{panel.window_id()});
   });
   // Closing the peek's browser is the dismissal (the card's own close chip

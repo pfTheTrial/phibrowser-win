@@ -15,6 +15,8 @@
 #include <vector>
 
 #include "base/memory/raw_ptr_exclusion.h"
+#include "base/values.h"
+#include "phibrowser-win/client/phi_oobe_analytics.h"
 #include "phibrowser-win/client/phi_ids.h"
 #include "phibrowser-win/client/phi_profile_card.h"
 #include "phibrowser-win/client/phi_secondary_window.h"
@@ -78,6 +80,11 @@ class PhiOnboardingWindow : public PhiSecondaryWindow {
     // WM_ACTIVATE, so Chromium's own activation is driven across the
     // boundary (the shell's FocusActiveBrowser).
     virtual void OnboardingFocusBrowser(BrowserId browser) = 0;
+    // The client's one analytics capture path (phi_client_analytics.h):
+    // the harness ring, then the collector's consent gate and allow-list.
+    virtual void CaptureAnalytics(const char* module,
+                                  const char* event_name,
+                                  base::DictValue properties) = 0;
   };
 
   PhiOnboardingWindow(Host* host,
@@ -87,8 +94,12 @@ class PhiOnboardingWindow : public PhiSecondaryWindow {
 
   // Creates the window on `page` and shows it centred on the work area.
   bool Open(Page page);
+  // Re-routes the window to `page` (the coordinator's, after the account
+  // settled): the step on screen is paused, not completed.
   void ShowPage(Page page);
   Page page() const { return page_; }
+  // Phi is exiting while this window is up: the funnel's interruption.
+  void NoteAppTerminating();
 
   // The embedded browser the coordinator requested for the hosted login
   // arrived (inside the announcement: reparent only, nothing else).
@@ -201,6 +212,13 @@ class PhiOnboardingWindow : public PhiSecondaryWindow {
   void Activate(const Hit& hit);
   void ApplyTheme(const std::string& theme_id);
   void SubmitName();
+  void NoteSignInPressed();
+  // The user's action moved the flow forward: the step on screen completes
+  // and `page` presents (the Mac's setContent).
+  void AdvanceTo(Page page);
+  // The funnel's step for a page — the sign-in page IS the login step.
+  static PhiOobeAnalyticsSession::Step StepFor(Page page);
+  static double Uptime();
   void PlaceEmbeddedBrowser();
   // Hands the keyboard to the embedded browser while the SigningIn page is
   // up: Win32 focus on its HWND plus the framework's activation.
@@ -243,6 +261,8 @@ class PhiOnboardingWindow : public PhiSecondaryWindow {
   // Decoded resources, keyed by file and size.
   std::map<std::wstring, std::unique_ptr<Image>> images_;
   int pressed_ = -1;
+  // The Mac's OOBEAnalyticsSession, fed through the host's capture path.
+  PhiOobeAnalyticsSession oobe_;
 };
 
 }  // namespace phi_client

@@ -9,6 +9,7 @@
 
 #include "base/json/json_reader.h"
 #include "base/values.h"
+#include "phibrowser-win/client/phi_client_analytics.h"
 #include "phibrowser-win/client/phi_feedback_outbox.h"
 #include "phibrowser-win/client/phi_ids.h"
 
@@ -36,6 +37,16 @@ void PhiAccountAndFeedback::Init(phi_framework::PhiFramework* framework,
 }
 
 void PhiAccountAndFeedback::OnAuthChanged() {
+  // The Mac's user_logged_in: the sign-in the user started came back as a
+  // session (LoginViewController's capture on credentials). A failure or
+  // a cancel settles the same way without one and counts as nothing.
+  if (sign_in_in_flight_ && !auth_.signing_in()) {
+    sign_in_in_flight_ = false;
+    if (auth_.signed_in() && auth_.last_error().empty()) {
+      host_.CaptureAnalytics(kAnalyticsModuleAccount, kEventUserLoggedIn,
+                             base::DictValue());
+    }
+  }
   profile_.SyncWithSession(&auth_, ProfileSubject(), auth_.user().picture);
   profile_.ApplyPending();
   host_.NoteAccountChanged();
@@ -105,12 +116,14 @@ void PhiAccountAndFeedback::RequestSignIn() {
     // callback scheme comes back through HandleAuthCallbackUrl.
     host_.OpenUrlInFirstUserSlot(url);
   });
+  sign_in_in_flight_ = auth_.signing_in();
   host_.NoteAccountChanged();
 }
 
 void PhiAccountAndFeedback::RequestSignInVia(
     std::function<void(const std::string& url)> open_url) {
   auth_.BeginSignIn(std::move(open_url));
+  sign_in_in_flight_ = auth_.signing_in();
   host_.NoteAccountChanged();
 }
 
@@ -128,6 +141,12 @@ void PhiAccountAndFeedback::RequestSignOut() {
   // required session is already dead there).
   const bool tenant_session = auth_.signed_in() && !auth_.reauth_required();
   const std::string logout_url = auth_.LogoutUrl();
+  if (auth_.signed_in()) {
+    // The Mac's user_logged_out, captured before the session clears (the
+    // identity it belongs to is still the sender's).
+    host_.CaptureAnalytics(kAnalyticsModuleAccount, kEventUserLoggedOut,
+                           base::DictValue());
+  }
   auth_.SignOut();  // Revokes the refresh token, notifies.
   profile_.Clear();
   avatar_edit_pending_ = false;

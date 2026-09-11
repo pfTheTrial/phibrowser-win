@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "base/memory/raw_ptr_exclusion.h"
+#include "base/values.h"
 #include "chrome/browser/phinomenon/phi_framework/phi_framework_api.h"
 #include "phibrowser-win/client/phi_account_profile.h"
 #include "phibrowser-win/client/phi_auth.h"
@@ -48,6 +49,11 @@ class PhiAccountAndFeedback : public PhiFeedbackHost {
     virtual void FocusWindowForBrowser(int64_t browser_window_id) = 0;
     // The session or profile state moved: the Account pane re-reads it.
     virtual void NoteAccountChanged() = 0;
+    // The client's one analytics capture path (phi_client_analytics.h):
+    // the harness ring, then the collector's consent gate and allow-list.
+    virtual void CaptureAnalytics(const char* module,
+                                  const char* event_name,
+                                  base::DictValue properties) = 0;
   };
 
   explicit PhiAccountAndFeedback(Host& host);
@@ -155,6 +161,10 @@ class PhiAccountAndFeedback : public PhiFeedbackHost {
   PhiAccountProfileService profile_;
   // RequestEditAvatar was used: the next refresh ignores the interval.
   bool avatar_edit_pending_ = false;
+  // Whether a user-initiated sign-in was in flight at the last settle, so
+  // the settle that lands it is the Mac's user_logged_in (a background
+  // refresh or a restored session is not).
+  bool sign_in_in_flight_ = false;
   // A harness-set stand-in account (agentSpace.feedback.setAccount) for a
   // box with no Auth0 session: reports file and prepare under it, and the
   // upload then fails for want of a token — which is the testable part.

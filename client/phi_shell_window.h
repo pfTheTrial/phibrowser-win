@@ -150,8 +150,12 @@ class SidebarHost {
   // the tab IS that surface, or the surface is open on its behalf.
   virtual bool IsReaderActive(int tab_id, const std::string& url) const = 0;
   // Enters Reader View for the tab, or leaves it when the tab already shows
-  // the reading surface. `url` is what tells those two apart.
-  virtual void RequestToggleReaderView(int tab_id, const std::string& url) = 0;
+  // the reading surface. `url` is what tells those two apart. `entry_point`
+  // is which control asked, for the usage metric (PhiReaderBridge's
+  // vocabulary: "address_bar", "view_menu", "shortcut").
+  virtual void RequestToggleReaderView(int tab_id,
+                                       const std::string& url,
+                                       const char* entry_point) = 0;
   // The page underneath the tab's attached surfaces (Reader View, Peek) is
   // about to change or move — an address-bar navigation or Back/Forward on
   // the origin — so every surface attached to it closes first. A surface
@@ -400,6 +404,16 @@ class WindowHost {
   // the host keeps the edge), and the user switched Space in this shell.
   virtual void NoteAppActivation(bool active) = 0;
   virtual void NoteUserSpaceSwitched() = 0;
+  // The menu bar's "Import from Google Chrome…": the prompt shown, the run
+  // accepted (the Mac's import_viewed / import_types_selected /
+  // import_started; the framework's completion is import_finished).
+  virtual void NoteImportPrompted() = 0;
+  virtual void NoteImportStarted() = 0;
+  // The client's one analytics capture path (phi_client_analytics.h):
+  // the harness ring, then the collector's consent gate and allow-list.
+  virtual void CaptureAnalytics(const char* module,
+                                const char* event_name,
+                                base::DictValue properties) = 0;
   // Opens the settings window (theme, appearance, layout).
   virtual void RequestSettings() = 0;
   // Opens the universal URL Rules editor (Spaces ▸ URL Rules…), centred
@@ -561,12 +575,17 @@ class PhiShellWindow : public PhiHitSource,
   // Reader View for the ACTIVE tab: enter, or leave when the tab already
   // shows the extension's reading surface. The reader button, the View menu
   // item, its shortcut and the page context menu all land here.
-  void ToggleReaderView();
+  // `entry_point` names the control for the reader's usage metric.
+  void ToggleReaderView(const char* entry_point);
   // Back/Forward or an address-bar commit on a tab the reader is covering:
   // leaves the reader and returns true, so the caller skips the navigation
   // (Back) or lets it land on the page underneath (the address bar). False
   // when no reader is up and the command is an ordinary one.
   bool LeaveReaderViewForNavigation();
+  // What the tab a Peek was opened from is bound to, for the peek's usage
+  // metric — the Mac's peekOpenerKind: "pinned", "bookmark" or "normal"
+  // (a tab in the strip, or one this window's tree does not know).
+  const char* PeekOpenerKind(int tab_id) const;
   // Whether the active tab is in Reader View right now (the item's tick, and
   // what makes the toggle mean "leave").
   bool ActiveTabShowsReader() const;
@@ -1408,7 +1427,7 @@ class PhiShellWindow : public PhiHitSource,
   void MenuSwitchSpace(const std::string& space_id) override;
   void MenuNewTab() override;
   void MenuToggleSidebar() override;
-  void MenuToggleReader() override;
+  void MenuToggleReader(bool from_accelerator) override;
   bool MenuAgentHoldsInput() const override;
   void MenuToggleDownloads() override;
   void MenuToggleSearchTabs() override;

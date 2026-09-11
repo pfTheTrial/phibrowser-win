@@ -794,7 +794,7 @@ void PhiMenuBar::RefreshTab() {
   }
 }
 
-bool PhiMenuBar::OnCommand(UINT id) {
+bool PhiMenuBar::OnCommand(UINT id, bool from_accelerator) {
   PhiMenuBarShell* c = services_;
   // The browser the slot SHOWS — invalid when none is attached, and NEVER
   // the slot's own number. Every framework branch below tests it first.
@@ -1025,7 +1025,7 @@ bool PhiMenuBar::OnCommand(UINT id) {
       c->MenuToggleSidebar();
       return true;
     case kCmdToggleReader:
-      c->MenuToggleReader();
+      c->MenuToggleReader(from_accelerator);
       return true;
     case kCmdReload:
     case kCmdForceReload:
@@ -1234,13 +1234,25 @@ bool PhiMenuBar::OnCommand(UINT id) {
       return true;
     }
     case kCmdImportBrowser:
-      if (c->MenuFramework() &&
-          PhiConfirm(c->MenuShellWindow(), PhiStr("menuBar.importFromGoogleChrome"),
-                     PhiStr("menuBar.importChromePromptBody"),
-                     PhiStr("app.import"), /*destructive=*/false)) {
-        if (!c->MenuFramework()->StartChromeImport(target.value)) {
-          PhiNotice(c->MenuShellWindow(), PhiStr("app.import"),
-                    PhiStr("menuBar.importChromeFailedBody"));
+      if (c->MenuFramework()) {
+        // The confirm IS this client's import window: the Mac's
+        // import_viewed as it opens, its selection and start as the user
+        // commits (one source, one type set), nothing when it is refused.
+        if (c->MenuWindowHost()) {
+          c->MenuWindowHost()->NoteImportPrompted();
+        }
+        if (PhiConfirm(c->MenuShellWindow(),
+                       PhiStr("menuBar.importFromGoogleChrome"),
+                       PhiStr("menuBar.importChromePromptBody"),
+                       PhiStr("app.import"), /*destructive=*/false)) {
+          if (c->MenuFramework()->StartChromeImport(target.value)) {
+            if (c->MenuWindowHost()) {
+              c->MenuWindowHost()->NoteImportStarted();
+            }
+          } else {
+            PhiNotice(c->MenuShellWindow(), PhiStr("app.import"),
+                      PhiStr("menuBar.importChromeFailedBody"));
+          }
         }
       }
       return true;

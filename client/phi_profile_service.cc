@@ -12,6 +12,7 @@
 #include "base/logging.h"
 #include "base/values.h"
 #include "chrome/browser/phinomenon/phi_framework/phi_framework_api.h"
+#include "phibrowser-win/client/phi_client_analytics.h"
 
 namespace phi_client {
 
@@ -44,6 +45,13 @@ void PhiProfileService::OnProfileCreated(const char* profile_id) {
   const std::string id = profile_id ? profile_id : "";
   LOG(INFO) << "[PhiClient] OnProfileCreated "
             << (id.empty() ? "(failed)" : id);
+  if (!id.empty()) {
+    // The Mac's profile_created: a creation landed, whoever asked (this
+    // client has no agent fallback profile to exclude). The count only.
+    host_.CaptureAnalytics(
+        kAnalyticsModuleProfiles, kEventProfileCreated,
+        PhiProfileCountProperties(static_cast<int>(Profiles().size())));
+  }
   if (pending_.empty()) {
     return;  // Settings' "New Profile" (CreateProfileNamed) asks for nothing.
   }

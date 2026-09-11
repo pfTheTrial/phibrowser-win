@@ -228,7 +228,11 @@ bool PhiCredentialService::PromptCredentialApproval(
     const std::wstring& detail,
     CredentialAccessKind kind,
     const std::string& grant_key,
-    bool once_only) {
+    bool once_only,
+    Decision* decision) {
+  Decision local;
+  Decision& out = decision ? *decision : local;
+  out = Decision();
   const bool reveal = kind == CredentialAccessKind::kReveal;
   const ULONGLONG now = ::GetTickCount64();
   // Denial memory first: a refused ask stays refused for five minutes, so
@@ -243,8 +247,11 @@ bool PhiCredentialService::PromptCredentialApproval(
   }
   if (!once_only && GrantCovers(grant_key)) {
     AppendCredentialAudit(grant_key, kind, "allowed (10-minute grant)");
+    out.approved = true;
+    out.approval_type = "existing_grant";
     return true;
   }
+  out.prompted = true;
   // The exposure banner is the load-bearing line, as on Mac — and it says
   // what is TRUE: a filled page is a page the agent holds a CDP session on.
   const std::wstring exposure =
@@ -286,12 +293,16 @@ bool PhiCredentialService::PromptCredentialApproval(
     grant.expires_tick = now + 10 * 60 * 1000;
     timed_grants_[grant_key] = grant;
     AppendCredentialAudit(grant_key, kind, "allowed (10 minutes)");
+    out.approved = true;
+    out.approval_type = "ten_minutes";
     return true;
   }
   if (chosen == 0) {
     AppendCredentialAudit(
         grant_key, kind,
         once_only ? "allowed (once, cross-origin)" : "allowed (once)");
+    out.approved = true;
+    out.approval_type = "once";
     return true;
   }
   denials_[grant_key] = now + 5 * 60 * 1000;

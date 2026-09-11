@@ -127,6 +127,13 @@ class PhiBookmarkManager : public PhiPanel {
   void DeleteSelection();
   void NewFolder(const std::string& parent_guid);
   void EditRow(const Row& row);
+  // The Mac's BookmarkManagerAnalyticsSession: one session per mount
+  // (Show..Hide) — bookmark_manager_opened at the start, and
+  // bookmark_manager_edited at the end only when an edit committed in
+  // between. Nothing about the bookmarks themselves.
+  void BeginSession();
+  void EndSession();
+  void MarkEdited() { session_edited_ = true; }
   // Ordered selected guids, in visible order, as the spec requires actions to
   // derive them at invocation time.
   std::vector<std::string> SelectedGuids() const;
@@ -145,6 +152,8 @@ class PhiBookmarkManager : public PhiPanel {
   std::wstring query_;
   int scroll_ = 0;
   RECT new_folder_button_{};
+  bool session_open_ = false;
+  bool session_edited_ = false;
 };
 
 }  // namespace phi_client

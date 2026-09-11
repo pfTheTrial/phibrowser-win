@@ -59,6 +59,11 @@ class PhiSurfacePanel {
   virtual void Raise() = 0;
   // Reader only: the surface tab moved in after construction. Default no-op.
   virtual void BindSurfaceTab(int64_t surface_tab_id) {}
+  // Peek only: how the peek is about to end, for the usage metric — the
+  // closer says why before it closes the browser, and the closing itself
+  // is what reports (PhiCoordinator::RetireClosingBrowser). A close nobody
+  // announced is the page's own doing. Default no-op.
+  virtual void NoteEndReason(const char* reason) {}
 };
 
 class PhiSurfaceRegistry {

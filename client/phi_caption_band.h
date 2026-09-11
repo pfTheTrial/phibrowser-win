@@ -159,7 +159,7 @@ class PhiCaptionBand {
 
   // WM_INITMENUPOPUP / WM_COMMAND, forwarded to the bar.
   void OnMenuOpening(HMENU menu);
-  bool OnCommand(UINT id);
+  bool OnCommand(UINT id, bool from_accelerator);
 
  private:
   // The titles, measured for the current DPI: one rect per top-level menu,

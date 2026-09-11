@@ -565,8 +565,8 @@ void PhiCaptionBand::OnMenuOpening(HMENU menu) {
   }
 }
 
-bool PhiCaptionBand::OnCommand(UINT id) {
-  return menu_bar_ && menu_bar_->OnCommand(id);
+bool PhiCaptionBand::OnCommand(UINT id, bool from_accelerator) {
+  return menu_bar_ && menu_bar_->OnCommand(id, from_accelerator);
 }
 
 // --- Paint -----------------------------------------------------------------

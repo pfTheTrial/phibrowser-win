@@ -20,6 +20,7 @@
 #include "base/values.h"
 #include "phibrowser-win/client/phi_app_model.h"
 #include "phibrowser-win/client/phi_control_server.h"
+#include "phibrowser-win/client/phi_credential_service.h"
 #include "phibrowser-win/client/phi_ids.h"
 #include "phibrowser-win/client/phi_verb_registry.h"
 
@@ -526,6 +527,11 @@ class PhiControlDispatcher : public PhiControlDelegate {
   PhiVerbResult VerbCredentialsGet(const PhiVerbContext& ctx);
   PhiVerbResult VerbCredentialsGetTotp(const PhiVerbContext& ctx);
   PhiVerbResult VerbCredentialsAutofill(const PhiVerbContext& ctx);
+  // The Mac's agent_credential_access_requested (every decision) and
+  // _approved (the allowed ones), with the caller's brand label.
+  void CaptureCredentialDecision(const PhiVerbContext& ctx,
+                                 const char* kind,
+                                 const PhiCredentialService::Decision& decision);
 
   // The owner; outlives this.
   RAW_PTR_EXCLUSION PhiCoordinator* coordinator_ = nullptr;

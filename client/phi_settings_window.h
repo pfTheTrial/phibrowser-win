@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "base/memory/raw_ptr_exclusion.h"
+#include "base/values.h"
 #include "phibrowser-win/client/phi_popup_chrome.h"
 #include "phibrowser-win/client/phi_profile_card.h"
 #include "phibrowser-win/client/phi_secondary_window.h"
@@ -109,6 +110,12 @@ class PhiSettingsHost {
   virtual void SetThemeId(const std::string& id) = 0;
   virtual void SetAppearance(PhiAppearance appearance) = 0;
   virtual void SetSaturation(int value) = 0;  // 0..100, the Mac's range.
+
+  // The client's one analytics capture path (phi_client_analytics.h):
+  // the harness ring, then the collector's consent gate and allow-list.
+  virtual void CaptureAnalytics(const char* module,
+                                const char* event_name,
+                                base::DictValue properties) = 0;
 
   // --- Account (the Auth0 session; stage 1 of bucket D's auth work) ---------
   virtual void RequestSignIn() = 0;

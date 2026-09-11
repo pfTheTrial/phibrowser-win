@@ -207,6 +207,7 @@ PhiVerbResult PhiControlDispatcher::VerbAgentCreate(
           kAnalyticsModuleAgent, kEventAgentTaskStarted,
           PhiAgentTaskProperties("phi_agent", existing->persistent,
                                  existing->agent_name));
+      coordinator_->NoteFirstTimeAction(kFirstTimeActionAgentTask);
       base::DictValue out;
       out.Set("spaceId", existing->space_id);
       out.Set("windowId", static_cast<double>(existing->window_id.value));

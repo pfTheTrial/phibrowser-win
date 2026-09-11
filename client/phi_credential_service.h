@@ -87,16 +87,28 @@ class PhiCredentialService {
                              base::DictValue* item,
                              base::DictValue* out);
 
+  // How a request was decided, for the usage metric (the Mac's
+  // agent_credential_access_requested / _approved): whether a prompt was
+  // shown, and for an approval how — "existing_grant", "once" or
+  // "ten_minutes" (null when denied). Never the scope or the purpose.
+  struct Decision {
+    bool approved = false;
+    bool prompted = false;
+    const char* approval_type = nullptr;
+  };
+
   // The native approve/deny prompt for a credential request. `detail` names
-  // the item and purpose. Returns true when the user approves.
-  // Consults the timed grants and the denial memory first; prompts only
-  // when neither answers. `grant_key` is "<item scope>|<page host>" for a
-  // fill and the item scope for a reveal. `once_only` (a cross-origin fill)
-  // offers no timed grant and consumes none.
+  // the item and purpose. Returns true when the user approves; `decision`,
+  // when given, says how. Consults the timed grants and the denial memory
+  // first; prompts only when neither answers. `grant_key` is
+  // "<item scope>|<page host>" for a fill and the item scope for a reveal.
+  // `once_only` (a cross-origin fill) offers no timed grant and consumes
+  // none.
   bool PromptCredentialApproval(const std::wstring& detail,
                                 model::CredentialAccessKind kind,
                                 const std::string& grant_key,
-                                bool once_only);
+                                bool once_only,
+                                Decision* decision = nullptr);
 
   // Appends one line to the credential audit trail (newest first, capped)
   // and persists it — every approval decision is recorded, allowed or not.

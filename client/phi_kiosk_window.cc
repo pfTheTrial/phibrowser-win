@@ -14,6 +14,7 @@
 
 #include "base/logging.h"
 #include "chrome/browser/phinomenon/phi_framework/phi_framework_api.h"
+#include "phibrowser-win/client/phi_client_analytics.h"
 #include "phibrowser-win/client/phi_coordinator.h"
 #include "phibrowser-win/client/phi_dwrite.h"
 #include "phibrowser-win/client/phi_extensions_popover.h"
@@ -768,6 +769,12 @@ void PhiKioskWindow::OpenInSpace(const std::string& space_id) {
   if (url.empty()) {
     return;
   }
+  // The Mac's kiosk_opened_in_space: the page starts its transfer. The
+  // count only, never which Space.
+  coordinator_->CaptureAnalytics(
+      kAnalyticsModuleKiosk, kEventKioskOpenedInSpace,
+      PhiSpaceSwitchedProperties(
+          static_cast<int>(coordinator_->spaces_model().spaces.size())));
   coordinator_->OnOpenLinkInSpace(window_id_.value, space_id.c_str(),
                                   url.c_str());
   // Closing tears this object down through OnBrowserWindowClosing: touch

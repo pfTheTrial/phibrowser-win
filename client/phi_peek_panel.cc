@@ -265,7 +265,8 @@ PhiPeekPanel::PhiPeekPanel(int64_t window_id,
       opener_(opener),
       framework_(framework),
       model_(model),
-      coordinator_(coordinator) {
+      coordinator_(coordinator),
+      opened_tick_(::GetTickCount64()) {
   HWND shell = opener_ ? opener_->shell_hwnd() : nullptr;
   if (!shell) {
     LOG(ERROR) << "[PhiClient] peek has no opener shell";
@@ -638,6 +639,10 @@ void PhiPeekPanel::HoverControl(int index) {
   hot_ = index;
 }
 
+void PhiPeekPanel::NoteEndReason(const char* reason) {
+  end_reason_ = reason;
+}
+
 void PhiPeekPanel::Dismiss() {
   if (framework_) {
     framework_->CloseBrowserWindow(window_id_.value);
@@ -645,7 +650,10 @@ void PhiPeekPanel::Dismiss() {
 }
 
 void PhiPeekPanel::ClickControl(int index) {
+  // The chip names the end for the metric (the Mac's PeekViewAnalytics
+  // reasons); the close that follows is what reports it.
   if (index == kHotClose) {
+    NoteEndReason("closed");
     Dismiss();
   } else if (index == kHotExpand) {
     // Expand: the page becomes a real tab in the opener window. The Mac moves
@@ -654,6 +662,7 @@ void PhiPeekPanel::ClickControl(int index) {
     if (framework_ && !url_.empty()) {
       framework_->NewTab(opener_window_id_.value, Narrow(url_).c_str());
     }
+    NoteEndReason("opened_as_tab");
     Dismiss();
   } else if (index == kHotSplit) {
     // Split: the same page as a fresh tab, put beside the one that opened
@@ -668,6 +677,7 @@ void PhiPeekPanel::ClickControl(int index) {
             static_cast<int>(opener_tab_id_), "vertical");
       }
     }
+    NoteEndReason("opened_as_split");
     Dismiss();
   }
 }

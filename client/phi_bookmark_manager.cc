@@ -14,6 +14,7 @@
 #include "base/containers/span.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
+#include "phibrowser-win/client/phi_client_analytics.h"
 #include "phibrowser-win/client/phi_dwrite.h"
 #include "phibrowser-win/client/phi_folder_icons.h"
 #include "phibrowser-win/client/phi_mac_icons.h"
@@ -105,6 +106,7 @@ PhiBookmarkManager::PhiBookmarkManager(PhiShellWindow* controller)
     : controller_(controller) {}
 
 PhiBookmarkManager::~PhiBookmarkManager() {
+  EndSession();  // A window closing over the page ends its session too.
   Destroy();  // Takes the search field with it.
   if (field_brush_) {
     ::DeleteObject(field_brush_);
@@ -208,10 +210,38 @@ void PhiBookmarkManager::Show() {
   Reposition();
   Refresh();
   ShowPanel();
+  BeginSession();
 }
 
 void PhiBookmarkManager::Hide() {
+  EndSession();
   HidePanel();
+}
+
+void PhiBookmarkManager::BeginSession() {
+  if (session_open_) {
+    return;
+  }
+  session_open_ = true;
+  session_edited_ = false;
+  if (controller_ && controller_->window_host()) {
+    controller_->window_host()->CaptureAnalytics(
+        kAnalyticsModuleBookmarks, kEventBookmarkManagerOpened,
+        base::DictValue());
+  }
+}
+
+void PhiBookmarkManager::EndSession() {
+  if (!session_open_) {
+    return;
+  }
+  session_open_ = false;
+  if (session_edited_ && controller_ && controller_->window_host()) {
+    controller_->window_host()->CaptureAnalytics(
+        kAnalyticsModuleBookmarks, kEventBookmarkManagerEdited,
+        base::DictValue());
+  }
+  session_edited_ = false;
 }
 
 void PhiBookmarkManager::Reposition() {
@@ -675,6 +705,7 @@ void PhiBookmarkManager::NewFolder(const std::string& parent_guid) {
   controller_->sidebar_host()->AddBookmarkFolder(controller_->slot().value,
                                                  parent_guid,
                                                  base::WideToUTF8(name));
+  MarkEdited();
   Refresh();
 }
 
@@ -690,6 +721,7 @@ void PhiBookmarkManager::EditRow(const Row& row) {
                     &name)) {
     controller_->sidebar_host()->RenameStoredRow(row.guid,
                                                  base::WideToUTF8(name));
+    MarkEdited();
   }
   Refresh();
 }
@@ -726,6 +758,7 @@ void PhiBookmarkManager::DeleteSelection() {
     // A folder takes its subtree.
     controller_->sidebar_host()->RemoveStoredRow(guid);
   }
+  MarkEdited();
   selected_.clear();
   Refresh();
 }

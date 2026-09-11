@@ -18,6 +18,7 @@
 #include "base/logging.h"
 #include "base/strings/utf_string_conversions.h"
 #include "phibrowser-win/client/phi_account_feedback.h"
+#include "phibrowser-win/client/phi_client_analytics.h"
 #include "phibrowser-win/client/phi_dwrite.h"
 #include "phibrowser-win/client/phi_fonts.h"
 #include "phibrowser-win/client/phi_i18n.h"
@@ -196,8 +197,48 @@ PhiOnboardingWindow::PhiOnboardingWindow(Host* host,
     : host_(host),
       prefs_(prefs),
       account_(account),
-      conch_(L"onboarding", /*card_chrome=*/false) {
+      conch_(L"onboarding", /*card_chrome=*/false),
+      oobe_([this](const PhiOobeAnalyticsSession::Event& event) {
+        host_->CaptureAnalytics(kAnalyticsModuleOobe, event.name,
+                                PhiOobeEventProperties(event));
+      }) {
   metrics_checked_ = MetricsDefaultForLocale();
+}
+
+// static
+PhiOobeAnalyticsSession::Step PhiOnboardingWindow::StepFor(Page page) {
+  using Step = PhiOobeAnalyticsSession::Step;
+  switch (page) {
+    case Page::kLogin:
+    case Page::kSigningIn:
+      return Step::kLogin;
+    case Page::kGuestPrivacy:
+      return Step::kGuestPrivacy;
+    case Page::kSetName:
+      return Step::kSetName;
+    case Page::kWelcome:
+      return Step::kSetTheme;
+    case Page::kLayout:
+      return Step::kLayoutSelection;
+    case Page::kNextSteps:
+      return Step::kNextStep;
+  }
+  return Step::kLogin;
+}
+
+// static
+double PhiOnboardingWindow::Uptime() {
+  return static_cast<double>(::GetTickCount64()) / 1000.0;
+}
+
+void PhiOnboardingWindow::AdvanceTo(Page page) {
+  oobe_.CompleteCurrentStep(Uptime());
+  ShowPage(page);
+}
+
+void PhiOnboardingWindow::NoteAppTerminating() {
+  oobe_.Interrupt(PhiOobeAnalyticsSession::Interruption::kAppTerminated,
+                  Uptime());
 }
 
 PhiOnboardingWindow::~PhiOnboardingWindow() {
@@ -298,6 +339,8 @@ std::string PhiOnboardingWindow::Drive(const std::string& action,
     OnEnter();
     return std::string();
   } else if (action == "close") {
+    oobe_.Interrupt(PhiOobeAnalyticsSession::Interruption::kWindowClosed,
+                    Uptime());
     host_->OnboardingClosed();
     return std::string();
   } else if (action == "name") {
@@ -365,6 +408,7 @@ bool PhiOnboardingWindow::Open(Page page) {
 void PhiOnboardingWindow::ShowPage(Page page) {
   page_ = page;
   pressed_ = -1;
+  oobe_.Present(StepFor(page), Uptime());
   if (page == Page::kSetName) {
     std::string name;
     account_->AccountInfo(&name, nullptr);
@@ -1244,11 +1288,12 @@ void PhiOnboardingWindow::OnCaptureLost() {
 void PhiOnboardingWindow::Activate(const Hit& hit) {
   switch (hit.control) {
     case Control::kSignIn:
+      NoteSignInPressed();
       ShowPage(Page::kSigningIn);
       host_->OnboardingSignIn();
       break;
     case Control::kContinueAsGuest:
-      ShowPage(Page::kGuestPrivacy);
+      AdvanceTo(Page::kGuestPrivacy);
       break;
     case Control::kCancelSignIn:
       host_->OnboardingCancelSignIn();
@@ -1299,12 +1344,17 @@ void PhiOnboardingWindow::OnEnter() {
   switch (page_) {
     case Page::kLogin:
       if (!account_->AccountSigningIn()) {
+        NoteSignInPressed();
         ShowPage(Page::kSigningIn);
         host_->OnboardingSignIn();
       }
       break;
     case Page::kGuestPrivacy:
       if (legal_checked_) {
+        // The Mac's completeGuestOOBE: two steps, then the crossing.
+        oobe_.Finish(/*is_guest=*/true, 2, Uptime());
+        host_->CaptureAnalytics(kAnalyticsModuleAccount,
+                                kEventGuestModeEntered, base::DictValue());
         host_->OnboardingContinueAsGuest(metrics_checked_);
       }
       break;
@@ -1313,20 +1363,31 @@ void PhiOnboardingWindow::OnEnter() {
       break;
     case Page::kWelcome:
       host_->OnboardingSetPhase(3);
-      ShowPage(Page::kLayout);
+      AdvanceTo(Page::kLayout);
       break;
     case Page::kLayout:
       prefs_->RequestLayoutMode(static_cast<PhiLayoutMode>(layout_choice_));
       host_->OnboardingSetPhase(5);
-      ShowPage(Page::kNextSteps);
+      AdvanceTo(Page::kNextSteps);
       break;
     case Page::kNextSteps:
       if (legal_checked_) {
+        oobe_.Finish(/*is_guest=*/false, std::nullopt, Uptime());
         host_->OnboardingFinished(metrics_checked_);
       }
       break;
     case Page::kSigningIn:
       break;
+  }
+}
+
+void PhiOnboardingWindow::NoteSignInPressed() {
+  // The Mac's login_retried: another go after a failed or abandoned
+  // attempt (its "Go back and try again"; here the note under the guest
+  // link is that state).
+  if (!account_->AccountLastError().empty()) {
+    host_->CaptureAnalytics(kAnalyticsModuleAccount, kEventLoginRetried,
+                            base::DictValue());
   }
 }
 
@@ -1437,7 +1498,7 @@ void PhiOnboardingWindow::SubmitName() {
   if (utf8 == original_name_) {
     // Unchanged: no round trip, the Mac's shortcut.
     host_->OnboardingSetPhase(2);
-    ShowPage(Page::kWelcome);
+    AdvanceTo(Page::kWelcome);
     return;
   }
   name_submitting_ = true;
@@ -1533,10 +1594,12 @@ void PhiOnboardingWindow::OnAccountChanged() {
         host_->OnboardingSetPhase(phase);
       }
       if (phase >= 6) {
+        // A finished account: the login step was the whole funnel.
+        oobe_.Finish(/*is_guest=*/false, std::nullopt, Uptime());
         host_->OnboardingFinished(prefs_->AnalyticsEnabled());
         return;
       }
-      ShowPage(PageForPhase(phase));
+      AdvanceTo(PageForPhase(phase));
       return;
     }
     ShowPage(Page::kLogin);  // Refused or abandoned: the note shows there.
@@ -1553,7 +1616,7 @@ void PhiOnboardingWindow::OnAccountChanged() {
       return;
     }
     host_->OnboardingSetPhase(2);
-    ShowPage(Page::kWelcome);
+    AdvanceTo(Page::kWelcome);
   }
 }
 
@@ -1562,6 +1625,10 @@ LRESULT PhiOnboardingWindow::OnWindowMessage(UINT msg, WPARAM wparam,
   switch (msg) {
     case WM_CLOSE:
       *handled = true;
+      // The user's own close before success (the Mac's willClose
+      // interruption); a close after success already ended the session.
+      oobe_.Interrupt(PhiOobeAnalyticsSession::Interruption::kWindowClosed,
+                      Uptime());
       host_->OnboardingClosed();
       return 0;
     case WM_CTLCOLOREDIT: {

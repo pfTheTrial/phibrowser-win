@@ -148,6 +148,7 @@ PhiVerbResult PhiControlDispatcher::VerbSpacesCreate(
         PhiSpaceCreatedProperties(
             static_cast<int>(coordinator_->spaces_model().spaces.size()),
             profile_id != "Default"));
+    coordinator_->NoteFirstTimeAction(kFirstTimeActionSpaceCreated);
   }
   // A wire colorHex tints the new Space.
   coordinator_->RebuildSpacePalettes();
@@ -192,7 +193,10 @@ PhiVerbResult PhiControlDispatcher::VerbSpacesRename(
 
 PhiVerbResult PhiControlDispatcher::VerbSpacesDelete(
     const PhiVerbContext& ctx) {
-  return PhiVerbOk(coordinator_->DeleteSpace(ctx.params.String("spaceId")));
+  // The manager directly: the Mac's space_deleted is its two confirm
+  // dialogs' (the coordinator's host override), never an agent's verb.
+  return PhiVerbOk(
+      coordinator_->space_manager().DeleteSpace(ctx.params.String("spaceId")));
 }
 
 PhiVerbResult PhiControlDispatcher::VerbSpacesReorder(

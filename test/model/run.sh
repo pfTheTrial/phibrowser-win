@@ -53,6 +53,13 @@ $CXX session_restore_test.cc -o /tmp/phi_session_restore_test
 # window lands. Header-only; the manager that consults it stays on the target.
 $CXX agent_space_route_test.cc -o /tmp/phi_agent_space_route_test
 /tmp/phi_agent_space_route_test
+# The onboarding's analytics session (phi_oobe_analytics.h): the Mac's
+# OOBEAnalyticsSession ported as a pure state machine — the same cases as
+# its OOBEAnalyticsSessionTests. Header-only; the window that drives it
+# stays on the target.
+$CXX ../../client/phi_oobe_analytics.cc oobe_analytics_test.cc \
+     -o /tmp/phi_oobe_analytics_test
+/tmp/phi_oobe_analytics_test
 # Phase 5's UI substrate (docs/architecture-review.md §3.6): the PURE half
 # of phi_window.cc — popover placement with monitor clamping, hit-rect
 # resolution, timer id allocation, easing. The Win32 half of the same file

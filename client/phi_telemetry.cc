@@ -327,7 +327,7 @@ std::string_view PhiTelemetry::AllowedProperties(std::string_view module) {
   }
   if (module == "app") {
     return "|from_background|version|build|previous_version|layout_mode|"
-           "ai_enabled|is_guest_mode|";
+           "ai_enabled|is_guest_mode|action|seconds_since_install|";
   }
   if (module == "settings") {
     return "|new_tab_behavior|layout_mode|app_language|appearance|"
@@ -335,13 +335,44 @@ std::string_view PhiTelemetry::AllowedProperties(std::string_view module) {
            "show_tab_previews|show_open_tab_indicators|"
            "dim_unloaded_tab_icons|restore_last_session_enabled|"
            "developer_mode_enabled|cdp_agent_access_enabled|"
-           "agent_user_spaces_enabled|always_show_bookmark_bar|";
+           "agent_user_spaces_enabled|always_show_bookmark_bar|enabled|"
+           "from|to|";
   }
   if (module == "spaces") {
-    return "|total_spaces|non_default_profile|";
+    return "|total_spaces|non_default_profile|total_profiles|";
+  }
+  if (module == "profiles") {
+    return "|total_profiles|";
   }
   if (module == "agent") {
-    return "|origin|persistent|agent_name|success|command|";
+    return "|origin|persistent|agent_name|success|command|incognito|kind|"
+           "approved|prompted|approval_type|";
+  }
+  if (module == "peek") {
+    return "|entry_point|opener_kind|reason|duration_seconds|enabled|";
+  }
+  if (module == "reader") {
+    return "|entry_point|reason|";
+  }
+  if (module == "bookmarks") {
+    return "||";  // Both events carry no properties at all.
+  }
+  if (module == "kiosk") {
+    return "|total_spaces|";
+  }
+  if (module == "oobe") {
+    return "|step|step_index|is_guest|duration_seconds|steps_completed|"
+           "total_duration_seconds|last_step|reason|";
+  }
+  if (module == "account") {
+    return "|trigger|";
+  }
+  if (module == "import") {
+    return "|entry_point|source_browser|types|source_browsers|success|"
+           "failed_sources|duration_seconds|error_code|";
+  }
+  if (module == "feature") {
+    return "|button|surface|";
   }
   return std::string_view();
 }
