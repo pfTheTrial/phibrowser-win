@@ -108,6 +108,8 @@ void DecodePrefsFields(const base::DictValue& dict, PhiSettings* out) {
       dict.FindBool("showTabPreviews").value_or(out->show_tab_previews);
   out->show_open_tab_indicators = dict.FindBool("showOpenTabIndicators")
                                       .value_or(out->show_open_tab_indicators);
+  out->dim_unloaded_tab_icons = dict.FindBool("dimUnloadedTabIcons")
+                                    .value_or(out->dim_unloaded_tab_icons);
   out->agent_auto_view =
       dict.FindBool("agentAutoView").value_or(out->agent_auto_view);
   out->peek_view_enabled =
@@ -354,6 +356,7 @@ base::DictValue PhiStoreTraits<PhiSettings>::Encode(const PhiSettings& value) {
   root.Set("alwaysShowFullUrl", value.always_show_full_url);
   root.Set("showTabPreviews", value.show_tab_previews);
   root.Set("showOpenTabIndicators", value.show_open_tab_indicators);
+  root.Set("dimUnloadedTabIcons", value.dim_unloaded_tab_icons);
   root.Set("agentAutoView", value.agent_auto_view);
   root.Set("peekViewEnabled", value.peek_view_enabled);
   root.Set("autoPeekViewEnabled", value.auto_peek_view_enabled);

@@ -2169,6 +2169,9 @@ void PhiSidebarView::PaintBand(HDC dc,
                            drag_index < static_cast<int>(pinned_.size());
   // The open-tab dots (preference, off by default).
   const bool show_dots = prefs_host_ && prefs_host_->ShowOpenTabIndicators();
+  // "Dim unloaded tab icons" (on by default): a reclaimed tab's favicon and
+  // open dot at 30%; the dimmed title on tab rows stays regardless.
+  const bool dim_reclaimed = !prefs_host_ || prefs_host_->DimUnloadedTabIcons();
   const COLORREF dot_ink = OpenDotInk(palette);
   // An EMPTY stored band while a drag is in flight shows its reserved drop
   // zone (the layout keeps the band's rect only then): the Mac's
@@ -2236,8 +2239,9 @@ void PhiSidebarView::PaintBand(HDC dc,
     }
     // A bound pane whose tab is dormant fades its favicon. The active cell
     // is never dormant (its page is showing).
-    const bool dormant_a = pin.unloaded && !pin.active;
-    const bool dormant_b = pin.unloaded_b && !pin.active;
+    // The fade is behind "Dim unloaded tab icons" (on by default).
+    const bool dormant_a = pin.unloaded && !pin.active && dim_reclaimed;
+    const bool dormant_b = pin.unloaded_b && !pin.active && dim_reclaimed;
     const int cx = (cell.left + cell.right) / 2;
     const int cy = (cell.top + cell.bottom) / 2;
     // The favicon's row: the open dot hangs under it.
@@ -2405,6 +2409,10 @@ void PhiSidebarView::PaintBand(HDC dc,
     // like a dormant tab row; the active row is never dormant.
     const bool dormant_a = bookmark.unloaded && !bookmark.active;
     const bool dormant_b = bookmark.unloaded_b && !bookmark.active;
+    // The favicon and dot fade is behind "Dim unloaded tab icons"; the
+    // dimmed title stays either way, as on Mac.
+    const bool dim_a = dormant_a && dim_reclaimed;
+    const bool dim_b = dormant_b && dim_reclaimed;
     const COLORREF bookmark_bg = bookmark.active ? kRowSelectedBg : kTintTop;
     if (bookmark.folder) {
       // The Mac paints a Lottie folder carrying the chosen symbol on its
@@ -2415,7 +2423,7 @@ void PhiSidebarView::PaintBand(HDC dc,
     } else if (!bookmark.favicon.empty()) {
       DrawFavicon(dc, icon, bookmark.favicon.data(), bookmark.favicon_width,
                   bookmark.favicon_height, bookmark_bg,
-                  dormant_a ? kReclaimedOpacity : 1.0f);
+                  dim_a ? kReclaimedOpacity : 1.0f);
     } else {
       HGDIOBJ previous_glyph_font =
           glyph_font ? ::SelectObject(dc, glyph_font) : nullptr;
@@ -2434,7 +2442,7 @@ void PhiSidebarView::PaintBand(HDC dc,
       if (!bookmark.favicon_b.empty()) {
         DrawFavicon(dc, icon_b, bookmark.favicon_b.data(),
                     bookmark.favicon_b_width, bookmark.favicon_b_height,
-                    bookmark_bg, dormant_b ? kReclaimedOpacity : 1.0f);
+                    bookmark_bg, dim_b ? kReclaimedOpacity : 1.0f);
       } else {
         HGDIOBJ previous_glyph_font =
             glyph_font ? ::SelectObject(dc, glyph_font) : nullptr;
@@ -2452,7 +2460,7 @@ void PhiSidebarView::PaintBand(HDC dc,
       const int dot = Scaled(kOpenDotDiameter);
       DrawOpenDot(dc, icon.left - Scaled(kOpenDotBookmarkSpacing) - dot,
                   mid - dot / 2, dot,
-                  dormant_a || dormant_b
+                  dim_a || dim_b
                       ? FadeInk(dot_ink, bookmark_bg, kReclaimedOpacity)
                       : dot_ink);
     }
@@ -2794,11 +2802,12 @@ void PhiSidebarView::PaintBand(HDC dc,
       // favicon at the Mac's 30% and reads dimmer than a live one. The
       // active row is never dormant, so this never fights the selected pill.
       const bool dormant = r.unloaded && !r.active;
+      const bool dim = dormant && dim_reclaimed;
       if (!favicon.empty()) {
         DrawFavicon(dc, icon, favicon.data(),
                     pane_b ? r.b_favicon_width : r.favicon_width,
                     pane_b ? r.b_favicon_height : r.favicon_height, row_bg,
-                    dormant ? kReclaimedOpacity : 1.0f);
+                    dim ? kReclaimedOpacity : 1.0f);
       } else if (r.internal_page && !logo.empty() &&
                  PhiDrawBgra(dc, icon, logo.data(), 256, 256)) {
         // Internal pages (chrome://newtab and friends) carry the Phi mark,

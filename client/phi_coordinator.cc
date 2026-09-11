@@ -1985,6 +1985,14 @@ void PhiCoordinator::SetShowOpenTabIndicators(bool enabled) {
   preferences_.SetShowOpenTabIndicators(enabled);
 }
 
+bool PhiCoordinator::DimUnloadedTabIcons() const {
+  return preferences_.DimUnloadedTabIcons();
+}
+
+void PhiCoordinator::SetDimUnloadedTabIcons(bool enabled) {
+  preferences_.SetDimUnloadedTabIcons(enabled);
+}
+
 bool PhiCoordinator::PeekViewEnabled() const {
   return preferences_.PeekViewEnabled();
 }
@@ -2311,7 +2319,8 @@ void PhiCoordinator::OnPreferencesChanged(
       registry_.InvalidateAll();  // The address fields repaint.
       break;
     case PreferenceChange::kOpenIndicators:
-      registry_.InvalidateAll();  // The sidebars repaint their dots.
+    case PreferenceChange::kDimUnloaded:
+      registry_.InvalidateAll();  // The sidebars repaint their icons and dots.
       break;
     case PreferenceChange::kPeek:
       PushPeekPreferences();  // The framework owns both decisions it gates.

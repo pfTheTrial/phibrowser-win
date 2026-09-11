@@ -948,6 +948,8 @@ constexpr PhiParamField kSettingsSet[] = {
     {"alwaysShowFullUrl", kParamBool, kOptional, "", "Omnibox url display."},
     {"showTabPreviews", kParamBool, kOptional, "", "Hover previews."},
     {"showOpenTabIndicators", kParamBool, kOptional, "", "Open-tab dots."},
+    {"dimUnloadedTabIcons", kParamBool, kOptional, "",
+     "Reclaimed tabs' icons at 30%."},
     {"restoreLastSession", kParamBool, kOptional, "", "Session restore."},
     {"peekViewEnabled", kParamBool, kOptional, "", "Peek's master switch."},
     {"autoPeekViewEnabled", kParamBool, kOptional, "", "Automatic peek."},

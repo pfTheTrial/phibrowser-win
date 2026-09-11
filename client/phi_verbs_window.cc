@@ -890,7 +890,7 @@ PhiVerbResult PhiControlDispatcher::VerbSettingsGet(
   // (There is no Phi Link pane on Mac — IMChannels exists in its source
   // but is never mounted.)
   for (const char* name : {"account", "general", "profiles", "spaces",
-                           "navigation", "ai", "shortcuts"}) {
+                           "navigation", "ai", "shortcuts", "advanced"}) {
     sections.Append(name);
   }
   if (coordinator_->settings().developer_mode) {
@@ -922,6 +922,8 @@ PhiVerbResult PhiControlDispatcher::VerbSettingsGet(
   out.Set("showTabPreviews", coordinator_->settings().show_tab_previews);
   out.Set("showOpenTabIndicators",
           coordinator_->settings().show_open_tab_indicators);
+  out.Set("dimUnloadedTabIcons",
+          coordinator_->settings().dim_unloaded_tab_icons);
   out.Set("restoreLastSession", coordinator_->settings().restore_last_session);
   out.Set("analyticsEnabled", coordinator_->settings().analytics_enabled);
   out.Set("peekViewEnabled", coordinator_->settings().peek_view_enabled);
@@ -972,6 +974,10 @@ PhiVerbResult PhiControlDispatcher::VerbSettingsSet(
   }
   if (std::optional<bool> dots = ctx.params.FindBool("showOpenTabIndicators")) {
     coordinator_->SetShowOpenTabIndicators(*dots);
+    ok = true;
+  }
+  if (std::optional<bool> dim = ctx.params.FindBool("dimUnloadedTabIcons")) {
+    coordinator_->SetDimUnloadedTabIcons(*dim);
     ok = true;
   }
   if (std::optional<bool> restore =
@@ -1030,6 +1036,8 @@ PhiVerbResult PhiControlDispatcher::VerbSettingsSet(
   out.Set("showTabPreviews", coordinator_->settings().show_tab_previews);
   out.Set("showOpenTabIndicators",
           coordinator_->settings().show_open_tab_indicators);
+  out.Set("dimUnloadedTabIcons",
+          coordinator_->settings().dim_unloaded_tab_icons);
   out.Set("restoreLastSession", coordinator_->settings().restore_last_session);
   out.Set("peekViewEnabled", coordinator_->settings().peek_view_enabled);
   out.Set("autoPeekViewEnabled",

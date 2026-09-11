@@ -132,6 +132,10 @@ bool PhiPreferences::ShowOpenTabIndicators() const {
   return settings_.show_open_tab_indicators;
 }
 
+bool PhiPreferences::DimUnloadedTabIcons() const {
+  return settings_.dim_unloaded_tab_icons;
+}
+
 bool PhiPreferences::NewTabOpensOmnibox() const {
   return settings_.new_tab_behavior == model::NewTabBehavior::kOmnibox;
 }
@@ -270,6 +274,15 @@ void PhiPreferences::SetShowOpenTabIndicators(bool enabled) {
   settings_.show_open_tab_indicators = enabled;
   MarkDirty();
   Notify(PreferenceChange::kOpenIndicators);
+}
+
+void PhiPreferences::SetDimUnloadedTabIcons(bool enabled) {
+  if (enabled == settings_.dim_unloaded_tab_icons) {
+    return;
+  }
+  settings_.dim_unloaded_tab_icons = enabled;
+  MarkDirty();
+  Notify(PreferenceChange::kDimUnloaded);
 }
 
 void PhiPreferences::SetPeekViewEnabled(bool enabled) {

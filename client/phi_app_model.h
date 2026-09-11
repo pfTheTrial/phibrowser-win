@@ -173,6 +173,9 @@ struct PhiSettings {
   // The Mac's GeneralSettings.showOpenTabIndicators: a dot on inactive
   // pinned tabs and bookmarks whose tab is open. Off by default, as on Mac.
   bool show_open_tab_indicators = false;
+  // The Mac's GeneralSettings.dimUnloadedTabIcons: a reclaimed (unloaded or
+  // discarded) tab's favicon and open dot draw at 30%. On by default.
+  bool dim_unloaded_tab_icons = true;
   bool peek_view_enabled = true;
   bool auto_peek_view_enabled = true;
   bool restore_last_session = false;

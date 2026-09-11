@@ -291,6 +291,9 @@ class ChromePrefsHost {
   // The Mac's GeneralSettings.showOpenTabIndicators: a dot on an inactive
   // pinned tab or bookmark whose tab is open. Off by default.
   virtual bool ShowOpenTabIndicators() const = 0;
+  // The Mac's GeneralSettings.dimUnloadedTabIcons: a reclaimed tab's favicon
+  // and open dot at 30%. On by default; the dimmed title stays either way.
+  virtual bool DimUnloadedTabIcons() const = 0;
   // Developer ▸ "Allow agents to control Phi": gates the View menu's agent
   // items, as the Mac's cdpAgentAccessEnabled does.
   virtual bool AllowAgentControl() const = 0;

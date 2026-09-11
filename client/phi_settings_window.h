@@ -124,6 +124,9 @@ class PhiSettingsHost {
   // GeneralSettings.showOpenTabIndicators — the dot on inactive open pins
   // and bookmarks. Off by default, as on Mac.
   virtual void SetShowOpenTabIndicators(bool enabled) = 0;
+  // GeneralSettings.dimUnloadedTabIcons — a reclaimed tab's favicon and
+  // open dot at 30%. On by default, as on Mac.
+  virtual void SetDimUnloadedTabIcons(bool enabled) = 0;
   // The UI language. An EMPTY tag means "follow the operating system", which
   // is the default and the only value that tracks a later OS change.
   virtual void SetLanguagePreference(const std::string& tag) = 0;
@@ -331,6 +334,7 @@ class PhiSettingsWindow : public PhiSecondaryWindow,
   void ScheduleRebuild();
   void BuildAccount(int* y);
   void BuildGeneral(int* y);
+  void BuildAdvanced(int* y);
   void BuildSpaces(int* y);
   // The Mac's Navigations pane: Kiosk, Peek and URL Rules.
   void BuildNavigation(int* y);

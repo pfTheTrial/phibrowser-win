@@ -50,6 +50,7 @@ class PhiPreferences : public ChromePrefsHost {
     kFullUrl,        // The address fields repaint.
     kPreviews,
     kOpenIndicators,  // The sidebar's open-tab dots: every sidebar repaints.
+    kDimUnloaded,     // The reclaimed-tab dimming: every sidebar repaints.
     kPeek,           // Both peek switches: the framework mirror is due.
     kRestore,        // The per-profile framework mirror is due.
     kBookmarkBar,    // Either bar flag: every slot re-fits its content.
@@ -100,6 +101,7 @@ class PhiPreferences : public ChromePrefsHost {
   void RequestLayoutMode(PhiLayoutMode mode) override;
   bool ShowTabPreviews() const override;
   bool ShowOpenTabIndicators() const override;
+  bool DimUnloadedTabIcons() const override;
   bool NewTabOpensOmnibox() const override;
   int SidebarWidth() const override;
   void RequestSidebarWidth(int dip) override;
@@ -131,6 +133,7 @@ class PhiPreferences : public ChromePrefsHost {
   void SetAlwaysShowFullUrl(bool enabled);
   void SetShowTabPreviews(bool enabled);
   void SetShowOpenTabIndicators(bool enabled);
+  void SetDimUnloadedTabIcons(bool enabled);
   bool PeekViewEnabled() const { return settings_.peek_view_enabled; }
   void SetPeekViewEnabled(bool enabled);
   bool AutoPeekViewEnabled() const { return settings_.auto_peek_view_enabled; }

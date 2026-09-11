@@ -91,7 +91,7 @@ These are what protocol 1 puts in `error`; protocol 2 reports the code beside th
 
 ## Verbs
 
-142 rows, 139 distinct names.
+148 rows, 145 distinct names.
 
 ### The agent-Space lifecycle
 
@@ -162,7 +162,9 @@ Ends a task: an ephemeral Space is torn down, a persistent one is marked complet
 | field | type | required | also accepts | meaning |
 | --- | --- | --- | --- | --- |
 | `taskId` | string | yes | — | The task to complete. |
+| `status` | string | no | — | "success" (default) or anything else for a failure. |
 | `keep` | boolean | no | — | Keep a persistent Space's window (default true). |
+| `message` | string | no | — | A closing line for the transcript (a failure's reason). |
 
 #### `agentSpace.getOwnership`
 
@@ -185,7 +187,8 @@ Hands a task's Space to the user.
 
 | field | type | required | also accepts | meaning |
 | --- | --- | --- | --- | --- |
-| `taskId` | string | yes | — | The task the verb acts on. |
+| `taskId` | string | yes | — | The task. |
+| `message` | string | no | — | Why the user is needed; shown in the prompt and the transcript. |
 
 #### `agentSpace.takeover`
 
@@ -225,8 +228,11 @@ Appends transcript lines and (unless touch:false) refreshes the keep-alive.
 | --- | --- | --- | --- | --- |
 | `taskId` | string | yes | — | The task. |
 | `text` | string | no | — | One transcript line. |
-| `entries` | list | no | — | Many lines, as [{text}]. |
-| `touch` | boolean | no | — | Refresh the keep-alive too (default true). |
+| `entries` | list | no | — | Many lines, oldest first (max 200), each {text, kind?, detail?, agent?, ts?, sourceId?, toolState?}. kind: action \| narration \| error \| user \| assistant \| thinking \| tool (status and round are the app's own and downgrade to action); kind "activity" is a driver's live tail row (codex: activity working\|waiting; claude: phase working\|idle), never history. |
+| `kind` | string | no | — | The single line's kind. |
+| `detail` | string | no | — | The single line's detail. |
+| `agent` | string | no | — | The single line's agent. |
+| `touch` | boolean | no | — | Refresh the keep-alive too (default true); a mirror passes false. |
 
 #### `agentSpace.markError`
 
@@ -1950,6 +1956,7 @@ Changes app settings. developerMode / allowAgentUserSpaces / testRig / analytics
 | `alwaysShowFullUrl` | boolean | no | — | Omnibox url display. |
 | `showTabPreviews` | boolean | no | — | Hover previews. |
 | `showOpenTabIndicators` | boolean | no | — | Open-tab dots. |
+| `dimUnloadedTabIcons` | boolean | no | — | Reclaimed tabs' icons at 30%. |
 | `restoreLastSession` | boolean | no | — | Session restore. |
 | `peekViewEnabled` | boolean | no | — | Peek's master switch. |
 | `autoPeekViewEnabled` | boolean | no | — | Automatic peek. |
@@ -2022,6 +2029,71 @@ Stands a signed-in account in on a box without one.
 | --- | --- | --- | --- | --- |
 | `userId` | string | no | — | A stand-in account id. |
 | `email` | string | no | — | Its email. |
+
+### Account (the Auth0 session; docs/login-port.md)
+
+#### `agentSpace.account.status`
+
+The session: signedIn, signingIn, reauthRequired, the identity, the cached profile and the last error.
+
+- **Capabilities**: `host`
+- **Scope**: app-wide.
+- **Errors**: `test_rig_only`
+
+*No payload fields.*
+
+#### `agentSpace.account.signIn`
+
+Starts the hosted sign-in in the first user window, as Settings ▸ You ▸ Sign in does.
+
+- **Capabilities**: `host`
+- **Scope**: app-wide.
+- **Errors**: `test_rig_only`, `window_not_open`
+
+*No payload fields.*
+
+#### `agentSpace.account.cancelSignIn`
+
+Abandons the sign-in in flight.
+
+- **Capabilities**: `host`
+- **Scope**: app-wide.
+- **Errors**: `test_rig_only`
+
+*No payload fields.*
+
+#### `agentSpace.account.signOut`
+
+Signs out without the pane's confirmation.
+
+- **Capabilities**: `host`
+- **Scope**: app-wide.
+- **Errors**: `test_rig_only`
+
+*No payload fields.*
+
+#### `agentSpace.onboarding.status`
+
+The onboarding gate and the window's page.
+
+- **Capabilities**: `host`
+- **Scope**: app-wide.
+- **Errors**: `test_rig_only`
+
+*No payload fields.*
+
+#### `agentSpace.onboarding.drive`
+
+Presses a control of the onboarding window by name.
+
+- **Capabilities**: `host`
+- **Scope**: app-wide.
+- **Errors**: `test_rig_only`, `not_open`, `wrong_page`, `unknown_action`
+
+| field | type | required | also accepts | meaning |
+| --- | --- | --- | --- | --- |
+| `action` | string | yes | — | signIn, guest, cancel, legal, metrics, name, swatch, layout, next, close. |
+| `value` | string | no | — | The name / theme id / layout. |
 
 ### Credentials
 

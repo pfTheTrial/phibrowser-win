@@ -35,6 +35,7 @@
 #include "phibrowser-win/client/phi_emoji.h"
 #include "phibrowser-win/client/phi_features.h"
 #include "phibrowser-win/client/phi_dwrite.h"
+#include "phibrowser-win/client/phi_sidebar_view.h"
 #include "phibrowser-win/client/phi_glyph_bitmap.h"
 #include "phibrowser-win/client/phi_i18n.h"
 #include "phibrowser-win/client/phi_icons.h"
@@ -182,7 +183,7 @@ struct SectionDef {
   const wchar_t* label;
   wchar_t glyph;
 };
-constexpr std::array<SectionDef, 8> kSections = {{
+constexpr std::array<SectionDef, 9> kSections = {{
     {"account", L"You", 0xE77B},        // Contact
     {"general", L"General", 0xE713},    // Settings gear
     {"profiles", L"Profiles", 0xE716},  // People
@@ -190,6 +191,7 @@ constexpr std::array<SectionDef, 8> kSections = {{
     {"navigation", L"Navigation", 0xE71B},  // Link — the Mac's navigations.svg
     {"ai", L"Phi & AI", 0xE734},        // Sparkle (the catalog's own pick)
     {"shortcuts", L"Shortcuts", 0xE765},  // Keyboard
+    {"advanced", L"Advanced", 0xE713},  // Two gears, composed at paint (gearshape.2)
     {"developer", L"Developer", 0xE90F},  // Repair — the Mac's hammer
 }};
 
@@ -719,7 +721,7 @@ void PhiSettingsWindow::BuildGeneral(int* y) {
   const bool locked = spaces_->Summaries().size() > 1;
 
   // The Mac's section order: Language, Theme, Appearance, Browsing,
-  // Profile, Developer.
+  // Profile (the browsing rows and Developer mode moved to Advanced).
   BeginSection(y, PhiStr("settings.general.language.sectionTitle"));
   {
     // The row was a dead chip until the string catalog existed. Now it is the
@@ -901,70 +903,14 @@ void PhiSettingsWindow::BuildGeneral(int* y) {
     }
   }
   AddDividerRow(y);
-  AddToggleRow(y, L"Always show full URL", prefs_->AlwaysShowFullUrl(),
-               /*enabled=*/true, "fullurl");
-  AddDividerRow(y);
-  AddToggleRow(y, L"Show tab preview cards", prefs_->ShowTabPreviews(),
-               /*enabled=*/true, "tabpreviews");
-  AddDividerRow(y);
-  AddToggleRow(y, L"Show open tab indicators",
-               prefs_->ShowOpenTabIndicators(),
-               /*enabled=*/true, "openindicators",
-               L"Show a dot on inactive pinned tabs and bookmarks that are "
-               L"currently open.");
-  AddDividerRow(y);
-  {
-    const size_t first = items_.size();
-    const RECT area = AddRow(
-        y, L"Auto picture-in-picture", kPillHeight, kPillWidth,
-        L"Pop out playing video when you switch tabs or apps");
-    for (size_t i = first; i < items_.size(); ++i) {
-      items_[i].enabled = false;  // The row is a placeholder, like its pill.
-    }
-    Item pill;
-    pill.kind = ItemKind::kPopup;
-    pill.text = L"Normal";
-    pill.enabled = false;
-    pill.bounds = area;
-    items_.push_back(std::move(pill));
-  }
-  AddDividerRow(y);
-  {
-    AddToggleRow(y, L"Restore last session", prefs_->RestoreLastSession(),
-                 /*enabled=*/true, "restoresession",
-                 L"Reopen your windows and tabs the next time you open "
-                 L"Phi.");
-  }
-  AddDividerRow(y);
   {
     // Telemetry consent (docs/architecture-review.md §3.9): the ONLY switch
     // for the analytics pipeline. Off by default, and deliberately out of
-    // reach of agentSpace.settings.set.
+    // reach of agentSpace.settings.set. Windows-only, so it stays here
+    // while the Mac's other browsing rows moved to Advanced.
     AddToggleRow(y, PhiStr("settings.general.analytics.toggle"),
                  prefs_->AnalyticsEnabled(), /*enabled=*/true, "analytics",
                  PhiStr("settings.general.analytics.hint"));
-  }
-  AddDividerRow(y);
-  {
-    // Chevron.right, 12pt semibold textSecondary on Mac — a kIcon glyph.
-    // The whole row opens chrome://settings, as on Mac — emitted FIRST so
-    // its hover wash paints behind the label and the chevron.
-    Item row;
-    row.kind = ItemKind::kListRow;
-    row.action = "browsersettings";
-    items_.push_back(std::move(row));
-    const size_t row_index = items_.size() - 1;
-    const RECT area = AddRow(y, L"Additional browser settings",
-                             kRowLabelHeight, 20);
-    Item chevron;
-    chevron.kind = ItemKind::kIcon;
-    chevron.text = std::wstring(1, wchar_t(0xE76C));  // ChevronRight
-    chevron.bounds = area;
-    items_.push_back(std::move(chevron));
-    items_[row_index].bounds = {Scaled(kMargin) + Scaled(4),
-                                area.top - Scaled(6),
-                                Scaled(kWidth - kMargin) - Scaled(4),
-                                area.bottom + Scaled(6)};
   }
   EndSection(y);
 
@@ -998,9 +944,73 @@ void PhiSettingsWindow::BuildGeneral(int* y) {
                        profile_id);
     *y += Scaled(kSectionGap) - Scaled(kMasterDetailGap);
   }
+}
 
-  BeginSection(y, L"Developer");
-  // The description belongs TO the row (GeneralSettingView stacks title and
+// The Mac's AdvancedSettingsView (6d1f7b12): the browsing rows and the
+// Developer-mode switch that used to sit in General, as four untitled
+// cards — the page rows, the browsing rows, Developer mode, then the
+// browser-settings link.
+void PhiSettingsWindow::BuildAdvanced(int* y) {
+  BeginSection(y, nullptr);
+  AddToggleRow(y, L"Always show full URL", prefs_->AlwaysShowFullUrl(),
+               /*enabled=*/true, "fullurl");
+  AddDividerRow(y);
+  AddToggleRow(y, L"Show a preview card when hovering over a tab",
+               prefs_->ShowTabPreviews(),
+               /*enabled=*/true, "tabpreviews");
+  AddDividerRow(y);
+  AddToggleRow(y, L"Show open tab indicators",
+               prefs_->ShowOpenTabIndicators(),
+               /*enabled=*/true, "openindicators",
+               L"Show a dot on inactive pinned tabs and bookmarks that are "
+               L"currently open.");
+  AddDividerRow(y);
+  AddToggleRow(y, L"Dim unloaded tab icons", prefs_->DimUnloadedTabIcons(),
+               /*enabled=*/true, "dimunloaded",
+               L"Dim tab icons when their pages are unloaded from memory.");
+  EndSection(y);
+
+  BeginSection(y, nullptr);
+  AddToggleRow(y, L"Restore last session", prefs_->RestoreLastSession(),
+               /*enabled=*/true, "restoresession",
+               prefs_->RestoreLastSession()
+                   ? L"Reopen your windows and tabs the next time you open "
+                     L"Phi."
+                   : L"Phi starts with a new window. Closing a window may "
+                     L"sign you out of some sites.");
+  AddDividerRow(y);
+  {
+    // "Copy Link to Highlight" has no Windows counterpart yet: the row is a
+    // placeholder, like Auto picture-in-picture below it.
+    const size_t first = items_.size();
+    AddToggleRow(y, L"Shorten links to selected text", /*on=*/true,
+                 /*enabled=*/false, std::string(),
+                 L"Applies to \u201CCopy Link to Highlight\u201D in the "
+                 L"right-click menu. Turn off to copy the full link.");
+    for (size_t i = first; i < items_.size(); ++i) {
+      items_[i].enabled = false;
+    }
+  }
+  AddDividerRow(y);
+  {
+    const size_t first = items_.size();
+    const RECT area = AddRow(
+        y, L"Auto picture-in-picture", kPillHeight, kPillWidth,
+        L"Pop out playing video when you switch tabs or apps");
+    for (size_t i = first; i < items_.size(); ++i) {
+      items_[i].enabled = false;  // The row is a placeholder, like its pill.
+    }
+    Item pill;
+    pill.kind = ItemKind::kPopup;
+    pill.text = L"Normal";
+    pill.enabled = false;
+    pill.bounds = area;
+    items_.push_back(std::move(pill));
+  }
+  EndSection(y);
+
+  BeginSection(y, nullptr);
+  // The description belongs TO the row (the Mac stacks title and
   // description in one VStack); a divider between them fenced the sentence
   // off from the switch it explains.
   AddToggleRow(y, L"Developer mode", prefs_->DeveloperMode(),
@@ -1011,6 +1021,30 @@ void PhiSettingsWindow::BuildGeneral(int* y) {
                    : L"Turning developer mode off turns off agent access "
                      L"and the agent password manager. An agent that "
                      L"connects later can ask you to turn it back on.");
+  EndSection(y);
+
+  BeginSection(y, nullptr);
+  {
+    // Chevron.right, 12pt semibold textSecondary on Mac — a kIcon glyph.
+    // The whole row opens chrome://settings, as on Mac — emitted FIRST so
+    // its hover wash paints behind the label and the chevron.
+    Item row;
+    row.kind = ItemKind::kListRow;
+    row.action = "browsersettings";
+    items_.push_back(std::move(row));
+    const size_t row_index = items_.size() - 1;
+    const RECT area = AddRow(y, L"Additional browser settings",
+                             kRowLabelHeight, 20);
+    Item chevron;
+    chevron.kind = ItemKind::kIcon;
+    chevron.text = std::wstring(1, wchar_t(0xE76C));  // ChevronRight
+    chevron.bounds = area;
+    items_.push_back(std::move(chevron));
+    items_[row_index].bounds = {Scaled(kMargin) + Scaled(4),
+                                area.top - Scaled(6),
+                                Scaled(kWidth - kMargin) - Scaled(4),
+                                area.bottom + Scaled(6)};
+  }
   EndSection(y);
 }
 
@@ -2330,7 +2364,11 @@ void PhiSettingsWindow::Rebuild() {
       ++shown;
     }
   }
-  int x = Scaled((kWidth - shown * kToolbarItemWidth) / 2);
+  // Nine tabs at the Mac's width do not all take the full 78: the items
+  // narrow together so the row never runs past the window's edges.
+  const int item_width =
+      std::min(kToolbarItemWidth, (kWidth - 2 * kMargin) / std::max(1, shown));
+  int x = Scaled((kWidth - shown * item_width) / 2);
   for (const SectionDef& section : kSections) {
     if (unmounted(section.id)) {
       continue;
@@ -2341,11 +2379,10 @@ void PhiSettingsWindow::Rebuild() {
     entry.payload = section.id;
     entry.selected = section_ == section.id;
     entry.action = "section";
-    entry.bounds = {x, Scaled(kCaptionHeight + 8),
-                    x + Scaled(kToolbarItemWidth),
+    entry.bounds = {x, Scaled(kCaptionHeight + 8), x + Scaled(item_width),
                     Scaled(kChromeTop - 8)};
     items_.push_back(std::move(entry));
-    x += Scaled(kToolbarItemWidth);
+    x += Scaled(item_width);
   }
   if (unmounted(section_.c_str())) {
     section_ = "general";  // The pane vanished under us, as on Mac.
@@ -2370,6 +2407,8 @@ void PhiSettingsWindow::Rebuild() {
     BuildAi(&y);
   } else if (section_ == "account") {
     BuildAccount(&y);
+  } else if (section_ == "advanced") {
+    BuildAdvanced(&y);
   } else if (section_ == "developer") {
     BuildDeveloper(&y);
   } else {
@@ -2555,12 +2594,31 @@ void PhiSettingsWindow::Paint(HDC dc, const RECT&) {
           }
         }
         // MDL2 stand-ins for the Mac's template PDFs (~16pt of ink).
-        if (mdl2_font_) {
-          ::SelectObject(dc, mdl2_font_);
+        if (item.payload == "advanced") {
+          // The Mac's SF gearshape.2, which MDL2 has no twin for: two
+          // Settings gears composed the way the symbol is — a larger one
+          // low and leading, a smaller one high and trailing, overlapping
+          // at the middle.
+          const COLORREF gear_ink = item.selected ? accent : secondary;
+          const int side = Scaled(kToolbarIcon);
+          const int left = (glyph.left + glyph.right - side) / 2;
+          const int top = (glyph.top + glyph.bottom - side) / 2;
+          const int major = side * 17 / 24;
+          const int minor = side * 12 / 24;  // (`small` is rpcndr.h's macro.)
+          const RECT major_rc = {left, top + side - major, left + major,
+                                 top + side};
+          const RECT minor_rc = {left + side - minor, top, left + side,
+                                 top + minor};
+          PhiDrawGlyphIcon(dc, major_rc, L"\uE713", major, gear_ink);
+          PhiDrawGlyphIcon(dc, minor_rc, L"\uE713", minor, gear_ink);
+        } else {
+          if (mdl2_font_) {
+            ::SelectObject(dc, mdl2_font_);
+          }
+          const std::wstring mark_text(1, mark);
+          PhiDrawTextAA(dc, mark_text.c_str(), -1, &glyph,
+                        DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         }
-        const std::wstring mark_text(1, mark);
-        PhiDrawTextAA(dc, mark_text.c_str(), -1, &glyph,
-                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         RECT caption = bounds;
         caption.top = glyph.bottom;
         if (small_font_) {
@@ -3414,6 +3472,8 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
     host_->SetShowTabPreviews(!item.on);
   } else if (item.action == "openindicators") {
     host_->SetShowOpenTabIndicators(!item.on);
+  } else if (item.action == "dimunloaded") {
+    host_->SetDimUnloadedTabIcons(!item.on);
   } else if (item.action == "fullurl") {
     host_->SetAlwaysShowFullUrl(!item.on);
   } else if (item.action == "restoresession") {
