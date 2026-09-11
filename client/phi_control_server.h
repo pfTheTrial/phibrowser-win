@@ -124,8 +124,8 @@ class PhiControlDelegate {
 //      so a process that cannot read the profile directory cannot even make
 //      the turn-on prompt appear.
 //   3. The switch: PhiControlDelegate::AuthorizeAgentPeer admits the
-//      connection when Developer ▸ "Allow agents to control Phi" is on (or
-//      the test rig is), asks the user once to turn it on when it is off,
+//      connection when Developer ▸ "Allow agents to control Phi" is on,
+//      asks the user once to turn it on when it is off,
 //      and registers a per-connection principal under the session's agent
 //      capability (or the one the peer presented); that capability is
 //      echoed on the 101. The peer's pid and image path are shown and
@@ -163,6 +163,15 @@ class PhiControlServer {
   // wedged peer drops its event instead of stalling the caller.
   void BroadcastEvent(const std::string& type,
                       const std::string& payload_json);
+
+  // Cuts every admitted connection — control channels and CDP sessions
+  // alike — the way the Mac's AgentCDPListener.revokeActiveAccess does when
+  // "Allow agents to control Phi" goes off: the pending I/O on each pipe is
+  // cancelled and the pipe disconnected, so its serving thread unwinds
+  // through its normal teardown (the DevTools session closed, the delegate
+  // told). The listener stays up; the next connection meets the switch.
+  // Safe to call from any thread.
+  void SeverAgentConnections();
 
  private:
   // One accepted pipe plus its read-ahead buffer; defined in the .cc.
@@ -223,6 +232,11 @@ class PhiControlServer {
   // Live control channels, for BroadcastEvent.
   std::vector<std::shared_ptr<ControlChannel>> channels_;
   mutable base::Lock channels_lock_;
+  // Every admitted connection's pipe while it is served, for
+  // SeverAgentConnections. A handle is only ever closed by its own serving
+  // thread, after it left this list.
+  std::vector<HANDLE> live_pipes_;
+  mutable base::Lock live_pipes_lock_;
 };
 
 }  // namespace phi_client

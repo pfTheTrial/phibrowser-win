@@ -169,6 +169,12 @@ class PhiControlDispatcher : public PhiControlDelegate {
   // remembered "Deny" so the next connection asks (or is admitted) afresh.
   // UI thread.
   void ForgetAgentControlDenial() { agent_control_denied_ = false; }
+  // The user turned "Allow agents to control Phi" OFF: every live agent
+  // connection is cut and every capability minted this session expires, so
+  // nothing admitted before the switch keeps driving — the Mac's
+  // AgentCDPListener.revokeActiveAccess. An agent that connects later
+  // meets the switch (the turn-on prompt) like a stranger. UI thread.
+  void RevokeAgentAccess();
   void OnControlProtocol(uint64_t connection_id, int protocol) override;
   void OnDevToolsSessionOpened(uint64_t connection_id,
                                uint64_t session_id) override;

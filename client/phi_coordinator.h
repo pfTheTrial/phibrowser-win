@@ -199,6 +199,7 @@ class PhiCoordinator : public SidebarHost,
   // kInternal) and the creation/reader paths answer deferred replies
   // through it (CompletePendingReply).
   PhiControlDispatcher& dispatcher() { return *dispatcher_; }
+  PhiControlServer& control_server() { return control_server_; }
 
   // What a shell is constructed with: the five interfaces this coordinator
   // implements, as one struct. It outlives every controller, so the

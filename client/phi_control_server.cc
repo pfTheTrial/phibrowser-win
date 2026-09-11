@@ -852,6 +852,10 @@ void PhiControlServer::HandleConnection(HANDLE pipe) {
     }
   }
   if (consented) {
+    {
+      base::AutoLock lock(live_pipes_lock_);
+      live_pipes_.push_back(pipe);
+    }
     const std::string raw_path = RequestPath(head);
     const std::string path = NormalizePath(raw_path);
     if (raw_path.rfind(kControlPathPrefix, 0) == 0) {
@@ -885,6 +889,12 @@ void PhiControlServer::HandleConnection(HANDLE pipe) {
     // After the serve loops, so every session the connection opened has
     // already been reported closed.
     delegate_->OnConnectionClosed(connection_id);
+    {
+      base::AutoLock lock(live_pipes_lock_);
+      live_pipes_.erase(
+          std::remove(live_pipes_.begin(), live_pipes_.end(), pipe),
+          live_pipes_.end());
+    }
   }
   ::FlushFileBuffers(pipe);
   ::DisconnectNamedPipe(pipe);
@@ -1171,6 +1181,25 @@ void PhiControlServer::ServeDevToolsSession(Connection* conn,
     conn->Write(WsCloseFrame(close_code));
   }
   ::CloseHandle(wake);
+}
+
+void PhiControlServer::SeverAgentConnections() {
+  std::vector<HANDLE> pipes;
+  {
+    base::AutoLock lock(live_pipes_lock_);
+    pipes = live_pipes_;
+  }
+  for (HANDLE pipe : pipes) {
+    // The serving thread's pending read completes with an abort and its
+    // loop breaks; the disconnect makes any write it tries fail too. The
+    // handle stays open until that thread closes it (HandleConnection).
+    ::CancelIoEx(pipe, nullptr);
+    ::DisconnectNamedPipe(pipe);
+  }
+  if (!pipes.empty()) {
+    LOG(INFO) << "[PhiAgent] severed " << pipes.size()
+              << " agent connection(s)";
+  }
 }
 
 void PhiControlServer::RegisterChannel(

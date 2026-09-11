@@ -2355,6 +2355,11 @@ void PhiCoordinator::OnPreferencesChanged(
       // touches the switch; the next connection asks again (or is admitted).
       if (dispatcher_) {
         dispatcher_->ForgetAgentControlDenial();
+        if (!preferences_.AllowAgentControl()) {
+          // OFF cuts every agent that is connected now — the switch is not
+          // only a door for newcomers (the Mac severs all live connections).
+          dispatcher_->RevokeAgentAccess();
+        }
       }
       break;
     case PreferenceChange::kAgentAutoView:

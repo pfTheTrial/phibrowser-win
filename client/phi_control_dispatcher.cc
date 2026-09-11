@@ -320,7 +320,12 @@ bool PhiControlDispatcher::AuthorizeAgentPeerOnUi(uint64_t connection_id,
   // later connection, or a helper it delegated to, joins the principal the
   // capability names. The id is a secret Phi handed to an admitted process
   // over the pipe, so presenting it is admission in itself.
-  if (!peer.presented_capability.empty()) {
+  const model::PhiSettings& settings = coordinator_->settings();
+  // A capability only ever stands in for the switch it was minted under:
+  // with the switch off it admits nothing (and RevokeAgentAccess has
+  // dropped it anyway), so an agent cut off by the switch cannot walk back
+  // in on the id it was handed.
+  if (!peer.presented_capability.empty() && settings.allow_agent_control) {
     if (FindCapability(peer.presented_capability)) {
       *capability_id = peer.presented_capability;
       RegisterPrincipal(connection_id, peer, *capability_id);
@@ -347,8 +352,11 @@ bool PhiControlDispatcher::AuthorizeAgentPeerOnUi(uint64_t connection_id,
     RegisterPrincipal(connection_id, peer, *capability_id);
     return true;
   };
-  const model::PhiSettings& settings = coordinator_->settings();
-  if (settings.allow_agent_control || settings.test_rig) {
+  // The switch alone decides. The test rig used to admit as well, which
+  // made the switch a no-op on a seeded profile — off must mean off; the
+  // harness seeds allowAgentControl beside testRig (seed-fx-prefs.sh) and
+  // keeps testRig for its own verbs only.
+  if (settings.allow_agent_control) {
     return admit();
   }
   if (agent_control_denied_) {
@@ -1076,6 +1084,16 @@ void PhiControlDispatcher::OnDevToolsSessionClosed(uint64_t connection_id,
   if (msg_hwnd_) {
     ::PostMessageW(msg_hwnd_, WM_PHI_SCOPE_SYNC, 0, 0);
   }
+}
+
+void PhiControlDispatcher::RevokeAgentAccess() {
+  capabilities_.clear();
+  session_capability_id_.clear();
+  LOG(INFO) << "[PhiAgent] agent control off: capabilities revoked";
+  // The connections unwind on their own threads and report themselves
+  // closed (OnConnectionClosed), which drops their principals and re-syncs
+  // the scopes.
+  coordinator_->control_server().SeverAgentConnections();
 }
 
 void PhiControlDispatcher::OnConnectionClosed(uint64_t connection_id) {
