@@ -91,6 +91,10 @@ struct PhiAgentPipView {
   std::string space_id;  // "agentspace-N": what a slot hosts it under.
   std::string caption;   // The agent's current status line (may be empty).
   std::string agent_name;  // "Claude Code", "Codex", … or empty.
+  // The pip's icon: the driving agent's brand mark (phi_agent_icons.h)
+  // when the driver named itself as a known agent, else the robot — the
+  // Mac's pipIcon override, render-time only.
+  std::wstring icon;
   int number = 0;        // The Mac's task ordinal ("R1").
   // What the corner badge shows (the Mac's agentBadge, in precedence):
   // error (failed, or an error the user has not seen yet), completed,

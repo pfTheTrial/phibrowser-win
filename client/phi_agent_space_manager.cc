@@ -13,6 +13,7 @@
 #include "base/time/time.h"
 #include "base/values.h"
 #include "chrome/browser/phinomenon/phi_framework/phi_framework_api.h"
+#include "phibrowser-win/client/phi_agent_icons.h"
 #include "phibrowser-win/client/phi_agent_overlay.h"
 #include "phibrowser-win/client/phi_util.h"
 
@@ -179,7 +180,13 @@ std::vector<PhiAgentPipView> PhiAgentSpaceManager::Pips(int64_t slot) const {
     pip.task_id = task_id;
     pip.space_id = space.space_id;
     pip.caption = space.caption;
-    pip.agent_name = space.agent_name;
+    // The driver as it declared itself on create, resolved to the Mac's
+    // badge: a known brand wears its mark and canonical name, anything
+    // else the robot and whatever name arrived.
+    const PhiAgentDriverBadge badge = PhiAgentDriverBadgeFor(space.agent_name);
+    pip.agent_name = badge.label;
+    pip.icon = badge.icon.empty() ? L"\U0001F916"  // 🤖
+                                  : PhiAgentIconGlyph(badge.icon);
     pip.number = space.number;
     pip.watched = task_id == watched_task_;
     // The Mac's agentBadge precedence.
@@ -377,9 +384,8 @@ void PhiAgentSpaceManager::RefreshOverlay() {
     PhiAgentOverlay::Hide();
     return;
   }
-  const std::wstring label = space->agent_name.empty()
-                                 ? L"Agent"
-                                 : base::UTF8ToWide(space->agent_name);
+  const std::wstring label =
+      base::UTF8ToWide(PhiAgentDriverBadgeFor(space->agent_name).label);
   const bool agent_owns = space->ownership == PhiAgentSpaces::Ownership::kAgent;
   std::wstring caption = base::UTF8ToWide(space->caption);
   if (caption.empty()) {
@@ -562,7 +568,8 @@ std::vector<PhiTranscriptTaskInfo> PhiAgentSpaceManager::TranscriptTasks() {
 std::string PhiAgentSpaceManager::TranscriptAgentName(
     const std::string& task_id) {
   PhiAgentSpaces::Space* space = spaces_.Find(task_id);
-  return space && !space->agent_name.empty() ? space->agent_name : "Agent";
+  return PhiAgentDriverBadgeFor(space ? space->agent_name : std::string())
+      .label;
 }
 
 bool PhiAgentSpaceManager::TranscriptTaskLive(const std::string& task_id,

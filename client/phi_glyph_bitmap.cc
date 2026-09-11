@@ -4,14 +4,9 @@
 
 #include "phibrowser-win/client/phi_glyph_bitmap.h"
 
-#include <wincodec.h>
-#include <wrl/client.h>
-
 #include <algorithm>
-#include <cstdint>
 #include <cstring>
 #include <iterator>
-#include <vector>
 
 #include "base/compiler_specific.h"
 #include "base/memory/raw_ptr_exclusion.h"
@@ -148,64 +143,6 @@ HBITMAP PhiSpaceGlyphBitmap(const std::wstring& glyph, int px, COLORREF ink) {
   }
   Release(&on_black, false);
   Release(&on_white, false);
-  HBITMAP result = out.dib;
-  Release(&out, true);
-  return result;
-}
-
-HBITMAP PhiTemplateImageBitmap(const std::wstring& path, int px,
-                               COLORREF ink) {
-  if (path.empty() || px <= 0) {
-    return nullptr;
-  }
-  using Microsoft::WRL::ComPtr;
-  ComPtr<IWICImagingFactory> factory;
-  ComPtr<IWICBitmapDecoder> decoder;
-  ComPtr<IWICBitmapFrameDecode> frame;
-  ComPtr<IWICBitmapScaler> scaler;
-  ComPtr<IWICFormatConverter> converter;
-  std::vector<uint8_t> bgra(static_cast<size_t>(px) * px * 4);
-  if (FAILED(::CoCreateInstance(CLSID_WICImagingFactory, nullptr,
-                                CLSCTX_INPROC_SERVER,
-                                IID_PPV_ARGS(&factory))) ||
-      FAILED(factory->CreateDecoderFromFilename(
-          path.c_str(), nullptr, GENERIC_READ,
-          WICDecodeMetadataCacheOnDemand, &decoder)) ||
-      FAILED(decoder->GetFrame(0, &frame)) ||
-      FAILED(factory->CreateBitmapScaler(&scaler)) ||
-      FAILED(scaler->Initialize(frame.Get(), static_cast<UINT>(px),
-                                static_cast<UINT>(px),
-                                WICBitmapInterpolationModeFant)) ||
-      FAILED(factory->CreateFormatConverter(&converter)) ||
-      FAILED(converter->Initialize(
-          scaler.Get(), GUID_WICPixelFormat32bppBGRA, WICBitmapDitherTypeNone,
-          nullptr, 0.0, WICBitmapPaletteTypeCustom)) ||
-      FAILED(converter->CopyPixels(nullptr, static_cast<UINT>(px * 4),
-                                   static_cast<UINT>(bgra.size()),
-                                   bgra.data()))) {
-    return nullptr;
-  }
-  Surface out = MakeSurface(px, 0x00);
-  if (!out.bits) {
-    return nullptr;
-  }
-  // Only the alpha plane counts: the shape's coverage, premultiplied into
-  // the ink the way the glyph path above recovers it.
-  const int r = GetRValue(ink);
-  const int g = GetGValue(ink);
-  const int b = GetBValue(ink);
-  const size_t count = static_cast<size_t>(px) * px;
-  for (size_t i = 0; i < count; ++i) {
-    // SAFETY: both buffers are px*px*4 bytes; i < px*px.
-    UNSAFE_BUFFERS({
-      const int alpha = bgra[i * 4 + 3];
-      unsigned char* o = out.bits + i * 4;
-      o[0] = static_cast<unsigned char>(b * alpha / 255);
-      o[1] = static_cast<unsigned char>(g * alpha / 255);
-      o[2] = static_cast<unsigned char>(r * alpha / 255);
-      o[3] = static_cast<unsigned char>(alpha);
-    });
-  }
   HBITMAP result = out.dib;
   Release(&out, true);
   return result;

@@ -30,10 +30,8 @@ namespace phi_client {
 struct PhiSkillTarget {
   const char* id;
   const wchar_t* name;
-  // The brand mark leading the agent's menu row: the stem of a Mac
-  // imageset shipped as resources\agents\<icon>[@2x|@3x].png, a template
-  // image (its alpha is the shape) tinted to the menu's text colour.
-  const wchar_t* icon;
+  // The brand mark leading the agent's menu row (phi_agent_icons.h id).
+  const char* icon;
   const wchar_t* skills_subdir;
   // Pi alone exposes a supported in-process message API; its companion
   // extension (bundled at extensions\pi) wakes idle sessions from Agent
@@ -47,10 +45,6 @@ const std::vector<PhiSkillTarget>& PhiSkillTargets();
 // its name in the menu ("~\.claude\skills").
 std::wstring PhiSkillLinkPath(const PhiSkillTarget& target);
 std::wstring PhiSkillDisplayPath(const PhiSkillTarget& target);
-
-// The file of `target`'s icon whose scale best covers a `px`-square
-// picture (the 1x, 2x or 3x rendition), whether or not it exists.
-std::wstring PhiSkillTargetIconPath(const PhiSkillTarget& target, int px);
 
 // <exe dir>\resources\phi-browser-skill, whether or not it exists.
 std::wstring PhiBundledSkillDir();

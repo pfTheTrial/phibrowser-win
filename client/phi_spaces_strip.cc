@@ -188,8 +188,9 @@ void PhiSpacesStrip::Rebuild() {
   }
   const std::string& active = shell_->SpacesActiveSpace();
   // The full pip row in strip order (the Mac's stripOrderedSpaces): the
-  // user Spaces, then the live agent Spaces as robot pips — in an agent
-  // window too, where the watched one wears the selection pill exactly as
+  // user Spaces, then the live agent Spaces as pips wearing their driver's
+  // brand mark (the robot for an unnamed driver) — in an agent window too,
+  // where the watched one wears the selection pill exactly as
   // the Mac's agent Space does in its own window's strip. Clicking one
   // surfaces its window so the user can watch the agent work live.
   std::vector<PhiSpaceChip> row;
@@ -224,7 +225,7 @@ void PhiSpacesStrip::Rebuild() {
       chip.label = L"R" + std::to_wstring(pip.number) + L" · " +
                    (pip.agent_name.empty() ? L"Agent"
                                            : base::UTF8ToWide(pip.agent_name));
-      chip.icon = L"\U0001F916";  // 🤖
+      chip.icon = pip.icon;  // The driver's brand mark, or the robot.
       row.push_back(std::move(chip));
     }
   }

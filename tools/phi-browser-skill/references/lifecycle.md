@@ -67,6 +67,22 @@ session, so a later round (a new `node` process) still owns the tasks the
 last one created — but so does any other local agent connected to the same
 Phi; Windows cannot tell them apart.
 
+## Who is driving
+
+`enterContext({kind:'agent', name, agent})` names the product running the
+skill — `'Claude Code'`, `'Codex'`, `'Cursor'`, `'Hermes'`, `'OpenClaw'`,
+`'Pi'`, `'Grok Build'`, `'Grok Bot'`, `'Antigravity'`, `'GitHub Copilot'`,
+`'OpenCode'`, `'Qwen Code'`, `'CodeBuddy'`. The app resolves it the way the
+Mac resolves a driver's code signature: a known agent's Space pip wears that
+agent's brand mark in the switcher and its watch pill and transcript carry
+the product name; an unknown name keeps the robot pip and shows the name as
+given. Windows has no peer identity of its own, so this is the only way the
+user learns WHO holds a Space — always pass it. Omitted, the skill falls back
+to the host its session mirror can prove (a Claude Code / Codex / Cursor /
+Hermes / OpenClaw / Pi session transcript) and otherwise sends nothing. Read
+on the create call only; a re-bind keeps the driver the Space was created
+with.
+
 ## Persistent Spaces
 
 Default agent Spaces are ephemeral: they auto-close on silence and are

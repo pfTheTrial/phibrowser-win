@@ -33,30 +33,25 @@ constexpr wchar_t kLinkName[] = L"phi-browser";
 // convention (Deep Code, Kimi Code, Cline, DeepSeek Harness, …).
 const std::vector<PhiSkillTarget>& Targets() {
   static const base::NoDestructor<std::vector<PhiSkillTarget>> targets({
-      {"claude", L"Claude Code", L"agent-claude", L".claude\\skills",
-       nullptr},
-      {"codex", L"Codex", L"agent-openai", L".codex\\skills", nullptr},
-      {"cursor", L"Cursor", L"agent-cursor", L".cursor\\skills", nullptr},
-      {"hermes", L"Hermes", L"agent-hermes", L".hermes\\skills", nullptr},
-      {"openclaw", L"OpenClaw", L"agent-openclaw", L".openclaw\\skills",
-       nullptr},
-      {"pi", L"Pi", L"agent-pi", L".pi\\agent\\skills",
-       L".pi\\agent\\extensions"},
-      {"grok", L"Grok Build", L"agent-grok", L".grok\\skills", nullptr},
-      {"grokbot", L"Grok Bot", L"agent-grokbot", L".grok\\skills", nullptr},
+      {"claude", L"Claude Code", "claude", L".claude\\skills", nullptr},
+      {"codex", L"Codex", "openai", L".codex\\skills", nullptr},
+      {"cursor", L"Cursor", "cursor", L".cursor\\skills", nullptr},
+      {"hermes", L"Hermes", "hermes", L".hermes\\skills", nullptr},
+      {"openclaw", L"OpenClaw", "openclaw", L".openclaw\\skills", nullptr},
+      {"pi", L"Pi", "pi", L".pi\\agent\\skills", L".pi\\agent\\extensions"},
+      {"grok", L"Grok Build", "grok", L".grok\\skills", nullptr},
+      {"grokbot", L"Grok Bot", "grokbot", L".grok\\skills", nullptr},
       // Antigravity's "shared" folder, which Gemini CLI reads too.
-      {"antigravity", L"Antigravity", L"agent-antigravity",
-       L".gemini\\skills", nullptr},
-      {"copilot", L"GitHub Copilot", L"agent-copilot", L".copilot\\skills",
+      {"antigravity", L"Antigravity", "antigravity", L".gemini\\skills",
        nullptr},
-      {"opencode", L"OpenCode", L"agent-opencode",
-       L".config\\opencode\\skills", nullptr},
-      {"qwen", L"Qwen Code", L"agent-qwen", L".qwen\\skills", nullptr},
-      {"codebuddy", L"CodeBuddy", L"agent-codebuddy", L".codebuddy\\skills",
+      {"copilot", L"GitHub Copilot", "copilot", L".copilot\\skills", nullptr},
+      {"opencode", L"OpenCode", "opencode", L".config\\opencode\\skills",
+       nullptr},
+      {"qwen", L"Qwen Code", "qwen", L".qwen\\skills", nullptr},
+      {"codebuddy", L"CodeBuddy", "codebuddy", L".codebuddy\\skills",
        nullptr},
       // No single brand owns the cross-agent folder: the generic terminal.
-      {"agents", L"Common agents", L"agent-generic", L".agents\\skills",
-       nullptr},
+      {"agents", L"Common agents", "generic", L".agents\\skills", nullptr},
   });
   return *targets;
 }
@@ -94,17 +89,6 @@ std::wstring Join(const std::wstring& dir, const wchar_t* leaf) {
 std::wstring Parent(const std::wstring& path) {
   const size_t slash = path.find_last_of(L'\\');
   return slash == std::wstring::npos ? std::wstring() : path.substr(0, slash);
-}
-
-// <exe dir>\resources, whether or not it exists; empty without an exe path.
-std::wstring ResourcesDir() {
-  wchar_t exe[MAX_PATH] = {};
-  const DWORD length = ::GetModuleFileNameW(nullptr, exe, MAX_PATH);
-  if (length == 0 || length >= MAX_PATH) {
-    return std::wstring();
-  }
-  const std::wstring dir = Parent(std::wstring(exe, length));
-  return dir.empty() ? dir : dir + L"\\resources";
 }
 
 std::wstring CompanionLinkPath(const PhiSkillTarget& target) {
@@ -300,20 +284,14 @@ std::wstring PhiSkillDisplayPath(const PhiSkillTarget& target) {
   return Join(L"~", target.skills_subdir);
 }
 
-std::wstring PhiSkillTargetIconPath(const PhiSkillTarget& target, int px) {
-  const std::wstring resources = ResourcesDir();
-  if (resources.empty()) {
-    return resources;
-  }
-  // The Mac's renditions are 18, 36 and 54 px: the smallest that still
-  // covers `px`, so the menu downsamples rather than upsamples.
-  const wchar_t* scale = px <= 18 ? L"" : px <= 36 ? L"@2x" : L"@3x";
-  return resources + L"\\agents\\" + target.icon + scale + L".png";
-}
-
 std::wstring PhiBundledSkillDir() {
-  const std::wstring resources = ResourcesDir();
-  return resources.empty() ? resources : resources + L"\\phi-browser-skill";
+  wchar_t exe[MAX_PATH] = {};
+  const DWORD length = ::GetModuleFileNameW(nullptr, exe, MAX_PATH);
+  if (length == 0 || length >= MAX_PATH) {
+    return std::wstring();
+  }
+  const std::wstring dir = Parent(std::wstring(exe, length));
+  return dir.empty() ? dir : dir + L"\\resources\\phi-browser-skill";
 }
 
 std::set<std::string> PhiInstalledSkillTargetIds() {

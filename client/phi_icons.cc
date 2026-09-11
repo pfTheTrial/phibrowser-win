@@ -10,6 +10,7 @@
 
 #include "base/compiler_specific.h"
 #include "base/no_destructor.h"
+#include "phibrowser-win/client/phi_agent_icons.h"
 #include "phibrowser-win/client/phi_dwrite.h"
 #include "base/strings/utf_string_conversions.h"
 
@@ -155,12 +156,25 @@ bool PhiIsPrivateGlyph(const std::wstring& text) {
   return !text.empty() && text.front() >= 0xE000 && text.front() <= 0xF8FF;
 }
 
+namespace {
+
+// The artwork a stand-in glyph names: the Phi catalog's, or an agent
+// brand mark's (phi_agent_icons.h) — the same draw sites serve both.
+const PhiMacIcon* MaskForGlyph(const std::wstring& text) {
+  if (const PhiMacIcon* mask = PhiCatalogMaskForGlyph(text)) {
+    return mask;
+  }
+  return PhiAgentIconMaskForGlyph(text);
+}
+
+}  // namespace
+
 bool PhiDrawCatalogArtwork(HDC dc,
                            const RECT& rc,
                            const std::wstring& text,
                            int px,
                            COLORREF ink) {
-  const PhiMacIcon* mask = PhiCatalogMaskForGlyph(text);
+  const PhiMacIcon* mask = MaskForGlyph(text);
   if (!mask || px <= 0) {
     return false;
   }
@@ -176,7 +190,7 @@ bool PhiDrawCatalogIcon(HDC dc,
                         const std::wstring& text,
                         int ink_size,
                         COLORREF ink) {
-  const PhiMacIcon* mask = PhiCatalogMaskForGlyph(text);
+  const PhiMacIcon* mask = MaskForGlyph(text);
   if (!mask || ink_size <= 0 || text.empty()) {
     return false;
   }

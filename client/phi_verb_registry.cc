@@ -522,7 +522,9 @@ constexpr PhiParamField kAgentCreate[] = {
     {"persistent", kParamBool, kOptional, "",
      "Keep the window when the task completes."},
     {"agentName", kParamString, kOptional, "",
-     "Shown on the watch-mode pill so the user sees who holds the Space."},
+     "The driving agent's product name (\"Claude Code\", \"Codex\", "
+     "\"Pi\", …): the Space's pip wears that agent's mark and the watch "
+     "pill names it."},
 };
 constexpr PhiParamField kAgentComplete[] = {
     {"taskId", kParamString, kRequired, "", "The task to complete."},

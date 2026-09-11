@@ -441,7 +441,8 @@ export async function enterContext(spec = {}) {
   }
   if (spec.kind === 'agent') {
     return enterAgentContext(spec.name,
-      { profile: spec.profile ?? '', persistent: spec.persistent ?? false })
+      { profile: spec.profile ?? '', persistent: spec.persistent ?? false,
+        agent: spec.agent ?? '' })
   }
   if (spec.kind === 'shadow') {
     return enterShadowContext(spec.name,
@@ -480,9 +481,15 @@ export function ensureUserSpace(space, opts = {}) {
  * call with the same name (see references/lifecycle.md "Persistent
  * Spaces"). Persistence
  * is decided when the Space is first created; on a re-bind both options are
- * ignored (the Space keeps its own profile).
+ * ignored (the Space keeps its own profile). {agent} — WHO is driving: the
+ * product name of the agent running this skill ('Claude Code', 'Codex',
+ * 'Cursor', 'Pi', …); the Space's pip wears that agent's mark and the watch
+ * pill names it. Omitted, the host the session mirror can prove stands in;
+ * an unknown driver keeps the robot pip.
  */
-async function enterAgentContext(name, { profile = '', persistent = false } = {}) {
+async function enterAgentContext(name,
+                                 { profile = '', persistent = false,
+                                   agent = '' } = {}) {
   if (!name || typeof name !== 'string') {
     throw new Error("enterContext({kind:'agent', name}): name is required")
   }
@@ -497,10 +504,12 @@ async function enterAgentContext(name, { profile = '', persistent = false } = {}
   let task = tasks.find((t) => t.taskId === name)
   const rebound = !!task
   if (!task) {
+    const agentName = String(agent || '').trim() || detectedAgentName(name)
     const created = await phiSend('agentSpace.create', {
       taskId: name,
       profileId: profile,
       ...(persistent ? { persistent: true } : {}),
+      ...(agentName ? { agentName } : {}),
     })
     task = {
       taskId: name,
@@ -1164,6 +1173,23 @@ let heredocSource = ''
 export function __setHeredocSource(text) { heredocSource = String(text || '') }
 
 // Exact env-exported session ids first, evidence heuristics after.
+// The driving agent's product name when the agent did not say — the same
+// positive evidence the session mirror is gated on (a known host's own
+// transcript), so it never guesses. Empty for an unknown host.
+function detectedAgentName(taskId) {
+  const names = {
+    claude: 'Claude Code', codex: 'Codex', cursor: 'Cursor',
+    hermes: 'Hermes', openclaw: 'OpenClaw', pi: 'Pi',
+  }
+  try {
+    const agentPid = agentRootPid() ?? appProvidedAgentPid()
+    const transcript = discoverSessionTranscript(taskId, agentPid)
+    return (transcript && names[transcript.format]) || ''
+  } catch {
+    return ''
+  }
+}
+
 function discoverSessionTranscript(taskId, agentPid) {
   return discoverClaudeTranscript()
     || discoverHermesTranscript()

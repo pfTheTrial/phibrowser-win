@@ -149,7 +149,7 @@ Binds a task to an agent Space, creating its hidden window when there is none (o
 | `taskId` | string | yes | — | The task to bind or create. |
 | `profileId` | string | no | `profileName` | The profile the Space runs in. |
 | `persistent` | boolean | no | — | Keep the window when the task completes. |
-| `agentName` | string | no | — | Shown on the watch-mode pill so the user sees who holds the Space. |
+| `agentName` | string | no | — | The driving agent's product name ("Claude Code", "Codex", "Pi", …): the Space's pip wears that agent's mark and the watch pill names it. |
 
 #### `agentSpace.complete`
 

@@ -47,7 +47,8 @@ folder, never another agent's:
 
 ```bash
 node <skill-dir>/scripts/runner.mjs <<'EOF'
-const ctx = await enterContext({ kind: 'agent', name: 'inspect example page' })
+const ctx = await enterContext({ kind: 'agent', name: 'inspect example page',
+                                 agent: 'Claude Code' })  // your product name
 await openTab('https://example.com')
 cliLog(await snapshotText())
 EOF
@@ -66,6 +67,13 @@ app-level surface that needs no binding:
   (ownership/handoff, keep-alive, `complete()`). `{ persistent: true }` makes
   it a lasting workspace instead of the ephemeral default — persistent is a
   *property of an agent Space*, not a separate kind. See "Task lifecycle".
+  Say who you are: `{ agent: 'Claude Code' }` (or `'Codex'`, `'Cursor'`,
+  `'Hermes'`, `'OpenClaw'`, `'Pi'`, `'Grok Build'`, `'Grok Bot'`,
+  `'Antigravity'`, `'GitHub Copilot'`, `'OpenCode'`, `'Qwen Code'`,
+  `'CodeBuddy'`) — the Space's pip in the user's switcher then wears your
+  product's mark instead of the generic robot, and the watch pill names
+  you. Pass it on every `enterContext` of kind `agent`; it is read when the
+  Space is first created.
 - **Shadow window** — `enterContext({ kind: 'shadow', name })`: a real
   browser window on a real profile that the user CANNOT SEE — off-screen at
   alpha 0, no pip, no transcript, no handoff, nobody watching. Page
@@ -98,7 +106,7 @@ human step turns up mid-run, stop, close the window, and say what's needed.
 
 Core surface — full semantics in this file:
 
-- Context: `enterContext({kind, name?/space?, profile?, persistent?,
+- Context: `enterContext({kind, name?/space?, profile?, persistent?, agent?,
   incognito?, create?, activate?, window?})` (the one entry — agent returns
   the Space's `tabs` and `pendingUserMessages`, shadow returns `tabs`, user
   returns `tabs`/`created`; `incognito` is shadow-only; `window` is

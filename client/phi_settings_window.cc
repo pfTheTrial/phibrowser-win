@@ -32,6 +32,7 @@
 #include "base/strings/utf_string_conversions.h"
 #include "phibrowser-win/client/phi_account_feedback.h"
 #include "phibrowser-win/client/phi_account_profile.h"
+#include "phibrowser-win/client/phi_agent_icons.h"
 #include "phibrowser-win/client/phi_emoji.h"
 #include "phibrowser-win/client/phi_features.h"
 #include "phibrowser-win/client/phi_dwrite.h"
@@ -3685,8 +3686,8 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
       const UINT id = static_cast<UINT>(i) + 2;
       ::AppendMenuW(menu, MF_STRING | (ticked ? MF_CHECKED : 0), id,
                     label.c_str());
-      if (HBITMAP bitmap = PhiTemplateImageBitmap(
-              PhiSkillTargetIconPath(targets[i], icon_px), icon_px,
+      if (HBITMAP bitmap = PhiSpaceGlyphBitmap(
+              PhiAgentIconGlyph(targets[i].icon), icon_px,
               ::GetSysColor(COLOR_MENUTEXT))) {
         bitmaps.push_back(bitmap);
         PhiSetMenuItemBitmap(menu, id, bitmap);

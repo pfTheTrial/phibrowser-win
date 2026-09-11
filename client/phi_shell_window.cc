@@ -4436,7 +4436,7 @@ void PhiShellWindow::ShowSpaceSwitcherMenu(POINT pt, bool overflow) {
                      (pip.agent_name.empty()
                           ? L"Agent"
                           : base::UTF8ToWide(pip.agent_name));
-      choice.glyph = L"\U0001F916";
+      choice.glyph = pip.icon;
       if (pip.watched) {
         watched_agent = pip.task_id;
       }
