@@ -2370,7 +2370,15 @@ void PhiSettingsWindow::Rebuild() {
   // narrow together so the row never runs past the window's edges.
   const int item_width =
       std::min(kToolbarItemWidth, (kWidth - 2 * kMargin) / std::max(1, shown));
-  int x = Scaled((kWidth - shown * item_width) / 2);
+  // Centre the PIXEL row against the real client width, not by scaling a
+  // DIP-space margin: `Scaled(item_width) * shown` and `Scaled((kWidth -
+  // shown*item_width)/2)` round independently, so the second is not half
+  // the slack the first leaves — the row drifted a few pixels off centre.
+  const int item_px = Scaled(item_width);
+  RECT client = {};
+  ::GetClientRect(hwnd(), &client);
+  const int row_width = client.right > 0 ? client.right : Scaled(kWidth);
+  int x = (row_width - shown * item_px) / 2;
   for (const SectionDef& section : kSections) {
     if (unmounted(section.id)) {
       continue;
@@ -2381,10 +2389,10 @@ void PhiSettingsWindow::Rebuild() {
     entry.payload = section.id;
     entry.selected = section_ == section.id;
     entry.action = "section";
-    entry.bounds = {x, Scaled(kCaptionHeight + 8), x + Scaled(item_width),
+    entry.bounds = {x, Scaled(kCaptionHeight + 8), x + item_px,
                     Scaled(kChromeTop - 8)};
     items_.push_back(std::move(entry));
-    x += Scaled(item_width);
+    x += item_px;
   }
   if (unmounted(section_.c_str())) {
     section_ = "general";  // The pane vanished under us, as on Mac.
