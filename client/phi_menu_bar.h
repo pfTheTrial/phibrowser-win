@@ -22,6 +22,7 @@ class PhiFramework;
 namespace phi_client {
 
 class ChromePrefsHost;
+struct PhiAgentPipView;
 class PhiWindowModel;
 class SidebarHost;
 class SpacesHost;
@@ -221,8 +222,13 @@ class PhiMenuBarShell {
   // True while an agent holds this (agent) window: the tab, navigation
   // and bookmark commands are refused (see PhiShellWindow::AgentHoldsInput).
   virtual bool MenuAgentHoldsInput() const = 0;
-  virtual bool MenuHasSpace(const std::string& space_id) const = 0;
-  virtual bool MenuShowSpace(const std::string& space_id) = 0;
+  // The agent Spaces this window's switchers offer, after the user Spaces
+  // — the Mac's slot.presentedSpaces, which the Spaces menu rows, Ctrl+N
+  // and Next/Previous Space index into (empty in agent and incognito
+  // windows). See PhiAgentPipView (phi_shell_window.h).
+  virtual std::vector<PhiAgentPipView> MenuAgentSpaces() const = 0;
+  // A Spaces menu row / Ctrl+N pick: PhiShellWindow::SwitchToSpace.
+  virtual void MenuSwitchSpace(const std::string& space_id) = 0;
   virtual void MenuNewTab() = 0;
   virtual void MenuToggleSidebar() = 0;
   virtual void MenuToggleReader() = 0;

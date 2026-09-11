@@ -197,7 +197,11 @@ class PhiBrowserHostShell {
 
   // --- The Space swap the shell animates -----------------------------------
   // Arms the band slide and the palette ramp for the Space being entered.
-  virtual void BrowserHostBeginSpaceSwap(const std::string& space_id) = 0;
+  // `entering` is its browser — the one being attached, not yet in the
+  // Space table when the swap starts (the comfortable slide fetches the
+  // entering page from it).
+  virtual void BrowserHostBeginSpaceSwap(const std::string& space_id,
+                                         BrowserId entering) = 0;
   // A slide is running, so the incoming child is parked until it lands.
   virtual bool BrowserHostSwapRunning() const = 0;
   // The children the running slide reveals and conceals.

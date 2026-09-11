@@ -245,6 +245,10 @@ class PhiSpacesStrip {
   // rule BeginSwap's band slide uses; the comfortable layout's content
   // slide reads it from here since it runs no band slide.
   bool SlideForward(const std::string& entering_space_id) const;
+  // A Space's place in strip order — the user Spaces, then this slot's
+  // agent Spaces (the Mac's presentedSpaces) — whatever the layout shows;
+  // one past the end for a Space the strip does not list.
+  int StripPosition(const std::string& space_id) const;
   // The slide's eased position, 1.0 when idle.
   double SwapProgress() const;
   // The palette the leaving Space's retained rows are painted at — frozen

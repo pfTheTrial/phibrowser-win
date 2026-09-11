@@ -885,8 +885,14 @@ PhiShellWindow::~PhiShellWindow() {
   // that must do nothing but die.
   destroying_ = true;
   // A hosted agent Space goes back to its own shell first, whole: the
-  // browser is the agent's, and it must not die with this window.
+  // browser is the agent's, and it must not die with this window — the
+  // one sliding home, then the one on screen.
+  FinishUnhost();
   if (HostsAgentSpace()) {
+    leaving_agent_task_ = hosted_agent_task_;
+    leaving_agent_space_ = hosted_agent_space_;
+    hosted_agent_task_.clear();
+    hosted_agent_space_.clear();
     FinishUnhost();
   }
   // A drag image that is sliding home has OUTLIVED its session (the slide
@@ -1237,12 +1243,17 @@ bool PhiShellWindow::MenuLeaveReaderForNavigation() {
   return LeaveReaderViewForNavigation();
 }
 
-bool PhiShellWindow::MenuHasSpace(const std::string& space_id) const {
-  return HasSpace(space_id);
+std::vector<PhiAgentPipView> PhiShellWindow::MenuAgentSpaces() const {
+  // This window's own list (PhiAgentSpaceManager::Presents); an agent
+  // window's menus never switch agent Spaces — its strip does.
+  if (!services_.agent || agent_ || incognito_) {
+    return {};
+  }
+  return services_.agent->AgentSpaces(slot_.value);
 }
 
-bool PhiShellWindow::MenuShowSpace(const std::string& space_id) {
-  return ShowSpace(space_id);
+void PhiShellWindow::MenuSwitchSpace(const std::string& space_id) {
+  SwitchToSpace(space_id);
 }
 
 void PhiShellWindow::MenuNewTab() {
@@ -1357,13 +1368,13 @@ void PhiShellWindow::BrowserHostScheduleRefresh() {
 }
 
 void PhiShellWindow::BrowserHostBeginSpaceSwap(
-    const std::string& space_id) {
+    const std::string& space_id, BrowserId entering) {
   if (layout_mode_ == PhiLayoutMode::kComfortable) {
     // No band to push in: the whole client area slides (phi_content_slide.h).
     // The content host defers the page exactly as for the band slide
     // (BrowserHostSwapRunning): the entering child parks until the slide
     // lands, the leaving one stays up until the slide starts.
-    BeginContentSlide(space_id);
+    BeginContentSlide(space_id, entering);
     return;
   }
   spaces_->BeginSwap(space_id);
@@ -1454,6 +1465,46 @@ bool PhiShellWindow::ShowSpace(const std::string& space_id) {
 
 bool PhiShellWindow::HasSpace(const std::string& space_id) const {
   return browsers_->spaces().Has(space_id);
+}
+
+void PhiShellWindow::SwitchToSpace(const std::string& space_id) {
+  if (space_id.empty() || space_id == active_space()) {
+    return;
+  }
+  if (PhiIsAgentSpaceId(space_id)) {
+    // An agent pip's click: the watch starts (or, hosted here already,
+    // the hosted one hands over to it — one swap). The pip carries the
+    // task the manager keys on.
+    if (!services_.agent) {
+      return;
+    }
+    for (const PhiAgentPipView& pip :
+         services_.agent->AgentSpaces(agent_ ? 0 : slot_.value)) {
+      if (pip.space_id == space_id) {
+        services_.agent->RequestWatchAgentSpace(pip.task_id, slot_.value);
+        ScheduleRefresh();  // The pip's watched state is the owner's.
+        return;
+      }
+    }
+    return;
+  }
+  if (agent_ || HostsAgentSpace()) {
+    // A user Space picked while the agent Space is up: the Mac's
+    // slot.activate — leave the agent Space and show that Space in the
+    // window that was watching. The agent's hidden browser never switches
+    // Space itself.
+    if (services_.agent) {
+      services_.agent->RequestLeaveWatchedAgentSpace(space_id);
+    }
+    return;
+  }
+  if (HasSpace(space_id)) {
+    ShowSpace(space_id);
+  } else if (services_.spaces) {
+    // Not yet in this slot: the owner creates its browser in the Space's
+    // profile and attaches it here.
+    services_.spaces->RequestSwitchSpace(slot_.value, space_id);
+  }
 }
 
 void PhiShellWindow::CloseSpaceBrowser(const std::string& space_id) {
@@ -2128,7 +2179,8 @@ void PhiShellWindow::PlaceContentChildren(const Layout& layout) {
 
 // --- The comfortable layout's Space switch (phi_content_slide.h) ------------
 
-void PhiShellWindow::BeginContentSlide(const std::string& space_id) {
+void PhiShellWindow::BeginContentSlide(const std::string& space_id,
+                                       BrowserId entering) {
   if (!shell_hwnd_ || destroying_ || incognito_ || agent_ || shell_hidden_ ||
       space_id == active_space()) {
     return;
@@ -2149,16 +2201,19 @@ void PhiShellWindow::BeginContentSlide(const std::string& space_id) {
     return;  // Nothing to slide out: the switch shows at once.
   }
   // The entering page comes from the framework once the switch under this
-  // has run (StartSlideCapture, on the posted turn): the Space's browser,
-  // when it already has one, and that browser's active tab.
-  slide_entering_browser_ = BrowserId();
+  // has run (StartSlideCapture, on the posted turn): the Space's browser
+  // — the one being attached, or the one the table holds — and that
+  // browser's active tab.
+  slide_entering_browser_ = entering;
   slide_entering_tab_ = TabId();
-  if (browsers_->spaces().Has(space_id)) {
+  if (!slide_entering_browser_.valid() && browsers_->spaces().Has(space_id)) {
     slide_entering_browser_ = browsers_->spaces().ForSpace(space_id);
-    if (const phi_framework::TabSnapshot* tab =
-            model_ ? model_->ActiveTab(slide_entering_browser_) : nullptr) {
-      slide_entering_tab_ = tab->id;
-    }
+  }
+  if (const phi_framework::TabSnapshot* tab =
+          model_ && slide_entering_browser_.valid()
+              ? model_->ActiveTab(slide_entering_browser_)
+              : nullptr) {
+    slide_entering_tab_ = tab->id;
   }
   // A fresh id per switch: a capture from a switch already landed or cut
   // short must not fill in this one's page.
@@ -2960,20 +3015,39 @@ void PhiShellWindow::HostAgentSpace(const std::string& space_id,
                                     BrowserId browser,
                                     HWND browser_hwnd,
                                     const std::string& task_id) {
+  // A browser still sliding home goes now: the swap below cuts that slide
+  // short anyway, and no two agent browsers wait in this frame.
+  FinishUnhost();
+  const bool hand_over = HostsAgentSpace();
+  const std::string previous_task = hosted_agent_task_;
+  const std::string previous_space = hosted_agent_space_;
+  if (!hand_over) {
+    hosted_return_space_ = active_space();
+  }
   hosted_agent_task_ = task_id;
   hosted_agent_space_ = space_id;
-  hosted_return_space_ = active_space();
-  unhost_at_landing_ = false;
   // The slot's own Space swap: band slide, pill slide, the page revealed
   // when the slide lands — the agent Space is a Space of this slot now.
   browsers_->AttachSpaceBrowser(space_id, browser, browser_hwnd,
                                 /*agent=*/true);
+  if (hand_over) {
+    // Agent to agent: the one that was on screen is the swap's leaving
+    // page. Noted only now — the swap's start settles any earlier one
+    // (RevealSwappedContent), which must not send THIS browser home before
+    // its page has slid out.
+    leaving_agent_task_ = previous_task;
+    leaving_agent_space_ = previous_space;
+    if (!BrowserHostSwapRunning()) {
+      FinishUnhost();
+    }
+  }
 }
 
 void PhiShellWindow::LeaveHostedAgentSpace(const std::string& space_id) {
   if (!HostsAgentSpace()) {
     return;
   }
+  FinishUnhost();  // A hand-over still in flight: that browser goes first.
   std::string target = space_id;
   if (target.empty() || !HasSpace(target) || PhiIsAgentSpaceId(target)) {
     target = hosted_return_space_;
@@ -2989,20 +3063,9 @@ void PhiShellWindow::LeaveHostedAgentSpace(const std::string& space_id) {
   if (!target.empty() && active_space() != target) {
     browsers_->ShowSpace(target);  // The normal swap back (or instant).
   }
-  if (BrowserHostSwapRunning()) {
-    unhost_at_landing_ = true;  // The leaving page paints until it lands.
-  } else {
-    FinishUnhost();
-  }
-}
-
-void PhiShellWindow::FinishUnhost() {
-  unhost_at_landing_ = false;
-  if (!HostsAgentSpace()) {
-    return;
-  }
-  const std::string task_id = hosted_agent_task_;
-  HWND child = browsers_->DetachSpaceBrowser(hosted_agent_space_);
+  // The hosted page is the leaving one: it paints until the slide lands.
+  leaving_agent_task_ = hosted_agent_task_;
+  leaving_agent_space_ = hosted_agent_space_;
   hosted_agent_task_.clear();
   hosted_agent_space_.clear();
   hosted_return_space_.clear();
@@ -3010,10 +3073,23 @@ void PhiShellWindow::FinishUnhost() {
   if (sidebar_) {
     sidebar_->set_agent_holds_input(false);
   }
+  if (!BrowserHostSwapRunning()) {
+    FinishUnhost();
+  }
+}
+
+void PhiShellWindow::FinishUnhost() {
+  if (leaving_agent_task_.empty()) {
+    return;
+  }
+  const std::string task_id = leaving_agent_task_;
+  HWND child = browsers_->DetachSpaceBrowser(leaving_agent_space_);
+  leaving_agent_task_.clear();
+  leaving_agent_space_.clear();
   if (services_.agent) {
     services_.agent->OnAgentBrowserReturned(task_id, child);
   }
-  ScheduleRefresh();  // The strip's pill is the user Space's again.
+  ScheduleRefresh();  // The strip's pill is the entering Space's alone.
 }
 
 HWND PhiShellWindow::ReleaseAgentBrowserForHosting() {
@@ -3320,9 +3396,7 @@ void PhiShellWindow::RevealSwappedContent() {
     native_pages_->SyncNtp();
     FocusActiveBrowser();
   }
-  if (unhost_at_landing_) {
-    FinishUnhost();  // The agent's page was the leaving one: hand it back.
-  }
+  FinishUnhost();  // An agent's page was the leaving one: hand it back.
 }
 
 void PhiShellWindow::RequestClose() {
@@ -3700,8 +3774,13 @@ void PhiShellWindow::OnChromeClick(int x, int y) {
   // showed under the pointer (docs/architecture-review.md §3.1 principle 7).
   if (const int hit = spaces_->ChipAt(pt); hit >= 0) {
     const PhiSpaceChip chip = spaces_->chips()[static_cast<size_t>(hit)];
-    // An agent pip toggles watching that agent Space (surface / park its
-    // hidden window). It never reorders and has no Space card.
+    // A click means "switch", not "hover": drop the pip's card and keep it
+    // down until the pointer leaves this pip — without this the switched-to
+    // strip's fresh hover re-presents it right after the swap (the Mac's
+    // suppressHoverCard). The modal popup below would freeze it, too.
+    spaces_->DismissHoverCard(chip.id);
+    // An agent pip starts watching that agent Space — or, from another
+    // agent Space, swaps to it. It never reorders.
     if (chip.is_agent) {
       // The agent Space on screen (hosted in this slot, or this IS its
       // window) is the active Space: a click on its pip does nothing, as
@@ -3709,27 +3788,14 @@ void PhiShellWindow::OnChromeClick(int x, int y) {
       if (chip.id == active_space() || (agent_ && chip.open)) {
         return;
       }
-      if (services_.agent) {
-        services_.agent->RequestWatchAgentSpace(chip.task_id, slot_.value);
-      }
-      ScheduleRefresh();  // The pip's watched state is the owner's.
+      SwitchToSpace(chip.id);
       return;
     }
     if (agent_ || HostsAgentSpace()) {
-      // A user pip inside the watched agent window: the Mac's
-      // slot.activate — leave the agent Space and show that Space in the
-      // window that was watching. The agent's hidden browser never
-      // switches Space itself.
-      if (services_.agent) {
-        services_.agent->RequestLeaveWatchedAgentSpace(chip.id);
-      }
+      // A user pip inside the watched agent window: the end of the watch.
+      SwitchToSpace(chip.id);
       return;
     }
-    // A click means "switch", not "hover": drop the pip's card and keep it
-    // down until the pointer leaves this pip — without this the switched-to
-    // strip's fresh hover re-presents it right after the swap (the Mac's
-    // suppressHoverCard). The modal popup below would freeze it, too.
-    spaces_->DismissHoverCard(chip.id);
     if (!layout.horizontal_tabs) {
       // Vertical strips show every pip: reorderable by drag.
       sidebar_->ArmDrag(SidebarKey::Space(chip.id), pt);
@@ -3744,13 +3810,7 @@ void PhiShellWindow::OnChromeClick(int x, int y) {
     if (spaces_->creating()) {
       return;  // Read-only while the form is up (the Mac's isCreatingSpace).
     }
-    if (chip.open) {
-      ShowSpace(chip.id);
-    } else if (services_.spaces) {
-      // Not yet in this slot: the owner creates its browser in the Space's
-      // profile and attaches it here.
-      services_.spaces->RequestSwitchSpace(slot_.value, chip.id);
-    }
+    SwitchToSpace(chip.id);
     return;
   }
   if (services_.spaces && ::PtInRect(&layout.add_space, pt)) {
@@ -4432,10 +4492,7 @@ void PhiShellWindow::ShowSpaceSwitcherMenu(POINT pt, bool overflow) {
          services_.agent->AgentSpaces(slot_.value)) {
       PhiMenuChoice choice;
       choice.id = pip.task_id;
-      choice.label = L"R" + std::to_wstring(pip.number) + L" · " +
-                     (pip.agent_name.empty()
-                          ? L"Agent"
-                          : base::UTF8ToWide(pip.agent_name));
+      choice.label = PhiAgentPipLabel(pip);
       choice.glyph = pip.icon;
       if (pip.watched) {
         watched_agent = pip.task_id;
@@ -4457,16 +4514,7 @@ void PhiShellWindow::ShowSpaceSwitcherMenu(POINT pt, bool overflow) {
   } else if (action.is("space.newWithProfile")) {
     services_.spaces->RequestCreateSpace(slot_.value, /*new_profile=*/true);
   } else if (action.is("space.switch")) {
-    if (agent_ || HostsAgentSpace()) {
-      // The agent Space is up: leave it for that Space (see the pip click).
-      if (services_.agent) {
-        services_.agent->RequestLeaveWatchedAgentSpace(action.target.id);
-      }
-    } else if (HasSpace(action.target.id)) {
-      ShowSpace(action.target.id);
-    } else {
-      services_.spaces->RequestSwitchSpace(slot_.value, action.target.id);
-    }
+    SwitchToSpace(action.target.id);
   }
 }
 

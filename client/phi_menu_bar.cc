@@ -543,6 +543,12 @@ std::vector<PhiMenuBar::SpaceEntry> PhiMenuBar::SpaceList() const {
                                               : "Space " + space.id),
          base::UTF8ToWide(space.icon_text)});
   }
+  // Then this window's agent Spaces, in strip order — the Mac's
+  // presentedSpaces: the Spaces menu lists them, and Ctrl+N and
+  // Next/Previous Space reach them, past the user Spaces.
+  for (const PhiAgentPipView& pip : services_->MenuAgentSpaces()) {
+    spaces.push_back({pip.space_id, PhiAgentPipLabel(pip), pip.icon});
+  }
   return spaces;
 }
 
@@ -824,12 +830,7 @@ bool PhiMenuBar::OnCommand(UINT id) {
   if (id >= kSpaceFirst && id <= kSpaceLast) {
     const size_t i = id - kSpaceFirst;
     if (i < space_ids_.size()) {
-      const std::string space_id = space_ids_[i];
-      if (c->MenuHasSpace(space_id)) {
-        c->MenuShowSpace(space_id);
-      } else if (c->MenuSpacesHost()) {
-        c->MenuSpacesHost()->RequestSwitchSpace(c->MenuSlot().value, space_id);
-      }
+      c->MenuSwitchSpace(space_ids_[i]);
     }
     return true;
   }
@@ -838,13 +839,8 @@ bool PhiMenuBar::OnCommand(UINT id) {
     // (space_ids_ only refreshes when the Spaces menu opens).
     const std::vector<SpaceEntry> spaces = SpaceList();
     const size_t i = id - kCmdSpace1;
-    if (i < spaces.size() && spaces[i].id != c->MenuActiveSpace()) {
-      const std::string space_id = spaces[i].id;
-      if (c->MenuHasSpace(space_id)) {
-        c->MenuShowSpace(space_id);
-      } else if (c->MenuSpacesHost()) {
-        c->MenuSpacesHost()->RequestSwitchSpace(c->MenuSlot().value, space_id);
-      }
+    if (i < spaces.size()) {
+      c->MenuSwitchSpace(spaces[i].id);
     }
     return true;
   }
@@ -1120,12 +1116,7 @@ bool PhiMenuBar::OnCommand(UINT id) {
       const size_t next = id == kCmdNextSpace
                               ? (at + 1) % spaces.size()
                               : (at + spaces.size() - 1) % spaces.size();
-      const std::string space_id = spaces[next].id;
-      if (c->MenuHasSpace(space_id)) {
-        c->MenuShowSpace(space_id);
-      } else if (c->MenuSpacesHost()) {
-        c->MenuSpacesHost()->RequestSwitchSpace(c->MenuSlot().value, space_id);
-      }
+      c->MenuSwitchSpace(spaces[next].id);
       return true;
     }
     case kCmdBack:

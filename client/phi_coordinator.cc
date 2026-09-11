@@ -3000,8 +3000,7 @@ PhiShellWindow* PhiCoordinator::SlotHostingAgentTask(
   // watcher); incognito windows have no strip to ask from but are walked
   // for the same reason the handoff prompt may anchor on one.
   for (PhiShellWindow* controller : registry_.Controllers()) {
-    if (!controller->is_agent() &&
-        controller->hosted_agent_task() == task_id) {
+    if (!controller->is_agent() && controller->HoldsAgentTask(task_id)) {
       return controller;
     }
   }

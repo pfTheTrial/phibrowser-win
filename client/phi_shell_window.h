@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "base/memory/raw_ptr_exclusion.h"
+#include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
 #include "chrome/browser/phinomenon/phi_framework/phi_framework_api.h"
 #include "phibrowser-win/client/phi_drag_image.h"
@@ -91,6 +92,7 @@ struct PhiAgentPipView {
   std::string space_id;  // "agentspace-N": what a slot hosts it under.
   std::string caption;   // The agent's current status line (may be empty).
   std::string agent_name;  // "Claude Code", "Codex", … or empty.
+  std::string profile_id;  // The profile it runs in (the hover card's).
   // The pip's icon: the driving agent's brand mark (phi_agent_icons.h)
   // when the driver named itself as a known agent, else the robot — the
   // Mac's pipIcon override, render-time only.
@@ -103,6 +105,14 @@ struct PhiAgentPipView {
   Badge badge = Badge::kRunning;
   bool watched = false;  // Its window is currently surfaced on-screen.
 };
+
+// The pip's name wherever a switcher lists it — the strip, the Spaces
+// menus, its hover card: the Mac's "R<number>", and the driving agent.
+inline std::wstring PhiAgentPipLabel(const PhiAgentPipView& pip) {
+  return L"R" + std::to_wstring(pip.number) + L" · " +
+         (pip.agent_name.empty() ? L"Agent"
+                                 : base::UTF8ToWide(pip.agent_name));
+}
 
 // What a slot needs from its owner (the coordinator), as five narrow
 // interfaces (docs/architecture-review.md §3.5): the full Space list to draw,
@@ -643,12 +653,25 @@ class PhiShellWindow : public PhiHitSource,
   // agent shell keeps the browser's record and gets the child back when
   // the watch ends (LeaveHostedAgentSpace: the swap back to a user Space,
   // then, once it lands, OnAgentBrowserReturned on the agent host).
+  // Called while another agent Space is hosted, it is the switch between
+  // the two — the Mac's slot.activate from one agent Space to the next:
+  // ONE swap, the hosted page leaving as the new one enters, and the
+  // leaving browser handed back when the slide lands. The user Space the
+  // first watch left stays the one the watch returns to.
   void HostAgentSpace(const std::string& space_id,
                       BrowserId browser,
                       HWND browser_hwnd,
                       const std::string& task_id);
   bool HostsAgentSpace() const { return !hosted_agent_task_.empty(); }
   const std::string& hosted_agent_task() const { return hosted_agent_task_; }
+  // True while `task_id`'s browser sits in this frame: hosted, or on its
+  // way home as the leaving page of a running swap (the watch ended, or
+  // the next agent Space took over) — until that swap lands, this slot
+  // alone presents the Space (PhiAgentSpaceManager::HostingSlotFor).
+  bool HoldsAgentTask(const std::string& task_id) const {
+    return !task_id.empty() && (hosted_agent_task_ == task_id ||
+                                leaving_agent_task_ == task_id);
+  }
   // `space_id` empty: the user Space the slot showed before.
   void LeaveHostedAgentSpace(const std::string& space_id);
   // The agent shell's two sides of the hand-over.
@@ -720,6 +743,13 @@ class PhiShellWindow : public PhiHitSource,
   // Shows the Space's browser, hiding the current one. False if unknown.
   bool ShowSpace(const std::string& space_id);
   bool HasSpace(const std::string& space_id) const;
+  // A switcher's pick by Space id — a pip, a Spaces menu row, Ctrl+N,
+  // Next/Previous Space — over everything this window presents (the
+  // Mac's slot.presentedSpaces): a user Space shows (attached already, or
+  // requested cold; from an agent Space this is the end of the watch), an
+  // agent Space is watched, exactly as its pip's click. The active Space
+  // is a no-op.
+  void SwitchToSpace(const std::string& space_id);
   // Recreates the menu bar from the CURRENT language. The bar caches every
   // title and item string as wide text inside its HMENUs, so a language
   // change cannot be repainted — the menus have to be built again, and the
@@ -1228,7 +1258,7 @@ class PhiShellWindow : public PhiHitSource,
   // the entering page as pixels the compositor hands over
   // (StartTabSurfaceCapture) instead of moving the live child.
   std::unique_ptr<PhiContentSlide> content_slide_;
-  void BeginContentSlide(const std::string& space_id);
+  void BeginContentSlide(const std::string& space_id, BrowserId entering);
   // The client area as it is on screen right now: the chrome from our own
   // paint (caption buttons left out, as the Mac fades its traffic lights
   // before the capture) and the content rect read off the screen — the
@@ -1369,8 +1399,8 @@ class PhiShellWindow : public PhiHitSource,
   bool MenuReaderActive() const override;
   bool MenuReaderOfferable() const override;
   bool MenuLeaveReaderForNavigation() override;
-  bool MenuHasSpace(const std::string& space_id) const override;
-  bool MenuShowSpace(const std::string& space_id) override;
+  std::vector<PhiAgentPipView> MenuAgentSpaces() const override;
+  void MenuSwitchSpace(const std::string& space_id) override;
   void MenuNewTab() override;
   void MenuToggleSidebar() override;
   void MenuToggleReader() override;
@@ -1393,7 +1423,8 @@ class PhiShellWindow : public PhiHitSource,
   void BrowserHostRelayout() override;
   void BrowserHostRefreshTabs() override;
   void BrowserHostScheduleRefresh() override;
-  void BrowserHostBeginSpaceSwap(const std::string& space_id) override;
+  void BrowserHostBeginSpaceSwap(const std::string& space_id,
+                                 BrowserId entering) override;
   bool BrowserHostSwapRunning() const override;
   void BrowserHostNoteSwapChildren(HWND reveal, HWND conceal) override;
   void BrowserHostEndSpacePreview() override;
@@ -1595,7 +1626,12 @@ class PhiShellWindow : public PhiHitSource,
   std::string hosted_agent_task_;
   std::string hosted_agent_space_;
   std::string hosted_return_space_;  // The user Space to swap back to.
-  bool unhost_at_landing_ = false;
+  // The agent Space on its way out: the leaving page of the running swap
+  // (a user Space or the next agent Space entering). It paints until the
+  // slide lands; FinishUnhost then detaches its browser and hands it back
+  // (or at once, when no slide runs).
+  std::string leaving_agent_task_;
+  std::string leaving_agent_space_;
   void FinishUnhost();
   bool floating_layout_ = false;
   HWND floating_sidebar_ = nullptr;

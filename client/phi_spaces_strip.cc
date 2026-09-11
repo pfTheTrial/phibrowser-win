@@ -221,10 +221,7 @@ void PhiSpacesStrip::Rebuild() {
       chip.is_agent = true;
       chip.open = pip.watched;
       chip.badge = static_cast<int>(pip.badge) + 1;
-      // The Mac names the Space "R<number>"; the driving agent follows.
-      chip.label = L"R" + std::to_wstring(pip.number) + L" · " +
-                   (pip.agent_name.empty() ? L"Agent"
-                                           : base::UTF8ToWide(pip.agent_name));
+      chip.label = PhiAgentPipLabel(pip);  // "R<number> · <driver>".
       chip.icon = pip.icon;  // The driver's brand mark, or the robot.
       row.push_back(std::move(chip));
     }
@@ -448,9 +445,7 @@ double PhiSpacesStrip::AddSlotRevealProgress() const {
 
 void PhiSpacesStrip::UpdateHoverCard(int chip_index) {
   std::string chip_id;
-  if (chip_index >= 0 && chip_index < static_cast<int>(chips_.size()) &&
-      // Agent pips carry a taskId, not a Space id — they have no Space card.
-      !chips_[static_cast<size_t>(chip_index)].is_agent) {
+  if (chip_index >= 0 && chip_index < static_cast<int>(chips_.size())) {
     chip_id = chips_[static_cast<size_t>(chip_index)].id;
   }
   // Click suppression means "while the cursor stays on the clicked pip":
@@ -533,17 +528,32 @@ void PhiSpacesStrip::ResolveHoverCard(const std::string& space_id) {
   if (!spaces_host_) {
     return;
   }
+  // The bound profile: the user Space's, or the one the agent Space runs
+  // in (the Mac card shows an agent pip's the same way).
   std::string profile_id;
-  int position = 0;
+  bool listed = false;
   for (const PhiSpaceView& space : spaces_host_->Spaces()) {
-    ++position;
     if (space.id == space_id) {
       profile_id = space.profile_id;
-      if (position <= 9) {
-        card_shortcut_ = position;  // The Spaces menu's Ctrl+1..9 binding.
-      }
+      listed = true;
       break;
     }
+  }
+  if (!listed && agent_host_) {
+    for (const PhiAgentPipView& pip : agent_host_->AgentSpaces(
+             shell_->SpacesIsAgent() ? 0 : shell_->SpacesSlot().value)) {
+      if (pip.space_id == space_id) {
+        profile_id = pip.profile_id;
+        listed = true;
+        break;
+      }
+    }
+  }
+  // The Spaces menu's Ctrl+1..9 binding: the pip's place in strip order,
+  // agent pips past the user Spaces (the Mac's spaceSelectionCommand).
+  const int position = StripPosition(space_id) + 1;
+  if (listed && position <= 9) {
+    card_shortcut_ = position;
   }
   // The pill and keycaps tint with the SPACE's own theme where it pins one
   // (the Mac card resolves the pip's theme color the same way).
@@ -745,26 +755,7 @@ void PhiSpacesStrip::BeginSwap(const std::string& entering_space_id) {
   }
   CancelSwap();  // Settle any in-flight switch first.
   // Direction from strip order, the Mac's forward/backward semantics.
-  int from = -1, to = -1, at = 0;
-  for (const PhiSpaceView& space : spaces_host_->Spaces()) {
-    if (space.id == active) {
-      from = at;
-    }
-    if (space.id == entering_space_id) {
-      to = at;
-    }
-    ++at;
-  }
-  // An agent Space is past every user Space in strip order (the Mac sorts
-  // them to the end): a switch into one slides forward, back out of one
-  // slides backward.
-  if (to < 0) {
-    to = at + 1;
-  }
-  if (from < 0) {
-    from = at + 1;
-  }
-  swap_forward_ = to >= from;
+  swap_forward_ = SlideForward(entering_space_id);
   swap_source_palette_ = shell_->SpacesPalette();
   // The strip's selected pill slides from the leaving pip to the entering
   // one on the same clock; capture where it starts (the active Space is
@@ -815,27 +806,33 @@ void PhiSpacesStrip::BeginSwap(const std::string& entering_space_id) {
 
 bool PhiSpacesStrip::SlideForward(
     const std::string& entering_space_id) const {
-  if (!spaces_host_) {
-    return true;
-  }
-  const std::string& active = shell_->SpacesActiveSpace();
-  int from = -1, to = -1, at = 0;
-  for (const PhiSpaceView& space : spaces_host_->Spaces()) {
-    if (space.id == active) {
-      from = at;
+  // An agent Space is past every user Space in strip order (the Mac sorts
+  // them to the end): a switch into one slides forward, back out of one
+  // slides backward, and between two of them the ordinal decides.
+  return StripPosition(entering_space_id) >=
+         StripPosition(shell_->SpacesActiveSpace());
+}
+
+int PhiSpacesStrip::StripPosition(const std::string& space_id) const {
+  int at = 0;
+  if (spaces_host_) {
+    for (const PhiSpaceView& space : spaces_host_->Spaces()) {
+      if (space.id == space_id) {
+        return at;
+      }
+      ++at;
     }
-    if (space.id == entering_space_id) {
-      to = at;
+  }
+  if (agent_host_) {
+    for (const PhiAgentPipView& pip : agent_host_->AgentSpaces(
+             shell_->SpacesIsAgent() ? 0 : shell_->SpacesSlot().value)) {
+      if (pip.space_id == space_id) {
+        return at;
+      }
+      ++at;
     }
-    ++at;
   }
-  if (to < 0) {
-    to = at + 1;
-  }
-  if (from < 0) {
-    from = at + 1;
-  }
-  return to >= from;
+  return at;  // Not listed: past the end.
 }
 
 void PhiSpacesStrip::NoteSlideLanded() {

@@ -631,7 +631,7 @@ void PhiBrowserHost::AttachSpaceBrowser(const std::string& space_id,
   // Reparent it into this shell exactly like the primary browser, then show it
   // in place of the current Space's.
   HWND previous = content_hwnd_;
-  shell_->BrowserHostBeginSpaceSwap(space_id);
+  shell_->BrowserHostBeginSpaceSwap(space_id, browser);
   content_hwnd_ = browser_hwnd;
   AdoptContentChild();
   if (shell_->BrowserHostSwapRunning()) {
@@ -700,7 +700,7 @@ bool PhiBrowserHost::ShowSpace(const std::string& space_id) {
                       : nullptr;
   SetStatusUrl(std::wstring());  // The leaving page's link target is stale.
   shell_->BrowserHostAbandonTyping();  // So is a half-typed query.
-  shell_->BrowserHostBeginSpaceSwap(space_id);
+  shell_->BrowserHostBeginSpaceSwap(space_id, spaces_.ForSpace(space_id));
   content_hwnd_ = hwnd_it->second;
   spaces_.Show(space_id);
   shell_->BrowserHostEndSpacePreview();

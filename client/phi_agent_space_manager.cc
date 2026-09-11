@@ -188,6 +188,7 @@ std::vector<PhiAgentPipView> PhiAgentSpaceManager::Pips(int64_t slot) const {
     pip.icon = badge.icon.empty() ? L"\U0001F916"  // 🤖
                                   : PhiAgentIconGlyph(badge.icon);
     pip.number = space.number;
+    pip.profile_id = space.profile_id;
     pip.watched = task_id == watched_task_;
     // The Mac's agentBadge precedence.
     using Badge = PhiAgentPipView::Badge;
@@ -204,6 +205,12 @@ std::vector<PhiAgentPipView> PhiAgentSpaceManager::Pips(int64_t slot) const {
     }
     out.push_back(std::move(pip));
   }
+  // Strip order is the task ordinal's — R1, R2, … — the order the strip,
+  // the switcher menus, Ctrl+N and the slide direction all read.
+  std::stable_sort(out.begin(), out.end(),
+                   [](const PhiAgentPipView& a, const PhiAgentPipView& b) {
+                     return a.number < b.number;
+                   });
   return out;
 }
 
@@ -240,7 +247,17 @@ void PhiAgentSpaceManager::RequestWatch(const std::string& task_id,
                 << ": browser still in flight back to its shell, ignoring";
       return;
   }
-  if (!watched_task_.empty()) {
+  // Agent to agent in the frame that hosts the watched one: the Mac's
+  // slot.activate between two agent Spaces — one swap, the entering
+  // browser attached as the hosted one slides out (HostAgentSpace). Ending
+  // the watch first slid the window back to the user Space and left the
+  // next agent's window to surface on its own: no slide, a second window,
+  // and its NOACTIVATE frame never took the keyboard.
+  PhiShellWindow* watcher = host_.ControllerForSlot(watcher_slot);
+  const bool hand_over = hosting_ && !toggling_off &&
+                         watcher_slot == watcher_slot_ && watcher &&
+                         watcher->hosted_agent_task() == watched_task_;
+  if (!watched_task_.empty() && !hand_over) {
     EndWatch(/*park_agent=*/true);
   }
   if (toggling_off) {
@@ -255,14 +272,19 @@ void PhiAgentSpaceManager::RequestWatch(const std::string& task_id,
   // The user surfaced it: an error they had not seen is seen now (the
   // Mac's userDidSurface).
   space->unseen_error = false;
-  PhiShellWindow* watcher = host_.ControllerForSlot(watcher_slot);
   const bool usable = watcher && !watcher->is_agent() &&
-                      watcher->shell_hwnd() && !watcher->HostsAgentSpace();
+                      watcher->shell_hwnd() &&
+                      (hand_over || !watcher->HostsAgentSpace());
   // The Mac's slot.activate: the agent Space is a Space of the watching
   // slot — its browser moves into that slot and the slot's own Space swap
   // shows it (band slide, pill slide, page reveal). The agent shell keeps
   // the record and gets the child back when the watch ends.
   HWND child = usable ? agent->ReleaseAgentBrowserForHosting() : nullptr;
+  if (!child && hand_over) {
+    LOG(INFO) << "[PhiAgent] watch " << task_id
+              << ": no browser to hand over to, keeping the watch";
+    return;  // The hosted one stays on screen, watched.
+  }
   if (child) {
     watcher->HostAgentSpace(space->space_id, space->window_id, child,
                             task_id);
