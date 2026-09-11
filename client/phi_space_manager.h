@@ -186,8 +186,8 @@ class PhiSpaceManager {
   // packed row — the panes name the fields (lane 1 §1.3).
   std::vector<PhiSpaceSummary> Summaries() const;
   // The Space holding the DEFAULT role (the Mac's currentDefaultSpaceId):
-  // the landing target for retreats and windows opened without a Space, the
-  // pre-selected bookmark target, the badge in Settings. Starts on "1" and,
+  // the landing target for retreats and windows opened without a Space and
+  // the pre-selected bookmark target. Starts on "1" and,
   // when its holder is deleted, is handed to the first remaining Space —
   // persisted with the Space list so the hand-off survives relaunches.
   std::string DefaultSpaceId() const;

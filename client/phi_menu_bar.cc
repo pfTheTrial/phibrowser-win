@@ -643,8 +643,11 @@ void PhiMenuBar::RefreshSpaces() {
   }
   ::AppendMenuW(spaces_, MF_POPUP | MF_STRING,
                 reinterpret_cast<UINT_PTR>(profiles), PhiStr("app.activeSpaceContextMenu.profileSubmenuTitle"));
+  // Any Space may go except the last one (the Mac's last-Space rule); the
+  // default Space hands its role on when deleted.
   Append(spaces_, kCmdDeleteSpace, PhiStr("app.activeSpaceContextMenu.deleteSpaceAction"),
-         services_->MenuSpacesHost() && active != "1");
+         services_->MenuSpacesHost() &&
+             services_->MenuSpacesHost()->CanDeleteSpace(active));
   Separator(spaces_);
   const std::vector<SpaceEntry> spaces = SpaceList();
   const bool several = spaces.size() > 1;

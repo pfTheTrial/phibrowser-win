@@ -237,9 +237,9 @@ class SpacesHost {
   // both.
   virtual int SpaceSaturation(const std::string& space_id) const = 0;
   virtual void SetSpaceSaturation(const std::string& space_id, int value) = 0;
-  // Space management (the menu bar and the chip context menu). Deleting the
-  // default Space is refused; deletion takes the Space's bookmarks and
-  // space-scoped pins with it, as on Mac.
+  // Space management (the menu bar and the chip context menu). Only the
+  // last Space is undeletable (the default hands its role on); deletion
+  // takes the Space's bookmarks and space-scoped pins with it, as on Mac.
   virtual bool RenameSpace(const std::string& space_id,
                            const std::string& name) = 0;
   virtual bool DeleteSpace(const std::string& space_id) = 0;

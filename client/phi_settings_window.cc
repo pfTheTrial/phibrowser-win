@@ -1148,7 +1148,6 @@ void PhiSettingsWindow::BuildSpaces(int* y) {
   const std::vector<PhiProfileSummary> profile_names = profiles_->Profiles();
   int row_y = band_top + Scaled(kListHeaderHeight) + Scaled(6);
   const int rows_bottom = band_bottom - Scaled(kToolStripHeight) - Scaled(6);
-  const std::string default_space = spaces_->DefaultSpaceId();
   for (const PhiSpaceSummary& space : spaces) {
     if (row_y + Scaled(kListRowHeight) > rows_bottom) {
       break;  // The Mac scrolls the inner list; ours clips for now.
@@ -1168,9 +1167,9 @@ void PhiSettingsWindow::BuildSpaces(int* y) {
       }
     }
     row.selected = space.id == selected_space_;
-    // The default ROLE's holder wears the badge, as on Mac (it moves when
-    // the default Space is deleted).
-    row.on = space.id == default_space;
+    // No Default badge: the role floats (it moves when its holder is
+    // deleted) and the Mac list dropped the badge with it; only the
+    // Profiles list still marks its permanent Default row.
     row.value = 1;       // Solid-accent selection (the Spaces list style).
     row.action = "selectspace";
     row.payload = space.id;
