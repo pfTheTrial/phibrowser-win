@@ -28,7 +28,8 @@ PhiCreateSpaceWindow* g_window = nullptr;
 void PhiCreateSpaceWindow::Open(PhiShellWindow* controller,
                                 const std::string& initial_profile_id,
                                 const std::string& source_theme_id,
-                                int saturation) {
+                                int saturation,
+                                HWND anchor) {
   if (!controller) {
     return;
   }
@@ -41,7 +42,7 @@ void PhiCreateSpaceWindow::Open(PhiShellWindow* controller,
     delete g_window;
     g_window = new PhiCreateSpaceWindow(controller);
     if (!g_window->OpenWindow(initial_profile_id, source_theme_id,
-                              saturation)) {
+                              saturation, anchor)) {
       delete g_window;
       g_window = nullptr;
       return;
@@ -82,7 +83,8 @@ PhiCreateSpaceWindow::~PhiCreateSpaceWindow() {
 
 bool PhiCreateSpaceWindow::OpenWindow(const std::string& initial_profile_id,
                                       const std::string& source_theme_id,
-                                      int saturation) {
+                                      int saturation,
+                                      HWND anchor) {
   ClassSpec spec;
   spec.name = kClassName;
   Options options;
@@ -113,7 +115,7 @@ bool PhiCreateSpaceWindow::OpenWindow(const std::string& initial_profile_id,
       controller_, hwnd(), static_cast<PhiCreateSpaceFormHost*>(this));
   form_->Show(ContentRect(), initial_profile_id, source_theme_id, saturation);
   FitToForm();
-  CenterOn(controller_->shell_hwnd());
+  CenterOn(anchor && ::IsWindow(anchor) ? anchor : controller_->shell_hwnd());
   return true;
 }
 

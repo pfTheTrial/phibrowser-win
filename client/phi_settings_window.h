@@ -162,8 +162,16 @@ class PhiSettingsHost {
                                const std::string& keyword) = 0;
   virtual bool SetDownloadDirectory(const std::string& profile_id,
                                     const std::string& dir) = 0;
-  // Creates a Space (Default profile) — the list's "+" button.
+  // Creates a Space (Default profile) — the fallback behind the list's "+"
+  // when no browser window can host the form's outcome.
   virtual void CreateSpaceNamed(const std::string& name) = 0;
+  // The list's "+": the standalone create-Space window (the Mac's
+  // SpacesSettingsView.newSpace always presents the floating panel — a
+  // sidebar overlay would open in a browser window behind Settings), for
+  // the focused browser window's slot, centred on `anchor`. False when
+  // there is no browser window to create the Space in.
+  virtual bool OpenCreateSpaceWindow(const std::string& initial_profile_id,
+                                     HWND anchor) = 0;
 
   // --- Navigation -----------------------------------------------------------
   // Peek View, the Mac's peekViewEnabled / autoPeekViewEnabled pair. The

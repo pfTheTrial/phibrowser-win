@@ -436,6 +436,8 @@ class PhiCoordinator : public SidebarHost,
   bool SetDownloadDirectory(const std::string& profile_id,
                             const std::string& dir) override;
   void CreateSpaceNamed(const std::string& name) override;
+  bool OpenCreateSpaceWindow(const std::string& initial_profile_id,
+                             HWND anchor) override;
   // The URL-rule door the VERB LADDER still takes: wire rows and POSITIONAL
   // edits (agentSpace.urlRules.*, which resolve a wire id to an index of
   // their own before calling in). The settings window takes PhiUrlRouter

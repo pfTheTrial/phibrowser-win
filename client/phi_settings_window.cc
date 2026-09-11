@@ -3683,10 +3683,22 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
     picker_tab_ = item.payload;
     picker_scroll_ = 0;
   } else if (item.action == "newspace") {
-    std::wstring name;
-    if (PhiPromptText(hwnd(), L"New Space", L"Enter a name for the new Space.",
-                      &name)) {
-      host_->CreateSpaceNamed(base::WideToUTF8(name));
+    // The create form in its own window, opened on the selected Space's
+    // profile (else the first's) — the Mac's newSpace. The bare name
+    // prompt stays only for a Settings window with no browser window
+    // behind it to present the new Space in.
+    std::string profile_id;
+    for (const PhiSpaceSummary& space : spaces_->Summaries()) {
+      if (profile_id.empty() || space.id == selected_space_) {
+        profile_id = space.profile_id;
+      }
+    }
+    if (!host_->OpenCreateSpaceWindow(profile_id, hwnd())) {
+      std::wstring name;
+      if (PhiPromptText(hwnd(), L"New Space",
+                        L"Enter a name for the new Space.", &name)) {
+        host_->CreateSpaceNamed(base::WideToUTF8(name));
+      }
     }
   } else if (item.action == "renspace") {
     std::wstring name;

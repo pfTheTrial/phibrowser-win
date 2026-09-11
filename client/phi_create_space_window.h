@@ -34,11 +34,15 @@ class PhiCreateSpaceWindow : public PhiSecondaryWindow,
   // Opens (or fronts) the window for `controller`'s slot. The form opens on
   // `initial_profile_id`'s profile and picks a random theme other than
   // `source_theme_id` (the active Space's), with the slider at
-  // `saturation` — CreateSpacePanel.requestCreation's seeding.
+  // `saturation` — CreateSpacePanel.requestCreation's seeding. The window
+  // centres on `anchor` (the shell when null): Settings' Spaces pane
+  // centres it on itself, so it comes up in front of Settings rather than
+  // over a browser window behind it.
   static void Open(PhiShellWindow* controller,
                    const std::string& initial_profile_id,
                    const std::string& source_theme_id,
-                   int saturation);
+                   int saturation,
+                   HWND anchor = nullptr);
   // The shell that owns the request is going away: the form goes with it.
   static void CloseIfBoundTo(PhiShellWindow* controller);
   // A profile the form asked for ("New Profile…") has appeared in
@@ -52,7 +56,8 @@ class PhiCreateSpaceWindow : public PhiSecondaryWindow,
   explicit PhiCreateSpaceWindow(PhiShellWindow* controller);
   bool OpenWindow(const std::string& initial_profile_id,
                   const std::string& source_theme_id,
-                  int saturation);
+                  int saturation,
+                  HWND anchor);
   // The form fills the client area below the band; the window is as tall
   // as the form wants (the Mac's setContentSize(fittingSize)).
   void FitToForm();

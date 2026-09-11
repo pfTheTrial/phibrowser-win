@@ -29,6 +29,7 @@
 #include "base/values.h"
 #include "phibrowser-win/client/phi_agent_overlay.h"
 #include "phibrowser-win/client/phi_control_dispatcher.h"
+#include "phibrowser-win/client/phi_create_space_window.h"
 #include "phibrowser-win/client/phi_updater.h"
 #include "phibrowser-win/client/phi_i18n.h"
 #include "phibrowser-win/client/phi_icons.h"
@@ -2189,6 +2190,25 @@ void PhiCoordinator::CreateSpaceNamed(const std::string& name) {
   dispatcher().ExecuteControlOnUi(
       "agentSpace.spaces.create", json,
       PhiControlDispatcher::ControlCaller::kInternal);
+}
+
+bool PhiCoordinator::OpenCreateSpaceWindow(
+    const std::string& initial_profile_id,
+    HWND anchor) {
+  // The focused browser window's slot presents the new Space, as it does
+  // for its own "New Space…"; seeded like the strip's form — the active
+  // Space's theme is what the random pick must differ from.
+  PhiShellWindow* controller = FocusedUserController();
+  if (!controller) {
+    return false;
+  }
+  std::string theme_id = SpaceThemeId(controller->active_space());
+  if (theme_id.empty()) {
+    theme_id = preferences_.ThemeId();
+  }
+  PhiCreateSpaceWindow::Open(controller, initial_profile_id, theme_id,
+                             preferences_.Saturation(), anchor);
+  return true;
 }
 
 std::vector<std::string> PhiCoordinator::URLRuleRows() const {
