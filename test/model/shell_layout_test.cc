@@ -122,15 +122,19 @@ void SingleSpace() {
   ShellLayout l = ComputeShellLayout(in);
   CHECK(l.spaces_strip.empty() && l.add_space.empty());
   CHECK(!l.spaces_switch);
-  // The address bar re-pins to the band (52 - 40) and the header shrinks
-  // by the row and its gap (88 - 40).
-  CHECK((l.url_field == SidebarRect{8, 32 + 12, 232, 32 + 44}));
-  CHECK(l.new_tab_row.top == 32 + 48 + 5);
+  // The address bar re-pins to the card's top edge (52 - 48 = 4, the
+  // content gap) and the header shrinks by the same 48.
+  CHECK((l.url_field == SidebarRect{8, 32 + 4, 232, 32 + 36}));
+  CHECK(l.url_field.top == l.content.top);
+  CHECK(l.new_tab_row.top == 32 + 88 + 5 - 48);
   in = Base(PhiLayoutMode::kBalanced);
   in.spaces_switch = false;
   l = ComputeShellLayout(in);
   CHECK(l.spaces_strip.empty());
-  CHECK(l.new_tab_row.top == 36 + 5);  // The card's top edge, then the spacer.
+  CHECK(l.new_tab_row.top == 36);  // The first row on the card's top edge.
+  in.pinned_row_count = 1;
+  l = ComputeShellLayout(in);
+  CHECK(l.favorites.top == 36 - 8);  // The grid's inset: cells at the edge.
   in = Base(PhiLayoutMode::kComfortable);
   in.spaces_switch = false;
   l = ComputeShellLayout(in);

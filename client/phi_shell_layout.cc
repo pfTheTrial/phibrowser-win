@@ -319,9 +319,13 @@ ShellLayout ComputeShellLayout(const ShellLayoutInputs& in) {
       const int rr = out.extensions.left - scaled(2);
       out.reader = {rr - fbtn, fmid - fbtn / 2, rr, fmid + fbtn / 2};
     }
-    // Without the strip the sidebar's bands start at the card's top edge.
-    out.tabs_top = (in.spaces_switch ? out.spaces_strip.bottom : gap) +
-                   scaled(kHeaderSpacer);
+    // Without the strip the sidebar's first ROW sits on the card's top
+    // edge: a pinned grid carries its own 8pt inset above its cells, so the
+    // band starts that much higher; bookmark rows have none.
+    out.tabs_top =
+        in.spaces_switch
+            ? out.spaces_strip.bottom + scaled(kHeaderSpacer)
+            : gap - (in.pinned_row_count > 0 ? scaled(kPinnedGap) : 0);
   } else {
     // Performance: back / forward / reload and search-tabs trail the caption
     // band, before the caption buttons — the sidebar has no header row at
@@ -338,10 +342,11 @@ ShellLayout ComputeShellLayout(const ShellLayoutInputs& in) {
     r = out.forward.left - scaled(kNavGroupSpacing);
     out.back = band_control(r);
     out.band_limit = out.back.left;
-    // Without the strip the address bar re-pins to the band and the header
-    // reclaims the row and its gap (the Mac's 80pt base against 120).
+    // Without the strip the address bar re-pins to the CARD's top edge —
+    // level with the page pane beside it — and the header reclaims the
+    // difference (the Mac's 80pt base against 120).
     const int strip_room =
-        in.spaces_switch ? 0 : scaled(kSpacesStripHeight + kSpacesStripTop);
+        in.spaces_switch ? 0 : scaled(kAddressBarTop - kContentTopGap);
     if (!hide_sidebar) {
       if (in.spaces_switch) {
         place_spaces(0, sidebar, tb + scaled(kSpacesStripTop));
