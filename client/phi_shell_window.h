@@ -24,6 +24,7 @@
 #include "phibrowser-win/client/phi_feedback_window.h"
 #include "phibrowser-win/client/phi_browser_host.h"
 #include "phibrowser-win/client/phi_caption_band.h"
+#include "phibrowser-win/client/phi_content_slide.h"
 #include "phibrowser-win/client/phi_menu_bar.h"
 #include "phibrowser-win/client/phi_native_pages_host.h"
 #include "phibrowser-win/client/phi_ids.h"
@@ -446,6 +447,9 @@ enum : UINT {
   // rebuild, so the rows rebuild from the window model on this posted turn,
   // the bands whose rows changed are invalidated, and the paint recomposes.
   kMsgPhiRebuildRows,
+  // The comfortable Space slide was begun and the switch under it has run:
+  // fetch the entering page and release the slide (StartSlideCapture).
+  kMsgPhiSlideCapture,
   // Alt pressed and released on its own: summon the caption band's hidden
   // menu titles (and hide them again on a second Alt), the keyboard route
   // to the bar the pointer reveals by hovering.
@@ -472,7 +476,8 @@ class PhiShellWindow : public PhiHitSource,
                             private PhiMenuBarShell,
                             private PhiNativePagesShell,
                             private PhiSidebarShell,
-                            private PhiSpacesStripShell {
+                            private PhiSpacesStripShell,
+                            private PhiContentSlideShell {
  public:
   // `agent` hosts the window as a HIDDEN agent Space: the shell is created
   // off-screen and off the taskbar (WS_EX_TOOLWINDOW), shown without
@@ -669,6 +674,12 @@ class PhiShellWindow : public PhiHitSource,
   // Chromium moved a pane of this window's split (the framework's
   // OnContentBoundsChanged): the native pages over the panes follow.
   void OnContentBoundsChanged(BrowserId browser_id);
+  // The entering page the comfortable Space slide asked the framework for
+  // (StartSlideCapture): true when `request_id` is this window's.
+  bool OnTabSurfaceCaptured(int request_id,
+                            const unsigned char* bgra,
+                            int width,
+                            int height);
 
   // THE refresh entry point (docs/architecture-review.md §3.1 principle 3):
   // marks the rows dirty and posts ONE coalesced rebuild (kMsgPhiRebuildRows)
@@ -1198,6 +1209,52 @@ class PhiShellWindow : public PhiHitSource,
   HWND swap_conceal_ = nullptr;  // Hidden when the slide lands.
   void RevealSwappedContent();
   void ComposeFrame(HDC mem);  // Chrome + drag indicator.
+
+  // --- The comfortable layout's Space switch (phi_content_slide.h) --------
+  // No sidebar band to push in there: the whole client area slides — the
+  // leaving Space's composite out, the entering Space's in — with the
+  // caption buttons standing still (the Mac's performHorizontalWindowSlide).
+  // The vertical layouts keep the strip's band slide; BrowserHostBeginSpace-
+  // Swap starts one or the other, and both park the entering browser child
+  // until they land (RevealSwappedContent) — the comfortable slide carries
+  // the entering page as pixels the compositor hands over
+  // (StartTabSurfaceCapture) instead of moving the live child.
+  std::unique_ptr<PhiContentSlide> content_slide_;
+  void BeginContentSlide(const std::string& space_id);
+  // The client area as it is on screen right now: the chrome from our own
+  // paint (caption buttons left out, as the Mac fades its traffic lights
+  // before the capture) and the content rect read off the screen — the
+  // browser child paints through DirectComposition, which no PrintWindow
+  // reads. Null when the window is not on screen to be read.
+  HBITMAP CaptureLeavingComposite();
+  // The posted turn after the switch: asks the framework for the entering
+  // page (retried on kSlideHoldTimer while the just-shown view has no frame
+  // yet), and releases the slide when it arrives or the hold runs out.
+  void StartSlideCapture();
+  void ReleaseContentSlide();
+  void CancelContentSlide();
+  int slide_capture_request_ = 0;
+  int slide_capture_tries_ = 0;
+  BrowserId slide_entering_browser_;
+  TabId slide_entering_tab_;
+  static constexpr UINT_PTR kSlideHoldTimer = 0x51D;
+  static constexpr UINT kSlideHoldTickMs = 16;
+  static constexpr int kSlideHoldTries = 5;  // ~80 ms, then it goes blank.
+  // PaintChrome leaves the caption buttons out while set: the slide paints
+  // them itself, last and unslid, and the leaving composite carries none.
+  bool caption_buttons_suppressed_ = false;
+  // A tick's frame: the two composites blitted at their slid positions,
+  // the caption buttons over them, straight to the window.
+  void ComposeSlideFrame();
+  // The client-sized back buffer WM_PAINT composes into, (re)made for `dc`.
+  HDC AcquireBackBuffer(HDC dc, HGDIOBJ* old_bitmap);
+  // The half of LayoutContents that places what sits against the content
+  // rect — the browser child, the watch overlay, the corner caps.
+  void PlaceContentChildren(const Layout& layout);
+  // PhiContentSlideShell:
+  HWND ContentSlideWindow() const override;
+  void ContentSlideMoved() override;
+  void ContentSlideLanded() override;
 
   // Tabs upstream's distiller says carry an article. Positive-only reports,
   // so entries are added and cleared when the tab navigates away.

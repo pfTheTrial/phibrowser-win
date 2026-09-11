@@ -812,6 +812,31 @@ void PhiSpacesStrip::BeginSwap(const std::string& entering_space_id) {
       });
 }
 
+bool PhiSpacesStrip::SlideForward(
+    const std::string& entering_space_id) const {
+  if (!spaces_host_) {
+    return true;
+  }
+  const std::string& active = shell_->SpacesActiveSpace();
+  int from = -1, to = -1, at = 0;
+  for (const PhiSpaceView& space : spaces_host_->Spaces()) {
+    if (space.id == active) {
+      from = at;
+    }
+    if (space.id == entering_space_id) {
+      to = at;
+    }
+    ++at;
+  }
+  if (to < 0) {
+    to = at + 1;
+  }
+  if (from < 0) {
+    from = at + 1;
+  }
+  return to >= from;
+}
+
 void PhiSpacesStrip::NoteSlideLanded() {
   shell_->SpacesDropLeavingBand();
   swap_start_ = 0;

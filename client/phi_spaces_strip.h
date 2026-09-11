@@ -239,6 +239,12 @@ class PhiSpacesStrip {
   void CancelSwap();
   bool swap_running() const { return swap_start_ != 0; }
   bool swap_forward() const { return swap_forward_; }
+  // Which way a switch from the active Space to `entering_space_id` runs:
+  // forward when the entering Space is later in strip order (an agent
+  // Space is past every user Space) — the Mac's SwapDirection. The same
+  // rule BeginSwap's band slide uses; the comfortable layout's content
+  // slide reads it from here since it runs no band slide.
+  bool SlideForward(const std::string& entering_space_id) const;
   // The slide's eased position, 1.0 when idle.
   double SwapProgress() const;
   // The palette the leaving Space's retained rows are painted at — frozen

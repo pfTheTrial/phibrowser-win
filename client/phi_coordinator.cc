@@ -3578,6 +3578,17 @@ void PhiCoordinator::OnContentBoundsChanged(int64_t window_id) {
   }
 }
 
+void PhiCoordinator::OnTabSurfaceCaptured(int request_id,
+                                          const unsigned char* bgra,
+                                          int width,
+                                          int height) {
+  for (PhiShellWindow* shell : registry_.Controllers()) {
+    if (shell->OnTabSurfaceCaptured(request_id, bgra, width, height)) {
+      return;
+    }
+  }
+}
+
 void PhiCoordinator::OnTargetURLChanged(int64_t window_id, const char* url) {
   const BrowserId browser{window_id};
   if (PhiShellWindow* shell = registry_.ControllerForBrowser(browser)) {

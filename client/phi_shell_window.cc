@@ -631,6 +631,9 @@ PhiShellWindow::PhiShellWindow(SlotId slot,
       // First, so the early return below still leaves a usable host.
       native_pages_(std::make_unique<PhiNativePagesHost>(
           static_cast<PhiNativePagesShell*>(this))),
+      // The comfortable layout's Space switch: the whole client area slides.
+      content_slide_(std::make_unique<PhiContentSlide>(
+          static_cast<PhiContentSlideShell*>(this))),
       slot_(slot),
       // The content area's component: the adopted browser child and the
       // slot's Space -> browser table.
@@ -909,6 +912,7 @@ PhiShellWindow::~PhiShellWindow() {
   sidebar_.reset();
   native_pages_->Shutdown();
   spaces_->Shutdown();
+  content_slide_.reset();  // Its clock stops; no landing callback runs.
   caption_band_.reset();
   if (floating_sidebar_ && ::IsWindow(floating_sidebar_)) {
     ::DestroyWindow(floating_sidebar_);
@@ -1352,11 +1356,19 @@ void PhiShellWindow::BrowserHostScheduleRefresh() {
 
 void PhiShellWindow::BrowserHostBeginSpaceSwap(
     const std::string& space_id) {
+  if (layout_mode_ == PhiLayoutMode::kComfortable) {
+    // No band to push in: the whole client area slides (phi_content_slide.h).
+    // The content host defers the page exactly as for the band slide
+    // (BrowserHostSwapRunning): the entering child parks until the slide
+    // lands, the leaving one stays up until the slide starts.
+    BeginContentSlide(space_id);
+    return;
+  }
   spaces_->BeginSwap(space_id);
 }
 
 bool PhiShellWindow::BrowserHostSwapRunning() const {
-  return spaces_->swap_running();
+  return spaces_->swap_running() || content_slide_->running();
 }
 
 void PhiShellWindow::BrowserHostNoteSwapChildren(HWND reveal,
@@ -1910,9 +1922,12 @@ void PhiShellWindow::SpacesSetCoveredContentSuppressed(bool suppressed) {
 }
 
 bool PhiShellWindow::OmniboxFieldHidden() const {
+  // While the comfortable Space slide runs the EDIT is down and the frame
+  // paints the address itself (include_child_controls): a real child window
+  // moves a frame apart from the parent's paint and would ghost.
   return browsers_->content_fullscreen() ||
          (sidebar_collapsed_ && layout_mode_ == PhiLayoutMode::kPerformance) ||
-         spaces_->creating();
+         spaces_->creating() || (content_slide_ && content_slide_->running());
 }
 
 void PhiShellWindow::SpacesRevealSwappedContent() {
@@ -2087,6 +2102,10 @@ void PhiShellWindow::LayoutContents() {
     }
   }
   omnibox_->SetFieldVisible(!OmniboxFieldHidden());
+  PlaceContentChildren(layout);
+}
+
+void PhiShellWindow::PlaceContentChildren(const Layout& layout) {
   PhiContentLayout content;
   content.content = layout.content;
   content.client = layout.client;
@@ -2094,7 +2113,8 @@ void PhiShellWindow::LayoutContents() {
   // under a top bar the card's top corners belong to the bar band.
   content.top_caps = layout.mode == PhiLayoutMode::kPerformance;
   content.corner_radius = Scaled(kContentRadius);
-  content.parked = spaces_->swap_running() ? swap_reveal_ : nullptr;
+  // Either Space switch parks the entering child until it lands.
+  content.parked = BrowserHostSwapRunning() ? swap_reveal_ : nullptr;
   browsers_->PositionContentChild(content);
 
   // Watch-mode overlay (fog + control pill) tracks the content rect. It goes
@@ -2102,6 +2122,197 @@ void PhiShellWindow::LayoutContents() {
   PhiAgentOverlay::Reposition();
 
   browsers_->PositionCornerCaps(content);
+}
+
+// --- The comfortable layout's Space switch (phi_content_slide.h) ------------
+
+void PhiShellWindow::BeginContentSlide(const std::string& space_id) {
+  if (!shell_hwnd_ || destroying_ || incognito_ || agent_ || shell_hidden_ ||
+      space_id == active_space()) {
+    return;
+  }
+  if (content_slide_->running()) {
+    // A switch on top of a switch: land the first, and let the screen show
+    // it before the composite is read off — the desktop composes on its own
+    // clock.
+    CancelContentSlide();
+    ::RedrawWindow(shell_hwnd_, nullptr, nullptr,
+                   RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+    ::DwmFlush();
+  }
+  RECT client = {};
+  ::GetClientRect(shell_hwnd_, &client);
+  HBITMAP leaving = CaptureLeavingComposite();
+  if (!leaving) {
+    return;  // Nothing to slide out: the switch shows at once.
+  }
+  // The entering page comes from the framework once the switch under this
+  // has run (StartSlideCapture, on the posted turn): the Space's browser,
+  // when it already has one, and that browser's active tab.
+  slide_entering_browser_ = BrowserId();
+  slide_entering_tab_ = TabId();
+  if (browsers_->spaces().Has(space_id)) {
+    slide_entering_browser_ = browsers_->spaces().ForSpace(space_id);
+    if (const phi_framework::TabSnapshot* tab =
+            model_ ? model_->ActiveTab(slide_entering_browser_) : nullptr) {
+      slide_entering_tab_ = tab->id;
+    }
+  }
+  // A fresh id per switch: a capture from a switch already landed or cut
+  // short must not fill in this one's page.
+  static int next_request = 0;
+  slide_capture_request_ = ++next_request;
+  slide_capture_tries_ = 0;
+  content_slide_->Begin(leaving, client.right, client.bottom,
+                        spaces_->SlideForward(space_id));
+  if (!content_slide_->running()) {
+    return;
+  }
+  // The EDIT goes down for the slide (OmniboxFieldHidden); the content
+  // host's relayout right after this would show it again otherwise.
+  omnibox_->SetFieldVisible(!OmniboxFieldHidden());
+  ::PostMessageW(shell_hwnd_, kMsgPhiSlideCapture, 0, 0);
+}
+
+HBITMAP PhiShellWindow::CaptureLeavingComposite() {
+  if (!shell_hwnd_ || ::IsIconic(shell_hwnd_) ||
+      !::IsWindowVisible(shell_hwnd_)) {
+    return nullptr;
+  }
+  RECT client = {};
+  ::GetClientRect(shell_hwnd_, &client);
+  if (client.right <= 0 || client.bottom <= 0) {
+    return nullptr;
+  }
+  HDC screen = ::GetDC(nullptr);
+  HDC mem = ::CreateCompatibleDC(screen);
+  HBITMAP bitmap = ::CreateCompatibleBitmap(screen, client.right, client.bottom);
+  if (!mem || !bitmap) {
+    if (bitmap) {
+      ::DeleteObject(bitmap);
+    }
+    if (mem) {
+      ::DeleteDC(mem);
+    }
+    ::ReleaseDC(nullptr, screen);
+    return nullptr;
+  }
+  HGDIOBJ old = ::SelectObject(mem, bitmap);
+  HBRUSH fill = ::CreateSolidBrush(BackgroundFill());
+  ::FillRect(mem, &client, fill);
+  ::DeleteObject(fill);
+  const Layout layout = ComputeLayout();
+  {
+    // The same frame WM_PAINT composes, minus the caption buttons: they
+    // stay put over the slide and are painted once, unslid, by the frame.
+    // The address text is painted in (the EDIT itself is not captured).
+    base::AutoReset<bool> suppress(&caption_buttons_suppressed_, true);
+    PaintChrome(mem, layout, /*include_child_controls=*/true);
+  }
+  // The page — and whatever sits over it (a native page, the watch fog):
+  // the screen has it right now.
+  const int w = layout.content.right - layout.content.left;
+  const int h = layout.content.bottom - layout.content.top;
+  if (w > 0 && h > 0) {
+    POINT origin = {layout.content.left, layout.content.top};
+    ::ClientToScreen(shell_hwnd_, &origin);
+    ::BitBlt(mem, layout.content.left, layout.content.top, w, h, screen,
+             origin.x, origin.y, SRCCOPY);
+  }
+  ::GdiFlush();
+  ::SelectObject(mem, old);
+  ::DeleteDC(mem);
+  ::ReleaseDC(nullptr, screen);
+  return bitmap;
+}
+
+void PhiShellWindow::StartSlideCapture() {
+  if (!content_slide_->holding()) {
+    return;
+  }
+  const bool asked =
+      framework_ && slide_entering_browser_.valid() &&
+      slide_entering_tab_.valid() &&
+      framework_->StartTabSurfaceCapture(slide_entering_browser_.value,
+                                         slide_entering_tab_.value,
+                                         slide_capture_request_);
+  if (!asked) {
+    ReleaseContentSlide();  // Nothing to fetch: the page area slides blank.
+    return;
+  }
+  // The view was shown a turn ago and may hold no frame yet: ask again
+  // every tick until one comes, for a few ticks.
+  if (slide_capture_tries_ == 0) {
+    ::SetTimer(shell_hwnd_, kSlideHoldTimer, kSlideHoldTickMs, nullptr);
+  }
+  ++slide_capture_tries_;
+}
+
+bool PhiShellWindow::OnTabSurfaceCaptured(int request_id,
+                                          const unsigned char* bgra,
+                                          int width,
+                                          int height) {
+  if (request_id != slide_capture_request_) {
+    return false;
+  }
+  if (!content_slide_->holding()) {
+    return true;  // Released already (the hold ran out, or a cancel).
+  }
+  if (!bgra || width <= 0 || height <= 0) {
+    // No frame yet: the hold timer asks again, or gives up.
+    return true;
+  }
+  content_slide_->SetEnteringPage(bgra, width, height,
+                                  ComputeLayout().content);
+  ReleaseContentSlide();
+  return true;
+}
+
+void PhiShellWindow::ReleaseContentSlide() {
+  if (shell_hwnd_) {
+    ::KillTimer(shell_hwnd_, kSlideHoldTimer);
+  }
+  if (!content_slide_->holding()) {
+    return;
+  }
+  content_slide_->Release();
+  // The leaving page leaves the screen for its composite: the slide owns
+  // the content rect from here until it lands (RevealSwappedContent). The
+  // composite goes under the child FIRST — a GDI paint reaches the desktop
+  // ahead of a window hide made in the same turn, and the other way round
+  // shows the shell's bare ground for a frame where the page was.
+  ComposeSlideFrame();
+  if (swap_conceal_ && ::IsWindow(swap_conceal_) &&
+      swap_conceal_ != browsers_->content_hwnd()) {
+    ::ShowWindow(swap_conceal_, SW_HIDE);
+  }
+}
+
+void PhiShellWindow::CancelContentSlide() {
+  if (shell_hwnd_) {
+    ::KillTimer(shell_hwnd_, kSlideHoldTimer);
+  }
+  content_slide_->Cancel();
+}
+
+HWND PhiShellWindow::ContentSlideWindow() const {
+  return shell_hwnd_;
+}
+
+void PhiShellWindow::ContentSlideMoved() {
+  if (destroying_ || !shell_hwnd_) {
+    return;
+  }
+  ComposeSlideFrame();
+}
+
+void PhiShellWindow::ContentSlideLanded() {
+  if (destroying_ || !shell_hwnd_) {
+    return;
+  }
+  ::KillTimer(shell_hwnd_, kSlideHoldTimer);
+  RevealSwappedContent();  // The entering child shows; the leaving hides.
+  LayoutContents();        // The EDIT comes back; the frame repaints.
 }
 
 bool PhiShellWindow::InSidebarResizeBand(POINT client_pt) {
@@ -2775,7 +2986,7 @@ void PhiShellWindow::LeaveHostedAgentSpace(const std::string& space_id) {
   if (!target.empty() && active_space() != target) {
     browsers_->ShowSpace(target);  // The normal swap back (or instant).
   }
-  if (spaces_->swap_running()) {
+  if (BrowserHostSwapRunning()) {
     unhost_at_landing_ = true;  // The leaving page paints until it lands.
   } else {
     FinishUnhost();
@@ -3012,7 +3223,75 @@ PhiPalette PhiShellWindow::CurrentPalette() const {
                        : kFallback);
 }
 
+HDC PhiShellWindow::AcquireBackBuffer(HDC dc, HGDIOBJ* old_bitmap) {
+  RECT rc = {};
+  ::GetClientRect(shell_hwnd_, &rc);
+  const LONG bw = rc.right > 0 ? rc.right : 1;
+  const LONG bh = rc.bottom > 0 ? rc.bottom : 1;
+  if (back_buffer_ &&
+      (back_buffer_size_.cx != bw || back_buffer_size_.cy != bh)) {
+    ::DeleteObject(back_buffer_);
+    back_buffer_ = nullptr;
+  }
+  if (!back_buffer_) {
+    back_buffer_ = ::CreateCompatibleBitmap(dc, bw, bh);
+    back_buffer_size_ = {bw, bh};
+  }
+  if (!back_buffer_) {
+    return nullptr;
+  }
+  HDC mem = ::CreateCompatibleDC(dc);
+  if (!mem) {
+    return nullptr;
+  }
+  *old_bitmap = ::SelectObject(mem, back_buffer_);
+  return mem;
+}
+
+void PhiShellWindow::ComposeSlideFrame() {
+  if (!shell_hwnd_ || destroying_ || !content_slide_->running()) {
+    return;
+  }
+  HDC dc = ::GetDC(shell_hwnd_);
+  if (!dc) {
+    return;
+  }
+  HGDIOBJ old_bmp = nullptr;
+  if (HDC mem = AcquireBackBuffer(dc, &old_bmp)) {
+    content_slide_->Compose(mem);
+    caption_band_->PaintButtons(mem);
+    ::BitBlt(dc, 0, 0, back_buffer_size_.cx, back_buffer_size_.cy, mem, 0, 0,
+             SRCCOPY);
+    ::SelectObject(mem, old_bmp);
+    ::DeleteDC(mem);
+  }
+  ::ReleaseDC(shell_hwnd_, dc);
+}
+
 void PhiShellWindow::ComposeFrame(HDC mem) {
+  if (HDC entering = content_slide_->EnteringDC()) {
+    // The comfortable Space slide: the entering chrome is painted at rest
+    // into the slide's scratch — no caption buttons — with the entering
+    // page laid into its content rect, and the composite goes into the
+    // frame beside the leaving one at their slid positions; the buttons go
+    // on last, standing still over both. A tick composes from the scratch
+    // as it is (ComposeSlideFrame); this repaint is a real one's — the
+    // rebuild that brings the entering Space's rows, a hover.
+    RECT client = {};
+    ::GetClientRect(shell_hwnd_, &client);
+    HBRUSH fill = ::CreateSolidBrush(BackgroundFill());
+    ::FillRect(entering, &client, fill);
+    ::DeleteObject(fill);
+    {
+      base::AutoReset<bool> suppress(&caption_buttons_suppressed_, true);
+      // The address text painted in: the EDIT is hidden for the slide.
+      PaintChrome(entering, ComputeLayout(), /*include_child_controls=*/true);
+    }
+    content_slide_->LayEnteringPage();
+    content_slide_->Compose(mem);
+    caption_band_->PaintButtons(mem);
+    return;
+  }
   PaintChrome(mem, ComputeLayout(), /*include_child_controls=*/false);
   sidebar_->DrawDragIndicator(mem);
 }
@@ -4760,7 +5039,7 @@ void PhiShellWindow::PaintChrome(HDC dc,
   // trailing — the menu bar ON the title row. The ground already painted it;
   // the band draws its own titles, glyphs and hot states over that
   // (phi_caption_band.h owns every one of them).
-  caption_band_->Paint(dc);
+  caption_band_->Paint(dc, /*with_buttons=*/!caption_buttons_suppressed_);
 
   // The top bar (balanced / comfortable): the content card's FIRST band -- the
   // Mac's WebContentHeader is the card's first stack item -- so it paints on
@@ -5375,6 +5654,11 @@ LRESULT CALLBACK PhiShellWindow::ShellWndProc(HWND hwnd,
         self->native_pages_->Sync();
       }
       return 0;
+    case kMsgPhiSlideCapture:
+      if (self) {
+        self->StartSlideCapture();
+      }
+      return 0;
     case kMsgPhiRebuildRows:
       if (self) {
         self->rebuild_posted_ = false;
@@ -5554,6 +5838,15 @@ LRESULT CALLBACK PhiShellWindow::ShellWndProc(HWND hwnd,
         self->sidebar_->OnHoverExpandTimer();
         return 0;
       }
+      if (self && wparam == kSlideHoldTimer) {
+        // The entering page has not come: ask once more, or slide without.
+        if (self->slide_capture_tries_ < kSlideHoldTries) {
+          self->StartSlideCapture();
+        } else {
+          self->ReleaseContentSlide();
+        }
+        return 0;
+      }
       if (self && wparam == PhiSidebarDragSession::kSlideTimer) {
         // The reorder slide: repaint until the current leg settles. The
         // session owns the clock; the timer is the shell's because the
@@ -5568,6 +5861,7 @@ LRESULT CALLBACK PhiShellWindow::ShellWndProc(HWND hwnd,
       if (self) {
         // Band geometry changed under the slide.
         self->spaces_->CancelSwap();
+        self->CancelContentSlide();
         self->LayoutContents();
       }
       return 0;
@@ -5625,20 +5919,9 @@ LRESULT CALLBACK PhiShellWindow::ShellWndProc(HWND hwnd,
         // work at 4K.
         RECT rc = {};
         ::GetClientRect(hwnd, &rc);
-        const LONG bw = rc.right > 0 ? rc.right : 1;
-        const LONG bh = rc.bottom > 0 ? rc.bottom : 1;
-        if (self->back_buffer_ && (self->back_buffer_size_.cx != bw ||
-                                   self->back_buffer_size_.cy != bh)) {
-          ::DeleteObject(self->back_buffer_);
-          self->back_buffer_ = nullptr;
-        }
-        if (!self->back_buffer_) {
-          self->back_buffer_ = ::CreateCompatibleBitmap(dc, bw, bh);
-          self->back_buffer_size_ = {bw, bh};
-        }
-        HDC mem = ::CreateCompatibleDC(dc);
-        if (mem && self->back_buffer_) {
-          HGDIOBJ old_bmp = ::SelectObject(mem, self->back_buffer_);
+        HGDIOBJ old_bmp = nullptr;
+        HDC mem = self->AcquireBackBuffer(dc, &old_bmp);
+        if (mem) {
           // PaintChrome excludes the content rect (the browser child owns
           // it), so give those buffer pixels a defined color for the rare
           // blit with no child covering them (startup, degenerate states) —

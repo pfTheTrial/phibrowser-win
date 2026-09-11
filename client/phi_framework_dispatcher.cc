@@ -155,6 +155,13 @@ void PhiFrameworkDispatcher::OnShowFeedbackRequested() {
   coordinator_.OnShowFeedbackRequested();
 }
 
+void PhiFrameworkDispatcher::OnTabSurfaceCaptured(int request_id,
+                                                  const unsigned char* bgra,
+                                                  int width,
+                                                  int height) {
+  coordinator_.OnTabSurfaceCaptured(request_id, bgra, width, height);
+}
+
 void PhiFrameworkDispatcher::OnFeedbackSystemLogs(int request_id,
                                                   const char* text) {
   coordinator_.account().OnFeedbackSystemLogs(request_id, text);

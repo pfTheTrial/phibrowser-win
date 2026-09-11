@@ -571,7 +571,7 @@ bool PhiCaptionBand::OnCommand(UINT id) {
 
 // --- Paint -----------------------------------------------------------------
 
-void PhiCaptionBand::Paint(HDC dc) {
+void PhiCaptionBand::Paint(HDC dc, bool with_buttons) {
   const PhiCaptionRects rects = shell_->CaptionRects();
   if (rects.title_bar.right <= rects.title_bar.left) {
     return;
@@ -627,6 +627,21 @@ void PhiCaptionBand::Paint(HDC dc) {
     ::FillRect(dc, &rects.band_divider, divider_brush);
     ::DeleteObject(divider_brush);
   }
+  if (previous_font) {
+    ::SelectObject(dc, previous_font);
+  }
+  if (with_buttons) {
+    PaintButtons(dc);
+  }
+}
+
+void PhiCaptionBand::PaintButtons(HDC dc) {
+  const PhiCaptionRects rects = shell_->CaptionRects();
+  if (rects.title_bar.right <= rects.title_bar.left) {
+    return;
+  }
+  const PhiPalette palette = shell_->CaptionPalette();
+  const COLORREF kLabel = palette.label;
   // Hot fills first (close turns the Win11 red), then the MDL2 glyphs.
   if (hot_caption_ == HTMINBUTTON || hot_caption_ == HTMAXBUTTON) {
     const RECT& hot_rc =
@@ -664,9 +679,6 @@ void PhiCaptionBand::Paint(HDC dc) {
             hot_caption_ == HTCLOSE ? RGB(0xFF, 0xFF, 0xFF) : kLabel);
   if (previous_caption) {
     ::SelectObject(dc, previous_caption);
-  }
-  if (previous_font) {
-    ::SelectObject(dc, previous_font);
   }
 }
 

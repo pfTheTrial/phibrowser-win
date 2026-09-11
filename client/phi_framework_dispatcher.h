@@ -68,6 +68,10 @@ class PhiFrameworkDispatcher : public phi_framework::PhiFrameworkDelegate {
   void OnReaderArticleExtracted(int request_id, const char* json) override;
   void OnShowFeedbackRequested() override;
   void OnFeedbackSystemLogs(int request_id, const char* text) override;
+  void OnTabSurfaceCaptured(int request_id,
+                            const unsigned char* bgra,
+                            int width,
+                            int height) override;
   void OnAgentDroveUserSpaceTab(int64_t tab_id,
                                 int64_t window_id,
                                 int64_t session_id) override;

@@ -108,8 +108,13 @@ class PhiCaptionBand {
   PhiMenuBar* menu_bar() { return menu_bar_.get(); }
 
   // Paints the band's own contents over the ground the shell already laid:
-  // the titles, the trailing hairline, and the three caption buttons.
-  void Paint(HDC dc);
+  // the titles, the trailing hairline, and the three caption buttons —
+  // those only when `with_buttons`.
+  void Paint(HDC dc, bool with_buttons = true);
+  // The three caption buttons alone (their hot fill and glyphs, no ground):
+  // the comfortable Space slide paints them last, standing still over the
+  // chrome sliding under them, the way the Mac's traffic lights do.
+  void PaintButtons(HDC dc);
 
   // What a CLIENT point in the band hits: HTCLOSE / HTMAXBUTTON /
   // HTMINBUTTON, HTCLIENT over a menu title or a control, HTCAPTION anywhere

@@ -144,6 +144,12 @@ class PhiCoordinator : public SidebarHost,
   void OnRefreshNewTab(int64_t window_id);
   void OnContentFullscreenChanged(int64_t window_id, bool fullscreen);
   void OnContentBoundsChanged(int64_t window_id);
+  // A page's pixels the comfortable Space slide asked for
+  // (PhiShellWindow::StartSlideCapture): to the shell whose request it is.
+  void OnTabSurfaceCaptured(int request_id,
+                            const unsigned char* bgra,
+                            int width,
+                            int height);
   void OnExtensionsChanged(int64_t window_id);
   void OnShowFeedbackRequested();
   void OnTabDistillable(int64_t window_id, int tab_id, bool distillable);
