@@ -394,6 +394,14 @@ class Image : public PhiWindow {
                    SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
   }
 
+  void PlaceAt(POINT origin) {
+    if (sliding_ || !alive()) {
+      return;
+    }
+    ::SetWindowPos(hwnd(), HWND_TOPMOST, origin.x, origin.y, 0, 0,
+                   SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+  }
+
   void Conceal() {
     if (alive()) {
       ::ShowWindow(hwnd(), SW_HIDE);
@@ -539,6 +547,13 @@ void PhiDragImage::ShowCard(const PhiDragCard& card,
 void PhiDragImage::MoveTo(POINT cursor) {
   if (Image::instance) {
     Image::instance->MoveTo(cursor);
+  }
+}
+
+// static
+void PhiDragImage::PlaceAt(POINT origin) {
+  if (Image::instance) {
+    Image::instance->PlaceAt(origin);
   }
 }
 

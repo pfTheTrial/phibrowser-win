@@ -97,6 +97,10 @@ class PhiDragImage {
                        POINT cursor);
   // Follows the cursor. Cheap: the composed surface is retained.
   static void MoveTo(POINT cursor);
+  // Puts the image's top-left at `origin` (screen) instead of under the
+  // cursor — the comfortable strip rides the dragged tab along its row,
+  // clamped to the strip, the way the Mac's dragPresentationFrame does.
+  static void PlaceAt(POINT origin);
   // Takes the window off the screen without ending the drag — for a screen
   // capture of what is under it, or a hit test that must not find it. The
   // next MoveTo / ShowRow / ShowCard brings it back.

@@ -224,12 +224,24 @@ class PhiSidebarDragSession {
   void ReleaseDropZones();
   int DragInsertSlot(POINT pt);
   void RetargetDragSlide();  // New targets for the current gap slot.
+  // The comfortable strip's half of RetargetDragSlide: chips and tabs
+  // glide sideways by the dragged tab's width, the group underlines
+  // stretch over the gap (the Mac's dragReorder relayout).
+  void RetargetStripSlide(std::map<TabId, double>* to,
+                          std::map<std::string, SlideVec>* row_to);
   bool CommitDragImpl();     // True when the drop changed something.
   void CancelDrag();         // Drops every field; the image is the caller's.
   void AbortDrag();
 
   // --- The drag image -----------------------------------------------------
   RECT DragSourceRect();
+  // A tab dragged on the comfortable strip: the drag image rides the
+  // strip's row rather than the cursor, y locked to the tabs' line and x
+  // clamped between the strip's first slot and the "+" with the Mac's
+  // soft overshoot (dragPresentationFrame). This is the rect the gap is
+  // resolved against too, so the drop lands where the tab is seen.
+  bool OnStrip() const;
+  RECT StripProxyRect(POINT pt) const;
   // The Mac's drag-image boundary (containsTabDragBoundary): inside the
   // sidebar's list band, or over ANOTHER shell window, the row image shows;
   // elsewhere — the page, the header, off the window — the page card does.
@@ -301,6 +313,9 @@ class PhiSidebarDragSession {
   bool active_ = false;
   bool finished_ = false;  // Committed or cancelled: the destructor is a no-op.
   int insert_ = -1;        // The gap slot for the slide animation, -1 = none.
+  // The strip: the content row (a chip or a tab) the gap opens before, -1
+  // when none is open (DropResolution::anchor_row).
+  int strip_anchor_ = -1;
   // The group the resolved drop lands IN (empty: none) — the same gap slot
   // reads as "under the header" or "before the group" depending on it, and
   // the header and its card slide differently for the two.
@@ -346,6 +361,8 @@ class PhiSidebarDragSession {
   bool card_built_ = false;   // The card is composed once per drag.
   PhiDragCard card_;
   RECT home_screen_{};  // The element's rect at lift-off, for the slide.
+  RECT strip_home_{};   // The same in client coordinates (the strip's proxy).
+  POINT strip_grip_{};  // Where inside it the cursor lifted it.
 
   // DROP ON THE PAGE — the Mac's SplitTabDropContainer.
   PhiSplitDropZone split_drop_zone_ = PhiSplitDropZone::kNone;

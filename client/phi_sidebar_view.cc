@@ -7,6 +7,7 @@
 #include "phibrowser-win/client/phi_agent_spaces.h"
 
 #include <algorithm>
+#include <cmath>
 #include <map>
 #include <string>
 #include <string_view>
@@ -16,6 +17,7 @@
 #include "base/compiler_specific.h"
 #include "base/containers/span.h"
 #include "base/strings/utf_string_conversions.h"
+#include "phibrowser-win/client/phi_animator.h"
 #include "phibrowser-win/client/phi_bookmark_manager.h"
 #include "phibrowser-win/client/phi_dwrite.h"
 #include "phibrowser-win/client/phi_folder_icons.h"
@@ -348,6 +350,7 @@ PhiSidebarView::PhiSidebarView(PhiSidebarShell* shell,
 // than by two ad-hoc calls in the shell's own destructor
 // (docs/architecture-review.md §3.5).
 PhiSidebarView::~PhiSidebarView() {
+  CancelStripLanding();
   for (HFONT font : {chip_count_font_, chip_mosaic_font_}) {
     if (font) {
       ::DeleteObject(font);
@@ -610,6 +613,73 @@ PhiSlideVec PhiSidebarView::RowSlide(const std::string& guid) const {
 
 double PhiSidebarView::TabSlide(TabId tab_id) const {
   return drag_ ? drag_->DragSlideOffset(tab_id) : 0.0;
+}
+
+void PhiSidebarView::BeginStripLanding(const SidebarKey& key, int drop_left) {
+  CancelStripLanding();
+  landing_armed_key_ = key;
+  landing_drop_left_ = drop_left;
+  landing_armed_at_ = ::GetTickCount64();
+}
+
+void PhiSidebarView::StartStripLanding(const PhiSidebarRects& layout) {
+  if (landing_armed_key_.empty()) {
+    return;
+  }
+  const SidebarKey key = landing_armed_key_;
+  landing_armed_key_ = {};
+  // The move's own rebuild is posted right behind the drop; a rebuild
+  // arriving much later is someone else's, and gliding then would be a
+  // tab jumping for no reason.
+  constexpr ULONGLONG kStaleMs = 500;
+  if (!layout.horizontal_tabs ||
+      ::GetTickCount64() - landing_armed_at_ > kStaleMs) {
+    return;
+  }
+  const TabRow* landed = nullptr;
+  for (const TabRow& row : tabs_) {
+    if (row.key == key && row.bounds.right > row.bounds.left) {
+      landed = &row;
+      break;
+    }
+  }
+  if (!landed) {
+    return;
+  }
+  const double from = landing_drop_left_ - landed->bounds.left;
+  if (std::fabs(from) < 1.0) {
+    return;  // Released in its slot: nothing to glide.
+  }
+  landing_key_ = key;
+  landing_from_ = from;
+  landing_dx_ = from;
+  // The band the glide sweeps: the strip's row, either side of the slot.
+  const RECT band = {layout.tabs_left, layout.tabs_top, layout.tabs_limit,
+                     layout.tabs_top + Scaled(kHTabHeight)};
+  landing_animation_ = PhiAnimator::ForThread().Animate(
+      shell_hwnd(), kLandingMs, PhiEasing::kEaseInOut,
+      [this, band](double t, RECT* dirty) {
+        landing_dx_ = landing_from_ * (1.0 - t);
+        *dirty = band;
+      },
+      [this, band] {
+        landing_animation_ = 0;
+        landing_key_ = {};
+        landing_dx_ = 0.0;
+        if (const HWND shell = shell_hwnd()) {
+          ::InvalidateRect(shell, &band, FALSE);  // The lifted look goes.
+        }
+      });
+}
+
+void PhiSidebarView::CancelStripLanding() {
+  landing_armed_key_ = {};
+  if (landing_animation_) {
+    PhiAnimator::ForThread().Cancel(landing_animation_);
+    landing_animation_ = 0;
+  }
+  landing_key_ = {};
+  landing_dx_ = 0.0;
 }
 
 RECT PhiSidebarView::RowHoverRect(HoverKind kind, int index) const {
@@ -1222,6 +1292,8 @@ void PhiSidebarView::Rebuild() {
       }
     }
   }
+  // A tab dropped on the strip glides into the slot it was just given.
+  StartStripLanding(layout);
   // MRU bookkeeping for the Ctrl+Tab switcher (the rule itself is pure and
   // host-tested): the active tab moves to the front; ids that left the
   // strip fall out.
@@ -2572,14 +2644,28 @@ void PhiSidebarView::PaintBand(HDC dc,
   // floats with the cursor and paints LAST (on top); its siblings paint at
   // their slide offsets, gliding around the insertion gap.
   const bool sliding = drag_active && drag_kind == PhiDragKind::kTab &&
-                       !layout.horizontal_tabs && drag_index >= 0 &&
+                       drag_index >= 0 &&
                        drag_index < static_cast<int>(tabs_.size());
+  // The strip's landing tab glides over its neighbours into its slot, so
+  // it paints after them too.
+  int landing_index = -1;
+  if (layout.horizontal_tabs && !landing_key_.empty()) {
+    for (size_t i = 0; i < tabs_.size(); ++i) {
+      if (tabs_[i].key == landing_key_) {
+        landing_index = static_cast<int>(i);
+      }
+    }
+  }
   std::vector<size_t> draw_order;
   draw_order.reserve(tabs_.size());
   for (size_t i = 0; i < tabs_.size(); ++i) {
-    if (!sliding || static_cast<int>(i) != drag_index) {
+    if ((!sliding || static_cast<int>(i) != drag_index) &&
+        static_cast<int>(i) != landing_index) {
       draw_order.push_back(i);
     }
+  }
+  if (landing_index >= 0) {
+    draw_order.push_back(static_cast<size_t>(landing_index));
   }
   if (sliding) {
     draw_order.push_back(static_cast<size_t>(drag_index));
@@ -2604,19 +2690,29 @@ void PhiSidebarView::PaintBand(HDC dc,
     if (is_dragged && !drag_capture) {
       continue;  // It rides the drag image window; its slot is the gap.
     }
+    const bool is_landing = static_cast<int>(order_index) == landing_index;
     // Siblings glide by their slide offsets; the dragged row is only ever
     // painted here at home, lifted, for its snapshot.
+    int dx = 0;
     int dy = band_shift;
     // The rows glide for ANY drag that opens a gap in the list — a tab
     // reorder, and a pinned cell or a bookmark entering it (the Mac's
-    // movePinnedTabOut / moveBookmarkOut(toNormalTabs:)).
-    if (!is_dragged && drag_active && !layout.horizontal_tabs) {
-      dy += static_cast<int>(TabSlide(row.id));
+    // movePinnedTabOut / moveBookmarkOut(toNormalTabs:)). The strip's
+    // glide sideways.
+    if (!is_dragged && drag_active) {
+      if (layout.horizontal_tabs) {
+        dx = static_cast<int>(TabSlide(row.id));
+      } else {
+        dy += static_cast<int>(TabSlide(row.id));
+      }
+    }
+    if (is_landing) {
+      dx += static_cast<int>(std::lround(landing_dx_));
     }
     RECT pill = row.bounds;
-    ::OffsetRect(&pill, 0, dy);
+    ::OffsetRect(&pill, dx, dy);
     RECT close_box = row.close_box;
-    ::OffsetRect(&close_box, 0, dy);
+    ::OffsetRect(&close_box, dx, dy);
     if (!layout.horizontal_tabs) {
       pill.top += Scaled(kRowPad);
       pill.bottom -= Scaled(kRowPad);
@@ -2624,6 +2720,11 @@ void PhiSidebarView::PaintBand(HDC dc,
     const bool row_hovered =
         hover_kind == HoverKind::kTab &&
         hover_index == static_cast<int>(&row - tabs_.data());
+    // The strip's lifted tab — the snapshot the drag image carries, and
+    // the landing glide — wears the hover wash (the Mac proxy's
+    // setDragHighlighted) and no divider: a clean tile over its neighbours.
+    const bool strip_lifted =
+        layout.horizontal_tabs && (is_dragged || is_landing);
     if (layout.horizontal_tabs) {
       // Chrome's strip. The active tab is the toolbar's own ground carried
       // up into the band, rounded on top and flush at the bottom so the two
@@ -2633,7 +2734,7 @@ void PhiSidebarView::PaintBand(HDC dc,
       if (row.active) {
         PhiFillRoundedTop(dc, pill, palette.window_bg, Scaled(kCornerRadius));
       } else {
-        if (row_hovered) {
+        if (row_hovered || strip_lifted) {
           PhiFillRoundedTop(dc, pill, palette.hover, Scaled(kCornerRadius));
         }
         // The divider rides the tab's trailing edge, inset vertically so it
@@ -2641,7 +2742,7 @@ void PhiSidebarView::PaintBand(HDC dc,
         const bool chip_after_hovered =
             hovered_chip_left >= pill.right &&
             hovered_chip_left <= pill.right + Scaled(kChipLeadGap);
-        if (!chip_after_hovered) {
+        if (!chip_after_hovered && !strip_lifted) {
           RECT divider = {pill.right - 1, pill.top + Scaled(6), pill.right,
                           pill.bottom - Scaled(6)};
           HBRUSH divider_brush = ::CreateSolidBrush(palette.separator);
@@ -2673,7 +2774,8 @@ void PhiSidebarView::PaintBand(HDC dc,
     const COLORREF ground = row.group_id.empty() ? kTintTop : palette.hover;
     const COLORREF row_bg =
         layout.horizontal_tabs
-            ? (row.active ? palette.window_bg : ground)
+            ? (row.active ? palette.window_bg
+                          : strip_lifted ? palette.hover : ground)
             : (is_dragged ? palette.hover_strong
                           : row.active ? kRowSelectedBg : ground);
     const auto draw_pane = [&](int left, int right, const TabRow& r,
@@ -2722,7 +2824,7 @@ void PhiSidebarView::PaintBand(HDC dc,
     const bool attached = row.attached_surface != SidebarSurface::kContent;
     const bool show_close = row_hovered && !is_dragged && !attached;
     RECT surface_box = row.surface_box;
-    ::OffsetRect(&surface_box, 0, dy);
+    ::OffsetRect(&surface_box, dx, dy);
     const int trailing = show_close ? close_box.left
                          : attached ? surface_box.left
                                     : pill.right;
@@ -2780,11 +2882,54 @@ void PhiSidebarView::PaintStripGroups(HDC dc,
   const std::string overview_group = PhiGroupOverview::OpenGroupId();
   const int radius = Scaled(kCornerRadius);
   const int strip_bottom = layout.tabs_top + Scaled(kHTabHeight);
+  // A tab drag in flight: the chips glide with their slots and each run's
+  // underline follows its gliding members (the session's group slide); the
+  // dragged tab is out of the strip, so it is nobody's neighbour.
+  const bool drag_active = drag_ && drag_->active();
+  const int dragged_tab =
+      drag_active && drag_->kind() == PhiDragKind::kTab ? drag_->Index() : -1;
+  int landing_index = -1;
+  if (!landing_key_.empty()) {
+    for (size_t t = 0; t < tabs_.size(); ++t) {
+      if (tabs_[t].key == landing_key_) {
+        landing_index = static_cast<int>(t);
+      }
+    }
+  }
+  // A tab's leading edge where it is painted right now.
+  const auto tab_dx = [&](size_t t) {
+    int dx = drag_active ? static_cast<int>(TabSlide(tabs_[t].id)) : 0;
+    if (static_cast<int>(t) == landing_index) {
+      dx += static_cast<int>(std::lround(landing_dx_));
+    }
+    return dx;
+  };
+  const auto chip_dx = [&](const GroupHeader& header) {
+    return drag_active
+               ? static_cast<int>(
+                     RowSlide(SidebarKey::Group(header.id).ToString()).dx)
+               : 0;
+  };
   ::SetBkMode(dc, TRANSPARENT);
   for (size_t i = 0; i < group_headers_.size(); ++i) {
-    const GroupHeader& gh = group_headers_[i];
-    if (!gh.chip || gh.bounds.right <= gh.bounds.left) {
+    const GroupHeader& header = group_headers_[i];
+    if (!header.chip || header.bounds.right <= header.bounds.left) {
       continue;
+    }
+    GroupHeader gh = header;
+    if (drag_active) {
+      const SlideVec slide =
+          RowSlide(SidebarKey::Group(gh.id).ToString());
+      const int dx = static_cast<int>(slide.dx);
+      const int dw = static_cast<int>(slide.dw);
+      for (RECT* part : {&gh.bounds, &gh.dot, &gh.label, &gh.count,
+                         &gh.mosaic, &gh.collapse_box}) {
+        ::OffsetRect(part, dx, 0);
+      }
+      if (gh.container.right > gh.container.left) {
+        gh.container.left += dx;
+        gh.container.right += dx + dw;
+      }
     }
     const bool hovered = hover_kind == HoverKind::kGroupHeader &&
                          hover_index == static_cast<int>(i);
@@ -2898,11 +3043,15 @@ void PhiSidebarView::PaintStripGroups(HDC dc,
       bool neighbour_hides = false;
       for (size_t t = 0; t < tabs_.size(); ++t) {
         const TabRow& tab = tabs_[t];
+        if (static_cast<int>(t) == dragged_tab) {
+          continue;  // Out of the strip while it is dragged.
+        }
+        const LONG tab_left = tab.bounds.left + tab_dx(t);
         if (tab.bounds.right <= tab.bounds.left ||
-            tab.bounds.left < gh.bounds.right) {
+            tab_left < gh.bounds.right) {
           continue;
         }
-        if (tab.bounds.left - gh.bounds.right <= Scaled(kChipTrailGap)) {
+        if (tab_left - gh.bounds.right <= Scaled(kChipTrailGap)) {
           has_neighbour = true;
           neighbour_hides = tab.active || hovered_tab == static_cast<int>(t);
         }
@@ -2910,8 +3059,9 @@ void PhiSidebarView::PaintStripGroups(HDC dc,
       }
       if (!has_neighbour && i + 1 < group_headers_.size()) {
         const GroupHeader& next = group_headers_[i + 1];
-        if (next.chip && next.bounds.left >= gh.bounds.right &&
-            next.bounds.left - gh.bounds.right <=
+        const LONG next_left = next.bounds.left + chip_dx(next);
+        if (next.chip && next_left >= gh.bounds.right &&
+            next_left - gh.bounds.right <=
                 Scaled(kChipTrailGap) + Scaled(kChipLeadGap)) {
           has_neighbour = true;
           neighbour_hides = hover_kind == HoverKind::kGroupHeader &&
@@ -2941,12 +3091,19 @@ void PhiSidebarView::PaintStripGroups(HDC dc,
       const int left = static_cast<int>(gh.container.left) + inset;
       const int right = static_cast<int>(gh.container.right) - inset;
       HBRUSH ink = ::CreateSolidBrush(gh.color);
-      const TabRow* active = nullptr;
+      // The active member's outline, where it is painted — not while it is
+      // the tab being dragged (the line runs straight under the gap).
+      RECT active_bounds = {};
+      bool active = false;
       if (gh.contains_active) {
-        for (const TabRow& row : tabs_) {
+        for (size_t t = 0; t < tabs_.size(); ++t) {
+          const TabRow& row = tabs_[t];
           if (row.active && row.group_id == gh.id &&
-              row.bounds.right > row.bounds.left) {
-            active = &row;
+              row.bounds.right > row.bounds.left &&
+              static_cast<int>(t) != dragged_tab) {
+            active = true;
+            active_bounds = row.bounds;
+            ::OffsetRect(&active_bounds, tab_dx(t), 0);
             break;
           }
         }
@@ -2958,12 +3115,12 @@ void PhiSidebarView::PaintStripGroups(HDC dc,
         }
       };
       if (active) {
-        line(left, static_cast<int>(active->bounds.left));
-        line(static_cast<int>(active->bounds.right), right);
+        line(left, static_cast<int>(active_bounds.left));
+        line(static_cast<int>(active_bounds.right), right);
         const int save = ::SaveDC(dc);
-        ::IntersectClipRect(dc, active->bounds.left - 1, active->bounds.top - 1,
-                            active->bounds.right + 1, line_y + 1);
-        RECT outline = active->bounds;
+        ::IntersectClipRect(dc, active_bounds.left - 1, active_bounds.top - 1,
+                            active_bounds.right + 1, line_y + 1);
+        RECT outline = active_bounds;
         outline.bottom += radius;
         PhiStrokeRoundRectAA(dc, outline, radius, gh.color, 1);
         ::RestoreDC(dc, save);

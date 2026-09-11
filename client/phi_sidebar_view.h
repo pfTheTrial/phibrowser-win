@@ -694,6 +694,16 @@ class PhiSidebarView {
   void OnHoverExpandTimer();
   // The 2px accent insertion line, over the composed frame.
   void DrawDragIndicator(HDC dc);
+  // A tab dropped on the comfortable strip lands from `drop_left` (client
+  // x, where the lifted tab was released): on the rebuild that follows the
+  // move it glides from there into its new slot over kLandingMs, painted
+  // over its neighbours — the Mac's clearDraggingPresentation snapping the
+  // source view to the proxy and performLayout(.dataChanged) animating it
+  // home. Armed for one rebuild only.
+  void BeginStripLanding(const SidebarKey& key, int drop_left);
+  // Disarms it (the move did not happen after all) or stops a glide.
+  void CancelStripLanding();
+  static constexpr int kLandingMs = 180;
 
   // --- Paint --------------------------------------------------------------
   // The band (pinned grid through tab list): once normally, or the two-pass
@@ -797,6 +807,9 @@ class PhiSidebarView {
   // The dragged element's slide offsets, zero with no drag in flight.
   PhiSlideVec RowSlide(const std::string& guid) const;
   double TabSlide(TabId tab_id) const;
+  // The strip's landing glide: on the rebuild after the drop, the landed
+  // row's offset from where it was released, eased to zero by the animator.
+  void StartStripLanding(const PhiSidebarRects& layout);
   HWND shell_hwnd() const;
   // Publishes the rows into the shell's hit list — one hit per row, keyed
   // so a provider handed out before a rebuild finds its row again.
@@ -871,6 +884,18 @@ class PhiSidebarView {
   // destructor IS AbortDrag, and it owns the drag image and the split-drop
   // overlay, so nothing tears those down by hand.
   std::unique_ptr<PhiSidebarDragSession> drag_;
+
+  // The strip's landing glide (BeginStripLanding). `landing_armed_key_` is
+  // consumed by the next rebuild, which starts the animation on the row it
+  // finds; `landing_key_` is the row in flight and `landing_dx_` how far
+  // it still is from its slot.
+  SidebarKey landing_armed_key_;
+  int landing_drop_left_ = 0;
+  ULONGLONG landing_armed_at_ = 0;
+  SidebarKey landing_key_;
+  double landing_from_ = 0.0;
+  double landing_dx_ = 0.0;
+  int landing_animation_ = 0;
 };
 
 }  // namespace phi_client

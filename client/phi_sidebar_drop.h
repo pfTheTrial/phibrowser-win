@@ -44,6 +44,11 @@ struct DropResolution {
   // folder (highlight `folder_key` instead).
   int gap_slot = -1;
   SidebarKey folder_key;
+  // The strip only (ResolveStripTabDrop): the content row the gap opens
+  // BEFORE — a chip or a tab; rows.size() = past the last one. The slide
+  // reads this rather than `gap_slot`, since a chip is a slot of its own on
+  // the strip and none in the tab count.
+  int anchor_row = -1;
 };
 
 // The bookmark outline (the Mac's SidebarBookmarkFolderDropResolver). Rows
@@ -73,6 +78,32 @@ DropResolution ResolveTabDrop(const std::vector<DropRow>& rows,
                               int pointer_y,
                               bool horizontal,
                               const SidebarKey& dragging);
+
+// The comfortable strip (the Mac's TabStripDragController). The gap is
+// decided by the dragged tab's EDGES, not by the pointer, so the moment a
+// neighbour lets way does not depend on where inside the tab it was
+// grabbed. `rows` are the strip's content rows in order — chips as headers,
+// tabs — with their RESTING rects (empty when hidden or unplaced), and
+// `dragged_row` the dragged tab's index among them; `proxy_left/right` is
+// where the lifted tab is on screen right now. Every other placed row is a
+// landmark: one left of the dragged tab lets way once the tab's LEFT edge
+// reaches its centre, one right of it once the tab's RIGHT edge does, and
+// the gap opens before the first landmark still ahead. (This is the Mac's
+// calculateGapIndexEdgeBased in resting coordinates: its was-before /
+// was-after hysteresis over the slid frames reduces to exactly this when
+// the gap is the dragged tab's own width, as it is here.)
+//
+// Membership at the gap: between two members, or right after an expanded
+// chip, joins the group; at a FOREIGN group's trailing edge the tab joins
+// while it covers the last member by a third of that member's width
+// (the Mac's trailingJoin); at its OWN group's trailing edge it stays a
+// member until it has moved a third of its width past its home
+// (trailingLeave); before a chip is before the group; right after a
+// collapsed chip is after the group.
+DropResolution ResolveStripTabDrop(const std::vector<DropRow>& rows,
+                                   int dragged_row,
+                                   int proxy_left,
+                                   int proxy_right);
 
 }  // namespace phi_client
 

@@ -4,6 +4,8 @@
 
 #include "phi_sidebar_drop.h"
 
+#include <algorithm>
+
 namespace phi_client {
 
 namespace {
@@ -179,6 +181,97 @@ DropResolution ResolveTabDrop(const std::vector<DropRow>& rows,
       for (size_t j = anchor_at + 1; j < rows.size(); ++j) {
         if (!rows[j].group_header && rows[j].key != dragging) {
           out.place.before = rows[j].key;
+          break;
+        }
+      }
+    }
+  }
+  return out;
+}
+
+DropResolution ResolveStripTabDrop(const std::vector<DropRow>& rows,
+                                   int dragged_row,
+                                   int proxy_left,
+                                   int proxy_right) {
+  DropResolution out;
+  out.place.section = SidebarPlace::Section::kTabs;
+  out.place.group_explicit = true;
+  const int count = static_cast<int>(rows.size());
+  const bool have_dragged = dragged_row >= 0 && dragged_row < count;
+  const std::string dragged_group =
+      have_dragged ? rows[static_cast<size_t>(dragged_row)].group_id
+                   : std::string();
+  const SidebarKey dragging =
+      have_dragged ? rows[static_cast<size_t>(dragged_row)].key : SidebarKey();
+  const int width = std::max(0, proxy_right - proxy_left);
+  // The landmarks, in order: the first still ahead of the tab's leading
+  // edge is the anchor. The gap slot counts the visible tab rows before it,
+  // the dragged one included (the same index space as ResolveTabDrop).
+  int anchor = count;
+  int previous = -1;
+  int slot = 0;
+  for (int i = 0; i < count; ++i) {
+    const DropRow& row = rows[static_cast<size_t>(i)];
+    if (row.bounds.empty()) {
+      continue;
+    }
+    if (i == dragged_row) {
+      ++slot;
+      continue;
+    }
+    const int mid = MidX(row.bounds);
+    const bool ahead = i < dragged_row ? proxy_left <= mid : proxy_right < mid;
+    if (ahead) {
+      anchor = i;
+      break;
+    }
+    previous = i;
+    if (!row.group_header) {
+      ++slot;
+    }
+  }
+  out.gap_slot = slot;
+  out.anchor_row = anchor;
+  const DropRow* prev =
+      previous >= 0 ? &rows[static_cast<size_t>(previous)] : nullptr;
+  const DropRow* next =
+      anchor < count ? &rows[static_cast<size_t>(anchor)] : nullptr;
+  if (prev && !prev->group_id.empty()) {
+    const std::string& group = prev->group_id;
+    const bool next_in =
+        next && !next->group_header && next->group_id == group;
+    if (next_in) {
+      // Between two members, or right after the chip: inside the run.
+      out.place.group_id = group;
+    } else if (group == dragged_group) {
+      // Its own group's trailing edge (the last member, or the chip when
+      // it is the only one): a member until a third of its width past
+      // home — the Mac's trailingLeave buffer.
+      if (proxy_left <= prev->bounds.right + width / 3) {
+        out.place.group_id = group;
+      }
+    } else if (!prev->group_header) {
+      // A foreign run's trailing edge: joins as its new last member while
+      // it covers the last member by a third of that member's width.
+      const int third = (prev->bounds.right - prev->bounds.left) / 3;
+      if (proxy_right >= prev->bounds.left + third &&
+          proxy_left <= prev->bounds.right - third) {
+        out.place.group_id = group;
+      }
+    }
+    // Else: right after a foreign chip with nothing of the run visible
+    // behind it (collapsed) — after the group, ungrouped.
+  }
+  if (next) {
+    if (!next->group_header && next->key != dragging) {
+      out.place.before = next->key;
+    } else {
+      // A chip's first member is the tab anchor — hidden or not, it is
+      // where "before the group" lands in the model.
+      for (int j = anchor + 1; j < count; ++j) {
+        const DropRow& row = rows[static_cast<size_t>(j)];
+        if (!row.group_header && row.key != dragging) {
+          out.place.before = row.key;
           break;
         }
       }

@@ -240,6 +240,143 @@ void TabDrop() {
   CHECK(r.gap_slot == 2 && r.place.before == SidebarKey::Tab(12));
 }
 
+// A strip row: a chip (`header`) or a tab, `left..right` on the strip.
+DropRow StripRowAt(SidebarKey key, int left, int right, std::string group = {},
+                   bool header = false) {
+  DropRow r;
+  r.key = std::move(key);
+  r.bounds = {left, 0, right, 34};
+  r.group_id = std::move(group);
+  r.group_header = header;
+  return r;
+}
+
+void StripTabDrop() {
+  std::printf("strip tab drop: edge-based gap, chips, join and leave\n");
+  // t0 | t1 (dragged) | t2 | t3 — 100 wide each, abutting.
+  std::vector<DropRow> rows = {
+      StripRowAt(SidebarKey::Tab(0), 0, 100),
+      StripRowAt(SidebarKey::Tab(1), 100, 200),
+      StripRowAt(SidebarKey::Tab(2), 200, 300),
+      StripRowAt(SidebarKey::Tab(3), 300, 400)};
+  // At home: the gap is its own slot — before t2, counted past t0 and t1.
+  DropResolution r = ResolveStripTabDrop(rows, 1, 100, 200);
+  CHECK(r.gap_slot == 2 && r.anchor_row == 2 &&
+        r.place.before == SidebarKey::Tab(2) && r.place.group_id.empty());
+  CHECK(r.place.group_explicit);
+  // Rightward: t2 lets way when the tab's RIGHT edge reaches its centre
+  // (250), whatever the grab offset — not before.
+  r = ResolveStripTabDrop(rows, 1, 140, 240);
+  CHECK(r.gap_slot == 2 && r.anchor_row == 2);
+  r = ResolveStripTabDrop(rows, 1, 160, 260);
+  CHECK(r.gap_slot == 3 && r.anchor_row == 3 &&
+        r.place.before == SidebarKey::Tab(3));
+  // Past everything: the end.
+  r = ResolveStripTabDrop(rows, 1, 320, 420);
+  CHECK(r.gap_slot == 4 && r.anchor_row == 4 && r.place.before.empty());
+  // Leftward: t0 lets way when the tab's LEFT edge reaches its centre (50).
+  r = ResolveStripTabDrop(rows, 1, 60, 160);
+  CHECK(r.gap_slot == 2 && r.anchor_row == 2);
+  r = ResolveStripTabDrop(rows, 1, 40, 140);
+  CHECK(r.gap_slot == 0 && r.anchor_row == 0 &&
+        r.place.before == SidebarKey::Tab(0));
+
+  // A foreign group ahead of the dragged tab, approached from the right:
+  // [G chip 0..40] g1 44..144 | g2 144..244 | u 244..344 | d 344..444.
+  std::vector<DropRow> group = {
+      StripRowAt(SidebarKey::Group("G"), 0, 40, "G", true),
+      StripRowAt(SidebarKey::Tab(1), 44, 144, "G"),
+      StripRowAt(SidebarKey::Tab(2), 144, 244, "G"),
+      StripRowAt(SidebarKey::Tab(3), 244, 344),
+      StripRowAt(SidebarKey::Tab(4), 344, 444)};
+  r = ResolveStripTabDrop(group, 4, 344, 444);  // Home.
+  CHECK(r.gap_slot == 4 && r.anchor_row == 5 && r.place.before.empty() &&
+        r.place.group_id.empty());
+  // u let way (left edge at its centre 294): the gap sits after G's last
+  // member — outside the group while the tab covers g2 by under a third.
+  r = ResolveStripTabDrop(group, 4, 280, 380);
+  CHECK(r.gap_slot == 2 && r.anchor_row == 3 &&
+        r.place.before == SidebarKey::Tab(3) && r.place.group_id.empty());
+  // A third's cover of g2 (left edge at or before 244 - 33): joins as last.
+  r = ResolveStripTabDrop(group, 4, 200, 300);
+  CHECK(r.gap_slot == 2 && r.anchor_row == 3 &&
+        r.place.before == SidebarKey::Tab(3) && r.place.group_id == "G");
+  // Between g1 and g2: in the run.
+  r = ResolveStripTabDrop(group, 4, 180, 280);
+  CHECK(r.gap_slot == 1 && r.anchor_row == 2 &&
+        r.place.before == SidebarKey::Tab(2) && r.place.group_id == "G");
+  // Right after the chip (left edge past the chip's centre 20, before
+  // g1's 94): the group's first member.
+  r = ResolveStripTabDrop(group, 4, 30, 130);
+  CHECK(r.gap_slot == 0 && r.anchor_row == 1 &&
+        r.place.before == SidebarKey::Tab(1) && r.place.group_id == "G");
+  // Before the chip: before the group, ungrouped, anchored on g1.
+  r = ResolveStripTabDrop(group, 4, 10, 110);
+  CHECK(r.gap_slot == 0 && r.anchor_row == 0 &&
+        r.place.before == SidebarKey::Tab(1) && r.place.group_id.empty());
+
+  // The dragged tab is its OWN group's last member: [G] g1 | d | u.
+  std::vector<DropRow> last = {
+      StripRowAt(SidebarKey::Group("G"), 0, 40, "G", true),
+      StripRowAt(SidebarKey::Tab(1), 44, 144, "G"),
+      StripRowAt(SidebarKey::Tab(2), 144, 244, "G"),
+      StripRowAt(SidebarKey::Tab(3), 244, 344)};
+  // Home, and a nudge right within a third of its width: still a member.
+  r = ResolveStripTabDrop(last, 2, 144, 244);
+  CHECK(r.anchor_row == 3 && r.place.before == SidebarKey::Tab(3) &&
+        r.place.group_id == "G");
+  r = ResolveStripTabDrop(last, 2, 170, 270);
+  CHECK(r.anchor_row == 3 && r.place.group_id == "G");
+  // A third past home: leaves the group in place (trailingLeave).
+  r = ResolveStripTabDrop(last, 2, 180, 280);
+  CHECK(r.anchor_row == 3 && r.place.before == SidebarKey::Tab(3) &&
+        r.place.group_id.empty());
+  // Past u: the end, ungrouped.
+  r = ResolveStripTabDrop(last, 2, 200, 300);
+  CHECK(r.anchor_row == 4 && r.place.before.empty() &&
+        r.place.group_id.empty());
+  // Leftward into its own run: before g1 (left edge at g1's centre 94).
+  r = ResolveStripTabDrop(last, 2, 90, 190);
+  CHECK(r.anchor_row == 1 && r.place.before == SidebarKey::Tab(1) &&
+        r.place.group_id == "G");
+  // Past its own chip's centre: before the group (leadingLeave).
+  r = ResolveStripTabDrop(last, 2, 15, 115);
+  CHECK(r.anchor_row == 0 && r.place.before == SidebarKey::Tab(1) &&
+        r.place.group_id.empty());
+
+  // The only member: [G] d | u — the chip is the trailing anchor.
+  std::vector<DropRow> lone = {
+      StripRowAt(SidebarKey::Group("G"), 0, 40, "G", true),
+      StripRowAt(SidebarKey::Tab(1), 44, 144, "G"),
+      StripRowAt(SidebarKey::Tab(2), 144, 244)};
+  r = ResolveStripTabDrop(lone, 1, 44, 144);
+  CHECK(r.anchor_row == 2 && r.place.group_id == "G");
+  r = ResolveStripTabDrop(lone, 1, 80, 180);  // A third past the chip.
+  CHECK(r.anchor_row == 2 && r.place.before == SidebarKey::Tab(2) &&
+        r.place.group_id.empty());
+
+  // A collapsed foreign chip stands in for its hidden run: before it is
+  // before the group (anchored on the hidden first member), right after it
+  // is after the group.
+  std::vector<DropRow> collapsed = {
+      StripRowAt(SidebarKey::Tab(0), 0, 100),
+      StripRowAt(SidebarKey::Group("G"), 104, 144, "G", true),
+      StripRowAt(SidebarKey::Tab(1), 0, 0, "G"),
+      StripRowAt(SidebarKey::Tab(2), 0, 0, "G"),
+      StripRowAt(SidebarKey::Tab(3), 148, 248),
+      StripRowAt(SidebarKey::Tab(4), 248, 348)};
+  r = ResolveStripTabDrop(collapsed, 5, 120, 220);
+  CHECK(r.gap_slot == 1 && r.anchor_row == 1 &&
+        r.place.before == SidebarKey::Tab(1) && r.place.group_id.empty());
+  r = ResolveStripTabDrop(collapsed, 5, 130, 230);
+  CHECK(r.gap_slot == 1 && r.anchor_row == 4 &&
+        r.place.before == SidebarKey::Tab(3) && r.place.group_id.empty());
+  // Nothing placed but the dragged tab: the end, slot past it.
+  std::vector<DropRow> alone = {StripRowAt(SidebarKey::Tab(1), 0, 100)};
+  r = ResolveStripTabDrop(alone, 0, 30, 130);
+  CHECK(r.gap_slot == 1 && r.anchor_row == 1 && r.place.before.empty());
+}
+
 }  // namespace
 
 int main() {
@@ -247,6 +384,7 @@ int main() {
   BookmarkDrop();
   PinnedDrop();
   TabDrop();
+  StripTabDrop();
   if (g_failures) {
     std::printf("%d FAILED\n", g_failures);
     return 1;

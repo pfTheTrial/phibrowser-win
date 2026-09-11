@@ -28,6 +28,7 @@ using phi_framework::WindowSnapshot;
 
 using sidebar_metrics::kBookmarkIndent;
 using sidebar_metrics::kCornerRadius;
+using sidebar_metrics::kHTabGap;
 using sidebar_metrics::kRowPad;
 using shell_metrics::kTabRowGap;
 using shell_metrics::kTabRowHeight;
@@ -181,6 +182,9 @@ void PhiSidebarDragSession::RetargetDragSlide() {
   const int pitch = Scaled(kTabRowHeight + kTabRowGap);
   int preview_rows = -1;  // The grid preview's rows, when one was walked.
 
+  if (active_ && layout.horizontal_tabs) {
+    RetargetStripSlide(&to, &row_to);
+  }
   if (active_ && !layout.horizontal_tabs && insert_ >= 0) {
     // The visible tab rows, and the dragged one's position among them (-1:
     // what is dragged is not a tab row — a pinned cell or a bookmark
@@ -571,6 +575,130 @@ void PhiSidebarDragSession::RetargetDragSlide() {
   }
 }
 
+void PhiSidebarDragSession::RetargetStripSlide(
+    std::map<TabId, double>* to,
+    std::map<std::string, SlideVec>* row_to) {
+  if (kind_ != PhiDragKind::kTab) {
+    return;  // Only a tab reorders the strip; a pin keeps its line.
+  }
+  // The strip's placed items in order — chips and tabs, the dragged tab
+  // left out — each with the id its slide is filed under.
+  const std::vector<DropRow> rows = view_->TabDropRows();
+  struct Item {
+    bool chip = false;
+    std::string group_id;
+    TabId id;
+    SidebarRect bounds;
+  };
+  std::vector<Item> items;
+  int dragged_row = -1;
+  int dragged_pos = -1;
+  SidebarRect dragged_bounds;
+  for (size_t i = 0; i < rows.size(); ++i) {
+    const DropRow& row = rows[i];
+    if (row.bounds.empty()) {
+      continue;
+    }
+    if (row.key == key_) {
+      dragged_row = static_cast<int>(i);
+      dragged_pos = static_cast<int>(items.size());
+      dragged_bounds = row.bounds;
+      continue;
+    }
+    Item item;
+    item.chip = row.group_header;
+    item.group_id = row.group_id;
+    if (!row.group_header) {
+      for (const TabRow& tab : view_->tabs()) {
+        if (tab.key == row.key) {
+          item.id = tab.id;
+          break;
+        }
+      }
+    }
+    item.bounds = row.bounds;
+    items.push_back(std::move(item));
+  }
+  const int count = static_cast<int>(items.size());
+  if (dragged_row < 0 || count == 0) {
+    return;
+  }
+  // The gap is the dragged tab's own slot moved: while the drop is on the
+  // strip it opens before the anchor row, and the items between there and
+  // the vacated slot glide one pitch toward it; off the strip (the page,
+  // another window, outside) the vacated slot closes — the items past it
+  // glide up, as the vertical list's rows do.
+  const int width = dragged_bounds.right - dragged_bounds.left;
+  const double pitch = width + Scaled(kHTabGap);
+  int gap_pos = count;
+  if (band_ == PhiDropBand::kTabs && strip_anchor_ >= 0) {
+    gap_pos = 0;
+    for (int i = 0; i < static_cast<int>(rows.size()) && i < strip_anchor_;
+         ++i) {
+      if (!rows[static_cast<size_t>(i)].bounds.empty() && i != dragged_row) {
+        ++gap_pos;
+      }
+    }
+  }
+  std::vector<double> dx(static_cast<size_t>(count), 0.0);
+  for (int i = 0; i < count; ++i) {
+    if (i >= dragged_pos && i < gap_pos) {
+      dx[static_cast<size_t>(i)] = -pitch;
+    } else if (i >= gap_pos && i < dragged_pos) {
+      dx[static_cast<size_t>(i)] = pitch;
+    }
+  }
+  // The gap's own rect once everything has glided — the slot a group's
+  // underline stretches over when the drop joins that group (the Mac's
+  // groupGeometries extending the run past its last member).
+  double phantom_right = 0.0;
+  if (gap_pos < count) {
+    phantom_right = items[static_cast<size_t>(gap_pos)].bounds.left +
+                    dx[static_cast<size_t>(gap_pos)];
+  } else {
+    phantom_right = items[static_cast<size_t>(count - 1)].bounds.right +
+                    dx[static_cast<size_t>(count - 1)] + Scaled(kHTabGap) +
+                    width;
+  }
+  for (int i = 0; i < count; ++i) {
+    const Item& item = items[static_cast<size_t>(i)];
+    const double shift = dx[static_cast<size_t>(i)];
+    if (!item.chip) {
+      if (shift != 0.0 && item.id.valid()) {
+        (*to)[item.id] = shift;
+      }
+      continue;
+    }
+    // The chip glides with its slot; its run's right edge follows the
+    // later of its remaining members' trailing edges and, when the drop
+    // lands in the group, the gap — the underline grows around the
+    // gliding tabs instead of sliding out from under them.
+    double run_right = item.bounds.right + shift;
+    for (int j = 0; j < count; ++j) {
+      const Item& member = items[static_cast<size_t>(j)];
+      if (!member.chip && member.group_id == item.group_id) {
+        run_right = std::max(
+            run_right, member.bounds.right + dx[static_cast<size_t>(j)]);
+      }
+    }
+    if (band_ == PhiDropBand::kTabs && gap_group_ == item.group_id) {
+      run_right = std::max(run_right, phantom_right);
+    }
+    double container_right = item.bounds.right;
+    for (const GroupHeader& header : view_->group_headers()) {
+      if (header.id == item.group_id &&
+          header.container.right > header.container.left) {
+        container_right = header.container.right;
+        break;
+      }
+    }
+    const SlideVec v{shift, 0.0, run_right - (container_right + shift), 0.0};
+    if (v.moved()) {
+      (*row_to)[SidebarKey::Group(item.group_id).ToString()] = v;
+    }
+  }
+}
+
 PhiDropBand PhiSidebarDragSession::DropBandAt(
     POINT client_pt) {
   // Outside the shell window entirely = tear-off (the Mac's pure
@@ -729,8 +857,12 @@ void PhiSidebarDragSession::Update(POINT pt) {
   // the animation opens; a change between INTO-a-folder and a gap repaints
   // even at the same slot.
   const int folder_before = bookmark_drop_folder_row_;
+  const int anchor_before = strip_anchor_;
   const int slot = DragInsertSlot(pt);
   const bool folder_target_changed = folder_before != bookmark_drop_folder_row_;
+  // The strip's gap sits before a chip or a tab: the same tab slot can be
+  // either side of a chip, and the chip glides differently for the two.
+  const bool anchor_changed = strip_anchor_ != anchor_before;
   // The same gap slot is "under the header" or "before the group" by which
   // side of the header's midpoint the pointer is on; the group headers
   // slide differently for the two, so crossing it retargets as a slot
@@ -745,7 +877,7 @@ void PhiSidebarDragSession::Update(POINT pt) {
                              kind_ == PhiDragKind::kPin ||
                              kind_ == PhiDragKind::kBookmark;
   if (slot != insert_ || band_changed || folder_target_changed ||
-      gap_group_changed) {
+      gap_group_changed || anchor_changed) {
     insert_ = slot;
     if (animated_kind) {
       RetargetDragSlide();  // The gap moved: siblings glide to the new slot.
@@ -786,6 +918,12 @@ bool PhiSidebarDragSession::CommitDragImpl() {
   const TabId split_focus = focus_tab_id_;
   const TabId click_tab = click_tab_id_;
   const int chip_pos = Index();
+  // A tab dropped on the strip lands from where it was released: the view
+  // glides it into its new slot once the rows have rebuilt (the Mac's
+  // clearDraggingPresentation snapping the source view to the proxy, then
+  // performLayout(.dataChanged) animating it home).
+  const bool strip_drop = active && OnStrip() && band == PhiDropBand::kTabs;
+  const int drop_left = strip_drop ? StripProxyRect(release).left : 0;
   CancelDrag();
   if (!active && kind == PhiDragKind::kTab && click_tab.valid()) {
     // A plain click on a tab row: the deferred activation.
@@ -866,7 +1004,16 @@ bool PhiSidebarDragSession::CommitDragImpl() {
   if (!place_valid) {
     return false;
   }
-  return view_->Apply(SidebarMove{key, place});
+  // Armed BEFORE the move: its rebuild may run inside Apply as well as on
+  // the posted turn, and the glide has to be waiting either way.
+  if (strip_drop) {
+    view_->BeginStripLanding(key, drop_left);
+  }
+  const bool acted = view_->Apply(SidebarMove{key, place});
+  if (!acted && strip_drop) {
+    view_->CancelStripLanding();
+  }
+  return acted;
 }
 
 void PhiSidebarDragSession::SyncHoverExpand(POINT pt) {
@@ -941,6 +1088,7 @@ void PhiSidebarDragSession::CancelDrag() {
   key_ = {};
   active_ = false;
   insert_ = -1;
+  strip_anchor_ = -1;
   place_valid_ = false;
   folder_key_ = {};
   bookmark_drop_folder_row_ = -1;
@@ -1059,6 +1207,65 @@ bool PhiSidebarDragSession::DragImageInside(POINT pt) {
          window_host_->SlotAtScreenPoint(screen, slot_.value) != 0;
 }
 
+bool PhiSidebarDragSession::OnStrip() const {
+  return kind_ == PhiDragKind::kTab && shell_->SidebarRects().horizontal_tabs;
+}
+
+RECT PhiSidebarDragSession::StripProxyRect(POINT pt) const {
+  const int width = strip_home_.right - strip_home_.left;
+  const int height = strip_home_.bottom - strip_home_.top;
+  RECT r = {pt.x - strip_grip_.x, strip_home_.top, 0, 0};
+  // The strip runs from its first placed slot to the "+" (or to where the
+  // tabs must end when the "+" was squeezed out). The Mac's exception: the
+  // strip's last tab, when grouped, may run over the "+" to the strip's own
+  // right edge — the "+" trails it so closely that it could never move
+  // right enough to leave its group by the trailing edge otherwise. That
+  // edge is where the "+" slot ends, in front of search-tabs (the Mac's
+  // combinedFrame.maxX); `tabs_limit` is only where the tabs stop so the
+  // "+" fits, the last tab's own right edge on a full strip.
+  const PhiSidebarRects layout = shell_->SidebarRects();
+  int min_x = layout.tabs_limit;
+  for (const TabRow& tab : view_->tabs()) {
+    if (tab.bounds.right > tab.bounds.left) {
+      min_x = std::min(min_x, static_cast<int>(tab.bounds.left));
+    }
+  }
+  for (const GroupHeader& header : view_->group_headers()) {
+    if (header.chip && header.bounds.right > header.bounds.left) {
+      min_x = std::min(min_x, static_cast<int>(header.bounds.left));
+    }
+  }
+  const RECT& plus = view_->add_tab_button();
+  int max_x = plus.right > plus.left ? plus.left : layout.tabs_limit;
+  const int index = Index();
+  const bool rightmost_grouped =
+      index >= 0 && index == static_cast<int>(view_->tabs().size()) - 1 &&
+      !view_->tabs()[static_cast<size_t>(index)].group_id.empty();
+  if (rightmost_grouped) {
+    max_x = layout.search_tabs.left;
+  }
+  const int lo = min_x;
+  const int hi = max_x - Scaled(6) - width;
+  if (lo <= hi) {
+    // A soft clamp: past either end the tab gives a little (8pt at 35%),
+    // the Mac's elastic edge.
+    const int limit = Scaled(8);
+    constexpr double kOvershoot = 0.35;
+    if (r.left < lo) {
+      const int delta = std::min(static_cast<int>(lo - r.left), limit);
+      r.left = lo - static_cast<int>(std::lround(delta * kOvershoot));
+    } else if (r.left > hi) {
+      const int delta = std::min(static_cast<int>(r.left - hi), limit);
+      r.left = hi + static_cast<int>(std::lround(delta * kOvershoot));
+    }
+  } else {
+    r.left = lo;
+  }
+  r.right = r.left + width;
+  r.bottom = r.top + height;
+  return r;
+}
+
 void PhiSidebarDragSession::BeginDragImage(POINT pt) {
   if (kind_ == PhiDragKind::kChip || kind_ == PhiDragKind::kNone ||
       !shell_hwnd()) {
@@ -1079,6 +1286,8 @@ void PhiSidebarDragSession::BeginDragImage(POINT pt) {
   POINT corners[2] = {{source.left, source.top}, {source.right, source.bottom}};
   ::MapWindowPoints(shell_hwnd(), nullptr, corners, 2);
   home_screen_ = {corners[0].x, corners[0].y, corners[1].x, corners[1].y};
+  strip_home_ = source;
+  strip_grip_ = {pt.x - source.left, pt.y - source.top};
   image_inside_ = true;
   card_built_ = false;
   card_ = PhiDragCard();
@@ -1115,9 +1324,23 @@ void PhiSidebarDragSession::SyncDragImage(POINT pt) {
              DragRowSize(&shape_w, &shape_h)) {
     morph = Morph::kRow;
   }
+  // On the strip the row image rides the tabs' line, not the cursor.
+  const PhiSidebarRects layout = shell_->SidebarRects();
+  const bool on_strip = inside && OnStrip() &&
+                        ::PtInRect(&layout.title_bar, pt);
+  const auto place_on_strip = [&]() {
+    const RECT proxy = StripProxyRect(pt);
+    POINT origin = {proxy.left, proxy.top};
+    ::ClientToScreen(shell_hwnd(), &origin);
+    PhiDragImage::PlaceAt(origin);
+  };
   if (inside == image_inside_ && morph == image_morph_ &&
       (morph == Morph::kNone || shape_w == image_morph_width_)) {
-    PhiDragImage::MoveTo(screen);
+    if (on_strip) {
+      place_on_strip();
+    } else {
+      PhiDragImage::MoveTo(screen);
+    }
     return;
   }
   image_inside_ = inside;
@@ -1132,6 +1355,9 @@ void PhiSidebarDragSession::SyncDragImage(POINT pt) {
   }
   if (inside) {
     PhiDragImage::ShowRow(screen);  // Back in: the row again.
+    if (on_strip) {
+      place_on_strip();
+    }
     return;
   }
   if (!card_built_) {
@@ -2033,8 +2259,25 @@ int PhiSidebarDragSession::DragInsertSlot(POINT pt) {
         case PhiDropBand::kBookmarks:
           return take(ResolveBookmarkDrop(view_->BookmarkDropRows(), pt.y, {}));
         default:
+          if (layout.horizontal_tabs) {
+            // The strip: the gap follows the lifted tab's edges, not the
+            // pointer (ResolveStripTabDrop), against the resting rows.
+            const std::vector<DropRow> rows = view_->TabDropRows();
+            int dragged_row = -1;
+            for (size_t i = 0; i < rows.size(); ++i) {
+              if (rows[i].key == key_) {
+                dragged_row = static_cast<int>(i);
+                break;
+              }
+            }
+            const RECT proxy = StripProxyRect(pt);
+            const DropResolution r =
+                ResolveStripTabDrop(rows, dragged_row, proxy.left, proxy.right);
+            strip_anchor_ = r.anchor_row;
+            return take(r);
+          }
           return take(ResolveTabDrop(view_->TabDropRows(), pt.x, pt.y,
-                                     layout.horizontal_tabs, key_));
+                                     /*horizontal=*/false, key_));
       }
     case PhiDragKind::kPin:
       switch (band_) {
@@ -2116,11 +2359,10 @@ void PhiSidebarDragSession::DrawIndicator(HDC dc) {
   const PhiSidebarRects layout = shell_->SidebarRects();
   switch (kind_) {
     case PhiDragKind::kTab:
-      // Every vertical target animates its own gap now (Chrome's vertical
-      // tabs draw no line either); only the horizontal strip keeps one.
-      have = layout.horizontal_tabs && band_ == PhiDropBand::kTabs
-                 ? pick(view_->tabs(), /*horizontal_list=*/true)
-                 : false;
+      // Every target animates its own gap now — the vertical lists and
+      // the strip alike (Chrome's vertical tabs and the Mac's strip draw
+      // no line either).
+      have = false;
       break;
     case PhiDragKind::kPin:
       // The grid gap is the indicator in the sidebar; the horizontal
