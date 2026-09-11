@@ -140,6 +140,10 @@ void SingleSpace() {
   l = ComputeShellLayout(in);
   CHECK(l.chips_limit == l.chips_left);  // No pip.
   CHECK(l.tabs_left == l.phi_menu.right + 8);
+  // The flag itself travels with the comfortable layout too — the strip
+  // decides on it whether to lay out the compact pip (a phantom one under
+  // the first pinned cell answered hovers with the Space card).
+  CHECK(!l.spaces_switch);
   // The cache key sees the flag.
   ShellLayoutInputs a = Base(PhiLayoutMode::kPerformance);
   ShellLayoutInputs b = a;

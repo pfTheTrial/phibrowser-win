@@ -93,6 +93,11 @@ ShellLayout ComputeShellLayout(const ShellLayoutInputs& in) {
   out.mode = in.mode;
   out.chip_size = kSpaceChip;  // The vertical strip below raises it.
   out.client = {0, 0, in.client_width, in.client_height};
+  // Carried on EVERY path — the comfortable branch returns early, and the
+  // strip reads this flag to decide whether it lays out a pip at all: an
+  // unset one left a phantom compact pip under the first pinned cell,
+  // whose hover then raised the Space card.
+  out.spaces_switch = in.spaces_switch;
   if (in.content_fullscreen) {
     // Content fullscreen: the hosted child owns every pixel of the shell;
     // every chrome rect stays empty.
@@ -394,7 +399,6 @@ ShellLayout ComputeShellLayout(const ShellLayoutInputs& in) {
     carve_bookmark_bar(&out);
     out.tabs_top = tb + scaled(kHeaderHeight + kHeaderSpacer) - strip_room;
   }
-  out.spaces_switch = in.spaces_switch;
 
   // The pinned-tab band sits between the header and the tab list. Empty until
   // favourites exist, exactly as on Mac (which mounts a zero-height container).
