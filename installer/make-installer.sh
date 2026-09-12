@@ -8,19 +8,30 @@
 # pulled back into installer/dist/.
 #
 # Usage: make-installer.sh [--version X.Y.Z] [--host user@host] [--keep-remote]
+#                          [--telemetry phi_telemetry.json | --no-telemetry]
 #   --version    defaults to PHI_WIN_VERSION_STRING in client/phi_version.h
 #   --keep-remote  skip pulling the exe back (leave it on the box)
+#   --telemetry  the deployment config the installer drops into the user
+#                data dir (crash_endpoint, analytics_*; docs/sentry-crash-
+#                reporting.md). Default: rendered by the sibling
+#                ../../push-telemetry-config.sh --print when that exists,
+#                else none. --no-telemetry builds a config-less installer
+#                (crashes stay local, analytics never leave the machine).
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 HOST="jdxin@192.168.100.170"
 VERSION=""
 PULL=yes
+TELEMETRY=""
+NO_TELEMETRY=no
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --version) VERSION="$2"; shift 2 ;;
     --host) HOST="$2"; shift 2 ;;
     --keep-remote) PULL=no; shift ;;
+    --telemetry) TELEMETRY="$2"; shift 2 ;;
+    --no-telemetry) NO_TELEMETRY=yes; shift ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -29,6 +40,27 @@ if [[ -z "$VERSION" ]]; then
     "$HERE/../client/phi_version.h")
 fi
 echo "version: $VERSION  host: $HOST"
+
+# The telemetry config: an explicit file, else the rendered deployment
+# config, else nothing. The rendered file is a throwaway in the temp dir so
+# the keys never sit in the repo.
+TELEMETRY_DEFINE=""
+if [[ "$NO_TELEMETRY" == no ]]; then
+  if [[ -z "$TELEMETRY" && -x "$HERE/../../push-telemetry-config.sh" ]]; then
+    TELEMETRY="$(mktemp -t phi_telemetry.XXXXXX.json)"
+    "$HERE/../../push-telemetry-config.sh" --print > "$TELEMETRY"
+  fi
+  if [[ -n "$TELEMETRY" ]]; then
+    python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); \
+      print("telemetry:", ", ".join(sorted(d)) or "(empty)")' "$TELEMETRY"
+    scp "$TELEMETRY" "$HOST:phi_telemetry.json" >/dev/null
+    TELEMETRY_DEFINE="/DPHI_TELEMETRY_JSON=C:\\Users\\jdxin\\phi_telemetry.json"
+  else
+    echo "telemetry: none (no --telemetry and no ../../push-telemetry-config.sh)"
+  fi
+else
+  echo "telemetry: none (--no-telemetry)"
+fi
 
 NSIS_VERSION=3.10
 NSIS_ZIP="nsis-${NSIS_VERSION}.zip"
@@ -63,7 +95,7 @@ scp "$HERE/phi-installer.nsi" "$HOST:phi-installer.nsi" >/dev/null
 
 echo "running makensis on the box..."
 ssh "$HOST" "C:\\Users\\jdxin\\nsis\\makensis.exe /V2 \
-  /DPHI_VERSION=$VERSION /DPHI_STAGE=C:\\Users\\jdxin\\phi-stage \
+  /DPHI_VERSION=$VERSION /DPHI_STAGE=C:\\Users\\jdxin\\phi-stage $TELEMETRY_DEFINE \
   C:\\Users\\jdxin\\phi-installer.nsi" | tail -3
 
 if [[ "$PULL" == yes ]]; then

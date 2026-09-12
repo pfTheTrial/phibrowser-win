@@ -13,7 +13,8 @@
 ;     valid, the snapshot is the Mac TimeMachineInstaller's rollback.
 ;
 ; Build (makensis 3.x):
-;   makensis /DPHI_VERSION=0.1.0 /DPHI_STAGE=payload phi-installer.nsi
+;   makensis /DPHI_VERSION=0.1.0 /DPHI_STAGE=payload \
+;            [/DPHI_TELEMETRY_JSON=phi_telemetry.json] phi-installer.nsi
 
 !ifndef PHI_VERSION
   !error "pass /DPHI_VERSION=x.y.z"
@@ -83,6 +84,22 @@ Section "Install"
   CreateShortCut "$SMPROGRAMS\Phi Browser.lnk" "$INSTDIR\Phi.exe"
   CreateShortCut "$DESKTOP\Phi Browser.lnk" "$INSTDIR\Phi.exe"
 
+!ifdef PHI_TELEMETRY_JSON
+  ; Deployment configuration (docs/sentry-crash-reporting.md, docs/
+  ; analytics.md): where crash reports and analytics go. Both halves of the
+  ; client read it once at startup from the user data directory, so it
+  ; lives there, not in bin\ - and the installer OWNS it: every install or
+  ; update rewrites it, so an endpoint change ships with the next version.
+  ; Crash uploads additionally need Chromium's usage-stats consent, which
+  ; install_static reads from HKCU\Software\Phi\usagestats (no Google
+  ; Update integration, so no ClientState sub-key). Analytics stay gated
+  ; by the in-app "Share anonymous usage analytics" switch (default off).
+  SetOutPath "$LOCALAPPDATA\Phi\User Data"
+  File "/oname=phi_telemetry.json" "${PHI_TELEMETRY_JSON}"
+  SetOutPath "$INSTDIR"
+  WriteRegDWORD HKCU "Software\Phi" "usagestats" 1
+!endif
+
   WriteUninstaller "$LOCALAPPDATA\PhiBrowser\Uninstall.exe"
 
   ; Apps & features entry (per-user hive).
@@ -107,4 +124,7 @@ Section "Uninstall"
   Delete "$SMPROGRAMS\Phi Browser.lnk"
   Delete "$DESKTOP\Phi Browser.lnk"
   DeleteRegKey HKCU "${UNINST_KEY}"
+  ; The crash-upload consent was ours to grant; the config file is user
+  ; data and stays with the profile.
+  DeleteRegValue HKCU "Software\Phi" "usagestats"
 SectionEnd

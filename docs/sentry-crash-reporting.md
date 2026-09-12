@@ -73,18 +73,28 @@ sentry-cli is a global npm install (`npm i -g @sentry/cli`).
   library resolving addresses from both PDBs. To see client frames named,
   crash the browser process in client code.
 
-## Not shipped to users yet
+## What an install ships (2026-09-12)
 
-Only the test box reports crashes. Two things are set by hand there and
-nothing in the installer or client provides them:
+Two things make an install report crashes, and `phi-installer.nsi` writes
+both when built with `/DPHI_TELEMETRY_JSON=<file>` (`make-installer.sh`
+passes it by default, rendering the file with the sibling
+`push-telemetry-config.sh --print`; `--telemetry <file>` overrides,
+`--no-telemetry` omits both):
 
-1. `phi_telemetry.json` with `crash_endpoint` (pushed by the script).
+1. `phi_telemetry.json` in the DEFAULT user data dir
+   (`%LOCALAPPDATA%\Phi\User Data`). The installer owns it — every install
+   or update rewrites it, so an endpoint change ships with the next
+   version. A `--user-data-dir` profile does not see it (the test box's
+   `C:\phi-fx-test` still needs the push script).
 2. Upload consent: `install_static::GetCollectStatsConsent()` reads
-   `HKCU\Software\Phi\ClientState\usagestats == 1`. Absent = dumps captured,
-   never uploaded. `phi-installer.nsi` and the client's `analyticsEnabled`
-   pref do not touch it.
+   `HKCU\Software\Phi\usagestats == 1` — `Software\Phi` itself
+   (`GetUnregisteredKeyPathForProduct`; there is no Google Update
+   integration, so no `ClientState` sub-key). Absent = dumps captured,
+   never uploaded. The installer writes it; uninstall deletes it. The
+   client's `analyticsEnabled` pref does not touch it — analytics consent
+   and crash-upload consent are separate switches today.
 
-Options: installer writes both; or a compiled-in default endpoint for
-release builds plus a fork change so consent follows the Phi analytics pref.
-Also unset: Crashpad `prod` (empty, Phi.exe has no product name in its
-version resource) and a release tag, so Sentry cannot group by build yet.
+Still open: a compiled-in default for builds that ship without the file;
+consent following the Phi analytics pref (a fork change); Crashpad `prod`
+(empty, Phi.exe has no product name in its version resource) and a release
+tag, so Sentry cannot group by build yet.
