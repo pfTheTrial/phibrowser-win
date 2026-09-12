@@ -34,18 +34,31 @@ SetCompressor /SOLID lzma
 
 Section "Install"
   ; The update path must not race a running Phi: chrome.dll being locked is
-  ; the tell. Ask-and-retry rather than failing halfway through a copy.
+  ; the tell - it stays mapped for as long as any Phi process lives. The
+  ; probe OPENS it for writing (a rename is no test: Windows lets a mapped
+  ; image be renamed, only not overwritten). WinSparkle launches this
+  ; installer and THEN asks Phi to quit, so a locked file is the normal
+  ; first sight here - wait up to a minute for Chromium to unwind before
+  ; asking the user, ask-and-retry rather than failing halfway through a
+  ; copy.
   check_running:
     IfFileExists "$INSTDIR\chrome.dll" 0 fresh_install
+    StrCpy $1 0
+  wait_running:
     ClearErrors
-    Rename "$INSTDIR\chrome.dll" "$INSTDIR\chrome.dll.swap"
+    FileOpen $0 "$INSTDIR\chrome.dll" a
     IfErrors 0 not_running
-      MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION \
-        "Phi Browser is running. Close it, then press Retry." \
-        IDRETRY check_running
-      Abort
-    not_running:
-      Rename "$INSTDIR\chrome.dll.swap" "$INSTDIR\chrome.dll"
+      IntOp $1 $1 + 1
+      IntCmp $1 120 ask_running 0 ask_running
+      Sleep 500
+      Goto wait_running
+  ask_running:
+    MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION \
+      "Phi Browser is running. Close it, then press Retry." \
+      IDRETRY check_running
+    Abort
+  not_running:
+    FileClose $0
 
     ; Rollback snapshot: keep exactly ONE previous version.
     RMDir /r "$LOCALAPPDATA\PhiBrowser\rollback"
@@ -55,6 +68,16 @@ Section "Install"
   fresh_install:
   SetOutPath "$INSTDIR"
   File /r "${PHI_STAGE}\*.*"
+
+  ; The sandbox's AppContainer utilities (proxy resolver, media CDM, ...)
+  ; run under the chromeInstallFiles / lpacChromeInstallFiles capabilities
+  ; and must read and execute the install tree; a user folder grants them
+  ; nothing by default and the launch then fails (sandbox_win.cc's
+  ; AddAppContainerProfileToConfig access check). Chrome's setup grants the
+  ; same two capability SIDs (installer/setup/configure_app_container_
+  ; sandbox.cc); the dev sync grants the broader ALL APPLICATION PACKAGES.
+  nsExec::ExecToLog 'icacls "$INSTDIR" /grant "*S-1-15-3-1024-3424233489-972189580-2057154623-747635277-1604371224-316187997-3786583170-1043257646:(OI)(CI)(RX)" "*S-1-15-3-1024-2302894289-466761758-1166120688-1039016420-2430351297-4240214049-4028510897-3317428798:(OI)(CI)(RX)"'
+  Pop $0
 
   ; Shortcuts to the STABLE path - pins survive every update.
   CreateShortCut "$SMPROGRAMS\Phi Browser.lnk" "$INSTDIR\Phi.exe"

@@ -757,6 +757,11 @@ class PhiCoordinator : public SidebarHost,
   // coalesced saves, the telemetry spool and the feedback outbox worker.
   // Idempotent: WM_QUERYENDSESSION and WM_ENDSESSION both call it.
   void FlushForShutdown();
+  // The updater's installer is running and needs the app gone
+  // (WM_PHI_QUIT_FOR_UPDATE): every shell and Kiosk closes through its
+  // normal path, the onboarding window too, and Chromium exits with the
+  // last Browser. Nothing when the app is already closing.
+  void QuitForUpdate();
 
   // --- The application model and its stores --------------------------------
   // The four persisted domains (docs/architecture-review.md §3.4 store

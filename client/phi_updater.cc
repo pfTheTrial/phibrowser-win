@@ -42,6 +42,9 @@ using SetAppDetailsFn = void(__cdecl*)(const wchar_t*,
 using SetEdDsaKeyFn = int(__cdecl*)(const char*);
 using SetAutomaticCheckFn = void(__cdecl*)(int);
 using VoidFn = void(__cdecl*)();
+using CanShutdownFn = int(__cdecl*)();
+using SetCanShutdownFn = void(__cdecl*)(CanShutdownFn);
+using SetShutdownRequestFn = void(__cdecl*)(VoidFn);
 
 struct Sparkle {
   HMODULE dll = nullptr;
@@ -49,6 +52,8 @@ struct Sparkle {
   SetAppDetailsFn set_app_details = nullptr;
   SetEdDsaKeyFn set_eddsa_public_key = nullptr;
   SetAutomaticCheckFn set_automatic_check = nullptr;
+  SetCanShutdownFn set_can_shutdown = nullptr;
+  SetShutdownRequestFn set_shutdown_request = nullptr;
   VoidFn init = nullptr;
   VoidFn check_update_with_ui = nullptr;
   VoidFn cleanup = nullptr;
@@ -56,6 +61,24 @@ struct Sparkle {
 
 Sparkle g_sparkle;
 bool g_initialized = false;
+// Where the shutdown request goes (Init's arguments). Read from WinSparkle's
+// thread, so set before init and never changed.
+HWND g_quit_hwnd = nullptr;
+UINT g_quit_msg = 0;
+
+// WinSparkle's "may I close you?" — always yes: Chromium has no unsaved
+// documents, and the close path itself saves the session.
+int __cdecl CanShutdown() {
+  return 1;
+}
+
+// WinSparkle has launched the installer (from its own thread): hand the
+// quit to the UI thread. WITHOUT this callback WinSparkle does nothing and
+// the installer meets a running Phi (its default RequestShutdown is empty).
+void __cdecl RequestShutdown() {
+  LOG(INFO) << "[PhiUpdater] installer launched; requesting quit";
+  ::PostMessageW(g_quit_hwnd, g_quit_msg, 0, 0);
+}
 
 // WinSparkle.dll sits beside phi_client.exe (the sync and the installer both
 // place it there). An absolute path keeps the search-order honest — no
@@ -103,12 +126,17 @@ bool Load() {
       proc("win_sparkle_set_eddsa_public_key"));
   sparkle.set_automatic_check = reinterpret_cast<SetAutomaticCheckFn>(
       proc("win_sparkle_set_automatic_check_for_updates"));
+  sparkle.set_can_shutdown = reinterpret_cast<SetCanShutdownFn>(
+      proc("win_sparkle_set_can_shutdown_callback"));
+  sparkle.set_shutdown_request = reinterpret_cast<SetShutdownRequestFn>(
+      proc("win_sparkle_set_shutdown_request_callback"));
   sparkle.init = reinterpret_cast<VoidFn>(proc("win_sparkle_init"));
   sparkle.check_update_with_ui = reinterpret_cast<VoidFn>(
       proc("win_sparkle_check_update_with_ui"));
   sparkle.cleanup = reinterpret_cast<VoidFn>(proc("win_sparkle_cleanup"));
   if (!sparkle.set_appcast_url || !sparkle.set_app_details ||
-      !sparkle.set_eddsa_public_key || !sparkle.init ||
+      !sparkle.set_eddsa_public_key || !sparkle.set_can_shutdown ||
+      !sparkle.set_shutdown_request || !sparkle.init ||
       !sparkle.check_update_with_ui || !sparkle.cleanup) {
     LOG(ERROR) << "[PhiUpdater] WinSparkle.dll is missing exports; ignored";
     ::FreeLibrary(dll);
@@ -154,10 +182,12 @@ std::string EdDsaPublicKey() {
 }  // namespace
 
 // static
-void PhiUpdater::Init() {
+void PhiUpdater::Init(HWND quit_hwnd, UINT quit_msg) {
   if (g_initialized) {
     return;
   }
+  g_quit_hwnd = quit_hwnd;
+  g_quit_msg = quit_msg;
   // No key, no updater — in every build. A feed that cannot be verified is
   // never fetched, let alone installed; the menu item goes dark
   // (Available) rather than offering an unsigned download.
@@ -183,6 +213,10 @@ void PhiUpdater::Init() {
   if (g_sparkle.set_automatic_check) {
     g_sparkle.set_automatic_check(1);  // Default daily background checks.
   }
+  // The quit hand-off, before init: an update found by the first check
+  // must already know how to close us.
+  g_sparkle.set_can_shutdown(&CanShutdown);
+  g_sparkle.set_shutdown_request(&RequestShutdown);
   g_sparkle.init();
   g_initialized = true;
   LOG(INFO) << "[PhiUpdater] init v" << PHI_WIN_VERSION_STRING
@@ -192,10 +226,7 @@ void PhiUpdater::Init() {
 // static
 bool PhiUpdater::CheckForUpdateWithUi() {
   if (!g_initialized) {
-    Init();  // Late first use: the menu can fire before/without startup init.
-  }
-  if (!g_initialized) {
-    return false;
+    return false;  // Never initialised: no DLL, no key.
   }
   g_sparkle.check_update_with_ui();
   return true;

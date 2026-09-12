@@ -108,6 +108,10 @@ constexpr UINT WM_PHI_AUTOVIEW = WM_APP + 10;
 // inside Chromium's startup, before its first window, and a window shown
 // from there sits in front of that startup.
 constexpr UINT WM_PHI_OPEN_ONBOARDING = WM_APP + 11;
+// WinSparkle has launched the downloaded installer and wants the app gone
+// (PhiUpdater's shutdown-request callback, posted from WinSparkle's own
+// thread): QuitForUpdate closes every window through the normal paths.
+constexpr UINT WM_PHI_QUIT_FOR_UPDATE = WM_APP + 12;
 }  // namespace
 
 void PhiCoordinator::OnFrameworkReady(phi_framework::PhiFramework* framework,
@@ -199,7 +203,7 @@ void PhiCoordinator::OnFrameworkReady(phi_framework::PhiFramework* framework,
 
   // Background update checks (WinSparkle over the Mac's appcast pipeline).
   // A no-op when WinSparkle.dll is not deployed beside the client.
-  PhiUpdater::Init();
+  PhiUpdater::Init(msg_hwnd_, WM_PHI_QUIT_FOR_UPDATE);
 
   // The Auth0 session and the feedback outbox (PhiAccountAndFeedback).
   account_.Init(framework_, user_data_dir, msg_hwnd_, WM_PHI_AUTH_CHANGED);
@@ -295,6 +299,14 @@ LRESULT CALLBACK PhiCoordinator::MsgWndProc(HWND hwnd,
     if (self && !self->CanUseBrowser()) {
       self->OpenOnboarding(
           static_cast<PhiOnboardingWindow::Page>(static_cast<int>(wparam)));
+    }
+    return 0;
+  }
+  if (msg == WM_PHI_QUIT_FOR_UPDATE) {
+    auto* self = reinterpret_cast<PhiCoordinator*>(
+        ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    if (self) {
+      self->QuitForUpdate();
     }
     return 0;
   }
@@ -3944,6 +3956,35 @@ void PhiCoordinator::RetireBrowserWindow(BrowserId browser) {
   window_model_.Remove(browser);
   RetireClosingBrowser(browser);
   MaybeEnterClosing();
+}
+
+void PhiCoordinator::QuitForUpdate() {
+  if (phase_ >= AppPhase::kClosing) {
+    return;
+  }
+  LOG(INFO) << "[PhiClient] quitting for the update installer";
+  if (!CanUseBrowser()) {
+    OnboardingClosed();  // Behind the gate the onboarding window is the app.
+    return;
+  }
+  // The user's own quit is WM_CLOSE on a shell (menu Quit, the caption's
+  // close): every shell and Kiosk gets that, so each saves and unwinds as
+  // it would by hand; the onboarding window, if up over a usable browser,
+  // is dismissed. Chromium exits with its last Browser (MaybeEnterClosing
+  // flushes the stores then) — the installer waits for that.
+  CloseOnboarding();
+  for (PhiShellWindow* controller : registry_.Controllers()) {
+    ::PostMessageW(controller->shell_hwnd(), WM_CLOSE, 0, 0);
+  }
+  for (const BrowserId browser : window_model_.Browsers()) {
+    if (PhiKioskWindow* kiosk = registry_.Kiosk(browser)) {
+      ::PostMessageW(kiosk->hwnd(), WM_CLOSE, 0, 0);
+    } else if (!registry_.IsBound(browser) && framework_) {
+      // A browser no window of ours hosts (a shadow window, a surface whose
+      // shell is already gone): the framework closes it directly.
+      framework_->CloseBrowserWindow(browser.value);
+    }
+  }
 }
 
 void PhiCoordinator::MaybeEnterClosing() {
