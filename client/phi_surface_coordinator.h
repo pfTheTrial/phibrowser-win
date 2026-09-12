@@ -171,7 +171,9 @@ class PhiSurfaceCoordinator {
   // Dismisses the Peek card(s) floating over `shell`, skipping any whose
   // card contains `inside` (a click landing in the card itself). Returns
   // true when one was dismissed.
-  bool DismissPeeksForShell(HWND shell, HWND inside);
+  bool DismissPeeksForShell(HWND shell,
+                            HWND inside,
+                            const POINT* screen_point = nullptr);
 
  private:
   RAW_PTR_EXCLUSION const PhiWindowModel& window_model_;

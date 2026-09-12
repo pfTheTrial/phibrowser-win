@@ -377,6 +377,17 @@ HWND PhiPeekPanel::hwnd() const {
   return PhiWindow::hwnd();
 }
 
+bool PhiPeekPanel::ClickDismisses(POINT screen_point) const {
+  const HWND shell = opener_ ? opener_->shell_hwnd() : nullptr;
+  if (!shell) {
+    return true;
+  }
+  POINT pt = screen_point;
+  ::ScreenToClient(shell, &pt);
+  const RECT content = opener_->ContentRect();
+  return ::PtInRect(&content, pt) != FALSE;
+}
+
 bool PhiPeekPanel::ContainsWindow(HWND window) const {
   if (PhiSurfacePanel::ContainsWindow(window)) {
     return true;
@@ -417,13 +428,16 @@ void PhiPeekPanel::Reposition() {
   if (width <= 0 || height <= 0) {
     return;
   }
-  // The panel spans the card minus the Mac's insets; the control gutter is
-  // kept INSIDE that reach, to the card's right, so the panel still stops at
-  // the page card's edges.
+  // The card sits CENTRED in the page card, inset by the Mac's margins on
+  // both sides (Jixiang: never narrowed on the right for the chips). The
+  // chips stand in the right margin, beside the card and over the page,
+  // never on the page the card shows — PositionControls lays them out in
+  // the strip Reposition leaves there.
   const int inset_x =
       std::max(Scaled(kMinPaneInset),
                static_cast<int>(width * kPaneInsetRatio));
   const int inset_y = Scaled(kPaneVerticalInset);
+  right_margin_ = inset_x;
   const RECT bounds = {content.left + inset_x, content.top + inset_y,
                        content.left + inset_x + std::max(0, width - inset_x * 2),
                        content.top + inset_y +
@@ -529,14 +543,19 @@ PhiPeekPanel::Layout PhiPeekPanel::ComputeLayout() const {
   const int spacing = Scaled(kControlSpacing);
   const int top = Scaled(kControlTopInset);
 
-  // The page takes the whole card — the controls FLOAT over its top-right
-  // corner rather than sitting in a chrome strip beside it, which is what the
-  // Mac does and what keeps the preview reading as a page and not a panel.
+  // The page takes the whole card; the controls stand in the page card's
+  // right margin, beside the card and over the page around the peek, the
+  // way the Mac's control column does — so the card reads as a page and the
+  // chips never cover what it shows. The strip is the margin Reposition
+  // measured (the Mac's 44 gutter where the margin has room for it), spelled
+  // in the card's client space past its right edge; PositionControls carries
+  // it into the shell's.
+  const int strip = std::min(gutter, std::max(btn, right_margin_));
   out.card = {0, 0, client.right, client.bottom};
-  out.gutter = {std::max(0L, client.right - gutter), 0, client.right,
+  out.gutter = {client.right, 0, client.right + strip,
                 top * 2 + btn * 3 + spacing * 2};
 
-  const int cx = out.gutter.left + (gutter - btn) / 2;
+  const int cx = out.gutter.left + (strip - btn) / 2;
   const int cy = out.gutter.top + top;
   out.close = {cx, cy, cx + btn, cy + btn};
   out.expand = {cx, out.close.bottom + spacing, cx + btn,

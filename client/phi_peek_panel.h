@@ -80,6 +80,11 @@ class PhiPeekPanel : public PhiSurfacePanel, public PhiPanel {
   HWND hwnd() const override;
   // The card, anything in it, or the chip layer beside it.
   bool ContainsWindow(HWND window) const override;
+  // Only a press on the PAGE PANE around the peek dismisses it (the Mac's
+  // monitor: "only clicks on the page pane around the panel close the
+  // peek"). The sidebar, the caption band, a resize grab on the frame: the
+  // peek stays — a tab switch hides it with its opener instead.
+  bool ClickDismisses(POINT screen_point) const override;
   // Shows the shadow, the card and the chips, in that z-order. Raise() is
   // the same for a peek that is already up and nothing for one that is down.
   void Show();
@@ -144,6 +149,9 @@ class PhiPeekPanel : public PhiSurfacePanel, public PhiPanel {
   // The close / new-tab / split chips, a shaped-layer child of this window
   // stacked above the hosted browser.
   std::unique_ptr<PhiPeekControls> controls_;
+  // The page card's right margin beside the card, in pixels, as Reposition
+  // last measured it: where the chips stand.
+  int right_margin_ = 0;
   BrowserId opener_window_id_;  // The browser the peek was opened FROM.
   int64_t opener_tab_id_ = 0;
   RAW_PTR_EXCLUSION PhiShellWindow* opener_ = nullptr;

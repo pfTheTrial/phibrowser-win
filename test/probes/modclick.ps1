@@ -7,6 +7,7 @@
 #   click,x,y         move the cursor to x,y, press + release the left button
 #   rclick,x,y        the same with the right button (a context menu)
 #   sclick,x,y        a left click at SCREEN px (a menu item)
+#   sdrag,x1,y1,x2,y2 press at SCREEN x1,y1, glide to x2,y2, release (a resize grab)
 #   shot,<name>       full-screen capture to C:\Users\jdxin\mod-<name>.png
 #   list              every PhiClientShell/PhiPeekPanel/PhiKioskShell window:
 #                     class, visible, rect -> the log
@@ -141,6 +142,24 @@ if ($h -ne [IntPtr]::Zero) {
         [M]::mouse_event(0x0004, 0, 0, 0, [IntPtr]::Zero)
         Start-Sleep -Milliseconds 400
         $out += " sclick=$($spec[1]),$($spec[2])"
+      }
+      'sdrag' {
+        # sdrag,x1,y1,x2,y2: press at SCREEN x1,y1, glide to x2,y2, release
+        # (a resize-border grab is the use).
+        [M]::SetCursorPos([int]$spec[1], [int]$spec[2]) | Out-Null
+        Start-Sleep -Milliseconds 250
+        [M]::mouse_event(0x0002, 0, 0, 0, [IntPtr]::Zero); Start-Sleep -Milliseconds 150
+        $dx = [int]$spec[3] - [int]$spec[1]; $dy = [int]$spec[4] - [int]$spec[2]
+        $steps = [Math]::Max(1, [int]([Math]::Max([Math]::Abs($dx), [Math]::Abs($dy)) / 12))
+        for ($i = 1; $i -le $steps; $i++) {
+          [M]::SetCursorPos([int]$spec[1] + [int]($dx * $i / $steps), [int]$spec[2] + [int]($dy * $i / $steps)) | Out-Null
+          [M]::mouse_event(0x0001, 0, 0, 0, [IntPtr]::Zero)
+          Start-Sleep -Milliseconds 15
+        }
+        Start-Sleep -Milliseconds 200
+        [M]::mouse_event(0x0004, 0, 0, 0, [IntPtr]::Zero)
+        Start-Sleep -Milliseconds 700
+        $out += " sdrag=$($spec[1]),$($spec[2])->$($spec[3]),$($spec[4])"
       }
       'shot' { Shot $spec[1]; $out += " shot=$($spec[1])" }
       'list' { $out += (ListWindows) }

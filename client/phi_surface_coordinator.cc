@@ -456,7 +456,9 @@ void PhiSurfaceCoordinator::NoteContentLayoutChanged(SlotId slot) {
   });
 }
 
-bool PhiSurfaceCoordinator::DismissPeeksForShell(HWND shell, HWND inside) {
+bool PhiSurfaceCoordinator::DismissPeeksForShell(HWND shell,
+                                                 HWND inside,
+                                                 const POINT* screen_point) {
   if (!shell) {
     return false;
   }
@@ -477,6 +479,9 @@ bool PhiSurfaceCoordinator::DismissPeeksForShell(HWND shell, HWND inside) {
     }
     if (inside && panel.ContainsWindow(inside)) {
       return;  // A click INSIDE the card is the card's own business.
+    }
+    if (screen_point && !panel.ClickDismisses(*screen_point)) {
+      return;  // Chrome, not the page pane: the peek keeps its place.
     }
     panel.NoteEndReason("closed");  // Esc / a click outside: the user's.
     to_dismiss.push_back(BrowserId{panel.window_id()});

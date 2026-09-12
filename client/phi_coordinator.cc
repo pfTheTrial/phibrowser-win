@@ -7,6 +7,7 @@
 #include <windows.h>
 
 #include <shellapi.h>
+#include <windowsx.h>
 
 #include <algorithm>
 #include <optional>
@@ -116,8 +117,8 @@ constexpr UINT WM_PHI_QUIT_FOR_UPDATE = WM_APP + 12;
 // outside of. DEFERRED out of the WH_MOUSE hook, where it used to run:
 // closing the peek's browser inside the button-down hook — a focused window
 // destroyed under a press in flight — cost the click itself, so a Shift-click
-// meant to open the NEXT peek opened nothing. wparam is the shell's root
-// HWND, lparam the window the button went down in.
+// meant to open the NEXT peek opened nothing. wparam is the window the
+// button went down in, lparam the press's screen point (x, y packed).
 constexpr UINT WM_PHI_DISMISS_PEEKS = WM_APP + 13;
 }  // namespace
 
@@ -285,9 +286,11 @@ LRESULT CALLBACK PhiCoordinator::MsgWndProc(HWND hwnd,
   if (msg == WM_PHI_DISMISS_PEEKS) {
     auto* self = reinterpret_cast<PhiCoordinator*>(
         ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
-    if (self) {
+    const HWND target = reinterpret_cast<HWND>(wparam);
+    if (self && ::IsWindow(target)) {
+      const POINT pt = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
       self->surface_coordinator_.DismissPeeksForShell(
-          reinterpret_cast<HWND>(wparam), reinterpret_cast<HWND>(lparam));
+          ::GetAncestor(target, GA_ROOT), target, &pt);
     }
     return 0;
   }
@@ -3750,14 +3753,15 @@ LRESULT CALLBACK PhiCoordinator::MouseHookProc(int code,
       self->accelerators_->OnMouseButtonDown();
     }
     if (self->surface_coordinator_.HasPeek() && self->msg_hwnd_) {
-      const HWND target = reinterpret_cast<MOUSEHOOKSTRUCT*>(lparam)->hwnd;
+      const auto* hook = reinterpret_cast<MOUSEHOOKSTRUCT*>(lparam);
       // The click is delivered regardless: dismissing is a side effect of
       // clicking elsewhere, not a swallowed click (the Mac lets the click
       // through too) — and it runs on a turn of its own, after this press
-      // has been dispatched (WM_PHI_DISMISS_PEEKS).
+      // has been dispatched (WM_PHI_DISMISS_PEEKS). The press's point goes
+      // along: only a press on the page pane dismisses.
       ::PostMessageW(self->msg_hwnd_, WM_PHI_DISMISS_PEEKS,
-                     reinterpret_cast<WPARAM>(::GetAncestor(target, GA_ROOT)),
-                     reinterpret_cast<LPARAM>(target));
+                     reinterpret_cast<WPARAM>(hook->hwnd),
+                     MAKELPARAM(hook->pt.x, hook->pt.y));
     }
   }
   return ::CallNextHookEx(nullptr, code, wparam, lparam);

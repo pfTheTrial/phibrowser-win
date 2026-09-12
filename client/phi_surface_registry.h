@@ -51,6 +51,9 @@ class PhiSurfacePanel {
   // Whether `window` is the card or something the panel considers part of
   // it — a click there is not a click outside.
   virtual bool ContainsWindow(HWND window) const;
+  // Whether a button press at `screen_point`, outside the panel, is the
+  // kind that dismisses it. Default: any.
+  virtual bool ClickDismisses(POINT screen_point) const;
 
   // The origin window moved or resized: re-fit to its content card.
   virtual void Reposition() = 0;

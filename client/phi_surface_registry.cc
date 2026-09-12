@@ -11,6 +11,10 @@ bool PhiSurfacePanel::ContainsWindow(HWND window) const {
   return card && window && (window == card || ::IsChild(card, window));
 }
 
+bool PhiSurfacePanel::ClickDismisses(POINT) const {
+  return true;
+}
+
 PhiSurfaceRegistry::PhiSurfaceRegistry() = default;
 PhiSurfaceRegistry::~PhiSurfaceRegistry() = default;
 
