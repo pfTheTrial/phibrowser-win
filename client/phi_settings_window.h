@@ -198,6 +198,10 @@ class PhiSettingsHost {
   // framework, which is where both decisions are actually made.
   virtual void SetPeekViewEnabled(bool enabled) = 0;
   virtual void SetAutoPeekViewEnabled(bool enabled) = 0;
+  // Kiosk, the Mac's openKioskOnCommandOptionClick: a link clicked with
+  // Ctrl+Alt held opens in a Kiosk window. Pushed into the framework too —
+  // Browser::OpenURLFromTab is where the click is remapped.
+  virtual void SetOpenKioskOnCtrlAltClick(bool enabled) = 0;
 
   // --- Shortcuts (the Mac Shortcuts pane's customising) ---------------------
   // Rebinding takes the chord's raw parts; a chord already held by another

@@ -1960,6 +1960,7 @@ Changes app settings. developerMode / allowAgentUserSpaces / testRig / analytics
 | `restoreLastSession` | boolean | no | — | Session restore. |
 | `peekViewEnabled` | boolean | no | — | Peek's master switch. |
 | `autoPeekViewEnabled` | boolean | no | — | Automatic peek. |
+| `openKioskOnCtrlAltClick` | boolean | no | — | Ctrl+Alt-click a link opens a Kiosk. |
 | `newTabBehavior` | string | no | — | omnibox or newTabPage. |
 | `developerMode` | boolean | no | — | Never agent-settable. |
 | `section` | string | no | — | Show this settings pane. |

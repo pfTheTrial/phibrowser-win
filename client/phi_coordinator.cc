@@ -457,12 +457,13 @@ void PhiCoordinator::OnProfileLoaded(const char* profile_id) {
     return;
   }
   global_mirrors_pushed_ = true;
-  // Global, once: the peek switches live on the framework, not a profile;
-  // the display language reconciles a PhiSettings.json edited while the
-  // browser was closed — Chromium read its own locale pref long before
+  // Global, once: the peek and Kiosk switches live on the framework, not a
+  // profile; the display language reconciles a PhiSettings.json edited while
+  // the browser was closed — Chromium read its own locale pref long before
   // this, and the first window is still to come, so it comes up in the
   // chosen language rather than flashing the old one.
   PushPeekPreferences();
+  PushKioskPreferences();
   PushDisplayLanguageToChromium();
 }
 
@@ -2105,6 +2106,20 @@ void PhiCoordinator::PushPeekPreferences() {
   }
 }
 
+bool PhiCoordinator::OpenKioskOnCtrlAltClick() const {
+  return preferences_.OpenKioskOnCtrlAltClick();
+}
+
+void PhiCoordinator::SetOpenKioskOnCtrlAltClick(bool enabled) {
+  preferences_.SetOpenKioskOnCtrlAltClick(enabled);
+}
+
+void PhiCoordinator::PushKioskPreferences() {
+  if (framework_) {
+    framework_->SetKioskPreferences(preferences_.OpenKioskOnCtrlAltClick());
+  }
+}
+
 PhiPinScope PhiCoordinator::PinScope() const {
   return tab_store_.pin_scope();
 }
@@ -2445,6 +2460,9 @@ void PhiCoordinator::OnPreferencesChanged(
       break;
     case PreferenceChange::kPeek:
       PushPeekPreferences();  // The framework owns both decisions it gates.
+      break;
+    case PreferenceChange::kKiosk:
+      PushKioskPreferences();  // Likewise: the click is remapped there.
       break;
     case PreferenceChange::kRestore:
       PushRestorePreference();  // Every LOADED profile takes the choice.
@@ -3705,16 +3723,24 @@ LRESULT CALLBACK PhiCoordinator::MouseHookProc(int code,
                                                WPARAM wparam,
                                                LPARAM lparam) {
   PhiCoordinator* self = g_coordinator;
-  if (code == HC_ACTION && self && self->surface_coordinator_.HasPeek() &&
-      (wparam == WM_LBUTTONDOWN || wparam == WM_RBUTTONDOWN ||
-       wparam == WM_MBUTTONDOWN || wparam == WM_NCLBUTTONDOWN ||
-       wparam == WM_NCRBUTTONDOWN || wparam == WM_NCMBUTTONDOWN)) {
-    const HWND target = reinterpret_cast<MOUSEHOOKSTRUCT*>(lparam)->hwnd;
-    // The click is delivered regardless: dismissing is a side effect of
-    // clicking elsewhere, not a swallowed click (the Mac lets the click
-    // through too).
-    self->surface_coordinator_.DismissPeeksForShell(
-        ::GetAncestor(target, GA_ROOT), target);
+  const bool button_down =
+      wparam == WM_LBUTTONDOWN || wparam == WM_RBUTTONDOWN ||
+      wparam == WM_MBUTTONDOWN || wparam == WM_NCLBUTTONDOWN ||
+      wparam == WM_NCRBUTTONDOWN || wparam == WM_NCMBUTTONDOWN;
+  if (code == HC_ACTION && self && button_down) {
+    // A click during an Alt hold makes it a chord, not the bare tap that
+    // summons the menu titles on release.
+    if (self->accelerators_) {
+      self->accelerators_->OnMouseButtonDown();
+    }
+    if (self->surface_coordinator_.HasPeek()) {
+      const HWND target = reinterpret_cast<MOUSEHOOKSTRUCT*>(lparam)->hwnd;
+      // The click is delivered regardless: dismissing is a side effect of
+      // clicking elsewhere, not a swallowed click (the Mac lets the click
+      // through too).
+      self->surface_coordinator_.DismissPeeksForShell(
+          ::GetAncestor(target, GA_ROOT), target);
+    }
   }
   return ::CallNextHookEx(nullptr, code, wparam, lparam);
 }

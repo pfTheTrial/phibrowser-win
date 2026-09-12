@@ -393,6 +393,11 @@ class PhiCoordinator : public SidebarHost,
   // decisions they gate (the context-menu item and the cross-domain
   // throttle's diversion). Run on the first profile load and on every change.
   void PushPeekPreferences();
+  bool OpenKioskOnCtrlAltClick() const;
+  void SetOpenKioskOnCtrlAltClick(bool enabled) override;
+  // Pushes the Ctrl+Alt-click Kiosk switch the same way: the framework's
+  // Browser::OpenURLFromTab is where the click is remapped.
+  void PushKioskPreferences();
   bool AnalyticsEnabled() const;
   void SetAnalyticsEnabled(bool enabled) override;
   PhiPinScope PinScope() const override;

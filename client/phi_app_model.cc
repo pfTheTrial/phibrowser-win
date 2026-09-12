@@ -116,6 +116,9 @@ void DecodePrefsFields(const base::DictValue& dict, PhiSettings* out) {
       dict.FindBool("peekViewEnabled").value_or(out->peek_view_enabled);
   out->auto_peek_view_enabled = dict.FindBool("autoPeekViewEnabled")
                                     .value_or(out->auto_peek_view_enabled);
+  out->open_kiosk_on_ctrl_alt_click =
+      dict.FindBool("openKioskOnCtrlAltClick")
+          .value_or(out->open_kiosk_on_ctrl_alt_click);
   out->restore_last_session =
       dict.FindBool("restoreLastSession").value_or(out->restore_last_session);
   out->always_show_bookmark_bar = dict.FindBool("alwaysShowBookmarkBar")
@@ -360,6 +363,7 @@ base::DictValue PhiStoreTraits<PhiSettings>::Encode(const PhiSettings& value) {
   root.Set("agentAutoView", value.agent_auto_view);
   root.Set("peekViewEnabled", value.peek_view_enabled);
   root.Set("autoPeekViewEnabled", value.auto_peek_view_enabled);
+  root.Set("openKioskOnCtrlAltClick", value.open_kiosk_on_ctrl_alt_click);
   root.Set("restoreLastSession", value.restore_last_session);
   root.Set("alwaysShowBookmarkBar", value.always_show_bookmark_bar);
   root.Set("bookmarkBarOnNewTab", value.bookmark_bar_on_new_tab);

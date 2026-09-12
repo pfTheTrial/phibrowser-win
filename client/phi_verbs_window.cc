@@ -934,6 +934,8 @@ PhiVerbResult PhiControlDispatcher::VerbSettingsGet(
   out.Set("peekViewEnabled", coordinator_->settings().peek_view_enabled);
   out.Set("autoPeekViewEnabled",
           coordinator_->settings().auto_peek_view_enabled);
+  out.Set("openKioskOnCtrlAltClick",
+          coordinator_->settings().open_kiosk_on_ctrl_alt_click);
   out.Set("pinScope", PhiPinScopeName(coordinator_->tab_store().pin_scope()));
   // With a profileId, the per-profile browsing settings too.
   if (const std::string* profile_id = ctx.params.FindString("profileId")) {
@@ -1002,6 +1004,11 @@ PhiVerbResult PhiControlDispatcher::VerbSettingsSet(
     coordinator_->SetAutoPeekViewEnabled(*auto_peek);
     ok = true;
   }
+  if (std::optional<bool> kiosk =
+          ctx.params.FindBool("openKioskOnCtrlAltClick")) {
+    coordinator_->SetOpenKioskOnCtrlAltClick(*kiosk);
+    ok = true;
+  }
   if (const std::string* behavior = ctx.params.FindString("newTabBehavior")) {
     if (*behavior == "omnibox" || *behavior == "newTabPage") {
       coordinator_->SetNewTabBehavior(*behavior == "omnibox"
@@ -1047,6 +1054,8 @@ PhiVerbResult PhiControlDispatcher::VerbSettingsSet(
   out.Set("peekViewEnabled", coordinator_->settings().peek_view_enabled);
   out.Set("autoPeekViewEnabled",
           coordinator_->settings().auto_peek_view_enabled);
+  out.Set("openKioskOnCtrlAltClick",
+          coordinator_->settings().open_kiosk_on_ctrl_alt_click);
   out.Set("newTabBehavior",
           coordinator_->NewTabBehavior() == PhiNewTabBehavior::kOmnibox
               ? "omnibox"

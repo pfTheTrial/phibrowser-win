@@ -303,6 +303,15 @@ void PhiPreferences::SetAutoPeekViewEnabled(bool enabled) {
   Notify(PreferenceChange::kPeek);
 }
 
+void PhiPreferences::SetOpenKioskOnCtrlAltClick(bool enabled) {
+  if (enabled == settings_.open_kiosk_on_ctrl_alt_click) {
+    return;
+  }
+  settings_.open_kiosk_on_ctrl_alt_click = enabled;
+  MarkDirty();
+  Notify(PreferenceChange::kKiosk);
+}
+
 void PhiPreferences::SetRestoreLastSession(bool enabled) {
   if (enabled == settings_.restore_last_session) {
     return;

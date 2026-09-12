@@ -178,6 +178,10 @@ struct PhiSettings {
   bool dim_unloaded_tab_icons = true;
   bool peek_view_enabled = true;
   bool auto_peek_view_enabled = true;
+  // The Mac's GeneralSettings.openKioskOnCommandOptionClick: a link clicked
+  // with Ctrl+Alt held (the Mac's Cmd+Opt) opens in a Kiosk window. On by
+  // default, as on Mac.
+  bool open_kiosk_on_ctrl_alt_click = true;
   bool restore_last_session = false;
   bool always_show_bookmark_bar = false;
   bool bookmark_bar_on_new_tab = false;

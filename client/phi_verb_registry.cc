@@ -955,6 +955,8 @@ constexpr PhiParamField kSettingsSet[] = {
     {"restoreLastSession", kParamBool, kOptional, "", "Session restore."},
     {"peekViewEnabled", kParamBool, kOptional, "", "Peek's master switch."},
     {"autoPeekViewEnabled", kParamBool, kOptional, "", "Automatic peek."},
+    {"openKioskOnCtrlAltClick", kParamBool, kOptional, "",
+     "Ctrl+Alt-click a link opens a Kiosk."},
     {"newTabBehavior", kParamString, kOptional, "", "omnibox or newTabPage."},
     {"developerMode", kParamBool, kOptional, "", "Never agent-settable."},
     {"section", kParamString, kOptional, "", "Show this settings pane."},

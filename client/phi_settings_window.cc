@@ -1492,13 +1492,13 @@ void PhiSettingsWindow::BuildSpaces(int* y) {
 }
 
 // The Mac's Navigations pane (NavigationsSettingsView): the link-opening
-// controls, collected out of General and Spaces. Peek and URL Rules are real.
+// controls, collected out of General and Spaces. Peek, the Ctrl+Alt-click
+// Kiosk switch and URL Rules are real.
 //
-// The two KIOSK switches are drawn for the shape of the pane but sit INERT,
-// because neither gesture reaches Windows: the Cmd+Opt link remap is
-// IS_MAC_PHI in Browser::OpenURLFromTab, and the client has no external-link
-// entry point at all. They become live rows once the framework takes a client
-// answer for them, the way the Peek pair now does.
+// The EXTERNAL-LINKS Kiosk switch is drawn for the shape of the pane but sits
+// INERT: the client has no external-link entry point yet. It becomes a live
+// row once one exists, the way the Ctrl+Alt row did when the framework took
+// the Mac's Cmd+Opt remap (Browser::OpenURLFromTab) for Windows.
 void PhiSettingsWindow::BuildNavigation(int* y) {
   AddSectionHeading(y, L"Kiosk",
                     L"Open links in a lightweight window, one page at a "
@@ -1510,12 +1510,13 @@ void PhiSettingsWindow::BuildNavigation(int* y) {
                L"Kiosk window.");
   AddDividerRow(y);
   AddToggleRow(y, L"Open Kiosk when clicking links with Ctrl+Alt held",
-               /*on=*/true, /*enabled=*/false, std::string(),
+               prefs_->OpenKioskOnCtrlAltClick(), /*enabled=*/true,
+               "kioskctrlalt",
                L"Hold Ctrl and Alt while clicking a link to open it in a "
                L"Kiosk window.");
   AddDividerRow(y);
-  AddSubHint(y, L"On Windows, Kiosk opens from a link's context menu and "
-                L"from URL rules.");
+  AddSubHint(y, L"Kiosk also opens from a link's context menu and from URL "
+                L"rules.");
   EndSection(y);
 
   AddSectionHeading(y, L"Peek",
@@ -1523,8 +1524,9 @@ void PhiSettingsWindow::BuildNavigation(int* y) {
   const bool peek = prefs_->PeekViewEnabled();
   BeginSection(y, nullptr);
   AddToggleRow(y, L"Enable Peek View", peek, /*enabled=*/true, "peekview",
-               L"Choose \u201COpen Link in Peek View\u201D to preview a "
-               L"link in a floating panel over the page.");
+               L"Shift-click a link, or choose \u201COpen Link in Peek "
+               L"View\u201D, to preview it in a floating panel over the "
+               L"page.");
   AddDividerRow(y);
   // The sub-switch is dimmed and inert while the master is off, as on Mac.
   AddToggleRow(y, L"Automatically peek from pinned tabs and bookmarks",
@@ -3521,6 +3523,8 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
     host_->CaptureAnalytics(kAnalyticsModulePeek, kEventPeekAutoSettingChanged,
                             PhiFlagProperties("enabled", !item.on));
     host_->SetAutoPeekViewEnabled(!item.on);
+  } else if (item.action == "kioskctrlalt") {
+    host_->SetOpenKioskOnCtrlAltClick(!item.on);  // The Mac reports nothing.
   } else if (item.action == "devmode") {
     host_->SetDeveloperMode(!item.on);
   } else if (item.action == "agentprofile") {

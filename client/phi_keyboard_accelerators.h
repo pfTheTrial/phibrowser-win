@@ -64,6 +64,11 @@ class PhiKeyboardAccelerators {
   // REPEAT is still a solo hold and leaves it as it was); any other
   // key-down ends it. Pure.
   static bool AltSoloAfterKeyDown(bool current, UINT vk, bool repeat);
+  // A mouse button went down while Alt was held: that is a chord too
+  // (Alt-click opens a link in split view, Ctrl+Alt-click in a Kiosk), so
+  // the release must not summon the menu titles -- Windows' own Alt-revealed
+  // bar stands down the same way. Called from the coordinator's mouse hook.
+  void OnMouseButtonDown() { alt_solo_ = false; }
 
  private:
   static LRESULT CALLBACK HookProc(int code, WPARAM wparam, LPARAM lparam);
@@ -76,8 +81,9 @@ class PhiKeyboardAccelerators {
   RAW_PTR_EXCLUSION Host& host_;
   HHOOK hook_ = nullptr;
   // Alt is down with nothing pressed since — a bare tap summons the caption
-  // band's hidden menu titles on release. Cleared by any other key-down, so
-  // Alt+Tab and the Alt+arrow history chords never trip it.
+  // band's hidden menu titles on release. Cleared by any other key-down (so
+  // Alt+Tab and the Alt+arrow history chords never trip it) and by a mouse
+  // button (an Alt-click).
   bool alt_solo_ = false;
 };
 

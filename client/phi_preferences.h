@@ -52,6 +52,7 @@ class PhiPreferences : public ChromePrefsHost {
     kOpenIndicators,  // The sidebar's open-tab dots: every sidebar repaints.
     kDimUnloaded,     // The reclaimed-tab dimming: every sidebar repaints.
     kPeek,           // Both peek switches: the framework mirror is due.
+    kKiosk,          // The Ctrl+Alt-click switch: the framework mirror is due.
     kRestore,        // The per-profile framework mirror is due.
     kBookmarkBar,    // Either bar flag: every slot re-fits its content.
     kLanguage,       // The preference: Chromium's locale mirror is due.
@@ -138,6 +139,10 @@ class PhiPreferences : public ChromePrefsHost {
   void SetPeekViewEnabled(bool enabled);
   bool AutoPeekViewEnabled() const { return settings_.auto_peek_view_enabled; }
   void SetAutoPeekViewEnabled(bool enabled);
+  bool OpenKioskOnCtrlAltClick() const {
+    return settings_.open_kiosk_on_ctrl_alt_click;
+  }
+  void SetOpenKioskOnCtrlAltClick(bool enabled);
   bool RestoreLastSession() const { return settings_.restore_last_session; }
   void SetRestoreLastSession(bool enabled);
   bool DeveloperMode() const { return settings_.developer_mode; }
