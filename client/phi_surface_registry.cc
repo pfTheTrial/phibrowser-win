@@ -6,6 +6,11 @@
 
 namespace phi_client {
 
+bool PhiSurfacePanel::ContainsWindow(HWND window) const {
+  const HWND card = hwnd();
+  return card && window && (window == card || ::IsChild(card, window));
+}
+
 PhiSurfaceRegistry::PhiSurfaceRegistry() = default;
 PhiSurfaceRegistry::~PhiSurfaceRegistry() = default;
 

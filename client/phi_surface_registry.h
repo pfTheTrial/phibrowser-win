@@ -48,6 +48,9 @@ class PhiSurfacePanel {
   virtual int64_t origin_tab_id() const = 0;
   // The panel's card HWND (what click-outside tests compare against).
   virtual HWND hwnd() const = 0;
+  // Whether `window` is the card or something the panel considers part of
+  // it — a click there is not a click outside.
+  virtual bool ContainsWindow(HWND window) const;
 
   // The origin window moved or resized: re-fit to its content card.
   virtual void Reposition() = 0;

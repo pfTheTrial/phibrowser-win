@@ -469,7 +469,13 @@ bool PhiSurfaceCoordinator::DismissPeeksForShell(HWND shell, HWND inside) {
     if (!card || ::GetAncestor(card, GA_ROOT) != shell) {
       return;
     }
-    if (inside && (inside == card || ::IsChild(card, inside))) {
+    // A peek whose opener tab is not the active one is hidden, not "around"
+    // anything: a click on another tab's page (or an Esc there) leaves it
+    // for its own tab to come back to, as the Mac's per-tab peeks do.
+    if (!::IsWindowVisible(card)) {
+      return;
+    }
+    if (inside && panel.ContainsWindow(inside)) {
       return;  // A click INSIDE the card is the card's own business.
     }
     panel.NoteEndReason("closed");  // Esc / a click outside: the user's.

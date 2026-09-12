@@ -78,6 +78,11 @@ class PhiPeekPanel : public PhiSurfacePanel, public PhiPanel {
   // The card's own window (the peek's browser is reparented inside it) —
   // what the click-outside test compares against.
   HWND hwnd() const override;
+  // The card, anything in it, or the chip layer beside it.
+  bool ContainsWindow(HWND window) const override;
+  // Shows the shadow, the card and the chips, in that z-order. Raise() is
+  // the same for a peek that is already up and nothing for one that is down.
+  void Show();
 
   // The opener window moved or resized: re-fit the card to its content rect.
   void Reposition() override;

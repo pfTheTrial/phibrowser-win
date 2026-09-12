@@ -5,9 +5,12 @@
 #   keydown,<vk>      keybd_event press (0x10 shift, 0x11 ctrl, 0x12 alt)
 #   keyup,<vk>        keybd_event release
 #   click,x,y         move the cursor to x,y, press + release the left button
+#   rclick,x,y        the same with the right button (a context menu)
+#   sclick,x,y        a left click at SCREEN px (a menu item)
 #   shot,<name>       full-screen capture to C:\Users\jdxin\mod-<name>.png
 #   list              every PhiClientShell/PhiPeekPanel/PhiKioskShell window:
 #                     class, visible, rect -> the log
+#   tree              the shell's child windows, z-order top-down -> the log
 #   sleep,<ms>
 # Writes the outcome to modprobe.txt and touches mod.done last.
 Add-Type -AssemblyName System.Windows.Forms,System.Drawing
@@ -29,6 +32,9 @@ public static class M {
   [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint f, IntPtr e);
   [DllImport("user32.dll")] public static extern short GetAsyncKeyState(int vk);
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowTextW(IntPtr h, StringBuilder s, int n);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetClassNameW(IntPtr h, StringBuilder s, int n);
+  [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr h, uint cmd);
+  [DllImport("user32.dll")] public static extern int GetWindowLongW(IntPtr h, int i);
   [StructLayout(LayoutKind.Sequential)] public struct P { public int X,Y; }
   [StructLayout(LayoutKind.Sequential)] public struct R { public int L,T,Rr,B; }
 }
@@ -63,6 +69,20 @@ function ListWindows() {
       $v = if ([M]::IsWindowVisible($w)) { 1 } else { 0 }
       $s += " [$cls hwnd=$w vis=$v rect=$($r.L),$($r.T),$($r.Rr),$($r.B) title=$($sb.ToString())]"
     }
+  }
+  return $s
+}
+# tree: the shell's child windows, z-order top-down, three levels deep.
+function Tree($w, $depth) {
+  $s = ""
+  $c = [M]::GetWindow($w, 5)
+  while ($c -ne [IntPtr]::Zero) {
+    $sb = New-Object System.Text.StringBuilder 256; [M]::GetClassNameW($c, $sb, 256) | Out-Null
+    $r = New-Object M+R; [M]::GetWindowRect($c, [ref]$r) | Out-Null
+    $v = if ([M]::IsWindowVisible($c)) { 1 } else { 0 }
+    $s += "`n" + ("  " * $depth) + "$($sb.ToString()) hwnd=$c vis=$v rect=$($r.L),$($r.T),$($r.Rr),$($r.B) style=0x$('{0:x}' -f [M]::GetWindowLongW($c, -16)) ex=0x$('{0:x}' -f [M]::GetWindowLongW($c, -20))"
+    if ($depth -lt 3) { $s += (Tree $c ($depth + 1)) }
+    $c = [M]::GetWindow($c, 2)
   }
   return $s
 }
@@ -103,8 +123,28 @@ if ($h -ne [IntPtr]::Zero) {
         Start-Sleep -Milliseconds 400
         $out += " click=$($p.X),$($p.Y) $mods"
       }
+      'rclick' {
+        # rclick,x,y: a right-button click at CLIENT px (a context menu).
+        $p = ToScreen $spec[1] $spec[2]
+        [M]::SetCursorPos($p.X, $p.Y) | Out-Null
+        Start-Sleep -Milliseconds 120
+        [M]::mouse_event(0x0008, 0, 0, 0, [IntPtr]::Zero); Start-Sleep -Milliseconds 90
+        [M]::mouse_event(0x0010, 0, 0, 0, [IntPtr]::Zero)
+        Start-Sleep -Milliseconds 700
+        $out += " rclick=$($p.X),$($p.Y)"
+      }
+      'sclick' {
+        # sclick,x,y: a left click at SCREEN px (a menu item).
+        [M]::SetCursorPos([int]$spec[1], [int]$spec[2]) | Out-Null
+        Start-Sleep -Milliseconds 250
+        [M]::mouse_event(0x0002, 0, 0, 0, [IntPtr]::Zero); Start-Sleep -Milliseconds 90
+        [M]::mouse_event(0x0004, 0, 0, 0, [IntPtr]::Zero)
+        Start-Sleep -Milliseconds 400
+        $out += " sclick=$($spec[1]),$($spec[2])"
+      }
       'shot' { Shot $spec[1]; $out += " shot=$($spec[1])" }
       'list' { $out += (ListWindows) }
+      'tree' { $out += (Tree $h 1) }
       'sleep' { Start-Sleep -Milliseconds ([int]$spec[1]) }
     }
   }

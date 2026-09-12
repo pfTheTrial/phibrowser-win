@@ -112,6 +112,13 @@ constexpr UINT WM_PHI_OPEN_ONBOARDING = WM_APP + 11;
 // (PhiUpdater's shutdown-request callback, posted from WinSparkle's own
 // thread): QuitForUpdate closes every window through the normal paths.
 constexpr UINT WM_PHI_QUIT_FOR_UPDATE = WM_APP + 12;
+// A mouse button went down somewhere in a shell: dismiss the peek it landed
+// outside of. DEFERRED out of the WH_MOUSE hook, where it used to run:
+// closing the peek's browser inside the button-down hook — a focused window
+// destroyed under a press in flight — cost the click itself, so a Shift-click
+// meant to open the NEXT peek opened nothing. wparam is the shell's root
+// HWND, lparam the window the button went down in.
+constexpr UINT WM_PHI_DISMISS_PEEKS = WM_APP + 13;
 }  // namespace
 
 void PhiCoordinator::OnFrameworkReady(phi_framework::PhiFramework* framework,
@@ -272,6 +279,15 @@ LRESULT CALLBACK PhiCoordinator::MsgWndProc(HWND hwnd,
         ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
     if (self) {
       self->AutoViewReevaluate();
+    }
+    return 0;
+  }
+  if (msg == WM_PHI_DISMISS_PEEKS) {
+    auto* self = reinterpret_cast<PhiCoordinator*>(
+        ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    if (self) {
+      self->surface_coordinator_.DismissPeeksForShell(
+          reinterpret_cast<HWND>(wparam), reinterpret_cast<HWND>(lparam));
     }
     return 0;
   }
@@ -3733,13 +3749,15 @@ LRESULT CALLBACK PhiCoordinator::MouseHookProc(int code,
     if (self->accelerators_) {
       self->accelerators_->OnMouseButtonDown();
     }
-    if (self->surface_coordinator_.HasPeek()) {
+    if (self->surface_coordinator_.HasPeek() && self->msg_hwnd_) {
       const HWND target = reinterpret_cast<MOUSEHOOKSTRUCT*>(lparam)->hwnd;
       // The click is delivered regardless: dismissing is a side effect of
       // clicking elsewhere, not a swallowed click (the Mac lets the click
-      // through too).
-      self->surface_coordinator_.DismissPeeksForShell(
-          ::GetAncestor(target, GA_ROOT), target);
+      // through too) — and it runs on a turn of its own, after this press
+      // has been dispatched (WM_PHI_DISMISS_PEEKS).
+      ::PostMessageW(self->msg_hwnd_, WM_PHI_DISMISS_PEEKS,
+                     reinterpret_cast<WPARAM>(::GetAncestor(target, GA_ROOT)),
+                     reinterpret_cast<LPARAM>(target));
     }
   }
   return ::CallNextHookEx(nullptr, code, wparam, lparam);

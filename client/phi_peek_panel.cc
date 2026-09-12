@@ -309,9 +309,17 @@ PhiPeekPanel::PhiPeekPanel(int64_t window_id,
                        SWP_FRAMECHANGED);
   }
 
+  // The chips are a child of the SHELL, not of the card, and sit right above
+  // the card in the shell's card stack (Raise). A child of the card lost to
+  // the hosted browser: HWNDMessageHandler::Activate() does SetWindowPos(
+  // HWND_TOP) on Chromium's own window — on Show(), and again whenever the
+  // page activates itself — which put the browser child above the chips as
+  // soon as the peek was up, and no reposition came to lift them again. A
+  // sibling of the card is out of that fight: nothing inside the card can
+  // reorder above it.
   controls_ = std::make_unique<PhiPeekControls>();
   if (controls_->Open(
-          hwnd(), [this](HDC dc) { PaintControls(dc); },
+          shell, [this](HDC dc) { PaintControls(dc); },
           [this](int index) { HoverControl(index); },
           [this](int index) { ClickControl(index); })) {
     controls_->ShowPanel();
@@ -319,22 +327,37 @@ PhiPeekPanel::PhiPeekPanel(int64_t window_id,
 
   Reposition();
   RefreshState();
-  Raise();
+  Show();
   if (browser_hwnd_ && ::IsWindow(browser_hwnd_)) {
     ::SetFocus(browser_hwnd_);
   }
 }
 
-void PhiPeekPanel::Raise() {
+void PhiPeekPanel::Show() {
   // Above the shell's hosted browser child, or the page would occlude both.
-  // The shadow goes up first so the card never ends up under its own shadow;
-  // the card stack keeps that order once both are in it.
+  // The shadow goes up first so the card never ends up under its own shadow,
+  // the chips last so they stay above the card; the card stack keeps that
+  // order once all three are in it.
   if (shadow_) {
     shadow_->ShowPanel();
   }
   if (alive()) {
     ShowPanel();
   }
+  if (controls_) {
+    controls_->ShowPanel();
+  }
+}
+
+void PhiPeekPanel::Raise() {
+  // A z-order refresh for a peek that is UP. One that is down — its opener
+  // is not the active tab — stays down: the caps raise (kMsgRaiseCaps) asks
+  // every surface of the slot to come up, and used to bring another tab's
+  // peek up over the page the user had switched to.
+  if (!IsPanelVisible()) {
+    return;
+  }
+  Show();
 }
 
 SidebarSurface PhiPeekPanel::kind() const {
@@ -352,6 +375,15 @@ int64_t PhiPeekPanel::origin_tab_id() const {
 HWND PhiPeekPanel::hwnd() const {
   // PhiSurfacePanel's spelling of the base's HWND; the two names meet here.
   return PhiWindow::hwnd();
+}
+
+bool PhiPeekPanel::ContainsWindow(HWND window) const {
+  if (PhiSurfacePanel::ContainsWindow(window)) {
+    return true;
+  }
+  // The chips are the shell's child, not the card's (see the constructor),
+  // so a click on one is the card's own business too.
+  return controls_ && controls_->alive() && window == controls_->hwnd();
 }
 
 PhiPalette PhiPeekPanel::QueryPalette() const {
@@ -456,11 +488,14 @@ void PhiPeekPanel::SetVisibleForActiveTab(int64_t active_tab_id) {
   }
   const bool mine = active_tab_id == opener_tab_id_;
   if (mine) {
-    Raise();  // Shows the shadow, then the card, in that order.
+    Show();  // The shadow, then the card, then the chips, in that order.
   } else {
     HidePanel();
     if (shadow_) {
       shadow_->HidePanel();
+    }
+    if (controls_) {
+      controls_->HidePanel();
     }
   }
 }
@@ -534,11 +569,17 @@ void PhiPeekPanel::PositionControls() {
   if (width <= 0 || height <= 0) {
     return;
   }
-  controls_->SetPanelBounds(layout.gutter);
-  // Raised on every move: the chips have to stay above the hosted browser,
-  // which reorders itself as it renders. That is the card's own card stack,
-  // not a bare HWND_TOP.
-  controls_->RaisePanel();
+  // The gutter is laid out in the card's client space; the chips live in the
+  // shell's, so the card's own origin carries them over.
+  RECT card = {};
+  ::GetWindowRect(hwnd(), &card);
+  POINT origin_in_shell = {card.left, card.top};
+  ::ScreenToClient(controls_->parent(), &origin_in_shell);
+  const RECT gutter = {origin_in_shell.x + layout.gutter.left,
+                       origin_in_shell.y + layout.gutter.top,
+                       origin_in_shell.x + layout.gutter.right,
+                       origin_in_shell.y + layout.gutter.bottom};
+  controls_->SetPanelBounds(gutter);
   // Only the chips themselves are the layer — the space between them is
   // transparent, so the page shows through and a click there lands on the
   // page. This used to be a CreateRoundRectRgn union, which stair-stepped
