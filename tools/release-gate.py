@@ -144,14 +144,99 @@ def check_sources():
     return rc
 
 
+API_HEADER = "chrome/browser/phinomenon/phi_framework/phi_framework_api.h"
+
+
+def split_params(text):
+    """Top-level comma split (template commas stay inside their <>)."""
+    parts, depth, cur = [], 0, ""
+    for ch in text:
+        if ch == "<":
+            depth += 1
+        elif ch == ">":
+            depth -= 1
+        if ch == "," and depth == 0:
+            parts.append(cur)
+            cur = ""
+        else:
+            cur += ch
+    if cur.strip():
+        parts.append(cur)
+    return [p.strip() for p in parts]
+
+
+def check_api_boundary(header):
+    """The framework/client boundary must not move ownership across modules
+    (phi_framework_api.h contract rule 6; docs/static-build-plan.md §1): in
+    a non-component build each side has its own allocator, so a std::
+    container written, returned or destroyed on the other side is a crash.
+    Allowed: POD, const char*, const T& / const T* read during the call,
+    sink interfaces. Flagged: any std:: type (or a struct holding one)
+    passed by value, by non-const pointer or by non-const reference, and any
+    std:: type returned by value."""
+    if not os.path.isfile(header):
+        return fail(f"{header} missing — the gate needs the framework tree "
+                   "(or SDK source twin) beside the out dir")
+    with open(header, errors="replace") as f:
+        src = f.read()
+    src = re.sub(r"/\*.*?\*/", "", src, flags=re.S)
+    src = re.sub(r"//[^\n]*", "", src)
+    # Structs that carry std:: members: passing them mutably is the same
+    # ownership move as passing the member.
+    owning = set()
+    for m in re.finditer(r"struct\s+(\w+)\s*\{(.*?)\};", src, re.S):
+        if "std::" in m.group(2):
+            owning.add(m.group(1))
+    owning_re = r"std::|\b(?:%s)\b" % "|".join(sorted(owning) or ["$^"])
+
+    def type_of(decl):
+        """'const T& name = x' -> 'const T&'; a bare return type is kept."""
+        d = re.sub(r"\s*=.*$", "", decl.strip())
+        m = re.match(r"^(.*?[*&>\w])\s+\w+$", d)
+        return m.group(1) if m else d
+
+    def moves_ownership(decl):
+        t = type_of(decl)
+        if not re.search(owning_re, t):
+            return False
+        # const T& and const T* are reads; everything else (by value,
+        # T*, T&) writes or destroys on the wrong side.
+        return not (t.startswith("const ") and t.endswith(("&", "*")))
+
+    rc = 0
+    for m in re.finditer(r"virtual\s+(.*?)\s+(\w+)\s*\((.*?)\)\s*"
+                         r"(?:const\s*)?(?:override|=\s*0|\{)", src, re.S):
+        ret, name, params = m.group(1), m.group(2), m.group(3)
+        ret = " ".join(ret.split())
+        params = " ".join(params.split())
+        bad = []
+        if moves_ownership(ret):
+            bad.append(f"returns {ret}")
+        for p in split_params(params):
+            if moves_ownership(p):
+                bad.append(f"parameter '{p}'")
+        if bad:
+            rc |= fail(f"phi_framework_api.h: {name}() moves ownership "
+                       "across the module boundary (contract rule 6): "
+                       + "; ".join(bad))
+    if rc == 0:
+        print("ok: api boundary")
+    return rc
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", default=DEFAULT_OUT)
     parser.add_argument("--source-only", action="store_true")
     args = parser.parse_args()
+    out_dir = os.path.abspath(args.out)
     rc = check_sources()
+    # The out dir sits two levels under the source root (out/<name>), in a
+    # checkout and in an unzipped SDK alike.
+    rc |= check_api_boundary(
+        os.path.normpath(os.path.join(out_dir, "..", "..", API_HEADER)))
     if not args.source_only:
-        rc |= check_binary(os.path.abspath(args.out))
+        rc |= check_binary(out_dir)
     print("RELEASE GATE " + ("PASSED" if rc == 0 else "FAILED"))
     sys.exit(rc)
 

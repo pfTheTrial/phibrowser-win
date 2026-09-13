@@ -20,13 +20,28 @@ void PhiWindowModel::Update(const Snapshot& snapshot) {
   Reindex(&entry);
 }
 
+// static
+bool PhiWindowModel::Pull(phi_framework::PhiFramework* framework,
+                          BrowserId browser,
+                          Snapshot* out) {
+  if (!framework || !out) {
+    return false;
+  }
+  const Snapshot* scratch = framework->Snapshot(browser);
+  if (!scratch) {
+    return false;
+  }
+  *out = *scratch;
+  return true;
+}
+
 bool PhiWindowModel::Refresh(phi_framework::PhiFramework* framework,
                              BrowserId browser) {
   if (!framework || !browser.valid()) {
     return false;
   }
   Snapshot snapshot;
-  if (!framework->Snapshot(browser, &snapshot)) {
+  if (!Pull(framework, browser, &snapshot)) {
     // The framework no longer knows the browser: whatever we held for it
     // describes a strip that is gone, and a reader that gets `false` here
     // must not find a stale one through Get afterwards.

@@ -67,12 +67,12 @@ void PhiSessionRestore::NoteActiveSpace(const std::string& space_id) {
 }
 
 void PhiSessionRestore::OnColdStartRestorePlan(
-    std::vector<int>* eager_window_ids,
+    phi_framework::ColdStartPlan* plan,
     bool* armed) {
   // Refuse to gate until the Space records are actually loaded. Arming with
   // an empty set here would park every window the user expected to see; an
   // unfiltered replay is the correct fallback, and `*armed` arrives false.
-  if (!eager_window_ids || !armed || ghosts_.Empty()) {
+  if (!plan || !armed || ghosts_.Empty()) {
     LOG(INFO) << "[PhiClient] ColdStartRestorePlan: NOT armed (records "
               << (ghosts_.Empty() ? "not loaded" : "loaded") << ")";
     host_.NoteRestorePlanned("unfiltered");
@@ -80,12 +80,16 @@ void PhiSessionRestore::OnColdStartRestorePlan(
   }
   host_.NoteRestorePlanned("armed");
   // The active Space's window is rebuilt now; every other saved window parks
-  // and materializes when the user switches to it.
-  *eager_window_ids = ghosts_.EagerWindowIds(LastActiveSpaceId());
+  // and materializes when the user switches to it. The ids go through the
+  // framework's sink (api rule 6), never into its containers.
+  const std::vector<int> eager = ghosts_.EagerWindowIds(LastActiveSpaceId());
+  for (int window_id : eager) {
+    plan->AddEagerWindow(window_id);
+  }
   *armed = true;
   LOG(INFO) << "[PhiClient] ColdStartRestorePlan: armed space="
             << LastActiveSpaceId() << " eager="
-            << (eager_window_ids->empty() ? 0 : eager_window_ids->front());
+            << (eager.empty() ? 0 : eager.front());
   // A cold start has no settlement callback, so the "eager set matched
   // nothing" case (the ids named windows the session file no longer holds:
   // every window parks, none appears) is caught by a timer: once the

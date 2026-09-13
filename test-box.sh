@@ -310,7 +310,13 @@ box 'New-Item -ItemType Directory -Force -Path '"$PHI_TEST_DIR"'\lib | Out-Null'
   for name in "${SUITES[@]}"; do printf 'put %s.mjs\n' "$name"; done
   if [ "$WITH_PROBES" -eq 1 ]; then
     for f in "$TESTDIR"/probes/*; do
-      printf 'put probes/%s probes/%s\n' "$(basename "$f")" "$(basename "$f")"
+      if [ -d "$f" ]; then
+        # A probe's page folder (mc-pages): one level deep is all there is.
+        printf -- '-mkdir probes/%s\nput probes/%s/* probes/%s/\n' \
+          "$(basename "$f")" "$(basename "$f")" "$(basename "$f")"
+      else
+        printf 'put probes/%s probes/%s\n' "$(basename "$f")" "$(basename "$f")"
+      fi
     done
   fi
 } | (cd "$TESTDIR" && sftp -b - -o BatchMode=yes "$HOST:$REMOTE_TEST_URL") \

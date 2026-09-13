@@ -40,6 +40,11 @@ DEFAULT_OUT = "/home/jx/Phi/chromuim/src/out/PhiFxWin"
 KIT = "phi_clientkit/kit.json"
 OBJ_DIR = "phi_clientkit/obj"
 RESOURCES = ("emoji-catalog.json", "phi.ico", "strings.json")
+# The client-owned subtrees under <out>/resources (staged below), and the
+# manifest naming them all for the installer's layout split.
+CLIENT_RESOURCE_TREES = ("phi-browser-skill", "profile-card", "onboarding",
+                         "fonts")
+CLIENT_RESOURCES_MANIFEST = "phi-client-resources.txt"
 # The phi-browser skill ships beside the exe as resources/phi-browser-skill:
 # the tree Settings > Developer > "Add skill to..." junctions into an agent's
 # skills folder (the Mac bundles the same folder under Contents/Resources).
@@ -114,6 +119,44 @@ def prepare_tree(out_dir, winsysroot):
         os.makedirs(os.path.dirname(sysroot), exist_ok=True)
         os.symlink(os.path.abspath(winsysroot), sysroot)
         print(f"linked {sysroot} -> {winsysroot}")
+
+
+def reorder_imports(exe_path, src_root):
+    """chrome_elf.dll must be the FIRST import so its blocklist and crash
+    hooks are in place before any other DLL initializes — what
+    //chrome:reorder_imports (build/win/reorder-imports.py) does to
+    chrome.exe. The link emits imports in library order, which puts the exe's
+    other imports (base.dll in a component build, system DLLs in a static
+    one) ahead of it; this swaps chrome_elf into slot 0 in place. Only the
+    two import directory entries change, so the debug directory (the PDB
+    binding) is untouched."""
+    sys.path.insert(0, os.path.join(src_root, "third_party", "pefile_py3"))
+    import pefile  # noqa: E402 (vendored with the framework tree / SDK)
+    pe = pefile.PE(exe_path, fast_load=True)
+    pe.parse_data_directories(directories=[
+        pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_IMPORT"]])
+    imports = pe.DIRECTORY_ENTRY_IMPORT
+    index = next((i for i, imp in enumerate(imports)
+                  if imp.dll.lower() == b"chrome_elf.dll"), None)
+    if index is None:
+        sys.exit("Phi.exe does not import chrome_elf.dll — the link recipe "
+                 "lost //chrome/chrome_elf")
+    if index == 0:
+        pe.close()
+        return "chrome_elf.dll already first"
+    elf, first = imports[index].struct, imports[0].struct
+    # OriginalFirstThunk and Characteristics are a union at offset 0;
+    # swapping one of them is enough (as reorder-imports.py notes).
+    for field in ("OriginalFirstThunk", "TimeDateStamp", "ForwarderChain",
+                  "Name", "FirstThunk"):
+        elf_value, first_value = getattr(elf, field), getattr(first, field)
+        setattr(elf, field, first_value)
+        setattr(first, field, elf_value)
+    tmp = exe_path + ".reorder"
+    pe.write(filename=tmp)
+    pe.close()
+    os.replace(tmp, exe_path)
+    return f"chrome_elf.dll moved from import slot {index} to 0"
 
 
 def retarget(template, old_source, old_out, source, out):
@@ -232,10 +275,13 @@ def main():
               if i not in kit["scaffold_objs"]
               and not i.endswith("chrome_exe_version.res")] + client_objs
     rsp_path = os.path.join(out_dir, "phi_clientkit/Phi.exe.rsp")
+    # The same rsp shape as the framework's link rule: inputs, libs,
+    # solibs, ldflags, then the rlibs (Rust code and its std — non-empty
+    # only in a non-component build; the SDK carries them like any input).
     with open(rsp_path, "w") as f:
         f.write("\n".join(inputs) + "\n")
         f.write(kit["libs"] + " " + kit["solibs"] + " " +
-                kit["ldflags"] + "\n")
+                kit["ldflags"] + " " + kit.get("rlibs", "") + "\n")
     link = kit["link_command"].replace(kit["scaffold_exe"], "Phi.exe")
     link = re.sub(r'"@[^"]*"', f'"@{rsp_path}"', link)
     print("linking Phi.exe...")
@@ -244,6 +290,9 @@ def main():
     if proc.returncode != 0:
         print(proc.stdout + proc.stderr)
         sys.exit(1)
+    print("imports: " + reorder_imports(
+        os.path.join(out_dir, "Phi.exe"),
+        os.path.normpath(os.path.join(out_dir, "..", ".."))))
 
     resources_dir = os.path.join(out_dir, "resources")
     os.makedirs(resources_dir, exist_ok=True)
@@ -262,6 +311,13 @@ def main():
               os.path.join(resources_dir, "onboarding"))
     sync_tree(os.path.join(CLIENT_DIR, "resources", "fonts"),
               os.path.join(resources_dir, "fonts"))
+    # What the CLIENT owns under resources/ — the installer's staging splits
+    # the shared dev-tree folder by this list (client entries stay beside
+    # Phi.exe, Chromium's accessibility/ and inspector_overlay/ go under
+    # framework/; installer/stage-payload.ps1).
+    with open(os.path.join(resources_dir, CLIENT_RESOURCES_MANIFEST),
+              "w") as f:
+        f.write("\n".join(sorted(RESOURCES + CLIENT_RESOURCE_TREES)) + "\n")
     # Stage the vendored WinSparkle.dll beside the client: the sync ships
     # every top-level DLL, and the updater loads it from the exe's own dir.
     winsparkle = os.path.join(os.path.dirname(os.path.abspath(__file__)),

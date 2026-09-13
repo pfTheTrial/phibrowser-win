@@ -91,7 +91,7 @@ class PhiFrameworkDispatcher : public phi_framework::PhiFrameworkDelegate {
   void OnAnalyticsEventCaptured(const char* module,
                                 const char* event_name,
                                 const char* properties_json) override;
-  void OnColdStartRestorePlan(std::vector<int>* eager_window_ids,
+  void OnColdStartRestorePlan(phi_framework::ColdStartPlan* plan,
                               bool* armed) override;
   void OnColdStartParkedWindows(const char* parked_json,
                                 const char* reporting_profile) override;

@@ -8,9 +8,15 @@
 # pulled back into installer/dist/.
 #
 # Usage: make-installer.sh [--version X.Y.Z] [--host user@host] [--keep-remote]
+#                          [--from phi-fx-dev|phi-fx-ship] [--layout auto|flat|framework]
 #                          [--telemetry phi_telemetry.json | --no-telemetry]
 #   --version    defaults to PHI_WIN_VERSION_STRING in client/phi_version.h
 #   --keep-remote  skip pulling the exe back (leave it on the box)
+#   --from       the deployed tree on the box to package (default phi-fx-dev,
+#                the component dev build; phi-fx-ship is the non-component
+#                ship build sync-fx-win.sh pushes with PHI_REMOTE_DIR)
+#   --layout     the installed tree's shape (stage-payload.ps1): auto picks
+#                framework\ for a static tree and flat for a component one
 #   --telemetry  the deployment config the installer drops into the user
 #                data dir (crash_endpoint, analytics_*; docs/sentry-crash-
 #                reporting.md). Default: rendered by the sibling
@@ -23,6 +29,8 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 HOST="jdxin@192.168.100.170"
 VERSION=""
 PULL=yes
+FROM=phi-fx-dev
+LAYOUT=auto
 TELEMETRY=""
 NO_TELEMETRY=no
 while [[ $# -gt 0 ]]; do
@@ -30,6 +38,8 @@ while [[ $# -gt 0 ]]; do
     --version) VERSION="$2"; shift 2 ;;
     --host) HOST="$2"; shift 2 ;;
     --keep-remote) PULL=no; shift ;;
+    --from) FROM="$2"; shift 2 ;;
+    --layout) LAYOUT="$2"; shift 2 ;;
     --telemetry) TELEMETRY="$2"; shift 2 ;;
     --no-telemetry) NO_TELEMETRY=yes; shift ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
@@ -39,7 +49,7 @@ if [[ -z "$VERSION" ]]; then
   VERSION=$(grep -oP '(?<=PHI_WIN_VERSION_STRING ")[^"]+' \
     "$HERE/../client/phi_version.h")
 fi
-echo "version: $VERSION  host: $HOST"
+echo "version: $VERSION  host: $HOST  from: $FROM  layout: $LAYOUT"
 
 # The telemetry config: an explicit file, else the rendered deployment
 # config, else nothing. The rendered file is a throwaway in the temp dir so
@@ -79,23 +89,28 @@ if ! ssh "$HOST" "Test-Path C:\\Users\\jdxin\\nsis\\makensis.exe" | grep -q True
     Remove-Item -Recurse -Force C:\\Users\\jdxin\\nsis-tmp; echo nsis-ready"
 fi
 
-# Stage the payload box-side: the deployed tree's top level (the same globs
-# the sync ships) PLUS the resource subdirectories from the initial full
-# deploy — the browser is DOA without locales\*.pak. /PURGE keeps the stage
-# exact across versions.
+# Stage the payload box-side from the deployed tree (the same globs the
+# sync ships plus the resource subdirectories — the browser is DOA without
+# locales\*.pak), in the flat or the framework\ layout (stage-payload.ps1).
+# The stage is rebuilt from scratch every time.
 echo "staging payload on the box..."
-ssh "$HOST" "robocopy C:\\Users\\jdxin\\phi-fx-dev C:\\Users\\jdxin\\phi-stage \
-  *.exe *.dll *.pak *.bin *.dat *.manifest /PURGE /NJH /NJS /NDL /NFL | Out-Null; \
-  foreach (\$d in 'Dictionaries','locales','MEIPreload','resources') { \
-    robocopy C:\\Users\\jdxin\\phi-fx-dev\\\$d C:\\Users\\jdxin\\phi-stage\\\$d \
-      /E /PURGE /NJH /NJS /NDL /NFL | Out-Null }; \
-  echo staged"
+scp "$HERE/stage-payload.ps1" "$HOST:stage-payload.ps1" >/dev/null
+STAGED=$(ssh "$HOST" "powershell -NoProfile -ExecutionPolicy Bypass -File C:\\Users\\jdxin\\stage-payload.ps1 \
+  -Source C:\\Users\\jdxin\\$FROM -Stage C:\\Users\\jdxin\\phi-stage -Layout $LAYOUT" | tr -d '\r' | tail -1)
+echo "$STAGED"
+[[ "$STAGED" == staged\ * ]] || { echo "staging failed" >&2; exit 1; }
+LAYOUT_DEFINE=""
+[[ "$STAGED" == *"layout=framework"* ]] && LAYOUT_DEFINE="/DPHI_LAYOUT_FRAMEWORK"
 
 scp "$HERE/phi-installer.nsi" "$HOST:phi-installer.nsi" >/dev/null
+# The wizard's art (installer/art: the onboarding's black sidebar with the
+# conch and the wordmark, the white header with the wordmark).
+ssh "$HOST" "New-Item -ItemType Directory -Force -Path C:\\Users\\jdxin\\phi-art | Out-Null"
+scp "$HERE"/art/*.bmp "$HOST:phi-art/" >/dev/null
 
 echo "running makensis on the box..."
 ssh "$HOST" "C:\\Users\\jdxin\\nsis\\makensis.exe /V2 \
-  /DPHI_VERSION=$VERSION /DPHI_STAGE=C:\\Users\\jdxin\\phi-stage $TELEMETRY_DEFINE \
+  /DPHI_VERSION=$VERSION /DPHI_STAGE=C:\\Users\\jdxin\\phi-stage /DPHI_ART=C:\\Users\\jdxin\\phi-art $LAYOUT_DEFINE $TELEMETRY_DEFINE \
   C:\\Users\\jdxin\\phi-installer.nsi" | tail -3
 
 if [[ "$PULL" == yes ]]; then

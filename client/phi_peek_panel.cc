@@ -521,7 +521,7 @@ void PhiPeekPanel::RefreshState() {
   const phi_framework::WindowSnapshot* snapshot =
       model_ ? model_->Get(window_id_) : nullptr;
   phi_framework::WindowSnapshot pulled;
-  if (!snapshot && framework_ && framework_->Snapshot(window_id_, &pulled)) {
+  if (!snapshot && PhiWindowModel::Pull(framework_, window_id_, &pulled)) {
     snapshot = &pulled;
   }
   if (snapshot) {

@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "base/memory/raw_ptr_exclusion.h"
+#include "chrome/browser/phinomenon/phi_framework/phi_framework_api.h"
 #include "phibrowser-win/client/phi_app_model.h"
 #include "phibrowser-win/client/phi_ghost_spaces.h"
 #include "phibrowser-win/client/phi_ids.h"
@@ -100,7 +101,7 @@ class PhiSessionRestore {
   void NoteActiveSpace(const std::string& space_id);
 
   // --- The framework's restore callbacks ----------------------------------
-  void OnColdStartRestorePlan(std::vector<int>* eager_window_ids, bool* armed);
+  void OnColdStartRestorePlan(phi_framework::ColdStartPlan* plan, bool* armed);
   void OnColdStartParkedWindows(const char* parked_json,
                                 const char* reporting_profile);
   void OnSessionRestoreSettled(const char* receipt_json);

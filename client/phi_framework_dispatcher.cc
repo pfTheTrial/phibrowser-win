@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "phibrowser-win/client/phi_agent_space_manager.h"
+#include "phibrowser-win/client/phi_client_logging.h"
 #include "phibrowser-win/client/phi_coordinator.h"
 #include "phibrowser-win/client/phi_profile_service.h"
 #include "phibrowser-win/client/phi_session_restore.h"
@@ -25,6 +26,10 @@ PhiFrameworkDispatcher::~PhiFrameworkDispatcher() = default;
 void PhiFrameworkDispatcher::OnFrameworkReady(
     phi_framework::PhiFramework* framework,
     const char* user_data_dir_utf8) {
+  // First: from here on the exe's own log lines must land where chrome.dll's
+  // do (no-op in the component build, where they already share base.dll).
+  AttachClientLoggingToBrowserLog(user_data_dir_utf8 ? user_data_dir_utf8
+                                                     : "");
   coordinator_.OnFrameworkReady(framework, user_data_dir_utf8);
 }
 
@@ -199,10 +204,9 @@ void PhiFrameworkDispatcher::OnSessionRestoreSettled(const char* receipt_json) {
 }
 
 void PhiFrameworkDispatcher::OnColdStartRestorePlan(
-    std::vector<int>* eager_window_ids,
+    phi_framework::ColdStartPlan* plan,
     bool* armed) {
-  coordinator_.session_restore().OnColdStartRestorePlan(eager_window_ids,
-                                                        armed);
+  coordinator_.session_restore().OnColdStartRestorePlan(plan, armed);
 }
 
 void PhiFrameworkDispatcher::OnColdStartParkedWindows(

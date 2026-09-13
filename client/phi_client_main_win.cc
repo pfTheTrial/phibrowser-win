@@ -53,6 +53,7 @@
 #include "chrome/install_static/install_util.h"
 #include "chrome/install_static/user_data_dir.h"
 #include "components/crash/core/app/crash_switches.h"
+#include "phibrowser-win/client/phi_client_logging.h"
 #include "components/crash/core/app/crashpad.h"
 #include "components/crash/core/app/fallback_crash_handling_win.h"
 #include "components/crash/core/app/run_as_crashpad_handler_win.h"
@@ -277,6 +278,10 @@ int main() {
   const std::string process_type =
       command_line->GetSwitchValueASCII(switches::kProcessType);
 
+  // A non-component exe owns its logging (phi_client_logging.h); until the
+  // framework is up nothing goes to a file.
+  phi_client::InitEarlyClientLogging();
+
   // The BROWSER process must start in the Default profile: the startup
   // browser becomes the default Space's window, and that Space is bound to
   // Default — bindings are immutable in the fork's model. Chromium's own
@@ -284,6 +289,13 @@ int main() {
   // at the previous exit; without this pin, a session that ended in another
   // Space's profile hands the default Space a wrong-profile browser at the
   // next launch.
+  //
+  // These appends reach ONLY THIS EXE's base::CommandLine. In the component
+  // build that is the one chrome.dll uses too; in a non-component build
+  // chrome.dll parses the process command line into its own copy, so the
+  // framework applies the same three switches itself
+  // (ChromeMainDelegate::BasicStartupComplete, IS_WIN_PHI_CLIENT). Kept
+  // here so the exe's own reads (the fast-notify path below) agree.
   if (process_type.empty() &&
       !command_line->HasSwitch("profile-directory")) {
     base::CommandLine::ForCurrentProcess()->AppendSwitchASCII(

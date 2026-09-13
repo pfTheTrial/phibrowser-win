@@ -79,7 +79,8 @@ class PhiGhostSpaces {
 
   // What the client should ARM as the eager set: the window ids it wants
   // rebuilt immediately (everything else parks). Empty means "park all".
-  // Plain ints: this feeds OnColdStartRestorePlan's std::vector<int>.
+  // Plain ints: OnColdStartRestorePlan feeds them to the framework's
+  // ColdStartPlan sink one by one.
   std::vector<int> EagerWindowIds(const std::string& active_space_id) const;
 
   // Takes the framework's settlement receipt and REPLACES the park set from

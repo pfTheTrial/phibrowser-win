@@ -23,6 +23,7 @@
 #include "phibrowser-win/client/phi_icons.h"
 #include "phibrowser-win/client/phi_new_tab_page.h"
 #include "phibrowser-win/client/phi_theme.h"
+#include "phibrowser-win/client/phi_window_model.h"
 
 namespace phi_client {
 
@@ -249,8 +250,8 @@ const phi_framework::WindowSnapshot* PhiKioskWindow::CurrentSnapshot(
           model_ ? model_->Get(window_id_) : nullptr) {
     return known;
   }
-  return framework_ && framework_->Snapshot(window_id_, pulled) ? pulled
-                                                                : nullptr;
+  return PhiWindowModel::Pull(framework_, window_id_, pulled) ? pulled
+                                                              : nullptr;
 }
 
 void PhiKioskWindow::RefreshState() {

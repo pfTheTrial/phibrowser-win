@@ -51,6 +51,12 @@ class PhiWindowModel {
   // Pull: asks the framework for the browser's snapshot and stores it.
   // False when the framework does not know the browser (it was closed).
   bool Refresh(phi_framework::PhiFramework* framework, BrowserId browser);
+  // The one pull everybody else goes through: copies the framework's scratch
+  // snapshot (api rule 5) into client-owned storage (rule 6) before any
+  // other framework call can overwrite it. False for an unknown browser.
+  static bool Pull(phi_framework::PhiFramework* framework,
+                   BrowserId browser,
+                   Snapshot* out);
   void Remove(BrowserId browser);
   bool Has(BrowserId browser) const;
 

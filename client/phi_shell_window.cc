@@ -2729,7 +2729,7 @@ bool PhiShellWindow::SplitIsStacked(TabId tab_id) const {
 
 bool PhiShellWindow::PullSnapshot(BrowserId browser,
                                        WindowSnapshot* out) const {
-  return framework_ && browser.valid() && framework_->Snapshot(browser, out);
+  return browser.valid() && PhiWindowModel::Pull(framework_, browser, out);
 }
 
 // The hovered row's page-snapshot card (the Mac's TabPreviewRegistration,

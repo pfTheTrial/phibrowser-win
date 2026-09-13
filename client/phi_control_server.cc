@@ -518,6 +518,19 @@ PhiAgentPeer ResolvePeer(HANDLE pipe) {
 // thread and must return at once, so they only append to a queue and signal
 // `wake`; the connection thread drains the queue and does the pipe writes,
 // where a wedged peer can only ever stall itself.
+// The receiving end of DevToolsDiscoveryJson (api rule 6): the document
+// lands in a client-owned std::string.
+class StringSink : public phi_framework::PhiStringSink {
+ public:
+  explicit StringSink(std::string* out) : out_(out) {}
+  void Append(const char* data, size_t length) override {
+    out_->append(data, length);
+  }
+
+ private:
+  RAW_PTR_EXCLUSION std::string* out_;
+};
+
 class DevToolsPump : public phi_framework::PhiDevToolsClient {
  public:
   explicit DevToolsPump(HANDLE wake) : wake_(wake) {}
@@ -876,7 +889,9 @@ void PhiControlServer::HandleConnection(HANDLE pipe) {
                (path == "/json" || path == "/json/version" ||
                 path == "/json/list")) {
       std::string doc;
-      if (framework_ && framework_->DevToolsDiscoveryJson(path.c_str(), &doc)) {
+      StringSink sink(&doc);
+      if (framework_ &&
+          framework_->DevToolsDiscoveryJson(path.c_str(), &sink)) {
         conn.Write(HttpResponse("200 OK", "application/json; charset=UTF-8",
                                 doc));
       } else {
