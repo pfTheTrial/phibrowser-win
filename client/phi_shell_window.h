@@ -1109,6 +1109,9 @@ class PhiShellWindow : public PhiHitSource,
   void ShowPinnedCellMenu(POINT pt, const MenuRow& row);
   void ShowBookmarkRowMenu(POINT pt, const MenuRow& row);
   void ShowTabAreaMenu(POINT pt);
+  // A right-click inside the bookmark bar's band: a pill takes the bookmark
+  // row's menu, the bare run the bar's own. False when `pt` is off the bar.
+  bool ShowBookmarkBarContextMenu(POINT pt);
   void ShowAgentChipMenu(POINT pt, std::string task);
   // The compact pip's switcher (with_new_space false) and the overflow "…"
   // button's (true, which adds the two creation rows).

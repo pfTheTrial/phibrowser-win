@@ -309,6 +309,9 @@ class PhiMenuBar {
   void RefreshFile();
   void RefreshEdit();
   void RefreshView();
+  // The bookmark bar pair (and its separator) exists in the View menu only
+  // for the comfortable layout; inserted or removed to match `comfortable`.
+  void SyncBookmarkBarItems(bool comfortable);
   void RefreshSpaces();
   void RefreshHistory();
   void RefreshBookmarks();

@@ -4449,6 +4449,55 @@ void PhiShellWindow::ShowBookmarkRowMenu(POINT pt, const MenuRow& row) {
   }
 }
 
+bool PhiShellWindow::ShowBookmarkBarContextMenu(POINT pt) {
+  const Layout layout = ComputeLayout();
+  if (!::PtInRect(&layout.bookmark_bar, pt)) {
+    return false;
+  }
+  if (AgentHoldsInput()) {
+    return true;  // Refused like the rows' menus while the agent drives.
+  }
+  for (const BarItem& item : bar_items_) {
+    if (!::PtInRect(&item.bounds, pt)) {
+      continue;
+    }
+    if (item.overflow || item.bookmark < 0 ||
+        item.bookmark >= static_cast<int>(sidebar_->bookmarks().size())) {
+      return true;  // The overflow button has no menu of its own.
+    }
+    // The same menu as the outline's row for this bookmark (the Mac's
+    // makeContextMenu(source: .bookmarkBar)); the icon picker hangs off the
+    // pill rather than the row.
+    const ShortcutRow& bookmark =
+        sidebar_->bookmarks()[static_cast<size_t>(item.bookmark)];
+    MenuRow snapshot;
+    snapshot.key = bookmark.key;
+    snapshot.guid = bookmark.guid;
+    snapshot.url = bookmark.url;
+    snapshot.url_b = bookmark.url_b;
+    snapshot.title = bookmark.title;
+    snapshot.layout = bookmark.layout;
+    snapshot.icon = bookmark.icon;
+    snapshot.folder = bookmark.folder;
+    snapshot.bounds = item.bounds;
+    ShowBookmarkRowMenu(pt, snapshot);
+    return true;
+  }
+  // The bar's bare run: the Mac BookmarkBar's own menu, New Folder only.
+  const PhiMenuAction action =
+      PhiRunPopupMenu(PhiBuildBookmarkBarAreaMenu(incognito_),
+                      PopupAt(pt, TPM_LEFTALIGN | TPM_TOPALIGN |
+                                      TPM_RIGHTBUTTON));
+  if (action.is("bar.newRootFolder") && services_.sidebar) {
+    std::wstring name = L"Untitled";
+    if (PhiPromptText(shell_hwnd_, L"New Folder", L"Folder name:", &name)) {
+      services_.sidebar->AddBookmarkFolder(slot_.value, std::string(),
+                                           base::WideToUTF8(name));
+    }
+  }
+  return true;
+}
+
 void PhiShellWindow::ShowTabAreaMenu(POINT pt) {
   // The Mac tab-area menu (TabAreaContextMenuHelper): new tab, reopen, the
   // bookmark block, the layout switch, then the active Space's own controls
@@ -4604,10 +4653,18 @@ void PhiShellWindow::ShowSpaceSwitcherMenu(POINT pt, bool overflow) {
 }
 
 void PhiShellWindow::OnChromeContextMenu(int x, int y) {
-  if (!services_.sidebar || !shell_hwnd_ || !BandOnShell()) {
-    return;  // Collapsed: every row here is the floating panel's.
+  if (!services_.sidebar || !shell_hwnd_) {
+    return;
   }
   const POINT pt = {x, y};
+  // The bookmark bar is carved off the content, not the band: its pills
+  // answer whatever the sidebar's collapse state, so they go first.
+  if (ShowBookmarkBarContextMenu(pt)) {
+    return;
+  }
+  if (!BandOnShell()) {
+    return;  // Collapsed: every row here is the floating panel's.
+  }
   // The chips and rows are hit-tested as the last frame showed them; what a
   // hit produces is a SNAPSHOT, copied here, and every menu below runs from
   // that copy alone.
@@ -4998,6 +5055,12 @@ LRESULT CALLBACK PhiShellWindow::FloatingSidebarProc(HWND hwnd,
 
 bool PhiShellWindow::BookmarkBarVisible() {
   if (!services_.prefs || incognito_ || browsers_->content_fullscreen()) {
+    return false;
+  }
+  // A comfortable-layout feature only (the Mac's bookmarkBarSupported =
+  // traditionalLayout && ...): the vertical layouts keep bookmarks in the
+  // sidebar, whatever the two prefs say.
+  if (layout_mode_ != PhiLayoutMode::kComfortable) {
     return false;
   }
   if (services_.prefs->AlwaysShowBookmarkBar()) {

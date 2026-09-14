@@ -511,13 +511,14 @@ void PhiMenuBar::RefreshView() {
                           : kCmdLayoutPerformance;
   ::CheckMenuRadioItem(view_, kCmdLayoutBalanced, kCmdLayoutComfortable,
                        chosen, MF_BYCOMMAND);
+  SyncBookmarkBarItems(mode == PhiLayoutMode::kComfortable);
   if (ChromePrefsHost* prefs = services_->MenuPrefsHost()) {
     SetEnabled(view_, kCmdAgentAutoview, prefs->AllowAgentControl());
     ::CheckMenuItem(view_, kCmdAgentAutoview,
                     MF_BYCOMMAND | (prefs->AgentAutoView() ? MF_CHECKED
                                                            : MF_UNCHECKED));
   }
-  if (services_->MenuPrefsHost()) {
+  if (services_->MenuPrefsHost() && mode == PhiLayoutMode::kComfortable) {
     ::CheckMenuItem(view_, kCmdAlwaysShowBookmarkBar,
                     MF_BYCOMMAND |
                         (services_->MenuPrefsHost()->AlwaysShowBookmarkBar()
@@ -528,6 +529,42 @@ void PhiMenuBar::RefreshView() {
                         (services_->MenuPrefsHost()->BookmarkBarOnNewTab()
                              ? MF_CHECKED
                              : MF_UNCHECKED));
+  }
+}
+
+void PhiMenuBar::SyncBookmarkBarItems(bool comfortable) {
+  // The bookmark bar is a comfortable-layout feature: the vertical layouts
+  // keep bookmarks in the sidebar, so the Mac hides both View items there
+  // (validateMenuItem: isHidden = !traditionalLayout). Win32 menus have no
+  // hidden state, so the pair and the separator after it come and go.
+  const bool present =
+      ::GetMenuState(view_, kCmdAlwaysShowBookmarkBar, MF_BYCOMMAND) !=
+      static_cast<UINT>(-1);
+  if (comfortable == present) {
+    return;
+  }
+  if (comfortable) {
+    // Back in front of Toggle Sidebar, where BuildStatic placed them.
+    ::InsertMenuW(view_, kCmdToggleSidebar, MF_BYCOMMAND | MF_STRING,
+                  kCmdAlwaysShowBookmarkBar,
+                  PhiStr("app.viewMenu.alwaysShowBookmarkBar"));
+    ::InsertMenuW(view_, kCmdToggleSidebar, MF_BYCOMMAND | MF_STRING,
+                  kCmdBookmarkBarOnNewTab,
+                  PhiStr("app.viewMenu.showBookmarkBarOnNewTab"));
+    ::InsertMenuW(view_, kCmdToggleSidebar, MF_BYCOMMAND | MF_SEPARATOR, 0,
+                  nullptr);
+    return;
+  }
+  ::DeleteMenu(view_, kCmdAlwaysShowBookmarkBar, MF_BYCOMMAND);
+  ::DeleteMenu(view_, kCmdBookmarkBarOnNewTab, MF_BYCOMMAND);
+  // Two separators now meet above Toggle Sidebar; drop the second.
+  const int count = ::GetMenuItemCount(view_);
+  for (int i = 1; i < count; ++i) {
+    if (::GetMenuItemID(view_, i) == kCmdToggleSidebar &&
+        (::GetMenuState(view_, i - 1, MF_BYPOSITION) & MF_SEPARATOR)) {
+      ::DeleteMenu(view_, i - 1, MF_BYPOSITION);
+      break;
+    }
   }
 }
 
@@ -1007,13 +1044,17 @@ bool PhiMenuBar::OnCommand(UINT id, bool from_accelerator) {
       }
       return true;
     case kCmdAlwaysShowBookmarkBar:
-      if (c->MenuPrefsHost()) {
+      // Comfortable only: the item is absent from the vertical layouts'
+      // View menu, and its Ctrl+Shift+B does nothing there either.
+      if (c->MenuPrefsHost() &&
+          c->MenuPrefsHost()->LayoutMode() == PhiLayoutMode::kComfortable) {
         c->MenuPrefsHost()->SetAlwaysShowBookmarkBar(
             !c->MenuPrefsHost()->AlwaysShowBookmarkBar());
       }
       return true;
     case kCmdBookmarkBarOnNewTab:
-      if (c->MenuPrefsHost()) {
+      if (c->MenuPrefsHost() &&
+          c->MenuPrefsHost()->LayoutMode() == PhiLayoutMode::kComfortable) {
         c->MenuPrefsHost()->SetBookmarkBarOnNewTab(
             !c->MenuPrefsHost()->BookmarkBarOnNewTab());
       }

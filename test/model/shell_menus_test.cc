@@ -249,6 +249,14 @@ void BookmarkRowMenuSplitsLeavesFromFolders() {
   CHECK(folder.Find("bm.remove")->label == L"Delete Folder");
 }
 
+void BookmarkBarAreaMenuIsRootFolderCreation() {
+  // The Mac BookmarkBar's own menu: one row, off the record in incognito.
+  const PhiMenuSpec spec = PhiBuildBookmarkBarAreaMenu(/*incognito=*/false);
+  CHECK(Joined(spec) == "bar.newRootFolder ");
+  CHECK(spec.Find("bar.newRootFolder")->enabled);
+  CHECK(!PhiBuildBookmarkBarAreaMenu(true).Find("bar.newRootFolder")->enabled);
+}
+
 // --- The tab area ----------------------------------------------------------
 
 void TabAreaMenuChecksTheLayoutInUse() {
@@ -434,6 +442,7 @@ int main() {
   AgentDrivenTabLeadsWithTheTakeover();
   PinnedCellMenuTracksItsCell();
   BookmarkRowMenuSplitsLeavesFromFolders();
+  BookmarkBarAreaMenuIsRootFolderCreation();
   TabAreaMenuChecksTheLayoutInUse();
   TabAreaMenuDisablesWithoutGreyingAnEmptyStrip();
   TabAreaMenuStopsAtTheLayoutForIncognito();

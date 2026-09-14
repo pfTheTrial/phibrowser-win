@@ -277,6 +277,13 @@ PhiMenuSpec PhiBuildPinnedCellMenu(const PhiPinnedMenuInputs& in) {
 
 // --- Bookmark row ----------------------------------------------------------
 
+PhiMenuSpec PhiBuildBookmarkBarAreaMenu(bool incognito) {
+  PhiMenuSpec spec;
+  spec.items.push_back(
+      PersistCommand("bar.newRootFolder", L"New Folder...", incognito));
+  return spec;
+}
+
 PhiMenuSpec PhiBuildBookmarkRowMenu(const PhiBookmarkMenuInputs& in) {
   PhiMenuSpec spec;
   std::vector<PhiMenuItem>& items = spec.items;

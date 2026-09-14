@@ -173,6 +173,10 @@ struct PhiBookmarkMenuInputs {
 };
 PhiMenuSpec PhiBuildBookmarkRowMenu(const PhiBookmarkMenuInputs& in);
 
+// The bookmark BAR's bare run (the Mac BookmarkBar's own menu(for:)): root
+// folder creation only; a pill gets the bookmark row's menu above.
+PhiMenuSpec PhiBuildBookmarkBarAreaMenu(bool incognito);
+
 // The tab AREA's menu (the Mac's TabAreaContextMenuHelper): new tab, reopen,
 // the bookmark block, the layout switch, then the active Space's controls.
 struct PhiTabAreaMenuInputs {
