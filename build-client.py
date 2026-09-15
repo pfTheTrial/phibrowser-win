@@ -19,7 +19,10 @@ Modes:
                 the winsysroot comes from --winsysroot or $PHI_WINSYSROOT
                 if the SDK doesn't already have one placed
   --out <dir>   build inside a local framework out dir (the default,
-                /home/jx/Phi/chromuim/src/out/PhiFxWin)
+                /home/jx/Phi/chromuim/src/out/PhiFxWinShip; the arm64
+                ship build is out/PhiFxWinShipArm64 — the kit's link
+                recipe carries the /MACHINE, nothing here is per-arch
+                except the WinSparkle.dll staged beside the exe)
 
 The exe lands at <out>/Phi.exe; client resources (emoji catalog,
 icon) are copied to <out>/resources/.
@@ -36,7 +39,7 @@ import sys
 
 REPO_DIR = os.path.dirname(os.path.abspath(__file__))
 CLIENT_DIR = os.path.join(REPO_DIR, "client")
-DEFAULT_OUT = "/home/jx/Phi/chromuim/src/out/PhiFxWin"
+DEFAULT_OUT = "/home/jx/Phi/chromuim/src/out/PhiFxWinShip"
 KIT = "phi_clientkit/kit.json"
 OBJ_DIR = "phi_clientkit/obj"
 RESOURCES = ("emoji-catalog.json", "phi.ico", "strings.json")
@@ -157,6 +160,16 @@ def reorder_imports(exe_path, src_root):
     pe.close()
     os.replace(tmp, exe_path)
     return f"chrome_elf.dll moved from import slot {index} to 0"
+
+
+def target_machine(kit):
+    """The architecture the kit links for ('x64' or 'arm64'), read off the
+    framework's own link command so the client can never disagree with
+    the chrome.dll it is built against."""
+    match = re.search(r"/MACHINE:(\w+)", kit["link_command"], re.IGNORECASE)
+    if not match:
+        sys.exit("the kit's link command carries no /MACHINE")
+    return match.group(1).lower()
 
 
 def retarget(template, old_source, old_out, source, out):
@@ -320,12 +333,16 @@ def main():
         f.write("\n".join(sorted(RESOURCES + CLIENT_RESOURCE_TREES)) + "\n")
     # Stage the vendored WinSparkle.dll beside the client: the sync ships
     # every top-level DLL, and the updater loads it from the exe's own dir.
+    # The DLL must match the exe's architecture (third_party/winsparkle
+    # carries the release's x64 and arm64 builds).
     winsparkle = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                              "third_party", "winsparkle", "x64",
-                              "WinSparkle.dll")
+                              "third_party", "winsparkle",
+                              target_machine(kit), "WinSparkle.dll")
+    if not os.path.exists(winsparkle):
+        sys.exit(f"no vendored WinSparkle.dll for {target_machine(kit)}: "
+                 f"{winsparkle}")
     staged = os.path.join(out_dir, "WinSparkle.dll")
-    if os.path.exists(winsparkle) and (
-            not os.path.exists(staged) or
+    if (not os.path.exists(staged) or
             os.path.getmtime(staged) < os.path.getmtime(winsparkle)):
         shutil.copy2(winsparkle, staged)
         print("staged WinSparkle.dll")

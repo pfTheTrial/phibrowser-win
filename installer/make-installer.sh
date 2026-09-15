@@ -1,45 +1,49 @@
 #!/bin/bash
-# Builds PhiBrowserSetup-<version>.exe.
+# Builds PhiBrowserSetup-<version>.exe (x64) or PhiBrowserSetup-<version>-arm64.exe
+# on THIS machine: the payload is staged straight from the ship out dir into
+# installer/stage/<arch> in the installed layout, and makensis (the Debian
+# `nsis` package) packs it. The Windows box plays no part.
 #
-# The payload is NOT shipped from this machine: the dev box already holds the
-# full deployed tree (phi-fx-dev, kept current by sync-fx-win.sh), so the
-# payload is staged box-side with robocopy and makensis runs there too (a
-# portable NSIS zip, expanded once into ~\nsis). The finished setup exe is
-# pulled back into installer/dist/.
-#
-# Usage: make-installer.sh [--version X.Y.Z] [--host user@host] [--keep-remote]
-#                          [--from phi-fx-dev|phi-fx-ship] [--layout auto|flat|framework]
+# Usage: make-installer.sh [--version X.Y.Z] [--arch x64|arm64] [--out <out dir>]
 #                          [--telemetry phi_telemetry.json | --no-telemetry]
 #   --version    defaults to PHI_WIN_VERSION_STRING in client/phi_version.h
-#   --keep-remote  skip pulling the exe back (leave it on the box)
-#   --from       the deployed tree on the box to package (default phi-fx-dev,
-#                the component dev build; phi-fx-ship is the non-component
-#                ship build sync-fx-win.sh pushes with PHI_REMOTE_DIR)
-#   --layout     the installed tree's shape (stage-payload.ps1): auto picks
-#                framework\ for a static tree and flat for a component one
+#   --arch       which build to package: x64 (default) from out/PhiFxWinShip,
+#                arm64 from out/PhiFxWinShipArm64 (docs/static-build-plan.md
+#                §10). The tree's Phi.exe and chrome.dll must be of that
+#                architecture (checked on their PE headers).
+#   --out        another out dir to package instead of the arch's default
 #   --telemetry  the deployment config the installer drops into the user
 #                data dir (crash_endpoint, analytics_*; docs/sentry-crash-
 #                reporting.md). Default: rendered by the sibling
 #                ../../push-telemetry-config.sh --print when that exists,
 #                else none. --no-telemetry builds a config-less installer
 #                (crashes stay local, analytics never leave the machine).
+#
+# The staged tree (docs/static-build-plan.md §6): Phi.exe, WinSparkle.dll and
+# the client's own resources\ entries at the top (the list build-client.py
+# writes to resources\phi-client-resources.txt), everything else under
+# framework\ - chrome.dll, chrome_elf.dll + chrome_wer.dll, the paks, locales,
+# ICU, the GL/Vulkan/DXC DLLs, Chromium's resources\, and the one manifest
+# (framework\framework.manifest) that lets the exe's static chrome_elf.dll
+# import resolve from inside the folder. The file set is the same one
+# sync-fx-win.sh ships. Every PE must be the tree's architecture; the x64
+# msdia140.dll that vs_toolchain.py copies into every out dir (dump_syms /
+# symupload tooling, nothing in Phi loads it) is dropped from an arm64
+# payload, anything else foreign is a packaging mistake.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-HOST="jdxin@192.168.100.170"
+SRC_ROOT=/home/jx/Phi/chromuim/src
 VERSION=""
-PULL=yes
-FROM=phi-fx-dev
-LAYOUT=auto
+ARCH=x64
+OUT=""
 TELEMETRY=""
 NO_TELEMETRY=no
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --version) VERSION="$2"; shift 2 ;;
-    --host) HOST="$2"; shift 2 ;;
-    --keep-remote) PULL=no; shift ;;
-    --from) FROM="$2"; shift 2 ;;
-    --layout) LAYOUT="$2"; shift 2 ;;
+    --arch) ARCH="$2"; shift 2 ;;
+    --out) OUT="$2"; shift 2 ;;
     --telemetry) TELEMETRY="$2"; shift 2 ;;
     --no-telemetry) NO_TELEMETRY=yes; shift ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
@@ -49,12 +53,23 @@ if [[ -z "$VERSION" ]]; then
   VERSION=$(grep -oP '(?<=PHI_WIN_VERSION_STRING ")[^"]+' \
     "$HERE/../client/phi_version.h")
 fi
-echo "version: $VERSION  host: $HOST  from: $FROM  layout: $LAYOUT"
+case "$ARCH" in
+  x64) SUFFIX=""; : "${OUT:=$SRC_ROOT/out/PhiFxWinShip}" ;;
+  arm64) SUFFIX="-arm64"; : "${OUT:=$SRC_ROOT/out/PhiFxWinShipArm64}" ;;
+  *) echo "--arch must be x64 or arm64" >&2; exit 2 ;;
+esac
+[[ -f "$OUT/Phi.exe" && -f "$OUT/chrome.dll" ]] || {
+  echo "$OUT has no Phi.exe + chrome.dll (build-fx.sh chrome phi_client, then build-fx-client.sh)" >&2; exit 1; }
+command -v makensis >/dev/null || { echo "makensis not found (apt install nsis)" >&2; exit 1; }
+SETUP="PhiBrowserSetup-$VERSION$SUFFIX.exe"
+STAGE="$HERE/stage/$ARCH"
+DIST="$HERE/dist"
+echo "version: $VERSION  arch: $ARCH  out: $OUT"
 
 # The telemetry config: an explicit file, else the rendered deployment
 # config, else nothing. The rendered file is a throwaway in the temp dir so
 # the keys never sit in the repo.
-TELEMETRY_DEFINE=""
+TELEMETRY_DEFINE=()
 if [[ "$NO_TELEMETRY" == no ]]; then
   if [[ -z "$TELEMETRY" && -x "$HERE/../../push-telemetry-config.sh" ]]; then
     TELEMETRY="$(mktemp -t phi_telemetry.XXXXXX.json)"
@@ -63,8 +78,7 @@ if [[ "$NO_TELEMETRY" == no ]]; then
   if [[ -n "$TELEMETRY" ]]; then
     python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); \
       print("telemetry:", ", ".join(sorted(d)) or "(empty)")' "$TELEMETRY"
-    scp "$TELEMETRY" "$HOST:phi_telemetry.json" >/dev/null
-    TELEMETRY_DEFINE="/DPHI_TELEMETRY_JSON=C:\\Users\\jdxin\\phi_telemetry.json"
+    TELEMETRY_DEFINE=("-DPHI_TELEMETRY_JSON=$(realpath "$TELEMETRY")")
   else
     echo "telemetry: none (no --telemetry and no ../../push-telemetry-config.sh)"
   fi
@@ -72,52 +86,79 @@ else
   echo "telemetry: none (--no-telemetry)"
 fi
 
-NSIS_VERSION=3.10
-NSIS_ZIP="nsis-${NSIS_VERSION}.zip"
+# The machine a PE was built for, off its COFF header.
+pe_machine() {
+  python3 - "$1" <<'EOF'
+import struct, sys
+with open(sys.argv[1], 'rb') as f:
+    d = f.read(4096)
+pe = struct.unpack_from('<I', d, 0x3c)[0]
+m = struct.unpack_from('<H', d, pe + 4)[0]
+print({0x8664: 'x64', 0xAA64: 'arm64', 0x14c: 'x86'}.get(m, hex(m)))
+EOF
+}
+tree_arch=$(pe_machine "$OUT/Phi.exe")
+dll_arch=$(pe_machine "$OUT/chrome.dll")
+[[ "$tree_arch" == "$dll_arch" ]] || { echo "$OUT mixes a $tree_arch Phi.exe with a $dll_arch chrome.dll" >&2; exit 1; }
+[[ "$tree_arch" == "$ARCH" ]] || { echo "$OUT is a $tree_arch tree, --arch $ARCH asked" >&2; exit 1; }
 
-# Portable NSIS on the box, expanded once.
-if ! ssh "$HOST" "Test-Path C:\\Users\\jdxin\\nsis\\makensis.exe" | grep -q True; then
-  echo "installing portable NSIS on the box..."
-  if [[ ! -f "/tmp/$NSIS_ZIP" ]]; then
-    curl -sL -o "/tmp/$NSIS_ZIP" \
-      "https://downloads.sourceforge.net/project/nsis/NSIS%203/${NSIS_VERSION}/${NSIS_ZIP}"
-  fi
-  scp "/tmp/$NSIS_ZIP" "$HOST:$NSIS_ZIP"
-  ssh "$HOST" "Expand-Archive -Force $NSIS_ZIP C:\\Users\\jdxin\\nsis-tmp; \
-    if (Test-Path C:\\Users\\jdxin\\nsis) { Remove-Item -Recurse -Force C:\\Users\\jdxin\\nsis }; \
-    Move-Item C:\\Users\\jdxin\\nsis-tmp\\nsis-${NSIS_VERSION} C:\\Users\\jdxin\\nsis; \
-    Remove-Item -Recurse -Force C:\\Users\\jdxin\\nsis-tmp; echo nsis-ready"
-fi
+# Stage, from scratch every time.
+echo "staging payload into $STAGE..."
+rm -rf "$STAGE"
+FW="$STAGE/framework"
+mkdir -p "$STAGE/resources" "$FW"
+RUNTIME_EXES=(Phi.exe chrome_proxy.exe chrome_pwa_launcher.exe
+              elevation_service.exe elevated_tracing_service.exe
+              notification_helper.exe)
+TOP=(Phi.exe WinSparkle.dll)
+CLIENT_LIST="$OUT/resources/phi-client-resources.txt"
+[[ -f "$CLIENT_LIST" ]] || { echo "$CLIENT_LIST missing - rebuild the client (build-client.py writes it)" >&2; exit 1; }
+mapfile -t CLIENT < <(grep -v '^\s*$' "$CLIENT_LIST")
+cd "$OUT"
+# Top level: the client's own.
+for f in "${TOP[@]}"; do [[ -f "$f" ]] && cp -p "$f" "$STAGE/"; done
+for e in "${CLIENT[@]}"; do
+  [[ -e "resources/$e" ]] && cp -rp "resources/$e" "$STAGE/resources/$e"
+done
+# framework\: every other runtime file, then Chromium's share of resources.
+for exe in "${RUNTIME_EXES[@]}"; do
+  [[ -f "$exe" && "$exe" != Phi.exe ]] && cp -p "$exe" "$FW/"
+done
+find . -maxdepth 1 -type f \( -name '*.dll' -o -name '*.pak' -o -name '*.bin' \
+    -o -name '*.dat' -o -name '*.manifest' \) -printf '%P\n' | while read -r f; do
+  [[ "$f" == WinSparkle.dll ]] && continue
+  case "$f" in
+    *.manifest) [[ "$f" == framework.manifest ]] || continue ;;
+  esac
+  cp -p "$f" "$FW/"
+done
+for d in Dictionaries locales MEIPreload resources; do
+  [[ -d "$d" ]] && cp -rp "$d" "$FW/$d"
+done
+for e in "${CLIENT[@]}" phi-client-resources.txt; do
+  rm -rf "$FW/resources/$e"
+done
+[[ -f "$FW/framework.manifest" ]] || {
+  echo "$OUT has no framework.manifest - a framework built before the assembly rename (chrome/app/version_assembly)" >&2; exit 1; }
+# Every PE the tree's architecture; the one known foreign file dropped.
+while IFS= read -r pe; do
+  m=$(pe_machine "$pe")
+  [[ "$m" == "$ARCH" ]] && continue
+  if [[ "$(basename "$pe")" == msdia140.dll ]]; then rm -f "$pe"; continue; fi
+  echo "$pe is $m in a $ARCH payload" >&2; exit 1
+done < <(find "$STAGE" -type f \( -name '*.exe' -o -name '*.dll' \))
+N=$(find "$STAGE" -type f | wc -l)
+echo "staged layout=framework arch=$ARCH files=$N"
 
-# Stage the payload box-side from the deployed tree (the same globs the
-# sync ships plus the resource subdirectories — the browser is DOA without
-# locales\*.pak), in the flat or the framework\ layout (stage-payload.ps1).
-# The stage is rebuilt from scratch every time.
-echo "staging payload on the box..."
-scp "$HERE/stage-payload.ps1" "$HOST:stage-payload.ps1" >/dev/null
-STAGED=$(ssh "$HOST" "powershell -NoProfile -ExecutionPolicy Bypass -File C:\\Users\\jdxin\\stage-payload.ps1 \
-  -Source C:\\Users\\jdxin\\$FROM -Stage C:\\Users\\jdxin\\phi-stage -Layout $LAYOUT" | tr -d '\r' | tail -1)
-echo "$STAGED"
-[[ "$STAGED" == staged\ * ]] || { echo "staging failed" >&2; exit 1; }
-LAYOUT_DEFINE=""
-[[ "$STAGED" == *"layout=framework"* ]] && LAYOUT_DEFINE="/DPHI_LAYOUT_FRAMEWORK"
-
-scp "$HERE/phi-installer.nsi" "$HOST:phi-installer.nsi" >/dev/null
 # The wizard's art (installer/art: the onboarding's black sidebar with the
-# conch and the wordmark, the white header with the wordmark).
-ssh "$HOST" "New-Item -ItemType Directory -Force -Path C:\\Users\\jdxin\\phi-art | Out-Null"
-scp "$HERE"/art/*.bmp "$HOST:phi-art/" >/dev/null
-
-echo "running makensis on the box..."
-ssh "$HOST" "C:\\Users\\jdxin\\nsis\\makensis.exe /V2 \
-  /DPHI_VERSION=$VERSION /DPHI_STAGE=C:\\Users\\jdxin\\phi-stage /DPHI_ART=C:\\Users\\jdxin\\phi-art $LAYOUT_DEFINE $TELEMETRY_DEFINE \
-  C:\\Users\\jdxin\\phi-installer.nsi" | tail -3
-
-if [[ "$PULL" == yes ]]; then
-  mkdir -p "$HERE/dist"
-  echo "pulling PhiBrowserSetup-$VERSION.exe..."
-  scp "$HOST:PhiBrowserSetup-$VERSION.exe" "$HERE/dist/" >/dev/null
-  ls -la "$HERE/dist/PhiBrowserSetup-$VERSION.exe"
-else
-  echo "left on box: C:\\Users\\jdxin\\PhiBrowserSetup-$VERSION.exe"
-fi
+# conch and the wordmark, the white header with the wordmark). makensis on
+# POSIX maps the script's backslashed paths onto these directories.
+mkdir -p "$DIST"
+echo "running makensis..."
+(makensis -V2 \
+  "-DPHI_VERSION=$VERSION" "-DPHI_ARCH=$ARCH" "-DPHI_STAGE=$STAGE" \
+  "-DPHI_ART=$HERE/art" "-DPHI_OUTDIR=$DIST" -DPHI_LAYOUT_FRAMEWORK \
+  "${TELEMETRY_DEFINE[@]}" "$HERE/phi-installer.nsi") | tail -3
+[[ -f "$DIST/$SETUP" ]] || { echo "makensis produced no $DIST/$SETUP" >&2; exit 1; }
+ls -la "$DIST/$SETUP"
+sha256sum "$DIST/$SETUP" | cut -c1-16

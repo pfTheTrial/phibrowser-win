@@ -46,7 +46,8 @@ should be `is_component_build=false` … decide at packaging time").
   Measured, warm cache: cold start to the shell window 1.0-1.1 s / 141
   modules / 206 MB working set (component: 1.3-1.6 s / 633 / 311 MB).
 * **Phase E — done.** `make-installer.sh --from phi-fx-ship` →
-  `stage-payload.ps1` (layout auto → framework) → PhiBrowserSetup-0.1.0.exe
+  `stage-payload.ps1` (layout auto → framework; both box-side, replaced by
+  the local build on 2026-09-15) → PhiBrowserSetup-0.1.0.exe
   **174 MB** (flat component build: 323 MB), sha256 f9ab8609908c7bf0…;
   LAN copy refreshed. Installed OVER the flat install on the box: the 548
   flat DLLs gone, `bin\` = Phi.exe + WinSparkle.dll + the client's
@@ -54,8 +55,27 @@ should be `is_component_build=false` … decide at packaging time").
   Chromium's resources\; launched from the install: chrome.dll from
   `bin\framework\chrome.dll`, 147 modules, client lines in the log, the
   crash handler carries the Sentry URL from the installer-dropped config.
-  Runbook artifact, status doc, memory updated. **Both repos are
-  uncommitted.**
+  Runbook artifact, status doc, memory updated. Committed: fork
+  7121035590, client f85db53.
+* **2026-09-15 — Windows on ARM twin built and packaged** (§10):
+  `out/PhiFxWinShipArm64`, `PhiBrowserSetup-<ver>-arm64.exe` via
+  `make-installer.sh --arch arm64`. First install on a Windows 11 ARM VM:
+  every renderer crashed at V8 start-up — the snapshot had been generated
+  by an x64 mksnapshot (Linux host + win/arm64 target quirk; §10) — fixed
+  with `v8_snapshot_toolchain = "//build/toolchain/linux:clang_x64_v8_arm64"`.
+  Same day the installer build moved OFF the box: `make-installer.sh`
+  stages from the out dir and runs the Linux `makensis` (stage-payload.ps1
+  removed).
+* **2026-09-14 — the component build is retired.** Development moves to
+  the non-component tree only: `out/PhiFxWinShip` / `phi-fx-ship` are the
+  defaults of every script (`build-fx.sh`, `build-fx-client.sh`,
+  `sync-fx-win.sh`, `upload-symbols.sh`, `run-fx-*.sh`, `box.env`,
+  `make-installer.sh`, `release-gate.py`), the box's PhiFxLaunch /
+  PhiDevLaunch tasks and a "Phi Dev" desktop shortcut run
+  `phi-fx-ship\Phi.exe` on `C:\phi-fx-test`. `out/PhiFxWin` and
+  `phi-fx-dev` are left on disk but nothing points at them; the E4 "rebuild
+  both" rule is void. Symbols go to Sentry only on request
+  (`PHI_UPLOAD_SYMBOLS=1` for the sync hook).
 
 ## 0. Decision and constraints
 
@@ -431,3 +451,107 @@ logging block, one gate check) verifiable immediately. Phase B is a ~4 h
 unattended build. C-D a few hours of build/inspect/box work. E half a day
 (the two folder-name fork changes, the staging split, the NSIS paths, one
 install smoke). About two elapsed days, most of it the build.
+
+## 10. Windows on ARM (arm64)
+
+One more ship tree, same recipe, second architecture. Nothing in the
+client or the framework's Phi code is architecture-specific (no
+intrinsics, no inline asm — checked); the whole port is toolchain,
+naming and packaging.
+
+* **Toolchain.** The packaged VS 2026 toolchain (`vs_files/800603caaa`,
+  MSVC 14.51.36231 + SDK 10.0.26100.8249) was made with
+  `package_from_installed.py --noarm`, so it had no arm64 libraries at
+  all. The arm64 side is GRAFTED into the same directory (additions only;
+  `800603caaa/ARM64-GRAFT.txt` lists every piece and its source): the
+  MSVC arm64 static + dynamic CRT, ATL and redist DLLs from the VS 18.10
+  feed's `Microsoft.VC.14.51.*.ARM64.*` vsix payloads (they unpack into
+  the very same `14.51.36231` toolset directory), the SDK's
+  `Lib/um|ucrt|ucrt_enclave/arm64`, `bin/10.0.26100.0/arm64`,
+  `Redist/D3D|MBN/arm64` from the `Win11SDK_10.0.26100` MSIs (an
+  administrative image made with `msiexec /a` on the box, then pulled
+  back), `Debuggers/arm64` (dbghelp/dbgcore/symsrv) from the WinDbg
+  arm64 package — the SDK feed VS uses carries no debugger MSIs, and
+  `vs_toolchain.py copy_dlls` (run by gn gen) hard-requires
+  `Debuggers/<cpu>/dbghelp.dll` — a generated `SetEnv.arm64.json`, and a
+  `VC/Redist -> redist` symlink (vs_toolchain.py spells it with a
+  capital, the package does not). Lowercase twins of the SDK libs, as the
+  x64 dirs have (the package sits on a plain case-sensitive directory
+  here, not the ciopfs mount Chromium expects). `build/win_toolchain.json`
+  already listed `sysarm64` as the third runtime dir.
+* **Out dir.** `out/PhiFxWinShipArm64` = the ship `args.gn` with
+  `target_cpu = "arm64"` AND `v8_snapshot_toolchain =
+  "//build/toolchain/linux:clang_x64_v8_arm64"`. The second line is the
+  one that makes the build RUN: `v8/gni/snapshot_toolchain.gni` hands a
+  win/arm64 target's mksnapshot to the plain host toolchain (a rule
+  written for Windows x64 hosts, where that toolchain's V8 still targets
+  arm64 through the simulator), but on a Linux host
+  `gcc_toolchain.gni` pins the host toolchain's `v8_current_cpu` to x64
+  — so the first arm64 build shipped an **x64 snapshot and x64 embedded
+  builtins inside the arm64 chrome.dll** (both dirs' `snapshot_blob.bin`
+  were byte-for-byte the same size), and every renderer died at V8
+  start-up: `ReadOnlyDeserializer::PostProcessNewObjects →
+  ReadOnlyHeapObjectIterator::Next → HeapObject::SizeFromMap` reading a
+  map word of `0x80808080` (EXCEPTION_ACCESS_VIOLATION_READ at
+  `0x…80808083`, Sentry PHIBROWSER-WIN-4, 53 identical dumps). The
+  simulator toolchain is what every other arm64 cross-compile uses; with
+  it `clang_x64_v8_arm64/mksnapshot` is built with `V8_TARGET_ARCH_ARM64`.
+  Build: `PHI_OUT=out/PhiFxWinShipArm64
+  ./build-fx.sh chrome phi_client`, client `PHI_OUT=out/PhiFxWinShipArm64
+  ./build-fx-client.sh` (the kit's link recipe carries `/MACHINE:ARM64`;
+  build-client.py stages the WinSparkle.dll matching that machine —
+  `third_party/winsparkle/arm64/` is vendored from the same 0.9.4
+  release zip as the x64 one). The Rust std is built from source per
+  target as before (`local_rustc_sysroot`).
+* **Deploy.** `PHI_OUT=out/PhiFxWinShipArm64 PHI_REMOTE_DIR=phi-fx-ship-arm64
+  ./sync-fx-win.sh` → the box's `phi-fx-ship-arm64` — a STAGING copy only:
+  the box is x64 and cannot run it. It runs on the user's Windows 11 ARM
+  VM (Apple silicon Mac); its Crashpad dumps land in
+  `%LOCALAPPDATA%\Phi\User Data\Crashpad\reports\*.dmp`, and
+  `~/.cargo/bin/minidump-stackwalk --symbols-path <store> x.dmp` walks
+  them here with a breakpad store made by `dump_syms --store <store>
+  out/PhiFxWinShipArm64/{Phi.exe,chrome.exe,chrome_elf.dll,chrome.dll}`
+  (rust-minidump + mozilla dump_syms, both `cargo install`ed 2026-09-15;
+  Sentry keeps no minidump and the org token cannot read events).
+* **Installer.** `make-installer.sh --arch arm64` → stages
+  `out/PhiFxWinShipArm64` into `installer/stage/arm64` (reads Phi.exe's and
+  chrome.dll's PE machine, refuses a mismatch, drops the x64 msdia140.dll)
+  → `makensis -DPHI_ARCH=arm64` → `installer/dist/PhiBrowserSetup-<ver>-arm64.exe`.
+  The x64 name stays `PhiBrowserSetup-<ver>.exe`. SINCE 2026-09-15 THE
+  INSTALLER IS BUILT ON THE LINUX MACHINE (the Debian `nsis` package;
+  makensis on POSIX maps the script's `\` paths, and resolves a bare
+  `OutFile` against the .nsi's directory — hence `-DPHI_OUTDIR`); the
+  box-side staging (`stage-payload.ps1`, robocopy, the portable NSIS under
+  `C:\Users\jdxin\nsis`) is gone, the box is no longer part of the release
+  path. The NSIS stub is 32-bit x86 either way and
+  runs on every Windows; `.onInit` checks the MACHINE (`x64.nsh`
+  `${IsNativeARM64}`): the arm64 installer refuses a non-ARM PC, the x64
+  one warns on an ARM PC (its build runs there through emulation) and
+  continues silently (`/SD IDYES`) so a WinSparkle-driven x64 update on an
+  ARM PC still goes through. Same install folder, registry keys and
+  Apps & Features entry for both, so either installer upgrades the other.
+* **Updates.** `make-appcast.sh` tags each enclosure
+  `sparkle:os="windows-x64"` / `"windows-arm64"` and can put both in the
+  one item (`--arm64-setup/--arm64-url`); WinSparkle 0.9.4 picks the
+  enclosure by the running process's architecture. The appcast rig's
+  existing feeds stay x64-only until an arm64 setup is added to them.
+* **Symbols.** `PHI_OUT=out/PhiFxWinShipArm64 ./upload-symbols.sh` when
+  asked; Sentry symbolicates arm64 PE/PDB like x64.
+* **Status (2026-09-15).** Toolchain grafted; `out/PhiFxWinShipArm64`
+  built in ≈3 h 25 m of compile at -j 20 after one restart (the first run
+  died 25 min in on `lld-link: could not open 'Cfgmgr32.lib'` — the x64
+  lib dir had accumulated exact-case copies for the spellings Chromium's
+  `#pragma comment(lib)` lines use; every x64 spelling is now hard-linked
+  in the arm64 dir too). chrome.dll 280 MB (x64: 308), 19 GB on disk;
+  Phi.exe 5.0 MB linked `/MACHINE:ARM64`, chrome_elf.dll already import
+  slot 0. All 27 shipped binaries are ARM64; the payload imports only
+  msvcp140.dll + vcruntime140.dll (both shipped as arm64;
+  vcruntime140_1.dll is x64-only in Chromium's copy list and nothing
+  imports it). Box: `phi-fx-ship-arm64` (789 files, 558 MB);
+  `PhiBrowserSetup-0.1.0-arm64.exe` 159 MB (sha256 6d5aae85…), the x64
+  one rebuilt with the same script (174 MB, payload unchanged), both in
+  the box's Downloads. Release gate on the arm64 dir: same as x64 (only
+  the empty release key). NOT DONE: running it — there is no Windows on
+  ARM machine; the installer's machine gate has not been exercised either
+  (on the x64 box `PhiBrowserSetup-0.1.0-arm64.exe /S` should exit 1 and
+  touch nothing).

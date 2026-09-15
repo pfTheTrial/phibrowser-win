@@ -17,18 +17,28 @@ Layout:
 
 Build (from src, after the toolchain env vars):
 ```
-autoninja -C out/PhiFxWin phi_client
+autoninja -C out/PhiFxWinShip phi_client
 ```
 Children (renderer/GPU/utility) run the stock `chrome.exe` sitting beside
 `phi_client.exe` — pulled in automatically via data_deps.
 
-Two framework builds exist (docs/static-build-plan.md): `out/PhiFxWin`
-is the component build for day-to-day iteration; `out/PhiFxWinShip`
-(`is_component_build = false`, one fat chrome.dll) is what evaluation
-installers and releases are cut from — `PHI_OUT=out/PhiFxWinShip` for
-`build-fx.sh` / `build-fx-client.sh` / `upload-symbols.sh`,
-`PHI_REMOTE_DIR=phi-fx-ship` for `sync-fx-win.sh`,
-`installer/make-installer.sh --from phi-fx-ship`. The client is built the
-same way against either; the framework/client API must stay
-allocation-safe across the two builds' separate heaps (contract rule 6 in
-phi_framework_api.h, enforced by `tools/release-gate.py`).
+Everything runs on the non-component build (docs/static-build-plan.md):
+`out/PhiFxWinShip` (`is_component_build = false`, one fat chrome.dll) is
+what `build-fx.sh` / `build-fx-client.sh` / `upload-symbols.sh` default
+to, `sync-fx-win.sh` pushes it to the box's `phi-fx-ship` (the "Phi Dev"
+desktop shortcut and the PhiFxLaunch / PhiDevLaunch tasks run it), and
+`installer/make-installer.sh` packages it. The component build
+(`out/PhiFxWin` → `phi-fx-dev`) is retired since 2026-09-14; it still
+builds with `PHI_OUT=out/PhiFxWin PHI_REMOTE_DIR=phi-fx-dev` if a
+component-only investigation ever needs it. The framework/client API must
+stay allocation-safe across the two builds' separate heaps (contract rule
+6 in phi_framework_api.h, enforced by `tools/release-gate.py`).
+
+Windows on ARM is the same ship recipe on a second out dir,
+`out/PhiFxWinShipArm64` (`target_cpu = "arm64"`; the arm64 libraries are
+grafted into the packaged toolchain — docs/static-build-plan.md §10):
+`PHI_OUT=out/PhiFxWinShipArm64 ./build-fx.sh chrome phi_client`, then
+`PHI_OUT=out/PhiFxWinShipArm64 ./build-fx-client.sh`, sync with
+`PHI_REMOTE_DIR=phi-fx-ship-arm64`, and `installer/make-installer.sh
+--arch arm64` packages it as `PhiBrowserSetup-<ver>-arm64.exe`. The dev box
+is x64, so that tree is only staged there, never run.

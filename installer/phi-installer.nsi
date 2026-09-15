@@ -17,7 +17,7 @@
 ;     --user-data-dir and the policy (chrome/install_static/user_data_dir.cc)
 ;     - every Phi process, the crash handler included, follows it.
 ;   - LAYOUT: Phi.exe + framework\ (the non-component framework;
-;     stage-payload.ps1 stages it so, /DPHI_LAYOUT_FRAMEWORK tells this
+;     make-installer.sh stages it so, /DPHI_LAYOUT_FRAMEWORK tells this
 ;     script). A component framework can only be flat: the exe's static
 ;     imports must sit in its own directory.
 ;   - VERSIONED-SWAP UPDATE: chrome.dll is locked while Phi runs, so the
@@ -27,9 +27,19 @@
 ;     snapshot is the Mac TimeMachineInstaller's rollback. Silent (/S)
 ;     installs keep the recorded program and data folders.
 ;
-; Build (makensis 3.x):
-;   makensis /DPHI_VERSION=0.1.0 /DPHI_STAGE=payload /DPHI_ART=art [/DPHI_LAYOUT_FRAMEWORK] \
-;            [/DPHI_TELEMETRY_JSON=phi_telemetry.json] phi-installer.nsi
+;   - ONE INSTALLER PER ARCHITECTURE: PhiBrowserSetup-<ver>.exe carries the
+;     x64 build, PhiBrowserSetup-<ver>-arm64.exe the Windows on ARM build
+;     (/DPHI_ARCH). The stub itself is NSIS's 32-bit code, which every
+;     Windows runs (x64 through WOW64, ARM64 through its x86 emulation), so
+;     the payload's architecture is checked against the MACHINE in .onInit:
+;     the arm64 installer refuses anything but an ARM64 PC, the x64 one
+;     warns on an ARM64 PC (its build runs there emulated) and continues
+;     silently - WinSparkle picks the enclosure by architecture, so a silent
+;     update on an ARM PC that has the x64 build is the x64 build again.
+;
+; Build (makensis 3.x, on Linux via make-installer.sh):
+;   makensis -DPHI_VERSION=0.1.0 -DPHI_STAGE=<staged tree> -DPHI_ART=art [-DPHI_LAYOUT_FRAMEWORK] \
+;            [-DPHI_ARCH=x64|arm64] [-DPHI_OUTDIR=dist] [-DPHI_TELEMETRY_JSON=phi_telemetry.json] phi-installer.nsi
 
 !ifndef PHI_VERSION
   !error "pass /DPHI_VERSION=x.y.z"
@@ -41,13 +51,31 @@
   !error "pass /DPHI_ART=<dir with welcome.bmp and header.bmp>"
 !endif
 
+!ifndef PHI_ARCH
+  !define PHI_ARCH "x64"
+!endif
+!if "${PHI_ARCH}" == "arm64"
+  !define PHI_ARCH_SUFFIX "-arm64"
+!else
+  !if "${PHI_ARCH}" != "x64"
+    !error "PHI_ARCH must be x64 or arm64"
+  !endif
+  !define PHI_ARCH_SUFFIX ""
+!endif
+
 Unicode true
 !include "MUI2.nsh"
 !include "nsDialogs.nsh"
 !include "LogicLib.nsh"
+!include "x64.nsh"
 
 Name "Phi Browser"
-OutFile "PhiBrowserSetup-${PHI_VERSION}.exe"
+; Where the setup exe lands (makensis resolves a bare OutFile against this
+; script's directory, not the working directory).
+!ifndef PHI_OUTDIR
+  !define PHI_OUTDIR "."
+!endif
+OutFile "${PHI_OUTDIR}/PhiBrowserSetup-${PHI_VERSION}${PHI_ARCH_SUFFIX}.exe"
 RequestExecutionLevel admin
 InstallDir "$PROGRAMFILES64\Phi Browser"
 InstallDirRegKey HKLM "Software\Phi" "InstallDir"
@@ -58,7 +86,7 @@ ShowUninstDetails nevershow
 
 VIProductVersion "${PHI_VERSION}.0"
 VIAddVersionKey "ProductName" "Phi Browser"
-VIAddVersionKey "FileDescription" "Phi Browser Setup"
+VIAddVersionKey "FileDescription" "Phi Browser Setup (${PHI_ARCH})"
 VIAddVersionKey "CompanyName" "Fyde Innovations"
 VIAddVersionKey "LegalCopyright" "Copyright 2026 The Fyde Innovations Limited"
 VIAddVersionKey "FileVersion" "${PHI_VERSION}"
@@ -109,6 +137,21 @@ Page custom DataDirCreate DataDirLeave
 
 ; ---------------------------------------------------------------- init
 Function .onInit
+  ; The payload's architecture against this PC's (the header's note on
+  ; PHI_ARCH). ${IsNativeARM64} is the machine, whatever this 32-bit stub
+  ; runs under.
+!if "${PHI_ARCH}" == "arm64"
+  ${IfNot} ${IsNativeARM64}
+    MessageBox MB_OK|MB_ICONSTOP "This is Phi Browser for Windows on ARM, and this PC is not ARM-based.$\r$\n$\r$\nPlease use the standard installer, PhiBrowserSetup-${PHI_VERSION}.exe." /SD IDOK
+    Abort
+  ${EndIf}
+!else
+  ${If} ${IsNativeARM64}
+    MessageBox MB_YESNO|MB_ICONEXCLAMATION "This PC is Windows on ARM. This installer carries the x64 build of Phi Browser, which runs here through emulation; the ARM64 build, PhiBrowserSetup-${PHI_VERSION}-arm64.exe, is the better fit.$\r$\n$\r$\nInstall the x64 build anyway?" /SD IDYES IDYES x64_on_arm_ok
+    Abort
+  x64_on_arm_ok:
+  ${EndIf}
+!endif
   StrCpy $DataDirDefault "$LOCALAPPDATA\Phi\User Data"
   ; A recorded choice from a previous install is the starting point.
   ReadRegStr $DataDir HKCU "${REG_PRODUCT}" "UserDataDir"
