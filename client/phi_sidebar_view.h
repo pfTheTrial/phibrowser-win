@@ -520,6 +520,12 @@ class PhiSidebarShell {
       phi_framework::WindowSnapshot* out) const = 0;
   // True when the split holding `tab_id` stacks its panes.
   virtual bool SidebarSplitIsStacked(TabId tab_id) const = 0;
+  // Where Chromium laid the ACTIVE tab's split panes out, in shell client
+  // coordinates (the framework's TabContentBoundsById) — the replace-mode
+  // drop cards trace them. False when the active tab is not in a split or
+  // the layout has not run yet.
+  virtual bool SidebarSplitPaneRects(RECT* primary,
+                                     RECT* secondary) const = 0;
   // The chrome fonts the rows draw with, all built and owned by the shell.
   virtual HFONT SidebarGlyphFont() const = 0;
   virtual HFONT SidebarSemiboldFont() const = 0;

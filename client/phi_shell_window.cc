@@ -614,6 +614,53 @@ POINT PhiShellWindow::frame_offset() const {
 
 void PhiShellWindow::ApplyPalette() {
   RefreshTabs();  // Every colour is read from the host at paint time.
+  PushSplitViewStyle();  // The framework paints the split's chrome itself.
+}
+
+void PhiShellWindow::PushSplitViewStyle() {
+  if (!framework_ || agent_) {
+    return;
+  }
+  const auto argb = [](PhiColor c) {
+    return 0xFF000000u | (static_cast<uint32_t>(GetRValue(c)) << 16) |
+           (static_cast<uint32_t>(GetGValue(c)) << 8) |
+           static_cast<uint32_t>(GetBValue(c));
+  };
+  static const PhiPalette kFallback =
+      PhiResolvePalette(PhiThemeById("pure"), PhiAppearance::kLight);
+  // Incognito is FIXED-DARK regardless of theme (CurrentPalette's rule).
+  static const PhiPalette kIncognito =
+      PhiResolvePalette(PhiThemeById("pure"), PhiAppearance::kDark);
+  for (const auto& [space_id, browser] : browsers_->spaces().all()) {
+    if (!browser.valid()) {
+      continue;
+    }
+    // The SETTLED palette of the browser's own Space, not the ramp a switch
+    // animation is painting the chrome with: the framework should not be
+    // re-laid out per frame, and the Mac's split host stands on
+    // windowBackground, never on the Space's tinted ground.
+    const PhiPalette& palette =
+        incognito_          ? kIncognito
+        : services_.spaces  ? services_.spaces->PaletteForSpace(space_id)
+                            : kFallback;
+    phi_framework::SplitViewStyle style;
+    style.background_argb = argb(palette.window_bg);
+    style.border_argb = argb(palette.border);
+    style.focus_argb = argb(palette.accent);
+    // SplitPaneHostView.paneLayoutRect: no top inset under a top address
+    // bar (Balanced / Comfortable); Performance keeps the 4 DIP all round.
+    style.top_inset = layout_mode_ == PhiLayoutMode::kPerformance ? 4 : 0;
+    auto it = split_style_pushed_.find(browser.value);
+    if (it != split_style_pushed_.end() &&
+        it->second.background_argb == style.background_argb &&
+        it->second.border_argb == style.border_argb &&
+        it->second.focus_argb == style.focus_argb &&
+        it->second.top_inset == style.top_inset) {
+      continue;
+    }
+    split_style_pushed_[browser.value] = style;
+    framework_->SetSplitViewStyle(browser.value, style);
+  }
 }
 
 void PhiShellWindow::ApplyLayoutMode(PhiLayoutMode mode) {
@@ -1747,6 +1794,18 @@ PhiSidebarRects PhiShellWindow::SidebarRects() {
   return BandRects(ComputeLayout());
 }
 
+bool PhiShellWindow::SidebarSplitPaneRects(RECT* primary,
+                                           RECT* secondary) const {
+  const std::vector<NativePane> panes = NativePagesSplitPanes();
+  if (panes.size() != 2 || ::IsRectEmpty(&panes[0].rect) ||
+      ::IsRectEmpty(&panes[1].rect)) {
+    return false;
+  }
+  *primary = panes[0].rect;
+  *secondary = panes[1].rect;
+  return true;
+}
+
 void PhiShellWindow::SidebarSetRowCounts(int pinned_rows,
                                               int bookmark_rows) {
   pinned_row_count_ = pinned_rows;
@@ -2193,6 +2252,7 @@ void PhiShellWindow::LayoutContents() {
   }
   omnibox_->SetFieldVisible(!OmniboxFieldHidden());
   PlaceContentChildren(layout);
+  PushSplitViewStyle();  // A layout-mode or Space change moves its inputs.
 }
 
 void PhiShellWindow::PlaceContentChildren(const Layout& layout) {

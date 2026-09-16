@@ -1999,16 +1999,17 @@ bool PhiSidebarDragSession::ResolveSplitDrop(POINT pt, bool rebuild) {
     if (!split_drop_valid_) {
       return false;
     }
-    split_drop_zone_ =
-        split_drop_replace_
-            ? PhiSplitReplaceZoneAt(area, pt, split_drop_stacked_,
-                                    split_drop_ratio_)
-            : PhiSplitCreateZoneAt(area, pt, split_drop_zone_);
     PhiSplitDropHints hints;
     hints.area = area;
     hints.replace = split_drop_replace_;
     hints.stacked = split_drop_stacked_;
     hints.ratio = split_drop_ratio_;
+    hints.panes = split_drop_panes_;
+    hints.primary = split_drop_primary_;
+    hints.secondary = split_drop_secondary_;
+    split_drop_zone_ = split_drop_replace_
+                           ? PhiSplitReplaceZoneAt(hints, pt)
+                           : PhiSplitCreateZoneAt(area, pt, split_drop_zone_);
     hints.active = split_drop_zone_;
     PhiSplitDropOverlay::Show(shell_->SidebarOwner(), hints);
     return true;
@@ -2088,10 +2089,17 @@ bool PhiSidebarDragSession::ResolveSplitDrop(POINT pt, bool rebuild) {
     split_drop_split_id_ = focused->split_id;
     split_drop_stacked_ = stacked;
     split_drop_ratio_ = ratio;
-    split_drop_zone_ = PhiSplitReplaceZoneAt(area, pt, stacked, ratio);
+    // The real pane rects (the framework's layout) while the split is on
+    // screen — the focused tab is the active one here, so they are its.
+    split_drop_panes_ = shell_->SidebarSplitPaneRects(&split_drop_primary_,
+                                                      &split_drop_secondary_);
     hints.replace = true;
     hints.stacked = stacked;
     hints.ratio = ratio;
+    hints.panes = split_drop_panes_;
+    hints.primary = split_drop_primary_;
+    hints.secondary = split_drop_secondary_;
+    split_drop_zone_ = PhiSplitReplaceZoneAt(hints, pt);
   }
   hints.active = split_drop_zone_;
   split_drop_valid_ = true;

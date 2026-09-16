@@ -2590,6 +2590,11 @@ const PhiPalette& PhiCoordinator::PaletteForSlot(int64_t slot) const {
   return space_manager_->PaletteForSlot(slot);
 }
 
+const PhiPalette& PhiCoordinator::PaletteForSpace(
+    const std::string& space_id) const {
+  return space_manager_->PaletteForSpace(space_id);
+}
+
 std::string PhiCoordinator::SpaceThemeId(const std::string& space_id) const {
   return space_manager_->SpaceThemeId(space_id);
 }

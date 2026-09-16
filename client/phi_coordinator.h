@@ -270,6 +270,8 @@ class PhiCoordinator : public SidebarHost,
   void RequestLayoutMode(PhiLayoutMode mode) override;
   const PhiPalette& Palette() const override;
   const PhiPalette& PaletteForSlot(int64_t slot) const override;
+  const PhiPalette& PaletteForSpace(
+      const std::string& space_id) const override;
 
   // Opens `url` as a foreground tab in the first shell window and raises it —
   // how a Kiosk window hands its page over when the user expands it.

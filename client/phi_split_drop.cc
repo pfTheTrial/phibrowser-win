@@ -54,8 +54,12 @@ constexpr double kEdgeZoneFraction = 1.0 / 3.0;
 // Once a zone is active it keeps its grip until the pointer leaves it by
 // this much, so tremble in a corner cannot alternate two cards.
 constexpr int kZoneExitTolerance = 12;
-// Chromium's split divider, so the replace cards line up with the real panes.
-constexpr int kSplitDividerThickness = 2;
+// The Mac's SplitPaneHostView geometry, which the framework's
+// MultiContentsView draws on Windows too (phi_split_view_style.h): 4 DIP of
+// ground around the pane cards and a 4 DIP divider between them. Only the
+// ESTIMATE uses these — the real pane rects arrive with the hints.
+constexpr int kSplitPaneInset = 4;
+constexpr int kSplitDividerThickness = 4;
 
 int Width(const RECT& r) {
   return r.right - r.left;
@@ -180,10 +184,11 @@ class Cards : public PhiPanel {
     if (hints_.replace) {
       // The two live panes: the cards ARE the panes, so the user drops on
       // what they can already see.
-      RECT area = {0, 0, static_cast<LONG>(w), static_cast<LONG>(h)};
       RECT primary = {}, secondary = {};
-      PhiSplitReplacePaneRects(area, hints_.stacked, hints_.ratio, &primary,
-                              &secondary);
+      PhiSplitReplacePaneRects(hints_, &primary, &secondary);
+      // The overlay's origin is the page area's corner.
+      ::OffsetRect(&primary, -hints_.area.left, -hints_.area.top);
+      ::OffsetRect(&secondary, -hints_.area.left, -hints_.area.top);
       const std::array<RECT, 2> panes = {primary, secondary};
       for (size_t i = 0; i < 2; ++i) {
         const int inset = Scaled(static_cast<int>(kSideCardInset));
@@ -403,13 +408,21 @@ PhiSplitDropZone PhiSplitCreateZoneAt(const RECT& area,
   return PhiSplitDropZone::kNone;  // The dead middle band.
 }
 
-void PhiSplitReplacePaneRects(const RECT& area,
-                              bool stacked,
-                              double ratio,
+void PhiSplitReplacePaneRects(const PhiSplitDropHints& hints,
                               RECT* primary,
                               RECT* secondary) {
-  const double share = std::min(1.0, std::max(0.0, ratio));
-  if (stacked) {
+  if (hints.panes) {
+    *primary = hints.primary;
+    *secondary = hints.secondary;
+    return;
+  }
+  // The estimate: the cards inset from the page area, the divider between.
+  RECT area = hints.area;
+  ::InflateRect(&area, -kSplitPaneInset, -kSplitPaneInset);
+  area.right = std::max(area.right, area.left);
+  area.bottom = std::max(area.bottom, area.top);
+  const double share = std::min(1.0, std::max(0.0, hints.ratio));
+  if (hints.stacked) {
     const int usable = std::max(0, Height(area) - kSplitDividerThickness);
     const int top = static_cast<int>(usable * share);
     *primary = {area.left, area.top, area.right, area.top + top};
@@ -424,14 +437,12 @@ void PhiSplitReplacePaneRects(const RECT& area,
                 area.right, area.bottom};
 }
 
-PhiSplitDropZone PhiSplitReplaceZoneAt(const RECT& area,
-                                       POINT pt,
-                                       bool stacked,
-                                       double ratio) {
+PhiSplitDropZone PhiSplitReplaceZoneAt(const PhiSplitDropHints& hints,
+                                       POINT pt) {
   RECT primary = {}, secondary = {};
-  PhiSplitReplacePaneRects(area, stacked, ratio, &primary, &secondary);
+  PhiSplitReplacePaneRects(hints, &primary, &secondary);
   // The divider gap resolves to whichever pane is nearer.
-  if (stacked) {
+  if (hints.stacked) {
     const int mid = (primary.bottom + secondary.top) / 2;
     return pt.y <= mid ? PhiSplitDropZone::kLeft : PhiSplitDropZone::kRight;
   }

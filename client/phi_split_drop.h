@@ -49,30 +49,35 @@ PhiSplitDropZone PhiSplitCreateZoneAt(const RECT& area,
                                       POINT pt,
                                       PhiSplitDropZone retained);
 
-// REPLACE mode hit test: the pane the point sits over, splitting at the
-// divider's midline. Always resolves to kLeft (the primary pane — left for a
-// side-by-side split, top for a stacked one) or kRight (the secondary).
-PhiSplitDropZone PhiSplitReplaceZoneAt(const RECT& area,
-                                       POINT pt,
-                                       bool stacked,
-                                       double ratio);
-
-// The live panes of a split filling `area`, mirroring Chromium's own layout so
-// the replace-mode cards line up with what the user sees.
-void PhiSplitReplacePaneRects(const RECT& area,
-                              bool stacked,
-                              double ratio,
-                              RECT* primary,
-                              RECT* secondary);
-
 // What the hint overlay should be showing right now.
 struct PhiSplitDropHints {
   RECT area{};        // The page area, in shell client coordinates.
   bool replace = false;
   bool stacked = false;  // Replace mode: the split's divider axis.
   double ratio = 0.5;    // Replace mode: the primary pane's share.
+  // Replace mode: where Chromium actually laid the two panes out (the
+  // framework's TabContentBoundsById, mapped into the shell), so the cards
+  // trace the real cards rather than a ratio estimate — the Mac's
+  // replacePaneRects mirrors its own SplitPaneHostView the same way. `panes`
+  // is false until the layout has run; the ratio estimate stands in.
+  bool panes = false;
+  RECT primary{};
+  RECT secondary{};
   PhiSplitDropZone active = PhiSplitDropZone::kNone;
 };
+
+// REPLACE mode hit test: the pane the point sits over, splitting at the
+// divider's midline. Always resolves to kLeft (the primary pane — left for a
+// side-by-side split, top for a stacked one) or kRight (the secondary).
+PhiSplitDropZone PhiSplitReplaceZoneAt(const PhiSplitDropHints& hints,
+                                       POINT pt);
+
+// The live panes of the split `hints` describes: the real rects when it has
+// them, else an estimate from the ratio over `hints.area` with the Mac's
+// 4 DIP card inset and divider.
+void PhiSplitReplacePaneRects(const PhiSplitDropHints& hints,
+                              RECT* primary,
+                              RECT* secondary);
 
 // The hint cards themselves: one layered, click-through child window above the
 // browser child, composed with GDI+ (per-pixel alpha, which is the only way to

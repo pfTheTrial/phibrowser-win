@@ -373,6 +373,11 @@ class PhiSidebarDragSession {
   std::string split_drop_split_id_;  // Replace mode: the split being re-paned.
   bool split_drop_stacked_ = false;  // Its divider axis, for the pane cards.
   double split_drop_ratio_ = 0.5;    // The primary pane's share.
+  // Where Chromium laid its panes out when the pointer entered the page
+  // (the cards trace them); `panes` false = estimate from the ratio.
+  bool split_drop_panes_ = false;
+  RECT split_drop_primary_{};
+  RECT split_drop_secondary_{};
 };
 
 }  // namespace phi_client

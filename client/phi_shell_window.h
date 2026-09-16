@@ -245,6 +245,10 @@ class SpacesHost {
   // The theme THIS SLOT paints with: a Space may pin its own (the Mac's
   // per-Space theme override), otherwise the app-wide one.
   virtual const PhiPalette& PaletteForSlot(int64_t slot) const = 0;
+  // The same for a Space by id — the split-view chrome is pushed per hosted
+  // browser, each on its own Space's palette, not the slot's current one.
+  virtual const PhiPalette& PaletteForSpace(
+      const std::string& space_id) const = 0;
   // A Space's pinned theme id (empty = follows the app-wide one), and setting
   // it — the sidebar's Space menu writes through here.
   virtual std::string SpaceThemeId(const std::string& space_id) const = 0;
@@ -1526,6 +1530,7 @@ class PhiShellWindow : public PhiHitSource,
       BrowserId browser,
       phi_framework::WindowSnapshot* out) const override;
   bool SidebarSplitIsStacked(TabId tab_id) const override;
+  bool SidebarSplitPaneRects(RECT* primary, RECT* secondary) const override;
   HFONT SidebarGlyphFont() const override;
   HFONT SidebarSemiboldFont() const override;
   HFONT SidebarTextFont() const override;
@@ -1643,6 +1648,14 @@ class PhiShellWindow : public PhiHitSource,
   // resize band that sets the width.
   std::unique_ptr<PhiSidebarView> sidebar_;
   PhiLayoutMode layout_mode_ = PhiLayoutMode::kPerformance;
+
+  // The split view's chrome, pushed per hosted browser (the Mac's
+  // SplitPaneHostView look, drawn by the framework's MultiContentsView):
+  // the Space's window ground, border and accent, and the top inset the
+  // layout mode implies. Re-pushed from LayoutContents / ApplyPalette, and
+  // only when a value moved — the framework re-lays out on every push.
+  void PushSplitViewStyle();
+  std::map<int64_t, phi_framework::SplitViewStyle> split_style_pushed_;
 
   // The Mac floating sidebar (WebContentContainerViewController+
   // FloatingSidebar): with the sidebar collapsed, hovering the left margin
