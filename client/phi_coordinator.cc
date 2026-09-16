@@ -3794,6 +3794,12 @@ bool PhiCoordinator::DismissPeeksForShell(HWND shell) {
   return surface_coordinator_.DismissPeeksForShell(shell, nullptr);
 }
 
+bool PhiCoordinator::ExtensionsButtonScreenRect(int64_t window_id,
+                                                RECT* rect) {
+  PhiShellWindow* shell = registry_.ControllerForBrowser(BrowserId{window_id});
+  return shell && shell->ExtensionsButtonScreenRect(rect);
+}
+
 void PhiCoordinator::OnExtensionsChanged(int64_t window_id) {
   PhiExtensionsPopover::RefreshOpen();
   // The address capsule's pinned-extension icons follow the same change

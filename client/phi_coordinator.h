@@ -152,6 +152,10 @@ class PhiCoordinator : public SidebarHost,
                             int width,
                             int height);
   void OnExtensionsChanged(int64_t window_id);
+  // The puzzle button of the shell hosting `window_id`, in screen px — the
+  // anchor Chromium asks for before it shows an extension bubble. False
+  // without a shell or with the button off the layout.
+  bool ExtensionsButtonScreenRect(int64_t window_id, RECT* rect);
   void OnShowFeedbackRequested();
   void OnTabDistillable(int64_t window_id, int tab_id, bool distillable);
   void OnExtensionMessage(const char* request_id,

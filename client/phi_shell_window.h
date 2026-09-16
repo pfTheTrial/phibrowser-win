@@ -22,6 +22,7 @@
 #include "base/values.h"
 #include "chrome/browser/phinomenon/phi_framework/phi_framework_api.h"
 #include "phibrowser-win/client/phi_drag_image.h"
+#include "phibrowser-win/client/phi_extension_action.h"
 #include "phibrowser-win/client/phi_feedback_window.h"
 #include "phibrowser-win/client/phi_browser_host.h"
 #include "phibrowser-win/client/phi_caption_band.h"
@@ -1169,6 +1170,9 @@ class PhiShellWindow : public PhiHitSource,
   // The row face at semibold — bookmark folder titles (the Mac's .medium)
   // and tab-group headers (.semibold). Built with ui_font_.
   HFONT ui_semibold_font_ = nullptr;
+  // 8pt semibold — the pinned extension icons' badge pill (the Mac's
+  // ExtensionBadge). Built with ui_font_.
+  HFONT badge_font_ = nullptr;
   // The caption band's Phi mark when the ICO's 256px entry cannot be read
   // (see PhiLogoBgra256): loaded from the ICO at the pixel size it draws,
   // reloaded when a DPI change moves that size, destroyed with the shell.
@@ -1338,13 +1342,16 @@ class PhiShellWindow : public PhiHitSource,
   // so entries are added and cleared when the tab navigates away.
   std::set<TabId> distillable_tabs_;
   // Pinned-extension icons inside the address capsule (SideAddressBar's
-  // right-stack lead): the pinned set with resolved 16px icons, refreshed
-  // with the tab list and on OnExtensionsChanged.
+  // right-stack lead): the pinned set with resolved 16px icons and each
+  // action's state on the active tab (badge, enabled, grayscale — a hidden
+  // page action is left out), refreshed with the tab list and on
+  // OnExtensionsChanged, which the framework also raises for a state change.
   struct FieldExtension {
     std::string id;
     std::vector<unsigned char> icon;  // Premultiplied BGRA; may be empty.
     int icon_w = 0;
     int icon_h = 0;
+    PhiExtensionActionState state;
   };
   std::vector<FieldExtension> field_extensions_;
   // The count ComputeLayout carves capsule slots for (it cannot call the
@@ -1355,10 +1362,19 @@ class PhiShellWindow : public PhiHitSource,
   // Re-reads the pinned set + icons (delegate's OnExtensionsChanged, and
   // every tab-list rebuild).
   void RefreshFieldExtensions();
+  // The extensions (puzzle) button in SCREEN pixels — where Chromium anchors
+  // the extension bubbles it would hang off its own toolbar button (the
+  // post-install notice, the uninstall confirmation). False when the layout
+  // carries no such button.
+  bool ExtensionsButtonScreenRect(RECT* rect);
 
  private:
   // Slot `i` of the in-field icon strip, or an empty rect without one.
   RECT FieldExtRect(const Layout& layout, size_t i) const;
+  // The action's context menu at in-field icon `index`'s bottom-left
+  // corner (`slot` in shell client coordinates) — the Mac's secondaryAction,
+  // and what a click on a disabled action falls back to.
+  void ShowFieldExtensionMenu(size_t index, const RECT& slot);
 
   // The slot's identity. Not a browser: the browsers this slot holds live
   // in space_browsers_ / browser_hwnds_, and "the original browser" is

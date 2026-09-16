@@ -341,6 +341,15 @@ void PhiShellWindow::EnsureFont() {
       }
       ui_semibold_font_ = semibold_built;
     }
+    // The same face at 8pt for the extension badge pill (the Mac's
+    // ExtensionBadge: .system(size: 8, weight: .semibold)).
+    semibold.lfHeight = -Scaled(8);
+    if (HFONT badge_built = ::CreateFontIndirectW(&semibold)) {
+      if (badge_font_) {
+        ::DeleteObject(badge_font_);
+      }
+      badge_font_ = badge_built;
+    }
   }
 
   if (emoji_font_ && emoji_font_dpi_ == dpi_) {
@@ -1017,6 +1026,9 @@ PhiShellWindow::~PhiShellWindow() {
   }
   if (ui_semibold_font_) {
     ::DeleteObject(ui_semibold_font_);
+  }
+  if (badge_font_) {
+    ::DeleteObject(badge_font_);
   }
   if (back_buffer_) {
     ::DeleteObject(back_buffer_);
@@ -3624,24 +3636,35 @@ void PhiShellWindow::RefreshFieldExtensions() {
     if (parsed && parsed->is_list()) {
       // The pinned set in toolbar order (pinnedIndex), the Mac's presented
       // pinned order.
-      std::vector<std::pair<int, std::string>> pinned;
+      std::vector<std::pair<int, FieldExtension>> pinned;
       for (const base::Value& value : parsed->GetList()) {
         const base::DictValue* dict = value.GetIfDict();
         if (!dict || !dict->FindBool("pinned").value_or(false)) {
           continue;
         }
-        if (const std::string* id = dict->FindString("id")) {
-          pinned.emplace_back(dict->FindInt("pinnedIndex").value_or(0), *id);
+        const std::string* id = dict->FindString("id");
+        if (!id) {
+          continue;
         }
-      }
-      std::sort(pinned.begin(), pinned.end());
-      for (const auto& [index, id] : pinned) {
         FieldExtension ext;
-        ext.id = id;
+        ext.id = *id;
+        ext.state = PhiReadExtensionActionState(*dict);
+        // A page action hidden on this tab is not laid out at all (the
+        // Mac's visible filter, Chrome's toolbar); a browser action stays
+        // whatever its state.
+        if (!ext.state.visible) {
+          continue;
+        }
+        pinned.emplace_back(dict->FindInt("pinnedIndex").value_or(0),
+                            std::move(ext));
+      }
+      std::sort(pinned.begin(), pinned.end(),
+                [](const auto& a, const auto& b) { return a.first < b.first; });
+      for (auto& [index, ext] : pinned) {
         int w = 0;
         int h = 0;
         const unsigned char* bgra =
-            framework_->ExtensionIconBgra(id.c_str(), &w, &h);
+            framework_->ExtensionIconBgra(ext.id.c_str(), &w, &h);
         if (bgra && w > 0 && h > 0) {
           const auto source = UNSAFE_BUFFERS(base::span<const unsigned char>(
               bgra, static_cast<size_t>(w) * h * 4));
@@ -3660,7 +3683,7 @@ void PhiShellWindow::RefreshFieldExtensions() {
       !std::equal(next.begin(), next.end(), field_extensions_.begin(),
                   [](const FieldExtension& a, const FieldExtension& b) {
                     return a.id == b.id && a.icon_w == b.icon_w &&
-                           a.icon_h == b.icon_h;
+                           a.icon_h == b.icon_h && a.state == b.state;
                   });
   field_extensions_ = std::move(next);
   field_ext_count_ = static_cast<int>(field_extensions_.size());
@@ -3679,6 +3702,34 @@ RECT PhiShellWindow::FieldExtRect(const Layout& layout, size_t i) const {
                     static_cast<LONG>(i) * (btn + Scaled(2));
   return {left, layout.field_ext_strip.top, left + btn,
           layout.field_ext_strip.bottom};
+}
+
+bool PhiShellWindow::ExtensionsButtonScreenRect(RECT* rect) {
+  if (!shell_hwnd_ || !::IsWindow(shell_hwnd_)) {
+    return false;
+  }
+  const RECT button = ComputeLayout().extensions;
+  if (button.right <= button.left || button.bottom <= button.top) {
+    return false;
+  }
+  *rect = button;
+  ::MapWindowPoints(shell_hwnd_, nullptr, reinterpret_cast<POINT*>(rect), 2);
+  return true;
+}
+
+void PhiShellWindow::ShowFieldExtensionMenu(size_t index, const RECT& slot) {
+  const BrowserId browser = active_browser_id();
+  if (!framework_ || !browser.valid() || index >= field_extensions_.size()) {
+    return;
+  }
+  // The icon's bottom-left corner in screen coordinates — the Mac's
+  // ExtensionPopupAnchor.pointBelowView.
+  RECT anchor = slot;
+  ::MapWindowPoints(shell_hwnd_, nullptr, reinterpret_cast<POINT*>(&anchor),
+                    2);
+  framework_->ShowExtensionContextMenu(browser.value,
+                                       field_extensions_[index].id.c_str(),
+                                       anchor.left, anchor.bottom);
 }
 
 void PhiShellWindow::RebuildChips() {
@@ -3849,7 +3900,13 @@ void PhiShellWindow::OnChromeClick(int x, int y) {
     const RECT slot = FieldExtRect(layout, i);
     if (slot.right > slot.left && ::PtInRect(&slot, pt)) {
       // A pinned extension's in-field icon: run its action anchored at the
-      // icon (a popup-bearing action opens Chromium's popup there).
+      // icon (a popup-bearing action opens Chromium's popup there). A
+      // DISABLED action doesn't run; fall back to its context menu like
+      // Chrome (ExecuteUserAction) — the Mac's extensionButtonClicked.
+      if (!field_extensions_[i].state.enabled) {
+        ShowFieldExtensionMenu(i, slot);
+        return;
+      }
       const BrowserId browser = active_browser_id();
       if (framework_ && browser.valid()) {
         RECT anchor = slot;
@@ -4722,6 +4779,18 @@ void PhiShellWindow::OnChromeContextMenu(int x, int y) {
   if (ShowBookmarkBarContextMenu(pt)) {
     return;
   }
+  // A pinned extension's in-field icon: its action's context menu at the
+  // icon's bottom-left corner — the Mac's secondaryAction on the button.
+  {
+    const Layout field_layout = ComputeLayout();
+    for (size_t i = 0; i < field_extensions_.size(); ++i) {
+      const RECT slot = FieldExtRect(field_layout, i);
+      if (slot.right > slot.left && ::PtInRect(&slot, pt)) {
+        ShowFieldExtensionMenu(i, slot);
+        return;
+      }
+    }
+  }
   if (!BandOnShell()) {
     return;  // Collapsed: every row here is the floating panel's.
   }
@@ -5519,8 +5588,16 @@ void PhiShellWindow::PaintChrome(HDC dc,
   // icons in 24pt slots on the radius-4 hover wash (SideAddressBar's
   // extensionIconsStackView).
   if (layout.field_ext_strip.right > layout.field_ext_strip.left) {
+    // The icons composite over the ground under them: the field's fill
+    // inside the capsule (Performance, Balanced), the top bar's own ground
+    // where Comfortable lays the strip beside the field.
+    const POINT strip_mid = {
+        (layout.field_ext_strip.left + layout.field_ext_strip.right) / 2,
+        (layout.field_ext_strip.top + layout.field_ext_strip.bottom) / 2};
     const COLORREF field_fill =
-        omnibox_->field_hover() ? kFieldBgHot : kFieldBg;
+        ::PtInRect(&layout.url_field, strip_mid)
+            ? (omnibox_->field_hover() ? kFieldBgHot : kFieldBg)
+            : static_cast<COLORREF>(palette.window_bg);
     for (size_t i = 0; i < field_extensions_.size(); ++i) {
       const RECT slot = FieldExtRect(layout, i);
       if (slot.right <= slot.left) {
@@ -5536,8 +5613,17 @@ void PhiShellWindow::PaintChrome(HDC dc,
       RECT icon = {mid_x - Scaled(8), mid_y - Scaled(8), mid_x + Scaled(8),
                    mid_y + Scaled(8)};
       if (!ext.icon.empty()) {
-        sidebar_->DrawFavicon(dc, icon, ext.icon.data(), ext.icon_w, ext.icon_h,
-                    field_fill);
+        // A grayed action (disabled, no page interaction) renders
+        // desaturated + lightened — the Mac's disabledActionVariant.
+        if (ext.state.grayscale) {
+          const std::vector<unsigned char> grayed =
+              PhiGrayedActionIcon(ext.icon);
+          sidebar_->DrawFavicon(dc, icon, grayed.data(), ext.icon_w,
+                                ext.icon_h, field_fill);
+        } else {
+          sidebar_->DrawFavicon(dc, icon, ext.icon.data(), ext.icon_w,
+                                ext.icon_h, field_fill);
+        }
       } else {
         // Icon not decoded yet: the puzzle stands in.
         HGDIOBJ previous_ext_font =
@@ -5547,6 +5633,9 @@ void PhiShellWindow::PaintChrome(HDC dc,
           ::SelectObject(dc, previous_ext_font);
         }
       }
+      // The action badge, straddling the icon's bottom-right corner (the
+      // Mac's BadgeCornerOverlay); nothing without badge text.
+      PhiDrawExtensionBadge(dc, icon, ext.state, badge_font_, dpi_);
     }
   }
   // The field's in-field copy-link button (SideAddressBar's rightStack lead):

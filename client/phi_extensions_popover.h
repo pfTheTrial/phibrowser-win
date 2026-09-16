@@ -18,11 +18,14 @@ class PhiFramework;
 
 namespace phi_client {
 
-// The Mac extensions popover, opened from the puzzle button: enabled
-// extensions as icon+name rows with a trailing pin toggle; clicking a row
-// runs its action (a popup-bearing one anchors Chromium's ExtensionPopup to
-// the row). One popover at a time; deactivation dismisses it; the toggle
-// races are handled the downloads popover's way.
+// The Mac extensions popover (ExtensionList.swift), opened from the puzzle
+// button: an "Extensions" title over a 4-column grid of icon tiles, each
+// wearing its badge and a pin disc on its corner, then a "Setting" title
+// and the "Manage Extensions" row (the extensions page in a new tab).
+// Clicking a tile runs its action (a popup-bearing one anchors Chromium's
+// ExtensionPopup to the tile; a disabled one falls back to its context
+// menu), a right-click opens that menu. One popover at a time; deactivation
+// dismisses it; the toggle races are handled the downloads popover's way.
 class PhiExtensionsPopover {
  public:
   static void Toggle(HWND owner,

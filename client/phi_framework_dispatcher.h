@@ -64,6 +64,12 @@ class PhiFrameworkDispatcher : public phi_framework::PhiFrameworkDelegate {
   void OnContentFullscreenChanged(int64_t window_id, bool fullscreen) override;
   void OnContentBoundsChanged(int64_t window_id) override;
   void OnExtensionsChanged(int64_t window_id) override;
+  void OnExtensionsButtonRectRequested(int64_t window_id,
+                                       int* left,
+                                       int* top,
+                                       int* right,
+                                       int* bottom,
+                                       bool* found) override;
   void OnProfileCreated(const char* profile_id) override;
   void OnReaderArticleExtracted(int request_id, const char* json) override;
   void OnShowFeedbackRequested() override;

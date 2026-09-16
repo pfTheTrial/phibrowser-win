@@ -258,12 +258,22 @@ ShellLayout ComputeShellLayout(const ShellLayoutInputs& in) {
     out.downloads = {r - btn, mid - btn / 2, r, mid + btn / 2};
     r = out.downloads.left - scaled(kTopBarSpacing);
     out.extensions = {r - btn, mid - btn / 2, r, mid + btn / 2};
+    r = out.extensions.left;
+    if (in.field_ext_count > 0) {
+      // Pinned-extension icons lead the extensions button on a 2pt gutter,
+      // OUTSIDE the field — the Mac HeaderExtensionContainer's HStack of
+      // pinned buttons then the menu button.
+      const int strip_w = in.field_ext_count * btn +
+                          (in.field_ext_count - 1) * scaled(2);
+      out.field_ext_strip = {r - scaled(2) - strip_w, mid - btn / 2,
+                             r - scaled(2), mid + btn / 2};
+      r = out.field_ext_strip.left;
+    }
     // Feedback, Chat and the memory chip have no band to sit in here; they
     // are items in the overflow menu instead.
     const int field_h = scaled(kOmniboxHeight);
     out.url_field = {out.reload.right + scaled(kTopBarSpacing),
-                     mid - field_h / 2,
-                     out.extensions.left - scaled(kTopBarSpacing),
+                     mid - field_h / 2, r - scaled(kTopBarSpacing),
                      mid + field_h / 2};
     const int icon = scaled(kFaviconSlot);
     out.page_icon = {out.url_field.left + scaled(10), mid - icon / 2,
@@ -331,6 +341,23 @@ ShellLayout ComputeShellLayout(const ShellLayoutInputs& in) {
     if (in.reader_offerable) {
       const int rr = out.extensions.left - scaled(2);
       out.reader = {rr - fbtn, fmid - fbtn / 2, rr, fmid + fbtn / 2};
+    }
+    if (in.field_ext_count > 0) {
+      // Pinned-extension icons lead the stack here as well, under the
+      // Performance capsule's rule: only while the text keeps the Mac's
+      // 84pt minimum (minimumAddressTextWidth).
+      const int strip_w = in.field_ext_count * btn +
+                          (in.field_ext_count - 1) * scaled(2);
+      const int text_left = out.url_field.left + scaled(12);
+      const int stack_left =
+          !out.reader.empty() ? out.reader.left : out.extensions.left;
+      const int remaining =
+          stack_left - scaled(2) - strip_w - scaled(8) - text_left;
+      if (remaining >= scaled(84)) {
+        out.field_ext_strip = {stack_left - scaled(2) - strip_w,
+                               fmid - btn / 2, stack_left - scaled(2),
+                               fmid + btn / 2};
+      }
     }
     // Without the strip the sidebar's first ROW sits on the card's top
     // edge: a pinned grid carries its own 8pt inset above its cells, so the

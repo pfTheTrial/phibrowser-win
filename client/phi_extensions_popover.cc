@@ -22,6 +22,7 @@
 #include "base/values.h"
 #include "chrome/browser/phinomenon/phi_framework/phi_framework_api.h"
 #include "phibrowser-win/client/phi_dwrite.h"
+#include "phibrowser-win/client/phi_extension_action.h"
 #include "phibrowser-win/client/phi_popover.h"
 
 #pragma comment(lib, "dwmapi.lib")
@@ -30,15 +31,48 @@ namespace phi_client {
 
 namespace {
 
-constexpr int kPanelWidth = 300;
-constexpr int kPanelMaxHeight = 380;
-constexpr int kHeaderHeight = 40;
-constexpr int kRowHeight = 40;
-constexpr int kIconSlot = 20;
+// The Mac ExtensionList's geometry (ExtensionList.swift), in design units:
+// a 240 pt panel, 12 pt side padding, an "Extensions" title, a 4-column
+// grid of 50x32 tiles on a 6 pt gutter (four rows visible, the rest
+// scroll), then a "Setting" title and the "Manage Extensions" row.
+constexpr int kPanelWidth = 240;
+constexpr int kSidePadding = 12;
+constexpr int kTopPadding = 12;
+constexpr int kBottomPadding = 12;
+constexpr int kSectionSpacing = 8;   // The VStack's spacing.
+constexpr int kTitleHeight = 20;     // A 15 pt medium title's line.
+constexpr int kColumns = 4;
+constexpr int kTileWidth = 50;
+constexpr int kTileHeight = 32;
+constexpr int kTileSpacing = 6;
+constexpr int kTileRadius = 8;
+constexpr int kMaxVisibleRows = 4;
+constexpr int kTileIcon = 18;
+constexpr int kPinDot = 16;          // The black pin disc on a tile corner.
+constexpr int kPinOffset = 4;        // Its overhang past the tile's corner.
+constexpr int kEmptyHeight = 100;    // "No extensions found".
+constexpr int kSettingSpacing = 4;   // Title → row inside the section.
+constexpr int kManageRowHeight = 22;
+constexpr int kManageRowInset = 8;   // The row's horizontal padding.
+constexpr int kManageTextInset = 4;  // Text/chevron inside the row.
+constexpr int kManageRadius = 6;
 constexpr UINT kPollIntervalMs = 700;
-// hits_ keys: row i is i * kKeyStride, its pin toggle is + 1. The base
-// resolves hover and clicks over the list.
+// hits_ keys: tile i is i * kKeyStride, its pin toggle is + 1; the Manage
+// Extensions row is kManageKey. The base resolves hover and clicks over
+// the list.
 constexpr int kKeyStride = 2;
+constexpr int kManageKey = 1 << 20;
+
+// `t` of `over` on `under`, for the Mac's translucent overlays (a 60 %
+// secondary chevron, a 60 % pin disc) on a flat GDI ground.
+COLORREF Mix(COLORREF over, COLORREF under, float t) {
+  const auto channel = [t](int o, int u) {
+    return static_cast<int>(o * t + u * (1.0f - t) + 0.5f);
+  };
+  return RGB(channel(GetRValue(over), GetRValue(under)),
+             channel(GetGValue(over), GetGValue(under)),
+             channel(GetBValue(over), GetBValue(under)));
+}
 
 void FillRect(HDC dc, const RECT& r, COLORREF color) {
   HBRUSH brush = ::CreateSolidBrush(color);
@@ -51,7 +85,7 @@ void FillRounded(HDC dc, const RECT& r, COLORREF color, int radius) {
 }
 
 // Box-averages a premultiplied BGRA buffer down to `out_px` square — the
-// manifest icons arrive at 48 or 128 and the row slot is 20.
+// manifest icons arrive at 48 or 128 and the tile's icon is 18.
 std::vector<unsigned char> ScaleBgra(const unsigned char* bgra,
                                      int width,
                                      int height,
@@ -96,17 +130,20 @@ std::vector<unsigned char> ScaleBgra(const unsigned char* bgra,
   return out;
 }
 
-struct ExtensionRow {
+struct ExtensionTile {
   std::string id;
   std::wstring name;
   bool pinned = false;
-  RECT bounds{};
-  RECT pin_box{};
+  // The action's state on this window's active tab: badge and grayscale on
+  // the tile's icon, enabled for the click (the Mac's ExtensionGridItem).
+  PhiExtensionActionState state;
+  RECT bounds{};   // The tile; empty while scrolled out of view.
+  RECT pin_box{};  // The pin disc straddling its bottom-right corner.
 };
 
-// The popover keeps its extension rows, its Paint() and its pin/action
-// handling. The window, the placement, the back buffer, hover, the poll
-// timer, dismissal and lifetime belong to PhiPopover (lane 3 §6.2).
+// The popover keeps its tiles, its Paint() and its pin/action handling. The
+// window, the placement, the back buffer, hover, the poll timer, dismissal
+// and lifetime belong to PhiPopover (lane 3 §6.2).
 class Popover : public PhiPopover {
  public:
   static Popover* instance;
@@ -142,8 +179,7 @@ class Popover : public PhiPopover {
     instance = this;  // Before Show(): activation churn can destroy us.
     SetPalette(colors);
     Refresh();
-    SIZE size = {Scaled(kPanelWidth), PanelHeight()};
-    Reposition(placement_, size);
+    Reposition(placement_, {Scaled(kPanelWidth), PanelHeight()});
     BuildHits();  // Refresh laid out against the pre-placement size.
     Show();
     // The list loads asynchronously on first use; poll cheaply while open
@@ -156,11 +192,11 @@ class Popover : public PhiPopover {
   void Refresh() {
     const char* json =
         framework_ ? framework_->ListExtensionsJson(browser_id_) : "[]";
-    if (json == last_json_ && !rows_.empty()) {
+    if (json == last_json_ && !tiles_.empty()) {
       return;
     }
     last_json_ = json;
-    rows_.clear();
+    tiles_.clear();
     std::optional<base::Value> parsed =
         base::JSONReader::Read(last_json_, base::JSON_PARSE_RFC);
     if (parsed && parsed->is_list()) {
@@ -169,25 +205,24 @@ class Popover : public PhiPopover {
         if (!dict) {
           continue;
         }
-        ExtensionRow row;
+        ExtensionTile tile;
         if (const std::string* id = dict->FindString("id")) {
-          row.id = *id;
+          tile.id = *id;
         }
         if (const std::string* name = dict->FindString("name")) {
-          row.name = base::UTF8ToWide(*name);
+          tile.name = base::UTF8ToWide(*name);
         }
-        row.pinned = dict->FindBool("pinned").value_or(false);
-        rows_.push_back(std::move(row));
+        tile.pinned = dict->FindBool("pinned").value_or(false);
+        tile.state = PhiReadExtensionActionState(*dict);
+        tiles_.push_back(std::move(tile));
       }
     }
+    scroll_row_ = std::min(scroll_row_, MaxScrollRow());
     if (alive()) {
-      // The row count changes the panel height (grown downward is wrong for
-      // a bottom-bar popover — keep the BOTTOM edge pinned).
-      RECT rect = {};
-      ::GetWindowRect(hwnd(), &rect);
-      const int h = PanelHeight();
-      ::SetWindowPos(hwnd(), nullptr, rect.left, rect.bottom - h,
-                     Scaled(kPanelWidth), h, SWP_NOZORDER | SWP_NOACTIVATE);
+      // The tile count changes the panel height: re-run placement so the
+      // panel keeps hanging off its anchor (below the capsule's button, or
+      // above the bottom bar) instead of growing past it.
+      Reposition(placement_, {Scaled(kPanelWidth), PanelHeight()});
       BuildHits();
       Invalidate();
     }
@@ -207,13 +242,18 @@ class Popover : public PhiPopover {
   }
 
   void OnHover(int hit, int) override {
-    hover_row_ = -1;
+    hover_tile_ = -1;
     hover_pin_ = false;
+    hover_manage_ = false;
     if (hit < 0) {
       return;
     }
     const int key = hits_[static_cast<size_t>(hit)].key;
-    hover_row_ = key / kKeyStride;
+    if (key == kManageKey) {
+      hover_manage_ = true;
+      return;
+    }
+    hover_tile_ = key / kKeyStride;
     hover_pin_ = (key % kKeyStride) != 0;
   }
 
@@ -222,12 +262,51 @@ class Popover : public PhiPopover {
     RunHoveredAction();
   }
 
+  void OnWheel(int delta, POINT) override {
+    // The Mac scrolls the grid past four rows; a notch is a row here.
+    const int next = std::clamp(scroll_row_ - delta / WHEEL_DELTA, 0,
+                                MaxScrollRow());
+    if (next == scroll_row_) {
+      return;
+    }
+    scroll_row_ = next;
+    BuildHits();
+    Invalidate();
+  }
+
+  LRESULT OnMessage(UINT message,
+                    WPARAM wparam,
+                    LPARAM lparam,
+                    bool* handled) override {
+    if (message == WM_RBUTTONUP) {
+      // A tile's secondary click: the action's context menu at the pointer
+      // (the Mac ExtensionGridItem's onSecondaryTap). The menu takes the
+      // stage, so the popover leaves as it does after running an action.
+      // Dismiss() deletes this object; nothing after it touches a member.
+      const POINT pt = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+      const int hit = HitTest(pt);
+      if (hit >= 0 && framework_) {
+        const int key = hits_[static_cast<size_t>(hit)].key;
+        const size_t tile = static_cast<size_t>(key / kKeyStride);
+        if (key != kManageKey && tile < tiles_.size()) {
+          POINT screen = pt;
+          ::ClientToScreen(hwnd(), &screen);
+          const std::string id = tiles_[tile].id;
+          phi_framework::PhiFramework* const framework = framework_;
+          const int64_t browser_id = browser_id_;
+          Dismiss();
+          framework->ShowExtensionContextMenu(browser_id, id.c_str(), screen.x,
+                                              screen.y);
+        }
+      }
+      *handled = true;
+      return 0;
+    }
+    return PhiPopover::OnMessage(message, wparam, lparam, handled);
+  }
+
   void OnDpiChanged(UINT) override {
-    RECT rect = {};
-    ::GetWindowRect(hwnd(), &rect);
-    const int h = PanelHeight();
-    ::SetWindowPos(hwnd(), nullptr, rect.left, rect.bottom - h,
-                   Scaled(kPanelWidth), h, SWP_NOZORDER | SWP_NOACTIVATE);
+    Reposition(placement_, {Scaled(kPanelWidth), PanelHeight()});
     BuildHits();
   }
 
@@ -240,50 +319,102 @@ class Popover : public PhiPopover {
   }
 
  private:
-  HFONT NameFont() { return fonts().Get(13, FW_NORMAL); }
-  HFONT TitleFont() { return fonts().Get(13, FW_SEMIBOLD); }
-  HFONT GlyphFont() {
+  // The Mac's 15 pt .medium section titles. Named face: asking "Segoe UI"
+  // for a weight past regular rounds up to Bold; Semibold is the nearest
+  // face Windows ships.
+  HFONT TitleFont() {
     PhiFontDesc desc;
-    desc.size = 12;
-    desc.face = L"Segoe MDL2 Assets";
+    desc.size = 15;
+    desc.weight = FW_SEMIBOLD;
+    desc.face = L"Segoe UI Semibold";
     return fonts().Get(desc);
   }
-  HFONT EmptyFont() {
+  HFONT RowFont() { return fonts().Get(13, FW_NORMAL); }
+  HFONT BadgeFont() {
     PhiFontDesc desc;
-    desc.size = 28;
+    desc.size = 8;
+    desc.weight = FW_SEMIBOLD;
+    desc.face = L"Segoe UI Semibold";
+    return fonts().Get(desc);
+  }
+  HFONT GlyphFont(int size) {
+    PhiFontDesc desc;
+    desc.size = size;
     desc.face = L"Segoe MDL2 Assets";
     return fonts().Get(desc);
   }
 
-  // THE layout pass: one hit per row plus one for its pin toggle, in
-  // paint order so the toggle (added second) takes the pointer.
+  int TotalRows() const {
+    return (static_cast<int>(tiles_.size()) + kColumns - 1) / kColumns;
+  }
+  int VisibleRows() const {
+    return std::min(kMaxVisibleRows, TotalRows());
+  }
+  int MaxScrollRow() const {
+    return std::max(0, TotalRows() - kMaxVisibleRows);
+  }
+  // The grid band's height: the Mac's gridHeight, or the empty label's.
+  int GridHeight() const {
+    if (tiles_.empty()) {
+      return Scaled(kEmptyHeight);
+    }
+    const int rows = VisibleRows();
+    return rows * Scaled(kTileHeight) + (rows - 1) * Scaled(kTileSpacing);
+  }
+  int GridTop() const {
+    return Scaled(kTopPadding) + Scaled(kTitleHeight) +
+           Scaled(kSectionSpacing);
+  }
+  int SettingTop() const {
+    return GridTop() + GridHeight() + Scaled(kSectionSpacing);
+  }
+  RECT ManageRow() const {
+    const int top =
+        SettingTop() + Scaled(kTitleHeight) + Scaled(kSettingSpacing);
+    return {Scaled(kManageRowInset), top,
+            Scaled(kPanelWidth) - Scaled(kManageRowInset),
+            top + Scaled(kManageRowHeight)};
+  }
+  int PanelHeight() const {
+    return ManageRow().bottom + Scaled(kBottomPadding);
+  }
+
+  // THE layout pass: one hit per visible tile plus one for its pin disc
+  // (added second, so it takes the pointer), then the Manage row.
   void BuildHits() {
     ClearHits();
-    RECT client = {};
-    ::GetClientRect(hwnd(), &client);
-    int y = Scaled(kHeaderHeight);
-    for (size_t i = 0; i < rows_.size(); ++i) {
-      RECT bounds = {Scaled(6), y, client.right - Scaled(6),
-                     y + Scaled(kRowHeight)};
-      rows_[i].bounds = bounds;
-      const int mid = (bounds.top + bounds.bottom) / 2;
-      const int pin_px = Scaled(22);
-      rows_[i].pin_box = {bounds.right - Scaled(10) - pin_px, mid - pin_px / 2,
-                          bounds.right - Scaled(10), mid + pin_px / 2};
-      AddHit(bounds, static_cast<int>(i) * kKeyStride, rows_[i].name,
-             PhiHitRole::kListItem);
-      AddHit(rows_[i].pin_box, static_cast<int>(i) * kKeyStride + 1,
-             rows_[i].pinned ? L"Unpin" : L"Pin", PhiHitRole::kToggle,
-             rows_[i].pinned);
-      y += Scaled(kRowHeight);
+    const int stride_x = Scaled(kTileWidth) + Scaled(kTileSpacing);
+    const int stride_y = Scaled(kTileHeight) + Scaled(kTileSpacing);
+    const int first = scroll_row_ * kColumns;
+    const int last = std::min(static_cast<int>(tiles_.size()),
+                              first + VisibleRows() * kColumns);
+    for (int i = 0; i < static_cast<int>(tiles_.size()); ++i) {
+      ExtensionTile& tile = tiles_[static_cast<size_t>(i)];
+      if (i < first || i >= last) {
+        tile.bounds = RECT{};
+        tile.pin_box = RECT{};
+        continue;
+      }
+      const int slot = i - first;
+      const int left = Scaled(kSidePadding) + (slot % kColumns) * stride_x;
+      const int top = GridTop() + (slot / kColumns) * stride_y;
+      tile.bounds = {left, top, left + Scaled(kTileWidth),
+                     top + Scaled(kTileHeight)};
+      // The 16 pt disc's bottom-right sits 4 pt past the tile's (the Mac's
+      // .bottomTrailing + .offset(4, 4)).
+      const int dot = Scaled(kPinDot);
+      const int overhang = Scaled(kPinOffset);
+      tile.pin_box = {tile.bounds.right + overhang - dot,
+                      tile.bounds.bottom + overhang - dot,
+                      tile.bounds.right + overhang,
+                      tile.bounds.bottom + overhang};
+      AddHit(tile.bounds, i * kKeyStride, tile.name, PhiHitRole::kButton);
+      AddHit(tile.pin_box, i * kKeyStride + 1,
+             tile.pinned ? L"Unpin extension" : L"Pin extension",
+             PhiHitRole::kToggle, tile.pinned);
     }
-  }
-
-  int PanelHeight() const {
-    const int rows = std::max(1, static_cast<int>(rows_.size()));
-    return std::min(Scaled(kPanelMaxHeight),
-                    Scaled(kHeaderHeight) + rows * Scaled(kRowHeight) +
-                        Scaled(8));
+    AddHit(ManageRow(), kManageKey, L"Manage Extensions",
+           PhiHitRole::kButton);
   }
 
   void PaintPanel(HDC dc, const RECT& client) {
@@ -294,96 +425,147 @@ class Popover : public PhiPopover {
     FillRect(dc, client, bg);
     ::SetBkMode(dc, TRANSPARENT);
 
-    RECT title = {Scaled(16), 0, client.right - Scaled(16),
-                  Scaled(kHeaderHeight)};
+    // "Extensions".
+    RECT title = {Scaled(kSidePadding), Scaled(kTopPadding),
+                  client.right - Scaled(kSidePadding),
+                  Scaled(kTopPadding) + Scaled(kTitleHeight)};
     ::SelectObject(dc, TitleFont());
     ::SetTextColor(dc, label);
     PhiDrawTextAA(dc, L"Extensions", -1, &title,
-                DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
 
-    if (rows_.empty()) {
-      RECT glyph = {0, Scaled(kHeaderHeight), client.right,
-                    Scaled(kHeaderHeight + 48)};
-      ::SelectObject(dc, EmptyFont());
+    if (tiles_.empty()) {
+      RECT empty = {0, GridTop(), client.right, GridTop() + GridHeight()};
+      ::SelectObject(dc, RowFont());
       ::SetTextColor(dc, dim);
-      PhiDrawTextAA(dc, L"", -1, &glyph,
-                  DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-      RECT hint = {0, glyph.bottom, client.right,
-                   glyph.bottom + Scaled(20)};
-      ::SelectObject(dc, NameFont());
-      PhiDrawTextAA(dc, L"No extensions installed", -1, &hint,
-                  DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+      PhiDrawTextAA(dc, L"No extensions found", -1, &empty,
+                    DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    } else {
+      for (size_t i = 0; i < tiles_.size(); ++i) {
+        if (tiles_[i].bounds.right > tiles_[i].bounds.left) {
+          PaintTile(dc, tiles_[i], static_cast<int>(i) == hover_tile_);
+        }
+      }
+    }
+
+    // "Setting" and the Manage Extensions row (ManageExtensionsButton).
+    RECT setting = {Scaled(kSidePadding), SettingTop(),
+                    client.right - Scaled(kSidePadding),
+                    SettingTop() + Scaled(kTitleHeight)};
+    ::SelectObject(dc, TitleFont());
+    ::SetTextColor(dc, label);
+    PhiDrawTextAA(dc, L"Setting", -1, &setting,
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    const RECT row = ManageRow();
+    if (hover_manage_) {
+      FillRounded(dc, row, p.hover, Scaled(kManageRadius));
+    }
+    RECT text = {row.left + Scaled(kManageTextInset), row.top,
+                 row.right - Scaled(kManageTextInset) - Scaled(16),
+                 row.bottom};
+    ::SelectObject(dc, RowFont());
+    ::SetTextColor(dc, dim);
+    PhiDrawTextAA(dc, L"Manage Extensions", -1, &text,
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    // chevron.right, 12 pt medium, secondary at 60 %.
+    RECT chevron = {row.right - Scaled(kManageTextInset) - Scaled(16),
+                    row.top, row.right - Scaled(kManageTextInset),
+                    row.bottom};
+    ::SelectObject(dc, GlyphFont(12));
+    ::SetTextColor(dc, Mix(dim, hover_manage_ ? p.hover : bg, 0.6f));
+    PhiDrawTextAA(dc, L"", -1, &chevron,
+                  DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+  }
+
+  // One 50x32 tile (ExtensionGridItem): the radius-8 wash (emphasized on
+  // hover), the 18 pt icon with its badge, and the pin disc on the corner —
+  // solid when pinned, 60 % while hovered, absent otherwise.
+  void PaintTile(HDC dc, const ExtensionTile& tile, bool hot) {
+    const PhiPalette& p = palette();
+    const COLORREF fill = hot ? p.hover_strong : p.hover;
+    FillRounded(dc, tile.bounds, fill, Scaled(kTileRadius));
+
+    const int icon_px = Scaled(kTileIcon);
+    const int mid_x = (tile.bounds.left + tile.bounds.right) / 2;
+    const int mid_y = (tile.bounds.top + tile.bounds.bottom) / 2;
+    RECT icon = {mid_x - icon_px / 2, mid_y - icon_px / 2,
+                 mid_x - icon_px / 2 + icon_px, mid_y - icon_px / 2 + icon_px};
+    int iw = 0;
+    int ih = 0;
+    const unsigned char* bgra =
+        framework_ ? framework_->ExtensionIconBgra(tile.id.c_str(), &iw, &ih)
+                   : nullptr;
+    if (bgra && iw > 0 && ih > 0) {
+      std::vector<unsigned char> scaled = ScaleBgra(bgra, iw, ih, icon_px);
+      if (tile.state.grayscale) {
+        scaled = PhiGrayedActionIcon(scaled);  // The grayed action.
+      }
+      PhiBlendBgra(dc, icon, scaled.data(), icon_px, icon_px);
+    } else {
+      // Icon not decoded yet: the puzzle stands in (the Mac's
+      // puzzlepiece.extension, secondary, half-faded when grayed).
+      ::SelectObject(dc, GlyphFont(14));
+      ::SetTextColor(dc, tile.state.grayscale
+                             ? Mix(p.label_dim, fill, 0.5f)
+                             : p.label_dim);
+      PhiDrawTextAA(dc, L"", -1, &icon,
+                    DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    }
+    PhiDrawExtensionBadge(dc, icon, tile.state, BadgeFont(), dpi());
+
+    if (!tile.pinned && !hot) {
       return;
     }
-
-    for (ExtensionRow& row : rows_) {
-      const int index = static_cast<int>(&row - rows_.data());
-      const int mid = (row.bounds.top + row.bounds.bottom) / 2;
-      const bool hot = hover_row_ == index;
-      if (hot) {
-        FillRounded(dc, row.bounds, p.hover, Scaled(6));
-      }
-      // Icon.
-      const int icon_px = Scaled(kIconSlot);
-      RECT icon = {row.bounds.left + Scaled(10), mid - icon_px / 2,
-                   row.bounds.left + Scaled(10) + icon_px, mid + icon_px / 2};
-      int iw = 0;
-      int ih = 0;
-      const unsigned char* bgra =
-          framework_ ? framework_->ExtensionIconBgra(row.id.c_str(), &iw, &ih)
-                     : nullptr;
-      if (bgra && iw > 0 && ih > 0) {
-        const std::vector<unsigned char> scaled =
-            ScaleBgra(bgra, iw, ih, icon_px);
-        PhiBlendBgra(dc, icon, scaled.data(), icon_px, icon_px);
-      } else {
-        ::SelectObject(dc, GlyphFont());
-        ::SetTextColor(dc, dim);
-        PhiDrawTextAA(dc, L"", -1, &icon,
-                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-      }
-      // Pin toggle, trailing (the Mac popover's pin column).
-      const bool pin_hot = hot && hover_pin_;
-      if (pin_hot) {
-        FillRounded(dc, row.pin_box, p.selected, Scaled(4));
-      }
-      ::SelectObject(dc, GlyphFont());
-      ::SetTextColor(dc, row.pinned ? p.accent : dim);
-      PhiDrawTextAA(dc, row.pinned ? L"" : L"", -1, &row.pin_box,
-                  DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-      // Name.
-      RECT text = {icon.right + Scaled(10), row.bounds.top,
-                   row.pin_box.left - Scaled(8), row.bounds.bottom};
-      ::SelectObject(dc, NameFont());
-      ::SetTextColor(dc, label);
-      PhiDrawTextAA(dc, row.name.c_str(), -1, &text,
-                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
-                      DT_NOPREFIX);
-    }
+    const COLORREF ink = RGB(0, 0, 0);
+    const COLORREF disc = tile.pinned ? ink : Mix(ink, fill, 0.6f);
+    FillRounded(dc, tile.pin_box, disc, Scaled(kPinDot) / 2);
+    ::SelectObject(dc, GlyphFont(9));
+    ::SetTextColor(dc, RGB(0xFF, 0xFF, 0xFF));
+    RECT glyph = tile.pin_box;
+    PhiDrawTextAA(dc, L"", -1, &glyph,
+                  DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
   }
 
   void RunHoveredAction() {
-    if (hover_row_ < 0 || hover_row_ >= static_cast<int>(rows_.size()) ||
-        !framework_) {
+    if (!framework_) {
       return;
     }
-    const ExtensionRow row = rows_[static_cast<size_t>(hover_row_)];
+    if (hover_manage_) {
+      // ManageExtensionsButton: the extensions page in a new tab of this
+      // window, then leave.
+      framework_->OpenTab(phi_framework::WindowId(browser_id_),
+                          "chrome://extensions");
+      Dismiss();
+      return;
+    }
+    if (hover_tile_ < 0 || hover_tile_ >= static_cast<int>(tiles_.size())) {
+      return;
+    }
+    const ExtensionTile tile = tiles_[static_cast<size_t>(hover_tile_)];
     if (hover_pin_) {
-      framework_->SetExtensionPinned(browser_id_, row.id.c_str(),
-                                     !row.pinned);
+      framework_->SetExtensionPinned(browser_id_, tile.id.c_str(),
+                                     !tile.pinned);
       // The change notification refreshes the list; flip optimistically so
       // the toggle reads instant.
-      rows_[static_cast<size_t>(hover_row_)].pinned = !row.pinned;
+      tiles_[static_cast<size_t>(hover_tile_)].pinned = !tile.pinned;
+      BuildHits();
       Invalidate();
       return;
     }
-    // Run the action anchored to the ROW (screen coords) and leave — the
-    // extension's own popup takes the stage.
-    RECT anchor = row.bounds;
+    // Run the action anchored to the TILE (screen coords) and leave — the
+    // extension's own popup takes the stage. A DISABLED action doesn't run;
+    // fall back to its context menu like Chrome (ExecuteUserAction), the
+    // Mac ExtensionList's triggerExtension.
+    RECT anchor = tile.bounds;
     ::MapWindowPoints(hwnd(), nullptr, reinterpret_cast<POINT*>(&anchor), 2);
-    framework_->TriggerExtensionAction(
-        browser_id_, row.id.c_str(), anchor.left, anchor.top,
-        anchor.right - anchor.left, anchor.bottom - anchor.top);
+    if (!tile.state.enabled) {
+      framework_->ShowExtensionContextMenu(browser_id_, tile.id.c_str(),
+                                           anchor.left, anchor.bottom);
+    } else {
+      framework_->TriggerExtensionAction(
+          browser_id_, tile.id.c_str(), anchor.left, anchor.top,
+          anchor.right - anchor.left, anchor.bottom - anchor.top);
+    }
     Dismiss();
   }
 
@@ -395,10 +577,12 @@ class Popover : public PhiPopover {
   int64_t browser_id_;
   Placement placement_;
   Timer poll_;
-  std::vector<ExtensionRow> rows_;
+  std::vector<ExtensionTile> tiles_;
   std::string last_json_;
-  int hover_row_ = -1;
+  int scroll_row_ = 0;  // The first visible grid row.
+  int hover_tile_ = -1;
   bool hover_pin_ = false;
+  bool hover_manage_ = false;
 };
 
 Popover* Popover::instance = nullptr;

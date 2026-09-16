@@ -95,6 +95,24 @@ void PhiFrameworkDispatcher::OnExtensionsChanged(int64_t window_id) {
   coordinator_.OnExtensionsChanged(window_id);
 }
 
+void PhiFrameworkDispatcher::OnExtensionsButtonRectRequested(int64_t window_id,
+                                                             int* left,
+                                                             int* top,
+                                                             int* right,
+                                                             int* bottom,
+                                                             bool* found) {
+  // Synchronous, inside Chromium's dialog construction: a layout read only.
+  RECT rect = {};
+  *found = coordinator_.ExtensionsButtonScreenRect(window_id, &rect);
+  if (!*found) {
+    return;
+  }
+  *left = rect.left;
+  *top = rect.top;
+  *right = rect.right;
+  *bottom = rect.bottom;
+}
+
 void PhiFrameworkDispatcher::OnImportCompleted(const char* source,
                                                bool success) {
   coordinator_.OnImportCompleted(source, success);
