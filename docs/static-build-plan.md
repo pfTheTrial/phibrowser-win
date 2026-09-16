@@ -555,3 +555,49 @@ naming and packaging.
   ARM machine; the installer's machine gate has not been exercised either
   (on the x64 box `PhiBrowserSetup-0.1.0-arm64.exe /S` should exit 1 and
   touch nothing).
+
+## 11. Authenticode signing
+
+Every PE the installer ships, the setup exe and the uninstaller carry an
+Authenticode signature; the appcast's ed25519 `sparkle:edSignature` is a
+separate, already-existing gate (WinSparkle's) and stays as it is.
+
+* **Tool.** `phibrowser-win-build/sign-pe.sh` (osslsigncode, on the Linux
+  build host): signs in place, SHA-256, RFC 3161 timestamp, skips a PE
+  that already carries a signature — the Microsoft-signed redistributables
+  in the payload (vcruntime140, msvcp140, dxil, d3dcompiler_47, dbghelp,
+  …) are left alone. The identity comes from
+  `phibrowser-win-build/phi-signing.env` (gitignored; keys in
+  `phi-signing.env.example`): a PKCS#12 + password, the TSA URL, the
+  description and URL the UAC prompt shows, and what `--verify` trusts.
+* **Where.** `make-installer.sh` signs the staged `*.exe`/`*.dll` after the
+  architecture check, passes `-DPHI_SIGN_CMD` to makensis, and verifies
+  the setup exe afterwards; the script's `!finalize` signs the setup exe
+  and `!uninstfinalize` (NSIS 3.08+, works under the Debian makensis)
+  signs the uninstaller stub before it is packed — `WriteUninstaller`
+  only drops that stub, so this is the one place `Uninstall.exe` can get
+  its signature. Signing is on whenever the env file exists; `--no-sign`
+  skips it and the log says `signing: none`. Signing leaves the CodeView
+  debug id alone, so Sentry's symbols keep matching.
+* **The TEST chain (LAN only).** `sign-pe.sh --make-test-cert` mints
+  `signing-test/`: a TEST root CA and a code-signing leaf under it, the
+  same two-tier shape as a CA-issued cert, and writes the env file. To
+  Windows a chain ending in an unknown root is unsigned, so the root is
+  imported on the test machines (`Import-Certificate -FilePath
+  TEST-root.crt -CertStoreLocation Cert:\LocalMachine\Root`, elevated) —
+  done on the x64 box 2026-09-16 (thumbprint 47701B2C…). Never ship it.
+* **Verified 2026-09-16 (x64 box).** `Get-AuthenticodeSignature` reports
+  `Valid` with the TEST signer and DigiCert's timestamp responder on the
+  setup exe, and after a silent install (exit 0 — NSIS's CRC check
+  tolerates the appended signature) on Phi.exe, WinSparkle.dll,
+  Uninstall.exe, framework\chrome.dll, chrome_elf.dll and the helper exes;
+  vcruntime140.dll still shows Microsoft's signature. The installed,
+  signed Phi launches (PhiEvalLaunch, which now resolves the install
+  folder from the uninstall key's `InstallLocation`).
+* **Release identity.** Azure Artifact Signing (Microsoft's CA, identity
+  validated once, short-lived certs, ~$10/month; eligible regions include
+  the UK and EU) or a CA-issued OV certificate on a cloud HSM; either
+  replaces the env file's PKCS#12 with a `jsign` invocation in
+  `sign-pe.sh` — the callers do not change. SmartScreen's "unrecognized
+  app" persists for a new signer until reputation accrues to that
+  identity; that is why no public build goes out unsigned.

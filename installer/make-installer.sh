@@ -6,6 +6,7 @@
 #
 # Usage: make-installer.sh [--version X.Y.Z] [--arch x64|arm64] [--out <out dir>]
 #                          [--telemetry phi_telemetry.json | --no-telemetry]
+#                          [--no-sign]
 #   --version    defaults to PHI_WIN_VERSION_STRING in client/phi_version.h
 #   --arch       which build to package: x64 (default) from out/PhiFxWinShip,
 #                arm64 from out/PhiFxWinShipArm64 (docs/static-build-plan.md
@@ -19,6 +20,12 @@
 #                when that repo is checked out beside this one,
 #                else none. --no-telemetry builds a config-less installer
 #                (crashes stay local, analytics never leave the machine).
+#   --no-sign    skip Authenticode. Otherwise every PE in the stage, the
+#                setup exe and the uninstaller are signed by the sibling
+#                ../../phibrowser-win-build/sign-pe.sh with the identity in
+#                its phi-signing.env (the LAN rig's TEST chain or the release
+#                one; docs/static-build-plan.md) - when that env exists.
+#                Without it the build is unsigned and says so.
 #
 # The staged tree (docs/static-build-plan.md §6): Phi.exe, WinSparkle.dll and
 # the client's own resources\ entries at the top (the list build-client.py
@@ -40,6 +47,7 @@ ARCH=x64
 OUT=""
 TELEMETRY=""
 NO_TELEMETRY=no
+NO_SIGN=no
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --version) VERSION="$2"; shift 2 ;;
@@ -47,6 +55,7 @@ while [[ $# -gt 0 ]]; do
     --out) OUT="$2"; shift 2 ;;
     --telemetry) TELEMETRY="$2"; shift 2 ;;
     --no-telemetry) NO_TELEMETRY=yes; shift ;;
+    --no-sign) NO_SIGN=yes; shift ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -152,6 +161,25 @@ done < <(find "$STAGE" -type f \( -name '*.exe' -o -name '*.dll' \))
 N=$(find "$STAGE" -type f | wc -l)
 echo "staged layout=framework arch=$ARCH files=$N"
 
+# Authenticode. The payload's PEs are signed here in the stage; the setup
+# exe and the uninstaller stub go through the script's !finalize /
+# !uninstfinalize with the same tool (-DPHI_SIGN_CMD) - the uninstaller
+# exists only inside makensis before it is packed, so that is the one place
+# it can be signed. Signing a PE leaves its CodeView debug id alone, so
+# Sentry's symbols still match.
+SIGN_TOOL="$HERE/../../phibrowser-win-build/sign-pe.sh"
+SIGN_DEFINE=()
+if [[ "$NO_SIGN" == yes ]]; then
+  echo "signing: none (--no-sign)"
+elif [[ -x "$SIGN_TOOL" ]] && SIGN_ID=$("$SIGN_TOOL" --info 2>/dev/null); then
+  echo "signing: $SIGN_ID"
+  find "$STAGE" -type f \( -name '*.exe' -o -name '*.dll' \) -print0 \
+    | xargs -0 "$SIGN_TOOL"
+  SIGN_DEFINE=("-DPHI_SIGN_CMD=$SIGN_TOOL")
+else
+  echo "signing: none (no $SIGN_TOOL with a phi-signing.env)"
+fi
+
 # The wizard's art (installer/art: the onboarding's black sidebar with the
 # conch and the wordmark, the white header with the wordmark). makensis on
 # POSIX maps the script's backslashed paths onto these directories.
@@ -160,7 +188,8 @@ echo "running makensis..."
 (makensis -V2 \
   "-DPHI_VERSION=$VERSION" "-DPHI_ARCH=$ARCH" "-DPHI_STAGE=$STAGE" \
   "-DPHI_ART=$HERE/art" "-DPHI_OUTDIR=$DIST" -DPHI_LAYOUT_FRAMEWORK \
-  "${TELEMETRY_DEFINE[@]}" "$HERE/phi-installer.nsi") | tail -3
+  "${TELEMETRY_DEFINE[@]}" "${SIGN_DEFINE[@]}" "$HERE/phi-installer.nsi") | tail -3
 [[ -f "$DIST/$SETUP" ]] || { echo "makensis produced no $DIST/$SETUP" >&2; exit 1; }
+[[ ${#SIGN_DEFINE[@]} -eq 0 ]] || "$SIGN_TOOL" --verify "$DIST/$SETUP"
 ls -la "$DIST/$SETUP"
 sha256sum "$DIST/$SETUP" | cut -c1-16

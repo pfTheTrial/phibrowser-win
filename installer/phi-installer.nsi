@@ -39,7 +39,8 @@
 ;
 ; Build (makensis 3.x, on Linux via make-installer.sh):
 ;   makensis -DPHI_VERSION=0.1.0 -DPHI_STAGE=<staged tree> -DPHI_ART=art [-DPHI_LAYOUT_FRAMEWORK] \
-;            [-DPHI_ARCH=x64|arm64] [-DPHI_OUTDIR=dist] [-DPHI_TELEMETRY_JSON=phi_telemetry.json] phi-installer.nsi
+;            [-DPHI_ARCH=x64|arm64] [-DPHI_OUTDIR=dist] [-DPHI_TELEMETRY_JSON=phi_telemetry.json] \
+;            [-DPHI_SIGN_CMD=<sign-pe.sh>] phi-installer.nsi
 
 !ifndef PHI_VERSION
   !error "pass /DPHI_VERSION=x.y.z"
@@ -76,6 +77,15 @@ Name "Phi Browser"
   !define PHI_OUTDIR "."
 !endif
 OutFile "${PHI_OUTDIR}/PhiBrowserSetup-${PHI_VERSION}${PHI_ARCH_SUFFIX}.exe"
+; Authenticode (make-installer.sh passes its sign-pe.sh): the setup exe once
+; it is written, and the uninstaller stub before it is packed into the
+; installer - WriteUninstaller only drops that stub, so this is the one
+; place Uninstall.exe can pick up a signature (NSIS 3.08+). The payload was
+; signed in the stage. A failed sign fails the build (= 0).
+!ifdef PHI_SIGN_CMD
+  !finalize '"${PHI_SIGN_CMD}" "%1"' = 0
+  !uninstfinalize '"${PHI_SIGN_CMD}" "%1"' = 0
+!endif
 RequestExecutionLevel admin
 InstallDir "$PROGRAMFILES64\Phi Browser"
 InstallDirRegKey HKLM "Software\Phi" "InstallDir"
