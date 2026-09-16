@@ -15,7 +15,8 @@
 #   --telemetry  the deployment config the installer drops into the user
 #                data dir (crash_endpoint, analytics_*; docs/sentry-crash-
 #                reporting.md). Default: rendered by the sibling
-#                ../../push-telemetry-config.sh --print when that exists,
+#                ../../phibrowser-win-build/push-telemetry-config.sh --print
+#                when that repo is checked out beside this one,
 #                else none. --no-telemetry builds a config-less installer
 #                (crashes stay local, analytics never leave the machine).
 #
@@ -71,16 +72,17 @@ echo "version: $VERSION  arch: $ARCH  out: $OUT"
 # the keys never sit in the repo.
 TELEMETRY_DEFINE=()
 if [[ "$NO_TELEMETRY" == no ]]; then
-  if [[ -z "$TELEMETRY" && -x "$HERE/../../push-telemetry-config.sh" ]]; then
+  TELEMETRY_TOOL="$HERE/../../phibrowser-win-build/push-telemetry-config.sh"
+  if [[ -z "$TELEMETRY" && -x "$TELEMETRY_TOOL" ]]; then
     TELEMETRY="$(mktemp -t phi_telemetry.XXXXXX.json)"
-    "$HERE/../../push-telemetry-config.sh" --print > "$TELEMETRY"
+    "$TELEMETRY_TOOL" --print > "$TELEMETRY"
   fi
   if [[ -n "$TELEMETRY" ]]; then
     python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); \
       print("telemetry:", ", ".join(sorted(d)) or "(empty)")' "$TELEMETRY"
     TELEMETRY_DEFINE=("-DPHI_TELEMETRY_JSON=$(realpath "$TELEMETRY")")
   else
-    echo "telemetry: none (no --telemetry and no ../../push-telemetry-config.sh)"
+    echo "telemetry: none (no --telemetry and no $TELEMETRY_TOOL)"
   fi
 else
   echo "telemetry: none (--no-telemetry)"

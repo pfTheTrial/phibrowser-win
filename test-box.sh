@@ -35,8 +35,8 @@ ENV_FILE="${PHI_BOX_ENV:-$REPO/box.env}"
 # shellcheck source=box.env
 . "$ENV_FILE"
 
-SYNC_SCRIPT="${PHI_SYNC_SCRIPT:-/home/jx/Phi/sync-fx-win.sh}"
-SEED_SCRIPT="${PHI_SEED_SCRIPT:-/home/jx/Phi/seed-fx-prefs.sh}"
+SYNC_SCRIPT="${PHI_SYNC_SCRIPT:-/home/jx/Phi/phibrowser-win-build/sync-fx-win.sh}"
+SEED_SCRIPT="${PHI_SEED_SCRIPT:-/home/jx/Phi/phibrowser-win-build/seed-fx-prefs.sh}"
 SUITES_FILE="$REPO/test/suites.txt"
 TESTDIR="$REPO/test"
 
