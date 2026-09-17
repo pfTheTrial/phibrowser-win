@@ -37,6 +37,9 @@
 #include "phibrowser-win/client/phi_emoji.h"
 #include "phibrowser-win/client/phi_features.h"
 #include "phibrowser-win/client/phi_dwrite.h"
+#include "phibrowser-win/client/phi_fluent.h"
+#include "phibrowser-win/client/phi_version.h"
+#include "phibrowser-win/client/phi_updater.h"
 #include "phibrowser-win/client/phi_sidebar_view.h"
 #include "phibrowser-win/client/phi_glyph_bitmap.h"
 #include "phibrowser-win/client/phi_i18n.h"
@@ -94,33 +97,43 @@ namespace {
 
 // The Mac window: content is a FIXED 680x561 in every pane
 // (each pane pins view.snp to that size); the toolbar rides above it.
-constexpr int kWidth = 680;
-constexpr int kHeight = 561;
+// Windows Settings (docs/windows-native-ui.md §7): resizable, 1120 × 760
+// by default, never under 760 × 560; a 280 navigation rail (48 under 900
+// wide) and a page column 40 in from it.
+constexpr int kWidth = 1120;
+constexpr int kHeight = 760;
+constexpr int kMinWidth = 760;
+constexpr int kMinHeight = 560;
+constexpr int kRailWidth = 280;
+constexpr int kRailNarrow = 48;
+constexpr int kRailBreakpoint = 900;
+constexpr int kRailItemHeight = 36;
+constexpr int kContentPad = 40;
+constexpr int kContentMaxWidth = 1000;
+constexpr int kPageTitleHeight = 36;   // 28 dip.
+constexpr int kPageTitleGap = 20;
 // The custom caption strip: the OS caption is retired (WM_NCCALCSIZE) so
 // the pane title can sit CENTERED with the Phi mark leading — the Mac
 // window's look. Both the strip and its close button (Win11's 46dip
 // metric) are PhiPopupChrome's now; kCaptionHeight is what this file
 // still needs to know for kChromeTop.
 constexpr int kCaptionHeight = kPhiCaptionHeightDip;
-constexpr int kToolbarHeight = 68;
+constexpr int kToolbarHeight = 0;  // The rail replaced the toolbar.
 // Everything below the caption strip and the pane toolbar.
 constexpr int kChromeTop = kCaptionHeight + kToolbarHeight;
-constexpr int kToolbarItemWidth = 78;
-constexpr int kToolbarIcon = 22;
 // Page insets 36 on every side; 24 between sections; 16 title -> card.
-constexpr int kMargin = 36;
 constexpr int kSectionGap = 24;
 // Posted by the profile card's decode worker when a frame worth repainting
 // for has landed.
 constexpr UINT kMsgProfileCardFrame = WM_APP + 0x3A1;
-constexpr int kTitleToCard = 16;
+constexpr int kTitleToCard = 8;
 constexpr int kCardPadding = 12;   // Inner horizontal padding of a card.
-constexpr int kRowPadding = 12;    // Vertical padding around a row's content.
-constexpr int kSectionTitleHeight = 15;  // 12pt section titles.
-constexpr int kHintHeight = 15;          // 11pt hints.
-constexpr int kRowLabelHeight = 16;      // 13pt labels.
-constexpr int kCardRadius = 7;
-constexpr int kRadius = 6;
+constexpr int kRowPadding = 14;    // Vertical padding around a row's content.
+constexpr int kSectionTitleHeight = 20;  // 14/600 group headers.
+constexpr int kHintHeight = 16;          // 12 dip descriptions.
+constexpr int kRowLabelHeight = 19;      // 14 dip labels.
+constexpr int kCardRadius = 4;
+constexpr int kRadius = 4;
 // Theme swatches: a 22pt dot in a 26pt ring frame, 2pt ring when selected,
 // caption (11pt) below only while selected (ThemeSwatchView).
 constexpr int kSwatchDot = 22;  // Selection ring = dot + 4.
@@ -136,7 +149,7 @@ constexpr int kSwatchBlockSpaces = 20 + 8 + 13;
 // The saturation slider: 10pt-tall full-width rounded bar with a gradient,
 // an 18pt white knob (ThemeOpacitySliderView).
 constexpr int kSliderHeight = 20;
-constexpr int kSliderGeneral = 324;
+constexpr int kSliderGeneral = 200;
 constexpr int kSliderSpaces = 200;  // themeSliderWidth in the Spaces detail.
 constexpr int kSliderKnob = 18;
 // Layout / appearance / new-tab picture cards: 122x72 image, r5, 2pt accent
@@ -146,8 +159,8 @@ constexpr int kImageCardH = 72;
 constexpr int kImageCardGap = 16;
 constexpr int kImageCardBlock = 72 + 10 + 15;
 // Switches: the Mac's .mini switch is about 26x15.
-constexpr int kToggleWidth = 26;
-constexpr int kToggleHeight = 15;
+constexpr int kToggleWidth = 40;
+constexpr int kToggleHeight = 20;
 // Master-detail lists (Profiles 240 wide, Spaces 280) with a 34pt tool strip.
 constexpr int kProfilesListWidth = 240;
 constexpr int kSpacesListWidth = 280;
@@ -157,8 +170,8 @@ constexpr int kListRowHeight = 32;  // 6/6 vertical padding around 20pt content.
 constexpr int kToolStripHeight = 34;
 constexpr int kSpacesBlockHeight = 431;  // The Mac's fixed master-detail band.
 // The Profiles trailing pill: inner width 110, H10/V5, primary@0.06, r6.
-constexpr int kPillWidth = 130;
-constexpr int kPillHeight = 24;
+constexpr int kPillWidth = 160;
+constexpr int kPillHeight = 32;
 // The Mac's SettingsIconChip: a 24pt rounded square (r6) filled with the
 // colour's gradient, carrying a 12pt semibold white glyph, 12pt from the
 // text it leads — so a chip-led row's text column starts 36 in, and the
@@ -189,16 +202,20 @@ struct SectionDef {
   const wchar_t* label;
   wchar_t glyph;
 };
-constexpr std::array<SectionDef, 9> kSections = {{
-    {"account", L"You", 0xE77B},        // Contact
-    {"general", L"General", 0xE713},    // Settings gear
-    {"profiles", L"Profiles", 0xE716},  // People
-    {"spaces", L"Spaces", 0xE8A9},      // ViewAll grid
-    {"navigation", L"Navigation", 0xE71B},  // Link — the Mac's navigations.svg
-    {"ai", L"Phi & AI", 0xE734},        // Sparkle (the catalog's own pick)
+// The pages (windows-native-ui.md §7), in rail order. The ids are the
+// remote surface's (`account` stays `account` — impl log D19).
+constexpr std::array<SectionDef, 11> kSections = {{
+    {"account", L"You", 0xE77B},          // Contact
+    {"general", L"General", 0xE713},      // Settings
+    {"appearance", L"Appearance", 0xE790},  // Color
+    {"spaces", L"Spaces", 0xE8A9},        // ViewAll
+    {"profiles", L"Profiles", 0xE716},    // People
+    {"navigation", L"Navigation", 0xE71B},  // Link
+    {"ai", L"Phi & AI", 0xE734},          // FavoriteStar
     {"shortcuts", L"Shortcuts", 0xE765},  // Keyboard
-    {"advanced", L"Advanced", 0xE713},  // Two gears, composed at paint (gearshape.2)
-    {"developer", L"Developer", 0xE90F},  // Repair — the Mac's hammer
+    {"advanced", L"Advanced", 0xE9F5},    // Processing
+    {"developer", L"Developer", 0xEC7A},  // DeveloperTools
+    {"about", L"About", 0xE946},          // Info
 }};
 
 PhiSettingsWindow* g_instance = nullptr;
@@ -358,14 +375,18 @@ bool PhiSettingsWindow::OpenWindow() {
   spec.icon_small = PhiAppIcon(16);
 
   Options options;
-  options.caption_buttons = kPhiCaptionClose;
-  options.dim_when_inactive = false;  // The strip never dimmed its title.
+  // A Windows Settings window: min / max / close, resizable (§7).
+  options.caption_buttons =
+      kPhiCaptionClose | kPhiCaptionMinimize | kPhiCaptionMaximize;
+  options.dim_when_inactive = false;
   options.dialog_keys = kPhiDialogNone;  // Every control here is drawn.
 
   const RECT bounds = {CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT + 100,
                        CW_USEDEFAULT + 100};
-  if (!CreateSecondary(spec, 0, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
-                       bounds, nullptr, L"General", options)) {
+  if (!CreateSecondary(spec, 0,
+                       WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU |
+                           WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX,
+                       bounds, nullptr, L"Settings", options)) {
     LOG(ERROR) << "[PhiClient] settings CreateWindowEx failed err="
                << ::GetLastError();
     return false;
@@ -414,10 +435,13 @@ void PhiSettingsWindow::EnsureFont() {
     }
     *slot = built;
   };
-  swap(&font_, make(13, FW_NORMAL));
-  swap(&title_font_, make(13, FW_SEMIBOLD));
-  swap(&small_font_, make(12, FW_NORMAL));
-  swap(&hint_font_, make(11, FW_NORMAL));
+  // The §2.2 ramp: body 14, group headers 14/600, descriptions 12, the
+  // page title 28/600 (Segoe UI Variable through PhiFluentFont).
+  swap(&font_, PhiFluentFont(dpi(), 14));
+  swap(&title_font_, PhiFluentFont(dpi(), 28, FW_SEMIBOLD));
+  swap(&small_font_, PhiFluentFont(dpi(), 14, FW_SEMIBOLD));
+  swap(&hint_font_, PhiFluentFont(dpi(), 12));
+  (void)make;
   LOGFONTW emoji = metrics.lfMessageFont;
   const std::wstring face = L"Segoe UI Emoji";
   std::fill(std::begin(emoji.lfFaceName), std::end(emoji.lfFaceName), L'\0');
@@ -427,7 +451,7 @@ void PhiSettingsWindow::EnsureFont() {
   emoji.lfHeight = -Scaled(14);
   swap(&emoji_font_, ::CreateFontIndirectW(&emoji));
   LOGFONTW mdl2 = metrics.lfMessageFont;
-  const std::wstring mdl2_face = L"Segoe MDL2 Assets";
+  const std::wstring mdl2_face = PhiIconFaceName();
   std::fill(std::begin(mdl2.lfFaceName), std::end(mdl2.lfFaceName), L'\0');
   std::copy_n(mdl2_face.begin(),
               std::min(mdl2_face.size(), std::size(mdl2.lfFaceName) - 1),
@@ -463,13 +487,9 @@ HFONT PhiSettingsWindow::IconFont(int size) {
 }
 
 void PhiSettingsWindow::SyncTitle() {
-  // The Mac library titles the window with the selected pane's title.
-  for (const SectionDef& section : kSections) {
-    if (section_ == section.id) {
-      ::SetWindowTextW(hwnd(), section.label);
-      return;
-    }
-  }
+  // Windows Settings: the window is "Settings"; the page title is in the
+  // page (§7).
+  ::SetWindowTextW(hwnd(), L"Settings");
 }
 
 // static
@@ -581,7 +601,7 @@ void PhiSettingsWindow::BeginSection(int* y, const wchar_t* title) {
     Item heading;
     heading.kind = ItemKind::kSectionTitle;
     heading.text = title;
-    heading.bounds = {Scaled(kMargin), *y, Scaled(kWidth - kMargin),
+    heading.bounds = {content_left_, *y, content_right_,
                       *y + Scaled(kSectionTitleHeight)};
     items_.push_back(std::move(heading));
     *y += Scaled(kSectionTitleHeight) + Scaled(kTitleToCard);
@@ -595,7 +615,7 @@ void PhiSettingsWindow::BeginSection(int* y, const wchar_t* title) {
   // text riding its top border.
   Item card;
   card.kind = ItemKind::kCard;
-  card.bounds = {Scaled(kMargin), *y, Scaled(kWidth - kMargin), 0};
+  card.bounds = {content_left_, *y, content_right_, 0};
   items_.push_back(std::move(card));
   open_card_ = items_.size() - 1;
   card_rows_ = 0;
@@ -628,8 +648,8 @@ int PhiSettingsWindow::WrappedHeight(HFONT font, const wchar_t* text,
 }
 
 void PhiSettingsWindow::AddHint(int* y, const wchar_t* text) {
-  const int left = Scaled(kMargin + kCardPadding);
-  const int right = Scaled(kWidth - kMargin - kCardPadding);
+  const int left = (content_left_ + Scaled(kCardPadding));
+  const int right = (content_right_ - Scaled(kCardPadding));
   const int height = std::max(Scaled(kHintHeight),
                               WrappedHeight(hint_font_, text, right - left));
   Item hint;
@@ -647,9 +667,9 @@ RECT PhiSettingsWindow::AddRow(int* y, const wchar_t* title,
                                wchar_t chip_glyph, COLORREF chip_color,
                                int row_padding) {
   const int padding = row_padding < 0 ? kRowPadding : row_padding;
-  const int gutter = Scaled(kMargin + kCardPadding);
+  const int gutter = (content_left_ + Scaled(kCardPadding));
   const int left = gutter + Scaled(text_indent);
-  const int right = Scaled(kWidth - kMargin - kCardPadding);
+  const int right = (content_right_ - Scaled(kCardPadding));
   const int text_right = right - Scaled(control_width) - Scaled(12);
   const int text_width = std::max(1, text_right - left);
   // The Mac's row is ONE VStack(spacing: 4): the 13pt title over its 11pt
@@ -721,13 +741,6 @@ void PhiSettingsWindow::AddChips(const RECT& area,
 // --- Panes -------------------------------------------------------------------
 
 void PhiSettingsWindow::BuildGeneral(int* y) {
-  const auto& themes = PhiBuiltInThemes();
-  // With more than one Space, each Space owns colour and saturation; the Mac
-  // locks these rows at 40% and adds the jump link.
-  const bool locked = spaces_->Summaries().size() > 1;
-
-  // The Mac's section order: Language, Theme, Appearance, Browsing,
-  // Profile (the browsing rows and Developer mode moved to Advanced).
   BeginSection(y, PhiStr("settings.general.language.sectionTitle"));
   {
     // The row was a dead chip until the string catalog existed. Now it is the
@@ -749,7 +762,165 @@ void PhiSettingsWindow::BuildGeneral(int* y) {
   }
   EndSection(y);
 
-  BeginSection(y, L"Theme");
+
+  BeginSection(y, L"Browsing");
+  {
+    // "New tab behavior": two picture cards. New Tab Page opens the native
+    // new-tab page (phi_new_tab_page.cc, the Mac's NewTabViewController);
+    // Omnibox focuses the address field and the tab is born on commit.
+    const RECT area = AddRow(y, L"New tab behavior", kImageCardBlock,
+                             2 * kImageCardW + kImageCardGap);
+    const struct {
+      const wchar_t* title;
+      PhiNewTabBehavior value;
+      const char* sketch;
+      bool enabled;
+    } kCards[] = {
+        {L"New Tab Page", PhiNewTabBehavior::kNewTabPage, "ntp", true},
+        {L"Omnibox", PhiNewTabBehavior::kOmnibox, "omnibox", true},
+    };
+    int i = 0;
+    for (const auto& definition : kCards) {
+      Item card;
+      card.kind = ItemKind::kImageCard;
+      card.text = definition.title;
+      card.payload = definition.sketch;
+      card.selected = prefs_->new_tab_behavior() == definition.value;
+      card.enabled = definition.enabled;
+      card.value = static_cast<int>(definition.value);
+      card.action = "newtab";
+      const int x = area.left + i * Scaled(kImageCardW + kImageCardGap);
+      card.bounds = {x, area.top, x + Scaled(kImageCardW),
+                     area.top + Scaled(kImageCardBlock)};
+      items_.push_back(std::move(card));
+      ++i;
+    }
+  }
+  AddDividerRow(y);
+  AddToggleRow(y, L"Restore last session", prefs_->RestoreLastSession(),
+               /*enabled=*/true, "restoresession",
+               prefs_->RestoreLastSession()
+                   ? L"Reopen your windows and tabs the next time you open "
+                     L"Phi."
+                   : L"Phi starts with a new window. Closing a window may "
+                     L"sign you out of some sites.");
+  AddDividerRow(y);
+  {
+    // Telemetry consent (docs/architecture-review.md §3.9): the ONLY switch
+    // for the analytics pipeline. Off by default, and deliberately out of
+    // reach of agentSpace.settings.set. Windows-only, so it stays here
+    // while the Mac's other browsing rows moved to Advanced.
+    AddToggleRow(y, PhiStr("settings.general.analytics.toggle"),
+                 prefs_->AnalyticsEnabled(), /*enabled=*/true, "analytics",
+                 PhiStr("settings.general.analytics.hint"));
+  }
+  EndSection(y);
+
+  // Profile: with several profiles just the jump link; with one, the Mac
+  // INLINES the profile detail (search engine, downloads, data links).
+  if (profiles_->Profiles().size() > 1) {
+    BeginSection(y, L"Profile");
+    const RECT area = AddRow(y,
+                             L"You have more than one profile, so each "
+                             L"profile manages its own settings.",
+                             kRowLabelHeight, 170);
+    Item link;
+    link.kind = ItemKind::kLink;
+    link.text = L"Edit in Profiles settings…";
+    link.action = "goprofiles";
+    link.bounds = area;
+    items_.push_back(std::move(link));
+    EndSection(y);
+  } else {
+    Item heading;
+    heading.kind = ItemKind::kSectionTitle;
+    heading.text = L"Profile";
+    heading.bounds = {content_left_, *y, content_right_,
+                      *y + Scaled(kSectionTitleHeight)};
+    items_.push_back(std::move(heading));
+    *y += Scaled(kSectionTitleHeight) + Scaled(kTitleToCard);
+    const std::vector<PhiProfileSummary> profiles = profiles_->Profiles();
+    const std::string profile_id =
+        profiles.empty() ? std::string() : profiles.front().id;
+    BuildProfileDetail(y, content_left_, content_right_,
+                       profile_id);
+    *y += Scaled(kSectionGap) - Scaled(kMasterDetailGap);
+  }
+}
+
+// The Mac's AdvancedSettingsView (6d1f7b12): the browsing rows and the
+// Developer-mode switch that used to sit in General, as four untitled
+// cards — the page rows, the browsing rows, Developer mode, then the
+// browser-settings link.
+void PhiSettingsWindow::BuildAppearance(int* y) {
+  const auto& themes = PhiBuiltInThemes();
+  const bool locked = spaces_->Summaries().size() > 1;
+
+  BeginSection(y, L"Layout");
+  {
+    // "Layout mode": three picture cards, in the Mac's allCases order —
+    // Balanced, Performance, Comfortable.
+    // Two layouts (impl log D9), Edge's words.
+    const RECT area = AddRow(y, L"Tabs", kImageCardBlock,
+                             2 * kImageCardW + kImageCardGap);
+    const struct {
+      const wchar_t* title;
+      PhiLayoutMode mode;
+      const char* sketch;
+    } kCards[] = {
+        {L"Horizontal tabs", PhiLayoutMode::kComfortable, "comfortable"},
+        {L"Vertical tabs", PhiLayoutMode::kBalanced, "balanced"},
+    };
+    int i = 0;
+    for (const auto& definition : kCards) {
+      Item card;
+      card.kind = ItemKind::kImageCard;
+      card.text = definition.title;
+      card.payload = definition.sketch;
+      card.selected = prefs_->LayoutMode() == definition.mode;
+      card.value = static_cast<int>(definition.mode);
+      card.action = "layout";
+      const int x = area.left + i * Scaled(kImageCardW + kImageCardGap);
+      card.bounds = {x, area.top, x + Scaled(kImageCardW),
+                     area.top + Scaled(kImageCardBlock)};
+      items_.push_back(std::move(card));
+      ++i;
+    }
+  }
+  EndSection(y);
+
+  BeginSection(y, L"Appearance");
+  {
+    const RECT area = AddRow(y, L"Color appearance", kImageCardBlock,
+                             3 * kImageCardW + 2 * kImageCardGap);
+    const struct {
+      const wchar_t* title;
+      PhiAppearance value;
+      const char* sketch;
+    } kCards[] = {
+        {L"System", PhiAppearance::kSystem, "system"},
+        {L"Light", PhiAppearance::kLight, "light"},
+        {L"Dark", PhiAppearance::kDark, "dark"},
+    };
+    int i = 0;
+    for (const auto& definition : kCards) {
+      Item card;
+      card.kind = ItemKind::kImageCard;
+      card.text = definition.title;
+      card.payload = definition.sketch;
+      card.selected = prefs_->Appearance() == definition.value;
+      card.value = static_cast<int>(definition.value);
+      card.action = "appearance";
+      const int x = area.left + i * Scaled(kImageCardW + kImageCardGap);
+      card.bounds = {x, area.top, x + Scaled(kImageCardW),
+                     area.top + Scaled(kImageCardBlock)};
+      items_.push_back(std::move(card));
+      ++i;
+    }
+  }
+  EndSection(y);
+
+  BeginSection(y, L"Space color");
   {
     // Row "Color": 22pt dots on 30pt centres, caption under the selected one.
     const int width = static_cast<int>(themes.size()) * kSwatchItemGeneral +
@@ -800,7 +971,7 @@ void PhiSettingsWindow::BuildGeneral(int* y) {
     const RECT area = AddRow(y,
                              L"You have more than one Space, so each Space "
                              L"sets its own color and opacity.",
-                             kRowLabelHeight, 160);
+                             kRowLabelHeight, 220);
     Item link;
     link.kind = ItemKind::kLink;
     link.text = L"Edit in Spaces settings…";
@@ -813,154 +984,8 @@ void PhiSettingsWindow::BuildGeneral(int* y) {
                /*on=*/true, /*enabled=*/false, std::string());
   EndSection(y);
 
-  BeginSection(y, L"Appearance");
-  {
-    // "Layout mode": three picture cards, in the Mac's allCases order —
-    // Balanced, Performance, Comfortable.
-    const RECT area = AddRow(y, L"Layout mode", kImageCardBlock,
-                             3 * kImageCardW + 2 * kImageCardGap);
-    const struct {
-      const wchar_t* title;
-      PhiLayoutMode mode;
-      const char* sketch;
-    } kCards[] = {
-        {L"Balanced", PhiLayoutMode::kBalanced, "balanced"},
-        {L"Performance", PhiLayoutMode::kPerformance, "performance"},
-        {L"Comfortable", PhiLayoutMode::kComfortable, "comfortable"},
-    };
-    int i = 0;
-    for (const auto& definition : kCards) {
-      Item card;
-      card.kind = ItemKind::kImageCard;
-      card.text = definition.title;
-      card.payload = definition.sketch;
-      card.selected = prefs_->LayoutMode() == definition.mode;
-      card.value = static_cast<int>(definition.mode);
-      card.action = "layout";
-      const int x = area.left + i * Scaled(kImageCardW + kImageCardGap);
-      card.bounds = {x, area.top, x + Scaled(kImageCardW),
-                     area.top + Scaled(kImageCardBlock)};
-      items_.push_back(std::move(card));
-      ++i;
-    }
-  }
-  AddDividerRow(y);
-  {
-    const RECT area = AddRow(y, L"Color appearance", kImageCardBlock,
-                             3 * kImageCardW + 2 * kImageCardGap);
-    const struct {
-      const wchar_t* title;
-      PhiAppearance value;
-      const char* sketch;
-    } kCards[] = {
-        {L"System", PhiAppearance::kSystem, "system"},
-        {L"Light", PhiAppearance::kLight, "light"},
-        {L"Dark", PhiAppearance::kDark, "dark"},
-    };
-    int i = 0;
-    for (const auto& definition : kCards) {
-      Item card;
-      card.kind = ItemKind::kImageCard;
-      card.text = definition.title;
-      card.payload = definition.sketch;
-      card.selected = prefs_->Appearance() == definition.value;
-      card.value = static_cast<int>(definition.value);
-      card.action = "appearance";
-      const int x = area.left + i * Scaled(kImageCardW + kImageCardGap);
-      card.bounds = {x, area.top, x + Scaled(kImageCardW),
-                     area.top + Scaled(kImageCardBlock)};
-      items_.push_back(std::move(card));
-      ++i;
-    }
-  }
-  EndSection(y);
 
-  BeginSection(y, L"Browsing");
-  {
-    // "New tab behavior": two picture cards. New Tab Page opens the native
-    // new-tab page (phi_new_tab_page.cc, the Mac's NewTabViewController);
-    // Omnibox focuses the address field and the tab is born on commit.
-    const RECT area = AddRow(y, L"New tab behavior", kImageCardBlock,
-                             2 * kImageCardW + kImageCardGap);
-    const struct {
-      const wchar_t* title;
-      PhiNewTabBehavior value;
-      const char* sketch;
-      bool enabled;
-    } kCards[] = {
-        {L"New Tab Page", PhiNewTabBehavior::kNewTabPage, "ntp", true},
-        {L"Omnibox", PhiNewTabBehavior::kOmnibox, "omnibox", true},
-    };
-    int i = 0;
-    for (const auto& definition : kCards) {
-      Item card;
-      card.kind = ItemKind::kImageCard;
-      card.text = definition.title;
-      card.payload = definition.sketch;
-      card.selected = prefs_->new_tab_behavior() == definition.value;
-      card.enabled = definition.enabled;
-      card.value = static_cast<int>(definition.value);
-      card.action = "newtab";
-      const int x = area.left + i * Scaled(kImageCardW + kImageCardGap);
-      card.bounds = {x, area.top, x + Scaled(kImageCardW),
-                     area.top + Scaled(kImageCardBlock)};
-      items_.push_back(std::move(card));
-      ++i;
-    }
-  }
-  AddDividerRow(y);
-  {
-    // Telemetry consent (docs/architecture-review.md §3.9): the ONLY switch
-    // for the analytics pipeline. Off by default, and deliberately out of
-    // reach of agentSpace.settings.set. Windows-only, so it stays here
-    // while the Mac's other browsing rows moved to Advanced.
-    AddToggleRow(y, PhiStr("settings.general.analytics.toggle"),
-                 prefs_->AnalyticsEnabled(), /*enabled=*/true, "analytics",
-                 PhiStr("settings.general.analytics.hint"));
-  }
-  EndSection(y);
-
-  // Profile: with several profiles just the jump link; with one, the Mac
-  // INLINES the profile detail (search engine, downloads, data links).
-  if (profiles_->Profiles().size() > 1) {
-    BeginSection(y, L"Profile");
-    const RECT area = AddRow(y,
-                             L"You have more than one profile, so each "
-                             L"profile manages its own settings.",
-                             kRowLabelHeight, 170);
-    Item link;
-    link.kind = ItemKind::kLink;
-    link.text = L"Edit in Profiles settings…";
-    link.action = "goprofiles";
-    link.bounds = area;
-    items_.push_back(std::move(link));
-    EndSection(y);
-  } else {
-    Item heading;
-    heading.kind = ItemKind::kSectionTitle;
-    heading.text = L"Profile";
-    heading.bounds = {Scaled(kMargin), *y, Scaled(kWidth - kMargin),
-                      *y + Scaled(kSectionTitleHeight)};
-    items_.push_back(std::move(heading));
-    *y += Scaled(kSectionTitleHeight) + Scaled(kTitleToCard);
-    const std::vector<PhiProfileSummary> profiles = profiles_->Profiles();
-    const std::string profile_id =
-        profiles.empty() ? std::string() : profiles.front().id;
-    BuildProfileDetail(y, Scaled(kMargin), Scaled(kWidth - kMargin),
-                       profile_id);
-    *y += Scaled(kSectionGap) - Scaled(kMasterDetailGap);
-  }
-}
-
-// The Mac's AdvancedSettingsView (6d1f7b12): the browsing rows and the
-// Developer-mode switch that used to sit in General, as four untitled
-// cards — the page rows, the browsing rows, Developer mode, then the
-// browser-settings link.
-void PhiSettingsWindow::BuildAdvanced(int* y) {
-  BeginSection(y, nullptr);
-  AddToggleRow(y, L"Always show full URL", prefs_->AlwaysShowFullUrl(),
-               /*enabled=*/true, "fullurl");
-  AddDividerRow(y);
+  BeginSection(y, L"Tabs");
   AddToggleRow(y, L"Show a preview card when hovering over a tab",
                prefs_->ShowTabPreviews(),
                /*enabled=*/true, "tabpreviews");
@@ -974,17 +999,50 @@ void PhiSettingsWindow::BuildAdvanced(int* y) {
   AddToggleRow(y, L"Dim unloaded tab icons", prefs_->DimUnloadedTabIcons(),
                /*enabled=*/true, "dimunloaded",
                L"Dim tab icons when their pages are unloaded from memory.");
+  AddDividerRow(y);
+  AddToggleRow(y, L"Always show full URL", prefs_->AlwaysShowFullUrl(),
+               /*enabled=*/true, "fullurl");
+  EndSection(y);
+}
+
+void PhiSettingsWindow::BuildAbout(int* y) {
+  BeginSection(y, nullptr);
+  {
+    const std::wstring version = std::wstring(L"Version ") + PHI_WIN_VERSION_WIDE;
+    const RECT area = AddRow(y, L"Phi Browser", kPillHeight, 160,
+                             version.c_str());
+    Item button;
+    button.kind = ItemKind::kButton;
+    button.text = L"Check for update";
+    button.enabled = PhiUpdater::Available();
+    button.action = "checkupdate";
+    button.bounds = area;
+    items_.push_back(std::move(button));
+  }
   EndSection(y);
 
   BeginSection(y, nullptr);
-  AddToggleRow(y, L"Restore last session", prefs_->RestoreLastSession(),
-               /*enabled=*/true, "restoresession",
-               prefs_->RestoreLastSession()
-                   ? L"Reopen your windows and tabs the next time you open "
-                     L"Phi."
-                   : L"Phi starts with a new window. Closing a window may "
-                     L"sign you out of some sites.");
+  {
+    const size_t first = items_.size();
+    AddRow(y, L"What's new", kRowLabelHeight, 20);
+    for (size_t i = first; i < items_.size(); ++i) {
+      items_[i].enabled = false;
+    }
+  }
   AddDividerRow(y);
+  {
+    const size_t first = items_.size();
+    AddRow(y, L"Documentation", kRowLabelHeight, 20);
+    for (size_t i = first; i < items_.size(); ++i) {
+      items_[i].enabled = false;
+    }
+  }
+  EndSection(y);
+  AddHint(y, L"Report an issue from the app menu's Help.");
+}
+
+void PhiSettingsWindow::BuildAdvanced(int* y) {
+  BeginSection(y, nullptr);
   {
     // "Copy Link to Highlight" has no Windows counterpart yet: the row is a
     // placeholder, like Auto picture-in-picture below it.
@@ -1047,9 +1105,9 @@ void PhiSettingsWindow::BuildAdvanced(int* y) {
     chevron.text = std::wstring(1, wchar_t(0xE76C));  // ChevronRight
     chevron.bounds = area;
     items_.push_back(std::move(chevron));
-    items_[row_index].bounds = {Scaled(kMargin) + Scaled(4),
+    items_[row_index].bounds = {content_left_ + Scaled(4),
                                 area.top - Scaled(6),
-                                Scaled(kWidth - kMargin) - Scaled(4),
+                                content_right_ - Scaled(4),
                                 area.bottom + Scaled(6)};
   }
   EndSection(y);
@@ -1058,16 +1116,16 @@ void PhiSettingsWindow::BuildAdvanced(int* y) {
 void PhiSettingsWindow::AddDividerRow(int* y) {
   Item divider;
   divider.kind = ItemKind::kDivider;
-  divider.bounds = {Scaled(kMargin + kCardPadding), *y - Scaled(6),
-                    Scaled(kWidth - kMargin - kCardPadding),
+  divider.bounds = {(content_left_ + Scaled(kCardPadding)), *y - Scaled(6),
+                    (content_right_ - Scaled(kCardPadding)),
                     *y - Scaled(6) + 1};
   items_.push_back(std::move(divider));
   *y += Scaled(2);
 }
 
 void PhiSettingsWindow::AddSubHint(int* y, const wchar_t* text) {
-  const int left = Scaled(kMargin + kCardPadding);
-  const int right = Scaled(kWidth - kMargin - kCardPadding);
+  const int left = (content_left_ + Scaled(kCardPadding));
+  const int right = (content_right_ - Scaled(kCardPadding));
   // Tucked under the row above it at the Mac's 4pt VStack spacing — or,
   // when it IS the card's first line (Developer's empty grant lists), on
   // the card's own padding. The old unconditional pull-up put that case
@@ -1091,18 +1149,18 @@ void PhiSettingsWindow::AddSectionHeading(int* y, const wchar_t* title,
   Item heading;
   heading.kind = ItemKind::kSectionTitle;
   heading.text = title;
-  heading.bounds = {Scaled(kMargin), *y, Scaled(kWidth - kMargin),
+  heading.bounds = {content_left_, *y, content_right_,
                     *y + Scaled(kSectionTitleHeight)};
   items_.push_back(std::move(heading));
   *y += Scaled(kSectionTitleHeight) + Scaled(4);
-  const int width = Scaled(kWidth - kMargin) - Scaled(kMargin);
+  const int width = content_right_ - content_left_;
   const int height = std::max(
       Scaled(kHintHeight), WrappedHeight(hint_font_, description, width));
   Item subtitle;
   subtitle.kind = ItemKind::kSubtitle;
   subtitle.text = description;
   subtitle.wrap = true;
-  subtitle.bounds = {Scaled(kMargin), *y, Scaled(kWidth - kMargin),
+  subtitle.bounds = {content_left_, *y, content_right_,
                      *y + height};
   items_.push_back(std::move(subtitle));
   // Leaves `y` where BeginSection(y, nullptr) expects it: the card follows at
@@ -1163,7 +1221,7 @@ void PhiSettingsWindow::BuildSpaces(int* y) {
   // The master-detail band: list 280 wide, detail beside, fixed height.
   const int band_top = *y;
   const int band_bottom = band_top + Scaled(kSpacesBlockHeight);
-  const int list_left = Scaled(kMargin);
+  const int list_left = content_left_;
   const int list_right = list_left + Scaled(kSpacesListWidth);
   {
     Item card;
@@ -1266,7 +1324,7 @@ void PhiSettingsWindow::BuildSpaces(int* y) {
 
   // Detail column: icon picker card, then colour + saturation card.
   const int detail_left = list_right + Scaled(kMasterDetailGap);
-  const int detail_right = Scaled(kWidth - kMargin);
+  const int detail_right = content_right_;
   if (!selected_space_.empty()) {
     // Card 1: the icon picker, absorbing the band's spare height (the Mac
     // gives the picker `maxHeight: .infinity` above the fixed theme card).
@@ -1562,8 +1620,8 @@ void PhiSettingsWindow::AddUrlRulesSection(int* y) {
     chevron.bounds = area;
     items_.push_back(std::move(chevron));
     items_[row_index].bounds = {
-        Scaled(kMargin) + Scaled(4), items_[first].bounds.top - Scaled(6),
-        Scaled(kWidth - kMargin) - Scaled(4),
+        content_left_ + Scaled(4), items_[first].bounds.top - Scaled(6),
+        content_right_ - Scaled(4),
         items_[items_.size() - 2].bounds.bottom + Scaled(6)};
   }
   EndSection(y);
@@ -1588,7 +1646,7 @@ void PhiSettingsWindow::BuildProfiles(int* y) {
 
   const int band_top = *y;
   const int band_bottom = band_top + Scaled(kSpacesBlockHeight);
-  const int list_left = Scaled(kMargin);
+  const int list_left = content_left_;
   const int list_right = list_left + Scaled(kProfilesListWidth);
   {
     Item card;
@@ -1689,7 +1747,7 @@ void PhiSettingsWindow::BuildProfiles(int* y) {
   // Detail column: the Mac's ProfileDetailSettingsView, shared with the
   // General pane's single-profile case.
   const int detail_left = list_right + Scaled(kMasterDetailGap);
-  const int detail_right = Scaled(kWidth - kMargin);
+  const int detail_right = content_right_;
   if (!selected_profile_.empty()) {
     int detail_y = band_top;
     BuildProfileDetail(&detail_y, detail_left, detail_right,
@@ -1860,10 +1918,10 @@ void PhiSettingsWindow::BuildAccount(int* y) {
   // The Mac's `offset(24)` is 36 minus the 12pt of shadow padding its card
   // view carries INSIDE its frame; the card's VISIBLE edge sits at 36 like
   // every other pane's content: card 36..276, right column 292..644.
-  const int left = Scaled(kMargin);
+  const int left = content_left_;
   const int card_w = Scaled(240);
   const int card_h = Scaled(380);
-  const int right_edge = Scaled(kWidth - kMargin);
+  const int right_edge = content_right_;
   std::string account_name;
   std::string account_email;
   const bool signed_in =
@@ -2100,7 +2158,7 @@ void PhiSettingsWindow::BuildShortcuts(int* y) {
     Item heading;
     heading.kind = ItemKind::kSectionTitle;
     heading.text = L"Shortcuts";
-    heading.bounds = {Scaled(kMargin), *y, Scaled(kMargin) + Scaled(200),
+    heading.bounds = {content_left_, *y, content_left_ + Scaled(200),
                       *y + Scaled(kSectionTitleHeight)};
     items_.push_back(std::move(heading));
     Item restore;
@@ -2108,9 +2166,9 @@ void PhiSettingsWindow::BuildShortcuts(int* y) {
     restore.text = L"Restore all shortcuts";
     restore.enabled = prefs_->AnyShortcutCustomized();
     restore.action = "restoreshortcuts";
-    restore.bounds = {Scaled(kWidth - kMargin) - Scaled(150),
+    restore.bounds = {content_right_ - Scaled(150),
                       *y - Scaled(4),
-                      Scaled(kWidth - kMargin),
+                      content_right_,
                       *y - Scaled(4) + Scaled(22)};
     items_.push_back(std::move(restore));
     *y += Scaled(kSectionTitleHeight) + Scaled(10);
@@ -2118,7 +2176,7 @@ void PhiSettingsWindow::BuildShortcuts(int* y) {
   Item card;
   card.kind = ItemKind::kCard;
   card.on = true;  // The white variant.
-  card.bounds = {Scaled(kMargin), *y, Scaled(kWidth - kMargin), 0};
+  card.bounds = {content_left_, *y, content_right_, 0};
   items_.push_back(std::move(card));
   const size_t card_index = items_.size() - 1;
 
@@ -2128,13 +2186,13 @@ void PhiSettingsWindow::BuildShortcuts(int* y) {
     Item search;
     search.kind = ItemKind::kSearchField;
     search.text = shortcut_search_;
-    search.bounds = {Scaled(kMargin), *y, Scaled(kWidth - kMargin),
+    search.bounds = {content_left_, *y, content_right_,
                      *y + Scaled(40)};
     items_.push_back(std::move(search));
     *y += Scaled(40);
     Item divider;
     divider.kind = ItemKind::kDivider;
-    divider.bounds = {Scaled(kMargin), *y, Scaled(kWidth - kMargin), *y + 1};
+    divider.bounds = {content_left_, *y, content_right_, *y + 1};
     items_.push_back(std::move(divider));
     *y += 1;
   }
@@ -2204,23 +2262,23 @@ void PhiSettingsWindow::BuildShortcuts(int* y) {
       Item heading;
       heading.kind = ItemKind::kSectionTitle;
       heading.text = row.group;
-      heading.bounds = {Scaled(kMargin + kCardPadding), *y,
-                        Scaled(kWidth - kMargin - kCardPadding),
+      heading.bounds = {(content_left_ + Scaled(kCardPadding)), *y,
+                        (content_right_ - Scaled(kCardPadding)),
                         *y + Scaled(35)};
       items_.push_back(std::move(heading));
       *y += Scaled(35);
       Item rule;
       rule.kind = ItemKind::kDivider;
-      rule.bounds = {Scaled(kMargin + kCardPadding), *y,
-                     Scaled(kWidth - kMargin - kCardPadding), *y + 1};
+      rule.bounds = {(content_left_ + Scaled(kCardPadding)), *y,
+                     (content_right_ - Scaled(kCardPadding)), *y + 1};
       items_.push_back(std::move(rule));
       *y += 1;
     }
     Item label;
     label.kind = ItemKind::kRowLabel;
     label.text = row.name;
-    label.bounds = {Scaled(kMargin + kCardPadding), *y,
-                    Scaled(kWidth - kMargin - kCardPadding) - Scaled(150),
+    label.bounds = {(content_left_ + Scaled(kCardPadding)), *y,
+                    (content_right_ - Scaled(kCardPadding)) - Scaled(150),
                     *y + row_h};
     items_.push_back(std::move(label));
     // One pill holding the whole chord (min width 80), the Mac's keycap.
@@ -2238,16 +2296,16 @@ void PhiSettingsWindow::BuildShortcuts(int* y) {
       cap.payload = row.id;
       cap.detail = row.name;
     }
-    cap.bounds = {Scaled(kWidth - kMargin - kCardPadding) - cap_w,
+    cap.bounds = {(content_right_ - Scaled(kCardPadding)) - cap_w,
                   *y + (row_h - Scaled(22)) / 2,
-                  Scaled(kWidth - kMargin - kCardPadding),
+                  (content_right_ - Scaled(kCardPadding)),
                   *y + (row_h + Scaled(22)) / 2};
     items_.push_back(std::move(cap));
     *y += row_h;
     Item rule;
     rule.kind = ItemKind::kDivider;
-    rule.bounds = {Scaled(kMargin + kCardPadding), *y,
-                   Scaled(kWidth - kMargin - kCardPadding), *y + 1};
+    rule.bounds = {(content_left_ + Scaled(kCardPadding)), *y,
+                   (content_right_ - Scaled(kCardPadding)), *y + 1};
     items_.push_back(std::move(rule));
     last_rule = items_.size() - 1;
     *y += 1;
@@ -2262,8 +2320,8 @@ void PhiSettingsWindow::BuildShortcuts(int* y) {
     Item empty;
     empty.kind = ItemKind::kHint;
     empty.text = L"No Results";
-    empty.bounds = {Scaled(kMargin), *y + Scaled(40),
-                    Scaled(kWidth - kMargin), *y + Scaled(40) + Scaled(16)};
+    empty.bounds = {content_left_, *y + Scaled(40),
+                    content_right_, *y + Scaled(40) + Scaled(16)};
     items_.push_back(std::move(empty));
     *y += Scaled(96);
   }
@@ -2358,60 +2416,70 @@ void PhiSettingsWindow::Rebuild() {
     ClearHits();
     return;
   }
-  // The pane toolbar, centred across the top. Two panes are not always
-  // mounted: Developer outside developer mode, and Phi & AI while the AI
-  // suite is off (phi_features.h).
+  // The navigation rail down the left (§7): 280 wide, 48 under the 900
+  // breakpoint (icons only), 36 dip items with a 16 icon and a 14 label.
+  // Two pages are not always mounted: Developer outside developer mode,
+  // and Phi & AI while the AI suite is off (phi_features.h).
   const bool developer = prefs_->DeveloperMode();
   const auto unmounted = [developer](const char* id) {
     const std::string name(id);
     return (!developer && name == "developer") ||
            (!kPhiAiEnabled && name == "ai");
   };
-  int shown = 0;
-  for (const SectionDef& section : kSections) {
-    if (!unmounted(section.id)) {
-      ++shown;
-    }
-  }
-  // Nine tabs at the Mac's width do not all take the full 78: the items
-  // narrow together so the row never runs past the window's edges.
-  const int item_width =
-      std::min(kToolbarItemWidth, (kWidth - 2 * kMargin) / std::max(1, shown));
-  // Centre the PIXEL row against the real client width, not by scaling a
-  // DIP-space margin: `Scaled(item_width) * shown` and `Scaled((kWidth -
-  // shown*item_width)/2)` round independently, so the second is not half
-  // the slack the first leaves — the row drifted a few pixels off centre.
-  const int item_px = Scaled(item_width);
   RECT client = {};
   ::GetClientRect(hwnd(), &client);
-  const int row_width = client.right > 0 ? client.right : Scaled(kWidth);
-  int x = (row_width - shown * item_px) / 2;
+  const bool narrow = client.right < Scaled(kRailBreakpoint);
+  rail_w_ = Scaled(narrow ? kRailNarrow : kRailWidth);
+  content_left_ = rail_w_ + Scaled(kContentPad);
+  content_right_ = std::max(content_left_ + Scaled(200),
+                            std::min(static_cast<int>(client.right) - Scaled(kContentPad + 12),
+                                     content_left_ + Scaled(kContentMaxWidth)));
+  int rail_y = Scaled(kCaptionHeight + 8);
   for (const SectionDef& section : kSections) {
     if (unmounted(section.id)) {
       continue;
     }
     Item entry;
     entry.kind = ItemKind::kToolbarItem;
-    entry.text = section.label;
+    entry.text = narrow ? std::wstring() : section.label;
+    entry.detail = section.label;  // The tooltip / narrow rail's name.
     entry.payload = section.id;
     entry.selected = section_ == section.id;
     entry.action = "section";
-    entry.bounds = {x, Scaled(kCaptionHeight + 8), x + item_px,
-                    Scaled(kChromeTop - 8)};
+    entry.bounds = {Scaled(4), rail_y, rail_w_ - Scaled(4),
+                    rail_y + Scaled(kRailItemHeight)};
     items_.push_back(std::move(entry));
-    x += item_px;
+    rail_y += Scaled(kRailItemHeight + 4);
   }
   if (unmounted(section_.c_str())) {
-    section_ = "general";  // The pane vanished under us, as on Mac.
+    section_ = "general";  // The page vanished under us, as on Mac.
     SyncTitle();
   }
 
   picker_grid_ = {};  // Only the Spaces pane mounts the icon picker.
   picker_max_line_ = 0;
-  int y = Scaled(kChromeTop + kMargin) - scroll_;
+  int y = Scaled(kChromeTop + kContentPad) - scroll_;
   const int top = y;
+  {
+    // The page title (28/600), then the groups.
+    Item title;
+    title.kind = ItemKind::kPageTitle;
+    for (const SectionDef& section : kSections) {
+      if (section_ == section.id) {
+        title.text = section.label;
+      }
+    }
+    title.bounds = {content_left_, y, content_right_,
+                    y + Scaled(kPageTitleHeight)};
+    items_.push_back(std::move(title));
+    y += Scaled(kPageTitleHeight + kPageTitleGap);
+  }
   if (section_ == "general") {
     BuildGeneral(&y);
+  } else if (section_ == "appearance") {
+    BuildAppearance(&y);
+  } else if (section_ == "about") {
+    BuildAbout(&y);
   } else if (section_ == "spaces") {
     BuildSpaces(&y);
   } else if (section_ == "navigation") {
@@ -2442,7 +2510,7 @@ void PhiSettingsWindow::Rebuild() {
       bottom = std::max<int>(bottom, item.bounds.bottom);
     }
   }
-  content_height_ = bottom - top + Scaled(kMargin);
+  content_height_ = bottom - top + content_left_;
   PublishHits();
 }
 
@@ -2542,21 +2610,20 @@ void PhiSettingsWindow::Paint(HDC dc, const RECT&) {
   // The Mac's fixedWindowBackground: flat, theme-INdependent — #EAEAEA
   // light / #252525 dark. Only the appearance choice matters here.
   const bool dark = prefs_->Palette().dark;
-  const COLORREF bg = dark ? RGB(0x25, 0x25, 0x25) : RGB(0xEA, 0xEA, 0xEA);
+  const COLORREF bg = dark ? RGB(0x20, 0x20, 0x20) : RGB(0xF3, 0xF3, 0xF3);
   const COLORREF ink = dark ? RGB(0xFF, 0xFF, 0xFF) : RGB(0x00, 0x00, 0x00);
-  const COLORREF label = dark ? Blend(RGB(0xFF, 0xFF, 0xFF), bg, 204)
-                              : RGB(0x26, 0x26, 0x26);
-  const COLORREF secondary = dark ? RGB(0xB3, 0xB3, 0xB3) : RGB(0x66, 0x66, 0x66);
-  const COLORREF tertiary = Blend(ink, bg, 77);
-  const COLORREF card_bg = Blend(ink, bg, 5);        // settingItemBackground 2%
-  const COLORREF card_border = Blend(ink, bg, 20);   // border 8%
-  const COLORREF separator = Blend(ink, bg, 15);
+  const COLORREF label = Blend(ink, bg, dark ? 230 : 222);
+  const COLORREF secondary = Blend(ink, bg, 158);
+  const COLORREF tertiary = Blend(ink, bg, 107);
+  const COLORREF card_bg = dark ? RGB(0x2B, 0x2B, 0x2B) : RGB(0xFF, 0xFF, 0xFF);
+  const COLORREF card_border = Blend(ink, bg, dark ? 20 : 23);
+  const COLORREF separator = Blend(ink, bg, 18);
   // A row divider is drawn ON the card, not on the page: blended against
   // the page ground it came out ~4% over a card already 2% dark, which on
   // a screen is no line at all. AppKit's Divider is nearer 12%.
-  const COLORREF rule_ink = Blend(ink, card_bg, 30);
+  const COLORREF rule_ink = Blend(ink, card_bg, 18);
   // The pointer's wash — the one cue every control here lacked.
-  const COLORREF hover_wash = Blend(ink, bg, 12);
+  const COLORREF hover_wash = Blend(ink, bg, dark ? 15 : 11);
   const COLORREF accent = prefs_->Palette().accent;
 
   RECT client = {};
@@ -2565,11 +2632,7 @@ void PhiSettingsWindow::Paint(HDC dc, const RECT&) {
   ::FillRect(dc, &client, page);
   ::DeleteObject(page);
   // The toolbar band shares the ground; a separator closes it.
-  RECT bar_sep = {0, Scaled(kChromeTop), client.right,
-                  Scaled(kChromeTop) + 1};
-  HBRUSH sep_brush = ::CreateSolidBrush(separator);
-  ::FillRect(dc, &bar_sep, sep_brush);
-  ::DeleteObject(sep_brush);
+  (void)separator;
 
   // The caption strip: Phi mark leading, the pane title CENTERED, the
   // close button trailing (Win11's metric, red when hot) — the shared
@@ -2585,7 +2648,7 @@ void PhiSettingsWindow::Paint(HDC dc, const RECT&) {
     const Item& item = items_[item_index];
     if (item.kind != ItemKind::kToolbarItem && !clipped) {
       // Pane content scrolls; nothing of it may paint over the toolbar.
-      ::IntersectClipRect(dc, 0, Scaled(kChromeTop) + 1, client.right,
+      ::IntersectClipRect(dc, rail_w_, Scaled(kChromeTop), client.right,
                           client.bottom);
       clipped = true;
     }
@@ -2595,14 +2658,18 @@ void PhiSettingsWindow::Paint(HDC dc, const RECT&) {
     const COLORREF row_ink = item.enabled ? label : Blend(label, bg, 120);
     switch (item.kind) {
       case ItemKind::kToolbarItem: {
+        // A rail item (§7): the selected one on ink 6 % with a 3 × 16
+        // accent indicator at its leading edge, hover ink 4.5 %, a 16 dip
+        // icon and the 14 label (dropped on the narrow rail).
         if (item.selected) {
-          FillRounded(dc, bounds, Blend(ink, bg, 20), Scaled(kRadius));
+          FillRounded(dc, bounds, Blend(ink, bg, 15), Scaled(kRadius));
+          const int mid = (bounds.top + bounds.bottom) / 2;
+          RECT bar = {bounds.left, mid - Scaled(8), bounds.left + Scaled(3),
+                      mid + Scaled(8)};
+          FillRounded(dc, bar, accent, Scaled(1));
         } else if (hot) {
           FillRounded(dc, bounds, hover_wash, Scaled(kRadius));
         }
-        ::SetTextColor(dc, item.selected ? accent : secondary);
-        RECT glyph = bounds;
-        glyph.bottom = glyph.top + Scaled(kToolbarIcon + 8);
         wchar_t mark = 0xE713;
         for (const SectionDef& section : kSections) {
           if (item.payload == section.id) {
@@ -2610,58 +2677,46 @@ void PhiSettingsWindow::Paint(HDC dc, const RECT&) {
             break;
           }
         }
-        // MDL2 stand-ins for the Mac's template PDFs (~16pt of ink).
-        if (item.payload == "advanced") {
-          // The Mac's SF gearshape.2, which MDL2 has no twin for: two
-          // Settings gears composed the way the symbol is — a larger one
-          // low and leading, a smaller one high and trailing, overlapping
-          // at the middle.
-          const COLORREF gear_ink = item.selected ? accent : secondary;
-          const int side = Scaled(kToolbarIcon);
-          const int left = (glyph.left + glyph.right - side) / 2;
-          const int top = (glyph.top + glyph.bottom - side) / 2;
-          const int major = side * 17 / 24;
-          const int minor = side * 12 / 24;  // (`small` is rpcndr.h's macro.)
-          const RECT major_rc = {left, top + side - major, left + major,
-                                 top + side};
-          const RECT minor_rc = {left + side - minor, top, left + side,
-                                 top + minor};
-          PhiDrawGlyphIcon(dc, major_rc, L"\uE713", major, gear_ink);
-          PhiDrawGlyphIcon(dc, minor_rc, L"\uE713", minor, gear_ink);
-        } else {
-          if (mdl2_font_) {
-            ::SelectObject(dc, mdl2_font_);
-          }
-          const std::wstring mark_text(1, mark);
-          PhiDrawTextAA(dc, mark_text.c_str(), -1, &glyph,
-                        DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        const int icon_px = Scaled(16);
+        const int mid_y = (bounds.top + bounds.bottom) / 2;
+        const int icon_left = item.text.empty()
+                                  ? (bounds.left + bounds.right - icon_px) / 2
+                                  : bounds.left + Scaled(12);
+        RECT glyph = {icon_left, mid_y - icon_px / 2, icon_left + icon_px,
+                      mid_y + icon_px / 2};
+        const std::wstring mark_text(1, mark);
+        PhiDrawGlyphIcon(dc, glyph, mark_text.c_str(), icon_px, row_ink);
+        if (!item.text.empty()) {
+          RECT caption = {glyph.right + Scaled(12), bounds.top,
+                          bounds.right - Scaled(8), bounds.bottom};
+          ::SetTextColor(dc, row_ink);
+          PhiDrawTextAA(dc, item.text.c_str(), -1, &caption,
+                        DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX |
+                            DT_END_ELLIPSIS);
         }
-        RECT caption = bounds;
-        caption.top = glyph.bottom;
-        if (small_font_) {
-          ::SelectObject(dc, small_font_);
+        break;
+      }
+      case ItemKind::kPageTitle:
+        if (title_font_) {
+          ::SelectObject(dc, title_font_);
         }
-        // NOPREFIX: "Phi & AI" must keep its ampersand.
-        PhiDrawTextAA(dc, item.text.c_str(), -1, &caption,
-                    DT_CENTER | DT_TOP | DT_SINGLELINE | DT_NOPREFIX);
+        ::SetTextColor(dc, ink);
+        PhiDrawTextAA(dc, item.text.c_str(), -1, &bounds,
+                    DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
         if (font_) {
           ::SelectObject(dc, font_);
         }
         break;
-      }
       case ItemKind::kCard:
-        // `on` marks the Shortcuts pane's own chrome: WHITE in light mode
-        // (the Mac rolls its own card there), the usual 2% wash otherwise.
-        StrokeRounded(dc, bounds,
-                      item.on && !dark ? RGB(0xFF, 0xFF, 0xFF) : card_bg,
-                      card_border,
-                      Scaled(item.on ? 8 : kCardRadius), 1);
+        // A settings card (§7): `card` fill, 1 px stroke, radius 4.
+        StrokeRounded(dc, bounds, card_bg, card_border, Scaled(kCardRadius),
+                      1);
         break;
       case ItemKind::kSectionTitle:
         if (small_font_) {
           ::SelectObject(dc, small_font_);
         }
-        ::SetTextColor(dc, secondary);
+        ::SetTextColor(dc, label);  // The group header, 14/600.
         PhiDrawTextAA(dc, item.text.c_str(), -1, &bounds,
                     DT_LEFT | DT_BOTTOM | DT_SINGLELINE);
         if (font_) {
@@ -2947,8 +3002,9 @@ void PhiSettingsWindow::Paint(HDC dc, const RECT&) {
         break;
       }
       case ItemKind::kPopup: {
-        FillRounded(dc, bounds, Blend(ink, bg, hot ? 30 : 15),
-                    Scaled(kRadius));
+        // A ComboBox (§7): the control fill with a 1 px stroke, radius 4.
+        StrokeRounded(dc, bounds, Blend(ink, card_bg, hot ? 18 : 11),
+                      card_border, Scaled(kRadius), 1);
         ::SetTextColor(dc, row_ink);
         RECT text = bounds;
         text.left += Scaled(10);
@@ -3374,9 +3430,16 @@ void PhiSettingsWindow::Paint(HDC dc, const RECT&) {
     const int span = std::max(1, content_height_ - visible);
     const int at = track_top + (track_height - thumb_height) *
                                    std::min(scroll_, span) / span;
-    RECT thumb = {client.right - Scaled(8), at, client.right - Scaled(4),
+    // A Fluent scrollbar: 2 dip at rest, 6 while dragged.
+    const int thick = scroll_drag_ ? Scaled(6) : Scaled(2);
+    RECT thumb = {client.right - Scaled(4) - thick, at, client.right - Scaled(4),
                   at + thumb_height};
-    FillRounded(dc, thumb, Blend(ink, bg, 46), Scaled(2));
+    FillRounded(dc, thumb, Blend(ink, bg, scroll_drag_ ? 90 : 46),
+                thick / 2);
+    // The drag target is generous: the 14 dip lane the thumb rides in.
+    thumb_rect_ = {client.right - Scaled(14), at, client.right, at + thumb_height};
+  } else {
+    thumb_rect_ = {};
   }
 
   ::SelectClipRgn(dc, nullptr);
@@ -3477,6 +3540,11 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
     scroll_ = 0;
     shortcut_search_.clear();
     SyncTitle();
+  } else if (item.action == "checkupdate") {
+    if (!PhiUpdater::CheckForUpdateWithUi()) {
+      PhiNotice(hwnd(), PhiStr("menuBar.checkForUpdate"),
+                PhiStr("menuBar.updaterUnavailableBody"));
+    }
   } else if (item.action == "theme") {
     host_->SetThemeId(item.payload);
   } else if (item.action == "appearance") {
@@ -3835,7 +3903,7 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
       host_->RenameSpace(selected_space_, base::WideToUTF8(name));
     }
   } else if (item.action == "delspace") {
-    if (PhiConfirm(hwnd(), L"Delete Space",
+    if (PhiConfirm(hwnd(), PhiStr("dialog.deleteSpace.title"),
                    L"Bookmarks and pinned tabs belonging to this Space will "
                    L"also be removed. This action cannot be undone.",
                    L"Delete") &&
@@ -3855,7 +3923,7 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
       host_->RenameProfileById(selected_profile_, base::WideToUTF8(name));
     }
   } else if (item.action == "delprofile") {
-    if (PhiConfirm(hwnd(), L"Delete Profile",
+    if (PhiConfirm(hwnd(), PhiStr("dialog.deleteProfile.title"),
                    L"All cookies, history, extensions, and saved data on "
                    L"this profile will be permanently removed. This cannot "
                    L"be undone.",
@@ -3974,7 +4042,57 @@ LRESULT PhiSettingsWindow::OnWindowMessage(UINT msg,
                                         LPARAM lparam,
                                         bool* handled) {
   switch (msg) {
+    case WM_GETMINMAXINFO: {
+      // Never under 760 × 560 (§7).
+      MINMAXINFO* info = reinterpret_cast<MINMAXINFO*>(lparam);
+      info->ptMinTrackSize.x = Scaled(kMinWidth);
+      info->ptMinTrackSize.y = Scaled(kMinHeight);
+      *handled = true;
+      return 0;
+    }
+    case WM_SIZE:
+      // The rail's breakpoint and the page column follow the client rect.
+      ScheduleRebuild();
+      break;
+    case WM_LBUTTONDOWN: {
+      const POINT pt = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+      if (thumb_rect_.right > thumb_rect_.left && ::PtInRect(&thumb_rect_, pt)) {
+        scroll_drag_ = true;
+        scroll_drag_grab_ = pt.y - thumb_rect_.top;
+        ::SetCapture(hwnd());
+        Invalidate();
+        *handled = true;
+        return 0;
+      }
+      break;
+    }
+    case WM_LBUTTONUP:
+      if (scroll_drag_) {
+        scroll_drag_ = false;
+        if (::GetCapture() == hwnd()) {
+          ::ReleaseCapture();
+        }
+        Invalidate();
+        *handled = true;
+        return 0;
+      }
+      break;
     case WM_MOUSEMOVE:
+      if (scroll_drag_) {
+        RECT client = {};
+        ::GetClientRect(hwnd(), &client);
+        const int visible = client.bottom - Scaled(kChromeTop);
+        const int track_top = Scaled(kChromeTop) + Scaled(6);
+        const int track_height = visible - Scaled(12);
+        const int thumb_height = thumb_rect_.bottom - thumb_rect_.top;
+        const int span = std::max(1, track_height - thumb_height);
+        const int max_scroll = std::max(0, content_height_ - visible);
+        const int y = GET_Y_LPARAM(lparam) - scroll_drag_grab_ - track_top;
+        scroll_ = std::max(0, std::min(max_scroll, max_scroll * y / span));
+        ScheduleRebuild();
+        *handled = true;
+        return 0;
+      }
       // Only a slider drag is answered here; every other move belongs to
       // the base, which updates the hover the paint pass reads. The drag
       // replays the item CAPTURED on the press, not whatever happens to
@@ -4091,6 +4209,7 @@ void PhiSettingsWindow::OnTimerFired(UINT_PTR id) {
 }
 
 void PhiSettingsWindow::OnCaptureLost() {
+  scroll_drag_ = false;
   // A stolen capture ends the card drag where the release would have.
   if (card_drag_) {
     card_drag_ = false;

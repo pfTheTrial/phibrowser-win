@@ -1,38 +1,43 @@
-// Layout suite: the three chrome layouts, named and behaving as on Mac
-// (PhiPreferences.swift LayoutMode).
-//   performance  vertical tabs, address bar in the sidebar   (the default)
-//   balanced     vertical tabs, address bar above the content
-//   comfortable  horizontal tabs, no sidebar
+// Layout suite: the two Windows-native chrome layouts
+// (docs/windows-native-ui.md §4). The wire names are the Mac's:
+//   balanced     vertical tabs — the sidebar beside a flush page pane whose
+//                first row is the address row (the default)
+//   comfortable  horizontal tabs — the strip on the caption row, a toolbar,
+//                the page edge to edge, no sidebar
+//   performance  RETIRED: accepted on the wire and lands on balanced (D9)
 import { test, run, assert, assertEq, sleep, openControl } from './phi-test.mjs'
 import { firstWindow } from './lib/window.mjs'
-import { capturePixel, isColoured } from './lib/pixels.mjs'
+import { capturePixel } from './lib/pixels.mjs'
 
 // kSidebarWidth in phi_shell_window.cc, in DESIGN UNITS. The client lays
-// out in physical pixels, so every expectation here scales by the window's DPI
-// — the whole point of the scaling work.
+// out in physical pixels, so every expectation here scales by the window's DPI.
 const SIDEBAR_DESIGN = 240
+const ADDRESS_ROW = 44   // The vertical layout's address row.
+const STRIP_ROW = 40     // The horizontal layout's strip row...
+const TOOLBAR_ROW = 40   // ...and the toolbar under it.
 const scaled = (design, dpi) => Math.round((design * dpi) / 96)
 
-/** Sets the layout and returns the slot's content rect once it has applied. */
-async function useLayout(ctl, windowId, mode) {
+/** Sets the layout and returns the slot's geometry once it has applied. */
+async function useLayout(ctl, windowId, mode, expect = mode) {
   const r = await ctl.send('agentSpace.layout.set', { mode })
   assertEq(r.ok, true, `layout.set ${mode} accepted`)
-  assertEq(r.mode, mode, `layout.set echoes ${mode}`)
+  assertEq(r.mode, expect, `layout.set echoes ${expect}`)
   await sleep(400)
   const l = await ctl.send('agentSpace.window.layout', { windowId })
   assertEq(l.ok, true, 'window.layout ok')
-  assertEq(l.mode, mode, `window reports ${mode}`)
+  assertEq(l.mode, expect, `window reports ${expect}`)
   assert(l.dpi >= 96, `window reports its dpi (${l.dpi})`)
   return { ...l.content, sidebar: scaled(SIDEBAR_DESIGN, l.dpi), dpi: l.dpi,
-           margin: l.contentMargin, titleBar: l.titleBar || 0 }
+           titleBar: l.titleBar || 0, urlField: l.urlField, appMenu: l.appMenu,
+           sidebarToggle: l.sidebarToggle }
 }
 
-test('layout: defaults to performance, the Mac default', async () => {
+test('layout: the mode is one of the two', async () => {
   const ctl = await openControl()
   try {
     const r = await ctl.send('agentSpace.layout.get')
     assertEq(r.ok, true, 'layout.get ok')
-    assert(['performance', 'balanced', 'comfortable'].includes(r.mode),
+    assert(['balanced', 'comfortable'].includes(r.mode),
            `a known mode (${r.mode})`)
   } finally { ctl.close() }
 })
@@ -47,49 +52,52 @@ test('layout: an unknown mode is rejected and changes nothing', async () => {
   } finally { ctl.close() }
 })
 
-test('layout: performance keeps the sidebar and gives it the full height', async () => {
+test('layout: vertical tabs — sidebar beside a flush pane with the address row', async () => {
   const ctl = await openControl()
   try {
     const windowId = await firstWindow(ctl)
-    const content = await useLayout(ctl, windowId, 'performance')
-    // The card sits FLUSH against the sidebar — the Mac's 0pt leading gutter
-    // while the sidebar is expanded (WebContentViewController).
-    assertEq(content.x, content.sidebar,
-             'content card flush against the sidebar')
-    // Above the card: the caption band (menu + window buttons share one row)
-    // and the titleAwareArea breath (8, = the margin).
-    assertEq(content.y, content.titleBar + content.margin,
-             'caption band + breath above the card')
-    assert(content.width > 0 && content.height > 0, 'content is non-empty')
+    const v = await useLayout(ctl, windowId, 'balanced')
+    // The pane sits FLUSH against the sidebar and starts under the 44 dip
+    // address row; it runs to the window's right and bottom edges.
+    assertEq(v.x, v.sidebar, 'pane flush against the sidebar')
+    assertEq(v.y, scaled(ADDRESS_ROW, v.dpi), 'the address row above the pane')
+    assertEq(v.titleBar, scaled(ADDRESS_ROW, v.dpi), 'the caption row IS the address row')
+    assert(v.width > 0 && v.height > 0, 'content is non-empty')
+    // The address row's controls: the toggle leads at the pane's edge + 8,
+    // the omnibox is on the row, the app menu trails before the caption.
+    assertEq(v.sidebarToggle.x, v.sidebar + scaled(8, v.dpi), 'toggle at the pane edge + 8')
+    assert(v.urlField.y >= 0 && v.urlField.y + v.urlField.height <= v.y,
+           'the omnibox lives in the address row')
+    assert(v.appMenu.x > v.urlField.x + v.urlField.width, 'the app menu trails the omnibox')
   } finally { ctl.close() }
 })
 
-test('layout: balanced keeps the sidebar and adds a bar above the content', async () => {
+test('layout: horizontal tabs — strip row, toolbar, page edge to edge', async () => {
   const ctl = await openControl()
   try {
     const windowId = await firstWindow(ctl)
-    const perf = await useLayout(ctl, windowId, 'performance')
-    const balanced = await useLayout(ctl, windowId, 'balanced')
-    assertEq(balanced.x, balanced.sidebar, 'sidebar still there, card flush')
-    assert(balanced.y > balanced.margin,
-           `address bar sits above the content (y=${balanced.y})`)
-    assertEq(balanced.width, perf.width, 'same content width as performance')
-    assert(balanced.height < perf.height,
-           `content is shorter by the bar (${balanced.height} < ${perf.height})`)
+    const v = await useLayout(ctl, windowId, 'balanced')
+    const h = await useLayout(ctl, windowId, 'comfortable')
+    assertEq(h.x, 0, 'content reaches the left edge — no sidebar')
+    // The bookmarks bar (28) may sit under the toolbar on this profile.
+    assert(h.y >= scaled(STRIP_ROW + TOOLBAR_ROW, h.dpi) &&
+           h.y <= scaled(STRIP_ROW + TOOLBAR_ROW + 28, h.dpi),
+           `strip + toolbar stacked above (y=${h.y})`)
+    assertEq(h.titleBar, scaled(STRIP_ROW, h.dpi), 'the caption row is the strip row')
+    assert(h.width > v.width + v.sidebar - 40,
+           `content gains the sidebar width (${h.width} vs ${v.width})`)
+    assert(h.height < v.height, 'content is shorter by the second row')
+    assertEq(h.sidebarToggle.width, 0, 'no sidebar toggle without a sidebar')
+    await useLayout(ctl, windowId, 'balanced')
   } finally { ctl.close() }
 })
 
-test('layout: comfortable drops the sidebar and stacks the chrome on top', async () => {
+test('layout: performance is retired — it lands on vertical tabs', async () => {
   const ctl = await openControl()
   try {
     const windowId = await firstWindow(ctl)
-    const perf = await useLayout(ctl, windowId, 'performance')
-    const comfy = await useLayout(ctl, windowId, 'comfortable')
-    assert(comfy.x < comfy.sidebar, 'content reaches the left edge — no sidebar')
-    assert(comfy.y > comfy.margin, `chrome is stacked above (y=${comfy.y})`)
-    assert(comfy.width > perf.width + perf.sidebar - 40,
-           `content gains the sidebar width (${comfy.width} vs ${perf.width})`)
-    assert(comfy.height < perf.height, 'content is shorter by the stacked rows')
+    const v = await useLayout(ctl, windowId, 'performance', 'balanced')
+    assertEq(v.x, v.sidebar, 'the vertical layout')
   } finally { ctl.close() }
 })
 
@@ -112,12 +120,12 @@ test('layout: every window follows the client-wide setting', async () => {
       assert(other.content.x < 40, 'and re-laid out its content')
     } finally {
       await ctl.send('agentSpace.close', { windowId: fresh })
-      await useLayout(ctl, before[0], 'performance')
+      await useLayout(ctl, before[0], 'balanced')
     }
   } finally { ctl.close() }
 })
 
-test('layout: the sidebar really disappears in comfortable (pixels)', async () => {
+test('layout: the sidebar really disappears in horizontal tabs (pixels)', async () => {
   const ctl = await openControl()
   try {
     const windowId = await firstWindow(ctl)
@@ -126,16 +134,17 @@ test('layout: the sidebar really disappears in comfortable (pixels)', async () =
                    { windowId, x: 60, y: 60, width: 1200, height: 900 })
     // A coloured theme: under Pure the ground is white and indistinguishable
     // from the unpainted content region.
-    await ctl.send('agentSpace.theme.set', { themeId: 'mint', appearance: 'light' })
+    // Full saturation: the flat tint at the default 10 is too pale for the
+    // colour probe.
+    await ctl.send('agentSpace.theme.set', { themeId: 'mint', appearance: 'light', saturation: 100 })
     await sleep(400)
     const geo = await ctl.send('agentSpace.window.layout', { windowId })
-    // Captures render from the WINDOW origin; client coords need the insets.
     const frame = { x: geo.frameLeft || 0, y: geo.frameTop || 0 }
-    // A point deep in the sidebar band: painted blue while a sidebar exists,
-    // and part of the (unpainted) content region once it is gone.
+    // A point deep in the sidebar band: painted with the tint while a
+    // sidebar exists, and part of the (unpainted) page once it is gone.
     const probe = () => capturePixel(h.ok ? h.hwnd : 0, 100, 400, { frame })
 
-    await useLayout(ctl, windowId, 'performance')
+    await useLayout(ctl, windowId, 'balanced')
     const withSidebar = probe()
     assert(isSidebarGround(withSidebar), `sidebar paints there (${withSidebar})`)
 
@@ -143,15 +152,17 @@ test('layout: the sidebar really disappears in comfortable (pixels)', async () =
     const without = probe()
     assert(!isSidebarGround(without), `sidebar is gone (${without})`)
 
-    await useLayout(ctl, windowId, 'performance')
+    await useLayout(ctl, windowId, 'balanced')
     assert(isSidebarGround(probe()), 'and comes back')
   } finally { ctl.close() }
 })
 
-// The ground carries the theme's TINT; the content card is not painted by the
-// shell at all and captures neutral. So test for "is coloured", not for a
-// particular hue — Mint is yellow-green (b below r), Mist and Aqua are blue,
-// and a hue-specific check only works for whichever theme it was written for.
-const isSidebarGround = isColoured
+// The ground carries Mint's tint (green above red and blue, however pale
+// the saturation); the page is not painted by the shell at all and
+// captures neutral, where green is never the top channel.
+const isSidebarGround = (s) => {
+  const [r, g, b] = s.split(',').map(Number)
+  return g > r && g > b
+}
 
 run()

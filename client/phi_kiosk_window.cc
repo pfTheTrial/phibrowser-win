@@ -17,6 +17,7 @@
 #include "phibrowser-win/client/phi_client_analytics.h"
 #include "phibrowser-win/client/phi_coordinator.h"
 #include "phibrowser-win/client/phi_dwrite.h"
+#include "phibrowser-win/client/phi_fluent.h"
 #include "phibrowser-win/client/phi_extensions_popover.h"
 #include "phibrowser-win/client/phi_glyph_bitmap.h"
 #include "phibrowser-win/client/phi_i18n.h"
@@ -43,13 +44,13 @@ enum HotControl {
 };
 
 // Design metrics (DIP), from the Mac's KioskBrowserToolbar.
-constexpr int kBandHeight = 52;          // preferredHeight.
+constexpr int kBandHeight = 44;  // The address row (windows-native-ui.md §4.7).
 constexpr int kCaptionButtonWidth = 46;  // The Win11 caption button metric.
 // The Mac clears the traffic lights with 78 leading points; the window
 // controls are on the trailing edge here, so the band opens on the plain
 // gutter the Mac gives its trailing control.
 constexpr int kEdge = 12;
-constexpr int kNavButton = 24;
+constexpr int kNavButton = 32;  // The one toolbar button (§2.2a).
 constexpr int kCapsuleHeight = 32;  // addressBarHeight.
 constexpr int kCapsuleInset = 5;    // The chip's and the actions' own inset.
 constexpr int kChipHeight = 26;
@@ -352,7 +353,7 @@ void PhiKioskWindow::EnsureFonts() {
 
   LOGFONTW glyph = metrics.lfMessageFont;
   // The unsafe-libc-call gate rules out wcscpy_s; copy the face name directly.
-  const std::wstring glyph_face = L"Segoe MDL2 Assets";
+  const std::wstring glyph_face = PhiIconFaceName();
   std::fill(std::begin(glyph.lfFaceName), std::end(glyph.lfFaceName), L'\0');
   std::copy_n(glyph_face.begin(),
               std::min(glyph_face.size(), std::size(glyph.lfFaceName) - 1),
@@ -577,8 +578,8 @@ void PhiKioskWindow::Paint(HDC mem, const RECT&) {
 
   // The address capsule: the Mac's bordered field, holding the profile chip,
   // the domain and the two actions.
-  FillCapsule(mem, layout.address, palette.hover);
-  StrokeCapsule(mem, layout.address, palette.border, 1);
+  // The read-only address keeps NO fill and draws dim (§4): a box always
+  // means "you can type", dim text "you cannot".
 
   if (layout.profile.right > layout.profile.left) {
     FillCapsule(mem, layout.profile, palette.hover_strong);
@@ -609,7 +610,7 @@ void PhiKioskWindow::Paint(HDC mem, const RECT&) {
   // has no omnibox, so it shows what it is displaying and nothing more.
   HGDIOBJ previous_url_font =
       ui_font_ ? ::SelectObject(mem, ui_font_) : nullptr;
-  ::SetTextColor(mem, palette.label);
+  ::SetTextColor(mem, palette.label_dim);
   RECT url_rc = layout.url;
   const std::wstring shown = DisplayUrl();
   PhiDrawTextAA(mem, shown.c_str(), -1, &url_rc,
@@ -623,14 +624,14 @@ void PhiKioskWindow::Paint(HDC mem, const RECT&) {
       glyph_font_ ? ::SelectObject(mem, glyph_font_) : nullptr;
   const auto draw_control = [&](int index, const RECT& rc, const wchar_t* glyph,
                                 bool enabled, COLORREF wash) {
-    if (rc.right <= rc.left) {
-      return;
-    }
-    if (index == hot_ && enabled) {
-      // The Mac header buttons' treatment: cornerRadius 4 on a plain wash.
-      FillRounded(mem, rc, wash, Scaled(4));
-    }
-    draw_glyph(rc, glyph, enabled ? palette.label : palette.label_tertiary);
+    (void)wash;
+    // The one button (§2.2a): 32 square, radius 4, a 16 dip glyph.
+    PhiPaintIconButton(mem, rc, glyph,
+                       !enabled        ? PhiButtonState::kDisabled
+                       : index == hot_ ? PhiButtonState::kHover
+                                       : PhiButtonState::kRest,
+                       palette, palette.label, Scaled(fluent::kIconToolbar),
+                       Scaled(fluent::kButtonRadius));
   };
   draw_control(kHotBack, layout.back, kGlyphBack, can_go_back_, palette.hover);
   draw_control(kHotExtensions, layout.extensions, kGlyphExtensions, true,

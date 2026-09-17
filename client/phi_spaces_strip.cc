@@ -13,6 +13,8 @@
 #include "phibrowser-win/client/phi_create_space_panel.h"
 #include "phibrowser-win/client/phi_create_space_window.h"
 #include "phibrowser-win/client/phi_dwrite.h"
+#include "phibrowser-win/client/phi_fluent.h"
+#include "phibrowser-win/client/phi_i18n.h"
 #include "phibrowser-win/client/phi_emoji.h"
 #include "phibrowser-win/client/phi_icons.h"
 #include "phibrowser-win/client/phi_shell_layout.h"
@@ -28,7 +30,7 @@ using shell_metrics::kSpaceChipVertical;
 
 // The pip's selection card: radius 9 on the 24pt chip, the third-of-a-side
 // the Mac draws.
-constexpr int kSpaceCardRadius = 9;
+constexpr int kSpaceCardRadius = 6;  // windows-native-ui.md §2.1: pips r6.
 constexpr int kSpaceIcon = 13;
 constexpr int kSpaceIconVertical = 14;
 constexpr int kCornerRadius = 8;  // The pill radius, everywhere.
@@ -37,7 +39,7 @@ constexpr int kSpaceSwapMs = 150;
 constexpr int kThemeRampMs = 600;
 // The pip hover card's dwell and its (rounder than the pills') radius.
 constexpr int kHoverCardDelayMs = 300;
-constexpr int kHoverCardRadius = 12;
+constexpr int kHoverCardRadius = 8;  // windows-native-ui.md §5.6.
 // The trailing "+"'s reveal (the Mac's 0.15s easeInOut on its opacity).
 constexpr int kAddSpaceFadeMs = 150;
 
@@ -129,6 +131,7 @@ PhiSpacesStrip::PhiSpacesStrip(PhiSpacesStripShell* shell,
       agent_host_(agent_host) {}
 
 PhiSpacesStrip::~PhiSpacesStrip() {
+  ReleaseCardFonts();
   StopAnimations();
   form_.reset();
   if (card_popup_ && ::IsWindow(card_popup_)) {
@@ -298,6 +301,12 @@ void PhiSpacesStrip::Rebuild() {
     PhiSpaceChip chip = std::move(row[static_cast<size_t>(i)]);
     const int x = origin + i * (item + gap);
     chip.bounds = {x, rects.chips_top, x + item, rects.chips_top + item};
+    if (rects.horizontal_tabs) {
+      // The Space chip (§5.2): the one chip fills the width the layout
+      // measured for its icon, name and chevron.
+      chip.bounds.right = std::max(static_cast<int>(chip.bounds.right),
+                                   rects.chips_limit);
+    }
     chips_.push_back(std::move(chip));
   }
   const int viewport_right =
@@ -921,6 +930,51 @@ void PhiSpacesStrip::Paint(HDC dc,
                   palette.dark ? kActivePillBorder : kBorder,
                   scaled(kSpaceCardRadius));
   }
+  if (rects.horizontal_tabs) {
+    // The Space chip (§5.2): a 28 dip card tile, 1 px stroke, the icon
+    // (16) + name (12/600, ellipsised) + a chevron; the hover wash over it.
+    EnsureCardFonts();
+    for (const PhiSpaceChip& chip : chips_) {
+      const RECT tile = chip.bounds;
+      const bool hot = hovered_chip == static_cast<int>(&chip - chips_.data());
+      StrokeRounded(dc, tile, hot ? BlendOver(palette.ink, palette.card, 11)
+                                  : palette.card,
+                    kBorder, scaled(kSpaceCardRadius));
+      const int icon_px = scaled(16);
+      RECT icon_rc = {tile.left + scaled(8), (tile.top + tile.bottom - icon_px) / 2,
+                      tile.left + scaled(8) + icon_px,
+                      (tile.top + tile.bottom + icon_px) / 2};
+      if (!chip.icon.empty() &&
+          PhiDrawCatalogIcon(dc, icon_rc, chip.icon, icon_px, kLabel)) {
+      } else if (!chip.icon.empty() &&
+                 PhiDrawColorIcon(dc, icon_rc, chip.icon, icon_px, kLabel)) {
+      } else {
+        ::SetTextColor(dc, kLabel);
+        const std::wstring initial =
+            chip.label.empty() ? std::wstring(L"?") : chip.label.substr(0, 1);
+        PhiDrawTextAA(dc, initial.c_str(), -1, &icon_rc,
+                      DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+      }
+      const int chevron_px = scaled(12);
+      RECT chevron_rc = {tile.right - scaled(8) - chevron_px, tile.top,
+                         tile.right - scaled(8), tile.bottom};
+      PhiDrawIconGlyph(dc, chevron_rc, fluent::kChevronDown, chevron_px,
+                       kLabelDim);
+      RECT name_rc = {icon_rc.right + scaled(6), tile.top,
+                      chevron_rc.left - scaled(4), tile.bottom};
+      HGDIOBJ previous_name_font =
+          card_name_font_ ? ::SelectObject(dc, card_name_font_) : nullptr;
+      ::SetTextColor(dc, kLabel);
+      PhiDrawTextAA(dc, chip.label.c_str(), -1, &name_rc,
+                    DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
+                        DT_NOPREFIX);
+      if (previous_name_font) {
+        ::SelectObject(dc, previous_name_font);
+      }
+    }
+    ::RestoreDC(dc, clip_save);
+    return;
+  }
   for (const PhiSpaceChip& chip : chips_) {
     const bool active = (chip.id == active_space);
     if (!active && hovered_chip == static_cast<int>(&chip - chips_.data())) {
@@ -1137,6 +1191,28 @@ void PhiSpacesStrip::Paint(HDC dc,
 // shortcut as keycaps, floating just above the pip on a bordered card. The
 // header above the strip is all shell-drawn — no child window clips it —
 // which is why the card anchors UPWARD, like the Mac panel.
+void PhiSpacesStrip::EnsureCardFonts() {
+  const UINT dpi = static_cast<UINT>(shell_->SpacesScaled(96));
+  if (card_fonts_dpi_ == dpi && card_name_font_) {
+    return;
+  }
+  ReleaseCardFonts();
+  card_name_font_ = PhiFluentFont(dpi, 12, FW_SEMIBOLD);
+  card_hint_font_ = PhiFluentFont(dpi, 11);
+  card_key_font_ = PhiFluentFont(dpi, 10);
+  card_fonts_dpi_ = dpi;
+}
+
+void PhiSpacesStrip::ReleaseCardFonts() {
+  for (HFONT* font : {&card_name_font_, &card_hint_font_, &card_key_font_}) {
+    if (*font) {
+      ::DeleteObject(*font);
+      *font = nullptr;
+    }
+  }
+  card_fonts_dpi_ = 0;
+}
+
 bool PhiSpacesStrip::MeasureHoverCard(HDC dc,
                                       const PhiSpacesStripRects& rects,
                                       CardGeometry* out) {
@@ -1153,79 +1229,89 @@ bool PhiSpacesStrip::MeasureHoverCard(HDC dc,
   if (!chip) {
     return false;  // The Space left the strip; the next hover change prunes it.
   }
+  EnsureCardFonts();
   const auto scaled = [this](int units) { return shell_->SpacesScaled(units); };
   CardGeometry g;
   g.icon = chip->icon;
-  g.name = chip->label.empty() ? L"Space" : chip->label;
-  g.profile = card_profile_.empty() ? L"Default" : card_profile_;
+  g.agent = chip->is_agent;
+  g.badge = chip->badge;
+  g.name_text = chip->label.empty() ? L"Space" : chip->label;
+  // Line 2: "<status> · " for an agent, then "profile · N tabs".
+  std::wstring hint;
+  if (chip->is_agent) {
+    const char* key = "spaces.hoverCard.status.running";
+    switch (chip->badge - 1) {
+      case 1: key = "spaces.hoverCard.status.idle"; break;
+      case 2: key = "spaces.hoverCard.status.held"; break;
+      case 3: key = "spaces.hoverCard.status.completed"; break;
+      case 4: key = "spaces.hoverCard.status.error"; break;
+      default: break;
+    }
+    hint = PhiStr(key);
+    hint += L" · ";
+  }
+  hint += card_profile_.empty() ? L"Default" : card_profile_;
+  if (const int tabs = shell_->SpacesTabCount(chip->id); tabs > 0) {
+    hint += L" · " + PhiStrN("spaces.hoverCard.tabs", tabs, {PhiFormatNumber(tabs)});
+  }
+  g.hint_text = hint;
+  if (card_shortcut_ > 0) {
+    g.keycap_text = L"Ctrl+" + std::to_wstring(card_shortcut_);
+  }
 
-  // Measure the two labels in the card's (small) font, clamped so the card
-  // always fits the window.
-  HFONT small_font = shell_->SpacesSmallFont();
-  HGDIOBJ previous_font = small_font ? ::SelectObject(dc, small_font) : nullptr;
-  const auto measure = [&](const std::wstring& text, int max_w) {
+  const auto measure = [&](HFONT font, const std::wstring& text) {
+    HGDIOBJ previous = font ? ::SelectObject(dc, font) : nullptr;
     RECT rc = {0, 0, 0, 0};
     PhiDrawTextAA(dc, text.c_str(), -1, &rc,
-                  DT_CALCRECT | DT_SINGLELINE | DT_LEFT);
-    return std::min(static_cast<int>(rc.right), max_w);
+                  DT_CALCRECT | DT_SINGLELINE | DT_LEFT | DT_NOPREFIX);
+    if (previous) {
+      ::SelectObject(dc, previous);
+    }
+    return static_cast<int>(rc.right);
   };
-  // A compact take on SpaceHoverCard's metrics: an 18pt capsule with 6/3
-  // padding around a 12pt icon and the name; 6pt between sections; 15pt
-  // keycaps with 2pt gaps; 8/5 card padding.
-  g.pill_h = scaled(18);
-  g.dot_w = scaled(5);
-  g.gap = scaled(6);
-  if (card_shortcut_ > 0) {
-    g.keycaps.push_back(L"Ctrl");
-    g.keycaps.push_back(std::to_wstring(card_shortcut_));
-  }
-  for (const std::wstring& token : g.keycaps) {
-    const int w = std::max(scaled(15), measure(token, scaled(36)) + scaled(6));
-    g.key_widths.push_back(w);
-    g.keys_w += (g.keys_w ? scaled(2) : 0) + w;
-  }
+  // Padding 8 × 10, the 20 dip tile, 8 to the text, the keycap (20 high)
+  // trailing after 12; min width 200, max 280 — the name ellipsises first.
+  const int pad_x = scaled(10);
+  const int pad_y = scaled(8);
+  const int tile = scaled(20);
+  const int gap = scaled(8);
+  const int key_w =
+      g.keycap_text.empty() ? 0 : measure(card_key_font_, g.keycap_text) + scaled(12);
+  const int name_w = measure(card_name_font_, g.name_text);
+  const int hint_w = measure(card_hint_font_, g.hint_text);
+  const int text_x = pad_x + tile + gap;
+  const int min_w = scaled(200);
+  const int max_w = std::min(scaled(280),
+                             static_cast<int>(rects.client.right) - scaled(16));
+  int card_w = text_x + std::max(name_w + (key_w ? scaled(12) + key_w : 0), hint_w) + pad_x;
+  card_w = std::max(min_w, std::min(max_w, card_w));
+  const int line1 = scaled(20);
+  const int line2 = scaled(16);
+  const int card_h = pad_y + line1 + scaled(2) + line2 + pad_y;
 
-  // The popup floats over the whole window, content child included, so
-  // only the window's own width bounds it. Shrink the name first, then the
-  // profile — never the keycaps.
-  const int band_right = static_cast<int>(rects.client.right) - scaled(4);
-  int name_w = measure(g.name, scaled(100));
-  int profile_w = measure(g.profile, scaled(72));
-  if (previous_font) {
-    ::SelectObject(dc, previous_font);
-  }
-  const int fixed_w = 2 * scaled(6) + scaled(12) + scaled(4) +  // Pill chrome.
-                      g.gap + g.dot_w + g.gap +
-                      (g.keys_w ? g.gap + g.dot_w + g.gap + g.keys_w : 0);
-  const int avail = band_right - scaled(4) - 2 * scaled(8);
-  int overflow = fixed_w + name_w + profile_w - avail;
-  if (overflow > 0 && name_w > scaled(44)) {
-    const int take = std::min(overflow, name_w - scaled(44));
-    name_w -= take;
-    overflow -= take;
-  }
-  if (overflow > 0 && profile_w > scaled(32)) {
-    profile_w -= std::min(overflow, profile_w - scaled(32));
-  }
-  g.name_w = name_w;
-  g.profile_w = profile_w;
-  g.pill_w = 2 * scaled(6) + scaled(12) + scaled(4) + name_w;
-  int content_w = g.pill_w + g.gap + g.dot_w + g.gap + profile_w;
-  if (g.keys_w) {
-    content_w += g.gap + g.dot_w + g.gap + g.keys_w;
-  }
-  const int card_w = content_w + 2 * scaled(8);
-  const int card_h = g.pill_h + 2 * scaled(5);
-
-  // Centered under the pip, clamped to the window; always BELOW the strip,
-  // so it never covers the caption row or the pips.
+  // Centred under the pip, 4 below the row, clamped 8 from the window's
+  // edges; always BELOW the strip, so it never covers the row.
   const int mid_x = (chip->bounds.left + chip->bounds.right) / 2;
   int left = mid_x - card_w / 2;
-  left = std::min(left, band_right - card_w);
-  left = std::max(left, scaled(4));
-  int top = chip->bounds.bottom + scaled(4);
-  top = std::min(top, static_cast<int>(rects.client.bottom) - scaled(2) - card_h);
+  left = std::min(left, static_cast<int>(rects.client.right) - scaled(8) - card_w);
+  left = std::max(left, scaled(8));
+  int top = std::max(static_cast<int>(chip->bounds.bottom),
+                     static_cast<int>(rects.strip.bottom)) +
+            scaled(4);
+  top = std::min(top, static_cast<int>(rects.client.bottom) - scaled(8) - card_h);
   g.card = {left, top, left + card_w, top + card_h};
+  g.tile = {left + pad_x, top + pad_y, left + pad_x + tile, top + pad_y + tile};
+  RECT key = {};
+  if (key_w) {
+    key = {g.card.right - pad_x - key_w, top + pad_y, g.card.right - pad_x,
+           top + pad_y + line1};
+  }
+  g.keycap = key;
+  g.name = {left + text_x, top + pad_y,
+            (key_w ? key.left - scaled(12) : g.card.right - pad_x),
+            top + pad_y + line1};
+  g.hint = {left + text_x, g.name.bottom + scaled(2), g.card.right - pad_x,
+            g.name.bottom + scaled(2) + line2};
   *out = std::move(g);
   return true;
 }
@@ -1234,78 +1320,70 @@ void PhiSpacesStrip::PaintHoverCard(HDC dc,
                                     const CardGeometry& g,
                                     const PhiPalette& palette) {
   const auto scaled = [this](int units) { return shell_->SpacesScaled(units); };
-  const COLORREF card_bg = palette.card;
+  EnsureCardFonts();
+  const COLORREF ground = palette.flyout;
   const COLORREF accent = card_accent_;
-  const RECT& card = g.card;
-  StrokeRounded(dc, card, card_bg, palette.border, scaled(kHoverCardRadius));
+  StrokeRounded(dc, g.card, ground, palette.border, scaled(kHoverCardRadius));
 
-  const int mid_y = (card.top + card.bottom) / 2;
-  int x = card.left + scaled(8);
-
-  // The Space capsule: icon + name on the accent's 15% wash.
-  const RECT pill = {x, mid_y - g.pill_h / 2, x + g.pill_w,
-                     mid_y + g.pill_h / 2};
-  FillRounded(dc, pill, BlendOver(accent, card_bg, 38), g.pill_h);
-  RECT icon_rc = {pill.left + scaled(6), mid_y - scaled(6),
-                  pill.left + scaled(6) + scaled(12), mid_y + scaled(6)};
-  // The icon keeps its strip colours — catalog art in the label ink, emoji
-  // in their own — only the name and keycaps wear the accent.
+  // The icon in its Space-colour tile (accent at 14 %, radius 4).
+  FillRounded(dc, g.tile, BlendOver(accent, ground, 36), scaled(4));
+  RECT icon_rc = g.tile;
+  ::InflateRect(&icon_rc, -scaled(2), -scaled(2));
   const COLORREF icon_ink = palette.label;
   if (!g.icon.empty() &&
-      PhiDrawCatalogIcon(dc, icon_rc, g.icon, scaled(12), icon_ink)) {
-    // The Mac catalog's own artwork.
+      PhiDrawCatalogIcon(dc, icon_rc, g.icon, scaled(14), icon_ink)) {
   } else if (!g.icon.empty() && !PhiIsPrivateGlyph(g.icon) &&
-             PhiDrawColorIcon(dc, icon_rc, g.icon, scaled(12), icon_ink)) {
-    // Colour emoji via DirectWrite; the font paths below are the fallback.
-  } else if (!g.icon.empty() &&
-             (shell_->SpacesEmojiFont() || shell_->SpacesChipIconFont())) {
-    HFONT icon_font = PhiIsPrivateGlyph(g.icon) ? shell_->SpacesChipIconFont()
-                                                : shell_->SpacesEmojiFont();
-    HGDIOBJ previous_icon_font =
-        icon_font ? ::SelectObject(dc, icon_font) : nullptr;
-    ::SetTextColor(dc, icon_ink);
-    PhiDrawTextAA(dc, g.icon.c_str(), -1, &icon_rc,
-                  DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-    if (previous_icon_font) {
-      ::SelectObject(dc, previous_icon_font);
-    }
+             PhiDrawColorIcon(dc, icon_rc, g.icon, scaled(14), icon_ink)) {
   } else {
     ::SetTextColor(dc, icon_ink);
-    const std::wstring initial = g.name.substr(0, 1);
+    const std::wstring initial = g.name_text.substr(0, 1);
+    HGDIOBJ previous = card_name_font_ ? ::SelectObject(dc, card_name_font_) : nullptr;
     PhiDrawTextAA(dc, initial.c_str(), -1, &icon_rc,
                   DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-  }
-  ::SetTextColor(dc, accent);
-  RECT name_rc = {icon_rc.right + scaled(4), pill.top, pill.right - scaled(6),
-                  pill.bottom};
-  PhiDrawTextAA(dc, g.name.c_str(), -1, &name_rc,
-                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-  x += g.pill_w + g.gap;
-
-  // Middle-dot separators and the profile, dim like the Mac's secondary.
-  const RECT dot1 = {x, card.top, x + g.dot_w, card.bottom};
-  DrawGlyph(dc, dot1, L"·", palette.label_dim);
-  x += g.dot_w + g.gap;
-  ::SetTextColor(dc, palette.label_dim);
-  RECT profile_rc = {x, card.top, x + g.profile_w, card.bottom};
-  PhiDrawTextAA(dc, g.profile.c_str(), -1, &profile_rc,
-                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-  x += g.profile_w;
-
-  // The switch shortcut as keycaps, tinted like the address tooltip's.
-  if (g.keys_w) {
-    x += g.gap;
-    const RECT dot2 = {x, card.top, x + g.dot_w, card.bottom};
-    DrawGlyph(dc, dot2, L"·", palette.label_dim);
-    x += g.dot_w + g.gap;
-    for (size_t i = 0; i < g.keycaps.size(); ++i) {
-      const RECT key = {x, mid_y - scaled(7), x + g.key_widths[i],
-                        mid_y + scaled(8)};
-      StrokeRounded(dc, key, BlendOver(accent, card_bg, 36),
-                    BlendOver(accent, card_bg, 140), scaled(4));
-      DrawGlyph(dc, key, g.keycaps[i].c_str(), accent);
-      x += g.key_widths[i] + scaled(2);
+    if (previous) {
+      ::SelectObject(dc, previous);
     }
+  }
+  // Line 1: the name, 12/600 in `label`; the keycap trailing.
+  HGDIOBJ previous_font = card_name_font_ ? ::SelectObject(dc, card_name_font_) : nullptr;
+  ::SetTextColor(dc, palette.label);
+  RECT name_rc = g.name;
+  PhiDrawTextAA(dc, g.name_text.c_str(), -1, &name_rc,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+  if (g.keycap.right > g.keycap.left) {
+    StrokeRounded(dc, g.keycap, BlendOver(palette.ink, ground, 11),
+                  palette.stroke_strong, scaled(4));
+    if (card_key_font_) {
+      ::SelectObject(dc, card_key_font_);
+    }
+    ::SetTextColor(dc, palette.label_dim);
+    RECT key_rc = g.keycap;
+    PhiDrawTextAA(dc, g.keycap_text.c_str(), -1, &key_rc,
+                  DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+  }
+  // Line 2: 11 dip `dim`; an agent's leads with its status dot.
+  if (card_hint_font_) {
+    ::SelectObject(dc, card_hint_font_);
+  }
+  ::SetTextColor(dc, palette.label_dim);
+  RECT hint_rc = g.hint;
+  if (g.agent) {
+    const int dot = scaled(7);
+    const COLORREF status =
+        g.badge == 2   ? palette.label_tertiary                 // Idle.
+        : g.badge == 3 ? RGB(0xF7, 0x63, 0x0C)                  // Held.
+        : g.badge == 4 ? RGB(0x0F, 0x7B, 0x0F)                  // Completed.
+        : g.badge == 5 ? palette.destructive                    // Error.
+                       : RGB(0x0F, 0x7B, 0x0F);                 // Running.
+    RECT dot_rc = {hint_rc.left, (hint_rc.top + hint_rc.bottom - dot) / 2,
+                   hint_rc.left + dot, (hint_rc.top + hint_rc.bottom + dot) / 2};
+    PhiFillEllipseAA(dc, dot_rc, status);
+    hint_rc.left += dot + scaled(5);
+  }
+  PhiDrawTextAA(dc, g.hint_text.c_str(), -1, &hint_rc,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+  if (previous_font) {
+    ::SelectObject(dc, previous_font);
   }
 }
 
@@ -1356,7 +1434,13 @@ void PhiSpacesStrip::SyncHoverCardPopup(HDC dc,
       return;
     }
   }
-  g.card = {0, 0, w, h};  // Painted at the popup's own origin.
+  // Painted at the popup's own origin: every rect re-based on the card.
+  for (RECT* rc : {&g.tile, &g.name, &g.hint, &g.keycap}) {
+    if (rc->right > rc->left) {
+      ::OffsetRect(rc, -g.card.left, -g.card.top);
+    }
+  }
+  g.card = {0, 0, w, h};
   card_geom_ = std::move(g);
   const bool moved = !::EqualRect(&screen, &card_popup_rect_);
   const int r = shell_->SpacesScaled(kHoverCardRadius);
@@ -1410,7 +1494,7 @@ void PhiSpacesStrip::PaintHoverCardPopup(HWND popup, HDC dc) {
   HGDIOBJ old_font = card_font ? ::SelectObject(mem, card_font) : nullptr;
   ::SetBkMode(mem, TRANSPARENT);
   const PhiPalette palette = shell_->SpacesPalette();
-  HBRUSH ground = ::CreateSolidBrush(palette.card);
+  HBRUSH ground = ::CreateSolidBrush(palette.flyout);
   ::FillRect(mem, &rc, ground);  // Under the region's trimmed corners.
   ::DeleteObject(ground);
   PaintHoverCard(mem, card_geom_, palette);

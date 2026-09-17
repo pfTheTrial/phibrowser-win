@@ -28,8 +28,8 @@ constexpr int kImageHeight = kCardWidth * 10 / 16;
 constexpr int kPadX = 12;
 constexpr int kPadY = 10;
 constexpr int kTextGap = 4;   // Title-to-URL spacing.
-constexpr int kTitleSize = 14;
-constexpr int kUrlSize = 12;
+constexpr int kTitleSize = 12;  // windows-native-ui.md §5.6: 12/600 over 11.
+constexpr int kUrlSize = 11;
 // CustomTooltipGeometry: the gap an attached placement does NOT take, and
 // the margin the card keeps off the screen edge.
 constexpr int kScreenMargin = 4;
@@ -575,9 +575,9 @@ void PhiTabPreview::PaintCard(HDC dc) {
   ::GetClientRect(hwnd(), &rc);
   const PhiPalette& palette = PhiWindow::palette();
 
-  // The Mac card is .themedBackground(.windowBackground) — DWM rounds the
-  // corners, so the fill is a plain rect.
-  HBRUSH ground = ::CreateSolidBrush(palette.window_bg);
+  // The flyout ground (§5.6); DWM rounds the corners, so the fill is a
+  // plain rect.
+  HBRUSH ground = ::CreateSolidBrush(palette.flyout);
   ::FillRect(dc, &rc, ground);
   ::DeleteObject(ground);
   ::SetBkMode(dc, TRANSPARENT);

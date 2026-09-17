@@ -108,6 +108,21 @@ struct PhiPalette {
   // GDI does not composite. Blend it yourself when the surface is layered.
   PhiColor overlay_scrim;
 
+  // The Windows-native design's roles (docs/windows-native-ui.md §2.3).
+  // Flyouts (menus, the Space switcher, the hover card): #F9F9F9 / #2C2C2C.
+  PhiColor flyout;
+  // A dialog's footer band under its body: #F3F3F3 / #202020.
+  PhiColor dialog_footer;
+  // The stroke a control needs to read on a card: ink 9 % / white 16 %.
+  PhiColor stroke_strong;
+  // A toggled-on button's fill: the accent at 14 % over the ground.
+  PhiColor accent_soft;
+  // A control's resting fill on a card (the omnibox at rest, a combo):
+  // ink 4.5 % / white 6 %.
+  PhiColor control_fill;
+  // The pressed wash: ink 9 % / white 10 %.
+  PhiColor pressed;
+
   bool dark = false;
 };
 

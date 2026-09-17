@@ -296,7 +296,9 @@ void PhiBrowserHost::PositionCornerCaps(const PhiContentLayout& layout) {
     if (!corner_caps_[i]) {
       continue;
     }
-    const bool shown = (i >= 2 || top_caps) && !content_fullscreen_;
+    const bool shown = ((i == 2) || (i == 3 && layout.right_caps) ||
+                        (i < 2 && top_caps)) &&
+                       !content_fullscreen_;
     ::SetWindowPos(corner_caps_[i], HWND_TOP, positions[i].x, positions[i].y,
                    radius, radius,
                    SWP_NOACTIVATE | (shown ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));

@@ -292,7 +292,8 @@ class PhiSettingsWindow : public PhiSecondaryWindow,
   // One drawn thing. Rows are built per section and hit-tested from the same
   // list, so what is drawn and what is clickable cannot drift apart.
   enum class ItemKind {
-    kToolbarItem,    // A pane, in the toolbar across the top.
+    kToolbarItem,    // A page, in the navigation rail down the left.
+    kPageTitle,      // The page's 28/600 title.
     kCard,           // The well a section's rows sit in.
     kSectionTitle,   // Small secondary label ABOVE a card.
     kSubtitle,       // 11pt tertiary line under a section title.
@@ -351,6 +352,8 @@ class PhiSettingsWindow : public PhiSecondaryWindow,
   void ScheduleRebuild();
   void BuildAccount(int* y);
   void BuildGeneral(int* y);
+  void BuildAppearance(int* y);
+  void BuildAbout(int* y);
   void BuildAdvanced(int* y);
   void BuildSpaces(int* y);
   // The Mac's Navigations pane: Kiosk, Peek and URL Rules.
@@ -484,6 +487,15 @@ class PhiSettingsWindow : public PhiSecondaryWindow,
   // pane switch, clamped to the built content's height.
   int scroll_ = 0;
   int content_height_ = 0;
+  // The navigation rail's width and the page column it leaves (client
+  // px), from the client rect on every rebuild (windows-native-ui.md §7).
+  int rail_w_ = 0;
+  int content_left_ = 0;
+  int content_right_ = 0;
+  // The scrollbar's thumb as last painted, and its drag.
+  RECT thumb_rect_{};
+  bool scroll_drag_ = false;
+  int scroll_drag_grab_ = 0;  // Pointer y − thumb top at the press.
   // Master-list selections (the Mac remembers per pane).
   std::string selected_space_;
   std::string selected_profile_;

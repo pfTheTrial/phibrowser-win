@@ -27,7 +27,6 @@ constexpr UINT_PTR kFieldId = 1;
 // fonts_dpi_ bookkeeping (lane 3 §3.5).
 constexpr wchar_t kBrandFace[] = L"Segoe UI Light";
 constexpr wchar_t kBodyFace[] = L"Segoe UI";
-constexpr wchar_t kGlyphFace[] = L"Segoe MDL2 Assets";
 
 // NewTabViewController's metrics (DIP).
 constexpr int kIconSize = 64;          // iconSize
@@ -108,7 +107,7 @@ HFONT PhiNewTabPage::FieldFont() const {
 HFONT PhiNewTabPage::GlyphFont() const {
   PhiFontDesc desc;
   desc.size = kGlyphSize;
-  desc.face = kGlyphFace;
+  desc.face = PhiIconFaceName();
   return const_cast<PhiNewTabPage*>(this)->fonts().Get(desc);
 }
 

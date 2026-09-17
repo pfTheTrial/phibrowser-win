@@ -8,10 +8,19 @@
 #include <windows.h>
 
 #include <string>
+#include <string_view>
 
 #include "base/functional/function_ref.h"
 
 namespace phi_client {
+
+// THE icon face (docs/windows-native-ui.md §2.2a): "Segoe Fluent Icons"
+// when the system collection has it (Windows 11), else "Segoe MDL2 Assets"
+// (Windows 10) — the same code points in both. Resolved once; every glyph
+// site names its font through this, never through a literal.
+const wchar_t* PhiIconFaceName();
+// True when `face` is the icon face (either spelling).
+bool PhiIsIconFace(std::wstring_view face);
 
 // Draws `text` centred in `rect` with COLOR-FONT rendering (Segoe UI Emoji's
 // COLR layers) — what GDI's DrawText cannot do. The pixel under the rect's

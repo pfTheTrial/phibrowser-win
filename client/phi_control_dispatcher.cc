@@ -34,7 +34,7 @@
 #include "phibrowser-win/client/phi_features.h"
 #include "phibrowser-win/client/phi_folder_icons.h"
 #include "phibrowser-win/client/phi_icons.h"
-#include "phibrowser-win/client/phi_menu_bar.h"
+#include "phibrowser-win/client/phi_app_menu.h"
 #include "phibrowser-win/client/phi_modal_scope.h"
 #include "phibrowser-win/client/phi_prompt.h"
 #include "phibrowser-win/client/phi_settings_window.h"

@@ -19,6 +19,7 @@
 #include "base/compiler_specific.h"
 #include "base/containers/span.h"
 #include "phibrowser-win/client/phi_animator.h"
+#include "phibrowser-win/client/phi_dwrite.h"
 #include "phibrowser-win/client/phi_gdiplus.h"
 #include "phibrowser-win/client/phi_panel.h"
 #include "phibrowser-win/client/phi_theme.h"
@@ -169,7 +170,7 @@ void DrawPlaceholder(Gdiplus::Graphics* g,
     g->DrawImage(&favicon, draw);
   } else {
     // The Mac's fallback is SF's globe; Segoe MDL2's is its twin.
-    Gdiplus::FontFamily glyphs(L"Segoe MDL2 Assets");
+    Gdiplus::FontFamily glyphs(PhiIconFaceName());
     if (glyphs.GetLastStatus() == Gdiplus::Ok) {
       Gdiplus::Font glyph_font(&glyphs, icon * 0.8f, Gdiplus::FontStyleRegular,
                                Gdiplus::UnitPixel);

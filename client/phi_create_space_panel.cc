@@ -280,7 +280,7 @@ HFONT PhiCreateSpacePanel::EmojiFont() const {
 }
 HFONT PhiCreateSpacePanel::Mdl2Font() const {
   return FaceFont(&const_cast<PhiCreateSpacePanel*>(this)->fonts(), kEmojiFont,
-                  FW_NORMAL, L"Segoe MDL2 Assets");
+                  FW_NORMAL, PhiIconFaceName());
 }
 
 void PhiCreateSpacePanel::EnsureField() {

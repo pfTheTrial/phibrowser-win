@@ -48,14 +48,13 @@ namespace phi_client {
 // own loop already translates them, and doing both would hide the raw
 // keys from the recorder.
 
-// One action button. Actions are listed in display order; `leading` pins
-// one to the left edge (the Mac's tertiary "Skip This Version" slot), the
-// rest group at the right with the LAST one rightmost.
+// One action button. Actions are listed in DISPLAY order, left to right:
+// the affirmative first, Cancel last (docs/windows-native-ui.md §6, impl
+// log D2). Every button takes an equal share of the footer.
 enum class PhiAlertRole { kPrimary, kSecondary, kDestructive };
 struct PhiAlertAction {
   std::wstring label;
   PhiAlertRole role = PhiAlertRole::kSecondary;
-  bool leading = false;
 };
 
 // A PhiAlert: `title` over `message` (may hold newlines; wraps) and the

@@ -339,7 +339,7 @@ class PhiUrlRulesWindow::RuleList : public PhiPanel {
     HFONT body = fonts().Get(13, FW_NORMAL);
     HFONT small = fonts().Get(11, FW_NORMAL);
     HFONT glyphs = fonts().Get(PhiFontDesc{12, FW_NORMAL,
-                                           L"Segoe MDL2 Assets"});
+                                           PhiIconFaceName()});
     HGDIOBJ previous = ::SelectObject(dc, body);
 
     const std::vector<Row>& rows = window_->rows();

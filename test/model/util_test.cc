@@ -303,8 +303,8 @@ void TestPaletteRoles() {
   CHECK_EQ(dark.ink, PhiRgb(0xFF, 0xFF, 0xFF));
   // The fixed ground the secondary windows stand on — the value
   // phi_popup_chrome.h and phi_settings_window.cc each carry today.
-  CHECK_EQ(light.ground_fixed, PhiRgb(0xEA, 0xEA, 0xEA));
-  CHECK_EQ(dark.ground_fixed, PhiRgb(0x25, 0x25, 0x25));
+  CHECK_EQ(light.ground_fixed, PhiRgb(0xF3, 0xF3, 0xF3));
+  CHECK_EQ(dark.ground_fixed, PhiRgb(0x20, 0x20, 0x20));
   // on_accent is legibility, not a fixed white: Amber's light accent is
   // bright enough to need dark ink.
   CHECK_EQ(light.on_accent, PhiRgb(0xFF, 0xFF, 0xFF));  // Pure's #3AA4D5
@@ -319,7 +319,15 @@ void TestPaletteRoles() {
   // The scrim reads as "behind" against both grounds.
   CHECK(light.overlay_scrim != light.ground_top);
   CHECK(dark.overlay_scrim != dark.ground_top);
-  CHECK_EQ(light.destructive, PhiRgb(0xFF, 0x3B, 0x30));
+  CHECK_EQ(light.destructive, PhiRgb(0xC4, 0x2B, 0x1C));
+  CHECK_EQ(dark.destructive, PhiRgb(0xE0, 0x46, 0x3A));
+  // The Windows-native roles.
+  CHECK_EQ(light.flyout, PhiRgb(0xF9, 0xF9, 0xF9));
+  CHECK_EQ(dark.flyout, PhiRgb(0x2C, 0x2C, 0x2C));
+  CHECK_EQ(light.dialog_footer, PhiRgb(0xF3, 0xF3, 0xF3));
+  CHECK(light.pressed != light.hover);
+  CHECK(light.accent_soft != light.accent);
+  CHECK(light.stroke_strong != light.ground_top);
   CHECK(light.destructive_hover != light.destructive);
   CHECK(light.warning != dark.warning);
   CHECK(light.error != dark.error);

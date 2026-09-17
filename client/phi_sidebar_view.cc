@@ -1509,8 +1509,12 @@ void PhiSidebarView::RebuildShortcuts(const PhiSidebarRects& layout,
     ListMetrics m;
     m.left = layout.tabs_left;
     m.right = Scaled(sidebar_dip() - kEdgeInset);
-    m.top = layout.favorites.bottom +
-            (pinned_grid_rows_ > 0 ? Scaled(kFavoritesSpacer) : 0);
+    // The outline's band starts under its section label (the shell lays
+    // the Bookmarks label between the pinned grid and the rows).
+    m.top = layout.bookmarks.bottom > layout.bookmarks.top
+                ? layout.bookmarks.top
+                : layout.favorites.bottom +
+                      (pinned_grid_rows_ > 0 ? Scaled(kFavoritesSpacer) : 0);
     m.row_height = Scaled(kTabRowHeight);
     m.row_gap = Scaled(kTabRowGap);
     const std::vector<ListItem> items(bookmarks_.size(), ListItem{});

@@ -19,7 +19,7 @@
 #include "phibrowser-win/client/phi_coordinator.h"
 #include "phibrowser-win/client/phi_feedback_outbox.h"
 #include "phibrowser-win/client/phi_feedback_window.h"
-#include "phibrowser-win/client/phi_menu_bar.h"
+#include "phibrowser-win/client/phi_app_menu.h"
 #include "phibrowser-win/client/phi_settings_window.h"
 #include "phibrowser-win/client/phi_tab_store.h"
 #include "phibrowser-win/client/phi_theme.h"
@@ -167,7 +167,10 @@ PhiVerbResult PhiControlDispatcher::VerbWindowLayout(
   // collapse it drives — the floating panel's trigger is the collapsed
   // card's left margin.
   out.Set("sidebarToggle", RectDict(shell->sidebar_toggle_rect()));
+  // The app menu button (⋯), every layout's way to the menu.
+  out.Set("appMenu", RectDict(shell->app_menu_rect()));
   out.Set("sidebarCollapsed", shell->sidebar_collapsed());
+  out.Set("sidebarFloating", shell->sidebar_floating());
   out.Set("tabsTop", shell->tabs_top());
   out.Set("rowHeight", shell->tab_row_height());
   out.Set("rowGap", shell->tab_row_gap());
@@ -231,14 +234,15 @@ PhiVerbResult PhiControlDispatcher::VerbWindowHandle(
 }
 
 PhiVerbResult PhiControlDispatcher::VerbMenuList(const PhiVerbContext& ctx) {
-  // The shell window's menu bar as the user would see it, dynamic rows
-  // included — the automated stand-in for opening each menu by hand.
+  // The shell window's app menu (⋯) as the user would see it, dynamic rows
+  // included — the automated stand-in for opening it by hand. `menus` is
+  // the root's rows; submenus nest under "items".
   PhiShellWindow* controller = ctx.scope.controller;
-  if (!controller || !controller->menu_bar()) {
+  if (!controller || !controller->app_menu()) {
     return PhiVerbOk(false);
   }
   std::optional<base::Value> menus = base::JSONReader::Read(
-      controller->menu_bar()->ListJson(), base::JSON_PARSE_RFC);
+      controller->app_menu()->ListJson(), base::JSON_PARSE_RFC);
   if (!menus) {
     return PhiVerbOk(false);
   }
@@ -248,13 +252,13 @@ PhiVerbResult PhiControlDispatcher::VerbMenuList(const PhiVerbContext& ctx) {
 }
 
 PhiVerbResult PhiControlDispatcher::VerbMenuClick(const PhiVerbContext& ctx) {
-  // Activates a menu item by its title path, e.g. ["File","New Tab"] or
-  // ["Spaces","Edit Theme","Mint"]. Disabled items refuse, as a real click
-  // would.
+  // Activates a menu item by its title path from the app menu's root, e.g.
+  // ["New tab"] or ["More tools","Task manager"]. Disabled items refuse,
+  // as a real click would.
   const std::vector<std::string> path = ctx.params.StringList("path");
   PhiShellWindow* controller = ctx.scope.controller;
-  return PhiVerbOk(controller && controller->menu_bar() && !path.empty() &&
-                   controller->menu_bar()->InvokePath(path));
+  return PhiVerbOk(controller && controller->app_menu() && !path.empty() &&
+                   controller->app_menu()->InvokePath(path));
 }
 
 // --- Tabs -----------------------------------------------------------------------
@@ -838,6 +842,21 @@ PhiVerbResult PhiControlDispatcher::VerbLayoutSet(const PhiVerbContext& ctx) {
     coordinator_->RequestSidebarWidth(*width);
     ok = true;
   }
+  // {sidebar: "docked" | "hidden"} docks or hides THIS window's sidebar
+  // (the floating panel then stays tucked at the edge, §4.4).
+  if (const std::string* sidebar = ctx.params.FindString("sidebar")) {
+    // An app-wide verb (no scope): {windowId} names the window, else the
+    // first user window takes it.
+    const int64_t window_id =
+        static_cast<int64_t>(ctx.params.FindDouble("windowId").value_or(0));
+    PhiShellWindow* shell = window_id
+                                ? coordinator_->registry().Resolve(window_id)
+                                : coordinator_->FirstUserShell();
+    if (shell && (*sidebar == "docked" || *sidebar == "hidden")) {
+      shell->SetSidebarCollapsed(*sidebar == "hidden");
+      ok = true;
+    }
+  }
   if (ok && name) {
     coordinator_->RequestLayoutMode(mode);
   }
@@ -894,13 +913,17 @@ PhiVerbResult PhiControlDispatcher::VerbSettingsGet(
   // The Mac's panes(), in its order; Developer only in developer mode.
   // (There is no Phi Link pane on Mac — IMChannels exists in its source
   // but is never mounted.)
-  for (const char* name : {"account", "general", "profiles", "spaces",
-                           "navigation", "ai", "shortcuts", "advanced"}) {
+  // The Windows Settings pages in rail order (docs/windows-native-ui.md
+  // §7); Developer only in developer mode.
+  for (const char* name : {"account", "general", "appearance", "spaces",
+                           "profiles", "navigation", "ai", "shortcuts",
+                           "advanced"}) {
     sections.Append(name);
   }
   if (coordinator_->settings().developer_mode) {
     sections.Append("developer");
   }
+  sections.Append("about");
   out.Set("sections", std::move(sections));
   out.Set("developerMode", coordinator_->settings().developer_mode);
   out.Set("allowAgentControl", coordinator_->settings().allow_agent_control);

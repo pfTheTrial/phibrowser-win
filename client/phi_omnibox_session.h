@@ -34,7 +34,7 @@ struct PhiOmniboxCapsule {
   SidebarRect page_icon;        // Comfortable's leading site chip.
   SidebarRect field_ext_strip;  // Pinned-extension icons.
   SidebarRect reader;
-  SidebarRect copy_link;
+  SidebarRect star;  // Bookmark this tab.
   SidebarRect extensions;
 };
 
@@ -54,7 +54,7 @@ inline SidebarRect PhiOmniboxTextRect(const PhiOmniboxCapsule& capsule,
   // extensions button in the top bar) are not candidates.
   int right_stop = box.right;
   for (const SidebarRect& accessory :
-       {capsule.field_ext_strip, capsule.reader, capsule.copy_link,
+       {capsule.field_ext_strip, capsule.reader, capsule.star,
         capsule.extensions}) {
     if (accessory.right > accessory.left && accessory.left > box.left &&
         accessory.left < right_stop) {
@@ -216,18 +216,6 @@ class PhiOmniboxSession {
   // paints.
   void Position();
   void SetFieldVisible(bool visible);
-  // Moves the EDIT into `host` (a window of the shell's — the floating
-  // sidebar panel) for as long as the shell has no field of its own: the
-  // collapsed performance layout, where the panel shows the sidebar's
-  // address bar and this is what makes it a REAL one. `offset` is where the
-  // host's client origin sits in the shell's client space (the capsule is
-  // laid out in the shell's coordinates; the field is placed in the host's).
-  // The host forwards the EDIT's WM_COMMAND and WM_CTLCOLOREDIT to
-  // OnShellCommand / OnCtlColorEdit, as the shell does. UnhostField hands
-  // it back; the shell then decides its visibility.
-  void HostField(HWND host, POINT offset);
-  void UnhostField();
-  bool field_hosted() const { return host_ != nullptr; }
   // Pushes the current page's URL into the field. Skipped while the user is
   // typing unless `force` (the Escape-reverts path).
   void Sync(bool force);
@@ -315,10 +303,6 @@ class PhiOmniboxSession {
   RAW_PTR_EXCLUSION PhiOmniboxShell* const shell_;
 
   HWND field_ = nullptr;
-  // HostField's window and its client origin in shell space; null when the
-  // field is the shell's own child.
-  HWND host_ = nullptr;
-  POINT host_offset_ = {};
   // The EDIT paints itself in SYSTEM colours, which clash under a dark
   // theme. WM_CTLCOLOREDIT hands it the palette instead; the brush must
   // outlive the message, so it is cached and rebuilt only when the colour

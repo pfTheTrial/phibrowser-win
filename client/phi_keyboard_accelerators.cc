@@ -4,7 +4,7 @@
 
 #include "phibrowser-win/client/phi_keyboard_accelerators.h"
 
-#include "phibrowser-win/client/phi_menu_bar.h"
+#include "phibrowser-win/client/phi_app_menu.h"
 #include "phibrowser-win/client/phi_preferences.h"
 #include "phibrowser-win/client/phi_tab_switcher.h"
 #include "phibrowser-win/client/phi_shell_window.h"
@@ -35,6 +35,12 @@ constexpr PhiKeyboardAccelerators::Accelerator kAccelerators[] = {
     {VK_OEM_MINUS, true, false, false, kCmdZoomOut},
     {VK_SUBTRACT, true, false, false, kCmdZoomOut},
     {VK_OEM_COMMA, true, false, false, kCmdPreferences},
+    // The app menu (docs/windows-native-ui.md §3.3): F10, Alt+F, Alt+E
+    // (Chrome's and Edge's mnemonics). The solo Alt tap posts the same
+    // command from OnKey.
+    {VK_F10, false, false, false, kCmdShowAppMenu},
+    {'F', false, false, true, kCmdShowAppMenu},
+    {'E', false, false, true, kCmdShowAppMenu},
     // Ctrl+Tab / Ctrl+Shift+Tab are handled in OnKey — the MRU switcher.
     // Alt+Left/Right/Home — the history chords Chrome reserves.
     {VK_LEFT, false, false, true, kCmdBack},
@@ -127,15 +133,15 @@ LRESULT PhiKeyboardAccelerators::OnKey(WPARAM wparam, LPARAM lparam) {
         PhiTabSwitcher::Cancel();
       }
     }
-    // Alt pressed and released with nothing in between summons the caption
-    // band's hidden menu titles — the keyboard's way to the bar the pointer
-    // reveals by hovering. Any chord (Alt+Tab, Alt+Left, Alt+F4, a mnemonic)
-    // cleared alt_solo_ on its key-down, so only a bare tap gets here. The
-    // key is NOT swallowed: Chromium still sees the release it expects.
+    // Alt pressed and released with nothing in between opens the app menu
+    // — the keyboard's way to the ⋯ flyout, as Alt opens Chrome's. Any
+    // chord (Alt+Tab, Alt+Left, Alt+F4, a mnemonic) cleared alt_solo_ on
+    // its key-down, so only a bare tap gets here. The key is NOT
+    // swallowed: Chromium still sees the release it expects.
     if (wparam == VK_MENU && alt_solo_) {
       alt_solo_ = false;
       if (HWND shell = host_.FocusedShellHwnd()) {
-        ::PostMessageW(shell, kMsgPhiToggleMenuReveal, 0, 0);
+        ::PostMessageW(shell, WM_COMMAND, MAKEWPARAM(kCmdShowAppMenu, 1), 0);
       }
     }
     return 0;

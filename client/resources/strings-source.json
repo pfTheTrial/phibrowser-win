@@ -472,6 +472,902 @@
    "comment": "app — used at phi_coordinator.cc:551",
    "en": ") wants to control Phi — tabs, navigation, and page content."
   },
+  "appMenu.about": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "About Phi",
+   "translations": {
+    "de": "Über Phi",
+    "es": "Acerca de Phi",
+    "fr": "À propos de Phi",
+    "ja": "Phi について",
+    "ko": "Phi 정보",
+    "nl": "Over Phi",
+    "zh-Hans": "关于 Phi",
+    "zh-Hant": "關於 Phi"
+   }
+  },
+  "appMenu.actualSize": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "Actual size\tCtrl+0",
+   "translations": {
+    "de": "Tatsächliche Größe\tCtrl+0",
+    "es": "Tamaño real\tCtrl+0",
+    "fr": "Taille réelle\tCtrl+0",
+    "ja": "実際のサイズ\tCtrl+0",
+    "ko": "실제 크기\tCtrl+0",
+    "nl": "Werkelijke grootte\tCtrl+0",
+    "zh-Hans": "实际大小\tCtrl+0",
+    "zh-Hant": "實際大小\tCtrl+0"
+   }
+  },
+  "appMenu.agentAutoview": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "Agent autoview",
+   "translations": {
+    "de": "Agent-Autoansicht",
+    "es": "Vista automática del agente",
+    "fr": "Vue automatique de l'agent",
+    "ja": "エージェント自動表示",
+    "ko": "에이전트 자동 보기",
+    "nl": "Automatische agentweergave",
+    "zh-Hans": "智能体自动视图",
+    "zh-Hant": "代理自動檢視"
+   }
+  },
+  "appMenu.back": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "Back\tAlt+Left",
+   "translations": {
+    "de": "Zurück\tAlt+Left",
+    "es": "Atrás\tAlt+Left",
+    "fr": "Retour\tAlt+Left",
+    "ja": "戻る\tAlt+Left",
+    "ko": "뒤로\tAlt+Left",
+    "nl": "Terug\tAlt+Left",
+    "zh-Hans": "后退\tAlt+Left",
+    "zh-Hant": "返回\tAlt+Left"
+   }
+  },
+  "appMenu.bookmarkAllTabs": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "Bookmark all tabs…\tCtrl+Shift+D",
+   "translations": {
+    "de": "Alle Tabs als Lesezeichen speichern…\tCtrl+Shift+D",
+    "es": "Añadir todas las pestañas a marcadores…\tCtrl+Shift+D",
+    "fr": "Ajouter tous les onglets aux favoris…\tCtrl+Shift+D",
+    "ja": "すべてのタブをブックマーク…\tCtrl+Shift+D",
+    "ko": "모든 탭을 북마크에 추가…\tCtrl+Shift+D",
+    "nl": "Alle tabbladen toevoegen aan bladwijzers…\tCtrl+Shift+D",
+    "zh-Hans": "将所有标签页加入书签…\tCtrl+Shift+D",
+    "zh-Hant": "將所有分頁加入書籤…\tCtrl+Shift+D"
+   }
+  },
+  "appMenu.bookmarkManager": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "Bookmark manager\tCtrl+Shift+O",
+   "translations": {
+    "de": "Lesezeichen-Manager\tCtrl+Shift+O",
+    "es": "Administrador de marcadores\tCtrl+Shift+O",
+    "fr": "Gestionnaire de favoris\tCtrl+Shift+O",
+    "ja": "ブックマーク マネージャー\tCtrl+Shift+O",
+    "ko": "북마크 관리자\tCtrl+Shift+O",
+    "nl": "Bladwijzerbeheer\tCtrl+Shift+O",
+    "zh-Hans": "书签管理器\tCtrl+Shift+O",
+    "zh-Hant": "書籤管理員\tCtrl+Shift+O"
+   }
+  },
+  "appMenu.bookmarkThisTab": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "Bookmark this tab…\tCtrl+D",
+   "translations": {
+    "de": "Diesen Tab als Lesezeichen speichern…\tCtrl+D",
+    "es": "Añadir esta pestaña a marcadores…\tCtrl+D",
+    "fr": "Ajouter cet onglet aux favoris…\tCtrl+D",
+    "ja": "このタブをブックマーク…\tCtrl+D",
+    "ko": "이 탭을 북마크에 추가…\tCtrl+D",
+    "nl": "Dit tabblad toevoegen aan bladwijzers…\tCtrl+D",
+    "zh-Hans": "将此标签页加入书签…\tCtrl+D",
+    "zh-Hant": "將此分頁加入書籤…\tCtrl+D"
+   }
+  },
+  "appMenu.bookmarks": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "Bookmarks",
+   "translations": {
+    "de": "Lesezeichen",
+    "es": "Marcadores",
+    "fr": "Favoris",
+    "ja": "ブックマーク",
+    "ko": "북마크",
+    "nl": "Bladwijzers",
+    "zh-Hans": "书签",
+    "zh-Hant": "書籤"
+   }
+  },
+  "appMenu.changeIcon": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "Change icon…",
+   "translations": {
+    "de": "Symbol ändern…",
+    "es": "Cambiar icono…",
+    "fr": "Changer l'icône…",
+    "ja": "アイコンを変更…",
+    "ko": "아이콘 변경…",
+    "nl": "Pictogram wijzigen…",
+    "zh-Hans": "更改图标…",
+    "zh-Hant": "變更圖示…"
+   }
+  },
+  "appMenu.changeProfile": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "Change profile",
+   "translations": {
+    "de": "Profil wechseln",
+    "es": "Cambiar perfil",
+    "fr": "Changer de profil",
+    "ja": "プロファイルを変更",
+    "ko": "프로필 변경",
+    "nl": "Profiel wijzigen",
+    "zh-Hans": "更改配置文件",
+    "zh-Hant": "變更設定檔"
+   }
+  },
+  "appMenu.checkForUpdate": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "Check for update…",
+   "translations": {
+    "de": "Nach Update suchen…",
+    "es": "Buscar actualización…",
+    "fr": "Rechercher une mise à jour…",
+    "ja": "アップデートを確認…",
+    "ko": "업데이트 확인…",
+    "nl": "Controleren op update…",
+    "zh-Hans": "检查更新…",
+    "zh-Hant": "檢查更新…"
+   }
+  },
+  "appMenu.deleteBrowsingData": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "Delete browsing data…\tCtrl+Shift+Del",
+   "translations": {
+    "de": "Browserdaten löschen…\tCtrl+Shift+Del",
+    "es": "Eliminar datos de navegación…\tCtrl+Shift+Del",
+    "fr": "Effacer les données de navigation…\tCtrl+Shift+Del",
+    "ja": "閲覧データを削除…\tCtrl+Shift+Del",
+    "ko": "인터넷 사용 기록 삭제…\tCtrl+Shift+Del",
+    "nl": "Browsegegevens verwijderen…\tCtrl+Shift+Del",
+    "zh-Hans": "删除浏览数据…\tCtrl+Shift+Del",
+    "zh-Hant": "刪除瀏覽資料…\tCtrl+Shift+Del"
+   }
+  },
+  "appMenu.deleteProfile": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "Delete profile",
+   "translations": {
+    "de": "Profil löschen",
+    "es": "Eliminar perfil",
+    "fr": "Supprimer le profil",
+    "ja": "プロファイルを削除",
+    "ko": "프로필 삭제",
+    "nl": "Profiel verwijderen",
+    "zh-Hans": "删除配置文件",
+    "zh-Hant": "刪除設定檔"
+   }
+  },
+  "appMenu.deleteSpace": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "Delete Space…",
+   "translations": {
+    "de": "Space löschen…",
+    "es": "Eliminar Space…",
+    "fr": "Supprimer le Space…",
+    "ja": "Space を削除…",
+    "ko": "Space 삭제…",
+    "nl": "Space verwijderen…",
+    "zh-Hans": "删除 Space…",
+    "zh-Hant": "刪除 Space…"
+   }
+  },
+  "appMenu.developerTools": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "Developer tools\tCtrl+Shift+I",
+   "translations": {
+    "de": "Entwicklertools\tCtrl+Shift+I",
+    "es": "Herramientas para desarrolladores\tCtrl+Shift+I",
+    "fr": "Outils de développement\tCtrl+Shift+I",
+    "ja": "デベロッパー ツール\tCtrl+Shift+I",
+    "ko": "개발자 도구\tCtrl+Shift+I",
+    "nl": "Hulpprogramma's voor ontwikkelaars\tCtrl+Shift+I",
+    "zh-Hans": "开发者工具\tCtrl+Shift+I",
+    "zh-Hant": "開發人員工具\tCtrl+Shift+I"
+   }
+  },
+  "appMenu.documentation": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "Documentation\tF1",
+   "translations": {
+    "de": "Dokumentation\tF1",
+    "es": "Documentación\tF1",
+    "fr": "Documentation\tF1",
+    "ja": "ドキュメント\tF1",
+    "ko": "문서\tF1",
+    "nl": "Documentatie\tF1",
+    "zh-Hans": "文档\tF1",
+    "zh-Hant": "說明文件\tF1"
+   }
+  },
+  "appMenu.downloads": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "Downloads\tCtrl+J",
+   "translations": {
+    "de": "Downloads\tCtrl+J",
+    "es": "Descargas\tCtrl+J",
+    "fr": "Téléchargements\tCtrl+J",
+    "ja": "ダウンロード\tCtrl+J",
+    "ko": "다운로드\tCtrl+J",
+    "nl": "Downloads\tCtrl+J",
+    "zh-Hans": "下载内容\tCtrl+J",
+    "zh-Hant": "下載\tCtrl+J"
+   }
+  },
+  "appMenu.editTheme": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "Edit theme…",
+   "translations": {
+    "de": "Design bearbeiten…",
+    "es": "Editar tema…",
+    "fr": "Modifier le thème…",
+    "ja": "テーマを編集…",
+    "ko": "테마 편집…",
+    "nl": "Thema bewerken…",
+    "zh-Hans": "编辑主题…",
+    "zh-Hant": "編輯主題…"
+   }
+  },
+  "appMenu.exit": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "Exit\tCtrl+Shift+Q",
+   "translations": {
+    "de": "Beenden\tCtrl+Shift+Q",
+    "es": "Salir\tCtrl+Shift+Q",
+    "fr": "Quitter\tCtrl+Shift+Q",
+    "ja": "終了\tCtrl+Shift+Q",
+    "ko": "종료\tCtrl+Shift+Q",
+    "nl": "Afsluiten\tCtrl+Shift+Q",
+    "zh-Hans": "退出\tCtrl+Shift+Q",
+    "zh-Hant": "結束\tCtrl+Shift+Q"
+   }
+  },
+  "appMenu.exportBookmarks": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "Export bookmarks…",
+   "translations": {
+    "de": "Lesezeichen exportieren…",
+    "es": "Exportar marcadores…",
+    "fr": "Exporter les favoris…",
+    "ja": "ブックマークをエクスポート…",
+    "ko": "북마크 내보내기…",
+    "nl": "Bladwijzers exporteren…",
+    "zh-Hans": "导出书签…",
+    "zh-Hant": "匯出書籤…"
+   }
+  },
+  "appMenu.exportUserData": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "Export user data…",
+   "translations": {
+    "de": "Benutzerdaten exportieren…",
+    "es": "Exportar datos de usuario…",
+    "fr": "Exporter les données utilisateur…",
+    "ja": "ユーザーデータを書き出す…",
+    "ko": "사용자 데이터 내보내기…",
+    "nl": "Gebruikersgegevens exporteren…",
+    "zh-Hans": "导出用户数据…",
+    "zh-Hant": "匯出使用者資料…"
+   }
+  },
+  "appMenu.extensions": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "Extensions",
+   "translations": {
+    "de": "Erweiterungen",
+    "es": "Extensiones",
+    "fr": "Extensions",
+    "ja": "拡張機能",
+    "ko": "확장 프로그램",
+    "nl": "Extensies",
+    "zh-Hans": "扩展程序",
+    "zh-Hant": "擴充功能"
+   }
+  },
+  "appMenu.findOnPage": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "Find on page…\tCtrl+F",
+   "translations": {
+    "de": "Auf Seite suchen…\tCtrl+F",
+    "es": "Buscar en la página…\tCtrl+F",
+    "fr": "Rechercher sur la page…\tCtrl+F",
+    "ja": "ページ内を検索…\tCtrl+F",
+    "ko": "페이지에서 찾기…\tCtrl+F",
+    "nl": "Zoeken op pagina…\tCtrl+F",
+    "zh-Hans": "在页面中查找…\tCtrl+F",
+    "zh-Hant": "在頁面中尋找…\tCtrl+F"
+   }
+  },
+  "appMenu.forward": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "Forward\tAlt+Right",
+   "translations": {
+    "de": "Vorwärts\tAlt+Right",
+    "es": "Adelante\tAlt+Right",
+    "fr": "Suivant\tAlt+Right",
+    "ja": "進む\tAlt+Right",
+    "ko": "앞으로\tAlt+Right",
+    "nl": "Vooruit\tAlt+Right",
+    "zh-Hans": "前进\tAlt+Right",
+    "zh-Hant": "前進\tAlt+Right"
+   }
+  },
+  "appMenu.fullScreen": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "Full screen\tF11",
+   "translations": {
+    "de": "Vollbild\tF11",
+    "es": "Pantalla completa\tF11",
+    "fr": "Plein écran\tF11",
+    "ja": "全画面表示\tF11",
+    "ko": "전체 화면\tF11",
+    "nl": "Volledig scherm\tF11",
+    "zh-Hans": "全屏\tF11",
+    "zh-Hant": "全螢幕\tF11"
+   }
+  },
+  "appMenu.help": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "Help",
+   "translations": {
+    "de": "Hilfe",
+    "es": "Ayuda",
+    "fr": "Aide",
+    "ja": "ヘルプ",
+    "ko": "도움말",
+    "nl": "Help",
+    "zh-Hans": "帮助",
+    "zh-Hant": "說明"
+   }
+  },
+  "appMenu.history": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "History",
+   "translations": {
+    "de": "Verlauf",
+    "es": "Historial",
+    "fr": "Historique",
+    "ja": "履歴",
+    "ko": "방문 기록",
+    "nl": "Geschiedenis",
+    "zh-Hans": "历史记录",
+    "zh-Hant": "歷史記錄"
+   }
+  },
+  "appMenu.home": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "Home\tAlt+Home",
+   "translations": {
+    "de": "Startseite\tAlt+Home",
+    "es": "Inicio\tAlt+Home",
+    "fr": "Accueil\tAlt+Home",
+    "ja": "ホーム\tAlt+Home",
+    "ko": "홈\tAlt+Home",
+    "nl": "Startpagina\tAlt+Home",
+    "zh-Hans": "主页\tAlt+Home",
+    "zh-Hant": "首頁\tAlt+Home"
+   }
+  },
+  "appMenu.horizontalTabs": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "Horizontal tabs",
+   "translations": {
+    "de": "Horizontale Tabs",
+    "es": "Pestañas horizontales",
+    "fr": "Onglets horizontaux",
+    "ja": "水平タブ",
+    "ko": "가로 탭",
+    "nl": "Horizontale tabbladen",
+    "zh-Hans": "水平标签页",
+    "zh-Hant": "水平分頁"
+   }
+  },
+  "appMenu.importFromBrowser": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "Import from another browser…",
+   "translations": {
+    "de": "Aus anderem Browser importieren…",
+    "es": "Importar desde otro navegador…",
+    "fr": "Importer depuis un autre navigateur…",
+    "ja": "他のブラウザからインポート…",
+    "ko": "다른 브라우저에서 가져오기…",
+    "nl": "Importeren uit een andere browser…",
+    "zh-Hans": "从其他浏览器导入…",
+    "zh-Hant": "從其他瀏覽器匯入…"
+   }
+  },
+  "appMenu.importUserData": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "Import user data…",
+   "translations": {
+    "de": "Benutzerdaten importieren…",
+    "es": "Importar datos de usuario…",
+    "fr": "Importer les données utilisateur…",
+    "ja": "ユーザーデータを読み込む…",
+    "ko": "사용자 데이터 가져오기…",
+    "nl": "Gebruikersgegevens importeren…",
+    "zh-Hans": "导入用户数据…",
+    "zh-Hant": "匯入使用者資料…"
+   }
+  },
+  "appMenu.inspectElements": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "Inspect elements",
+   "translations": {
+    "de": "Elemente untersuchen",
+    "es": "Inspeccionar elementos",
+    "fr": "Inspecter les éléments",
+    "ja": "要素を検証",
+    "ko": "요소 검사",
+    "nl": "Elementen inspecteren",
+    "zh-Hans": "检查元素",
+    "zh-Hant": "檢查元素"
+   }
+  },
+  "appMenu.javascriptConsole": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "JavaScript console\tCtrl+Shift+J",
+   "translations": {
+    "de": "JavaScript-Konsole\tCtrl+Shift+J",
+    "es": "Consola de JavaScript\tCtrl+Shift+J",
+    "fr": "Console JavaScript\tCtrl+Shift+J",
+    "ja": "JavaScript コンソール\tCtrl+Shift+J",
+    "ko": "JavaScript 콘솔\tCtrl+Shift+J",
+    "nl": "JavaScript-console\tCtrl+Shift+J",
+    "zh-Hans": "JavaScript 控制台\tCtrl+Shift+J",
+    "zh-Hant": "JavaScript 主控台\tCtrl+Shift+J"
+   }
+  },
+  "appMenu.layout": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "Layout",
+   "translations": {
+    "de": "Layout",
+    "es": "Diseño",
+    "fr": "Disposition",
+    "ja": "レイアウト",
+    "ko": "레이아웃",
+    "nl": "Indeling",
+    "zh-Hans": "布局",
+    "zh-Hant": "版面配置"
+   }
+  },
+  "appMenu.manageExtensions": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "Manage extensions",
+   "translations": {
+    "de": "Erweiterungen verwalten",
+    "es": "Gestionar extensiones",
+    "fr": "Gérer les extensions",
+    "ja": "拡張機能を管理",
+    "ko": "확장 프로그램 관리",
+    "nl": "Extensies beheren",
+    "zh-Hans": "管理扩展程序",
+    "zh-Hant": "管理擴充功能"
+   }
+  },
+  "appMenu.moreTools": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "More tools",
+   "translations": {
+    "de": "Weitere Tools",
+    "es": "Más herramientas",
+    "fr": "Plus d'outils",
+    "ja": "その他のツール",
+    "ko": "도구 더보기",
+    "nl": "Meer hulpprogramma's",
+    "zh-Hans": "更多工具",
+    "zh-Hant": "更多工具"
+   }
+  },
+  "appMenu.newIncognitoWindow": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "New incognito window\tCtrl+Shift+N",
+   "translations": {
+    "de": "Neues Inkognitofenster\tCtrl+Shift+N",
+    "es": "Nueva ventana de incógnito\tCtrl+Shift+N",
+    "fr": "Nouvelle fenêtre de navigation privée\tCtrl+Shift+N",
+    "ja": "新しいシークレット ウィンドウ\tCtrl+Shift+N",
+    "ko": "새 시크릿 창\tCtrl+Shift+N",
+    "nl": "Nieuw incognitovenster\tCtrl+Shift+N",
+    "zh-Hans": "新的无痕窗口\tCtrl+Shift+N",
+    "zh-Hant": "新增無痕式視窗\tCtrl+Shift+N"
+   }
+  },
+  "appMenu.newProfile": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "New profile…",
+   "translations": {
+    "de": "Neues Profil…",
+    "es": "Nuevo perfil…",
+    "fr": "Nouveau profil…",
+    "ja": "新しいプロファイル…",
+    "ko": "새 프로필…",
+    "nl": "Nieuw profiel…",
+    "zh-Hans": "新建配置文件…",
+    "zh-Hant": "新增設定檔…"
+   }
+  },
+  "appMenu.newSpace": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "New Space…",
+   "translations": {
+    "de": "Neuer Space…",
+    "es": "Nuevo Space…",
+    "fr": "Nouveau Space…",
+    "ja": "新しい Space…",
+    "ko": "새 Space…",
+    "nl": "Nieuwe Space…",
+    "zh-Hans": "新建 Space…",
+    "zh-Hant": "新增 Space…"
+   }
+  },
+  "appMenu.newTab": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "New tab\tCtrl+T",
+   "translations": {
+    "de": "Neuer Tab\tCtrl+T",
+    "es": "Nueva pestaña\tCtrl+T",
+    "fr": "Nouvel onglet\tCtrl+T",
+    "ja": "新しいタブ\tCtrl+T",
+    "ko": "새 탭\tCtrl+T",
+    "nl": "Nieuw tabblad\tCtrl+T",
+    "zh-Hans": "新标签页\tCtrl+T",
+    "zh-Hant": "新分頁\tCtrl+T"
+   }
+  },
+  "appMenu.newWindow": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "New window\tCtrl+N",
+   "translations": {
+    "de": "Neues Fenster\tCtrl+N",
+    "es": "Nueva ventana\tCtrl+N",
+    "fr": "Nouvelle fenêtre\tCtrl+N",
+    "ja": "新しいウィンドウ\tCtrl+N",
+    "ko": "새 창\tCtrl+N",
+    "nl": "Nieuw venster\tCtrl+N",
+    "zh-Hans": "新窗口\tCtrl+N",
+    "zh-Hant": "新視窗\tCtrl+N"
+   }
+  },
+  "appMenu.nextSpace": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "Next Space\tCtrl+Alt+Right",
+   "translations": {
+    "de": "Nächster Space\tCtrl+Alt+Right",
+    "es": "Space siguiente\tCtrl+Alt+Right",
+    "fr": "Space suivant\tCtrl+Alt+Right",
+    "ja": "次の Space\tCtrl+Alt+Right",
+    "ko": "다음 Space\tCtrl+Alt+Right",
+    "nl": "Volgende Space\tCtrl+Alt+Right",
+    "zh-Hans": "下一个 Space\tCtrl+Alt+Right",
+    "zh-Hant": "下一個 Space\tCtrl+Alt+Right"
+   }
+  },
+  "appMenu.openFile": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "Open file…\tCtrl+O",
+   "translations": {
+    "de": "Datei öffnen…\tCtrl+O",
+    "es": "Abrir archivo…\tCtrl+O",
+    "fr": "Ouvrir un fichier…\tCtrl+O",
+    "ja": "ファイルを開く…\tCtrl+O",
+    "ko": "파일 열기…\tCtrl+O",
+    "nl": "Bestand openen…\tCtrl+O",
+    "zh-Hans": "打开文件…\tCtrl+O",
+    "zh-Hant": "開啟檔案…\tCtrl+O"
+   }
+  },
+  "appMenu.previousSpace": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "Previous Space\tCtrl+Alt+Left",
+   "translations": {
+    "de": "Vorheriger Space\tCtrl+Alt+Left",
+    "es": "Space anterior\tCtrl+Alt+Left",
+    "fr": "Space précédent\tCtrl+Alt+Left",
+    "ja": "前の Space\tCtrl+Alt+Left",
+    "ko": "이전 Space\tCtrl+Alt+Left",
+    "nl": "Vorige Space\tCtrl+Alt+Left",
+    "zh-Hans": "上一个 Space\tCtrl+Alt+Left",
+    "zh-Hant": "上一個 Space\tCtrl+Alt+Left"
+   }
+  },
+  "appMenu.print": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "Print…\tCtrl+P",
+   "translations": {
+    "de": "Drucken…\tCtrl+P",
+    "es": "Imprimir…\tCtrl+P",
+    "fr": "Imprimer…\tCtrl+P",
+    "ja": "印刷…\tCtrl+P",
+    "ko": "인쇄…\tCtrl+P",
+    "nl": "Afdrukken…\tCtrl+P",
+    "zh-Hans": "打印…\tCtrl+P",
+    "zh-Hant": "列印…\tCtrl+P"
+   }
+  },
+  "appMenu.readerView": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "Reader view\tCtrl+Alt+R",
+   "translations": {
+    "de": "Leseansicht\tCtrl+Alt+R",
+    "es": "Vista de lectura\tCtrl+Alt+R",
+    "fr": "Mode lecture\tCtrl+Alt+R",
+    "ja": "リーダー表示\tCtrl+Alt+R",
+    "ko": "읽기 모드\tCtrl+Alt+R",
+    "nl": "Leesweergave\tCtrl+Alt+R",
+    "zh-Hans": "阅读视图\tCtrl+Alt+R",
+    "zh-Hant": "閱讀模式\tCtrl+Alt+R"
+   }
+  },
+  "appMenu.recentlyClosed": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "Recently closed",
+   "translations": {
+    "de": "Kürzlich geschlossen",
+    "es": "Cerrado recientemente",
+    "fr": "Récemment fermés",
+    "ja": "最近閉じたタブ",
+    "ko": "최근에 닫은 탭",
+    "nl": "Onlangs gesloten",
+    "zh-Hans": "最近关闭的标签页",
+    "zh-Hant": "最近關閉的分頁"
+   }
+  },
+  "appMenu.renameSpace": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "Rename Space…",
+   "translations": {
+    "de": "Space umbenennen…",
+    "es": "Cambiar nombre del Space…",
+    "fr": "Renommer le Space…",
+    "ja": "Space の名前を変更…",
+    "ko": "Space 이름 바꾸기…",
+    "nl": "Space hernoemen…",
+    "zh-Hans": "重命名 Space…",
+    "zh-Hant": "重新命名 Space…"
+   }
+  },
+  "appMenu.reopenClosedTab": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "Reopen closed tab\tCtrl+Shift+T",
+   "translations": {
+    "de": "Geschlossenen Tab wieder öffnen\tCtrl+Shift+T",
+    "es": "Reabrir pestaña cerrada\tCtrl+Shift+T",
+    "fr": "Rouvrir l'onglet fermé\tCtrl+Shift+T",
+    "ja": "閉じたタブを再度開く\tCtrl+Shift+T",
+    "ko": "닫은 탭 다시 열기\tCtrl+Shift+T",
+    "nl": "Gesloten tabblad opnieuw openen\tCtrl+Shift+T",
+    "zh-Hans": "重新打开关闭的标签页\tCtrl+Shift+T",
+    "zh-Hant": "重新開啟已關閉的分頁\tCtrl+Shift+T"
+   }
+  },
+  "appMenu.reportIssue": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "Report an issue…",
+   "translations": {
+    "de": "Problem melden…",
+    "es": "Informar de un problema…",
+    "fr": "Signaler un problème…",
+    "ja": "問題を報告…",
+    "ko": "문제 신고…",
+    "nl": "Een probleem melden…",
+    "zh-Hans": "报告问题…",
+    "zh-Hant": "回報問題…"
+   }
+  },
+  "appMenu.savePageAs": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "Save page as…\tCtrl+Shift+S",
+   "translations": {
+    "de": "Seite speichern unter…\tCtrl+Shift+S",
+    "es": "Guardar página como…\tCtrl+Shift+S",
+    "fr": "Enregistrer la page sous…\tCtrl+Shift+S",
+    "ja": "名前を付けてページを保存…\tCtrl+Shift+S",
+    "ko": "다른 이름으로 페이지 저장…\tCtrl+Shift+S",
+    "nl": "Pagina opslaan als…\tCtrl+Shift+S",
+    "zh-Hans": "网页另存为…\tCtrl+Shift+S",
+    "zh-Hant": "另存網頁為…\tCtrl+Shift+S"
+   }
+  },
+  "appMenu.settings": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "Settings\tCtrl+,",
+   "translations": {
+    "de": "Einstellungen\tCtrl+,",
+    "es": "Configuración\tCtrl+,",
+    "fr": "Paramètres\tCtrl+,",
+    "ja": "設定\tCtrl+,",
+    "ko": "설정\tCtrl+,",
+    "nl": "Instellingen\tCtrl+,",
+    "zh-Hans": "设置\tCtrl+,",
+    "zh-Hant": "設定\tCtrl+,"
+   }
+  },
+  "appMenu.showBookmarksBar": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "Show bookmarks bar\tCtrl+Shift+B",
+   "translations": {
+    "de": "Lesezeichenleiste anzeigen\tCtrl+Shift+B",
+    "es": "Mostrar barra de marcadores\tCtrl+Shift+B",
+    "fr": "Afficher la barre de favoris\tCtrl+Shift+B",
+    "ja": "ブックマーク バーを表示\tCtrl+Shift+B",
+    "ko": "북마크 바 표시\tCtrl+Shift+B",
+    "nl": "Bladwijzerbalk weergeven\tCtrl+Shift+B",
+    "zh-Hans": "显示书签栏\tCtrl+Shift+B",
+    "zh-Hant": "顯示書籤列\tCtrl+Shift+B"
+   }
+  },
+  "appMenu.showFullHistory": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "Show full history\tCtrl+H",
+   "translations": {
+    "de": "Gesamten Verlauf anzeigen\tCtrl+H",
+    "es": "Mostrar todo el historial\tCtrl+H",
+    "fr": "Afficher tout l'historique\tCtrl+H",
+    "ja": "履歴をすべて表示\tCtrl+H",
+    "ko": "전체 방문 기록 보기\tCtrl+H",
+    "nl": "Volledige geschiedenis weergeven\tCtrl+H",
+    "zh-Hans": "显示完整历史记录\tCtrl+H",
+    "zh-Hant": "顯示完整歷史記錄\tCtrl+H"
+   }
+  },
+  "appMenu.showSidebar": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "Show sidebar\tCtrl+S",
+   "translations": {
+    "de": "Seitenleiste anzeigen\tCtrl+S",
+    "es": "Mostrar barra lateral\tCtrl+S",
+    "fr": "Afficher la barre latérale\tCtrl+S",
+    "ja": "サイドバーを表示\tCtrl+S",
+    "ko": "사이드바 표시\tCtrl+S",
+    "nl": "Zijbalk weergeven\tCtrl+S",
+    "zh-Hans": "显示侧边栏\tCtrl+S",
+    "zh-Hant": "顯示側邊欄\tCtrl+S"
+   }
+  },
+  "appMenu.spaces": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "Spaces",
+   "translations": {
+    "de": "Spaces",
+    "es": "Spaces",
+    "fr": "Spaces",
+    "ja": "Spaces",
+    "ko": "Spaces",
+    "nl": "Spaces",
+    "zh-Hans": "Spaces",
+    "zh-Hant": "Spaces"
+   }
+  },
+  "appMenu.taskManager": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "Task manager\tShift+Esc",
+   "translations": {
+    "de": "Task-Manager\tShift+Esc",
+    "es": "Administrador de tareas\tShift+Esc",
+    "fr": "Gestionnaire de tâches\tShift+Esc",
+    "ja": "タスク マネージャー\tShift+Esc",
+    "ko": "작업 관리자\tShift+Esc",
+    "nl": "Taakbeheer\tShift+Esc",
+    "zh-Hans": "任务管理器\tShift+Esc",
+    "zh-Hant": "工作管理員\tShift+Esc"
+   }
+  },
+  "appMenu.urlRules": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "URL rules…",
+   "translations": {
+    "de": "URL-Regeln…",
+    "es": "Reglas de URL…",
+    "fr": "Règles d'URL…",
+    "ja": "URL ルール…",
+    "ko": "URL 규칙…",
+    "nl": "URL-regels…",
+    "zh-Hans": "URL 规则…",
+    "zh-Hant": "URL 規則…"
+   }
+  },
+  "appMenu.verticalTabs": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "Vertical tabs",
+   "translations": {
+    "de": "Vertikale Tabs",
+    "es": "Pestañas verticales",
+    "fr": "Onglets verticaux",
+    "ja": "垂直タブ",
+    "ko": "세로 탭",
+    "nl": "Verticale tabbladen",
+    "zh-Hans": "垂直标签页",
+    "zh-Hant": "垂直分頁"
+   }
+  },
+  "appMenu.viewSource": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "View source\tCtrl+U",
+   "translations": {
+    "de": "Quelltext anzeigen\tCtrl+U",
+    "es": "Ver código fuente\tCtrl+U",
+    "fr": "Afficher la source\tCtrl+U",
+    "ja": "ソースを表示\tCtrl+U",
+    "ko": "소스 보기\tCtrl+U",
+    "nl": "Bron weergeven\tCtrl+U",
+    "zh-Hans": "查看源代码\tCtrl+U",
+    "zh-Hant": "檢視原始碼\tCtrl+U"
+   }
+  },
+  "appMenu.whatsNew": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "What's new",
+   "translations": {
+    "de": "Neuigkeiten",
+    "es": "Novedades",
+    "fr": "Nouveautés",
+    "ja": "新機能",
+    "ko": "새로운 기능",
+    "nl": "Wat is er nieuw",
+    "zh-Hans": "新功能",
+    "zh-Hant": "最新消息"
+   }
+  },
+  "appMenu.zoom": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "Zoom",
+   "translations": {
+    "de": "Zoom",
+    "es": "Zoom",
+    "fr": "Zoom",
+    "ja": "ズーム",
+    "ko": "확대/축소",
+    "nl": "Zoomen",
+    "zh-Hans": "缩放",
+    "zh-Hant": "縮放"
+   }
+  },
+  "appMenu.zoomIn": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "Zoom in\tCtrl++",
+   "translations": {
+    "de": "Vergrößern\tCtrl++",
+    "es": "Ampliar\tCtrl++",
+    "fr": "Zoom avant\tCtrl++",
+    "ja": "拡大\tCtrl++",
+    "ko": "확대\tCtrl++",
+    "nl": "Inzoomen\tCtrl++",
+    "zh-Hans": "放大\tCtrl++",
+    "zh-Hant": "放大\tCtrl++"
+   }
+  },
+  "appMenu.zoomOut": {
+   "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
+   "en": "Zoom out\tCtrl+-",
+   "translations": {
+    "de": "Verkleinern\tCtrl+-",
+    "es": "Reducir\tCtrl+-",
+    "fr": "Zoom arrière\tCtrl+-",
+    "ja": "縮小\tCtrl+-",
+    "ko": "축소\tCtrl+-",
+    "nl": "Uitzoomen\tCtrl+-",
+    "zh-Hans": "缩小\tCtrl+-",
+    "zh-Hant": "縮小\tCtrl+-"
+   }
+  },
   "bookmarkBar.folderContextMenu.renameAction": {
    "comment": "sidebar — used at phi_shell_window.cc:6353",
    "en": "Rename…"
@@ -655,6 +1551,34 @@
   "common.tabMultiSelectionContextMenu.openAsSplitAction": {
    "comment": "sidebar — used at phi_shell_window.cc:5560",
    "en": "Open as Split"
+  },
+  "dialog.deleteProfile.title": {
+   "comment": "dialog — destructive confirm title (docs/windows-native-ui.md §6). Translations authored for Windows (impl log D14).",
+   "en": "Delete this profile?",
+   "translations": {
+    "de": "Dieses Profil löschen?",
+    "es": "¿Eliminar este perfil?",
+    "fr": "Supprimer ce profil ?",
+    "ja": "このプロファイルを削除しますか？",
+    "ko": "이 프로필을 삭제할까요?",
+    "nl": "Dit profiel verwijderen?",
+    "zh-Hans": "删除此配置文件？",
+    "zh-Hant": "刪除此設定檔？"
+   }
+  },
+  "dialog.deleteSpace.title": {
+   "comment": "dialog — destructive confirm title (docs/windows-native-ui.md §6). Translations authored for Windows (impl log D14).",
+   "en": "Delete this Space?",
+   "translations": {
+    "de": "Diesen Space löschen?",
+    "es": "¿Eliminar este Space?",
+    "fr": "Supprimer ce Space ?",
+    "ja": "この Space を削除しますか？",
+    "ko": "이 Space를 삭제할까요?",
+    "nl": "Deze Space verwijderen?",
+    "zh-Hans": "删除此 Space？",
+    "zh-Hant": "刪除此 Space？"
+   }
   },
   "download.safety.short.blocked": {
    "comment": "downloads — used at phi_downloads_popover.cc:421",
@@ -2905,6 +3829,48 @@
    "comment": "sidebar — used at phi_shell_window.cc:5939",
    "en": "Rename Pinned Tab"
   },
+  "sidebar.section.bookmarks": {
+   "comment": "sidebar — section label over a band (docs/windows-native-ui.md §4.2); translations authored for Windows (impl log D14).",
+   "en": "Bookmarks",
+   "translations": {
+    "de": "Lesezeichen",
+    "es": "Marcadores",
+    "fr": "Favoris",
+    "ja": "ブックマーク",
+    "ko": "북마크",
+    "nl": "Bladwijzers",
+    "zh-Hans": "书签",
+    "zh-Hant": "書籤"
+   }
+  },
+  "sidebar.section.pinned": {
+   "comment": "sidebar — section label over a band (docs/windows-native-ui.md §4.2); translations authored for Windows (impl log D14).",
+   "en": "Pinned",
+   "translations": {
+    "de": "Angeheftet",
+    "es": "Fijadas",
+    "fr": "Épinglés",
+    "ja": "ピン留め",
+    "ko": "고정됨",
+    "nl": "Vastgezet",
+    "zh-Hans": "已固定",
+    "zh-Hant": "已釘選"
+   }
+  },
+  "sidebar.section.tabs": {
+   "comment": "sidebar — section label over a band (docs/windows-native-ui.md §4.2); translations authored for Windows (impl log D14).",
+   "en": "Tabs",
+   "translations": {
+    "de": "Tabs",
+    "es": "Pestañas",
+    "fr": "Onglets",
+    "ja": "タブ",
+    "ko": "탭",
+    "nl": "Tabbladen",
+    "zh-Hans": "标签页",
+    "zh-Hant": "分頁"
+   }
+  },
   "sidebar.setTheme": {
    "comment": "sidebar — used at phi_shell_window.cc:6356",
    "en": "Set Theme"
@@ -3100,6 +4066,104 @@
   "spaces.builtIn.incognito.routingTargetName": {
    "comment": "Built-in Incognito target name used by URL routing (phi_url_rules_window.cc, phi_url_router.cc)",
    "en": "Incognito"
+  },
+  "spaces.hoverCard.status.completed": {
+   "comment": "spaces — the pip hover flyout's second line (docs/windows-native-ui.md §5.6). Translations authored for Windows (impl log D14).",
+   "en": "Completed",
+   "translations": {
+    "de": "Abgeschlossen",
+    "es": "Completado",
+    "fr": "Terminé",
+    "ja": "完了",
+    "ko": "완료됨",
+    "nl": "Voltooid",
+    "zh-Hans": "已完成",
+    "zh-Hant": "已完成"
+   }
+  },
+  "spaces.hoverCard.status.error": {
+   "comment": "spaces — the pip hover flyout's second line (docs/windows-native-ui.md §5.6). Translations authored for Windows (impl log D14).",
+   "en": "Error",
+   "translations": {
+    "de": "Fehler",
+    "es": "Error",
+    "fr": "Erreur",
+    "ja": "エラー",
+    "ko": "오류",
+    "nl": "Fout",
+    "zh-Hans": "错误",
+    "zh-Hant": "錯誤"
+   }
+  },
+  "spaces.hoverCard.status.held": {
+   "comment": "spaces — the pip hover flyout's second line (docs/windows-native-ui.md §5.6). Translations authored for Windows (impl log D14).",
+   "en": "Paused by you",
+   "translations": {
+    "de": "Von Ihnen angehalten",
+    "es": "Pausado por ti",
+    "fr": "Mis en pause par vous",
+    "ja": "ユーザーが一時停止",
+    "ko": "사용자가 일시 중지함",
+    "nl": "Door u gepauzeerd",
+    "zh-Hans": "已由你暂停",
+    "zh-Hant": "已由您暫停"
+   }
+  },
+  "spaces.hoverCard.status.idle": {
+   "comment": "spaces — the pip hover flyout's second line (docs/windows-native-ui.md §5.6). Translations authored for Windows (impl log D14).",
+   "en": "Idle",
+   "translations": {
+    "de": "Inaktiv",
+    "es": "Inactivo",
+    "fr": "Inactif",
+    "ja": "待機中",
+    "ko": "대기 중",
+    "nl": "Inactief",
+    "zh-Hans": "空闲",
+    "zh-Hant": "閒置"
+   }
+  },
+  "spaces.hoverCard.status.running": {
+   "comment": "spaces — the pip hover flyout's second line (docs/windows-native-ui.md §5.6). Translations authored for Windows (impl log D14).",
+   "en": "Running",
+   "translations": {
+    "de": "Läuft",
+    "es": "En ejecución",
+    "fr": "En cours",
+    "ja": "実行中",
+    "ko": "실행 중",
+    "nl": "Actief",
+    "zh-Hans": "运行中",
+    "zh-Hant": "執行中"
+   }
+  },
+  "spaces.hoverCard.tabs.one": {
+   "comment": "spaces — the pip hover flyout's second line (docs/windows-native-ui.md §5.6). Plural family: {0} tabs.",
+   "en": "{0} tab",
+   "translations": {
+    "de": "{0} Tab",
+    "es": "{0} pestaña",
+    "fr": "{0} onglet",
+    "ja": "{0} 個のタブ",
+    "ko": "탭 {0}개",
+    "nl": "{0} tabblad",
+    "zh-Hans": "{0} 个标签页",
+    "zh-Hant": "{0} 個分頁"
+   }
+  },
+  "spaces.hoverCard.tabs.other": {
+   "comment": "spaces — the pip hover flyout's second line (docs/windows-native-ui.md §5.6). Plural family: {0} tabs.",
+   "en": "{0} tabs",
+   "translations": {
+    "de": "{0} Tabs",
+    "es": "{0} pestañas",
+    "fr": "{0} onglets",
+    "ja": "{0} 個のタブ",
+    "ko": "탭 {0}개",
+    "nl": "{0} tabbladen",
+    "zh-Hans": "{0} 个标签页",
+    "zh-Hant": "{0} 個分頁"
+   }
   },
   "tabs.tabGroup.colorName.blue": {
    "comment": "sidebar — used at phi_shell_window.cc:164",

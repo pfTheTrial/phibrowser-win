@@ -203,12 +203,8 @@ void PhiOmniboxSession::Position() {
   // and the EDIT is a real child window, so a stale width paints straight
   // over whatever just appeared beside it. Moving only on a real change
   // keeps that call from feeding itself more paints.
-  // Hosted: the capsule is in the shell's space, the EDIT in the host's.
   RECT placed = target;
-  const HWND parent = host_ ? host_ : shell_->OmniboxShellWindow();
-  if (host_) {
-    ::OffsetRect(&placed, -host_offset_.x, -host_offset_.y);
-  }
+  const HWND parent = shell_->OmniboxShellWindow();
   RECT current = {};
   if (::GetWindowRect(field_, &current) &&
       ::MapWindowPoints(HWND_DESKTOP, parent,
@@ -226,33 +222,6 @@ void PhiOmniboxSession::SetFieldVisible(bool visible) {
   }
 }
 
-void PhiOmniboxSession::HostField(HWND host, POINT offset) {
-  if (!field_ || !host || host == host_) {
-    return;
-  }
-  ClosePopup(/*stop_query=*/true);  // Anchored to the old place.
-  host_ = host;
-  host_offset_ = offset;
-  ::SetParent(field_, host);
-  Position();
-  ::ShowWindow(field_, SW_SHOW);
-}
-
-void PhiOmniboxSession::UnhostField() {
-  if (!host_) {
-    return;
-  }
-  ClosePopup(/*stop_query=*/true);
-  host_ = nullptr;
-  host_offset_ = {};
-  if (field_) {
-    // Down first: the shell's own turn shows it again if its layout has a
-    // field, and a reparented EDIT must not flash at the host's position.
-    ::ShowWindow(field_, SW_HIDE);
-    ::SetParent(field_, shell_->OmniboxShellWindow());
-    Position();
-  }
-}
 
 void PhiOmniboxSession::Sync(bool force) {
   if (!field_) {
@@ -357,13 +326,13 @@ HBRUSH PhiOmniboxSession::OnCtlColorEdit(HDC edit_dc, HWND edit) {
   // Balanced and comfortable wash over the bar's own windowBackground,
   // so the EDIT carries no Space tint there; only performance's
   // sidebar pill blends over the tinted ground (see kFieldBg).
-  const PhiLayoutMode mode = shell_->OmniboxLayoutMode();
-  const COLORREF bg =
-      mode == PhiLayoutMode::kBalanced
-          ? (field_hover_ ? palette.bar_hover : palette.window_bg)
-      : mode == PhiLayoutMode::kComfortable
-          ? (field_hover_ ? palette.bar_hover_strong : palette.bar_hover)
-          : (field_hover_ ? palette.hover_strong : palette.hover);
+  // The EDIT paints on the field's own fill (windows-native-ui.md §4, the
+  // shell's PaintChrome): the control fill at rest, a step darker under
+  // the pointer, the card body while focused — in every layout.
+  const bool focused = ::GetFocus() == field_;
+  const COLORREF bg = focused        ? palette.card
+                      : field_hover_ ? PhiBlend(palette.ink, palette.card, 18)
+                                     : palette.control_fill;
   ::SetTextColor(edit_dc, palette.label);
   ::SetBkColor(edit_dc, bg);
   if (!brush_ || brush_color_ != bg) {

@@ -27,7 +27,7 @@
 #include "phibrowser-win/client/phi_browser_host.h"
 #include "phibrowser-win/client/phi_caption_band.h"
 #include "phibrowser-win/client/phi_content_slide.h"
-#include "phibrowser-win/client/phi_menu_bar.h"
+#include "phibrowser-win/client/phi_app_menu.h"
 #include "phibrowser-win/client/phi_native_pages_host.h"
 #include "phibrowser-win/client/phi_ids.h"
 #include "phibrowser-win/client/phi_omnibox_session.h"
@@ -464,7 +464,7 @@ inline constexpr int kSidebarWidthDefault = 240;
 inline constexpr int kSidebarWidthMin = 193;
 inline constexpr int kSidebarWidthMax = 500;
 
-class PhiMenuBar;
+class PhiAppMenu;
 
 // Owns the client-drawn shell window for one browser (the Windows twin of the
 // Mac MainBrowserWindowController), using the Option-B model
@@ -491,10 +491,6 @@ enum : UINT {
   // The comfortable Space slide was begun and the switch under it has run:
   // fetch the entering page and release the slide (StartSlideCapture).
   kMsgPhiSlideCapture,
-  // Alt pressed and released on its own: summon the caption band's hidden
-  // menu titles (and hide them again on a second Alt), the keyboard route
-  // to the bar the pointer reveals by hovering.
-  kMsgPhiToggleMenuReveal,
   // A close that arrived while a nested message loop of this window was on
   // the stack (PhiModalDepth() > 0): the handler retries on this posted
   // turn, and keeps retrying by timer until the loop has unwound. See
@@ -514,7 +510,7 @@ class PhiShellWindow : public PhiHitSource,
                             private PhiOmniboxShell,
                             private PhiBrowserHostShell,
                             private PhiCaptionShell,
-                            private PhiMenuBarShell,
+                            private PhiAppMenuShell,
                             private PhiNativePagesShell,
                             private PhiSidebarShell,
                             private PhiSpacesStripShell,
@@ -786,7 +782,9 @@ class PhiShellWindow : public PhiHitSource,
   // title and item string as wide text inside its HMENUs, so a language
   // change cannot be repainted — the menus have to be built again, and the
   // caption band's measured title rects re-measured with them.
-  void RebuildMenuBar();
+  // Recreates the app menu from the CURRENT language: the HMENU rows cache
+  // every string as wide text, so a language change cannot be repainted.
+  void RebuildAppMenu();
   // The Space whose browser is `browser_id` in this slot, or empty — the
   // reverse of BrowserIdForSpace, for a skill payload that names a WINDOW
   // and wants the Space it shows.
@@ -853,11 +851,12 @@ class PhiShellWindow : public PhiHitSource,
   // tab, so it must be the pane the user is typing in.
   void ActivatePaneTab(int tab_id);
 
-  // The shell window's menu bar (null before the shell exists). The control
-  // socket reads and clicks it through here.
-  PhiMenuBar* menu_bar() {
-    return caption_band_ ? caption_band_->menu_bar() : nullptr;
-  }
+  // The shell window's app menu (⋯; null before the shell exists). The
+  // control socket reads and clicks it through here.
+  PhiAppMenu* app_menu() { return app_menu_.get(); }
+  // Drops the app menu under its ⋯ button (the button's click, F10, Alt+F,
+  // Alt+E and the solo Alt tap all land here).
+  void ShowAppMenu();
 
   // Re-lays the chrome for `mode` and repaints. Cheap: all geometry is derived
   // from the client rect on demand, so nothing is cached across the switch.
@@ -888,7 +887,17 @@ class PhiShellWindow : public PhiHitSource,
   // The caption band's sidebar toggle (empty in comfortable), and whether
   // the sidebar is collapsed behind it — for the layout verb.
   RECT sidebar_toggle_rect();
+  // The app menu button (⋯), for the layout verb.
+  RECT app_menu_rect();
+  // The active tab is one pane of a split (the address row is then a
+  // sheet of its own, §4.6).
+  bool ActiveTabIsSplit() const;
   bool sidebar_collapsed() const { return sidebar_collapsed_; }
+  // The floating panel is slid in over the page right now (§4.4).
+  bool sidebar_floating() const { return floating_sidebar_ && floating_expanded_; }
+  // Docks (`collapsed` false) or hides the sidebar; hidden, the panel
+  // stays tucked at the window's left edge. ToggleSidebar flips it.
+  void SetSidebarCollapsed(bool collapsed);
   // The two signals behind that offer, separately — a test needs to know
   // WHICH one lit the button (upstream's distiller, or the reader
   // extension's own in-page probe and site rules).
@@ -956,17 +965,11 @@ class PhiShellWindow : public PhiHitSource,
   struct Layout {
     PhiLayoutMode mode = PhiLayoutMode::kPerformance;
     RECT client{};
-    // The caption band: menu titles leading, then drag space, then the three
-    // caption buttons. The OS caption is gone (WM_NCCALCSIZE) — this row IS
-    // the title bar, so the menu shares it with minimize / maximize / close.
+    // The caption band: drag space, then the trailing control cluster and
+    // the three caption buttons. The OS caption is gone (WM_NCCALCSIZE) —
+    // this row IS the title bar.
     RECT title_bar{};
     RECT caption_min{}, caption_max{}, caption_close{};
-    // The x the menu titles may not cross: the caption band's trailing
-    // control cluster (back / forward / reload and search-tabs in the
-    // vertical layouts), or the caption buttons where there is no cluster.
-    // A narrow window drops the titles that would collide rather than
-    // painting them under the controls.
-    int band_limit = 0;
     RECT sidebar{};  // Empty in Comfortable.
     RECT top_bar{};  // The band above the content; empty in Performance.
     RECT content{};  // Where the reparented browser child goes.
@@ -996,23 +999,22 @@ class PhiShellWindow : public PhiHitSource,
     // the menu.
     RECT downloads{}, memory{}, feedback{}, chat{};
     RECT extensions{};     // The puzzle button (in-field / bottom bar / header).
-    // Comfortable's overflow menu (Chrome's ⋮): the toolbar's trailing
-    // button. It is that layout's ONLY way to the menu bar — the caption
-    // band has no titles there — and the home of the Feedback, Chat and
-    // memory entries the other layouts keep in bands. Empty elsewhere.
-    RECT overflow{};
-    // Comfortable's Phi button: the logo alone at the caption band's leading
-    // edge, the corner the Mac's menu bar gives the Phi menu and where the
-    // vertical layouts start their titles. It drops the bar's FIRST popup;
-    // the rest of the bar stays behind the overflow. Empty in the other
-    // layouts, which draw the real "Phi" title there instead.
-    RECT phi_menu{};
+    // The app menu button (⋯): comfortable's toolbar trailing button, the
+    // vertical layout's band cluster. Every layout has one — it is the
+    // only way to the menu (docs/windows-native-ui.md §3).
+    RECT app_menu{};
     // The globe leading comfortable's omnibox pill, where Chrome shows the
     // site chip. Empty in the other layouts, whose fields carry no icon.
     RECT page_icon{};
-    // SideAddressBar's in-field copy-link button (performance layout only) —
-    // the leading half of the field's trailing stack, the puzzle its other.
-    RECT copy_link{};
+    // The in-field Bookmark-this-tab slot (the star), trailing the field.
+    RECT star{};
+    // The HTCAPTION run reserved between the omnibox and the tool cluster
+    // (vertical layout).
+    RECT drag_gutter{};
+    // The floating panel's pin (empty on the shell's own layout) and the
+    // sidebar's section labels.
+    RECT pin{};
+    RECT pinned_label{}, bookmarks_label{}, tabs_label{};
     // Reader View's entry, leading the copy-link button. Empty unless the
     // ACTIVE tab is distillable — the Mac shows the reader button only where
     // Reader View has something to offer.
@@ -1113,7 +1115,9 @@ class PhiShellWindow : public PhiHitSource,
   void ShowTabRowMenu(POINT pt, const MenuRow& row);
   void ShowPinnedCellMenu(POINT pt, const MenuRow& row);
   void ShowBookmarkRowMenu(POINT pt, const MenuRow& row);
-  void ShowTabAreaMenu(POINT pt);
+  // `space_only`: the Space block alone — a right-click on a Space pip or
+  // the Space chip (docs/windows-native-ui.md §5.4).
+  void ShowTabAreaMenu(POINT pt, bool space_only = false);
   // A right-click inside the bookmark bar's band: a pill takes the bookmark
   // row's menu, the bare run the bar's own. False when `pt` is off the bar.
   bool ShowBookmarkBarContextMenu(POINT pt);
@@ -1167,17 +1171,14 @@ class PhiShellWindow : public PhiHitSource,
   HFONT pip_text_font_ = nullptr;
   // 11pt labels — the bottom bar's Feedback/Chat capsules (the Mac's 11pt).
   HFONT small_font_ = nullptr;
+  // The sidebar's section labels: 12 dip Segoe UI Variable, `dim`.
+  HFONT label_font_ = nullptr;
   // The row face at semibold — bookmark folder titles (the Mac's .medium)
   // and tab-group headers (.semibold). Built with ui_font_.
   HFONT ui_semibold_font_ = nullptr;
   // 8pt semibold — the pinned extension icons' badge pill (the Mac's
   // ExtensionBadge). Built with ui_font_.
   HFONT badge_font_ = nullptr;
-  // The caption band's Phi mark when the ICO's 256px entry cannot be read
-  // (see PhiLogoBgra256): loaded from the ICO at the pixel size it draws,
-  // reloaded when a DPI change moves that size, destroyed with the shell.
-  HICON logo_icon_ = nullptr;
-  int logo_icon_size_ = 0;
   UINT dpi_ = 96;
 
 
@@ -1191,9 +1192,6 @@ class PhiShellWindow : public PhiHitSource,
   // band brushes.
   HBITMAP back_buffer_ = nullptr;
   SIZE back_buffer_size_{};
-  std::vector<HBRUSH> band_brushes_;
-  COLORREF band_top_ = 0;
-  COLORREF band_bottom_ = 0;
   // The slot palette's window ground — what uncovered backbuffer pixels show.
   COLORREF BackgroundFill() const;
 
@@ -1223,7 +1221,7 @@ class PhiShellWindow : public PhiHitSource,
   RECT HoverRect(HoverKind kind, int index);
   void SetHover(HoverKind kind, int index);
   // The chrome buttons a kNav hover indexes, in PaintChrome's order.
-  std::array<RECT, 15> NavHoverTable(const Layout& layout) const;
+  std::array<RECT, 16> NavHoverTable(const Layout& layout) const;
 
   // The hovered row's page-snapshot card (the Mac's TabPreviewController).
   // Unlike the Space card above it floats in its own popup, so it can hang
@@ -1405,6 +1403,11 @@ class PhiShellWindow : public PhiHitSource,
   // reveal state machine, the caption buttons and the WM_NC* frame; the
   // shell forwards it messages and asks it to paint its rect.
   std::unique_ptr<PhiCaptionBand> caption_band_;
+  // The palette a context menu was opened with; PopupAt points the request
+  // at it and it must outlive the menu loop.
+  mutable PhiPalette popup_palette_;
+  // The app menu (⋯), the shell's own control since the menu bar went.
+  std::unique_ptr<PhiAppMenu> app_menu_;
   // --- The address field, as a component (phi_omnibox_session.h) -----------
   // The single owner of the EDIT, its subclass, the suggestion dropdown, the
   // results and the navigation state (docs/architecture-review.md §3.5,
@@ -1419,21 +1422,17 @@ class PhiShellWindow : public PhiHitSource,
   HWND CaptionShellWindow() const override;
   int CaptionScaled(int design_units) const override;
   UINT CaptionDpi() const override;
-  HFONT CaptionTextFont() override;
   HFONT CaptionGlyphFont() const override;
   PhiPalette CaptionPalette() const override;
   PhiCaptionRects CaptionRects() override;
   bool CaptionStripTakesPoint(POINT client_pt) override;
-  bool CaptionPhiMenuHovered() const override;
-  void CaptionDrawLogo(HDC dc, int x, int y, int size) override;
   void CaptionClearShellHover() override;
   bool CaptionContentFullscreen() const override;
-  PhiMenuBarShell* CaptionMenuServices() override;
 
-  // --- PhiMenuBarShell: what the menu bar asks of its shell ----------------
+  // --- PhiAppMenuShell: what the app menu asks of its shell ----------------
   // This interface RETIRED `friend class PhiMenuBar` and the six const
   // reference views the shell used to publish so the bar's by-name reaches
-  // kept compiling (lane 1 §2.1 item 3).
+  // kept compiling (lane 1 §2.1 item 3); the app menu inherited it.
   HWND MenuShellWindow() const override;
   SlotId MenuSlot() const override;
   bool MenuIncognito() const override;
@@ -1451,8 +1450,8 @@ class PhiShellWindow : public PhiHitSource,
   HWND MenuAddressField() const override;
   void MenuFocusAddressField() override;
   void MenuRefreshNavState() override;
-  PhiMenuBarNavState MenuNavState() const override;
-  std::vector<PhiMenuBarTab> MenuTabRows() const override;
+  PhiAppMenuNavState MenuNavState() const override;
+  std::vector<PhiAppMenuTab> MenuTabRows() const override;
   bool MenuReaderActive() const override;
   bool MenuReaderOfferable() const override;
   bool MenuLeaveReaderForNavigation() override;
@@ -1467,6 +1466,8 @@ class PhiShellWindow : public PhiHitSource,
   void MenuOpenFeedback() override;
   void MenuCreateSpace() override;
   void MenuEditSpaceTheme() override;
+  void MenuTriggerExtension(const std::string& extension_id) override;
+  bool MenuSidebarShown() const override;
 
   // --- PhiBrowserHostShell: what the content host asks of its shell --------
   HWND BrowserHostShellWindow() const override;
@@ -1585,6 +1586,7 @@ class PhiShellWindow : public PhiHitSource,
   PhiPalette SpacesPalette() const override;
   bool SpacesDragActive() const override;
   int SpacesHoveredChip() const override;
+  int SpacesTabCount(const std::string& space_id) const override;
   bool SpacesAddSlotHovered() const override;
   RECT SpacesAddSlotDirtyRect() override;
   void SpacesForgetHover() override;
@@ -1673,11 +1675,13 @@ class PhiShellWindow : public PhiHitSource,
   void PushSplitViewStyle();
   std::map<int64_t, phi_framework::SplitViewStyle> split_style_pushed_;
 
-  // The Mac floating sidebar (WebContentContainerViewController+
-  // FloatingSidebar): with the sidebar collapsed, hovering the left margin
-  // slides in a popup panel showing the REAL sidebar — PaintChrome runs
-  // against the expanded layout (floating_layout_ override) and the panel
-  // forwards its mouse events through the normal handlers with a y offset.
+  // The floating sidebar (docs/windows-native-ui.md §4.4): with the
+  // sidebar hidden, a popup panel showing the REAL sidebar stays TUCKED at
+  // the window's left edge with 8 dip showing; hovering it slides it in
+  // over the page, leaving slides it back, clicking the tucked edge or
+  // its pin docks the sidebar. PaintChrome runs against the expanded
+  // layout (floating_layout_ override, at the panel's own height) and
+  // the panel forwards its mouse events through the normal handlers.
   bool sidebar_collapsed_ = false;
   // Hosted as a hidden agent Space (off-screen, off-taskbar). See the ctor.
   bool agent_ = false;
@@ -1701,14 +1705,44 @@ class PhiShellWindow : public PhiHitSource,
   void FinishUnhost();
   bool floating_layout_ = false;
   HWND floating_sidebar_ = nullptr;
+  // The horizontal layout's Space chip width (dip), measured from the
+  // active Space's name (§5.2); refreshed with the layout inputs.
+  int space_chip_dip_ = 0;
+  HFONT chip_name_font_ = nullptr;
+  UINT chip_name_font_dpi_ = 0;
+  // Slid in (true) or tucked (false); the slide between the two runs on
+  // the tick timer from `floating_slide_start_`.
+  bool floating_expanded_ = false;
+  ULONGLONG floating_slide_start_ = 0;
+  int floating_slide_from_ = 0;
+  int floating_slide_to_ = 0;
+  // The panel's client height while it is up: the expanded layout the
+  // panel paints is computed for THIS height, so its bands fit the panel.
+  int floating_panel_h_ = 0;
   int floating_offset_y_ = 0;
   ULONGLONG floating_shown_tick_ = 0;
   ULONGLONG floating_outside_tick_ = 0;
+  // The pointer entered the tucked edge at this tick (the 300 ms dwell).
+  ULONGLONG floating_hover_tick_ = 0;
   // The band (chips, pinned grid, outline, tab rows) belongs to this
   // shell's own paint and pointer: false while the sidebar is collapsed and
   // the turn is not the floating panel's.
   bool BandOnShell() const;
+  // Creates the tucked panel for a hidden sidebar (no-op when it exists,
+  // the sidebar is docked, the layout is horizontal or the page is
+  // fullscreen) and destroys it for the other states.
+  void EnsureFloatingPanel();
+  void DestroyFloatingPanel();
+  // The panel's screen rect, tucked or slid in.
+  RECT FloatingPanelRect(bool expanded) const;
+  // Re-seats the panel after the shell moved or resized (hidden while the
+  // shell is minimised).
+  void PositionFloatingPanel();
+  // Starts the 150 ms slide to the expanded or tucked position.
+  void SlideFloatingPanel(bool expanded);
+  // Slides the panel in (the left-edge hover, a drag crossing the edge).
   void ShowFloatingSidebar();
+  // Slides it back to its tucked position.
   void HideFloatingSidebar(bool animated);
   void FloatingSidebarTick();
   void PaintFloatingSidebar(HDC dc);

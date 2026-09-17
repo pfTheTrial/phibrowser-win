@@ -119,6 +119,9 @@ class PhiSpacesStripShell {
   virtual HFONT SpacesPipIconFont() const = 0;
   virtual HFONT SpacesPipEmojiFont() const = 0;
   virtual HFONT SpacesPipTextFont() const = 0;
+  // The open tabs a Space's browser holds (the hover flyout's "N tabs");
+  // 0 when the Space has no live browser in this slot.
+  virtual int SpacesTabCount(const std::string& space_id) const = 0;
   // Whether the sidebar can host the create-Space form inline, and the
   // window the hover card's popup is positioned against when the floating
   // sidebar panel is the one showing the strip.
@@ -275,13 +278,18 @@ class PhiSpacesStrip {
 
  private:
   // The measured hover card, at the popup's own origin.
+  // The two-line Fluent flyout (docs/windows-native-ui.md §5.6):
+  //   [icon]  Name                     Ctrl+2
+  //           profile · N tabs
   struct CardGeometry {
     RECT card{};
-    int pill_h = 0, pill_w = 0, name_w = 0, profile_w = 0, keys_w = 0;
-    int dot_w = 0, gap = 0;
-    std::vector<int> key_widths;
-    std::vector<std::wstring> keycaps;
-    std::wstring icon, name, profile;
+    RECT tile{};   // The 20 dip icon tile.
+    RECT name{};   // Line 1's text.
+    RECT hint{};   // Line 2's text.
+    RECT keycap{}; // Trailing; empty past the ninth Space.
+    std::wstring icon, name_text, hint_text, keycap_text;
+    bool agent = false;
+    int badge = 0;  // The agent status dot (PhiAgentPipView::Badge + 1).
   };
 
   bool MeasureHoverCard(HDC dc,
@@ -337,6 +345,13 @@ class PhiSpacesStrip {
   std::wstring card_profile_;
   COLORREF card_accent_ = 0;
   int card_shortcut_ = 0;  // 1-based Ctrl+N digit; 0 = past the ninth.
+  // The flyout's type (name 12/600, hint 11, keycap 10), per DPI.
+  HFONT card_name_font_ = nullptr;
+  HFONT card_hint_font_ = nullptr;
+  HFONT card_key_font_ = nullptr;
+  UINT card_fonts_dpi_ = 0;
+  void EnsureCardFonts();
+  void ReleaseCardFonts();
   CardGeometry card_geom_;
   HWND card_popup_ = nullptr;
   RECT card_popup_rect_{};

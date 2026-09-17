@@ -85,7 +85,7 @@ void DrawGlyph(HDC dc, int px, const std::wstring& glyph, COLORREF ink) {
   lf.lfHeight = -em;
   lf.lfCharSet = DEFAULT_CHARSET;
   const std::wstring face =
-      PhiIsPrivateGlyph(glyph) ? L"Segoe MDL2 Assets" : L"Segoe UI Emoji";
+      PhiIsPrivateGlyph(glyph) ? PhiIconFaceName() : L"Segoe UI Emoji";
   std::copy_n(face.begin(), std::min(face.size(), std::size(lf.lfFaceName) - 1),
               std::begin(lf.lfFaceName));
   HFONT font = ::CreateFontIndirectW(&lf);

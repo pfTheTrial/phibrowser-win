@@ -9,8 +9,10 @@ import { restartApp } from './lib/app.mjs'
 // Account, General, Profiles, Spaces, Navigation, AI, Shortcuts, Developer.
 // There is no Phi Link pane — IMChannels exists in the Mac source but is
 // never mounted.
-const MAC_PANES = ['account', 'general', 'profiles', 'spaces', 'navigation',
-                   'ai', 'shortcuts', 'developer']
+// The Windows Settings pages (docs/windows-native-ui.md §7), rail order.
+const MAC_PANES = ['account', 'general', 'appearance', 'spaces', 'profiles',
+                   'navigation', 'ai', 'shortcuts', 'advanced', 'developer',
+                   'about']
 
 test('settings: every Mac pane is offered, in order', async () => {
   const ctl = await openControl()

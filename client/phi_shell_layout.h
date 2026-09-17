@@ -22,13 +22,17 @@ namespace phi_client {
 // and same meanings (PhiPreferences.swift), so a user moving between platforms
 // gets the same three choices:
 //
-//   kPerformance  vertical tabs, address bar IN the sidebar (the default)
+//   kPerformance  RETIRED on Windows (docs/windows-native-ui.md §4.3, impl
+//                 log D9): the enum value stays so the Mac's stored setting
+//                 still parses, but FromName answers kBalanced for it and
+//                 nothing lays it out.
 //   kBalanced     vertical tabs, address bar across the TOP of the web content
 //   kComfortable  horizontal tabs — the traditional stacked layout, no sidebar
 enum class PhiLayoutMode { kPerformance, kBalanced, kComfortable };
 
 // Wire names, matching the Mac enum's raw values so the two clients can share
-// a stored setting: "performance", "balanced", "comfortable".
+// a stored setting: "balanced", "comfortable" ("performance" reads as
+// balanced).
 const char* PhiLayoutModeName(PhiLayoutMode mode);
 bool PhiLayoutModeFromName(const std::string& name, PhiLayoutMode* out);
 
@@ -38,89 +42,88 @@ bool PhiLayoutModeFromName(const std::string& name, PhiLayoutMode* out);
 // SidebarBottomBar. ONE definition, here, so the pure layout and the
 // controller's paint code cannot drift apart.
 namespace shell_metrics {
-// The caption band: the OS title bar is removed (WM_NCCALCSIZE) and this row
-// holds the MENU TITLES and the minimize / maximize / close buttons together
-// — the menu bar lives on the caption row, not under it.
-inline constexpr int kTitleBarHeight = 32;
-// Comfortable's band is taller: it carries the tab strip as well as the
-// window controls, and a tab is 34 tall over the strip's 6pt top inset.
-inline constexpr int kTitleBarHeightTabs = 40;
+// The Windows-native geometry (docs/windows-native-ui.md §2.1). The OS
+// caption is removed (WM_NCCALCSIZE); the vertical layout's ADDRESS ROW
+// and the horizontal layout's STRIP ROW carry the minimize / maximize /
+// close buttons at the window's top-right.
+inline constexpr int kAddressRowHeight = 44;   // Vertical: the pane's first row.
+inline constexpr int kStripRowHeight = 40;     // Horizontal: the tab strip.
+inline constexpr int kToolbarRowHeight = 40;   // Horizontal: the toolbar.
 inline constexpr int kCaptionButtonWidth = 46;  // The Win11 caption metric.
-// WebContentConstant.edgesSpacing — THE horizontal gutter. There is no other
-// sidebar padding on Mac; every row applies 8 on each side itself.
+// THE horizontal gutter: every row applies 8 on each side itself.
 inline constexpr int kEdgeInset = 8;
-inline constexpr int kNavButton = 24;       // Every header button is 24x24.
-inline constexpr int kNavGroupSpacing = 1;  // back/forward/reload spacing.
-// The caption band's trailing control cluster. The vertical layouts moved
-// their header controls up here: search-tabs sits one 16pt gap before
-// minimize (close enough to reach, far enough that a miss does not minimize
-// the window), and performance leads it with back / forward / reload. Both
-// modes park search-tabs at the SAME x, so switching layout does not move
-// the button under the pointer.
-inline constexpr int kBandTrailingGap = 16;  // cluster → the caption buttons.
-inline constexpr int kBandGroupGap = 8;      // the nav trio → search-tabs.
+// The one toolbar button: 32 square, radius 4; 4 apart in a cluster.
+inline constexpr int kNavButton = 32;
+inline constexpr int kNavGroupSpacing = 4;
+// The gap between the two leading groups (toggle + search → nav trio) and
+// between the nav trio and the omnibox.
+inline constexpr int kGroupGap = 8;
+// The reserved HTCAPTION run between the omnibox and the tool cluster, so
+// a maximised omnibox never swallows every drag point.
+inline constexpr int kDragGutter = 32;
+// The tool cluster → the caption divider, and the divider's gap to the
+// caption buttons.
+inline constexpr int kBandTrailingGap = 16;
+inline constexpr int kBandGroupGap = 8;
 // The hairline standing in that gap: short enough to read as a seam between
 // the app's controls and the window's, not as a border round either.
 inline constexpr int kBandDividerHeight = 16;
-// The sidebar's own top inset: the Spaces strip starts at the gutter.
-inline constexpr int kSpacesStripTop = 8;
-inline constexpr int kSpacesStripHeight = 32;  // SpacesStripView.sidebarHeight
-// The strip shares the sidebar's gutter, so the row of pip backgrounds spans
-// EXACTLY the width of the address bar under it.
+// The omnibox: 32 high, radius 8, 24 dip in-field slots 4 from its ends.
+inline constexpr int kOmniboxHeight = 32;
+inline constexpr int kOmniboxRadius = 8;
+inline constexpr int kFieldSlot = 24;
+inline constexpr int kFieldSlotInset = 4;
+inline constexpr int kFieldTextInset = 12;
+// The Mac's minimumAddressTextWidth: below it the trailing stack hides.
+inline constexpr int kFieldMinText = 84;
+// The pinned-extension slots in the tool cluster: 28 wide, 2 apart.
+inline constexpr int kExtSlot = 28;
+inline constexpr int kExtSlotGap = 2;
+// The Space pips: 28 in a 44 header row (vertical) / the strip row
+// (horizontal), radius 6, 4 apart, the "+" trailing them.
+inline constexpr int kSpaceChip = 28;
+inline constexpr int kSpaceChipVertical = 28;  // The strip's "big pip" flag.
+inline constexpr int kSpaceChipGap = 4;
 inline constexpr int kSpacesStripPad = kEdgeInset;
-inline constexpr int kSpaceChip = 24;  // stripItemWidth/Height: a 24pt pip.
-// The vertical layouts' cell: the painted card (the Mac's 24pt chip) plus a
-// point of hit area on each side. Comfortable keeps the plain 24pt pip.
-inline constexpr int kSpaceChipVertical = 26;
-inline constexpr int kSpaceChipGap = 4;  // stripSpacing.
-inline constexpr int kAddressBarTop = 52;  // spacesStrip.bottom + 12
-inline constexpr int kAddressBarHeight = 32;
-inline constexpr int kHeaderHeight = 88;    // 48 base + 32 strip + 8 gap
-inline constexpr int kHeaderSpacer = 5;     // header → pinned band spacer.
-inline constexpr int kFavoritesSpacer = 3;  // pinned band → tab list spacer.
+inline constexpr int kSpacesStripHeight = kAddressRowHeight;  // The header row.
+// The sidebar stack: header → pinned band spacer, pinned → list spacer.
+inline constexpr int kHeaderSpacer = 8;
+// The sidebar's section labels (Pinned / Bookmarks / Tabs): 12 dip text,
+// 12 above, 4 below, 16 inset (§4.2).
+inline constexpr int kSectionLabelHeight = 28;
+inline constexpr int kSectionLabelInset = 16;
+inline constexpr int kFavoritesSpacer = 4;
 inline constexpr int kTabRowHeight = 36;    // Row pitch adds kTabRowGap.
-inline constexpr int kTabRowGap = 2;        // AppKit's default intercell.
-inline constexpr int kBottomBarHeight = 24;  // SidebarBottomBarState row.
-inline constexpr int kBottomSpacer = 8;
-// The web content is an inset rounded card floating on the tint. Margins are
-// the Mac's: LEFT FLUSH against the sidebar, 8 right/bottom, and a
-// titleAwareArea breath on top.
-inline constexpr int kContentMargin = 8;
-// The breath between the caption band and the content card.
-inline constexpr int kContentTopGap = 4;
+inline constexpr int kTabRowGap = 2;
+inline constexpr int kBottomBarHeight = 40;
+inline constexpr int kBottomSpacer = 0;
+// Kept for the readers that still name them: no margin round the pane and
+// no breath under the band — the pane is flush (§4.2).
+inline constexpr int kContentMargin = 0;
+inline constexpr int kContentTopGap = 0;
 inline constexpr int kFaviconSlot = 16;  // The 16pt slot in the row.
-// The Mac's SeparatorItem row between the bookmark outline and the tab list.
+// The separator row between the bookmark outline and the tab list.
 inline constexpr int kBookmarkSeparatorHeight = 16;
 inline constexpr int kNewTabRowHeight = 36;
-// The empty pinned band's drop zone while a tab drag is in flight: the
-// Mac's SidebarViewController.updateFavoriteHeight clamps a sub-20pt
-// container to 100pt for the duration of the drag, so the "Drag tabs here"
-// view has room under the cursor.
+// The empty pinned band's drop zone while a tab drag is in flight.
 inline constexpr int kPinnedDropZoneHeight = 100;
-// Pinned tabs: PinnedTabLayout — 45pt cells, 8pt gaps and insets.
-inline constexpr int kPinnedCellHeight = 45;
+// Pinned tabs: 44 dip cells, 8 gaps and insets.
+inline constexpr int kPinnedCellHeight = 44;
 inline constexpr int kPinnedGap = 8;
-// Bands used by the two layouts that put navigation above the web content.
-inline constexpr int kTopBarHeight = 40;  // WebContentConstant.headerHeight
-// Balanced's top bar is slimmer: 24pt controls with 4 above and below, the
-// same 32pt band the Spaces strip runs at, so the sidebar's strip and the
-// card's address row sit on ONE line across the window.
-inline constexpr int kTopBarHeightNav = 32;
-inline constexpr int kBookmarkBarHeight = 32;  // The Mac BookmarkBar height.
-inline constexpr int kTopBarLeading = 16;      // header leading padding.
-inline constexpr int kComfortableLeading = 12;  // …and comfortable's.
-inline constexpr int kOmniboxHeight = 28;  // comfortable's omnibox capsule.
-inline constexpr int kTopBarSpacing = 8;   // header button spacing.
-inline constexpr int kTopBarField = 24;    // balanced's field.
-// The comfortable layout's tab strip shares the caption band with the
-// window controls, Chrome-style, so the band is taller there and a tab runs
-// from the strip's top inset all the way to the band's bottom edge.
-inline constexpr int kHTabStripTop = 6;      // Strip top inset (8 − 2).
-inline constexpr int kHTabStripLeading = 8;  // The Space pip → the first tab.
-// The bottom bar's two capsules (Feedback bordered, Chat on the accent).
-inline constexpr int kFeedbackIconWidth = 32;  // Icon-only variant.
+inline constexpr int kBookmarkBarHeight = 28;
+inline constexpr int kTopBarSpacing = kNavGroupSpacing;
+// The horizontal tab strip: tabs are 34 tall over the strip's 6 top inset,
+// the compact pip / Space chip leads them after the edge inset.
+inline constexpr int kHTabStripTop = 6;
+inline constexpr int kHTabStripLeading = 8;
+// The bottom bar's capsules (Feedback bordered, Chat on the accent).
+inline constexpr int kFeedbackIconWidth = 32;
 inline constexpr int kChatWidth = 58;
-inline constexpr int kPillHeight = 22;
+inline constexpr int kPillHeight = 24;
+// Legacy names still read by the box rigs' arithmetic: the band height
+// the layout verb reports. The vertical row is 44, the strip row 40.
+inline constexpr int kTitleBarHeight = kAddressRowHeight;
+inline constexpr int kTitleBarHeightTabs = kStripRowHeight;
 }  // namespace shell_metrics
 
 // Design units → physical pixels at `dpi` (96 = 100%). MulDiv's rounding.
@@ -131,7 +134,7 @@ int ShellScaled(int design_units, int dpi);
 // cache key (lane 3 §3.2: the layout used to be re-derived, with DPI
 // queries and host round-trips, eight times per pointer move).
 struct ShellLayoutInputs {
-  PhiLayoutMode mode = PhiLayoutMode::kPerformance;
+  PhiLayoutMode mode = PhiLayoutMode::kBalanced;
   int client_width = 0;
   int client_height = 0;
   int dpi = 96;
@@ -158,6 +161,12 @@ struct ShellLayoutInputs {
   // layouts drop the row and reclaim its 40pt, comfortable drops the
   // compact pip.
   bool spaces_switch = true;
+  // The layout is the floating panel's (§4.4): the header row gains the
+  // pin button at its trailing edge and the "+" moves in by one slot.
+  bool floating_panel = false;
+  // The horizontal layout's Space chip width in dip (§5.2: icon + name +
+  // chevron, measured by the shell); 0 = the bare 28 dip pip.
+  int space_chip_dip = 0;
 
   friend bool operator==(const ShellLayoutInputs& a,
                          const ShellLayoutInputs& b) {
@@ -174,7 +183,9 @@ struct ShellLayoutInputs {
            a.bookmark_row_count == b.bookmark_row_count &&
            a.pinned_drop_zone == b.pinned_drop_zone &&
            a.bookmark_drop_zone == b.bookmark_drop_zone &&
-           a.spaces_switch == b.spaces_switch;
+           a.spaces_switch == b.spaces_switch &&
+           a.floating_panel == b.floating_panel &&
+           a.space_chip_dip == b.space_chip_dip;
   }
   friend bool operator!=(const ShellLayoutInputs& a,
                          const ShellLayoutInputs& b) {
@@ -184,29 +195,29 @@ struct ShellLayoutInputs {
 
 // Every rect the chrome needs, for one layout mode, in physical pixels.
 struct ShellLayout {
-  PhiLayoutMode mode = PhiLayoutMode::kPerformance;
+  PhiLayoutMode mode = PhiLayoutMode::kBalanced;
   SidebarRect client;
-  // The caption band: menu titles leading, then drag space, then the three
-  // caption buttons. The OS caption is gone (WM_NCCALCSIZE) — this row IS
-  // the title bar, so the menu shares it with minimize / maximize / close.
+  // The caption band: drag space, then the trailing control cluster and
+  // the three caption buttons. The OS caption is gone (WM_NCCALCSIZE) —
+  // this row IS the title bar.
   SidebarRect title_bar;
   SidebarRect caption_min, caption_max, caption_close;
-  // The x the menu titles may not cross: the caption band's trailing
-  // control cluster (back / forward / reload and search-tabs in the
-  // vertical layouts), or the caption buttons where there is no cluster.
-  int band_limit = 0;
   SidebarRect sidebar;  // Empty in Comfortable.
-  SidebarRect top_bar;  // The band above the content; empty in Performance.
+  // The address row (vertical: the pane's first row, from the sidebar's
+  // edge to the window's; horizontal: the toolbar under the strip).
+  SidebarRect top_bar;
   SidebarRect content;  // Where the reparented browser child goes.
   // The bookmark bar band, carved off the content's top when visible.
   SidebarRect bookmark_bar;
   SidebarRect search_tabs;
-  // The sidebar toggle (the Mac SidebarHeaderView's leftSidebarToggle): the
-  // caption band's LEADING control in the vertical layouts, at the window's
-  // top-left corner, docked or collapsed alike — so a collapsed sidebar is
-  // always one click from coming back. The Phi button follows it. Empty in
+  // The sidebar toggle (ClosePane / OpenPane): the address row's LEADING
+  // control in the vertical layout, docked or collapsed alike — so a
+  // collapsed sidebar is always one click from coming back. Empty in
   // comfortable, which has no sidebar to toggle.
   SidebarRect sidebar_toggle;
+  // The HTCAPTION run reserved between the omnibox and the tool cluster
+  // (vertical layout), so the row always has a drag point.
+  SidebarRect drag_gutter;
   // The hairline closing the band's trailing cluster.
   SidebarRect band_divider;
   SidebarRect back, forward, reload;
@@ -226,22 +237,27 @@ struct ShellLayout {
   // Feedback and Chat capsules trailing.
   SidebarRect downloads, memory, feedback, chat;
   SidebarRect extensions;  // The puzzle button.
-  // Comfortable's overflow menu (Chrome's ⋮): the toolbar's trailing button.
-  SidebarRect overflow;
-  // Comfortable's Phi button: the logo alone at the band's leading edge.
-  SidebarRect phi_menu;
-  // The globe leading comfortable's omnibox pill.
+  // The app menu button (⋯, docs/windows-native-ui.md §3): comfortable's
+  // toolbar trailing button; the vertical layout's band cluster, before
+  // search-tabs. Every layout has one — it is the only way to the menu.
+  SidebarRect app_menu;
+  // The omnibox's leading site-info slot (lock / page glyph).
   SidebarRect page_icon;
-  // SideAddressBar's in-field copy-link button (performance only).
-  SidebarRect copy_link;
-  // Reader View's entry, leading the copy-link button; empty unless offered.
+  // The in-field trailing slots: Reader View (empty unless offered) and
+  // Bookmark-this-tab (the star, always).
   SidebarRect reader;
-  // The pinned-extension icon strip inside the capsule; empty when nothing
-  // is pinned or the icons would squeeze the text below 84pt.
+  SidebarRect star;
+  // The pinned-extension icon strip in the tool cluster; empty when nothing
+  // is pinned or the icons would squeeze the omnibox text below 84 dip.
   SidebarRect field_ext_strip;
   SidebarRect add_space;  // The strip's trailing "+" chip.
-  // The pip's edge in points: the vertical layouts fill the strip band with
-  // it, comfortable keeps the Mac's compact caption pip.
+  // The floating panel's pin button (docks the sidebar), trailing the
+  // header row; empty unless `floating_panel`.
+  SidebarRect pin;
+  // The sidebar's section labels, each above its band; empty when the
+  // band is (the Tabs label is always there in a docked sidebar).
+  SidebarRect pinned_label, bookmarks_label, tabs_label;
+  // The pip's edge in points (28 in both layouts).
   int chip_size = 0;
   int chips_left = 0, chips_top = 0;
   int chips_limit = 0;  // Right edge chips may not cross.

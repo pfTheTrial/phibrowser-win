@@ -2,8 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef PHIBROWSER_WIN_CLIENT_PHI_MENU_BAR_H_
-#define PHIBROWSER_WIN_CLIENT_PHI_MENU_BAR_H_
+#ifndef PHIBROWSER_WIN_CLIENT_PHI_APP_MENU_H_
+#define PHIBROWSER_WIN_CLIENT_PHI_APP_MENU_H_
 
 #include <windows.h>
 
@@ -13,6 +13,7 @@
 
 #include "base/memory/raw_ptr_exclusion.h"
 #include "phibrowser-win/client/phi_ids.h"
+#include "phibrowser-win/client/phi_menu_paint.h"
 #include "phibrowser-win/client/phi_theme.h"
 
 namespace phi_framework {
@@ -144,36 +145,41 @@ enum : UINT {
   // their clicks.
   kCmdToggleReader,  // View — Reader View for the active tab.
   kCmdAgentAutoview,  // View — Agent Autoview (follows the working agent).
+  // The app menu itself (docs/windows-native-ui.md §3.3): F10, Alt+F,
+  // Alt+E and the solo Alt tap post it; the shell drops the menu under
+  // its ⋯ button.
+  kCmdShowAppMenu,
+  // Extensions ▸ Manage extensions (chrome://extensions in a new tab).
+  kCmdManageExtensions,
+  // Layout ▸ Show sidebar — the same toggle as kCmdToggleSidebar, listed
+  // under its own name so the remote surface can address the row.
+  kCmdShowBookmarksBar = kCmdAlwaysShowBookmarkBar,
 };
 
-// One finished sidebar row, as the Tab menu lists it. A SNAPSHOT of what the
+// One finished sidebar row (Next / Previous tab walk them). A SNAPSHOT of what the
 // last rebuild placed: a menu opening is not a reason to rebuild
 // (docs/architecture-review.md §3.1 principle 3; phase 2 made rebuilds
 // posted).
-struct PhiMenuBarTab {
+struct PhiAppMenuTab {
   TabId id;
   std::wstring title;
   bool active = false;
 };
 
 // The navigation state the View, History and Bookmarks menus enable from.
-struct PhiMenuBarNavState {
+struct PhiAppMenuNavState {
   std::wstring url;
   bool can_go_back = false;
   bool can_go_forward = false;
   bool loading = false;
 };
 
-// WHAT THE BAR ASKS OF ITS SHELL (docs/architecture-review.md §3.5, lane 1
-// §2.1 item 3). Until phase 6 the bar was a `friend` of PhiShellWindow
-// and read seventeen private members by name — `host_`, `framework_`,
-// `tabs_`, `url_field_`, `nav_url_`, `active_space_`, `active_tab_id_` and
-// the rest — which is why the shell had to keep const reference VIEWS onto
-// its own components just to stay compilable. This interface replaced all of
-// it: nav state, the finished rows, the active Space, the address field, and
-// command dispatch. No `friend`, and nothing here reaches back into a cache
-// the bar could outlive.
-class PhiMenuBarShell {
+// WHAT THE MENU ASKS OF ITS SHELL (docs/architecture-review.md §3.5, lane 1
+// §2.1 item 3): nav state, the finished rows, the active Space, the address
+// field, and command dispatch. No `friend`, and nothing here reaches back
+// into a cache the menu could outlive. (PhiMenuBarShell, renamed unchanged
+// when the menu bar became the app menu — windows-native-ui.md §10 P1.)
+class PhiAppMenuShell {
  public:
   // --- Identity and services ----------------------------------------------
   virtual HWND MenuShellWindow() const = 0;
@@ -211,10 +217,10 @@ class PhiMenuBarShell {
   // Re-reads navigation state from the window model. NOT a row rebuild —
   // the rows a menu shows are always the finished ones.
   virtual void MenuRefreshNavState() = 0;
-  virtual PhiMenuBarNavState MenuNavState() const = 0;
+  virtual PhiAppMenuNavState MenuNavState() const = 0;
 
   // --- The finished rows --------------------------------------------------
-  virtual std::vector<PhiMenuBarTab> MenuTabRows() const = 0;
+  virtual std::vector<PhiAppMenuTab> MenuTabRows() const = 0;
 
   // --- Reader View --------------------------------------------------------
   virtual bool MenuReaderActive() const = 0;
@@ -245,77 +251,71 @@ class PhiMenuBarShell {
   // The Mac's Edit Theme: the panel drops under the caption, centred on the
   // window (the menu bar has no trigger point to hang it off).
   virtual void MenuEditSpaceTheme() = 0;
+  // Extensions ▸ <name>: runs the action as a click on its toolbar button
+  // would, anchored to the app-menu button.
+  virtual void MenuTriggerExtension(const std::string& extension_id) = 0;
+  // Whether the sidebar is currently shown (Layout ▸ Show sidebar's check).
+  virtual bool MenuSidebarShown() const = 0;
 
  protected:
-  // The shell owns the bar, never the reverse.
-  ~PhiMenuBarShell() = default;
+  // The shell owns the menu, never the reverse.
+  ~PhiAppMenuShell() = default;
 };
 
-// The Mac menu bar (AppController+Menu.swift over Chromium's
-// main_menu_builder.mm), ported as a native Win32 menu on the shell window:
-// Phi | File | Edit | View | Spaces | History | Bookmarks | Tab | Window |
-// Help — the Mac's visible top-level order. Mac-only surfaces (Services,
-// Hide/Show All, Share, dictation, the AppKit window list) are skipped
-// deliberately; items whose feature has no Windows surface yet are drawn
-// DISABLED, so the bar reads like the Mac one without lying about what works.
-//
-// The four data-driven menus (Spaces, Bookmarks, Tab, and the enable states
-// everywhere) are rebuilt each time their menu drops down — the Win32
-// equivalent of the Mac's menuWillOpen rebuilds.
-class PhiMenuBar {
+// The "Settings and more" menu (docs/windows-native-ui.md §3): Chrome's and
+// Edge's ⋯ flyout, which replaced the Mac-style menu bar on Windows. ONE
+// popup HMENU tree — New tab / New window / New incognito window; Spaces ▸,
+// History ▸, Bookmarks ▸, Downloads, Extensions ▸; Zoom ▸, Print, Find,
+// Reader view, Layout ▸, More tools ▸; Settings, Help ▸, Exit — every row
+// owner-drawn to the Fluent look through phi_menu_paint. The dynamic
+// submenus (Spaces, History, Bookmarks, Extensions) and every enable state
+// are rebuilt as their menu drops down (WM_INITMENUPOPUP), the Win32
+// equivalent of the Mac's menuWillOpen. Items whose feature has no Windows
+// surface yet stay listed and disabled.
+class PhiAppMenu {
  public:
-  explicit PhiMenuBar(PhiMenuBarShell* shell);
-  ~PhiMenuBar();
+  explicit PhiAppMenu(PhiAppMenuShell* shell);
+  ~PhiAppMenu();
 
-  PhiMenuBar(const PhiMenuBar&) = delete;
-  PhiMenuBar& operator=(const PhiMenuBar&) = delete;
+  PhiAppMenu(const PhiAppMenu&) = delete;
+  PhiAppMenu& operator=(const PhiAppMenu&) = delete;
 
-  // Builds the menus. The bar HMENU is NOT attached with SetMenu: the shell
-  // draws the titles itself, in the caption row beside minimize / maximize /
-  // close, and opens each popup on click. The HMENU tree stays the single
-  // source of truth for what the menus contain.
+  // Builds the tree. Commands route to `shell` as WM_COMMAND (no
+  // TPM_RETURNCMD), so the click path and the accelerator path are one.
   void Install(HWND shell);
 
-  // The top-level titles, in order, mnemonics stripped — what the shell draws.
-  std::vector<std::wstring> Titles() const;
-  // Drops menu `index` at screen coordinates. The popup routes WM_COMMAND to
-  // the shell (no TPM_RETURNCMD), so the click path is one code path.
-  void ShowAt(size_t index, int screen_x, int screen_y);
-  // Drops the comfortable layout's overflow menu — Chrome's ⋮. That layout
-  // gives the caption band to the tab strip, so it has no menu titles: this
-  // is the only way to the bar there. Every top-level menu hangs off it as
-  // a submenu, under the two entries that lost their bands with the sidebar
-  // (Chat and Feedback). Right-aligned, since the button trails the toolbar.
-  void ShowOverflow(int screen_x, int screen_y);
+  // Drops the menu with its top-right corner at SCREEN (x, y) — under the
+  // ⋯ button's trailing edge — or top-left when `right_align` is false.
+  // Runs the modal loop; returns when it is down.
+  void Show(int screen_x, int screen_y, bool right_align);
+  // The menu is up right now (the button paints pressed meanwhile).
+  bool open() const { return open_; }
 
-  // WM_INITMENUPOPUP: refresh `menu` if it is one of ours. TrackPopupMenu
-  // fires it too, so dropped-down menus refresh exactly like attached ones.
+  // WM_INITMENUPOPUP: refresh `menu` if it is one of ours.
   void OnMenuOpening(HMENU menu);
   // WM_COMMAND with lparam == 0. True when `id` was a menu command.
   // `from_accelerator` is WM_COMMAND's HIWORD 1: the chord, not the row.
   bool OnCommand(UINT id, bool from_accelerator = false);
 
-  // The whole bar as JSON (refreshing dynamic menus first), for the control
-  // socket: [{"title","items":[{"id","title","enabled","checked","items"?}]}].
+  // The whole tree as JSON (refreshing dynamic menus first), for the
+  // control socket: [{"title","enabled","checked","id"?,"items"?},…] —
+  // the root's rows, submenus nested under "items".
   std::string ListJson();
-  // Activates the item reached by `path` (top-level title, then item titles,
-  // matched with mnemonics and "\t…" shortcut text stripped). False when no
-  // such item exists or it is disabled.
+  // Activates the item reached by `path` (row titles from the root, e.g.
+  // ["More tools","Task manager"]; mnemonics and chords stripped). False
+  // when no such item exists or it is disabled.
   bool InvokePath(const std::vector<std::string>& path);
 
  private:
   void BuildStatic();
-  void RefreshPhi();
-  void RefreshFile();
-  void RefreshEdit();
-  void RefreshView();
-  // The bookmark bar pair (and its separator) exists in the View menu only
-  // for the comfortable layout; inserted or removed to match `comfortable`.
-  void SyncBookmarkBarItems(bool comfortable);
+  void RefreshRoot();
   void RefreshSpaces();
   void RefreshHistory();
   void RefreshBookmarks();
-  void RefreshTab();
+  void RefreshExtensions();
+  void RefreshLayout();
+  void RefreshTools();
+  void RefreshHelp();
   // Re-reads the live enable state of every Chromium-routed item (the
   // kIdcRoutes table) from the framework — run on every menu open.
   void RefreshChromiumCommands();
@@ -326,45 +326,42 @@ class PhiMenuBar {
   // `parent_guid` — folders recurse into submenus, as on Mac.
   void AppendBookmarkRows(HMENU menu, const std::string& parent_guid,
                           int depth);
-  // Every Space from the owner's full list — the strip's chips only mirror
-  // what fits (one, in the comfortable layout). The title is the bare name;
-  // the icon glyph rides beside it, rasterized into the row's bitmap.
+  // Every Space from the owner's full list, then this window's agent
+  // Spaces. The title is the bare name; the glyph rides beside it.
   struct SpaceEntry {
     std::string id;
     std::wstring title;
     std::wstring glyph;
+    bool agent = false;
   };
   std::vector<SpaceEntry> SpaceList() const;
-  void ReleaseSpaceBitmaps();
+  void SetEnabled(HMENU menu, UINT id, bool enabled);
+  void SetChecked(HMENU menu, UINT id, bool checked);
 
-  RAW_PTR_EXCLUSION PhiMenuBarShell* const services_;  // Owns this.
-  HMENU bar_ = nullptr;
-  // The overflow popup. It borrows the SAME submenu handles `bar_` holds, so
-  // its items are detached before it is destroyed — destroying it outright
-  // would take the shared popups with it and leave `bar_` holding freed
-  // handles.
-  HMENU overflow_ = nullptr;
+  RAW_PTR_EXCLUSION PhiAppMenuShell* const services_;  // Owns this.
+  PhiMenuRowStore rows_;
   HWND shell_ = nullptr;  // Owner for TrackPopupMenu (commands route here).
-  HMENU phi_ = nullptr;
-  HMENU file_ = nullptr;
-  HMENU edit_ = nullptr;
-  HMENU view_ = nullptr;
+  HMENU root_ = nullptr;
   HMENU spaces_ = nullptr;
+  HMENU profiles_ = nullptr;
+  HMENU delete_profiles_ = nullptr;
   HMENU history_ = nullptr;
   HMENU bookmarks_ = nullptr;
-  HMENU tab_ = nullptr;
-  HMENU window_ = nullptr;
+  HMENU extensions_ = nullptr;
+  HMENU zoom_ = nullptr;
+  HMENU layout_ = nullptr;
+  HMENU tools_ = nullptr;
   HMENU help_ = nullptr;
+  bool open_ = false;
 
   // What the dynamic ids currently mean, rebuilt with their menus.
   std::vector<std::string> space_ids_;     // kSpaceFirst + i
-  std::vector<HBITMAP> space_bitmaps_;     // The Space rows' icons; ours.
   std::vector<std::string> profile_ids_;   // kProfileFirst / kDeleteProfileFirst + i
   std::vector<std::wstring> profile_names_;  // Their display names, in step.
   std::vector<std::string> bookmark_urls_; // kBookmarkFirst + i
-  std::vector<TabId> tab_ids_;             // kTabFirst + i
+  std::vector<std::string> extension_ids_;  // kExtensionFirst + i
 };
 
 }  // namespace phi_client
 
-#endif  // PHIBROWSER_WIN_CLIENT_PHI_MENU_BAR_H_
+#endif  // PHIBROWSER_WIN_CLIENT_PHI_APP_MENU_H_

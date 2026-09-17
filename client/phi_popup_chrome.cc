@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "phibrowser-win/client/phi_dwrite.h"
+#include "phibrowser-win/client/phi_fluent.h"
 #include "phibrowser-win/client/phi_icons.h"
 #include "phibrowser-win/client/phi_secondary_window.h"
 
@@ -33,7 +34,7 @@ constexpr int kCaptionButtonWidth = kPhiCaptionButtonWidthDip;
 constexpr int kMarkSize = 16;
 constexpr int kMarkInset = 12;
 // PhiAlertButton: radius 8, 13pt label; disabled at 0.55, pressed at 0.78.
-constexpr int kButtonRadius = 8;
+constexpr int kButtonRadius = 4;  // Fluent controls (§2.1).
 constexpr int kWellRadius = 8;
 // Segoe MDL2 Assets — the OS caption buttons' own glyphs.
 constexpr wchar_t kGlyphMinimize[] = L"\uE921";
@@ -170,30 +171,29 @@ int Border(UINT dpi, bool vertical) {
 }  // namespace
 
 PhiPopupColors PhiPopupColorsFor(bool dark, COLORREF accent) {
+  // The Windows-native ladder (docs/windows-native-ui.md §2.3): the
+  // Windows Settings ground, white / #2B2B2B cards, the ink percentages,
+  // Fluent's standard button (#FBFBFB, 1 px stroke) and the danger red.
   PhiPopupColors c;
   c.dark = dark;
-  c.bg = dark ? RGB(0x25, 0x25, 0x25) : RGB(0xEA, 0xEA, 0xEA);
+  c.bg = dark ? RGB(0x20, 0x20, 0x20) : RGB(0xF3, 0xF3, 0xF3);
   c.ink = dark ? RGB(0xFF, 0xFF, 0xFF) : RGB(0, 0, 0);
-  c.label = dark ? PhiPopupBlend(c.ink, c.bg, 204) : RGB(0x26, 0x26, 0x26);
+  c.label = PhiPopupBlend(c.ink, c.bg, dark ? 230 : 222);       // 90 / 87 %
   c.label_strong = c.ink;
-  c.secondary = dark ? RGB(0xB3, 0xB3, 0xB3) : RGB(0x66, 0x66, 0x66);
-  c.tertiary = PhiPopupBlend(c.ink, c.bg, 77);
-  // controlBackgroundColor: white / the Mac's #1E1E1E control ground.
-  c.card = dark ? RGB(0x1E, 0x1E, 0x1E) : RGB(0xFF, 0xFF, 0xFF);
-  c.card_border = PhiPopupBlend(c.ink, c.bg, 20);
-  c.separator = PhiPopupBlend(c.ink, c.bg, 15);
-  c.well = PhiPopupBlend(c.ink, c.bg, dark ? 20 : 13);
-  c.hover = PhiPopupBlend(c.ink, c.bg, dark ? 26 : 16);
+  c.secondary = PhiPopupBlend(c.ink, c.bg, 158);               // 62 %
+  c.tertiary = PhiPopupBlend(c.ink, c.bg, 107);                // 42 %
+  c.card = dark ? RGB(0x2B, 0x2B, 0x2B) : RGB(0xFF, 0xFF, 0xFF);
+  c.card_border = PhiPopupBlend(c.ink, c.bg, dark ? 20 : 23);  // 8 / 9 %
+  c.separator = PhiPopupBlend(c.ink, c.bg, 18);                // 7 %
+  c.well = PhiPopupBlend(c.ink, c.bg, dark ? 15 : 11);         // 6 / 4.5 %
+  c.hover = PhiPopupBlend(c.ink, c.bg, dark ? 15 : 11);
   c.accent = accent;
-  // themeColorOnHover: the accent nudged 5% darker (light) / lighter (dark).
   c.accent_hover = dark ? PhiPopupBlend(RGB(0xFF, 0xFF, 0xFF), accent, 26)
                         : PhiPopupBlend(RGB(0, 0, 0), accent, 26);
-  const int grey = dark ? 0x3D : 0xE0;        // calibratedWhite 0.24 / 0.88
-  const int grey_hot = dark ? 0x4D : 0xD1;    // 0.30 / 0.82
-  c.button = RGB(grey, grey, grey);
-  c.button_hover = RGB(grey_hot, grey_hot, grey_hot);
-  c.destructive = dark ? RGB(0xFF, 0x45, 0x3A) : RGB(0xFF, 0x3B, 0x30);
-  c.destructive_hover = PhiPopupBlend(c.bg, c.destructive, 46);  // 0.82
+  c.button = dark ? RGB(0x33, 0x33, 0x33) : RGB(0xFB, 0xFB, 0xFB);
+  c.button_hover = dark ? RGB(0x3A, 0x3A, 0x3A) : RGB(0xF6, 0xF6, 0xF6);
+  c.destructive = dark ? RGB(0xE0, 0x46, 0x3A) : RGB(0xC4, 0x2B, 0x1C);
+  c.destructive_hover = PhiPopupBlend(c.bg, c.destructive, 46);
   c.warning = dark ? RGB(0xFF, 0xD6, 0x0A) : RGB(0xB0, 0x80, 0x00);
   c.error = dark ? RGB(0xFF, 0x6B, 0x6B) : RGB(0xC0, 0x1E, 0x1E);
   return c;
@@ -234,24 +234,13 @@ void PhiPopupStrokeRounded(HDC dc,
 }
 
 HFONT PhiPopupFont(UINT dpi, int size, int weight) {
-  NONCLIENTMETRICSW metrics = {};
-  metrics.cbSize = sizeof(metrics);
-  LOGFONTW lf = {};
-  if (::SystemParametersInfoForDpi(SPI_GETNONCLIENTMETRICS, sizeof(metrics),
-                                   &metrics, 0, dpi)) {
-    lf = metrics.lfMessageFont;
-  } else {
-    SetFace(&lf, L"Segoe UI");
-    lf.lfQuality = CLEARTYPE_QUALITY;
-  }
-  lf.lfHeight = -::MulDiv(size, static_cast<int>(dpi), 96);
-  lf.lfWeight = weight;
-  return ::CreateFontIndirectW(&lf);
+  // The §2.2 ramp: Segoe UI Variable (Segoe UI on Windows 10).
+  return PhiFluentFont(dpi, size, weight);
 }
 
 HFONT PhiPopupGlyphFont(UINT dpi) {
   LOGFONTW lf = {};
-  SetFace(&lf, L"Segoe MDL2 Assets");
+  SetFace(&lf, PhiIconFaceName());
   lf.lfHeight = -::MulDiv(10, static_cast<int>(dpi), 96);
   lf.lfWeight = FW_NORMAL;
   lf.lfCharSet = DEFAULT_CHARSET;
@@ -316,7 +305,10 @@ void PhiPopupPaintButton(HDC dc,
   HBRUSH ground = ::CreateSolidBrush(colors.bg);
   ::FillRect(dc, &bounds, ground);
   ::DeleteObject(ground);
-  if (role != PhiPopupButtonRole::kLink) {
+  if (role == PhiPopupButtonRole::kSecondary) {
+    // Fluent's standard button: the fill with a 1 px stroke.
+    PhiPopupStrokeRounded(dc, bounds, fill, colors.card_border, radius);
+  } else if (role != PhiPopupButtonRole::kLink) {
     PhiPopupFillRounded(dc, bounds, fill, radius);
   }
   ::SetBkMode(dc, TRANSPARENT);
@@ -706,16 +698,17 @@ void PhiPopupChrome::PaintCaption(HDC dc,
     title = text;
   }
   if (*title) {
-    // Centred between the mark and the button cluster, never under either.
+    // At the leading edge after the mark (Windows), never under the
+    // button cluster.
     const int leading = show_mark ? Scaled(kMarkInset * 2 + kMarkSize)
                                   : Scaled(12);
     const int reserve = PhiCaptionTitleInset(
         BandMetrics(hwnd_, h, Scaled(kCaptionButtonWidth), buttons_), leading);
-    RECT title_rc = {reserve, 0, client.right - reserve, h};
+    RECT title_rc = {leading, 0, client.right - reserve, h};
     HGDIOBJ previous = title_font_ ? ::SelectObject(dc, title_font_) : nullptr;
     ::SetTextColor(dc, active ? colors.label : colors.tertiary);
     PhiDrawTextAA(dc, title, -1, &title_rc,
-                DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX |
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX |
                     DT_END_ELLIPSIS);
     if (previous) {
       ::SelectObject(dc, previous);

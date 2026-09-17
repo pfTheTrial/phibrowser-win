@@ -50,10 +50,10 @@ void TextRectStartsAfterThePageIcon() {
 
 void TextRectStopsAtTheLeftMOSTAccessoryInsideTheCapsule() {
   PhiOmniboxCapsule capsule = BareCapsule();
-  capsule.copy_link = SidebarRect{200, 104, 224, 126};
+  capsule.star = SidebarRect{200, 104, 224, 126};
   capsule.reader = SidebarRect{172, 104, 196, 126};
   const SidebarRect r = PhiOmniboxTextRect(capsule, 20, 12, 8, 8);
-  CHECK(r.right == 164);  // reader.left - trailing_gap, not copy_link's.
+  CHECK(r.right == 164);  // reader.left - trailing_gap, not the star's.
 }
 
 void TextRectIgnoresAccessoriesOutsideTheCapsule() {

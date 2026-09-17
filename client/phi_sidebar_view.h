@@ -150,7 +150,7 @@ namespace sidebar_metrics {
 
 // 36pt row -> 32pt pill (the vertical inset).
 inline constexpr int kRowPad = 2;
-inline constexpr int kCornerRadius = 8;  // The pill radius, everywhere.
+inline constexpr int kCornerRadius = 6;  // The row radius (windows-native-ui.md §2.1).
 inline constexpr int kFaviconSize = 14;  // The 16pt slot holds a 14pt icon.
 inline constexpr int kBookmarkIndent = 10;  // SideBarOutlineView.indentation.
 inline constexpr int kFolderIconSize = 20;  // BookmarkFaviconView.folderSize.

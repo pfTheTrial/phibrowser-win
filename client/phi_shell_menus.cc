@@ -11,7 +11,8 @@
 #include "phibrowser-win/client/phi_i18n.h"
 
 #if defined(_WIN32)
-#include "phibrowser-win/client/phi_glyph_bitmap.h"
+#include "phibrowser-win/client/phi_fluent.h"
+#include "phibrowser-win/client/phi_menu_paint.h"
 #include "phibrowser-win/client/phi_modal_scope.h"
 #endif
 
@@ -334,6 +335,23 @@ PhiMenuSpec PhiBuildBookmarkRowMenu(const PhiBookmarkMenuInputs& in) {
 PhiMenuSpec PhiBuildTabAreaMenu(const PhiTabAreaMenuInputs& in) {
   PhiMenuSpec spec;
   std::vector<PhiMenuItem>& items = spec.items;
+  if (in.space_only) {
+    // The pip's menu (§5.4): the Space block without its leading separator
+    // and without the "New Space" row (the "+" pip and the switcher do that).
+    PhiTabAreaMenuInputs rest = in;
+    rest.space_only = false;
+    PhiMenuSpec full = PhiBuildTabAreaMenu(rest);
+    bool past_layout = false;
+    for (PhiMenuItem& item : full.items) {
+      if (item.key == "area.renameSpace") {
+        past_layout = true;
+      }
+      if (past_layout) {
+        items.push_back(std::move(item));
+      }
+    }
+    return spec;
+  }
   items.push_back(PhiMenuItem::Command("area.newTab", L"New Tab"));
   items.push_back(PhiMenuItem::Command("area.reopen", L"Reopen Closed Tab"));
   items.push_back(PhiMenuItem::Separator());
@@ -352,9 +370,9 @@ PhiMenuSpec PhiBuildTabAreaMenu(const PhiTabAreaMenuInputs& in) {
     PhiLayoutMode mode;
     const wchar_t* label;
   } kLayouts[] = {
-      {"performance", PhiLayoutMode::kPerformance, L"Performance"},
-      {"balanced", PhiLayoutMode::kBalanced, L"Balanced"},
-      {"comfortable", PhiLayoutMode::kComfortable, L"Comfortable"},
+      // Performance is retired on Windows (impl log D9): two layouts.
+      {"comfortable", PhiLayoutMode::kComfortable, L"Horizontal tabs"},
+      {"balanced", PhiLayoutMode::kBalanced, L"Vertical tabs"},
   };
   std::vector<PhiMenuItem> layouts;
   for (const auto& entry : kLayouts) {
@@ -363,7 +381,7 @@ PhiMenuSpec PhiBuildTabAreaMenu(const PhiTabAreaMenuInputs& in) {
     item.checked = in.mode == entry.mode;
     layouts.push_back(std::move(item));
   }
-  items.push_back(PhiMenuItem::Submenu(L"Layout Mode", std::move(layouts)));
+  items.push_back(PhiMenuItem::Submenu(L"Layout", std::move(layouts)));
   if (in.incognito) {
     // Incognito shells have no Spaces: the active-Space block never appears.
     return spec;
@@ -519,17 +537,73 @@ PhiMenuSpec PhiBuildBookmarkBarMenu(
 
 namespace {
 
-// Flattens the spec into an HMENU, numbering the actionable rows from 1 so
-// TPM_RETURNCMD's answer indexes `actions` directly. Submenus are owned by
-// their parent, so the caller destroys exactly one handle.
+// The Fluent decorations by KEY (docs/windows-native-ui.md §3.5): the
+// chord in the right column, the destructive rows in red, an icon on the
+// primary rows. Kept out of the pure builders so the host test pins the
+// order alone; the painter reads them from the row.
+struct RowDecor {
+  const char* key;
+  const wchar_t* shortcut;
+  bool danger;
+  const wchar_t* icon;
+};
+constexpr RowDecor kRowDecor[] = {
+    {"area.newTab", L"Ctrl+T", false, fluent::kAdd},
+    {"area.reopen", L"Ctrl+Shift+T", false, fluent::kClock},
+    {"area.newRootFolder", nullptr, false, fluent::kFolder},
+    {"area.bookmarkAll", L"Ctrl+Shift+D", false, fluent::kFavoriteStar},
+    {"area.newSpace", nullptr, false, fluent::kAdd},
+    {"area.renameSpace", nullptr, false, fluent::kRename},
+    {"area.changeIcon", nullptr, false, fluent::kEmoji},
+    {"area.setTheme", nullptr, false, fluent::kColor},
+    {"area.deleteSpace", nullptr, true, fluent::kDelete},
+    {"space.new", nullptr, false, fluent::kAdd},
+    {"tab.pin", nullptr, false, fluent::kPin},
+    {"tab.duplicate", nullptr, false, fluent::kCopy},
+    {"tab.copyUrl", L"Ctrl+Shift+C", false, fluent::kLink},
+    {"tab.bookmark", L"Ctrl+D", false, fluent::kFavoriteStar},
+    {"tab.close", L"Ctrl+W", false, fluent::kCancel},
+    {"tab.closeOthers", nullptr, false, nullptr},
+    {"tab.removeSplit", nullptr, false, nullptr},
+    {"pin.open", nullptr, false, fluent::kOpenInNewWindow},
+    {"pin.copyUrl", nullptr, false, fluent::kLink},
+    {"pin.rename", nullptr, false, fluent::kRename},
+    {"pin.unpin", nullptr, false, fluent::kUnpin},
+    {"pin.close", L"Ctrl+W", false, fluent::kCancel},
+    {"bm.open", nullptr, false, fluent::kOpenInNewWindow},
+    {"bm.copyUrl", nullptr, false, fluent::kLink},
+    {"bm.rename", nullptr, false, fluent::kRename},
+    {"bm.changeIcon", nullptr, false, fluent::kEmoji},
+    {"bm.newFolder", nullptr, false, fluent::kFolder},
+    {"bm.remove", nullptr, true, fluent::kDelete},
+    {"bar.newRootFolder", nullptr, false, fluent::kFolder},
+    {"bar.open", nullptr, false, fluent::kGlobe},
+    {"group.rename", nullptr, false, fluent::kRename},
+    {"group.ungroup", nullptr, false, nullptr},
+    {"group.close", nullptr, true, fluent::kCancel},
+    {"agent.finish", nullptr, true, nullptr},
+};
+
+const RowDecor* DecorFor(const std::string& key) {
+  for (const RowDecor& decor : kRowDecor) {
+    if (key == decor.key) {
+      return &decor;
+    }
+  }
+  return nullptr;
+}
+
+// Flattens the spec into an HMENU of owner-drawn rows, numbering the
+// actionable rows from 1 so TPM_RETURNCMD's answer indexes `actions`
+// directly. Submenus are owned by their parent, so the caller destroys
+// exactly one handle; the rows live in `store` for the loop.
 bool AppendSpec(HMENU menu,
                 const std::vector<PhiMenuItem>& items,
-                int glyph_px,
                 std::vector<const PhiMenuItem*>* actions,
-                std::vector<HBITMAP>* bitmaps) {
+                PhiMenuRowStore* store) {
   for (const PhiMenuItem& item : items) {
     if (item.separator) {
-      ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+      store->AppendSeparator(menu);
       continue;
     }
     if (item.submenu) {
@@ -537,26 +611,14 @@ bool AppendSpec(HMENU menu,
       if (!sub) {
         return false;
       }
-      if (!AppendSpec(sub, item.items, glyph_px, actions, bitmaps)) {
+      if (!AppendSpec(sub, item.items, actions, store)) {
         ::DestroyMenu(sub);
         return false;
       }
-      ::AppendMenuW(menu, MF_POPUP | MF_STRING,
-                    reinterpret_cast<UINT_PTR>(sub), item.label.c_str());
+      PhiMenuRow* row = store->AppendSubmenu(menu, sub, item.label);
+      row->height_dip = 32;
+      row->picture = item.glyph;
       continue;
-    }
-    UINT flags = MF_STRING;
-    if (!item.enabled) {
-      flags |= MF_DISABLED;
-      if (item.grey_when_disabled) {
-        flags |= MF_GRAYED;
-      }
-    }
-    if (item.checked) {
-      flags |= MF_CHECKED;
-    }
-    if (item.default_item) {
-      flags |= MF_DEFAULT;
     }
     // A label-only row (the "no profiles" placeholder) carries no key and
     // takes id 0, which TrackPopupMenu can never return.
@@ -565,14 +627,35 @@ bool AppendSpec(HMENU menu,
       actions->push_back(&item);
       id = static_cast<UINT>(actions->size());
     }
-    ::AppendMenuW(menu, flags, id, item.label.c_str());
-    if (id && glyph_px > 0 && !item.glyph.empty()) {
-      if (HBITMAP bitmap = PhiSpaceGlyphBitmap(item.glyph, glyph_px,
-                                               ::GetSysColor(COLOR_MENUTEXT))) {
-        bitmaps->push_back(bitmap);
-        PhiSetMenuItemBitmap(menu, id, bitmap);
+    PhiMenuRow* row = store->AppendCommand(menu, id, item.label, nullptr,
+                                           item.enabled);
+    row->height_dip = 32;
+    row->picture = item.glyph;
+    if (const RowDecor* decor = DecorFor(item.key)) {
+      if (decor->shortcut && row->shortcut.empty()) {
+        row->shortcut = decor->shortcut;
+      }
+      row->danger = decor->danger;
+      if (decor->icon) {
+        row->icon = decor->icon;
       }
     }
+    UINT state = item.enabled ? MFS_ENABLED : MFS_DISABLED;
+    if (!item.enabled && !item.grey_when_disabled) {
+      // Inert but not greyed: the design retires that state — a disabled
+      // row reads disabled (docs/windows-native-ui.md §3.5).
+      state = MFS_DISABLED;
+    }
+    if (item.checked) {
+      state |= MFS_CHECKED;
+    }
+    if (item.default_item) {
+      state |= MFS_DEFAULT;
+    }
+    MENUITEMINFOW info = {sizeof(info)};
+    info.fMask = MIIM_STATE;
+    info.fState = state;
+    ::SetMenuItemInfoW(menu, ::GetMenuItemCount(menu) - 1, TRUE, &info);
   }
   return true;
 }
@@ -593,11 +676,13 @@ PhiMenuAction PhiRunPopupMenu(const PhiMenuSpec& spec,
   // caller built from a snapshot, so nothing here reaches into a rebuildable
   // cache (docs/architecture-review.md §3.1 principle 4).
   std::vector<const PhiMenuItem*> actions;
-  std::vector<HBITMAP> bitmaps;
-  const bool built =
-      AppendSpec(menu, spec.items, request.glyph_px, &actions, &bitmaps);
+  PhiMenuRowStore rows;
+  const bool built = AppendSpec(menu, spec.items, &actions, &rows);
   UINT chosen = 0;
   if (built) {
+    if (request.palette) {
+      PhiMenuApplyTheme(menu, *request.palette);
+    }
     // The nested loop: a PhiModalScope, so the coordinator parks pipe verbs
     // and the shell parks its own close until the menu is down.
     PhiModalScope modal;
@@ -606,9 +691,6 @@ PhiMenuAction PhiRunPopupMenu(const PhiMenuSpec& spec,
         request.owner, nullptr));
   }
   ::DestroyMenu(menu);  // Owns every submenu it was given.
-  for (HBITMAP bitmap : bitmaps) {
-    ::DeleteObject(bitmap);
-  }
   if (chosen >= 1 && chosen <= actions.size()) {
     const PhiMenuItem* item = actions[chosen - 1];
     action.key = item->key;

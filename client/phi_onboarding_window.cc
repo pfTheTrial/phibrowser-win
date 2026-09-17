@@ -574,12 +574,12 @@ void PhiOnboardingWindow::Layout() {
       break;
     }
     case Page::kLayout: {
-      const int container_h = 8 + 3 * kLayoutRowHeight + 2 * 8 + 8;
+      // Two layouts (impl log D9), Edge's words.
+      const int container_h = 8 + 2 * kLayoutRowHeight + 8 + 8;
       const int container_top = (kHeight - container_h) / 2;
-      const std::array<std::pair<PhiLayoutMode, const char*>, 3> rows = {{
-          {PhiLayoutMode::kBalanced, "oobe.layoutSelection.balancedOption"},
-          {PhiLayoutMode::kPerformance, "oobe.layoutSelection.performanceOption"},
-          {PhiLayoutMode::kComfortable, "oobe.layoutSelection.comfortableOption"},
+      const std::array<std::pair<PhiLayoutMode, const char*>, 2> rows = {{
+          {PhiLayoutMode::kBalanced, "appMenu.verticalTabs"},
+          {PhiLayoutMode::kComfortable, "appMenu.horizontalTabs"},
       }};
       for (size_t i = 0; i < rows.size(); ++i) {
         const int top = container_top + 8 + static_cast<int>(i) * (kLayoutRowHeight + 8);
@@ -1203,11 +1203,9 @@ void PhiOnboardingWindow::PaintLayout(HDC dc, const RECT& content) {
               ? L"layout-performance.png"
               : L"layout-comfortable.png";
       const char* key =
-          hit.key == static_cast<int>(PhiLayoutMode::kBalanced)
-              ? "oobe.layoutSelection.balancedOption"
-          : hit.key == static_cast<int>(PhiLayoutMode::kPerformance)
-              ? "oobe.layoutSelection.performanceOption"
-              : "oobe.layoutSelection.comfortableOption";
+          hit.key == static_cast<int>(PhiLayoutMode::kComfortable)
+              ? "appMenu.horizontalTabs"
+              : "appMenu.verticalTabs";
       HGDIOBJ old_font = ::SelectObject(dc, fonts().Get(18, FW_NORMAL));
       ::SetTextColor(dc, RGB(255, 255, 255));
       RECT label = {hit.bounds.left + Scaled(18), hit.bounds.top,

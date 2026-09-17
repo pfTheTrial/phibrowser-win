@@ -53,7 +53,9 @@
 #include "phibrowser-win/client/phi_emoji.h"
 #include "phibrowser-win/client/phi_icons.h"
 #include "phibrowser-win/client/phi_mac_icons.h"
-#include "phibrowser-win/client/phi_menu_bar.h"
+#include "phibrowser-win/client/phi_app_menu.h"
+#include "phibrowser-win/client/phi_fluent.h"
+#include "phibrowser-win/client/phi_menu_paint.h"
 #include "phibrowser-win/client/phi_modal_scope.h"
 #include "phibrowser-win/client/phi_i18n.h"
 #include "phibrowser-win/client/phi_new_tab_page.h"
@@ -77,47 +79,7 @@ using phi_framework::WindowSnapshot;
 // PinnedTabLayout, TabStripMetrics and SidebarBottomBar. The ones the
 // geometry is built from live in phi_shell_layout.h (the pure, host-tested
 // layout reads them); the paint-only ones stay here.
-using shell_metrics::kAddressBarHeight;
-using shell_metrics::kAddressBarTop;
-using shell_metrics::kBandDividerHeight;
-using shell_metrics::kBandGroupGap;
-using shell_metrics::kBandTrailingGap;
-using shell_metrics::kBookmarkBarHeight;
-using shell_metrics::kBookmarkSeparatorHeight;
-using shell_metrics::kBottomBarHeight;
-using shell_metrics::kBottomSpacer;
-using shell_metrics::kCaptionButtonWidth;
-using shell_metrics::kChatWidth;
-using shell_metrics::kComfortableLeading;
-using shell_metrics::kContentMargin;
-using shell_metrics::kContentTopGap;
-using shell_metrics::kEdgeInset;
-using shell_metrics::kFaviconSlot;
-using shell_metrics::kFavoritesSpacer;
-using shell_metrics::kFeedbackIconWidth;
-using shell_metrics::kHTabStripLeading;
-using shell_metrics::kHTabStripTop;
-using shell_metrics::kHeaderHeight;
-using shell_metrics::kHeaderSpacer;
-using shell_metrics::kNavButton;
-using shell_metrics::kNavGroupSpacing;
-using shell_metrics::kNewTabRowHeight;
-using shell_metrics::kOmniboxHeight;
-using shell_metrics::kPillHeight;
-using shell_metrics::kPinnedCellHeight;
-using shell_metrics::kPinnedGap;
-using shell_metrics::kSpacesStripHeight;
-using shell_metrics::kSpacesStripPad;
-using shell_metrics::kSpacesStripTop;
-using shell_metrics::kTabRowGap;
-using shell_metrics::kTabRowHeight;
-using shell_metrics::kTitleBarHeight;
-using shell_metrics::kTitleBarHeightTabs;
-using shell_metrics::kTopBarField;
-using shell_metrics::kTopBarHeight;
-using shell_metrics::kTopBarHeightNav;
-using shell_metrics::kTopBarLeading;
-using shell_metrics::kTopBarSpacing;
+using namespace shell_metrics;
 // (The menu titles' padding metrics moved with them, into
 // phi_caption_band.cc.)
 // The selected card's corner RADIUS — and it is passed DOUBLED to the
@@ -151,7 +113,7 @@ constexpr int kSpaceTextVertical = 14;
 // How far a shell with no placement to inherit sits off the work area's
 // top-left corner (see the first-run placement in the constructor).
 constexpr int kDefaultPlacementMargin = 24;
-constexpr int kContentRadius = 14;  // webContentContainerCornerRadius (macOS 26)
+constexpr int kContentRadius = 8;  // The pane's corners (windows-native-ui.md §2.1).
 // 0x515 and 0x516 belonged to the Space swap and hover-card clocks; the
 // swap now rides PhiAnimator and the card's dwell timer is
 // PhiSpacesStrip::kHoverCardTimer (still 0x516), which the strip owns.
@@ -363,6 +325,12 @@ void PhiShellWindow::EnsureFont() {
     }
     small_font_ = small_built;
   }
+  if (HFONT label_built = PhiFluentFont(dpi_, 12)) {
+    if (label_font_) {
+      ::DeleteObject(label_font_);
+    }
+    label_font_ = label_built;
+  }
   LOGFONTW emoji = metrics.lfMessageFont;
   // The unsafe-libc-call gate rules out wcscpy_s; copy the face name directly.
   const std::wstring emoji_face = L"Segoe UI Emoji";
@@ -386,7 +354,7 @@ void PhiShellWindow::EnsureFont() {
   }
   // The caption glyph font — the OS buttons' own glyphs (E921/E922/E923/E8BB).
   LOGFONTW caption = metrics.lfMessageFont;
-  const std::wstring caption_face = L"Segoe MDL2 Assets";
+  const std::wstring caption_face = PhiIconFaceName();
   std::fill(std::begin(caption.lfFaceName), std::end(caption.lfFaceName),
             L'\0');
   std::copy_n(caption_face.begin(),
@@ -439,10 +407,13 @@ void PhiShellWindow::EnsureFont() {
   }
 }
 
-void PhiShellWindow::RebuildMenuBar() {
-  if (caption_band_) {
-    caption_band_->Rebuild();
+void PhiShellWindow::RebuildAppMenu() {
+  if (!shell_hwnd_ || !::IsWindow(shell_hwnd_)) {
+    return;
   }
+  app_menu_ = std::make_unique<PhiAppMenu>(static_cast<PhiAppMenuShell*>(this));  // The old tree goes.
+  app_menu_->Install(shell_hwnd_);
+  ::InvalidateRect(shell_hwnd_, nullptr, TRUE);
 }
 
 // ShellLayout → the RECT-based Layout the paint and hit-test code reads.
@@ -456,7 +427,6 @@ PhiShellWindow::Layout PhiShellWindow::ToLayout(
   out.caption_min = PhiToRect(shell.caption_min);
   out.caption_max = PhiToRect(shell.caption_max);
   out.caption_close = PhiToRect(shell.caption_close);
-  out.band_limit = shell.band_limit;
   out.sidebar = PhiToRect(shell.sidebar);
   out.top_bar = PhiToRect(shell.top_bar);
   out.content = PhiToRect(shell.content);
@@ -478,10 +448,14 @@ PhiShellWindow::Layout PhiShellWindow::ToLayout(
   out.feedback = PhiToRect(shell.feedback);
   out.chat = PhiToRect(shell.chat);
   out.extensions = PhiToRect(shell.extensions);
-  out.overflow = PhiToRect(shell.overflow);
-  out.phi_menu = PhiToRect(shell.phi_menu);
+  out.app_menu = PhiToRect(shell.app_menu);
   out.page_icon = PhiToRect(shell.page_icon);
-  out.copy_link = PhiToRect(shell.copy_link);
+  out.star = PhiToRect(shell.star);
+  out.drag_gutter = PhiToRect(shell.drag_gutter);
+  out.pin = PhiToRect(shell.pin);
+  out.pinned_label = PhiToRect(shell.pinned_label);
+  out.bookmarks_label = PhiToRect(shell.bookmarks_label);
+  out.tabs_label = PhiToRect(shell.tabs_label);
   out.reader = PhiToRect(shell.reader);
   out.sidebar_toggle = PhiToRect(shell.sidebar_toggle);
   out.field_ext_strip = PhiToRect(shell.field_ext_strip);
@@ -513,6 +487,12 @@ ShellLayoutInputs PhiShellWindow::CurrentLayoutInputs() const {
   // the floating sidebar's hover trigger). The floating panel paints with
   // floating_layout_ set, which restores the expanded layout.
   in.sidebar_hidden = sidebar_collapsed_ && !floating_layout_;
+  in.floating_panel = floating_layout_;
+  in.space_chip_dip = space_chip_dip_;
+  if (floating_layout_ && floating_panel_h_ > 0) {
+    // The panel's own height: its bands (the bottom bar) fit the panel.
+    in.client_height = floating_panel_h_;
+  }
   in.content_fullscreen = browsers_->content_fullscreen();
   in.bookmark_bar = layout_bookmark_bar_;
   in.reader_offerable = layout_reader_;
@@ -540,6 +520,41 @@ void PhiShellWindow::RefreshLayoutInputs() {
   }
   layout_bookmark_bar_ = BookmarkBarVisible();
   layout_reader_ = ActiveTabReaderOfferable();
+  // The Space chip (§5.2): 8 + icon 16 + 6 + name (≤ 120) + 4 + chevron 12
+  // + 8, measured in the chip's 12/600 face.
+  space_chip_dip_ = 0;
+  if (layout_mode_ == PhiLayoutMode::kComfortable && services_.spaces &&
+      shell_hwnd_) {
+    if (!chip_name_font_ || chip_name_font_dpi_ != dpi_) {
+      if (chip_name_font_) {
+        ::DeleteObject(chip_name_font_);
+      }
+      chip_name_font_ = PhiFluentFont(dpi_, 12, FW_SEMIBOLD);
+      chip_name_font_dpi_ = dpi_;
+    }
+    std::wstring name;
+    for (const PhiSpaceView& space : services_.spaces->Spaces()) {
+      if (space.id == active_space()) {
+        name = base::UTF8ToWide(space.name);
+        break;
+      }
+    }
+    int name_dip = 0;
+    if (HDC dc = ::GetDC(shell_hwnd_)) {
+      HGDIOBJ previous = chip_name_font_ ? ::SelectObject(dc, chip_name_font_) : nullptr;
+      SIZE extent = {};
+      if (!name.empty() &&
+          ::GetTextExtentPoint32W(dc, name.c_str(), static_cast<int>(name.size()),
+                                  &extent)) {
+        name_dip = static_cast<int>(extent.cx) * 96 / static_cast<int>(dpi_);
+      }
+      if (previous) {
+        ::SelectObject(dc, previous);
+      }
+      ::ReleaseDC(shell_hwnd_, dc);
+    }
+    space_chip_dip_ = 8 + 16 + 6 + std::min(120, name_dip) + 4 + 12 + 8;
+  }
 }
 
 PhiShellWindow::Layout PhiShellWindow::ComputeLayout() {
@@ -656,9 +671,9 @@ void PhiShellWindow::PushSplitViewStyle() {
     style.background_argb = argb(palette.window_bg);
     style.border_argb = argb(palette.border);
     style.focus_argb = argb(palette.accent);
-    // SplitPaneHostView.paneLayoutRect: no top inset under a top address
-    // bar (Balanced / Comfortable); Performance keeps the 4 DIP all round.
-    style.top_inset = layout_mode_ == PhiLayoutMode::kPerformance ? 4 : 0;
+    // A 4 dip gutter of tint under the address row while split (§4.6):
+    // the row becomes a sheet of its own. Unsplit, the pane touches it.
+    style.top_inset = 4;
     auto it = split_style_pushed_.find(browser.value);
     if (it != split_style_pushed_.end() &&
         it->second.background_argb == style.background_argb &&
@@ -794,20 +809,14 @@ PhiShellWindow::PhiShellWindow(SlotId slot,
     // whose page runs edge to edge. A mode-blind conversion was placing
     // balanced and comfortable windows a bar (or a sidebar) off on their
     // first frame.
+    // Vertical: the pane starts at the sidebar's edge under the 44 address
+    // row; horizontal: the page starts under the strip and the toolbar.
     int content_left = Scaled(sidebar_dip_);
-    int content_top = Scaled(kTitleBarHeight) + Scaled(kContentTopGap);
-    int trailing = Scaled(kContentMargin);
-    switch (layout_mode_) {
-      case PhiLayoutMode::kComfortable:
-        content_left = 0;
-        content_top = Scaled(kTitleBarHeightTabs) + Scaled(kTopBarHeight);
-        trailing = 0;
-        break;
-      case PhiLayoutMode::kBalanced:
-        content_top += Scaled(kTopBarHeightNav);
-        break;
-      default:
-        break;
+    int content_top = Scaled(kAddressRowHeight);
+    const int trailing = 0;
+    if (layout_mode_ == PhiLayoutMode::kComfortable) {
+      content_left = 0;
+      content_top = Scaled(kStripRowHeight) + Scaled(kToolbarRowHeight);
     }
     x = wr.left - content_left - border_x;
     y = wr.top - content_top;
@@ -900,9 +909,10 @@ PhiShellWindow::PhiShellWindow(SlotId slot,
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE |
                      SWP_FRAMECHANGED);
 
-  // The menus (never attached with SetMenu — the caption band draws the
-  // titles itself).
   caption_band_->Install(shell_hwnd_);
+  // The app menu (⋯): a popup tree, never attached with SetMenu.
+  app_menu_ = std::make_unique<PhiAppMenu>(static_cast<PhiAppMenuShell*>(this));
+  app_menu_->Install(shell_hwnd_);
 
   // The window the slot was created with backs the DEFAULT Space — whichever
   // Space holds that role now (it moves when its holder is deleted).
@@ -997,9 +1007,6 @@ PhiShellWindow::~PhiShellWindow() {
     ::KillTimer(shell_hwnd_, kDeferredCloseTimer);
     ::DestroyWindow(shell_hwnd_);  // Takes the address field child with it.
   }
-  if (logo_icon_) {
-    ::DestroyIcon(logo_icon_);
-  }
   if (ui_font_) {
     ::DeleteObject(ui_font_);
   }
@@ -1024,6 +1031,12 @@ PhiShellWindow::~PhiShellWindow() {
   if (small_font_) {
     ::DeleteObject(small_font_);
   }
+  if (chip_name_font_) {
+    ::DeleteObject(chip_name_font_);
+  }
+  if (label_font_) {
+    ::DeleteObject(label_font_);
+  }
   if (ui_semibold_font_) {
     ::DeleteObject(ui_semibold_font_);
   }
@@ -1032,9 +1045,6 @@ PhiShellWindow::~PhiShellWindow() {
   }
   if (back_buffer_) {
     ::DeleteObject(back_buffer_);
-  }
-  for (HBRUSH brush : band_brushes_) {
-    ::DeleteObject(brush);
   }
 }
 
@@ -1098,11 +1108,6 @@ UINT PhiShellWindow::CaptionDpi() const {
   return dpi_;
 }
 
-HFONT PhiShellWindow::CaptionTextFont() {
-  EnsureFont();
-  return ui_font_;
-}
-
 HFONT PhiShellWindow::CaptionGlyphFont() const {
   return caption_font_;
 }
@@ -1125,8 +1130,8 @@ PhiCaptionRects PhiShellWindow::CaptionRects() {
   rects.reload = layout.reload;
   rects.search_tabs = layout.search_tabs;
   rects.sidebar_toggle = layout.sidebar_toggle;
-  rects.phi_menu = layout.phi_menu;
-  rects.band_limit = layout.band_limit;
+  rects.app_menu = layout.app_menu;
+  rects.spaces_strip = layout.spaces_strip;
   rects.tabs_top = layout.tabs_top;
   rects.horizontal_tabs = layout.horizontal_tabs;
   return rects;
@@ -1151,44 +1156,15 @@ bool PhiShellWindow::CaptionStripTakesPoint(POINT client_pt) {
   if (spaces_->ChipAt(client_pt) >= 0) {
     return true;
   }
+  if (::PtInRect(&spaces_->add_slot(), client_pt)) {
+    return true;  // The "+" / "…" slot trailing the pips.
+  }
   for (const ShortcutRow& pin : sidebar_->pinned()) {
     if (::PtInRect(&pin.bounds, client_pt)) {
       return true;
     }
   }
   return false;
-}
-
-bool PhiShellWindow::CaptionPhiMenuHovered() const {
-  // Its index in the band's hover table.
-  return hover_kind_ == HoverKind::kNav && hover_index_ == 12;
-}
-
-void PhiShellWindow::CaptionDrawLogo(HDC dc, int x, int y, int size) {
-  // The logo is loaded AT the size it draws (the multi-size ico has exact
-  // entries per DPI), so no GDI rescale blurs it.
-  const std::vector<unsigned char>& logo_bgra = PhiLogoBgra256();
-  constexpr int kLogoNative = 256;
-  if (logo_bgra.empty()) {
-    // Fallback: the nearest ICO entry, held per window at the size this DPI
-    // draws — a process static loaded at the first window's DPI drew blurred
-    // (and leaked) on every other display.
-    if (logo_icon_ && logo_icon_size_ != size) {
-      ::DestroyIcon(logo_icon_);
-      logo_icon_ = nullptr;
-    }
-    if (!logo_icon_) {
-      logo_icon_ = PhiAppIcon(size);
-      logo_icon_size_ = size;
-    }
-  }
-  RECT logo_rc = {x, y, x + size, y + size};
-  const bool drew = !logo_bgra.empty() &&
-                    PhiDrawBgra(dc, logo_rc, logo_bgra.data(), kLogoNative,
-                                kLogoNative);
-  if (!drew && logo_icon_) {
-    ::DrawIconEx(dc, x, y, logo_icon_, size, size, 0, nullptr, DI_NORMAL);
-  }
 }
 
 void PhiShellWindow::CaptionClearShellHover() {
@@ -1199,11 +1175,7 @@ bool PhiShellWindow::CaptionContentFullscreen() const {
   return browsers_->content_fullscreen();
 }
 
-PhiMenuBarShell* PhiShellWindow::CaptionMenuServices() {
-  return this;
-}
-
-// --- PhiMenuBarShell: what the menu bar asks of its shell -----------------
+// --- PhiAppMenuShell: what the app menu asks of its shell -----------------
 // This interface RETIRED `friend class PhiMenuBar` (lane 1 §2.1 item 3): the
 // bar used to read seventeen private members by name, which is why the shell
 // had to publish const reference views onto its own components' state just
@@ -1281,8 +1253,8 @@ void PhiShellWindow::MenuRefreshNavState() {
   RebuildNavState();
 }
 
-PhiMenuBarNavState PhiShellWindow::MenuNavState() const {
-  PhiMenuBarNavState nav;
+PhiAppMenuNavState PhiShellWindow::MenuNavState() const {
+  PhiAppMenuNavState nav;
   nav.url = omnibox_->nav_url();
   nav.can_go_back = omnibox_->can_go_back();
   nav.can_go_forward = omnibox_->can_go_forward();
@@ -1290,10 +1262,10 @@ PhiMenuBarNavState PhiShellWindow::MenuNavState() const {
   return nav;
 }
 
-std::vector<PhiMenuBarTab> PhiShellWindow::MenuTabRows() const {
+std::vector<PhiAppMenuTab> PhiShellWindow::MenuTabRows() const {
   // A SNAPSHOT of the finished rows. The bar holds it for the length of one
   // menu build; a rebuild under an open menu cannot reach into it.
-  std::vector<PhiMenuBarTab> rows;
+  std::vector<PhiAppMenuTab> rows;
   rows.reserve(sidebar_->tabs().size());
   for (const TabRow& row : sidebar_->tabs()) {
     rows.push_back({row.id, row.title, row.active});
@@ -1388,6 +1360,45 @@ void PhiShellWindow::MenuEditSpaceTheme() {
   ::GetWindowRect(shell_hwnd_, &shell);
   const RECT anchor = {shell.left, shell.top, shell.right, shell.top};
   PhiShowSpaceThemePanel(this, anchor, active_space());
+}
+
+void PhiShellWindow::MenuTriggerExtension(const std::string& extension_id) {
+  const BrowserId browser = active_browser_id();
+  if (!framework_ || !browser.valid() || !shell_hwnd_) {
+    return;
+  }
+  // Anchored to the app-menu button, where the row was picked from.
+  const Layout layout = ComputeLayout();
+  RECT anchor = layout.app_menu;
+  ::MapWindowPoints(shell_hwnd_, nullptr, reinterpret_cast<POINT*>(&anchor), 2);
+  framework_->TriggerExtensionAction(browser.value, extension_id.c_str(),
+                                     anchor.left, anchor.top,
+                                     anchor.right - anchor.left,
+                                     anchor.bottom - anchor.top);
+}
+
+bool PhiShellWindow::MenuSidebarShown() const {
+  return !sidebar_collapsed_;
+}
+
+void PhiShellWindow::ShowAppMenu() {
+  if (!app_menu_ || !shell_hwnd_ || app_menu_->open()) {
+    return;
+  }
+  const Layout layout = ComputeLayout();
+  // Under the ⋯ button, right-aligned to its trailing edge (the button
+  // trails its row, so a left-aligned popup would run off the window). A
+  // layout with no button (fullscreen) drops it at the window's top-right.
+  POINT anchor = layout.app_menu.right > layout.app_menu.left
+                     ? POINT{layout.app_menu.right, layout.app_menu.bottom}
+                     : POINT{layout.client.right, layout.client.top};
+  ::ClientToScreen(shell_hwnd_, &anchor);
+  // The button paints pressed while the menu is up.
+  hover_kind_ = HoverKind::kNav;
+  hover_index_ = 5;
+  ::InvalidateRect(shell_hwnd_, &layout.app_menu, FALSE);
+  app_menu_->Show(anchor.x, anchor.y, /*right_align=*/true);
+  ClearHover();
 }
 
 // --- PhiBrowserHostShell: what the content host asks of its shell ---------
@@ -1629,10 +1640,6 @@ void PhiShellWindow::ActivatePaneTab(int tab_id) {
 }
 
 PhiOmniboxCapsule PhiShellWindow::OmniboxCapsule() {
-  // A field hosted in the floating panel is laid out where the panel
-  // paints it: the expanded layout of the collapsed shell.
-  const base::AutoReset<bool> floating_scope(
-      &floating_layout_, floating_layout_ || omnibox_->field_hosted());
   const Layout layout = ComputeLayout();
   auto to_pure = [](const RECT& r) {
     return SidebarRect{r.left, r.top, r.right, r.bottom};
@@ -1642,7 +1649,7 @@ PhiOmniboxCapsule PhiShellWindow::OmniboxCapsule() {
   capsule.page_icon = to_pure(layout.page_icon);
   capsule.field_ext_strip = to_pure(layout.field_ext_strip);
   capsule.reader = to_pure(layout.reader);
-  capsule.copy_link = to_pure(layout.copy_link);
+  capsule.star = to_pure(layout.star);
   capsule.extensions = to_pure(layout.extensions);
   return capsule;
 }
@@ -2014,6 +2021,13 @@ int PhiShellWindow::SpacesHoveredChip() const {
   return hover_kind_ == HoverKind::kChip ? hover_index_ : -1;
 }
 
+int PhiShellWindow::SpacesTabCount(const std::string& space_id) const {
+  const BrowserId browser = browsers_->spaces().ForSpace(space_id);
+  const PhiWindowModel::Snapshot* window =
+      model_ && browser.valid() ? model_->Get(browser) : nullptr;
+  return window ? static_cast<int>(window->tabs.size()) : 0;
+}
+
 bool PhiShellWindow::SpacesAddSlotHovered() const {
   return hover_kind_ == HoverKind::kAddSpace;
 }
@@ -2072,10 +2086,11 @@ bool PhiShellWindow::OmniboxFieldHidden() const {
   // The collapsed performance shell has no address bar of its own — but
   // the floating panel shows the sidebar's, and while the EDIT is hosted
   // there (ShowFloatingSidebar) it is that panel's live field.
-  return browsers_->content_fullscreen() ||
-         (sidebar_collapsed_ && layout_mode_ == PhiLayoutMode::kPerformance &&
-          !omnibox_->field_hosted()) ||
-         spaces_->creating() || (content_slide_ && content_slide_->running());
+  // The address row is the pane's in every layout now: a collapsed
+  // sidebar never takes the field with it (the Performance layout, which
+  // kept the field in the sidebar, is retired — impl log D9).
+  return browsers_->content_fullscreen() || spaces_->creating() ||
+         (content_slide_ && content_slide_->running());
 }
 
 void PhiShellWindow::FocusAddressField() {
@@ -2084,10 +2099,6 @@ void PhiShellWindow::FocusAddressField() {
   // one to focus, so the panel comes up first (the Mac's Cmd+L raises its
   // omnibox overlay wherever the sidebar is; this is the panel's turn at
   // that). The focused field pins the panel open (FloatingSidebarTick).
-  if (sidebar_collapsed_ && !floating_sidebar_ &&
-      layout_mode_ == PhiLayoutMode::kPerformance && OmniboxFieldHidden()) {
-    ShowFloatingSidebar();
-  }
   omnibox_->FocusFieldIfVisible();
 }
 
@@ -2206,12 +2217,18 @@ RECT PhiShellWindow::ContentRect() {
 }
 
 void PhiShellWindow::ToggleSidebar() {
-  if (ComputeLayout().horizontal_tabs) {
+  SetSidebarCollapsed(!sidebar_collapsed_);
+}
+
+void PhiShellWindow::SetSidebarCollapsed(bool collapsed) {
+  if (ComputeLayout().horizontal_tabs || collapsed == sidebar_collapsed_) {
     return;  // Comfortable has no sidebar to collapse.
   }
-  sidebar_collapsed_ = !sidebar_collapsed_;
-  HideFloatingSidebar(/*animated=*/false);
-  LayoutContents();
+  sidebar_collapsed_ = collapsed;
+  if (!collapsed) {
+    DestroyFloatingPanel();
+  }
+  LayoutContents();  // Creates the tucked panel for a hidden sidebar.
   if (shell_hwnd_) {
     ::InvalidateRect(shell_hwnd_, nullptr, FALSE);
   }
@@ -2265,15 +2282,26 @@ void PhiShellWindow::LayoutContents() {
   omnibox_->SetFieldVisible(!OmniboxFieldHidden());
   PlaceContentChildren(layout);
   PushSplitViewStyle();  // A layout-mode or Space change moves its inputs.
+  // The tucked panel exists exactly while the sidebar is hidden in the
+  // vertical layout; a layout switch or fullscreen takes it down.
+  if (sidebar_collapsed_ && !layout.horizontal_tabs &&
+      !browsers_->content_fullscreen() && !shell_hidden_) {
+    EnsureFloatingPanel();
+    PositionFloatingPanel();
+  } else {
+    DestroyFloatingPanel();
+  }
 }
 
 void PhiShellWindow::PlaceContentChildren(const Layout& layout) {
   PhiContentLayout content;
   content.content = layout.content;
   content.client = layout.client;
-  // Top caps only where the content's top edge meets the tint (performance);
-  // under a top bar the card's top corners belong to the bar band.
-  content.top_caps = layout.mode == PhiLayoutMode::kPerformance;
+  // The address row owns the pane's top corners; the bottom-left cap
+  // rounds the pane against the tint, and the bottom-right only when the
+  // pane is not flush with the window's edge (DWM rounds the window there).
+  content.top_caps = false;
+  content.right_caps = layout.content.right < layout.client.right;
   content.corner_radius = Scaled(kContentRadius);
   // Either Space switch parks the entering child until it lands.
   content.parked = BrowserHostSwapRunning() ? swap_reveal_ : nullptr;
@@ -2568,18 +2596,24 @@ PhiDragBitmap PhiShellWindow::CaptureChromeRect(const RECT& client_rect) {
 
 
 
-std::array<RECT, 15> PhiShellWindow::NavHoverTable(
+std::array<RECT, 16> PhiShellWindow::NavHoverTable(
     const Layout& layout) const {
   // The nav buttons' hover washes (back/forward/reload/search).
   // The first six MUST stay in the paint table's order — PaintChrome keys
   // a button's hover wash on this index.
   // APPEND ONLY: PaintChrome keys a button's hover wash on its index here,
   // so inserting into the middle silently moves someone else's wash.
+  // Ordinal 12 was the Phi button, gone with the menu bar: an empty rect
+  // keeps every later ordinal where the rigs aim.
+  // Ordinal 11 was the copy-link slot and 12 the Phi button, both gone:
+  // empty rects keep every later ordinal where the rigs aim. 15 is the
+  // star (Bookmark this tab), appended.
   return {layout.back,        layout.forward,    layout.reload,
-          layout.search_tabs, sidebar_->add_tab_button(),   layout.overflow,
+          layout.search_tabs, sidebar_->add_tab_button(),   layout.app_menu,
           layout.downloads,   layout.memory,     layout.feedback,
-          layout.chat,        layout.extensions, layout.copy_link,
-          layout.phi_menu,    layout.reader,     layout.sidebar_toggle};
+          layout.chat,        layout.extensions, RECT{},
+          RECT{},             layout.reader,     layout.sidebar_toggle,
+          layout.star};
 }
 
 // The client rect a hovered element's wash covers, empty for none — so a
@@ -2599,7 +2633,7 @@ RECT PhiShellWindow::HoverRect(HoverKind kind, int index) {
       r = spaces_->ChipBounds(index);
       break;
     case HoverKind::kNav: {
-      const std::array<RECT, 15> nav = NavHoverTable(ComputeLayout());
+      const auto nav = NavHoverTable(ComputeLayout());
       r = index >= 0 && index < static_cast<int>(nav.size())
               ? nav[static_cast<size_t>(index)]
               : RECT{};
@@ -2656,7 +2690,7 @@ void PhiShellWindow::OnChromeMouseMove(POINT client_pt) {
   const bool band = BandOnShell();
   {
     const Layout layout = ComputeLayout();
-    const std::array<RECT, 15> nav = NavHoverTable(layout);
+    const auto nav = NavHoverTable(layout);
     for (size_t i = 0; i < nav.size() && kind == HoverKind::kNone; ++i) {
       if (::PtInRect(&nav[i], client_pt)) {
         kind = HoverKind::kNav;
@@ -3697,10 +3731,10 @@ RECT PhiShellWindow::FieldExtRect(const Layout& layout, size_t i) const {
   if (layout.field_ext_strip.right <= layout.field_ext_strip.left) {
     return RECT{};
   }
-  const int btn = Scaled(kNavButton);
+  const int slot = Scaled(kExtSlot);
   const LONG left = layout.field_ext_strip.left +
-                    static_cast<LONG>(i) * (btn + Scaled(2));
-  return {left, layout.field_ext_strip.top, left + btn,
+                    static_cast<LONG>(i) * (slot + Scaled(kExtSlotGap));
+  return {left, layout.field_ext_strip.top, left + slot,
           layout.field_ext_strip.bottom};
 }
 
@@ -3807,6 +3841,9 @@ void PhiShellWindow::OnChromeClick(int x, int y) {
   if (tab_preview_) {
     tab_preview_->Cancel();
   }
+  if (!floating_layout_ && floating_expanded_) {
+    HideFloatingSidebar(/*animated=*/true);  // A click on the row tucks it.
+  }
   // Clicking anywhere else in the chrome means the user is done editing the
   // address; hand the keyboard back to the page (the field is a child window,
   // so clicks on it never reach here).
@@ -3815,12 +3852,6 @@ void PhiShellWindow::OnChromeClick(int x, int y) {
   }
   const Layout layout = ComputeLayout();
   POINT pt = {x, y};
-  // The caption band takes its own clicks: comfortable's Phi button, a menu
-  // title, and the drag space around them (phi_caption_band.h). The band's
-  // TRAILING controls fall through to the block below.
-  if (caption_band_ && caption_band_->OnClick(pt)) {
-    return;
-  }
   if (framework_ && ::PtInRect(&layout.back, pt)) {
     // Back while the reader covers this tab reads as "leave the reader" —
     // the Mac's closeReaderOverlayForBackForwardNavigation, and what the
@@ -3924,10 +3955,11 @@ void PhiShellWindow::OnChromeClick(int x, int y) {
     ToggleReaderView("address_bar");  // The in-field reader button.
     return;
   }
-  if (::PtInRect(&layout.copy_link, pt)) {
-    // The in-field copy-link button: current URL to the clipboard, glyph
-    // swaps to a checkmark for a second (the Mac copyURLButton).
-    omnibox_->CopyLinkToClipboard();
+  if (::PtInRect(&layout.star, pt)) {
+    // The in-field star: Bookmark this tab (Ctrl+D's row).
+    if (app_menu_) {
+      app_menu_->OnCommand(kCmdBookmarkThisTab);
+    }
     return;
   }
   for (const BarItem& item : bar_items_) {
@@ -3966,10 +3998,8 @@ void PhiShellWindow::OnChromeClick(int x, int y) {
     }
     return;
   }
-  if (caption_band_ && ::PtInRect(&layout.overflow, pt)) {
-    // Comfortable's only way to the menu bar. Anchored to the button's
-    // trailing edge, under the toolbar, and right-aligned there.
-    caption_band_->ShowOverflow({layout.overflow.right, layout.top_bar.bottom});
+  if (::PtInRect(&layout.app_menu, pt)) {
+    ShowAppMenu();
     return;
   }
   // The chips and rows are hit-tested as they are — what the last frame
@@ -4087,12 +4117,25 @@ PhiPopupMenuRequest PhiShellWindow::PopupAt(POINT client_pt,
                                                  UINT align) const {
   POINT screen = client_pt;
   ::ClientToScreen(shell_hwnd_, &screen);
+  popup_palette_ = CurrentPalette();
   PhiPopupMenuRequest request;
   request.owner = shell_hwnd_;
   request.x = screen.x;
   request.y = screen.y;
   request.align = align;
+  request.palette = &popup_palette_;
   return request;
+}
+
+bool PhiShellWindow::ActiveTabIsSplit() const {
+  const BrowserId browser = active_browser_id();
+  const TabId tab = active_tab_id();
+  return model_ && browser.valid() && tab.valid() &&
+         model_->SplitOfTab(browser, tab) != nullptr;
+}
+
+RECT PhiShellWindow::app_menu_rect() {
+  return ComputeLayout().app_menu;
 }
 
 std::vector<PhiMenuChoice> PhiShellWindow::SpaceMenuChoices() const {
@@ -4615,7 +4658,7 @@ bool PhiShellWindow::ShowBookmarkBarContextMenu(POINT pt) {
   return true;
 }
 
-void PhiShellWindow::ShowTabAreaMenu(POINT pt) {
+void PhiShellWindow::ShowTabAreaMenu(POINT pt, bool space_only) {
   // The Mac tab-area menu (TabAreaContextMenuHelper): new tab, reopen, the
   // bookmark block, the layout switch, then the active Space's own controls
   // (the Spaces menu's rows, for the Space under the pointer).
@@ -4626,6 +4669,7 @@ void PhiShellWindow::ShowTabAreaMenu(POINT pt) {
   in.incognito = incognito_;
   in.tabs_empty = sidebar_->tabs().empty();
   in.mode = layout_mode_;
+  in.space_only = space_only;
   if (!incognito_) {
     in.can_delete_space = services_.spaces->CanDeleteSpace(active_space());
     for (const PhiSpaceView& space : services_.spaces->Spaces()) {
@@ -4680,14 +4724,12 @@ void PhiShellWindow::ShowTabAreaMenu(POINT pt) {
                                base::WideToUTF8(name));
     }
   } else if (action.is("area.layout")) {
-    services_.prefs->RequestLayoutMode(action.target.id == "balanced"
-                                 ? PhiLayoutMode::kBalanced
-                             : action.target.id == "comfortable"
-                                 ? PhiLayoutMode::kComfortable
-                                 : PhiLayoutMode::kPerformance);
-  } else if (PhiMenuBar* bar = menu_bar(); bar && action.valid()) {
-    // The rest are the menu bar's own commands, run through it so the
-    // sidebar and the bar cannot drift apart.
+    services_.prefs->RequestLayoutMode(action.target.id == "comfortable"
+                                           ? PhiLayoutMode::kComfortable
+                                           : PhiLayoutMode::kBalanced);
+  } else if (PhiAppMenu* bar = app_menu(); bar && action.valid()) {
+    // The rest are the app menu's own commands, run through it so the
+    // sidebar and the menu cannot drift apart.
     if (action.is("area.reopen")) {
       bar->OnCommand(kCmdReopenClosedTab);
     } else if (action.is("area.bookmarkAll")) {
@@ -4801,11 +4843,17 @@ void PhiShellWindow::OnChromeContextMenu(int x, int y) {
     const PhiSpaceChip& chip = spaces_->chips()[static_cast<size_t>(hit)];
     if (chip.is_agent) {
       ShowAgentChipMenu(pt, chip.task_id);
+      return;
     }
-    // A user Space pip has no context menu: switching is a click, and
-    // rename / icon / theme / profile / delete live in the sidebar's own
-    // menu (right-click its empty space), Settings > Spaces and the Spaces
-    // menu.
+    // A user Space pip (or the Space chip): the Space block — rename, icon,
+    // theme, profile, delete — for the ACTIVE Space (§5.4). A pip of
+    // another Space switches there first, as the Mac's does.
+    if (chip.id != active_space()) {
+      SwitchToSpace(chip.id);
+    }
+    if (!incognito_) {
+      ShowTabAreaMenu(pt, /*space_only=*/true);
+    }
     return;
   }
   // Not a chip: the row context menus. Tab rows work in both orientations
@@ -4897,101 +4945,163 @@ void PhiShellWindow::OnChromeContextMenu(int x, int y) {
 // handlers with the band's y offset, so chips, tabs, pins, bookmarks and
 // menus all behave as in the docked sidebar.
 
-void PhiShellWindow::ShowFloatingSidebar() {
-  if (floating_sidebar_ || !sidebar_collapsed_ || !shell_hwnd_) {
+RECT PhiShellWindow::FloatingPanelRect(bool expanded) const {
+  // x 8, y 52 (below the 44 address row plus 8), the docked width, bottom
+  // at h − 8; tucked, the same panel sits at x = 8 − width so its right 8
+  // dip peek from the window's edge (§4.4).
+  RECT client = {};
+  ::GetClientRect(shell_hwnd_, &client);
+  POINT origin = {0, 0};
+  ::ClientToScreen(shell_hwnd_, &origin);
+  const int inset = Scaled(kEdgeInset);
+  const int row = Scaled(kAddressRowHeight);
+  const int w = Scaled(sidebar_dip_);
+  const int x = origin.x + (expanded ? inset : inset - w);
+  const int top = origin.y + row + inset;
+  return {x, top, x + w, origin.y + client.bottom - inset};
+}
+
+void PhiShellWindow::EnsureFloatingPanel() {
+  if (floating_sidebar_ || !sidebar_collapsed_ || !shell_hwnd_ ||
+      layout_mode_ == PhiLayoutMode::kComfortable) {
     return;
   }
-  floating_layout_ = true;
-  const Layout layout = ComputeLayout();
-  floating_layout_ = false;
-  if (layout.horizontal_tabs) {
-    return;
-  }
-  // The Mac's 5pt inset from the window edges; the panel band starts below
-  // the caption so the menu row never appears inside it.
-  const int panel_inset = Scaled(5);
-  floating_offset_y_ = layout.title_bar.bottom + panel_inset;
-  const int panel_w = Scaled(sidebar_dip_);
-  const int panel_h = layout.client.bottom - floating_offset_y_ - panel_inset;
-  if (panel_h <= 0 || panel_w <= 0) {
+  const RECT rc = FloatingPanelRect(/*expanded=*/false);
+  if (rc.bottom - rc.top <= 0 || rc.right - rc.left <= 0) {
     return;
   }
   static bool registered = false;
   if (!registered) {
     registered = true;
     WNDCLASSW cls = {};
+    cls.style = CS_DROPSHADOW;  // The panel floats: the flyout shadow.
     cls.lpfnWndProc = &PhiShellWindow::FloatingSidebarProc;
     cls.hInstance = ::GetModuleHandleW(nullptr);
     cls.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
     cls.lpszClassName = L"PhiFloatingSidebar";
     ::RegisterClassW(&cls);
   }
-  POINT origin = {0, 0};
-  ::ClientToScreen(shell_hwnd_, &origin);
+  floating_expanded_ = false;
+  floating_offset_y_ = 0;
+  floating_panel_h_ = rc.bottom - rc.top;
+  floating_hover_tick_ = 0;
+  floating_outside_tick_ = 0;
+  floating_slide_start_ = 0;
   floating_sidebar_ = ::CreateWindowExW(
       WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, L"PhiFloatingSidebar", L"",
-      WS_POPUP, origin.x + panel_inset, origin.y + floating_offset_y_,
-      panel_w, panel_h, shell_hwnd_, nullptr, ::GetModuleHandleW(nullptr),
-      nullptr);
+      WS_POPUP, rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top,
+      shell_hwnd_, nullptr, ::GetModuleHandleW(nullptr), nullptr);
   if (!floating_sidebar_) {
     return;
   }
   ::SetWindowLongPtrW(floating_sidebar_, GWLP_USERDATA,
                       reinterpret_cast<LONG_PTR>(this));
-  // The rows move into the panel's geometry NOW, before the slide's first
-  // frame renders them (AnimateWindow paints synchronously through
-  // WM_PRINTCLIENT): a viewport change, like a layout mode change, not a
-  // paint-time rebuild.
+  // The rows move into the panel's geometry NOW: a viewport change, like a
+  // layout mode change, not a paint-time rebuild.
   rows_dirty_ = true;
   RebuildTabs();
   const DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_ROUND;
   ::DwmSetWindowAttribute(floating_sidebar_, DWMWA_WINDOW_CORNER_PREFERENCE,
                           &corner, sizeof(corner));
-  // The Mac's 0.15s ease-out slide-in.
-  ::AnimateWindow(floating_sidebar_, 140, AW_SLIDE | AW_HOR_POSITIVE);
-  ::SetTimer(floating_sidebar_, kFloatingTickTimer, 100, nullptr);
-  floating_shown_tick_ = ::GetTickCount64();
-  floating_outside_tick_ = 0;
-  // Performance keeps its address bar IN the sidebar, so a collapsed shell
-  // has none: the panel's is the real thing — the shell's EDIT moves in
-  // for the panel's lifetime (typing, IME, the dropdown all follow it). The
-  // panel's client origin is the band's own x at the band offset (the blit
-  // in PaintFloatingSidebar). After the slide: the slide paints the address
-  // by hand (include_child_controls), the hosted EDIT paints itself.
-  if (layout_mode_ == PhiLayoutMode::kPerformance && OmniboxFieldHidden()) {
-    omnibox_->HostField(floating_sidebar_, {0, floating_offset_y_});
-    omnibox_->SetFieldVisible(!OmniboxFieldHidden());
-  }
+  ::ShowWindow(floating_sidebar_, SW_SHOWNOACTIVATE);
+  ::SetTimer(floating_sidebar_, kFloatingTickTimer, 30, nullptr);
 }
 
-void PhiShellWindow::HideFloatingSidebar(bool animated) {
+void PhiShellWindow::DestroyFloatingPanel() {
   if (!floating_sidebar_) {
     return;
   }
   HWND panel = floating_sidebar_;
-  // The EDIT leaves BEFORE its host goes down — DestroyWindow takes a
-  // window's children with it — and the keyboard goes back to the page.
-  if (omnibox_->field_hosted()) {
-    if (omnibox_->FieldHasFocus()) {
-      FocusActiveBrowser();
-    }
-    omnibox_->UnhostField();
-  }
   floating_sidebar_ = nullptr;
-  if (omnibox_->field()) {
-    omnibox_->SetFieldVisible(!OmniboxFieldHidden());
-  }
+  floating_expanded_ = false;
+  floating_panel_h_ = 0;
   ::KillTimer(panel, kFloatingTickTimer);
-  if (animated) {
-    ::AnimateWindow(panel, 140, AW_SLIDE | AW_HOR_NEGATIVE | AW_HIDE);
-  }
   ::DestroyWindow(panel);
   ScheduleRefresh();  // Back to the docked geometry on the next turn.
+}
+
+void PhiShellWindow::PositionFloatingPanel() {
+  if (!floating_sidebar_ || !shell_hwnd_) {
+    return;
+  }
+  if (::IsIconic(shell_hwnd_)) {
+    ::ShowWindow(floating_sidebar_, SW_HIDE);
+    return;
+  }
+  const RECT rc = FloatingPanelRect(floating_expanded_);
+  const int h = rc.bottom - rc.top;
+  if (h <= 0) {
+    ::ShowWindow(floating_sidebar_, SW_HIDE);
+    return;
+  }
+  if (h != floating_panel_h_) {
+    floating_panel_h_ = h;
+    rows_dirty_ = true;  // The bands are laid out for the panel's height.
+    RebuildTabs();
+  }
+  floating_slide_start_ = 0;  // A move lands the slide where it is going.
+  ::SetWindowPos(floating_sidebar_, nullptr, rc.left, rc.top, rc.right - rc.left,
+                 h, SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+}
+
+void PhiShellWindow::SlideFloatingPanel(bool expanded) {
+  if (!floating_sidebar_ || floating_expanded_ == expanded) {
+    return;
+  }
+  floating_expanded_ = expanded;
+  RECT now_rc = {};
+  ::GetWindowRect(floating_sidebar_, &now_rc);
+  floating_slide_from_ = now_rc.left;
+  floating_slide_to_ = FloatingPanelRect(expanded).left;
+  floating_slide_start_ = ::GetTickCount64();
+  if (expanded) {
+    floating_shown_tick_ = floating_slide_start_;
+    floating_outside_tick_ = 0;
+    ::SetWindowPos(floating_sidebar_, HWND_TOP, 0, 0, 0, 0,
+                   SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+  }
+  floating_hover_tick_ = 0;
+}
+
+void PhiShellWindow::ShowFloatingSidebar() {
+  if (!sidebar_collapsed_ || !shell_hwnd_) {
+    return;
+  }
+  EnsureFloatingPanel();
+  SlideFloatingPanel(/*expanded=*/true);
+}
+
+void PhiShellWindow::HideFloatingSidebar(bool animated) {
+  if (!floating_sidebar_ || !floating_expanded_) {
+    return;
+  }
+  SlideFloatingPanel(/*expanded=*/false);
+  if (!animated) {
+    floating_slide_start_ = 0;
+    PositionFloatingPanel();
+  }
 }
 
 void PhiShellWindow::FloatingSidebarTick() {
   if (!floating_sidebar_) {
     return;
+  }
+  const ULONGLONG now = ::GetTickCount64();
+  // The slide: 150 ms ease-out between the two rests.
+  if (floating_slide_start_) {
+    const double t = std::min(
+        1.0, static_cast<double>(now - floating_slide_start_) / 150.0);
+    const double eased = 1.0 - (1.0 - t) * (1.0 - t);
+    const int x = floating_slide_from_ +
+                  static_cast<int>((floating_slide_to_ - floating_slide_from_) *
+                                   eased);
+    RECT rc = {};
+    ::GetWindowRect(floating_sidebar_, &rc);
+    ::SetWindowPos(floating_sidebar_, nullptr, x, rc.top, 0, 0,
+                   SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOSIZE);
+    if (t >= 1.0) {
+      floating_slide_start_ = 0;
+    }
   }
   // Hover states, hover cards and tab changes land on the next tick.
   ::InvalidateRect(floating_sidebar_, nullptr, FALSE);
@@ -4999,26 +5109,23 @@ void PhiShellWindow::FloatingSidebarTick() {
   ::GetCursorPos(&cursor);
   RECT panel_rc = {};
   ::GetWindowRect(floating_sidebar_, &panel_rc);
-  bool inside = ::PtInRect(&panel_rc, cursor) != FALSE;
-  if (!inside && shell_hwnd_) {
-    // The trigger strip pins it open, like the Mac's trigger tracking.
-    POINT origin = {0, 0};
-    ::ClientToScreen(shell_hwnd_, &origin);
-    const Layout layout = ComputeLayout();
-    RECT strip = {origin.x, origin.y + layout.title_bar.bottom,
-                  origin.x + layout.content.left,
-                  origin.y + layout.client.bottom};
-    inside = ::PtInRect(&strip, cursor) != FALSE;
+  const bool inside = ::PtInRect(&panel_rc, cursor) != FALSE;
+  if (!floating_expanded_) {
+    // Tucked: the 300 ms dwell on the peeking edge slides the panel in.
+    if (!inside) {
+      floating_hover_tick_ = 0;
+    } else if (!floating_hover_tick_) {
+      floating_hover_tick_ = now;
+    } else if (now - floating_hover_tick_ >= 300) {
+      SlideFloatingPanel(/*expanded=*/true);
+    }
+    return;
   }
-  // The hosted address field with the keyboard pins the panel open: a
-  // pointer excursion must not tear the field down mid-typing (the way the
-  // Mac's create-Space form pins its panel). The pin lifts when the field
-  // commits or is abandoned, both of which hand focus back to the page.
-  if (omnibox_->field_hosted() && omnibox_->FieldHasFocus()) {
-    inside = true;
-  }
-  const ULONGLONG now = ::GetTickCount64();
-  if (inside) {
+  // Slid in: it stays while the pointer is on it, a drag is in flight or a
+  // menu is up from it; otherwise 150 ms after the pointer leaves (and at
+  // least 500 ms after it came up) it tucks itself away.
+  const bool held = inside || sidebar_->drag_armed() || PhiModalDepth() > 0;
+  if (held) {
     floating_outside_tick_ = 0;
     return;
   }
@@ -5026,10 +5133,9 @@ void PhiShellWindow::FloatingSidebarTick() {
     floating_outside_tick_ = now;
     return;
   }
-  // The Mac's 0.12s leave delay and 0.5s minimum visible time.
-  if (now - floating_outside_tick_ >= 120 &&
+  if (now - floating_outside_tick_ >= 150 &&
       now - floating_shown_tick_ >= 500) {
-    HideFloatingSidebar(/*animated=*/true);
+    SlideFloatingPanel(/*expanded=*/false);
   }
 }
 
@@ -5044,23 +5150,33 @@ void PhiShellWindow::PaintFloatingSidebar(HDC dc) {
   // override is flipped here, for PaintChrome's rects.
   floating_layout_ = true;
   const Layout layout = ComputeLayout();
+  const PhiPalette palette = CurrentPalette();
   HDC mem = ::CreateCompatibleDC(dc);
   HBITMAP bitmap = ::CreateCompatibleBitmap(dc, layout.client.right,
                                             layout.client.bottom);
   HGDIOBJ old = ::SelectObject(mem, bitmap);
-  // include_child_controls: with no live EDIT in the panel the address
-  // text is painted by hand (the capture path's contract); once the
-  // shell's EDIT is hosted here (performance) it paints itself.
-  PaintChrome(mem, layout,
-              /*include_child_controls=*/!omnibox_->field_hosted());
+  // include_child_controls: the panel has no live EDIT; the address text
+  // is painted by hand where the layout has a field.
+  PaintChrome(mem, layout, /*include_child_controls=*/true);
+  // The pin: docks the sidebar (§4.4), trailing the header row.
+  if (layout.pin.right > layout.pin.left) {
+    POINT cursor = {};
+    ::GetCursorPos(&cursor);
+    ::ScreenToClient(floating_sidebar_, &cursor);
+    PhiPaintIconButton(mem, layout.pin, fluent::kPin,
+                       ::PtInRect(&layout.pin, cursor) ? PhiButtonState::kHover
+                                                       : PhiButtonState::kRest,
+                       palette, palette.label, Scaled(fluent::kIconToolbar),
+                       Scaled(fluent::kButtonRadius));
+  }
   ::BitBlt(dc, 0, 0, panel_rc.right, panel_rc.bottom, mem, 0,
            floating_offset_y_, SRCCOPY);
   ::SelectObject(mem, old);
   ::DeleteObject(bitmap);
   ::DeleteDC(mem);
   floating_layout_ = false;
-  // The panel's edge hairline (the Mac panel's 1pt border).
-  HPEN pen = ::CreatePen(PS_SOLID, 1, CurrentPalette().border);
+  // The panel's edge: 1 px stroke_strong (the DWM corners round it).
+  HPEN pen = ::CreatePen(PS_SOLID, 1, palette.stroke_strong);
   HGDIOBJ old_pen = ::SelectObject(dc, pen);
   HGDIOBJ old_brush = ::SelectObject(dc, ::GetStockObject(NULL_BRUSH));
   ::Rectangle(dc, panel_rc.left, panel_rc.top, panel_rc.right,
@@ -5095,21 +5211,6 @@ LRESULT CALLBACK PhiShellWindow::FloatingSidebarProc(HWND hwnd,
   switch (msg) {
     case WM_MOUSEACTIVATE:
       return MA_NOACTIVATE;  // Focus stays with the page.
-    case WM_COMMAND:
-      // The hosted address field's EN_CHANGE arrives at ITS parent.
-      if (self && self->omnibox_->OnShellCommand(wparam, lparam)) {
-        return 0;
-      }
-      break;
-    case WM_CTLCOLOREDIT:
-      if (self) {
-        if (HBRUSH brush = self->omnibox_->OnCtlColorEdit(
-                reinterpret_cast<HDC>(wparam),
-                reinterpret_cast<HWND>(lparam))) {
-          return reinterpret_cast<LRESULT>(brush);
-        }
-      }
-      break;
     case WM_PAINT: {
       PAINTSTRUCT ps = {};
       HDC dc = ::BeginPaint(hwnd, &ps);
@@ -5126,6 +5227,9 @@ LRESULT CALLBACK PhiShellWindow::FloatingSidebarProc(HWND hwnd,
       return 0;
     case WM_MOUSEMOVE:
       if (self) {
+        if (!self->floating_expanded_) {
+          return 0;  // Tucked: the tick's dwell decides.
+        }
         forward([&] {
           POINT pt = {GET_X_LPARAM(lparam),
                       GET_Y_LPARAM(lparam) + self->floating_offset_y_};
@@ -5136,17 +5240,29 @@ LRESULT CALLBACK PhiShellWindow::FloatingSidebarProc(HWND hwnd,
       break;
     case WM_LBUTTONDOWN:
       if (self) {
+        const POINT pt = {GET_X_LPARAM(lparam),
+                          GET_Y_LPARAM(lparam) + self->floating_offset_y_};
+        // The tucked edge and the pin both DOCK the sidebar (§4.4).
+        bool dock = !self->floating_expanded_;
+        if (!dock) {
+          self->floating_layout_ = true;
+          const Layout panel_layout = self->ComputeLayout();
+          self->floating_layout_ = false;
+          dock = ::PtInRect(&panel_layout.pin, pt) != FALSE;
+        }
+        if (dock) {
+          self->SetSidebarCollapsed(false);
+          return 0;
+        }
         forward([&] {
-          self->OnChromeClick(GET_X_LPARAM(lparam),
-                              GET_Y_LPARAM(lparam) +
-                                  self->floating_offset_y_);
+          self->OnChromeClick(pt.x, pt.y);
           self->sidebar_->AbortDrag();  // Drags never start from the panel.
         });
         return 0;
       }
       break;
     case WM_RBUTTONUP:
-      if (self) {
+      if (self && self->floating_expanded_) {
         forward([&] {
           self->OnChromeContextMenu(GET_X_LPARAM(lparam),
                                     GET_Y_LPARAM(lparam) +
@@ -5156,7 +5272,7 @@ LRESULT CALLBACK PhiShellWindow::FloatingSidebarProc(HWND hwnd,
       }
       break;
     case WM_MOUSEWHEEL:
-      if (self) {
+      if (self && self->floating_expanded_) {
         forward([&] {
           POINT pt = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
           ::ScreenToClient(hwnd, &pt);
@@ -5326,7 +5442,6 @@ void PhiShellWindow::PaintChrome(HDC dc,
   // target while a Space swap slide is in flight.
   const PhiPalette palette = CurrentPalette();
   const COLORREF kTintTop = palette.ground_top;
-  const COLORREF kTintBottom = palette.ground_bottom;
   const COLORREF kLabel = palette.label;
   const COLORREF kLabelDim = palette.label_dim;
   const COLORREF kBorder = palette.border;
@@ -5338,10 +5453,10 @@ void PhiShellWindow::PaintChrome(HDC dc,
   // there (WebContentAddressBar's .sidebarTabHovered over the header), so the
   // field carries no Space tint in those two. Blending them over the tinted
   // ground instead is what painted a themed pill on the untinted bar.
-  const bool kFieldOnBar = layout.mode != PhiLayoutMode::kPerformance;
-  const COLORREF kFieldBg = kFieldOnBar ? palette.bar_hover : palette.hover;
-  const COLORREF kFieldBgHot =
-      kFieldOnBar ? palette.bar_hover_strong : palette.hover_strong;
+  // The address row is the card in every layout: the field's resting fill
+  // is the control fill over it, its hover a step darker (§4).
+  const COLORREF kFieldBg = palette.control_fill;
+  const COLORREF kFieldBgHot = PhiBlend(palette.ink, palette.card, 18);
   // Paint only the bands we own. Whatever is left is the content region, and
   // the reparented browser child covers it. No seam along the content edge:
   // the chrome runs straight into the page.
@@ -5350,67 +5465,48 @@ void PhiShellWindow::PaintChrome(HDC dc,
   // than GradientFill, which lives in msimg32 and is not linked here.
   ::ExcludeClipRect(dc, layout.content.left, layout.content.top,
                     layout.content.right, layout.content.bottom);
-  const int height = layout.client.bottom > 0 ? layout.client.bottom : 1;
-  const int bands = 48;
-  // The band brushes only depend on the palette, not the height — cache them
-  // instead of creating and destroying 48 GDI brushes every paint.
-  if (band_brushes_.empty() || band_top_ != kTintTop ||
-      band_bottom_ != kTintBottom) {
-    for (HBRUSH brush : band_brushes_) {
-      ::DeleteObject(brush);
-    }
-    band_brushes_.clear();
-    band_brushes_.reserve(bands);
-    for (int i = 0; i < bands; ++i) {
-      const int r = GetRValue(kTintTop) +
-                    (GetRValue(kTintBottom) - GetRValue(kTintTop)) * i / bands;
-      const int g = GetGValue(kTintTop) +
-                    (GetGValue(kTintBottom) - GetGValue(kTintTop)) * i / bands;
-      const int b = GetBValue(kTintTop) +
-                    (GetBValue(kTintBottom) - GetBValue(kTintTop)) * i / bands;
-      band_brushes_.push_back(::CreateSolidBrush(RGB(r, g, b)));
-    }
-    band_top_ = kTintTop;
-    band_bottom_ = kTintBottom;
-  }
-  for (int i = 0; i < bands; ++i) {
-    RECT band = {0, height * i / bands, layout.client.right,
-                 height * (i + 1) / bands};
-    ::FillRect(dc, &band, band_brushes_[i]);
+  // Flat (docs/windows-native-ui.md §2.3: no vertical band gradient).
+  {
+    HBRUSH ground = ::CreateSolidBrush(kTintTop);
+    ::FillRect(dc, &layout.client, ground);
+    ::DeleteObject(ground);
   }
 
   ::SelectClipRgn(dc, nullptr);
 
-  // The card's hairline: 1px of `border` just outside the content region
-  // (the Mac's contentOuterBorder), ROUNDED to follow the card's corners —
-  // a square frame would cut straight across the corner arcs. Under a top
-  // bar the card begins at the bar's top edge, so the outline wraps both.
+  // The pane (§4.2): flush to the window's top, right and bottom; its LEFT
+  // corners round at kContentRadius against the sidebar's tint, a 1 px
+  // stroke on that edge and the sheet shadow (§2.4) so it floats. The
+  // horizontal layout has no pane: its page runs edge to edge.
   if (layout.content.right > layout.content.left &&
-      layout.mode != PhiLayoutMode::kComfortable) {
-    // Comfortable has no card to outline: its page runs edge to edge and
-    // the toolbar's own separator is the only rule above it.
-    RECT frame_rc = layout.content;
+      layout.mode != PhiLayoutMode::kComfortable && layout.content.left > 0) {
+    RECT pane = layout.content;
     if (layout.top_bar.right > layout.top_bar.left) {
-      frame_rc.top = layout.top_bar.top;
+      pane.top = layout.top_bar.top;
     }
+    const int radius = Scaled(kContentRadius);
+    // The right corners are off the window: extend the rect past the edge
+    // so only the left arcs are drawn.
+    pane.right += radius * 2;
+    // The shadow: three 1 px rings outside the edge at falling alpha
+    // (0 2 8 @12 %, approximated on the tint), then the stroke.
+    const std::array<int, 3> alphas = {14, 8, 4};
+    for (int i = 3; i >= 1; --i) {
+      RECT ring = pane;
+      ::InflateRect(&ring, i, i);
+      ring.top += 1;  // The shadow falls downward: none above the top edge.
+      PhiStrokeRoundRectAA(dc, ring, radius + i,
+                           PhiBlend(palette.ink, kTintTop, alphas[static_cast<size_t>(i - 1)]), 1);
+    }
+    RECT frame_rc = pane;
     ::InflateRect(&frame_rc, 1, 1);
-    // The frame sits 1px outside the card, so its corner circle is the
-    // card's (the caps' circle) grown by 1 — concentric, and the very
-    // circle each cap strokes inside its bite.
-    PhiStrokeRoundRectAA(dc, frame_rc, Scaled(kContentRadius) + 1,
-                         palette.border, 1);
+    PhiStrokeRoundRectAA(dc, frame_rc, radius + 1, palette.border, 1);
   }
 
   PaintBookmarkBar(dc, layout, palette);
 
   ::SetBkMode(dc, TRANSPARENT);
   HGDIOBJ previous_font = ui_font_ ? ::SelectObject(dc, ui_font_) : nullptr;
-
-  // The caption band: menu titles leading, minimize / maximize / close
-  // trailing — the menu bar ON the title row. The ground already painted it;
-  // the band draws its own titles, glyphs and hot states over that
-  // (phi_caption_band.h owns every one of them).
-  caption_band_->Paint(dc, /*with_buttons=*/!caption_buttons_suppressed_);
 
   // The top bar (balanced / comfortable): the content card's FIRST band -- the
   // Mac's WebContentHeader is the card's first stack item -- so it paints on
@@ -5420,46 +5516,64 @@ void PhiShellWindow::PaintChrome(HDC dc,
     const RECT& band = layout.top_bar;
     const int radius = Scaled(kContentRadius);
     HBRUSH bg = ::CreateSolidBrush(palette.window_bg);
-    if (layout.mode == PhiLayoutMode::kComfortable) {
-      // Edge to edge and square: there is no card here, and the band's top
-      // corners belong to the tabs merging into it, not to a rounded card.
+    // While the active tab is split the row is a sheet of its own: its
+    // bottom corners round at kContentRadius and the hairline under it
+    // goes, the tint showing in the framework's 4 dip gutter (§4.6).
+    const bool split_row = ActiveTabIsSplit();
+    if (split_row) {
+      RECT rounded = band;
+      if (band.left == 0 || layout.mode == PhiLayoutMode::kComfortable) {
+        rounded.left -= radius * 2;  // Square at the window's left edge.
+      }
+      rounded.right += radius * 2;
+      PhiFillRoundRectAA(dc, rounded, radius, palette.window_bg);
+    } else if (layout.mode == PhiLayoutMode::kComfortable || band.left == 0) {
+      // Edge to edge and square: the horizontal toolbar, or the pane
+      // filling the window with the sidebar hidden.
       ::FillRect(dc, &band, bg);
     } else {
-      // The card's top corners at kContentRadius — the same curve its
-      // hairline and its bottom corner caps use, so the arcs meet.
-      PhiFillRoundRectAA(dc, band, radius, palette.window_bg);
+      // The pane's top-left corner at kContentRadius — the curve the frame
+      // strokes; the right end runs off the window's edge.
+      RECT rounded = band;
+      rounded.right += radius * 2;
+      PhiFillRoundRectAA(dc, rounded, radius, palette.window_bg);
       RECT lower = {band.left, band.top + radius, band.right, band.bottom};
       ::FillRect(dc, &lower, bg);
     }
     ::DeleteObject(bg);
-    RECT sep = {band.left, band.bottom - 1, band.right, band.bottom};
-    HBRUSH sep_brush = ::CreateSolidBrush(palette.separator);
-    ::FillRect(dc, &sep, sep_brush);
-    ::DeleteObject(sep_brush);
+    if (!split_row) {
+      RECT sep = {band.left, band.bottom - 1, band.right, band.bottom};
+      HBRUSH sep_brush = ::CreateSolidBrush(palette.separator);
+      ::FillRect(dc, &sep, sep_brush);
+      ::DeleteObject(sep_brush);
+    }
   }
 
-  // Nav row: MDL2 icons at the 13pt icon size \u2014 the UI font's \u2039 \u203A \u21BB were
-  // punctuation-sized. Hovering an actionable button raises a rounded
-  // wash, the Mac header buttons' treatment. Each mode empties the rects
-  // it hides, so nothing draws where a control does not exist. (The
-  // sidebar-toggle stand-in is gone: it only opened stray windows until
-  // the real toggle lands.)
+  // The caption buttons and the divider, over the row they share (the
+  // address row in the vertical layout, the strip row in the horizontal):
+  // painted AFTER the row's ground so the fill cannot cover them
+  // (phi_caption_band.h owns their hot states).
+  caption_band_->Paint(dc, /*with_buttons=*/!caption_buttons_suppressed_);
+
+  // The toolbar buttons (§2.2a): one painter, 32 square, radius 4, a 16
+  // dip glyph, the state's wash. Each mode empties the rects it hides, so
+  // nothing draws where a control does not exist.
   {
-    HGDIOBJ previous_nav_font =
-        chip_icon_font_ ? ::SelectObject(dc, chip_icon_font_) : nullptr;
     struct NavButton {
       RECT rect;
       const wchar_t* glyph;
       bool enabled;
+      bool toggled;
     };
     const std::array<NavButton, 6> nav_buttons = {{
-        {layout.back, L"\uE72B", omnibox_->can_go_back()},
-        {layout.forward, L"\uE72A", omnibox_->can_go_forward()},
-        {layout.reload, omnibox_->nav_loading() ? L"\uE711" : L"\uE72C", true},
-        {layout.search_tabs, L"\uE721", true},
-        // Comfortable only: the strip's "+" and the toolbar's overflow.
-        {sidebar_->add_tab_button(), L"\uE710", true},
-        {layout.overflow, L"\uE712", true},
+        {layout.back, fluent::kBack, omnibox_->can_go_back(), false},
+        {layout.forward, fluent::kForward, omnibox_->can_go_forward(), false},
+        {layout.reload, omnibox_->nav_loading() ? fluent::kStop : fluent::kRefresh,
+         true, false},
+        {layout.search_tabs, fluent::kSearch, true, false},
+        // Comfortable's strip "+", and every layout's app menu (⋯).
+        {sidebar_->add_tab_button(), fluent::kAdd, true, false},
+        {layout.app_menu, fluent::kMore, true, app_menu_ && app_menu_->open()},
     }};
     for (size_t i = 0; i < nav_buttons.size(); ++i) {
       const NavButton& button = nav_buttons[i];
@@ -5468,31 +5582,25 @@ void PhiShellWindow::PaintChrome(HDC dc,
       }
       const bool hot = hover_kind_ == HoverKind::kNav &&
                        hover_index_ == static_cast<int>(i);
-      if (hot && button.enabled) {
-        // The Mac header buttons: cornerRadius 4 on the plain hover wash.
-        PhiFillRounded(dc, button.rect, palette.hover, Scaled(4));
-      }
-      PhiDrawGlyphIcon(dc, button.rect, button.glyph, Scaled(kSpaceIcon),
-                    button.enabled ? kLabel : kLabelDim);
-    }
-    if (previous_nav_font) {
-      ::SelectObject(dc, previous_nav_font);
+      const PhiButtonState state =
+          !button.enabled ? PhiButtonState::kDisabled
+          : button.toggled ? PhiButtonState::kPressed
+          : hot            ? PhiButtonState::kHover
+                           : PhiButtonState::kRest;
+      PhiPaintIconButton(dc, button.rect, button.glyph, state, palette, kLabel,
+                         Scaled(fluent::kIconToolbar),
+                         Scaled(fluent::kButtonRadius));
     }
   }
-  // The sidebar toggle (nav-hover ordinal 14): the Mac's own
-  // left-sidebar-toggle artwork, a template image tinted like the header
-  // buttons, on the same radius-4 wash. It paints in the docked AND the
-  // collapsed band — the collapsed shell's one visible control.
+  // The sidebar toggle (nav-hover ordinal 14): ClosePane while the sidebar
+  // is shown, OpenPane while it is hidden — the stateful Fluent pair.
   if (layout.sidebar_toggle.right > layout.sidebar_toggle.left) {
-    if (hover_kind_ == HoverKind::kNav && hover_index_ == 14) {
-      PhiFillRounded(dc, layout.sidebar_toggle, palette.hover, Scaled(4));
-    }
-    const int toggle_px =
-        layout.sidebar_toggle.right - layout.sidebar_toggle.left;
-    const std::vector<unsigned char> toggle_bgra =
-        PhiTintedIconBgra(PhiSidebarToggleIcon(), kLabel, toggle_px);
-    PhiBlendBgra(dc, layout.sidebar_toggle, toggle_bgra.data(), toggle_px,
-                 toggle_px);
+    const bool hot = hover_kind_ == HoverKind::kNav && hover_index_ == 14;
+    PhiPaintIconButton(dc, layout.sidebar_toggle,
+                       sidebar_collapsed_ ? fluent::kOpenPane : fluent::kClosePane,
+                       hot ? PhiButtonState::kHover : PhiButtonState::kRest,
+                       palette, kLabel, Scaled(fluent::kIconToolbar),
+                       Scaled(fluent::kButtonRadius));
   }
 
   // Address field. In the sidebar it is a pill on the 4% wash with no border
@@ -5521,58 +5629,51 @@ void PhiShellWindow::PaintChrome(HDC dc,
     return hover_kind_ == HoverKind::kNav && hover_index_ == index &&
            r.right > r.left;
   };
-  const auto accessory_wash = [&](const RECT& r) {
-    // Inside the capsule the button lights the field's own emphasized fill;
-    // out on the bar it takes the bar's plain wash, like the nav buttons.
-    return on_field(r) ? kFieldBgHot : palette.hover;
-  };
   const bool pointer_on_field_accessory =
       (accessory_hot(13, layout.reader) && on_field(layout.reader)) ||
-      (accessory_hot(11, layout.copy_link) && on_field(layout.copy_link)) ||
-      (accessory_hot(10, layout.extensions) && on_field(layout.extensions));
+      (accessory_hot(15, layout.star) && on_field(layout.star));
   const bool field_hot =
       omnibox_->field_hover() && !pointer_on_field_accessory;
-
-  if (layout.mode == PhiLayoutMode::kPerformance) {
-    // Resting 4% wash, brightening to the emphasized 8% under the cursor
-    // (SideAddressBar's hoveredColor).
-    PhiFillRounded(dc, layout.url_field, field_hot ? kFieldBgHot : kFieldBg,
-                Scaled(kCornerRadius));
-  } else if (layout.mode == PhiLayoutMode::kComfortable) {
-    // Chrome's omnibox: a full pill standing on the toolbar, on the same 4%
-    // wash the sidebar field uses, brightening under the cursor. Balanced's
-    // field stays bare — it has the card's own ground behind it; this one
-    // has only the flat toolbar, and would vanish into it.
-    const int pill_r = (layout.url_field.bottom - layout.url_field.top) / 2;
-    PhiFillRounded(dc, layout.url_field, field_hot ? kFieldBgHot : kFieldBg,
-                pill_r);
-    // The page's globe leads the pill, where Chrome puts its site chip.
-    if (layout.page_icon.right > layout.page_icon.left) {
-      HGDIOBJ previous_icon_font =
-          caption_font_ ? ::SelectObject(dc, caption_font_) : nullptr;
-      PhiDrawGlyph(dc, layout.page_icon, L"\uE774", kLabelDim);
-      if (previous_icon_font) {
-        ::SelectObject(dc, previous_icon_font);
-      }
+  const bool field_focused = omnibox_->FieldHasFocus();
+  if (layout.url_field.right > layout.url_field.left) {
+    // §4: rest = control fill (ink 4.5 % / white 6 %), radius 8, no stroke;
+    // hover a step darker; focus = the card body with a 1 px stroke and a
+    // 2 px accent bottom edge (Fluent TextBox).
+    const int radius = Scaled(kOmniboxRadius);
+    if (field_focused) {
+      PhiFillRoundRectAA(dc, layout.url_field, radius, palette.card);
+      PhiStrokeRoundRectAA(dc, layout.url_field, radius, palette.stroke_strong,
+                           1);
+      RECT edge = layout.url_field;
+      edge.top = edge.bottom - Scaled(2);
+      edge.left += radius;
+      edge.right -= radius;
+      HBRUSH accent = ::CreateSolidBrush(palette.accent);
+      ::FillRect(dc, &edge, accent);
+      ::DeleteObject(accent);
+    } else {
+      PhiFillRoundRectAA(dc, layout.url_field, radius,
+                         field_hot ? kFieldBgHot : kFieldBg);
     }
-  } else if (field_hot &&
-             layout.url_field.right > layout.url_field.left) {
-    // The top-bar field rests BARE and takes the wash only under the
-    // cursor (the Mac top bar's transparent-until-hovered field).
-    PhiFillRounded(dc, layout.url_field, kFieldBg, Scaled(kCornerRadius));
+    // The leading site-info slot: the page glyph, in `dim`.
+    if (layout.page_icon.right > layout.page_icon.left) {
+      PhiDrawIconGlyph(dc, layout.page_icon, fluent::kGlobe,
+                       Scaled(fluent::kIconToolbar), kLabelDim);
+    }
   }
   if (include_child_controls) {
     // What the user actually sees, mid-edit.
     const std::wstring shown = omnibox_->DisplayedUrl();
     ::SetTextColor(dc, shown.empty() ? kLabelDim : kLabel);
     RECT url_rc = layout.url_field;
-    url_rc.left += Scaled(12);  // SideAddressBar.textFieldLeadingInset
+    url_rc.left = layout.page_icon.right > layout.page_icon.left
+                      ? layout.page_icon.right + Scaled(4)
+                      : url_rc.left + Scaled(kFieldTextInset);
     // Stop before the in-field trailing stack when it exists — the leftmost
     // accessory that actually sits inside the capsule (the same rule
     // PhiOmniboxTextRect applies to the EDIT).
     int text_right = url_rc.right;
-    for (const RECT& accessory : {layout.field_ext_strip, layout.copy_link,
-                                  layout.extensions}) {
+    for (const RECT& accessory : {layout.reader, layout.star}) {
       if (accessory.right > accessory.left &&
           accessory.left > layout.url_field.left &&
           accessory.left < text_right) {
@@ -5580,7 +5681,7 @@ void PhiShellWindow::PaintChrome(HDC dc,
       }
     }
     url_rc.right = text_right - Scaled(8);
-    PhiDrawTextAA(dc, shown.empty() ? L"Search or Enter URL" : shown.c_str(),
+    PhiDrawTextAA(dc, shown.empty() ? L"Search or enter address" : shown.c_str(),
                 -1, &url_rc,
                 DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_PATH_ELLIPSIS);
   }
@@ -5597,7 +5698,7 @@ void PhiShellWindow::PaintChrome(HDC dc,
     const COLORREF field_fill =
         ::PtInRect(&layout.url_field, strip_mid)
             ? (omnibox_->field_hover() ? kFieldBgHot : kFieldBg)
-            : static_cast<COLORREF>(palette.window_bg);
+            : static_cast<COLORREF>(palette.card);
     for (size_t i = 0; i < field_extensions_.size(); ++i) {
       const RECT slot = FieldExtRect(layout, i);
       if (slot.right <= slot.left) {
@@ -5628,7 +5729,8 @@ void PhiShellWindow::PaintChrome(HDC dc,
         // Icon not decoded yet: the puzzle stands in.
         HGDIOBJ previous_ext_font =
             chip_icon_font_ ? ::SelectObject(dc, chip_icon_font_) : nullptr;
-        PhiDrawGlyph(dc, slot, L"", kLabelDim);
+        PhiDrawGlyphIcon(dc, slot, fluent::kPuzzle,
+                         Scaled(fluent::kIconToolbar), kLabelDim);
         if (previous_ext_font) {
           ::SelectObject(dc, previous_ext_font);
         }
@@ -5638,31 +5740,23 @@ void PhiShellWindow::PaintChrome(HDC dc,
       PhiDrawExtensionBadge(dc, icon, ext.state, badge_font_, dpi_);
     }
   }
-  // The field's in-field copy-link button (SideAddressBar's rightStack lead):
-  // a 12pt link glyph on a radius-4 hover wash; a checkmark for the second
-  // after a copy, the Mac's triggered swap.
+  // The in-field trailing slots (24, the icon in `dim`): Reader View when
+  // offered — held lit while the reader is up — and the star.
   if (layout.reader.right > layout.reader.left) {
-    // No icon font to select: this one is drawn, not typeset (see
-    // DrawReaderGlyph).
-    // Washed on hover, and held lit while the reader is UP — the Mac's
-    // ReaderButtonView shows its circle for `isButtonHovering || isActive`.
-    if (accessory_hot(13, layout.reader) || ActiveTabShowsReader()) {
-      PhiFillRounded(dc, layout.reader, accessory_wash(layout.reader), Scaled(4));
-    }
-    PhiDrawReaderGlyph(dc, layout.reader, kLabel, dpi_);
+    const bool active = ActiveTabShowsReader();
+    PhiPaintIconButton(dc, layout.reader, fluent::kReadingMode,
+                       active                        ? PhiButtonState::kToggled
+                       : accessory_hot(13, layout.reader) ? PhiButtonState::kHover
+                                                          : PhiButtonState::kRest,
+                       palette, kLabelDim, Scaled(fluent::kIconToolbar),
+                       Scaled(fluent::kButtonRadius));
   }
-  if (layout.copy_link.right > layout.copy_link.left) {
-    HGDIOBJ previous_link_font =
-        chip_icon_font_ ? ::SelectObject(dc, chip_icon_font_) : nullptr;
-    if (accessory_hot(11, layout.copy_link)) {
-      PhiFillRounded(dc, layout.copy_link, accessory_wash(layout.copy_link),
-                  Scaled(4));
-    }
-    PhiDrawGlyph(dc, layout.copy_link,
-              omnibox_->copy_link_flash() ? L"" : L"", kLabel);
-    if (previous_link_font) {
-      ::SelectObject(dc, previous_link_font);
-    }
+  if (layout.star.right > layout.star.left) {
+    PhiPaintIconButton(dc, layout.star, fluent::kFavoriteStar,
+                       accessory_hot(15, layout.star) ? PhiButtonState::kHover
+                                                      : PhiButtonState::kRest,
+                       palette, kLabelDim, Scaled(fluent::kIconToolbar),
+                       Scaled(fluent::kButtonRadius));
   }
 
   // Space pips: 24pt, icon only. The selected one sits on a selected-pill
@@ -5677,6 +5771,24 @@ void PhiShellWindow::PaintChrome(HDC dc,
   if (BandOnShell()) {
     spaces_->Paint(dc, StripRects(layout), palette);
     sidebar_->Paint(dc, BandRects(layout), palette);
+    // The section labels (§4.2): 12 dip, `dim`, over each band.
+    HGDIOBJ previous_label_font =
+        label_font_ ? ::SelectObject(dc, label_font_) : nullptr;
+    ::SetTextColor(dc, kLabelDim);
+    const auto label = [&](const RECT& rc, const wchar_t* text) {
+      if (rc.right <= rc.left) {
+        return;
+      }
+      RECT text_rc = {rc.left, rc.top + Scaled(8), rc.right, rc.bottom};
+      PhiDrawTextAA(dc, text, -1, &text_rc,
+                    DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    };
+    label(layout.pinned_label, PhiStr("sidebar.section.pinned"));
+    label(layout.bookmarks_label, PhiStr("sidebar.section.bookmarks"));
+    label(layout.tabs_label, PhiStr("sidebar.section.tabs"));
+    if (previous_label_font) {
+      ::SelectObject(dc, previous_label_font);
+    }
   }
 
   // Bottom bar — SidebarBottomBar, inch for inch: a 24pt row where the
@@ -5690,26 +5802,19 @@ void PhiShellWindow::PaintChrome(HDC dc,
     return hover_kind_ == HoverKind::kNav && hover_index_ == 4 + ordinal;
   };
   {
-    HGDIOBJ previous_icon_font =
-        chip_icon_font_ ? ::SelectObject(dc, chip_icon_font_) : nullptr;
+    const auto tool = [&](const RECT& rect, const wchar_t* glyph, bool hot) {
+      PhiPaintIconButton(dc, rect, glyph,
+                         hot ? PhiButtonState::kHover : PhiButtonState::kRest,
+                         palette, kLabel, Scaled(fluent::kIconToolbar),
+                         Scaled(fluent::kButtonRadius));
+    };
     if (layout.downloads.right > layout.downloads.left) {
-      if (bottom_hot(0)) {
-        PhiFillRounded(dc, layout.downloads, palette.hover, Scaled(6));
-      }
-      // The Mac's download icon (sidebar-download.imageset), textPrimary
-      // as DownloadButtonView tints its Lottie.
-      const int down_px = layout.downloads.right - layout.downloads.left;
-      const std::vector<unsigned char> down_bgra =
-          PhiTintedIconBgra(PhiDownloadIcon(), kLabel, down_px);
-      PhiBlendBgra(dc, layout.downloads, down_bgra.data(), down_px,
-                   down_px);
+      tool(layout.downloads, fluent::kDownload, bottom_hot(0));
     }
     if (layout.memory.right > layout.memory.left) {
       if (bottom_hot(1)) {
-        PhiFillRounded(dc, layout.memory, palette.hover, Scaled(6));
+        PhiFillRounded(dc, layout.memory, palette.hover, Scaled(4));
       }
-      // The Mac's memory icon (memory-icon.imageset), black/white by
-      // appearance as its two PDF variants are.
       const int memory_px = layout.memory.right - layout.memory.left;
       const std::vector<unsigned char> memory_bgra = PhiTintedIconBgra(
           PhiMemoryIcon(),
@@ -5720,17 +5825,7 @@ void PhiShellWindow::PaintChrome(HDC dc,
     }
     if (layout.extensions.right > layout.extensions.left) {
       // The extensions puzzle button (nav-hover ordinal 8 = bottom_hot(4)).
-      // In-field (performance) it wears the header buttons' radius-4 wash;
-      // in the bottom bar (balanced) the bar buttons' radius 6.
-      if (bottom_hot(4)) {
-        PhiFillRounded(dc, layout.extensions, palette.hover,
-                    Scaled(layout.mode == PhiLayoutMode::kPerformance ? 4
-                                                                      : 6));
-      }
-      PhiDrawGlyph(dc, layout.extensions, L"", kLabel);  // Puzzle.
-    }
-    if (previous_icon_font) {
-      ::SelectObject(dc, previous_icon_font);
+      tool(layout.extensions, fluent::kPuzzle, bottom_hot(4));
     }
   }
   if (layout.feedback.right > layout.feedback.left) {
@@ -5757,10 +5852,7 @@ void PhiShellWindow::PaintChrome(HDC dc,
     const int mid_y = (layout.feedback.top + layout.feedback.bottom) / 2;
     RECT icon_rc = {left, mid_y - icon_w / 2, left + icon_w,
                     mid_y + icon_w / 2};
-    // The Mac's feedback icon (sidebar-feedback.imageset), textPrimary.
-    const std::vector<unsigned char> feedback_bgra =
-        PhiTintedIconBgra(PhiFeedbackIcon(), kLabel, icon_w);
-    PhiBlendBgra(dc, icon_rc, feedback_bgra.data(), icon_w, icon_w);
+    PhiDrawIconGlyph(dc, icon_rc, fluent::kFeedback, icon_w, kLabel);
     if (!icon_only) {
       if (small_font_) {
         ::SelectObject(dc, small_font_);
@@ -5901,11 +5993,8 @@ LRESULT CALLBACK PhiShellWindow::ShellWndProc(HWND hwnd,
     }
     case WM_ACTIVATE:
     case WM_SETFOCUS:
-      // Alt's summoned menu titles go back down when the window deactivates,
-      // as Windows' own Alt-revealed bar does.
-      if (self && msg == WM_ACTIVATE && LOWORD(wparam) == WA_INACTIVE &&
-          self->caption_band_) {
-        self->caption_band_->OnWindowDeactivated();
+      if (self && msg == WM_ACTIVATE && LOWORD(wparam) == WA_INACTIVE) {
+        self->HideFloatingSidebar(/*animated=*/true);  // Tucks on deactivate.
       }
       // Activation/focus arriving at the shell top-level must be forwarded to
       // the child: as a WS_CHILD, Chromium's window reports IsTopLevelWindow()
@@ -5981,7 +6070,10 @@ LRESULT CALLBACK PhiShellWindow::ShellWndProc(HWND hwnd,
         POINT pt = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
         ::ScreenToClient(hwnd, &pt);
         const Layout band = self->ComputeLayout();
-        if (band.horizontal_tabs && ::PtInRect(&band.title_bar, pt)) {
+        // The vertical layout's pip row too (its empty run opens the tab
+        // area's menu, §3.5); the address row's run keeps the system menu.
+        if ((band.horizontal_tabs && ::PtInRect(&band.title_bar, pt)) ||
+            ::PtInRect(&band.spaces_strip, pt)) {
           self->OnChromeContextMenu(pt.x, pt.y);
           return 0;  // No WM_CONTEXTMENU, so no system menu behind ours.
         }
@@ -6001,7 +6093,7 @@ LRESULT CALLBACK PhiShellWindow::ShellWndProc(HWND hwnd,
         // band — the outer frame pixels are non-client, so slamming the
         // cursor to the window edge (the Mac gesture) arrives here, not as
         // WM_MOUSEMOVE.
-        if (self->sidebar_collapsed_ && !self->floating_sidebar_ &&
+        if (self->sidebar_collapsed_ && !self->floating_expanded_ &&
             wparam == HTLEFT) {
           const Layout collapsed = self->ComputeLayout();
           if (!collapsed.horizontal_tabs &&
@@ -6023,22 +6115,8 @@ LRESULT CALLBACK PhiShellWindow::ShellWndProc(HWND hwnd,
     case WM_MOUSEMOVE:
       if (self) {
         POINT pt = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
-        // The Phi button's held press: past the drag threshold it hands
-        // itself to the frame's move loop (phi_caption_band.h), and until it
-        // decides nothing else in the chrome may see the travel.
-        if (self->caption_band_ && self->caption_band_->OnPressMove(pt)) {
-          return 0;
-        }
-        if (self->sidebar_collapsed_ && !self->floating_sidebar_) {
-          const Layout collapsed = self->ComputeLayout();
-          if (!collapsed.horizontal_tabs &&
-              pt.x < collapsed.content.left &&
-              pt.y > collapsed.title_bar.bottom) {
-            self->ShowFloatingSidebar();
-          }
-        }
         // The band's own hover: the caption buttons leave (a client move
-        // means we are off them) and the titles reveal or highlight.
+        // means we are off them).
         if (self->caption_band_) {
           self->caption_band_->OnMouseMove(pt);
         }
@@ -6099,11 +6177,6 @@ LRESULT CALLBACK PhiShellWindow::ShellWndProc(HWND hwnd,
         self->RunDeferredClose();  // May destroy `self`.
       }
       return 0;
-    case kMsgPhiToggleMenuReveal:
-      if (self && self->caption_band_) {
-        self->caption_band_->ToggleAltReveal();
-      }
-      return 0;
     case kMsgPhiSwitcherNext:
     case kMsgPhiSwitcherPrev:
       if (self) {
@@ -6129,9 +6202,36 @@ LRESULT CALLBACK PhiShellWindow::ShellWndProc(HWND hwnd,
     case WM_INITMENUPOPUP:
       // A menu is about to drop down — refresh its dynamic rows and enable
       // states, the Win32 twin of the Mac's menuWillOpen rebuilds.
-      if (self && self->caption_band_) {
-        self->caption_band_->OnMenuOpening(reinterpret_cast<HMENU>(wparam));
+      if (self && self->app_menu_) {
+        self->app_menu_->OnMenuOpening(reinterpret_cast<HMENU>(wparam));
         return 0;
+      }
+      break;
+    case WM_MEASUREITEM:
+      // The owner-drawn menu rows (phi_menu_paint.h): the app menu's and
+      // every context menu's, all Fluent flyout rows.
+      if (self && wparam == 0 &&
+          PhiMenuOnMeasureItem(hwnd,
+                               reinterpret_cast<MEASUREITEMSTRUCT*>(lparam))) {
+        return TRUE;
+      }
+      break;
+    case WM_DRAWITEM:
+      if (self && wparam == 0 &&
+          PhiMenuOnDrawItem(hwnd, *reinterpret_cast<DRAWITEMSTRUCT*>(lparam),
+                            self->CurrentPalette())) {
+        return TRUE;
+      }
+      break;
+    case WM_MENUCHAR:
+      // Owner-drawn rows carry no string the system can match a mnemonic
+      // against, so the letter is resolved here.
+      if (self) {
+        if (const LRESULT pick = PhiMenuOnMenuChar(
+                reinterpret_cast<HMENU>(lparam),
+                static_cast<wchar_t>(LOWORD(wparam)))) {
+          return pick;
+        }
       }
       break;
     case WM_COMMAND:
@@ -6140,9 +6240,13 @@ LRESULT CALLBACK PhiShellWindow::ShellWndProc(HWND hwnd,
       // menu pick, 1 an accelerator — Win32's own convention, which the
       // keyboard service follows when it posts a chord (the reader's usage
       // metric tells the two apart; nothing else does).
-      if (self && lparam == 0 && HIWORD(wparam) <= 1 && self->caption_band_ &&
-          self->caption_band_->OnCommand(LOWORD(wparam),
-                                         HIWORD(wparam) == 1)) {
+      if (self && lparam == 0 && HIWORD(wparam) <= 1 &&
+          LOWORD(wparam) == kCmdShowAppMenu) {
+        self->ShowAppMenu();
+        return 0;
+      }
+      if (self && lparam == 0 && HIWORD(wparam) <= 1 && self->app_menu_ &&
+          self->app_menu_->OnCommand(LOWORD(wparam), HIWORD(wparam) == 1)) {
         return 0;
       }
       if (self && self->omnibox_->OnShellCommand(wparam, lparam)) {
@@ -6190,10 +6294,6 @@ LRESULT CALLBACK PhiShellWindow::ShellWndProc(HWND hwnd,
       return ::DefWindowProcW(hwnd, msg, wparam, lparam);
     case WM_LBUTTONUP:
       if (self) {
-        // A Phi-button press that never travelled: the menu drops here.
-        if (self->caption_band_ && self->caption_band_->OnPressUp()) {
-          return 0;
-        }
         if (self->sidebar_resizing_) {
           self->sidebar_resizing_ = false;
           if (::GetCapture() == hwnd) {
@@ -6209,9 +6309,6 @@ LRESULT CALLBACK PhiShellWindow::ShellWndProc(HWND hwnd,
       return ::DefWindowProcW(hwnd, msg, wparam, lparam);
     case WM_CAPTURECHANGED:
       if (self) {
-        if (self->caption_band_) {
-          self->caption_band_->CancelPress();
-        }
         if (self->sidebar_resizing_) {
           self->sidebar_resizing_ = false;
           if (self->services_.prefs) {
@@ -6289,9 +6386,14 @@ LRESULT CALLBACK PhiShellWindow::ShellWndProc(HWND hwnd,
         // Band geometry changed under the slide.
         self->spaces_->CancelSwap();
         self->CancelContentSlide();
-        self->LayoutContents();
+        self->LayoutContents();  // Re-seats the floating panel too.
       }
       return 0;
+    case WM_MOVE:
+      if (self) {
+        self->PositionFloatingPanel();  // The panel follows the shell.
+      }
+      break;
     case WM_DPICHANGED:
       // The window moved to a display at another scale. Windows hands us the
       // new DPI in wparam and the rect it wants in lparam; take both, rebuild

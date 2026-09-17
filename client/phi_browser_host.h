@@ -161,6 +161,7 @@ struct PhiContentLayout {
   RECT content = {};  // The page's rect in the shell's client coords.
   RECT client = {};   // The whole client rect (the ground gradient's height).
   bool top_caps = false;   // The card's TOP corners are the content's here.
+  bool right_caps = true;  // False when the pane is flush with the window's edge.
   int corner_radius = 0;   // Already scaled.
   // The child awaiting a Space swap's slide-end reveal, or null. It is
   // PARKED outside the client area rather than hidden — the parent clips

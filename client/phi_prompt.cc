@@ -26,24 +26,25 @@ constexpr wchar_t kPromptClass[] = L"PhiPrompt";
 // PhiAlertLayout, in design units: a 465-wide surface with 24 of padding
 // around 417 of content; the mark, 24 to the title, 16 to the copy, 36 to
 // the actions row; 130x36 actions 8 apart.
-constexpr int kWidth = 465;
+// The ContentDialog (docs/windows-native-ui.md §6): 448 wide, body padding
+// 24, title 20/600, 12 to the message, 16 to an accessory; a footer band
+// with padding 24 and equal-width 32 dip buttons 8 apart.
+constexpr int kWidth = 448;
 constexpr int kPadding = 24;
-constexpr int kContentWidth = kWidth - 2 * kPadding;  // 417
-constexpr int kMark = 28;
-constexpr int kMarkToTitle = 24;
-constexpr int kTitleHeight = 24;  // 18pt, one line.
-constexpr int kCopySpacing = 16;
-constexpr int kActionsSpacing = 36;
-constexpr int kActionWidth = 130;
-constexpr int kActionHeight = 36;
+constexpr int kContentWidth = kWidth - 2 * kPadding;  // 400
+constexpr int kTitleHeight = 28;  // 20 dip, one line.
+constexpr int kCopySpacing = 12;
+constexpr int kAccessorySpacing = 16;
+constexpr int kActionHeight = 32;
 constexpr int kActionGap = 8;
+constexpr int kFooterHeight = kPadding + kActionHeight + kPadding;
 // The accessory wells: the Mac's 240x24 field grown to the alert's width.
-constexpr int kFieldHeight = 34;
+constexpr int kFieldHeight = 32;
 constexpr int kFieldInsetX = 10;
-constexpr int kListRowHeight = 20;
+constexpr int kListRowHeight = 32;
 constexpr int kListMaxRows = 8;
 constexpr int kListInset = 4;
-constexpr int kRecorderHeight = 40;
+constexpr int kRecorderHeight = 32;
 
 constexpr UINT_PTR kControlId = 100;
 constexpr UINT_PTR kActionIdFirst = 1000;
@@ -53,7 +54,6 @@ enum class Accessory { kNone, kField, kList, kRecorder };
 struct Action {
   std::wstring label;
   PhiPopupButtonRole role = PhiPopupButtonRole::kSecondary;
-  bool leading = false;
 };
 
 struct Spec {
@@ -115,8 +115,11 @@ class Alert : public PhiSecondaryWindow {
     ClassSpec spec;
     spec.name = kPromptClass;
     Options options;
-    options.caption_buttons = kPhiCaptionClose;
-    options.show_mark = false;  // PhiAlert carries its mark in the body.
+    // No caption band, no close button, no Phi mark (§6): the dialog is
+    // its body and its footer; Esc cancels, Enter takes the default.
+    options.caption_buttons = 0;
+    options.caption_height_dip = 0;
+    options.show_mark = false;
     options.dialog_keys = kPhiDialogNone;  // See the note above.
     const RECT bounds = {0, 0, 100, 100};
     if (!CreateSecondary(spec, WS_EX_DLGMODALFRAME,
@@ -124,9 +127,9 @@ class Alert : public PhiSecondaryWindow {
                          bounds, owner_, spec_.title.c_str(), options)) {
       return false;
     }
-    title_font_ = PhiPopupFont(dpi(), 18, FW_SEMIBOLD);
+    title_font_ = PhiPopupFont(dpi(), 20, FW_SEMIBOLD);
     body_font_ = PhiPopupFont(dpi(), 14);
-    button_font_ = PhiPopupFont(dpi(), 13);
+    button_font_ = PhiPopupFont(dpi(), 14);
     OnColorsChanged();  // The two cached brushes.
     Build();
     return true;
@@ -241,8 +244,6 @@ class Alert : public PhiSecondaryWindow {
     const int content_w = Scaled(kContentWidth);
     int y = CaptionHeight() + Scaled(kPadding);
 
-    mark_ = {x0, y, x0 + Scaled(kMark), y + Scaled(kMark)};
-    y += Scaled(kMark + kMarkToTitle);
     title_ = {x0, y, x0 + content_w, y + Scaled(kTitleHeight)};
     y += Scaled(kTitleHeight);
 
@@ -282,14 +283,16 @@ class Alert : public PhiSecondaryWindow {
         break;
     }
     if (well_h) {
-      y += Scaled(kCopySpacing);
+      y += Scaled(kAccessorySpacing);
       well_ = {x0, y, x0 + content_w, y + well_h};
       y += well_h;
     }
 
-    y += Scaled(kActionsSpacing);
-    actions_top_ = y;
-    y += Scaled(kActionHeight) + Scaled(kPadding);
+    // The footer band: a separator, then the buttons on the footer ground.
+    y += Scaled(kPadding);
+    footer_top_ = y;
+    actions_top_ = y + Scaled(kPadding);
+    y += Scaled(kFooterHeight);
 
     // Size the window: the content plus the band and the thin borders.
     const int content_h = ::MulDiv(y - CaptionHeight(), 96,
@@ -361,50 +364,43 @@ class Alert : public PhiSecondaryWindow {
   }
 
   void BuildActions() {
-    const int w = Scaled(kActionWidth);
+    // Left to right in declaration order — the affirmative first, Cancel
+    // last (Windows' order, D2) — each an equal share of the row.
+    const size_t n = spec_.actions.size();
+    if (n == 0) {
+      return;
+    }
     const int h = Scaled(kActionHeight);
     const int gap = Scaled(kActionGap);
-    int left = Scaled(kPadding);
-    int right = Scaled(kPadding + kContentWidth);
-    buttons_.assign(spec_.actions.size(), nullptr);
-    // Leading actions from the left edge, the rest packed at the right with
-    // the last one rightmost.
-    for (size_t i = 0; i < spec_.actions.size(); ++i) {
-      if (!spec_.actions[i].leading) {
-        continue;
-      }
-      RECT rc = {left, actions_top_, left + w, actions_top_ + h};
+    const int left = Scaled(kPadding);
+    const int content_w = Scaled(kContentWidth);
+    const int w = (content_w - gap * static_cast<int>(n - 1)) / static_cast<int>(n);
+    buttons_.assign(n, nullptr);
+    int x = left;
+    for (size_t i = 0; i < n; ++i) {
+      const int right = i + 1 == n ? left + content_w : x + w;
+      RECT rc = {x, actions_top_, right, actions_top_ + h};
       buttons_[i] = Child(L"BUTTON", spec_.actions[i].label.c_str(),
                           WS_TABSTOP | BS_PUSHBUTTON, rc, kActionIdFirst + i,
                           button_font_);
       PhiPopupStyleButton(buttons_[i], spec_.actions[i].role);
-      left += w + gap;
-    }
-    for (size_t n = spec_.actions.size(); n > 0; --n) {
-      const size_t i = n - 1;
-      if (spec_.actions[i].leading) {
-        continue;
-      }
-      RECT rc = {right - w, actions_top_, right, actions_top_ + h};
-      buttons_[i] = Child(L"BUTTON", spec_.actions[i].label.c_str(),
-                          WS_TABSTOP | BS_PUSHBUTTON, rc, kActionIdFirst + i,
-                          button_font_);
-      PhiPopupStyleButton(buttons_[i], spec_.actions[i].role);
-      right -= w + gap;
+      x += w + gap;
     }
   }
 
   void Paint(HDC dc, const RECT&) override {
     RECT client = {};
     ::GetClientRect(hwnd(), &client);
-    ::FillRect(dc, &client, ground_brush_);
-    // No title in the band — PhiAlert carries its title in the body.
-    PaintBand(dc, L"");
-
-    const std::vector<unsigned char>& logo = PhiLogoBgra256();
-    if (!logo.empty()) {
-      PhiDrawBgra(dc, mark_, logo.data(), 256, 256);
-    }
+    // The body on `card`, the footer band on the dialog-footer ground with
+    // a 1 px separator between them (§6).
+    RECT body = {client.left, client.top, client.right, footer_top_};
+    ::FillRect(dc, &body, card_brush_);
+    RECT footer = {client.left, footer_top_, client.right, client.bottom};
+    ::FillRect(dc, &footer, ground_brush_);
+    RECT rule = {client.left, footer_top_, client.right, footer_top_ + 1};
+    HBRUSH separator = ::CreateSolidBrush(colors().separator);
+    ::FillRect(dc, &rule, separator);
+    ::DeleteObject(separator);
     ::SetBkMode(dc, TRANSPARENT);
     HGDIOBJ previous = title_font_ ? ::SelectObject(dc, title_font_) : nullptr;
     ::SetTextColor(dc, colors().label_strong);
@@ -596,10 +592,10 @@ class Alert : public PhiSecondaryWindow {
   HBRUSH ground_brush_ = nullptr;
   HWND control_ = nullptr;
   std::vector<HWND> buttons_;
-  RECT mark_ = {};
   RECT title_ = {};
   RECT message_ = {};
   RECT well_ = {};
+  int footer_top_ = 0;
   int actions_top_ = 0;
   bool done_ = false;
   int chosen_ = -1;
@@ -629,7 +625,7 @@ int PhiAlert(HWND owner,
   spec.title = title ? title : L"";
   spec.message = message ? message : L"";
   for (const PhiAlertAction& action : actions) {
-    spec.actions.push_back({action.label, RoleFor(action.role), action.leading});
+    spec.actions.push_back({action.label, RoleFor(action.role)});
   }
   spec.default_index =
       default_index < static_cast<int>(actions.size()) ? default_index : -1;
@@ -654,16 +650,16 @@ bool PhiPromptText(HWND owner,
   spec.message = message ? message : L"";
   spec.accessory = Accessory::kField;
   spec.field_text = value ? *value : std::wstring();
-  spec.actions = {{PhiStr("prompt.cancel"), PhiPopupButtonRole::kSecondary},
-                  {confirm_label ? confirm_label : PhiStr("prompt.ok"),
-                   PhiPopupButtonRole::kPrimary}};
-  spec.default_index = 1;
-  spec.cancel_index = 0;
+  spec.actions = {{confirm_label ? confirm_label : PhiStr("prompt.ok"),
+                   PhiPopupButtonRole::kPrimary},
+                  {PhiStr("prompt.cancel"), PhiPopupButtonRole::kSecondary}};
+  spec.default_index = 0;
+  spec.cancel_index = 1;
   Alert alert(owner, std::move(spec));
   if (!alert.Open()) {
     return false;
   }
-  const bool accepted = alert.Run() == 1;
+  const bool accepted = alert.Run() == 0;
   const std::wstring entered = alert.ControlText();
   if (!accepted || entered.empty()) {
     return false;
@@ -681,12 +677,14 @@ bool PhiConfirm(HWND owner,
                 bool destructive) {
   // The confirming button answers Return only when it is not destructive —
   // an irreversible action wants a deliberate click, the Mac's noButton.
+  // The affirmative leads (Windows' order, D2); a destructive one is never
+  // the default — Return is inert, Esc cancels (the Mac's noButton rule).
   return PhiAlert(owner, title, message,
-                  {{PhiStr("prompt.cancel"), PhiAlertRole::kSecondary},
-                   {confirm_label ? confirm_label : PhiStr("prompt.ok"),
+                  {{confirm_label ? confirm_label : PhiStr("prompt.ok"),
                     destructive ? PhiAlertRole::kDestructive
-                                : PhiAlertRole::kPrimary}},
-                  destructive ? -1 : 1, 0) == 1;
+                                : PhiAlertRole::kPrimary},
+                   {PhiStr("prompt.cancel"), PhiAlertRole::kSecondary}},
+                  destructive ? -1 : 0, 1) == 0;
 }
 
 std::wstring PhiFormatChord(const PhiShortcutChord& chord) {
@@ -837,18 +835,18 @@ int PhiPromptChoose(HWND owner,
   spec.accessory = Accessory::kList;
   spec.options = options;
   spec.selected = default_index;
-  spec.actions = {{cancel_label ? cancel_label : PhiStr("prompt.keepHere"),
-                   PhiPopupButtonRole::kSecondary},
-                  {confirm_label ? confirm_label : PhiStr("prompt.open"),
-                   PhiPopupButtonRole::kPrimary}};
-  spec.default_index = cancel_is_default ? 0 : 1;
-  spec.cancel_index = 0;
-  spec.list_activate_index = 1;
+  spec.actions = {{confirm_label ? confirm_label : PhiStr("prompt.open"),
+                   PhiPopupButtonRole::kPrimary},
+                  {cancel_label ? cancel_label : PhiStr("prompt.keepHere"),
+                   PhiPopupButtonRole::kSecondary}};
+  spec.default_index = cancel_is_default ? 1 : 0;
+  spec.cancel_index = 1;
+  spec.list_activate_index = 0;
   Alert alert(owner, std::move(spec));
   if (!alert.Open()) {
     return -1;
   }
-  const bool accepted = alert.Run() == 1;
+  const bool accepted = alert.Run() == 0;
   return accepted ? alert.ListSelection() : -1;
 }
 
@@ -869,18 +867,18 @@ int PhiPromptChooseRows(HWND owner,
     spec.options.push_back(row.label);
   }
   spec.selected = default_index;
-  spec.actions = {{cancel_label ? cancel_label : PhiStr("prompt.keepHere"),
-                   PhiPopupButtonRole::kSecondary},
-                  {confirm_label ? confirm_label : PhiStr("prompt.open"),
-                   PhiPopupButtonRole::kPrimary}};
-  spec.default_index = cancel_is_default ? 0 : 1;
-  spec.cancel_index = 0;
-  spec.list_activate_index = 1;
+  spec.actions = {{confirm_label ? confirm_label : PhiStr("prompt.open"),
+                   PhiPopupButtonRole::kPrimary},
+                  {cancel_label ? cancel_label : PhiStr("prompt.keepHere"),
+                   PhiPopupButtonRole::kSecondary}};
+  spec.default_index = cancel_is_default ? 1 : 0;
+  spec.cancel_index = 1;
+  spec.list_activate_index = 0;
   Alert alert(owner, std::move(spec));
   if (!alert.Open()) {
     return -1;
   }
-  const bool accepted = alert.Run() == 1;
+  const bool accepted = alert.Run() == 0;
   return accepted ? alert.ListSelection() : -1;
 }
 

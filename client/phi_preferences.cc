@@ -10,7 +10,7 @@
 #include "base/logging.h"
 #include "base/strings/utf_string_conversions.h"
 #include "phibrowser-win/client/phi_i18n.h"
-#include "phibrowser-win/client/phi_menu_bar.h"
+#include "phibrowser-win/client/phi_app_menu.h"
 
 namespace phi_client {
 

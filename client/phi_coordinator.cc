@@ -2491,10 +2491,10 @@ void PhiCoordinator::OnPreferencesChanged(
       break;
     case PreferenceChange::kLocaleStrings:
       // Every piece of chrome caches the strings it was built with, so the
-      // whole UI is rebuilt: menu bars are recreated from their (new)
-      // titles.
+      // whole UI is rebuilt: the app menus are recreated from their (new)
+      // labels.
       for (PhiShellWindow* controller : registry_.Controllers()) {
-        controller->RebuildMenuBar();
+        controller->RebuildAppMenu();
         if (HWND shell = controller->shell_hwnd()) {
           ::InvalidateRect(shell, nullptr, TRUE);
         }

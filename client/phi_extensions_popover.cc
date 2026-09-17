@@ -340,7 +340,7 @@ class Popover : public PhiPopover {
   HFONT GlyphFont(int size) {
     PhiFontDesc desc;
     desc.size = size;
-    desc.face = L"Segoe MDL2 Assets";
+    desc.face = PhiIconFaceName();
     return fonts().Get(desc);
   }
 

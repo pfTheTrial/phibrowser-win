@@ -636,7 +636,7 @@ void PhiPeekPanel::PaintControls(HDC dc) {
 
   PhiFontDesc glyph_desc;
   glyph_desc.size = 11;
-  glyph_desc.face = L"Segoe MDL2 Assets";
+  glyph_desc.face = PhiIconFaceName();
   HGDIOBJ old_font = ::SelectObject(dc, fonts().Get(glyph_desc));
   ::SetBkMode(dc, TRANSPARENT);
 

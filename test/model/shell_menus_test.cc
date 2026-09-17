@@ -269,12 +269,14 @@ void TabAreaMenuChecksTheLayoutInUse() {
   const PhiMenuSpec spec = PhiBuildTabAreaMenu(in);
   CHECK(Joined(spec) ==
         "area.newTab area.reopen - area.newRootFolder area.bookmarkAll - "
-        ". area.layout area.layout area.layout - "
+        ". area.layout area.layout - "
         "area.newSpace area.renameSpace area.changeIcon area.setTheme "
         ". area.profile area.profile area.deleteSpace ");
   const PhiMenuItem& layouts = spec.items[6];
-  CHECK(layouts.items[0].target.id == "performance");
+  // Two layouts (Performance is retired on Windows, impl log D9).
+  CHECK(layouts.items[0].target.id == "comfortable");
   CHECK(!layouts.items[0].checked);
+  CHECK(layouts.items[1].target.id == "balanced");
   CHECK(layouts.items[1].checked);
   // The profile rows carry the name the confirmation prompt repeats.
   const PhiMenuItem* profile = spec.Find("area.profile");
@@ -282,6 +284,20 @@ void TabAreaMenuChecksTheLayoutInUse() {
   CHECK(profile->target.text == L"Personal");
   CHECK(!profile->checked);
   CHECK(spec.items[12].items[1].checked);
+}
+
+void SpacePipMenuIsTheSpaceBlockAlone() {
+  PhiTabAreaMenuInputs in;
+  in.can_delete_space = true;
+  in.can_reprofile = true;
+  in.profiles = {Choice("p1", L"Personal")};
+  in.space_only = true;
+  const PhiMenuSpec spec = PhiBuildTabAreaMenu(in);
+  CHECK(Joined(spec) ==
+        "area.renameSpace area.changeIcon area.setTheme . area.profile "
+        "area.deleteSpace ");
+  CHECK(spec.Find("area.newTab") == nullptr);
+  CHECK(spec.Find("area.newSpace") == nullptr);
 }
 
 void TabAreaMenuDisablesWithoutGreyingAnEmptyStrip() {
@@ -300,7 +316,7 @@ void TabAreaMenuStopsAtTheLayoutForIncognito() {
   const PhiMenuSpec spec = PhiBuildTabAreaMenu(in);
   CHECK(Joined(spec) ==
         "area.newTab area.reopen - area.newRootFolder area.bookmarkAll - "
-        ". area.layout area.layout area.layout ");
+        ". area.layout area.layout ");
   CHECK(!spec.Find("area.newRootFolder")->enabled);
   CHECK(spec.Find("area.newRootFolder")->grey_when_disabled);
   CHECK(spec.Find("area.newSpace") == nullptr);
@@ -444,6 +460,7 @@ int main() {
   BookmarkRowMenuSplitsLeavesFromFolders();
   BookmarkBarAreaMenuIsRootFolderCreation();
   TabAreaMenuChecksTheLayoutInUse();
+  SpacePipMenuIsTheSpaceBlockAlone();
   TabAreaMenuDisablesWithoutGreyingAnEmptyStrip();
   TabAreaMenuStopsAtTheLayoutForIncognito();
   TabAreaMenuSaysWhenThereAreNoProfiles();

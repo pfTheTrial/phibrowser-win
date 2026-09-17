@@ -293,6 +293,42 @@ const InkMetrics& MetricsFor(const std::wstring& text, int pixel_size) {
   return state.ink_metrics.emplace(key, metrics).first->second;
 }
 
+}  // namespace
+
+const wchar_t* PhiIconFaceName() {
+  // Fluent when installed (Windows 11 ships it; Windows 10 does not), MDL2
+  // otherwise. GDI's own font mapper answers the presence question without
+  // DirectWrite, so a machine with no D2D still picks the right face.
+  static const wchar_t* const face = [] {
+    LOGFONTW probe = {};
+    probe.lfCharSet = DEFAULT_CHARSET;
+    const std::wstring fluent = L"Segoe Fluent Icons";
+    std::copy_n(fluent.begin(),
+                std::min(fluent.size(), std::size(probe.lfFaceName) - 1),
+                std::begin(probe.lfFaceName));
+    bool found = false;
+    HDC screen = ::GetDC(nullptr);
+    if (screen) {
+      ::EnumFontFamiliesExW(
+          screen, &probe,
+          [](const LOGFONTW*, const TEXTMETRICW*, DWORD, LPARAM found) {
+            *reinterpret_cast<bool*>(found) = true;
+            return 0;
+          },
+          reinterpret_cast<LPARAM>(&found), 0);
+      ::ReleaseDC(nullptr, screen);
+    }
+    return found ? L"Segoe Fluent Icons" : L"Segoe MDL2 Assets";
+  }();
+  return face;
+}
+
+bool PhiIsIconFace(std::wstring_view face) {
+  return face == L"Segoe Fluent Icons" || face == L"Segoe MDL2 Assets";
+}
+
+namespace {
+
 // The icon face, created on first use. A missing face (a stripped Windows
 // install) fails once and stays failed — every draw then takes the caller's
 // GDI path.
@@ -312,7 +348,7 @@ IDWriteFontFace* IconFace() {
   ComPtr<IDWriteFont> font;
   if (FAILED(state.dwrite->GetSystemFontCollection(collection.GetAddressOf(),
                                                    FALSE)) ||
-      FAILED(collection->FindFamilyName(L"Segoe MDL2 Assets", &index,
+      FAILED(collection->FindFamilyName(PhiIconFaceName(), &index,
                                         &exists)) ||
       !exists ||
       FAILED(collection->GetFontFamily(index, family.GetAddressOf())) ||
@@ -1488,7 +1524,7 @@ int PhiDrawTextAA(HDC dc,
       LOGFONTW lf = {};
       HGDIOBJ font = ::GetCurrentObject(dc, OBJ_FONT);
       if (font && ::GetObjectW(font, sizeof(lf), &lf) &&
-          std::wstring_view(lf.lfFaceName) == L"Segoe MDL2 Assets" &&
+          PhiIsIconFace(lf.lfFaceName) &&
           lf.lfHeight != 0) {
         // A negative height is the em size; a positive one the cell
         // height, which for this face is the em plus a little leading.

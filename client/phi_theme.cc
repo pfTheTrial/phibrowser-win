@@ -148,37 +148,50 @@ PhiPalette PhiResolvePalette(const PhiTheme& theme,
   // The ink the Mac's percentage overlays are made of.
   const PhiColor ink = dark ? PhiRgb(0xFF, 0xFF, 0xFF) : PhiRgb(0, 0, 0);
   palette.ink = ink;
-  // Alphas as /255: 4% ≈ 10, 6% ≈ 15, 8% ≈ 20, 30% ≈ 77, 80% ≈ 204, 85% ≈ 217.
-  palette.hover = PhiBlend(ink, palette.ground_top, 10);
-  palette.hover_strong = PhiBlend(ink, palette.ground_top, 20);
+  // The Windows-native ladder (docs/windows-native-ui.md §2.3), as /255:
+  // hover ink 4.5 % ≈ 11 (dark: white 6 % ≈ 15), pressed 9 % ≈ 23 (dark
+  // 10 % ≈ 26), stroke 9 % ≈ 23 (dark white 8 % ≈ 20), separator 7 % ≈ 18,
+  // label 87 % ≈ 222 (dark 90 % ≈ 230), dim 62 % ≈ 158, tertiary 42 % ≈ 107.
+  palette.hover = PhiBlend(ink, palette.ground_top, dark ? 15 : 11);
+  palette.pressed = PhiBlend(ink, palette.ground_top, dark ? 26 : 23);
+  palette.hover_strong = palette.pressed;
   // The top bar's copies: same ink, its own ground.
-  palette.bar_hover = PhiBlend(ink, palette.window_bg, 10);
-  palette.bar_hover_strong = PhiBlend(ink, palette.window_bg, 20);
-  palette.label_tertiary = PhiBlend(ink, palette.ground_top, 77);
-  palette.border = PhiBlend(ink, palette.ground_bottom, 20);
-  palette.separator = PhiBlend(ink, palette.ground_top, 15);
+  palette.bar_hover = PhiBlend(ink, palette.window_bg, dark ? 15 : 11);
+  palette.bar_hover_strong = PhiBlend(ink, palette.window_bg, dark ? 26 : 23);
+  palette.label_tertiary = PhiBlend(ink, palette.ground_top, 107);
+  palette.border = PhiBlend(ink, palette.ground_top, dark ? 20 : 23);
+  palette.stroke_strong = PhiBlend(ink, palette.ground_top, dark ? 41 : 23);
+  palette.separator = PhiBlend(ink, palette.ground_top, 18);
+  palette.control_fill = PhiBlend(ink, palette.window_bg, dark ? 15 : 11);
   if (dark) {
-    // sidebar-tab-selectedColor dark = WHITE at 30%, not black — the pill
-    // lifts off the ground (Assets.xcassets ColorSet).
+    // The selected row lifts off the ground in WHITE; the card / toolbar /
+    // active tab is the design's #2B2B2B; the flyout a step lighter.
     const PhiColor white = PhiRgb(0xFF, 0xFF, 0xFF);
     palette.selected = PhiBlend(white, palette.ground_top, 77);
-    palette.card = PhiBlend(white, palette.ground_top, 26);
-    palette.label = PhiBlend(white, palette.ground_top, 204);
-    palette.label_dim = PhiRgb(0x9A, 0x9A, 0x9A);
+    palette.card = PhiRgb(0x2B, 0x2B, 0x2B);
+    palette.label = PhiBlend(white, palette.ground_top, 230);
+    palette.label_dim = PhiBlend(white, palette.ground_top, 158);
+    palette.flyout = PhiRgb(0x2C, 0x2C, 0x2C);
+    palette.dialog_footer = PhiRgb(0x20, 0x20, 0x20);
   } else {
     palette.selected = PhiRgb(0xFF, 0xFF, 0xFF);
     palette.card = PhiRgb(0xFF, 0xFF, 0xFF);
-    palette.label = PhiRgb(0x26, 0x26, 0x26);   // primary-label, 85% black
-    palette.label_dim = PhiRgb(0x6E, 0x6E, 0x72);
+    palette.label = PhiBlend(ink, palette.ground_top, 222);
+    palette.label_dim = PhiBlend(ink, palette.ground_top, 158);
+    palette.flyout = PhiRgb(0xF9, 0xF9, 0xF9);
+    palette.dialog_footer = PhiRgb(0xF3, 0xF3, 0xF3);
   }
+  palette.accent_soft = PhiBlend(colors.accent, palette.card, 36);  // 14 %.
 
   // The roles the individual files were inventing. Values transcribed from
   // where they already exist: phi_popup_chrome.h:26-44 (the fixed ground and
   // the button ladder), phi_settings_window.cc:2441-2446 and :2491 (the
   // parallel palette and the close-button red), phi_shell_window.cc (the
   // second copy of that red).
+  // The Windows Settings ground (#F3F3F3 / #202020): the Mac's #EAEAEA /
+  // #252525 is retired with the Mac look (windows-native-ui.md §2.3).
   palette.ground_fixed =
-      dark ? PhiRgb(0x25, 0x25, 0x25) : PhiRgb(0xEA, 0xEA, 0xEA);
+      dark ? PhiRgb(0x20, 0x20, 0x20) : PhiRgb(0xF3, 0xF3, 0xF3);
   // Legibility over the accent, not a fixed white: the light Amber accent
   // (#D9B857) carries black text, everything darker carries white. The
   // threshold is Rec. 601 luma, which is what the Mac's
@@ -193,8 +206,12 @@ PhiPalette PhiResolvePalette(const PhiTheme& theme,
   palette.accent_hover =
       PhiBlend(dark ? PhiRgb(0xFF, 0xFF, 0xFF) : PhiRgb(0, 0, 0),
                palette.accent, 26);
-  palette.destructive = PhiRgb(0xFF, 0x3B, 0x30);  // systemRed
-  palette.destructive_hover = PhiRgb(0xE0, 0x34, 0x2A);
+  // Windows' danger red (the caption close button's, and Fluent's critical
+  // text): #C42B1C light, #E0463A dark — systemRed is the Mac's.
+  palette.destructive = dark ? PhiRgb(0xE0, 0x46, 0x3A) : PhiRgb(0xC4, 0x2B, 0x1C);
+  palette.destructive_hover =
+      PhiBlend(dark ? PhiRgb(0xFF, 0xFF, 0xFF) : PhiRgb(0, 0, 0),
+               palette.destructive, 26);
   palette.warning = dark ? PhiRgb(0xD9, 0xA5, 0x27) : PhiRgb(0xB0, 0x80, 0x00);
   palette.error = dark ? PhiRgb(0xE8, 0x5D, 0x5D) : PhiRgb(0xC0, 0x1E, 0x1E);
   // The dim behind a modal / the group overview: 40% black over the ground

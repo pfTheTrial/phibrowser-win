@@ -21,13 +21,8 @@ struct PhiMacIcon {
   const unsigned char* alpha;
 };
 
-const PhiMacIcon& PhiDownloadIcon();
 const PhiMacIcon& PhiMemoryIcon();
 const PhiMacIcon& PhiChatIcon();
-const PhiMacIcon& PhiFeedbackIcon();
-// The sidebar header's toggle (left-sidebar-toggle.imageset), the caption
-// band's leading control in the vertical layouts.
-const PhiMacIcon& PhiSidebarToggleIcon();
 
 // The native new-tab page's artwork (native-NTP-icon / native-NTP-incognito
 // imagesets), 192px masks generated into phi_ntp_art.cc by

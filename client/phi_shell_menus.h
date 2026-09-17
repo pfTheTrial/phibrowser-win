@@ -13,7 +13,9 @@
 #include <string_view>
 #include <vector>
 
+#include "base/memory/raw_ptr_exclusion.h"
 #include "phibrowser-win/client/phi_shell_layout.h"
+#include "phibrowser-win/client/phi_theme.h"
 
 // Every context menu the shell window drops, as DATA
 // (docs/architecture-review.md §3.1 principle 4, §3.5, lane 1 §3.2).
@@ -189,6 +191,10 @@ struct PhiTabAreaMenuInputs {
   bool can_reprofile = false;
   std::string active_profile;
   std::vector<PhiMenuChoice> profiles;
+  // The Space block alone (docs/windows-native-ui.md §5.4): a right-click
+  // on a Space pip or the Space chip — rename, icon, theme, profile,
+  // delete — without the tab-area rows.
+  bool space_only = false;
 };
 PhiMenuSpec PhiBuildTabAreaMenu(const PhiTabAreaMenuInputs& in);
 
@@ -237,6 +243,10 @@ struct PhiPopupMenuRequest {
   // > 0: every item carrying a glyph gets it rasterized at this pixel size
   // and set as the row's bitmap (Space icons).
   int glyph_px = 0;
+  // The flyout ground and inks (docs/windows-native-ui.md §3.5): every row
+  // is owner-drawn to the Fluent look through phi_menu_paint, and the
+  // owner's WM_DRAWITEM paints it. Null keeps the system look.
+  RAW_PTR_EXCLUSION const PhiPalette* palette = nullptr;
 };
 
 // Builds the HMENU tree, tracks it under a PhiModalScope (so the coordinator
