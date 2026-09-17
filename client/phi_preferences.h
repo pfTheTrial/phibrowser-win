@@ -106,6 +106,10 @@ class PhiPreferences : public ChromePrefsHost {
   bool NewTabOpensOmnibox() const override;
   int SidebarWidth() const override;
   void RequestSidebarWidth(int dip) override;
+  // The Settings window's remembered client size (dip); false when it
+  // was never resized, so the window opens at its default.
+  bool SettingsWindowSize(int* width, int* height) const;
+  void RequestSettingsWindowSize(int width, int height);
   const PhiPalette& Palette() const override;
   bool AlwaysShowBookmarkBar() const override;
   void SetAlwaysShowBookmarkBar(bool enabled) override;

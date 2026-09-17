@@ -69,7 +69,7 @@ void GroupHeaderMenuListsColors() {
   CHECK(spec.items[2].items[1].target.id == "blue");
   CHECK(spec.items[2].items[1].checked);
   CHECK(!spec.items[2].items[0].checked);
-  CHECK(spec.items[1].items[0].label == L"tabs.tabGroup.colorName.grey");
+  CHECK(spec.items[2].items[0].label == L"tabs.tabGroup.colorName.grey");
 }
 
 // --- The tab row -----------------------------------------------------------
@@ -99,7 +99,7 @@ void TabMenuPairsWithTheFocusedTab() {
   const PhiMenuSpec spec = PhiBuildTabRowMenu(in);
   CHECK(spec.Find("tab.splitCurrent") != nullptr);
   CHECK(spec.Find("tab.openAsSplit") == nullptr);
-  CHECK(spec.Find("tab.splitCurrent")->label == L"Split with Current");
+  CHECK(spec.Find("tab.splitCurrent")->label == L"Split with current");
   // A row already in a split offers neither: it has a partner.
   in.split_bound = true;
   const PhiMenuSpec bound = PhiBuildTabRowMenu(in);
@@ -168,13 +168,13 @@ void MergedTabMenuActsOnThePair() {
         "tab.reversePanes tab.convertSplit tab.removeSplit - "
         "tab.bookmark - tab.newGroup - tab.close tab.closeOthers ");
   // One key, two labels: pinning a split is still "pin this row".
-  CHECK(spec.Find("tab.pin")->label == L"Pin Split");
-  CHECK(spec.Find("tab.bookmark")->label == L"Add Split to Bookmark");
+  CHECK(spec.Find("tab.pin")->label == L"Pin split");
+  CHECK(spec.Find("tab.bookmark")->label == L"Add split to bookmarks");
   // The convert row is labelled by where it TAKES you.
-  CHECK(spec.Find("tab.convertSplit")->label == L"Convert to Vertical Split");
+  CHECK(spec.Find("tab.convertSplit")->label == L"Convert to vertical split");
   in.split_stacked = true;
   CHECK(PhiBuildTabRowMenu(in).Find("tab.convertSplit")->label ==
-        L"Convert to Horizontal Split");
+        L"Convert to horizontal split");
 }
 
 void MergedTabMenuGroupsThePair() {
@@ -184,7 +184,7 @@ void MergedTabMenuGroupsThePair() {
   in.merged = true;
   in.groups = {Choice("g1", L"Research (2)")};
   const PhiMenuSpec loose = PhiBuildTabRowMenu(in);
-  CHECK(loose.Find("tab.newGroup")->label == L"New Tab Group");
+  CHECK(loose.Find("tab.newGroup")->label == L"New tab group");
   CHECK(loose.Find("tab.joinGroup")->target.id == "g1");
   CHECK(loose.Find("tab.moveNewGroup") == nullptr);
   CHECK(loose.Find("tab.leaveGroup") == nullptr);
@@ -229,7 +229,7 @@ void PinnedCellMenuTracksItsCell() {
         "pin.convertSplit - pin.unpin - pin.close ");
   CHECK(split.Find("pin.close")->enabled);
   CHECK(split.Find("pin.editUrl") == nullptr);  // A split pin keeps its panes.
-  CHECK(split.Find("pin.unpin")->label == L"Unpin Split");
+  CHECK(split.Find("pin.unpin")->label == L"Unpin split");
 }
 
 void BookmarkRowMenuSplitsLeavesFromFolders() {
@@ -247,7 +247,7 @@ void BookmarkRowMenuSplitsLeavesFromFolders() {
         "bm.rename bm.changeIcon bm.newFolder - bm.remove ");
   // A folder's subtree stays where it is: no cross-Space rows.
   CHECK(folder.Find("bm.moveToSpace") == nullptr);
-  CHECK(folder.Find("bm.remove")->label == L"Delete Folder");
+  CHECK(folder.Find("bm.remove")->label == L"Delete folder");
 }
 
 void BookmarkBarAreaMenuIsRootFolderCreation() {

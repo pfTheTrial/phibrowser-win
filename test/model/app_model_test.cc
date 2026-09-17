@@ -38,6 +38,8 @@ void TestSettingsDefaults() {
   const PhiSettings s;
   CHECK(s.layout_mode == PhiLayoutMode::kPerformance);
   CHECK(s.sidebar_width == 240);
+  CHECK(s.settings_window_width == 0);  // "Never resized": the default size.
+  CHECK(s.settings_window_height == 0);
   CHECK(s.theme_id == "pure");
   CHECK(s.appearance == Appearance::kSystem);
   CHECK(s.saturation == 10);

@@ -20,7 +20,7 @@ decisions and I will check." The box is mine for testing.
 | P2 | the two layouts, flush page pane, Performance removed, floating panel | done 2026-09-17, box-verified (split-time row sheet, Esc → P6) |
 | P3 | Spaces: pips, chip + switcher, two-line hover flyout | done 2026-09-17, box-verified |
 | P4 | dialogs as ContentDialogs | done 2026-09-17, box-verified (scrim not done) |
-| P5 | Settings as a Windows Settings window | done 2026-09-17, box-verified (expander cards → D17) |
+| P5 | Settings as a Windows Settings window | done 2026-09-17, box-verified (expander cards, rail search, remembered size: round B) |
 | P6 | secondary windows, Kiosk, dark pass, polish | done 2026-09-17 (partial, see notes) |
 
 ## D. Decisions taken without asking (review these)
@@ -73,12 +73,21 @@ decisions and I will check." The box is mine for testing.
 * **D15 — the incognito row stays live** through Chromium's
   IDC_NEW_INCOGNITO_WINDOW route, as the menu bar's was (the design
   said "disabled until supported"; the route already works).
-* **D17 — Settings › Spaces / Profiles keep master-detail.** The §7.1 /
-  §7.2 expander cards would rebuild two 400-line builders; the list +
-  detail band works and is now on the card ground. Revisit if the
-  expanders are wanted.
-* **D18 — no "Find a setting" search box** in the rail yet (the
-  Shortcuts page keeps its own filter).
+* **D17 — RETIRED (round B).** Settings › Spaces / Profiles are the §7.1
+  / §7.2 expander cards now (see the round B notes). The one liberty:
+  the expander hint reads "profile · Ctrl+n" — the settings host has no
+  per-Space tab count, so "N tabs" is left out rather than plumbed.
+* **D18 — RETIRED (round B).** The rail has "Find a setting": typing on
+  any page but Shortcuts filters every page's rows by title and
+  description into one results page, under per-page headings.
+* **D21 — the Settings size is remembered as a preference**
+  (`settingsWindowWidth` / `settingsWindowHeight` in PhiSettings.json,
+  written on WM_EXITSIZEMOVE, never for a maximized window); no
+  position, which Windows Settings also does not keep.
+* **D22 — a Space's Profile is a ComboBox in its expander** backed by
+  the coordinator's existing `SetSpaceProfile` (the Space's browser
+  respawns in the new profile); the default Space refuses with a
+  notice, as the coordinator does.
 * **D19 — the You page keeps the id `account`** on the remote surface
   (verbs, suites, rigs aim at it); only its label is "You".
 * **D20 — the rail has no account block**; the "You" row is the way to
@@ -315,11 +324,24 @@ decisions and I will check." The box is mine for testing.
   `settings.set {section}` takes them. `test/suite-settings.mjs`
   updated (8/8 on the box); `test/probes/settings-open.mjs`.
 * Box check: PhiSetShot of General, Appearance, Spaces and About.
-* Left for later: the §7.1 / §7.2 expander cards (D17 — master-detail
-  kept, restyled as cards), the rail's "Find a setting" search (D18),
-  the account block at the rail's top (D20 — the "You" row stands in),
-  a remembered window size, the Shortcuts recorder as a §6 dialog (it
-  already is a PhiAlert).
+* Round B (same day): **expander cards** for Spaces and Profiles
+  (`ItemKind::kExpander`, 56 dip header: 28 tile, name 14, hint 12,
+  chevron; group header row with "+ New Space" / "+ New profile"; a
+  Space's body = Name + Rename…, Profile ComboBox, Icon cell + Change…
+  unfolding the four-line picker in place, Color dots, Saturation,
+  Shortcut keycap, Delete Space in the danger red; a profile's body =
+  Name, Search engine, Download location, Used by, the three data
+  pages, Delete profile with the reason it is disabled; the "Default"
+  badge on the header), the **About mark at 48** (`kAppMark`), the
+  **rail search** (results page "Results for “x”", AddRow drops
+  non-matching rows, EndSection drops emptied cards and trailing
+  dividers, General's inline profile block and loose hints stay out),
+  the **remembered window size** (D21). Box-verified: suite-settings
+  8/8, PhiSetShot of Spaces (folded, Work open, picker open),
+  Profiles (Default open), About, "peek" and "tab" results.
+* Left for later: the account block at the rail's top (D20 — the "You"
+  row stands in), the Shortcuts recorder as a §6 dialog (it already is
+  a PhiAlert).
 
 ### P6 — secondary windows and polish (2026-09-17)
 
@@ -355,9 +377,8 @@ decisions and I will check." The box is mine for testing.
   `strings.json`); the bookmarks bar on the 12 dip face with Fluent
   glyphs.
 * Left for later: "Move to new window" (no framework op), "Paste and
-  go" on the native EDIT menu, the incognito chrome pass, the rail
-  search (D18), a remembered Settings size, PhiCap re-baselines,
-  context-menu labels into `strings.json`.
+  go" on the native EDIT menu, the incognito chrome pass, PhiCap
+  re-baselines, context-menu labels into `strings.json`.
 
 ## Questions for Jixiang
 
@@ -366,9 +387,9 @@ much they change what you see:
 
 1. **D2 — dialog button order** is now Windows' (affirmative left,
    Cancel right). Keep, or the Mac order?
-2. **D17 — Settings › Spaces / Profiles** kept the list + detail band
-   (as cards) instead of the designed expander cards. Worth the
-   rebuild?
+2. **D17 retired** — Settings › Spaces / Profiles are the designed
+   expander cards now; the hint has no tab count (D17's note). Want the
+   count plumbed?
 3. **D16 — the Space switcher** is a Fluent menu, not the two-line
    custom flyout. Fine, or do you want the "profile · N tabs" hint in
    it?
@@ -384,8 +405,7 @@ much they change what you see:
    300 ms slides it in; a click on the edge or its pin docks it. The
    toggle's right-click menu ("Show / Auto-hide") is not done.
 8. Not done, listed per phase above: "Move to new window", "Paste and
-   go", the rail search box, the remembered Settings size, the incognito
-   chrome pass.
+   go", the incognito chrome pass.
 
 
 (Collected during the work; answered at the end.)

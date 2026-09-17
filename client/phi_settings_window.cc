@@ -161,14 +161,16 @@ constexpr int kImageCardBlock = 72 + 10 + 15;
 // Switches: the Mac's .mini switch is about 26x15.
 constexpr int kToggleWidth = 40;
 constexpr int kToggleHeight = 20;
-// Master-detail lists (Profiles 240 wide, Spaces 280) with a 34pt tool strip.
-constexpr int kProfilesListWidth = 240;
-constexpr int kSpacesListWidth = 280;
-constexpr int kMasterDetailGap = 16;
-constexpr int kListHeaderHeight = 34;
-constexpr int kListRowHeight = 32;  // 6/6 vertical padding around 20pt content.
-constexpr int kToolStripHeight = 34;
-constexpr int kSpacesBlockHeight = 431;  // The Mac's fixed master-detail band.
+// Expander cards (windows-native-ui.md §7.1 / §7.2): a 56 dip header
+// row, 8 between cards, and the inline icon picker's four lines.
+constexpr int kExpanderHeight = 56;
+constexpr int kExpanderGap = 8;
+constexpr int kPickerLines = 4;
+// The rail's "Find a setting" field (§7): 32 high under the caption.
+constexpr int kRailSearchHeight = 32;
+constexpr int kAboutMark = 48;
+// The gap between the General pane's single-profile detail cards.
+constexpr int kDetailCardGap = 16;
 // The Profiles trailing pill: inner width 110, H10/V5, primary@0.06, r6.
 constexpr int kPillWidth = 160;
 constexpr int kPillHeight = 32;
@@ -401,8 +403,15 @@ bool PhiSettingsWindow::OpenWindow() {
                        ::GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi());
   const int border_y = ::GetSystemMetricsForDpi(SM_CYSIZEFRAME, dpi()) +
                        ::GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi());
-  ::SetWindowPos(hwnd(), nullptr, 0, 0, Scaled(kWidth) + 2 * border_x,
-                 Scaled(kChromeTop + kHeight) + border_y,
+  // The last size the user left it at (dip), else the §7 default.
+  int width = kWidth;
+  int height = kHeight;
+  if (prefs_->SettingsWindowSize(&width, &height)) {
+    width = std::max(kMinWidth, width);
+    height = std::max(kMinHeight, height);
+  }
+  ::SetWindowPos(hwnd(), nullptr, 0, 0, Scaled(width) + 2 * border_x,
+                 Scaled(kChromeTop + height) + border_y,
                  SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
   EnsureFont();
   SyncTitle();
@@ -589,6 +598,9 @@ void PhiSettingsWindow::ShowSpacePicker(const std::string& space_id) {
   }
   g_instance->section_ = "spaces";
   g_instance->selected_space_ = space_id;
+  g_instance->picker_open_ = space_id;
+  g_instance->rail_search_.clear();
+  g_instance->search_filter_.clear();
   g_instance->scroll_ = 0;
   g_instance->SyncTitle();
   Refresh();
@@ -597,6 +609,16 @@ void PhiSettingsWindow::ShowSpacePicker(const std::string& space_id) {
 // --- Section plumbing --------------------------------------------------------
 
 void PhiSettingsWindow::BeginSection(int* y, const wchar_t* title) {
+  // Where the section began, heading included, so a filter that keeps
+  // none of its rows can take the whole thing back out.
+  if (heading_pending_) {
+    section_start_ = heading_start_;
+    section_start_y_ = heading_start_y_;
+    heading_pending_ = false;
+  } else {
+    section_start_ = items_.size();
+    section_start_y_ = *y;
+  }
   if (title && title[0]) {
     Item heading;
     heading.kind = ItemKind::kSectionTitle;
@@ -623,9 +645,46 @@ void PhiSettingsWindow::BeginSection(int* y, const wchar_t* title) {
 }
 
 void PhiSettingsWindow::EndSection(int* y) {
+  if (!search_filter_.empty()) {
+    if (card_rows_ == 0) {
+      // The filter kept nothing here: the card, its title and heading go.
+      items_.resize(std::min(items_.size(), section_start_));
+      *y = section_start_y_;
+      card_rows_ = 0;
+      return;
+    }
+    // A divider that ended up trailing the last kept row — behind the
+    // empty-rect controls of the rows the filter dropped after it.
+    while (items_.size() > open_card_ + 1) {
+      const Item& last = items_.back();
+      const bool empty = last.bounds.bottom == 0 && last.bounds.top == 0;
+      if (!empty && last.kind != ItemKind::kDivider) {
+        break;
+      }
+      items_.pop_back();
+    }
+  }
   items_[open_card_].bounds.bottom = *y;
   card_rows_ = 0;
   *y += Scaled(kSectionGap);
+}
+
+bool PhiSettingsWindow::SearchMatches(const wchar_t* title,
+                                      const wchar_t* hint) const {
+  if (search_filter_.empty()) {
+    return true;
+  }
+  const auto contains = [this](const wchar_t* text) {
+    if (!text || !*text) {
+      return false;
+    }
+    std::wstring folded(text);
+    for (wchar_t& c : folded) {
+      c = static_cast<wchar_t>(::towlower(c));
+    }
+    return folded.find(search_filter_) != std::wstring::npos;
+  };
+  return contains(title) || contains(hint);
 }
 
 int PhiSettingsWindow::WrappedHeight(HFONT font, const wchar_t* text,
@@ -648,6 +707,9 @@ int PhiSettingsWindow::WrappedHeight(HFONT font, const wchar_t* text,
 }
 
 void PhiSettingsWindow::AddHint(int* y, const wchar_t* text) {
+  if (!search_filter_.empty()) {
+    return;  // A page's loose captions have no row to hang from here.
+  }
   const int left = (content_left_ + Scaled(kCardPadding));
   const int right = (content_right_ - Scaled(kCardPadding));
   const int height = std::max(Scaled(kHintHeight),
@@ -666,6 +728,15 @@ RECT PhiSettingsWindow::AddRow(int* y, const wchar_t* title,
                                const wchar_t* hint, int text_indent,
                                wchar_t chip_glyph, COLORREF chip_color,
                                int row_padding) {
+  // The rail search: a row whose title and description carry none of the
+  // typed text is not built at all. Its caller's control then lands on an
+  // empty rect, which neither paints (it clips out under the caption) nor
+  // publishes a hit.
+  last_row_skipped_ = !SearchMatches(title, hint);
+  if (last_row_skipped_) {
+    return RECT{};
+  }
+  ++filter_hits_;
   const int padding = row_padding < 0 ? kRowPadding : row_padding;
   const int gutter = (content_left_ + Scaled(kCardPadding));
   const int left = gutter + Scaled(text_indent);
@@ -831,7 +902,8 @@ void PhiSettingsWindow::BuildGeneral(int* y) {
     link.bounds = area;
     items_.push_back(std::move(link));
     EndSection(y);
-  } else {
+  } else if (search_filter_.empty()) {
+    // (Its detail rows are not filterable: the results page skips them.)
     Item heading;
     heading.kind = ItemKind::kSectionTitle;
     heading.text = L"Profile";
@@ -844,7 +916,7 @@ void PhiSettingsWindow::BuildGeneral(int* y) {
         profiles.empty() ? std::string() : profiles.front().id;
     BuildProfileDetail(y, content_left_, content_right_,
                        profile_id);
-    *y += Scaled(kSectionGap) - Scaled(kMasterDetailGap);
+    *y += Scaled(kSectionGap) - Scaled(kDetailCardGap);
   }
 }
 
@@ -1008,16 +1080,29 @@ void PhiSettingsWindow::BuildAppearance(int* y) {
 void PhiSettingsWindow::BuildAbout(int* y) {
   BeginSection(y, nullptr);
   {
+    // The brand mark at 48 leading the name and version (§7 About).
     const std::wstring version = std::wstring(L"Version ") + PHI_WIN_VERSION_WIDE;
-    const RECT area = AddRow(y, L"Phi Browser", kPillHeight, 160,
-                             version.c_str());
-    Item button;
-    button.kind = ItemKind::kButton;
-    button.text = L"Check for update";
-    button.enabled = PhiUpdater::Available();
-    button.action = "checkupdate";
-    button.bounds = area;
-    items_.push_back(std::move(button));
+    RECT area = AddRow(y, L"Phi Browser", kAboutMark, 160, version.c_str(),
+                       kAboutMark + 16);
+    if (area.right > area.left) {
+      Item mark;
+      mark.kind = ItemKind::kAppMark;
+      mark.bounds = {content_left_ + Scaled(kCardPadding), area.top,
+                     content_left_ + Scaled(kCardPadding) + Scaled(kAboutMark),
+                     area.top + Scaled(kAboutMark)};
+      items_.push_back(std::move(mark));
+      const int mid = (area.top + area.bottom) / 2;
+      area.top = mid - Scaled(kPillHeight) / 2;
+      area.bottom = area.top + Scaled(kPillHeight);
+      Item button;
+      button.kind = ItemKind::kButton;
+      button.text = L"Check for update";
+      button.enabled = PhiUpdater::Available();
+      button.action = "checkupdate";
+      button.bounds = area;
+      items_.push_back(std::move(button));
+    }
+
   }
   EndSection(y);
 
@@ -1114,6 +1199,11 @@ void PhiSettingsWindow::BuildAdvanced(int* y) {
 }
 
 void PhiSettingsWindow::AddDividerRow(int* y) {
+  if (!search_filter_.empty() &&
+      (last_row_skipped_ || card_rows_ == 0 ||
+       (!items_.empty() && items_.back().kind == ItemKind::kDivider))) {
+    return;  // Nothing above it to separate.
+  }
   Item divider;
   divider.kind = ItemKind::kDivider;
   divider.bounds = {(content_left_ + Scaled(kCardPadding)), *y - Scaled(6),
@@ -1124,6 +1214,9 @@ void PhiSettingsWindow::AddDividerRow(int* y) {
 }
 
 void PhiSettingsWindow::AddSubHint(int* y, const wchar_t* text) {
+  if (!search_filter_.empty() && last_row_skipped_) {
+    return;  // Its row was filtered out.
+  }
   const int left = (content_left_ + Scaled(kCardPadding));
   const int right = (content_right_ - Scaled(kCardPadding));
   // Tucked under the row above it at the Mac's 4pt VStack spacing — or,
@@ -1146,6 +1239,9 @@ void PhiSettingsWindow::AddSubHint(int* y, const wchar_t* text) {
 
 void PhiSettingsWindow::AddSectionHeading(int* y, const wchar_t* title,
                                           const wchar_t* description) {
+  heading_pending_ = true;
+  heading_start_ = items_.size();
+  heading_start_y_ = *y;
   Item heading;
   heading.kind = ItemKind::kSectionTitle;
   heading.text = title;
@@ -1197,155 +1293,105 @@ void PhiSettingsWindow::AddToggleRow(int* y, const wchar_t* title, bool on,
   items_.push_back(std::move(toggle));
 }
 
-void PhiSettingsWindow::BuildSpaces(int* y) {
-  const std::vector<PhiSpaceSummary> spaces = spaces_->Summaries();
-  // Resolve (and default) the selection.
-  const PhiSpaceSummary* selected = nullptr;
-  for (const PhiSpaceSummary& space : spaces) {
-    if (space.id == selected_space_) {
-      selected = &space;
-      break;
-    }
-  }
-  if (!selected) {
-    selected_space_.clear();
-    if (!spaces.empty()) {
-      selected = &spaces.front();
-      selected_space_ = selected->id;
-    }
-  }
-  const std::string selected_theme =
-      selected ? selected->theme_id : std::string();
-  const int selected_saturation = selected ? selected->saturation : -1;
+void PhiSettingsWindow::AddExpander(int* y, const std::wstring& name,
+                                    const std::wstring& hint,
+                                    const std::wstring& icon, bool avatar,
+                                    COLORREF tint, bool expanded, bool badge,
+                                    const std::string& action,
+                                    const std::string& payload) {
+  Item header;
+  header.kind = ItemKind::kExpander;
+  header.text = name;
+  header.detail = hint;
+  header.icon = icon;
+  header.value = avatar ? 1 : 0;
+  header.swatch = tint;
+  header.on = expanded;
+  header.selected = badge;
+  header.action = action;
+  header.payload = payload;
+  // The card opened kRowPadding above; the header row fills the card's
+  // width minus a 4 dip inset so its hover wash sits inside the border.
+  header.bounds = {content_left_ + Scaled(4), *y - Scaled(kRowPadding) + Scaled(4),
+                   content_right_ - Scaled(4),
+                   *y - Scaled(kRowPadding) + Scaled(4) + Scaled(kExpanderHeight)};
+  items_.push_back(std::move(header));
+  *y = *y - Scaled(kRowPadding) + Scaled(4) + Scaled(kExpanderHeight) +
+       Scaled(4);
+  ++card_rows_;
+}
 
-  // The master-detail band: list 280 wide, detail beside, fixed height.
-  const int band_top = *y;
-  const int band_bottom = band_top + Scaled(kSpacesBlockHeight);
-  const int list_left = content_left_;
-  const int list_right = list_left + Scaled(kSpacesListWidth);
+void PhiSettingsWindow::AddSpaceBody(int* y, const PhiSpaceSummary& space,
+                                     int ordinal) {
+  const std::vector<PhiProfileSummary> profiles = profiles_->Profiles();
+  const bool expanded_only = search_filter_.empty();
+  AddDividerRow(y);
+  *y += Scaled(kRowPadding);
+  // Name — the value under the label, "Rename…" trailing.
   {
-    Item card;
-    card.kind = ItemKind::kCard;
-    card.bounds = {list_left, band_top, list_right, band_bottom};
-    items_.push_back(std::move(card));
+    const RECT area = AddRow(y, L"Name", kPillHeight, 100,
+                             base::UTF8ToWide(space.name).c_str());
+    Item button;
+    button.kind = ItemKind::kButton;
+    button.text = L"Rename…";
+    button.action = "renspace";
+    button.payload = space.id;
+    button.bounds = area;
+    items_.push_back(std::move(button));
   }
+  AddDividerRow(y);
+  // Profile — a ComboBox of the profiles; re-binding respawns the Space's
+  // browser in the new profile (the Mac's changeProfile).
   {
-    Item header;
-    header.kind = ItemKind::kSectionTitle;
-    header.text = L"Your Spaces";
-    header.bounds = {list_left + Scaled(kCardPadding), band_top + Scaled(10),
-                     list_right - Scaled(kCardPadding),
-                     band_top + Scaled(10) + Scaled(kSectionTitleHeight)};
-    items_.push_back(std::move(header));
-    Item divider;
-    divider.kind = ItemKind::kDivider;
-    divider.bounds = {list_left, band_top + Scaled(kListHeaderHeight),
-                      list_right, band_top + Scaled(kListHeaderHeight) + 1};
-    items_.push_back(std::move(divider));
-  }
-  // The trailing profile is shown by NAME (the Mac row hosts a profile
-  // picker; bindings are immutable here, so it reads as a static menu).
-  const std::vector<PhiProfileSummary> profile_names = profiles_->Profiles();
-  int row_y = band_top + Scaled(kListHeaderHeight) + Scaled(6);
-  const int rows_bottom = band_bottom - Scaled(kToolStripHeight) - Scaled(6);
-  for (const PhiSpaceSummary& space : spaces) {
-    if (row_y + Scaled(kListRowHeight) > rows_bottom) {
-      break;  // The Mac scrolls the inner list; ours clips for now.
-    }
-    Item row;
-    row.kind = ItemKind::kListRow;
-    row.text = base::UTF8ToWide(space.name);
-    // The Space's icon, drawn by the paint pass as the Mac catalog's
-    // artwork or a colour emoji (it used to be pasted into the text,
-    // which dropped catalog icons and greyed emoji out).
-    row.icon = base::UTF8ToWide(space.icon_text);
-    row.detail = L"";
-    for (const PhiProfileSummary& profile : profile_names) {
+    const RECT area = AddRow(y, L"Profile", kPillHeight, kPillWidth,
+                             L"The browsing profile this Space uses: its "
+                             L"cookies, history and extensions.");
+    Item pill;
+    pill.kind = ItemKind::kPopup;
+    for (const PhiProfileSummary& profile : profiles) {
       if (profile.id == space.profile_id) {
-        row.detail = base::UTF8ToWide(profile.name);
-        break;
+        pill.text = base::UTF8ToWide(profile.name);
       }
     }
-    row.selected = space.id == selected_space_;
-    // No Default badge: the role floats (it moves when its holder is
-    // deleted) and the Mac list dropped the badge with it; only the
-    // Profiles list still marks its permanent Default row.
-    row.value = 1;       // Solid-accent selection (the Spaces list style).
-    row.action = "selectspace";
-    row.payload = space.id;
-    row.bounds = {list_left + Scaled(6), row_y, list_right - Scaled(6),
-                  row_y + Scaled(kListRowHeight)};
-    items_.push_back(std::move(row));
-    row_y += Scaled(kListRowHeight);
+    if (pill.text.empty()) {
+      pill.text = base::UTF8ToWide(space.profile_id);
+    }
+    pill.action = "spaceprofile";
+    pill.payload = space.id;
+    pill.bounds = area;
+    items_.push_back(std::move(pill));
   }
+  AddDividerRow(y);
+  // Icon — the current icon in a 32 cell, "Change…" beside it; the
+  // picker unfolds under the row (§7.1), scrolling in place.
   {
-    // The 34pt tool strip: new / delete / rename (the latter two wait for
-    // their surfaces, exactly like the sidebar menu's entries).
-    Item divider;
-    divider.kind = ItemKind::kDivider;
-    divider.bounds = {list_left, band_bottom - Scaled(kToolStripHeight),
-                      list_right, band_bottom - Scaled(kToolStripHeight) + 1};
-    items_.push_back(std::move(divider));
-    const struct {
-      wchar_t glyph;
-      const char* action;
-      bool enabled;
-    } kTools[] = {
-        {0xE710, "newspace", true},  // Add
-        // Only the LAST Space is permanent (the Mac's last-Space rule).
-        {0xE738, "delspace",
-         !selected_space_.empty() &&
-             spaces_->CanDeleteSpace(selected_space_)},  // Remove
-        {0xE70F, "renspace", !selected_space_.empty()},        // Edit
-    };
-    int x = list_left;
-    size_t placed = 0;
-    for (const auto& tool : kTools) {
-      Item button;
-      button.kind = ItemKind::kToolButton;
-      button.text = std::wstring(1, tool.glyph);
-      button.enabled = tool.enabled;
-      button.action = tool.action;
-      button.bounds = {x, band_bottom - Scaled(kToolStripHeight),
-                       x + Scaled(kToolStripHeight), band_bottom};
-      items_.push_back(std::move(button));
-      x += Scaled(kToolStripHeight);
-      // The Mac's 1x20 separatorColor rule BETWEEN the buttons; the loop
-      // used to hang one off the trailing edge of the last one as well.
-      if (++placed < std::size(kTools)) {
-        Item rule;
-        rule.kind = ItemKind::kDivider;
-        rule.bounds = {x, band_bottom - Scaled(kToolStripHeight) + Scaled(7),
-                       x + 1, band_bottom - Scaled(7)};
-        items_.push_back(std::move(rule));
-      }
-    }
-  }
-
-  // Detail column: icon picker card, then colour + saturation card.
-  const int detail_left = list_right + Scaled(kMasterDetailGap);
-  const int detail_right = content_right_;
-  if (!selected_space_.empty()) {
-    // Card 1: the icon picker, absorbing the band's spare height (the Mac
-    // gives the picker `maxHeight: .infinity` above the fixed theme card).
-    const int theme_card_h = Scaled(110);
-    const int picker_bottom =
-        band_bottom - Scaled(kMasterDetailGap) - theme_card_h;
-    {
-      Item card;
-      card.kind = ItemKind::kCard;
-      card.bounds = {detail_left, band_top, detail_right, picker_bottom};
-      items_.push_back(std::move(card));
-    }
-    // The Mac picker's segmented control (128x26, centered): the Phi icon
-    // catalog, then the emoji library. The grid below scrolls in place
-    // under the wheel, as the Mac's does.
-    {
+    const bool open = expanded_only && picker_open_ == space.id;
+    const RECT area = AddRow(y, L"Icon", 32, 32 + 8 + 100);
+    Item cell;
+    cell.kind = ItemKind::kEmojiCell;
+    cell.text = base::UTF8ToWide(space.icon_text);
+    cell.selected = true;
+    cell.action = "spaceiconpicker";
+    cell.payload = space.id;
+    cell.bounds = {area.left, area.top, area.left + Scaled(32), area.bottom};
+    items_.push_back(std::move(cell));
+    Item button;
+    button.kind = ItemKind::kButton;
+    button.text = open ? L"Done" : L"Change…";
+    button.action = "spaceiconpicker";
+    button.payload = space.id;
+    button.bounds = {area.right - Scaled(100), area.top, area.right,
+                     area.bottom};
+    items_.push_back(std::move(button));
+    if (open) {
+      const int left = content_left_ + Scaled(kCardPadding);
+      const int right = content_right_ - Scaled(kCardPadding);
+      // The segmented control (Icon | Emoji), then four lines of cells.
       const struct {
         const wchar_t* label;
         const char* tab;
       } kTabs[] = {{L"Icon", "icon"}, {L"Emoji", "emoji"}};
-      int seg_x = (detail_left + detail_right) / 2 - Scaled(64);
+      int seg_x = left;
       for (const auto& tab : kTabs) {
         Item segment;
         segment.kind = ItemKind::kButton;
@@ -1353,167 +1399,202 @@ void PhiSettingsWindow::BuildSpaces(int* y) {
         segment.selected = picker_tab_ == tab.tab;
         segment.action = "pickertab";
         segment.payload = tab.tab;
-        segment.bounds = {seg_x, band_top + Scaled(8), seg_x + Scaled(64),
-                          band_top + Scaled(8) + Scaled(26)};
+        segment.bounds = {seg_x, *y, seg_x + Scaled(72), *y + Scaled(28)};
         items_.push_back(std::move(segment));
-        seg_x += Scaled(64);
+        seg_x += Scaled(72) + Scaled(4);
       }
-    }
-    // One flat cell list: the catalog, or every emoji group in Mac order.
-    std::vector<std::pair<std::wstring, std::string>> cells;
-    if (picker_tab_ == "icon") {
-      for (const PhiCatalogIcon& icon : PhiIconCatalogAll()) {
-        cells.emplace_back(std::wstring(1, icon.glyph),
-                           std::string("phi:") + icon.id);
-      }
-    } else {
-      for (const PhiEmojiGroup& group : PhiEmojiGroups()) {
-        for (const PhiEmoji& emoji : group.items) {
-          cells.emplace_back(base::UTF8ToWide(emoji.text),
-                             "emoji:" + emoji.id);
+      *y += Scaled(28) + Scaled(8);
+      std::vector<std::pair<std::wstring, std::string>> cells;
+      if (picker_tab_ == "icon") {
+        for (const PhiCatalogIcon& icon : PhiIconCatalogAll()) {
+          cells.emplace_back(std::wstring(1, icon.glyph),
+                             std::string("phi:") + icon.id);
+        }
+      } else {
+        for (const PhiEmojiGroup& group : PhiEmojiGroups()) {
+          for (const PhiEmoji& emoji : group.items) {
+            cells.emplace_back(base::UTF8ToWide(emoji.text),
+                               "emoji:" + emoji.id);
+          }
         }
       }
+      const std::wstring current_icon = base::UTF8ToWide(space.icon_text);
+      const int pitch = Scaled(kEmojiCell + kEmojiGap);
+      const int per_row =
+          std::max(1, (right - left + Scaled(kEmojiGap)) / pitch);
+      const int rows_fit = kPickerLines;
+      const int lines =
+          (static_cast<int>(cells.size()) + per_row - 1) / per_row;
+      picker_max_line_ = std::max(0, lines - rows_fit);
+      picker_scroll_ =
+          std::max(0, std::min(picker_scroll_, picker_max_line_));
+      const int grid_top = *y;
+      picker_grid_ = {left, grid_top, right, grid_top + rows_fit * pitch};
+      const size_t first = static_cast<size_t>(picker_scroll_) *
+                           static_cast<size_t>(per_row);
+      const size_t per_page = static_cast<size_t>(per_row * rows_fit);
+      for (size_t i = first; i < cells.size() && i < first + per_page; ++i) {
+        const int index = static_cast<int>(i - first);
+        const int col = index % per_row;
+        const int line = index / per_row;
+        Item pick;
+        pick.kind = ItemKind::kEmojiCell;
+        pick.text = cells[i].first;
+        pick.selected =
+            !current_icon.empty() && cells[i].first == current_icon;
+        pick.action = "spaceicon";
+        pick.payload = cells[i].second;
+        pick.space = space.id;
+        const int x = left + col * pitch;
+        const int top = grid_top + line * pitch;
+        pick.bounds = {x, top, x + Scaled(kEmojiCell),
+                       top + Scaled(kEmojiCell)};
+        items_.push_back(std::move(pick));
+      }
+      *y = grid_top + rows_fit * pitch + Scaled(kRowPadding);
     }
-    // The Space's current icon, so its cell reads selected as on Mac.
-    const std::wstring current_icon =
-        selected ? base::UTF8ToWide(selected->icon_text) : std::wstring();
-    // The grid scrolls a whole cell row at a time (three per wheel notch,
-    // like the create-space form's grid), so no row ever straddles the
-    // viewport's edge and nothing needs clipping. `picker_scroll_` is the
-    // first visible row, clamped here against the content.
-    const int grid_left = detail_left + Scaled(10);
-    const int grid_top = band_top + Scaled(34);
-    const int grid_bottom = picker_bottom - Scaled(8);
-    const int pitch = Scaled(kEmojiCell + kEmojiGap);
-    const int per_row = std::max(
-        1, (detail_right - Scaled(10) - grid_left + Scaled(kEmojiGap)) /
-               pitch);
-    const int rows_fit = std::max(1, (grid_bottom - grid_top) / pitch);
-    const int lines =
-        (static_cast<int>(cells.size()) + per_row - 1) / per_row;
-    picker_max_line_ = std::max(0, lines - rows_fit);
-    picker_scroll_ = std::max(0, std::min(picker_scroll_, picker_max_line_));
-    picker_grid_ = {detail_left, grid_top, detail_right, grid_bottom};
-    const size_t first = static_cast<size_t>(picker_scroll_) *
-                         static_cast<size_t>(per_row);
-    const size_t per_page = static_cast<size_t>(per_row * rows_fit);
-    for (size_t i = first; i < cells.size() && i < first + per_page; ++i) {
-      const int index = static_cast<int>(i - first);
-      const int col = index % per_row;
-      const int line = index / per_row;
-      Item cell;
-      cell.kind = ItemKind::kEmojiCell;
-      cell.text = cells[i].first;
-      cell.selected = !current_icon.empty() && cells[i].first == current_icon;
-      cell.action = "spaceicon";
-      cell.payload = cells[i].second;
-      cell.space = selected_space_;
-      const int x = grid_left + col * pitch;
-      const int top = grid_top + line * pitch;
-      cell.bounds = {x, top, x + Scaled(kEmojiCell),
-                     top + Scaled(kEmojiCell)};
-      items_.push_back(std::move(cell));
+  }
+  AddDividerRow(y);
+  // Color — the theme dots; a Space pinning no theme follows the app's.
+  {
+    const auto& themes = PhiBuiltInThemes();
+    const int block = static_cast<int>(themes.size()) *
+                          (kSwatchItemSpaces + kSwatchGapSpaces) -
+                      kSwatchGapSpaces;
+    const bool inherited = space.theme_id.empty();
+    const std::string effective_theme =
+        inherited ? prefs_->ThemeId() : space.theme_id;
+    const RECT area = AddRow(y, L"Color", kSwatchBlockSpaces, block,
+                             inherited ? L"Follows the app-wide theme."
+                                       : nullptr);
+    int x = area.left;
+    for (size_t i = 0; i < themes.size(); ++i) {
+      Item swatch;
+      swatch.kind = ItemKind::kSwatch;
+      swatch.text = base::UTF8ToWide(themes[i].name);
+      swatch.selected = effective_theme == themes[i].id;
+      swatch.on = swatch.selected && inherited;
+      const PhiPalette resolved = PhiResolvePalette(
+          themes[i], prefs_->Appearance(), prefs_->Saturation());
+      swatch.swatch = i == 0 ? RGB(0xFF, 0xFF, 0xFF) : resolved.accent;
+      swatch.ring = resolved.accent;
+      swatch.value = kSwatchDotSpaces;
+      swatch.action = "spacetheme";
+      swatch.payload = themes[i].id;
+      swatch.space = space.id;
+      swatch.bounds = {x, area.top, x + Scaled(kSwatchItemSpaces),
+                       area.top + Scaled(kSwatchBlockSpaces)};
+      items_.push_back(std::move(swatch));
+      x += Scaled(kSwatchItemSpaces + kSwatchGapSpaces);
     }
+  }
+  AddDividerRow(y);
+  // Saturation — this Space's slider (−1 follows the app-wide one).
+  {
+    const RECT area = AddRow(y, L"Saturation", kSliderHeight, kSliderSpaces);
+    Item slider;
+    slider.kind = ItemKind::kSliderTrack;
+    slider.value =
+        space.saturation < 0 ? prefs_->Saturation() : space.saturation;
+    slider.action = "spacesat";
+    slider.payload = space.id;
+    const std::string effective =
+        space.theme_id.empty() ? prefs_->ThemeId() : space.theme_id;
+    const PhiTheme& theme = PhiThemeById(effective);
+    slider.swatch =
+        prefs_->Palette().dark ? theme.dark.overlay : theme.light.overlay;
+    slider.on = effective == "pure";
+    slider.bounds = area;
+    items_.push_back(std::move(slider));
+  }
+  AddDividerRow(y);
+  // Shortcut — Ctrl+n follows the strip order (the first nine Spaces).
+  {
+    const RECT area = AddRow(y, L"Shortcut", kPillHeight, 80,
+                             L"Follows the Space's position in the strip.");
+    if (ordinal >= 1 && ordinal <= 9) {
+      Item cap;
+      cap.kind = ItemKind::kKeycap;
+      cap.text = L"Ctrl+" + std::to_wstring(ordinal);
+      cap.bounds = area;
+      items_.push_back(std::move(cap));
+    }
+  }
+  AddDividerRow(y);
+  // Delete — the danger button, disabled for the last Space.
+  {
+    const bool deletable = spaces_->CanDeleteSpace(space.id);
+    const RECT area = AddRow(
+        y, L"Delete this Space", kPillHeight, 120,
+        deletable ? L"Its bookmarks and pinned tabs are removed with it."
+                  : L"The last Space cannot be deleted.");
+    Item button;
+    button.kind = ItemKind::kButton;
+    button.text = L"Delete Space";
+    button.danger = true;
+    button.enabled = deletable;
+    button.action = "delspace";
+    button.payload = space.id;
+    button.bounds = area;
+    items_.push_back(std::move(button));
+  }
+}
 
-    // Card 2: the Mac's compact theme card - "Color" with 16pt dots in
-    // 20pt frames (spacing 10), a divider, then the 200pt Saturation
-    // slider, applied to THIS Space. There is no "follow the app" dot on
-    // Mac; un-pinning stays in the sidebar's Edit Theme menu.
-    const int theme_top = picker_bottom + Scaled(kMasterDetailGap);
-    {
-      Item card;
-      card.kind = ItemKind::kCard;
-      card.bounds = {detail_left, theme_top, detail_right,
-                     theme_top + theme_card_h};
-      items_.push_back(std::move(card));
-    }
-    {
-      Item label;
-      label.kind = ItemKind::kRowLabel;
-      label.text = L"Color";
-      label.bounds = {detail_left + Scaled(kCardPadding),
-                      theme_top + Scaled(kRowPadding),
-                      detail_left + Scaled(kCardPadding) + Scaled(46),
-                      theme_top + Scaled(kRowPadding) + Scaled(20)};
-      items_.push_back(std::move(label));
-      const auto& themes = PhiBuiltInThemes();
-      // A Space that pins no theme follows the app-wide one: mark THAT dot
-      // instead of leaving the row with nothing ringed, and say so in the
-      // caption (`on` = inherited, drawn as a quieter ring).
-      const bool inherited = selected_theme.empty();
-      const std::string effective_theme =
-          inherited ? prefs_->ThemeId() : selected_theme;
-      int x = detail_left + Scaled(kCardPadding) + Scaled(46) + Scaled(12);
-      for (size_t i = 0; i < themes.size(); ++i) {
-        Item swatch;
-        swatch.kind = ItemKind::kSwatch;
-        swatch.text = base::UTF8ToWide(themes[i].name);
-        swatch.selected = effective_theme == themes[i].id;
-        swatch.on = swatch.selected && inherited;
-        const PhiPalette resolved = PhiResolvePalette(
-            themes[i], prefs_->Appearance(), prefs_->Saturation());
-        swatch.swatch = i == 0 ? RGB(0xFF, 0xFF, 0xFF) : resolved.accent;
-        swatch.ring = resolved.accent;
-        swatch.value = kSwatchDotSpaces;  // Compact 16pt dot.
-        swatch.action = "spacetheme";
-        swatch.payload = themes[i].id;
-        swatch.space = selected_space_;
-        swatch.bounds = {x, theme_top + Scaled(kRowPadding),
-                         x + Scaled(kSwatchItemSpaces),
-                         theme_top + Scaled(kRowPadding) +
-                             Scaled(kSwatchBlockSpaces)};
-        items_.push_back(std::move(swatch));
-        x += Scaled(kSwatchItemSpaces + kSwatchGapSpaces);
+void PhiSettingsWindow::BuildSpaces(int* y) {
+  const std::vector<PhiSpaceSummary> spaces = spaces_->Summaries();
+  const std::vector<PhiProfileSummary> profiles = profiles_->Profiles();
+  const bool searching = !search_filter_.empty();
+  // The group header: "Your Spaces" with the "+ New Space" button on the
+  // same line (§7.1). Neither shows on the results page.
+  if (!searching) {
+    Item heading;
+    heading.kind = ItemKind::kSectionTitle;
+    heading.text = L"Your Spaces";
+    heading.bounds = {content_left_, *y, content_right_ - Scaled(140),
+                      *y + Scaled(kPillHeight)};
+    items_.push_back(std::move(heading));
+    Item add;
+    add.kind = ItemKind::kButton;
+    add.text = L"  New Space";
+    add.action = "newspace";
+    add.bounds = {content_right_ - Scaled(130), *y, content_right_,
+                  *y + Scaled(kPillHeight)};
+    items_.push_back(std::move(add));
+    *y += Scaled(kPillHeight) + Scaled(kTitleToCard);
+  }
+  int ordinal = 0;
+  for (const PhiSpaceSummary& space : spaces) {
+    ++ordinal;
+    const std::wstring name = base::UTF8ToWide(space.name);
+    std::wstring profile_name;
+    for (const PhiProfileSummary& profile : profiles) {
+      if (profile.id == space.profile_id) {
+        profile_name = base::UTF8ToWide(profile.name);
       }
     }
-    const int color_bottom = theme_top + Scaled(kRowPadding) +
-                             Scaled(kSwatchBlockSpaces) + Scaled(kRowPadding);
-    {
-      Item divider;
-      divider.kind = ItemKind::kDivider;
-      divider.bounds = {detail_left + Scaled(kCardPadding), color_bottom,
-                        detail_right - Scaled(kCardPadding),
-                        color_bottom + 1};
-      items_.push_back(std::move(divider));
+    if (searching && !SearchMatches(name.c_str(), profile_name.c_str())) {
+      continue;
     }
-    {
-      const int slider_top = color_bottom + 1 + Scaled(kRowPadding);
-      Item label;
-      label.kind = ItemKind::kRowLabel;
-      label.text = L"Saturation";
-      label.bounds = {detail_left + Scaled(kCardPadding), slider_top,
-                      detail_left + Scaled(90),
-                      slider_top + Scaled(kSliderHeight)};
-      items_.push_back(std::move(label));
-      Item slider;
-      slider.kind = ItemKind::kSliderTrack;
-      slider.value = selected_saturation < 0 ? prefs_->Saturation()
-                                             : selected_saturation;
-      slider.action = "spacesat";
-      slider.payload = selected_space_;
-      // The track ramps THIS Space's effective theme.
-      const std::string effective =
-          selected_theme.empty() ? prefs_->ThemeId() : selected_theme;
-      const PhiTheme& theme = PhiThemeById(effective);
-      slider.swatch = prefs_->Palette().dark ? theme.dark.overlay
-                                            : theme.light.overlay;
-      slider.on = effective == "pure";
-      slider.bounds = {detail_right - Scaled(kCardPadding) -
-                           Scaled(kSliderSpaces),
-                       slider_top,
-                       detail_right - Scaled(kCardPadding),
-                       slider_top + Scaled(kSliderHeight)};
-      items_.push_back(std::move(slider));
+    ++filter_hits_;
+    std::wstring hint = profile_name.empty() ? L"" : profile_name;
+    if (ordinal <= 9) {
+      hint += (hint.empty() ? L"" : L"  ·  ") + std::wstring(L"Ctrl+") +
+              std::to_wstring(ordinal);
     }
-  } else {
-    Item empty;
-    empty.kind = ItemKind::kHint;
-    empty.text = L"Select a Space to view its settings.";
-    empty.bounds = {detail_left, band_top + Scaled(200), detail_right,
-                    band_top + Scaled(200) + Scaled(kHintHeight)};
-    items_.push_back(std::move(empty));
+    const bool expanded = !searching && selected_space_ == space.id;
+    BeginSection(y, nullptr);
+    AddExpander(y, name, hint, base::UTF8ToWide(space.icon_text), false,
+                prefs_->Palette().accent, expanded, false, "selectspace",
+                space.id);
+    if (expanded) {
+      AddSpaceBody(y, space, ordinal);
+    }
+    EndSection(y);
+    *y -= Scaled(kSectionGap - kExpanderGap);
   }
-  *y = band_bottom + Scaled(kMasterDetailGap);
+  if (!searching) {
+    *y += Scaled(kSectionGap - kExpanderGap);
+  }
 
   // Pane-wide card: pinned tab scope, with the live description.
   BeginSection(y, nullptr);
@@ -1627,140 +1708,219 @@ void PhiSettingsWindow::AddUrlRulesSection(int* y) {
   EndSection(y);
 }
 
-void PhiSettingsWindow::BuildProfiles(int* y) {
-  const std::vector<PhiProfileSummary> profiles = profiles_->Profiles();
-  const std::vector<PhiSpaceSummary> spaces = spaces_->Summaries();
-  bool found = false;
-  for (const PhiProfileSummary& profile : profiles) {
-    if (profile.id == selected_profile_) {
-      found = true;
-      break;
-    }
-  }
-  if (!found) {
-    selected_profile_.clear();
-    if (!profiles.empty()) {
-      selected_profile_ = profiles.front().id;
-    }
-  }
-
-  const int band_top = *y;
-  const int band_bottom = band_top + Scaled(kSpacesBlockHeight);
-  const int list_left = content_left_;
-  const int list_right = list_left + Scaled(kProfilesListWidth);
+void PhiSettingsWindow::AddProfileBody(
+    int* y, const PhiProfileSummary& profile,
+    const std::vector<PhiSpaceSummary>& spaces) {
+  const std::string& id = profile.id;
+  AddDividerRow(y);
+  *y += Scaled(kRowPadding);
   {
-    Item card;
-    card.kind = ItemKind::kCard;
-    card.bounds = {list_left, band_top, list_right, band_bottom};
-    items_.push_back(std::move(card));
-    Item header;
-    header.kind = ItemKind::kSectionTitle;
-    header.text = L"Your Profiles";
-    header.bounds = {list_left + Scaled(kCardPadding), band_top + Scaled(10),
-                     list_right - Scaled(kCardPadding),
-                     band_top + Scaled(10) + Scaled(kSectionTitleHeight)};
-    items_.push_back(std::move(header));
-    Item divider;
-    divider.kind = ItemKind::kDivider;
-    divider.bounds = {list_left, band_top + Scaled(kListHeaderHeight),
-                      list_right, band_top + Scaled(kListHeaderHeight) + 1};
-    items_.push_back(std::move(divider));
+    const RECT area = AddRow(y, L"Name", kPillHeight, 100,
+                             base::UTF8ToWide(profile.name).c_str());
+    Item button;
+    button.kind = ItemKind::kButton;
+    button.text = L"Rename…";
+    button.action = "renprofile";
+    button.payload = id;
+    button.bounds = area;
+    items_.push_back(std::move(button));
   }
-  int row_y = band_top + Scaled(kListHeaderHeight) + Scaled(6);
-  const int rows_bottom = band_bottom - Scaled(kToolStripHeight) - Scaled(6);
-  for (const PhiProfileSummary& profile : profiles) {
-    if (row_y + Scaled(kListRowHeight) > rows_bottom) {
-      break;
+  AddDividerRow(y);
+  // Search engine / download location — live, per profile. Both read
+  // empty while the profile is not loaded, and the rows grey out; one
+  // short poll per rebuild fills them in once the loads land.
+  {
+    const std::vector<PhiSearchEngineRow> engines =
+        profiles_->SearchEngines(id);
+    std::wstring engine_name = L"Unavailable";
+    for (const PhiSearchEngineRow& engine : engines) {
+      if (engine.is_default) {
+        engine_name = base::UTF8ToWide(engine.name);
+        break;
+      }
     }
-    const std::string& id = profile.id;
-    int bound = 0;
+    const std::string download_dir = profiles_->DownloadDirectory(id);
+    if ((engines.empty() || download_dir.empty()) && alive()) {
+      profile_poll_.Start(700);
+    }
+    std::wstring download_leaf = L"Choose…";
+    if (!download_dir.empty()) {
+      const size_t cut = download_dir.find_last_of("\\\\/");
+      download_leaf = base::UTF8ToWide(
+          cut == std::string::npos ? download_dir
+                                   : download_dir.substr(cut + 1));
+    }
+    {
+      const RECT area = AddRow(y, L"Search engine", kPillHeight, kPillWidth);
+      Item pill;
+      pill.kind = ItemKind::kPopup;
+      pill.text = engine_name;
+      pill.enabled = !engines.empty();
+      pill.action = "searchengine";
+      pill.payload = id;
+      pill.bounds = area;
+      items_.push_back(std::move(pill));
+    }
+    AddDividerRow(y);
+    {
+      const RECT area =
+          AddRow(y, L"Download location", kPillHeight, kPillWidth);
+      Item pill;
+      pill.kind = ItemKind::kPopup;
+      pill.text = download_leaf;
+      pill.enabled = !download_dir.empty();
+      pill.action = "downloadfolder";
+      pill.payload = id;
+      pill.bounds = area;
+      items_.push_back(std::move(pill));
+    }
+  }
+  AddDividerRow(y);
+  // Used by — the Spaces bound to this profile.
+  int bound = 0;
+  {
+    std::wstring names;
     for (const PhiSpaceSummary& space : spaces) {
       if (space.profile_id == id) {
         ++bound;
+        names += (names.empty() ? L"" : L", ") + base::UTF8ToWide(space.name);
       }
     }
-    Item row;
-    row.kind = ItemKind::kListRow;
-    row.text = base::UTF8ToWide(profile.name);
-    row.detail =
-        bound == 0
-            ? L"Not used"
-            : base::UTF8ToWide(base::NumberToString(bound) + " Spaces");
-    row.selected = id == selected_profile_;
-    row.on = id == "Default";  // Wears the badge.
-    row.value = 2;  // 15% accent wash selection (the Profiles list style).
-    row.action = "selectprofile";
-    row.payload = id;
-    row.bounds = {list_left + Scaled(6), row_y, list_right - Scaled(6),
-                  row_y + Scaled(kListRowHeight)};
-    items_.push_back(std::move(row));
-    row_y += Scaled(kListRowHeight);
+    AddRow(y, L"Used by", kRowLabelHeight, 20,
+           bound == 0 ? L"No Space uses this profile." : names.c_str());
   }
+  AddDividerRow(y);
+  // The data pages: three rows into chrome://settings for this profile.
   {
-    Item divider;
-    divider.kind = ItemKind::kDivider;
-    divider.bounds = {list_left, band_bottom - Scaled(kToolStripHeight),
-                      list_right, band_bottom - Scaled(kToolStripHeight) + 1};
-    items_.push_back(std::move(divider));
     const struct {
       wchar_t glyph;
-      const char* action;
-      bool enabled;
-    } kTools[] = {
-        {0xE710, "addprofile", true},  // Add
-        // Default is permanent; a profile still bound to a Space stays.
-        {0xE738, "delprofile", [&] {
-           if (selected_profile_.empty() || selected_profile_ == "Default") {
-             return false;
-           }
-           for (const PhiSpaceSummary& space : spaces) {
-             if (space.profile_id == selected_profile_) {
-               return false;
-             }
-           }
-           return true;
-         }()},
-        {0xE70F, "renprofile", !selected_profile_.empty()},  // Edit
+      const wchar_t* title;
+      const char* url;
+    } kRows[] = {
+        {0xE72E, L"Privacy and security", "chrome://settings/privacy"},
+        {0xE7ED, L"Notifications", "chrome://settings/content/notifications"},
+        {0xE74D, L"Clear browsing data", "chrome://settings/clearBrowserData"},
     };
-    int x = list_left;
     size_t placed = 0;
-    for (const auto& tool : kTools) {
-      Item button;
-      button.kind = ItemKind::kToolButton;
-      button.text = std::wstring(1, tool.glyph);
-      button.enabled = tool.enabled;
-      button.action = tool.action;
-      button.bounds = {x, band_bottom - Scaled(kToolStripHeight),
-                       x + Scaled(kToolStripHeight), band_bottom};
-      items_.push_back(std::move(button));
-      x += Scaled(kToolStripHeight);
-      if (++placed < std::size(kTools)) {
-        Item rule;
-        rule.kind = ItemKind::kDivider;
-        rule.bounds = {x, band_bottom - Scaled(kToolStripHeight) + Scaled(7),
-                       x + 1, band_bottom - Scaled(7)};
-        items_.push_back(std::move(rule));
+    for (const auto& def : kRows) {
+      const size_t row_index = items_.size();
+      Item row;
+      row.kind = ItemKind::kListRow;
+      row.action = "openpage";
+      row.payload = def.url;
+      items_.push_back(std::move(row));
+      const int top = *y;
+      const RECT area = AddRow(y, def.title, kRowLabelHeight, 24, nullptr,
+                               36, 0, 0, 10);
+      if (area.right > area.left) {
+        Item glyph;
+        glyph.kind = ItemKind::kIcon;
+        glyph.text = std::wstring(1, def.glyph);
+        glyph.bounds = {content_left_ + Scaled(kCardPadding), area.top,
+                        content_left_ + Scaled(kCardPadding) + Scaled(24),
+                        area.bottom};
+        items_.push_back(std::move(glyph));
+        Item arrow;
+        arrow.kind = ItemKind::kIcon;
+        arrow.text = std::wstring(1, wchar_t(0xE72A));
+        arrow.selected = true;
+        arrow.bounds = area;
+        items_.push_back(std::move(arrow));
+        items_[row_index].bounds = {content_left_ + Scaled(4), top - Scaled(4),
+                                    content_right_ - Scaled(4),
+                                    *y - Scaled(10) + Scaled(4)};
+      }
+      if (++placed < std::size(kRows)) {
+        AddDividerRow(y);
       }
     }
   }
-
-  // Detail column: the Mac's ProfileDetailSettingsView, shared with the
-  // General pane's single-profile case.
-  const int detail_left = list_right + Scaled(kMasterDetailGap);
-  const int detail_right = content_right_;
-  if (!selected_profile_.empty()) {
-    int detail_y = band_top;
-    BuildProfileDetail(&detail_y, detail_left, detail_right,
-                       selected_profile_);
-  } else {
-    Item empty;
-    empty.kind = ItemKind::kHint;
-    empty.text = L"Select a profile to view its settings.";
-    empty.bounds = {detail_left, band_top + Scaled(200), detail_right,
-                    band_top + Scaled(200) + Scaled(kHintHeight)};
-    items_.push_back(std::move(empty));
+  AddDividerRow(y);
+  // Delete — Default is permanent; a profile still bound to a Space stays.
+  {
+    const bool is_default = id == "Default";
+    const bool deletable = !is_default && bound == 0;
+    const RECT area = AddRow(
+        y, L"Delete this profile", kPillHeight, 120,
+        is_default ? L"The Default profile cannot be deleted."
+        : bound > 0
+            ? L"Move its Spaces to another profile first."
+            : L"Its cookies, history, extensions and saved data are "
+              L"removed with it.");
+    Item button;
+    button.kind = ItemKind::kButton;
+    button.text = L"Delete profile";
+    button.danger = true;
+    button.enabled = deletable;
+    button.action = "delprofile";
+    button.payload = id;
+    button.bounds = area;
+    items_.push_back(std::move(button));
   }
-  *y = band_bottom + Scaled(kSectionGap);
+}
+
+void PhiSettingsWindow::BuildProfiles(int* y) {
+  const std::vector<PhiProfileSummary> profiles = profiles_->Profiles();
+  const std::vector<PhiSpaceSummary> spaces = spaces_->Summaries();
+  const bool searching = !search_filter_.empty();
+  if (!searching) {
+    Item heading;
+    heading.kind = ItemKind::kSectionTitle;
+    heading.text = L"Your profiles";
+    heading.bounds = {content_left_, *y, content_right_ - Scaled(140),
+                      *y + Scaled(kPillHeight)};
+    items_.push_back(std::move(heading));
+    Item add;
+    add.kind = ItemKind::kButton;
+    add.text = L"  New profile";
+    add.action = "addprofile";
+    add.bounds = {content_right_ - Scaled(130), *y, content_right_,
+                  *y + Scaled(kPillHeight)};
+    items_.push_back(std::move(add));
+    *y += Scaled(kPillHeight) + Scaled(kTitleToCard);
+  }
+  // Avatar tints, by position — a profile has no colour of its own.
+  static constexpr COLORREF kTints[] = {
+      RGB(0x0F, 0x6C, 0xBD), RGB(0xCA, 0x50, 0x10), RGB(0x0B, 0x6A, 0x0B),
+      RGB(0x88, 0x17, 0x98), RGB(0xC2, 0x39, 0x62), RGB(0x03, 0x83, 0x87),
+  };
+  size_t at = 0;
+  for (const PhiProfileSummary& profile : profiles) {
+    const std::wstring name = base::UTF8ToWide(profile.name);
+    const COLORREF tint = kTints[at++ % std::size(kTints)];
+    std::wstring used;
+    int bound = 0;
+    for (const PhiSpaceSummary& space : spaces) {
+      if (space.profile_id == profile.id) {
+        ++bound;
+        used += (used.empty() ? L"" : L", ") + base::UTF8ToWide(space.name);
+      }
+    }
+    if (searching && !SearchMatches(name.c_str(), used.c_str())) {
+      continue;
+    }
+    ++filter_hits_;
+    std::wstring hint =
+        bound == 0 ? L"Not used"
+                   : L"Used by " + used + L"  ·  " +
+                         std::to_wstring(bound) +
+                         (bound == 1 ? L" Space" : L" Spaces");
+    const bool expanded = !searching && selected_profile_ == profile.id;
+    BeginSection(y, nullptr);
+    AddExpander(y, name, hint, name.empty() ? L"?" : name.substr(0, 1), true,
+                tint, expanded, profile.id == "Default", "selectprofile",
+                profile.id);
+    if (expanded) {
+      AddProfileBody(y, profile, spaces);
+    }
+    EndSection(y);
+    *y -= Scaled(kSectionGap - kExpanderGap);
+  }
+  if (!searching) {
+    *y += Scaled(kSectionGap - kExpanderGap);
+    AddHint(y, L"Each profile keeps its own cookies, history, extensions "
+               L"and saved data. A Space browses in exactly one profile.");
+  }
 }
 
 void PhiSettingsWindow::BuildProfileDetail(int* y, int left, int right,
@@ -1847,7 +2007,7 @@ void PhiSettingsWindow::BuildProfileDetail(int* y, int left, int right,
                !download_dir.empty());
     trailing_pill(*y + row_h, download_leaf, !download_dir.empty(),
                   "downloadfolder");
-    *y += 2 * row_h + Scaled(kMasterDetailGap);
+    *y += 2 * row_h + Scaled(kDetailCardGap);
   }
 
   // "Your Data and Settings": three live links into chrome://settings for
@@ -2435,6 +2595,20 @@ void PhiSettingsWindow::Rebuild() {
                             std::min(static_cast<int>(client.right) - Scaled(kContentPad + 12),
                                      content_left_ + Scaled(kContentMaxWidth)));
   int rail_y = Scaled(kCaptionHeight + 8);
+  if (!narrow) {
+    // "Find a setting" (§7): the rail's field, fed by WM_CHAR on every
+    // page but Shortcuts (which has its own). Built before the page items
+    // so it paints with the rail, outside the content clip.
+    Item search;
+    search.kind = ItemKind::kSearchField;
+    search.text = rail_search_;
+    search.detail = L"Find a setting";
+    search.on = true;  // Draw its own field (the rail has no card).
+    search.bounds = {Scaled(12), rail_y, rail_w_ - Scaled(12),
+                     rail_y + Scaled(kRailSearchHeight)};
+    items_.push_back(std::move(search));
+    rail_y += Scaled(kRailSearchHeight + 12);
+  }
   for (const SectionDef& section : kSections) {
     if (unmounted(section.id)) {
       continue;
@@ -2458,6 +2632,17 @@ void PhiSettingsWindow::Rebuild() {
 
   picker_grid_ = {};  // Only the Spaces pane mounts the icon picker.
   picker_max_line_ = 0;
+  search_filter_.clear();
+  filter_hits_ = 0;
+  last_row_skipped_ = false;
+  heading_pending_ = false;
+  const bool searching = !rail_search_.empty() && section_ != "shortcuts";
+  if (searching) {
+    search_filter_ = rail_search_;
+    for (wchar_t& c : search_filter_) {
+      c = static_cast<wchar_t>(::towlower(c));
+    }
+  }
   int y = Scaled(kChromeTop + kContentPad) - scroll_;
   const int top = y;
   {
@@ -2469,12 +2654,17 @@ void PhiSettingsWindow::Rebuild() {
         title.text = section.label;
       }
     }
+    if (searching) {
+      title.text = L"Results for \u201C" + rail_search_ + L"\u201D";
+    }
     title.bounds = {content_left_, y, content_right_,
                     y + Scaled(kPageTitleHeight)};
     items_.push_back(std::move(title));
     y += Scaled(kPageTitleHeight + kPageTitleGap);
   }
-  if (section_ == "general") {
+  if (searching) {
+    BuildSearchResults(&y);
+  } else if (section_ == "general") {
     BuildGeneral(&y);
   } else if (section_ == "appearance") {
     BuildAppearance(&y);
@@ -2512,6 +2702,65 @@ void PhiSettingsWindow::Rebuild() {
   }
   content_height_ = bottom - top + content_left_;
   PublishHits();
+}
+
+// The results page (§7 "Find a setting"): every page's rows that carry
+// the typed text, under that page's heading — the page builders run with
+// the filter up, and AddRow / EndSection keep only what matches.
+void PhiSettingsWindow::BuildSearchResults(int* y) {
+  const bool developer = prefs_->DeveloperMode();
+  struct Page {
+    const char* id;
+    void (PhiSettingsWindow::*build)(int*);
+  };
+  const Page kPages[] = {
+      {"general", &PhiSettingsWindow::BuildGeneral},
+      {"appearance", &PhiSettingsWindow::BuildAppearance},
+      {"spaces", &PhiSettingsWindow::BuildSpaces},
+      {"profiles", &PhiSettingsWindow::BuildProfiles},
+      {"navigation", &PhiSettingsWindow::BuildNavigation},
+      {"ai", &PhiSettingsWindow::BuildAi},
+      {"advanced", &PhiSettingsWindow::BuildAdvanced},
+      {"developer", &PhiSettingsWindow::BuildDeveloper},
+      {"about", &PhiSettingsWindow::BuildAbout},
+  };
+  int total = 0;
+  for (const Page& page : kPages) {
+    const std::string id(page.id);
+    if ((id == "developer" && !developer) || (id == "ai" && !kPhiAiEnabled)) {
+      continue;
+    }
+    const size_t start = items_.size();
+    const int start_y = *y;
+    Item heading;
+    heading.kind = ItemKind::kSectionTitle;
+    for (const SectionDef& section : kSections) {
+      if (id == section.id) {
+        heading.text = section.label;
+      }
+    }
+    heading.bounds = {content_left_, *y, content_right_,
+                      *y + Scaled(kSectionTitleHeight)};
+    items_.push_back(std::move(heading));
+    *y += Scaled(kSectionTitleHeight) + Scaled(kTitleToCard);
+    filter_hits_ = 0;
+    (this->*page.build)(y);
+    if (filter_hits_ == 0) {
+      items_.resize(start);
+      *y = start_y;
+      continue;
+    }
+    total += filter_hits_;
+  }
+  if (total == 0) {
+    Item empty;
+    empty.kind = ItemKind::kHint;
+    empty.text = L"No settings match \u201C" + rail_search_ + L"\u201D.";
+    empty.bounds = {content_left_, *y, content_right_,
+                    *y + Scaled(kHintHeight)};
+    items_.push_back(std::move(empty));
+    *y += Scaled(kHintHeight);
+  }
 }
 
 // The base's hit list is THE rect list (phi_window.h): hover, clicks,
@@ -2646,7 +2895,8 @@ void PhiSettingsWindow::Paint(HDC dc, const RECT&) {
   const int hot_item = ItemOfHit(hovered());
   for (size_t item_index = 0; item_index < items_.size(); ++item_index) {
     const Item& item = items_[item_index];
-    if (item.kind != ItemKind::kToolbarItem && !clipped) {
+    const bool rail_field = item.kind == ItemKind::kSearchField && item.on;
+    if (item.kind != ItemKind::kToolbarItem && !rail_field && !clipped) {
       // Pane content scrolls; nothing of it may paint over the toolbar.
       ::IntersectClipRect(dc, rail_w_, Scaled(kChromeTop), client.right,
                           client.bottom);
@@ -3196,7 +3446,18 @@ void PhiSettingsWindow::Paint(HDC dc, const RECT&) {
         break;
       }
       case ItemKind::kSearchField: {
-        // Magnifier + the live filter text (placeholder when empty).
+        // Magnifier + the live filter text (placeholder when empty). The
+        // rail's field (`on`) draws its own control fill; the Shortcuts
+        // one rides its card.
+        if (item.on) {
+          StrokeRounded(dc, bounds, Blend(ink, bg, item.text.empty() ? 8 : 4),
+                        card_border, Scaled(kRadius), 1);
+          if (!item.text.empty()) {
+            RECT edge = {bounds.left + Scaled(8), bounds.bottom - Scaled(2),
+                         bounds.right - Scaled(8), bounds.bottom};
+            FillRounded(dc, edge, accent, 1);
+          }
+        }
         if (mdl2_font_) {
           ::SelectObject(dc, mdl2_font_);
         }
@@ -3212,8 +3473,10 @@ void PhiSettingsWindow::Paint(HDC dc, const RECT&) {
                      bounds.right - Scaled(12), bounds.bottom};
         if (item.text.empty()) {
           ::SetTextColor(dc, tertiary);
-          PhiDrawTextAA(dc, L"Find shortcut keys", -1, &text,
-                      DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+          PhiDrawTextAA(dc,
+                        item.detail.empty() ? L"Find shortcut keys"
+                                            : item.detail.c_str(),
+                        -1, &text, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
         } else {
           ::SetTextColor(dc, row_ink);
           PhiDrawTextAA(dc, item.text.c_str(), -1, &text,
@@ -3402,17 +3665,140 @@ void PhiSettingsWindow::Paint(HDC dc, const RECT&) {
         }
         break;
       }
-      case ItemKind::kButton:
+      case ItemKind::kButton: {
         if (item.selected) {
           FillRounded(dc, bounds, accent, Scaled(kRadius));
         } else {
           StrokeRounded(dc, bounds, Blend(ink, bg, hot ? 24 : 10),
                         card_border, Scaled(kRadius), 1);
         }
-        ::SetTextColor(dc, item.selected ? RGB(0xFF, 0xFF, 0xFF) : row_ink);
+        // A destructive button reads in the danger red (§2.3), dimmed
+        // like any other when disabled.
+        const COLORREF danger = prefs_->Palette().destructive;
+        ::SetTextColor(dc, item.selected ? RGB(0xFF, 0xFF, 0xFF)
+                           : item.danger   ? (item.enabled
+                                                  ? danger
+                                                  : Blend(danger, bg, 120))
+                                           : row_ink);
+        // A leading PUA glyph ("+ New Space") comes from the icon face.
+        if (!item.text.empty() && PhiIsPrivateGlyph(item.text.substr(0, 1))) {
+          RECT glyph = {bounds.left + Scaled(12), bounds.top,
+                        bounds.left + Scaled(28), bounds.bottom};
+          if (HFONT icon_font = IconFont(12)) {
+            ::SelectObject(dc, icon_font);
+          }
+          PhiDrawTextAA(dc, item.text.substr(0, 1).c_str(), -1, &glyph,
+                        DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+          if (font_) {
+            ::SelectObject(dc, font_);
+          }
+          RECT rest = {glyph.right + Scaled(4), bounds.top,
+                       bounds.right - Scaled(8), bounds.bottom};
+          std::wstring tail = item.text.substr(1);
+          while (!tail.empty() && tail.front() == L' ') {
+            tail.erase(tail.begin());
+          }
+          PhiDrawTextAA(dc, tail.c_str(), -1, &rest,
+                        DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+          break;
+        }
         PhiDrawTextAA(dc, item.text.c_str(), -1, &bounds,
                     DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         break;
+      }
+      case ItemKind::kAppMark: {
+        // The brand mark at the item's size (About).
+        const int px = bounds.right - bounds.left;
+        if (HICON mark = PhiAppIcon(px)) {
+          ::DrawIconEx(dc, bounds.left, bounds.top, mark, px, px, 0, nullptr,
+                       DI_NORMAL);
+        }
+        break;
+      }
+      case ItemKind::kExpander: {
+        // An expander header (§7.1 / §7.2): hover wash, a 28 tile (the
+        // Space's icon on an accent-soft square, or the profile's initial
+        // on a filled circle), name 14 over hint 12, an optional Default
+        // badge, and the chevron.
+        if (hot) {
+          FillRounded(dc, bounds, hover_wash, Scaled(kRadius));
+        }
+        const int mid = (bounds.top + bounds.bottom) / 2;
+        int x = bounds.left + Scaled(12);
+        RECT tile = {x, mid - Scaled(14), x + Scaled(28), mid + Scaled(14)};
+        if (item.value == 1) {
+          PhiFillEllipseAA(dc, tile, item.swatch);
+          if (small_font_) {
+            ::SelectObject(dc, small_font_);
+          }
+          ::SetTextColor(dc, RGB(0xFF, 0xFF, 0xFF));
+          PhiDrawTextAA(dc, item.icon.c_str(), -1, &tile,
+                        DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        } else {
+          FillRounded(dc, tile, Blend(item.swatch, card_bg, 34), Scaled(6));
+          RECT glyph_rc = tile;
+          ::InflateRect(&glyph_rc, -Scaled(5), -Scaled(5));
+          bool drawn = PhiDrawCatalogIcon(dc, glyph_rc, item.icon, Scaled(16),
+                                          row_ink);
+          if (!drawn && !PhiIsPrivateGlyph(item.icon)) {
+            drawn = PhiDrawColorIcon(dc, glyph_rc, item.icon, Scaled(16),
+                                     row_ink);
+          }
+          if (!drawn) {
+            HFONT cell_font =
+                PhiIsPrivateGlyph(item.icon) ? mdl2_font_ : emoji_font_;
+            if (cell_font) {
+              ::SelectObject(dc, cell_font);
+            }
+            ::SetTextColor(dc, row_ink);
+            PhiDrawTextAA(dc, item.icon.c_str(), -1, &tile,
+                          DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+          }
+        }
+        x = tile.right + Scaled(12);
+        int text_right = bounds.right - Scaled(40);
+        if (item.selected) {
+          // The "Default" badge, trailing the text block.
+          RECT badge = {text_right - Scaled(60), mid - Scaled(10), text_right,
+                        mid + Scaled(10)};
+          FillRounded(dc, badge, Blend(ink, bg, 25), Scaled(10));
+          if (hint_font_) {
+            ::SelectObject(dc, hint_font_);
+          }
+          ::SetTextColor(dc, secondary);
+          PhiDrawTextAA(dc, L"Default", -1, &badge,
+                        DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+          text_right = badge.left - Scaled(12);
+        }
+        if (font_) {
+          ::SelectObject(dc, font_);
+        }
+        ::SetTextColor(dc, row_ink);
+        RECT name = {x, mid - Scaled(18), text_right, mid};
+        PhiDrawTextAA(dc, item.text.c_str(), -1, &name,
+                      DT_LEFT | DT_BOTTOM | DT_SINGLELINE | DT_END_ELLIPSIS |
+                          DT_NOPREFIX);
+        if (hint_font_) {
+          ::SelectObject(dc, hint_font_);
+        }
+        ::SetTextColor(dc, secondary);
+        RECT hint = {x, mid + Scaled(2), text_right, mid + Scaled(18)};
+        PhiDrawTextAA(dc, item.detail.c_str(), -1, &hint,
+                      DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS |
+                          DT_NOPREFIX);
+        if (mdl2_font_) {
+          ::SelectObject(dc, mdl2_font_);
+        }
+        ::SetTextColor(dc, secondary);
+        RECT chevron = {bounds.right - Scaled(36), bounds.top,
+                        bounds.right - Scaled(12), bounds.bottom};
+        PhiDrawTextAA(dc, item.on ? L"\uE70E" : L"\uE70D", -1, &chevron,
+                      DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        if (font_) {
+          ::SelectObject(dc, font_);
+        }
+        break;
+      }
     }
   }
 
@@ -3539,6 +3925,7 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
     section_ = item.payload;
     scroll_ = 0;
     shortcut_search_.clear();
+    rail_search_.clear();
     SyncTitle();
   } else if (item.action == "checkupdate") {
     if (!PhiUpdater::CheckForUpdateWithUi()) {
@@ -3866,9 +4253,46 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
   } else if (item.action == "spaceicon") {
     host_->SetSpaceIcon(item.space, item.payload);
   } else if (item.action == "selectspace") {
-    selected_space_ = item.payload;
+    // The expander header: a click folds the open one, opens another.
+    selected_space_ = selected_space_ == item.payload ? "" : item.payload;
+    picker_open_.clear();
   } else if (item.action == "selectprofile") {
-    selected_profile_ = item.payload;
+    selected_profile_ =
+        selected_profile_ == item.payload ? "" : item.payload;
+  } else if (item.action == "spaceiconpicker") {
+    picker_open_ = picker_open_ == item.payload ? "" : item.payload;
+    picker_scroll_ = 0;
+  } else if (item.action == "spaceprofile") {
+    // The Profile ComboBox: a menu of the profiles, the bound one checked.
+    HMENU menu = ::CreatePopupMenu();
+    if (!menu) {
+      return;
+    }
+    std::string bound;
+    for (const PhiSpaceSummary& space : spaces_->Summaries()) {
+      if (space.id == item.payload) {
+        bound = space.profile_id;
+      }
+    }
+    const std::vector<PhiProfileSummary> profiles = profiles_->Profiles();
+    UINT id = 1;
+    for (const PhiProfileSummary& profile : profiles) {
+      ::AppendMenuW(menu, MF_STRING | (profile.id == bound ? MF_CHECKED : 0),
+                    id++, base::UTF8ToWide(profile.name).c_str());
+    }
+    POINT anchor = {item.bounds.left, item.bounds.bottom};
+    ::ClientToScreen(hwnd(), &anchor);
+    const UINT chosen = static_cast<UINT>(::TrackPopupMenu(
+        menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, anchor.x,
+        anchor.y, 0, hwnd(), nullptr));
+    ::DestroyMenu(menu);
+    if (chosen >= 1 && chosen <= profiles.size()) {
+      const std::string& target = profiles[chosen - 1].id;
+      if (target != bound && !host_->SetSpaceProfile(item.payload, target)) {
+        PhiNotice(hwnd(), L"Profile not changed",
+                  L"The default Space keeps its profile.");
+      }
+    }
   } else if (item.action == "pickertab") {
     picker_tab_ = item.payload;
     picker_scroll_ = 0;
@@ -4028,8 +4452,9 @@ void PhiSettingsWindow::OnWheel(int delta, POINT client_pt) {
 void PhiSettingsWindow::OnEscape() {
   // Esc walks back out, one step at a time — the filter, then the window
   // (which only hides, as WM_CLOSE does).
-  if (section_ == "shortcuts" && !shortcut_search_.empty()) {
+  if (!shortcut_search_.empty() || !rail_search_.empty()) {
     shortcut_search_.clear();
+    rail_search_.clear();
     scroll_ = 0;
     ScheduleRebuild();
     return;
@@ -4054,6 +4479,21 @@ LRESULT PhiSettingsWindow::OnWindowMessage(UINT msg,
       // The rail's breakpoint and the page column follow the client rect.
       ScheduleRebuild();
       break;
+    case WM_EXITSIZEMOVE: {
+      // A resize by hand is remembered (dip, content under the caption);
+      // maximize is a window state, not a size, and stays out of it.
+      if (!::IsZoomed(hwnd()) && !::IsIconic(hwnd())) {
+        RECT client = {};
+        ::GetClientRect(hwnd(), &client);
+        const int width = ::MulDiv(client.right, 96, static_cast<int>(dpi()));
+        const int height =
+            ::MulDiv(client.bottom, 96, static_cast<int>(dpi())) - kChromeTop;
+        if (width >= kMinWidth && height >= kMinHeight) {
+          host_->SetSettingsWindowSize(width, height);
+        }
+      }
+      break;
+    }
     case WM_LBUTTONDOWN: {
       const POINT pt = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
       if (thumb_rect_.right > thumb_rect_.left && ::PtInRect(&thumb_rect_, pt)) {
@@ -4133,9 +4573,12 @@ LRESULT PhiSettingsWindow::OnWindowMessage(UINT msg,
       break;
     }
     case WM_CHAR:
-      // The Shortcuts filter: typing anywhere while the pane is up feeds
-      // the search field — Esc clears, Backspace deletes.
-      if (section_ == "shortcuts") {
+      // Typing anywhere feeds a filter: the Shortcuts pane's own field,
+      // or the rail's "Find a setting" on every other page — Esc clears,
+      // Backspace deletes.
+      {
+        std::wstring& target =
+            section_ == "shortcuts" ? shortcut_search_ : rail_search_;
         const wchar_t c = static_cast<wchar_t>(wparam);
         // Escape arrives as WM_KEYDOWN first and OnEscape() has already
         // cleared the filter by now; swallow the character it leaves.
@@ -4144,11 +4587,11 @@ LRESULT PhiSettingsWindow::OnWindowMessage(UINT msg,
           return 0;
         }
         if (c == VK_BACK) {
-          if (!shortcut_search_.empty()) {
-            shortcut_search_.pop_back();
+          if (!target.empty()) {
+            target.pop_back();
           }
         } else if (c >= L' ') {
-          shortcut_search_.push_back(c);
+          target.push_back(c);
         } else {
           *handled = true;
           return 0;

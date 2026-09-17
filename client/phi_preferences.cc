@@ -155,6 +155,27 @@ void PhiPreferences::RequestSidebarWidth(int dip) {
   Notify(PreferenceChange::kSidebarWidth);
 }
 
+bool PhiPreferences::SettingsWindowSize(int* width, int* height) const {
+  if (settings_.settings_window_width <= 0 ||
+      settings_.settings_window_height <= 0) {
+    return false;
+  }
+  *width = settings_.settings_window_width;
+  *height = settings_.settings_window_height;
+  return true;
+}
+
+void PhiPreferences::RequestSettingsWindowSize(int width, int height) {
+  if (width <= 0 || height <= 0 ||
+      (width == settings_.settings_window_width &&
+       height == settings_.settings_window_height)) {
+    return;
+  }
+  settings_.settings_window_width = width;
+  settings_.settings_window_height = height;
+  MarkDirty();  // Nobody else reads it live: no Notify.
+}
+
 const PhiPalette& PhiPreferences::Palette() const {
   return palette_;
 }

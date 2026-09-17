@@ -89,6 +89,12 @@ void DecodeLayoutFields(const base::DictValue& dict, PhiSettings* out) {
     out->sidebar_width =
         std::max(kSidebarWidthMin, std::min(*width, kSidebarWidthMax));
   }
+  if (std::optional<int> width = dict.FindInt("settingsWindowWidth")) {
+    out->settings_window_width = std::max(0, *width);
+  }
+  if (std::optional<int> height = dict.FindInt("settingsWindowHeight")) {
+    out->settings_window_height = std::max(0, *height);
+  }
 }
 
 void DecodeThemeFields(const base::DictValue& dict, PhiSettings* out) {
@@ -352,6 +358,10 @@ base::DictValue PhiStoreTraits<PhiSettings>::Encode(const PhiSettings& value) {
   base::DictValue root;
   root.Set("layoutMode", PhiLayoutModeName(value.layout_mode));
   root.Set("sidebarWidth", value.sidebar_width);
+  if (value.settings_window_width > 0 && value.settings_window_height > 0) {
+    root.Set("settingsWindowWidth", value.settings_window_width);
+    root.Set("settingsWindowHeight", value.settings_window_height);
+  }
   root.Set("themeId", value.theme_id);
   root.Set("appearance", model::AppearanceName(value.appearance));
   root.Set("saturation", value.saturation);

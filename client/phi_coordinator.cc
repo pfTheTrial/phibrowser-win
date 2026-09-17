@@ -1821,6 +1821,10 @@ int PhiCoordinator::SidebarWidth() const {
   return preferences_.SidebarWidth();
 }
 
+void PhiCoordinator::SetSettingsWindowSize(int width, int height) {
+  preferences_.RequestSettingsWindowSize(width, height);
+}
+
 void PhiCoordinator::RequestSidebarWidth(int dip) {
   preferences_.RequestSidebarWidth(dip);
 }

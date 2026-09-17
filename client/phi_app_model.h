@@ -162,6 +162,10 @@ struct PhiSettings {
   // Layout (PhiLayout.json).
   PhiLayoutMode layout_mode = PhiLayoutMode::kPerformance;
   int sidebar_width = 240;  // kSidebarWidthDefault; clamped on decode.
+  // The Settings window's last client size in dip (windows-native-ui.md
+  // §7: a Windows Settings window remembers its size). 0 = the default.
+  int settings_window_width = 0;
+  int settings_window_height = 0;
   // Theme (PhiTheme.json).
   std::string theme_id = "pure";
   Appearance appearance = Appearance::kSystem;

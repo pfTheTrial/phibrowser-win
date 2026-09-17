@@ -163,6 +163,12 @@ class PhiSettingsHost {
   virtual void SetSpaceIcon(const std::string& space_id,
                             const std::string& icon) = 0;
   virtual void SetSpaceSaturation(const std::string& space_id, int value) = 0;
+  // Re-binds a Space to another profile (the expander's Profile pick,
+  // windows-native-ui.md §7.1). Refused for the default Space.
+  virtual bool SetSpaceProfile(const std::string& space_id,
+                               const std::string& profile_id) = 0;
+  // The window's client size on every resize, remembered across opens.
+  virtual void SetSettingsWindowSize(int width, int height) = 0;
   // Space / profile management, with the Mac's guards (see SpacesHost).
   virtual bool RenameSpace(const std::string& space_id,
                            const std::string& name) = 0;
@@ -318,6 +324,8 @@ class PhiSettingsWindow : public PhiSecondaryWindow,
     kAvatar,         // The account's picture as a circle; `text` = fallback glyph.
     kEditableLabel,  // A 13pt semibold label trailed by a pencil; click edits.
     kProfileCard,    // The Mac's draggable conch card (PhiProfileCard).
+    kExpander,       // An expander card's header row (§7.1 / §7.2).
+    kAppMark,        // The Phi mark at `bounds` size (About).
   };
   struct Item {
     ItemKind kind = ItemKind::kRowLabel;
@@ -333,6 +341,8 @@ class PhiSettingsWindow : public PhiSecondaryWindow,
     // (`fixedSize(horizontal: false, vertical: true)`); a single line with
     // DT_END_ELLIPSIS chopped the longer ones mid-sentence.
     bool wrap = false;
+    // A kButton whose label reads in the destructive red (Delete Space).
+    bool danger = false;
     COLORREF swatch = 0;
     COLORREF ring = 0;   // A swatch's selection-ring color (its own accent).
     int value = 0;       // Slider position, or an option index.
@@ -371,6 +381,27 @@ class PhiSettingsWindow : public PhiSecondaryWindow,
   // Profiles detail column and the General pane's single-profile case.
   void BuildProfileDetail(int* y, int left, int right,
                           const std::string& profile_id);
+  // One expander card's header row (windows-native-ui.md §7.1 / §7.2):
+  // a tile (a Space icon, or a profile avatar when `avatar`, a filled
+  // circle with `icon` as its initial), the 14 name, the 12 hint, an
+  // optional "Default" badge and the chevron. Clicking runs `action`.
+  void AddExpander(int* y, const std::wstring& name,
+                   const std::wstring& hint, const std::wstring& icon,
+                   bool avatar, COLORREF tint, bool expanded, bool badge,
+                   const std::string& action, const std::string& payload);
+  // The Space expander's body (name, profile, icon + inline picker,
+  // colour, saturation, shortcut, delete), inside the open card.
+  void AddSpaceBody(int* y, const PhiSpaceSummary& space, int ordinal);
+  // The profile expander's body (name, search engine, download location,
+  // used by, data pages, delete), inside the open card.
+  void AddProfileBody(int* y, const PhiProfileSummary& profile,
+                      const std::vector<PhiSpaceSummary>& spaces);
+  // The rail's "Find a setting" filter: true when `title` or `hint`
+  // contains the typed text (case-folded), or when nothing is typed.
+  bool SearchMatches(const wchar_t* title, const wchar_t* hint) const;
+  // The results page the filter builds: every page's matching rows under
+  // that page's heading.
+  void BuildSearchResults(int* y);
   // A section = a small title, then a card holding its rows. BeginSection
   // remembers where the card starts; EndSection sizes it around the rows that
   // were added, the way the Mac's GeneralSectionView wraps a
@@ -502,6 +533,26 @@ class PhiSettingsWindow : public PhiSecondaryWindow,
   // The Shortcuts pane's filter text ("Find shortcut keys"), fed by WM_CHAR
   // while that pane is up.
   std::wstring shortcut_search_;
+  // The rail's "Find a setting" text (every other page), and the same
+  // case-folded, which AddRow tests titles and hints against while a
+  // search is up; `filter_hits_` counts the rows a page kept.
+  std::wstring rail_search_;
+  std::wstring search_filter_;
+  int filter_hits_ = 0;
+  // Whether the last AddRow was dropped by the filter (its divider and
+  // sub-hint follow it out).
+  bool last_row_skipped_ = false;
+  // Where the open section began (item index and y), so EndSection can
+  // drop a card the filter emptied; the heading AddSectionHeading put
+  // above it goes with it.
+  size_t section_start_ = 0;
+  int section_start_y_ = 0;
+  bool heading_pending_ = false;
+  size_t heading_start_ = 0;
+  int heading_start_y_ = 0;
+  // The Space whose expander shows the inline icon picker (§7.1 "Icon:
+  // Change…"); empty when the picker is folded.
+  std::string picker_open_;
   // Whether this exe is the system's http handler — a registry walk
   // (AssocQueryStringW). Resolved on demand, CACHED for the life of the
   // answer, and dropped only when the window is activated, which is when

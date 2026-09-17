@@ -412,6 +412,7 @@ class PhiCoordinator : public SidebarHost,
   void SetSpaceIcon(const std::string& space_id,
                     const std::string& icon) override;
   void SetSpaceSaturation(const std::string& space_id, int value) override;
+  void SetSettingsWindowSize(int width, int height) override;
   int SpaceSaturation(const std::string& space_id) const override;
   bool RenameSpace(const std::string& space_id,
                    const std::string& name) override;
