@@ -126,6 +126,11 @@ class PhiSpacesStripShell {
   // window the hover card's popup is positioned against when the floating
   // sidebar panel is the one showing the strip.
   virtual bool SpacesSidebarCanHostForm(const RECT& form) const = 0;
+  // Where the create-Space FLYOUT hangs when the sidebar cannot host the
+  // form (§5.5): the Space chip or the strip's "+" while the strip rides
+  // the shell, else the sidebar toggle. Screen coordinates; false in the
+  // windows that take the standalone window instead (agent, incognito).
+  virtual bool SpacesCreateFlyoutAnchor(RECT* screen) const = 0;
   virtual HWND SpacesFloatingPanel(int* offset_y) const = 0;
 
  protected:

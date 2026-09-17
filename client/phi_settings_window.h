@@ -500,15 +500,6 @@ class PhiSettingsWindow : public PhiSecondaryWindow,
   // press and red-when-hot live in the frame. Lane 3 §2 counted four
   // copies of that code; this was the third.
   std::vector<std::pair<int, HFONT>> icon_fonts_;
-  // The icon picker's segment ("icon" | "emoji", Icon default as on Mac)
-  // and its scroll position: the first visible cell row, clamped by the
-  // Spaces build to `picker_max_line_`. `picker_grid_` is the grid's
-  // viewport (client px) so the wheel over it scrolls the picker, not the
-  // pane; empty on every other pane.
-  std::string picker_tab_ = "icon";
-  int picker_scroll_ = 0;
-  int picker_max_line_ = 0;
-  RECT picker_grid_{};
   UINT font_dpi_ = 0;
   std::string section_ = "general";
   std::vector<Item> items_;
@@ -550,9 +541,6 @@ class PhiSettingsWindow : public PhiSecondaryWindow,
   bool heading_pending_ = false;
   size_t heading_start_ = 0;
   int heading_start_y_ = 0;
-  // The Space whose expander shows the inline icon picker (§7.1 "Icon:
-  // Change…"); empty when the picker is folded.
-  std::string picker_open_;
   // Whether this exe is the system's http handler — a registry walk
   // (AssocQueryStringW). Resolved on demand, CACHED for the life of the
   // answer, and dropped only when the window is activated, which is when

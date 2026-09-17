@@ -923,9 +923,7 @@ bool PhiAppMenu::OnCommand(UINT id, bool from_accelerator) {
       return true;
     }
     case kCmdChangeIcon:
-      if (c->MenuSpacesHost()) {
-        c->MenuSpacesHost()->RequestSpaceIconPicker(c->MenuActiveSpace());
-      }
+      c->MenuChangeSpaceIcon();
       return true;
     case kCmdEditSpaceTheme:
       // The Mac's .windowTop placement: the menu bar has no trigger point to

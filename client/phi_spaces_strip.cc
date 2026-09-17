@@ -11,6 +11,7 @@
 #include "base/strings/utf_string_conversions.h"
 #include "phibrowser-win/client/phi_animator.h"
 #include "phibrowser-win/client/phi_create_space_panel.h"
+#include "phibrowser-win/client/phi_create_space_flyout.h"
 #include "phibrowser-win/client/phi_create_space_window.h"
 #include "phibrowser-win/client/phi_dwrite.h"
 #include "phibrowser-win/client/phi_fluent.h"
@@ -626,8 +627,16 @@ void PhiSpacesStrip::ShowCreateForm() {
   // a Spaces strip open the Mac's standalone window instead.
   const RECT form = FormRect();
   if (!shell_->SpacesSidebarCanHostForm(form)) {
-    PhiCreateSpaceWindow::Open(shell_->SpacesOwner(), profile_id, theme_id,
-                               prefs_host_->Saturation());
+    // §5.5's flyout host, hung off the chip / "+" / toggle; the standalone
+    // window only where nothing offers an anchor.
+    RECT anchor = {};
+    if (shell_->SpacesCreateFlyoutAnchor(&anchor)) {
+      PhiOpenCreateSpaceFlyout(shell_->SpacesOwner(), anchor, profile_id,
+                               theme_id, prefs_host_->Saturation());
+    } else {
+      PhiCreateSpaceWindow::Open(shell_->SpacesOwner(), profile_id, theme_id,
+                                 prefs_host_->Saturation());
+    }
     return;
   }
   if (creating_) {

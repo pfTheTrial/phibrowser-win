@@ -77,6 +77,7 @@ std::vector<PhiSpaceSummary> PhiSpaceManager::Summaries() const {
   for (const model::Space& space : model_.spaces) {
     out.push_back({space.id, space.name, PhiIconDisplayText(space.icon),
                    space.profile_id, space.theme_id, space.saturation});
+    out.back().icon = space.icon;
   }
   return out;
 }

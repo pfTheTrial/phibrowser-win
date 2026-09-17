@@ -84,6 +84,14 @@ decisions and I will check." The box is mine for testing.
   (`settingsWindowWidth` / `settingsWindowHeight` in PhiSettings.json,
   written on WM_EXITSIZEMOVE, never for a maximized window); no
   position, which Windows Settings also does not keep.
+* **D24 — the icon picker flyout has no "Recently used" row and no
+  skin-tone variants** (§5.9 lists both): both need a stored recents
+  list and the catalogue's tone tables; the search box, sections and
+  category strip are in.
+* **D25 — the create-Space form keeps its current control styling in
+  the flyout host**; only the host changed (§5.5's "Flyout" case).
+  Restyling `PhiCreateSpacePanel` to Fluent controls touches the docked
+  form too and is a follow-up.
 * **D23 — the omnibox's context menu is the Fluent flyout**, replacing
   the EDIT control's stock menu rather than adding one row to it (§3.5
   said "the native EDIT menu plus one Phi row"): one menu family
@@ -395,7 +403,36 @@ decisions and I will check." The box is mine for testing.
   authored, impl log D14) — the host test's stub echoes keys, so its
   label checks name keys now. Box: suite-menu 7/7; PhiRm shots of the
   omnibox menu and the switcher.
-* Left for later: the incognito chrome pass, PhiCap re-baselines.
+* Round C2 (same day): the **§5.9 icon picker flyout**
+  (`client/phi_icon_picker.{h,cc}`, `PhiOpenSpaceIconPicker` /
+  `PhiPickSpaceIcon`): 300 dip PhiPopover, Icon | Emoji segments, a
+  search box (type-to-filter on the catalogue names; the IME is
+  detached from the window or the first letter opens a composition),
+  a 7-column grid of 28 dip cells in sections ("Letters & numbers",
+  "Symbols"; the nine emoji groups behind a category strip of their
+  first emoji, the current one underlined), arrows / Enter / Esc, the
+  wheel scrolling the grid in place. Opened by the pip's "Change
+  icon…" (hung off the click point), the app menu's (under the ⋯
+  button, `MenuChangeSpaceIcon`) and Settings › Spaces "Change…" /
+  the icon cell (under the cell; the inline grid of round B is gone
+  again — one control, as §5.9 asks). D24: no "Recently used" row and
+  no skin-tone variants yet. Box: PhiDragCap keyboard drive (F10 →
+  Spaces → Change icon…, "mail" → the mail glyph).
+* Round C3 (same day): the **§5.5 create-Space flyout**
+  (`client/phi_create_space_flyout.{h,cc}`): a 300 dip PhiPopover
+  hosting the same `PhiCreateSpacePanel` (standalone host seam), hung
+  off the strip's "+", the Space chip, the sidebar toggle or the ⋯
+  button (`SpacesCreateFlyoutAnchor`), for the horizontal layout and
+  the hidden sidebar — `PhiCreateSpaceWindow` remains for Settings'
+  "+" and the windows with no anchor (agent, incognito). The form's
+  "New profile…" prompt is owned by the flyout, so its activation does
+  not dismiss it. D25: the form itself keeps its current control
+  styling in all three hosts (the §5.5 Fluent TextBox / ComboBox /
+  segmented restyle of `PhiCreateSpacePanel` is a follow-up). Box:
+  keyboard drive F10 → Spaces → New Space…, PhiDragCap shot.
+* Left for later: the incognito chrome pass, PhiCap re-baselines, the
+  create form's Fluent restyle (D25), the picker's recents / skin
+  tones (D24).
 
 ## Questions for Jixiang
 

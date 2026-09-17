@@ -251,6 +251,8 @@ class PhiAppMenuShell {
   // The Mac's Edit Theme: the panel drops under the caption, centred on the
   // window (the menu bar has no trigger point to hang it off).
   virtual void MenuEditSpaceTheme() = 0;
+  // "Change icon…": the §5.9 picker flyout under the ⋯ button.
+  virtual void MenuChangeSpaceIcon() = 0;
   // Extensions ▸ <name>: runs the action as a click on its toolbar button
   // would, anchored to the app-menu button.
   virtual void MenuTriggerExtension(const std::string& extension_id) = 0;

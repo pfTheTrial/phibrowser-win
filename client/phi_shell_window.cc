@@ -44,8 +44,10 @@
 #include "phibrowser-win/client/phi_bookmark_manager.h"
 #include "phibrowser-win/client/phi_client_analytics.h"
 #include "phibrowser-win/client/phi_create_space_panel.h"
+#include "phibrowser-win/client/phi_create_space_flyout.h"
 #include "phibrowser-win/client/phi_create_space_window.h"
 #include "phibrowser-win/client/phi_folder_icon_picker.h"
+#include "phibrowser-win/client/phi_icon_picker.h"
 #include "phibrowser-win/client/phi_folder_icons.h"
 #include "phibrowser-win/client/phi_tab_preview.h"
 #include "phibrowser-win/client/phi_tab_switcher.h"
@@ -984,6 +986,7 @@ PhiShellWindow::~PhiShellWindow() {
   // overview and the switcher answer keys, the search panel a click).
   PhiAgentOverlay::HideIfBoundTo(this);
   PhiCreateSpaceWindow::CloseIfBoundTo(this);
+  PhiCloseCreateSpaceFlyoutIfBoundTo(this);
   PhiGroupOverview::CloseIfBoundTo(this);
   PhiTabSwitcher::CancelIfBoundTo(this);
   PhiSearchTabsPanel::CloseIfBoundTo(this);
@@ -1362,6 +1365,43 @@ void PhiShellWindow::MenuEditSpaceTheme() {
   ::GetWindowRect(shell_hwnd_, &shell);
   const RECT anchor = {shell.left, shell.top, shell.right, shell.top};
   PhiShowSpaceThemePanel(this, anchor, active_space());
+}
+
+void PhiShellWindow::MenuChangeSpaceIcon() {
+  // The app menu's row: no pip to hang off, so the flyout drops under the
+  // ⋯ button itself.
+  if (!shell_hwnd_ || active_space().empty()) {
+    return;
+  }
+  const RECT button = app_menu_rect();
+  POINT top_left = {button.left, button.top};
+  POINT bottom_right = {button.right, button.bottom};
+  ::ClientToScreen(shell_hwnd_, &top_left);
+  ::ClientToScreen(shell_hwnd_, &bottom_right);
+  ShowSpaceIconPicker(active_space(),
+                      {top_left.x, top_left.y, bottom_right.x, bottom_right.y});
+}
+
+void PhiShellWindow::ShowSpaceIconPicker(const std::string& space_id,
+                                         const RECT& anchor_screen) {
+  if (!services_.spaces || !shell_hwnd_) {
+    return;
+  }
+  std::string current;
+  for (const PhiSpaceView& space : services_.spaces->Spaces()) {
+    if (space.id == space_id) {
+      current = space.icon;
+    }
+  }
+  std::string picked;
+  {
+    PhiModalScope modal;  // The picker pumps its own loop.
+    picked = PhiPickSpaceIcon(shell_hwnd_, CurrentPalette(), anchor_screen,
+                              current);
+  }
+  if (!picked.empty() && services_.spaces) {
+    services_.spaces->SetSpaceIcon(space_id, picked);
+  }
 }
 
 void PhiShellWindow::MenuTriggerExtension(const std::string& extension_id) {
@@ -2155,6 +2195,44 @@ bool PhiShellWindow::SpacesSidebarCanHostForm(const RECT& form) const {
          form.bottom - form.top > Scaled(200);
 }
 
+bool PhiShellWindow::SpacesCreateFlyoutAnchor(RECT* screen) const {
+  if (incognito_ || agent_ || !shell_hwnd_ || !spaces_) {
+    return false;
+  }
+  RECT anchor = {};
+  if (BandOnShell()) {
+    // The "+" / "…" slot when the strip shows one, else the active chip
+    // (the horizontal layout's Space chip).
+    const PhiSpacesStripRects rects =
+        const_cast<PhiShellWindow*>(this)->SpacesRects();
+    if (rects.add_space.right > rects.add_space.left) {
+      anchor = rects.add_space;
+    } else {
+      const std::vector<PhiSpaceChip>& chips = spaces_->chips();
+      for (size_t i = 0; i < chips.size(); ++i) {
+        if (chips[i].id == active_space()) {
+          anchor = chips[i].bounds;
+        }
+      }
+    }
+  }
+  if (anchor.right <= anchor.left) {
+    anchor = const_cast<PhiShellWindow*>(this)->ComputeLayout().sidebar_toggle;
+  }
+  if (anchor.right <= anchor.left) {
+    anchor = const_cast<PhiShellWindow*>(this)->app_menu_rect();
+  }
+  if (anchor.right <= anchor.left) {
+    return false;
+  }
+  POINT top_left = {anchor.left, anchor.top};
+  POINT bottom_right = {anchor.right, anchor.bottom};
+  ::ClientToScreen(shell_hwnd_, &top_left);
+  ::ClientToScreen(shell_hwnd_, &bottom_right);
+  *screen = {top_left.x, top_left.y, bottom_right.x, bottom_right.y};
+  return true;
+}
+
 HWND PhiShellWindow::SpacesFloatingPanel(int* offset_y) const {
   if (floating_layout_ && floating_sidebar_ && ::IsWindow(floating_sidebar_)) {
     if (offset_y) {
@@ -2824,6 +2902,7 @@ void PhiShellWindow::OnSpaceFormProfileCreated(
     const std::string& profile_id) {
   spaces_->OnFormProfileCreated(profile_id);
   PhiCreateSpaceWindow::NoteProfileCreated(this, profile_id);
+  PhiNoteCreateSpaceFlyoutProfileCreated(this, profile_id);
 }
 
 // True when `tab_id`'s split stacks its panes.
@@ -4786,7 +4865,12 @@ void PhiShellWindow::ShowTabAreaMenu(POINT pt, bool space_only) {
     } else if (action.is("area.renameSpace")) {
       bar->OnCommand(kCmdRenameSpace);
     } else if (action.is("area.changeIcon")) {
-      bar->OnCommand(kCmdChangeIcon);
+      // The §5.9 flyout, hung off the point the menu opened at (the pip
+      // or the chip under the pointer).
+      POINT screen = pt;
+      ::ClientToScreen(shell_hwnd_, &screen);
+      ShowSpaceIconPicker(active_space(),
+                          {screen.x, screen.y, screen.x + 1, screen.y + 1});
     } else if (action.is("area.deleteSpace")) {
       bar->OnCommand(kCmdDeleteSpace);
     }

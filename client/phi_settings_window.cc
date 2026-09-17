@@ -43,6 +43,7 @@
 #include "phibrowser-win/client/phi_sidebar_view.h"
 #include "phibrowser-win/client/phi_glyph_bitmap.h"
 #include "phibrowser-win/client/phi_i18n.h"
+#include "phibrowser-win/client/phi_icon_picker.h"
 #include "phibrowser-win/client/phi_icons.h"
 #include "phibrowser-win/client/phi_preferences.h"
 #include "phibrowser-win/client/phi_profile_service.h"
@@ -162,10 +163,9 @@ constexpr int kImageCardBlock = 72 + 10 + 15;
 constexpr int kToggleWidth = 40;
 constexpr int kToggleHeight = 20;
 // Expander cards (windows-native-ui.md §7.1 / §7.2): a 56 dip header
-// row, 8 between cards, and the inline icon picker's four lines.
+// row, 8 between cards.
 constexpr int kExpanderHeight = 56;
 constexpr int kExpanderGap = 8;
-constexpr int kPickerLines = 4;
 // The rail's "Find a setting" field (§7): 32 high under the caption.
 constexpr int kRailSearchHeight = 32;
 constexpr int kAboutMark = 48;
@@ -188,9 +188,6 @@ constexpr COLORREF kChipIndigo = RGB(0x58, 0x56, 0xD6);
 constexpr COLORREF kChipOrange = RGB(0xFF, 0x95, 0x00);
 constexpr COLORREF kChipBlue = RGB(0x00, 0x7A, 0xFF);
 constexpr COLORREF kChipTeal = RGB(0x30, 0xB0, 0xC7);
-// Icon picker grid (IconPicker): 26pt cells, 4pt gaps, r10 cells.
-constexpr int kEmojiCell = 26;
-constexpr int kEmojiGap = 4;
 
 // The Mac's panes(), in order (AppController+Settings.panes(): Account,
 // General, Profiles, Spaces, Navigation, Phi & AI, Shortcuts, Developer —
@@ -598,7 +595,6 @@ void PhiSettingsWindow::ShowSpacePicker(const std::string& space_id) {
   }
   g_instance->section_ = "spaces";
   g_instance->selected_space_ = space_id;
-  g_instance->picker_open_ = space_id;
   g_instance->rail_search_.clear();
   g_instance->search_filter_.clear();
   g_instance->scroll_ = 0;
@@ -1324,7 +1320,6 @@ void PhiSettingsWindow::AddExpander(int* y, const std::wstring& name,
 void PhiSettingsWindow::AddSpaceBody(int* y, const PhiSpaceSummary& space,
                                      int ordinal) {
   const std::vector<PhiProfileSummary> profiles = profiles_->Profiles();
-  const bool expanded_only = search_filter_.empty();
   AddDividerRow(y);
   *y += Scaled(kRowPadding);
   // Name — the value under the label, "Rename…" trailing.
@@ -1362,10 +1357,9 @@ void PhiSettingsWindow::AddSpaceBody(int* y, const PhiSpaceSummary& space,
     items_.push_back(std::move(pill));
   }
   AddDividerRow(y);
-  // Icon — the current icon in a 32 cell, "Change…" beside it; the
-  // picker unfolds under the row (§7.1), scrolling in place.
+  // Icon — the current icon in a 32 cell, "Change…" beside it; both open
+  // the §5.9 picker flyout under the cell.
   {
-    const bool open = expanded_only && picker_open_ == space.id;
     const RECT area = AddRow(y, L"Icon", 32, 32 + 8 + 100);
     Item cell;
     cell.kind = ItemKind::kEmojiCell;
@@ -1377,82 +1371,12 @@ void PhiSettingsWindow::AddSpaceBody(int* y, const PhiSpaceSummary& space,
     items_.push_back(std::move(cell));
     Item button;
     button.kind = ItemKind::kButton;
-    button.text = open ? L"Done" : L"Change…";
+    button.text = L"Change\u2026";
     button.action = "spaceiconpicker";
     button.payload = space.id;
     button.bounds = {area.right - Scaled(100), area.top, area.right,
                      area.bottom};
     items_.push_back(std::move(button));
-    if (open) {
-      const int left = content_left_ + Scaled(kCardPadding);
-      const int right = content_right_ - Scaled(kCardPadding);
-      // The segmented control (Icon | Emoji), then four lines of cells.
-      const struct {
-        const wchar_t* label;
-        const char* tab;
-      } kTabs[] = {{L"Icon", "icon"}, {L"Emoji", "emoji"}};
-      int seg_x = left;
-      for (const auto& tab : kTabs) {
-        Item segment;
-        segment.kind = ItemKind::kButton;
-        segment.text = tab.label;
-        segment.selected = picker_tab_ == tab.tab;
-        segment.action = "pickertab";
-        segment.payload = tab.tab;
-        segment.bounds = {seg_x, *y, seg_x + Scaled(72), *y + Scaled(28)};
-        items_.push_back(std::move(segment));
-        seg_x += Scaled(72) + Scaled(4);
-      }
-      *y += Scaled(28) + Scaled(8);
-      std::vector<std::pair<std::wstring, std::string>> cells;
-      if (picker_tab_ == "icon") {
-        for (const PhiCatalogIcon& icon : PhiIconCatalogAll()) {
-          cells.emplace_back(std::wstring(1, icon.glyph),
-                             std::string("phi:") + icon.id);
-        }
-      } else {
-        for (const PhiEmojiGroup& group : PhiEmojiGroups()) {
-          for (const PhiEmoji& emoji : group.items) {
-            cells.emplace_back(base::UTF8ToWide(emoji.text),
-                               "emoji:" + emoji.id);
-          }
-        }
-      }
-      const std::wstring current_icon = base::UTF8ToWide(space.icon_text);
-      const int pitch = Scaled(kEmojiCell + kEmojiGap);
-      const int per_row =
-          std::max(1, (right - left + Scaled(kEmojiGap)) / pitch);
-      const int rows_fit = kPickerLines;
-      const int lines =
-          (static_cast<int>(cells.size()) + per_row - 1) / per_row;
-      picker_max_line_ = std::max(0, lines - rows_fit);
-      picker_scroll_ =
-          std::max(0, std::min(picker_scroll_, picker_max_line_));
-      const int grid_top = *y;
-      picker_grid_ = {left, grid_top, right, grid_top + rows_fit * pitch};
-      const size_t first = static_cast<size_t>(picker_scroll_) *
-                           static_cast<size_t>(per_row);
-      const size_t per_page = static_cast<size_t>(per_row * rows_fit);
-      for (size_t i = first; i < cells.size() && i < first + per_page; ++i) {
-        const int index = static_cast<int>(i - first);
-        const int col = index % per_row;
-        const int line = index / per_row;
-        Item pick;
-        pick.kind = ItemKind::kEmojiCell;
-        pick.text = cells[i].first;
-        pick.selected =
-            !current_icon.empty() && cells[i].first == current_icon;
-        pick.action = "spaceicon";
-        pick.payload = cells[i].second;
-        pick.space = space.id;
-        const int x = left + col * pitch;
-        const int top = grid_top + line * pitch;
-        pick.bounds = {x, top, x + Scaled(kEmojiCell),
-                       top + Scaled(kEmojiCell)};
-        items_.push_back(std::move(pick));
-      }
-      *y = grid_top + rows_fit * pitch + Scaled(kRowPadding);
-    }
   }
   AddDividerRow(y);
   // Color — the theme dots; a Space pinning no theme follows the app's.
@@ -2630,8 +2554,6 @@ void PhiSettingsWindow::Rebuild() {
     SyncTitle();
   }
 
-  picker_grid_ = {};  // Only the Spaces pane mounts the icon picker.
-  picker_max_line_ = 0;
   search_filter_.clear();
   filter_hits_ = 0;
   last_row_skipped_ = false;
@@ -4255,13 +4177,28 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
   } else if (item.action == "selectspace") {
     // The expander header: a click folds the open one, opens another.
     selected_space_ = selected_space_ == item.payload ? "" : item.payload;
-    picker_open_.clear();
   } else if (item.action == "selectprofile") {
     selected_profile_ =
         selected_profile_ == item.payload ? "" : item.payload;
   } else if (item.action == "spaceiconpicker") {
-    picker_open_ = picker_open_ == item.payload ? "" : item.payload;
-    picker_scroll_ = 0;
+    // The §5.9 picker flyout under the cell; the pick applies at once.
+    std::string current;
+    for (const PhiSpaceSummary& space : spaces_->Summaries()) {
+      if (space.id == item.payload) {
+        current = space.icon;
+      }
+    }
+    POINT top_left = {item.bounds.left, item.bounds.top};
+    POINT bottom_right = {item.bounds.right, item.bounds.bottom};
+    ::ClientToScreen(hwnd(), &top_left);
+    ::ClientToScreen(hwnd(), &bottom_right);
+    const RECT anchor = {top_left.x, top_left.y, bottom_right.x,
+                         bottom_right.y};
+    const std::string picked =
+        PhiPickSpaceIcon(hwnd(), prefs_->Palette(), anchor, current);
+    if (!picked.empty() && alive()) {
+      host_->SetSpaceIcon(item.payload, picked);
+    }
   } else if (item.action == "spaceprofile") {
     // The Profile ComboBox: a menu of the profiles, the bound one checked.
     HMENU menu = ::CreatePopupMenu();
@@ -4293,9 +4230,6 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
                   L"The default Space keeps its profile.");
       }
     }
-  } else if (item.action == "pickertab") {
-    picker_tab_ = item.payload;
-    picker_scroll_ = 0;
   } else if (item.action == "newspace") {
     // The create form in its own window, opened on the selected Space's
     // profile (else the first's) — the Mac's newSpace. The bare name
@@ -4432,15 +4366,6 @@ void PhiSettingsWindow::OnWheel(int delta, POINT client_pt) {
   // Pane content can outgrow the fixed window; the Mac scrolls, so do we.
   // The offset feeds Rebuild(), so the scroll is a rebuild — not something
   // WM_PAINT discovers.
-  if (picker_max_line_ > 0 && ::PtInRect(&picker_grid_, client_pt)) {
-    // Over the icon picker: three cell rows per notch, in place.
-    const int rows = std::max(1, 3 * std::abs(delta) / WHEEL_DELTA);
-    picker_scroll_ =
-        std::max(0, std::min(picker_max_line_,
-                             picker_scroll_ + (delta > 0 ? -rows : rows)));
-    ScheduleRebuild();
-    return;
-  }
   RECT client = {};
   ::GetClientRect(hwnd(), &client);
   const int visible = client.bottom - Scaled(kChromeTop);

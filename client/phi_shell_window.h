@@ -282,9 +282,13 @@ class SpacesHost {
   // Profile management. Deleting Default, or a profile still bound to a
   // Space, is refused (re-bind or delete those Spaces first).
   virtual bool DeleteProfileById(const std::string& profile_id) = 0;
-  // Opens Settings > Spaces with this Space selected — its detail column is
-  // the icon picker (the "Change Icon…" destination).
+  // Opens Settings > Spaces with this Space selected (the remote surface's
+  // "Change Icon…" destination; the shell's own path is the §5.9 flyout
+  // through SetSpaceIcon).
   virtual void RequestSpaceIconPicker(const std::string& space_id) = 0;
+  // The Space's icon, as the picker stores it ("phi:<id>" / "emoji:<id>").
+  virtual void SetSpaceIcon(const std::string& space_id,
+                            const std::string& icon) = 0;
   // The create-Space form (PhiCreateSpacePanel). ProfileSummaries is the
   // Settings host's spelling, so one coordinator override serves both.
   virtual std::vector<std::string> ProfileSummaries() const = 0;  // "id\tname"
@@ -1476,6 +1480,11 @@ class PhiShellWindow : public PhiHitSource,
   void MenuOpenFeedback() override;
   void MenuCreateSpace() override;
   void MenuEditSpaceTheme() override;
+  void MenuChangeSpaceIcon() override;
+  // The §5.9 icon picker flyout for `space_id`, hung off `anchor_screen`;
+  // a pick applies through the spaces host at once.
+  void ShowSpaceIconPicker(const std::string& space_id,
+                           const RECT& anchor_screen);
   void MenuTriggerExtension(const std::string& extension_id) override;
   bool MenuSidebarShown() const override;
 
@@ -1618,6 +1627,7 @@ class PhiShellWindow : public PhiHitSource,
   HFONT SpacesPipEmojiFont() const override;
   HFONT SpacesPipTextFont() const override;
   bool SpacesSidebarCanHostForm(const RECT& form) const override;
+  bool SpacesCreateFlyoutAnchor(RECT* screen) const override;
   HWND SpacesFloatingPanel(int* offset_y) const override;
   // The strip's slice of a per-turn Layout.
   PhiSpacesStripRects StripRects(const Layout& layout) const;

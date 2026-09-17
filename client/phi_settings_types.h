@@ -40,6 +40,9 @@ struct PhiSpaceSummary {
   std::string profile_id;
   std::string theme_id;   // Empty: the Space follows the app-wide theme.
   int saturation = -1;    // -1: the Space follows the app-wide slider.
+  // The icon's STORAGE value ("phi:<id>" / "emoji:<id>"), what the picker
+  // preselects.
+  std::string icon;
 };
 
 // One Chromium profile, as the Profiles pane and the Spaces list read it.
