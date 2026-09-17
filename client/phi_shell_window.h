@@ -162,6 +162,13 @@ class SidebarHost {
   // the origin — so every surface attached to it closes first. A surface
   // cannot be left over a page that changed beneath it.
   virtual void RequestCloseSurfaces(int tab_id) = 0;
+  // §5.8: the favicon the row tile shows for the surface attached to
+  // `tab_id` (the peeked page's; the origin's own for a reader). False
+  // when nothing is attached or the page has none yet.
+  virtual bool SurfaceFaviconForOrigin(int tab_id,
+                                       std::vector<unsigned char>* bgra,
+                                       int* width,
+                                       int* height) = 0;
   // The content card moved or resized: re-fit whatever is hosted over it.
   virtual void NoteContentLayoutChanged(int64_t slot) = 0;
   // Raise this slot's surface panels above the browser child, so the corner
@@ -1029,6 +1036,7 @@ class PhiShellWindow : public PhiHitSource,
     // sidebar's section labels.
     RECT pin{};
     RECT pinned_label{}, bookmarks_label{}, tabs_label{};
+    RECT agent_chip{};  // §5.10: the address-row agent chip; empty for none.
     // Reader View's entry, leading the copy-link button. Empty unless the
     // ACTIVE tab is distillable — the Mac shows the reader button only where
     // Reader View has something to offer.
@@ -1227,6 +1235,8 @@ class PhiShellWindow : public PhiHitSource,
   using HoverKind = PhiChromeHover;
   HoverKind hover_kind_ = HoverKind::kNone;
   int hover_index_ = -1;
+  // §5.8: the pointer is on the hovered row's surface tile.
+  bool surface_tile_hot_ = false;
   void OnChromeMouseMove(POINT client_pt);
   void ClearHover();
   // The client rect a hovered element's wash covers, empty for none — so a
@@ -1235,7 +1245,12 @@ class PhiShellWindow : public PhiHitSource,
   RECT HoverRect(HoverKind kind, int index);
   void SetHover(HoverKind kind, int index);
   // The chrome buttons a kNav hover indexes, in PaintChrome's order.
-  std::array<RECT, 16> NavHoverTable(const Layout& layout) const;
+  std::array<RECT, 17> NavHoverTable(const Layout& layout) const;
+  // §5.10: the agent chip's data from the slot's agent pips (the active
+  // Space's agent = the full chip; a running agent elsewhere = compact).
+  void ComputeAgentChip();
+  void PaintAgentChip(HDC dc, const RECT& rect, const PhiPalette& palette,
+                      bool hot);
 
   // The hovered row's page-snapshot card (the Mac's TabPreviewController).
   // Unlike the Space card above it floats in its own popup, so it can hang
@@ -1572,6 +1587,11 @@ class PhiShellWindow : public PhiHitSource,
   HFONT SidebarTextFont() const override;
   PhiChromeHover SidebarHoverKind() const override;
   int SidebarHoverIndex() const override;
+  bool SidebarSurfaceTileHovered() const override;
+  bool SidebarSurfaceFavicon(TabId origin_tab_id,
+                             std::vector<unsigned char>* bgra,
+                             int* width,
+                             int* height) const override;
   PhiSpacesStrip* SidebarSpacesStrip() override;
   void SidebarScheduleRefresh() override;
   void SidebarSyncNativePages() override;
@@ -1728,6 +1748,17 @@ class PhiShellWindow : public PhiHitSource,
   // The horizontal layout's Space chip width (dip), measured from the
   // active Space's name (§5.2); refreshed with the layout inputs.
   int space_chip_dip_ = 0;
+  // §5.10 cue 3: the address-row agent chip, recomputed with the layout
+  // inputs. `agent_chip_task_` names the task it stands for; compact =
+  // the mark and dot only (a user Space while an agent works elsewhere).
+  int agent_chip_dip_ = 0;
+  bool agent_chip_compact_ = false;
+  std::string agent_chip_task_;
+  std::string agent_chip_space_;
+  std::wstring agent_chip_name_;
+  std::wstring agent_chip_status_;
+  std::wstring agent_chip_mark_;   // The brand mark's stand-in glyph.
+  COLORREF agent_chip_dot_ = 0;
   HFONT chip_name_font_ = nullptr;
   UINT chip_name_font_dpi_ = 0;
   // Slid in (true) or tucked (false); the slide between the two runs on

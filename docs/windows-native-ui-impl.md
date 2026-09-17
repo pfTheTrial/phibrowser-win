@@ -21,7 +21,7 @@ decisions and I will check." The box is mine for testing.
 | P3 | Spaces: pips, chip + switcher, two-line hover flyout | done 2026-09-17, box-verified |
 | P4 | dialogs as ContentDialogs | done 2026-09-17, box-verified (scrim not done) |
 | P5 | Settings as a Windows Settings window | done 2026-09-17, box-verified (expander cards, rail search, remembered size: round B) |
-| P6 | secondary windows, Kiosk, dark pass, polish | done 2026-09-17 (partial, see notes) |
+| P6 | secondary windows, Kiosk, dark pass, polish | done 2026-09-17 (round D: Peek header, row tiles, incognito glyph, agent cues) |
 
 ## D. Decisions taken without asking (review these)
 
@@ -84,6 +84,21 @@ decisions and I will check." The box is mine for testing.
   (`settingsWindowWidth` / `settingsWindowHeight` in PhiSettings.json,
   written on WM_EXITSIZEMOVE, never for a maximized window); no
   position, which Windows Settings also does not keep.
+* **D26 — agent Spaces keep the app accent** on the graphite ground:
+  the brand colour per agent (§5.10) needs a colour table beside the
+  marks; the mark itself is the brand's.
+* **D27 — no omnibox dim / eye glyph while the agent holds the tab**
+  (§5.10 cue 3's last sentence); the ring, fog and capsule carry the
+  held-input state.
+* **D28 — the ring is steady**, not pulsing (60 → 100 % over 1.2 s):
+  a pulse means recomposing a shaped layer on a timer; deferred.
+* **D29 — no "Claude — Research" window title**: the shell never sets
+  its own title today (nothing in the client calls SetWindowText on
+  it), so cue 7 is a separate piece of plumbing.
+* **D30 — the expanded capsule keeps a Finish button** where §5.10 puts
+  a ⋯ menu (Take control · ⋯ · chevron); the pip's agent menu already
+  has the rest. Tile tooltips ("Close Peek") are not wired either: the
+  sidebar rows are not window hits yet.
 * **D24 — the icon picker flyout has no "Recently used" row and no
   skin-tone variants** (§5.9 lists both): both need a stored recents
   list and the catalogue's tone tables; the search box, sections and
@@ -430,9 +445,42 @@ decisions and I will check." The box is mine for testing.
   styling in all three hosts (the §5.5 Fluent TextBox / ComboBox /
   segmented restyle of `PhiCreateSpacePanel` is a follow-up). Box:
   keyboard drive F10 → Spaces → New Space…, PhiDragCap shot.
-* Left for later: the incognito chrome pass, PhiCap re-baselines, the
-  create form's Fluent restyle (D25), the picker's recents / skin
-  tones (D24).
+* Round D (same day): **§5.7 Peek sheet** — the floating chip column is
+  gone; the card (inset 40 / 24 under 900, radius 8, 1 px stroke) has a
+  36 dip header on the flyout ground: the peeked page's favicon
+  (`TabFaviconBgraById`), host in `label` + path in `dim`, then Open as
+  tab · Open in split view · Close as 28 dip buttons in the panel's own
+  hit list; **Reader View** gets the same header (origin favicon, host,
+  Close) and radius 8. **§5.8 row tiles**: `DrawSurfaceBadge` →
+  `DrawSurfaceTile` (20 dip card tile with 1 px stroke and a one-line
+  shadow holding the surface tab's favicon — the reader glyph for
+  Reader — 18 dip overhanging a pinned cell's corner by 2), hover
+  scoped to the tile (`surface_tile_hot_` on the shell, invalidating
+  just the row; ✕ at 12 while hot), `SurfaceFaviconForOrigin` on the
+  sidebar host; `DrawOpenDot` → `DrawOpenPill` 8 × 2 at 60 % under the
+  favicon on pinned cells AND bookmark rows. The caption band now asks
+  `CaptionStripTakesPoint` for every point (a tile overhanging into the
+  band was HTCAPTION; the old badge only cleared it by a pixel).
+  **§4.9 incognito**: the field's leading slot wears the incognito
+  glyph (the chrome was already fixed dark). **§5.10 agent cues**: the
+  graphite ground (`PhiSpaceManager::agent_palette_`, #E8EAEE / #26282C
+  for any `agentspace-*` id), the address-row agent chip (`agent_chip`
+  layout rect after the nav trio: full form = mark · name · hairline ·
+  status dot + word · chevron, click = the agent menu; compact form =
+  mark + dot in a user Space while an agent runs elsewhere, click =
+  switch), "Claude Code's tabs" as the tab section label, the control
+  capsule in the page's bottom-right (collapsed 36: mark · dot · name;
+  hover 300 ms / click expands to the 44 pill: "<Agent> is working" over
+  the step, divider, Take control / Hand back, Finish, chevron;
+  collapses 6 s after the pointer leaves; "waiting" opens and stays),
+  the 2 dip status-coloured ring inside the page pane (`Ring` shaped
+  layer), the fog at 5 %, and the cursor's name tag (`DrawNameTag`).
+  Box: sv-surface 16/16 (its reader path re-keyed to the app menu's
+  "Reader view"), PhiDragCap shots of the Peek sheet, the agent Space
+  (Ctrl+2 into `agentspace-1` created by a probe) and the hovered
+  capsule.
+* Left for later: PhiCap re-baselines, the create form's Fluent restyle
+  (D25), the picker's recents / skin tones (D24), and D26–D30 below.
 
 ## Questions for Jixiang
 

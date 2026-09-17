@@ -1587,6 +1587,41 @@ void PhiCoordinator::RequestCloseSurfaces(int tab_id) {
   surface_coordinator_.CloseSurfacesForOrigin(TabId{tab_id});
 }
 
+bool PhiCoordinator::SurfaceFaviconForOrigin(int tab_id,
+                                             std::vector<unsigned char>* bgra,
+                                             int* width,
+                                             int* height) {
+  bgra->clear();
+  *width = *height = 0;
+  const PhiSurfacePanel* panel =
+      surface_coordinator_.registry().ForOrigin(TabId{tab_id});
+  if (!panel || !framework_) {
+    return false;
+  }
+  // A reader shows the ORIGIN page (reader.html has no favicon of its
+  // own); a peek shows the page it previews.
+  int64_t window_id = panel->window_id();
+  int64_t tab = panel->surface_tab_id();
+  if (panel->kind() == SidebarSurface::kReader) {
+    window_id = panel->origin_window_id();
+    tab = panel->origin_tab_id();
+  }
+  if (tab <= 0) {
+    return false;
+  }
+  const unsigned char* pixels = framework_->TabFaviconBgraById(
+      window_id, static_cast<int>(tab), width, height);
+  if (!pixels || *width <= 0 || *height <= 0) {
+    return false;
+  }
+  const size_t bytes =
+      static_cast<size_t>(*width) * static_cast<size_t>(*height) * 4;
+  // SAFETY: the framework reports the dimensions of the buffer it returned.
+  const auto view = UNSAFE_BUFFERS(base::span<const unsigned char>(pixels, bytes));
+  bgra->assign(view.begin(), view.end());
+  return true;
+}
+
 void PhiCoordinator::RaiseReaderPanels(int64_t slot) {
   surface_coordinator_.RaiseReaderPanels(SlotId{slot});
 }

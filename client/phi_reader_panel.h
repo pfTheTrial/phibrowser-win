@@ -9,6 +9,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include "base/memory/raw_ptr_exclusion.h"
 #include "phibrowser-win/client/phi_ids.h"
@@ -106,6 +107,14 @@ class PhiReaderPanel : public PhiSurfacePanel, public PhiPanel {
   // child window paints over its layered parent's alpha.
   void ApplyCardShape();
   void PositionContent();
+  // §5.7: the reader shares the Peek sheet's 36 dip header — the origin
+  // page's favicon, its host, and Close — so the two attached surfaces
+  // read alike. The page sits below it.
+  RECT HeaderRect() const;
+  void LayoutHits();
+  void OnHover(int hit, int previous) override;
+  void OnClick(int hit, POINT client_pt) override;
+  int64_t surface_tab_id() const override;
 
   BrowserId window_id_;  // The surface's own browser.
   HWND browser_hwnd_ = nullptr;
@@ -120,6 +129,11 @@ class PhiReaderPanel : public PhiSurfacePanel, public PhiPanel {
   std::wstring url_;
   int64_t surface_tab_id_ = 0;
   bool expanded_ = false;
+  // The header's hovered button (0 = Close) and the origin page's favicon.
+  int hot_ = -1;
+  std::vector<unsigned char> favicon_;
+  int favicon_w_ = 0;
+  int favicon_h_ = 0;
 };
 
 }  // namespace phi_client

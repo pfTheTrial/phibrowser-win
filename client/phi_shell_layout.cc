@@ -202,9 +202,17 @@ ShellLayout ComputeShellLayout(const ShellLayoutInputs& in) {
     out.back = control_l(inset, mid);
     out.forward = control_l(out.back.right + btn_gap, mid);
     out.reload = control_l(out.forward.right + btn_gap, mid);
+    int field_left = out.reload.right + scaled(kGroupGap);
+    if (in.agent_chip_dip > 0) {
+      // The agent chip (§5.10): 28 high, after the trio, before the field.
+      const int chip_h = scaled(28);
+      out.agent_chip = {field_left, mid - chip_h / 2,
+                        field_left + scaled(in.agent_chip_dip),
+                        mid + chip_h / 2};
+      field_left = out.agent_chip.right + scaled(kGroupGap);
+    }
     const int cluster_left = place_cluster(w - inset, mid, true);
-    place_omnibox(out.reload.right + scaled(kGroupGap),
-                  cluster_left - scaled(kGroupGap), mid);
+    place_omnibox(field_left, cluster_left - scaled(kGroupGap), mid);
     out.content = {0, out.top_bar.bottom, w, h};
     carve_bookmark_bar(&out);
     return out;
@@ -232,8 +240,16 @@ ShellLayout ComputeShellLayout(const ShellLayoutInputs& in) {
     // caption buttons: place the cluster, then the seam.
     const int cluster_left = place_cluster(cluster_right, mid, true);
     place_band_divider(out.app_menu);
-    // The omnibox fills what is left, minus the reserved drag gutter.
-    const int field_left = out.reload.right + scaled(kGroupGap);
+    // The omnibox fills what is left, minus the reserved drag gutter —
+    // after the agent chip (§5.10) when one is up.
+    int field_left = out.reload.right + scaled(kGroupGap);
+    if (in.agent_chip_dip > 0) {
+      const int chip_h = scaled(28);
+      out.agent_chip = {field_left, mid - chip_h / 2,
+                        field_left + scaled(in.agent_chip_dip),
+                        mid + chip_h / 2};
+      field_left = out.agent_chip.right + scaled(kGroupGap);
+    }
     int field_right = cluster_left - scaled(kDragGutter);
     // Below the minimum text width the pinned-extension slots hide first
     // (the Mac's minimumAddressTextWidth rule), then the field simply gets

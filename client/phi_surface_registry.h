@@ -65,6 +65,9 @@ class PhiSurfacePanel {
   virtual void Raise() = 0;
   // Reader only: the surface tab moved in after construction. Default no-op.
   virtual void BindSurfaceTab(int64_t surface_tab_id) {}
+  // The tab the surface shows (its own browser's), 0 while unknown — what
+  // the sidebar's row tile draws the favicon of (windows-native-ui.md §5.8).
+  virtual int64_t surface_tab_id() const;
   // Peek only: how the peek is about to end, for the usage metric — the
   // closer says why before it closes the browser, and the closing itself
   // is what reports (PhiCoordinator::RetireClosingBrowser). A close nobody

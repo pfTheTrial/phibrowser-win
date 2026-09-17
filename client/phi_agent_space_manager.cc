@@ -417,7 +417,24 @@ void PhiAgentSpaceManager::RefreshOverlay() {
     caption = L"\u26A0 " + caption;
   }
   controller->SetAgentOwned(agent_owns);
-  PhiAgentOverlay::Show(controller, watched_task_, label, caption, agent_owns);
+  // The capsule's mark and state word (§5.10): the brand glyph the pip
+  // wears, and the five states' words.
+  const PhiAgentDriverBadge badge = PhiAgentDriverBadgeFor(space->agent_name);
+  const std::wstring mark =
+      badge.icon.empty() ? std::wstring() : PhiAgentIconGlyph(badge.icon);
+  const bool waiting = space->status == "waiting";
+  std::wstring status = L"Running";
+  if (!agent_owns) {
+    status = L"You have control";
+  } else if (space->status == "failed") {
+    status = L"Error";
+  } else if (space->status == "completed") {
+    status = L"Done";
+  } else if (waiting) {
+    status = L"Waiting for you";
+  }
+  PhiAgentOverlay::Show(controller, watched_task_, label, caption, agent_owns,
+                        mark, status, waiting);
 }
 
 void PhiAgentSpaceManager::RequestTakeControl(const std::string& task_id) {

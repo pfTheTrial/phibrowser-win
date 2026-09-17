@@ -55,6 +55,7 @@
 #include "phibrowser-win/client/phi_emoji.h"
 #include "phibrowser-win/client/phi_icons.h"
 #include "phibrowser-win/client/phi_mac_icons.h"
+#include "phibrowser-win/client/phi_agent_icons.h"
 #include "phibrowser-win/client/phi_app_menu.h"
 #include "phibrowser-win/client/phi_fluent.h"
 #include "phibrowser-win/client/phi_menu_paint.h"
@@ -460,6 +461,7 @@ PhiShellWindow::Layout PhiShellWindow::ToLayout(
   out.pinned_label = PhiToRect(shell.pinned_label);
   out.bookmarks_label = PhiToRect(shell.bookmarks_label);
   out.tabs_label = PhiToRect(shell.tabs_label);
+  out.agent_chip = PhiToRect(shell.agent_chip);
   out.reader = PhiToRect(shell.reader);
   out.sidebar_toggle = PhiToRect(shell.sidebar_toggle);
   out.field_ext_strip = PhiToRect(shell.field_ext_strip);
@@ -493,6 +495,7 @@ ShellLayoutInputs PhiShellWindow::CurrentLayoutInputs() const {
   in.sidebar_hidden = sidebar_collapsed_ && !floating_layout_;
   in.floating_panel = floating_layout_;
   in.space_chip_dip = space_chip_dip_;
+  in.agent_chip_dip = agent_chip_dip_;
   if (floating_layout_ && floating_panel_h_ > 0) {
     // The panel's own height: its bands (the bottom bar) fit the panel.
     in.client_height = floating_panel_h_;
@@ -558,6 +561,162 @@ void PhiShellWindow::RefreshLayoutInputs() {
       ::ReleaseDC(shell_hwnd_, dc);
     }
     space_chip_dip_ = 8 + 16 + 6 + std::min(120, name_dip) + 4 + 12 + 8;
+  }
+  ComputeAgentChip();
+}
+
+void PhiShellWindow::ComputeAgentChip() {
+  agent_chip_dip_ = 0;
+  agent_chip_compact_ = false;
+  agent_chip_task_.clear();
+  agent_chip_space_.clear();
+  agent_chip_name_.clear();
+  agent_chip_status_.clear();
+  agent_chip_mark_.clear();
+  if (!services_.agent || incognito_ || !shell_hwnd_) {
+    return;
+  }
+  // The slot's agent pips: the one whose Space is on screen here takes the
+  // full chip; failing that, the first one still running takes the
+  // compact form (windows-native-ui.md §5.10 cue 3).
+  const std::vector<PhiAgentPipView> pips =
+      services_.agent->AgentSpaces(agent_ ? 0 : slot_.value);
+  const PhiAgentPipView* shown = nullptr;
+  const PhiAgentPipView* running = nullptr;
+  for (const PhiAgentPipView& pip : pips) {
+    if (pip.space_id == active_space()) {
+      shown = &pip;
+    } else if (!running && pip.badge == PhiAgentPipView::Badge::kRunning) {
+      running = &pip;
+    }
+  }
+  const PhiAgentPipView* pip = shown ? shown : running;
+  if (!pip) {
+    return;
+  }
+  agent_chip_compact_ = !shown;
+  agent_chip_task_ = pip->task_id;
+  agent_chip_space_ = pip->space_id;
+  const PhiAgentDriverBadge badge = PhiAgentDriverBadgeFor(pip->agent_name);
+  agent_chip_name_ = base::UTF8ToWide(badge.label);
+  agent_chip_mark_ = pip->icon;
+  // The five states' words and colours (§5.10): Running green, Waiting
+  // orange, Idle grey, Done green, Error red.
+  switch (pip->badge) {
+    case PhiAgentPipView::Badge::kRunning:
+      agent_chip_status_ = L"Running";
+      agent_chip_dot_ = RGB(0x1E, 0x9E, 0x4A);
+      break;
+    case PhiAgentPipView::Badge::kIdle:
+      agent_chip_status_ = L"Idle";
+      agent_chip_dot_ = RGB(0x8E, 0x8E, 0x93);
+      break;
+    case PhiAgentPipView::Badge::kUserHolds:
+      agent_chip_status_ = L"Waiting for you";
+      agent_chip_dot_ = RGB(0xF0, 0xA0, 0x20);
+      break;
+    case PhiAgentPipView::Badge::kCompleted:
+      agent_chip_status_ = L"Done";
+      agent_chip_dot_ = RGB(0x1E, 0x9E, 0x4A);
+      break;
+    case PhiAgentPipView::Badge::kError:
+      agent_chip_status_ = L"Error";
+      agent_chip_dot_ = RGB(0xE0, 0x46, 0x3A);
+      break;
+  }
+  if (agent_chip_compact_) {
+    agent_chip_dip_ = 40;  // The mark and the dot.
+    return;
+  }
+  if (!chip_name_font_ || chip_name_font_dpi_ != dpi_) {
+    if (chip_name_font_) {
+      ::DeleteObject(chip_name_font_);
+    }
+    chip_name_font_ = PhiFluentFont(dpi_, 12, FW_SEMIBOLD);
+    chip_name_font_dpi_ = dpi_;
+  }
+  int name_dip = 60;
+  int status_dip = 48;
+  if (HDC dc = ::GetDC(shell_hwnd_)) {
+    HGDIOBJ previous =
+        chip_name_font_ ? ::SelectObject(dc, chip_name_font_) : nullptr;
+    SIZE extent = {};
+    if (::GetTextExtentPoint32W(dc, agent_chip_name_.c_str(),
+                                static_cast<int>(agent_chip_name_.size()),
+                                &extent)) {
+      name_dip = static_cast<int>(extent.cx) * 96 / static_cast<int>(dpi_);
+    }
+    if (::GetTextExtentPoint32W(dc, agent_chip_status_.c_str(),
+                                static_cast<int>(agent_chip_status_.size()),
+                                &extent)) {
+      status_dip = static_cast<int>(extent.cx) * 96 / static_cast<int>(dpi_);
+    }
+    if (previous) {
+      ::SelectObject(dc, previous);
+    }
+    ::ReleaseDC(shell_hwnd_, dc);
+  }
+  // mark 16 · name · hairline · dot 7 · status · chevron 12, with 8 dip
+  // padding and 6 dip gaps.
+  agent_chip_dip_ = 8 + 16 + 6 + std::min(120, name_dip) + 8 + 1 + 8 + 7 +
+                    4 + std::min(120, status_dip) + 8 + 6 + 12 + 8;
+}
+
+void PhiShellWindow::PaintAgentChip(HDC dc, const RECT& rect,
+                                    const PhiPalette& palette, bool hot) {
+  if (rect.right <= rect.left || agent_chip_task_.empty()) {
+    return;
+  }
+  // Brand-soft ground (the accent at 12 %, 18 % hot), a capsule.
+  const int radius = (rect.bottom - rect.top) / 2;
+  PhiFillRoundRectAA(dc, rect, radius,
+                     PhiBlend(palette.accent, palette.ground_top, hot ? 46 : 31));
+  ::SetBkMode(dc, TRANSPARENT);
+  const int mid = (rect.top + rect.bottom) / 2;
+  int x = rect.left + Scaled(agent_chip_compact_ ? 8 : 8);
+  RECT mark = {x, mid - Scaled(8), x + Scaled(16), mid + Scaled(8)};
+  if (agent_chip_mark_.empty() ||
+      !PhiDrawCatalogIcon(dc, mark, agent_chip_mark_, Scaled(14), palette.label)) {
+    PhiDrawIconGlyph(dc, mark, fluent::kRobot, Scaled(14), palette.label);
+  }
+  x = mark.right + Scaled(6);
+  if (agent_chip_compact_) {
+    // The compact form: the status dot rides the mark's corner.
+    RECT dot = {mark.right - Scaled(4), mark.bottom - Scaled(4),
+                mark.right + Scaled(3), mark.bottom + Scaled(3)};
+    PhiFillEllipseAA(dc, dot, agent_chip_dot_);
+    return;
+  }
+  HGDIOBJ previous = chip_name_font_ ? ::SelectObject(dc, chip_name_font_) : nullptr;
+  ::SetTextColor(dc, palette.label);
+  RECT name = {x, rect.top, rect.right, rect.bottom};
+  SIZE extent = {};
+  ::GetTextExtentPoint32W(dc, agent_chip_name_.c_str(),
+                          static_cast<int>(agent_chip_name_.size()), &extent);
+  name.right = std::min<LONG>(rect.right, name.left + std::min<LONG>(extent.cx, Scaled(120)));
+  PhiDrawTextAA(dc, agent_chip_name_.c_str(), -1, &name,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
+                    DT_NOPREFIX);
+  x = name.right + Scaled(8);
+  RECT rule = {x, mid - Scaled(7), x + 1, mid + Scaled(7)};
+  HBRUSH hairline = ::CreateSolidBrush(PhiBlend(palette.ink, palette.ground_top, 46));
+  ::FillRect(dc, &rule, hairline);
+  ::DeleteObject(hairline);
+  x += 1 + Scaled(8);
+  RECT dot = {x, mid - Scaled(3) - 1, x + Scaled(7), mid + Scaled(4)};
+  PhiFillEllipseAA(dc, dot, agent_chip_dot_);
+  x = dot.right + Scaled(4);
+  ::SetTextColor(dc, palette.label_dim);
+  RECT status = {x, rect.top, rect.right - Scaled(8 + 12 + 6), rect.bottom};
+  PhiDrawTextAA(dc, agent_chip_status_.c_str(), -1, &status,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
+                    DT_NOPREFIX);
+  RECT chevron = {rect.right - Scaled(8 + 12), mid - Scaled(6),
+                  rect.right - Scaled(8), mid + Scaled(6)};
+  PhiDrawIconGlyph(dc, chevron, fluent::kChevronDown, Scaled(10),
+                   palette.label_dim);
+  if (previous) {
+    ::SelectObject(dc, previous);
   }
 }
 
@@ -1165,7 +1324,13 @@ bool PhiShellWindow::CaptionStripTakesPoint(POINT client_pt) {
     return true;  // The "+" / "…" slot trailing the pips.
   }
   for (const ShortcutRow& pin : sidebar_->pinned()) {
-    if (::PtInRect(&pin.bounds, client_pt)) {
+    if (::PtInRect(&pin.bounds, client_pt) ||
+        ::PtInRect(&pin.surface_box, client_pt)) {
+      return true;  // The cell, or its §5.8 tile overhanging its corner.
+    }
+  }
+  for (const ShortcutRow& row : sidebar_->bookmarks()) {
+    if (::PtInRect(&row.bounds, client_pt)) {
       return true;
     }
   }
@@ -1924,6 +2089,19 @@ int PhiShellWindow::SidebarHoverIndex() const {
   return hover_index_;
 }
 
+bool PhiShellWindow::SidebarSurfaceTileHovered() const {
+  return surface_tile_hot_;
+}
+
+bool PhiShellWindow::SidebarSurfaceFavicon(TabId origin_tab_id,
+                                           std::vector<unsigned char>* bgra,
+                                           int* width,
+                                           int* height) const {
+  return services_.sidebar && origin_tab_id.valid() &&
+         services_.sidebar->SurfaceFaviconForOrigin(origin_tab_id.value, bgra,
+                                                    width, height);
+}
+
 PhiSpacesStrip* PhiShellWindow::SidebarSpacesStrip() {
   return spaces_.get();
 }
@@ -2676,7 +2854,7 @@ PhiDragBitmap PhiShellWindow::CaptureChromeRect(const RECT& client_rect) {
 
 
 
-std::array<RECT, 16> PhiShellWindow::NavHoverTable(
+std::array<RECT, 17> PhiShellWindow::NavHoverTable(
     const Layout& layout) const {
   // The nav buttons' hover washes (back/forward/reload/search).
   // The first six MUST stay in the paint table's order — PaintChrome keys
@@ -2693,7 +2871,7 @@ std::array<RECT, 16> PhiShellWindow::NavHoverTable(
           layout.downloads,   layout.memory,     layout.feedback,
           layout.chat,        layout.extensions, RECT{},
           RECT{},             layout.reader,     layout.sidebar_toggle,
-          layout.star};
+          layout.star,        layout.agent_chip};
 }
 
 // The client rect a hovered element's wash covers, empty for none — so a
@@ -2860,6 +3038,27 @@ void PhiShellWindow::OnChromeMouseMove(POINT client_pt) {
     }
   }
   SetHover(kind, index);
+  // §5.8: the surface tile's own hover, scoped to the tile inside the
+  // hovered row (a change within the row repaints just that row).
+  RECT tile = {};
+  if (index >= 0) {
+    if (kind == HoverKind::kPin && index < static_cast<int>(pins.size())) {
+      tile = pins[static_cast<size_t>(index)].surface_box;
+    } else if (kind == HoverKind::kBookmark &&
+               index < static_cast<int>(marks.size())) {
+      tile = marks[static_cast<size_t>(index)].surface_box;
+    } else if (kind == HoverKind::kTab && index < static_cast<int>(rows.size())) {
+      tile = rows[static_cast<size_t>(index)].surface_box;
+    }
+  }
+  const bool tile_hot = tile.right > tile.left && ::PtInRect(&tile, client_pt);
+  if (tile_hot != surface_tile_hot_) {
+    surface_tile_hot_ = tile_hot;
+    const RECT row = HoverRect(kind, index);
+    if (shell_hwnd_ && row.right > row.left) {
+      ::InvalidateRect(shell_hwnd_, &row, FALSE);
+    }
+  }
 }
 
 bool PhiShellWindow::BandOnShell() const {
@@ -2869,6 +3068,7 @@ bool PhiShellWindow::BandOnShell() const {
 }
 
 void PhiShellWindow::ClearHover() {
+  surface_tile_hot_ = false;
   spaces_->DismissHoverCard(std::string());
   spaces_->SetRowHovered(false);
   if (tab_preview_) {
@@ -3959,6 +4159,16 @@ void PhiShellWindow::OnChromeClick(int x, int y) {
   if (framework_ && ::PtInRect(&layout.reload, pt)) {
     if (const BrowserId browser = active_browser_id(); browser.valid()) {
       framework_->Reload(browser.value, /*bypass_cache=*/false);
+    }
+    return;
+  }
+  if (::PtInRect(&layout.agent_chip, pt) && !agent_chip_task_.empty()) {
+    // The full chip opens the agent menu; the compact one switches to the
+    // agent's Space ("click to watch").
+    if (agent_chip_compact_) {
+      SwitchToSpace(agent_chip_space_);
+    } else {
+      ShowAgentChipMenu(pt, agent_chip_task_);
     }
     return;
   }
@@ -6057,6 +6267,9 @@ void PhiShellWindow::PaintChrome(HDC dc,
                          Scaled(fluent::kIconToolbar),
                          Scaled(fluent::kButtonRadius));
     }
+    // The agent chip (§5.10), ordinal 16 in the hover table.
+    PaintAgentChip(dc, layout.agent_chip, palette,
+                   hover_kind_ == HoverKind::kNav && hover_index_ == 16);
   }
   // The sidebar toggle (nav-hover ordinal 14): ClosePane while the sidebar
   // is shown, OpenPane while it is hidden — the stateful Fluent pair.
@@ -6123,7 +6336,10 @@ void PhiShellWindow::PaintChrome(HDC dc,
     }
     // The leading site-info slot: the page glyph, in `dim`.
     if (layout.page_icon.right > layout.page_icon.left) {
-      PhiDrawIconGlyph(dc, layout.page_icon, fluent::kGlobe,
+      // §4.9: an incognito window wears the incognito glyph in the
+      // field's leading slot (its chrome is fixed dark, CurrentPalette).
+      PhiDrawIconGlyph(dc, layout.page_icon,
+                       incognito_ ? fluent::kIncognito : fluent::kGlobe,
                        Scaled(fluent::kIconToolbar), kLabelDim);
     }
   }
@@ -6251,7 +6467,13 @@ void PhiShellWindow::PaintChrome(HDC dc,
     };
     label(layout.pinned_label, PhiStr("sidebar.section.pinned"));
     label(layout.bookmarks_label, PhiStr("sidebar.section.bookmarks"));
-    label(layout.tabs_label, PhiStr("sidebar.section.tabs"));
+    if (!agent_chip_compact_ && !agent_chip_name_.empty()) {
+      // §5.10 cue 6: the agent's own Space reads "Claude's tabs".
+      const std::wstring owned = agent_chip_name_ + L"\u2019s tabs";
+      label(layout.tabs_label, owned.c_str());
+    } else {
+      label(layout.tabs_label, PhiStr("sidebar.section.tabs"));
+    }
     if (previous_label_font) {
       ::SelectObject(dc, previous_label_font);
     }

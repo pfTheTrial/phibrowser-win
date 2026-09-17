@@ -21,6 +21,8 @@
 #include "base/memory/raw_ptr_exclusion.h"
 #include "phibrowser-win/client/phi_animator.h"
 #include "phibrowser-win/client/phi_dwrite.h"
+#include "phibrowser-win/client/phi_icons.h"
+#include "phibrowser-win/client/phi_fluent.h"
 #include "phibrowser-win/client/phi_gdiplus.h"
 #include "phibrowser-win/client/phi_panel.h"
 #include "phibrowser-win/client/phi_shell_window.h"
@@ -36,11 +38,21 @@ constexpr wchar_t kPillClass[] = L"PhiAgentPill";
 constexpr wchar_t kSpriteClass[] = L"PhiAgentSprite";
 // The fog is a light wash, not a blackout: the user must still SEE what the
 // agent is doing — that is the whole point of watch mode.
-constexpr BYTE kFogAlpha = 46;
+// §5.10 cue 4: a 5 % brand fog, a 2 dip ring inside the page pane, and
+// the control capsule in the page's bottom-right corner — collapsed (36
+// high) by default, the 44 dip pill when expanded.
+constexpr BYTE kFogAlpha = 13;
+constexpr int kRingDip = 2;
 constexpr int kPillHeight = 44;
-constexpr int kPillMaxWidth = 560;
-constexpr int kPillBottomGap = 24;
-constexpr int kButtonHeight = 26;
+constexpr int kCapsuleHeight = 36;
+constexpr int kPillMaxWidth = 440;
+constexpr int kCornerInsetX = 24;  // Clear of the scrollbar.
+constexpr int kCornerInsetY = 16;
+constexpr int kButtonHeight = 28;
+constexpr UINT_PTR kExpandTimer = 41;
+constexpr UINT_PTR kCollapseTimer = 42;
+constexpr int kExpandDelayMs = 300;
+constexpr int kCollapseDelayMs = 6000;
 // The minimise chevron at the pill's trailing edge (the Mac's 44861119):
 // folds the caption and the buttons away and parks the pill, label-only,
 // in the pane's bottom-right corner; a click on the parked pill unfolds it.
@@ -57,7 +69,56 @@ class OverlayHost {
   virtual ~OverlayHost() = default;
   virtual void PaintPill(HDC dc) = 0;
   virtual void PillClicked(int x, int y) = 0;
+  virtual void PillHovered(bool inside) = 0;
+  virtual void PillTimer(UINT_PTR id) = 0;
   virtual void ComposeSprite() = 0;
+};
+
+// The 2 dip brand ring inside the page pane (§5.10): four bars in a
+// shaped layer, so the page between them stays live and clickable.
+class Ring : public PhiPanel {
+ public:
+  Ring() = default;
+  ~Ring() override { Destroy(); }
+
+  bool Open(HWND shell) {
+    ClassSpec spec;
+    spec.name = L"PhiAgentRing";
+    Options options;
+    options.shaped_layer = true;
+    options.click_through = true;
+    options.ex_style = WS_EX_NOPARENTNOTIFY;
+    const RECT nothing = {0, 0, 0, 0};
+    return CreatePanel(spec, shell, nothing, options);
+  }
+  void set_ink(COLORREF ink) { ink_ = ink; }
+  void set_thickness(int px) { thickness_ = px; }
+
+ protected:
+  void Paint(HDC dc, const RECT&) override {
+    RECT client = {};
+    ::GetClientRect(hwnd(), &client);
+    HBRUSH brush = ::CreateSolidBrush(ink_);
+    ::FillRect(dc, &client, brush);
+    ::DeleteObject(brush);
+  }
+  void LayerShapes(int width, int height,
+                   std::vector<PhiLayerShape>* out) const override {
+    const int t = std::max(1, thickness_);
+    PhiLayerShape top, bottom, left, right;
+    top.bounds = {0, 0, width, t};
+    bottom.bounds = {0, height - t, width, height};
+    left.bounds = {0, 0, t, height};
+    right.bounds = {width - t, 0, width, height};
+    out->push_back(top);
+    out->push_back(bottom);
+    out->push_back(left);
+    out->push_back(right);
+  }
+
+ private:
+  COLORREF ink_ = RGB(0x1E, 0x9E, 0x4A);
+  int thickness_ = 2;
 };
 
 // The FOG: a constant-alpha layered barrier over the whole content area. It
@@ -192,15 +253,34 @@ class Pill : public PhiPanel {
                     WPARAM wparam,
                     LPARAM lparam,
                     bool* handled) override {
-    if (message == WM_MOUSEACTIVATE) {
-      *handled = true;
-      return MA_NOACTIVATE;  // Clickable without stealing page focus.
+    switch (message) {
+      case WM_MOUSEACTIVATE:
+        *handled = true;
+        return MA_NOACTIVATE;  // Clickable without stealing page focus.
+      case WM_MOUSEMOVE:
+        if (!tracking_) {
+          TRACKMOUSEEVENT track = {sizeof(track), TME_LEAVE, hwnd(), 0};
+          tracking_ = ::TrackMouseEvent(&track) != FALSE;
+          host_->PillHovered(true);
+        }
+        break;
+      case WM_MOUSELEAVE:
+        tracking_ = false;
+        host_->PillHovered(false);
+        break;
+      case WM_TIMER:
+        host_->PillTimer(static_cast<UINT_PTR>(wparam));
+        *handled = true;
+        return 0;
+      default:
+        break;
     }
     return PhiPanel::OnMessage(message, wparam, lparam, handled);
   }
 
  private:
   RAW_PTR_EXCLUSION OverlayHost* const host_;
+  bool tracking_ = false;
 };
 
 class Overlay : public OverlayHost {
@@ -213,6 +293,7 @@ class Overlay : public OverlayHost {
         task_id_(task_id) {
     dpi_ = ::GetDpiForWindow(shell_);
     fog_.Open(shell_);
+    ring_.Open(shell_);
     sprite_.Open(shell_);
     pill_.Open(shell_);
     EnsureFonts();
@@ -234,24 +315,33 @@ class Overlay : public OverlayHost {
 
   void Update(const std::wstring& agent_label,
               const std::wstring& caption,
-              bool agent_owns) {
+              bool agent_owns,
+              const std::wstring& mark,
+              const std::wstring& status,
+              bool waiting) {
     agent_label_ = agent_label;
     caption_ = caption;
+    mark_ = mark;
+    status_ = status;
     const bool owner_changed = agent_owns_ != agent_owns;
     agent_owns_ = agent_owns;
+    if (waiting && !waiting_) {
+      // "Waiting for you": the capsule opens by itself and stays open.
+      collapsed_ = false;
+      ::KillTimer(pill_.hwnd(), kCollapseTimer);
+    }
+    waiting_ = waiting;
     Reposition();
     if (owner_changed) {
-      // The drawn cursor follows ownership (see ComposeSprite): it leaves
-      // with a takeover and returns where it was on hand-back.
       ComposeSprite();
     }
-    // The fog only exists while the AGENT owns the Space; once the user takes
-    // control the page must be usable, so the barrier comes down entirely.
     if (agent_owns_) {
       fog_.ShowPanel();
       ::SetLayeredWindowAttributes(fog_.hwnd(), 0, kFogAlpha, LWA_ALPHA);
+      ring_.ShowPanel();
     } else {
       fog_.HidePanel();
+      ring_.HidePanel();
     }
     pill_.ShowPanel();
     pill_.Invalidate();
@@ -268,25 +358,27 @@ class Overlay : public OverlayHost {
     const int width = content.right - content.left;
     fog_.SetPanelBounds(content);
     fog_.RaisePanel();
-    // The sprite tracks the content rect exactly, stacked over the fog —
-    // the card stack keeps that order (it is the "last raised" list the two
-    // HWND_TOP calls used to race for).
+    ring_.set_ink(StatusColor());
+    ring_.set_thickness(Scaled(kRingDip));
+    ring_.SetPanelBounds(content);
+    ring_.RaisePanel();
+    ring_.Invalidate();  // A shaped layer composes on its next paint.
     sprite_.SetPanelBounds(content);
     sprite_.ShowPanel();
     ComposeSprite();
-    const int pill_h = Scaled(kPillHeight);
+    // The capsule in the page's bottom-right corner (§5.10): 24 in from
+    // the right, 16 from the bottom; 36 high collapsed (mark · dot ·
+    // name), the 44 dip pill expanded.
+    int pill_h = Scaled(kPillHeight);
     int pill_w = std::min(Scaled(kPillMaxWidth), width - Scaled(32));
-    int pill_x = content.left + (width - pill_w) / 2;
     if (collapsed_) {
-      // Parked bottom-right, 24dip in, wide enough for the label and the
-      // chevron — a deliberate user choice that survives every update and
-      // ownership flip until they unfold it.
-      pill_w = Scaled(16) + LabelWidth() + Scaled(12) + Scaled(kChevronWidth) +
-               Scaled(10);
+      pill_h = Scaled(kCapsuleHeight);
+      pill_w = Scaled(10) + Scaled(16) + Scaled(6) + Scaled(7) + Scaled(6) +
+               LabelWidth() + Scaled(12);
       pill_w = std::min(pill_w, width - Scaled(32));
-      pill_x = content.right - Scaled(kPillBottomGap) - pill_w;
     }
-    const int pill_y = content.bottom - pill_h - Scaled(kPillBottomGap);
+    const int pill_x = content.right - Scaled(kCornerInsetX) - pill_w;
+    const int pill_y = content.bottom - pill_h - Scaled(kCornerInsetY);
     const RECT pill_rect = {pill_x, pill_y, pill_x + pill_w, pill_y + pill_h};
     pill_.SetPanelBounds(pill_rect);
     pill_.RaisePanel();
@@ -298,6 +390,50 @@ class Overlay : public OverlayHost {
   }
 
   bool agent_owns() const { return agent_owns_; }
+
+  COLORREF StatusColor() const {
+    if (status_ == L"Error") {
+      return RGB(0xE0, 0x46, 0x3A);
+    }
+    if (status_ == L"Waiting for you") {
+      return RGB(0xF0, 0xA0, 0x20);
+    }
+    if (status_ == L"Idle" || status_ == L"You have control") {
+      return RGB(0x8E, 0x8E, 0x93);
+    }
+    return RGB(0x1E, 0x9E, 0x4A);  // Running / Done.
+  }
+
+  void PillHovered(bool inside) override {
+    if (!pill_.alive()) {
+      return;
+    }
+    if (inside) {
+      ::KillTimer(pill_.hwnd(), kCollapseTimer);
+      if (collapsed_) {
+        ::SetTimer(pill_.hwnd(), kExpandTimer, kExpandDelayMs, nullptr);
+      }
+    } else {
+      ::KillTimer(pill_.hwnd(), kExpandTimer);
+      if (!collapsed_ && !waiting_) {
+        ::SetTimer(pill_.hwnd(), kCollapseTimer, kCollapseDelayMs, nullptr);
+      }
+    }
+  }
+
+  void PillTimer(UINT_PTR id) override {
+    if (!pill_.alive()) {
+      return;
+    }
+    ::KillTimer(pill_.hwnd(), id);
+    if (id == kExpandTimer && collapsed_) {
+      collapsed_ = false;
+      Reposition();
+    } else if (id == kCollapseTimer && !collapsed_ && !waiting_) {
+      collapsed_ = true;
+      Reposition();
+    }
+  }
 
   // ---- The agent cursor + input-mirror effects (the sprite layer) ----
 
@@ -487,7 +623,9 @@ class Overlay : public OverlayHost {
       // The stored point survives the flip, so the cursor reappears where it
       // was when control is handed back.
       if (cursor_shown_ && agent_owns_) {
-        DrawCursor(&graphics, CursorNow(now));
+        const Gdiplus::PointF at = CursorNow(now);
+        DrawCursor(&graphics, at);
+        DrawNameTag(&graphics, at);
       }
     }
     layer.Commit(sprite_.hwnd(), nullptr);
@@ -624,6 +762,39 @@ class Overlay : public OverlayHost {
 
   // The Mac cursor path (a 14.0089 × 15.9927 viewBox, authored y-down — no
   // flip needed in GDI's y-down space), scaled to a 27pt-tall arrow.
+  // §5.10 cue 5: the Teams / Figma-style name tag riding the cursor's
+  // lower right, so its movements are never mistaken for the user's.
+  void DrawNameTag(Gdiplus::Graphics* graphics,
+                   const Gdiplus::PointF& at) const {
+    if (agent_label_.empty()) {
+      return;
+    }
+    Gdiplus::Font font(L"Segoe UI", static_cast<float>(Scaled(11)),
+                       Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
+    Gdiplus::RectF measured;
+    graphics->MeasureString(agent_label_.c_str(), -1, &font,
+                            Gdiplus::PointF(0, 0), &measured);
+    const float pad_x = static_cast<float>(Scaled(6));
+    const float pad_y = static_cast<float>(Scaled(3));
+    const float w = measured.Width + pad_x * 2;
+    const float h = measured.Height + pad_y * 2;
+    const float x = at.X + static_cast<float>(Scaled(16));
+    const float y = at.Y + static_cast<float>(Scaled(18));
+    const float r = h / 2;
+    Gdiplus::GraphicsPath tag;
+    tag.AddArc(x, y, r * 2, r * 2, 180, 90);
+    tag.AddArc(x + w - r * 2, y, r * 2, r * 2, 270, 90);
+    tag.AddArc(x + w - r * 2, y + h - r * 2, r * 2, r * 2, 0, 90);
+    tag.AddArc(x, y + h - r * 2, r * 2, r * 2, 90, 90);
+    tag.CloseFigure();
+    Gdiplus::SolidBrush fill(AccentColor(255));
+    graphics->FillPath(&fill, &tag);
+    Gdiplus::SolidBrush text(Gdiplus::Color(255, 255, 255, 255));
+    graphics->SetTextRenderingHint(Gdiplus::TextRenderingHintAntiAlias);
+    graphics->DrawString(agent_label_.c_str(), -1, &font,
+                         Gdiplus::PointF(x + pad_x, y + pad_y), &text);
+  }
+
   void DrawCursor(Gdiplus::Graphics* graphics,
                   const Gdiplus::PointF& at) const {
     const float scale = ScaledF(27) / 15.9927f;
@@ -773,50 +944,71 @@ class Overlay : public OverlayHost {
     RECT client = {};
     ::GetClientRect(pill_.hwnd(), &client);
     const PhiPalette& palette = controller_->CurrentPalette();
-    const COLORREF ground = palette.dark ? RGB(0x2A, 0x2A, 0x2E)
-                                         : RGB(0xFF, 0xFF, 0xFF);
-    const COLORREF ink = palette.dark ? RGB(0xF2, 0xF2, 0xF4)
-                                      : RGB(0x1A, 0x1A, 0x1C);
-    const COLORREF dim = palette.dark ? RGB(0xA0, 0xA0, 0xA8)
-                                      : RGB(0x6A, 0x6A, 0x72);
-    // SQUARE fill: the capsule is the LAYER's alpha (Pill::LayerShapes), so
-    // an antialiased fill here would blend its own edge against an empty
-    // buffer and leave a dark fringe once the mask ramps over it.
+    const COLORREF ground = palette.flyout;
+    const COLORREF ink = palette.label;
+    const COLORREF dim = palette.label_dim;
+    // SQUARE fill: the capsule is the LAYER's alpha (Pill::LayerShapes).
     HBRUSH plate = ::CreateSolidBrush(ground);
     ::FillRect(dc, &client, plate);
     ::DeleteObject(plate);
     ::SetBkMode(dc, TRANSPARENT);
+    const int mid = client.bottom / 2;
+    // The brand mark (the robot for an unbranded agent).
+    const auto draw_mark = [&](int left) {
+      RECT mark = {left, mid - Scaled(8), left + Scaled(16), mid + Scaled(8)};
+      if (mark_.empty() ||
+          !PhiDrawCatalogIcon(dc, mark, mark_, Scaled(14), ink)) {
+        PhiDrawIconGlyph(dc, mark, fluent::kRobot, Scaled(14), ink);
+      }
+      return static_cast<int>(mark.right);
+    };
 
     if (collapsed_) {
-      // Folded: the label and the chevron, nothing else.
-      RECT text = {Scaled(16), client.top, chevron_.left - Scaled(8),
-                   client.bottom};
+      // mark · status dot · the agent's name; the whole capsule is the
+      // target (no chevron in a corner).
+      int x = draw_mark(Scaled(10)) + Scaled(6);
+      RECT dot = {x, mid - Scaled(3) - 1, x + Scaled(7), mid + Scaled(4)};
+      PhiFillEllipseAA(dc, dot, StatusColor());
+      x = dot.right + Scaled(6);
+      RECT text = {x, client.top, client.right - Scaled(12), client.bottom};
       ::SelectObject(dc, label_font_);
       ::SetTextColor(dc, ink);
       ::DrawTextW(dc, agent_label_.c_str(), -1, &text,
                   DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
                       DT_NOPREFIX);
-      PaintChevron(dc, dim);
       return;
     }
-    // Leading: who is driving, then the status caption.
-    RECT text = {Scaled(16), client.top, primary_.left - Scaled(12),
-                 client.bottom};
+    // Expanded: mark, "<Agent> is working" over the current step, a
+    // divider, the brand-filled primary, Finish, the collapse chevron.
+    const int text_left = draw_mark(Scaled(12)) + Scaled(10);
+    RECT title = {text_left, client.top + Scaled(6), primary_.left - Scaled(16),
+                  mid + Scaled(1)};
     ::SelectObject(dc, label_font_);
     ::SetTextColor(dc, ink);
-    RECT measured = text;
-    ::DrawTextW(dc, agent_label_.c_str(), -1, &measured,
-                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_CALCRECT);
-    ::DrawTextW(dc, agent_label_.c_str(), -1, &text,
-                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-    RECT caption = {measured.right + Scaled(12), client.top,
-                    primary_.left - Scaled(12), client.bottom};
+    std::wstring headline = agent_label_;
+    if (status_ == L"Running") {
+      headline += L" is working";
+    } else if (!status_.empty()) {
+      headline += L" \u00B7 " + status_;
+    }
+    ::DrawTextW(dc, headline.c_str(), -1, &title,
+                DT_LEFT | DT_BOTTOM | DT_SINGLELINE | DT_END_ELLIPSIS |
+                    DT_NOPREFIX);
+    RECT caption = {text_left, mid + Scaled(1), primary_.left - Scaled(16),
+                    client.bottom - Scaled(6)};
     if (caption.right > caption.left) {
       ::SelectObject(dc, caption_font_);
       ::SetTextColor(dc, dim);
       ::DrawTextW(dc, caption_.c_str(), -1, &caption,
-                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
+                  DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS |
                       DT_NOPREFIX);
+    }
+    {
+      RECT rule = {primary_.left - Scaled(10), mid - Scaled(10),
+                   primary_.left - Scaled(10) + 1, mid + Scaled(10)};
+      HBRUSH sep = ::CreateSolidBrush(palette.separator);
+      ::FillRect(dc, &rule, sep);
+      ::DeleteObject(sep);
     }
 
     // The primary action carries the accent; the secondary stays quiet.
@@ -872,7 +1064,11 @@ class Overlay : public OverlayHost {
   std::wstring agent_label_;
   std::wstring caption_;
   bool agent_owns_ = true;
-  bool collapsed_ = false;  // The user folded the pill (see kChevronWidth).
+  bool collapsed_ = true;   // Collapsed by default (§5.10); hover/click opens.
+  bool waiting_ = false;    // "Waiting for you": open and stays open.
+  std::wstring mark_;
+  std::wstring status_;
+  Ring ring_;
   RECT chevron_{};
   Fog fog_;
   Sprite sprite_{this};
@@ -901,7 +1097,10 @@ void PhiAgentOverlay::Show(PhiShellWindow* controller,
                            const std::string& task_id,
                            const std::wstring& agent_label,
                            const std::wstring& caption,
-                           bool agent_owns) {
+                           bool agent_owns,
+                           const std::wstring& mark,
+                           const std::wstring& status,
+                           bool waiting) {
   if (!controller || !controller->shell_hwnd()) {
     return;
   }
@@ -912,7 +1111,8 @@ void PhiAgentOverlay::Show(PhiShellWindow* controller,
   if (!Overlay::instance) {
     Overlay::instance = new Overlay(controller, task_id);
   }
-  Overlay::instance->Update(agent_label, caption, agent_owns);
+  Overlay::instance->Update(agent_label, caption, agent_owns, mark, status,
+                            waiting);
 }
 
 // static

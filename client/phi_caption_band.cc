@@ -74,14 +74,13 @@ int PhiCaptionBand::HitTest(POINT client_pt) {
       ::PtInRect(&rects.sidebar_toggle, client_pt)) {
     return HTCLIENT;
   }
-  if (rects.horizontal_tabs || ::PtInRect(&rects.spaces_strip, client_pt)) {
-    // Comfortable's band IS the tab strip, and the vertical layout's row
-    // carries the Space pips: everything drawn there takes its own clicks;
-    // the bare run still drags the window, which is how Chrome's strip
-    // behaves. The strip is the shell's, so the shell answers for it.
-    if (shell_->CaptionStripTakesPoint(client_pt)) {
-      return HTCLIENT;
-    }
+  // Comfortable's band IS the tab strip, the vertical layout's row carries
+  // the Space pips, and a sidebar cell's §5.8 tile may overhang into the
+  // band: everything the shell draws there takes its own clicks; the bare
+  // run still drags the window, which is how Chrome's strip behaves. The
+  // strip is the shell's, so the shell answers for it.
+  if (shell_->CaptionStripTakesPoint(client_pt)) {
+    return HTCLIENT;
   }
   return HTCAPTION;  // Everything else in the band drags the window.
 }

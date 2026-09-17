@@ -369,6 +369,10 @@ class PhiCoordinator : public SidebarHost,
                                const std::string& url,
                                const char* entry_point) override;
   void RequestCloseSurfaces(int tab_id) override;
+  bool SurfaceFaviconForOrigin(int tab_id,
+                               std::vector<unsigned char>* bgra,
+                               int* width,
+                               int* height) override;
   void NoteContentLayoutChanged(int64_t slot) override;
   void RaiseReaderPanels(int64_t slot) override;
   bool IsTabAgentDriven(int tab_id) const override;

@@ -536,6 +536,15 @@ class PhiSidebarShell {
   // own vector.
   virtual PhiChromeHover SidebarHoverKind() const = 0;
   virtual int SidebarHoverIndex() const = 0;
+  // §5.8: the pointer is over the hovered row's surface TILE (the tile
+  // alone swaps to its close ✕; the row's hover no longer flips it).
+  virtual bool SidebarSurfaceTileHovered() const = 0;
+  // The favicon of the surface attached to `origin_tab_id` — the peeked
+  // page's, the origin's for a reader — at its native size.
+  virtual bool SidebarSurfaceFavicon(TabId origin_tab_id,
+                                     std::vector<unsigned char>* bgra,
+                                     int* width,
+                                     int* height) const = 0;
   // The Spaces strip, whose pips ride the same drag machinery as the rows.
   virtual PhiSpacesStrip* SidebarSpacesStrip() = 0;
   // THE refresh entry point: marks the rows dirty and posts one coalesced
@@ -743,8 +752,13 @@ class PhiSidebarView {
   void PaintDropZone(HDC dc, const RECT& zone, bool hot, const wchar_t* glyph,
                      int glyph_dip, const wchar_t* hint, bool stacked,
                      const PhiPalette& palette);
-  void DrawSurfaceBadge(HDC dc, const RECT& box, SidebarSurface kind,
-                        bool hovered, COLORREF ground);
+  // §5.8's tile: `tile_dip` square (20 on rows, 18 on a pinned cell)
+  // centred in `box`, card fill, 1 px stroke, holding the surface tab's
+  // favicon (the reader glyph for Reader View) — or a 12 dip ✕ while the
+  // tile itself is hovered.
+  void DrawSurfaceTile(HDC dc, const RECT& box, SidebarSurface kind,
+                       bool hovered, COLORREF ground, TabId origin_tab,
+                       int tile_dip);
   // leaving_band_ <-> the live row vectors. The Space slide paints both
   // models, so the strip exchanges them twice per frame.
   void SwapBandModel();

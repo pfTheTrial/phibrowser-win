@@ -167,6 +167,10 @@ struct ShellLayoutInputs {
   // The horizontal layout's Space chip width in dip (§5.2: icon + name +
   // chevron, measured by the shell); 0 = the bare 28 dip pip.
   int space_chip_dip = 0;
+  // §5.10 cue 3: the agent chip after the nav trio — the full chip's
+  // width in the agent's own Space, 40 for the compact form in a user
+  // Space while an agent works elsewhere, 0 for none.
+  int agent_chip_dip = 0;
 
   friend bool operator==(const ShellLayoutInputs& a,
                          const ShellLayoutInputs& b) {
@@ -185,7 +189,8 @@ struct ShellLayoutInputs {
            a.bookmark_drop_zone == b.bookmark_drop_zone &&
            a.spaces_switch == b.spaces_switch &&
            a.floating_panel == b.floating_panel &&
-           a.space_chip_dip == b.space_chip_dip;
+           a.space_chip_dip == b.space_chip_dip &&
+           a.agent_chip_dip == b.agent_chip_dip;
   }
   friend bool operator!=(const ShellLayoutInputs& a,
                          const ShellLayoutInputs& b) {
@@ -221,6 +226,7 @@ struct ShellLayout {
   // The hairline closing the band's trailing cluster.
   SidebarRect band_divider;
   SidebarRect back, forward, reload;
+  SidebarRect agent_chip;  // §5.10: after the nav trio; empty for none.
   SidebarRect spaces_strip;  // The band the Space chips live in.
   SidebarRect url_field;
   SidebarRect favorites;  // Pinned-tab band; empty without pins.

@@ -253,6 +253,9 @@ class PhiSpaceManager {
   // One resolved palette per Space that overrides the app-wide theme; a
   // Space with no override is not in here and uses the preferences' palette.
   std::map<std::string, std::unique_ptr<PhiPalette>> palette_by_space_;
+  // §5.10: the fixed graphite ground every agent Space wears (never a
+  // user theme), rebuilt with the Space palettes.
+  std::unique_ptr<PhiPalette> agent_palette_;
   // Non-owning; all outlive the service (see the constructor). The
   // framework is a singleton across a module boundary.
   RAW_PTR_EXCLUSION PhiWindowRegistry& registry_;

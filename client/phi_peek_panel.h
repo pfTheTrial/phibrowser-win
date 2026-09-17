@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "base/memory/raw_ptr_exclusion.h"
 #include "phibrowser-win/client/phi_ids.h"
@@ -31,7 +32,6 @@ class PhiWindowModel;
 // phi_peek_panel.cc): the drop shadow under the card, and the chip layer
 // over the hosted page.
 class PhiPeekShadow;
-class PhiPeekControls;
 
 // The Mac's floating Peek panel (UserInterface/Peek/PeekPanelController): a
 // link opened from a bound tab previews in a card floating over the page
@@ -40,7 +40,7 @@ class PhiPeekControls;
 //
 // Geometry follows the Mac's spec: the card insets from the content card by
 // 4% of its width (at least 16 DIP) horizontally and 14 DIP vertically, with
-// a 44-DIP control gutter kept to its right, over the page. The card itself
+// a 36 dip header on the flyout ground above the page (§5.7). The card itself
 // carries no chrome — the page fills it edge to edge (Arc's peek layout).
 //
 // WHAT THE CARD HOSTS DIVERGES FROM THE MAC, deliberately: there a peek is a
@@ -115,24 +115,30 @@ class PhiPeekPanel : public PhiSurfacePanel, public PhiPanel {
   PhiPalette QueryPalette() const override;
 
  private:
+  // §5.7: a 36 dip header on the flyout ground (the peeked page's favicon,
+  // its host and path, then Open as tab · Open in split view · Close),
+  // the page below it. The header is the panel's own client area, so the
+  // hosted page never covers it and the buttons are ordinary hits.
   struct Layout {
-    RECT card;     // The page, edge to edge.
-    RECT gutter;   // The control column floating over the page's top-right.
-    RECT close;
+    RECT header;
+    RECT page;
+    RECT favicon;
+    RECT text;
     RECT expand;   // Promote the preview into a tab of the opener window.
     RECT split;    // ...and put it beside the tab that opened it.
+    RECT close;
   };
   Layout ComputeLayout() const;
 
-  void HoverControl(int index);
   void ClickControl(int index);
   void PositionContent();
   void Dismiss();
-  // The control chips live in a window of their OWN, above the hosted page:
-  // a child window always paints over its parent, so chips drawn by the panel
-  // would be buried under the page they belong to.
-  void PositionControls();
-  void PaintControls(HDC dc);
+  // The header's buttons into the panel's hit list (hover, click, UIA).
+  void LayoutHits();
+  void PaintHeader(HDC dc, const Layout& layout);
+  void OnHover(int hit, int previous) override;
+  void OnClick(int hit, POINT client_pt) override;
+  int64_t surface_tab_id() const override;
   // Rounds the card. THE sanctioned SetWindowRgn (lane 3 §3.6): the hosted
   // browser is a child of this window, so the region that clips it is this
   // one's. The CHIPS, which host nothing, are a shaped layer instead.
@@ -148,10 +154,8 @@ class PhiPeekPanel : public PhiSurfacePanel, public PhiPanel {
   std::unique_ptr<PhiPeekShadow> shadow_;
   // The close / new-tab / split chips, a shaped-layer child of this window
   // stacked above the hosted browser.
-  std::unique_ptr<PhiPeekControls> controls_;
   // The page card's right margin beside the card, in pixels, as Reposition
   // last measured it: where the chips stand.
-  int right_margin_ = 0;
   BrowserId opener_window_id_;  // The browser the peek was opened FROM.
   int64_t opener_tab_id_ = 0;
   RAW_PTR_EXCLUSION PhiShellWindow* opener_ = nullptr;
@@ -160,6 +164,11 @@ class PhiPeekPanel : public PhiSurfacePanel, public PhiPanel {
   RAW_PTR_EXCLUSION PhiCoordinator* coordinator_ = nullptr;
 
   std::wstring url_;
+  // The peek browser's one tab and its favicon, for the header.
+  int64_t tab_id_ = 0;
+  std::vector<unsigned char> favicon_;
+  int favicon_w_ = 0;
+  int favicon_h_ = 0;
   int hot_ = -1;
   const char* end_reason_ = nullptr;
   uint64_t opened_tick_ = 0;

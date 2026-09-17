@@ -34,11 +34,19 @@ class PhiAgentOverlay {
  public:
   // Mounts (or updates) the overlay over `controller`'s content area.
   // `agent_owns` drives both the barrier and the button set.
+  // `mark` is the agent's brand glyph (PhiAgentIconGlyph, empty for the
+  // robot), `status` the state word the capsule shows ("Running",
+  // "Waiting for you", …) and `waiting` whether the agent is asking the
+  // user something — the capsule then expands on its own and stays open
+  // (windows-native-ui.md §5.10 cue 4).
   static void Show(PhiShellWindow* controller,
                    const std::string& task_id,
                    const std::wstring& agent_label,
                    const std::wstring& caption,
-                   bool agent_owns);
+                   bool agent_owns,
+                   const std::wstring& mark = std::wstring(),
+                   const std::wstring& status = std::wstring(),
+                   bool waiting = false);
   // Tears the overlay down (watch mode ended, or the task is gone).
   static void Hide();
   // Hide() only if the overlay is bound to `controller` — its shell is being

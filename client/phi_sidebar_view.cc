@@ -20,6 +20,7 @@
 #include "phibrowser-win/client/phi_animator.h"
 #include "phibrowser-win/client/phi_bookmark_manager.h"
 #include "phibrowser-win/client/phi_dwrite.h"
+#include "phibrowser-win/client/phi_fluent.h"
 #include "phibrowser-win/client/phi_folder_icons.h"
 #include "phibrowser-win/client/phi_group_overview.h"
 #include "phibrowser-win/client/phi_i18n.h"
@@ -105,10 +106,14 @@ constexpr float kReclaimedOpacity = 0.3f;
 // under a pinned favicon (2pt on the Comfortable strip, where the cell is
 // shorter) and leads a bookmark's favicon by 2pt. A reclaimed tab dims the
 // dot with its favicon.
-constexpr int kOpenDotDiameter = 2;
-constexpr int kOpenDotPinnedSpacing = 3;
-constexpr int kOpenDotStripSpacing = 2;
-constexpr int kOpenDotBookmarkSpacing = 2;
+// windows-native-ui.md §5.8: the taskbar's running mark — an 8 × 2 dip
+// pill, radius 1, `label` ink at 60 %, centred under the favicon with a
+// 3 dip gap (2 on the shorter Comfortable strip cell).
+constexpr int kOpenPillWidth = 8;
+constexpr int kOpenPillHeight = 2;
+constexpr int kOpenPillGap = 3;
+constexpr int kOpenPillStripGap = 2;
+constexpr float kOpenPillOpacity = 0.6f;
 
 COLORREF OpenDotInk(const PhiPalette& palette) {
   return palette.dark ? RGB(255, 255, 255) : RGB(0, 0, 0);
@@ -124,8 +129,11 @@ COLORREF FadeInk(COLORREF ink, COLORREF ground, float opacity) {
              mix(GetBValue(ink), GetBValue(ground)));
 }
 
-void DrawOpenDot(HDC dc, int left, int top, int diameter, COLORREF ink) {
-  PhiFillEllipseAA(dc, {left, top, left + diameter, top + diameter}, ink);
+void DrawOpenPill(HDC dc, int cx, int top, int width, int height,
+                  COLORREF ink) {
+  PhiFillRoundRectAA(dc, {cx - width / 2, top, cx - width / 2 + width,
+                          top + height},
+                     std::max(1, height / 2), ink);
 }
 
 }  // namespace
@@ -1495,11 +1503,13 @@ void PhiSidebarView::RebuildShortcuts(const PhiSidebarRects& layout,
       ShortcutRow& pin = pinned_[i];
       pin.bounds = PhiToRect(grid.cells[i]);
       if (pin.attached_surface != SidebarSurface::kContent) {
-        // The Mac's PinnedPeekBadgeView: a plate on the cell's top-right.
-        const int badge = Scaled(16);
-        pin.surface_box = {pin.bounds.right - badge - Scaled(2),
-                           pin.bounds.top + Scaled(2), pin.bounds.right - Scaled(2),
-                           pin.bounds.top + Scaled(2) + badge};
+        // §5.8: an 18 dip tile overhanging the cell's top-right by 2 (the
+        // Mac's PinnedPeekBadgeView circle, squared to Fluent).
+        const int tile = Scaled(18);
+        pin.surface_box = {pin.bounds.right + Scaled(2) - tile,
+                           pin.bounds.top - Scaled(2),
+                           pin.bounds.right + Scaled(2),
+                           pin.bounds.top - Scaled(2) + tile};
       }
     }
   }
@@ -2132,34 +2142,54 @@ void PhiSidebarView::PaintDropZone(HDC dc,
 }
 
 // static
-void PhiSidebarView::DrawSurfaceBadge(HDC dc,
-                                      const RECT& box,
-                                      SidebarSurface kind,
-                                      bool hovered,
-                                      COLORREF ground) {
-  const HFONT glyph_font = shell_->SidebarGlyphFont();
+void PhiSidebarView::DrawSurfaceTile(HDC dc,
+                                     const RECT& box,
+                                     SidebarSurface kind,
+                                     bool hovered,
+                                     COLORREF ground,
+                                     TabId origin_tab,
+                                     int tile_dip) {
   if (box.right <= box.left || kind == SidebarSurface::kContent ||
       !spaces_host_) {
     return;
   }
   const PhiPalette& palette = spaces_host_->PaletteForSlot(slot_.value);
-  // A small plate the accent tints, so it reads as "something is attached"
-  // whether or not the row is selected.
-  PhiFillRounded(dc, box, PhiBlendOver(palette.accent, ground, 46),
-              Scaled(kCornerRadius) / 2);
-  HGDIOBJ previous_font = glyph_font ? ::SelectObject(dc, glyph_font)
-                                        : nullptr;
+  const int size = Scaled(tile_dip);
+  RECT tile = {(box.left + box.right - size) / 2, (box.top + box.bottom - size) / 2,
+               0, 0};
+  tile.right = tile.left + size;
+  tile.bottom = tile.top + size;
+  const int radius = Scaled(5);
+  // A 0 1 2 shadow, as one darker line under the plate.
+  RECT shadow = tile;
+  ::OffsetRect(&shadow, 0, 1);
+  PhiFillRounded(dc, shadow, PhiBlendOver(RGB(0, 0, 0), ground, 24), radius);
+  PhiStrokeRounded(dc, tile, hovered ? palette.hover_strong : palette.card,
+                   palette.stroke_strong, radius);
   if (hovered) {
-    PhiDrawGlyph(dc, box, L"\u2212", palette.accent);  // Minus: close it.
-  } else if (kind == SidebarSurface::kReader) {
-    PhiDrawReaderGlyph(dc, box, palette.accent, dpi());
-  } else {
-    // A window floating over the page.
-    PhiDrawGlyph(dc, box, L"\uE8A7", palette.accent);
+    // The tile's own hover: the close ✕ (12 dip) — the click closes the
+    // surface without activating the row.
+    PhiDrawIconGlyph(dc, tile, fluent::kCancel, Scaled(12), palette.label);
+    return;
   }
-  if (previous_font) {
-    ::SelectObject(dc, previous_font);
+  if (kind == SidebarSurface::kReader) {
+    PhiDrawReaderGlyph(dc, tile, palette.label, dpi());
+    return;
   }
+  std::vector<unsigned char> bgra;
+  int width = 0;
+  int height = 0;
+  if (shell_->SidebarSurfaceFavicon(origin_tab, &bgra, &width, &height)) {
+    const int icon_px = Scaled(tile_dip - 6);
+    RECT icon = {(tile.left + tile.right - icon_px) / 2,
+                 (tile.top + tile.bottom - icon_px) / 2, 0, 0};
+    icon.right = icon.left + icon_px;
+    icon.bottom = icon.top + icon_px;
+    DrawFavicon(dc, icon, bgra.data(), width, height, palette.card);
+    return;
+  }
+  PhiDrawIconGlyph(dc, tile, fluent::kOpenInNewWindow, Scaled(12),
+                   palette.label);
 }
 
 void PhiSidebarView::PaintBand(HDC dc,
@@ -2328,21 +2358,24 @@ void PhiSidebarView::PaintBand(HDC dc,
     // favicon (under the PAIR for a split cell), faded when a pane is
     // dormant — the Mac's PinnedTabItem/PinnedSplitItem openIndicatorHost.
     if (show_dots && pin.open && !pin.active) {
-      const int dot = Scaled(kOpenDotDiameter);
-      const int gap = Scaled(layout.horizontal_tabs ? kOpenDotStripSpacing
-                                                    : kOpenDotPinnedSpacing);
-      DrawOpenDot(dc, cx - dot / 2, icon_bottom + gap, dot,
-                  dormant_a || dormant_b
-                      ? FadeInk(dot_ink, pin_bg, kReclaimedOpacity)
-                      : dot_ink);
+      const int gap = Scaled(layout.horizontal_tabs ? kOpenPillStripGap
+                                                    : kOpenPillGap);
+      DrawOpenPill(dc, cx, icon_bottom + gap, Scaled(kOpenPillWidth),
+                   Scaled(kOpenPillHeight),
+                   FadeInk(dot_ink, pin_bg,
+                           dormant_a || dormant_b
+                               ? kOpenPillOpacity * kReclaimedOpacity
+                               : kOpenPillOpacity));
     }
     if (pin.attached_surface != SidebarSurface::kContent &&
         pin.surface_box.right > pin.surface_box.left) {
       RECT badge = pin.surface_box;  // Pinned to the cell's top-right.
       ::OffsetRect(&badge, cell.right - pin.bounds.right,
                    cell.top - pin.bounds.top);
-      DrawSurfaceBadge(dc, badge, pin.attached_surface,
-                       pin_hovered && !pin_dragged, pin_bg);
+      DrawSurfaceTile(dc, badge, pin.attached_surface,
+                      pin_hovered && !pin_dragged &&
+                          shell_->SidebarSurfaceTileHovered(),
+                      pin_bg, pin.tab_id, 18);
     }
   }
 
@@ -2490,12 +2523,13 @@ void PhiSidebarView::PaintBand(HDC dc,
     // overlay), decorative so the title never moves; faded when a bound
     // pane is dormant.
     if (show_dots && !bookmark.folder && bookmark.open && !bookmark.active) {
-      const int dot = Scaled(kOpenDotDiameter);
-      DrawOpenDot(dc, icon.left - Scaled(kOpenDotBookmarkSpacing) - dot,
-                  mid - dot / 2, dot,
-                  dim_a || dim_b
-                      ? FadeInk(dot_ink, bookmark_bg, kReclaimedOpacity)
-                      : dot_ink);
+      // Centred under the favicon, as on the pinned cells (§5.8).
+      DrawOpenPill(dc, (icon.left + icon.right) / 2,
+                   icon.bottom + Scaled(kOpenPillGap), Scaled(kOpenPillWidth),
+                   Scaled(kOpenPillHeight),
+                   FadeInk(dot_ink, bookmark_bg,
+                           dim_a || dim_b ? kOpenPillOpacity * kReclaimedOpacity
+                                          : kOpenPillOpacity));
     }
     ::SetTextColor(dc, dormant_a || dormant_b ? kLabelDim : kLabel);
     // No disclosure glyph: the outline hides its triangles
@@ -2547,9 +2581,11 @@ void PhiSidebarView::PaintBand(HDC dc,
       ::SelectObject(dc, folder_font_previous);
     }
     if (bookmark_attached) {
-      DrawSurfaceBadge(dc, bookmark_badge, bookmark.attached_surface,
-                       bookmark_hovered && !bookmark_dragged,
-                       bookmark.active ? kRowSelectedBg : kTintTop);
+      DrawSurfaceTile(dc, bookmark_badge, bookmark.attached_surface,
+                      bookmark_hovered && !bookmark_dragged &&
+                          shell_->SidebarSurfaceTileHovered(),
+                      bookmark.active ? kRowSelectedBg : kTintTop,
+                      bookmark.tab_id, 20);
     }
   }
 
@@ -2886,8 +2922,10 @@ void PhiSidebarView::PaintBand(HDC dc,
       PhiDrawGlyph(dc, close_box, L"\u00D7", kLabelDim);
     }
     if (attached) {
-      DrawSurfaceBadge(dc, surface_box, row.attached_surface,
-                       row_hovered && !is_dragged, row_bg);
+      DrawSurfaceTile(dc, surface_box, row.attached_surface,
+                      row_hovered && !is_dragged &&
+                          shell_->SidebarSurfaceTileHovered(),
+                      row_bg, row.id, 20);
     }
     // The agent operating mask: a badge on rows an agent is holding. Accent
     // while the agent drives; dimmed once the user has taken the tab back

@@ -5,6 +5,7 @@
 #include "phibrowser-win/client/phi_peek_panel.h"
 
 #include "phibrowser-win/client/phi_dwrite.h"
+#include "phibrowser-win/client/phi_fluent.h"
 
 #include <windowsx.h>
 
@@ -30,21 +31,24 @@ namespace {
 
 constexpr wchar_t kPeekClassName[] = L"PhiPeekPanel";
 constexpr wchar_t kPeekShadowClassName[] = L"PhiPeekShadow";
-constexpr wchar_t kPeekControlsClassName[] = L"PhiPeekControls";
 
 // The Mac's PeekPanelController metrics, in DIP.
-constexpr double kPaneInsetRatio = 0.04;
-constexpr int kMinPaneInset = 24;
+// §5.7: the sheet is inset 40 horizontally (24 under 900 dip of content)
+// and 24 vertically; a 36 dip header holds three 28 dip buttons.
+constexpr int kPaneInsetWide = 40;
+constexpr int kPaneInsetNarrow = 24;
+constexpr int kNarrowContentDip = 900;
 constexpr int kPaneVerticalInset = 24;
-constexpr int kControlGutterWidth = 44;
-constexpr int kControlButtonSize = 28;
-constexpr int kControlSpacing = 6;
-constexpr int kControlTopInset = 6;
+constexpr int kHeaderHeight = 36;
+constexpr int kHeaderPad = 12;
+constexpr int kFaviconSize = 16;
+constexpr int kButtonSize = 28;
+constexpr int kButtonGap = 4;
+constexpr int kButtonRadius = 4;
 // The card itself (PeekPanelController): a 12pt rounded sheet under a soft
 // drop shadow, so a peek reads as something floating OVER the page rather
 // than as part of it.
-constexpr int kCardRadius = 12;
-constexpr int kControlRadius = 8;
+constexpr int kCardRadius = 8;
 // The Mac's card shadow — blur 20, 6pt down, black at 44% (60% on dark, where
 // a soft black all but disappears against the page) — and the margin the
 // blur needs around the card to fade out inside.
@@ -180,75 +184,6 @@ class PhiPeekShadow : public PhiPanel {
 // so a click in the air between two chips still reaches the page and
 // dismisses the peek.
 
-class PhiPeekControls : public PhiPanel {
- public:
-  using PaintFn = std::function<void(HDC)>;
-  using HoverFn = std::function<void(int)>;
-  using ClickFn = std::function<void(int)>;
-
-  PhiPeekControls() = default;
-  ~PhiPeekControls() override { Destroy(); }
-
-  bool Open(HWND card, PaintFn paint, HoverFn hover, ClickFn click) {
-    paint_ = std::move(paint);
-    hover_ = std::move(hover);
-    click_ = std::move(click);
-    ClassSpec spec;
-    spec.name = kPeekControlsClassName;
-    spec.style = CS_HREDRAW | CS_VREDRAW;
-    Options options;
-    options.shaped_layer = true;
-    options.ex_style = WS_EX_NOPARENTNOTIFY;
-    const RECT nothing = {0, 0, 0, 0};
-    return CreatePanel(spec, card, nothing, options);
-  }
-
-  // The chips in THIS window's client pixels, in hit order. Rebuilding them
-  // rebuilds hits_, which is where hover and clicks come from.
-  void SetChips(const std::vector<RECT>& chips, int radius) {
-    chips_.clear();
-    ClearHits();
-    for (size_t i = 0; i < chips.size(); ++i) {
-      PhiLayerShape shape;
-      shape.bounds = PhiFromRect(chips[i]);
-      shape.radius = radius;
-      chips_.push_back(shape);
-      AddHit(chips[i], static_cast<int>(i), std::wstring(),
-             PhiHitRole::kButton);
-    }
-  }
-
- protected:
-  void Paint(HDC dc, const RECT&) override {
-    if (paint_) {
-      paint_(dc);
-    }
-  }
-
-  void LayerShapes(int, int, std::vector<PhiLayerShape>* out) const override {
-    *out = chips_;
-  }
-
-  bool HitTestShape() const override { return true; }
-
-  void OnHover(int hit, int) override {
-    if (hover_) {
-      hover_(hit);
-    }
-  }
-
-  void OnClick(int hit, POINT) override {
-    if (hit >= 0 && click_) {
-      click_(hit);
-    }
-  }
-
- private:
-  std::vector<PhiLayerShape> chips_;
-  PaintFn paint_;
-  HoverFn hover_;
-  ClickFn click_;
-};
 
 PhiPeekPanel::PhiPeekPanel(int64_t window_id,
                            HWND browser_hwnd,
@@ -317,14 +252,6 @@ PhiPeekPanel::PhiPeekPanel(int64_t window_id,
   // soon as the peek was up, and no reposition came to lift them again. A
   // sibling of the card is out of that fight: nothing inside the card can
   // reorder above it.
-  controls_ = std::make_unique<PhiPeekControls>();
-  if (controls_->Open(
-          shell, [this](HDC dc) { PaintControls(dc); },
-          [this](int index) { HoverControl(index); },
-          [this](int index) { ClickControl(index); })) {
-    controls_->ShowPanel();
-  }
-
   Reposition();
   RefreshState();
   Show();
@@ -343,9 +270,6 @@ void PhiPeekPanel::Show() {
   }
   if (alive()) {
     ShowPanel();
-  }
-  if (controls_) {
-    controls_->ShowPanel();
   }
 }
 
@@ -394,7 +318,7 @@ bool PhiPeekPanel::ContainsWindow(HWND window) const {
   }
   // The chips are the shell's child, not the card's (see the constructor),
   // so a click on one is the card's own business too.
-  return controls_ && controls_->alive() && window == controls_->hwnd();
+  return false;
 }
 
 PhiPalette PhiPeekPanel::QueryPalette() const {
@@ -412,7 +336,6 @@ PhiPeekPanel::~PhiPeekPanel() {
   // the card. Each destructor destroys its own HWND and the base clears
   // GWLP_USERDATA at WM_NCDESTROY, so no teardown message can reach a
   // half-destroyed object.
-  controls_.reset();
   shadow_.reset();
   Destroy();
 }
@@ -428,16 +351,12 @@ void PhiPeekPanel::Reposition() {
   if (width <= 0 || height <= 0) {
     return;
   }
-  // The card sits CENTRED in the page card, inset by the Mac's margins on
-  // both sides (Jixiang: never narrowed on the right for the chips). The
-  // chips stand in the right margin, beside the card and over the page,
-  // never on the page the card shows — PositionControls lays them out in
-  // the strip Reposition leaves there.
+  // The sheet sits centred in the page card (§5.7): 40 dip in from the
+  // sides (24 in a narrow window), 24 top and bottom.
   const int inset_x =
-      std::max(Scaled(kMinPaneInset),
-               static_cast<int>(width * kPaneInsetRatio));
+      Scaled(width < Scaled(kNarrowContentDip) ? kPaneInsetNarrow
+                                               : kPaneInsetWide);
   const int inset_y = Scaled(kPaneVerticalInset);
-  right_margin_ = inset_x;
   const RECT bounds = {content.left + inset_x, content.top + inset_y,
                        content.left + inset_x + std::max(0, width - inset_x * 2),
                        content.top + inset_y +
@@ -445,6 +364,7 @@ void PhiPeekPanel::Reposition() {
   SetPanelBounds(bounds);
   ApplyCardShape();
   PositionContent();
+  LayoutHits();
   UpdateShadow();
   Invalidate();
 }
@@ -508,9 +428,6 @@ void PhiPeekPanel::SetVisibleForActiveTab(int64_t active_tab_id) {
     if (shadow_) {
       shadow_->HidePanel();
     }
-    if (controls_) {
-      controls_->HidePanel();
-    }
   }
 }
 
@@ -526,6 +443,29 @@ void PhiPeekPanel::RefreshState() {
   }
   if (snapshot) {
     url_ = Widen(snapshot->nav.url);
+    if (!snapshot->tabs.empty()) {
+      tab_id_ = snapshot->tabs.front().id.value;
+    }
+  }
+  // The header's favicon: the page's, copied out of the framework's
+  // scratch buffer (which the next call overwrites).
+  favicon_.clear();
+  favicon_w_ = favicon_h_ = 0;
+  if (framework_ && tab_id_ > 0) {
+    int width = 0;
+    int height = 0;
+    const unsigned char* pixels = framework_->TabFaviconBgraById(
+        window_id_.value, static_cast<int>(tab_id_), &width, &height);
+    if (pixels && width > 0 && height > 0) {
+      const size_t bytes =
+          static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
+      // SAFETY: the framework reports the buffer's own dimensions.
+      const auto view =
+          UNSAFE_BUFFERS(base::span<const unsigned char>(pixels, bytes));
+      favicon_.assign(view.begin(), view.end());
+      favicon_w_ = width;
+      favicon_h_ = height;
+    }
   }
   if (alive()) {
     Invalidate();
@@ -538,144 +478,141 @@ PhiPeekPanel::Layout PhiPeekPanel::ComputeLayout() const {
   if (alive()) {
     ::GetClientRect(hwnd(), &client);
   }
-  const int gutter = Scaled(kControlGutterWidth);
-  const int btn = Scaled(kControlButtonSize);
-  const int spacing = Scaled(kControlSpacing);
-  const int top = Scaled(kControlTopInset);
-
-  // The page takes the whole card; the controls stand in the page card's
-  // right margin, beside the card and over the page around the peek, the
-  // way the Mac's control column does — so the card reads as a page and the
-  // chips never cover what it shows. The strip is the margin Reposition
-  // measured (the Mac's 44 gutter where the margin has room for it), spelled
-  // in the card's client space past its right edge; PositionControls carries
-  // it into the shell's.
-  const int strip = std::min(gutter, std::max(btn, right_margin_));
-  out.card = {0, 0, client.right, client.bottom};
-  out.gutter = {client.right, 0, client.right + strip,
-                top * 2 + btn * 3 + spacing * 2};
-
-  const int cx = out.gutter.left + (strip - btn) / 2;
-  const int cy = out.gutter.top + top;
-  out.close = {cx, cy, cx + btn, cy + btn};
-  out.expand = {cx, out.close.bottom + spacing, cx + btn,
-                out.close.bottom + spacing + btn};
-  out.split = {cx, out.expand.bottom + spacing, cx + btn,
-               out.expand.bottom + spacing + btn};
+  const int header = Scaled(kHeaderHeight);
+  const int btn = Scaled(kButtonSize);
+  const int gap = Scaled(kButtonGap);
+  const int pad = Scaled(kHeaderPad);
+  out.header = {0, 0, client.right, header};
+  // A 1 px stroke frames the sheet: the page is inset by it on the three
+  // sides the header does not cover.
+  out.page = {1, header, std::max(1, static_cast<int>(client.right) - 1),
+              std::max(header, static_cast<int>(client.bottom) - 1)};
+  const int mid = header / 2;
+  // Close trailing, then Split, then Open as tab (Windows keeps the close
+  // box at the far right).
+  int x = client.right - gap;
+  out.close = {x - btn, mid - btn / 2, x, mid + btn / 2};
+  x = out.close.left - gap;
+  out.split = {x - btn, mid - btn / 2, x, mid + btn / 2};
+  x = out.split.left - gap;
+  out.expand = {x - btn, mid - btn / 2, x, mid + btn / 2};
+  const int icon = Scaled(kFaviconSize);
+  out.favicon = {pad, mid - icon / 2, pad + icon, mid + icon / 2};
+  out.text = {out.favicon.right + Scaled(8), 0, out.expand.left - Scaled(8),
+              header};
   return out;
 }
 
 void PhiPeekPanel::PositionContent() {
   if (!browser_hwnd_ || !::IsWindow(browser_hwnd_)) {
-    PositionControls();
     return;
   }
   const Layout layout = ComputeLayout();
-  ::SetWindowPos(browser_hwnd_, nullptr, layout.card.left, layout.card.top,
-                 layout.card.right - layout.card.left,
-                 layout.card.bottom - layout.card.top,
+  ::SetWindowPos(browser_hwnd_, nullptr, layout.page.left, layout.page.top,
+                 layout.page.right - layout.page.left,
+                 layout.page.bottom - layout.page.top,
                  SWP_NOZORDER | SWP_NOACTIVATE);
-  PositionControls();
 }
 
-void PhiPeekPanel::PositionControls() {
-  if (!controls_ || !controls_->alive()) {
-    return;
-  }
-  const Layout layout = ComputeLayout();
-  const int width = layout.gutter.right - layout.gutter.left;
-  const int height = layout.gutter.bottom - layout.gutter.top;
-  if (width <= 0 || height <= 0) {
-    return;
-  }
-  // The gutter is laid out in the card's client space; the chips live in the
-  // shell's, so the card's own origin carries them over.
-  RECT card = {};
-  ::GetWindowRect(hwnd(), &card);
-  POINT origin_in_shell = {card.left, card.top};
-  ::ScreenToClient(controls_->parent(), &origin_in_shell);
-  const RECT gutter = {origin_in_shell.x + layout.gutter.left,
-                       origin_in_shell.y + layout.gutter.top,
-                       origin_in_shell.x + layout.gutter.right,
-                       origin_in_shell.y + layout.gutter.bottom};
-  controls_->SetPanelBounds(gutter);
-  // Only the chips themselves are the layer — the space between them is
-  // transparent, so the page shows through and a click there lands on the
-  // page. This used to be a CreateRoundRectRgn union, which stair-stepped
-  // every chip corner (lane 3 §3.6 finding 3).
-  const POINT origin = {layout.gutter.left, layout.gutter.top};
-  const auto shift = [&origin](const RECT& rc) {
-    return RECT{rc.left - origin.x, rc.top - origin.y, rc.right - origin.x,
-                rc.bottom - origin.y};
-  };
-  const std::vector<RECT> chips = {shift(layout.close), shift(layout.expand),
-                                   shift(layout.split)};
-  controls_->SetChips(chips, Scaled(kControlRadius));
-  controls_->Invalidate();
-}
 
 void PhiPeekPanel::Paint(HDC dc, const RECT&) {
-  // The page covers the whole card; this only shows through in the moment
-  // before the browser child has drawn, and behind its rounded corners.
+  // The page covers everything under the header; the ground shows through
+  // in the moment before the browser child has drawn, and as the 1 px frame
+  // around it. Live, as before: the opener slot's palette ramps between
+  // frames.
   RECT client = {};
   ::GetClientRect(hwnd(), &client);
-  // Live, as before: the opener slot's palette ramps between frames.
-  HBRUSH ground = ::CreateSolidBrush(QueryPalette().card);
+  const PhiPalette palette = QueryPalette();
+  HBRUSH ground = ::CreateSolidBrush(palette.card);
   ::FillRect(dc, &client, ground);
   ::DeleteObject(ground);
+  const Layout layout = ComputeLayout();
+  PaintHeader(dc, layout);
+  PhiStrokeRoundRectAA(dc, client, Scaled(kCardRadius), palette.stroke_strong,
+                       1);
 }
 
 void PhiPeekPanel::OnSize(int, int) {
   PositionContent();
+  LayoutHits();
 }
 
-void PhiPeekPanel::PaintControls(HDC dc) {
+void PhiPeekPanel::PaintHeader(HDC dc, const Layout& layout) {
   const PhiPalette palette = QueryPalette();
-  const Layout layout = ComputeLayout();
-  const POINT origin = {layout.gutter.left, layout.gutter.top};
-
-  PhiFontDesc glyph_desc;
-  glyph_desc.size = 11;
-  glyph_desc.face = PhiIconFaceName();
-  HGDIOBJ old_font = ::SelectObject(dc, fonts().Get(glyph_desc));
+  HBRUSH ground = ::CreateSolidBrush(palette.flyout);
+  ::FillRect(dc, &layout.header, ground);
+  ::DeleteObject(ground);
+  RECT rule = {layout.header.left, layout.header.bottom - 1,
+               layout.header.right, layout.header.bottom};
+  HBRUSH sep = ::CreateSolidBrush(palette.separator);
+  ::FillRect(dc, &rule, sep);
+  ::DeleteObject(sep);
   ::SetBkMode(dc, TRANSPARENT);
 
-  // The chips read against arbitrary page content, so each is an opaque
-  // rounded plate — the Mac's 8pt corners — not a bare glyph. The plate's
-  // FILL is square here on purpose: the LAYER's alpha carries the rounded
-  // silhouette, so an antialiased fill under it would blend its own edge
-  // against an empty buffer and leave a dark fringe once the mask ramps.
-  auto plate = [&](int index, const RECT& rc) {
-    const int chip = Scaled(kControlRadius);
-    HBRUSH fill = ::CreateSolidBrush(index == hot_ ? palette.selected
-                                                   : palette.card);
-    ::FillRect(dc, &rc, fill);
-    ::DeleteObject(fill);
-    PhiStrokeRoundRectAA(dc, rc, chip, palette.border, 1);
-  };
-  auto shift = [&origin](const RECT& rc) {
-    return RECT{rc.left - origin.x, rc.top - origin.y, rc.right - origin.x,
-                rc.bottom - origin.y};
-  };
-  auto glyph_chip = [&](int index, const RECT& panel_rect,
-                        const wchar_t* glyph) {
-    const RECT rc = shift(panel_rect);
-    plate(index, rc);
+  // The favicon (the globe until the page has one).
+  if (!favicon_.empty()) {
+    PhiDrawBgra(dc, layout.favicon, favicon_.data(), favicon_w_, favicon_h_);
+  } else {
+    PhiDrawIconGlyph(dc, layout.favicon, fluent::kGlobe, Scaled(kFaviconSize),
+                     palette.label_dim);
+  }
+  // Host in `label`, path in `dim`, one line, ellipsised.
+  std::wstring host = url_;
+  std::wstring path;
+  const size_t scheme = host.find(L"://");
+  if (scheme != std::wstring::npos) {
+    host.erase(0, scheme + 3);
+  }
+  const size_t slash = host.find(L'/');
+  if (slash != std::wstring::npos) {
+    path = host.substr(slash);
+    host.resize(slash);
+  }
+  if (path == L"/") {
+    path.clear();
+  }
+  PhiFontDesc text_desc;
+  text_desc.size = 12;
+  text_desc.face = PhiTextFaceName(/*display=*/false);
+  HGDIOBJ old_font = ::SelectObject(dc, fonts().Get(text_desc));
+  RECT text = layout.text;
+  if (!host.empty()) {
+    SIZE host_size = {};
+    ::GetTextExtentPoint32W(dc, host.c_str(), static_cast<int>(host.size()),
+                            &host_size);
+    RECT host_rc = text;
+    host_rc.right = std::min<LONG>(text.right, text.left + host_size.cx);
     ::SetTextColor(dc, palette.label);
-    RECT text = rc;
-    PhiDrawTextAA(dc, glyph, -1, &text,
-                DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-  };
-  glyph_chip(kHotClose, layout.close, kGlyphClose);
-  glyph_chip(kHotExpand, layout.expand, kGlyphExpand);
+    PhiDrawTextAA(dc, host.c_str(), -1, &host_rc,
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
+                      DT_NOPREFIX);
+    text.left = host_rc.right;
+  }
+  if (!path.empty() && text.right > text.left) {
+    ::SetTextColor(dc, palette.label_dim);
+    PhiDrawTextAA(dc, path.c_str(), -1, &text,
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
+                      DT_NOPREFIX);
+  }
 
+  // The three 28 dip buttons: the ink wash under the hovered one, Fluent
+  // glyphs at 16.
+  const auto button = [&](int index, const RECT& rc, const wchar_t* glyph) {
+    if (index == hot_) {
+      PhiFillRoundRectAA(dc, rc, Scaled(kButtonRadius), palette.hover);
+    }
+    PhiDrawIconGlyph(dc, rc, glyph, Scaled(16), palette.label);
+  };
+  button(kHotExpand, layout.expand, kGlyphExpand);
+  button(kHotClose, layout.close, kGlyphClose);
   // Split view is DRAWN, not lettered: Segoe MDL2 has no side-by-side mark
-  // that renders the same across the Windows versions this ships on, and a
-  // missing glyph shows as a hollow box.
+  // that renders the same across the Windows versions this ships on.
   {
-    const RECT rc = shift(layout.split);
-    plate(kHotSplit, rc);
-    RECT mark = rc;
+    if (hot_ == kHotSplit) {
+      PhiFillRoundRectAA(dc, layout.split, Scaled(kButtonRadius),
+                         palette.hover);
+    }
+    RECT mark = layout.split;
     ::InflateRect(&mark, -Scaled(8), -Scaled(9));
     HPEN pen = ::CreatePen(PS_SOLID, std::max(1, Scaled(1)), palette.label);
     HGDIOBJ old_pen = ::SelectObject(dc, pen);
@@ -688,16 +625,39 @@ void PhiPeekPanel::PaintControls(HDC dc) {
     ::SelectObject(dc, old_pen);
     ::DeleteObject(pen);
   }
-
   ::SelectObject(dc, old_font);
 }
 
-void PhiPeekPanel::HoverControl(int index) {
-  // The chip layer's hits_ ARE the chips, in kHotClose / kHotExpand /
-  // kHotSplit order, so the hovered index is the hot control. The base has
-  // already invalidated the two chip rects that changed.
-  hot_ = index;
+void PhiPeekPanel::LayoutHits() {
+  ClearHits();
+  if (!alive()) {
+    return;
+  }
+  const Layout layout = ComputeLayout();
+  AddHit(layout.close, kHotClose, L"Close Peek (Esc)", PhiHitRole::kButton);
+  AddHit(layout.expand, kHotExpand, L"Open as tab", PhiHitRole::kButton);
+  AddHit(layout.split, kHotSplit, L"Open in split view", PhiHitRole::kButton);
 }
+
+void PhiPeekPanel::OnHover(int hit, int) {
+  hot_ = hit >= 0 && hit < static_cast<int>(hits_.size())
+             ? hits_[static_cast<size_t>(hit)].key
+             : -1;
+  if (alive()) {
+    Invalidate(ComputeLayout().header);
+  }
+}
+
+void PhiPeekPanel::OnClick(int hit, POINT) {
+  if (hit >= 0 && hit < static_cast<int>(hits_.size())) {
+    ClickControl(hits_[static_cast<size_t>(hit)].key);
+  }
+}
+
+int64_t PhiPeekPanel::surface_tab_id() const {
+  return tab_id_;
+}
+
 
 void PhiPeekPanel::NoteEndReason(const char* reason) {
   end_reason_ = reason;

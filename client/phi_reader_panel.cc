@@ -3,7 +3,11 @@
 // found in the LICENSE file.
 
 #include "phibrowser-win/client/phi_reader_panel.h"
+#include "phibrowser-win/client/phi_dwrite.h"
+#include "phibrowser-win/client/phi_fluent.h"
 
+#include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/logging.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/phinomenon/phi_framework/phi_framework_api.h"
@@ -22,7 +26,13 @@ constexpr wchar_t kReaderPanelClassName[] = L"PhiReaderPanel";
 // The page card's corner radius (PhiShellWindow's kContentRadius,
 // webContentContainerCornerRadius on macOS 26) — the reading surface wears
 // the same corners as the page it covers.
-constexpr int kContentRadius = 14;
+constexpr int kContentRadius = 8;  // §5.7: the sheet family's radius.
+constexpr int kHeaderHeight = 36;
+constexpr int kHeaderPad = 12;
+constexpr int kFaviconSize = 16;
+constexpr int kButtonSize = 28;
+constexpr int kButtonGap = 4;
+constexpr int kButtonRadius = 4;
 
 }  // namespace
 
@@ -233,6 +243,30 @@ void PhiReaderPanel::RefreshState() {
   }
   const phi_framework::TabSnapshot& row = snapshot->tabs.front();
   const bool is_surface = row.surface == phi_framework::TabSurface::kReader;
+  // The header shows the ORIGIN page's favicon (reader.html has none) and
+  // the reading surface's url below it.
+  if (framework_ && origin_tab_id_ > 0) {
+    int width = 0;
+    int height = 0;
+    const unsigned char* pixels = framework_->TabFaviconBgraById(
+        origin_window_id_.value, static_cast<int>(origin_tab_id_), &width,
+        &height);
+    favicon_.clear();
+    favicon_w_ = favicon_h_ = 0;
+    if (pixels && width > 0 && height > 0) {
+      const size_t bytes =
+          static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
+      // SAFETY: the framework reports the buffer's own dimensions.
+      const auto view =
+          UNSAFE_BUFFERS(base::span<const unsigned char>(pixels, bytes));
+      favicon_.assign(view.begin(), view.end());
+      favicon_w_ = width;
+      favicon_h_ = height;
+    }
+    if (alive()) {
+      Invalidate(HeaderRect());
+    }
+  }
   if (!surface_tab_id_) {
     // The framework panelled the surface itself (the insertion divert), so
     // nobody bound it here: adopt the reader page standing for our origin.
@@ -270,19 +304,105 @@ void PhiReaderPanel::PositionContent() {
   }
   RECT client = {};
   ::GetClientRect(hwnd(), &client);
-  ::SetWindowPos(browser_hwnd_, nullptr, 0, 0, client.right, client.bottom,
+  const int header = HeaderRect().bottom;
+  ::SetWindowPos(browser_hwnd_, nullptr, 0, header, client.right,
+                 std::max(0, static_cast<int>(client.bottom) - header),
                  SWP_NOZORDER | SWP_NOACTIVATE);
+  LayoutHits();
+}
+
+RECT PhiReaderPanel::HeaderRect() const {
+  RECT client = {};
+  if (alive()) {
+    ::GetClientRect(hwnd(), &client);
+  }
+  return {0, 0, client.right, Scaled(kHeaderHeight)};
+}
+
+void PhiReaderPanel::LayoutHits() {
+  ClearHits();
+  if (!alive()) {
+    return;
+  }
+  const RECT header = HeaderRect();
+  const int btn = Scaled(kButtonSize);
+  const int mid = header.bottom / 2;
+  const RECT close = {header.right - Scaled(kButtonGap) - btn, mid - btn / 2,
+                      header.right - Scaled(kButtonGap), mid + btn / 2};
+  AddHit(close, 0, L"Close Reader", PhiHitRole::kButton);
+}
+
+void PhiReaderPanel::OnHover(int hit, int) {
+  hot_ = hit;
+  if (alive()) {
+    Invalidate(HeaderRect());
+  }
+}
+
+void PhiReaderPanel::OnClick(int hit, POINT) {
+  if (hit == 0 && coordinator_) {
+    coordinator_->CloseSurfacesForOrigin(
+        TabId{static_cast<int32_t>(origin_tab_id_)}, SidebarSurface::kReader);
+  }
+}
+
+int64_t PhiReaderPanel::surface_tab_id() const {
+  return surface_tab_id_;
 }
 
 void PhiReaderPanel::Paint(HDC dc, const RECT&) {
-  // Only ever seen in the instant before the hosted page covers it; painting
-  // the window's own ground stops that instant reading as a white flash.
   RECT client = {};
   ::GetClientRect(hwnd(), &client);
-  // Live, as before: the origin slot's palette ramps between frames.
-  HBRUSH ground = ::CreateSolidBrush(QueryPalette().ground_top);
+  const PhiPalette palette = QueryPalette();
+  HBRUSH ground = ::CreateSolidBrush(palette.ground_top);
   ::FillRect(dc, &client, ground);
   ::DeleteObject(ground);
+  // The header: flyout ground, the origin page's favicon and host, Close.
+  const RECT header = HeaderRect();
+  HBRUSH band = ::CreateSolidBrush(palette.flyout);
+  ::FillRect(dc, &header, band);
+  ::DeleteObject(band);
+  RECT rule = {header.left, header.bottom - 1, header.right, header.bottom};
+  HBRUSH sep = ::CreateSolidBrush(palette.separator);
+  ::FillRect(dc, &rule, sep);
+  ::DeleteObject(sep);
+  ::SetBkMode(dc, TRANSPARENT);
+  const int mid = header.bottom / 2;
+  const int icon = Scaled(kFaviconSize);
+  const RECT favicon = {Scaled(kHeaderPad), mid - icon / 2,
+                        Scaled(kHeaderPad) + icon, mid + icon / 2};
+  if (!favicon_.empty()) {
+    PhiDrawBgra(dc, favicon, favicon_.data(), favicon_w_, favicon_h_);
+  } else {
+    PhiDrawIconGlyph(dc, favicon, fluent::kGlobe, icon, palette.label_dim);
+  }
+  const int btn = Scaled(kButtonSize);
+  const RECT close = {header.right - Scaled(kButtonGap) - btn, mid - btn / 2,
+                      header.right - Scaled(kButtonGap), mid + btn / 2};
+  std::wstring host = url_;
+  const size_t scheme = host.find(L"://");
+  if (scheme != std::wstring::npos) {
+    host.erase(0, scheme + 3);
+  }
+  const size_t slash = host.find(L'/');
+  if (slash != std::wstring::npos) {
+    host.resize(slash);
+  }
+  PhiFontDesc text_desc;
+  text_desc.size = 12;
+  text_desc.face = PhiTextFaceName(/*display=*/false);
+  HGDIOBJ old_font = ::SelectObject(dc, fonts().Get(text_desc));
+  RECT text = {favicon.right + Scaled(8), header.top, close.left - Scaled(8),
+               header.bottom};
+  ::SetTextColor(dc, palette.label);
+  PhiDrawTextAA(dc, host.c_str(), -1, &text,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
+                    DT_NOPREFIX);
+  ::SelectObject(dc, old_font);
+  if (hot_ == 0) {
+    PhiFillRoundRectAA(dc, close, Scaled(kButtonRadius), palette.hover);
+  }
+  PhiDrawIconGlyph(dc, close, fluent::kCancel, Scaled(16), palette.label);
 }
 
 void PhiReaderPanel::OnSize(int, int) {

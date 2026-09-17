@@ -6,6 +6,10 @@
 
 namespace phi_client {
 
+int64_t PhiSurfacePanel::surface_tab_id() const {
+  return 0;
+}
+
 bool PhiSurfacePanel::ContainsWindow(HWND window) const {
   const HWND card = hwnd();
   return card && window && (window == card || ::IsChild(card, window));

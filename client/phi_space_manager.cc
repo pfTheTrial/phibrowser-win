@@ -4,6 +4,8 @@
 
 #include "phibrowser-win/client/phi_space_manager.h"
 
+#include "phibrowser-win/client/phi_agent_spaces.h"
+
 #include <utility>
 
 #include "base/json/json_writer.h"
@@ -355,6 +357,20 @@ void PhiSpaceManager::RebuildSpacePalettes() {
   const model::PhiSettings& settings = preferences_.settings();
   const PhiAppearance appearance = preferences_.Appearance();
   palette_by_space_.clear();
+  // The agent ground (windows-native-ui.md §5.10): a neutral #E8EAEE
+  // (dark #26282C) chrome tint whatever the user's theme, so a glance
+  // tells a machine's window from a person's. The accent stays the
+  // app's (the brand accent is impl log D26).
+  {
+    PhiPalette graphite = PhiResolvePalette(PhiThemeById("pure"), appearance,
+                                            /*saturation=*/0);
+    const COLORREF ground =
+        graphite.dark ? RGB(0x26, 0x28, 0x2C) : RGB(0xE8, 0xEA, 0xEE);
+    graphite.ground_top = ground;
+    graphite.ground_bottom = ground;
+    graphite.window_bg = ground;
+    agent_palette_ = std::make_unique<PhiPalette>(graphite);
+  }
   for (const model::Space& space : model_.spaces) {
     COLORREF accent = 0;
     const bool has_hex = PhiParseColorHex(space.color_hex, &accent);
@@ -388,6 +404,9 @@ const PhiPalette& PhiSpaceManager::PaletteForSpace(
   auto found = palette_by_space_.find(space_id);
   if (found != palette_by_space_.end()) {
     return *found->second;
+  }
+  if (agent_palette_ && PhiIsAgentSpaceId(space_id)) {
+    return *agent_palette_;
   }
   return preferences_.palette();
 }
