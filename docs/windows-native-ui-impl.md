@@ -19,7 +19,7 @@ decisions and I will check." The box is mine for testing.
 | P1 | app menu (⋯) replaces the menu bar; Fluent owner-drawn menus; Alt / F10 | done 2026-09-17, box-verified |
 | P2 | the two layouts, flush page pane, Performance removed, floating panel | done 2026-09-17, box-verified (split-time row sheet, Esc → P6) |
 | P3 | Spaces: pips, chip + switcher, two-line hover flyout | done 2026-09-17, box-verified |
-| P4 | dialogs as ContentDialogs | done 2026-09-17, box-verified (scrim not done) |
+| P4 | dialogs as ContentDialogs | done 2026-09-17, box-verified (scrim added the same day, f3f38f6) |
 | P5 | Settings as a Windows Settings window | done 2026-09-17, box-verified (expander cards, rail search, remembered size: round B) |
 | P6 | secondary windows, Kiosk, dark pass, polish | done 2026-09-17 (round D: Peek header, row tiles, incognito glyph, agent cues) |
 
@@ -517,6 +517,29 @@ decisions and I will check." The box is mine for testing.
 * Left for later: PhiCap re-baselines, the create form's Fluent restyle
   (D25), the picker's recents / skin tones (D24), D26–D30 below, and the
   §4.8 remainder (D31–D33).
+
+## What is left (examined 2026-09-17, after eeb15c6)
+
+Against `docs/windows-native-ui.md` section by section, everything a
+user sees is in. What remains is either a deferred mechanic with a
+decision above, or a small polish item:
+
+| Design | Left | Note |
+|---|---|---|
+| §3.1 app menu | the Zoom submenu has no live "100 %" readout | the framework API has no zoom query (P1 note) |
+| §4.4 floating panel | no fade on the slide-in | the 300 ms slide is there; the fade is a layered-alpha ramp |
+| §4.8 drag & drop | auto-scroll, Ctrl / Shift, whole-group drag, bookmarks-bar drag, cross-window slot, OLE drops, pip lift, hidden-sidebar reveal, ring on a pip, ghost caption strip | D31 / D32 / D34; the vocabulary (ghost, gap, line, ring, badge, snap tiles, New window) is in |
+| §5.5 create-Space form | the form's controls are still the Mac's styling in all three hosts | D25; the flyout host is new |
+| §5.8 row tiles | no "Close Peek" / "Close Reader" tooltips on the tiles | D30; the rows are not window hits yet |
+| §5.9 icon picker | no "Recently used" row, no skin-tone variants | D24 |
+| §5.10 agent cues | brand accent per agent, ring pulse, "Claude — Research" window title, ⋯ menu on the expanded capsule, omnibox dim + eye while held | D26 – D30 |
+| §6 dialogs | four titles still the old wording ("Sign out of Phi?" is done; the skill-replace, Chrome-import and updater-unavailable prompts keep theirs) | strings only |
+| §7 Settings | no account block at the rail's top (the "You" row stands in); the expander hint has no tab count | D20 / D17 note |
+| rigs | PhiCap band baselines and the layout-cycling rig still name "performance"; suite-drag wants three tab rows seeded | box scripts, not code |
+
+Nothing in the tree is half-migrated: no parallel patterns were left
+(the menu bar, the dashed drop cards, the Settings master-detail band,
+the Peek chip column and the inline icon grid are all deleted).
 
 ## Questions for Jixiang
 
