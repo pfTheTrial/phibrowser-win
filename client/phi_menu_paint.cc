@@ -30,6 +30,7 @@ constexpr int kArrowRoom = 20;  // The system's submenu arrow at the right.
 constexpr int kHighlightRadius = 4;
 constexpr int kLabelSize = 14;
 constexpr int kShortcutSize = 12;
+constexpr int kHintSize = 11;
 
 int Scale(int dip, UINT dpi) {
   return ::MulDiv(dip, static_cast<int>(dpi), 96);
@@ -41,6 +42,7 @@ struct MenuFonts {
   HFONT label = nullptr;
   HFONT label_strong = nullptr;
   HFONT shortcut = nullptr;
+  HFONT hint = nullptr;
 };
 
 const MenuFonts& FontsFor(UINT dpi) {
@@ -52,6 +54,7 @@ const MenuFonts& FontsFor(UINT dpi) {
     built.label = PhiFluentFont(dpi, kLabelSize);
     built.label_strong = PhiFluentFont(dpi, kLabelSize, FW_SEMIBOLD);
     built.shortcut = PhiFluentFont(dpi, kShortcutSize);
+    built.hint = PhiFluentFont(dpi, kHintSize);
     it = fonts->emplace(dpi, built).first;
   }
   return it->second;
@@ -362,6 +365,10 @@ bool PhiMenuOnMeasureItem(HWND owner, MEASUREITEMSTRUCT* measure) {
   const MenuFonts& fonts = FontsFor(dpi);
   int width = Scale(kPad + kIconColumn + kIconGap, dpi) +
               TextWidth(dc, fonts.label_strong, StripMnemonic(row->label));
+  if (!row->hint.empty()) {
+    width = std::max(width, Scale(kPad + kIconColumn + kIconGap, dpi) +
+                                TextWidth(dc, fonts.hint, row->hint));
+  }
   if (!row->shortcut.empty()) {
     width += Scale(kShortcutGap, dpi) +
              TextWidth(dc, fonts.shortcut, row->shortcut);
@@ -474,9 +481,27 @@ bool PhiMenuOnDrawItem(HWND owner,
     label_rc.right -= TextWidth(dc, fonts.shortcut, row->shortcut) +
                       Scale(kShortcutGap, dpi);
   }
-  ::DrawTextW(dc, row->label.c_str(), -1, &label_rc,
-              DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
-                  (hide_prefix ? DT_HIDEPREFIX : 0));
+  if (row->hint.empty()) {
+    ::DrawTextW(dc, row->label.c_str(), -1, &label_rc,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
+                    (hide_prefix ? DT_HIDEPREFIX : 0));
+  } else {
+    // Two lines (§5.3): the label above the middle, the hint in the
+    // tertiary ink below it.
+    const int mid = (r.top + r.bottom) / 2;
+    RECT top = label_rc;
+    top.bottom = mid + Scale(1, dpi);
+    ::DrawTextW(dc, row->label.c_str(), -1, &top,
+                DT_LEFT | DT_BOTTOM | DT_SINGLELINE | DT_END_ELLIPSIS |
+                    (hide_prefix ? DT_HIDEPREFIX : 0));
+    ::SelectObject(dc, fonts.hint);
+    ::SetTextColor(dc, shortcut_ink);
+    RECT bottom = label_rc;
+    bottom.top = mid + Scale(1, dpi);
+    ::DrawTextW(dc, row->hint.c_str(), -1, &bottom,
+                DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS |
+                    DT_NOPREFIX);
+  }
   if (!row->shortcut.empty()) {
     ::SelectObject(dc, fonts.shortcut);
     ::SetTextColor(dc, shortcut_ink);

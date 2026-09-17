@@ -222,6 +222,10 @@ class PhiOmniboxSession {
   // Navigates to whatever is typed in `edit` — the address field or the
   // native page's omnibox — then hands focus back to the page.
   void Commit(HWND edit);
+  // The field's right-click menu (windows-native-ui.md §3.5): the Fluent
+  // flyout with the EDIT's own verbs and "Paste and go" at the top, which
+  // pastes the clipboard's text over the field and commits it.
+  void ShowFieldMenu(HWND edit, POINT screen);
   void CommitField();  // Commit(field_).
   // Focuses the field and selects it whole, when it is on screen; false when
   // there is no visible field to focus (placeholder mode's entry point).
@@ -301,6 +305,8 @@ class PhiOmniboxSession {
                                     LPARAM lparam);
 
   RAW_PTR_EXCLUSION PhiOmniboxShell* const shell_;
+  // The palette the field menu's owner-draw reads while the menu is up.
+  PhiPalette menu_palette_;
 
   HWND field_ = nullptr;
   // The EDIT paints itself in SYSTEM colours, which clash under a dark

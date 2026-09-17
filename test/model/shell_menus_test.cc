@@ -85,7 +85,7 @@ void TabMenuFollowsTheMacOrder() {
   CHECK(Joined(spec) ==
         "tab.pin tab.duplicate tab.copyUrl - tab.openAsSplit - "
         "tab.bookmark . tab.newFolder - tab.newGroup - "
-        "tab.close tab.closeOthers ");
+        "tab.moveToNewWindow - tab.close tab.closeOthers ");
   // "Add to Folder" always exists (the fresh-folder row lives in it) but has
   // no separator above its only entry.
   const PhiMenuItem& folders = spec.items[7];
@@ -99,7 +99,7 @@ void TabMenuPairsWithTheFocusedTab() {
   const PhiMenuSpec spec = PhiBuildTabRowMenu(in);
   CHECK(spec.Find("tab.splitCurrent") != nullptr);
   CHECK(spec.Find("tab.openAsSplit") == nullptr);
-  CHECK(spec.Find("tab.splitCurrent")->label == L"Split with current");
+  CHECK(spec.Find("tab.splitCurrent")->label == L"contextMenu.splitWithCurrent");
   // A row already in a split offers neither: it has a partner.
   in.split_bound = true;
   const PhiMenuSpec bound = PhiBuildTabRowMenu(in);
@@ -166,15 +166,15 @@ void MergedTabMenuActsOnThePair() {
   CHECK(Joined(spec) ==
         "tab.pin tab.duplicate tab.copyLeft tab.copyRight - "
         "tab.reversePanes tab.convertSplit tab.removeSplit - "
-        "tab.bookmark - tab.newGroup - tab.close tab.closeOthers ");
+        "tab.bookmark - tab.newGroup - tab.moveToNewWindow - tab.close tab.closeOthers ");
   // One key, two labels: pinning a split is still "pin this row".
-  CHECK(spec.Find("tab.pin")->label == L"Pin split");
-  CHECK(spec.Find("tab.bookmark")->label == L"Add split to bookmarks");
+  CHECK(spec.Find("tab.pin")->label == L"contextMenu.pinSplit");
+  CHECK(spec.Find("tab.bookmark")->label == L"contextMenu.addSplitToBookmarks");
   // The convert row is labelled by where it TAKES you.
-  CHECK(spec.Find("tab.convertSplit")->label == L"Convert to vertical split");
+  CHECK(spec.Find("tab.convertSplit")->label == L"contextMenu.convertToVerticalSplit");
   in.split_stacked = true;
   CHECK(PhiBuildTabRowMenu(in).Find("tab.convertSplit")->label ==
-        L"Convert to horizontal split");
+        L"contextMenu.convertToHorizontalSplit");
 }
 
 void MergedTabMenuGroupsThePair() {
@@ -184,7 +184,7 @@ void MergedTabMenuGroupsThePair() {
   in.merged = true;
   in.groups = {Choice("g1", L"Research (2)")};
   const PhiMenuSpec loose = PhiBuildTabRowMenu(in);
-  CHECK(loose.Find("tab.newGroup")->label == L"New tab group");
+  CHECK(loose.Find("tab.newGroup")->label == L"contextMenu.newTabGroup");
   CHECK(loose.Find("tab.joinGroup")->target.id == "g1");
   CHECK(loose.Find("tab.moveNewGroup") == nullptr);
   CHECK(loose.Find("tab.leaveGroup") == nullptr);
@@ -194,7 +194,7 @@ void MergedTabMenuGroupsThePair() {
         "tab.pin tab.duplicate tab.copyLeft tab.copyRight - "
         "tab.reversePanes tab.convertSplit tab.removeSplit - "
         "tab.bookmark - . tab.joinGroup tab.moveNewGroup tab.leaveGroup - "
-        "tab.close tab.closeOthers ");
+        "tab.moveToNewWindow - tab.close tab.closeOthers ");
   CHECK(member.Find("tab.newGroup") == nullptr);
 }
 
@@ -207,7 +207,7 @@ void AgentDrivenTabLeadsWithTheTakeover() {
   in.agent_reclaimed = true;
   const PhiMenuSpec back = PhiBuildTabRowMenu(in);
   CHECK(back.items[0].key == "tab.handBack");
-  CHECK(back.items[0].label == L"Hand Back to Agent");
+  CHECK(back.items[0].label == L"contextMenu.handBackToAgent");
 }
 
 // --- Pinned cells and bookmark rows ---------------------------------------
@@ -229,7 +229,7 @@ void PinnedCellMenuTracksItsCell() {
         "pin.convertSplit - pin.unpin - pin.close ");
   CHECK(split.Find("pin.close")->enabled);
   CHECK(split.Find("pin.editUrl") == nullptr);  // A split pin keeps its panes.
-  CHECK(split.Find("pin.unpin")->label == L"Unpin split");
+  CHECK(split.Find("pin.unpin")->label == L"contextMenu.unpinSplit");
 }
 
 void BookmarkRowMenuSplitsLeavesFromFolders() {
@@ -239,7 +239,7 @@ void BookmarkRowMenuSplitsLeavesFromFolders() {
   CHECK(Joined(leaf) ==
         "bm.open bm.openSplit bm.copyUrl bm.rename bm.editUrl - "
         ". bm.moveToSpace . bm.cloneToSpace - bm.remove ");
-  CHECK(leaf.Find("bm.remove")->label == L"Delete");
+  CHECK(leaf.Find("bm.remove")->label == L"contextMenu.delete");
 
   in.folder = true;
   const PhiMenuSpec folder = PhiBuildBookmarkRowMenu(in);
@@ -247,7 +247,7 @@ void BookmarkRowMenuSplitsLeavesFromFolders() {
         "bm.rename bm.changeIcon bm.newFolder - bm.remove ");
   // A folder's subtree stays where it is: no cross-Space rows.
   CHECK(folder.Find("bm.moveToSpace") == nullptr);
-  CHECK(folder.Find("bm.remove")->label == L"Delete folder");
+  CHECK(folder.Find("bm.remove")->label == L"contextMenu.deleteFolder");
 }
 
 void BookmarkBarAreaMenuIsRootFolderCreation() {

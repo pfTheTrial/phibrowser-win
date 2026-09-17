@@ -74,6 +74,8 @@ std::vector<PhiMenuItem> ChoiceRows(const std::vector<PhiMenuChoice>& choices,
     PhiMenuItem item = PhiMenuItem::Command(key, choice.label);
     item.target.id = choice.id;
     item.glyph = choice.glyph;
+    item.hint = choice.hint;
+    item.shortcut = choice.shortcut;
     rows.push_back(std::move(item));
   }
   return rows;
@@ -118,14 +120,14 @@ PhiMenuSpec PhiBuildGroupHeaderMenu(
   PhiMenuSpec spec;
   // The Mac's "New tab in group" leads (windows-native-ui.md §3.5).
   spec.items.push_back(
-      PhiMenuItem::Command("group.newTab", L"New tab in group"));
+      PhiMenuItem::Command("group.newTab", PhiStr("contextMenu.newTabInGroup")));
   spec.items.push_back(
-      PhiMenuItem::Command("group.rename", L"Rename group…"));
+      PhiMenuItem::Command("group.rename", PhiStr("contextMenu.renameGroup")));
   spec.items.push_back(
-      PhiMenuItem::Submenu(L"Change color", std::move(swatches)));
+      PhiMenuItem::Submenu(PhiStr("contextMenu.changeColor"), std::move(swatches)));
   spec.items.push_back(PhiMenuItem::Separator());
-  spec.items.push_back(PhiMenuItem::Command("group.ungroup", L"Ungroup"));
-  spec.items.push_back(PhiMenuItem::Command("group.close", L"Close group"));
+  spec.items.push_back(PhiMenuItem::Command("group.ungroup", PhiStr("contextMenu.ungroup")));
+  spec.items.push_back(PhiMenuItem::Command("group.close", PhiStr("contextMenu.closeGroup")));
   return spec;
 }
 
@@ -139,20 +141,20 @@ namespace {
 void AppendGroupBlock(const PhiTabMenuInputs& in,
                       std::vector<PhiMenuItem>& items) {
   if (!in.grouped) {
-    items.push_back(PhiMenuItem::Command("tab.newGroup", L"New tab group"));
+    items.push_back(PhiMenuItem::Command("tab.newGroup", PhiStr("contextMenu.newTabGroup")));
     if (!in.groups.empty()) {
       items.push_back(PhiMenuItem::Submenu(
-          L"Add to group", ChoiceRows(in.groups, "tab.joinGroup")));
+          PhiStr("contextMenu.addToGroup"), ChoiceRows(in.groups, "tab.joinGroup")));
     }
   } else {
     if (!in.groups.empty()) {
       items.push_back(PhiMenuItem::Submenu(
-          L"Move to group", ChoiceRows(in.groups, "tab.joinGroup")));
+          PhiStr("contextMenu.moveToGroup"), ChoiceRows(in.groups, "tab.joinGroup")));
     }
     items.push_back(
-        PhiMenuItem::Command("tab.moveNewGroup", L"Move to new group"));
+        PhiMenuItem::Command("tab.moveNewGroup", PhiStr("contextMenu.moveToNewGroup")));
     items.push_back(
-        PhiMenuItem::Command("tab.leaveGroup", L"Remove from group"));
+        PhiMenuItem::Command("tab.leaveGroup", PhiStr("contextMenu.removeFromGroup")));
   }
 }
 
@@ -166,13 +168,13 @@ PhiMenuSpec PhiBuildTabRowMenu(const PhiTabMenuInputs& in) {
   if (in.agent_driven) {
     items.push_back(PhiMenuItem::Command(
         in.agent_reclaimed ? "tab.handBack" : "tab.takeControl",
-        in.agent_reclaimed ? L"Hand Back to Agent" : L"Take Control"));
+        in.agent_reclaimed ? PhiStr("contextMenu.handBackToAgent") : PhiStr("contextMenu.takeControl")));
     items.push_back(PhiMenuItem::Separator());
   }
   if (!in.merged) {
-    items.push_back(PersistCommand("tab.pin", L"Pin", in.incognito));
-    items.push_back(PhiMenuItem::Command("tab.duplicate", L"Duplicate"));
-    items.push_back(PhiMenuItem::Command("tab.copyUrl", L"Copy link"));
+    items.push_back(PersistCommand("tab.pin", PhiStr("contextMenu.pin"), in.incognito));
+    items.push_back(PhiMenuItem::Command("tab.duplicate", PhiStr("contextMenu.duplicate")));
+    items.push_back(PhiMenuItem::Command("tab.copyUrl", PhiStr("contextMenu.copyLink")));
     items.push_back(PhiMenuItem::Separator());
     if (!in.split_bound) {
       // "Split with Current" pairs this row with the FOCUSED tab; on the
@@ -180,11 +182,11 @@ PhiMenuSpec PhiBuildTabRowMenu(const PhiTabMenuInputs& in) {
       // becomes "Open as Split", a fresh pane (the Mac's two labels).
       items.push_back(PhiMenuItem::Command(
           in.current_can_pair ? "tab.splitCurrent" : "tab.openAsSplit",
-          in.current_can_pair ? L"Split with current" : L"Open as split"));
+          in.current_can_pair ? PhiStr("contextMenu.splitWithCurrent") : PhiStr("contextMenu.openAsSplit")));
       items.push_back(PhiMenuItem::Separator());
     }
     items.push_back(
-        PersistCommand("tab.bookmark", L"Add to bookmarks", in.incognito));
+        PersistCommand("tab.bookmark", PhiStr("contextMenu.addToBookmarks"), in.incognito));
     // "Add to Folder": this Space's bookmark folders in outline order,
     // nesting indented, then a fresh folder — the Mac's addToFolder submenu.
     // Nothing persists from incognito.
@@ -195,9 +197,9 @@ PhiMenuSpec PhiBuildTabRowMenu(const PhiTabMenuInputs& in) {
         folder_items.push_back(PhiMenuItem::Separator());
       }
       folder_items.push_back(
-          PhiMenuItem::Command("tab.newFolder", L"New folder\u2026"));
+          PhiMenuItem::Command("tab.newFolder", PhiStr("contextMenu.newFolder")));
       items.push_back(
-          PhiMenuItem::Submenu(L"Add to folder", std::move(folder_items)));
+          PhiMenuItem::Submenu(PhiStr("contextMenu.addToFolder"), std::move(folder_items)));
     }
     items.push_back(PhiMenuItem::Separator());
     AppendGroupBlock(in, items);
@@ -206,31 +208,31 @@ PhiMenuSpec PhiBuildTabRowMenu(const PhiTabMenuInputs& in) {
     // Space skipped; nothing persists from incognito).
     if (!in.spaces.empty()) {
       items.push_back(PhiMenuItem::Submenu(
-          L"Move to Space", ChoiceRows(in.spaces, "tab.moveToSpace")));
+          PhiStr("contextMenu.moveToSpace"), ChoiceRows(in.spaces, "tab.moveToSpace")));
       items.push_back(PhiMenuItem::Submenu(
-          L"Clone to Space", ChoiceRows(in.spaces, "tab.cloneToSpace")));
+          PhiStr("contextMenu.cloneToSpace"), ChoiceRows(in.spaces, "tab.cloneToSpace")));
       items.push_back(PhiMenuItem::Separator());
     }
   } else {
     // The merged split row: every action operates on the pair.
-    items.push_back(PersistCommand("tab.pin", L"Pin split", in.incognito));
-    items.push_back(PhiMenuItem::Command("tab.duplicate", L"Duplicate split"));
-    items.push_back(PhiMenuItem::Command("tab.copyLeft", L"Copy left URL"));
-    items.push_back(PhiMenuItem::Command("tab.copyRight", L"Copy right URL"));
+    items.push_back(PersistCommand("tab.pin", PhiStr("contextMenu.pinSplit"), in.incognito));
+    items.push_back(PhiMenuItem::Command("tab.duplicate", PhiStr("contextMenu.duplicateSplit")));
+    items.push_back(PhiMenuItem::Command("tab.copyLeft", PhiStr("contextMenu.copyLeftURL")));
+    items.push_back(PhiMenuItem::Command("tab.copyRight", PhiStr("contextMenu.copyRightURL")));
     items.push_back(PhiMenuItem::Separator());
     // The Mac's "Reverse Panes": swap the two sides of this split.
     items.push_back(
-        PhiMenuItem::Command("tab.reversePanes", L"Reverse Panes"));
+        PhiMenuItem::Command("tab.reversePanes", PhiStr("contextMenu.reversePanes")));
     // The Mac's convert item, labelled by where it takes you: a side-by-side
     // pair offers the stacked arrangement and vice versa.
     items.push_back(PhiMenuItem::Command("tab.convertSplit",
                                          in.split_stacked
-                                             ? L"Convert to horizontal split"
-                                             : L"Convert to vertical split"));
+                                             ? PhiStr("contextMenu.convertToHorizontalSplit")
+                                             : PhiStr("contextMenu.convertToVerticalSplit")));
     items.push_back(
-        PhiMenuItem::Command("tab.removeSplit", L"Remove from split"));
+        PhiMenuItem::Command("tab.removeSplit", PhiStr("contextMenu.removeFromSplit")));
     items.push_back(PhiMenuItem::Separator());
-    items.push_back(PersistCommand("tab.bookmark", L"Add split to bookmarks",
+    items.push_back(PersistCommand("tab.bookmark", PhiStr("contextMenu.addSplitToBookmarks"),
                                    in.incognito));
     items.push_back(PhiMenuItem::Separator());
     // The pair groups as one: both panes join (or leave) together, as the
@@ -238,8 +240,13 @@ PhiMenuSpec PhiBuildTabRowMenu(const PhiTabMenuInputs& in) {
     AppendGroupBlock(in, items);
     items.push_back(PhiMenuItem::Separator());
   }
-  items.push_back(PhiMenuItem::Command("tab.close", L"Close"));
-  items.push_back(PhiMenuItem::Command("tab.closeOthers", L"Close other tabs"));
+  // Chrome's "Move tab to new window" (§3.5): the row (a split's pair
+  // together) detaches into a fresh window of the same profile.
+  items.push_back(
+      PhiMenuItem::Command("tab.moveToNewWindow", PhiStr("contextMenu.moveToNewWindow")));
+  items.push_back(PhiMenuItem::Separator());
+  items.push_back(PhiMenuItem::Command("tab.close", PhiStr("contextMenu.close")));
+  items.push_back(PhiMenuItem::Command("tab.closeOthers", PhiStr("contextMenu.closeOtherTabs")));
   return spec;
 }
 
@@ -248,32 +255,32 @@ PhiMenuSpec PhiBuildTabRowMenu(const PhiTabMenuInputs& in) {
 PhiMenuSpec PhiBuildPinnedCellMenu(const PhiPinnedMenuInputs& in) {
   PhiMenuSpec spec;
   std::vector<PhiMenuItem>& items = spec.items;
-  items.push_back(PhiMenuItem::Command("pin.open", L"Open"));
+  items.push_back(PhiMenuItem::Command("pin.open", PhiStr("contextMenu.open")));
   items.push_back(PhiMenuItem::Command(
-      "pin.duplicate", in.split_cell ? L"Duplicate split" : L"Duplicate"));
+      "pin.duplicate", in.split_cell ? PhiStr("contextMenu.duplicateSplit") : PhiStr("contextMenu.duplicate")));
   if (in.split_cell) {
-    items.push_back(PhiMenuItem::Command("pin.copyLeft", L"Copy left URL"));
-    items.push_back(PhiMenuItem::Command("pin.copyRight", L"Copy right URL"));
+    items.push_back(PhiMenuItem::Command("pin.copyLeft", PhiStr("contextMenu.copyLeftURL")));
+    items.push_back(PhiMenuItem::Command("pin.copyRight", PhiStr("contextMenu.copyRightURL")));
   } else {
-    items.push_back(PhiMenuItem::Command("pin.copyUrl", L"Copy link"));
+    items.push_back(PhiMenuItem::Command("pin.copyUrl", PhiStr("contextMenu.copyLink")));
   }
-  items.push_back(PhiMenuItem::Command("pin.rename", L"Rename\u2026"));
+  items.push_back(PhiMenuItem::Command("pin.rename", PhiStr("contextMenu.rename")));
   // The Mac's Edit…: the pin's address (a split pin keeps its panes).
   if (!in.split_cell) {
-    items.push_back(PhiMenuItem::Command("pin.editUrl", L"Edit URL\u2026"));
+    items.push_back(PhiMenuItem::Command("pin.editUrl", PhiStr("contextMenu.editURL")));
   }
   if (in.split_cell) {
     items.push_back(PhiMenuItem::Separator());
     items.push_back(PhiMenuItem::Command("pin.convertSplit",
                                          in.horizontal
-                                             ? L"Convert to horizontal split"
-                                             : L"Convert to vertical split"));
+                                             ? PhiStr("contextMenu.convertToHorizontalSplit")
+                                             : PhiStr("contextMenu.convertToVerticalSplit")));
   }
   items.push_back(PhiMenuItem::Separator());
   items.push_back(PhiMenuItem::Command(
-      "pin.unpin", in.split_cell ? L"Unpin split" : L"Unpin"));
+      "pin.unpin", in.split_cell ? PhiStr("contextMenu.unpinSplit") : PhiStr("contextMenu.unpin")));
   items.push_back(PhiMenuItem::Separator());
-  PhiMenuItem close = PhiMenuItem::Command("pin.close", L"Close");
+  PhiMenuItem close = PhiMenuItem::Command("pin.close", PhiStr("contextMenu.close"));
   close.enabled = in.open;
   items.push_back(std::move(close));
   return spec;
@@ -284,7 +291,7 @@ PhiMenuSpec PhiBuildPinnedCellMenu(const PhiPinnedMenuInputs& in) {
 PhiMenuSpec PhiBuildBookmarkBarAreaMenu(bool incognito) {
   PhiMenuSpec spec;
   spec.items.push_back(
-      PersistCommand("bar.newRootFolder", L"New folder\u2026", incognito));
+      PersistCommand("bar.newRootFolder", PhiStr("contextMenu.newFolder"), incognito));
   return spec;
 }
 
@@ -292,44 +299,44 @@ PhiMenuSpec PhiBuildBookmarkRowMenu(const PhiBookmarkMenuInputs& in) {
   PhiMenuSpec spec;
   std::vector<PhiMenuItem>& items = spec.items;
   if (!in.folder) {
-    items.push_back(PhiMenuItem::Command("bm.open", L"Open in new tab"));
-    items.push_back(PhiMenuItem::Command("bm.openSplit", L"Open as split"));
+    items.push_back(PhiMenuItem::Command("bm.open", PhiStr("contextMenu.openInNewTab")));
+    items.push_back(PhiMenuItem::Command("bm.openSplit", PhiStr("contextMenu.openAsSplit")));
     if (in.split_row) {
-      items.push_back(PhiMenuItem::Command("bm.copyLeft", L"Copy left URL"));
-      items.push_back(PhiMenuItem::Command("bm.copyRight", L"Copy right URL"));
+      items.push_back(PhiMenuItem::Command("bm.copyLeft", PhiStr("contextMenu.copyLeftURL")));
+      items.push_back(PhiMenuItem::Command("bm.copyRight", PhiStr("contextMenu.copyRightURL")));
     } else {
-      items.push_back(PhiMenuItem::Command("bm.copyUrl", L"Copy link"));
+      items.push_back(PhiMenuItem::Command("bm.copyUrl", PhiStr("contextMenu.copyLink")));
     }
   }
-  items.push_back(PhiMenuItem::Command("bm.rename", L"Rename\u2026"));
+  items.push_back(PhiMenuItem::Command("bm.rename", PhiStr("contextMenu.rename")));
   if (!in.folder && !in.split_row) {
     // The Mac's Edit…
-    items.push_back(PhiMenuItem::Command("bm.editUrl", L"Edit URL\u2026"));
+    items.push_back(PhiMenuItem::Command("bm.editUrl", PhiStr("contextMenu.editURL")));
   }
   if (in.split_row) {
     items.push_back(PhiMenuItem::Command("bm.convertSplit",
                                          in.horizontal
-                                             ? L"Convert to horizontal split"
-                                             : L"Convert to vertical split"));
+                                             ? PhiStr("contextMenu.convertToHorizontalSplit")
+                                             : PhiStr("contextMenu.convertToVerticalSplit")));
   }
   if (in.folder) {
     // The Mac's folder menu: Rename, then the icon picker.
-    items.push_back(PhiMenuItem::Command("bm.changeIcon", L"Change icon\u2026"));
+    items.push_back(PhiMenuItem::Command("bm.changeIcon", PhiStr("contextMenu.changeIcon")));
     items.push_back(
-        PhiMenuItem::Command("bm.newFolder", L"New nested folder\u2026"));
+        PhiMenuItem::Command("bm.newFolder", PhiStr("contextMenu.newNestedFolder")));
   }
   // Move/Clone to Space — the Mac's appendSpaceTransferMenuItems, leaf rows
   // only (a folder's subtree stays where it is).
   if (!in.folder && !in.spaces.empty()) {
     items.push_back(PhiMenuItem::Separator());
     items.push_back(PhiMenuItem::Submenu(
-        L"Move to Space", ChoiceRows(in.spaces, "bm.moveToSpace")));
+        PhiStr("contextMenu.moveToSpace"), ChoiceRows(in.spaces, "bm.moveToSpace")));
     items.push_back(PhiMenuItem::Submenu(
-        L"Clone to Space", ChoiceRows(in.spaces, "bm.cloneToSpace")));
+        PhiStr("contextMenu.cloneToSpace"), ChoiceRows(in.spaces, "bm.cloneToSpace")));
   }
   items.push_back(PhiMenuItem::Separator());
   items.push_back(PhiMenuItem::Command(
-      "bm.remove", in.folder ? L"Delete folder" : L"Delete"));
+      "bm.remove", in.folder ? PhiStr("contextMenu.deleteFolder") : PhiStr("contextMenu.delete")));
   return spec;
 }
 
@@ -355,13 +362,13 @@ PhiMenuSpec PhiBuildTabAreaMenu(const PhiTabAreaMenuInputs& in) {
     }
     return spec;
   }
-  items.push_back(PhiMenuItem::Command("area.newTab", L"New tab"));
-  items.push_back(PhiMenuItem::Command("area.reopen", L"Reopen closed tab"));
+  items.push_back(PhiMenuItem::Command("area.newTab", PhiStr("contextMenu.newTab")));
+  items.push_back(PhiMenuItem::Command("area.reopen", PhiStr("contextMenu.reopenClosedTab")));
   items.push_back(PhiMenuItem::Separator());
   items.push_back(
-      PersistCommand("area.newRootFolder", L"New folder\u2026", in.incognito));
+      PersistCommand("area.newRootFolder", PhiStr("contextMenu.newFolder"), in.incognito));
   PhiMenuItem bookmark_all =
-      PersistCommand("area.bookmarkAll", L"Bookmark all tabs", in.incognito);
+      PersistCommand("area.bookmarkAll", PhiStr("contextMenu.bookmarkAllTabs"), in.incognito);
   // Two different disabled states: incognito greys the row off the record,
   // an empty tab list only makes it inert.
   bookmark_all.enabled = !in.incognito && !in.tabs_empty;
@@ -374,8 +381,8 @@ PhiMenuSpec PhiBuildTabAreaMenu(const PhiTabAreaMenuInputs& in) {
     const wchar_t* label;
   } kLayouts[] = {
       // Performance is retired on Windows (impl log D9): two layouts.
-      {"comfortable", PhiLayoutMode::kComfortable, L"Horizontal tabs"},
-      {"balanced", PhiLayoutMode::kBalanced, L"Vertical tabs"},
+      {"comfortable", PhiLayoutMode::kComfortable, PhiStr("contextMenu.horizontalTabs")},
+      {"balanced", PhiLayoutMode::kBalanced, PhiStr("contextMenu.verticalTabs")},
   };
   std::vector<PhiMenuItem> layouts;
   for (const auto& entry : kLayouts) {
@@ -384,7 +391,7 @@ PhiMenuSpec PhiBuildTabAreaMenu(const PhiTabAreaMenuInputs& in) {
     item.checked = in.mode == entry.mode;
     layouts.push_back(std::move(item));
   }
-  items.push_back(PhiMenuItem::Submenu(L"Layout", std::move(layouts)));
+  items.push_back(PhiMenuItem::Submenu(PhiStr("contextMenu.layout"), std::move(layouts)));
   if (in.incognito) {
     // Incognito shells have no Spaces: the active-Space block never appears.
     return spec;
@@ -411,10 +418,10 @@ PhiMenuSpec PhiBuildTabAreaMenu(const PhiTabAreaMenuInputs& in) {
     profiles.push_back(std::move(none));
   }
   items.push_back(PhiMenuItem::Separator());
-  items.push_back(PhiMenuItem::Command("area.newSpace", L"New Space\u2026"));
+  items.push_back(PhiMenuItem::Command("area.newSpace", PhiStr("contextMenu.newSpace")));
   items.push_back(
-      PhiMenuItem::Command("area.renameSpace", L"Rename Space\u2026"));
-  items.push_back(PhiMenuItem::Command("area.changeIcon", L"Change icon\u2026"));
+      PhiMenuItem::Command("area.renameSpace", PhiStr("contextMenu.renameSpace")));
+  items.push_back(PhiMenuItem::Command("area.changeIcon", PhiStr("contextMenu.changeIcon")));
   // Set Theme opens the Mac's editor panel (swatch row + saturation slider)
   // rather than a list of theme names.
   items.push_back(
@@ -423,7 +430,7 @@ PhiMenuSpec PhiBuildTabAreaMenu(const PhiTabAreaMenuInputs& in) {
       PhiStr("app.activeSpaceContextMenu.profileSubmenuTitle"),
       std::move(profiles)));
   PhiMenuItem del =
-      PhiMenuItem::Command("area.deleteSpace", L"Delete Space\u2026");
+      PhiMenuItem::Command("area.deleteSpace", PhiStr("contextMenu.deleteSpace"));
   del.enabled = in.can_delete_space;
   items.push_back(std::move(del));
   return spec;
@@ -435,10 +442,10 @@ PhiMenuSpec PhiBuildAgentChipMenu() {
   PhiMenuSpec spec;
   if (kPhiTranscriptEnabled) {
     spec.items.push_back(
-        PhiMenuItem::Command("agent.transcript", L"Show transcript"));
+        PhiMenuItem::Command("agent.transcript", PhiStr("contextMenu.showTranscript")));
     spec.items.push_back(PhiMenuItem::Separator());
   }
-  spec.items.push_back(PhiMenuItem::Command("agent.finish", L"Finish task"));
+  spec.items.push_back(PhiMenuItem::Command("agent.finish", PhiStr("contextMenu.finishTask")));
   return spec;
 }
 
@@ -478,7 +485,7 @@ PhiMenuSpec PhiBuildSpaceSwitcherMenu(const std::vector<PhiMenuChoice>& spaces,
   // newSpaceItem): it opens the create form — inline in a docked sidebar,
   // else in the standalone window.
   spec.items.push_back(PhiMenuItem::Separator());
-  PhiMenuItem new_space = PhiMenuItem::Command("space.new", L"New Space\u2026");
+  PhiMenuItem new_space = PhiMenuItem::Command("space.new", PhiStr("contextMenu.newSpace"));
   new_space.glyph = L"\uE710";  // MDL2 Add.
   spec.items.push_back(std::move(new_space));
   if (!with_new_profile) {
@@ -488,7 +495,43 @@ PhiMenuSpec PhiBuildSpaceSwitcherMenu(const std::vector<PhiMenuChoice>& spaces,
   // is the second row (profile creation is asynchronous — the Space follows
   // once the profile exists).
   spec.items.push_back(PhiMenuItem::Command(
-      "space.newWithProfile", L"New Space with new profile\u2026"));
+      "space.newWithProfile", PhiStr("contextMenu.newSpaceWithNewProfile")));
+  return spec;
+}
+
+// --- The omnibox field -----------------------------------------------------
+
+PhiMenuSpec PhiBuildOmniboxFieldMenu(bool has_selection,
+                                     bool has_text,
+                                     bool clipboard_text,
+                                     bool can_undo) {
+  PhiMenuSpec spec;
+  std::vector<PhiMenuItem>& items = spec.items;
+  if (clipboard_text) {
+    items.push_back(PhiMenuItem::Command("edit.pasteAndGo",
+                                         PhiStr("contextMenu.edit.pasteAndGo")));
+    items.push_back(PhiMenuItem::Separator());
+  }
+  PhiMenuItem undo = PhiMenuItem::Command("edit.undo", PhiStr("contextMenu.edit.undo"));
+  undo.enabled = can_undo;
+  items.push_back(std::move(undo));
+  items.push_back(PhiMenuItem::Separator());
+  PhiMenuItem cut = PhiMenuItem::Command("edit.cut", PhiStr("contextMenu.edit.cut"));
+  cut.enabled = has_selection;
+  items.push_back(std::move(cut));
+  PhiMenuItem copy = PhiMenuItem::Command("edit.copy", PhiStr("contextMenu.edit.copy"));
+  copy.enabled = has_selection;
+  items.push_back(std::move(copy));
+  PhiMenuItem paste = PhiMenuItem::Command("edit.paste", PhiStr("contextMenu.edit.paste"));
+  paste.enabled = clipboard_text;
+  items.push_back(std::move(paste));
+  PhiMenuItem erase = PhiMenuItem::Command("edit.delete", PhiStr("contextMenu.edit.delete"));
+  erase.enabled = has_selection;
+  items.push_back(std::move(erase));
+  items.push_back(PhiMenuItem::Separator());
+  PhiMenuItem all = PhiMenuItem::Command("edit.selectAll", PhiStr("contextMenu.edit.selectAll"));
+  all.enabled = has_text;
+  items.push_back(std::move(all));
   return spec;
 }
 
@@ -564,6 +607,14 @@ constexpr RowDecor kRowDecor[] = {
     {"tab.pin", nullptr, false, fluent::kPin},
     {"tab.duplicate", nullptr, false, fluent::kCopy},
     {"tab.copyUrl", L"Ctrl+Shift+C", false, fluent::kLink},
+    {"tab.moveToNewWindow", nullptr, false, fluent::kOpenInNewWindow},
+    {"edit.undo", L"Ctrl+Z", false, fluent::kUndo},
+    {"edit.cut", L"Ctrl+X", false, fluent::kCut},
+    {"edit.copy", L"Ctrl+C", false, fluent::kCopy},
+    {"edit.paste", L"Ctrl+V", false, fluent::kPaste},
+    {"edit.pasteAndGo", nullptr, false, fluent::kGo},
+    {"edit.delete", nullptr, false, nullptr},
+    {"edit.selectAll", L"Ctrl+A", false, nullptr},
     {"tab.bookmark", L"Ctrl+D", false, fluent::kFavoriteStar},
     {"tab.close", L"Ctrl+W", false, fluent::kCancel},
     {"tab.closeOthers", nullptr, false, nullptr},
@@ -634,6 +685,13 @@ bool AppendSpec(HMENU menu,
                                            item.enabled);
     row->height_dip = 32;
     row->picture = item.glyph;
+    row->hint = item.hint;
+    row->shortcut = item.shortcut;
+    if (!item.hint.empty()) {
+      // A two-line row (the switcher, §5.3): 40 dip in a 300 dip flyout.
+      row->height_dip = 40;
+      row->min_width_dip = 300;
+    }
     if (const RowDecor* decor = DecorFor(item.key)) {
       if (decor->shortcut && row->shortcut.empty()) {
         row->shortcut = decor->shortcut;

@@ -4220,12 +4220,33 @@ std::vector<PhiMenuChoice> PhiShellWindow::SpaceSwitcherChoices() const {
   if (!services_.spaces) {
     return choices;
   }
+  // The switcher's second line (§5.3): "profile · N tabs", and the Ctrl+n
+  // keycap by strip position (user Spaces lead the strip).
+  const std::vector<std::string> profiles = services_.spaces->ProfileSummaries();
+  const auto profile_name = [&profiles](const std::string& id) {
+    for (const std::string& summary : profiles) {
+      const size_t tab = summary.find('\t');
+      if (summary.substr(0, tab) == id) {
+        return base::UTF8ToWide(
+            tab != std::string::npos ? summary.substr(tab + 1) : id);
+      }
+    }
+    return base::UTF8ToWide(id);
+  };
+  int ordinal = 0;
   for (const PhiSpaceView& space : services_.spaces->Spaces()) {
+    ++ordinal;
     PhiMenuChoice choice;
     choice.id = space.id;
     choice.label = base::UTF8ToWide(!space.name.empty() ? space.name
                                                         : "Space " + space.id);
     choice.glyph = base::UTF8ToWide(space.icon_text);
+    const int tabs = SpacesTabCount(space.id);
+    choice.hint = profile_name(space.profile_id) + L"  \u00B7  " +
+                  std::to_wstring(tabs) + (tabs == 1 ? L" tab" : L" tabs");
+    if (ordinal <= 9) {
+      choice.shortcut = L"Ctrl+" + std::to_wstring(ordinal);
+    }
     choices.push_back(std::move(choice));
   }
   return choices;
@@ -4433,6 +4454,21 @@ void PhiShellWindow::ShowTabRowMenu(POINT pt, const MenuRow& row) {
     sidebar_->Apply(SidebarLeaveGroup{row.key});
   } else if (action.is("tab.close")) {
     sidebar_->Apply(SidebarClose{row.key, -1});
+  } else if (action.is("tab.moveToNewWindow") && framework_ &&
+             browser.valid() && row.id.valid()) {
+    // Chrome's "Move tab to new window": the drag-out gesture's end state
+    // without the drag — the row (a split's pair together) detaches into a
+    // new window of the same profile. A stored row's tab is unbound first
+    // so its cell stays behind as a placeholder, as the tear-off does.
+    if (sidebar_) {
+      sidebar_->UnbindStoredTab(browser, row.id);
+      if (row.b_id.valid()) {
+        sidebar_->UnbindStoredTab(browser, row.b_id);
+      }
+    }
+    const TabId ids[] = {row.id, row.b_id};
+    framework_->MoveTabsToNewWindowByIds(browser, ids,
+                                         row.b_id.valid() ? 2 : 1);
   } else if (action.is("tab.closeOthers") && framework_ && model_) {
     // Every UNBOUND tab except this row (both panes of a merged one);
     // pin/bookmark-bound tabs live in their cells and stay. Closed by stable
@@ -4798,6 +4834,35 @@ void PhiShellWindow::ShowSpaceSwitcherMenu(POINT pt, bool overflow) {
       choice.id = pip.task_id;
       choice.label = PhiAgentPipLabel(pip);
       choice.glyph = pip.icon;
+      // The status word leads the agent row's hint (§5.3), then the
+      // profile and the tab count like a user Space's.
+      const wchar_t* status = L"Running";
+      switch (pip.badge) {
+        case PhiAgentPipView::Badge::kRunning:
+          status = L"Running";
+          break;
+        case PhiAgentPipView::Badge::kIdle:
+          status = L"Idle";
+          break;
+        case PhiAgentPipView::Badge::kUserHolds:
+          status = L"You have control";
+          break;
+        case PhiAgentPipView::Badge::kCompleted:
+          status = L"Done";
+          break;
+        case PhiAgentPipView::Badge::kError:
+          status = L"Error";
+          break;
+      }
+      const int tabs = SpacesTabCount(pip.space_id);
+      choice.hint = std::wstring(status) + L"  \u00B7  " +
+                    base::UTF8ToWide(pip.profile_id) + L"  \u00B7  " +
+                    std::to_wstring(tabs) + (tabs == 1 ? L" tab" : L" tabs");
+      const int position = static_cast<int>(spaces.size()) +
+                           static_cast<int>(agents.size()) + 1;
+      if (position <= 9) {
+        choice.shortcut = L"Ctrl+" + std::to_wstring(position);
+      }
       if (pip.watched) {
         watched_agent = pip.task_id;
       }

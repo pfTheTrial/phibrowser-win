@@ -84,6 +84,10 @@ struct PhiMenuItem {
   // Rasterized into the row's bitmap by the runner (Space icons: menu text
   // cannot render the strip's artwork or a colour emoji).
   std::wstring glyph;
+  // A dim second line (40 dip rows) and a per-row chord; the decor table
+  // supplies chords by key for everything else.
+  std::wstring hint;
+  std::wstring shortcut;
   std::vector<PhiMenuItem> items;
 
   static PhiMenuItem Separator();
@@ -122,7 +126,18 @@ struct PhiMenuChoice {
   std::string id;
   std::wstring label;
   std::wstring glyph;  // Space rows only.
+  // The switcher's second line and keycap (§5.3): "profile · N tabs" and
+  // "Ctrl+n"; empty on every other list.
+  std::wstring hint;
+  std::wstring shortcut;
 };
+
+// The omnibox field's menu (§3.5): "Paste and go" leads (only with text
+// on the clipboard), then the EDIT's own verbs with their states.
+PhiMenuSpec PhiBuildOmniboxFieldMenu(bool has_selection,
+                                     bool has_text,
+                                     bool clipboard_text,
+                                     bool can_undo);
 
 // A tab group's colour swatch row.
 struct PhiMenuColorOption {

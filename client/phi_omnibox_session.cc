@@ -17,6 +17,7 @@
 #include "base/values.h"
 #include "phibrowser-win/client/phi_dwrite.h"
 #include "phibrowser-win/client/phi_i18n.h"
+#include "phibrowser-win/client/phi_shell_menus.h"
 
 namespace phi_client {
 
@@ -242,6 +243,71 @@ void PhiOmniboxSession::Sync(bool force) {
 
 void PhiOmniboxSession::CommitField() {
   Commit(field_);
+}
+
+void PhiOmniboxSession::ShowFieldMenu(HWND edit, POINT screen) {
+  DWORD sel_start = 0;
+  DWORD sel_end = 0;
+  ::SendMessageW(edit, EM_GETSEL, reinterpret_cast<WPARAM>(&sel_start),
+                 reinterpret_cast<LPARAM>(&sel_end));
+  const bool has_selection = sel_end > sel_start;
+  const bool has_text = ::GetWindowTextLengthW(edit) > 0;
+  const bool clipboard_text =
+      ::IsClipboardFormatAvailable(CF_UNICODETEXT) != FALSE;
+  const bool can_undo = ::SendMessageW(edit, EM_CANUNDO, 0, 0) != 0;
+  PhiMenuSpec spec = PhiBuildOmniboxFieldMenu(has_selection, has_text,
+                                              clipboard_text, can_undo);
+  menu_palette_ = shell_->OmniboxPalette();
+  PhiPopupMenuRequest request;
+  request.owner = shell_->OmniboxShellWindow();
+  request.x = screen.x;
+  request.y = screen.y;
+  request.align = TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RIGHTBUTTON;
+  request.palette = &menu_palette_;
+  const PhiMenuAction action = PhiRunPopupMenu(spec, request);
+  if (!::IsWindow(edit)) {
+    return;
+  }
+  if (action.is("edit.undo")) {
+    ::SendMessageW(edit, WM_UNDO, 0, 0);
+  } else if (action.is("edit.cut")) {
+    ::SendMessageW(edit, WM_CUT, 0, 0);
+  } else if (action.is("edit.copy")) {
+    ::SendMessageW(edit, WM_COPY, 0, 0);
+  } else if (action.is("edit.paste")) {
+    ::SendMessageW(edit, WM_PASTE, 0, 0);
+  } else if (action.is("edit.delete")) {
+    ::SendMessageW(edit, WM_CLEAR, 0, 0);
+  } else if (action.is("edit.selectAll")) {
+    ::SendMessageW(edit, EM_SETSEL, 0, -1);
+  } else if (action.is("edit.pasteAndGo")) {
+    // Chrome's and Edge's row: the clipboard's first line replaces the
+    // field and goes, without a round trip through the keyboard.
+    std::wstring text;
+    if (::OpenClipboard(edit)) {
+      if (HANDLE data = ::GetClipboardData(CF_UNICODETEXT)) {
+        if (const wchar_t* chars =
+                static_cast<const wchar_t*>(::GlobalLock(data))) {
+          text = chars;
+          ::GlobalUnlock(data);
+        }
+      }
+      ::CloseClipboard();
+    }
+    const size_t cut = text.find_first_of(L"\r\n");
+    if (cut != std::wstring::npos) {
+      text.resize(cut);
+    }
+    while (!text.empty() && (text.front() == L' ' || text.front() == L'\t')) {
+      text.erase(text.begin());
+    }
+    if (text.empty()) {
+      return;
+    }
+    ::SetWindowTextW(edit, text.c_str());
+    ClosePopup(/*stop_query=*/false);
+    Commit(edit);
+  }
 }
 
 void PhiOmniboxSession::Commit(HWND edit) {
@@ -786,6 +852,21 @@ LRESULT CALLBACK PhiOmniboxSession::FieldProc(HWND hwnd,
       ::SendMessageW(hwnd, EM_SETSEL, 0, -1);  // Typing replaces the whole URL.
       return result;
     }
+    case WM_CONTEXTMENU:
+      if (self) {
+        // The EDIT's stock menu is replaced by the Fluent flyout (§3.5).
+        // Shift+F10 / the menu key arrive with (-1, -1): anchor those on
+        // the caret's field.
+        POINT screen = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+        if (screen.x == -1 && screen.y == -1) {
+          RECT rc = {};
+          ::GetWindowRect(hwnd, &rc);
+          screen = {rc.left + (rc.right - rc.left) / 3, rc.bottom};
+        }
+        self->ShowFieldMenu(hwnd, screen);
+        return 0;
+      }
+      break;
   }
   return ::CallWindowProcW(g_edit_base_proc, hwnd, msg, wparam, lparam);
 }

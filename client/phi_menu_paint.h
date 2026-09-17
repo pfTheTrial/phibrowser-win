@@ -36,6 +36,9 @@ struct PhiMenuRow {
   static constexpr unsigned kMagic = 0x504D4E55;  // "PMNU"
   std::wstring label;     // Mnemonic '&' allowed; no "\t" chord inside.
   std::wstring shortcut;  // "Ctrl+T", drawn right-aligned. Empty = none.
+  // A second, dim line under the label (the switcher's "profile · N tabs",
+  // windows-native-ui.md §5.3). Rows with one are 40 dip.
+  std::wstring hint;
   // A glyph of the icon face (one code point) for the icon column.
   std::wstring icon;
   // A Space picture instead: catalog artwork or an emoji, drawn through the

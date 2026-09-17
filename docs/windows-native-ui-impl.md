@@ -84,6 +84,10 @@ decisions and I will check." The box is mine for testing.
   (`settingsWindowWidth` / `settingsWindowHeight` in PhiSettings.json,
   written on WM_EXITSIZEMOVE, never for a maximized window); no
   position, which Windows Settings also does not keep.
+* **D23 — the omnibox's context menu is the Fluent flyout**, replacing
+  the EDIT control's stock menu rather than adding one row to it (§3.5
+  said "the native EDIT menu plus one Phi row"): one menu family
+  everywhere, and the stock menu cannot be themed dark.
 * **D22 — a Space's Profile is a ComboBox in its expander** backed by
   the coordinator's existing `SetSpaceProfile` (the Space's browser
   respawns in the new profile); the default Space refuses with a
@@ -376,9 +380,22 @@ decisions and I will check." The box is mine for testing.
   context-menu labels in sentence case (still literals, not
   `strings.json`); the bookmarks bar on the 12 dip face with Fluent
   glyphs.
-* Left for later: "Move to new window" (no framework op), "Paste and
-  go" on the native EDIT menu, the incognito chrome pass, PhiCap
-  re-baselines, context-menu labels into `strings.json`.
+* Round C1 (same day): the **switcher's two-line rows** (§5.3 —
+  `PhiMenuRow::hint`, 40 dip, 300 wide: "profile · N tabs" under the
+  name, the Ctrl+n keycap trailing; agent rows lead with the status
+  word) — retires D16's "menu, not flyout" caveat (it is still an
+  owner-drawn HMENU, now with the designed content); **Move to new
+  window** on the tab row (Chrome's; `MoveTabsToNewWindowByIds`, the
+  tear-off's own call); the **omnibox field menu** as the Fluent flyout
+  with "Paste and go" leading when the clipboard holds text (Undo ·
+  Cut · Copy · Paste · Delete · Select all with live states — D23: the
+  native EDIT menu is replaced outright, not extended, so every menu
+  in the app is one family); the **context-menu labels in
+  `strings.json`** (`contextMenu.*`, 63 keys, eight translations
+  authored, impl log D14) — the host test's stub echoes keys, so its
+  label checks name keys now. Box: suite-menu 7/7; PhiRm shots of the
+  omnibox menu and the switcher.
+* Left for later: the incognito chrome pass, PhiCap re-baselines.
 
 ## Questions for Jixiang
 
@@ -404,8 +421,9 @@ much they change what you see:
 7. **D4** — the floating panel stays tucked with 8 dip showing; hover
    300 ms slides it in; a click on the edge or its pin docks it. The
    toggle's right-click menu ("Show / Auto-hide") is not done.
-8. Not done, listed per phase above: "Move to new window", "Paste and
-   go", the incognito chrome pass.
+8. Not done, listed per phase above: the incognito chrome pass (§4.9)
+   and the later rounds' items (icon picker flyout, create-Space
+   flyout, Peek header, row tiles, agent cues, drag & drop).
 
 
 (Collected during the work; answered at the end.)
