@@ -699,6 +699,9 @@ class PhiSidebarView {
   void CommitDrag();
   // An external cancel (the capture was taken away, a panel press).
   void AbortDrag();
+  // Esc during a drag (§4.8): the ghost slides home, nothing changes.
+  // False when no drag was active.
+  bool CancelDragEscape();
   bool drag_armed() const { return drag_ != nullptr; }
   bool drag_active() const;
   PhiSidebarDragSession* drag() const { return drag_.get(); }

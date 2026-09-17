@@ -7,6 +7,8 @@
 
 #include <windows.h>
 
+#include <array>
+
 #include <string>
 
 namespace phi_client {
@@ -33,7 +35,20 @@ class PhiShellWindow;
 //   replace mode (the focused tab IS a split) — the page maps onto the split's
 //                two live panes and the dragged item swaps into the one under
 //                the cursor.
-enum class PhiSplitDropZone { kNone, kLeft, kRight, kTop, kBottom };
+// kNewWindow: the page's centre (Chrome's and Edge's rule — a tab dragged
+// onto the page detaches) and the fifth snap tile (windows-native-ui.md
+// §4.8).
+enum class PhiSplitDropZone { kNone, kLeft, kRight, kTop, kBottom, kNewWindow };
+
+// The snap-tile flyout at the page's top centre (§4.8): five 56 × 40 dip
+// tiles — Left, Right, Top, Bottom split, then New window — in a radius-8
+// flyout, 8 apart, a divider before the fifth. In replace mode the first
+// two are the split's panes and the middle two are empty. `out[5]` is the
+// flyout's own rect. Shell client coordinates, from `area` and `dpi`.
+void PhiSnapTileRects(const RECT& area,
+                      UINT dpi,
+                      bool replace,
+                      std::array<RECT, 6>* out);
 
 // True when the zone lands in Chromium's PRIMARY slot (leading / top).
 bool PhiSplitZoneIsPrimary(PhiSplitDropZone zone);
@@ -45,9 +60,13 @@ const char* PhiSplitZoneLayout(PhiSplitDropZone zone);
 // overlapping corners. `retained` is the zone the drag is already on — it
 // keeps its grip until the pointer leaves it by more than a small tolerance,
 // so tremble in a corner cannot flip the choice back and forth.
+// The zone under `pt` while nothing is split: a snap tile first, then the
+// edge thirds (with the 12 px exit tolerance for `retained`), then the
+// centre = New window. `dpi` places the tiles; 96 lays them out in dip.
 PhiSplitDropZone PhiSplitCreateZoneAt(const RECT& area,
                                       POINT pt,
-                                      PhiSplitDropZone retained);
+                                      PhiSplitDropZone retained,
+                                      UINT dpi = 96);
 
 // What the hint overlay should be showing right now.
 struct PhiSplitDropHints {
@@ -70,7 +89,8 @@ struct PhiSplitDropHints {
 // divider's midline. Always resolves to kLeft (the primary pane — left for a
 // side-by-side split, top for a stacked one) or kRight (the secondary).
 PhiSplitDropZone PhiSplitReplaceZoneAt(const PhiSplitDropHints& hints,
-                                       POINT pt);
+                                       POINT pt,
+                                       UINT dpi = 96);
 
 // The live panes of the split `hints` describes: the real rects when it has
 // them, else an estimate from the ratio over `hints.area` with the Mac's

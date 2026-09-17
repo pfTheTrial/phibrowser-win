@@ -192,7 +192,8 @@ class PhiLayerSurface {
   // Hands the surface to `hwnd` (which must be WS_EX_LAYERED). `origin`
   // moves the window at the same time when it is a top-level popup;
   // null leaves the position alone.
-  bool Commit(HWND hwnd, const POINT* screen_origin) const;
+  // `alpha` scales the whole layer (the 85 % drag ghost, §4.8).
+  bool Commit(HWND hwnd, const POINT* screen_origin, BYTE alpha = 255) const;
 
  private:
   int width_ = 0;

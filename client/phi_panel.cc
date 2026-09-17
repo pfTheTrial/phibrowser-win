@@ -245,7 +245,8 @@ size_t PhiLayerSurface::byte_size() const {
   return static_cast<size_t>(width_) * static_cast<size_t>(height_) * 4u;
 }
 
-bool PhiLayerSurface::Commit(HWND hwnd, const POINT* screen_origin) const {
+bool PhiLayerSurface::Commit(HWND hwnd, const POINT* screen_origin,
+                             BYTE alpha) const {
   if (!valid() || !hwnd || !::IsWindow(hwnd)) {
     return false;
   }
@@ -254,7 +255,7 @@ bool PhiLayerSurface::Commit(HWND hwnd, const POINT* screen_origin) const {
   ::GdiFlush();
   POINT src = {0, 0};
   SIZE size = {width_, height_};
-  BLENDFUNCTION blend = {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
+  BLENDFUNCTION blend = {AC_SRC_OVER, 0, alpha, AC_SRC_ALPHA};
   POINT origin = screen_origin ? *screen_origin : POINT{0, 0};
   return ::UpdateLayeredWindow(hwnd, nullptr,
                                screen_origin ? &origin : nullptr, &size, dc_,

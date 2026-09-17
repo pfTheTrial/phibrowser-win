@@ -29,6 +29,9 @@ namespace phi_client {
 
 namespace {
 
+constexpr BYTE kGhostAlpha = 217;  // 85 %.
+
+
 constexpr wchar_t kImageClass[] = L"PhiDragImage";
 // AppKit's slide-back: a short ease-out to the starting position. The
 // 8 ms SetTimer this ran on is gone — PhiAnimator's one coalescable clock
@@ -485,7 +488,9 @@ class Image : public PhiWindow {
                        static_cast<unsigned char*>(layer.bits()),
                        layer.byte_size()))
         .copy_from(base::span<const unsigned char>(surface.pargb));
-    layer.Commit(hwnd(), &origin);
+    // §4.8 "Ghost": the lifted element at 85 %, Explorer's translucent
+    // drag image.
+    layer.Commit(hwnd(), &origin, kGhostAlpha);
     ::SetWindowPos(hwnd(), HWND_TOPMOST, 0, 0, 0, 0,
                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE |
                        SWP_SHOWWINDOW);

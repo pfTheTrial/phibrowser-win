@@ -592,6 +592,17 @@ void PhiSidebarView::AbortDrag() {
   drag_.reset();  // ~PhiSidebarDragSession IS AbortDrag.
 }
 
+bool PhiSidebarView::CancelDragEscape() {
+  if (!drag_ || !drag_->active()) {
+    return false;
+  }
+  // Out of the view FIRST: cancelling releases the mouse capture, and
+  // WM_CAPTURECHANGED re-enters here to reset drag_ — under the call.
+  const std::unique_ptr<PhiSidebarDragSession> session = std::move(drag_);
+  session->CancelWithSlideBack();
+  return true;
+}
+
 bool PhiSidebarView::drag_active() const {
   return drag_ && drag_->active();
 }

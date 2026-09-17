@@ -84,6 +84,21 @@ decisions and I will check." The box is mine for testing.
   (`settingsWindowWidth` / `settingsWindowHeight` in PhiSettings.json,
   written on WM_EXITSIZEMOVE, never for a maximized window); no
   position, which Windows Settings also does not keep.
+* **D31 — §4.8's mechanics beyond the vocabulary are deferred**:
+  auto-scroll in the list's edge bands, Ctrl (keep the source) and Shift
+  (force stacked) modifiers, the whole-group drag, the bookmarks bar as
+  a drag source / target, the cross-window insertion slot, OLE drops
+  from other apps, the pip lift at 50 %, and the hidden sidebar's edge
+  reveal during a drag. Each is its own piece of session plumbing; the
+  ghost / gap / line / ring / badge / snap vocabulary is in.
+* **D32 — no ring on a Space pip while a tab hovers it**: the strip has
+  no drop-highlight state yet; the badge and the closed list gap carry
+  the cue.
+* **D33 — the badge's labels are literals** (no `strings.json` keys
+  yet), like the context menus were before round C1.
+* **D34 — the ghost does not grow a caption strip** over the New window
+  zone (§4.8 says it previews a window): the badge and the lit tile say
+  "New window".
 * **D26 — agent Spaces keep the app accent** on the graphite ground:
   the brand colour per agent (§5.10) needs a colour table beside the
   marks; the mark itself is the brand's.
@@ -479,8 +494,29 @@ decisions and I will check." The box is mine for testing.
   "Reader view"), PhiDragCap shots of the Peek sheet, the agent Space
   (Ctrl+2 into `agentspace-1` created by a probe) and the hovered
   capsule.
+* Round E (same day): **§4.8 drag & drop** — the ghost at 85 %
+  (`PhiLayerSurface::Commit` takes an alpha; the drag image passes 217),
+  the **snap-tile flyout** (`phi_split_drop.cc`: five 56 × 40 tiles at
+  the page's top centre in a radius-8 flyout, the arrangement drawn as
+  the tile's glyph, the active tile in accent_soft with an accent ring,
+  the target half previewed in accent_soft with a 2 dip ring inset 8;
+  replace mode shows the two pane tiles and New window), the **New
+  window zone** (`PhiSplitDropZone::kNewWindow`: the page's centre and
+  the fifth tile detach the row through the tear-off's own path,
+  `TearOffToNewWindow`; in a split, the divider gap), the **badge**
+  (`client/phi_drop_badge.{h,cc}`: a 22 dip layered pill 16 × 20 past
+  the cursor — Move · Pin · Unpin · Bookmark · Open as tab · Split
+  left/right/top/bottom · Replace … · New window · Move to window ·
+  Move to <Space>), **Esc cancels** (the accelerator's Esc reaches
+  `PhiShellWindow::CancelSidebarDrag` before the floating panel and the
+  Peeks; the ghost slides home), the **24 dip cancel band** along the
+  sidebar edge and under the address row, and **drop on a Space pip**
+  (a tab row over another user Space's pip: the list closes its gap, the
+  badge reads "Move to <Space>", the drop is `SidebarMoveToSpace`).
+  The dashed hint cards and their 1.5× scale are gone.
 * Left for later: PhiCap re-baselines, the create form's Fluent restyle
-  (D25), the picker's recents / skin tones (D24), and D26–D30 below.
+  (D25), the picker's recents / skin tones (D24), D26–D30 below, and the
+  §4.8 remainder (D31–D33).
 
 ## Questions for Jixiang
 

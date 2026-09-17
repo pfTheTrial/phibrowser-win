@@ -911,6 +911,8 @@ class PhiShellWindow : public PhiHitSource,
   void SetSidebarCollapsed(bool collapsed);
   // Esc: tucks the slid-in floating panel. True when it was up.
   bool TuckFloatingSidebar();
+  // Esc during a sidebar drag (§4.8): cancels it; false when none.
+  bool CancelSidebarDrag();
   // The split view's hover chip (docs/windows-native-ui.md §4.6): while
   // the active tab is one pane of a split, a chip at the UNFOCUSED pane's
   // top-right shows its favicon, host and a ⋯ pane menu; it fades in when

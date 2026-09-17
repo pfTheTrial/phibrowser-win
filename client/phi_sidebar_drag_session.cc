@@ -4,6 +4,8 @@
 
 #include "phibrowser-win/client/phi_sidebar_drag_session.h"
 
+#include "phibrowser-win/client/phi_drop_badge.h"
+
 #include <algorithm>
 #include <cmath>
 #include <string>
@@ -715,6 +717,14 @@ PhiDropBand PhiSidebarDragSession::DropBandAt(
   // below: a split drop is offered in every layout and off the record too
   // (it forms no stored row, so there is nothing to keep).
   if (::PtInRect(&layout.content, client_pt)) {
+    // §4.8: a 24 dip cancel band along the sidebar's edge and under the
+    // address row, so a drag that slips just past the sidebar never
+    // tears off — a release there is a cancel.
+    const int band = shell_->SidebarScaled(24);
+    if ((layout.content.left > 0 && client_pt.x < layout.content.left + band) ||
+        client_pt.y < layout.content.top + band) {
+      return PhiDropBand::kNone;
+    }
     return PhiDropBand::kContent;
   }
   if (incognito_) {
@@ -831,7 +841,27 @@ void PhiSidebarDragSession::Update(POINT pt) {
   } else if (kind_ != PhiDragKind::kTab && kind_ != PhiDragKind::kPin) {
     band = PhiDropBand::kTabs;
   }
-  const bool band_changed = band != band_;
+  // §4.8 (2): a tab row over a Space pip targets that Space; the list
+  // closes its gap meanwhile.
+  std::string pip_target;
+  std::wstring pip_label;
+  if (kind_ == PhiDragKind::kTab && strip()) {
+    const int chip = strip()->ChipAt(pt);
+    if (chip >= 0 && chip < static_cast<int>(strip()->chips().size())) {
+      const PhiSpaceChip& target = strip()->chips()[static_cast<size_t>(chip)];
+      if (!target.is_agent && target.id != shell_->SidebarActiveSpace()) {
+        pip_target = target.id;
+        pip_label = target.label;
+      }
+    }
+  }
+  if (!pip_target.empty()) {
+    band = PhiDropBand::kNone;
+  }
+  const bool pip_changed = pip_target != pip_target_;
+  pip_target_ = pip_target;
+  pip_target_label_ = pip_label;
+  const bool band_changed = band != band_ || pip_changed;
   band_ = band;
   // The image first: crossing out of the sidebar swaps the row for the page
   // card, which captures the page BEFORE the hint cards go up over it.
@@ -848,11 +878,23 @@ void PhiSidebarDragSession::Update(POINT pt) {
         ::InvalidateRect(shell_hwnd(), nullptr, FALSE);
       }
     }
+    UpdateBadge(pt);
     return;
   }
   PhiSplitDropOverlay::Hide();
   split_drop_valid_ = false;
   split_drop_zone_ = PhiSplitDropZone::kNone;
+  if (!pip_target_.empty()) {
+    if (insert_ != -1 || band_changed) {
+      insert_ = -1;
+      RetargetDragSlide();
+      if (shell_hwnd()) {
+        ::InvalidateRect(shell_hwnd(), nullptr, FALSE);
+      }
+    }
+    UpdateBadge(pt);
+    return;
+  }
   // The pure resolvers describe the drop as a SidebarPlace and the gap slot
   // the animation opens; a change between INTO-a-folder and a gap repaints
   // even at the same slot.
@@ -888,6 +930,73 @@ void PhiSidebarDragSession::Update(POINT pt) {
   }
   // A plain move repaints nothing: the dragged element rides the drag image
   // window, and the chrome only changes when the gap does.
+  UpdateBadge(pt);
+}
+
+void PhiSidebarDragSession::UpdateBadge(POINT pt) {
+  if (!active_ || !shell_hwnd()) {
+    PhiDropBadge::Hide();
+    return;
+  }
+  POINT screen = pt;
+  ::ClientToScreen(shell_hwnd(), &screen);
+  PhiShellWindow* owner = shell_->SidebarOwner();
+  PhiDropBadge::Show(shell_hwnd(), shell_->SidebarDpi(), screen, BadgeText(),
+                     /*plus=*/false,
+                     owner ? owner->CurrentPalette()
+                           : PhiResolvePalette(PhiThemeById("pure"),
+                                               PhiAppearance::kSystem));
+}
+
+std::wstring PhiSidebarDragSession::BadgeText() const {
+  if (!pip_target_.empty()) {
+    return L"Move to " + pip_target_label_;
+  }
+  switch (band_) {
+    case PhiDropBand::kNone:
+      return std::wstring();
+    case PhiDropBand::kContent:
+      switch (split_drop_zone_) {
+        case PhiSplitDropZone::kNewWindow:
+          return L"New window";
+        case PhiSplitDropZone::kLeft:
+          return split_drop_replace_
+                     ? (split_drop_stacked_ ? L"Replace top" : L"Replace left")
+                     : L"Split left";
+        case PhiSplitDropZone::kRight:
+          return split_drop_replace_ ? (split_drop_stacked_ ? L"Replace bottom"
+                                                            : L"Replace right")
+                                     : L"Split right";
+        case PhiSplitDropZone::kTop:
+          return L"Split top";
+        case PhiSplitDropZone::kBottom:
+          return L"Split bottom";
+        case PhiSplitDropZone::kNone:
+          return std::wstring();
+      }
+      return std::wstring();
+    case PhiDropBand::kOutside: {
+      POINT screen = point_;
+      ::ClientToScreen(shell_hwnd(), &screen);
+      const bool other_window =
+          window_host_ && window_host_->SlotAtScreenPoint(screen, slot_.value);
+      return other_window ? L"Move to window" : L"New window";
+    }
+    case PhiDropBand::kTabs:
+      return kind_ == PhiDragKind::kPin        ? L"Unpin"
+             : kind_ == PhiDragKind::kBookmark ? L"Open as tab"
+                                               : L"Move";
+    case PhiDropBand::kPins:
+      return kind_ == PhiDragKind::kPin ? L"Move" : L"Pin";
+    case PhiDropBand::kBookmarks:
+      return kind_ == PhiDragKind::kBookmark ? L"Move" : L"Bookmark";
+  }
+  return std::wstring();
+}
+
+void PhiSidebarDragSession::CancelWithSlideBack() {
+  image_inside_ = true;  // Home is inside: the ghost slides back.
+  AbortDrag();           // Cancels, ends the image, marks finished_.
 }
 
 void PhiSidebarDragSession::Commit() {
@@ -918,6 +1027,7 @@ bool PhiSidebarDragSession::CommitDragImpl() {
   const TabId split_focus = focus_tab_id_;
   const TabId click_tab = click_tab_id_;
   const int chip_pos = Index();
+  const std::string pip_target = pip_target_;
   // A tab dropped on the strip lands from where it was released: the view
   // glides it into its new slot once the rows have rebuilt (the Mac's
   // clearDraggingPresentation snapping the source view to the proxy, then
@@ -925,6 +1035,11 @@ bool PhiSidebarDragSession::CommitDragImpl() {
   const bool strip_drop = active && OnStrip() && band == PhiDropBand::kTabs;
   const int drop_left = strip_drop ? StripProxyRect(release).left : 0;
   CancelDrag();
+  if (active && !pip_target.empty() && kind == PhiDragKind::kTab) {
+    // §4.8 (2): dropped on a Space pip — the tab moves to that Space.
+    view_->Apply(SidebarMoveToSpace{key, pip_target, /*clone=*/false});
+    return true;
+  }
   if (!active && kind == PhiDragKind::kTab && click_tab.valid()) {
     // A plain click on a tab row: the deferred activation.
     view_->Apply(SidebarActivate{SidebarKey::Tab(click_tab.value), 0});
@@ -933,6 +1048,11 @@ bool PhiSidebarDragSession::CommitDragImpl() {
   // The page band lands before the slot paths below: a split drop has no
   // insertion slot at all, and the dead middle band is a no-op.
   if (band == PhiDropBand::kContent) {
+    if (active && split_zone == PhiSplitDropZone::kNewWindow) {
+      // The page's centre / the New window tile (§4.8): detach, exactly
+      // as a release outside every window does.
+      return TearOffToNewWindow(kind, key, release);
+    }
     if (active && split_zone != PhiSplitDropZone::kNone) {
       CommitSplitDrop(kind, key, split_focus, split_zone, split_replace,
                       split_id);
@@ -944,41 +1064,7 @@ bool PhiSidebarDragSession::CommitDragImpl() {
     return false;
   }
   if (band == PhiDropBand::kOutside) {
-    // Released outside the window: the live tab(s) join the shell under the
-    // cursor or tear off into a new window (the Mac's live-wrapper
-    // tear-off). A stored row stays behind as a closed cell.
-    if (kind == PhiDragKind::kPin || kind == PhiDragKind::kBookmark) {
-      return TearOffStoredRow(kind, key, release);
-    }
-    if (kind != PhiDragKind::kTab || !framework_) {
-      return false;
-    }
-    const TabId tab_a(TabOfKey(view_->tree(), key, 0));
-    const TabId tab_b(TabOfKey(view_->tree(), key, 1));
-    if (!tab_a.valid()) {
-      return false;
-    }
-    // The drag image comes down first so the hit test cannot land on it.
-    PhiDragImage::Hide();
-    POINT screen = release;
-    ::ClientToScreen(shell_hwnd(), &screen);
-    const int64_t target =
-        window_host_ ? window_host_->SlotAtScreenPoint(screen, slot_.value) : 0;
-    if (!target || !window_host_ ||
-        !window_host_->RequestDropTabOnWindow(slot_.value, tab_a.value,
-                                              tab_b.value, target)) {
-      // No browser attached: an empty strip, and nothing tears off.
-      const BrowserId browser = shell_->SidebarActiveBrowser();
-      if (browser.valid()) {
-        if (window_host_) {
-          window_host_->NoteTearOffDrop(screen);
-        }
-        const TabId ids[] = {tab_a, tab_b};
-        framework_->MoveTabsToNewWindowByIds(browser, ids,
-                                             tab_b.valid() ? 2 : 1);
-      }
-    }
-    return true;
+    return TearOffToNewWindow(kind, key, release);
   }
   if (kind == PhiDragKind::kChip) {
     if (slot < 0 || chip_pos < 0 ||
@@ -1099,6 +1185,9 @@ void PhiSidebarDragSession::CancelDrag() {
   split_drop_replace_ = false;
   split_drop_split_id_.clear();
   PhiSplitDropOverlay::Hide();
+  PhiDropBadge::Hide();
+  pip_target_.clear();
+  pip_target_label_.clear();
   drag_slide_from_.clear();
   drag_slide_to_.clear();
   row_slide_from_.clear();
@@ -1866,6 +1955,46 @@ PhiDragCard PhiSidebarDragSession::BuildDragCard() {
   return card;
 }
 
+bool PhiSidebarDragSession::TearOffToNewWindow(PhiDragKind kind,
+                                               const SidebarKey& key,
+                                               POINT release) {
+  // The live tab(s) join the shell under the cursor or tear off into a new
+  // window (the Mac's live-wrapper tear-off). A stored row stays behind
+  // as a closed cell.
+  if (kind == PhiDragKind::kPin || kind == PhiDragKind::kBookmark) {
+    return TearOffStoredRow(kind, key, release);
+  }
+  if (kind != PhiDragKind::kTab || !framework_) {
+    return false;
+  }
+  const TabId tab_a(TabOfKey(view_->tree(), key, 0));
+  const TabId tab_b(TabOfKey(view_->tree(), key, 1));
+  if (!tab_a.valid()) {
+    return false;
+  }
+  // The drag image comes down first so the hit test cannot land on it.
+  PhiDragImage::Hide();
+  POINT screen = release;
+  ::ClientToScreen(shell_hwnd(), &screen);
+  const int64_t target =
+      window_host_ ? window_host_->SlotAtScreenPoint(screen, slot_.value) : 0;
+  if (!target || !window_host_ ||
+      !window_host_->RequestDropTabOnWindow(slot_.value, tab_a.value,
+                                            tab_b.value, target)) {
+    // No browser attached: an empty strip, and nothing tears off.
+    const BrowserId browser = shell_->SidebarActiveBrowser();
+    if (browser.valid()) {
+      if (window_host_) {
+        window_host_->NoteTearOffDrop(screen);
+      }
+      const TabId ids[] = {tab_a, tab_b};
+      framework_->MoveTabsToNewWindowByIds(browser, ids,
+                                           tab_b.valid() ? 2 : 1);
+    }
+  }
+  return true;
+}
+
 bool PhiSidebarDragSession::TearOffStoredRow(PhiDragKind kind,
                                            const SidebarKey& key,
                                            POINT release) {
@@ -2007,9 +2136,11 @@ bool PhiSidebarDragSession::ResolveSplitDrop(POINT pt, bool rebuild) {
     hints.panes = split_drop_panes_;
     hints.primary = split_drop_primary_;
     hints.secondary = split_drop_secondary_;
-    split_drop_zone_ = split_drop_replace_
-                           ? PhiSplitReplaceZoneAt(hints, pt)
-                           : PhiSplitCreateZoneAt(area, pt, split_drop_zone_);
+    split_drop_zone_ =
+        split_drop_replace_
+            ? PhiSplitReplaceZoneAt(hints, pt, shell_->SidebarDpi())
+            : PhiSplitCreateZoneAt(area, pt, split_drop_zone_,
+                                   shell_->SidebarDpi());
     hints.active = split_drop_zone_;
     PhiSplitDropOverlay::Show(shell_->SidebarOwner(), hints);
     return true;
@@ -2052,7 +2183,8 @@ bool PhiSidebarDragSession::ResolveSplitDrop(POINT pt, bool rebuild) {
     // CREATE: the four edge thirds, the middle a no-drop band.
     split_drop_replace_ = false;
     split_drop_split_id_.clear();
-    split_drop_zone_ = PhiSplitCreateZoneAt(area, pt, split_drop_zone_);
+    split_drop_zone_ = PhiSplitCreateZoneAt(area, pt, split_drop_zone_,
+                                            shell_->SidebarDpi());
   } else {
     // REPLACE: the page maps onto the focused split's two panes.
     const auto stored_is_pinned = [&](const std::string& tag) {
@@ -2099,7 +2231,7 @@ bool PhiSidebarDragSession::ResolveSplitDrop(POINT pt, bool rebuild) {
     hints.panes = split_drop_panes_;
     hints.primary = split_drop_primary_;
     hints.secondary = split_drop_secondary_;
-    split_drop_zone_ = PhiSplitReplaceZoneAt(hints, pt);
+    split_drop_zone_ = PhiSplitReplaceZoneAt(hints, pt, shell_->SidebarDpi());
   }
   hints.active = split_drop_zone_;
   split_drop_valid_ = true;

@@ -166,6 +166,8 @@ class PhiSidebarDragSession {
 
   // The pointer moved with the button down.
   void Update(POINT pt);
+  // Esc (§4.8): the ghost slides home and nothing changes.
+  void CancelWithSlideBack();
   // The button came up: the drop lands (or the deferred click activates).
   void Commit();
   // The tab row a press armed WITHOUT activating it.
@@ -271,6 +273,14 @@ class PhiSidebarDragSession {
   // A pinned row or bookmark released outside the window: its live tab(s)
   // move to the shell under the cursor, else tear off into a new window.
   bool TearOffStoredRow(DragKind kind, const SidebarKey& key, POINT release);
+  // A release outside every window, or on the page's New window zone
+  // (§4.8): the row (a split's pair together) into a new window under the
+  // drop point, or onto the Phi window under it.
+  bool TearOffToNewWindow(DragKind kind, const SidebarKey& key, POINT release);
+  // §4.8 "Badge": the drop description by the cursor for the current
+  // band, zone or pip target.
+  void UpdateBadge(POINT pt);
+  std::wstring BadgeText() const;
 
   // --- Drop on the page ---------------------------------------------------
   // The dragged row as the page drop sees it.
@@ -310,6 +320,10 @@ class PhiSidebarDragSession {
   DropBand band_ = DropBand::kNone;
   POINT origin_{};
   POINT point_{};  // Cursor, for the drop.
+  // §4.8 (2): the Space pip the pointer is over with a tab row lifted —
+  // the drop moves the tab to that Space.
+  std::string pip_target_;
+  std::wstring pip_target_label_;
   bool active_ = false;
   bool finished_ = false;  // Committed or cancelled: the destructor is a no-op.
   int insert_ = -1;        // The gap slot for the slide animation, -1 = none.

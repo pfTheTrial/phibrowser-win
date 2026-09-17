@@ -2373,6 +2373,10 @@ bool PhiShellWindow::SpacesSidebarCanHostForm(const RECT& form) const {
          form.bottom - form.top > Scaled(200);
 }
 
+bool PhiShellWindow::CancelSidebarDrag() {
+  return sidebar_ && sidebar_->CancelDragEscape();
+}
+
 bool PhiShellWindow::SpacesCreateFlyoutAnchor(RECT* screen) const {
   if (incognito_ || agent_ || !shell_hwnd_ || !spaces_) {
     return false;

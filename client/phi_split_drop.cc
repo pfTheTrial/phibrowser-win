@@ -18,7 +18,6 @@
 
 #include "base/memory/raw_ptr_exclusion.h"
 #include "phibrowser-win/client/phi_gdiplus.h"
-#include "phibrowser-win/client/phi_i18n.h"
 #include "phibrowser-win/client/phi_panel.h"
 #include "phibrowser-win/client/phi_shell_window.h"
 
@@ -32,24 +31,18 @@ constexpr wchar_t kCardsClass[] = L"PhiSplitDropCards";
 // UNIFORMLY inside the page area (one contain-scale for all four), so a wide
 // or a tall window cannot stretch a side card back into the top one. Hit
 // testing is the edge thirds below and is deliberately independent of this.
-constexpr double kHintReferenceWidth = 1290.0;
-constexpr double kHintReferenceHeight = 689.0;
-constexpr double kSideCardWidth = 160.0;
-constexpr double kSideCardHeight = 460.0;
-constexpr double kBandCardWidth = 300.0;
-constexpr double kBandCardHeight = 120.0;
-constexpr double kSideCardInset = 14.0;
-constexpr double kBandCardInset = 18.0;
-// The card the cursor is resolving to grows (the Mac's activeDropHintScale is
-// 1.1; Jixiang asked for half again as large here) and turns OPAQUE — the
-// chosen target must read as solid, not as glass over the page.
-constexpr double kActiveCardScale = 1.5;
-constexpr int kCardCornerRadius = 32;
-constexpr int kCardLabelSize = 14;
-// The Mac's dashed stroke, in reference points.
-constexpr double kCardDashOn = 8.0;
-constexpr double kCardDashOff = 10.0;
-// Fraction of the page's width / height each edge zone claims.
+// §4.8's snap tiles: 56 × 40 dip tiles, 8 apart, in a radius-8 flyout
+// with 8 dip padding, hung 8 under the page's top edge.
+constexpr int kTileWidth = 56;
+constexpr int kTileHeight = 40;
+constexpr int kTileGap = 8;
+constexpr int kFlyoutPad = 8;
+constexpr int kFlyoutTop = 8;
+constexpr int kFlyoutRadius = 8;
+constexpr int kTileRadius = 6;
+constexpr int kPreviewInset = 8;
+constexpr int kPreviewRadius = 8;
+constexpr int kPreviewRing = 2;
 constexpr double kEdgeZoneFraction = 1.0 / 3.0;
 // Once a zone is active it keeps its grip until the pointer leaves it by
 // this much, so tremble in a corner cannot alternate two cards.
@@ -90,6 +83,8 @@ size_t ZoneSlot(PhiSplitDropZone zone) {
       return 2;
     case PhiSplitDropZone::kBottom:
       return 3;
+    case PhiSplitDropZone::kNewWindow:
+      return 4;
     case PhiSplitDropZone::kNone:
       break;
   }
@@ -121,25 +116,23 @@ void AddRoundedPath(Gdiplus::GraphicsPath* path,
 // page area: their pixels come from UpdateLayeredWindow (per-pixel alpha
 // over live page content), never from a WM_PAINT blit, so the panel runs
 // in PhiPanel's `layered` mode and composes in ComposeLayer().
-class Cards : public PhiPanel {
+class Tiles : public PhiPanel {
  public:
-  static Cards* instance;
+  static Tiles* instance;
 
-  explicit Cards(PhiShellWindow* controller) : controller_(controller) {
+  explicit Tiles(PhiShellWindow* controller) : controller_(controller) {
     ClassSpec spec;
     spec.name = kCardsClass;
     spec.cursor = nullptr;
     Options options;
     options.layered = true;
-    // The cards are pure output. Hit tests fall through, and the shell
-    // keeps the mouse capture the drag runs on.
     options.click_through = true;
     options.ex_style = WS_EX_NOPARENTNOTIFY;
     const RECT nothing = {0, 0, 0, 0};
     CreatePanel(spec, controller_->shell_hwnd(), nothing, options);
   }
 
-  ~Cards() override { Destroy(); }
+  ~Tiles() override { Destroy(); }
 
   PhiShellWindow* controller() const { return controller_; }
 
@@ -153,7 +146,7 @@ class Cards : public PhiPanel {
         hints.ratio == hints_.ratio && hints.active == hints_.active;
     hints_ = hints;
     if (same) {
-      return;  // Nothing the cards draw has moved.
+      return;  // Nothing the overlay draws has moved.
     }
     SetPanelBounds(hints_.area);
     ShowPanel();
@@ -164,90 +157,45 @@ class Cards : public PhiPanel {
  protected:
   void ComposeLayer() override { Compose(); }
 
-  // The page area moved under the drag; the cards re-fit to it.
   void OnDpiChanged(UINT) override { Compose(); }
 
  private:
-  // The card rect for each visible zone, in the overlay's own coordinates
-  // (the page area's origin is 0,0 here).
-  void CardRects(std::array<Gdiplus::RectF, 4>* out,
-                 std::array<bool, 4>* visible) const {
-    const Gdiplus::REAL w = static_cast<Gdiplus::REAL>(Width(hints_.area));
-    const Gdiplus::REAL h = static_cast<Gdiplus::REAL>(Height(hints_.area));
-    for (size_t i = 0; i < 4; ++i) {
-      (*visible)[i] = false;
-      (*out)[i] = Gdiplus::RectF();
-    }
-    if (w <= 0 || h <= 0) {
-      return;
-    }
+  // The target half (or pane) the active zone would take, in the layer's
+  // own pixels; empty for New window and none.
+  RECT PreviewRect() const {
+    const int w = Width(hints_.area);
+    const int h = Height(hints_.area);
+    RECT out = {};
     if (hints_.replace) {
-      // The two live panes: the cards ARE the panes, so the user drops on
-      // what they can already see.
       RECT primary = {}, secondary = {};
       PhiSplitReplacePaneRects(hints_, &primary, &secondary);
-      // The overlay's origin is the page area's corner.
       ::OffsetRect(&primary, -hints_.area.left, -hints_.area.top);
       ::OffsetRect(&secondary, -hints_.area.left, -hints_.area.top);
-      const std::array<RECT, 2> panes = {primary, secondary};
-      for (size_t i = 0; i < 2; ++i) {
-        const int inset = Scaled(static_cast<int>(kSideCardInset));
-        (*out)[i] = Gdiplus::RectF(
-            static_cast<Gdiplus::REAL>(panes[i].left + inset),
-            static_cast<Gdiplus::REAL>(panes[i].top + inset),
-            static_cast<Gdiplus::REAL>(
-                std::max(0, Width(panes[i]) - inset * 2)),
-            static_cast<Gdiplus::REAL>(
-                std::max(0, Height(panes[i]) - inset * 2)));
-        (*visible)[i] = (*out)[i].Width > 0 && (*out)[i].Height > 0;
+      if (hints_.active == PhiSplitDropZone::kLeft) {
+        out = primary;
+      } else if (hints_.active == PhiSplitDropZone::kRight) {
+        out = secondary;
       }
-      return;
+      return out;
     }
-    // Create mode: one contain-scale keeps every card's aspect ratio and the
-    // spacing between the four directions.
-    const double scale = std::min(w / kHintReferenceWidth,
-                                  h / kHintReferenceHeight);
-    const auto side = Gdiplus::SizeF(
-        static_cast<Gdiplus::REAL>(kSideCardWidth * scale),
-        static_cast<Gdiplus::REAL>(kSideCardHeight * scale));
-    const auto band = Gdiplus::SizeF(
-        static_cast<Gdiplus::REAL>(kBandCardWidth * scale),
-        static_cast<Gdiplus::REAL>(kBandCardHeight * scale));
-    const auto side_inset = static_cast<Gdiplus::REAL>(kSideCardInset * scale);
-    const auto band_inset = static_cast<Gdiplus::REAL>(kBandCardInset * scale);
-    (*out)[0] = Gdiplus::RectF(side_inset, (h - side.Height) / 2, side.Width,
-                               side.Height);
-    (*out)[1] = Gdiplus::RectF(w - side_inset - side.Width,
-                               (h - side.Height) / 2, side.Width, side.Height);
-    (*out)[2] = Gdiplus::RectF((w - band.Width) / 2, band_inset, band.Width,
-                               band.Height);
-    (*out)[3] = Gdiplus::RectF((w - band.Width) / 2,
-                               h - band_inset - band.Height, band.Width,
-                               band.Height);
-    for (size_t i = 0; i < 4; ++i) {
-      (*visible)[i] = (*out)[i].Width > 0 && (*out)[i].Height > 0;
+    switch (hints_.active) {
+      case PhiSplitDropZone::kLeft:
+        out = {0, 0, w / 2, h};
+        break;
+      case PhiSplitDropZone::kRight:
+        out = {w / 2, 0, w, h};
+        break;
+      case PhiSplitDropZone::kTop:
+        out = {0, 0, w, h / 2};
+        break;
+      case PhiSplitDropZone::kBottom:
+        out = {0, h / 2, w, h};
+        break;
+      case PhiSplitDropZone::kNewWindow:
+      case PhiSplitDropZone::kNone:
+        break;
     }
-  }
-
-  const wchar_t* CardLabel(size_t slot) const {
-    if (hints_.replace) {
-      if (hints_.stacked) {
-        return slot == 0 ? PhiStr("browser.splitDropHint.top")
-                         : PhiStr("browser.splitDropHint.bottom");
-      }
-      return slot == 0 ? PhiStr("browser.splitDropHint.leftHalf")
-                       : PhiStr("browser.splitDropHint.rightHalf");
-    }
-    switch (slot) {
-      case 0:
-        return PhiStr("browser.splitDropHint.leftThird");
-      case 1:
-        return PhiStr("browser.splitDropHint.rightThird");
-      case 2:
-        return PhiStr("browser.splitDropHint.topThird");
-      default:
-        return PhiStr("browser.splitDropHint.bottomThird");
-    }
+    return out;
   }
 
   void Compose() {
@@ -265,102 +213,119 @@ class Cards : public PhiPanel {
                              static_cast<BYTE*>(surface.bits()));
       Gdiplus::Graphics graphics(&bitmap);
       graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
-      graphics.SetTextRenderingHint(Gdiplus::TextRenderingHintAntiAlias);
       graphics.Clear(Gdiplus::Color(0, 0, 0, 0));
-      std::array<Gdiplus::RectF, 4> rects;
-      std::array<bool, 4> visible = {};
-      CardRects(&rects, &visible);
-      for (size_t i = 0; i < 4; ++i) {
-        if (visible[i]) {
-          DrawCard(&graphics, rects[i], i,
-                   hints_.active != PhiSplitDropZone::kNone &&
-                       ZoneSlot(hints_.active) == i);
+      const PhiPalette& palette = controller_->CurrentPalette();
+      // The preview: the target half in accent_soft with a 2 dip ring,
+      // inset 8.
+      RECT preview = PreviewRect();
+      if (preview.right > preview.left && preview.bottom > preview.top) {
+        ::InflateRect(&preview, -Scaled(kPreviewInset), -Scaled(kPreviewInset));
+        const Gdiplus::RectF rc(
+            static_cast<Gdiplus::REAL>(preview.left),
+            static_cast<Gdiplus::REAL>(preview.top),
+            static_cast<Gdiplus::REAL>(Width(preview)),
+            static_cast<Gdiplus::REAL>(Height(preview)));
+        Gdiplus::GraphicsPath path;
+        AddRoundedPath(&path, rc, static_cast<Gdiplus::REAL>(Scaled(kPreviewRadius)));
+        Gdiplus::SolidBrush fill(Blend(palette.accent, 0.14));
+        graphics.FillPath(&fill, &path);
+        Gdiplus::Pen ring(Blend(palette.accent, 0.9),
+                          static_cast<Gdiplus::REAL>(Scaled(kPreviewRing)));
+        graphics.DrawPath(&ring, &path);
+      }
+      // The flyout and its tiles.
+      std::array<RECT, 6> tiles = {};
+      PhiSnapTileRects(hints_.area, dpi(), hints_.replace, &tiles);
+      for (RECT& r : tiles) {
+        ::OffsetRect(&r, -hints_.area.left, -hints_.area.top);
+      }
+      {
+        const Gdiplus::RectF fly(
+            static_cast<Gdiplus::REAL>(tiles[5].left),
+            static_cast<Gdiplus::REAL>(tiles[5].top),
+            static_cast<Gdiplus::REAL>(Width(tiles[5])),
+            static_cast<Gdiplus::REAL>(Height(tiles[5])));
+        Gdiplus::GraphicsPath path;
+        AddRoundedPath(&path, fly, static_cast<Gdiplus::REAL>(Scaled(kFlyoutRadius)));
+        Gdiplus::SolidBrush fill(Blend(palette.flyout, 0.97));
+        graphics.FillPath(&fill, &path);
+        Gdiplus::Pen stroke(Blend(palette.stroke_strong, 1.0), 1.0f);
+        graphics.DrawPath(&stroke, &path);
+        // The divider before the New window tile.
+        const Gdiplus::REAL dx =
+            static_cast<Gdiplus::REAL>(tiles[4].left - Scaled(kTileGap) / 2);
+        Gdiplus::Pen divider(Blend(palette.separator, 1.0), 1.0f);
+        graphics.DrawLine(&divider, dx, fly.Y + Scaled(kFlyoutPad),
+                          dx, fly.GetBottom() - Scaled(kFlyoutPad));
+      }
+      for (size_t i = 0; i < 5; ++i) {
+        if (tiles[i].right <= tiles[i].left) {
+          continue;  // Replace mode leaves the top / bottom tiles out.
         }
+        DrawTile(&graphics, tiles[i], i,
+                 hints_.active != PhiSplitDropZone::kNone &&
+                     ZoneSlot(hints_.active) == i,
+                 palette);
       }
     }
     surface.Commit(hwnd(), nullptr);
   }
 
-  void DrawCard(Gdiplus::Graphics* graphics,
-                const Gdiplus::RectF& base,
+  // One tile: the glyph is the arrangement itself — a frame with the
+  // target half filled (New window: a small window with a caption bar).
+  void DrawTile(Gdiplus::Graphics* graphics,
+                const RECT& tile,
                 size_t slot,
-                bool active) {
-    const PhiPalette& palette = controller_->CurrentPalette();
-    Gdiplus::RectF rect = base;
-    if (active) {
-      // Grows around its own centre, so the card the drop will land on reads
-      // as the chosen one — then nudged back inside the page area, since at
-      // this scale a side card would otherwise run past the edge.
-      const Gdiplus::REAL dw =
-          rect.Width * static_cast<Gdiplus::REAL>(kActiveCardScale - 1.0);
-      const Gdiplus::REAL dh =
-          rect.Height * static_cast<Gdiplus::REAL>(kActiveCardScale - 1.0);
-      rect = Gdiplus::RectF(rect.X - dw / 2, rect.Y - dh / 2, rect.Width + dw,
-                            rect.Height + dh);
-      const auto area_w = static_cast<Gdiplus::REAL>(Width(hints_.area));
-      const auto area_h = static_cast<Gdiplus::REAL>(Height(hints_.area));
-      const Gdiplus::REAL margin = static_cast<Gdiplus::REAL>(Scaled(8));
-      rect.Width = std::min(rect.Width, std::max<Gdiplus::REAL>(0, area_w - margin * 2));
-      rect.Height = std::min(rect.Height, std::max<Gdiplus::REAL>(0, area_h - margin * 2));
-      rect.X = std::max(margin, std::min(rect.X, area_w - margin - rect.Width));
-      rect.Y = std::max(margin, std::min(rect.Y, area_h - margin - rect.Height));
-    }
-    const auto radius = static_cast<Gdiplus::REAL>(
-        std::min<double>(Scaled(kCardCornerRadius),
-                         std::min(rect.Width, rect.Height) / 2.0));
+                bool active,
+                const PhiPalette& palette) {
+    const Gdiplus::RectF rc(static_cast<Gdiplus::REAL>(tile.left),
+                            static_cast<Gdiplus::REAL>(tile.top),
+                            static_cast<Gdiplus::REAL>(Width(tile)),
+                            static_cast<Gdiplus::REAL>(Height(tile)));
     Gdiplus::GraphicsPath path;
-    AddRoundedPath(&path, rect, radius);
-    // The Mac fills the glass card with white at 60%; in dark mode the same
-    // wash has to come from the dark side or the label cannot be read. The
-    // ACTIVE card is solid: the target the drop will land on hides the page
-    // under it instead of letting it bleed through.
-    const COLORREF wash = palette.dark ? RGB(0x1C, 0x1C, 0x1E)
-                                       : RGB(0xFF, 0xFF, 0xFF);
-    Gdiplus::SolidBrush fill(Blend(wash, active ? 1.0 : 0.60));
-    graphics->FillPath(&fill, &path);
+    AddRoundedPath(&path, rc, static_cast<Gdiplus::REAL>(Scaled(kTileRadius)));
     if (active) {
-      // The Mac's active scrim: a flat ink wash that reads consistently over
-      // both the card fill and whatever page is behind it.
-      Gdiplus::SolidBrush scrim(
-          Blend(palette.dark ? RGB(0xFF, 0xFF, 0xFF) : RGB(0, 0, 0), 0.06));
-      graphics->FillPath(&scrim, &path);
+      Gdiplus::SolidBrush fill(Blend(palette.accent, 0.16));
+      graphics->FillPath(&fill, &path);
+      Gdiplus::Pen ring(Blend(palette.accent, 1.0), 1.0f);
+      graphics->DrawPath(&ring, &path);
     }
-    Gdiplus::Pen pen(Blend(palette.label, 0.35),
-                     static_cast<Gdiplus::REAL>(std::max(1, Scaled(1))));
-    const Gdiplus::REAL dashes[] = {
-        static_cast<Gdiplus::REAL>(kCardDashOn),
-        static_cast<Gdiplus::REAL>(kCardDashOff)};
-    pen.SetDashPattern(dashes, 2);
-    pen.SetDashCap(Gdiplus::DashCapRound);
-    graphics->DrawPath(&pen, &path);
-    DrawLabel(graphics, rect, CardLabel(slot), palette.label);
-  }
-
-  void DrawLabel(Gdiplus::Graphics* graphics,
-                 const Gdiplus::RectF& card,
-                 const wchar_t* text,
-                 COLORREF ink) {
-    const auto size = static_cast<Gdiplus::REAL>(Scaled(kCardLabelSize));
-    if (card.Height < size * 2 || card.Width < size * 2 || !text) {
-      return;  // Too small to say anything legible.
-    }
-    Gdiplus::FontFamily family(L"Segoe UI");
-    if (family.GetLastStatus() != Gdiplus::Ok) {
+    const COLORREF ink = active ? palette.accent : palette.label_dim;
+    // The frame: a 28 × 20 rect centred in the tile.
+    const int fw = Scaled(28);
+    const int fh = Scaled(20);
+    const Gdiplus::RectF frame(
+        rc.X + (rc.Width - fw) / 2, rc.Y + (rc.Height - fh) / 2,
+        static_cast<Gdiplus::REAL>(fw), static_cast<Gdiplus::REAL>(fh));
+    Gdiplus::Pen pen(Blend(ink, 1.0), 1.0f);
+    Gdiplus::SolidBrush half(Blend(ink, active ? 0.9 : 0.5));
+    if (slot == 4) {
+      // New window: the frame with a caption bar.
+      graphics->DrawRectangle(&pen, frame);
+      Gdiplus::RectF bar(frame.X, frame.Y, frame.Width,
+                         static_cast<Gdiplus::REAL>(Scaled(5)));
+      graphics->FillRectangle(&half, bar);
       return;
     }
-    Gdiplus::Font font(&family, size, Gdiplus::FontStyleRegular,
-                       Gdiplus::UnitPixel);
-    Gdiplus::StringFormat format;
-    format.SetAlignment(Gdiplus::StringAlignmentCenter);
-    format.SetLineAlignment(Gdiplus::StringAlignmentCenter);
-    format.SetTrimming(Gdiplus::StringTrimmingEllipsisWord);
-    const Gdiplus::REAL inset = size;
-    const Gdiplus::RectF box(card.X + inset, card.Y + inset,
-                             std::max<Gdiplus::REAL>(0, card.Width - inset * 2),
-                             std::max<Gdiplus::REAL>(0,
-                                                     card.Height - inset * 2));
-    Gdiplus::SolidBrush brush(Blend(ink, 1.0));
-    graphics->DrawString(text, -1, &font, box, &format, &brush);
+    Gdiplus::RectF target = frame;
+    switch (slot) {
+      case 0:
+        target.Width /= 2;
+        break;
+      case 1:
+        target.X += target.Width / 2;
+        target.Width /= 2;
+        break;
+      case 2:
+        target.Height /= 2;
+        break;
+      default:
+        target.Y += target.Height / 2;
+        target.Height /= 2;
+        break;
+    }
+    graphics->FillRectangle(&half, target);
+    graphics->DrawRectangle(&pen, frame);
   }
 
   RAW_PTR_EXCLUSION PhiShellWindow* controller_ = nullptr;
@@ -368,7 +333,7 @@ class Cards : public PhiPanel {
   PhiSplitDropHints hints_;
 };
 
-Cards* Cards::instance = nullptr;
+Tiles* Tiles::instance = nullptr;
 
 }  // namespace
 
@@ -382,30 +347,79 @@ const char* PhiSplitZoneLayout(PhiSplitDropZone zone) {
              : "vertical";
 }
 
+void PhiSnapTileRects(const RECT& area,
+                      UINT dpi,
+                      bool replace,
+                      std::array<RECT, 6>* out) {
+  const auto scaled = [dpi](int dip) {
+    return ::MulDiv(dip, static_cast<int>(dpi), 96);
+  };
+  const int tw = scaled(kTileWidth);
+  const int th = scaled(kTileHeight);
+  const int gap = scaled(kTileGap);
+  const int pad = scaled(kFlyoutPad);
+  const int count = replace ? 3 : 5;  // Two panes + New window, or five.
+  const int width = pad * 2 + count * tw + (count - 1) * gap;
+  const int left = (area.left + area.right - width) / 2;
+  const int top = area.top + scaled(kFlyoutTop);
+  (*out)[5] = {left, top, left + width, top + pad * 2 + th};
+  for (size_t i = 0; i < 5; ++i) {
+    (*out)[i] = RECT{};
+  }
+  int x = left + pad;
+  const auto place = [&](size_t slot) {
+    (*out)[slot] = {x, top + pad, x + tw, top + pad + th};
+    x += tw + gap;
+  };
+  if (replace) {
+    place(0);
+    place(1);
+    place(4);
+  } else {
+    for (size_t i = 0; i < 5; ++i) {
+      place(i);
+    }
+  }
+}
+
 PhiSplitDropZone PhiSplitCreateZoneAt(const RECT& area,
                                       POINT pt,
-                                      PhiSplitDropZone retained) {
+                                      PhiSplitDropZone retained,
+                                      UINT dpi) {
   if (!::PtInRect(&area, pt)) {
     return PhiSplitDropZone::kNone;
   }
+  constexpr std::array<PhiSplitDropZone, 5> kOrder = {
+      PhiSplitDropZone::kLeft, PhiSplitDropZone::kRight,
+      PhiSplitDropZone::kTop, PhiSplitDropZone::kBottom,
+      PhiSplitDropZone::kNewWindow};
+  // A snap tile wins over the zone under it.
+  std::array<RECT, 6> tiles = {};
+  PhiSnapTileRects(area, dpi, /*replace=*/false, &tiles);
+  for (size_t i = 0; i < 5; ++i) {
+    if (::PtInRect(&tiles[i], pt)) {
+      return kOrder[i];
+    }
+  }
+  if (::PtInRect(&tiles[5], pt)) {
+    return retained;  // The flyout's padding keeps what was chosen.
+  }
   const std::array<RECT, 4> zones = EdgeZoneRects(area);
-  if (retained != PhiSplitDropZone::kNone) {
+  if (retained != PhiSplitDropZone::kNone &&
+      retained != PhiSplitDropZone::kNewWindow) {
     RECT held = zones[ZoneSlot(retained)];
     ::InflateRect(&held, kZoneExitTolerance, kZoneExitTolerance);
     if (::PtInRect(&held, pt)) {
       return retained;
     }
   }
-  // Left and right take the overlapping corners, as on Mac.
-  constexpr std::array<PhiSplitDropZone, 4> kOrder = {
-      PhiSplitDropZone::kLeft, PhiSplitDropZone::kRight,
-      PhiSplitDropZone::kTop, PhiSplitDropZone::kBottom};
   for (size_t i = 0; i < 4; ++i) {
     if (::PtInRect(&zones[i], pt)) {
       return kOrder[i];
     }
   }
-  return PhiSplitDropZone::kNone;  // The dead middle band.
+  // The centre of the page picks New window (Jixiang, 2026-09-17).
+  return PhiSplitDropZone::kNewWindow;
 }
 
 void PhiSplitReplacePaneRects(const PhiSplitDropHints& hints,
@@ -438,16 +452,36 @@ void PhiSplitReplacePaneRects(const PhiSplitDropHints& hints,
 }
 
 PhiSplitDropZone PhiSplitReplaceZoneAt(const PhiSplitDropHints& hints,
-                                       POINT pt) {
+                                       POINT pt,
+                                       UINT dpi) {
+  // The pane tiles and the New window tile first.
+  std::array<RECT, 6> tiles = {};
+  PhiSnapTileRects(hints.area, dpi, /*replace=*/true, &tiles);
+  if (::PtInRect(&tiles[0], pt)) {
+    return PhiSplitDropZone::kLeft;
+  }
+  if (::PtInRect(&tiles[1], pt)) {
+    return PhiSplitDropZone::kRight;
+  }
+  if (::PtInRect(&tiles[4], pt)) {
+    return PhiSplitDropZone::kNewWindow;
+  }
   RECT primary = {}, secondary = {};
   PhiSplitReplacePaneRects(hints, &primary, &secondary);
-  // The divider gap resolves to whichever pane is nearer.
+  // The centre rule applies to the divider gap only: between the panes a
+  // drop detaches.
   if (hints.stacked) {
-    const int mid = (primary.bottom + secondary.top) / 2;
-    return pt.y <= mid ? PhiSplitDropZone::kLeft : PhiSplitDropZone::kRight;
+    if (pt.y > primary.bottom && pt.y < secondary.top) {
+      return PhiSplitDropZone::kNewWindow;
+    }
+    return pt.y <= primary.bottom ? PhiSplitDropZone::kLeft
+                                  : PhiSplitDropZone::kRight;
   }
-  const int mid = (primary.right + secondary.left) / 2;
-  return pt.x <= mid ? PhiSplitDropZone::kLeft : PhiSplitDropZone::kRight;
+  if (pt.x > primary.right && pt.x < secondary.left) {
+    return PhiSplitDropZone::kNewWindow;
+  }
+  return pt.x <= primary.right ? PhiSplitDropZone::kLeft
+                               : PhiSplitDropZone::kRight;
 }
 
 // static
@@ -456,19 +490,19 @@ void PhiSplitDropOverlay::Show(PhiShellWindow* controller,
   if (!controller || !controller->shell_hwnd()) {
     return;
   }
-  if (Cards::instance && Cards::instance->controller() != controller) {
+  if (Tiles::instance && Tiles::instance->controller() != controller) {
     Hide();  // The drag moved to another shell window.
   }
-  if (!Cards::instance) {
-    Cards::instance = new Cards(controller);
+  if (!Tiles::instance) {
+    Tiles::instance = new Tiles(controller);
   }
-  Cards::instance->Update(hints);
+  Tiles::instance->Update(hints);
 }
 
 // static
 void PhiSplitDropOverlay::Hide() {
-  delete Cards::instance;
-  Cards::instance = nullptr;
+  delete Tiles::instance;
+  Tiles::instance = nullptr;
 }
 
 }  // namespace phi_client

@@ -3833,7 +3833,13 @@ bool PhiCoordinator::DismissPeeksForShell(HWND shell) {
   // Esc's window-level escapes, nearest first: the floating sidebar slid
   // in over the page (windows-native-ui.md §4.4), then the Peek cards.
   for (PhiShellWindow* controller : registry_.Controllers()) {
-    if (controller->shell_hwnd() == shell && controller->TuckFloatingSidebar()) {
+    if (controller->shell_hwnd() != shell) {
+      continue;
+    }
+    if (controller->CancelSidebarDrag()) {
+      return true;  // §4.8: Esc cancels a lifted row first.
+    }
+    if (controller->TuckFloatingSidebar()) {
       return true;
     }
   }
