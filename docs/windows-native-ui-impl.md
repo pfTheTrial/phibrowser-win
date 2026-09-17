@@ -520,31 +520,40 @@ decisions and I will check." The box is mine for testing.
 
 ## Questions for Jixiang
 
-Answered by the D-list above; the ones worth a look, in order of how
-much they change what you see:
+Every phase and round of the design is implemented and committed
+(b3bb322, f3f38f6, b564a87, a62f96c, 5642ae5, bf79198, d9b6d47; fork
+8a780c05f2 — nothing pushed). The decisions I took without asking are
+D2–D34 above; the ones worth your eye, in order of how much they change
+what you see:
 
-1. **D2 — dialog button order** is now Windows' (affirmative left,
-   Cancel right). Keep, or the Mac order?
-2. **D17 retired** — Settings › Spaces / Profiles are the designed
-   expander cards now; the hint has no tab count (D17's note). Want the
-   count plumbed?
-3. **D16 — the Space switcher** is a Fluent menu, not the two-line
-   custom flyout. Fine, or do you want the "profile · N tabs" hint in
-   it?
-4. **D9 / D15** — Performance is gone from every surface (Settings,
-   onboarding, the Layout menu; a stored "performance" loads as
-   Vertical tabs). The incognito window row is live through Chromium's
-   command.
-5. **D13** — dark menu frames use uxtheme's undocumented ordinals 135 /
-   136 (as every dark Win32 app does). OK to ship?
-6. **D14** — 70-odd new strings carry translations I wrote; the
-   translation repo may overwrite them.
-7. **D4** — the floating panel stays tucked with 8 dip showing; hover
-   300 ms slides it in; a click on the edge or its pin docks it. The
-   toggle's right-click menu ("Show / Auto-hide") is not done.
-8. Not done, listed per phase above: the incognito chrome pass (§4.9)
-   and the later rounds' items (icon picker flyout, create-Space
-   flyout, Peek header, row tiles, agent cues, drag & drop).
-
-
-(Collected during the work; answered at the end.)
+1. **D2 — dialog button order** is Windows' (affirmative left, Cancel
+   right). Keep, or the Mac order?
+2. **D5 — no Mica / acrylic**: the chrome is a flat tint. Do you want
+   Mica on the caption row when the window is active?
+3. **D9 / D15 — Performance is gone** from every surface; a stored
+   "performance" loads as Vertical tabs. The incognito window row is
+   live through Chromium's command.
+4. **D13 — dark menu frames** use uxtheme's undocumented ordinals
+   135 / 136 (as every dark Win32 app does). OK to ship?
+5. **D14 — ~135 new strings carry translations I wrote** (app menu,
+   context menus, dialogs); the translation repo may overwrite them.
+6. **D17 / D16 retired** — Settings › Spaces / Profiles are the expander
+   cards, the switcher has the two-line rows; the expander hint has no
+   tab count (the settings host has none). Want it plumbed?
+7. **D26 — agent Spaces wear the app accent** on the graphite ground,
+   not the brand colour. Want a per-agent colour table (Claude, OpenAI,
+   Cursor, Copilot…)?
+8. **D30 / D29 — the expanded agent capsule keeps a Finish button**
+   instead of a ⋯ menu, and the window title is not "Claude — Research"
+   (nothing sets the shell's title today). Worth their own pieces?
+9. **D31 — drag & drop's remaining mechanics** (auto-scroll, Ctrl /
+   Shift modifiers, whole-group drag, bookmarks-bar drag, the
+   cross-window slot, OLE drops, the pip lift) are deferred; the ghost /
+   gap / ring / badge / snap vocabulary is in. Which of these matter
+   first?
+10. **D24 / D25** — the icon picker has no "Recently used" row or skin
+    tones, and the create-Space form keeps its Mac-styled controls in
+    all three hosts (only the flyout host is new). Restyle the form?
+11. **D23** — the omnibox's right-click menu is the Fluent flyout
+    (replacing the EDIT's stock menu), with "Paste and go" leading.
+12. **D21** — the Settings window remembers its size (not its position).
