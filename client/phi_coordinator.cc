@@ -3791,6 +3791,13 @@ HWND PhiCoordinator::FocusedShellHwnd() const {
 }
 
 bool PhiCoordinator::DismissPeeksForShell(HWND shell) {
+  // Esc's window-level escapes, nearest first: the floating sidebar slid
+  // in over the page (windows-native-ui.md §4.4), then the Peek cards.
+  for (PhiShellWindow* controller : registry_.Controllers()) {
+    if (controller->shell_hwnd() == shell && controller->TuckFloatingSidebar()) {
+      return true;
+    }
+  }
   return surface_coordinator_.DismissPeeksForShell(shell, nullptr);
 }
 

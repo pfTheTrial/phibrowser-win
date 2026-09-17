@@ -61,13 +61,14 @@ void GroupHeaderMenuListsColors() {
   std::vector<PhiMenuColorOption> colors = {{"grey", false}, {"blue", true}};
   const PhiMenuSpec spec = PhiBuildGroupHeaderMenu(colors);
   CHECK(Joined(spec) ==
-        "group.rename . group.color group.color - group.ungroup group.close ");
+        "group.newTab group.rename . group.color group.color - group.ungroup "
+        "group.close ");
   // The swatches ride the submenu, checked by NAME — the colour the header
   // wore when the menu was built, not an index into a rebuilt row.
-  CHECK(spec.items[1].submenu);
-  CHECK(spec.items[1].items[1].target.id == "blue");
-  CHECK(spec.items[1].items[1].checked);
-  CHECK(!spec.items[1].items[0].checked);
+  CHECK(spec.items[2].submenu);
+  CHECK(spec.items[2].items[1].target.id == "blue");
+  CHECK(spec.items[2].items[1].checked);
+  CHECK(!spec.items[2].items[0].checked);
   CHECK(spec.items[1].items[0].label == L"tabs.tabGroup.colorName.grey");
 }
 

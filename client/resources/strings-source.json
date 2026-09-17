@@ -3809,6 +3809,20 @@
    "comment": "sidebar — used at phi_shell_window.cc:5536",
    "en": "Hand Back to Agent"
   },
+  "sidebar.hide": {
+   "comment": "sidebar — the toggle's right-click menu (impl log D4). Translations authored for Windows (D14).",
+   "en": "Hide sidebar\tCtrl+S",
+   "translations": {
+    "de": "Seitenleiste ausblenden\tCtrl+S",
+    "es": "Ocultar barra lateral\tCtrl+S",
+    "fr": "Masquer la barre latérale\tCtrl+S",
+    "ja": "サイドバーを非表示\tCtrl+S",
+    "ko": "사이드바 숨기기\tCtrl+S",
+    "nl": "Zijbalk verbergen\tCtrl+S",
+    "zh-Hans": "隐藏侧边栏\tCtrl+S",
+    "zh-Hant": "隱藏側邊欄\tCtrl+S"
+   }
+  },
   "sidebar.newSpaceWithNewProfile": {
    "comment": "sidebar — used at phi_shell_window.cc:5158",
    "en": "New Space with New Profile..."

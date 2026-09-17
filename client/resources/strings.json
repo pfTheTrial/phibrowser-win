@@ -5487,6 +5487,17 @@
   "sidebar.handBackToAgent": {
    "en": "Hand Back to Agent"
   },
+  "sidebar.hide": {
+   "de": "Seitenleiste ausblenden\tCtrl+S\tCtrl+S",
+   "en": "Hide sidebar\tCtrl+S",
+   "es": "Ocultar barra lateral\tCtrl+S\tCtrl+S",
+   "fr": "Masquer la barre latérale\tCtrl+S\tCtrl+S",
+   "ja": "サイドバーを非表示\tCtrl+S\tCtrl+S",
+   "ko": "사이드바 숨기기\tCtrl+S\tCtrl+S",
+   "nl": "Zijbalk verbergen\tCtrl+S\tCtrl+S",
+   "zh-Hans": "隐藏侧边栏\tCtrl+S\tCtrl+S",
+   "zh-Hant": "隱藏側邊欄\tCtrl+S\tCtrl+S"
+  },
   "sidebar.newSpaceWithNewProfile": {
    "en": "New Space with New Profile..."
   },

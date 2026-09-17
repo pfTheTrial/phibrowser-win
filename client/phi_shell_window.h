@@ -898,6 +898,16 @@ class PhiShellWindow : public PhiHitSource,
   // Docks (`collapsed` false) or hides the sidebar; hidden, the panel
   // stays tucked at the window's left edge. ToggleSidebar flips it.
   void SetSidebarCollapsed(bool collapsed);
+  // Esc: tucks the slid-in floating panel. True when it was up.
+  bool TuckFloatingSidebar();
+  // The split view's hover chip (docs/windows-native-ui.md §4.6): while
+  // the active tab is one pane of a split, a chip at the UNFOCUSED pane's
+  // top-right shows its favicon, host and a ⋯ pane menu; it fades in when
+  // the pointer enters that pane and leaves 600 ms after it goes. A popup
+  // owned by the shell, driven by kSplitChipTimer.
+  void SplitChipTick();
+  // Runs the chip's poll exactly while the active tab is split.
+  void SyncSplitChipTimer();
   // The two signals behind that offer, separately — a test needs to know
   // WHICH one lit the button (upstream's distiller, or the reader
   // extension's own in-page probe and site rules).
@@ -1719,6 +1729,18 @@ class PhiShellWindow : public PhiHitSource,
   // The panel's client height while it is up: the expanded layout the
   // panel paints is computed for THIS height, so its bands fit the panel.
   int floating_panel_h_ = 0;
+  HWND split_chip_ = nullptr;
+  int split_chip_tab_ = 0;  // The pane's tab while shown; 0 = hidden.
+  ULONGLONG split_chip_leave_tick_ = 0;
+  void ShowSplitChip(int tab_id, const RECT& pane);
+  void HideSplitChip();
+  void PaintSplitChip(HDC dc);
+  void OnSplitChipClick(POINT chip_pt);
+  const TabRow* SplitRowForTab(int tab_id) const;
+  static LRESULT CALLBACK SplitChipProc(HWND hwnd,
+                                        UINT msg,
+                                        WPARAM wparam,
+                                        LPARAM lparam);
   int floating_offset_y_ = 0;
   ULONGLONG floating_shown_tick_ = 0;
   ULONGLONG floating_outside_tick_ = 0;

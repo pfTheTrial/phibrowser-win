@@ -156,8 +156,10 @@ class Alert : public PhiSecondaryWindow {
       return -1;
     }
     CenterOn(owner_);
+    HWND scrim = nullptr;
     if (owner_) {
       ::EnableWindow(owner_, FALSE);  // Modal against its owner, as NSAlert.
+      scrim = CreateScrim(owner_);    // WinUI's smoke layer over the owner.
     }
     ::ShowWindow(hwnd(), SW_SHOW);
     ::SetForegroundWindow(hwnd());
@@ -191,11 +193,46 @@ class Alert : public PhiSecondaryWindow {
         }
       }
     }
+    if (scrim) {
+      ::DestroyWindow(scrim);
+    }
     if (owner_) {
       ::EnableWindow(owner_, TRUE);
       ::SetForegroundWindow(owner_);
     }
     return chosen_;
+  }
+
+  // The 30 % ink layer over the owner's client area for the dialog's
+  // lifetime (docs/windows-native-ui.md §6): a layered popup owned by the
+  // owner, activation-free, under the dialog.
+  static HWND CreateScrim(HWND owner) {
+    static bool registered = false;
+    if (!registered) {
+      registered = true;
+      WNDCLASSW cls = {};
+      cls.lpfnWndProc = ::DefWindowProcW;
+      cls.hInstance = ::GetModuleHandleW(nullptr);
+      cls.hbrBackground = static_cast<HBRUSH>(::GetStockObject(BLACK_BRUSH));
+      cls.lpszClassName = L"PhiDialogScrim";
+      ::RegisterClassW(&cls);
+    }
+    RECT client = {};
+    if (!::GetClientRect(owner, &client) || ::IsIconic(owner)) {
+      return nullptr;
+    }
+    ::MapWindowPoints(owner, nullptr, reinterpret_cast<POINT*>(&client), 2);
+    HWND scrim = ::CreateWindowExW(
+        WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
+        L"PhiDialogScrim", L"", WS_POPUP, client.left, client.top,
+        client.right - client.left, client.bottom - client.top, owner, nullptr,
+        ::GetModuleHandleW(nullptr), nullptr);
+    if (!scrim) {
+      return nullptr;
+    }
+    ::SetLayeredWindowAttributes(scrim, 0, 77, LWA_ALPHA);  // 30 %.
+    ::ShowWindow(scrim, SW_SHOWNOACTIVATE);
+    return scrim;
   }
 
   std::wstring ControlText() const {

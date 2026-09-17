@@ -342,11 +342,22 @@ decisions and I will check." The box is mine for testing.
 * The Mac masks the Fluent glyphs replaced (`PhiSidebarToggleIcon`,
   `PhiDownloadIcon`, `PhiFeedbackIcon`) are deleted from
   `phi_mac_icons`; the memory and chat masks stay for the AI build.
-* Left for later: the split view's hover chip on the unfocused pane and
-  its pane menu (§4.6), Esc tucking the floating panel, the incognito
-  chrome pass, the remaining Title Case context-menu labels and the
-  §3.5 additions (Move to new window, New tab in group, Paste and go),
-  the bookmarks bar's Fluent restyle, PhiCap re-baselines.
+* After the first commit (b3bb322), the same day: the split view's
+  **hover chip** on the unfocused pane (favicon · host · ⋯ pane menu:
+  Swap panes / Convert / Unsplit / Close pane; a click on the chip
+  focuses that pane; polled while the active tab is split, 600 ms leave)
+  — box-verified; the **dialog scrim** (a 30 % layered popup over the
+  owner for the dialog's lifetime) — box-verified; **Esc tucks the
+  floating panel** (through the keyboard hook's escape ladder, before
+  the Peek cards); the **toggle's right-click menu** Show / Hide sidebar
+  (D4) — box-verified; **New tab in group** on the group header; the
+  context-menu labels in sentence case (still literals, not
+  `strings.json`); the bookmarks bar on the 12 dip face with Fluent
+  glyphs.
+* Left for later: "Move to new window" (no framework op), "Paste and
+  go" on the native EDIT menu, the incognito chrome pass, the rail
+  search (D18), a remembered Settings size, PhiCap re-baselines,
+  context-menu labels into `strings.json`.
 
 ## Questions for Jixiang
 
@@ -372,9 +383,9 @@ much they change what you see:
 7. **D4** — the floating panel stays tucked with 8 dip showing; hover
    300 ms slides it in; a click on the edge or its pin docks it. The
    toggle's right-click menu ("Show / Auto-hide") is not done.
-8. Not done, listed per phase above: the owner scrim under dialogs, the
-   split view's hover chip, Esc for the panel, the rail search box, the
-   remembered Settings size, the bookmarks bar restyle.
+8. Not done, listed per phase above: "Move to new window", "Paste and
+   go", the rail search box, the remembered Settings size, the incognito
+   chrome pass.
 
 
 (Collected during the work; answered at the end.)

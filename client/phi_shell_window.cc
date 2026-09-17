@@ -127,6 +127,8 @@ constexpr UINT_PTR kFloatingTickTimer = 0x522;
 // Re-arms a kMsgPhiDeferredClose that found a nested loop still on the
 // stack (see PhiShellWindow::RequestClose).
 constexpr UINT_PTR kDeferredCloseTimer = 0x525;
+// The split view's hover chip poll (§4.6).
+constexpr UINT_PTR kSplitChipTimer = 0x526;
 constexpr UINT kDeferredCloseRetryMs = 50;
 
 // The row metrics the sidebar owns and the chrome below shares — the pill
@@ -3301,6 +3303,7 @@ COLORREF PhiShellWindow::BackgroundFill() const {
 }
 
 void PhiShellWindow::RefreshTabs() {
+  SyncSplitChipTimer();
   // A structural view change (a Space switch, a layout mode, the DPI): the
   // rows must exist in the new geometry before the next frame, so the
   // rebuild runs here and the whole shell repaints. Never for a framework
@@ -3774,6 +3777,7 @@ void PhiShellWindow::RebuildChips() {
 // chrome's own caches first, then the sidebar's one pass over the model.
 // Nothing here paints, and nothing else writes a row.
 void PhiShellWindow::RebuildTabs() {
+  SyncSplitChipTimer();  // The split state may have changed with the rows.
   // The floating panel shows the EXPANDED sidebar of a collapsed shell.
   // While it is up the rows are built in that geometry — the docked,
   // collapsed shell shows no rows of its own — so the panel paints them as
@@ -4268,9 +4272,16 @@ void PhiShellWindow::ShowGroupHeaderMenu(POINT pt,
   if (!framework_ || !browser) {
     return;
   }
-  if (action.is("group.rename")) {
+  if (action.is("group.newTab")) {
+    // A fresh tab, added to the group (the Mac's newTabInGroup).
+    const TabId created = framework_->OpenTab(BrowserId{browser}, "");
+    if (created.valid()) {
+      const std::string ids = "[" + std::to_string(created.value) + "]";
+      framework_->AddTabsToGroup(browser, group_id.c_str(), ids.c_str());
+    }
+  } else if (action.is("group.rename")) {
     std::wstring value = title;
-    if (PhiPromptText(shell_hwnd_, L"Rename Group", L"Group name:", &value)) {
+    if (PhiPromptText(shell_hwnd_, L"Rename group", L"Group name:", &value)) {
       framework_->RenameTabGroup(browser, group_id.c_str(),
                                  base::WideToUTF8(value).c_str());
     }
@@ -4816,6 +4827,25 @@ void PhiShellWindow::OnChromeContextMenu(int x, int y) {
     return;
   }
   const POINT pt = {x, y};
+  const RECT toggle_rc = ComputeLayout().sidebar_toggle;
+  if (::PtInRect(&toggle_rc, pt)) {
+    // The toggle's own menu (impl log D4): Show / Hide sidebar.
+    PhiMenuSpec spec;
+    PhiMenuItem show = PhiMenuItem::Command("sidebar.show", PhiStr("appMenu.showSidebar"));
+    show.checked = !sidebar_collapsed_;
+    spec.items.push_back(std::move(show));
+    PhiMenuItem hide = PhiMenuItem::Command("sidebar.hide", PhiStr("sidebar.hide"));
+    hide.checked = sidebar_collapsed_;
+    spec.items.push_back(std::move(hide));
+    const PhiMenuAction action = PhiRunPopupMenu(
+        spec, PopupAt(pt, TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RIGHTBUTTON));
+    if (action.is("sidebar.show")) {
+      SetSidebarCollapsed(false);
+    } else if (action.is("sidebar.hide")) {
+      SetSidebarCollapsed(true);
+    }
+    return;
+  }
   // The bookmark bar is carved off the content, not the band: its pills
   // answer whatever the sidebar's collapse state, so they go first.
   if (ShowBookmarkBarContextMenu(pt)) {
@@ -5061,6 +5091,302 @@ void PhiShellWindow::SlideFloatingPanel(bool expanded) {
                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
   }
   floating_hover_tick_ = 0;
+}
+
+// --- The split view's hover chip (§4.6) -------------------------------------
+
+namespace {
+
+constexpr int kSplitChipHeight = 28;
+constexpr int kSplitChipInset = 8;
+
+std::wstring HostOfUrl(const std::wstring& url) {
+  size_t start = url.find(L"://");
+  start = start == std::wstring::npos ? 0 : start + 3;
+  const size_t end = url.find_first_of(L"/?#", start);
+  std::wstring host = url.substr(start, end == std::wstring::npos
+                                            ? std::wstring::npos
+                                            : end - start);
+  if (host.rfind(L"www.", 0) == 0) {
+    host.erase(0, 4);
+  }
+  return host.empty() ? url : host;
+}
+
+}  // namespace
+
+void PhiShellWindow::SyncSplitChipTimer() {
+  if (!shell_hwnd_) {
+    return;
+  }
+  if (ActiveTabIsSplit()) {
+    ::SetTimer(shell_hwnd_, kSplitChipTimer, 150, nullptr);
+  } else {
+    ::KillTimer(shell_hwnd_, kSplitChipTimer);
+    HideSplitChip();
+  }
+}
+
+const TabRow* PhiShellWindow::SplitRowForTab(int tab_id) const {
+  for (const TabRow& row : sidebar_->tabs()) {
+    if (row.id.value == tab_id || row.b_id.value == tab_id) {
+      return &row;
+    }
+  }
+  return nullptr;
+}
+
+void PhiShellWindow::SplitChipTick() {
+  if (!shell_hwnd_ || !ActiveTabIsSplit() || floating_expanded_) {
+    HideSplitChip();
+    return;
+  }
+  const std::vector<NativePane> panes = NativePagesSplitPanes();
+  if (panes.size() != 2 || ::IsRectEmpty(&panes[0].rect) ||
+      ::IsRectEmpty(&panes[1].rect)) {
+    HideSplitChip();
+    return;
+  }
+  // The UNFOCUSED pane: the one the active tab is not in.
+  const int active = active_tab_id().value;
+  const NativePane& other = panes[0].tab_id == active ? panes[1] : panes[0];
+  POINT cursor = {};
+  ::GetCursorPos(&cursor);
+  RECT pane_screen = other.rect;
+  ::MapWindowPoints(shell_hwnd_, nullptr, reinterpret_cast<POINT*>(&pane_screen), 2);
+  bool inside = ::PtInRect(&pane_screen, cursor) != FALSE;
+  if (!inside && split_chip_ && ::IsWindowVisible(split_chip_)) {
+    RECT chip_rc = {};
+    ::GetWindowRect(split_chip_, &chip_rc);
+    inside = ::PtInRect(&chip_rc, cursor) != FALSE;
+  }
+  const ULONGLONG now = ::GetTickCount64();
+  if (inside) {
+    split_chip_leave_tick_ = 0;
+    ShowSplitChip(other.tab_id, other.rect);
+    return;
+  }
+  if (!split_chip_tab_) {
+    return;
+  }
+  if (!split_chip_leave_tick_) {
+    split_chip_leave_tick_ = now;
+  } else if (now - split_chip_leave_tick_ >= 600) {
+    HideSplitChip();
+  }
+}
+
+void PhiShellWindow::ShowSplitChip(int tab_id, const RECT& pane) {
+  const TabRow* row = SplitRowForTab(tab_id);
+  if (!row) {
+    return;
+  }
+  static bool registered = false;
+  if (!registered) {
+    registered = true;
+    WNDCLASSW cls = {};
+    cls.style = CS_DROPSHADOW;
+    cls.lpfnWndProc = &PhiShellWindow::SplitChipProc;
+    cls.hInstance = ::GetModuleHandleW(nullptr);
+    cls.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
+    cls.lpszClassName = L"PhiSplitChip";
+    ::RegisterClassW(&cls);
+  }
+  // 8 · favicon 16 · 6 · host · 6 · ⋯ 20 · 8, 28 high.
+  const std::wstring host =
+      HostOfUrl(row->b_id.value == tab_id ? row->b_url : row->url);
+  int host_w = Scaled(60);
+  if (HDC dc = ::GetDC(shell_hwnd_)) {
+    HGDIOBJ previous = label_font_ ? ::SelectObject(dc, label_font_) : nullptr;
+    SIZE extent = {};
+    if (::GetTextExtentPoint32W(dc, host.c_str(), static_cast<int>(host.size()),
+                                &extent)) {
+      host_w = std::min(static_cast<int>(extent.cx), Scaled(220));
+    }
+    if (previous) {
+      ::SelectObject(dc, previous);
+    }
+    ::ReleaseDC(shell_hwnd_, dc);
+  }
+  const int w = Scaled(8 + 16 + 6) + host_w + Scaled(6 + 20 + 8);
+  const int h = Scaled(kSplitChipHeight);
+  POINT origin = {pane.right - Scaled(kSplitChipInset) - w,
+                  pane.top + Scaled(kSplitChipInset)};
+  ::ClientToScreen(shell_hwnd_, &origin);
+  if (!split_chip_) {
+    split_chip_ = ::CreateWindowExW(
+        WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, L"PhiSplitChip", L"", WS_POPUP,
+        origin.x, origin.y, w, h, shell_hwnd_, nullptr,
+        ::GetModuleHandleW(nullptr), nullptr);
+    if (!split_chip_) {
+      return;
+    }
+    ::SetWindowLongPtrW(split_chip_, GWLP_USERDATA,
+                        reinterpret_cast<LONG_PTR>(this));
+    const DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_ROUND;
+    ::DwmSetWindowAttribute(split_chip_, DWMWA_WINDOW_CORNER_PREFERENCE,
+                            &corner, sizeof(corner));
+  }
+  const bool changed = split_chip_tab_ != tab_id;
+  split_chip_tab_ = tab_id;
+  ::SetWindowPos(split_chip_, HWND_TOP, origin.x, origin.y, w, h,
+                 SWP_NOACTIVATE | SWP_SHOWWINDOW);
+  if (changed) {
+    ::InvalidateRect(split_chip_, nullptr, FALSE);
+  }
+}
+
+void PhiShellWindow::HideSplitChip() {
+  split_chip_tab_ = 0;
+  split_chip_leave_tick_ = 0;
+  if (split_chip_ && ::IsWindowVisible(split_chip_)) {
+    ::ShowWindow(split_chip_, SW_HIDE);
+  }
+}
+
+void PhiShellWindow::PaintSplitChip(HDC dc) {
+  RECT rc = {};
+  ::GetClientRect(split_chip_, &rc);
+  const PhiPalette palette = CurrentPalette();
+  HBRUSH ground = ::CreateSolidBrush(palette.flyout);
+  ::FillRect(dc, &rc, ground);
+  ::DeleteObject(ground);
+  const TabRow* row = SplitRowForTab(split_chip_tab_);
+  if (!row) {
+    return;
+  }
+  const bool b = row->b_id.value == split_chip_tab_;
+  const std::vector<unsigned char>& favicon = b ? row->b_favicon : row->favicon;
+  const int fav_w = b ? row->b_favicon_width : row->favicon_width;
+  const int fav_h = b ? row->b_favicon_height : row->favicon_height;
+  const int mid = (rc.top + rc.bottom) / 2;
+  const int icon_px = Scaled(16);
+  RECT icon = {rc.left + Scaled(8), mid - icon_px / 2,
+               rc.left + Scaled(8) + icon_px, mid + icon_px / 2};
+  if (!favicon.empty()) {
+    sidebar_->DrawFavicon(dc, icon, favicon.data(), fav_w, fav_h,
+                          palette.flyout);
+  } else {
+    PhiDrawIconGlyph(dc, icon, fluent::kGlobe, icon_px, palette.label_dim);
+  }
+  RECT more = {rc.right - Scaled(8) - Scaled(20), mid - Scaled(10),
+               rc.right - Scaled(8), mid + Scaled(10)};
+  POINT cursor = {};
+  ::GetCursorPos(&cursor);
+  ::ScreenToClient(split_chip_, &cursor);
+  PhiPaintIconButton(dc, more, fluent::kMore,
+                     ::PtInRect(&more, cursor) ? PhiButtonState::kHover
+                                               : PhiButtonState::kRest,
+                     palette, palette.label, Scaled(12),
+                     Scaled(fluent::kButtonRadius));
+  ::SetBkMode(dc, TRANSPARENT);
+  HGDIOBJ previous = label_font_ ? ::SelectObject(dc, label_font_) : nullptr;
+  ::SetTextColor(dc, palette.label_dim);
+  RECT text = {icon.right + Scaled(6), rc.top, more.left - Scaled(6), rc.bottom};
+  const std::wstring host = HostOfUrl(b ? row->b_url : row->url);
+  PhiDrawTextAA(dc, host.c_str(), -1, &text,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
+                    DT_NOPREFIX);
+  if (previous) {
+    ::SelectObject(dc, previous);
+  }
+  HPEN pen = ::CreatePen(PS_SOLID, 1, palette.border);
+  HGDIOBJ old_pen = ::SelectObject(dc, pen);
+  HGDIOBJ old_brush = ::SelectObject(dc, ::GetStockObject(NULL_BRUSH));
+  ::Rectangle(dc, rc.left, rc.top, rc.right, rc.bottom);
+  ::SelectObject(dc, old_brush);
+  ::SelectObject(dc, old_pen);
+  ::DeleteObject(pen);
+}
+
+void PhiShellWindow::OnSplitChipClick(POINT chip_pt) {
+  const int tab = split_chip_tab_;
+  const TabRow* found = SplitRowForTab(tab);
+  const BrowserId browser = active_browser_id();
+  if (!found || !framework_ || !browser.valid()) {
+    return;
+  }
+  const TabRow row = *found;  // A snapshot: the menu loop may rebuild rows.
+  RECT rc = {};
+  ::GetClientRect(split_chip_, &rc);
+  if (chip_pt.x < rc.right - Scaled(8 + 20)) {
+    // The chip itself focuses that pane.
+    framework_->ActivateTabById(browser.value, tab);
+    return;
+  }
+  // The pane menu: Swap panes · Convert · Unsplit · ─ · Close pane.
+  PhiMenuSpec spec;
+  spec.items.push_back(PhiMenuItem::Command("tab.reversePanes", L"Swap panes"));
+  spec.items.push_back(PhiMenuItem::Command(
+      "tab.convertSplit", SplitIsStacked(row.id) ? L"Convert to side by side"
+                                                 : L"Convert to stacked"));
+  spec.items.push_back(PhiMenuItem::Command("tab.removeSplit", L"Unsplit"));
+  spec.items.push_back(PhiMenuItem::Separator());
+  spec.items.push_back(PhiMenuItem::Command("split.closePane", L"Close pane"));
+  POINT screen = {rc.right, rc.bottom};
+  ::ClientToScreen(split_chip_, &screen);
+  ::ScreenToClient(shell_hwnd_, &screen);
+  const PhiMenuAction action =
+      PhiRunPopupMenu(spec, PopupAt(screen, TPM_RIGHTALIGN | TPM_TOPALIGN));
+  if (action.is("tab.reversePanes")) {
+    sidebar_->Apply(SidebarSwapPanes{row.key});
+  } else if (action.is("tab.convertSplit")) {
+    sidebar_->Apply(SidebarSetLayout{
+        row.key, SplitIsStacked(row.id) ? "vertical" : "horizontal"});
+  } else if (action.is("tab.removeSplit")) {
+    sidebar_->Apply(SidebarBreakSplit{row.key});
+  } else if (action.is("split.closePane")) {
+    framework_->CloseTabById(browser.value, tab);
+  }
+  HideSplitChip();
+}
+
+// static
+LRESULT CALLBACK PhiShellWindow::SplitChipProc(HWND hwnd,
+                                               UINT msg,
+                                               WPARAM wparam,
+                                               LPARAM lparam) {
+  if (msg == WM_NCDESTROY) {
+    ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+    return ::DefWindowProcW(hwnd, msg, wparam, lparam);
+  }
+  auto* self = reinterpret_cast<PhiShellWindow*>(
+      ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+  if (!self || self->destroying_) {
+    return ::DefWindowProcW(hwnd, msg, wparam, lparam);
+  }
+  switch (msg) {
+    case WM_MOUSEACTIVATE:
+      return MA_NOACTIVATE;
+    case WM_PAINT: {
+      PAINTSTRUCT ps = {};
+      HDC dc = ::BeginPaint(hwnd, &ps);
+      self->PaintSplitChip(dc);
+      ::EndPaint(hwnd, &ps);
+      return 0;
+    }
+    case WM_MOUSEMOVE:
+      ::InvalidateRect(hwnd, nullptr, FALSE);  // The ⋯ hover wash.
+      return 0;
+    case WM_LBUTTONDOWN:
+      self->OnSplitChipClick({GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)});
+      return 0;
+    case WM_DESTROY:
+      if (self->split_chip_ == hwnd) {
+        self->split_chip_ = nullptr;
+        self->split_chip_tab_ = 0;
+      }
+      return 0;
+  }
+  return ::DefWindowProcW(hwnd, msg, wparam, lparam);
+}
+
+bool PhiShellWindow::TuckFloatingSidebar() {
+  if (!floating_sidebar_ || !floating_expanded_) {
+    return false;
+  }
+  HideFloatingSidebar(/*animated=*/true);
+  return true;
 }
 
 void PhiShellWindow::ShowFloatingSidebar() {
@@ -5340,8 +5666,8 @@ void PhiShellWindow::PaintBookmarkBar(HDC dc,
     }
   }
   ::SetBkMode(dc, TRANSPARENT);
-  if (ui_font_) {
-    ::SelectObject(dc, ui_font_);
+  if (label_font_) {
+    ::SelectObject(dc, label_font_);  // 12 dip (§4.1).
   }
   if (roots.empty()) {
     // The Mac bar's empty hint, dimmed and leading.
@@ -5379,17 +5705,12 @@ void PhiShellWindow::PaintBookmarkBar(HDC dc,
       sidebar_->DrawFavicon(dc, icon, row.favicon.data(), row.favicon_width,
                   row.favicon_height, palette.ground_top);
     } else {
-      HGDIOBJ previous = caption_font_ ? ::SelectObject(dc, caption_font_)
-                                       : nullptr;
-      PhiDrawGlyph(dc, icon, L"", palette.label_dim);  // Globe.
-      if (previous) {
-        ::SelectObject(dc, previous);
-      }
+      PhiDrawIconGlyph(dc, icon, fluent::kGlobe, icon_px, palette.label_dim);
     }
     RECT text = {icon.right + Scaled(6), pill.top, pill.right - pad,
                  pill.bottom};
-    if (ui_font_) {
-      ::SelectObject(dc, ui_font_);
+    if (label_font_) {
+      ::SelectObject(dc, label_font_);
     }
     ::SetTextColor(dc, palette.label);
     PhiDrawTextAA(dc, row.title.c_str(), -1, &text,
@@ -5403,12 +5724,8 @@ void PhiShellWindow::PaintBookmarkBar(HDC dc,
     // The Mac's "More Bookmarks" chevron.
     const RECT more = {limit, mid - pill_h / 2, limit + more_w,
                        mid + pill_h / 2};
-    HGDIOBJ previous = caption_font_ ? ::SelectObject(dc, caption_font_)
-                                     : nullptr;
-    PhiDrawGlyph(dc, more, L"", palette.label_dim);  // Chevron right.
-    if (previous) {
-      ::SelectObject(dc, previous);
-    }
+    PhiDrawIconGlyph(dc, more, fluent::kChevronRight, Scaled(12),
+                     palette.label_dim);
     BarItem overflow;
     overflow.bounds = more;
     overflow.bookmark = static_cast<int>(shown);  // First hidden root.
@@ -6340,6 +6657,10 @@ LRESULT CALLBACK PhiShellWindow::ShellWndProc(HWND hwnd,
       return ::DefWindowProcW(hwnd, msg, wparam, lparam);
     case WM_TIMER:
       if (self && self->tab_preview_ && self->tab_preview_->OnTimer(wparam)) {
+        return 0;
+      }
+      if (self && wparam == kSplitChipTimer) {
+        self->SplitChipTick();
         return 0;
       }
       if (wparam == kDeferredCloseTimer) {
