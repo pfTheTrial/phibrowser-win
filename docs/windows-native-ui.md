@@ -1521,29 +1521,34 @@ the brand mark (§2.2b), Fluent controls, no wizard chrome at all.
    later install), footer [Remove] in danger red · [Cancel]. The Yes/No
    box after the files are gone is replaced by this checkbox before.
 
-### 12.4 Decisions
+### 12.4 Decisions (as implemented 2026-09-18)
 
 * **D-I1 NSIS stays; the UI is nsDialogs plus one helper DLL.** Every
-  screen is a `Page custom`; the MUI header, welcome bitmaps, branding text
-  and the Back/Next row go (`ChangeUI` to a resource without them). Win32
-  cannot paint a Fluent accent button, an expander card, a 4 dip progress
-  bar or an InfoBar, so a ~400-line `phi_setup_ui.dll` plugin owner-draws
-  those (BS_OWNERDRAW buttons, a subclassed STATIC for cards and bars)
-  with the client's palette; EDIT, checkbox and labels are stock controls
-  under `SetCtlColors`. Segoe UI Variable via `CreateFont`.
+  screen is a `Page custom` (the progress screens are NSIS's own instfiles
+  pages, redecorated); MUI2 is gone with the header, welcome bitmaps,
+  branding text and the Back button. `installer/ui/phi_setup_ui.c` is the
+  x86-unicode plugin `PhiSetupUI` (built by `build-plugin.sh` with the
+  Chromium checkout's clang-cl + lld-link, the DLL committed): it sizes the
+  window, owner-draws the buttons, expander card, chevron, toggle, checkbox,
+  progress bar, InfoBar and the mark, sets Segoe UI Variable on the stock
+  labels and edits, and pins the caption. Controls that need a click
+  callback are created by nsDialogs and only painted by the plugin.
 * **D-I2 Dark mode follows the Windows app mode**: `AppsUseLightTheme`
-  read in `.onInit`, `DwmSetWindowAttribute(DWMWA_USE_IMMERSIVE_DARK_MODE)`
-  for the caption, `SetWindowTheme("DarkMode_Explorer")` for the stock
-  controls, the dark token block for everything the plugin draws.
-* **D-I3 One primary per screen, no default-button ambiguity**: Enter is
-  Install / Update / Launch / Remove, Esc is Cancel / Close; the
-  destructive Remove is NOT the default (Enter does nothing there, §6).
-* **D-I4 Desktop shortcut becomes a choice** (on by default); the Start
-  menu entry is always written. Today both are unconditional.
-* **D-I5 The license link** opens the shipped LICENSE in Notepad; there is
-  no license page to click through (the Mac has none either).
-* **D-I6 Errors stay in the window**: unwritable folders, a failed copy
-  and the running-Phi wait all render as an InfoBar or a red row hint;
-  the only remaining `MessageBox` is the abort confirmation ("Stop
-  installing Phi Browser?"), which becomes a §6 ContentDialog over the
-  window.
+  read by the plugin, `DWMWA_USE_IMMERSIVE_DARK_MODE` for the caption,
+  `DarkMode_CFD` for the edits, the dark token block for everything else.
+* **D-I3 One primary per screen**: Enter is Install / Update / Reinstall /
+  Launch, Esc is Cancel / Close; Remove is the red button. A focus ring is
+  drawn only after keyboard input. (A same-version run says "Reinstall".)
+* **D-I4 Desktop shortcut is a toggle** (on by default); the Start menu
+  entry is always written.
+* **D-I5 No license link**: the repo ships no LICENSE file, so the footer
+  stays empty on the Setup screen; the "What's new" link of the update
+  state waits for a release-notes URL.
+* **D-I6 Errors stay in the window**: an unwritable folder and the
+  running-Phi wait are InfoBars; the abort confirmation ("Stop installing
+  Phi Browser?") is still a MessageBox. NSIS disables Cancel and the
+  caption's close while files are copied, so the progress screen's Cancel
+  is greyed rather than the design's live one.
+* **D-I7 The uninstaller quits when the files are gone** (`Quit` at the
+  end of its section - AutoCloseWindow does not carry an uninstaller past
+  its last page); a silent uninstall keeps the data as before.

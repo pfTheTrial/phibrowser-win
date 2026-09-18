@@ -180,14 +180,16 @@ else
   echo "signing: none (no $SIGN_TOOL with a phi-signing.env)"
 fi
 
-# The wizard's art (installer/art: the onboarding's black sidebar with the
-# conch and the wordmark, the white header with the wordmark). makensis on
-# POSIX maps the script's backslashed paths onto these directories.
+# The window's look comes from the PhiSetupUI plugin (installer/ui, the
+# committed x86-unicode DLL; build-plugin.sh rebuilds it from the .c file).
+# makensis on POSIX maps the script's backslashed paths onto these
+# directories; the script is UTF-8 (the "…" and "·" in its strings).
+[[ -f "$HERE/ui/x86-unicode/PhiSetupUI.dll" ]] || "$HERE/ui/build-plugin.sh"
 mkdir -p "$DIST"
 echo "running makensis..."
-(makensis -V2 \
+(makensis -V2 -INPUTCHARSET UTF8 \
   "-DPHI_VERSION=$VERSION" "-DPHI_ARCH=$ARCH" "-DPHI_STAGE=$STAGE" \
-  "-DPHI_ART=$HERE/art" "-DPHI_OUTDIR=$DIST" -DPHI_LAYOUT_FRAMEWORK \
+  "-DPHI_OUTDIR=$DIST" -DPHI_LAYOUT_FRAMEWORK \
   "${TELEMETRY_DEFINE[@]}" "${SIGN_DEFINE[@]}" "$HERE/phi-installer.nsi") | tail -3
 [[ -f "$DIST/$SETUP" ]] || { echo "makensis produced no $DIST/$SETUP" >&2; exit 1; }
 [[ ${#SIGN_DEFINE[@]} -eq 0 ]] || "$SIGN_TOOL" --verify "$DIST/$SETUP"

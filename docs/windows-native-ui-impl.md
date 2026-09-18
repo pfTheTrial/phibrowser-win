@@ -580,3 +580,38 @@ what you see:
 11. **D23** — the omnibox's right-click menu is the Fluent flyout
     (replacing the EDIT's stock menu), with "Paste and go" leading.
 12. **D21** — the Settings window remembers its size (not its position).
+
+## Round F — the installer and uninstaller (§12, 2026-09-18)
+
+Implemented and box-verified against a throwaway payload
+(`-DPHI_UI_TEST`, see `installer/test/README.md`) and the real ship
+payload: the Setup screen (one-click install, the expander with program
+folder / browsing data / desktop toggle, Install · Update · Reinstall
+wording from the Apps & Features entry), the redecorated progress screen
+(4 dip bar, live percentage, NSIS's status line), the Done screen (Launch
+through the shell, Close), the folder-error and running-Phi InfoBars
+("Try again" plus a 1 s poll on chrome.dll, primary disabled, footer
+"Waiting for Phi Browser to close…"), the wrong-architecture screen (the
+arm64 stub on an x64 PC), dark mode, silent `/S`, the uninstaller's
+confirm screen with the data checkbox (off; only offered when the data
+folder looks like Phi's) and its self-closing progress.
+
+Files: `installer/phi-installer.nsi` (rewritten; MUI2 dropped),
+`installer/ui/phi_setup_ui.c` + `build-plugin.sh` +
+`x86-unicode/PhiSetupUI.dll`, `installer/test/` (the box rig),
+`installer/make-installer.sh` (`-INPUTCHARSET UTF8`, no `PHI_ART`, builds
+the DLL when missing); `installer/art` deleted.
+
+Gotchas that cost a round each: NSIS unloads a plugin after every call
+unless it calls `RegisterPluginCallback` (the subclassed windows then
+crashed on the next message: "PhiSetupUI.dll_unloaded"); a built-in NSIS
+page keeps its dialog-template size (`SWP_NOSIZE`) so the plugin's `Page`
+call resizes it; NSIS sets the Next/Cancel texts, re-shows Back and
+disables Cancel per page, so `Buttons` re-hides Back and re-enables
+Cancel each screen; the uninstaller ignores AutoCloseWindow on its last
+page (hence `Quit`); the elevated installer needs an elevated driver task
+(UIPI drops injected clicks), `SetWindowText` cannot reach another
+process's edit (`WM_SETTEXT` can), the box IME eats typed backslashes,
+and a lock held by a process spawned from a finished ssh command dies
+with the session.
+
