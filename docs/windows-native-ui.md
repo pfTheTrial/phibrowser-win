@@ -613,8 +613,9 @@ Every state the sidebar tree can produce, with its Windows look. Rows are
   inset); the empty band is 0 high and grows to the 100 dip drop zone
   only during a drag, as today. A **split pin** shows its two favicons
   side by side (16 each, 2 apart) in one cell.
-* **Bookmarks, folder closed**: folder glyph (16, `dim`), name, a
-  trailing right chevron (12, `tertiary`). **Folder open**: down
+* **Bookmarks, folder closed**: the closed folder glyph (16, `dim`),
+  name, a trailing right chevron (12, `tertiary`). **Folder open**: the
+  open-folder glyph (the flap lifted, Fluent's OpenFolder) and a down
   chevron, children indented 10 per level (`kBookmarkIndent`), nested
   folders the same. A bookmark whose tab is **open** shows the open pill
   under its favicon (§5.8); an **unloaded** one draws its favicon at

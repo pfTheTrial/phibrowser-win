@@ -2043,12 +2043,13 @@ void PhiSidebarView::DrawFavicon(HDC dc,
 
 // A bookmark folder's icon slot: the catalog symbol it wears, or the
 // outline folder glyph for the catalog's "default" (docs/windows-native-ui.md
-// §4.2: 16 dip, `dim`, the same closed or open — the row's trailing chevron
-// says which).
+// §4.2: 16 dip, `dim`, the flap lifted while the folder is open).
 void PhiSidebarView::DrawFolderIcon(HDC dc,
                                     const RECT& slot,
                                     const std::string& icon_id,
-                                    COLORREF ink) {
+                                    COLORREF ink,
+                                    bool expanded) {
+  const wchar_t* glyph = expanded ? fluent::kOpenFolder : fluent::kFolder;
   const std::string resolved = PhiResolveFolderIcon(icon_id);
   const int px = std::min(slot.right - slot.left, slot.bottom - slot.top);
   if (px > 0 && resolved != PhiFolderIconDefaultId()) {
@@ -2064,13 +2065,13 @@ void PhiSidebarView::DrawFolderIcon(HDC dc,
       }
     }
   }
-  if (px > 0 && PhiDrawIconGlyph(dc, slot, fluent::kFolder, px, ink)) {
+  if (px > 0 && PhiDrawIconGlyph(dc, slot, glyph, px, ink)) {
     return;
   }
   const HFONT glyph_font = shell_->SidebarGlyphFont();
   HGDIOBJ previous = glyph_font ? ::SelectObject(dc, glyph_font)
                                    : nullptr;
-  PhiDrawGlyph(dc, slot, fluent::kFolder, ink);
+  PhiDrawGlyph(dc, slot, glyph, ink);
   if (previous) {
     ::SelectObject(dc, previous);
   }
@@ -2484,8 +2485,9 @@ void PhiSidebarView::PaintBand(HDC dc,
       // The Mac paints a Lottie folder carrying the chosen symbol on its
       // face; with no Lottie runtime here the symbol itself IS the row icon,
       // drawn from the same imageset artwork the Mac's picker uses. The
-      // catalog's "default" is the outline folder glyph (§4.2).
-      DrawFolderIcon(dc, icon, bookmark.icon, kLabelDim);
+      // catalog's "default" is the outline folder glyph, open or closed
+      // (§4.2).
+      DrawFolderIcon(dc, icon, bookmark.icon, kLabelDim, bookmark.expanded);
     } else if (!bookmark.favicon.empty()) {
       DrawFavicon(dc, icon, bookmark.favicon.data(), bookmark.favicon_width,
                   bookmark.favicon_height, bookmark_bg,

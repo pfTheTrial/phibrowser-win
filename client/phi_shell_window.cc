@@ -6110,7 +6110,7 @@ void PhiShellWindow::PaintBookmarkBar(HDC dc,
     RECT icon = {pill.left + pad, mid - icon_px / 2, pill.left + pad + icon_px,
                  mid + icon_px / 2};
     if (row.folder) {
-      sidebar_->DrawFolderIcon(dc, icon, row.icon, palette.label_dim);
+      sidebar_->DrawFolderIcon(dc, icon, row.icon, palette.label_dim, false);
     } else if (!row.favicon.empty()) {
       sidebar_->DrawFavicon(dc, icon, row.favicon.data(), row.favicon_width,
                   row.favicon_height, palette.ground_top);

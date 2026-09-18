@@ -744,7 +744,7 @@ class PhiSidebarView {
   // A bookmark folder's icon slot: the catalog symbol it wears, or the
   // plain folder glyph for the catalog's "default".
   void DrawFolderIcon(HDC dc, const RECT& slot, const std::string& icon_id,
-                      COLORREF ink);
+                      COLORREF ink, bool expanded);
   // The attached-surface indicator: a plate with the kind's glyph, or the
   // minus that closes it while its row is hovered.
   // An empty stored band's drop zone while a drag is in flight (the Mac's
