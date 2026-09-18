@@ -1599,9 +1599,45 @@ std::vector<const SidebarCell*> PhiSidebarView::VisibleBookmarkCells()
 }
 
 
+
 bool PhiSidebarView::Apply(const SidebarCommand& command) {
   return sidebar_host_ &&
          sidebar_host_->Apply(slot_.value, command, sidebar_tree_);
+}
+
+base::DictValue PhiSidebarView::DragStateJson() const {
+  base::DictValue d;
+  if (!drag_ || !drag_->active()) {
+    return d;
+  }
+  const auto kind_name = [](PhiDragKind kind) {
+    switch (kind) {
+      case PhiDragKind::kTab: return "tab";
+      case PhiDragKind::kPin: return "pin";
+      case PhiDragKind::kBookmark: return "bookmark";
+      case PhiDragKind::kChip: return "chip";
+      case PhiDragKind::kNone: break;
+    }
+    return "none";
+  };
+  const auto band_name = [](PhiDropBand band) {
+    switch (band) {
+      case PhiDropBand::kTabs: return "tabs";
+      case PhiDropBand::kPins: return "pins";
+      case PhiDropBand::kBookmarks: return "bookmarks";
+      case PhiDropBand::kOutside: return "outside";
+      case PhiDropBand::kContent: return "content";
+      case PhiDropBand::kNone: break;
+    }
+    return "none";
+  };
+  d.Set("kind", kind_name(drag_->kind()));
+  d.Set("key", drag_->key().ToString());
+  d.Set("band", band_name(drag_->band()));
+  d.Set("gapSlot", drag_->insert_slot());
+  d.Set("folderRow", drag_->folder_row());
+  d.Set("dropFolder", drag_->drop_folder());
+  return d;
 }
 
 std::vector<DropRow> PhiSidebarView::TabDropRows() const {
@@ -2211,7 +2247,11 @@ void PhiSidebarView::PaintBand(HDC dc,
   const PhiDragKind drag_kind =
       drag_ ? drag_->kind() : PhiDragKind::kNone;
   const int drag_index = drag_ ? drag_->Index() : -1;
-  const int folder_row = drag_ ? drag_->folder_row() : -1;
+  // The folder the outline drop lands INSIDE: it wears the container wash
+  // + accent ring for as long as that holds (a gap among its children, or
+  // its collapsed row), so "the end of this folder" never reads like
+  // "after this folder" (§4.8 "Ring").
+  const std::string drop_folder = drag_ ? drag_->drop_folder() : std::string();
   // Palette-derived locals the band rows use (same derivations as
   // PaintChrome's own).
   const COLORREF kTintTop = palette.ground_top;
@@ -2397,6 +2437,55 @@ void PhiSidebarView::PaintBand(HDC dc,
                   16, PhiStr("sidebar.bookmarks.dropHint"), /*stacked=*/false,
                   palette);
   }
+  // The container the drop lands in wears the wash + accent ring over its
+  // WHOLE area — header, children and the gap the drop opens among them —
+  // so the folder reads as the target, not one row of it, and the space
+  // made at its end (the rows below parted a pitch) is visibly ITS space
+  // (Jixiang, 2026-09-18: the gap is the placeholder; nothing is drawn
+  // for a folder the drag is not near).
+  if (drag_active && !drop_folder.empty()) {
+    RECT area = {0, 0, 0, 0};
+    bool any = false;
+    int folder_depth = 0;
+    int last_row = -1;  // The subtree's last row (the header when empty).
+    bool inside = false;
+    for (size_t i = 0; i < bookmarks_.size(); ++i) {
+      const ShortcutRow& row = bookmarks_[i];
+      if (!inside) {
+        if (row.folder && row.guid == drop_folder) {
+          inside = true;
+          folder_depth = row.depth;
+        } else {
+          continue;
+        }
+      } else if (row.depth <= folder_depth) {
+        break;
+      }
+      last_row = static_cast<int>(i);
+      RECT r = row.bounds;
+      const SlideVec offset = RowSlide(row.guid);
+      ::OffsetRect(&r, static_cast<int>(offset.dx), static_cast<int>(offset.dy));
+      if (!any) {
+        area = r;
+        any = true;
+      } else {
+        ::UnionRect(&area, &area, &r);
+      }
+    }
+    // A gap right after the subtree is the folder's end: the rows under
+    // it slid, the folder's own did not, so the area grows by the pitch.
+    if (any && drag_->insert_slot() == last_row + 1) {
+      area.bottom += Scaled(kTabRowHeight + kTabRowGap);
+    }
+    if (any) {
+      area.top += Scaled(kRowPad);
+      area.bottom -= Scaled(kRowPad);
+      area.left += folder_depth * Scaled(kBookmarkIndent);
+      PhiFillRounded(dc, area, palette.hover_strong, Scaled(kCornerRadius));
+      PhiStrokeRounded(dc, area, palette.hover_strong, palette.accent,
+                       Scaled(kCornerRadius));
+    }
+  }
   std::vector<size_t> bookmark_order;
   bookmark_order.reserve(bookmarks_.size());
   for (size_t i = 0; i < bookmarks_.size(); ++i) {
@@ -2437,15 +2526,6 @@ void PhiSidebarView::PaintBand(HDC dc,
       // Lifted, like the dragged tab row.
       PhiFillRounded(dc, pill, palette.hover_strong, Scaled(kCornerRadius));
       PhiStrokeRounded(dc, pill, palette.hover_strong, palette.border,
-                    Scaled(kCornerRadius));
-    } else if (drag_active &&
-               (drag_kind == PhiDragKind::kBookmark ||
-                drag_kind == PhiDragKind::kPin) &&
-               folder_row ==
-                   static_cast<int>(bookmark_order_index)) {
-      // The Mac resolver's folder highlight: this drop lands INSIDE.
-      PhiFillRounded(dc, pill, palette.hover_strong, Scaled(kCornerRadius));
-      PhiStrokeRounded(dc, pill, palette.hover_strong, palette.accent,
                     Scaled(kCornerRadius));
     } else if (bookmark.active) {
       // Its bound live tab is the active tab: the row IS the tab, so it

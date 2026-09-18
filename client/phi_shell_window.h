@@ -931,6 +931,7 @@ class PhiShellWindow : public PhiHitSource,
   // The placed sidebar rows (keys + client rects) for the agent dialect's
   // window.layout, so a box probe can aim a real drag without pixels.
   base::ListValue LayoutRowsJson() const;
+  base::DictValue DragStateJson() const;
   // The gap between rows (the Mac's 2pt intercell spacing); row pitch is
   // tab_row_height() + tab_row_gap().
   int tab_row_gap() const;

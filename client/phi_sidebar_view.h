@@ -645,6 +645,9 @@ class PhiSidebarView {
   // The placed rows (keys + client rects) for the agent dialect's
   // window.layout, so a box probe can aim a real drag without pixels.
   base::ListValue LayoutRowsJson() const;
+  // The drag in flight, for a probe: kind, band, the gap slot, the folder
+  // the drop lands inside. Empty when nothing drags.
+  base::DictValue DragStateJson() const;
   // The rows as assistive technology sees them, rebuilt with them.
   const std::vector<PhiHit>& hits() const { return hits_; }
 

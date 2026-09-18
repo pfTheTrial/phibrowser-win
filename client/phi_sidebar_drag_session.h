@@ -187,6 +187,17 @@ class PhiSidebarDragSession {
   // The visible bookmark row a drop INTO a collapsed folder highlights
   // (-1 = an ordinary gap insertion).
   int folder_row() const { return bookmark_drop_folder_row_; }
+  // The bookmark folder the drop lands INSIDE right now — at a gap among
+  // its children or on its collapsed row — so the painter can mark the
+  // folder as the container taking the item (empty: the root, or no
+  // outline drop).
+  std::string drop_folder() const {
+    return place_valid_ && band_ == PhiDropBand::kBookmarks
+               ? place_.parent_guid
+               : std::string();
+  }
+  // The gap slot the slide animation holds open (-1 = none).
+  int insert_slot() const { return insert_; }
   // The slide offsets the painters glide siblings by.
   SlideVec RowSlideOffset(const std::string& guid) const;
   double DragSlideOffset(TabId tab_id) const;

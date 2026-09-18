@@ -658,3 +658,25 @@ with the session.
   the disclosure; the title stops 4 dip short of it. The bookmarks bar's
   folder pills share `DrawFolderIcon`, so they wear the same glyph.
   Verified on the box with `test/probes/bm-folders.mjs` + PhiRm.
+* Folder drop space + container ring (Jixiang, 2026-09-18, "hard to move
+  to an empty folder / to the last slot of a folder"; then "dim the whole
+  folder, not the row"; then "no placeholder — just the space, and only
+  when the tab is near"): the gap the resolver already opened at a
+  folder's end (lower half of the last child; the header of an empty
+  folder) IS the space, so nothing is added to the row model. What
+  changed is the paint: `PhiSidebarDragSession::drop_folder()` (the
+  resolved place's parent while the band is bookmarks) names the folder
+  the drop lands in, and `PaintChrome` washes + rings that folder's WHOLE
+  area — the union of its slid row rects, plus one pitch when the gap
+  slot sits right after its subtree (`insert_slot()` == last row + 1) —
+  before the rows paint; the header-only highlight branch is gone. A
+  first cut spliced dashed "Drop here" tail wells (one per open folder
+  and one for the root) into the rows for the drag's duration; it read as
+  clutter and reserved space far from the pointer, so it was removed the
+  same day — `PaintDropZone` and the string table are back to their
+  committed state. `window.layout` now reports `drag` {kind, key, band,
+  gapSlot, folderRow, dropFolder} for probes. Box:
+  `test/probes/bm-drop-space.mjs` (PhiDragCap; its points are
+  client-relative physical — the rig adds the parked origin; a stop
+  needs ~2 s before its shot for the slide to settle). Canvas: Drag &
+  drop · sidebar scene 5 redrawn (Versions 54–57).

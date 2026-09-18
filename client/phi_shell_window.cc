@@ -4118,6 +4118,10 @@ base::ListValue PhiShellWindow::LayoutRowsJson() const {
   return sidebar_->LayoutRowsJson();
 }
 
+base::DictValue PhiShellWindow::DragStateJson() const {
+  return sidebar_->DragStateJson();
+}
+
 void PhiShellWindow::OnChromeMiddleClick(int x, int y) {
   CloseExtensionPopup();
   sidebar_->OnMiddleClick(POINT{x, y});

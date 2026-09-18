@@ -774,6 +774,20 @@ Windows version — one vocabulary, used everywhere:
   a group well, a Space pip, an empty-band zone, a snap preview — shows
   `accent_soft` fill with a 1 dip (2 dip on previews) accent ring, radius
   6. The dashed resting zones keep a 1 dip dashed `stroke_strong`.
+  In the bookmark outline the ring also marks the **folder the drop
+  lands in** for as long as that holds — at a gap among its children as
+  much as on its collapsed row — and it covers the folder's **whole
+  area**: header, children and the gap the drop opens among them, one
+  wash with one ring, so "the end of this folder" never reads like
+  "after this folder" (Jixiang, 2026-09-18).
+* **Space at the end**: the gap IS the placeholder — nothing is drawn at
+  rest and no space is reserved ahead of time (a "Drop here" well came
+  and went the same day). The lower half of a folder's last child opens
+  a gap at the folder's end, inside the washed area; an empty folder
+  opens it right under its header (a collapsed one hover-expands after
+  the 400 ms dwell, then does the same); the lower half of the last root
+  row opens it at the outline's end, the tab list parting below. The
+  space appears only where the drag is and closes as it leaves.
 * **Badge**: Windows' drop-description pill by the cursor (22 dip,
   `flyout` ground, 1 dip stroke, 11 dip text): **Move · Move to
   <group> · Pin · Bookmark · Move to <Space> · Split left / right / top /

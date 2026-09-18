@@ -182,6 +182,7 @@ PhiVerbResult PhiControlDispatcher::VerbWindowLayout(
   out.Set("frameTop", static_cast<int>(frame.y));
   out.Set("mode", PhiLayoutModeName(coordinator_->settings().layout_mode));
   out.Set("rows", shell->LayoutRowsJson());
+  out.Set("drag", shell->DragStateJson());
   // The surface registry's view of this window: origin tab -> kind.
   base::DictValue surfaces;
   for (const auto& [tab, kind] :
