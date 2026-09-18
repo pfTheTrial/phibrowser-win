@@ -493,6 +493,7 @@ ShellLayoutInputs PhiShellWindow::CurrentLayoutInputs() const {
   // floating_layout_ set, which restores the expanded layout.
   in.sidebar_hidden = sidebar_collapsed_ && !floating_layout_;
   in.floating_panel = floating_layout_;
+  in.owned_tabs_label = !agent_chip_compact_ && !agent_chip_name_.empty();
   in.space_chip_dip = space_chip_dip_;
   in.agent_chip_dip = agent_chip_dip_;
   if (floating_layout_ && floating_panel_h_ > 0) {
@@ -6109,7 +6110,7 @@ void PhiShellWindow::PaintBookmarkBar(HDC dc,
     RECT icon = {pill.left + pad, mid - icon_px / 2, pill.left + pad + icon_px,
                  mid + icon_px / 2};
     if (row.folder) {
-      sidebar_->DrawFolderIcon(dc, icon, row.icon, palette.label_dim, false);
+      sidebar_->DrawFolderIcon(dc, icon, row.icon, palette.label_dim);
     } else if (!row.favicon.empty()) {
       sidebar_->DrawFavicon(dc, icon, row.favicon.data(), row.favicon_width,
                   row.favicon_height, palette.ground_top);
@@ -6536,14 +6537,11 @@ void PhiShellWindow::PaintChrome(HDC dc,
       PhiDrawTextAA(dc, text, -1, &text_rc,
                     DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
     };
-    label(layout.pinned_label, PhiStr("sidebar.section.pinned"));
-    label(layout.bookmarks_label, PhiStr("sidebar.section.bookmarks"));
+    // The section labels are gone (§4.2); the one line left is §5.10's
+    // cue 6, the agent's own Space reading "Claude's tabs".
     if (!agent_chip_compact_ && !agent_chip_name_.empty()) {
-      // §5.10 cue 6: the agent's own Space reads "Claude's tabs".
       const std::wstring owned = agent_chip_name_ + L"\u2019s tabs";
       label(layout.tabs_label, owned.c_str());
-    } else {
-      label(layout.tabs_label, PhiStr("sidebar.section.tabs"));
     }
     if (previous_label_font) {
       ::SelectObject(dc, previous_label_font);

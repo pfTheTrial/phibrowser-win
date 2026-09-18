@@ -274,10 +274,11 @@ ShellLayout ComputeShellLayout(const ShellLayoutInputs& in) {
   if (!hide_sidebar && header_row) {
     place_spaces(0, sidebar, 0, tb);
   }
-  // Each band is led by its section label (§4.2): Pinned over the cell
-  // grid, Bookmarks over the outline, Tabs over "+ New tab".
+  // No section labels (§4.2): the bands follow each other 8 dip apart;
+  // only the agent Space's "<Agent>'s tabs" cue keeps a label row.
   const int label_h = scaled(kSectionLabelHeight);
   const int label_inset = scaled(kSectionLabelInset);
+  const int gap = scaled(kSectionGap);
   int y = header_row ? tb : 0;
   const int pinned_rows = in.pinned_row_count;
   const int pinned_height =
@@ -286,10 +287,7 @@ ShellLayout ComputeShellLayout(const ShellLayoutInputs& in) {
                             (pinned_rows - 1) * scaled(kPinnedGap)
       : in.pinned_drop_zone ? scaled(kPinnedDropZoneHeight)
                             : 0;
-  if (pinned_height > 0) {
-    out.pinned_label = {label_inset, y, sidebar - label_inset, y + label_h};
-    y += label_h;
-  }
+  out.pinned_label = SidebarRect{};
   out.favorites = {0, y, sidebar, y + pinned_height};
   y = out.favorites.bottom;
   const int bookmark_rows =
@@ -297,9 +295,9 @@ ShellLayout ComputeShellLayout(const ShellLayoutInputs& in) {
       : in.bookmark_drop_zone   ? 1
                                 : 0;
   const int bookmarks_height = bookmark_rows * scaled(kTabRowHeight + kTabRowGap);
-  if (bookmark_rows > 0) {
-    out.bookmarks_label = {label_inset, y, sidebar - label_inset, y + label_h};
-    y += label_h;
+  out.bookmarks_label = SidebarRect{};
+  if (bookmark_rows > 0 && pinned_height > 0) {
+    y += gap;
   }
   const int bookmarks_top = y;
   // The outline's trailing separator row is gone: the Tabs label parts
@@ -312,8 +310,15 @@ ShellLayout ComputeShellLayout(const ShellLayoutInputs& in) {
                                       separator_top + separator_h}
                         : SidebarRect{};
   y = separator_top + separator_h;
-  out.tabs_label = {label_inset, y, sidebar - label_inset, y + label_h};
-  y += label_h;
+  if (y > (header_row ? tb : 0)) {
+    y += gap;
+  }
+  if (in.owned_tabs_label) {
+    out.tabs_label = {label_inset, y, sidebar - label_inset, y + label_h};
+    y += label_h;
+  } else {
+    out.tabs_label = SidebarRect{};
+  }
   out.new_tab_row = {inset, y, sidebar - inset, y + scaled(kNewTabRowHeight)};
   out.tabs_top = out.new_tab_row.bottom + scaled(kTabRowGap);
 

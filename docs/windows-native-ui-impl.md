@@ -643,4 +643,17 @@ with the session.
   none above the top edge; it observes the panes' bounds for divider
   drags). The client cannot paint there — the gutters belong to the
   framework's window.
+* Sidebar section labels removed (canvas comment 2026-09-18, "no Pinned
+  Bookmarks Tabs header needed"): `kSectionLabelHeight` rows give way to
+  an 8 dip band gap; only the agent Space's "<Agent>'s tabs" cue keeps a
+  label row (`ShellLayoutInputs::owned_tabs_label`). The
+  `sidebar.section.*` strings stay for the drop-zone wells and menus.
 
+* Bookmark folder rows follow §4.2 (2026-09-18): the outline folder glyph
+  (Fluent `kFolder`, 16 dip, `dim`) replaces the Mac's 20 dip two-tone
+  folder art for the catalog "default" (a chosen catalog symbol still
+  draws as before), the title carries the row's regular weight, and a
+  trailing 12 dip chevron in `tertiary` — right closed, down open — is
+  the disclosure; the title stops 4 dip short of it. The bookmarks bar's
+  folder pills share `DrawFolderIcon`, so they wear the same glyph.
+  Verified on the box with `test/probes/bm-folders.mjs` + PhiRm.

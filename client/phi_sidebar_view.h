@@ -153,7 +153,7 @@ inline constexpr int kRowPad = 2;
 inline constexpr int kCornerRadius = 6;  // The row radius (windows-native-ui.md §2.1).
 inline constexpr int kFaviconSize = 14;  // The 16pt slot holds a 14pt icon.
 inline constexpr int kBookmarkIndent = 10;  // SideBarOutlineView.indentation.
-inline constexpr int kFolderIconSize = 20;  // BookmarkFaviconView.folderSize.
+inline constexpr int kFolderIconSize = 16;  // The outline glyph fills the slot (§4.2).
 // Pinned tabs: PinnedTabLayout — column limit by width breakpoint (3 at
 // this sidebar width), 53pt minimum width.
 inline constexpr int kPinnedMinWidth = 53;
@@ -744,7 +744,7 @@ class PhiSidebarView {
   // A bookmark folder's icon slot: the catalog symbol it wears, or the
   // plain folder glyph for the catalog's "default".
   void DrawFolderIcon(HDC dc, const RECT& slot, const std::string& icon_id,
-                      COLORREF ink, bool expanded);
+                      COLORREF ink);
   // The attached-surface indicator: a plate with the kind's glyph, or the
   // minus that closes it while its row is hovered.
   // An empty stored band's drop zone while a drag is in flight (the Mac's

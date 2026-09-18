@@ -90,7 +90,8 @@ inline constexpr int kSpacesStripHeight = kAddressRowHeight;  // The header row.
 inline constexpr int kHeaderSpacer = 8;
 // The sidebar's section labels (Pinned / Bookmarks / Tabs): 12 dip text,
 // 12 above, 4 below, 16 inset (§4.2).
-inline constexpr int kSectionLabelHeight = 28;
+inline constexpr int kSectionLabelHeight = 28;  // Only the agent's "<Agent>'s tabs" cue now.
+inline constexpr int kSectionGap = 8;           // Between bands (no section labels, §4.2).
 inline constexpr int kSectionLabelInset = 16;
 inline constexpr int kFavoritesSpacer = 4;
 inline constexpr int kTabRowHeight = 36;    // Row pitch adds kTabRowGap.
@@ -164,6 +165,9 @@ struct ShellLayoutInputs {
   // The layout is the floating panel's (§4.4): the header row gains the
   // pin button at its trailing edge and the "+" moves in by one slot.
   bool floating_panel = false;
+  // The agent Space's "<Agent>'s tabs" cue (§5.10) above the tab list;
+  // the plain section labels are gone (§4.2).
+  bool owned_tabs_label = false;
   // The horizontal layout's Space chip width in dip (§5.2: icon + name +
   // chevron, measured by the shell); 0 = the bare 28 dip pip.
   int space_chip_dip = 0;
@@ -189,6 +193,7 @@ struct ShellLayoutInputs {
            a.bookmark_drop_zone == b.bookmark_drop_zone &&
            a.spaces_switch == b.spaces_switch &&
            a.floating_panel == b.floating_panel &&
+           a.owned_tabs_label == b.owned_tabs_label &&
            a.space_chip_dip == b.space_chip_dip &&
            a.agent_chip_dip == b.agent_chip_dip;
   }

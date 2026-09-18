@@ -2041,46 +2041,36 @@ void PhiSidebarView::DrawFavicon(HDC dc,
   ::SetStretchBltMode(dc, prev_mode);
 }
 
-// A bookmark folder's icon slot: the catalog symbol it wears, or the plain
-// folder glyph for the catalog's "default" (the Mac's BookmarkFolderIcon).
+// A bookmark folder's icon slot: the catalog symbol it wears, or the
+// outline folder glyph for the catalog's "default" (docs/windows-native-ui.md
+// §4.2: 16 dip, `dim`, the same closed or open — the row's trailing chevron
+// says which).
 void PhiSidebarView::DrawFolderIcon(HDC dc,
                                     const RECT& slot,
                                     const std::string& icon_id,
-                                    COLORREF ink,
-                                    bool expanded) {
-  const HFONT glyph_font = shell_->SidebarGlyphFont();
+                                    COLORREF ink) {
   const std::string resolved = PhiResolveFolderIcon(icon_id);
-  const bool plain = resolved == PhiFolderIconDefaultId();
   const int px = std::min(slot.right - slot.left, slot.bottom - slot.top);
-  if (px > 0) {
+  if (px > 0 && resolved != PhiFolderIconDefaultId()) {
     RECT art = {slot.left + ((slot.right - slot.left) - px) / 2,
                 slot.top + ((slot.bottom - slot.top) - px) / 2, 0, 0};
     art.right = art.left + px;
     art.bottom = art.top + px;
-    // "default" wears the plain folder, open or closed, in the Mac's
-    // two-tone accent-derived palette; anything else is its catalog symbol
-    // in the row's ink.
-    std::vector<unsigned char> bgra;
-    if (plain) {
-      const PhiPalette palette = shell_->SidebarPalette();
-      bgra = PhiPlainFolderBgra(expanded, px, palette.accent, palette.dark,
-                                palette.window_bg);
-    }
-    if (bgra.empty()) {
-      const PhiMacIcon* mask = plain ? PhiPlainFolderMask(expanded)
-                                     : PhiFolderIconMask(resolved);
-      if (mask) {
-        bgra = PhiTintedIconBgra(*mask, ink, px);
+    if (const PhiMacIcon* mask = PhiFolderIconMask(resolved)) {
+      const std::vector<unsigned char> bgra = PhiTintedIconBgra(*mask, ink, px);
+      if (!bgra.empty()) {
+        PhiBlendBgra(dc, art, bgra.data(), px, px);
+        return;
       }
     }
-    if (!bgra.empty()) {
-      PhiBlendBgra(dc, art, bgra.data(), px, px);
-      return;
-    }
   }
+  if (px > 0 && PhiDrawIconGlyph(dc, slot, fluent::kFolder, px, ink)) {
+    return;
+  }
+  const HFONT glyph_font = shell_->SidebarGlyphFont();
   HGDIOBJ previous = glyph_font ? ::SelectObject(dc, glyph_font)
                                    : nullptr;
-  PhiDrawGlyph(dc, slot, L"", ink);  // Folder.
+  PhiDrawGlyph(dc, slot, fluent::kFolder, ink);
   if (previous) {
     ::SelectObject(dc, previous);
   }
@@ -2469,17 +2459,16 @@ void PhiSidebarView::PaintBand(HDC dc,
     }
     RECT text = pill;
     const int mid = (pill.top + pill.bottom) / 2;
-    // A 14pt favicon centred in its 16pt slot 6pt in; a folder's 20pt art
-    // 4pt in — both leave the title at 30pt (BookmarkCellView's leading
-    // padding and spacing differ by exactly the slot difference).
+    // A 14pt favicon centred in its 16pt slot 6pt in; a folder's 16 dip
+    // glyph fills the slot — both leave the title at 30pt.
     RECT icon = {pill.left + Scaled(6) +
                      (Scaled(kFaviconSlot) - Scaled(kFaviconSize)) / 2,
                  mid - Scaled(kFaviconSize) / 2, 0, 0};
     icon.right = icon.left + Scaled(kFaviconSize);
     icon.bottom = icon.top + Scaled(kFaviconSize);
     if (bookmark.folder) {
-      icon = {pill.left + Scaled(4), mid - Scaled(kFolderIconSize) / 2,
-              pill.left + Scaled(4) + Scaled(kFolderIconSize),
+      icon = {pill.left + Scaled(6), mid - Scaled(kFolderIconSize) / 2,
+              pill.left + Scaled(6) + Scaled(kFolderIconSize),
               mid - Scaled(kFolderIconSize) / 2 + Scaled(kFolderIconSize)};
     }
     // A bound pane whose tab is dormant fades its favicon and the title,
@@ -2495,8 +2484,8 @@ void PhiSidebarView::PaintBand(HDC dc,
       // The Mac paints a Lottie folder carrying the chosen symbol on its
       // face; with no Lottie runtime here the symbol itself IS the row icon,
       // drawn from the same imageset artwork the Mac's picker uses. The
-      // catalog's "default" keeps the plain folder glyph.
-      DrawFolderIcon(dc, icon, bookmark.icon, kLabelDim, bookmark.expanded);
+      // catalog's "default" is the outline folder glyph (§4.2).
+      DrawFolderIcon(dc, icon, bookmark.icon, kLabelDim);
     } else if (!bookmark.favicon.empty()) {
       DrawFavicon(dc, icon, bookmark.favicon.data(), bookmark.favicon_width,
                   bookmark.favicon_height, bookmark_bg,
@@ -2543,9 +2532,20 @@ void PhiSidebarView::PaintBand(HDC dc,
                                           : kOpenPillOpacity));
     }
     ::SetTextColor(dc, dormant_a || dormant_b ? kLabelDim : kLabel);
-    // No disclosure glyph: the outline hides its triangles
-    // (frameOfOutlineCell is zero) and the folder art alone says open or
-    // closed. Folder titles are one weight up (.medium).
+    if (bookmark.folder) {
+      // The disclosure is a trailing 12 dip chevron in `tertiary`, right
+      // when closed and down when open (§4.2); the title stops short of it.
+      const int chevron_px = Scaled(12);
+      const RECT chevron = {pill.right - Scaled(10) - chevron_px,
+                            mid - chevron_px / 2, pill.right - Scaled(10),
+                            mid + chevron_px / 2};
+      PhiDrawIconGlyph(dc, chevron,
+                       bookmark.expanded ? fluent::kChevronDown
+                                         : fluent::kChevronRight,
+                       chevron_px, palette.label_tertiary);
+      text.right = chevron.left - Scaled(4);
+    }
+    // Folder titles carry the row's regular weight, as the design's rows do.
     std::wstring label = bookmark.title;
     if (split_row) {
       // "primary \u2022 secondary" \u2014 the secondary title, or its www.-stripped
@@ -2582,15 +2582,8 @@ void PhiSidebarView::PaintBand(HDC dc,
                    static_cast<int>(offset.dy));
       text.right = bookmark_badge.left - Scaled(4);
     }
-    HGDIOBJ folder_font_previous =
-        bookmark.folder && semibold_font
-            ? ::SelectObject(dc, semibold_font)
-            : nullptr;
     PhiDrawTextAA(dc, label.c_str(), -1, &text,
                 DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-    if (folder_font_previous) {
-      ::SelectObject(dc, folder_font_previous);
-    }
     if (bookmark_attached) {
       DrawSurfaceTile(dc, bookmark_badge, bookmark.attached_surface,
                       bookmark_hovered && !bookmark_dragged &&

@@ -97,13 +97,18 @@ void Vertical() {
   CHECK(l.chips_left == 8 && l.chips_top == 8);
   CHECK((l.add_space == SidebarRect{240 - 8 - 28, 8, 232, 36}));
   CHECK(l.chips_limit == l.add_space.left - 4);
-  // No pins, no bookmarks: the Tabs label under the header, "+ New tab"
-  // under it.
+  // No pins, no bookmarks, no section labels: "+ New tab" right under
+  // the header.
   CHECK(l.favorites.empty());
   CHECK(l.pinned_label.empty() && l.bookmarks_label.empty());
-  CHECK((l.tabs_label == SidebarRect{16, 44, 240 - 16, 44 + 28}));
-  CHECK(l.new_tab_row.top == 44 + 28);
-  CHECK(l.pin.empty());
+  CHECK(l.tabs_label.empty());
+  CHECK(l.new_tab_row.top == 44);
+  // The agent Space's "<Agent>'s tabs" cue is the one label row left.
+  ShellLayoutInputs owned = Base(PhiLayoutMode::kBalanced);
+  owned.owned_tabs_label = true;
+  const ShellLayout o = ComputeShellLayout(owned);
+  CHECK((o.tabs_label == SidebarRect{16, 44, 240 - 16, 44 + 28}));
+  CHECK(o.new_tab_row.top == 44 + 28);
   CHECK(l.tabs_top == l.new_tab_row.bottom + 2);
   CHECK(l.tabs_left == 8);
   CHECK((l.bottom_bar == SidebarRect{0, 900 - 40, 240, 900}));
@@ -128,28 +133,27 @@ void VerticalExtras() {
   CHECK(l.field_ext_strip.right == l.extensions.left - 4);
   CHECK(l.field_ext_strip.right - l.field_ext_strip.left == 2 * 28 + 2);
   CHECK(l.url_field.right == l.field_ext_strip.left - 32);
-  // The Pinned label, then two pinned rows: 8 + 44 + 8 + 44 + 8.
-  CHECK(l.pinned_label.top == 44 && l.favorites.top == 44 + 28);
+  // Two pinned rows right under the header: 8 + 44 + 8 + 44 + 8.
+  CHECK(l.pinned_label.empty() && l.favorites.top == 44);
   CHECK(l.favorites.bottom - l.favorites.top == 8 + 44 + 8 + 44 + 8);
-  // The Bookmarks label, three rows, then the Tabs label.
-  CHECK(l.bookmarks_label.top == l.favorites.bottom);
-  CHECK(l.bookmarks.top == l.bookmarks_label.bottom);
+  // An 8 dip gap, three bookmark rows, another gap, "+ New tab".
+  CHECK(l.bookmarks_label.empty());
+  CHECK(l.bookmarks.top == l.favorites.bottom + 8);
   CHECK(l.bookmarks.bottom == l.bookmarks.top + 3 * 38);
   CHECK(l.bookmark_separator.empty());
-  CHECK(l.tabs_label.top == l.bookmarks.bottom);
-  CHECK(l.new_tab_row.top == l.tabs_label.bottom);
-  // The floating panel: the pin trails the header, the "+" moves in.
+  CHECK(l.tabs_label.empty());
+  CHECK(l.new_tab_row.top == l.bookmarks.bottom + 8);
+  // The floating panel: no pin button; the "+" trails the header.
   ShellLayoutInputs floating = in;
   floating.floating_panel = true;
   const ShellLayout f = ComputeShellLayout(floating);
-  CHECK((f.pin == SidebarRect{240 - 8 - 32, 6, 232, 38}));
-  CHECK(f.add_space.right == f.pin.left - 4);
-  // With a single Space the panel keeps the row for the pin alone.
+  CHECK(f.add_space.right == 240 - 8);
+  // With a single Space the panel keeps the header row, pips and all gone.
   floating.spaces_switch = false;
   const ShellLayout lone = ComputeShellLayout(floating);
-  CHECK(!lone.spaces_strip.empty() && !lone.pin.empty());
+  CHECK(!lone.spaces_strip.empty());
   CHECK(lone.add_space.empty() && lone.chips_limit == lone.chips_left);
-  CHECK(lone.pinned_label.top == 44);
+  CHECK(lone.favorites.top == 44);
   // A narrow window hides the extension slots before crushing the text.
   ShellLayoutInputs narrow = in;
   narrow.client_width = 900;
@@ -165,10 +169,11 @@ void SingleSpace() {
   ShellLayout l = ComputeShellLayout(in);
   CHECK(l.spaces_strip.empty() && l.add_space.empty());
   CHECK(!l.spaces_switch);
-  CHECK(l.tabs_label.top == 0 && l.new_tab_row.top == 28);
+  CHECK(l.tabs_label.empty() && l.new_tab_row.top == 0);
   in.pinned_row_count = 1;
   l = ComputeShellLayout(in);
-  CHECK(l.pinned_label.top == 0 && l.favorites.top == 28);
+  CHECK(l.pinned_label.empty() && l.favorites.top == 0);
+  CHECK(l.new_tab_row.top == l.favorites.bottom + 8);
   in = Base(PhiLayoutMode::kComfortable);
   in.spaces_switch = false;
   l = ComputeShellLayout(in);

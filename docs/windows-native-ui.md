@@ -503,12 +503,13 @@ page pane, left and right is ok").
   the window) holding **only the Space pips** at x 8 (28 dip, 4 apart,
   "+" trailing them; §5.1) — the whole width is theirs, so eight Spaces
   fit before the overflow dots. With a single Space the row collapses
-  and the sections start at y 0. Below it, **section labels**
-  (12 dip, `dim`, 12 above / 4 below, 16 inset — the screenshot's
-  "Bookmarks / Chats / Tabs"): *Pinned* over the 44 dip cell grid,
-  *Bookmarks* over the outline (with the dashed "Drag tabs here" well
-  when empty, as the drag zone already does), *Tabs* over "+ New tab"
-  (Ctrl+T keycap trailing) and the tab list. The bottom bar (40):
+  and the sections start at y 0. Below it the bands follow each other
+  with **no section labels** (Jixiang, 2026-09-18: "no Pinned /
+  Bookmarks / Tabs header needed"; an 8 dip gap parts them): the 44 dip
+  cell grid, the outline (with the dashed "Drag tabs here" well when
+  empty, as the drag zone already does), then "+ New tab" (Ctrl+T keycap
+  trailing) and the tab list. The one line that stays is the agent
+  Space's "Claude's tabs" cue (§5.10). The bottom bar (40):
   Downloads and memory leading, the Feedback pill trailing. No Chat
   capsule (out of scope for now).
 * Rows: 36 high, radius 6; the active tab is a `card` tile with a 1 px
