@@ -1808,6 +1808,12 @@ class PhiShellWindow : public PhiHitSource,
   // Re-seats the panel after the shell moved or resized (hidden while the
   // shell is minimised).
   void PositionFloatingPanel();
+  // Clips the panel to the shell's client area: a popup is not clipped by
+  // its owner, so the tucked panel's off-window part (and the slide's)
+  // would otherwise paint over the desktop beside the window. Fully in,
+  // the region goes and DWM's corners return.
+  void ClipFloatingPanel();
+  bool floating_clipped_ = false;
   // Starts the 150 ms slide to the expanded or tucked position.
   void SlideFloatingPanel(bool expanded);
   // Slides the panel in (the left-edge hover, a drag crossing the edge).

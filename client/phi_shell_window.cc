@@ -5413,6 +5413,8 @@ void PhiShellWindow::EnsureFloatingPanel() {
   const DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_ROUND;
   ::DwmSetWindowAttribute(floating_sidebar_, DWMWA_WINDOW_CORNER_PREFERENCE,
                           &corner, sizeof(corner));
+  floating_clipped_ = false;
+  ClipFloatingPanel();
   ::ShowWindow(floating_sidebar_, SW_SHOWNOACTIVATE);
   ::SetTimer(floating_sidebar_, kFloatingTickTimer, 30, nullptr);
 }
@@ -5452,6 +5454,39 @@ void PhiShellWindow::PositionFloatingPanel() {
   floating_slide_start_ = 0;  // A move lands the slide where it is going.
   ::SetWindowPos(floating_sidebar_, nullptr, rc.left, rc.top, rc.right - rc.left,
                  h, SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+  ClipFloatingPanel();
+}
+
+void PhiShellWindow::ClipFloatingPanel() {
+  if (!floating_sidebar_ || !shell_hwnd_) {
+    return;
+  }
+  RECT panel_rc = {};
+  ::GetWindowRect(floating_sidebar_, &panel_rc);
+  RECT client = {};
+  ::GetClientRect(shell_hwnd_, &client);
+  ::MapWindowPoints(shell_hwnd_, nullptr, reinterpret_cast<POINT*>(&client), 2);
+  RECT visible = {};
+  ::IntersectRect(&visible, &panel_rc, &client);
+  if (::EqualRect(&visible, &panel_rc)) {
+    if (floating_clipped_) {
+      ::SetWindowRgn(floating_sidebar_, nullptr, TRUE);
+      floating_clipped_ = false;
+    }
+    return;
+  }
+  // The visible part, in the panel's own coordinates, with the panel's
+  // 8 dip corners kept where they are visible.
+  ::OffsetRect(&visible, -panel_rc.left, -panel_rc.top);
+  const int w = panel_rc.right - panel_rc.left;
+  const int h = panel_rc.bottom - panel_rc.top;
+  const int d = Scaled(8) * 2;
+  HRGN region = ::CreateRoundRectRgn(0, 0, w + 1, h + 1, d, d);
+  HRGN box = ::CreateRectRgnIndirect(&visible);
+  ::CombineRgn(region, region, box, RGN_AND);
+  ::DeleteObject(box);
+  ::SetWindowRgn(floating_sidebar_, region, TRUE);  // The system owns it now.
+  floating_clipped_ = true;
 }
 
 void PhiShellWindow::SlideFloatingPanel(bool expanded) {
@@ -5805,6 +5840,7 @@ void PhiShellWindow::FloatingSidebarTick() {
     ::GetWindowRect(floating_sidebar_, &rc);
     ::SetWindowPos(floating_sidebar_, nullptr, x, rc.top, 0, 0,
                    SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOSIZE);
+    ClipFloatingPanel();
     if (t >= 1.0) {
       floating_slide_start_ = 0;
     }
@@ -5815,7 +5851,17 @@ void PhiShellWindow::FloatingSidebarTick() {
   ::GetCursorPos(&cursor);
   RECT panel_rc = {};
   ::GetWindowRect(floating_sidebar_, &panel_rc);
-  const bool inside = ::PtInRect(&panel_rc, cursor) != FALSE;
+  // The hover zone is the panel's VISIBLE part plus the strip between it
+  // and the window's outer left edge: the frame's HTLEFT band slides the
+  // panel in, so a pointer parked there must also hold it (else it flips
+  // in and out for as long as the pointer rests on the edge), and the
+  // tucked panel's off-window part is no target.
+  RECT shell_rc = {};
+  ::GetWindowRect(shell_hwnd_, &shell_rc);
+  RECT zone = panel_rc;
+  zone.left = shell_rc.left;
+  zone.right = std::min(zone.right, shell_rc.right);
+  const bool inside = ::PtInRect(&zone, cursor) != FALSE;
   if (!floating_expanded_) {
     // Tucked: the 300 ms dwell on the peeking edge slides the panel in.
     if (!inside) {
