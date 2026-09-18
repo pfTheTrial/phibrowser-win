@@ -776,15 +776,10 @@ void PhiSpacesStrip::BeginSwap(const std::string& entering_space_id) {
   swap_forward_ = SlideForward(entering_space_id);
   swap_source_palette_ = shell_->SpacesPalette();
   // The strip's selected pill slides from the leaving pip to the entering
-  // one on the same clock; capture where it starts (the active Space is
-  // still the leaving one here). An off-strip leaving pip skips the slide.
-  swap_chip_from_ = RECT{};
-  for (const PhiSpaceChip& chip : chips_) {
-    if (chip.id == active) {
-      swap_chip_from_ = chip.bounds;
-      break;
-    }
-  }
+  // one on the same clock; remember WHICH Space it leaves (the active one
+  // is still the leaving one here) and let the paint resolve the rect, so
+  // the slide survives the viewport re-centring the switch triggers.
+  swap_from_space_ = active;
   // Retain the leaving Space's laid-out rows: the slide paints them LIVE
   // (the rebuild refills the working vectors with the entering Space's).
   shell_->SpacesDropLeavingBand();
@@ -856,6 +851,7 @@ int PhiSpacesStrip::StripPosition(const std::string& space_id) const {
 void PhiSpacesStrip::NoteSlideLanded() {
   shell_->SpacesDropLeavingBand();
   swap_start_ = 0;
+  swap_from_space_.clear();
   PhiAnimator::ForThread().Cancel(swap_anim_);
   swap_anim_ = 0;
   shell_->SpacesRevealSwappedContent();  // The page flips only now.
@@ -864,7 +860,7 @@ void PhiSpacesStrip::NoteSlideLanded() {
 void PhiSpacesStrip::CancelSwap() {
   shell_->SpacesRevealSwappedContent();  // Aborted switches settle instantly.
   shell_->SpacesDropLeavingBand();
-  swap_chip_from_ = RECT{};
+  swap_from_space_.clear();
   PhiAnimator& animator = PhiAnimator::ForThread();
   animator.Cancel(swap_anim_);
   animator.Cancel(ramp_anim_);
@@ -872,6 +868,55 @@ void PhiSpacesStrip::CancelSwap() {
   swap_start_ = 0;
   ramp_start_ = 0;
   shell_->SpacesRepaintOmnibox();  // The palette jumped to its target.
+}
+
+RECT PhiSpacesStrip::ViewportRect(
+    const PhiSpacesStripRects& rects) const {
+  RECT view = {rects.chips_left, rects.strip.top, rects.chips_limit,
+               rects.strip.bottom};
+  if (clip_.right > clip_.left) {
+    view.left = clip_.left;
+    view.right = clip_.right;
+  }
+  return view;
+}
+
+bool PhiSpacesStrip::ChipShown(const std::string& space_id) const {
+  for (const PhiSpaceChip& chip : chips_) {
+    if (chip.id == space_id) {
+      return true;
+    }
+  }
+  return false;
+}
+
+RECT PhiSpacesStrip::SwapPillOrigin(
+    const RECT& entering, const PhiSpacesStripRects& rects) const {
+  // The leaving pip is still on screen: the pill starts on it, wherever the
+  // viewport has since put it.
+  for (const PhiSpaceChip& chip : chips_) {
+    if (chip.id == swap_from_space_) {
+      return PaintedChip(chip.bounds, shell_->SpacesScaled(kSpaceChip));
+    }
+  }
+  // It scrolled out of the windowed row (or is no longer listed): the pill
+  // cannot start on it, so it starts just past the viewport edge it lies
+  // behind and slides in from there — the switch still reads as coming from
+  // the source's direction instead of blinking into place. Forward means the
+  // entering Space is LATER in strip order, so the source is behind the
+  // leading edge; backward, behind the trailing one.
+  const int gap = shell_->SpacesScaled(kSpaceChipGap);
+  const RECT view = ViewportRect(rects);
+  RECT from = entering;
+  const LONG width = entering.right - entering.left;
+  if (swap_forward_) {
+    from.right = view.left - gap;
+    from.left = from.right - width;
+  } else {
+    from.left = view.right + gap;
+    from.right = from.left + width;
+  }
+  return from;
 }
 
 // ---------------------------------------------------------------------------
@@ -900,10 +945,16 @@ void PhiSpacesStrip::Paint(HDC dc,
   // white pill disappears on a white ground.
   // An overflowing row paints through the viewport clip: the peeked
   // neighbours show partly, the cue that the row continues.
+  // A pill sliding in from a scrolled-out source starts OUTSIDE the pips'
+  // room, so clip to that room even where the row itself is not windowed:
+  // the pill has to emerge from the edge, not paint over the trailing slot
+  // or the padding beside it.
+  const bool swap_from_offscreen =
+      swap_start_ && !swap_from_space_.empty() && !ChipShown(swap_from_space_);
   const int clip_save = ::SaveDC(dc);
-  if (clip_.right > clip_.left) {
-    ::IntersectClipRect(dc, clip_.left, rects.strip.top, clip_.right,
-                        rects.strip.bottom);
+  if (clip_.right > clip_.left || swap_from_offscreen) {
+    const RECT view = ViewportRect(rects);
+    ::IntersectClipRect(dc, view.left, view.top, view.right, view.bottom);
   }
   for (const PhiSpaceChip& chip : chips_) {
     // A watched agent pip wears the selection pill too, so "which agent am I
@@ -922,14 +973,13 @@ void PhiSpacesStrip::Paint(HDC dc,
       continue;
     }
     RECT pill = PaintedChip(chip.bounds, scaled(kSpaceChip));
-    if (!chip.is_agent && swap_start_ &&
-        swap_chip_from_.right > swap_chip_from_.left) {
+    if (!chip.is_agent && swap_start_ && !swap_from_space_.empty()) {
       const double t = SwapProgress();
       const auto mix = [t](LONG from, LONG to) {
         return from + static_cast<LONG>(std::lround((to - from) * t));
       };
-      const RECT from = PaintedChip(swap_chip_from_, scaled(kSpaceChip));
       const RECT to = PaintedChip(chip.bounds, scaled(kSpaceChip));
+      const RECT from = SwapPillOrigin(to, rects);
       pill.left = mix(from.left, to.left);
       pill.top = mix(from.top, to.top);
       pill.right = mix(from.right, to.right);

@@ -309,6 +309,16 @@ class PhiSpacesStrip {
                                              WPARAM wparam,
                                              LPARAM lparam);
   void ResolveHoverCard(const std::string& space_id);
+  // The room the pips may paint in: the overflow clip where the row is
+  // windowed, else the span the layout gave them.
+  RECT ViewportRect(const PhiSpacesStripRects& rects) const;
+  // Whether the windowed row currently shows a Space's pip at all.
+  bool ChipShown(const std::string& space_id) const;
+  // Where the selected pill starts its slide: the leaving Space's pip where
+  // the viewport still shows it, else just outside the edge the leaving pip
+  // scrolled past, so the pill still arrives from the source's direction.
+  RECT SwapPillOrigin(const RECT& entering,
+                      const PhiSpacesStripRects& rects) const;
   // Restarts the "+" fade animation with `ms` still to run.
   void StartFade(int ms);
   void StopAnimations();
@@ -369,11 +379,14 @@ class PhiSpacesStrip {
   bool preview_until_switch_ = false;
 
   // The Space switch: the band slide's clock and the theme ramp's, plus the
-  // selected pill's start rect and the frozen source palette.
+  // Space the selected pill slides FROM and the frozen source palette. The
+  // start rect is resolved at paint time, not captured here: the switch
+  // re-centres the viewport on the entering pip, so the leaving pip has
+  // usually moved (or scrolled out) by the time the first frame is drawn.
   ULONGLONG swap_start_ = 0;
   ULONGLONG ramp_start_ = 0;
   bool swap_forward_ = true;
-  RECT swap_chip_from_{};
+  std::string swap_from_space_;
   PhiPalette swap_source_palette_{};
   int swap_anim_ = 0;
   int ramp_anim_ = 0;
