@@ -52,10 +52,12 @@ struct DropResolution {
 };
 
 // The bookmark outline (the Mac's SidebarBookmarkFolderDropResolver). Rows
-// are the VISIBLE outline rows in order. Over an expanded folder: its first
-// child. Over the upper half of a collapsed folder: INTO it (highlight, no
-// gap). Otherwise before/after the row among its own siblings; a pointer
-// below every row lands at the root's end. `dragging` (may be empty) is the
+// are the VISIBLE outline rows in order. A folder's top third: BEFORE it
+// among its siblings (so the slot ahead of the first row is reachable).
+// The rest of an expanded folder: its first child. The middle third of a
+// collapsed folder: INTO it (highlight, no gap); its bottom third: after
+// it. Otherwise before/after the row among its own siblings by halves; a
+// pointer below every row lands at the root's end. `dragging` (may be empty) is the
 // row leaving its slot, never its own anchor.
 DropResolution ResolveBookmarkDrop(const std::vector<DropRow>& rows,
                                    int pointer_y,

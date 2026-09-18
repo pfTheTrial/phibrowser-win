@@ -44,8 +44,19 @@ DropResolution ResolveBookmarkDrop(const std::vector<DropRow>& rows,
       continue;
     }
     const bool upper = pointer_y < MidY(row.bounds);
+    // A folder row has three zones (the tree-view rule): its top third
+    // drops BEFORE it among its siblings — the only way to reach the slot
+    // ahead of the outline's first row — the rest goes in.
+    const bool top_third =
+        pointer_y < row.bounds.top + (row.bounds.bottom - row.bounds.top) / 3;
+    if (row.folder && top_third && row.key != dragging) {
+      out.place.parent_guid = row.parent_guid;
+      out.place.before = row.key;
+      out.gap_slot = static_cast<int>(i);
+      return out;
+    }
     if (row.folder && row.expanded && row.key != dragging) {
-      // Anywhere on an expanded folder: its first child.
+      // The rest of an expanded folder: its first child.
       out.place.parent_guid = row.key.id;
       for (size_t j = i + 1; j < rows.size(); ++j) {
         if (rows[j].depth <= row.depth) break;
@@ -58,7 +69,7 @@ DropResolution ResolveBookmarkDrop(const std::vector<DropRow>& rows,
       return out;
     }
     if (row.folder && upper && row.key != dragging) {
-      // Upper half of a collapsed folder: INTO it, at the end.
+      // The middle of a collapsed folder: INTO it, at the end.
       out.place.parent_guid = row.key.id;
       out.folder_key = row.key;
       out.gap_slot = -1;

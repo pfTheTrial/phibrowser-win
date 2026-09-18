@@ -135,12 +135,17 @@ void BookmarkDrop() {
       Row(SidebarKey::Cell("b2"), 76, 112, "f", 1),
       Row(SidebarKey::Folder("g"), 114, 150, "", 0, true, false),
       Row(SidebarKey::Cell("b0"), 152, 188, "", 0)};
-  DropResolution r = ResolveBookmarkDrop(rows, 10, {});      // On f: first child.
+  DropResolution r = ResolveBookmarkDrop(rows, 20, {});      // On f (below its top third): first child.
   CHECK(r.place.parent_guid == "f" && r.place.before == SidebarKey::Cell("b1"));
   CHECK(r.gap_slot == 1 && r.folder_key.empty());
-  r = ResolveBookmarkDrop(rows, 120, {});                    // Upper half of g: INTO.
+  r = ResolveBookmarkDrop(rows, 5, {});                      // f's top third: BEFORE f, the outline's first slot.
+  CHECK(r.place.parent_guid.empty() && r.place.before == SidebarKey::Folder("f"));
+  CHECK(r.gap_slot == 0 && r.folder_key.empty());
+  r = ResolveBookmarkDrop(rows, 130, {});                    // Middle of g: INTO.
   CHECK(r.place.parent_guid == "g" && r.place.before.empty());
   CHECK(r.gap_slot == -1 && r.folder_key == SidebarKey::Folder("g"));
+  r = ResolveBookmarkDrop(rows, 118, {});                    // g's top third: before g.
+  CHECK(r.place.parent_guid.empty() && r.place.before == SidebarKey::Folder("g") && r.gap_slot == 3);
   r = ResolveBookmarkDrop(rows, 145, {});                    // Lower half of g: after g.
   CHECK(r.place.parent_guid.empty() && r.place.before == SidebarKey::Cell("b0"));
   CHECK(r.gap_slot == 4);
@@ -154,7 +159,7 @@ void BookmarkDrop() {
   CHECK(r.place.before == SidebarKey::Cell("b2"));
   r = ResolveBookmarkDrop(rows, 400, {});                    // Past the end.
   CHECK(r.place.parent_guid.empty() && r.place.before.empty() && r.gap_slot == 5);
-  r = ResolveBookmarkDrop(rows, 120, SidebarKey::Folder("g"));  // A folder over itself.
+  r = ResolveBookmarkDrop(rows, 130, SidebarKey::Folder("g"));  // A folder over itself.
   CHECK(r.folder_key.empty());
   // An EMPTY outline (the reserved drop zone): the root's end, gap 0.
   r = ResolveBookmarkDrop({}, 20, {});

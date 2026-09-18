@@ -8,6 +8,7 @@
 //                                          header is the space, Reading washed
 //   c  a root bookmark's upper half      -> plain gap, no folder lit
 //   d  below the last root row           -> the root's end: the list below parts
+//   e  the first row's top third         -> the outline's first slot opens
 // The release lands at Work's end (the tab becomes Work's last bookmark).
 // Runs ON the box.
 import { readFileSync, existsSync, unlinkSync } from 'node:fs'
@@ -20,6 +21,19 @@ const { windows } = await ctl.send('agentSpace.list')
 const windowId = windows[0]
 for (const extra of windows.slice(1)) {
   await ctl.send('agentSpace.close', { windowId: extra }).catch(() => {})
+}
+// One pinned row: extra pins wrap the grid, which shifts the outline while
+// a tab drag's phantom cell passes the band.
+const { pinned = [] } = await ctl.send('agentSpace.pinned.list', { windowId })
+for (const pin of pinned.slice(2)) {
+  await ctl.send('agentSpace.pinned.remove', { guid: pin.guid })
+  await sleep(80)
+}
+if (pinned.length === 0) {
+  // An EMPTY band reserves its 100 dip drop zone at the lift, which would
+  // move the outline under the rects read below.
+  await ctl.send('agentSpace.pinned.add', { windowId, title: 'Docs', url: 'https://example.com/docs' })
+  await sleep(300)
 }
 const { bookmarks = [] } = await ctl.send('agentSpace.bookmarks.list', {})
 for (const row of bookmarks) {
@@ -75,7 +89,7 @@ const tab = tabRows.find((r) => !r.active) || tabRows[0]
 console.log('tab', JSON.stringify(tab))
 const [tx, ty] = mid(tab)
 const pitch = specs.bottom - specs.top + 2
-for (const n of 'abcd') { try { unlinkSync(boxPath(`drag-tail-${n}.png`)) } catch { /* none */ } }
+for (const n of 'abcde') { try { unlinkSync(boxPath(`drag-tail-${n}.png`)) } catch { /* none */ } }
 const steps = runSteps([
   `down,${tx},${ty}`, `move,${tx},${ty + 14}`, `move,${tx},${ty + 30}`, 'sleep,300',
   `move,${at(specs, 0.8)[0]},${at(specs, 0.8)[1]}`, 'sleep,900', 'shot,tail-a', 'sleep,900',
@@ -86,14 +100,16 @@ const steps = runSteps([
   // Reading is open now (a gap under its header): the root rows sit a pitch lower.
   `move,${at(design, 0.3)[0]},${at(design, 0.3)[1] + pitch}`, 'sleep,900', 'shot,tail-c', 'sleep,900',
   `move,${at(linkedin, 0.5)[0]},${at(linkedin, 0.85)[1]}`, 'sleep,2500', 'shot,tail-d', 'sleep,900',
+  // e  the top third of the first row (Work) -> the outline's first slot opens
+  `move,${at(workRow, 0.15)[0]},${at(workRow, 0.15)[1]}`, 'sleep,2000', 'shot,tail-e', 'sleep,900',
   `move,${at(specs, 0.8)[0]},${at(specs, 0.8)[1]}`, 'sleep,700', 'up', 'sleep,900',
-], { timeout: 120000 })
+], { timeout: 150000 })
 const snap = async (label) => {
   const l = await ctl.send('agentSpace.window.layout', { windowId })
   const marks = (l.rows || []).filter((r) => r.band === 'bookmarks')
   console.log(label, JSON.stringify(l.drag), JSON.stringify(marks.map((r) => [r.key.slice(0, 12), r.depth, r.expanded, r.top, r.bottom])))
 }
-for (const n of 'abcd') {
+for (const n of 'abcde') {
   const file = boxPath(`drag-tail-${n}.png`)
   const deadline = Date.now() + 30000
   while (!existsSync(file) && Date.now() < deadline) await sleep(100)

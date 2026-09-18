@@ -787,7 +787,12 @@ Windows version — one vocabulary, used everywhere:
   opens it right under its header (a collapsed one hover-expands after
   the 400 ms dwell, then does the same); the lower half of the last root
   row opens it at the outline's end, the tab list parting below. The
-  space appears only where the drag is and closes as it leaves.
+  space appears only where the drag is and closes as it leaves. A
+  folder row has three zones (the tree-view rule): its **top third**
+  drops before it among its siblings — which is how the slot ahead of
+  the outline's first row opens — the rest goes in (an expanded folder's
+  first child; a collapsed one's middle third takes it whole, its bottom
+  third drops after it).
 * **Badge**: Windows' drop-description pill by the cursor (22 dip,
   `flyout` ground, 1 dip stroke, 11 dip text): **Move · Move to
   <group> · Pin · Bookmark · Move to <Space> · Split left / right / top /

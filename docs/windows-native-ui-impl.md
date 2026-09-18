@@ -680,3 +680,11 @@ with the session.
   client-relative physical — the rig adds the parked origin; a stop
   needs ~2 s before its shot for the slide to settle). Canvas: Drag &
   drop · sidebar scene 5 redrawn (Versions 54–57).
+* First slot of the outline (Jixiang, 2026-09-18): a folder's top third
+  now resolves BEFORE it among its siblings (`ResolveBookmarkDrop`; the
+  tree-view three-zone rule — an expanded folder used to take its whole
+  row as "first child", so nothing could open the slot ahead of a
+  leading folder). Collapsed: top third before, middle INTO, bottom
+  third after. Host test updated; `bm-drop-space.mjs` stop e shows the
+  gap opening above Work. The probe keeps one pin so the empty band's
+  reserved zone does not move the outline under its pre-read rects.
