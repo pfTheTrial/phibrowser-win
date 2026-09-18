@@ -1021,6 +1021,7 @@ class PhiShellWindow : public PhiHitSource,
     // Feedback and Chat capsules trailing. Settings has NO bottom-bar button —
     // it opens from the menu bar, as on Mac. All placeholders except through
     // the menu.
+    RECT sidebar_downloads{};  // The bottom bar's own Downloads button.
     RECT downloads{}, memory{}, feedback{}, chat{};
     RECT extensions{};     // The puzzle button (in-field / bottom bar / header).
     // The app menu button (⋯): comfortable's toolbar trailing button, the
@@ -1248,7 +1249,10 @@ class PhiShellWindow : public PhiHitSource,
   RECT HoverRect(HoverKind kind, int index);
   void SetHover(HoverKind kind, int index);
   // The chrome buttons a kNav hover indexes, in PaintChrome's order.
-  std::array<RECT, 17> NavHoverTable(const Layout& layout) const;
+  std::array<RECT, 18> NavHoverTable(const Layout& layout) const;
+  // The 12/600 face the Space chip, the agent chip and the Feedback pill
+  // share; built on demand and rebuilt when the DPI moves.
+  HFONT EnsureChipNameFont();
   // §5.10: the agent chip's data from the slot's agent pips (the active
   // Space's agent = the full chip; a running agent elsewhere = compact).
   void ComputeAgentChip();
@@ -1760,6 +1764,8 @@ class PhiShellWindow : public PhiHitSource,
   // inputs. `agent_chip_task_` names the task it stands for; compact =
   // the mark and dot only (a user Space while an agent works elsewhere).
   int agent_chip_dip_ = 0;
+  // The Feedback pill's measured width in dip (0 = the icon-only slot).
+  int feedback_dip_ = 0;
   bool agent_chip_compact_ = false;
   std::string agent_chip_task_;
   std::string agent_chip_space_;

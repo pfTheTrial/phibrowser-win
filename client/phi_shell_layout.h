@@ -119,6 +119,9 @@ inline constexpr int kHTabStripTop = 6;
 inline constexpr int kHTabStripLeading = 8;
 // The bottom bar's capsules (Feedback bordered, Chat on the accent).
 inline constexpr int kFeedbackIconWidth = 32;
+// The Feedback pill's own height (§4.2's bottom bar); the Chat capsule
+// keeps kPillHeight.
+inline constexpr int kFeedbackPillHeight = 26;
 inline constexpr int kChatWidth = 58;
 inline constexpr int kPillHeight = 24;
 // Legacy names still read by the box rigs' arithmetic: the band height
@@ -175,6 +178,9 @@ struct ShellLayoutInputs {
   // width in the agent's own Space, 40 for the compact form in a user
   // Space while an agent works elsewhere, 0 for none.
   int agent_chip_dip = 0;
+  // The Feedback pill's measured width (10 + icon 16 + 6 + label + 10) in
+  // dip; 0 means the icon-only slot.
+  int feedback_dip = 0;
 
   friend bool operator==(const ShellLayoutInputs& a,
                          const ShellLayoutInputs& b) {
@@ -195,7 +201,8 @@ struct ShellLayoutInputs {
            a.floating_panel == b.floating_panel &&
            a.owned_tabs_label == b.owned_tabs_label &&
            a.space_chip_dip == b.space_chip_dip &&
-           a.agent_chip_dip == b.agent_chip_dip;
+           a.agent_chip_dip == b.agent_chip_dip &&
+           a.feedback_dip == b.feedback_dip;
   }
   friend bool operator!=(const ShellLayoutInputs& a,
                          const ShellLayoutInputs& b) {
@@ -244,8 +251,10 @@ struct ShellLayout {
   SidebarRect bookmark_separator;
   SidebarRect new_tab_row;  // The sidebar's "+ New Tab" row.
   SidebarRect bottom_bar;
-  // Bottom-bar buttons, the Mac's order: downloads and memory leading, the
-  // Feedback and Chat capsules trailing.
+  // Bottom-bar buttons (§4.2): Downloads — its own slot, the tool cluster's
+  // `downloads` is the address row's — and the memory chip leading, the
+  // Feedback pill (and the Chat capsule while the AI suite is on) trailing.
+  SidebarRect sidebar_downloads;
   SidebarRect downloads, memory, feedback, chat;
   SidebarRect extensions;  // The puzzle button.
   // The app menu button (⋯, docs/windows-native-ui.md §3): comfortable's

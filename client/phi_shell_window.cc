@@ -72,6 +72,16 @@ namespace {
 
 constexpr wchar_t kShellClassName[] = L"PhiClientShell";
 
+// The sidebar bottom bar's Feedback pill label (§4.2), measured in the
+// shell's 12/600 face so the pill is laid out around the real text.
+constexpr wchar_t kFeedbackLabel[] = L"Feedback";
+// The bug's box. The canvas draws a 16 dip icon; the 48 px mask behind it
+// carries a 4 px margin the canvas's drawing does not, so the artwork is
+// laid out and drawn a fifth larger and its INK then measures the
+// canvas's.
+constexpr int kFeedbackArtwork = 20;
+constexpr int kFeedbackLabelLen = static_cast<int>(std::size(kFeedbackLabel)) - 1;
+
 using phi_framework::SplitSnapshot;
 using phi_framework::TabSnapshot;
 using phi_framework::WindowSnapshot;
@@ -448,6 +458,7 @@ PhiShellWindow::Layout PhiShellWindow::ToLayout(
   out.bookmark_separator = PhiToRect(shell.bookmark_separator);
   out.new_tab_row = PhiToRect(shell.new_tab_row);
   out.bottom_bar = PhiToRect(shell.bottom_bar);
+  out.sidebar_downloads = PhiToRect(shell.sidebar_downloads);
   out.downloads = PhiToRect(shell.downloads);
   out.memory = PhiToRect(shell.memory);
   out.feedback = PhiToRect(shell.feedback);
@@ -477,6 +488,17 @@ PhiShellWindow::Layout PhiShellWindow::ToLayout(
   return out;
 }
 
+HFONT PhiShellWindow::EnsureChipNameFont() {
+  if (!chip_name_font_ || chip_name_font_dpi_ != dpi_) {
+    if (chip_name_font_) {
+      ::DeleteObject(chip_name_font_);
+    }
+    chip_name_font_ = PhiFluentFont(dpi_, 12, FW_SEMIBOLD);
+    chip_name_font_dpi_ = dpi_;
+  }
+  return chip_name_font_;
+}
+
 ShellLayoutInputs PhiShellWindow::CurrentLayoutInputs() const {
   ShellLayoutInputs in;
   in.mode = layout_mode_;
@@ -496,6 +518,7 @@ ShellLayoutInputs PhiShellWindow::CurrentLayoutInputs() const {
   in.owned_tabs_label = !agent_chip_compact_ && !agent_chip_name_.empty();
   in.space_chip_dip = space_chip_dip_;
   in.agent_chip_dip = agent_chip_dip_;
+  in.feedback_dip = feedback_dip_;
   if (floating_layout_ && floating_panel_h_ > 0) {
     // The panel's own height: its bands (the bottom bar) fit the panel.
     in.client_height = floating_panel_h_;
@@ -532,13 +555,7 @@ void PhiShellWindow::RefreshLayoutInputs() {
   space_chip_dip_ = 0;
   if (layout_mode_ == PhiLayoutMode::kComfortable && services_.spaces &&
       shell_hwnd_) {
-    if (!chip_name_font_ || chip_name_font_dpi_ != dpi_) {
-      if (chip_name_font_) {
-        ::DeleteObject(chip_name_font_);
-      }
-      chip_name_font_ = PhiFluentFont(dpi_, 12, FW_SEMIBOLD);
-      chip_name_font_dpi_ = dpi_;
-    }
+    EnsureChipNameFont();
     std::wstring name;
     for (const PhiSpaceView& space : services_.spaces->Spaces()) {
       if (space.id == active_space()) {
@@ -561,6 +578,33 @@ void PhiShellWindow::RefreshLayoutInputs() {
       ::ReleaseDC(shell_hwnd_, dc);
     }
     space_chip_dip_ = 8 + 16 + 6 + std::min(120, name_dip) + 4 + 12 + 8;
+  }
+  // The bottom bar's Feedback pill (§4.2): 10 + icon 16 + 6 + the label in
+  // the same 12/600 face + 10. Measured here so the layout never guesses a
+  // text width — an unmeasurable label leaves 0 and the icon-only slot.
+  feedback_dip_ = 0;
+  if (shell_hwnd_) {
+    EnsureChipNameFont();
+    if (HDC dc = ::GetDC(shell_hwnd_)) {
+      HGDIOBJ previous =
+          chip_name_font_ ? ::SelectObject(dc, chip_name_font_) : nullptr;
+      SIZE extent = {};
+      if (::GetTextExtentPoint32W(dc, kFeedbackLabel, kFeedbackLabelLen,
+                                  &extent)) {
+        // 10 pad + the 20 dip artwork + 6 + the label + 10 pad. The label
+        // is rounded UP into dip: truncating it (and scaling the total back
+        // to pixels) lost a pixel or two and clipped the word's last
+        // letter.
+        const int label_dip = (static_cast<int>(extent.cx) * 96 +
+                               static_cast<int>(dpi_) - 1) /
+                              static_cast<int>(dpi_);
+        feedback_dip_ = 10 + kFeedbackArtwork + 6 + label_dip + 10;
+      }
+      if (previous) {
+        ::SelectObject(dc, previous);
+      }
+      ::ReleaseDC(shell_hwnd_, dc);
+    }
   }
   ComputeAgentChip();
 }
@@ -628,13 +672,7 @@ void PhiShellWindow::ComputeAgentChip() {
     agent_chip_dip_ = 40;  // The mark and the dot.
     return;
   }
-  if (!chip_name_font_ || chip_name_font_dpi_ != dpi_) {
-    if (chip_name_font_) {
-      ::DeleteObject(chip_name_font_);
-    }
-    chip_name_font_ = PhiFluentFont(dpi_, 12, FW_SEMIBOLD);
-    chip_name_font_dpi_ = dpi_;
-  }
+  EnsureChipNameFont();
   int name_dip = 60;
   int status_dip = 48;
   if (HDC dc = ::GetDC(shell_hwnd_)) {
@@ -2863,7 +2901,7 @@ PhiDragBitmap PhiShellWindow::CaptureChromeRect(const RECT& client_rect) {
 
 
 
-std::array<RECT, 17> PhiShellWindow::NavHoverTable(
+std::array<RECT, 18> PhiShellWindow::NavHoverTable(
     const Layout& layout) const {
   // The nav buttons' hover washes (back/forward/reload/search).
   // The first six MUST stay in the paint table's order — PaintChrome keys
@@ -2874,13 +2912,14 @@ std::array<RECT, 17> PhiShellWindow::NavHoverTable(
   // keeps every later ordinal where the rigs aim.
   // Ordinal 11 was the copy-link slot and 12 the Phi button, both gone:
   // empty rects keep every later ordinal where the rigs aim. 15 is the
-  // star (Bookmark this tab), appended.
+  // star (Bookmark this tab), appended; 17 the bottom bar's own Downloads
+  // button (§4.2), appended after it.
   return {layout.back,        layout.forward,    layout.reload,
           layout.search_tabs, sidebar_->add_tab_button(),   layout.app_menu,
           layout.downloads,   layout.memory,     layout.feedback,
           layout.chat,        layout.extensions, RECT{},
           RECT{},             layout.reader,     layout.sidebar_toggle,
-          layout.star,        layout.agent_chip};
+          layout.star,        layout.agent_chip, layout.sidebar_downloads};
 }
 
 // The client rect a hovered element's wash covers, empty for none — so a
@@ -4205,7 +4244,8 @@ void PhiShellWindow::OnChromeClick(int x, int y) {
     ToggleSidebar();  // The band's leading control, View ▸ Toggle Sidebar.
     return;
   }
-  if (::PtInRect(&layout.downloads, pt)) {
+  if (::PtInRect(&layout.downloads, pt) ||
+      ::PtInRect(&layout.sidebar_downloads, pt)) {
     // The Mac DownloadButtonView's popover toggle — and its
     // feature_entry_tapped: the button lives in the sidebar's bottom bar,
     // or in Comfortable's toolbar (the Mac's WebContentHeader).
@@ -4219,7 +4259,9 @@ void PhiShellWindow::OnChromeClick(int x, int y) {
     }
     const BrowserId browser = active_browser_id();
     if (services_.spaces && framework_ && browser.valid()) {
-      RECT anchor = layout.downloads;
+      RECT anchor = ::PtInRect(&layout.sidebar_downloads, pt)
+                        ? layout.sidebar_downloads
+                        : layout.downloads;
       ::MapWindowPoints(shell_hwnd_, nullptr,
                         reinterpret_cast<POINT*>(&anchor), 2);
       PhiDownloadsPopover::Toggle(shell_hwnd_, anchor,
@@ -6175,7 +6217,6 @@ void PhiShellWindow::PaintChrome(HDC dc,
   const COLORREF kTintTop = palette.ground_top;
   const COLORREF kLabel = palette.label;
   const COLORREF kLabelDim = palette.label_dim;
-  const COLORREF kBorder = palette.border;
   // The address field's two fills. In performance the field is a pill in the
   // SIDEBAR, so it rests on the 4% wash over the Space tint (sidebarTabHovered
   // — SideAddressBar's showBackgroundWhenInactive), brightening to 8%. In
@@ -6552,15 +6593,18 @@ void PhiShellWindow::PaintChrome(HDC dc,
     }
   }
 
-  // Bottom bar — SidebarBottomBar, inch for inch: a 24pt row where the
-  // download and memory icon buttons lead (24pt, rounded-6 hover wash),
-  // and the Feedback capsule (16pt flag + 11pt label, hairline border,
-  // hover wash) and Chat capsule (accent ground that darkens on hover;
-  // white glyph flush LEFT, 2pt gap, 11pt white label, 8pt trailing pad)
-  // trail. Functions arrive later; there is NO settings gear here —
-  // settings opens from the menu bar, as on Mac.
+  // Bottom bar — docs/windows-native-ui.md §4.2: a 40 dip row, 8 dip of
+  // padding at each end, where the Downloads button leads (32 × 32, radius
+  // 4, a 16 dip glyph) with the memory chip beside it while the AI suite is
+  // on, and the Feedback pill trails (26 high, stroke_strong capsule, 16
+  // glyph + 6 + the 12/600 label). The Chat capsule (accent ground that
+  // darkens on hover) is AI-only and out of the design for now. There is NO
+  // settings gear here — settings opens from the app menu, as on Mac.
+  // Ordinals into NavHoverTable, where the bottom bar's run starts at 6
+  // (downloads, memory, feedback, chat, extensions) and the bar's own
+  // Downloads button is the appended 17.
   const auto bottom_hot = [&](int ordinal) {
-    return hover_kind_ == HoverKind::kNav && hover_index_ == 4 + ordinal;
+    return hover_kind_ == HoverKind::kNav && hover_index_ == 6 + ordinal;
   };
   {
     const auto tool = [&](const RECT& rect, const wchar_t* glyph, bool hot) {
@@ -6571,6 +6615,10 @@ void PhiShellWindow::PaintChrome(HDC dc,
     };
     if (layout.downloads.right > layout.downloads.left) {
       tool(layout.downloads, fluent::kDownload, bottom_hot(0));
+    }
+    if (layout.sidebar_downloads.right > layout.sidebar_downloads.left) {
+      // The bottom bar's own Downloads button (§4.2), nav-hover ordinal 17.
+      tool(layout.sidebar_downloads, fluent::kDownload, bottom_hot(11));
     }
     if (layout.memory.right > layout.memory.left) {
       if (bottom_hot(1)) {
@@ -6585,47 +6633,49 @@ void PhiShellWindow::PaintChrome(HDC dc,
                    memory_px);
     }
     if (layout.extensions.right > layout.extensions.left) {
-      // The extensions puzzle button (nav-hover ordinal 8 = bottom_hot(4)).
+      // The extensions puzzle button (nav-hover ordinal 10 = bottom_hot(4)).
       tool(layout.extensions, fluent::kPuzzle, bottom_hot(4));
     }
   }
   if (layout.feedback.right > layout.feedback.left) {
-    // ViewThatFits: the bottom bar's narrow slot takes the icon-only
-    // variant; the comfortable header keeps icon + label.
+    // The Feedback pill (§4.2): 26 high, a 1 px stroke_strong capsule, the
+    // 16 dip glyph then a 6 dip gap and the 12/600 label, 10 dip of padding
+    // at each end. ViewThatFits: a bar too narrow for the label takes the
+    // icon-only slot, and the glyph then centres in it.
     const bool icon_only = layout.feedback.right - layout.feedback.left <=
                            Scaled(kFeedbackIconWidth);
     if (bottom_hot(2)) {
       PhiFillCapsuleAA(dc, layout.feedback, palette.hover);
     }
-    PhiStrokeCapsuleAA(dc, layout.feedback, kBorder, std::max(1, Scaled(1)));
-    HGDIOBJ previous_small =
-        small_font_ ? ::SelectObject(dc, small_font_) : nullptr;
-    const int icon_w = Scaled(16);
-    int group_w = icon_w;
-    RECT measure = {0, 0, 0, 0};
-    if (!icon_only) {
-      PhiDrawTextAA(dc, L"Feedback", -1, &measure,
-                  DT_CALCRECT | DT_SINGLELINE);
-      group_w += Scaled(4) + measure.right;
-    }
-    const int left =
-        (layout.feedback.left + layout.feedback.right - group_w) / 2;
+    PhiStrokeCapsuleAA(dc, layout.feedback, palette.stroke_strong,
+                       std::max(1, Scaled(1)));
+    HGDIOBJ previous_label =
+        ::SelectObject(dc, EnsureChipNameFont());
+    const int icon_w = Scaled(kFeedbackArtwork);
     const int mid_y = (layout.feedback.top + layout.feedback.bottom) / 2;
+    const int left = icon_only
+                         ? (layout.feedback.left + layout.feedback.right -
+                            icon_w) / 2
+                         : layout.feedback.left + Scaled(10);
     RECT icon_rc = {left, mid_y - icon_w / 2, left + icon_w,
                     mid_y + icon_w / 2};
-    PhiDrawIconGlyph(dc, icon_rc, fluent::kFeedback, icon_w, kLabel);
+    // The canvas's bug, the one mask the Fluent face has no answer for
+    // (§2.2a's exception list), tinted like every other template icon.
+    const std::vector<unsigned char> bug_bgra =
+        PhiTintedIconBgra(PhiFeedbackIcon(), kLabel, icon_w);
+    PhiBlendBgra(dc, icon_rc, bug_bgra.data(), icon_w, icon_w);
     if (!icon_only) {
-      if (small_font_) {
-        ::SelectObject(dc, small_font_);
-      }
       ::SetTextColor(dc, kLabel);
-      RECT text_rc = {icon_rc.right + Scaled(4), layout.feedback.top,
+      // The trailing padding is in the MEASURED width already; clipping the
+      // text rect to it again cost the last letter whenever the two
+      // measurements disagreed by a pixel.
+      RECT text_rc = {icon_rc.right + Scaled(6), layout.feedback.top,
                       layout.feedback.right, layout.feedback.bottom};
-      PhiDrawTextAA(dc, L"Feedback", -1, &text_rc,
-                  DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+      PhiDrawTextAA(dc, kFeedbackLabel, -1, &text_rc,
+                    DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
     }
-    if (previous_small) {
-      ::SelectObject(dc, previous_small);
+    if (previous_label) {
+      ::SelectObject(dc, previous_label);
     }
   }
   if (layout.chat.right > layout.chat.left) {

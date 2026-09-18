@@ -22,6 +22,10 @@ struct PhiMacIcon {
 };
 
 const PhiMacIcon& PhiMemoryIcon();
+// The bug the canvas draws on the sidebar's Feedback pill
+// (sidebar-feedback.imageset/solar_bug-line-duotone.pdf): the Fluent face
+// has no bug near it, so this one mask stays (§2.2a's exception list).
+const PhiMacIcon& PhiFeedbackIcon();
 const PhiMacIcon& PhiChatIcon();
 
 // The native new-tab page's artwork (native-NTP-icon / native-NTP-incognito

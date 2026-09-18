@@ -680,6 +680,60 @@ with the session.
   client-relative physical — the rig adds the parked origin; a stop
   needs ~2 s before its shot for the slide to settle). Canvas: Drag &
   drop · sidebar scene 5 redrawn (Versions 54–57).
+* Space icons drawn from the catalogue (§5.9, Jixiang 2026-09-18, "the
+  space icon is different from our icon catalogue"): `PhiCatalogIcon`
+  carries the Fluent code point and a `fluent` flag, and the 88-row table
+  in `phi_icons.cc` maps every id to the family's own glyph. Letters and
+  digits draw as TYPE (the shell's face at 13/16 of the box, semibold),
+  not as artwork; the compiled masks stay only for the ten ids with no
+  Fluent twin (sparkles, ticket, chip, cube-transparent, truck, cake,
+  table, database, server, rss) and for the Fluent-only codes that fall
+  back on Windows 10's MDL2 (F0E3, F133, F196). `PhiDrawCatalogIcon` and
+  `PhiDrawCatalogArtwork` try the glyph first and keep the mask path
+  behind it, so every draw site (pips, chips, Settings rows, the picker,
+  menus, kiosk, the agent overlay) follows without a change. Box:
+  `test/probes/space-icons.mjs` seeds eight Spaces across the three
+  cases; verified on the strip and in Settings › Spaces.
+* Space-switch pill, a scrolled-out source (Jixiang, 2026-09-18): the
+  strip's selected pill used to capture the leaving pip's RECT when the
+  switch began, so it did not animate at all when the row had been
+  wheeled past that pip, and started from a stale position whenever the
+  switch re-centred the viewport. `PhiSpacesStrip` now remembers the
+  leaving Space's id and resolves the start rect each frame
+  (`SwapPillOrigin`): the pip where the viewport still shows it, else one
+  gap outside the edge it lies behind — the leading edge for a forward
+  switch, the trailing one for a backward switch — with the pip row
+  clipped for that frame so the pill emerges from the edge. Box:
+  `test/probes/sp-strip.mjs` seeds ten Spaces; caught with skillcap's new
+  `wheel` and `bpost` steps (the burst has to start on the same tick the
+  command is posted to catch a 150 ms slide).
+* Sidebar bottom bar aligned with the board (Jixiang, 2026-09-18): the
+  40 dip bar now leads with its OWN Downloads button (32 × 32, radius 4,
+  16 dip glyph at the 8 dip inset — `sidebar_downloads`, beside the tool
+  cluster's copy in the address row, as both Vertical and Floating draw
+  it) and trails with the full Feedback pill: 26 high, a 1 px
+  `stroke_strong` capsule, 10 dip of padding, the 16 dip glyph, a 6 dip
+  gap and the 12/600 label. It was an icon-only 32 × 24 capsule on the
+  hairline `border` with an 11/400 label in the layouts that showed one.
+  The pill is laid out around the measured label
+  (`ShellLayoutInputs::feedback_dip`, taken in the same 12/600 face the
+  Space and agent chips use — now one `EnsureChipNameFont`), and falls
+  back to the icon-only slot if a bar is ever too narrow for it. Fixed
+  with it: `bottom_hot` keyed the bottom bar's hover washes at
+  NavHoverTable ordinal 4 instead of 6, so hovering Feedback lit the
+  extensions button and the pill itself never washed. The icon is the
+  canvas's own bug, not a Fluent stand-in (Jixiang rejected both the
+  family's `Feedback` mark, ED15, a person and a speech bubble, and its
+  `Bug`, EBE8, a thin straight-legged tick): `PhiFeedbackIcon()` — the
+  48 px `solar_bug-line-duotone` mask §2.2a had retired — comes back
+  beside the memory and chat masks as the one artwork the Fluent face
+  has no answer for. Its master carries a 4 px margin the canvas's 16 dip
+  drawing does not, so the artwork's box is 20 dip and its INK then
+  measures the canvas's 16. The pill is 10 + 20 + 6 + label + 10, the
+  label rounded UP into dip and the text rect NOT re-clipped to the
+  trailing padding the width already reserves — truncating it and
+  clipping it again cost the word's last letter (Jixiang: "do not make
+  the button show half word").
 * First slot of the outline (Jixiang, 2026-09-18): a folder's top third
   now resolves BEFORE it among its siblings (`ResolveBookmarkDrop`; the
   tree-view three-zone rule — an expanded folder used to take its whole

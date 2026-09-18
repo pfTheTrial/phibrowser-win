@@ -329,21 +329,30 @@ ShellLayout ComputeShellLayout(const ShellLayoutInputs& in) {
   out.bottom_bar = {0, bar_top, sidebar, bar_top + bar_h};
   const int bar_mid = bar_top + bar_h / 2;
   int bx = inset;
-  // The downloads button lives in the tool cluster in the vertical layout
-  // too (§4); the bottom bar keeps the memory chip and Feedback.
+  // Downloads leads the bar, as the board draws it — its own slot, beside
+  // the tool cluster's copy in the address row — then the memory chip.
+  out.sidebar_downloads = {bx, bar_mid - btn / 2, bx + btn, bar_mid + btn / 2};
+  bx += btn + btn_gap;
   if (in.ai_enabled) {
     out.memory = {bx, bar_mid - btn / 2, bx + btn, bar_mid + btn / 2};
     bx += btn + btn_gap;
   }
   int br = sidebar - inset;
-  const int pill_top = bar_mid - scaled(kPillHeight) / 2;
   if (in.ai_enabled) {
-    out.chat = {br - scaled(kChatWidth), pill_top, br,
-                pill_top + scaled(kPillHeight)};
+    const int chat_top = bar_mid - scaled(kPillHeight) / 2;
+    out.chat = {br - scaled(kChatWidth), chat_top, br,
+                chat_top + scaled(kPillHeight)};
     br = out.chat.left - btn_gap;
   }
-  out.feedback = {br - scaled(kFeedbackIconWidth), pill_top, br,
-                  pill_top + scaled(kPillHeight)};
+  // ViewThatFits: the measured pill where the bar has room for it after
+  // the leading buttons, else the icon-only slot.
+  const int pill_h = scaled(kFeedbackPillHeight);
+  const int pill_top = bar_mid - pill_h / 2;
+  int pill_w = scaled(in.feedback_dip);
+  if (pill_w <= 0 || br - pill_w < bx + btn_gap) {
+    pill_w = scaled(kFeedbackIconWidth);
+  }
+  out.feedback = {br - pill_w, pill_top, br, pill_top + pill_h};
 
   out.tabs_left = inset;
   out.tabs_limit = out.bottom_bar.top - scaled(kFavoritesSpacer);
@@ -357,6 +366,7 @@ ShellLayout ComputeShellLayout(const ShellLayoutInputs& in) {
     out.tabs_label = zero;
     out.new_tab_row = zero;
     out.bottom_bar = zero;
+    out.sidebar_downloads = zero;
     out.memory = zero;
     out.feedback = zero;
     out.chat = zero;
