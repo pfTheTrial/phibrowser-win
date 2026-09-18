@@ -7,108 +7,113 @@
 #include <algorithm>
 #include <cmath>
 #include <map>
+#include <string_view>
 
 #include "base/compiler_specific.h"
 #include "base/no_destructor.h"
 #include "phibrowser-win/client/phi_agent_icons.h"
 #include "phibrowser-win/client/phi_dwrite.h"
+#include "phibrowser-win/client/phi_fluent.h"
 #include "base/strings/utf_string_conversions.h"
 
 namespace phi_client {
 
 const std::vector<PhiCatalogIcon>& PhiIconCatalogAll() {
-  // Ids and ORDER are the Mac's (PhiIconCatalog.swift). Glyphs are Segoe
-  // MDL2 Assets stand-ins from the stable E7xx/E8xx core set — close in
-  // meaning, not the Mac's artwork; the artwork port is a later slice.
+  // Ids and ORDER are the Mac's (PhiIconCatalog.swift). The Fluent twins
+  // are the §5.9 map (the canvas board's table, code points from Segoe
+  // Fluent Icons; the MDL2 face on Windows 10 lacks a few — F0E3, F133,
+  // F196 — and those fall back to the mask at draw time). `false` rows keep
+  // their mask: cake, chip, cube-transparent, database, rss, server,
+  // sparkles, table, ticket, truck; their glyph is only a name.
   static const base::NoDestructor<std::vector<PhiCatalogIcon>> icons({
-      {"phi-icon-mail", "mail", 0xE715},
-      {"phi-icon-color-swatch", "color-swatch", 0xE790},
-      {"phi-icon-camera", "camera", 0xE722},
-      {"phi-icon-chat", "chat", 0xE8BD},
-      {"phi-icon-bell", "bell", 0xE7ED},
-      {"phi-icon-user", "user", 0xE77B},
-      {"phi-icon-globe-alt", "globe-alt", 0xE774},
-      {"phi-icon-sun", "sun", 0xE706},
-      {"phi-icon-sparkles", "sparkles", 0xE734},
-      {"phi-icon-credit-card", "credit-card", 0xE8C7},
-      {"phi-icon-ticket", "ticket", 0xE8EC},
-      {"phi-icon-moon", "moon", 0xE708},
-      {"phi-icon-briefcase", "briefcase", 0xE821},
-      {"phi-icon-archive", "archive", 0xE7B8},
-      {"phi-icon-lock-closed", "lock-closed", 0xE72E},
-      {"phi-icon-office-building", "office-building", 0xE80F},
-      {"phi-icon-chart-pie", "chart-pie", 0xE9D9},
-      {"phi-icon-shield-exclamation", "shield-exclamation", 0xEA18},
-      {"phi-icon-photograph", "photograph", 0xE91B},
-      {"phi-icon-cog", "cog", 0xE713},
-      {"phi-icon-filter", "filter", 0xE71C},
-      {"phi-icon-qrcode", "qrcode", 0xE8A6},
-      {"phi-icon-clipboard-list", "clipboard-list", 0xE77F},
-      {"phi-icon-lightning-bolt", "lightning-bolt", 0xE945},
-      {"phi-icon-light-bulb", "light-bulb", 0xEA80},
-      {"phi-icon-view-grid-add", "view-grid-add", 0xE8A9},
-      {"phi-icon-md-library", "md-library", 0xE8F1},
-      {"phi-icon-play", "play", 0xE768},
-      {"phi-icon-presentation-chart-line", "presentation-chart-line", 0xE9D2},
-      {"phi-icon-chip", "chip", 0xE7F8},
-      {"phi-icon-cube-transparent", "cube-transparent", 0xE8B3},
-      {"phi-icon-search-circle", "search-circle", 0xE721},
-      {"phi-icon-cloud", "cloud", 0xE753},
-      {"phi-icon-academic-cap", "academic-cap", 0xE7BE},
-      {"phi-icon-gift", "gift", 0xE719},
-      {"phi-icon-truck", "truck", 0xE7C0},
-      {"phi-icon-cake", "cake", 0xE728},
-      {"phi-icon-beaker", "beaker", 0xE9F9},
-      {"phi-icon-table", "table", 0xE80A},
-      {"phi-icon-paper-airplane", "paper-airplane", 0xE724},
-      {"phi-icon-device-mobile", "device-mobile", 0xE8EA},
-      {"phi-icon-music-note", "music-note", 0xE8D6},
-      {"phi-icon-film", "film", 0xE714},
-      {"phi-icon-database", "database", 0xE7C3},
-      {"phi-icon-server", "server", 0xE83B},
-      {"phi-icon-identification", "identification", 0xE8D4},
-      {"phi-icon-rss", "rss", 0xE736},
-      {"phi-icon-map", "map", 0xE707},
-      {"phi-icon-number-1", "1", L'1'},
-      {"phi-icon-number-2", "2", L'2'},
-      {"phi-icon-number-3", "3", L'3'},
-      {"phi-icon-number-4", "4", L'4'},
-      {"phi-icon-number-5", "5", L'5'},
-      {"phi-icon-number-6", "6", L'6'},
-      {"phi-icon-number-7", "7", L'7'},
-      {"phi-icon-number-8", "8", L'8'},
-      {"phi-icon-number-9", "9", L'9'},
-      {"phi-icon-number-0", "0", L'0'},
-      {"phi-icon-letter-a", "A", L'A'},
-      {"phi-icon-letter-b", "B", L'B'},
-      {"phi-icon-letter-c", "C", L'C'},
-      {"phi-icon-letter-d", "D", L'D'},
-      {"phi-icon-letter-e", "E", L'E'},
-      {"phi-icon-letter-f", "F", L'F'},
-      {"phi-icon-letter-g", "G", L'G'},
-      {"phi-icon-letter-h", "H", L'H'},
-      {"phi-icon-letter-i", "I", L'I'},
-      {"phi-icon-letter-j", "J", L'J'},
-      {"phi-icon-letter-k", "K", L'K'},
-      {"phi-icon-letter-l", "L", L'L'},
-      {"phi-icon-letter-m", "M", L'M'},
-      {"phi-icon-letter-n", "N", L'N'},
-      {"phi-icon-letter-o", "O", L'O'},
-      {"phi-icon-letter-p", "P", L'P'},
-      {"phi-icon-letter-q", "Q", L'Q'},
-      {"phi-icon-letter-r", "R", L'R'},
-      {"phi-icon-letter-s", "S", L'S'},
-      {"phi-icon-letter-t", "T", L'T'},
-      {"phi-icon-letter-u", "U", L'U'},
-      {"phi-icon-letter-v", "V", L'V'},
-      {"phi-icon-letter-w", "W", L'W'},
-      {"phi-icon-letter-x", "X", L'X'},
-      {"phi-icon-letter-y", "Y", L'Y'},
-      {"phi-icon-letter-z", "Z", L'Z'},
-      {"phi-icon-question-mark", "?", L'?'},
-      {"phi-icon-exclamation-mark", "!", L'!'},
-      {"phi-icon-tilde", "~", L'~'},
-      {"phi-icon-backtick", "`", L'`'},
+      {"phi-icon-mail", "mail", 0xE715, true},              // Mail
+      {"phi-icon-color-swatch", "color-swatch", 0xE790, true},  // Color
+      {"phi-icon-camera", "camera", 0xE722, true},          // Camera
+      {"phi-icon-chat", "chat", 0xE90A, true},              // Comment
+      {"phi-icon-bell", "bell", 0xEA8F, true},              // Ringer
+      {"phi-icon-user", "user", 0xE77B, true},              // Contact
+      {"phi-icon-globe-alt", "globe-alt", 0xE774, true},    // Globe
+      {"phi-icon-sun", "sun", 0xE706, true},                // Brightness
+      {"phi-icon-sparkles", "sparkles", 0xE734, false},
+      {"phi-icon-credit-card", "credit-card", 0xE8C7, true},  // PaymentCard
+      {"phi-icon-ticket", "ticket", 0xE8EC, false},
+      {"phi-icon-moon", "moon", 0xE708, true},              // QuietHours
+      {"phi-icon-briefcase", "briefcase", 0xE821, true},    // Work
+      {"phi-icon-archive", "archive", 0xE7B8, true},        // Package
+      {"phi-icon-lock-closed", "lock-closed", 0xE72E, true},  // Lock
+      {"phi-icon-office-building", "office-building", 0xEC06, true},  // CityNext
+      {"phi-icon-chart-pie", "chart-pie", 0xEB05, true},    // PieSingle
+      {"phi-icon-shield-exclamation", "shield-exclamation", 0xEA18, true},  // Shield
+      {"phi-icon-photograph", "photograph", 0xE91B, true},  // Photo
+      {"phi-icon-cog", "cog", 0xE713, true},                // Settings
+      {"phi-icon-filter", "filter", 0xE71C, true},          // Filter
+      {"phi-icon-qrcode", "qrcode", 0xED14, true},          // QRCode
+      {"phi-icon-clipboard-list", "clipboard-list", 0xF0E3, true},  // ClipboardList
+      {"phi-icon-lightning-bolt", "lightning-bolt", 0xE945, true},  // LightningBolt
+      {"phi-icon-light-bulb", "light-bulb", 0xEA80, true},  // Lightbulb
+      {"phi-icon-view-grid-add", "view-grid-add", 0xE8A9, true},  // ViewAll
+      {"phi-icon-md-library", "md-library", 0xE8F1, true},  // Library
+      {"phi-icon-play", "play", 0xE768, true},              // Play
+      {"phi-icon-presentation-chart-line", "presentation-chart-line", 0xE9D2, true},  // AreaChart
+      {"phi-icon-chip", "chip", 0xE7F8, false},
+      {"phi-icon-cube-transparent", "cube-transparent", 0xE8B3, false},
+      {"phi-icon-search-circle", "search-circle", 0xE721, true},  // Search
+      {"phi-icon-cloud", "cloud", 0xE753, true},            // Cloud
+      {"phi-icon-academic-cap", "academic-cap", 0xE7BE, true},  // Education
+      {"phi-icon-gift", "gift", 0xF133, true},              // GiftboxOpen
+      {"phi-icon-truck", "truck", 0xE7C0, false},
+      {"phi-icon-cake", "cake", 0xE728, false},
+      {"phi-icon-beaker", "beaker", 0xF196, true},          // Beaker
+      {"phi-icon-table", "table", 0xE80A, false},
+      {"phi-icon-paper-airplane", "paper-airplane", 0xE724, true},  // Send
+      {"phi-icon-device-mobile", "device-mobile", 0xE8EA, true},  // CellPhone
+      {"phi-icon-music-note", "music-note", 0xEC4F, true},  // MusicNote
+      {"phi-icon-film", "film", 0xE714, true},              // Video
+      {"phi-icon-database", "database", 0xE7C3, false},
+      {"phi-icon-server", "server", 0xE83B, false},
+      {"phi-icon-identification", "identification", 0xE779, true},  // ContactInfo
+      {"phi-icon-rss", "rss", 0xE736, false},
+      {"phi-icon-map", "map", 0xE707, true},                // MapPin
+      {"phi-icon-number-1", "1", L'1', false},
+      {"phi-icon-number-2", "2", L'2', false},
+      {"phi-icon-number-3", "3", L'3', false},
+      {"phi-icon-number-4", "4", L'4', false},
+      {"phi-icon-number-5", "5", L'5', false},
+      {"phi-icon-number-6", "6", L'6', false},
+      {"phi-icon-number-7", "7", L'7', false},
+      {"phi-icon-number-8", "8", L'8', false},
+      {"phi-icon-number-9", "9", L'9', false},
+      {"phi-icon-number-0", "0", L'0', false},
+      {"phi-icon-letter-a", "A", L'A', false},
+      {"phi-icon-letter-b", "B", L'B', false},
+      {"phi-icon-letter-c", "C", L'C', false},
+      {"phi-icon-letter-d", "D", L'D', false},
+      {"phi-icon-letter-e", "E", L'E', false},
+      {"phi-icon-letter-f", "F", L'F', false},
+      {"phi-icon-letter-g", "G", L'G', false},
+      {"phi-icon-letter-h", "H", L'H', false},
+      {"phi-icon-letter-i", "I", L'I', false},
+      {"phi-icon-letter-j", "J", L'J', false},
+      {"phi-icon-letter-k", "K", L'K', false},
+      {"phi-icon-letter-l", "L", L'L', false},
+      {"phi-icon-letter-m", "M", L'M', false},
+      {"phi-icon-letter-n", "N", L'N', false},
+      {"phi-icon-letter-o", "O", L'O', false},
+      {"phi-icon-letter-p", "P", L'P', false},
+      {"phi-icon-letter-q", "Q", L'Q', false},
+      {"phi-icon-letter-r", "R", L'R', false},
+      {"phi-icon-letter-s", "S", L'S', false},
+      {"phi-icon-letter-t", "T", L'T', false},
+      {"phi-icon-letter-u", "U", L'U', false},
+      {"phi-icon-letter-v", "V", L'V', false},
+      {"phi-icon-letter-w", "W", L'W', false},
+      {"phi-icon-letter-x", "X", L'X', false},
+      {"phi-icon-letter-y", "Y", L'Y', false},
+      {"phi-icon-letter-z", "Z", L'Z', false},
+      {"phi-icon-question-mark", "?", 0xE897, true},        // Help
+      {"phi-icon-exclamation-mark", "!", 0xE8C9, true},     // Important
+      {"phi-icon-tilde", "~", L'~', false},
+      {"phi-icon-backtick", "`", L'`', false},
   });
   return *icons;
 }
@@ -167,6 +172,71 @@ const PhiMacIcon* MaskForGlyph(const std::wstring& text) {
   return PhiAgentIconMaskForGlyph(text);
 }
 
+// The catalog entry a stand-in glyph names (null for an agent mark, an
+// emoji or initials).
+const PhiCatalogIcon* CatalogForGlyph(const std::wstring& text) {
+  if (text.size() != 1) {
+    return nullptr;
+  }
+  for (const PhiCatalogIcon& icon : PhiIconCatalogAll()) {
+    if (icon.glyph == text.front()) {
+      return &icon;
+    }
+  }
+  return nullptr;
+}
+
+// §5.9: a catalog pictogram with a Fluent twin draws from the icon font at
+// `px` (false when the face lacks the glyph — the mask then stands in); a
+// letter, digit or mark is TYPE, Segoe UI Variable Semibold at 13/16 of
+// the icon size, centred. False when `text` is neither: the caller draws
+// the mask.
+bool DrawCatalogGlyph(HDC dc,
+                      const RECT& rc,
+                      const std::wstring& text,
+                      int px,
+                      COLORREF ink) {
+  const PhiCatalogIcon* icon = CatalogForGlyph(text);
+  if (!icon || px <= 0) {
+    return false;
+  }
+  if (icon->fluent) {
+    return PhiDrawIconGlyph(dc, rc, text, px, ink);
+  }
+  if (icon->glyph >= 0x80) {
+    return false;  // Mask-only.
+  }
+  const int height = std::max(1, static_cast<int>(std::lround(px * 13.0 / 16.0)));
+  static base::NoDestructor<std::map<int, HFONT>> fonts;
+  HFONT& font = (*fonts)[height];
+  if (!font) {
+    LOGFONTW lf = {};
+    const wchar_t* face = PhiTextFaceName(false);
+    if (std::wstring_view(face) == L"Segoe UI") {
+      face = L"Segoe UI Semibold";
+    }
+    const std::wstring name = face;
+    std::copy_n(name.begin(),
+                std::min(name.size(), std::size(lf.lfFaceName) - 1),
+                std::begin(lf.lfFaceName));
+    lf.lfHeight = -height;
+    lf.lfWeight = FW_SEMIBOLD;
+    lf.lfCharSet = DEFAULT_CHARSET;
+    lf.lfQuality = CLEARTYPE_QUALITY;
+    font = ::CreateFontIndirectW(&lf);
+  }
+  HGDIOBJ previous = ::SelectObject(dc, font);
+  const int old_mode = ::SetBkMode(dc, TRANSPARENT);
+  const COLORREF old_ink = ::SetTextColor(dc, ink);
+  RECT box = rc;
+  PhiDrawTextAA(dc, text.c_str(), -1, &box,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+  ::SetTextColor(dc, old_ink);
+  ::SetBkMode(dc, old_mode);
+  ::SelectObject(dc, previous);
+  return true;
+}
+
 }  // namespace
 
 bool PhiDrawCatalogArtwork(HDC dc,
@@ -174,6 +244,9 @@ bool PhiDrawCatalogArtwork(HDC dc,
                            const std::wstring& text,
                            int px,
                            COLORREF ink) {
+  if (DrawCatalogGlyph(dc, rc, text, px, ink)) {
+    return true;
+  }
   const PhiMacIcon* mask = MaskForGlyph(text);
   if (!mask || px <= 0) {
     return false;
@@ -190,6 +263,9 @@ bool PhiDrawCatalogIcon(HDC dc,
                         const std::wstring& text,
                         int ink_size,
                         COLORREF ink) {
+  if (DrawCatalogGlyph(dc, rc, text, ink_size, ink)) {
+    return true;
+  }
   const PhiMacIcon* mask = MaskForGlyph(text);
   if (!mask || ink_size <= 0 || text.empty()) {
     return false;

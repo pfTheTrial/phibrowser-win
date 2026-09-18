@@ -17,13 +17,20 @@ namespace phi_client {
 // The Mac's Phi icon catalog (PhiIconCatalog.swift): 88 icons — 48
 // pictograms, the digits 1..9 0, the letters A..Z, and ? ! ~ ` — with the
 // SAME ids and the SAME order, so a "phi:<id>" stored by either client means
-// the same icon on both. The Mac draws custom SVG assets; this client stands
-// them in with Segoe MDL2 glyphs (pictograms) and plain characters (digits /
-// letters / punctuation) until vector assets are ported.
+// the same icon on both. The stored ids never change; only how Windows
+// draws them (docs/windows-native-ui.md §5.9, the "Icon catalogue (88)"
+// board): a pictogram with a Segoe Fluent Icons twin is that glyph, on the
+// same hairline grid as every other icon in the chrome; a letter, digit or
+// mark is type (Segoe UI Variable Semibold, 13 at the 16 dip icon size);
+// the few with no twin keep the Mac's compiled artwork mask.
 struct PhiCatalogIcon {
   const char* id;       // "phi-icon-mail" — storage is "phi:" + id.
   const char* name;     // The Figma name, searched and shown as tooltip.
-  wchar_t glyph;        // MDL2 codepoint (E7xx/E8xx…) or a plain character.
+  // The display stand-in: the Fluent codepoint, a plain character, or —
+  // for a mask-only icon — a unique MDL2 codepoint that names it to the
+  // draw path and is never drawn from the font.
+  wchar_t glyph;
+  bool fluent;          // The glyph is drawn from the icon font.
 };
 
 // All 88, in the Mac picker's order.
