@@ -1439,3 +1439,111 @@ needed except `phi_split_view_style.h`.
 * **D5 — Mica.** Real Mica (`DWMWA_SYSTEMBACKDROP_TYPE`) needs the ground
   painted transparent, which the GDI chrome cannot do; the flat Space tint
   is the stand-in. Not planned.
+
+## 12. The installer and uninstaller (the two "Installer" artboards, added 2026-09-18)
+
+`installer/phi-installer.nsi` is a stock MUI2 wizard: the black
+onboarding sidebar on the Welcome page, a header bitmap, five pages
+(Welcome, Program folder, Browsing data, progress, Finish), four
+`MessageBox` prompts and a Yes/No box for the browsing data on uninstall.
+It is the only Phi surface that still looks like 2005. The redesign makes
+it the same kind of window as Settings: one 600 × 420 dip window on the
+Windows Settings ground (`#F3F3F3` / `#202020`, §2.3), Segoe UI Variable,
+the brand mark (§2.2b), Fluent controls, no wizard chrome at all.
+
+### 12.1 Anatomy (every screen)
+
+* **Caption** 32 dip: the mark at 16 with a 3 dip radius, the title
+  "Phi Browser Setup" (the uninstaller: "Uninstall Phi Browser"), Minimize
+  and Close. No Back / Next row, no branding text, no header bitmap.
+* **Header**: the mark at 48 (10 dip radius) + the product name at 28 / 600
+  Display + a 12 dip dim line "Version 0.1.0 · x64 · Fyde Innovations".
+  The version line is also where an update shows "Update 0.1.0 → 0.2.0".
+* **Body** on a 32 dip left margin: one 14 dip lead sentence, then ONE
+  expander card (§7's card: white / `#2B2B2B`, 1 dip stroke, 4 dip radius,
+  56 dip header row with a folder glyph, label, hint and chevron).
+* **Footer** 76 dip with a 1 dip separator: a 12 dip link or status on the
+  left, the buttons right-aligned in ContentDialog order (primary first,
+  then Cancel), 32 dip high, 4 dip radius, min 96 dip wide.
+
+### 12.2 The screens (Installer · install flow)
+
+1. **Setup opens** — the whole install is one click: header, lead
+   ("Setup puts the program in Program Files and keeps your browsing data
+   in a folder of its own"), the expander COLLAPSED with the hint "Program
+   in Program Files · browsing data in this user's app data", footer
+   "License terms" · [Install] [Cancel]. The two folder pages of the wizard
+   are gone; nothing is asked of someone who wants the default.
+2. **Expander open** — three rows: Program folder (field + Browse…),
+   Browsing data (field + Browse…, hint "Spaces, history, bookmarks,
+   settings and passwords. An update never touches this folder."), Desktop
+   shortcut (toggle, on; "A Start menu entry is always added."). The
+   write-probe checks of `DirLeave` / `DataDirLeave` run when Install is
+   pressed; a failure turns the row's hint red (§6's danger ink) instead of
+   a MessageBox.
+3. **Installing** — the header stays; "Installing…" 14 / 600 with the
+   percentage on the right, a 4 dip Fluent progress bar (accent fill on a
+   12 % ink track), the current file in 12 dip dim, and a hint about the
+   rollback copy. Footer: the destination on the left, [Cancel] alone.
+4. **Done** — a card with a 40 dip green check circle, "Phi Browser is
+   installed", a key/value list (Program, Browsing data, Shortcuts).
+   Footer: "Updates arrive on their own; Settings › About checks now." ·
+   [Launch Phi Browser] [Close]. Launch goes through the shell as today
+   (the browser runs as the user, not the elevated installer).
+
+### 12.3 The states (Installer · update · running · architecture · uninstall)
+
+5. **Update** (WinSparkle's payload runs this same installer): the version
+   line reads "Update 0.1.0 → 0.2.0", the lead promises that Spaces,
+   settings and data stay put and the previous version is kept for
+   rollback, the expander hint says "Recorded from the previous install ·
+   C:\Program Files\Phi Browser", the footer link is "What's new in
+   0.2.0", the primary is [Update].
+6. **Phi still running**: a Fluent InfoBar (warning tone `#FFF4CE` /
+   `#433519`, triangle glyph) above the expander — "Phi Browser is still
+   running. Close it to continue. Setup checks again on its own for a
+   minute, then asks." with a small [Try again]; the primary is DISABLED
+   (6 % ink fill, 36 % ink text) and the footer status reads "Waiting for
+   Phi Browser to close…". This replaces the Retry/Cancel MessageBox; the
+   60 s poll of `check_running` stays.
+7. **Wrong architecture** (the arm64 installer on a non-ARM PC): the body
+   is the notice itself — a 48 dip blocked-circle glyph on the control
+   fill, a 20 / 600 title "This installer is for Windows on ARM", the file
+   name as the sub line, the lead naming the standard installer, footer
+   "Get the standard installer" · [Close]. The mirror case (x64 on an ARM
+   PC) is an INFORMATIONAL InfoBar on screen 1 with a "Get the ARM64
+   build" link; Install stays enabled, as today's Yes/No box allows.
+8. **Uninstall**: header "Remove Phi Browser" / "Version 0.1.0 · C:\Program
+   Files\Phi Browser", lead "The program, its shortcuts and the Apps &
+   Features entry will be removed. Rollback copies go with them.", one
+   card with the checkbox "Also delete my browsing data" (OFF by default;
+   hint names the folder and says leaving it off keeps the data for a
+   later install), footer [Remove] in danger red · [Cancel]. The Yes/No
+   box after the files are gone is replaced by this checkbox before.
+
+### 12.4 Decisions
+
+* **D-I1 NSIS stays; the UI is nsDialogs plus one helper DLL.** Every
+  screen is a `Page custom`; the MUI header, welcome bitmaps, branding text
+  and the Back/Next row go (`ChangeUI` to a resource without them). Win32
+  cannot paint a Fluent accent button, an expander card, a 4 dip progress
+  bar or an InfoBar, so a ~400-line `phi_setup_ui.dll` plugin owner-draws
+  those (BS_OWNERDRAW buttons, a subclassed STATIC for cards and bars)
+  with the client's palette; EDIT, checkbox and labels are stock controls
+  under `SetCtlColors`. Segoe UI Variable via `CreateFont`.
+* **D-I2 Dark mode follows the Windows app mode**: `AppsUseLightTheme`
+  read in `.onInit`, `DwmSetWindowAttribute(DWMWA_USE_IMMERSIVE_DARK_MODE)`
+  for the caption, `SetWindowTheme("DarkMode_Explorer")` for the stock
+  controls, the dark token block for everything the plugin draws.
+* **D-I3 One primary per screen, no default-button ambiguity**: Enter is
+  Install / Update / Launch / Remove, Esc is Cancel / Close; the
+  destructive Remove is NOT the default (Enter does nothing there, §6).
+* **D-I4 Desktop shortcut becomes a choice** (on by default); the Start
+  menu entry is always written. Today both are unconditional.
+* **D-I5 The license link** opens the shipped LICENSE in Notepad; there is
+  no license page to click through (the Mac has none either).
+* **D-I6 Errors stay in the window**: unwritable folders, a failed copy
+  and the running-Phi wait all render as an InfoBar or a red row hint;
+  the only remaining `MessageBox` is the abort confirmation ("Stop
+  installing Phi Browser?"), which becomes a §6 ContentDialog over the
+  window.
