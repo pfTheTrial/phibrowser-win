@@ -257,9 +257,6 @@ struct ShellLayout {
   // is pinned or the icons would squeeze the omnibox text below 84 dip.
   SidebarRect field_ext_strip;
   SidebarRect add_space;  // The strip's trailing "+" chip.
-  // The floating panel's pin button (docks the sidebar), trailing the
-  // header row; empty unless `floating_panel`.
-  SidebarRect pin;
   // The sidebar's section labels, each above its band; empty when the
   // band is (the Tabs label is always there in a docked sidebar).
   SidebarRect pinned_label, bookmarks_label, tabs_label;

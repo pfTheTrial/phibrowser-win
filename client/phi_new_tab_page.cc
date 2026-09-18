@@ -201,7 +201,24 @@ void PhiNewTabPage::Reposition() {
     return;
   }
   SyncDpiFromParent();
-  SetPanelBounds(has_pane_ ? pane_ : controller_->ContentRect());
+  if (has_pane_) {
+    // Inside a split the page sits INSIDE the pane sheet's edge: the
+    // framework strokes the 1 dip hairline and the focused pane's 2 dip
+    // accent ring within the pane's own bounds (§4.6), and a child window
+    // over the whole pane would cover them and square the sheet's corners.
+    RECT inner = pane_;
+    const int ring = Scaled(2);
+    ::InflateRect(&inner, -ring, -ring);
+    SetPanelBounds(inner);
+    const int d = Scaled(6) * 2;  // The sheet's radius 8, less the ring.
+    ::SetWindowRgn(hwnd(),
+                   ::CreateRoundRectRgn(0, 0, inner.right - inner.left + 1,
+                                        inner.bottom - inner.top + 1, d, d),
+                   TRUE);
+  } else {
+    SetPanelBounds(controller_->ContentRect());
+    ::SetWindowRgn(hwnd(), nullptr, TRUE);
+  }
   RaisePanel();
   LayoutField();
   Invalidate();

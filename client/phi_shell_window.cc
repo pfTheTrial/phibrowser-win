@@ -457,7 +457,6 @@ PhiShellWindow::Layout PhiShellWindow::ToLayout(
   out.page_icon = PhiToRect(shell.page_icon);
   out.star = PhiToRect(shell.star);
   out.drag_gutter = PhiToRect(shell.drag_gutter);
-  out.pin = PhiToRect(shell.pin);
   out.pinned_label = PhiToRect(shell.pinned_label);
   out.bookmarks_label = PhiToRect(shell.bookmarks_label);
   out.tabs_label = PhiToRect(shell.tabs_label);
@@ -824,14 +823,15 @@ void PhiShellWindow::PushSplitViewStyle() {
     }
     // The SETTLED palette of the browser's own Space, not the ramp a switch
     // animation is painting the chrome with: the framework should not be
-    // re-laid out per frame, and the Mac's split host stands on
-    // windowBackground, never on the Space's tinted ground.
+    // re-laid out per frame. The pane sheets stand on the Space TINT (§4.6:
+    // the same ground the sidebar and the gutters paint), not the card's
+    // window background — that is the sheets' own colour.
     const PhiPalette& palette =
         incognito_          ? kIncognito
         : services_.spaces  ? services_.spaces->PaletteForSpace(space_id)
                             : kFallback;
     phi_framework::SplitViewStyle style;
-    style.background_argb = argb(palette.window_bg);
+    style.background_argb = argb(palette.ground_top);
     style.border_argb = argb(palette.border);
     style.focus_argb = argb(palette.accent);
     // A 4 dip gutter of tint under the address row while split (§4.6):
@@ -5910,17 +5910,6 @@ void PhiShellWindow::PaintFloatingSidebar(HDC dc) {
   // include_child_controls: the panel has no live EDIT; the address text
   // is painted by hand where the layout has a field.
   PaintChrome(mem, layout, /*include_child_controls=*/true);
-  // The pin: docks the sidebar (§4.4), trailing the header row.
-  if (layout.pin.right > layout.pin.left) {
-    POINT cursor = {};
-    ::GetCursorPos(&cursor);
-    ::ScreenToClient(floating_sidebar_, &cursor);
-    PhiPaintIconButton(mem, layout.pin, fluent::kPin,
-                       ::PtInRect(&layout.pin, cursor) ? PhiButtonState::kHover
-                                                       : PhiButtonState::kRest,
-                       palette, palette.label, Scaled(fluent::kIconToolbar),
-                       Scaled(fluent::kButtonRadius));
-  }
   ::BitBlt(dc, 0, 0, panel_rc.right, panel_rc.bottom, mem, 0,
            floating_offset_y_, SRCCOPY);
   ::SelectObject(mem, old);
@@ -5994,15 +5983,9 @@ LRESULT CALLBACK PhiShellWindow::FloatingSidebarProc(HWND hwnd,
       if (self) {
         const POINT pt = {GET_X_LPARAM(lparam),
                           GET_Y_LPARAM(lparam) + self->floating_offset_y_};
-        // The tucked edge and the pin both DOCK the sidebar (§4.4).
-        bool dock = !self->floating_expanded_;
-        if (!dock) {
-          self->floating_layout_ = true;
-          const Layout panel_layout = self->ComputeLayout();
-          self->floating_layout_ = false;
-          dock = ::PtInRect(&panel_layout.pin, pt) != FALSE;
-        }
-        if (dock) {
+        // The tucked edge DOCKS the sidebar (§4.4); the slid-in panel
+        // has no pin button, its toggle in the caption band docks.
+        if (!self->floating_expanded_) {
           self->SetSidebarCollapsed(false);
           return 0;
         }
@@ -6221,8 +6204,12 @@ void PhiShellWindow::PaintChrome(HDC dc,
   // corners round at kContentRadius against the sidebar's tint, a 1 px
   // stroke on that edge and the sheet shadow (§2.4) so it floats. The
   // horizontal layout has no pane: its page runs edge to edge.
+  // While the active tab is split the framework draws two sheets of its
+  // own inside the content (§4.6) and the row is a sheet below: this frame
+  // around the whole content would run a stray line down the sidebar seam.
   if (layout.content.right > layout.content.left &&
-      layout.mode != PhiLayoutMode::kComfortable && layout.content.left > 0) {
+      layout.mode != PhiLayoutMode::kComfortable && layout.content.left > 0 &&
+      !ActiveTabIsSplit()) {
     RECT pane = layout.content;
     if (layout.top_bar.right > layout.top_bar.left) {
       pane.top = layout.top_bar.top;
@@ -6269,6 +6256,23 @@ void PhiShellWindow::PaintChrome(HDC dc,
         rounded.left -= radius * 2;  // Square at the window's left edge.
       }
       rounded.right += radius * 2;
+      // The sheet shadow (§2.4) under the row's edge, on the tint, then
+      // the 1 px stroke: the row floats like the panes below it.
+      const std::array<int, 3> row_alphas = {14, 8, 4};
+      for (int i = 3; i >= 1; --i) {
+        RECT ring = rounded;
+        ::InflateRect(&ring, i, i);
+        ring.top += i + 1;  // Falls downward: nothing above the top edge.
+        PhiStrokeRoundRectAA(
+            dc, ring, radius + i,
+            PhiBlend(palette.ink, palette.ground_top,
+                     row_alphas[static_cast<size_t>(i - 1)]),
+            1);
+      }
+      RECT row_frame = rounded;
+      ::InflateRect(&row_frame, 1, 1);
+      row_frame.top += 2;
+      PhiStrokeRoundRectAA(dc, row_frame, radius + 1, palette.border, 1);
       PhiFillRoundRectAA(dc, rounded, radius, palette.window_bg);
     } else if (layout.mode == PhiLayoutMode::kComfortable || band.left == 0) {
       // Edge to edge and square: the horizontal toolbar, or the pane

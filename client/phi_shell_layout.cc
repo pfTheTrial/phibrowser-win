@@ -140,14 +140,9 @@ ShellLayout ComputeShellLayout(const ShellLayoutInputs& in) {
     out.chips_left = left + scaled(kSpacesStripPad);
     out.chips_top = chip_top;
     int trailing = right - scaled(kSpacesStripPad);
-    if (in.floating_panel) {
-      // The panel's pin docks the sidebar: a 32 button at the row's end.
-      const int mid = top + height / 2;
-      out.pin = {trailing - btn, mid - btn / 2, trailing, mid + btn / 2};
-      trailing = out.pin.left - scaled(kSpaceChipGap);
-    }
     if (!in.spaces_switch) {
-      // The panel's row with a single Space: the pin alone, no pips.
+      // The panel's row with a single Space: no pips (the tucked edge
+      // docks the sidebar; the panel carries no pin button).
       out.chips_limit = out.chips_left;
       return;
     }

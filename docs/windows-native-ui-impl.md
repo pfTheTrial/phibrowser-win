@@ -249,9 +249,9 @@ decisions and I will check." The box is mine for testing.
   deactivation; it stays while a drag or a modal menu is up; it follows
   `WM_MOVE` / `WM_SIZE` and hides while minimised. Inside: the docked
   sidebar laid out for the panel's own height (`floating_panel_h_`)
-  with the header row always present and a **pin** button trailing it
-  (`ShellLayout::pin`, `ShellLayoutInputs::floating_panel`); the tucked
-  edge and the pin dock the sidebar. `PhiOmniboxSession::HostField /
+  with the header row always present (`ShellLayoutInputs::floating_panel`;
+  the pin button that trailed it was removed 2026-09-18 — the tucked edge
+  and the caption toggle dock the sidebar). `PhiOmniboxSession::HostField /
   UnhostField` deleted (the field never leaves the address row).
   `SetSidebarCollapsed(bool)` is the one setter; `ToggleSidebar` flips it.
 * Remote surface: `agentSpace.layout.set {sidebar: "docked"|"hidden"
@@ -614,4 +614,33 @@ page (hence `Quit`); the elevated installer needs an elevated driver task
 process's edit (`WM_SETTEXT` can), the box IME eats typed backslashes,
 and a lock held by a process spawned from a finished ssh command dies
 with the session.
+
+## Round G — floating sidebar and split view follow-ups (2026-09-18)
+
+* Floating sidebar: the panel is clipped to the shell's client area while
+  tucked or sliding (`ClipFloatingPanel`, a window region; a popup is not
+  clipped by its owner, so the tucked part painted over the desktop when
+  the window was not at the screen edge); the hover zone reaches the
+  window's outer left edge so a pointer parked on the frame holds the
+  panel instead of flipping it in and out; the pin button is gone from the
+  panel (Jixiang) — the tucked edge and the caption toggle dock.
+* Split view: the pane sheets stand on the Space TINT (`ground_top`,
+  what §4.6 draws) — the client pushed `window_bg`, so the gutter, the
+  4 dip divider and the row's gutter were grey on a tinted Space. The
+  native new-tab page inside a split pane is inset by the 2 dip ring and
+  clipped to radius 6, so the framework's hairline / accent ring and the
+  sheet's corners show around it instead of a square white page covering
+  them (the "focus ring missing on a new-tab pane" report).
+* Split view, the seam: the client's frame for the UNSPLIT pane (1 px
+  border + three shadow rings around the whole content rect) kept painting
+  while split, a stray line down the sidebar seam beside the framework's
+  sheets — it is skipped while split; the split address row draws its own
+  §2.4 sheet shadow and stroke instead.
+* Split view, the sheet shadows: the panes' §2.4 shadow is painted by the
+  FORK's `MultiContentsBackgroundView` (a textured layer now under a Phi
+  split chrome: the pushed tint plus three 1 dip rings outside every
+  visible pane, alpha 14/8/4 on a light ground, 48/28/14 on a dark one,
+  none above the top edge; it observes the panes' bounds for divider
+  drags). The client cannot paint there — the gutters belong to the
+  framework's window.
 

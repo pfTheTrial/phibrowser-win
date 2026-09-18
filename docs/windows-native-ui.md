@@ -564,9 +564,9 @@ never covers the address bar, the nav buttons or the toggle), width 240
 edge, the Space tint as ground, 1 px `stroke_strong`, the sheet shadow
 (§2.4) under the flyout shadow so it floats like the pane. Inside it is the
 docked sidebar exactly — the pip row, the sections, the tab list, the
-bottom bar — with one addition: a **pin** button at the pip row's
-trailing edge, which docks the sidebar (the same `ToggleSidebar`). The omnibox
-stays in the address row; there is no field in the panel any more (the
+bottom bar — and nothing more: no pin button (dropped 2026-09-18 at
+Jixiang's request; the tucked edge and the caption's toggle dock the
+sidebar). The omnibox stays in the address row; there is no field in the panel any more (the
 reparenting code goes with Performance, §4.3).
 
 Shows: left-edge hover after 300 ms; a tab drag from the bookmarks bar or
