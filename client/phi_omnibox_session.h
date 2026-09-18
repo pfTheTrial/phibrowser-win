@@ -161,6 +161,9 @@ class PhiOmniboxShell {
   virtual bool OmniboxNewTabFocusesField() const = 0;
   // Keys belong to the page again.
   virtual void OmniboxFocusContent() = 0;
+  // The pointer pressed the field (or the native page's): a chrome press
+  // for whatever the shell dismisses on one (the extension popup).
+  virtual void OmniboxFieldPressed() = 0;
   // A typed URL replaces the page the reader is covering.
   virtual void OmniboxLeaveReader() = 0;
 

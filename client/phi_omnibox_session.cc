@@ -867,6 +867,14 @@ LRESULT CALLBACK PhiOmniboxSession::FieldProc(HWND hwnd,
         return 0;
       }
       break;
+    case WM_LBUTTONDOWN:
+      // A press on the field is a press on the shell's chrome that the
+      // shell's own click handler never sees (the EDIT is a child window):
+      // the extension popup closes on it as on any other chrome press.
+      if (self) {
+        self->shell_->OmniboxFieldPressed();
+      }
+      break;
   }
   return ::CallWindowProcW(g_edit_base_proc, hwnd, msg, wparam, lparam);
 }

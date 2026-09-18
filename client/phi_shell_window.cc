@@ -1250,6 +1250,10 @@ BrowserId PhiShellWindow::OmniboxBrowser() const {
   return active_browser_id();
 }
 
+void PhiShellWindow::OmniboxFieldPressed() {
+  CloseExtensionPopup();
+}
+
 void PhiShellWindow::OmniboxFocusContent() {
   FocusActiveBrowser();
 }
@@ -4114,7 +4118,18 @@ base::ListValue PhiShellWindow::LayoutRowsJson() const {
 }
 
 void PhiShellWindow::OnChromeMiddleClick(int x, int y) {
+  CloseExtensionPopup();
   sidebar_->OnMiddleClick(POINT{x, y});
+}
+
+void PhiShellWindow::CloseExtensionPopup() {
+  // Chromium closes an action popup when any widget of its window activates
+  // — a click on the Mac's window, on Chrome's toolbar. The shell's chrome
+  // is not a views widget, so a click here has to say so itself.
+  const BrowserId browser = active_browser_id();
+  if (framework_ && browser.valid()) {
+    framework_->CloseExtensionPopup(browser.value);
+  }
 }
 
 
@@ -4128,6 +4143,7 @@ void PhiShellWindow::OnChromeClick(int x, int y) {
   if (tab_preview_) {
     tab_preview_->Cancel();
   }
+  CloseExtensionPopup();
   if (!floating_layout_ && floating_expanded_) {
     HideFloatingSidebar(/*animated=*/true);  // A click on the row tucks it.
   }
@@ -5189,6 +5205,7 @@ void PhiShellWindow::OnChromeContextMenu(int x, int y) {
   if (!services_.sidebar || !shell_hwnd_) {
     return;
   }
+  CloseExtensionPopup();
   const POINT pt = {x, y};
   const RECT toggle_rc = ComputeLayout().sidebar_toggle;
   if (::PtInRect(&toggle_rc, pt)) {

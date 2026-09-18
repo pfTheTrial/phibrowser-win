@@ -1404,6 +1404,10 @@ class PhiShellWindow : public PhiHitSource,
   // corner (`slot` in shell client coordinates) — the Mac's secondaryAction,
   // and what a click on a disabled action falls back to.
   void ShowFieldExtensionMenu(size_t index, const RECT& slot);
+  // A press on the shell's own chrome: closes the active browser's extension
+  // popup, the dismissal Chromium ties to a widget activation the shell's
+  // HWND never produces.
+  void CloseExtensionPopup();
 
   // The slot's identity. Not a browser: the browsers this slot holds live
   // in space_browsers_ / browser_hwnds_, and "the original browser" is
@@ -1545,6 +1549,7 @@ class PhiShellWindow : public PhiHitSource,
   bool OmniboxBrowserPlaceholding() const override;
   bool OmniboxNewTabFocusesField() const override;
   void OmniboxFocusContent() override;
+  void OmniboxFieldPressed() override;
   void OmniboxLeaveReader() override;
   HWND OmniboxNativePageField() const override;
   bool OmniboxNativePageBox(RECT* out) const override;
