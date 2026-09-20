@@ -459,7 +459,6 @@ PhiShellWindow::Layout PhiShellWindow::ToLayout(
   out.new_tab_row = PhiToRect(shell.new_tab_row);
   out.bottom_bar = PhiToRect(shell.bottom_bar);
   out.sidebar_downloads = PhiToRect(shell.sidebar_downloads);
-  out.downloads = PhiToRect(shell.downloads);
   out.memory = PhiToRect(shell.memory);
   out.feedback = PhiToRect(shell.feedback);
   out.chat = PhiToRect(shell.chat);
@@ -467,7 +466,6 @@ PhiShellWindow::Layout PhiShellWindow::ToLayout(
   out.app_menu = PhiToRect(shell.app_menu);
   out.page_icon = PhiToRect(shell.page_icon);
   out.star = PhiToRect(shell.star);
-  out.drag_gutter = PhiToRect(shell.drag_gutter);
   out.pinned_label = PhiToRect(shell.pinned_label);
   out.bookmarks_label = PhiToRect(shell.bookmarks_label);
   out.tabs_label = PhiToRect(shell.tabs_label);
@@ -1338,6 +1336,10 @@ PhiCaptionRects PhiShellWindow::CaptionRects() {
   rects.search_tabs = layout.search_tabs;
   rects.sidebar_toggle = layout.sidebar_toggle;
   rects.app_menu = layout.app_menu;
+  rects.url_field = layout.url_field;
+  rects.agent_chip = layout.agent_chip;
+  rects.field_ext_strip = layout.field_ext_strip;
+  rects.extensions = layout.extensions;
   rects.spaces_strip = layout.spaces_strip;
   rects.tabs_top = layout.tabs_top;
   rects.horizontal_tabs = layout.horizontal_tabs;
@@ -2547,7 +2549,13 @@ void PhiShellWindow::ToggleDownloadsPopover() {
   if (!services_.spaces || !framework_ || !shell_hwnd_ || !browser.valid()) {
     return;
   }
-  RECT anchor = ComputeLayout().downloads;
+  // Anchored at the sidebar's Downloads button, or — no bottom bar (a
+  // collapsed sidebar, Comfortable) — at the app menu button, the row's
+  // trailing control.
+  const Layout layout = ComputeLayout();
+  RECT anchor = layout.sidebar_downloads.right > layout.sidebar_downloads.left
+                    ? layout.sidebar_downloads
+                    : layout.app_menu;
   ::MapWindowPoints(shell_hwnd_, nullptr, reinterpret_cast<POINT*>(&anchor),
                     2);
   PhiDownloadsPopover::Toggle(shell_hwnd_, anchor,
@@ -2910,13 +2918,14 @@ std::array<RECT, 18> PhiShellWindow::NavHoverTable(
   // so inserting into the middle silently moves someone else's wash.
   // Ordinal 12 was the Phi button, gone with the menu bar: an empty rect
   // keeps every later ordinal where the rigs aim.
-  // Ordinal 11 was the copy-link slot and 12 the Phi button, both gone:
-  // empty rects keep every later ordinal where the rigs aim. 15 is the
-  // star (Bookmark this tab), appended; 17 the bottom bar's own Downloads
-  // button (§4.2), appended after it.
+  // Ordinal 6 was the address row's Downloads button, 11 the copy-link
+  // slot and 12 the Phi button, all gone: empty rects keep every later
+  // ordinal where the rigs aim. 15 is the star (Bookmark this tab),
+  // appended; 17 the bottom bar's own Downloads button (§4.2), appended
+  // after it.
   return {layout.back,        layout.forward,    layout.reload,
           layout.search_tabs, sidebar_->add_tab_button(),   layout.app_menu,
-          layout.downloads,   layout.memory,     layout.feedback,
+          RECT{},             layout.memory,     layout.feedback,
           layout.chat,        layout.extensions, RECT{},
           RECT{},             layout.reader,     layout.sidebar_toggle,
           layout.star,        layout.agent_chip, layout.sidebar_downloads};
@@ -3252,19 +3261,6 @@ bool PhiShellWindow::CanOfferReaderForUrl(const std::string& url) {
     c = static_cast<char>(::tolower(static_cast<unsigned char>(c)));
   }
   return ext != "pdf";
-}
-
-RECT PhiShellWindow::card_rect() {
-  const Layout layout = ComputeLayout();
-  RECT card = layout.content;
-  // The top bar is the card's first band, so the card starts at ITS top —
-  // the same rule the card's outline follows (see the frame in PaintChrome).
-  // Comfortable is excluded there and here alike: no card, no wrapping.
-  if (layout.mode != PhiLayoutMode::kComfortable &&
-      layout.top_bar.right > layout.top_bar.left) {
-    card.top = layout.top_bar.top;
-  }
-  return card;
 }
 
 void PhiShellWindow::CardRoundedCorners(bool* top, bool* bottom) const {
@@ -4244,24 +4240,19 @@ void PhiShellWindow::OnChromeClick(int x, int y) {
     ToggleSidebar();  // The band's leading control, View ▸ Toggle Sidebar.
     return;
   }
-  if (::PtInRect(&layout.downloads, pt) ||
-      ::PtInRect(&layout.sidebar_downloads, pt)) {
+  if (::PtInRect(&layout.sidebar_downloads, pt)) {
     // The Mac DownloadButtonView's popover toggle — and its
-    // feature_entry_tapped: the button lives in the sidebar's bottom bar,
-    // or in Comfortable's toolbar (the Mac's WebContentHeader).
+    // feature_entry_tapped: the button lives in the sidebar's bottom bar
+    // (the address row carries none; the app menu and Ctrl+J reach the
+    // same popover).
     if (services_.window) {
       services_.window->CaptureAnalytics(
           kAnalyticsModuleFeature, kEventFeatureEntryTapped,
-          PhiFeatureEntryProperties(
-              "download", layout_mode_ == PhiLayoutMode::kComfortable
-                              ? "web_content_header"
-                              : "sidebar"));
+          PhiFeatureEntryProperties("download", "sidebar"));
     }
     const BrowserId browser = active_browser_id();
     if (services_.spaces && framework_ && browser.valid()) {
-      RECT anchor = ::PtInRect(&layout.sidebar_downloads, pt)
-                        ? layout.sidebar_downloads
-                        : layout.downloads;
+      RECT anchor = layout.sidebar_downloads;
       ::MapWindowPoints(shell_hwnd_, nullptr,
                         reinterpret_cast<POINT*>(&anchor), 2);
       PhiDownloadsPopover::Toggle(shell_hwnd_, anchor,
@@ -6601,8 +6592,8 @@ void PhiShellWindow::PaintChrome(HDC dc,
   // darkens on hover) is AI-only and out of the design for now. There is NO
   // settings gear here — settings opens from the app menu, as on Mac.
   // Ordinals into NavHoverTable, where the bottom bar's run starts at 6
-  // (downloads, memory, feedback, chat, extensions) and the bar's own
-  // Downloads button is the appended 17.
+  // (the retired address-row Downloads slot, memory, feedback, chat,
+  // extensions) and the bar's own Downloads button is the appended 17.
   const auto bottom_hot = [&](int ordinal) {
     return hover_kind_ == HoverKind::kNav && hover_index_ == 6 + ordinal;
   };
@@ -6613,9 +6604,6 @@ void PhiShellWindow::PaintChrome(HDC dc,
                          palette, kLabel, Scaled(fluent::kIconToolbar),
                          Scaled(fluent::kButtonRadius));
     };
-    if (layout.downloads.right > layout.downloads.left) {
-      tool(layout.downloads, fluent::kDownload, bottom_hot(0));
-    }
     if (layout.sidebar_downloads.right > layout.sidebar_downloads.left) {
       // The bottom bar's own Downloads button (§4.2), nav-hover ordinal 17.
       tool(layout.sidebar_downloads, fluent::kDownload, bottom_hot(11));

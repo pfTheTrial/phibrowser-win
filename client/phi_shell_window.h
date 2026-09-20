@@ -877,14 +877,6 @@ class PhiShellWindow : public PhiHitSource,
   // The content region (client coords, physical pixels) the browser child
   // occupies.
   RECT content_rect();
-  // The whole page CARD: the content region, raised to include the top bar
-  // where one exists, because that bar is the card's first band (the Mac's
-  // WebContentHeader is the first item inside `splitViewContainer`, and the
-  // card's rounded top corners are the bar's). What a full-pane overlay has
-  // to cover to BE the card rather than sit inside it. Comfortable has no
-  // card — its page runs edge to edge under a toolbar that belongs to the
-  // window — so there it is just the content.
-  RECT card_rect();
   // The DPI the chrome is currently laid out for (96 = 100%).
   UINT dpi() const { return dpi_; }
   // Chrome geometry, published so tools and tests can locate what they are
@@ -1022,7 +1014,7 @@ class PhiShellWindow : public PhiHitSource,
     // it opens from the menu bar, as on Mac. All placeholders except through
     // the menu.
     RECT sidebar_downloads{};  // The bottom bar's own Downloads button.
-    RECT downloads{}, memory{}, feedback{}, chat{};
+    RECT memory{}, feedback{}, chat{};
     RECT extensions{};     // The puzzle button (in-field / bottom bar / header).
     // The app menu button (⋯): comfortable's toolbar trailing button, the
     // vertical layout's band cluster. Every layout has one — it is the
@@ -1033,9 +1025,6 @@ class PhiShellWindow : public PhiHitSource,
     RECT page_icon{};
     // The in-field Bookmark-this-tab slot (the star), trailing the field.
     RECT star{};
-    // The HTCAPTION run reserved between the omnibox and the tool cluster
-    // (vertical layout).
-    RECT drag_gutter{};
     // The floating panel's pin (empty on the shell's own layout) and the
     // sidebar's section labels.
     RECT pin{};

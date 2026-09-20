@@ -71,7 +71,11 @@ int PhiCaptionBand::HitTest(POINT client_pt) {
       ::PtInRect(&rects.reload, client_pt) ||
       ::PtInRect(&rects.search_tabs, client_pt) ||
       ::PtInRect(&rects.app_menu, client_pt) ||
-      ::PtInRect(&rects.sidebar_toggle, client_pt)) {
+      ::PtInRect(&rects.sidebar_toggle, client_pt) ||
+      ::PtInRect(&rects.url_field, client_pt) ||
+      ::PtInRect(&rects.agent_chip, client_pt) ||
+      ::PtInRect(&rects.field_ext_strip, client_pt) ||
+      ::PtInRect(&rects.extensions, client_pt)) {
     return HTCLIENT;
   }
   // Comfortable's band IS the tab strip, the vertical layout's row carries

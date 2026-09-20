@@ -97,12 +97,12 @@ ShellLayout ComputeShellLayout(const ShellLayoutInputs& in) {
     out.band_divider = {x, mid - half, x + scaled(1), mid + half};
   };
   // The tool cluster, built right-to-left from `right` on `mid`: ⋯ app
-  // menu · Downloads · Extensions · the pinned-extension slots. Returns
-  // the cluster's left edge.
+  // menu · Extensions · the pinned-extension slots. No Downloads button
+  // (Jixiang, 2026-09-20): downloads live in the sidebar's bottom bar, the
+  // app menu and Ctrl+J. Returns the cluster's left edge.
   const auto place_cluster = [&](int right, int mid, bool with_ext_strip) {
     out.app_menu = control_r(right, mid);
-    out.downloads = control_r(out.app_menu.left - btn_gap, mid);
-    out.extensions = control_r(out.downloads.left - btn_gap, mid);
+    out.extensions = control_r(out.app_menu.left - btn_gap, mid);
     int left = out.extensions.left;
     if (with_ext_strip && in.field_ext_count > 0) {
       const int slot = scaled(kExtSlot);
@@ -245,7 +245,10 @@ ShellLayout ComputeShellLayout(const ShellLayoutInputs& in) {
                         mid + chip_h / 2};
       field_left = out.agent_chip.right + scaled(kGroupGap);
     }
-    int field_right = cluster_left - scaled(kDragGutter);
+    // The field runs up to the cluster at the ordinary group gap: no
+    // reserved drag run (Jixiang, 2026-09-20) — the row's controls take
+    // their clicks and the window drags from the sidebar's pip row.
+    int field_right = cluster_left - scaled(kGroupGap);
     // Below the minimum text width the pinned-extension slots hide first
     // (the Mac's minimumAddressTextWidth rule), then the field simply gets
     // narrow.
@@ -253,16 +256,12 @@ ShellLayout ComputeShellLayout(const ShellLayoutInputs& in) {
                                  2 * kFieldSlotInset + 8);
     if (field_right - field_left < min_field && !out.field_ext_strip.empty()) {
       out.field_ext_strip = SidebarRect{};
-      field_right = out.extensions.left - scaled(kDragGutter);
+      field_right = out.extensions.left - scaled(kGroupGap);
     }
     if (field_right < field_left + scaled(kFieldSlot)) {
       field_right = field_left + scaled(kFieldSlot);
     }
     place_omnibox(field_left, field_right, mid);
-    out.drag_gutter = {out.url_field.right, 0,
-                       (out.field_ext_strip.empty() ? out.extensions.left
-                                                    : out.field_ext_strip.left),
-                       tb};
   }
 
   // The sidebar stack, top to bottom: the header row (pips only), the

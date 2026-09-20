@@ -397,10 +397,11 @@ the caption buttons at the window's top-right, the tool cluster, the
 omnibox, the app menu.
 
 The **tool cluster** (right-to-left, 8 from the caption divider or the
-edge): ⋯ app menu · Downloads · Extensions (puzzle) · the
-pinned-extension icons (28 wide slots, 2 apart). No split button
-(Jixiang, 2026-09-17): splitting stays a tab-menu / split-row / drag
-action. Peek and memory keep
+edge): ⋯ app menu · Extensions (puzzle) · the pinned-extension icons
+(28 wide slots, 2 apart). No Downloads button (Jixiang, 2026-09-20):
+downloads live in the sidebar's bottom bar, the app menu and Ctrl+J. No
+split button (Jixiang, 2026-09-17): splitting stays a tab-menu /
+split-row / drag action. Peek and memory keep
 their current homes. **Chat is out for now** (Jixiang, 2026-09-17): no
 capsule anywhere, no chatbar items in the app menu; the AI-build code
 paths stay behind `kPhiAiEnabled` untouched until the feature returns.

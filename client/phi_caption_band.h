@@ -39,6 +39,11 @@ struct PhiCaptionRects {
   RECT back{}, forward{}, reload{}, search_tabs{}, app_menu{};
   // The vertical layout's leading sidebar toggle.
   RECT sidebar_toggle{};
+  // The rest of the address row (vertical layout, where the row IS the
+  // band): the omnibox capsule with its in-field slots (Reader, the star),
+  // the agent chip, the pinned-extension strip and the puzzle button. Only
+  // the drag gutter between the field and the cluster drags the window.
+  RECT url_field{}, agent_chip{}, field_ext_strip{}, extensions{};
   // The sidebar's header row (vertical layout): the pips take their own
   // clicks there; the empty run drags the window.
   RECT spaces_strip{};

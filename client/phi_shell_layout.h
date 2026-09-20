@@ -58,9 +58,6 @@ inline constexpr int kNavGroupSpacing = 4;
 // The gap between the two leading groups (toggle + search → nav trio) and
 // between the nav trio and the omnibox.
 inline constexpr int kGroupGap = 8;
-// The reserved HTCAPTION run between the omnibox and the tool cluster, so
-// a maximised omnibox never swallows every drag point.
-inline constexpr int kDragGutter = 32;
 // The tool cluster → the caption divider, and the divider's gap to the
 // caption buttons.
 inline constexpr int kBandTrailingGap = 16;
@@ -232,9 +229,6 @@ struct ShellLayout {
   // collapsed sidebar is always one click from coming back. Empty in
   // comfortable, which has no sidebar to toggle.
   SidebarRect sidebar_toggle;
-  // The HTCAPTION run reserved between the omnibox and the tool cluster
-  // (vertical layout), so the row always has a drag point.
-  SidebarRect drag_gutter;
   // The hairline closing the band's trailing cluster.
   SidebarRect band_divider;
   SidebarRect back, forward, reload;
@@ -251,11 +245,11 @@ struct ShellLayout {
   SidebarRect bookmark_separator;
   SidebarRect new_tab_row;  // The sidebar's "+ New Tab" row.
   SidebarRect bottom_bar;
-  // Bottom-bar buttons (§4.2): Downloads — its own slot, the tool cluster's
-  // `downloads` is the address row's — and the memory chip leading, the
+  // Bottom-bar buttons (§4.2): Downloads and the memory chip leading, the
   // Feedback pill (and the Chat capsule while the AI suite is on) trailing.
+  // The address row has no Downloads button of its own.
   SidebarRect sidebar_downloads;
-  SidebarRect downloads, memory, feedback, chat;
+  SidebarRect memory, feedback, chat;
   SidebarRect extensions;  // The puzzle button.
   // The app menu button (⋯, docs/windows-native-ui.md §3): comfortable's
   // toolbar trailing button; the vertical layout's band cluster, before
