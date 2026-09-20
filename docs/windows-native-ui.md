@@ -1011,8 +1011,10 @@ Windows version:
   the page around the sheet, Back / Forward / a navigation on the
   opener, the opener leaving the list; a click in the sidebar or the
   address row hides it with its opener (it comes back with the tab).
-* **Reader View** keeps its full-cover panel; it gets the same 36 dip
-  header (favicon, host, Close) so the two attached surfaces read alike.
+* **Reader View** covers the page below the address row — the row and
+  its controls stay live — with **no header** (Jixiang, 2026-09-20): the
+  reading page's own HUD, the omnibox button, Ctrl+Alt+R and the row's
+  indicator tile close it.
 
 ### 5.8 The two row indicators (the "Peek indicator · open tab indicator" artboard)
 
