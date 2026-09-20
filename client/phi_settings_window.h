@@ -326,6 +326,8 @@ class PhiSettingsWindow : public PhiSecondaryWindow,
     kProfileCard,    // The Mac's draggable conch card (PhiProfileCard).
     kExpander,       // An expander card's header row (§7.1 / §7.2).
     kAppMark,        // The Phi mark at `bounds` size (About).
+    kAccountBlock,   // The rail's account block: 44 avatar, name, email.
+    kLayoutCard,     // The Layout picker's half: 110 preview + radio row.
   };
   struct Item {
     ItemKind kind = ItemKind::kRowLabel;
@@ -389,6 +391,10 @@ class PhiSettingsWindow : public PhiSecondaryWindow,
                    const std::wstring& hint, const std::wstring& icon,
                    bool avatar, COLORREF tint, bool expanded, bool badge,
                    const std::string& action, const std::string& payload);
+  // An expander body's row: the label in the row text's column, the
+  // control kDetailLabelWidth further in; returns the control's rect.
+  RECT AddDetailRow(int* y, const wchar_t* label, int control_height,
+                    int control_width);
   // The Space expander's body (name, profile, icon + inline picker,
   // colour, saturation, shortcut, delete), inside the open card.
   void AddSpaceBody(int* y, const PhiSpaceSummary& space, int ordinal);
