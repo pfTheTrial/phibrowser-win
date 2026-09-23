@@ -91,10 +91,11 @@ test('feedback: Send files a job with logs, images and files prepared',
 
     const sent = await ctl.send('agentSpace.feedback.form', { send: true })
     assertEq(sent.ok, true, 'Send pressed')
-    // The form closes once the job is filed (after the system logs arrive,
-    // or the 15 s wait for them lapses).
-    status = await waitFor(ctl, s => !s.form.open, 25000)
-    assertEq(status.form.open, false, 'form closed after Send')
+    // The form turns into the "Thanks for the report" confirmation once the
+    // job is filed (after the system logs arrive, or the 15 s wait for them
+    // lapses).
+    status = await waitFor(ctl, s => !s.form.open || s.form.sent, 25000)
+    assert(!status.form.open || status.form.sent, 'form confirmed the send')
     const job = status.jobs.find(j => !known.has(j.id))
     assert(job, 'a new outbox job exists')
     assertEq(job.sourceFiles, 1, 'the picked file was copied in')

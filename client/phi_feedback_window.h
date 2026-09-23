@@ -10,12 +10,14 @@
 #include <cstdint>
 #include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "base/memory/raw_ptr_exclusion.h"
 #include "phibrowser-win/client/phi_feedback_outbox.h"
 #include "phibrowser-win/client/phi_popup_chrome.h"
 #include "phibrowser-win/client/phi_secondary_window.h"
+#include "phibrowser-win/client/phi_theme.h"
 
 namespace phi_client {
 
@@ -46,21 +48,24 @@ class PhiFeedbackHost {
       int64_t window_id) = 0;
 };
 
-// The Mac's "Send Feedback to Phi" window (FeedbackViewController +
-// FeedbackView): app-global — one window, rebound to whichever browser
-// window reopens it — with the description, the URL it is about, picked or
-// pasted attachments, the privacy notice, and Send. Send collects Chromium's
-// system logs through the framework, files the report in the outbox and
-// closes; the upload happens in the background from there.
+// The "Send feedback" window (docs/windows-native-ui.md §13, the canvas's
+// "Send feedback" boards): app-global — one window, rebound to whichever
+// browser window reopens it — with the description, the page it is about,
+// attachment tiles (picked, dropped or pasted), the diagnostic-info
+// expander, the privacy notice and a Send / Cancel footer. Send collects
+// Chromium's system logs through the framework, files the report in the
+// outbox and turns the window into a confirmation; the upload happens in the
+// background from there.
 //
-// Native fields on the shared popup chrome (the caption band with the
-// Windows minimize / close pair), laid out as the Mac FeedbackView: the
-// description well, the "Additional info" card with its divided rows, the
-// legal notice with inline links, and the footer's Send. Modeless, like the
-// Mac's — the user can go back to the page to check a detail while
-// composing: it is a PhiSecondaryWindow that registers kPhiDialogTab, so
-// its control set gets tab navigation from the MAIN message loop and no
-// nested loop exists here (phi_secondary_window.h).
+// Windows Settings look on the shared popup chrome: the #F3F3F3 / #202020
+// ground, Fluent text boxes (a 2 dip accent bottom edge on focus), cards,
+// InfoBars for "sign in to send" and refused files instead of modal
+// boxes. The window's height follows its content (an InfoBar, a second tile
+// row or the expanded diagnostics grow it). Modeless, like the Mac's — the
+// user can go back to the page to check a detail while composing: it is a
+// PhiSecondaryWindow that registers kPhiDialogTab, so its control set gets
+// tab navigation from the MAIN message loop and no nested loop exists here
+// (phi_secondary_window.h).
 class PhiFeedbackWindow : public PhiSecondaryWindow {
  public:
   static void Open(PhiFeedbackHost* host,
@@ -71,8 +76,12 @@ class PhiFeedbackWindow : public PhiSecondaryWindow {
   static void OnSystemLogs(int request_id, const char* text);
   // The open window, or null.
   static HWND Handle();
+  // The account behind feedback changed (signed in or out): the window
+  // swaps its "Sending as" line and the sign-in InfoBar.
+  static void OnAccountChanged();
   // The form's state for the harness: {"open","windowId","url","title",
-  // "description","attachments":[{filename,size,image}],"submitting"}.
+  // "description","attachments":[{filename,size,image}],"submitting",
+  // "signedIn","sent","diagnosticsExpanded","attachmentError"}.
   static std::string StateJson();
   // Drives the form from the control socket: sets what is given
   // (description / url), adds `attachFiles` (paths), and presses Send when
@@ -91,7 +100,41 @@ class PhiFeedbackWindow : public PhiSecondaryWindow {
  private:
   struct Attachment {
     PhiFeedbackDraftAttachment draft;
-    std::wstring preview_path;  // A pasted image written out for Preview.
+    std::wstring preview_path;  // A pasted image written out for Open.
+    // The tile's thumbnail, premultiplied BGRA at `thumb_size` device px
+    // (rebuilt when the DPI moves the tile).
+    std::vector<unsigned char> thumb;
+    SIZE thumb_size = {0, 0};
+    bool thumb_failed = false;
+    HWND tile = nullptr;
+  };
+  class DropTarget;
+  // Where everything goes, in device px of the client area; recomputed
+  // from the state by Layout().
+  struct Geometry {
+    RECT sign_in_bar = {};
+    RECT title = {};
+    RECT from = {};
+    RECT description_label = {};
+    RECT description_box = {};
+    RECT help = {};
+    RECT page_label = {};
+    RECT page_box = {};
+    RECT error_bar = {};
+    RECT attach_label = {};
+    RECT tiles = {};  // The tile grid, one or two rows.
+    RECT diagnostics = {};  // The whole card, expanded body included.
+    RECT legal = {};
+    RECT footer = {};
+    RECT progress = {};
+    // The legal notice laid out word by word: plain runs painted, the two
+    // links placed as buttons.
+    struct Run {
+      std::wstring text;
+      RECT rect;
+    };
+    std::vector<Run> legal_runs;
+    int content_height = 0;  // Design units below the band.
   };
 
   PhiFeedbackWindow(PhiFeedbackHost* host, const PhiFeedbackContext& context);
@@ -106,24 +149,39 @@ class PhiFeedbackWindow : public PhiSecondaryWindow {
   void Build();
   void EnsureFonts();
   void ApplyFonts();
+  // Computes the geometry for the current state, places the controls and
+  // sizes the window to the content.
   void Layout();
+  void LayoutLegal(HDC dc, int x, int* y, int width);
   void Rebind(const PhiFeedbackContext& context);
-  void RefreshAttachmentList();
+  void RefreshAccount();
+  void RebuildTiles();
   void RefreshSendState();
   void RefreshCounter();
-  // `interactive` shows the "Could Not Add Attachment" notice for refused
-  // files; a driven call (the harness, on the control socket) records the
-  // message in `attachment_error_` instead — a modal there wedges the call.
+  // `interactive` shows the refused files in the error InfoBar; a driven
+  // call records them in `attachment_error_` as well (StateJson).
   bool AddFiles(const std::vector<std::wstring>& paths, bool interactive);
+  void ShowAttachmentError(const std::wstring& text);
   void ChooseFiles();
+  // Ctrl+V: files copied in Explorer attach as files, an image as a PNG.
+  // False when the clipboard holds neither (the edit pastes its text).
+  bool PasteAttachments();
   void PasteImage();
-  void RemoveSelected();
-  void PreviewSelected();
-  // False when nothing was sent: blank, already sending, or (with
-  // `interactive` false) no account.
+  void RemoveAttachment(size_t index);
+  void OpenAttachment(size_t index);
+  void RevealAttachment(size_t index);
+  void ShowTileMenu(size_t index, POINT screen);
+  size_t TileIndex(HWND tile) const;
+  // The ✕ a hovered tile shows, in the tile's client px.
+  RECT TileRemoveRect(HWND tile) const;
+  void EnsureThumbnail(Attachment* a, SIZE px);
+  // False when nothing was sent: blank, already sending, or no account.
   bool Send(bool interactive);
+  void CancelSend();
   // The second half of Send: the logs arrived (or were given up on).
   void CompleteSend(const char* logs);
+  void ShowSent();
+  void SetDragging(bool dragging, int count);
   std::string DescriptionText() const;
   std::string UrlText() const;
   HWND Child(const wchar_t* cls,
@@ -131,6 +189,26 @@ class PhiFeedbackWindow : public PhiSecondaryWindow {
              DWORD style,
              UINT_PTR id,
              DWORD ex_style = 0);
+
+  // Painting.
+  void PaintForm(HDC dc);
+  void PaintSent(HDC dc);
+  void PaintTextBox(HDC dc, const RECT& box, HWND edit);
+  void PaintInfoBar(HDC dc,
+                    const RECT& bar,
+                    bool error,
+                    const std::wstring& title,
+                    const std::wstring& message,
+                    int trailing_px);
+  void PaintFooter(HDC dc);
+  bool DrawOwnerItem(const DRAWITEMSTRUCT& item);
+  void DrawTile(const DRAWITEMSTRUCT& item, size_t index);
+  void DrawAddTile(const DRAWITEMSTRUCT& item);
+  void DrawDiagnosticsHeader(const DRAWITEMSTRUCT& item);
+  void DrawGlyphButton(const DRAWITEMSTRUCT& item, const wchar_t* glyph);
+  void DrawFocusRing(HDC dc, const RECT& r, int radius);
+  COLORREF Ink(int alpha) const;  // colors().ink over the ground.
+  COLORREF FieldFill() const;
 
   // PhiSecondaryWindow.
   void Paint(HDC dc, const RECT& dirty) override;
@@ -145,28 +223,63 @@ class PhiFeedbackWindow : public PhiSecondaryWindow {
 
   RAW_PTR_EXCLUSION PhiFeedbackHost* const host_;
   PhiFeedbackContext context_;
+  Geometry geo_;
   HBRUSH bg_brush_ = nullptr;
   HBRUSH card_brush_ = nullptr;
-  HBRUSH divider_brush_ = nullptr;
-  HFONT font_ = nullptr;
-  HFONT headline_font_ = nullptr;
-  HFONT small_font_ = nullptr;
+  HBRUSH field_brush_ = nullptr;
+  HBRUSH disabled_brush_ = nullptr;
+  HFONT font_ = nullptr;         // 14, body and fields.
+  HFONT title_font_ = nullptr;   // 20 semibold.
+  HFONT strong_font_ = nullptr;  // 14 semibold.
+  HFONT small_font_ = nullptr;   // 12.
+  HFONT tiny_font_ = nullptr;    // 11.
   HWND description_ = nullptr;
-  HWND counter_ = nullptr;
   HWND url_ = nullptr;
-  HWND choose_ = nullptr;
-  HWND list_ = nullptr;
-  HWND preview_ = nullptr;
-  HWND remove_ = nullptr;
+  HWND url_clear_ = nullptr;
+  HWND add_ = nullptr;
+  HWND diagnostics_ = nullptr;
+  HWND sign_in_ = nullptr;
+  HWND error_close_ = nullptr;
+  HWND privacy_ = nullptr;
+  HWND terms_ = nullptr;
   HWND send_ = nullptr;
+  HWND cancel_ = nullptr;
+  // The owner-drawn control under the pointer, and whether the pointer is
+  // on a hovered tile's ✕.
+  HWND hot_ = nullptr;
+  bool hot_remove_ = false;
+  // The last press on a tile began on its ✕ (BN_CLICKED then removes).
+  bool press_on_remove_ = false;
   // How long Send waits for Chromium's system logs before filing without
   // them; an id out of the window's own pool, not the literal 1 the file
   // used to pick (lane 3 §4.1).
   Timer logs_timer_;
+  // The indeterminate progress bar's frames while sending.
+  Timer progress_timer_;
+  int progress_phase_ = 0;
   std::vector<Attachment> attachments_;
-  // The last refused-attachment message on a driven path (StateJson).
+  // The last refused-attachment message (the error InfoBar; StateJson).
   std::string attachment_error_;
+  std::wstring error_text_;
+  std::string email_;
+  bool signed_in_ = false;
+  bool diagnostics_expanded_ = false;
+  // The expander's rows, read when it opens: label -> value.
+  std::vector<std::pair<std::wstring, std::wstring>> diagnostic_rows_;
+  // The flyout palette the tile menu paints with.
+  PhiPalette menu_palette_;
+  // Ctrl+V attached something: the edit's Ctrl+V character that follows is
+  // swallowed.
+  bool swallow_paste_char_ = false;
   bool submitting_ = false;
+  bool sent_ = false;
+  // Files are being dragged over the window: the tile row becomes the drop
+  // zone.
+  bool dragging_ = false;
+  int drag_count_ = 0;
+  // The OLE drop target, or null when RegisterDragDrop failed and
+  // WM_DROPFILES carries drops instead.
+  RAW_PTR_EXCLUSION DropTarget* drop_target_ = nullptr;
   int pending_request_ = 0;
 };
 

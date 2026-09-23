@@ -63,6 +63,10 @@ class PhiFeedbackOutbox {
  public:
   // The submit endpoint takes at most five attachments; a picked file may be
   // 10 MB, any single prepared attachment 20 MB.
+  // "Windows 10.0.26100 (24H2)" — what a report names the OS as (the
+  // form's diagnostic-info expander shows it before Send).
+  static std::string OsVersion();
+
   static constexpr int kMaxSubmitAttachments = 5;
   static constexpr int64_t kMaxSelectedAttachmentBytes = 10 * 1024 * 1024;
   static constexpr int64_t kMaxAttachmentBytes = 20 * 1024 * 1024;

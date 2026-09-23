@@ -636,6 +636,9 @@ constexpr RowDecor kRowDecor[] = {
     {"group.ungroup", nullptr, false, nullptr},
     {"group.close", nullptr, true, fluent::kCancel},
     {"agent.finish", nullptr, true, nullptr},
+    {"feedback.open", L"Enter", false, fluent::kOpenFile},
+    {"feedback.reveal", nullptr, false, fluent::kOpenFolder},
+    {"feedback.remove", L"Del", true, fluent::kDelete},
 };
 
 const RowDecor* DecorFor(const std::string& key) {

@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace phi_client {
 
@@ -24,6 +25,17 @@ bool PhiClipboardImageToPng(std::string* png);
 bool PhiEncodeJpegUnderLimit(const std::wstring& source,
                              int64_t max_bytes,
                              const std::wstring& destination);
+
+// Decodes the image at `path` (or, when `path` is empty, the encoded
+// `bytes`) into a thumbnail that COVERS exactly `width` x `height` device
+// px — scaled so the shorter side fits, the overflow cropped evenly — as
+// premultiplied BGRA rows, the attachment tile's picture. False when the
+// image does not decode. UI thread (COM initialized).
+bool PhiDecodeImageThumbnail(const std::wstring& path,
+                             const std::string& bytes,
+                             int width,
+                             int height,
+                             std::vector<unsigned char>* bgra);
 
 }  // namespace phi_client
 

@@ -209,10 +209,12 @@ void PhiAccountAndFeedback::SyncFeedbackAccount() {
   // burn its retries on "no account".
   if (auth_.signed_in() && !auth_.reauth_required()) {
     PhiFeedbackOutbox::Get().SetAccount(auth_.user().sub, auth_.user().email);
-    return;
+  } else {
+    PhiFeedbackOutbox::Get().SetAccount(test_feedback_user_id_,
+                                        test_feedback_email_);
   }
-  PhiFeedbackOutbox::Get().SetAccount(test_feedback_user_id_,
-                                      test_feedback_email_);
+  // An open form swaps its "Sending as" line and the sign-in InfoBar.
+  PhiFeedbackWindow::OnAccountChanged();
 }
 
 void PhiAccountAndFeedback::OpenFeedback(HWND owner,

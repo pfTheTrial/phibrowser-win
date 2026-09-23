@@ -1249,6 +1249,11 @@ int64_t BackoffMs(int retry_count) {
 
 }  // namespace
 
+// static
+std::string PhiFeedbackOutbox::OsVersion() {
+  return OsVersionString();
+}
+
 // --- PhiFeedbackOutbox -------------------------------------------------------
 
 PhiFeedbackOutbox& PhiFeedbackOutbox::Get() {

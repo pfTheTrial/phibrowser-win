@@ -1576,3 +1576,85 @@ the brand mark (§2.2b), Fluent controls, no wizard chrome at all.
 * **D-I7 The uninstaller quits when the files are gone** (`Quit` at the
   end of its section - AutoCloseWindow does not carry an uninstaller past
   its last page); a silent uninstall keeps the data as before.
+
+## 13. Send feedback (the two "Send feedback" artboards, added 2026-09-23)
+
+The Mac port's form (a well, an "Additional info" card with a list box and
+Preview / Remove buttons, legal links under the notice, a lone Send, a
+modal sign-in prompt and a modal "Could Not Add Attachment") becomes a
+Windows Settings-style form. Implemented in `client/phi_feedback_window.cc`
+the same day; the outbox, the harness verbs and the upload are unchanged.
+
+### 13.1 Anatomy
+
+* **Window**: 560 wide, `PhiPopupChrome` caption with the Phi mark and
+  "Send feedback", minimize + close. The height follows the content: an
+  InfoBar, a second tile row or the open diagnostics card grow it; the top
+  edge stays put.
+* **Header**: "Tell us what went wrong" (20 / 600) and, signed in, a
+  "Sending as <email>" line with an initial disc in the accent.
+* **Signed out**: an informational InfoBar above the title — "Sign in to
+  send" / "Reports are tied to your Phi account so we can follow up. You can
+  keep writing — nothing is lost." — with an accent **Sign in** button.
+  Send stays disabled until an account exists; the window follows sign-in
+  and sign-out live (`PhiFeedbackWindow::OnAccountChanged`, called from
+  `SyncFeedbackAccount`). The modal "Sign in now?" alert is gone.
+* **Description**: Fluent multi-line TextBox, 144 high (control fill at
+  rest, card + 2 dip accent bottom edge on focus); the scrollbar appears only
+  when the text overflows. Helper line under it; from 3,000 characters the
+  counter "3,412 / 4,096" sits at its right (red at the limit).
+* **Page (optional)**: one-line TextBox with a globe glyph and a clear ✕,
+  prefilled from the focused tab ("From the tab you were on").
+* **Attachments (optional)** — "Up to 5 files, 10 MB each": a four-column
+  grid of 88 dip tiles (thumbnail — WIC-decoded, cover-cropped — or a
+  document glyph with the extension; name; size, "Pasted · 96 KB" for a
+  pasted image) followed by a dashed **Add files / or paste an image** tile
+  that disappears at five. A tile is a focusable button: click / Enter
+  opens it, hover shows a ✕ in its corner, Delete removes it, right-click or
+  Shift+F10 opens the Fluent menu (Open · Show in Explorer · Remove; Show in
+  Explorer is off for pasted images). The five-file limit is now enforced
+  when adding (it used to be a silent trim at submit).
+* **Adding**: the picker, **drag and drop from Explorer** (OLE drop target
+  with the shell's drag image; while files hover the tile row becomes an
+  accent-dashed "Drop to attach N files" zone; WM_DROPFILES is the fallback),
+  and **Ctrl+V anywhere but the Page field** — files copied in Explorer attach
+  as files, an image as `image-N.png`.
+* **Refused files**: an error InfoBar above Attachments ("Some files
+  weren't added" + "name: reason" for up to three, "and N more."), with a
+  ✕; the next add attempt replaces it. No modal.
+* **Diagnostic info**: an expander card ("Diagnostic info is included" /
+  "Phi and Windows versions, extensions and recent browser logs"); open, it
+  lists Phi, Windows, page title, Phi extensions and "Browser logs —
+  Collected when you press Send". Informational only: the pipeline always
+  sends these, the card just says so.
+* **Notice**: the privacy sentence flows word by word with **Privacy Policy**
+  and **Terms of Service** inline (they are link buttons placed where their
+  words land, so they stay tab stops).
+* **Footer**: card-coloured band with a separator, **Send** (accent) ·
+  **Cancel**, 120 wide each, right-aligned. Enter anywhere but the
+  description sends; Ctrl+Enter there.
+
+### 13.2 States
+
+* **Sending**: fields and tiles lock, Send shows "Sending…", the footer runs
+  Fluent's indeterminate bar with "Collecting diagnostics…". Cancel (or
+  Esc) stops it — the framework's late log answer is dropped by request id.
+* **Sent**: the window becomes a confirmation — green check disc, "Thanks
+  for the report", "Phi is uploading it in the background. If you're
+  offline or Phi closes first, it finishes the next time Phi runs." —
+  with **Close** (Enter / Esc). It used to vanish silently. Reopening the
+  form from a browser window while the confirmation is up starts a fresh
+  report.
+* Harness: `agentSpace.feedback.status` gains `sent`, `signedIn` and
+  `diagnosticsExpanded`; `test/suite-feedback.mjs` waits for `sent` instead
+  of the window closing.
+
+### 13.3 Not verified on the box (2026-09-23)
+
+The signed-out InfoBar (the box has a real session, and the harness's
+stand-in account never overrides one), the OLE drop zone, Ctrl+V of an
+image or of Explorer files, and the Sending / Sent states (a real Send
+files a report on staging under the signed-in account). The rest —
+fields, tiles and thumbnails, hover ✕, the tile menu, the refused-files
+InfoBar, the five-file limit, the counter, the expander, light and dark —
+was captured on the box.

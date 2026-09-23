@@ -2966,6 +2966,39 @@
    "zh-Hans": "补充信息（可选）",
    "zh-Hant": "其他資訊（選填）"
   },
+  "feedback.form.attachment.open": {
+   "de": "Öffnen",
+   "en": "Open",
+   "es": "Abrir",
+   "fr": "Ouvrir",
+   "ja": "開く",
+   "ko": "열기",
+   "nl": "Openen",
+   "zh-Hans": "打开",
+   "zh-Hant": "開啟"
+  },
+  "feedback.form.attachment.pastedImage": {
+   "de": "Eingefügtes Bild",
+   "en": "Pasted image",
+   "es": "Imagen pegada",
+   "fr": "Image collée",
+   "ja": "貼り付けた画像",
+   "ko": "붙여넣은 이미지",
+   "nl": "Geplakte afbeelding",
+   "zh-Hans": "粘贴的图片",
+   "zh-Hant": "貼上的圖片"
+  },
+  "feedback.form.attachment.pastedSize": {
+   "de": "Eingefügt · {0}",
+   "en": "Pasted · {0}",
+   "es": "Pegado · {0}",
+   "fr": "Collé · {0}",
+   "ja": "貼り付け · {0}",
+   "ko": "붙여넣음 · {0}",
+   "nl": "Geplakt · {0}",
+   "zh-Hans": "已粘贴 · {0}",
+   "zh-Hant": "已貼上 · {0}"
+  },
   "feedback.form.attachment.previewTooltip": {
    "de": "Anhang in Vorschau anzeigen",
    "en": "Preview attachment",
@@ -2976,6 +3009,17 @@
    "nl": "Voorvertoning van bijlage",
    "zh-Hans": "预览附件",
    "zh-Hant": "預覽附件"
+  },
+  "feedback.form.attachment.remove": {
+   "de": "Entfernen",
+   "en": "Remove",
+   "es": "Quitar",
+   "fr": "Supprimer",
+   "ja": "削除",
+   "ko": "제거",
+   "nl": "Verwijderen",
+   "zh-Hans": "移除",
+   "zh-Hant": "移除"
   },
   "feedback.form.attachment.removeTooltip": {
    "de": "Anhang entfernen",
@@ -2991,6 +3035,61 @@
   "feedback.form.attachment.showInExplorerTooltip": {
    "en": "Show in Explorer"
   },
+  "feedback.form.attachmentFailure.dismiss": {
+   "de": "Schließen",
+   "en": "Dismiss",
+   "es": "Descartar",
+   "fr": "Ignorer",
+   "ja": "閉じる",
+   "ko": "닫기",
+   "nl": "Sluiten",
+   "zh-Hans": "关闭",
+   "zh-Hant": "關閉"
+  },
+  "feedback.form.attachmentFailure.heading": {
+   "de": "Einige Dateien wurden nicht hinzugefügt",
+   "en": "Some files weren't added",
+   "es": "Algunos archivos no se añadieron",
+   "fr": "Certains fichiers n'ont pas été ajoutés",
+   "ja": "一部のファイルを追加できませんでした",
+   "ko": "일부 파일이 추가되지 않았습니다",
+   "nl": "Sommige bestanden zijn niet toegevoegd",
+   "zh-Hans": "部分文件未添加",
+   "zh-Hant": "部分檔案未加入"
+  },
+  "feedback.form.attachmentFailure.limit": {
+   "de": "{0}: Es können nur 5 Dateien angehängt werden.",
+   "en": "{0}: only 5 files can be attached.",
+   "es": "{0}: solo se pueden adjuntar 5 archivos.",
+   "fr": "{0} : seuls 5 fichiers peuvent être joints.",
+   "ja": "{0}: 添付できるのは 5 ファイルまでです。",
+   "ko": "{0}: 파일은 5개까지만 첨부할 수 있습니다.",
+   "nl": "{0}: er kunnen maar 5 bestanden worden toegevoegd.",
+   "zh-Hans": "{0}：最多只能附加 5 个文件。",
+   "zh-Hant": "{0}：最多只能附加 5 個檔案。"
+  },
+  "feedback.form.attachmentFailure.more.one": {
+   "de": "und {0} weitere.",
+   "en": "and {0} more.",
+   "es": "y {0} más.",
+   "fr": "et {0} autre.",
+   "ja": "ほか {0} 件。",
+   "ko": "외 {0}개.",
+   "nl": "en nog {0}.",
+   "zh-Hans": "以及另外 {0} 个。",
+   "zh-Hant": "以及另外 {0} 個。"
+  },
+  "feedback.form.attachmentFailure.more.other": {
+   "de": "und {0} weitere.",
+   "en": "and {0} more.",
+   "es": "y {0} más.",
+   "fr": "et {0} autres.",
+   "ja": "ほか {0} 件。",
+   "ko": "외 {0}개.",
+   "nl": "en nog {0}.",
+   "zh-Hans": "以及另外 {0} 个。",
+   "zh-Hant": "以及另外 {0} 個。"
+  },
   "feedback.form.attachmentFailure.title": {
    "de": "Anhang konnte nicht hinzugefügt werden",
    "en": "Could Not Add Attachment",
@@ -3001,6 +3100,72 @@
    "nl": "Kan bijlage niet toevoegen",
    "zh-Hans": "无法添加附件",
    "zh-Hant": "無法加入附件"
+  },
+  "feedback.form.attachments.add": {
+   "de": "Dateien hinzufügen",
+   "en": "Add files",
+   "es": "Añadir archivos",
+   "fr": "Ajouter des fichiers",
+   "ja": "ファイルを追加",
+   "ko": "파일 추가",
+   "nl": "Bestanden toevoegen",
+   "zh-Hans": "添加文件",
+   "zh-Hant": "新增檔案"
+  },
+  "feedback.form.attachments.addHint": {
+   "de": "oder ein Bild einfügen",
+   "en": "or paste an image",
+   "es": "o pega una imagen",
+   "fr": "ou collez une image",
+   "ja": "または画像を貼り付け",
+   "ko": "또는 이미지 붙여넣기",
+   "nl": "of plak een afbeelding",
+   "zh-Hans": "或粘贴图片",
+   "zh-Hant": "或貼上圖片"
+  },
+  "feedback.form.attachments.aside": {
+   "de": "Bis zu 5 Dateien, je 10 MB",
+   "en": "Up to 5 files, 10 MB each",
+   "es": "Hasta 5 archivos de 10 MB cada uno",
+   "fr": "Jusqu'à 5 fichiers de 10 Mo chacun",
+   "ja": "最大 5 ファイル、各 10 MB",
+   "ko": "최대 5개 파일, 각 10MB",
+   "nl": "Maximaal 5 bestanden van 10 MB",
+   "zh-Hans": "最多 5 个文件，每个 10 MB",
+   "zh-Hant": "最多 5 個檔案，每個 10 MB"
+  },
+  "feedback.form.attachments.drop.one": {
+   "de": "Ablegen, um {0} Datei anzuhängen",
+   "en": "Drop to attach {0} file",
+   "es": "Suelta para adjuntar {0} archivo",
+   "fr": "Déposez pour joindre {0} fichier",
+   "ja": "ドロップして {0} 個のファイルを添付",
+   "ko": "놓아서 파일 {0}개 첨부",
+   "nl": "Neerzetten om {0} bestand toe te voegen",
+   "zh-Hans": "松开以附加 {0} 个文件",
+   "zh-Hant": "放開以附加 {0} 個檔案"
+  },
+  "feedback.form.attachments.drop.other": {
+   "de": "Ablegen, um {0} Dateien anzuhängen",
+   "en": "Drop to attach {0} files",
+   "es": "Suelta para adjuntar {0} archivos",
+   "fr": "Déposez pour joindre {0} fichiers",
+   "ja": "ドロップして {0} 個のファイルを添付",
+   "ko": "놓아서 파일 {0}개 첨부",
+   "nl": "Neerzetten om {0} bestanden toe te voegen",
+   "zh-Hans": "松开以附加 {0} 个文件",
+   "zh-Hant": "放開以附加 {0} 個檔案"
+  },
+  "feedback.form.attachments.label": {
+   "de": "Anhänge",
+   "en": "Attachments",
+   "es": "Archivos adjuntos",
+   "fr": "Pièces jointes",
+   "ja": "添付ファイル",
+   "ko": "첨부 파일",
+   "nl": "Bijlagen",
+   "zh-Hans": "附件",
+   "zh-Hant": "附件"
   },
   "feedback.form.attachmentsSection.chooseFilesButton": {
    "de": "Dateien auswählen",
@@ -3035,6 +3200,61 @@
    "zh-Hans": "附加文件",
    "zh-Hant": "附加檔案"
   },
+  "feedback.form.cancelButton": {
+   "de": "Abbrechen",
+   "en": "Cancel",
+   "es": "Cancelar",
+   "fr": "Annuler",
+   "ja": "キャンセル",
+   "ko": "취소",
+   "nl": "Annuleren",
+   "zh-Hans": "取消",
+   "zh-Hant": "取消"
+  },
+  "feedback.form.closeButton": {
+   "de": "Schließen",
+   "en": "Close",
+   "es": "Cerrar",
+   "fr": "Fermer",
+   "ja": "閉じる",
+   "ko": "닫기",
+   "nl": "Sluiten",
+   "zh-Hans": "关闭",
+   "zh-Hant": "關閉"
+  },
+  "feedback.form.collecting": {
+   "de": "Diagnosedaten werden erfasst…",
+   "en": "Collecting diagnostics…",
+   "es": "Recopilando diagnósticos…",
+   "fr": "Collecte des diagnostics…",
+   "ja": "診断情報を収集しています…",
+   "ko": "진단 정보 수집 중…",
+   "nl": "Diagnostische gegevens verzamelen…",
+   "zh-Hans": "正在收集诊断信息…",
+   "zh-Hant": "正在收集診斷資訊…"
+  },
+  "feedback.form.description.help": {
+   "de": "Was ist passiert, was hast du erwartet und wie kommt man dorthin?",
+   "en": "What happened, what you expected, and the steps to get there",
+   "es": "Qué pasó, qué esperabas y los pasos para llegar ahí",
+   "fr": "Ce qui s'est passé, ce que vous attendiez et les étapes pour y arriver",
+   "ja": "何が起きたか、何を期待していたか、再現手順",
+   "ko": "무슨 일이 있었는지, 무엇을 기대했는지, 재현 단계",
+   "nl": "Wat er gebeurde, wat je verwachtte en de stappen ernaartoe",
+   "zh-Hans": "发生了什么、你期望的结果，以及重现步骤",
+   "zh-Hant": "發生了什麼、你預期的結果，以及重現步驟"
+  },
+  "feedback.form.description.label": {
+   "de": "Beschreibung",
+   "en": "Description",
+   "es": "Descripción",
+   "fr": "Description",
+   "ja": "説明",
+   "ko": "설명",
+   "nl": "Beschrijving",
+   "zh-Hans": "描述",
+   "zh-Hant": "描述"
+  },
   "feedback.form.descriptionSection.title": {
    "de": "Beschreibe das Problem im Detail",
    "en": "Describe the issue in detail",
@@ -3045,6 +3265,116 @@
    "nl": "Beschrijf het probleem in detail",
    "zh-Hans": "详细描述问题",
    "zh-Hant": "詳細描述問題"
+  },
+  "feedback.form.diagnostics.extensions": {
+   "de": "Phi-Erweiterungen",
+   "en": "Phi extensions",
+   "es": "Extensiones de Phi",
+   "fr": "Extensions Phi",
+   "ja": "Phi 拡張機能",
+   "ko": "Phi 확장 프로그램",
+   "nl": "Phi-extensies",
+   "zh-Hans": "Phi 扩展程序",
+   "zh-Hant": "Phi 擴充功能"
+  },
+  "feedback.form.diagnostics.logs": {
+   "de": "Browser-Protokolle",
+   "en": "Browser logs",
+   "es": "Registros del navegador",
+   "fr": "Journaux du navigateur",
+   "ja": "ブラウザーログ",
+   "ko": "브라우저 로그",
+   "nl": "Browserlogboeken",
+   "zh-Hans": "浏览器日志",
+   "zh-Hant": "瀏覽器記錄"
+  },
+  "feedback.form.diagnostics.logsValue": {
+   "de": "Werden beim Senden erfasst",
+   "en": "Collected when you press Send",
+   "es": "Se recopilan al pulsar Enviar",
+   "fr": "Collectés lorsque vous appuyez sur Envoyer",
+   "ja": "送信時に収集されます",
+   "ko": "보내기를 누르면 수집됩니다",
+   "nl": "Verzameld wanneer je op Versturen drukt",
+   "zh-Hans": "点击“发送”时收集",
+   "zh-Hant": "按下「傳送」時收集"
+  },
+  "feedback.form.diagnostics.none": {
+   "de": "Keine",
+   "en": "None",
+   "es": "Ninguna",
+   "fr": "Aucune",
+   "ja": "なし",
+   "ko": "없음",
+   "nl": "Geen",
+   "zh-Hans": "无",
+   "zh-Hant": "無"
+  },
+  "feedback.form.diagnostics.pageTitle": {
+   "de": "Seitentitel",
+   "en": "Page title",
+   "es": "Título de la página",
+   "fr": "Titre de la page",
+   "ja": "ページタイトル",
+   "ko": "페이지 제목",
+   "nl": "Paginatitel",
+   "zh-Hans": "页面标题",
+   "zh-Hant": "頁面標題"
+  },
+  "feedback.form.diagnostics.phi": {
+   "de": "Phi",
+   "en": "Phi",
+   "es": "Phi",
+   "fr": "Phi",
+   "ja": "Phi",
+   "ko": "Phi",
+   "nl": "Phi",
+   "zh-Hans": "Phi",
+   "zh-Hant": "Phi"
+  },
+  "feedback.form.diagnostics.subtitle": {
+   "de": "Phi- und Windows-Version, Erweiterungen und aktuelle Browser-Protokolle",
+   "en": "Phi and Windows versions, extensions and recent browser logs",
+   "es": "Versiones de Phi y Windows, extensiones y registros recientes del navegador",
+   "fr": "Versions de Phi et de Windows, extensions et journaux récents du navigateur",
+   "ja": "Phi と Windows のバージョン、拡張機能、最近のブラウザーログ",
+   "ko": "Phi 및 Windows 버전, 확장 프로그램, 최근 브라우저 로그",
+   "nl": "Phi- en Windows-versies, extensies en recente browserlogboeken",
+   "zh-Hans": "Phi 和 Windows 版本、扩展程序及最近的浏览器日志",
+   "zh-Hant": "Phi 與 Windows 版本、擴充功能及最近的瀏覽器記錄"
+  },
+  "feedback.form.diagnostics.title": {
+   "de": "Diagnoseinformationen sind enthalten",
+   "en": "Diagnostic info is included",
+   "es": "Se incluye información de diagnóstico",
+   "fr": "Des informations de diagnostic sont incluses",
+   "ja": "診断情報が含まれます",
+   "ko": "진단 정보가 포함됩니다",
+   "nl": "Diagnostische gegevens worden meegestuurd",
+   "zh-Hans": "包含诊断信息",
+   "zh-Hant": "包含診斷資訊"
+  },
+  "feedback.form.diagnostics.windows": {
+   "de": "Windows",
+   "en": "Windows",
+   "es": "Windows",
+   "fr": "Windows",
+   "ja": "Windows",
+   "ko": "Windows",
+   "nl": "Windows",
+   "zh-Hans": "Windows",
+   "zh-Hant": "Windows"
+  },
+  "feedback.form.heading": {
+   "de": "Beschreibe uns das Problem",
+   "en": "Tell us what went wrong",
+   "es": "Cuéntanos qué ha fallado",
+   "fr": "Dites-nous ce qui ne va pas",
+   "ja": "どのような問題が起きたか教えてください",
+   "ko": "무엇이 잘못되었는지 알려 주세요",
+   "nl": "Vertel ons wat er misging",
+   "zh-Hans": "告诉我们出了什么问题",
+   "zh-Hant": "告訴我們發生了什麼問題"
   },
   "feedback.form.localSaveFailure.title": {
    "de": "Feedback konnte nicht gespeichert werden",
@@ -3057,6 +3387,50 @@
    "zh-Hans": "无法保存反馈",
    "zh-Hant": "無法儲存意見回饋"
   },
+  "feedback.form.optional": {
+   "de": "(optional)",
+   "en": "(optional)",
+   "es": "(opcional)",
+   "fr": "(facultatif)",
+   "ja": "（任意）",
+   "ko": "(선택 사항)",
+   "nl": "(optioneel)",
+   "zh-Hans": "（可选）",
+   "zh-Hant": "（選填）"
+  },
+  "feedback.form.page.aside": {
+   "de": "Aus dem Tab, in dem du warst",
+   "en": "From the tab you were on",
+   "es": "De la pestaña en la que estabas",
+   "fr": "De l'onglet où vous étiez",
+   "ja": "開いていたタブから",
+   "ko": "보고 있던 탭에서",
+   "nl": "Van het tabblad waarop je was",
+   "zh-Hans": "来自你所在的标签页",
+   "zh-Hant": "來自你所在的分頁"
+  },
+  "feedback.form.page.clear": {
+   "de": "Seite löschen",
+   "en": "Clear page",
+   "es": "Borrar página",
+   "fr": "Effacer la page",
+   "ja": "ページをクリア",
+   "ko": "페이지 지우기",
+   "nl": "Pagina wissen",
+   "zh-Hans": "清除页面",
+   "zh-Hant": "清除頁面"
+  },
+  "feedback.form.page.label": {
+   "de": "Seite",
+   "en": "Page",
+   "es": "Página",
+   "fr": "Page",
+   "ja": "ページ",
+   "ko": "페이지",
+   "nl": "Pagina",
+   "zh-Hans": "页面",
+   "zh-Hant": "頁面"
+  },
   "feedback.form.privacyNotice": {
    "de": "Möglicherweise werden einige Konto- und Systeminformationen an Phinomenon gesendet. Wir verwenden die Informationen, die du uns gibst, um technische Probleme zu beheben und unsere Dienste zu verbessern, gemäß unserer Datenschutzerklärung und unseren Nutzungsbedingungen.",
    "en": "Some account and system information may be sent to Phinomenon. We will use the information you give us to help address technical issues and to improve our services, subject to our Privacy Policy and Terms of Service.",
@@ -3067,6 +3441,17 @@
    "nl": "Mogelijk worden er account- en systeemgegevens naar Phinomenon gestuurd. We gebruiken de informatie die je ons geeft om technische problemen op te lossen en onze diensten te verbeteren, in overeenstemming met ons privacybeleid en onze servicevoorwaarden.",
    "zh-Hans": "部分账号和系统信息可能会发送给 Phinomenon。我们会使用你提供的信息来帮助解决技术问题并改进我们的服务，具体以我们的隐私政策和服务条款为准。",
    "zh-Hant": "部分帳號與系統資訊可能會傳送給 Phinomenon。我們會依照隱私權政策與服務條款，使用你提供的資訊來協助解決技術問題並改善我們的服務。"
+  },
+  "feedback.form.privacyNotice2": {
+   "de": "Einige Konto- und Systeminformationen werden an Phinomenon gesendet, um technische Probleme zu beheben und Phi zu verbessern, wie in der {0} und den {1} beschrieben.",
+   "en": "Some account and system information is sent to Phinomenon to help fix technical issues and improve Phi, as described in the {0} and {1}.",
+   "es": "Se envía cierta información de la cuenta y del sistema a Phinomenon para ayudar a resolver problemas técnicos y mejorar Phi, según se describe en la {0} y los {1}.",
+   "fr": "Certaines informations de compte et de système sont envoyées à Phinomenon pour aider à résoudre les problèmes techniques et améliorer Phi, comme décrit dans la {0} et les {1}.",
+   "ja": "技術的な問題の解決と Phi の改善のため、一部のアカウント情報とシステム情報が Phinomenon に送信されます。詳細は{0}と{1}をご覧ください。",
+   "ko": "기술 문제 해결과 Phi 개선을 위해 일부 계정 및 시스템 정보가 Phinomenon에 전송됩니다. 자세한 내용은 {0} 및 {1}을 참조하세요.",
+   "nl": "Sommige account- en systeemgegevens worden naar Phinomenon gestuurd om technische problemen op te lossen en Phi te verbeteren, zoals beschreven in het {0} en de {1}.",
+   "zh-Hans": "部分账户和系统信息会发送给 Phinomenon，用于帮助解决技术问题和改进 Phi，详见{0}和{1}。",
+   "zh-Hant": "部分帳戶與系統資訊會傳送給 Phinomenon，用於協助解決技術問題並改善 Phi，詳見{0}與{1}。"
   },
   "feedback.form.privacyPolicyLink": {
    "de": "Datenschutzerklärung",
@@ -3093,6 +3478,72 @@
   "feedback.form.sending": {
    "en": "Sending…"
   },
+  "feedback.form.sendingAs": {
+   "de": "Wird gesendet als {0}",
+   "en": "Sending as {0}",
+   "es": "Se enviará como {0}",
+   "fr": "Envoi en tant que {0}",
+   "ja": "{0} として送信",
+   "ko": "{0}(으)로 보내기",
+   "nl": "Verzenden als {0}",
+   "zh-Hans": "以 {0} 的身份发送",
+   "zh-Hant": "以 {0} 的身分傳送"
+  },
+  "feedback.form.sent.message": {
+   "de": "Phi lädt ihn im Hintergrund hoch. Bist du offline oder wird Phi vorher beendet, wird der Upload beim nächsten Start abgeschlossen.",
+   "en": "Phi is uploading it in the background. If you're offline or Phi closes first, it finishes the next time Phi runs.",
+   "es": "Phi lo está subiendo en segundo plano. Si no tienes conexión o Phi se cierra antes, terminará la próxima vez que se abra Phi.",
+   "fr": "Phi l'envoie en arrière-plan. Si vous êtes hors ligne ou si Phi se ferme avant, l'envoi se terminera au prochain lancement de Phi.",
+   "ja": "Phi がバックグラウンドでアップロードしています。オフラインの場合や先に Phi を閉じた場合は、次回 Phi の起動時に完了します。",
+   "ko": "Phi가 백그라운드에서 업로드하고 있습니다. 오프라인이거나 Phi가 먼저 종료되면 다음에 Phi를 실행할 때 완료됩니다.",
+   "nl": "Phi uploadt het op de achtergrond. Ben je offline of sluit Phi eerder, dan wordt het afgerond wanneer Phi weer start.",
+   "zh-Hans": "Phi 正在后台上传。如果你处于离线状态或 Phi 先行关闭，将在下次运行 Phi 时完成。",
+   "zh-Hant": "Phi 正在背景上傳。如果你離線或 Phi 先關閉，會在下次執行 Phi 時完成。"
+  },
+  "feedback.form.sent.title": {
+   "de": "Danke für deinen Bericht",
+   "en": "Thanks for the report",
+   "es": "Gracias por el informe",
+   "fr": "Merci pour votre signalement",
+   "ja": "ご報告ありがとうございます",
+   "ko": "보고해 주셔서 감사합니다",
+   "nl": "Bedankt voor je melding",
+   "zh-Hans": "感谢你的反馈",
+   "zh-Hant": "感謝你的回報"
+  },
+  "feedback.form.signIn.button": {
+   "de": "Anmelden",
+   "en": "Sign in",
+   "es": "Iniciar sesión",
+   "fr": "Se connecter",
+   "ja": "サインイン",
+   "ko": "로그인",
+   "nl": "Inloggen",
+   "zh-Hans": "登录",
+   "zh-Hant": "登入"
+  },
+  "feedback.form.signIn.message": {
+   "de": "Berichte sind mit deinem Phi-Konto verknüpft, damit wir nachfragen können. Du kannst weiterschreiben – nichts geht verloren.",
+   "en": "Reports are tied to your Phi account so we can follow up. You can keep writing — nothing is lost.",
+   "es": "Los informes se vinculan a tu cuenta de Phi para que podamos hacer un seguimiento. Puedes seguir escribiendo; no se pierde nada.",
+   "fr": "Les rapports sont liés à votre compte Phi pour que nous puissions assurer le suivi. Vous pouvez continuer à écrire : rien n'est perdu.",
+   "ja": "レポートはフォローアップのため Phi アカウントに関連付けられます。書き続けても内容は失われません。",
+   "ko": "후속 조치를 위해 보고서는 Phi 계정에 연결됩니다. 계속 작성해도 내용은 사라지지 않습니다.",
+   "nl": "Meldingen zijn gekoppeld aan je Phi-account zodat we kunnen opvolgen. Je kunt verder schrijven; er gaat niets verloren.",
+   "zh-Hans": "报告会关联到你的 Phi 账户，方便我们跟进。你可以继续填写，内容不会丢失。",
+   "zh-Hant": "回報會連結到你的 Phi 帳戶，方便我們後續追蹤。你可以繼續填寫，內容不會遺失。"
+  },
+  "feedback.form.signIn.title": {
+   "de": "Zum Senden anmelden",
+   "en": "Sign in to send",
+   "es": "Inicia sesión para enviar",
+   "fr": "Connectez-vous pour envoyer",
+   "ja": "送信するにはサインイン",
+   "ko": "보내려면 로그인하세요",
+   "nl": "Log in om te versturen",
+   "zh-Hans": "登录后发送",
+   "zh-Hant": "登入後傳送"
+  },
   "feedback.form.signInPrompt": {
    "en": "Sign in to your Phi account to send feedback. Sign in now?"
   },
@@ -3117,6 +3568,17 @@
    "nl": "URL",
    "zh-Hans": "网址",
    "zh-Hant": "網址"
+  },
+  "feedback.window.title": {
+   "de": "Feedback senden",
+   "en": "Send feedback",
+   "es": "Enviar comentarios",
+   "fr": "Envoyer des commentaires",
+   "ja": "フィードバックを送信",
+   "ko": "피드백 보내기",
+   "nl": "Feedback versturen",
+   "zh-Hans": "发送反馈",
+   "zh-Hant": "傳送意見回饋"
   },
   "kiosk.toolbar.openInSpace": {
    "de": "Öffnen in",

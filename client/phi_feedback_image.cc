@@ -10,6 +10,7 @@
 #include <wincodec.h>
 #include <wrl/client.h>
 
+#include <algorithm>
 #include <array>
 #include <utility>
 
@@ -200,6 +201,80 @@ bool PhiEncodeJpegUnderLimit(const std::wstring& source,
     }
   }
   return false;
+}
+
+bool PhiDecodeImageThumbnail(const std::wstring& path,
+                             const std::string& bytes,
+                             int width,
+                             int height,
+                             std::vector<unsigned char>* bgra) {
+  if (width <= 0 || height <= 0) {
+    return false;
+  }
+  ComPtr<IWICImagingFactory> factory = Factory();
+  if (!factory) {
+    return false;
+  }
+  ComPtr<IWICBitmapDecoder> decoder;
+  if (!path.empty()) {
+    if (FAILED(factory->CreateDecoderFromFilename(
+            path.c_str(), nullptr, GENERIC_READ,
+            WICDecodeMetadataCacheOnDemand, &decoder))) {
+      return false;
+    }
+  } else {
+    ComPtr<IStream> stream;
+    stream.Attach(::SHCreateMemStream(
+        reinterpret_cast<const BYTE*>(bytes.data()),
+        static_cast<UINT>(bytes.size())));
+    if (!stream ||
+        FAILED(factory->CreateDecoderFromStream(
+            stream.Get(), nullptr, WICDecodeMetadataCacheOnDemand,
+            &decoder))) {
+      return false;
+    }
+  }
+  ComPtr<IWICBitmapFrameDecode> frame;
+  UINT source_w = 0;
+  UINT source_h = 0;
+  if (FAILED(decoder->GetFrame(0, &frame)) ||
+      FAILED(frame->GetSize(&source_w, &source_h)) || !source_w ||
+      !source_h) {
+    return false;
+  }
+  // Cover: the scale that makes BOTH sides at least the tile's.
+  const double scale =
+      std::max(static_cast<double>(width) / source_w,
+               static_cast<double>(height) / source_h);
+  const UINT scaled_w = std::max<UINT>(
+      static_cast<UINT>(width), static_cast<UINT>(source_w * scale + 0.5));
+  const UINT scaled_h = std::max<UINT>(
+      static_cast<UINT>(height), static_cast<UINT>(source_h * scale + 0.5));
+  ComPtr<IWICBitmapScaler> scaler;
+  if (FAILED(factory->CreateBitmapScaler(&scaler)) ||
+      FAILED(scaler->Initialize(frame.Get(), scaled_w, scaled_h,
+                                WICBitmapInterpolationModeHighQualityCubic))) {
+    return false;
+  }
+  ComPtr<IWICBitmapClipper> clipper;
+  const WICRect crop = {static_cast<INT>((scaled_w - width) / 2),
+                        static_cast<INT>((scaled_h - height) / 2), width,
+                        height};
+  if (FAILED(factory->CreateBitmapClipper(&clipper)) ||
+      FAILED(clipper->Initialize(scaler.Get(), &crop))) {
+    return false;
+  }
+  ComPtr<IWICFormatConverter> converter;
+  if (FAILED(factory->CreateFormatConverter(&converter)) ||
+      FAILED(converter->Initialize(clipper.Get(), GUID_WICPixelFormat32bppPBGRA,
+                                   WICBitmapDitherTypeNone, nullptr, 0.0,
+                                   WICBitmapPaletteTypeMedianCut))) {
+    return false;
+  }
+  const UINT stride = static_cast<UINT>(width) * 4;
+  bgra->assign(static_cast<size_t>(stride) * static_cast<size_t>(height), 0);
+  return SUCCEEDED(converter->CopyPixels(
+      nullptr, stride, static_cast<UINT>(bgra->size()), bgra->data()));
 }
 
 }  // namespace phi_client

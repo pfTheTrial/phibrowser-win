@@ -101,6 +101,8 @@ inline constexpr wchar_t kEye[] = L"";  // Peek.
 inline constexpr wchar_t kRobot[] = L"";
 inline constexpr wchar_t kHome[] = L"";
 inline constexpr wchar_t kClock[] = L"";  // Recently closed.
+inline constexpr wchar_t kUpload[] = L"";  // Drop zone.
+inline constexpr wchar_t kDiagnostic[] = L"";  // Feedback diagnostics.
 
 // The three icon sizes (§2.2a), in dip.
 inline constexpr int kIconToolbar = 16;
