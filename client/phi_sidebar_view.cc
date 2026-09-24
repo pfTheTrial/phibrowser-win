@@ -2888,6 +2888,12 @@ void PhiSidebarView::PaintBand(HDC dc,
     // setDragHighlighted) and no divider: a clean tile over its neighbours.
     const bool strip_lifted =
         layout.horizontal_tabs && (is_dragged || is_landing);
+    // The strip's active tab wears the address row's page colour when the row
+    // follows the page (SetActiveTabPagePalette).
+    const PhiPalette& row_palette =
+        layout.horizontal_tabs && row.active && active_tab_page_palette_
+            ? *active_tab_page_palette_
+            : palette;
     if (layout.horizontal_tabs) {
       // Chrome's strip. The active tab is the toolbar's own ground carried
       // up into the band, rounded on top and flush at the bottom so the two
@@ -2895,7 +2901,8 @@ void PhiSidebarView::PaintBand(HDC dc,
       // sits on, divided from its neighbour by a hairline. Nothing here
       // rounds the bottom — that is the whole point of the merge.
       if (row.active) {
-        PhiFillRoundedTop(dc, pill, palette.window_bg, Scaled(kCornerRadius));
+        PhiFillRoundedTop(dc, pill, row_palette.window_bg,
+                          Scaled(kCornerRadius));
       } else {
         if (row_hovered || strip_lifted) {
           PhiFillRoundedTop(dc, pill, palette.hover, Scaled(kCornerRadius));
@@ -2937,7 +2944,7 @@ void PhiSidebarView::PaintBand(HDC dc,
     const COLORREF ground = row.group_id.empty() ? kTintTop : palette.hover;
     const COLORREF row_bg =
         layout.horizontal_tabs
-            ? (row.active ? palette.window_bg
+            ? (row.active ? row_palette.window_bg
                           : strip_lifted ? palette.hover : ground)
             : (is_dragged ? palette.hover_strong
                           : row.active ? kRowSelectedBg : ground);
@@ -2971,12 +2978,12 @@ void PhiSidebarView::PaintBand(HDC dc,
         // The Mac's no-favicon placeholder: the globe (FaviconProvider).
         HGDIOBJ previous_glyph_font =
             glyph_font ? ::SelectObject(dc, glyph_font) : nullptr;
-        PhiDrawGlyph(dc, icon, L"\uE774", kLabelDim);
+        PhiDrawGlyph(dc, icon, L"\uE774", row_palette.label_dim);
         if (previous_glyph_font) {
           ::SelectObject(dc, previous_glyph_font);
         }
       }
-      ::SetTextColor(dc, dormant ? kLabelDim : kLabel);
+      ::SetTextColor(dc, dormant ? row_palette.label_dim : row_palette.label);
       RECT title_rc = {slot.right + Scaled(8), pill.top, right - Scaled(4),
                        pill.bottom};
       PhiDrawTextAA(dc, (pane_b ? r.b_title : r.title).c_str(), -1, &title_rc,
@@ -3005,7 +3012,7 @@ void PhiSidebarView::PaintBand(HDC dc,
       draw_pane(pill.left, trailing, row, /*pane_b=*/false);
     }
     if (show_close) {
-      PhiDrawGlyph(dc, close_box, L"\u00D7", kLabelDim);
+      PhiDrawGlyph(dc, close_box, L"\u00D7", row_palette.label_dim);
     }
     if (attached) {
       DrawSurfaceTile(dc, surface_box, row.attached_surface,

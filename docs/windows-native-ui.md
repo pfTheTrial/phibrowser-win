@@ -182,13 +182,21 @@ the Space's dark ground; card / toolbar / active tab `#2B2B2B`; flyout
 white 6 %, pressed 10 %; label white 90 %, dim 62 %, tertiary 42 %;
 accent = the Space's dark accent (lighter than the light one, e.g.
 `#5FB3DE` for `#2A86B5`) with near-black text on it; danger `#E0463A`.
-The address row is chrome, not page: it paints on `card` (`#2B2B2B` in
-dark) in every host — the vertical layout's pane, both split panes, the
-Kiosk — so a light web page sits under a dark row. Web pages keep their
-own colours; the mockups draw the page content dark on the Dark mode
-page only so the chrome can be judged against a dark site. Appearance
-follows Settings › Appearance › Color appearance
-(System / Light / Dark); "System" tracks the Windows app mode.
+The address row paints on `card` (`#2B2B2B` in dark) — unless the page
+reports its own colour. Then it follows the page, as the Mac's
+WebContentHeader does: Mirage's page-chrome-color script reports the
+page's background (`phinomenonPrivate.setPageColor`), the framework carries
+it as `TabSnapshot::page_color_argb`, and the row takes it as its ground
+with the ink WCAG contrast picks (white when white contrasts more than
+black), every wash and hairline re-derived over it (`PhiPageBarPalette`).
+In comfortable the strip's active tab and the bookmark bar follow it too;
+the rest of the strip keeps the Space tint. The native chrome stays on the
+new tab and bookmark pages, a placeholder, a split, the group overview and
+a crashed tab, and the strip's active tab keeps it while Reader View covers
+the page. A cross-document navigation drops the colour until the new page
+reports; a reload keeps it. Appearance follows Settings › Appearance ›
+Color appearance (System / Light / Dark); "System" tracks the Windows app
+mode.
 
 The `#EAEAEA` / `#252525` "fixed popup ground" is retired: secondary
 windows (Settings, Feedback, URL rules, Create Space, Onboarding) take the

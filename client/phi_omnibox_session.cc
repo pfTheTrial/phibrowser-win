@@ -382,7 +382,7 @@ HBRUSH PhiOmniboxSession::OnCtlColorEdit(HDC edit_dc, HWND edit) {
   }
   // The shell's CurrentPalette, not the host's: incognito overrides to
   // fixed-dark.
-  const PhiPalette palette = shell_->OmniboxPalette();
+  const PhiPalette palette = shell_->OmniboxFieldPalette();
   // In the sidebar the field rests on the 4% wash (8% while hovered,
   // tracking the capsule's brighten); in a top bar it sits bare on the
   // bar's own ground, washing only under the cursor.

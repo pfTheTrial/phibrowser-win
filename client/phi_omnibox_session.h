@@ -146,6 +146,11 @@ class PhiOmniboxShell {
   virtual HFONT OmniboxTextFont() const = 0;
   virtual HFONT OmniboxIconFont() const = 0;
   virtual PhiPalette OmniboxPalette() const = 0;
+  // The palette of the row the field sits in: OmniboxPalette, or the page's
+  // own colour when the address row follows the page (the Mac's
+  // WebContentHeader page colour). The EDIT paints with it; the suggestion
+  // popup and menus stay on OmniboxPalette.
+  virtual PhiPalette OmniboxFieldPalette() const = 0;
   virtual PhiLayoutMode OmniboxLayoutMode() const = 0;
   // This turn's capsule geometry (the shell's cached layout).
   virtual PhiOmniboxCapsule OmniboxCapsule() = 0;

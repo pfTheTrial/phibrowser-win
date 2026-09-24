@@ -4027,12 +4027,13 @@ void PhiCoordinator::NoteWindowSnapshot(
     panel->RefreshState();
     return;
   }
-  if (reason != phi_framework::WindowChangeReason::kFaviconReady) {
+  if (reason != phi_framework::WindowChangeReason::kFaviconReady &&
+      reason != phi_framework::WindowChangeReason::kPageColor) {
     // The surfaces over this window settle now (re-fit, show only over the
     // active tab, close when the origin left the strip) and stale pin tags
     // are folded: rule 1 already puts us after commit, on a fresh task,
     // once per window per flush, so there is nothing to defer for. A
-    // favicon landing moves no rows and needs neither.
+    // favicon landing or a page colour moves no rows and needs neither.
     ApplyLegacyTagAliases(browser);
     surface_coordinator_.UpdateReaderPanelsForWindow(browser);
   }

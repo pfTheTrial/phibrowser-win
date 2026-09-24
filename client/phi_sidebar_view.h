@@ -10,6 +10,7 @@
 #include <map>
 #include <memory>
 #include <set>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -733,6 +734,12 @@ class PhiSidebarView {
   // The band (pinned grid through tab list): once normally, or the two-pass
   // slide while a Space switch animates.
   void Paint(HDC dc, const PhiSidebarRects& layout, const PhiPalette& palette);
+  // The palette the horizontal strip's ACTIVE tab wears: the address row's
+  // page colour, which the tab merges into (the Mac's TabItemView
+  // setActivePageStyle); nullopt = the chrome palette. Set before Paint.
+  void SetActiveTabPagePalette(std::optional<PhiPalette> palette) {
+    active_tab_page_palette_ = std::move(palette);
+  }
   // The wash rect of one of the sidebar's own hovered rows, empty for any
   // other kind — so a hover change invalidates the two elements, not the
   // whole shell.
@@ -867,6 +874,7 @@ class PhiSidebarView {
   bool agent_holds_input_ = false;
 
   std::vector<TabRow> tabs_;
+  std::optional<PhiPalette> active_tab_page_palette_;
   // The model — what every live tab IS (docs/sidebar-architecture.md §4.5).
   // tabs_, pinned_ and bookmarks_ are paint/hit-test caches derived from it
   // in Rebuild(); nothing decides bindings or split rows anywhere else.

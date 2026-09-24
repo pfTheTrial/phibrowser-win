@@ -160,4 +160,27 @@ test('toolbar: clicking back navigates (framework path)', async () => {
   } finally { ctl.close() }
 })
 
+test('toolbar: the address row follows the page colour, and lets it go', async () => {
+  // Mirage's page-chrome-color script reports the page's colour on http(s)
+  // pages; the address row (and the comfortable strip's active tab and the
+  // bookmark bar) take it -- the Mac's WebContentHeader page colour. A page
+  // the script does not run on (data:) clears it on the cross-document
+  // navigation.
+  const ctl = await openControl()
+  try {
+    const windowId = await firstWindow(ctl)
+    await ctl.send('agentSpace.navigate', { windowId, url: 'https://example.com/' })
+    const coloured = await waitFor(async () => {
+      const l = await ctl.send('agentSpace.window.layout', { windowId })
+      return /^#[0-9A-F]{6}$/.test(l.pageColor || '') ? l.pageColor : null
+    }, { timeout: 15000, interval: 300, what: 'the page colour to arrive' })
+    assert(coloured, 'a page colour was reported')
+    await navigateAndSettle(ctl, windowId, `plain-${Date.now()}`)
+    await waitFor(async () => {
+      const l = await ctl.send('agentSpace.window.layout', { windowId })
+      return l.pageColor === ''
+    }, { timeout: 6000, interval: 250, what: 'the page colour to clear' })
+  } finally { ctl.close() }
+})
+
 run()

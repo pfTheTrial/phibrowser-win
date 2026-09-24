@@ -337,6 +337,8 @@ void PhiGroupOverview::Open(PhiShellWindow* controller,
   Close();
   if (controller) {
     Overview::instance = new Overview(controller, group_id);
+    // The address row drops the page colour under the overview.
+    controller->ScheduleRefresh();
   }
 }
 
@@ -355,6 +357,9 @@ void PhiGroupOverview::Close() {
     // and simply returns. The object itself is freed by the base at
     // WM_NCDESTROY (DeleteWhenDestroyed), not from inside a message.
     Overview::instance = nullptr;
+    if (PhiShellWindow* controller = gone->controller()) {
+      controller->ScheduleRefresh();  // The page colour comes back.
+    }
     if (gone->alive()) {
       gone->Destroy();  // DeleteWhenDestroyed frees it at WM_NCDESTROY.
     } else {

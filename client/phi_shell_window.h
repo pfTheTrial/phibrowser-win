@@ -628,6 +628,12 @@ class PhiShellWindow : public PhiHitSource,
   // showFeedbackWindow).
   void OpenFeedback();
   PhiPalette CurrentPalette() const;  // Ramped while a switch is in flight.
+  // The page colour the address row takes (the Mac's WebContentHeader page
+  // colour): the active tab's reported colour, or nullopt where the Mac keeps
+  // the native chrome -- no page (the new tab / bookmark page, placeholder),
+  // a split, the group overview. BarPalette is the palette painted with it.
+  std::optional<PhiColor> ActivePageColor() const;
+  PhiPalette BarPalette() const;
   // Tab ids most-recently-used first — the Ctrl+Tab switcher's order.
   const std::vector<TabId>& TabMruOrder() const;
   // The content card's client-coordinate rect (the group overview covers it).
@@ -1536,6 +1542,7 @@ class PhiShellWindow : public PhiHitSource,
   HFONT OmniboxTextFont() const override;
   HFONT OmniboxIconFont() const override;
   PhiPalette OmniboxPalette() const override;
+  PhiPalette OmniboxFieldPalette() const override;
   PhiLayoutMode OmniboxLayoutMode() const override;
   PhiOmniboxCapsule OmniboxCapsule() override;
   phi_framework::PhiFramework* OmniboxFramework() const override;
@@ -1664,6 +1671,11 @@ class PhiShellWindow : public PhiHitSource,
   // The coordinator's window model (it owns the instance and outlives every
   // controller): the one source for rows, nav state, splits and groups.
   RAW_PTR_EXCLUSION const PhiWindowModel* const model_;
+  // The page colour the chrome follows and whether the reader hides it from
+  // the strip's active tab -- settled on the rebuild turn (RebuildTabs), like
+  // the nav state, so a colour that arrives alone still repaints.
+  std::optional<PhiColor> page_color_;
+  bool page_color_reader_ = false;
   // Rebuilds the paint caches (tabs_/pinned_/bookmarks_/group_headers_,
   // the nav state, the chips) from model_ and the host's stores WITHOUT
   // invalidating. Runs on the posted rebuild turn; a few structural view
@@ -1684,9 +1696,15 @@ class PhiShellWindow : public PhiHitSource,
     bool can_go_back = false;
     bool can_go_forward = false;
     bool nav_loading = false;
+    // The page colour the chrome follows (-1 = none), and whether the reader
+    // hides it from the strip's active tab.
+    int64_t page_color = -1;
+    bool reader_shown = false;
     ShellLayoutInputs layout;
   };
   BandSignature CurrentBandSignature() const;
+  // ActivePageColor's eligibility, evaluated on the rebuild turn.
+  std::optional<PhiColor> ComputeActivePageColor() const;
   // Invalidates what changed between two signatures (everything when the
   // layout itself moved).
   void InvalidateChangedBands(const BandSignature& before);

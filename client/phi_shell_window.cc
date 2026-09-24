@@ -1275,6 +1275,11 @@ PhiPalette PhiShellWindow::OmniboxPalette() const {
   return CurrentPalette();
 }
 
+PhiPalette PhiShellWindow::OmniboxFieldPalette() const {
+  // The field sits in the address row, which follows the page.
+  return BarPalette();
+}
+
 PhiLayoutMode PhiShellWindow::OmniboxLayoutMode() const {
   return layout_mode_;
 }
@@ -1318,7 +1323,10 @@ HFONT PhiShellWindow::CaptionGlyphFont() const {
 }
 
 PhiPalette PhiShellWindow::CaptionPalette() const {
-  return CurrentPalette();
+  // The caption buttons share the address row in the vertical layout, which
+  // follows the page; in comfortable they sit on the strip's tint.
+  return layout_mode_ == PhiLayoutMode::kComfortable ? CurrentPalette()
+                                                    : BarPalette();
 }
 
 PhiCaptionRects PhiShellWindow::CaptionRects() {
@@ -3727,6 +3735,10 @@ PhiShellWindow::BandSignature PhiShellWindow::CurrentBandSignature()
   out.can_go_back = omnibox_->can_go_back();
   out.can_go_forward = omnibox_->can_go_forward();
   out.nav_loading = omnibox_->nav_loading();
+  if (page_color_) {
+    out.page_color = static_cast<int64_t>(*page_color_);
+  }
+  out.reader_shown = page_color_reader_;
   out.layout = CurrentLayoutInputs();
   return out;
 }
@@ -3768,6 +3780,15 @@ void PhiShellWindow::InvalidateChangedBands(
                           layout.client.bottom});
     invalidate(layout.bookmark_bar);  // Its pills are bookmark rows.
   }
+  if (after.page_color != before.page_color ||
+      after.reader_shown != before.reader_shown) {
+    // The page's colour: the address row, the strip's active tab and the
+    // bookmark bar follow it; the EDIT repaints itself (WM_CTLCOLOREDIT).
+    invalidate(layout.title_bar);
+    invalidate(layout.top_bar);
+    invalidate(layout.bookmark_bar);
+    omnibox_->Repaint();
+  }
   if (after.nav_url != before.nav_url ||
       after.can_go_back != before.can_go_back ||
       after.can_go_forward != before.can_go_forward ||
@@ -3800,6 +3821,36 @@ PhiPalette PhiShellWindow::CurrentPalette() const {
   return spaces_->RampPalette(
       services_.spaces ? services_.spaces->PaletteForSlot(slot_.value)
                        : kFallback);
+}
+
+std::optional<PhiColor> PhiShellWindow::ActivePageColor() const {
+  return page_color_;
+}
+
+std::optional<PhiColor> PhiShellWindow::ComputeActivePageColor() const {
+  // WebContentHeader.updatePageColor's eligibility: a real page (not the new
+  // tab or bookmark page, not a placeholder), no group overview, not a split
+  // -- each pane of a split is its own page. A crashed tab needs no test: the
+  // framework clears its colour.
+  if (!model_ || !browsers_ || browsers_->ActiveBrowserPlaceholding() ||
+      PhiGroupOverview::IsOpen() || ActiveTabIsSplit() ||
+      (native_pages_ && (native_pages_->ntp_mounted() ||
+                         native_pages_->bookmark_page_mounted()))) {
+    return std::nullopt;
+  }
+  const PhiWindowModel::Tab* tab =
+      model_->FindTab(active_browser_id(), active_tab_id());
+  if (!tab || !tab->has_page_color || PhiNewTabPage::IsNewTabUrl(tab->url)) {
+    return std::nullopt;
+  }
+  const uint32_t argb = tab->page_color_argb;
+  return PhiRgb((argb >> 16) & 0xFF, (argb >> 8) & 0xFF, argb & 0xFF);
+}
+
+PhiPalette PhiShellWindow::BarPalette() const {
+  const PhiPalette palette = CurrentPalette();
+  const std::optional<PhiColor> page = ActivePageColor();
+  return page ? PhiPageBarPalette(palette, *page) : palette;
 }
 
 HDC PhiShellWindow::AcquireBackBuffer(HDC dc, HGDIOBJ* old_bitmap) {
@@ -4113,6 +4164,11 @@ void PhiShellWindow::RebuildTabs() {
   RebuildChips();
   rows_dirty_ = false;
   sidebar_->Rebuild();
+  // After the rows: the active tab (a reader redirects to its origin) is
+  // theirs. Cached here like the nav state, so the rebuild turn's signature
+  // sees the change and paint reads one settled value.
+  page_color_ = ComputeActivePageColor();
+  page_color_reader_ = ActiveTabShowsReader();
   // The strip row came or went (a second Space created, the last other one
   // deleted): the address bar and every band under it moved, and nothing
   // else repaints a band that was empty a moment ago.
@@ -6098,11 +6154,21 @@ bool PhiShellWindow::BookmarkBarVisible() {
 
 void PhiShellWindow::PaintBookmarkBar(HDC dc,
                                            const Layout& layout,
-                                           const PhiPalette& palette) {
+                                           const PhiPalette& chrome_palette) {
   bar_items_.clear();
   const RECT& band = layout.bookmark_bar;
   if (band.right <= band.left || band.bottom <= band.top) {
     return;
+  }
+  // The bar follows the address row's page colour (the Mac's BookmarkBar
+  // setPageColorPresentation); otherwise it stands on the tint as before.
+  const std::optional<PhiColor> page = ActivePageColor();
+  const PhiPalette palette =
+      page ? PhiPageBarPalette(chrome_palette, *page) : chrome_palette;
+  if (page) {
+    HBRUSH ground = ::CreateSolidBrush(*page);
+    ::FillRect(dc, &band, ground);
+    ::DeleteObject(ground);
   }
   // Root rows only — the sidebar outline's spliced children (depth > 0)
   // belong to the sidebar's disclosure state, not the bar.
@@ -6205,6 +6271,17 @@ void PhiShellWindow::PaintChrome(HDC dc,
   // The SLOT's palette (a Space may pin its own theme), ramped source →
   // target while a Space swap slide is in flight.
   const PhiPalette palette = CurrentPalette();
+  // The address row's palette: the page's own colour while the row follows
+  // it (ActivePageColor), CurrentPalette otherwise. A control takes the
+  // palette of the row it stands in -- the comfortable strip row keeps the
+  // tint.
+  const PhiPalette bar = BarPalette();
+  const auto row_palette = [&](const RECT& r) -> const PhiPalette& {
+    return r.top >= layout.top_bar.top && r.bottom <= layout.top_bar.bottom &&
+                   layout.top_bar.bottom > layout.top_bar.top
+               ? bar
+               : palette;
+  };
   const COLORREF kTintTop = palette.ground_top;
   const COLORREF kLabel = palette.label;
   const COLORREF kLabelDim = palette.label_dim;
@@ -6218,8 +6295,8 @@ void PhiShellWindow::PaintChrome(HDC dc,
   // ground instead is what painted a themed pill on the untinted bar.
   // The address row is the card in every layout: the field's resting fill
   // is the control fill over it, its hover a step darker (§4).
-  const COLORREF kFieldBg = palette.control_fill;
-  const COLORREF kFieldBgHot = PhiBlend(palette.ink, palette.card, 18);
+  const COLORREF kFieldBg = bar.control_fill;
+  const COLORREF kFieldBgHot = PhiBlend(bar.ink, bar.card, 18);
   // Paint only the bands we own. Whatever is left is the content region, and
   // the reparented browser child covers it. No seam along the content edge:
   // the chrome runs straight into the page.
@@ -6282,7 +6359,7 @@ void PhiShellWindow::PaintChrome(HDC dc,
   if (layout.top_bar.right > layout.top_bar.left) {
     const RECT& band = layout.top_bar;
     const int radius = Scaled(kContentRadius);
-    HBRUSH bg = ::CreateSolidBrush(palette.window_bg);
+    HBRUSH bg = ::CreateSolidBrush(bar.window_bg);
     // While the active tab is split the row is a sheet of its own: its
     // bottom corners round at kContentRadius and the hairline under it
     // goes, the tint showing in the framework's 4 dip gutter (§4.6).
@@ -6310,7 +6387,7 @@ void PhiShellWindow::PaintChrome(HDC dc,
       ::InflateRect(&row_frame, 1, 1);
       row_frame.top += 2;
       PhiStrokeRoundRectAA(dc, row_frame, radius + 1, palette.border, 1);
-      PhiFillRoundRectAA(dc, rounded, radius, palette.window_bg);
+      PhiFillRoundRectAA(dc, rounded, radius, bar.window_bg);
     } else if (layout.mode == PhiLayoutMode::kComfortable || band.left == 0) {
       // Edge to edge and square: the horizontal toolbar, or the pane
       // filling the window with the sidebar hidden.
@@ -6320,14 +6397,14 @@ void PhiShellWindow::PaintChrome(HDC dc,
       // strokes; the right end runs off the window's edge.
       RECT rounded = band;
       rounded.right += radius * 2;
-      PhiFillRoundRectAA(dc, rounded, radius, palette.window_bg);
+      PhiFillRoundRectAA(dc, rounded, radius, bar.window_bg);
       RECT lower = {band.left, band.top + radius, band.right, band.bottom};
       ::FillRect(dc, &lower, bg);
     }
     ::DeleteObject(bg);
     if (!split_row) {
       RECT sep = {band.left, band.bottom - 1, band.right, band.bottom};
-      HBRUSH sep_brush = ::CreateSolidBrush(palette.separator);
+      HBRUSH sep_brush = ::CreateSolidBrush(bar.separator);
       ::FillRect(dc, &sep, sep_brush);
       ::DeleteObject(sep_brush);
     }
@@ -6371,12 +6448,13 @@ void PhiShellWindow::PaintChrome(HDC dc,
           : button.toggled ? PhiButtonState::kPressed
           : hot            ? PhiButtonState::kHover
                            : PhiButtonState::kRest;
-      PhiPaintIconButton(dc, button.rect, button.glyph, state, palette, kLabel,
+      const PhiPalette& ink = row_palette(button.rect);
+      PhiPaintIconButton(dc, button.rect, button.glyph, state, ink, ink.label,
                          Scaled(fluent::kIconToolbar),
                          Scaled(fluent::kButtonRadius));
     }
     // The agent chip (§5.10), ordinal 16 in the hover table.
-    PaintAgentChip(dc, layout.agent_chip, palette,
+    PaintAgentChip(dc, layout.agent_chip, row_palette(layout.agent_chip),
                    hover_kind_ == HoverKind::kNav && hover_index_ == 16);
   }
   // The sidebar toggle (nav-hover ordinal 14): ClosePane while the sidebar
@@ -6386,7 +6464,9 @@ void PhiShellWindow::PaintChrome(HDC dc,
     PhiPaintIconButton(dc, layout.sidebar_toggle,
                        sidebar_collapsed_ ? fluent::kOpenPane : fluent::kClosePane,
                        hot ? PhiButtonState::kHover : PhiButtonState::kRest,
-                       palette, kLabel, Scaled(fluent::kIconToolbar),
+                       row_palette(layout.sidebar_toggle),
+                       row_palette(layout.sidebar_toggle).label,
+                       Scaled(fluent::kIconToolbar),
                        Scaled(fluent::kButtonRadius));
   }
 
@@ -6428,9 +6508,8 @@ void PhiShellWindow::PaintChrome(HDC dc,
     // 2 px accent bottom edge (Fluent TextBox).
     const int radius = Scaled(kOmniboxRadius);
     if (field_focused) {
-      PhiFillRoundRectAA(dc, layout.url_field, radius, palette.card);
-      PhiStrokeRoundRectAA(dc, layout.url_field, radius, palette.stroke_strong,
-                           1);
+      PhiFillRoundRectAA(dc, layout.url_field, radius, bar.card);
+      PhiStrokeRoundRectAA(dc, layout.url_field, radius, bar.stroke_strong, 1);
       RECT edge = layout.url_field;
       edge.top = edge.bottom - Scaled(2);
       edge.left += radius;
@@ -6448,13 +6527,13 @@ void PhiShellWindow::PaintChrome(HDC dc,
       // field's leading slot (its chrome is fixed dark, CurrentPalette).
       PhiDrawIconGlyph(dc, layout.page_icon,
                        incognito_ ? fluent::kIncognito : fluent::kGlobe,
-                       Scaled(fluent::kIconToolbar), kLabelDim);
+                       Scaled(fluent::kIconToolbar), bar.label_dim);
     }
   }
   if (include_child_controls) {
     // What the user actually sees, mid-edit.
     const std::wstring shown = omnibox_->DisplayedUrl();
-    ::SetTextColor(dc, shown.empty() ? kLabelDim : kLabel);
+    ::SetTextColor(dc, shown.empty() ? bar.label_dim : bar.label);
     RECT url_rc = layout.url_field;
     url_rc.left = layout.page_icon.right > layout.page_icon.left
                       ? layout.page_icon.right + Scaled(4)
@@ -6488,7 +6567,7 @@ void PhiShellWindow::PaintChrome(HDC dc,
     const COLORREF field_fill =
         ::PtInRect(&layout.url_field, strip_mid)
             ? (omnibox_->field_hover() ? kFieldBgHot : kFieldBg)
-            : static_cast<COLORREF>(palette.card);
+            : static_cast<COLORREF>(bar.card);
     for (size_t i = 0; i < field_extensions_.size(); ++i) {
       const RECT slot = FieldExtRect(layout, i);
       if (slot.right <= slot.left) {
@@ -6496,7 +6575,7 @@ void PhiShellWindow::PaintChrome(HDC dc,
       }
       if (hover_kind_ == HoverKind::kFieldExt &&
           hover_index_ == static_cast<int>(i)) {
-        PhiFillRounded(dc, slot, palette.hover, Scaled(4));
+        PhiFillRounded(dc, slot, bar.hover, Scaled(4));
       }
       const FieldExtension& ext = field_extensions_[i];
       const int mid_x = (slot.left + slot.right) / 2;
@@ -6520,7 +6599,7 @@ void PhiShellWindow::PaintChrome(HDC dc,
         HGDIOBJ previous_ext_font =
             chip_icon_font_ ? ::SelectObject(dc, chip_icon_font_) : nullptr;
         PhiDrawGlyphIcon(dc, slot, fluent::kPuzzle,
-                         Scaled(fluent::kIconToolbar), kLabelDim);
+                         Scaled(fluent::kIconToolbar), bar.label_dim);
         if (previous_ext_font) {
           ::SelectObject(dc, previous_ext_font);
         }
@@ -6538,14 +6617,14 @@ void PhiShellWindow::PaintChrome(HDC dc,
                        active                        ? PhiButtonState::kToggled
                        : accessory_hot(13, layout.reader) ? PhiButtonState::kHover
                                                           : PhiButtonState::kRest,
-                       palette, kLabelDim, Scaled(fluent::kIconToolbar),
+                       bar, bar.label_dim, Scaled(fluent::kIconToolbar),
                        Scaled(fluent::kButtonRadius));
   }
   if (layout.star.right > layout.star.left) {
     PhiPaintIconButton(dc, layout.star, fluent::kFavoriteStar,
                        accessory_hot(15, layout.star) ? PhiButtonState::kHover
                                                       : PhiButtonState::kRest,
-                       palette, kLabelDim, Scaled(fluent::kIconToolbar),
+                       bar, bar.label_dim, Scaled(fluent::kIconToolbar),
                        Scaled(fluent::kButtonRadius));
   }
 
@@ -6560,6 +6639,13 @@ void PhiShellWindow::PaintChrome(HDC dc,
   // would land on the widened card (the balanced top bar's own buttons).
   if (BandOnShell()) {
     spaces_->Paint(dc, StripRects(layout), palette);
+    // The strip's active tab merges into the address row, so it wears the
+    // row's page colour too -- except while the reader covers the page (the
+    // Mac's tabStripPageColorPresentation).
+    sidebar_->SetActiveTabPagePalette(
+        page_color_ && !page_color_reader_
+            ? std::optional<PhiPalette>(bar)
+            : std::nullopt);
     sidebar_->Paint(dc, BandRects(layout), palette);
     // The section labels (§4.2): 12 dip, `dim`, over each band.
     HGDIOBJ previous_label_font =

@@ -288,6 +288,44 @@ void TestFwMust() {
 // answered, and on the host it answers "light" — which is also what an
 // unconfigured Windows reports.
 
+// The page-colour bar palette (the Mac's WebContentHeader page colour): the
+// page is every ground, the ink follows WCAG contrast, and the roles that are
+// not on the page keep the base's.
+void TestPageBarPalette() {
+  const PhiTheme pure = PhiThemeById("pure");
+  const PhiPalette base = PhiResolvePalette(pure, PhiAppearance::kLight);
+  CHECK(PhiContrastRatio(PhiRgb(0, 0, 0), PhiRgb(0xFF, 0xFF, 0xFF)) > 20.9);
+  CHECK(PhiContrastRatio(PhiRgb(0x80, 0x80, 0x80),
+                         PhiRgb(0x80, 0x80, 0x80)) < 1.001);
+
+  const PhiColor night = PhiRgb(0x1E, 0x1E, 0x1E);
+  const PhiPalette dark = PhiPageBarPalette(base, night);
+  CHECK(dark.dark);
+  CHECK_EQ(dark.ink, PhiRgb(0xFF, 0xFF, 0xFF));
+  CHECK_EQ(dark.window_bg, night);
+  CHECK_EQ(dark.ground_top, night);
+  CHECK_EQ(dark.card, night);
+  CHECK(PhiRed(dark.label) > 0xC0);  // Light text on the dark page.
+  CHECK(dark.hover != night);
+  CHECK(dark.separator != night);
+
+  const PhiColor cream = PhiRgb(0xF5, 0xF5, 0xDC);
+  const PhiPalette light = PhiPageBarPalette(base, cream);
+  CHECK(!light.dark);
+  CHECK_EQ(light.ink, PhiRgb(0, 0, 0));
+  CHECK(PhiRed(light.label) < 0x40);  // Dark text on the light page.
+
+  // A saturated mid tone takes whichever ink contrasts more: black on
+  // YouTube-ish red loses to white, black on a yellow wins.
+  CHECK(PhiPageBarPalette(base, PhiRgb(0xCC, 0x00, 0x00)).dark);
+  CHECK(!PhiPageBarPalette(base, PhiRgb(0xFF, 0xD7, 0x00)).dark);
+
+  // Not on the page: kept.
+  CHECK_EQ(dark.accent, base.accent);
+  CHECK_EQ(dark.flyout, base.flyout);
+  CHECK_EQ(dark.destructive, base.destructive);
+}
+
 void TestPaletteRoles() {
   // Copied, not bound: PhiThemeById takes a std::string, so a reference to
   // its result would outlive the temporary the literal builds.
@@ -392,6 +430,7 @@ int main() {
   TestRedactPath();
   TestFwMust();
   TestPaletteRoles();
+  TestPageBarPalette();
   TestParseColorHex();
   TestMetrics();
   if (g_failures) {

@@ -4,7 +4,9 @@
 
 #include "phibrowser-win/client/phi_theme.h"
 
+#include <algorithm>
 #include <array>
+#include <cmath>
 
 #include "base/no_destructor.h"
 #include "phibrowser-win/client/phi_util.h"
@@ -218,6 +220,57 @@ PhiPalette PhiResolvePalette(const PhiTheme& theme,
   // in light, 55% in dark (a dark ground needs more to read as "behind").
   palette.overlay_scrim =
       PhiBlend(PhiRgb(0, 0, 0), palette.ground_top, dark ? 140 : 102);
+  return palette;
+}
+
+namespace {
+
+// WCAG 2 relative luminance of an sRGB colour.
+double RelativeLuminance(PhiColor color) {
+  const auto channel = [](int value) {
+    const double c = value / 255.0;
+    return c <= 0.04045 ? c / 12.92 : std::pow((c + 0.055) / 1.055, 2.4);
+  };
+  return 0.2126 * channel(PhiRed(color)) + 0.7152 * channel(PhiGreen(color)) +
+         0.0722 * channel(PhiBlue(color));
+}
+
+}  // namespace
+
+double PhiContrastRatio(PhiColor a, PhiColor b) {
+  const double la = RelativeLuminance(a);
+  const double lb = RelativeLuminance(b);
+  return (std::max(la, lb) + 0.05) / (std::min(la, lb) + 0.05);
+}
+
+PhiPalette PhiPageBarPalette(const PhiPalette& base, PhiColor page) {
+  const PhiColor white = PhiRgb(0xFF, 0xFF, 0xFF);
+  const PhiColor black = PhiRgb(0, 0, 0);
+  // WebContentHeader.updatePageColor: dark ink-set when white reads better.
+  const bool dark = PhiContrastRatio(page, white) > PhiContrastRatio(page, black);
+  const PhiColor ink = dark ? white : black;
+  PhiPalette palette = base;
+  palette.dark = dark;
+  palette.ink = ink;
+  palette.ground_top = page;
+  palette.ground_bottom = page;
+  palette.window_bg = page;
+  palette.card = page;
+  // PhiResolvePalette's ladder, over the page instead of the tint.
+  palette.hover = PhiBlend(ink, page, dark ? 15 : 11);
+  palette.pressed = PhiBlend(ink, page, dark ? 26 : 23);
+  palette.hover_strong = palette.pressed;
+  palette.bar_hover = palette.hover;
+  palette.bar_hover_strong = palette.pressed;
+  palette.control_fill = palette.hover;
+  palette.label = PhiBlend(ink, page, dark ? 230 : 222);
+  palette.label_dim = PhiBlend(ink, page, 158);
+  palette.label_tertiary = PhiBlend(ink, page, 107);
+  palette.border = PhiBlend(ink, page, dark ? 20 : 23);
+  palette.stroke_strong = PhiBlend(ink, page, dark ? 41 : 23);
+  palette.separator = PhiBlend(ink, page, 18);
+  palette.selected = dark ? PhiBlend(white, page, 77) : white;
+  palette.accent_soft = PhiBlend(base.accent, page, 36);
   return palette;
 }
 

@@ -176,6 +176,15 @@ inline constexpr PhiMetrics kPhiMetrics = {};
 PhiPalette PhiResolvePalette(const PhiTheme& theme,
                              PhiAppearance appearance,
                              int saturation = 10);
+// The chrome around a page that reported its own colour (the Mac's
+// WebContentHeaderPageColorPresentation): `base` with `page` as the ground of
+// every surface the palette paints on, and the ink the page's colour calls for
+// -- light when white contrasts with it more than black does, the Mac's WCAG
+// rule -- with every wash, label and hairline re-derived over it. The accent,
+// the flyouts and the dialog roles stay `base`'s: they are not on the page.
+PhiPalette PhiPageBarPalette(const PhiPalette& base, PhiColor page);
+// WCAG 2 contrast ratio between two opaque colours, 1..21.
+double PhiContrastRatio(PhiColor a, PhiColor b);
 // True when Windows is currently set to a dark app appearance.
 bool PhiSystemPrefersDark();
 

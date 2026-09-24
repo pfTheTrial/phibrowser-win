@@ -12,6 +12,7 @@
 
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
+#include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
 #include "chrome/browser/phinomenon/phi_framework/phi_framework_api.h"
@@ -181,6 +182,14 @@ PhiVerbResult PhiControlDispatcher::VerbWindowLayout(
   out.Set("frameLeft", static_cast<int>(frame.x));
   out.Set("frameTop", static_cast<int>(frame.y));
   out.Set("mode", PhiLayoutModeName(coordinator_->settings().layout_mode));
+  // The page colour the address row follows (the Mac's WebContentHeader page
+  // colour), "" when the row keeps the native chrome.
+  if (const std::optional<PhiColor> page = shell->ActivePageColor()) {
+    out.Set("pageColor", base::StringPrintf("#%02X%02X%02X", PhiRed(*page),
+                                            PhiGreen(*page), PhiBlue(*page)));
+  } else {
+    out.Set("pageColor", "");
+  }
   out.Set("rows", shell->LayoutRowsJson());
   out.Set("drag", shell->DragStateJson());
   // The surface registry's view of this window: origin tab -> kind.
