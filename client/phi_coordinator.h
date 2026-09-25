@@ -11,13 +11,18 @@
 #include <deque>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "base/memory/raw_ptr_exclusion.h"
 #include "chrome/browser/phinomenon/phi_framework/phi_framework_api.h"
+#include "phibrowser-win/client/phi_account_storage.h"
 #include "phibrowser-win/client/phi_agent_space_manager.h"
+#include "phibrowser-win/client/phi_chromium_sync.h"
+#include "phibrowser-win/client/phi_sync_key_service.h"
+#include "phibrowser-win/client/phi_sync_setup_window.h"
 #include "phibrowser-win/client/phi_control_server.h"
 #include "phibrowser-win/client/phi_client_analytics.h"
 #include "phibrowser-win/client/phi_credential_service.h"
@@ -37,6 +42,7 @@
 #include "phibrowser-win/client/phi_session_restore.h"
 #include "phibrowser-win/client/phi_framework_dispatcher.h"
 #include "phibrowser-win/client/phi_keyboard_accelerators.h"
+#include "phibrowser-win/client/phi_local_store.h"
 #include "phibrowser-win/client/phi_preferences.h"
 #include "phibrowser-win/client/phi_profile_service.h"
 #include "phibrowser-win/client/phi_space_manager.h"
@@ -77,6 +83,7 @@ class PhiCoordinator : public SidebarHost,
                        public PhiCredentialService::Host,
                        public PhiSessionRestore::Host,
                        public PhiProfileService::Host,
+                       public PhiSyncSetupWindow::Host,
                        public PhiSurfaceCoordinator::Host,
                        public PhiAgentSpaceManager::Host {
  public:
@@ -292,6 +299,13 @@ class PhiCoordinator : public SidebarHost,
   std::string KioskTargetSpaceId() const;
   void RequestSettings() override;
   void RequestUrlRulesEditor(HWND anchor) override;
+  // PhiSettingsHost + PhiSyncSetupWindow::Host (the same answer for both).
+  PhiSyncKeyService* SyncKeys() override;
+  void RequestSyncSetup(HWND anchor) override;
+  // PhiSyncSetupWindow::Host:
+  void SyncSetupCreateProfile(const std::string& display_name) override;
+  bool SyncProfileNameExists(const std::string& display_name) override;
+  void SyncSetupClosed() override;
   void RequestFeedback(int64_t slot,
                        const PhiFeedbackContext& context) override;
   void RequestSpaceIconPicker(const std::string& space_id) override;
@@ -312,6 +326,7 @@ class PhiCoordinator : public SidebarHost,
   void SetAlwaysShowBookmarkBar(bool enabled) override;
   bool BookmarkBarOnNewTab() const override;
   void SetBookmarkBarOnNewTab(bool enabled) override;
+  void NoteStoredRowSeen(const std::string& guid) override;
   std::vector<PhiStoredRowView> PinnedRows(int64_t slot) const override;
   std::vector<SidebarStoredItem> SidebarStoredItems(int64_t slot) const override;
   bool Apply(int64_t slot,
@@ -695,6 +710,12 @@ class PhiCoordinator : public SidebarHost,
   }
   // The Auth0 session, for the feedback harness verb's signedIn report.
   const PhiAuth& auth() const { return account_.auth(); }
+  // Chromium's Phi sync: what its sync service asks the client, and the
+  // nudges back (docs/user-data-parity.md S2).
+  PhiChromiumSync& chromium_sync() { return chromium_sync_; }
+  // The signed-in account's sync key layer (S3); null signed out, in Guest
+  // Mode, or before the session is known.
+  PhiSyncKeyService* sync_keys() { return sync_keys_.get(); }
   // The account / feedback service (docs/architecture-review.md §3.4).
   PhiAccountAndFeedback& account() { return account_; }
   // Harness only (agentSpace.feedback.setAccount): a stand-in account for a
@@ -840,10 +861,11 @@ class PhiCoordinator : public SidebarHost,
   static constexpr uint32_t StoreBit(StoreDomain domain) {
     return 1u << static_cast<uint32_t>(domain);
   }
-  // Finishes the store's schema 1 -> 2 fold on LIVE tabs: a tab still tagged
-  // with a folded-away pin guid (session restore brings them back) is retagged
-  // to the survivor's pane-B tag. No-op once the store has no aliases.
-  void ApplyLegacyTagAliases(BrowserId window_id);
+  // Keeps a pinned pair's live tags canonical. The pair is two rows and its
+  // cell is named by whichever sorts first, so a swap (or, later, a synced
+  // reorder) moves the cell's name: each bound tab is retagged by the row it
+  // shows — `<primary>` for pane A, `<primary>#b` for pane B.
+  void CanonicalizePinTags(BrowserId window_id);
   // Swaps in the url-favicon service's larger icon when it beats the row's
   // stored 16px capture.
   void UpgradeFavicon(SlotId slot,
@@ -1056,7 +1078,64 @@ class PhiCoordinator : public SidebarHost,
   // it changes and once at startup, where it reconciles a preference file
   // that was edited while the browser was not running.
   void PushDisplayLanguageToChromium();
-  // Pinned tabs and bookmarks, the Mac's LocalStore equivalent.
+  // The signed-in (or Guest) account's local data (docs/user-data-parity.md):
+  // its LocalStore — Spaces, URL rules, pinned tabs, bookmarks, profiles,
+  // the pin scope — and its account defaults, both under
+  // <UserData>\Phi\users\<account>. Declared before tab_store_, which
+  // reads the store.
+  store::LocalStore local_store_;
+  PhiAccountDefaults account_defaults_;
+  // The account whose data is open (kGuestAccountId for Guest Mode and the
+  // pre-login placeholder), and the user-data-dir it lives under.
+  std::string data_account_;
+  std::wstring user_data_dir_;
+  // Opens `account_id`'s store and defaults (creating its directory), and
+  // points the Space manager, the router and the restore service at them.
+  // With `reconcile_windows`, windows showing a Space the account does not
+  // have retreat to its default Space (an account switch at runtime).
+  void OpenDataAccount(const std::string& account_id, bool reconcile_windows);
+  // The data account the current session and access choice resolve to; a
+  // different one than is open is switched to.
+  void SyncDataAccountToAccess();
+  // Copies every Chromium profile's display name onto its ProfileModel row.
+  void MirrorProfileNames();
+  // Tells Chromium sync who the account is now: signed in (the session's
+  // subject), or signed out (no session, or Guest Mode — the Mac answers {}
+  // for a guest).
+  void SyncChromiumAccount();
+  PhiChromiumSync chromium_sync_;
+  // Builds, keeps or retires the key layer for the account now signed in
+  // (the Mac's buildSyncKeyControllerIfNeeded / invalidateSyncKeyController)
+  // and starts its silent unlock when it is new.
+  void UpdateSyncKeyService();
+  // The key layer's snapshot moved: hand Chromium the exposed keys.
+  void OnSyncKeysChanged();
+  // The user's Chromium profiles as the key layer pairs them.
+  std::vector<keys::LocalProfile> SyncLocalProfiles();
+  std::unique_ptr<PhiSyncKeyService> sync_keys_;
+  // True while Phi native sync lands bookmarks / pins into local_store_.
+  bool owned_sync_applying_ = false;
+  // Clears the row tag of every open tab whose stored row is gone.
+  void UnbindTabsOfMissingRows();
+  // Signing in from Guest Mode (docs/user-data-parity.md S6, the Mac's
+  // GuestDataMigration): BeginGuestMigration closes the Guest store and
+  // moves its data into `target` before the target opens;
+  // FinishGuestMigration, after it opened, rebinds open tabs to the
+  // imported rows and removes the Guest directory.
+  void BeginGuestMigration(const std::string& target);
+  void FinishGuestMigration(const std::string& target);
+  // The imported rows' ids by their Guest ids (the receipt's modelGUIDs)
+  // while a migration is between Begin and Finish; empty otherwise.
+  std::map<std::string, std::string> guest_rebind_;
+  bool guest_cleanup_pending_ = false;
+  // Sync's automatic profile creations waiting for their basename, by the
+  // display name requested.
+  std::map<std::string, std::vector<std::function<void(const std::string&)>>>
+      sync_profile_creations_;
+  // The profile ids the key layer last resolved against; a change re-runs
+  // the silent unlock + resolve (the Mac's $profiles subscription).
+  std::set<std::string> sync_profile_ids_;
+  // Pinned tabs and bookmarks as cells, over local_store_.
   PhiTabStore tab_store_;
   // The OnBrowserWindowCreated branches. Each adopts `hwnd` for `browser`.
   // A requested kind whose pending record names a slot that is gone, and a
@@ -1087,6 +1166,8 @@ class PhiCoordinator : public SidebarHost,
   void CompleteProfileReply(int reply_id, std::string json) override;
   void FillSpaceFormProfile(SlotId slot,
                             const std::string& profile_id) override;
+  void SyncPairingProfileCreated(const std::string& display_name,
+                                 const std::string& profile_id) override;
   void OpenSpaceOnNewProfile(SlotId slot,
                              const std::string& profile_id) override;
   void NoteProfilesChanged() override;

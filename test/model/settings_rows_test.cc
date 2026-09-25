@@ -62,7 +62,7 @@ void TestSearchEngineWire() {
 
 // The urlRules.* verbs read these rows.
 void TestUrlRuleWire() {
-  const model::UrlRule rule{"2", "*.example.com", "/docs", true};
+  const model::UrlRule rule{"2", "*.example.com", "/docs", true, ""};
   const std::string wire = PhiUrlRuleWireRow(rule);
   CHECK(wire == "2\t*.example.com\t/docs\t1");
   model::UrlRule back;
@@ -70,7 +70,7 @@ void TestUrlRuleWire() {
   CHECK(back == rule);
 
   // An empty path prefix is the common case and must survive the hole.
-  const model::UrlRule bare{"1", "github.com", "", false};
+  const model::UrlRule bare{"1", "github.com", "", false, ""};
   CHECK(PhiParseUrlRuleWireRow(PhiUrlRuleWireRow(bare), &back));
   CHECK(back == bare);
 

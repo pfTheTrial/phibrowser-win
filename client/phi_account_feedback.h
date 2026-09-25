@@ -123,6 +123,11 @@ class PhiAccountAndFeedback : public PhiFeedbackHost {
   void RefreshAccountProfile(bool force);
   // The Auth0 session, for the harness verbs' reports.
   const PhiAuth& auth() const { return auth_; }
+  // The key layer's bound token calls (AccessTokenBlockingFor,
+  // InvalidateAccessToken) are thread-safe members of a non-const PhiAuth.
+  PhiAuth* auth_for_sync_keys() { return &auth_; }
+  // Chromium sync's bearer (PhiAuth::AccessTokenForSync). UI thread.
+  std::string AccessTokenForSync() { return auth_.AccessTokenForSync(); }
   // Harness only (agentSpace.feedback.setAccount): a stand-in account for a
   // box with no Auth0 session; empty clears. Ignored while a real session
   // is signed in.

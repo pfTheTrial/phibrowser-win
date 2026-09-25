@@ -41,7 +41,8 @@ $CXX app_model_test.cc -o /tmp/phi_app_model_test
 # target.
 $CXX space_manager_test.cc -o /tmp/phi_space_manager_test
 /tmp/phi_space_manager_test
-$CXX url_router_test.cc -o /tmp/phi_url_router_test
+$CXX ../../client/phi_url_rule_normalize.cc url_router_test.cc \
+     -o /tmp/phi_url_router_test
 /tmp/phi_url_router_test
 # The lazy-restore service's two pure decisions (the receipt's settle reason
 # and the last-active Space); the ghost store and the framework calls stay
@@ -167,3 +168,76 @@ $CXX ../../client/phi_util.cc ../../client/phi_log.cc \
 $CXX ../../client/phi_auth_codec.cc auth_codec_test.cc \
      -o /tmp/phi_auth_codec_test
 /tmp/phi_auth_codec_test
+# The sync conformance gate (docs/user-data-parity.md, phase S0): the C++
+# port of the Mac's sync merge core replayed against vectors the Mac's own
+# code wrote (test/sync-vectors). Families the port has not reached yet are
+# listed as PENDING, never silently skipped.
+# The vendored SQLite, compiled once as C for the tests that need it (the
+# local store, and the URL rule normalisation the vectors pin through it).
+SQLITE_SRC=../../third_party/sqlite/sqlite3.c
+SQLITE_OBJ=/tmp/phi_sqlite3.o
+if [[ ! -f $SQLITE_OBJ || $SQLITE_OBJ -ot $SQLITE_SRC ]]; then
+  ${CC:-gcc} -O1 -w -DSQLITE_THREADSAFE=1 -DSQLITE_DQS=0 \
+    -DSQLITE_OMIT_LOAD_EXTENSION -c $SQLITE_SRC -o $SQLITE_OBJ
+fi
+# BoringSSL for the sync tests (client tag hashes, the key layer): the
+# fork's own copy, built once for the host with CMake (the Windows client
+# links the framework kit's boringssl.lib instead).
+BSSL_SRC=$FORK_SRC/third_party/boringssl/src
+BSSL_OUT=/tmp/phi-bssl
+if [[ ! -f $BSSL_OUT/libcrypto.a ]]; then
+  NINJA=$FORK_SRC/third_party/ninja/ninja
+  cmake -S $BSSL_SRC -B $BSSL_OUT -G Ninja -DCMAKE_MAKE_PROGRAM=$NINJA \
+    -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DOPENSSL_NO_ASM=1 >/dev/null
+  $NINJA -C $BSSL_OUT crypto >/dev/null
+fi
+BSSL="-isystem $BSSL_SRC/include $BSSL_OUT/libcrypto.a -lpthread"
+$CXX ../../client/phi_sync_rank.cc ../../client/phi_url_rule_normalize.cc \
+     ../../client/phi_sync_proto.cc ../../client/phi_sync_merge.cc \
+     ../../client/phi_key_crypto.cc sync_vectors_test.cc $BSSL \
+     -o /tmp/phi_sync_vectors_test
+/tmp/phi_sync_vectors_test ../sync-vectors
+# The account's local store (docs/user-data-parity.md, phase S1): the
+# Mac's LocalStore write rules — stamps, renumbering, pin-scope migration,
+# Space cascades, the URL rule edit set — and persistence.
+$CXX ../../client/phi_local_store.cc ../../client/phi_url_rule_normalize.cc \
+     local_store_test.cc $SQLITE_OBJ \
+     -lpthread -ldl -o /tmp/phi_local_store_test
+/tmp/phi_local_store_test
+# Guest → account migration (docs/user-data-parity.md S6): the Mac's
+# GuestDataMigration planner, import and verification over two stores.
+$CXX ../../client/phi_local_store.cc ../../client/phi_url_rule_normalize.cc \
+     ../../client/phi_guest_migration.cc guest_migration_test.cc $SQLITE_OBJ \
+     -lpthread -ldl -o /tmp/phi_guest_migration_test
+/tmp/phi_guest_migration_test
+# The Sync pane's status card: the Mac's summary reduction and the
+# framework payload decode. Header-only.
+$CXX sync_status_test.cc -o /tmp/phi_sync_status_test
+/tmp/phi_sync_status_test
+# The sync key layer (docs/user-data-parity.md, phase S3): the Mac's
+# PhiKeyCrypto + RecoveryCode.
+$CXX ../../client/phi_key_crypto.cc key_crypto_test.cc $BSSL \
+     -o /tmp/phi_key_crypto_test
+/tmp/phi_key_crypto_test
+# The key layer's managers (AccountKeyManager, approvals, profile keys, the
+# controller's mapping pass and pairing gate) device to device, against an
+# in-memory /keys/v1 that keeps the server's refusals.
+$CXX ../../client/phi_key_crypto.cc ../../client/phi_sync_keys.cc \
+     sync_keys_test.cc $BSSL -o /tmp/phi_sync_keys_test
+/tmp/phi_sync_keys_test
+# Phi native sync's engine (docs/user-data-parity.md S5): the settings and
+# Space paths device to device through a fake sync server that keeps the
+# server's rules.
+$CXX ../../client/phi_key_crypto.cc ../../client/phi_sync_proto.cc \
+     ../../client/phi_sync_merge.cc ../../client/phi_sync_protocol.cc \
+     ../../client/phi_sync_rank.cc ../../client/phi_sync_spaces.cc \
+     ../../client/phi_sync_owned.cc ../../client/phi_sync_owned_kinds.cc \
+     ../../client/phi_sync_bookmarks.cc ../../client/phi_sync_pins.cc \
+     ../../client/phi_sync_rules.cc ../../client/phi_url_rule_normalize.cc \
+     ../../client/phi_sync_engine.cc sync_engine_test.cc $BSSL \
+     -o /tmp/phi_sync_engine_test
+# The invalidation stream's SSE parser.
+$CXX ../../client/phi_sync_invalidation.cc sync_invalidation_test.cc \
+     -o /tmp/phi_sync_invalidation_test
+/tmp/phi_sync_invalidation_test
+/tmp/phi_sync_engine_test

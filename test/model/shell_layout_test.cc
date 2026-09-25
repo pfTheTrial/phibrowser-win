@@ -72,19 +72,17 @@ void Vertical() {
   CHECK(l.back.left == l.search_tabs.right + 8);
   CHECK(l.forward.left == l.back.right + 4);
   CHECK(l.reload.left == l.forward.right + 4);
-  // Trailing: ⋯ 16 before minimize, the divider between, then downloads
-  // and extensions 4 apart.
+  // Trailing: ⋯ 16 before minimize, the divider between, then extensions
+  // 4 apart (no Downloads button: it lives in the sidebar's bottom bar).
   CHECK(l.app_menu.right == l.caption_min.left - 16);
   CHECK(l.band_divider.left > l.app_menu.right &&
         l.band_divider.right < l.caption_min.left);
-  CHECK(l.downloads.right == l.app_menu.left - 4);
-  CHECK(l.extensions.right == l.downloads.left - 4);
-  // The omnibox: 32 high on the row's centre line, a 32 drag gutter
-  // before the cluster.
+  CHECK(l.extensions.right == l.app_menu.left - 4);
+  // The omnibox: 32 high on the row's centre line, the ordinary group gap
+  // before the cluster (no reserved drag run).
   CHECK(l.url_field.left == l.reload.right + 8);
-  CHECK(l.url_field.right == l.extensions.left - 32);
+  CHECK(l.url_field.right == l.extensions.left - 8);
   CHECK(l.url_field.top == 6 && l.url_field.bottom == 38);
-  CHECK((l.drag_gutter == SidebarRect{l.url_field.right, 0, l.extensions.left, 44}));
   // In-field slots: site info leading, the star trailing, no reader.
   CHECK((l.page_icon == SidebarRect{l.url_field.left + 4, 10,
                                     l.url_field.left + 28, 34}));
@@ -132,7 +130,7 @@ void VerticalExtras() {
   CHECK(!l.field_ext_strip.empty());
   CHECK(l.field_ext_strip.right == l.extensions.left - 4);
   CHECK(l.field_ext_strip.right - l.field_ext_strip.left == 2 * 28 + 2);
-  CHECK(l.url_field.right == l.field_ext_strip.left - 32);
+  CHECK(l.url_field.right == l.field_ext_strip.left - 8);
   // Two pinned rows right under the header: 8 + 44 + 8 + 44 + 8.
   CHECK(l.pinned_label.empty() && l.favorites.top == 44);
   CHECK(l.favorites.bottom - l.favorites.top == 8 + 44 + 8 + 44 + 8);
@@ -156,10 +154,10 @@ void VerticalExtras() {
   CHECK(lone.favorites.top == 44);
   // A narrow window hides the extension slots before crushing the text.
   ShellLayoutInputs narrow = in;
-  narrow.client_width = 900;
+  narrow.client_width = 760;
   const ShellLayout n = ComputeShellLayout(narrow);
   CHECK(n.field_ext_strip.empty());
-  CHECK(n.url_field.right == n.extensions.left - 32);
+  CHECK(n.url_field.right == n.extensions.left - 8);
 }
 
 void SingleSpace() {
@@ -214,13 +212,11 @@ void Horizontal() {
   CHECK(l.forward.left == l.back.right + 4);
   CHECK(l.reload.left == l.forward.right + 4);
   CHECK(!l.app_menu.empty() && l.app_menu.right == 1440 - 8);
-  CHECK(l.downloads.right == l.app_menu.left - 4);
-  CHECK(l.extensions.right == l.downloads.left - 4);
+  CHECK(l.extensions.right == l.app_menu.left - 4);
   CHECK(l.url_field.left == l.reload.right + 8);
   CHECK(l.url_field.right == l.extensions.left - 8);
   CHECK(l.url_field.top == 44 && l.url_field.bottom == 76);
   CHECK(!l.page_icon.empty() && !l.star.empty());
-  CHECK(l.drag_gutter.empty());
   CHECK(l.sidebar_toggle.empty());
   CHECK(l.spaces_strip.empty());
   CHECK(l.new_tab_row.empty());
@@ -269,7 +265,7 @@ void Collapsed() {
   CHECK(l.new_tab_row.empty());
   CHECK(l.bottom_bar.empty());
   CHECK(l.feedback.empty());
-  CHECK(!l.downloads.empty() && !l.extensions.empty());  // The cluster stays.
+  CHECK(!l.app_menu.empty() && !l.extensions.empty());  // The cluster stays.
   CHECK(l.tabs_limit == l.tabs_top);  // No rows.
   // The floating panel asks for the expanded layout of a collapsed shell:
   // the very same inputs with sidebar_hidden cleared.

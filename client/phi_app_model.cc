@@ -33,19 +33,13 @@ namespace phi_client {
 using model::PhiConsentModel;
 using model::PhiRestoreModel;
 using model::PhiSettings;
-using model::PhiSpacesModel;
 
 namespace {
 
 // Legacy file names (pre-phase-3), imported once and then renamed.
 constexpr const wchar_t* kLegacyPrefs = L"PhiPrefs.json";
-constexpr const wchar_t* kLegacyLayout = L"PhiLayout.json";
-constexpr const wchar_t* kLegacyTheme = L"PhiTheme.json";
-constexpr const wchar_t* kLegacyUrlRules = L"PhiUrlRules.json";
 constexpr const wchar_t* kLegacyGhosts = L"PhiGhostSpaces.json";
 constexpr const wchar_t* kLegacyCredentialGrants = L"PhiCredentialGrants.json";
-// Read for one field (pinScope), never renamed: the tab store still owns it.
-constexpr const wchar_t* kTabStoreFile = L"PhiTabData.json";
 
 std::wstring Join(const std::wstring& dir, const wchar_t* name) {
   return dir + L"\\" + name;
@@ -76,18 +70,16 @@ void MarkImported(const std::wstring& dir, const wchar_t* name) {
 
 // --- Settings ---------------------------------------------------------------
 
-// The three legacy files' fields, each in its own reader so Import and
-// Decode share one spelling per field.
-void DecodeLayoutFields(const base::DictValue& dict, PhiSettings* out) {
+// PhiPreferences.json — the Mac's UserDefaults.standard keys and types
+// (docs/user-data-parity.md §4.4). Windows-only keys keep Windows names:
+// settingsWindowWidth/Height, saturation, restoreLastSession, testRig,
+// skipOnboarding, analyticsEnabled.
+void DecodePreferences(const base::DictValue& dict, PhiSettings* out) {
   if (const std::string* name = dict.FindString("layoutMode")) {
     PhiLayoutMode parsed = PhiLayoutMode::kPerformance;
     if (PhiLayoutModeFromName(*name, &parsed)) {
       out->layout_mode = parsed;
     }
-  }
-  if (std::optional<int> width = dict.FindInt("sidebarWidth")) {
-    out->sidebar_width =
-        std::max(kSidebarWidthMin, std::min(*width, kSidebarWidthMax));
   }
   if (std::optional<int> width = dict.FindInt("settingsWindowWidth")) {
     out->settings_window_width = std::max(0, *width);
@@ -95,21 +87,23 @@ void DecodeLayoutFields(const base::DictValue& dict, PhiSettings* out) {
   if (std::optional<int> height = dict.FindInt("settingsWindowHeight")) {
     out->settings_window_height = std::max(0, *height);
   }
-}
-
-void DecodeThemeFields(const base::DictValue& dict, PhiSettings* out) {
-  if (const std::string* id = dict.FindString("themeId")) {
-    out->theme_id = PhiThemeById(*id).id;  // Unknown ids normalise to Pure.
+  // The Mac's "default" names Pure; unknown ids normalise to Pure too.
+  if (const std::string* id = dict.FindString("PhiCurrentThemeId")) {
+    out->theme_id = PhiThemeById(*id == "default" ? "pure" : *id).id;
   }
-  if (const std::string* name = dict.FindString("appearance")) {
-    model::AppearanceFromName(*name, &out->appearance);
+  // UserAppearanceChoice: 0 system, 1 light, 2 dark.
+  if (std::optional<int> choice = dict.FindInt("PhiUserAppearanceChoice")) {
+    out->appearance = *choice == 1   ? model::Appearance::kLight
+                      : *choice == 2 ? model::Appearance::kDark
+                                     : model::Appearance::kSystem;
   }
-}
-
-void DecodePrefsFields(const base::DictValue& dict, PhiSettings* out) {
   out->saturation = dict.FindInt("saturation").value_or(out->saturation);
+  if (std::optional<bool> ntp = dict.FindBool("openNewTabPageOnCmdT")) {
+    out->new_tab_behavior = *ntp ? model::NewTabBehavior::kNewTabPage
+                                 : model::NewTabBehavior::kOmnibox;
+  }
   out->always_show_full_url =
-      dict.FindBool("alwaysShowFullUrl").value_or(out->always_show_full_url);
+      dict.FindBool("alwaysShowURLPath").value_or(out->always_show_full_url);
   out->show_tab_previews =
       dict.FindBool("showTabPreviews").value_or(out->show_tab_previews);
   out->show_open_tab_indicators = dict.FindBool("showOpenTabIndicators")
@@ -117,28 +111,29 @@ void DecodePrefsFields(const base::DictValue& dict, PhiSettings* out) {
   out->dim_unloaded_tab_icons = dict.FindBool("dimUnloadedTabIcons")
                                     .value_or(out->dim_unloaded_tab_icons);
   out->agent_auto_view =
-      dict.FindBool("agentAutoView").value_or(out->agent_auto_view);
+      dict.FindBool("PhiAgentSpaceAutoView").value_or(out->agent_auto_view);
   out->peek_view_enabled =
       dict.FindBool("peekViewEnabled").value_or(out->peek_view_enabled);
   out->auto_peek_view_enabled = dict.FindBool("autoPeekViewEnabled")
                                     .value_or(out->auto_peek_view_enabled);
   out->open_kiosk_on_ctrl_alt_click =
-      dict.FindBool("openKioskOnCtrlAltClick")
+      dict.FindBool("openKioskOnCommandOptionClick")
           .value_or(out->open_kiosk_on_ctrl_alt_click);
   out->restore_last_session =
       dict.FindBool("restoreLastSession").value_or(out->restore_last_session);
   out->always_show_bookmark_bar = dict.FindBool("alwaysShowBookmarkBar")
                                       .value_or(out->always_show_bookmark_bar);
-  out->bookmark_bar_on_new_tab = dict.FindBool("bookmarkBarOnNewTab")
+  out->bookmark_bar_on_new_tab = dict.FindBool("showBookmarkBarOnNewTabPage")
                                      .value_or(out->bookmark_bar_on_new_tab);
   out->developer_mode =
-      dict.FindBool("developerMode").value_or(out->developer_mode);
-  out->allow_agent_control =
-      dict.FindBool("allowAgentControl").value_or(out->allow_agent_control);
-  out->allow_agent_user_spaces = dict.FindBool("allowAgentUserSpaces")
-                                     .value_or(out->allow_agent_user_spaces);
+      dict.FindBool("PhiDeveloperModeEnabled").value_or(out->developer_mode);
+  out->allow_agent_control = dict.FindBool("PhiCDPAgentAccessEnabled")
+                                 .value_or(out->allow_agent_control);
+  out->allow_agent_user_spaces =
+      dict.FindBool("PhiAgentUserSpaceOperationsEnabled")
+          .value_or(out->allow_agent_user_spaces);
   if (const base::ListValue* blocked =
-          dict.FindList("disallowedAgentProfileIds")) {
+          dict.FindList("PhiAgentDisallowedProfileIds")) {
     out->disallowed_agent_profile_ids.clear();
     for (const base::Value& entry : *blocked) {
       if (const std::string* id = entry.GetIfString()) {
@@ -147,17 +142,37 @@ void DecodePrefsFields(const base::DictValue& dict, PhiSettings* out) {
     }
   }
   out->test_rig = dict.FindBool("testRig").value_or(out->test_rig);
-  if (const std::string* language = dict.FindString("language")) {
-    out->language = *language;
+  // appLanguagePreference: "system" (the model's "") or a catalog tag.
+  if (const std::string* language = dict.FindString("appLanguagePreference")) {
+    out->language = *language == "system" ? std::string() : *language;
   }
-  if (const std::string* behavior = dict.FindString("newTabBehavior")) {
-    // The coordinator read anything but "omnibox" as the new tab page.
-    out->new_tab_behavior = *behavior == "omnibox"
-                                ? model::NewTabBehavior::kOmnibox
-                                : model::NewTabBehavior::kNewTabPage;
-  }
-  if (const base::DictValue* reader = dict.FindDict("reader")) {
-    // Through PhiReaderStyle so the range checks live in one place.
+  // The Mac's PhiReader* keys, through PhiReaderStyle so the range checks
+  // live in one place.
+  {
+    base::DictValue reader;
+    const auto copy_int = [&](const char* from, const char* to) {
+      if (std::optional<int> v = dict.FindInt(from)) {
+        reader.Set(to, *v);
+      }
+    };
+    const auto copy_string = [&](const char* from, const char* to) {
+      if (const std::string* v = dict.FindString(from)) {
+        reader.Set(to, *v);
+      }
+    };
+    const auto copy_bool = [&](const char* from, const char* to) {
+      if (std::optional<bool> v = dict.FindBool(from)) {
+        reader.Set(to, *v);
+      }
+    };
+    copy_int("PhiReaderFontSize", "fontSize");
+    copy_string("PhiReaderWidth", "width");
+    copy_string("PhiReaderTheme", "theme");
+    copy_string("PhiReaderTypeface", "typeface");
+    copy_string("PhiReaderLineHeight", "lineHeight");
+    copy_string("PhiReaderLetterSpacing", "letterSpacing");
+    copy_bool("PhiReaderShowsImages", "showsImages");
+    copy_bool("PhiReaderHighlightsLinks", "highlightsLinks");
     PhiReaderStyle style;
     style.font_size = out->reader.font_size;
     style.width = out->reader.width;
@@ -167,7 +182,7 @@ void DecodePrefsFields(const base::DictValue& dict, PhiSettings* out) {
     style.letter_spacing = out->reader.letter_spacing;
     style.shows_images = out->reader.shows_images;
     style.highlights_links = out->reader.highlights_links;
-    style.MergeFrom(*reader);
+    style.MergeFrom(reader);
     out->reader.font_size = style.font_size;
     out->reader.width = style.width;
     out->reader.theme = style.theme;
@@ -177,124 +192,26 @@ void DecodePrefsFields(const base::DictValue& dict, PhiSettings* out) {
     out->reader.shows_images = style.shows_images;
     out->reader.highlights_links = style.highlights_links;
   }
-  if (const base::DictValue* shortcuts = dict.FindDict("shortcuts")) {
-    for (const auto [name, value] : *shortcuts) {
-      const base::DictValue* chord = value.GetIfDict();
-      if (!chord) {
-        continue;
-      }
-      out->shortcut_overrides[name] = {
-          static_cast<unsigned>(chord->FindInt("vk").value_or(0)),
-          chord->FindBool("ctrl").value_or(false),
-          chord->FindBool("shift").value_or(false),
-          chord->FindBool("alt").value_or(false)};
+  if (const std::string* scope = dict.FindString("PhiPinnedTabScope")) {
+    PhiPinScopeFromName(*scope, &out->pin_scope);
+  }
+  out->analytics_enabled =
+      dict.FindBool("analyticsEnabled").value_or(out->analytics_enabled);
+  out->guest_mode_enabled =
+      dict.FindBool("guestModeEnabled").value_or(out->guest_mode_enabled);
+  out->login_phase = dict.FindInt("phiLoginPhase").value_or(out->login_phase);
+  out->skip_onboarding =
+      dict.FindBool("skipOnboarding").value_or(out->skip_onboarding);
+  out->suppress_close_incognito_space_warning =
+      dict.FindBool("suppressCloseIncognitoSpaceWarning")
+          .value_or(out->suppress_close_incognito_space_warning);
+  if (const std::string* mode = dict.FindString("autoPictureInPictureMode")) {
+    if (*mode == "off" || *mode == "normal" || *mode == "parked") {
+      out->auto_picture_in_picture_mode = *mode;
     }
   }
-}
-
-base::DictValue EncodeReader(const model::ReaderStyle& reader) {
-  PhiReaderStyle style;
-  style.font_size = reader.font_size;
-  style.width = reader.width;
-  style.theme = reader.theme;
-  style.typeface = reader.typeface;
-  style.line_height = reader.line_height;
-  style.letter_spacing = reader.letter_spacing;
-  style.shows_images = reader.shows_images;
-  style.highlights_links = reader.highlights_links;
-  return style.ToDict();
-}
-
-// --- Spaces -----------------------------------------------------------------
-
-void DecodeSpaceList(const base::ListValue& list, PhiSpacesModel* out) {
-  std::vector<model::Space> loaded;
-  for (const base::Value& v : list) {
-    const base::DictValue* d = v.GetIfDict();
-    if (!d) {
-      continue;
-    }
-    const std::string* id = d->FindString("id");
-    if (!id || id->empty()) {
-      continue;
-    }
-    const std::string* name = d->FindString("name");
-    const std::string* profile = d->FindString("profileId");
-    const std::string* icon = d->FindString("icon");
-    const std::string* theme = d->FindString("themeId");
-    const std::string* color = d->FindString("colorHex");
-    model::Space space;
-    space.id = *id;
-    space.name = name ? *name : ("Space " + *id);
-    space.profile_id = profile && !profile->empty() ? *profile : "Default";
-    space.icon =
-        icon && PhiIconIsValid(*icon) ? *icon : std::string(kPhiDefaultSpaceIcon);
-    space.theme_id = theme ? *theme : std::string();
-    space.saturation = d->FindInt("saturation").value_or(-1);
-    space.color_hex = color ? *color : std::string();
-    loaded.push_back(std::move(space));
-  }
-  // An empty or all-invalid list keeps the built-in default Space, as the
-  // coordinator's loader did — a Space list with nothing in it is not a
-  // state the UI can show.
-  if (!loaded.empty()) {
-    out->spaces = std::move(loaded);
-  }
-}
-
-base::ListValue EncodeSpaceList(const std::vector<model::Space>& spaces) {
-  base::ListValue list;
-  for (const model::Space& space : spaces) {
-    base::DictValue d;
-    d.Set("id", space.id);
-    d.Set("name", space.name);
-    d.Set("profileId", space.profile_id);
-    d.Set("icon", space.icon);
-    d.Set("themeId", space.theme_id);
-    d.Set("saturation", space.saturation);
-    d.Set("colorHex", space.color_hex);
-    list.Append(std::move(d));
-  }
-  return list;
-}
-
-void DecodeRuleList(const base::ListValue& list,
-                    std::vector<model::UrlRule>* out) {
-  out->clear();
-  for (const base::Value& v : list) {
-    const base::DictValue* d = v.GetIfDict();
-    if (!d) {
-      continue;
-    }
-    const std::string* space_id = d->FindString("spaceId");
-    const std::string* host = d->FindString("host");
-    if (!space_id || space_id->empty() || !host || host->empty()) {
-      continue;
-    }
-    model::UrlRule rule;
-    rule.space_id = *space_id;
-    rule.host = *host;
-    if (const std::string* prefix = d->FindString("pathPrefix")) {
-      rule.path_prefix = *prefix;
-    }
-    rule.ask = d->FindBool("ask").value_or(false);
-    out->push_back(std::move(rule));
-  }
-}
-
-base::ListValue EncodeRuleList(const std::vector<model::UrlRule>& rules) {
-  base::ListValue list;
-  for (const model::UrlRule& rule : rules) {
-    base::DictValue d;
-    d.Set("spaceId", rule.space_id);
-    d.Set("host", rule.host);
-    if (!rule.path_prefix.empty()) {
-      d.Set("pathPrefix", rule.path_prefix);
-    }
-    d.Set("ask", rule.ask);
-    list.Append(std::move(d));
-  }
-  return list;
+  out->selection_tint_enabled = dict.FindBool("PhiSelectionTintEnabled")
+                                    .value_or(out->selection_tint_enabled);
 }
 
 // --- Restore ----------------------------------------------------------------
@@ -350,65 +267,65 @@ void DecodeAudit(const base::ListValue& list, std::vector<std::string>* out) {
 }  // namespace
 
 // =============================================================================
-// PhiSettings.json (schema 1)
+// PhiPreferences.json (schema 1)
 // =============================================================================
 
 // static
 base::DictValue PhiStoreTraits<PhiSettings>::Encode(const PhiSettings& value) {
   base::DictValue root;
   root.Set("layoutMode", PhiLayoutModeName(value.layout_mode));
-  root.Set("sidebarWidth", value.sidebar_width);
   if (value.settings_window_width > 0 && value.settings_window_height > 0) {
     root.Set("settingsWindowWidth", value.settings_window_width);
     root.Set("settingsWindowHeight", value.settings_window_height);
   }
-  root.Set("themeId", value.theme_id);
-  root.Set("appearance", model::AppearanceName(value.appearance));
+  root.Set("PhiCurrentThemeId", value.theme_id);
+  root.Set("PhiUserAppearanceChoice",
+           value.appearance == model::Appearance::kLight  ? 1
+           : value.appearance == model::Appearance::kDark ? 2
+                                                          : 0);
   root.Set("saturation", value.saturation);
-  root.Set("newTabBehavior", model::NewTabBehaviorName(value.new_tab_behavior));
-  root.Set("alwaysShowFullUrl", value.always_show_full_url);
+  root.Set("openNewTabPageOnCmdT",
+           value.new_tab_behavior == model::NewTabBehavior::kNewTabPage);
+  root.Set("alwaysShowURLPath", value.always_show_full_url);
   root.Set("showTabPreviews", value.show_tab_previews);
   root.Set("showOpenTabIndicators", value.show_open_tab_indicators);
   root.Set("dimUnloadedTabIcons", value.dim_unloaded_tab_icons);
-  root.Set("agentAutoView", value.agent_auto_view);
+  root.Set("PhiAgentSpaceAutoView", value.agent_auto_view);
   root.Set("peekViewEnabled", value.peek_view_enabled);
   root.Set("autoPeekViewEnabled", value.auto_peek_view_enabled);
-  root.Set("openKioskOnCtrlAltClick", value.open_kiosk_on_ctrl_alt_click);
+  root.Set("openKioskOnCommandOptionClick", value.open_kiosk_on_ctrl_alt_click);
   root.Set("restoreLastSession", value.restore_last_session);
   root.Set("alwaysShowBookmarkBar", value.always_show_bookmark_bar);
-  root.Set("bookmarkBarOnNewTab", value.bookmark_bar_on_new_tab);
-  if (!value.shortcut_overrides.empty()) {
-    base::DictValue shortcuts;
-    for (const auto& [name, chord] : value.shortcut_overrides) {
-      base::DictValue entry;
-      entry.Set("vk", static_cast<int>(chord.vk));
-      entry.Set("ctrl", chord.ctrl);
-      entry.Set("shift", chord.shift);
-      entry.Set("alt", chord.alt);
-      shortcuts.Set(name, std::move(entry));
-    }
-    root.Set("shortcuts", std::move(shortcuts));
-  }
-  root.Set("reader", EncodeReader(value.reader));
-  root.Set("language", value.language);
-  root.Set("developerMode", value.developer_mode);
-  root.Set("allowAgentControl", value.allow_agent_control);
-  root.Set("allowAgentUserSpaces", value.allow_agent_user_spaces);
+  root.Set("showBookmarkBarOnNewTabPage", value.bookmark_bar_on_new_tab);
+  root.Set("PhiReaderFontSize", value.reader.font_size);
+  root.Set("PhiReaderWidth", value.reader.width);
+  root.Set("PhiReaderTheme", value.reader.theme);
+  root.Set("PhiReaderTypeface", value.reader.typeface);
+  root.Set("PhiReaderLineHeight", value.reader.line_height);
+  root.Set("PhiReaderLetterSpacing", value.reader.letter_spacing);
+  root.Set("PhiReaderShowsImages", value.reader.shows_images);
+  root.Set("PhiReaderHighlightsLinks", value.reader.highlights_links);
+  root.Set("appLanguagePreference",
+           value.language.empty() ? std::string("system") : value.language);
+  root.Set("PhiDeveloperModeEnabled", value.developer_mode);
+  root.Set("PhiCDPAgentAccessEnabled", value.allow_agent_control);
+  root.Set("PhiAgentUserSpaceOperationsEnabled",
+           value.allow_agent_user_spaces);
   base::ListValue blocked;
   for (const std::string& id : value.disallowed_agent_profile_ids) {
     blocked.Append(id);
   }
-  root.Set("disallowedAgentProfileIds", std::move(blocked));
+  root.Set("PhiAgentDisallowedProfileIds", std::move(blocked));
   root.Set("testRig", value.test_rig);
-  root.Set("pinScope", PhiPinScopeName(value.pin_scope));
+  root.Set("PhiPinnedTabScope", PhiPinScopeName(value.pin_scope));
   root.Set("analyticsEnabled", value.analytics_enabled);
   root.Set("guestModeEnabled", value.guest_mode_enabled);
-  base::DictValue phases;
-  for (const auto& [sub, phase] : value.onboarding_phases) {
-    phases.Set(sub, phase);
-  }
-  root.Set("onboardingPhases", std::move(phases));
+  root.Set("phiLoginPhase", value.login_phase);
   root.Set("skipOnboarding", value.skip_onboarding);
+  root.Set("suppressCloseIncognitoSpaceWarning",
+           value.suppress_close_incognito_space_warning);
+  root.Set("autoPictureInPictureMode", value.auto_picture_in_picture_mode);
+  root.Set("PhiSelectionTintEnabled", value.selection_tint_enabled);
   return root;
 }
 
@@ -416,138 +333,19 @@ base::DictValue PhiStoreTraits<PhiSettings>::Encode(const PhiSettings& value) {
 bool PhiStoreTraits<PhiSettings>::Decode(const base::DictValue& dict,
                                          int /*schema*/,
                                          PhiSettings* out) {
-  // Field-tolerant like PhiPrefs.json always was: a hand-edited or partial
-  // file keeps the defaults for what it does not name, so there is no
-  // shape that fails to decode.
-  DecodeLayoutFields(dict, out);
-  DecodeThemeFields(dict, out);
-  DecodePrefsFields(dict, out);
-  if (const std::string* scope = dict.FindString("pinScope")) {
-    PhiPinScopeFromName(*scope, &out->pin_scope);
-  }
-  out->analytics_enabled =
-      dict.FindBool("analyticsEnabled").value_or(out->analytics_enabled);
-  out->guest_mode_enabled =
-      dict.FindBool("guestModeEnabled").value_or(out->guest_mode_enabled);
-  if (const base::DictValue* phases = dict.FindDict("onboardingPhases")) {
-    out->onboarding_phases.clear();
-    for (const auto [sub, phase] : *phases) {
-      if (phase.is_int()) {
-        out->onboarding_phases[sub] = phase.GetInt();
-      }
-    }
-  }
-  out->skip_onboarding =
-      dict.FindBool("skipOnboarding").value_or(out->skip_onboarding);
+  // Field-tolerant: a hand-edited or partial file keeps the defaults for
+  // what it does not name, so there is no shape that fails to decode.
+  DecodePreferences(dict, out);
   return true;
 }
 
 // static
-bool PhiStoreTraits<PhiSettings>::Import(const std::wstring& dir,
-                                         PhiSettings* out) {
-  bool imported = false;
-  base::DictValue dict;
-  if (ReadLegacy(dir, kLegacyLayout, &dict) == PhiJsonFileStatus::kOk) {
-    DecodeLayoutFields(dict, out);
-    MarkImported(dir, kLegacyLayout);
-    imported = true;
-  }
-  dict = base::DictValue();
-  if (ReadLegacy(dir, kLegacyTheme, &dict) == PhiJsonFileStatus::kOk) {
-    DecodeThemeFields(dict, out);
-    MarkImported(dir, kLegacyTheme);
-    imported = true;
-  }
-  dict = base::DictValue();
-  if (ReadLegacy(dir, kLegacyPrefs, &dict) == PhiJsonFileStatus::kOk) {
-    // lastActiveSpaceId is NOT ours: PhiRestore imports it (from this
-    // file or its .imported copy, whichever the order of loads leaves).
-    DecodePrefsFields(dict, out);
-    MarkImported(dir, kLegacyPrefs);
-    imported = true;
-  }
-  dict = base::DictValue();
-  // The pin scope's writer stays PhiTabStore for now; this only carries the
-  // user's choice over so the setting does not flip on upgrade.
-  if (ReadLegacy(dir, kTabStoreFile, &dict) == PhiJsonFileStatus::kOk) {
-    if (const std::string* scope = dict.FindString("pinScope")) {
-      if (PhiPinScopeFromName(*scope, &out->pin_scope)) {
-        imported = true;
-      }
-    }
-  }
-  return imported;
-}
-
-// =============================================================================
-// PhiSpaces.json (schema 2; schema 1 is the pre-phase-3 file)
-// =============================================================================
-
-// static
-base::DictValue PhiStoreTraits<PhiSpacesModel>::Encode(
-    const PhiSpacesModel& value) {
-  base::DictValue root;
-  root.Set("spaces", EncodeSpaceList(value.spaces));
-  root.Set("defaultSpaceId", value.default_space_id);
-  root.Set("nextSpaceId", value.next_space_id);
-  root.Set("rules", EncodeRuleList(value.url_rules));
-  root.Set("urlRulesGeneration", value.url_rules_generation);
-  return root;
-}
-
-// static
-bool PhiStoreTraits<PhiSpacesModel>::Decode(const base::DictValue& dict,
-                                            int schema,
-                                            PhiSpacesModel* out) {
-  if (const base::ListValue* list = dict.FindList("spaces")) {
-    DecodeSpaceList(*list, out);
-  }
-  const std::string* persisted = dict.FindString("defaultSpaceId");
-  out->default_space_id = model::ResolveDefaultSpaceId(
-      out->spaces, persisted ? *persisted : std::string());
-  // Never below what the list implies, whatever the stamp says: a restored
-  // backup must not hand out an id a listed Space already holds.
-  out->next_space_id = std::max(dict.FindInt("nextSpaceId").value_or(0),
-                                model::NextSpaceIdAfter(out->spaces));
-  if (schema >= 2) {
-    if (const base::ListValue* rules = dict.FindList("rules")) {
-      DecodeRuleList(*rules, &out->url_rules);
-    }
-    out->url_rules_generation = std::max(
-        1, dict.FindInt("urlRulesGeneration").value_or(1));
-  }
-  // Schema 1 (and the unstamped file before phase 0) carried no rules:
-  // PhiStore's migration path calls Import for PhiUrlRules.json next.
-  return true;
-}
-
-// static
-bool PhiStoreTraits<PhiSpacesModel>::Import(const std::wstring& dir,
-                                            PhiSpacesModel* out) {
-  // Only the rules file: the Space list has kept its name, so a pre-phase-3
-  // PhiSpaces.json reaches Decode as schema 1, not Import. The rules file
-  // was a bare list before phase 0 and {"schema":1,"rules":[...]} after;
-  // both are read, anything else is quarantined (as LoadUrlRules did).
-  const std::wstring path = Join(dir, kLegacyUrlRules);
-  std::string json;
-  if (!PhiReadFileBytes(path, &json)) {
-    return false;
-  }
-  std::optional<base::Value> root =
-      base::JSONReader::Read(json, base::JSON_PARSE_RFC);
-  const base::ListValue* rules = nullptr;
-  if (root && root->is_list()) {
-    rules = &root->GetList();
-  } else if (root && root->is_dict()) {
-    rules = root->GetDict().FindList("rules");
-  }
-  if (!rules) {
-    PhiQuarantineFile(path, "not a rule list");
-    return false;
-  }
-  DecodeRuleList(*rules, &out->url_rules);
-  MarkImported(dir, kLegacyUrlRules);
-  return true;
+bool PhiStoreTraits<PhiSettings>::Import(const std::wstring& /*dir*/,
+                                         PhiSettings* /*out*/) {
+  // phibrowser-win is unreleased: the old PhiSettings.json (and the
+  // pre-phase-3 files before it) are not carried over
+  // (docs/user-data-parity.md).
+  return false;
 }
 
 // =============================================================================
@@ -679,7 +477,6 @@ bool PhiStoreTraits<PhiConsentModel>::Import(const std::wstring& dir,
 // seal bug surfaces in this TU's build rather than in whichever TU first
 // touches that store.
 template class PhiStore<PhiSettings>;
-template class PhiStore<PhiSpacesModel>;
 template class PhiStore<PhiRestoreModel>;
 template class PhiStore<PhiConsentModel>;
 

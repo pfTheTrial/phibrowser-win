@@ -4,8 +4,10 @@
 
 #include "phibrowser-win/client/phi_space_manager.h"
 
+#include "phibrowser-win/client/phi_account_storage.h"
 #include "phibrowser-win/client/phi_agent_spaces.h"
 
+#include <set>
 #include <utility>
 
 #include "base/json/json_writer.h"
@@ -14,7 +16,6 @@
 #include "chrome/browser/phinomenon/phi_framework/phi_framework_api.h"
 #include "phibrowser-win/client/phi_emoji.h"
 #include "phibrowser-win/client/phi_preferences.h"
-#include "phibrowser-win/client/phi_store.h"
 #include "phibrowser-win/client/phi_theme.h"
 #include "phibrowser-win/client/phi_shell_window.h"
 
@@ -25,13 +26,16 @@ PhiSpaceManager::PhiSpaceManager(PhiWindowRegistry& registry,
                                  const PhiPreferences& preferences,
                                  phi_framework::PhiFramework& framework,
                                  Host& host,
+                                 store::LocalStore& store,
+                                 PhiAccountDefaults& defaults,
                                  DirtyCallback dirty)
-    : store_(std::make_unique<PhiStore<model::PhiSpacesModel>>()),
-      registry_(registry),
+    : registry_(registry),
       window_model_(window_model),
       preferences_(preferences),
       framework_(framework),
       host_(host),
+      store_(store),
+      defaults_(defaults),
       dirty_(std::move(dirty)) {}
 
 PhiSpaceManager::~PhiSpaceManager() = default;
@@ -44,16 +48,237 @@ void PhiSpaceManager::RemoveObserver(Observer* observer) {
   std::erase(observers_, observer);
 }
 
-void PhiSpaceManager::Load(const std::wstring& user_data_dir) {
-  store_->Init(user_data_dir);
-  // The load leaves the model usable: decoded, imported from the
-  // pre-phase-3 files on a first run over an old profile, or defaults over
-  // a quarantined file (the truth-owner rules are in phi_app_model.h).
-  store_->Load(&model_);
+void PhiSpaceManager::Load() {
+  model_ = model::PhiSpacesModel();
+  if (!store_.is_open()) {
+    return;  // The built-in default Space stands in; nothing is saved.
+  }
+  if (store_.Spaces().empty()) {
+    // The Mac's first-launch bootstrap: `default-space`, on the Default
+    // profile, only in an EMPTY store.
+    store_.EnsureDefaultSpace(store::kDefaultProfileId);
+  }
+  const std::map<std::string, std::string> themes =
+      defaults_.GetStringMap(kDefaultsSpaceThemeIds);
+  const std::map<std::string, int> saturations =
+      defaults_.GetIntMap(kDefaultsWinSpaceSaturations);
+  std::vector<model::Space> spaces;
+  for (const store::Space& row : store_.Spaces()) {
+    model::Space space;
+    space.id = row.space_id;
+    space.name = row.name;
+    space.profile_id = row.profile_id;
+    space.icon = PhiIconIsValid(row.icon_name) ? row.icon_name
+                                               : store::kDefaultSpaceIconName;
+    space.color_hex = row.color_hex;
+    if (const auto t = themes.find(row.space_id); t != themes.end()) {
+      space.theme_id = t->second;
+    }
+    if (const auto v = saturations.find(row.space_id);
+        v != saturations.end()) {
+      space.saturation = v->second < 0 ? -1 : std::min(100, v->second);
+    }
+    spaces.push_back(std::move(space));
+  }
+  if (!spaces.empty()) {
+    model_.spaces = std::move(spaces);
+  }
+  hidden_.clear();
+  ApplyHiddenSet();
+  model_.default_space_id = model::ResolveDefaultSpaceId(
+      model_.spaces, defaults_.GetString(kDefaultsDefaultSpaceId));
+  ReloadUrlRulesFromStore();
+}
+
+void PhiSpaceManager::ReloadUrlRulesFromStore() {
+  model_.url_rules.clear();
+  for (const store::UrlRule& row : store_.UrlRules()) {
+    model::UrlRule rule;
+    rule.id = row.id;
+    rule.space_id = row.space_id;
+    rule.host = row.host;
+    rule.path_prefix = row.path_prefix.value_or(std::string());
+    rule.ask = row.ask;
+    model_.url_rules.push_back(std::move(rule));
+  }
 }
 
 void PhiSpaceManager::Save() {
-  store_->Save(model_);
+  if (!store_.is_open()) {
+    return;
+  }
+  // Spaces: create, re-bind, update — only what differs, so an unchanged
+  // Space's updatedDate stays put.
+  std::map<std::string, store::Space> stored;
+  for (const store::Space& row : store_.Spaces()) {
+    stored[row.space_id] = row;
+  }
+  std::set<std::string> live;
+  for (const model::Space& space : hidden_) {
+    live.insert(space.id);
+  }
+  for (const model::Space& space : model_.spaces) {
+    live.insert(space.id);
+    // The Mac's colorHex is never empty; a Space nobody coloured carries the
+    // Mac's default.
+    const std::string color = space.color_hex.empty()
+                                  ? std::string(store::kDefaultSpaceColorHex)
+                                  : space.color_hex;
+    const auto it = stored.find(space.id);
+    if (it == stored.end()) {
+      store_.CreateSpace(space.id, space.profile_id, space.name, color,
+                         space.icon);
+      continue;
+    }
+    const store::Space& row = it->second;
+    if (row.profile_id != space.profile_id) {
+      store_.ChangeSpaceProfile(space.id, space.profile_id);
+    }
+    // An icon this build cannot show (a newer peer's) reads as the
+    // stand-in; the stand-in is never written back over it.
+    const bool icon_changed =
+        row.icon_name != space.icon &&
+        (PhiIconIsValid(row.icon_name) ||
+         space.icon != store::kDefaultSpaceIconName);
+    if (row.name != space.name || row.color_hex != color || icon_changed) {
+      store_.UpdateSpace(
+          space.id,
+          row.name != space.name ? std::optional(space.name) : std::nullopt,
+          row.color_hex != color ? std::optional(color) : std::nullopt,
+          icon_changed ? std::optional(space.icon) : std::nullopt);
+    }
+  }
+  for (const auto& [id, row] : stored) {
+    if (!live.count(id)) {
+      // Normally already gone (DeleteSpace's ForgetSpaceData cascades at
+      // once); this catches a Space removed any other way.
+      store_.DeleteSpaceCascade(id, /*user_intent=*/true);
+    }
+  }
+  std::vector<std::string> order;
+  for (const model::Space& space : model_.spaces) {
+    order.push_back(space.id);
+  }
+  for (const model::Space& space : hidden_) {
+    order.push_back(space.id);
+  }
+  std::vector<std::string> stored_order;
+  for (const store::Space& row : store_.Spaces()) {
+    stored_order.push_back(row.space_id);
+  }
+  if (order != stored_order) {
+    store_.ReorderSpaces(order);
+  }
+
+  // URL rules: one edit set. The model's order is each target bucket's
+  // order; units that did not change are omitted, so they stamp nothing.
+  std::map<std::string, store::UrlRule> stored_rules;
+  for (const store::UrlRule& row : store_.UrlRules()) {
+    stored_rules[row.id] = row;
+  }
+  std::vector<store::UrlRuleDraft> drafts;
+  std::set<std::string> kept;
+  std::map<std::string, int> next_in_bucket;
+  for (model::UrlRule& rule : model_.url_rules) {
+    if (rule.id.empty()) {
+      rule.id = store::NewUppercaseUuid();
+    }
+    kept.insert(rule.id);
+    const int sort_order = next_in_bucket[rule.space_id]++;
+    const std::optional<std::string> path =
+        rule.path_prefix.empty() ? std::nullopt
+                                 : std::optional<std::string>(rule.path_prefix);
+    store::UrlRuleDraft draft;
+    draft.id = rule.id;
+    const auto it = stored_rules.find(rule.id);
+    if (it == stored_rules.end()) {
+      draft.content = store::UrlRuleDraft::Content{rule.host, path, rule.ask};
+      draft.space_id = rule.space_id;
+      draft.sort_order = sort_order;
+      drafts.push_back(std::move(draft));
+      continue;
+    }
+    const store::UrlRule& row = it->second;
+    bool changed = false;
+    if (row.host != store::NormalizedRuleHost(rule.host) ||
+        row.path_prefix != store::NormalizedRulePathPrefix(path) ||
+        row.ask != rule.ask) {
+      draft.content = store::UrlRuleDraft::Content{rule.host, path, rule.ask};
+      changed = true;
+    }
+    if (row.space_id != rule.space_id) {
+      draft.space_id = rule.space_id;
+      changed = true;
+    }
+    if (row.sort_order != sort_order) {
+      draft.sort_order = sort_order;
+      changed = true;
+    }
+    if (changed) {
+      drafts.push_back(std::move(draft));
+    }
+  }
+  std::set<std::string> deleted;
+  for (const auto& [id, row] : stored_rules) {
+    if (!kept.count(id)) {
+      deleted.insert(id);
+    }
+  }
+  if (!drafts.empty() || !deleted.empty()) {
+    const store::WriteError error = store_.ApplyUrlRuleEdits(drafts, deleted);
+    if (error != store::WriteError::kNone) {
+      LOG(ERROR) << "[PhiClient] URL rule save failed ("
+                 << static_cast<int>(error) << ")";
+    }
+  }
+
+  // The account defaults: the default role and the theme overrides.
+  defaults_.SetString(kDefaultsDefaultSpaceId, model_.default_space_id);
+  std::map<std::string, std::string> themes;
+  std::map<std::string, int> saturations;
+  std::vector<model::Space> all = model_.spaces;
+  all.insert(all.end(), hidden_.begin(), hidden_.end());
+  for (const model::Space& space : all) {
+    if (!space.theme_id.empty()) {
+      themes[space.id] = space.theme_id;
+    }
+    if (space.saturation >= 0) {
+      saturations[space.id] = space.saturation;
+    }
+  }
+  defaults_.SetStringMap(kDefaultsSpaceThemeIds, themes);
+  defaults_.SetIntMap(kDefaultsWinSpaceSaturations, saturations);
+}
+
+void PhiSpaceManager::RetreatFromMissingSpaces() {
+  const std::string retreat = DefaultSpaceId();
+  // Over a copy: a retreat can close a slot (its last browser going).
+  const std::vector<PhiShellWindow*> controllers = registry_.Controllers();
+  for (PhiShellWindow* controller : controllers) {
+    if (controller->is_agent()) {
+      continue;
+    }
+    std::vector<std::string> missing;
+    bool has_valid = false;
+    for (const std::string& id : controller->space_order()) {
+      if (Has(id)) {
+        has_valid = true;
+      } else if (!PhiIsAgentSpaceId(id)) {
+        missing.push_back(id);
+      }
+    }
+    if (missing.empty()) {
+      continue;
+    }
+    if (!has_valid) {
+      host_.SurfaceSpaceInSlot(controller->slot(), retreat, nullptr);
+    }
+    for (const std::string& id : missing) {
+      controller->CloseSpaceBrowser(id);
+    }
+  }
+  RebuildSpacePalettes();
+  Notify(SpacesChange::kList);
 }
 
 // --- Reads --------------------------------------------------------------------
@@ -145,46 +370,7 @@ bool PhiSpaceManager::DeleteSpace(const std::string& space_id) {
   if (it == model_.spaces.end()) {
     return false;
   }
-  if (space_id == model_.default_space_id) {
-    // The default role passes to the first REMAINING Space (strip order),
-    // before the windows retreat so anything landing on the default lands
-    // on the successor; the Spaces save below persists the hand-off.
-    const std::string successor =
-        DefaultRoleSuccessor(model_.spaces, space_id);
-    if (!successor.empty()) {
-      model_.default_space_id = successor;
-    }
-    LOG(INFO) << "[PhiClient] default Space role handed to "
-              << model_.default_space_id;
-  }
-  // A slot whose ONLY browser is the deleted Space's would be torn down by
-  // the close below (a window closes with its last browser). Retreat it to
-  // the default Space first — spawning that Space's browser into the slot
-  // (synchronous for a loaded profile) — the Mac's retreat-then-close order.
-  // Now reachable for the default Space itself, whose browser is usually the
-  // slot's original one.
-  const std::string retreat = DefaultSpaceId();
-  for (PhiShellWindow* controller : registry_.Controllers()) {
-    if (controller->is_agent() || !controller->HasSpace(space_id) ||
-        retreat == space_id) {
-      continue;
-    }
-    bool has_other = false;
-    for (const model::Space& space : model_.spaces) {
-      if (space.id != space_id && controller->HasSpace(space.id)) {
-        has_other = true;
-        break;
-      }
-    }
-    if (!has_other) {
-      host_.SurfaceSpaceInSlot(controller->slot(), retreat, nullptr);
-    }
-  }
-  // Close the Space's browser wherever it is open; each controller switches
-  // away first so a live window never keeps showing a deleted Space.
-  for (PhiShellWindow* controller : registry_.Controllers()) {
-    controller->CloseSpaceBrowser(space_id);
-  }
+  RetreatFromSpace(space_id);
   // The Space's bookmarks and space-scoped pins go with it (the Mac's
   // delete-confirmation promise) — and its URL rules, which would otherwise
   // route into a Space that no longer exists, and its ghost record (a
@@ -373,7 +559,11 @@ void PhiSpaceManager::RebuildSpacePalettes() {
   }
   for (const model::Space& space : model_.spaces) {
     COLORREF accent = 0;
-    const bool has_hex = PhiParseColorHex(space.color_hex, &accent);
+    // The Mac's default colorHex is what every Space nobody coloured
+    // carries (the store never holds an empty one), so it means "no
+    // colour choice", not a tint.
+    const bool has_hex = space.color_hex != store::kDefaultSpaceColorHex &&
+                         PhiParseColorHex(space.color_hex, &accent);
     if (space.theme_id.empty() && space.saturation < 0 && !has_hex) {
       continue;  // Follows the app-wide theme.
     }
@@ -454,6 +644,370 @@ void PhiSpaceManager::Notify(SpacesChange what) {
   const std::vector<Observer*> observers = observers_;
   for (Observer* observer : observers) {
     observer->OnSpacesChanged(what);
+  }
+}
+
+void PhiSpaceManager::RetreatFromSpace(const std::string& space_id) {
+  if (space_id == model_.default_space_id) {
+    // The default role passes to the first REMAINING Space (strip order),
+    // before the windows retreat so anything landing on the default lands
+    // on the successor; the Spaces save below persists the hand-off.
+    const std::string successor =
+        DefaultRoleSuccessor(model_.spaces, space_id);
+    if (!successor.empty()) {
+      model_.default_space_id = successor;
+      // A user hand-off publishes; sync's own hide does not.
+      if (!sync_applying_ && on_default_role_moved_) {
+        on_default_role_moved_(successor);
+      }
+    }
+    LOG(INFO) << "[PhiClient] default Space role handed to "
+              << model_.default_space_id;
+  }
+  // A slot whose ONLY browser is the deleted Space's would be torn down by
+  // the close below (a window closes with its last browser). Retreat it to
+  // the default Space first — spawning that Space's browser into the slot
+  // (synchronous for a loaded profile) — the Mac's retreat-then-close order.
+  // Now reachable for the default Space itself, whose browser is usually the
+  // slot's original one.
+  const std::string retreat = DefaultSpaceId();
+  for (PhiShellWindow* controller : registry_.Controllers()) {
+    if (controller->is_agent() || !controller->HasSpace(space_id) ||
+        retreat == space_id) {
+      continue;
+    }
+    bool has_other = false;
+    for (const model::Space& space : model_.spaces) {
+      if (space.id != space_id && controller->HasSpace(space.id)) {
+        has_other = true;
+        break;
+      }
+    }
+    if (!has_other) {
+      host_.SurfaceSpaceInSlot(controller->slot(), retreat, nullptr);
+    }
+  }
+  // Close the Space's browser wherever it is open; each controller switches
+  // away first so a live window never keeps showing a deleted Space.
+  for (PhiShellWindow* controller : registry_.Controllers()) {
+    controller->CloseSpaceBrowser(space_id);
+  }
+}
+
+// --- Phi native sync ---------------------------------------------------------
+
+namespace {
+
+// Clears sync_applying_ on every return path.
+class ScopedFlag {
+ public:
+  explicit ScopedFlag(bool& flag) : flag_(flag) { flag_ = true; }
+  ~ScopedFlag() { flag_ = false; }
+  ScopedFlag(const ScopedFlag&) = delete;
+  ScopedFlag& operator=(const ScopedFlag&) = delete;
+
+ private:
+  RAW_PTR_EXCLUSION bool& flag_;
+};
+
+std::optional<double> OpacityIn(const base::DictValue* entry,
+                                std::string_view key) {
+  if (!entry) {
+    return std::nullopt;
+  }
+  return entry->FindDouble(key);
+}
+
+}  // namespace
+
+std::vector<PhiSpaceManager::SyncRow> PhiSpaceManager::SyncRows() const {
+  std::vector<SyncRow> rows;
+  if (!store_.is_open()) {
+    return rows;
+  }
+  const base::DictValue* opacities =
+      defaults_.GetDict(kDefaultsSpaceOverlayOpacities);
+  auto add = [&](const model::Space& space, bool hidden) {
+    const store::Space* stored = store_.FindSpace(space.id);
+    if (!stored) {
+      return;  // not flushed yet: next round
+    }
+    SyncRow row;
+    row.id = space.id;
+    row.profile_id = stored->profile_id;
+    row.name = stored->name;
+    row.color_hex = stored->color_hex;
+    row.icon = stored->icon_name;  // raw: a peer's icon is echoed as is
+    row.theme_id = space.theme_id;
+    const base::DictValue* entry =
+        opacities ? opacities->FindDict(space.id) : nullptr;
+    row.opacity_light = OpacityIn(entry, "light");
+    row.opacity_dark = OpacityIn(entry, "dark");
+    row.created_ms = stored->created;
+    row.hidden = hidden;
+    rows.push_back(std::move(row));
+  };
+  for (const model::Space& space : model_.spaces) {
+    add(space, false);
+  }
+  for (const model::Space& space : hidden_) {
+    add(space, true);
+  }
+  return rows;
+}
+
+bool PhiSpaceManager::SyncCreate(const SyncRow& row) {
+  if (!store_.is_open() || row.id.empty() || row.profile_id.empty() ||
+      Has(row.id) || PhiIsAgentSpaceId(row.id)) {
+    return false;
+  }
+  ScopedFlag applying(sync_applying_);
+  const std::string color = row.color_hex.empty()
+                                ? std::string(store::kDefaultSpaceColorHex)
+                                : row.color_hex;
+  if (!store_.CreateSpace(row.id, row.profile_id, row.name, color, row.icon,
+                          row.created_ms > 0
+                              ? std::optional<store::TimeMs>(row.created_ms)
+                              : std::nullopt)) {
+    return false;
+  }
+  model::Space space;
+  space.id = row.id;
+  space.name = row.name;
+  space.profile_id = row.profile_id;
+  space.icon = PhiIconIsValid(row.icon) ? row.icon
+                                        : store::kDefaultSpaceIconName;
+  space.color_hex = color;
+  space.theme_id = row.theme_id;
+  model_.spaces.push_back(std::move(space));
+  MarkDirty();
+  RebuildSpacePalettes();
+  Notify(SpacesChange::kList);
+  return true;
+}
+
+bool PhiSpaceManager::SyncUpdate(const std::string& space_id,
+                                 const std::optional<std::string>& name,
+                                 const std::optional<std::string>& color_hex,
+                                 const std::optional<std::string>& icon,
+                                 std::optional<int64_t> created_ms) {
+  model::Space* space = nullptr;
+  for (model::Space& candidate : model_.spaces) {
+    if (candidate.id == space_id) {
+      space = &candidate;
+    }
+  }
+  for (model::Space& candidate : hidden_) {
+    if (candidate.id == space_id) {
+      space = &candidate;
+    }
+  }
+  if (!space || !store_.is_open()) {
+    return false;
+  }
+  ScopedFlag applying(sync_applying_);
+  if (!store_.UpdateSpace(space_id, name, color_hex, icon, created_ms)) {
+    return false;
+  }
+  if (name) {
+    space->name = *name;
+  }
+  if (color_hex) {
+    space->color_hex = *color_hex;
+  }
+  if (icon) {
+    space->icon =
+        PhiIconIsValid(*icon) ? *icon : store::kDefaultSpaceIconName;
+  }
+  MarkDirty();
+  Notify(SpacesChange::kList);
+  return true;
+}
+
+bool PhiSpaceManager::SyncRebind(const std::string& space_id,
+                                 const std::string& profile_id) {
+  const model::Space* space = Find(space_id);
+  if (!space) {
+    return false;
+  }
+  if (space->profile_id == profile_id) {
+    return true;
+  }
+  ScopedFlag applying(sync_applying_);
+  // The local rebind path (browser respawn, rows move with it); the store
+  // write rides the flush, so it is made here at once.
+  if (!SetSpaceProfile(space_id, profile_id)) {
+    return false;
+  }
+  const store::Space* stored = store_.FindSpace(space_id);
+  if (stored && stored->profile_id != profile_id &&
+      !store_.ChangeSpaceProfile(space_id, profile_id)) {
+    return false;
+  }
+  return true;
+}
+
+bool PhiSpaceManager::SyncThemeState(const std::string& space_id,
+                                     const std::optional<std::string>& theme_id,
+                                     std::optional<double> opacity_light,
+                                     std::optional<double> opacity_dark) {
+  model::Space* space = nullptr;
+  for (model::Space& candidate : model_.spaces) {
+    if (candidate.id == space_id) {
+      space = &candidate;
+    }
+  }
+  for (model::Space& candidate : hidden_) {
+    if (candidate.id == space_id) {
+      space = &candidate;
+    }
+  }
+  if (!space) {
+    return false;
+  }
+  ScopedFlag applying(sync_applying_);
+  // The raw id: a theme this build does not have paints as the app-wide
+  // one and is echoed back unchanged.
+  space->theme_id = theme_id.value_or(std::string());
+  base::DictValue opacities;
+  if (const base::DictValue* stored =
+          defaults_.GetDict(kDefaultsSpaceOverlayOpacities)) {
+    opacities = stored->Clone();
+  }
+  base::DictValue entry;
+  if (opacity_light) {
+    entry.Set("light", *opacity_light);
+  }
+  if (opacity_dark) {
+    entry.Set("dark", *opacity_dark);
+  }
+  if (entry.empty()) {
+    opacities.Remove(space_id);
+  } else {
+    opacities.Set(space_id, std::move(entry));
+  }
+  defaults_.SetDict(kDefaultsSpaceOverlayOpacities, std::move(opacities));
+  MarkDirty();
+  RebuildSpacePalettes();
+  Notify(SpacesChange::kTheme);
+  return true;
+}
+
+bool PhiSpaceManager::SyncOrder(const std::vector<std::string>& ordered) {
+  std::vector<model::Space> spaces;
+  for (const std::string& id : ordered) {
+    if (const model::Space* space = Find(id)) {
+      spaces.push_back(*space);
+    }
+  }
+  if (spaces.size() != model_.spaces.size()) {
+    return false;  // the list moved under the round: next round
+  }
+  if (spaces == model_.spaces) {
+    return true;
+  }
+  ScopedFlag applying(sync_applying_);
+  model_.spaces = std::move(spaces);
+  MarkDirty();
+  Notify(SpacesChange::kOrder);
+  return true;
+}
+
+bool PhiSpaceManager::SyncHide(const std::string& space_id) {
+  if (hidden_ids_.count(space_id)) {
+    return true;
+  }
+  if (!Find(space_id) || model_.spaces.size() <= 1) {
+    return false;
+  }
+  ScopedFlag applying(sync_applying_);
+  hidden_ids_.insert(space_id);
+  RetreatFromSpace(space_id);
+  ApplyHiddenSet();
+  MarkDirty();
+  RebuildSpacePalettes();
+  Notify(SpacesChange::kList);
+  return true;
+}
+
+bool PhiSpaceManager::SyncPurge(const std::string& space_id) {
+  if (!store_.is_open()) {
+    return false;
+  }
+  ScopedFlag applying(sync_applying_);
+  if (Find(space_id)) {
+    if (model_.spaces.size() <= 1) {
+      return false;
+    }
+    RetreatFromSpace(space_id);
+    std::erase_if(model_.spaces,
+                  [&](const model::Space& s) { return s.id == space_id; });
+  }
+  std::erase_if(hidden_,
+                [&](const model::Space& s) { return s.id == space_id; });
+  hidden_ids_.erase(space_id);
+  if (store_.FindSpace(space_id) &&
+      !store_.DeleteSpaceCascade(space_id, /*user_intent=*/false)) {
+    return false;
+  }
+  MarkDirty();
+  RebuildSpacePalettes();
+  Notify(SpacesChange::kList);
+  return true;
+}
+
+void PhiSpaceManager::ApplyAccountDefaultSpace(const std::string& space_id) {
+  if (!Find(space_id) || model_.default_space_id == space_id) {
+    return;
+  }
+  ScopedFlag applying(sync_applying_);
+  model_.default_space_id = space_id;
+  MarkDirty();
+  Notify(SpacesChange::kList);
+}
+
+void PhiSpaceManager::SetSyncHiddenSpaces(const std::set<std::string>& ids) {
+  if (ids == hidden_ids_) {
+    return;
+  }
+  ScopedFlag applying(sync_applying_);
+  const std::set<std::string> before = hidden_ids_;
+  hidden_ids_ = ids;
+  for (const std::string& id : ids) {
+    // Never hide the last visible Space.
+    if (!before.count(id) && Find(id)) {
+      if (model_.spaces.size() <= 1) {
+        hidden_ids_.erase(id);
+        continue;
+      }
+      RetreatFromSpace(id);
+    }
+  }
+  ApplyHiddenSet();
+  RebuildSpacePalettes();
+  Notify(SpacesChange::kList);
+}
+
+void PhiSpaceManager::ApplyHiddenSet() {
+  // Unhide: back at the end of the strip.
+  for (auto it = hidden_.begin(); it != hidden_.end();) {
+    if (!hidden_ids_.count(it->id)) {
+      model_.spaces.push_back(std::move(*it));
+      it = hidden_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+  for (auto it = model_.spaces.begin(); it != model_.spaces.end();) {
+    if (hidden_ids_.count(it->id) && model_.spaces.size() > 1) {
+      hidden_.push_back(std::move(*it));
+      it = model_.spaces.erase(it);
+    } else {
+      ++it;
+    }
+  }
+  if (!Find(model_.default_space_id) && !model_.spaces.empty()) {
+    model_.default_space_id = model_.spaces.front().id;
   }
 }
 

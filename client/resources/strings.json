@@ -570,15 +570,7 @@
    "en": "Nederlands"
   },
   "app.newIncognitoWindow": {
-   "de": "Neues Inkognitofenster",
-   "en": "New Incognito Window",
-   "es": "Nueva ventana de incógnito",
-   "fr": "Nouvelle fenêtre de navigation privée",
-   "ja": "新しいシークレットウインドウ",
-   "ko": "새 시크릿 윈도우",
-   "nl": "Nieuw incognitovenster",
-   "zh-Hans": "新建无痕式窗口",
-   "zh-Hant": "新增無痕視窗"
+   "en": "New Incognito Window"
   },
   "app.newTab": {
    "de": "Neuer Tab",
@@ -3591,6 +3583,17 @@
    "zh-Hans": "打开到",
    "zh-Hant": "開啟於"
   },
+  "localData.bookmarks.importedFromGuestFolderTitle": {
+   "de": "Aus dem Gastmodus importiert",
+   "en": "Imported from Guest",
+   "es": "Importados del modo Invitado",
+   "fr": "Importés du mode Invité",
+   "ja": "ゲストからインポート",
+   "ko": "게스트에서 가져옴",
+   "nl": "Geïmporteerd uit Gast",
+   "zh-Hans": "从访客模式导入",
+   "zh-Hant": "從訪客匯入"
+  },
   "menuBar.aboutBody": {
    "de": "Phi Browser für Windows {0}\nDie Phi-Client-Shell über dem Phi-Framework.",
    "en": "Phi Browser for Windows {0}\nThe Phi client shell over the Phi framework.",
@@ -6393,6 +6396,131 @@
    "zh-Hans": "饱和度",
    "zh-Hant": "飽和度"
   },
+  "settings.sync.approve": {
+   "de": "Genehmigen",
+   "en": "Approve",
+   "es": "Aprobar",
+   "fr": "Approuver",
+   "ja": "承認",
+   "ko": "승인",
+   "nl": "Keur goed",
+   "zh-Hans": "批准",
+   "zh-Hant": "核准"
+  },
+  "settings.sync.continueSetup": {
+   "en": "Continue setup"
+  },
+  "settings.sync.deny": {
+   "de": "Ablehnen",
+   "en": "Deny",
+   "es": "Denegar",
+   "fr": "Refuser",
+   "ja": "拒否",
+   "ko": "거부",
+   "nl": "Weiger",
+   "zh-Hans": "拒绝",
+   "zh-Hant": "拒絕"
+  },
+  "settings.sync.devices": {
+   "en": "Devices"
+  },
+  "settings.sync.error.expired": {
+   "en": "That request already expired."
+  },
+  "settings.sync.error.notUnlocked": {
+   "en": "This device isn’t unlocked yet."
+  },
+  "settings.sync.error.requestFailed": {
+   "en": "Couldn’t reach sync. Check your connection and try again."
+  },
+  "settings.sync.expires": {
+   "en": "Expires: {0}"
+  },
+  "settings.sync.loadFailed": {
+   "en": "Couldn’t load sync information. Check your connection and retry."
+  },
+  "settings.sync.loading": {
+   "en": "Checking sync…"
+  },
+  "settings.sync.notPaired": {
+   "en": "Not paired"
+  },
+  "settings.sync.notSetUp": {
+   "en": "This device isn’t set up for sync yet."
+  },
+  "settings.sync.notStarted": {
+   "en": "Sync has not started"
+  },
+  "settings.sync.paired": {
+   "en": "Sync is on for this PC"
+  },
+  "settings.sync.recoveryBody": {
+   "en": "To join on another device, approve its request here or use your saved recovery code. The code is shown only when sync is first set up."
+  },
+  "settings.sync.recoveryTitle": {
+   "en": "Recovery and removal"
+  },
+  "settings.sync.remove": {
+   "en": "Remove this device from sync…"
+  },
+  "settings.sync.remove.body": {
+   "en": "This PC will stop syncing. Your local browsing data stays on this PC. To join again, use approval from another device or your saved recovery code."
+  },
+  "settings.sync.remove.confirm": {
+   "en": "Remove This Device"
+  },
+  "settings.sync.remove.lastDevice": {
+   "en": "This is the last authorized device and can’t be removed yet. Set up sync on another device first."
+  },
+  "settings.sync.remove.title": {
+   "en": "Remove this PC from account sync?"
+  },
+  "settings.sync.remove.unavailable": {
+   "en": "Sync isn’t available right now, so this device wasn’t removed. Check that you’re still signed in, then try again."
+  },
+  "settings.sync.requestFrom": {
+   "en": "{0} · {1}"
+  },
+  "settings.sync.retry": {
+   "de": "Erneut versuchen",
+   "en": "Retry",
+   "es": "Reintentar",
+   "fr": "Réessayer",
+   "ja": "再試行",
+   "ko": "다시 시도",
+   "nl": "Opnieuw proberen",
+   "zh-Hans": "重试",
+   "zh-Hant": "重試"
+  },
+  "settings.sync.setUp": {
+   "en": "Set up sync on this device"
+  },
+  "settings.sync.signIn": {
+   "de": "Anmelden",
+   "en": "Sign in",
+   "es": "Iniciar sesión",
+   "fr": "Se connecter",
+   "ja": "ログイン",
+   "ko": "로그인",
+   "nl": "Inloggen",
+   "zh-Hans": "登录",
+   "zh-Hant": "登入"
+  },
+  "settings.sync.signInPrompt": {
+   "en": "Sign in to sync across devices"
+  },
+  "settings.sync.status.lastSuccess": {
+   "en": "Last successful sync on this PC"
+  },
+  "settings.sync.thisDevice": {
+   "en": "This PC"
+  },
+  "settings.sync.title": {
+   "en": "Sync"
+  },
+  "settings.sync.verifyCode": {
+   "en": "Verify this code matches the other device: {0}"
+  },
   "settings.turningDeveloperModeOffTurns": {
    "en": "Turning developer mode off turns off agent access "
   },
@@ -7300,6 +7428,226 @@
    "nl": "{0} tabbladen",
    "zh-Hans": "{0} 个标签页",
    "zh-Hant": "{0} 個分頁"
+  },
+  "sync.setup.applying": {
+   "en": "Applying your choices…"
+  },
+  "sync.setup.code.body": {
+   "en": "Store this code somewhere safe. You will need it to add another device to your account."
+  },
+  "sync.setup.code.copied": {
+   "en": "Copied"
+  },
+  "sync.setup.code.copy": {
+   "en": "Copy"
+  },
+  "sync.setup.code.saved": {
+   "en": "I’ve saved it"
+  },
+  "sync.setup.code.title": {
+   "en": "Save your recovery code"
+  },
+  "sync.setup.denied.body": {
+   "en": "The other device denied this request."
+  },
+  "sync.setup.denied.title": {
+   "en": "Request denied"
+  },
+  "sync.setup.enter.body": {
+   "en": "Enter the recovery code you saved when you set up sync on another device."
+  },
+  "sync.setup.enter.placeholder": {
+   "en": "Recovery code"
+  },
+  "sync.setup.enter.submit": {
+   "en": "Submit"
+  },
+  "sync.setup.enter.title": {
+   "en": "Enter your recovery code"
+  },
+  "sync.setup.error.badRecoveryCode": {
+   "en": "Check your recovery code and try again."
+  },
+  "sync.setup.error.connection": {
+   "en": "Couldn’t connect to sync. Check your connection and try again."
+  },
+  "sync.setup.error.createProfileFailed": {
+   "en": "Couldn’t create a profile named “{0}” on this PC."
+  },
+  "sync.setup.error.profileDecisionFailed": {
+   "en": "Couldn’t apply one of your profile choices. Check your connection and retry."
+  },
+  "sync.setup.error.profileLoadFailed": {
+   "en": "Couldn’t load your account’s profiles. Check your connection and retry."
+  },
+  "sync.setup.error.signInRequired": {
+   "en": "Sign in again to continue setting up sync."
+  },
+  "sync.setup.error.title": {
+   "en": "Something went wrong"
+  },
+  "sync.setup.error.tooManyRequests": {
+   "en": "Too many pending requests. Try again later or use a recovery code."
+  },
+  "sync.setup.expired.body": {
+   "en": "This request timed out. You can try again."
+  },
+  "sync.setup.expired.title": {
+   "en": "Request expired"
+  },
+  "sync.setup.finishLater": {
+   "en": "Finish later"
+  },
+  "sync.setup.intro.body": {
+   "en": "Bring your Spaces, bookmarks, pinned tabs and supported browsing data to your other devices. Save a recovery code, then choose how this PC joins your account."
+  },
+  "sync.setup.intro.continue": {
+   "de": "Weiter",
+   "en": "Continue",
+   "es": "Continuar",
+   "fr": "Continuer",
+   "ja": "続ける",
+   "ko": "계속",
+   "nl": "Ga door",
+   "zh-Hans": "继续",
+   "zh-Hant": "繼續"
+  },
+  "sync.setup.intro.title": {
+   "en": "Set up sync"
+  },
+  "sync.setup.join.body": {
+   "en": "Choose how to set up sync on this device."
+  },
+  "sync.setup.join.requestApproval": {
+   "en": "Request approval from another device"
+  },
+  "sync.setup.join.title": {
+   "en": "Add this device to your account"
+  },
+  "sync.setup.join.useRecoveryCode": {
+   "en": "Enter a recovery code"
+  },
+  "sync.setup.notStarted": {
+   "en": "Sync has not started"
+  },
+  "sync.setup.profiles.assignTo": {
+   "en": "Assign to {0}"
+  },
+  "sync.setup.profiles.body": {
+   "en": "Choose how profiles on this PC connect to your account. Sync starts after you finish matching profiles. You can finish later and keep browsing."
+  },
+  "sync.setup.profiles.choose": {
+   "de": "Auswählen…",
+   "en": "Choose…",
+   "es": "Seleccionar…",
+   "fr": "Choisir…",
+   "ja": "選択…",
+   "ko": "선택…",
+   "nl": "Kies…",
+   "zh-Hans": "选取…",
+   "zh-Hant": "選擇…"
+  },
+  "sync.setup.profiles.continue": {
+   "de": "Weiter",
+   "en": "Continue",
+   "es": "Continuar",
+   "fr": "Continuer",
+   "ja": "続ける",
+   "ko": "계속",
+   "nl": "Ga door",
+   "zh-Hans": "继续",
+   "zh-Hant": "繼續"
+  },
+  "sync.setup.profiles.createHere": {
+   "en": "Create on this PC"
+  },
+  "sync.setup.profiles.fallbackName": {
+   "de": "Profil",
+   "en": "Profile",
+   "es": "Perfil",
+   "fr": "Profil",
+   "ja": "プロファイル",
+   "ko": "프로필",
+   "nl": "Profiel",
+   "zh-Hans": "个人资料",
+   "zh-Hant": "設定檔"
+  },
+  "sync.setup.profiles.registerNew": {
+   "en": "Register as new"
+  },
+  "sync.setup.profiles.title": {
+   "en": "Match your profiles"
+  },
+  "sync.setup.profiles.unclaimed": {
+   "en": "Unclaimed account profiles"
+  },
+  "sync.setup.profiles.unnamed": {
+   "en": "Unnamed profile ({0})"
+  },
+  "sync.setup.profiles.unreadable": {
+   "en": "Can’t be read right now — Phi keeps retrying in the background"
+  },
+  "sync.setup.tryAgain": {
+   "en": "Try again"
+  },
+  "sync.setup.tryAnotherWay": {
+   "en": "Try another way"
+  },
+  "sync.setup.waiting.body": {
+   "en": "On an authorized device, open Settings → Sync and approve this request. Make sure this code matches:"
+  },
+  "sync.setup.waiting.cancel": {
+   "de": "Abbrechen",
+   "en": "Cancel",
+   "es": "Cancelar",
+   "fr": "Annuler",
+   "ja": "キャンセル",
+   "ko": "취소",
+   "nl": "Annuleer",
+   "zh-Hans": "取消",
+   "zh-Hant": "取消"
+  },
+  "sync.setup.waiting.expiresIn": {
+   "en": "Expires in {0}"
+  },
+  "sync.setup.waiting.title": {
+   "en": "Waiting for approval"
+  },
+  "sync.setup.waiting.useRecoveryCode": {
+   "en": "Use a recovery code"
+  },
+  "sync.setup.windowTitle": {
+   "en": "Finish setting up sync"
+  },
+  "sync.setup.working": {
+   "en": "Working…"
+  },
+  "sync.status.checking": {
+   "en": "Checking sync status…"
+  },
+  "sync.status.initial": {
+   "en": "Initial sync in progress"
+  },
+  "sync.status.needsAttention": {
+   "en": "Needs attention"
+  },
+  "sync.status.offline": {
+   "en": "Offline — changes will sync when connected"
+  },
+  "sync.status.partialFailure": {
+   "en": "Some content needs attention. Check the details and your connection."
+  },
+  "sync.status.phiData": {
+   "en": "Phi data"
+  },
+  "sync.status.profile": {
+   "en": "Profile"
+  },
+  "sync.status.syncing": {
+   "en": "Syncing…"
+  },
+  "sync.status.upToDate": {
+   "en": "Up to date"
   },
   "tabs.tabGroup.colorName.blue": {
    "de": "Blau",

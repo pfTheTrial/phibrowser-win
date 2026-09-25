@@ -147,6 +147,45 @@ void PhiFrameworkDispatcher::OnAuthCallbackUrl(const char* url,
   *taken = coordinator_.account().HandleAuthCallbackUrl(url ? url : "");
 }
 
+// --- Phi sync (Chromium's side of it; PhiChromiumSync) --------------------
+
+namespace {
+void Put(phi_framework::PhiStringSink* sink, const std::string& value) {
+  if (sink && !value.empty()) {
+    sink->Append(value.data(), value.size());
+  }
+}
+}  // namespace
+
+void PhiFrameworkDispatcher::GetPhiSyncAccessToken(
+    phi_framework::PhiStringSink* token) {
+  Put(token, coordinator_.chromium_sync().AccessToken());
+}
+
+void PhiFrameworkDispatcher::GetPhiSyncAccount(
+    int* state,
+    phi_framework::PhiStringSink* subject,
+    phi_framework::PhiStringSink* email) {
+  std::string sub;
+  std::string mail;
+  *state =
+      static_cast<int>(coordinator_.chromium_sync().Account(&sub, &mail));
+  Put(subject, sub);
+  Put(email, mail);
+}
+
+void PhiFrameworkDispatcher::GetPhiProfileSyncInfo(
+    const char* profile_id,
+    phi_framework::PhiStringSink* uuid,
+    phi_framework::PhiStringSink* passphrase) {
+  PhiChromiumSync::ProfileKey key;
+  if (coordinator_.chromium_sync().ProfileKeyFor(profile_id ? profile_id : "",
+                                                 &key)) {
+    Put(uuid, key.uuid);
+    Put(passphrase, key.passphrase);
+  }
+}
+
 // --- Reader View and extensions -------------------------------------------
 
 void PhiFrameworkDispatcher::OnReaderArticleExtracted(int request_id,

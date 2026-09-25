@@ -975,6 +975,37 @@ constexpr PhiParamField kOnboardingDrive[] = {
      "signIn, guest, cancel, legal, metrics, name, swatch, layout, next, close."},
     {"value", kParamString, kOptional, "", "The name / theme id / layout."},
 };
+constexpr PhiParamField kSyncProfileKey[] = {
+    {"profileId", kParamString, kRequired, "", "The Chromium profile id."},
+    {"uuid", kParamString, kOptional, "",
+     "The account-global profile uuid; empty removes the key."},
+    {"passphrase", kParamString, kOptional, "",
+     "The profile key, 64 lowercase hex chars."},
+};
+constexpr PhiParamField kSyncKeyOp[] = {
+    {"op", kParamString, kRequired, "",
+     "unlock, resolve, beginSetup, bootstrap, requestJoin, pollJoin, "
+     "cancelJoin, recover, startPairing, applyDecisions, refresh, approve, "
+     "deny, removeDevice, peek (read-only: the account's Phi sync data), "
+     "syncNow (a Phi native sync round)."},
+    {"requestId", kParamString, kOptional, "",
+     "pollJoin / cancelJoin / approve / deny: the join request."},
+    {"code", kParamString, kOptional, "", "recover: the recovery code."},
+    {"confirm", kParamString, kOptional, "",
+     "bootstrap: must be \"bootstrap\" (it creates the account's keys)."},
+    {"decisions", kParamList, kOptional, "",
+     "applyDecisions: [{kind: adopt|registerNew|createLocal, localProfileId, "
+     "remoteUuid, displayName}]."},
+};
+constexpr PhiParamField kSyncSetupDrive[] = {
+    {"action", kParamString, kRequired, "",
+     "continue, saved, copy, requestApproval, useRecovery, cancel, code, "
+     "submit, tryAnother, tryAgain, local, remote, continueProfiles, "
+     "finishLater."},
+    {"value", kParamString, kOptional, "",
+     "code: the text; local: \"<row>:<remote row>|new\"; remote: "
+     "\"<row>:create|assign:<local row>|none\"."},
+};
 constexpr PhiParamField kFeedbackAccount[] = {
     {"userId", kParamString, kOptional, "", "A stand-in account id."},
     {"email", kParamString, kOptional, "", "Its email."},
@@ -1719,6 +1750,36 @@ base::span<const PhiVerbSpec> PhiControlDispatcher::Registry() {
        &Call<&PhiControlDispatcher::VerbOnboardingDrive>,
        "test_rig_only not_open wrong_page unknown_action",
        "Presses a control of the onboarding window by name."},
+      // --- Chromium sync (docs/user-data-parity.md S2) ----------------------------
+      {"agentSpace.sync.status", "", kScopeNone, kHost, kVerbPlain, {}, false,
+       false, &Call<&PhiControlDispatcher::VerbSyncStatus>, "test_rig_only",
+       "What Chromium sync is told: the account state, the server, whether a "
+       "bearer token is at hand, and which profiles have a key."},
+      {"agentSpace.sync.setProfileKey", "", kScopeNone, kHost, kVerbPlain,
+       kSyncProfileKey, false, false,
+       &Call<&PhiControlDispatcher::VerbSyncSetProfileKey>,
+       "test_rig_only invalid_payload",
+       "Hands Chromium a profile's sync key by hand, standing in for the key "
+       "layer."},
+      {"agentSpace.sync.setup.open", "", kScopeNone, kHost, kVerbPlain, {},
+       false, false, &Call<&PhiControlDispatcher::VerbSyncSetupOpen>,
+       "test_rig_only no_key_layer",
+       "Opens the sync setup window, as Settings ▸ Sync's button does."},
+      {"agentSpace.sync.setup.status", "", kScopeNone, kHost, kVerbPlain, {},
+       false, false, &Call<&PhiControlDispatcher::VerbSyncSetupStatus>,
+       "test_rig_only not_open",
+       "The sync setup window's page and state."},
+      {"agentSpace.sync.setup.drive", "", kScopeNone, kHost, kVerbPlain,
+       kSyncSetupDrive, false, false,
+       &Call<&PhiControlDispatcher::VerbSyncSetupDrive>,
+       "test_rig_only not_open wrong_page unknown_action invalid_value busy "
+       "undecided",
+       "Presses a control of the sync setup window by name."},
+      {"agentSpace.sync.keyOp", "", kScopeNone, kHost, kVerbPlain, kSyncKeyOp,
+       false, false, &Call<&PhiControlDispatcher::VerbSyncKeyOp>,
+       "test_rig_only invalid_payload no_key_layer",
+       "Starts one sync key-layer operation (the setup window's and Settings ▸ "
+       "Sync's steps); agentSpace.sync.status's lastOp reports the outcome."},
 
       // --- Credentials -------------------------------------------------------------
       {"credentials.status", "", kScopeNone, kAgentSpace, kVerbPlain, {},

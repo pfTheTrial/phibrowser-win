@@ -59,6 +59,13 @@ class PhiFrameworkDispatcher : public phi_framework::PhiFrameworkDelegate {
   void OnOmniboxResults(int64_t window_id, const char* json) override;
   void OnImportCompleted(const char* source, bool success) override;
   void OnAuthCallbackUrl(const char* url, bool* taken) override;
+  void GetPhiSyncAccessToken(phi_framework::PhiStringSink* token) override;
+  void GetPhiSyncAccount(int* state,
+                         phi_framework::PhiStringSink* subject,
+                         phi_framework::PhiStringSink* email) override;
+  void GetPhiProfileSyncInfo(const char* profile_id,
+                             phi_framework::PhiStringSink* uuid,
+                             phi_framework::PhiStringSink* passphrase) override;
   void OnPlaceholderModeChanged(int64_t window_id, bool entered) override;
   void OnRefreshNewTab(int64_t window_id) override;
   void OnContentFullscreenChanged(int64_t window_id, bool fullscreen) override;

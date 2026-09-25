@@ -11,6 +11,8 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -18,6 +20,7 @@
 #include "base/memory/raw_ptr_exclusion.h"
 #include "phibrowser-win/client/phi_app_model.h"
 #include "phibrowser-win/client/phi_ids.h"
+#include "phibrowser-win/client/phi_local_store.h"
 #include "phibrowser-win/client/phi_settings_types.h"
 #include "phibrowser-win/client/phi_window_model.h"
 #include "phibrowser-win/client/phi_window_registry.h"
@@ -40,11 +43,10 @@ class PhiFramework;
 
 namespace phi_client {
 
+class PhiAccountDefaults;
 class PhiPreferences;
 struct PhiPalette;
 struct PhiSpaceView;
-template <typename T>
-class PhiStore;
 
 // --- Pure helpers (host-tested) ---------------------------------------------
 
@@ -59,15 +61,15 @@ inline const model::Space* FindSpaceIn(const std::vector<model::Space>& spaces,
 }
 
 // The Space holding the DEFAULT role at run time: the persisted holder when
-// it still exists, "1" (the built-in default) when the list is empty, else
-// the first Space. (The decoder's ResolveDefaultSpaceId is the load-time
+// it still exists, "default-space" (the built-in default) when the list is
+// empty, else the first Space. (The decoder's ResolveDefaultSpaceId is the load-time
 // rule; this is what DefaultSpaceId() has always answered.)
 inline std::string DefaultSpaceIdOf(const std::vector<model::Space>& spaces,
                                     const std::string& persisted) {
   if (FindSpaceIn(spaces, persisted)) {
     return persisted;
   }
-  return spaces.empty() ? std::string("1") : spaces.front().id;
+  return spaces.empty() ? std::string("default-space") : spaces.front().id;
 }
 
 // Who inherits the default role when `deleted_id` (its holder) goes: the
@@ -144,11 +146,16 @@ class PhiSpaceManager {
   // the write into its coalesced-save timer (then calls Save()).
   using DirtyCallback = std::function<void()>;
   // Every reference outlives the service (the coordinator owns them all).
+  // Every reference outlives the service (the coordinator owns them all).
+  // `store` and `defaults` are the open account's (OpenDataAccount); the
+  // manager's model is loaded from and saved into them.
   PhiSpaceManager(PhiWindowRegistry& registry,
                   const PhiWindowModel& window_model,
                   const PhiPreferences& preferences,
                   phi_framework::PhiFramework& framework,
                   Host& host,
+                  store::LocalStore& store,
+                  PhiAccountDefaults& defaults,
                   DirtyCallback dirty);
   ~PhiSpaceManager();
 
@@ -159,12 +166,22 @@ class PhiSpaceManager {
   void RemoveObserver(Observer* observer);
 
   // --- The store ----------------------------------------------------------
-  // Binds the store to `user_data_dir` and loads it. No observer hears a
-  // load; the owner rebuilds the palettes once the preferences are in.
-  void Load(const std::wstring& user_data_dir);
-  // Writes the model (Spaces, default role AND the rules). The owner's
-  // flush is the only caller.
+  // Reads the model from the open account: the Spaces and URL rules from its
+  // LocalStore, the default role and the per-Space theme overrides from its
+  // account defaults. An empty store gets the Mac's first-launch
+  // `default-space` (ensureDefaultSpace). No observer hears a load; the
+  // owner rebuilds the palettes once the preferences are in.
+  void Load();
+  // Reconciles the store with the model: creates, updates, re-binds,
+  // deletes and reorders Spaces, applies the rule changes as ONE edit set
+  // (the Mac's applyURLRuleEdits — stable ids, soft deletes, pending
+  // flags), and writes the default role and theme overrides. Idempotent.
+  // The owner's flush is the only caller.
   void Save();
+  // After the model was reloaded for another account: every window showing
+  // a Space this account does not have retreats to the default Space and
+  // closes that browser (the delete path's order), then everyone repaints.
+  void RetreatFromMissingSpaces();
   const model::PhiSpacesModel& model() const { return model_; }
   // THE exception to "this service is the only writer of the list": the
   // verb ladder's agentSpace.spaces.create (and the urlRules.* verbs, on
@@ -178,7 +195,11 @@ class PhiSpaceManager {
     return FindSpaceIn(model_.spaces, id);
   }
   bool Has(const std::string& id) const { return Find(id) != nullptr; }
-  int next_space_id() const { return model_.next_space_id; }
+  // The number a new Space's default name carries ("Space 3"). Only a
+  // name: Space ids are UUIDs, as on the Mac.
+  int next_space_id() const {
+    return static_cast<int>(model_.spaces.size()) + 1;
+  }
   // Every Space, in display order, as the chips row and menus consume it.
   std::vector<PhiSpaceView> Spaces() const;
   // Every Space as the SETTINGS panes read it: id, name, display icon,
@@ -244,12 +265,78 @@ class PhiSpaceManager {
   // the body; the coordinator coalesces the calls to one per turn.
   void PushSpaceMenuNow();
 
+  // --- Phi native sync (docs/user-data-parity.md S5) ------------------------
+  // The Space kind's local side (phi_sync_spaces_win.cc marshals here). The
+  // owner flushes the model into the store before SyncRows. Every Sync*
+  // write lands in the store at once AND in the model, publishes
+  // SpacesChanged, and returns false when it did not land; while one runs
+  // sync_applying() is true, so the owner does not read it as a local edit.
+  struct SyncRow {
+    std::string id;
+    std::string profile_id;
+    std::string name;
+    std::string color_hex;
+    std::string icon;
+    std::string theme_id;  // "" = follows the app-wide theme
+    std::optional<double> opacity_light;
+    std::optional<double> opacity_dark;
+    int64_t created_ms = 0;
+    bool hidden = false;
+  };
+  // Every stored Space in strip order, hidden ones last.
+  std::vector<SyncRow> SyncRows() const;
+  bool SyncCreate(const SyncRow& row);
+  bool SyncUpdate(const std::string& space_id,
+                  const std::optional<std::string>& name,
+                  const std::optional<std::string>& color_hex,
+                  const std::optional<std::string>& icon,
+                  std::optional<int64_t> created_ms);
+  bool SyncRebind(const std::string& space_id, const std::string& profile_id);
+  // The Mac's applyRemoteThemeState: the theme pin and the overlay
+  // opacities (spaceOverlayOpacities, carried for the Mac; Windows paints
+  // with its own saturation).
+  bool SyncThemeState(const std::string& space_id,
+                      const std::optional<std::string>& theme_id,
+                      std::optional<double> opacity_light,
+                      std::optional<double> opacity_dark);
+  bool SyncOrder(const std::vector<std::string>& ordered_space_ids);
+  // A remote soft delete: the Space leaves every list, its windows retreat,
+  // its row stays stored until retention purges it. Refused for the last
+  // visible Space.
+  bool SyncHide(const std::string& space_id);
+  // Retention: the stored row and what it owns go for good.
+  bool SyncPurge(const std::string& space_id);
+  // The account's default-Space register landed: the role moves to
+  // `space_id` when it is a Space here (applyAccountDefaultSpace).
+  void ApplyAccountDefaultSpace(const std::string& space_id);
+  // Told when the default role moves to another Space on a user delete.
+  void set_on_default_role_moved(std::function<void(const std::string&)> callback) {
+    on_default_role_moved_ = std::move(callback);
+  }
+  // Sync landed URL rules in the store: the model's rules follow (Save
+  // diffs the model against the store, so a stale model would undo them).
+  void ReloadUrlRulesFromStore();
+  // The sync table's hidden set (local ids), after every table write.
+  void SetSyncHiddenSpaces(const std::set<std::string>& ids);
+  bool sync_applying() const { return sync_applying_; }
+
  private:
   void MarkDirty();
   void Notify(SpacesChange what);
+  // DeleteSpace's window half, shared with SyncHide: the default role moves
+  // on, slots showing only this Space retreat to the default Space, and its
+  // browsers close.
+  void RetreatFromSpace(const std::string& space_id);
+  // Moves Spaces between the model and hidden_ to match hidden_ids_.
+  void ApplyHiddenSet();
 
-  model::PhiSpacesModel model_;  // PhiSpaces.json (Spaces + rules)
-  std::unique_ptr<PhiStore<model::PhiSpacesModel>> store_;
+  model::PhiSpacesModel model_;  // Spaces + rules, as loaded/saved above.
+  // Sync-hidden Spaces: out of the model (so out of every list), still
+  // stored — Save neither deletes nor reorders them away.
+  std::set<std::string> hidden_ids_;
+  std::vector<model::Space> hidden_;
+  bool sync_applying_ = false;
+  std::function<void(const std::string&)> on_default_role_moved_;
   // One resolved palette per Space that overrides the app-wide theme; a
   // Space with no override is not in here and uses the preferences' palette.
   std::map<std::string, std::unique_ptr<PhiPalette>> palette_by_space_;
@@ -263,6 +350,8 @@ class PhiSpaceManager {
   RAW_PTR_EXCLUSION const PhiPreferences& preferences_;
   RAW_PTR_EXCLUSION phi_framework::PhiFramework& framework_;
   RAW_PTR_EXCLUSION Host& host_;
+  RAW_PTR_EXCLUSION store::LocalStore& store_;
+  RAW_PTR_EXCLUSION PhiAccountDefaults& defaults_;
   DirtyCallback dirty_;
   std::vector<Observer*> observers_;
 };

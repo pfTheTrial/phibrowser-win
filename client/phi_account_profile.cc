@@ -17,6 +17,7 @@
 #include "base/memory/raw_ptr_exclusion.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
+#include "phibrowser-win/client/phi_account_storage.h"
 #include "phibrowser-win/client/phi_auth.h"
 #include "phibrowser-win/client/phi_file_io.h"
 #include "phibrowser-win/client/phi_http.h"
@@ -261,10 +262,24 @@ PhiAccountProfileService::~PhiAccountProfileService() {
 void PhiAccountProfileService::Load(const std::wstring& user_data_dir,
                                     HWND notify_hwnd,
                                     UINT notify_msg) {
-  profile_path_ = user_data_dir + L"\\PhiAccountProfile.json";
-  avatar_path_ = user_data_dir + L"\\PhiAvatar.img";
+  user_data_dir_ = user_data_dir;
   notify_hwnd_ = notify_hwnd;
   notify_msg_ = notify_msg;
+}
+
+void PhiAccountProfileService::BindSubject(const std::string& sub) {
+  profile_.reset();
+  avatar_bytes_.clear();
+  avatar_url_.clear();
+  avatar_circles_.clear();
+  const std::wstring dir = PhiEnsureAccountDir(user_data_dir_, sub);
+  if (dir.empty()) {
+    profile_path_.clear();
+    avatar_path_.clear();
+    return;
+  }
+  profile_path_ = dir + L"\\PhiAccountProfile.json";
+  avatar_path_ = dir + L"\\PhiAvatar.img";
   base::DictValue dict;
   if (PhiReadJsonFile(profile_path_, &dict) == PhiJsonFileStatus::kOk) {
     profile_ = ProfileFromDict(dict);
@@ -295,12 +310,8 @@ void PhiAccountProfileService::SyncWithSession(
     synced_sub_ = sub;
     last_fetch_tick_ = 0;
     last_error_.clear();
-    if (profile_ && profile_->auth0_id != sub) {
-      // The cache belongs to somebody else (an account switch through
-      // sign-out/sign-in leaves nothing, but a copied user-data dir might).
-      Clear();
-      synced_sub_ = sub;  // Clear() reset it.
-    }
+    // Each account keeps its own cache: read this one's.
+    BindSubject(sub);
   }
   if (!busy_ && last_fetch_tick_ == 0) {
     auto job = std::make_unique<Job>();

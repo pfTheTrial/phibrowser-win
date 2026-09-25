@@ -17,6 +17,7 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/uuid.h"
 #include "base/values.h"
+#include "phibrowser-win/client/phi_account_storage.h"
 #include "phibrowser-win/client/phi_auth.h"
 #include "phibrowser-win/client/phi_feedback_image.h"
 #include "phibrowser-win/client/phi_feedback_zip.h"
@@ -30,7 +31,6 @@ namespace phi_client {
 
 namespace {
 
-constexpr wchar_t kDirectoryName[] = L"PhiFeedbackOutbox";
 constexpr wchar_t kManifestFilename[] = L"manifest.json";
 constexpr char kSystemLogsFilename[] = "system_logs.txt";
 constexpr char kPrimaryLogsZipFilename[] = "logs.zip";
@@ -1277,7 +1277,9 @@ void PhiFeedbackOutbox::Start(const std::wstring& user_data_dir,
   if (!already) {
     started_ = true;
     user_data_dir_ = user_data_dir;
-    root_ = Join(user_data_dir, kDirectoryName);
+    // Every account's outbox sits in its own directory (the Mac's
+    // users/<sub>/feedbackOutbox); root_ is the accounts' parent.
+    root_ = Join(Join(user_data_dir, L"Phi"), L"users");
     auth_ = auth;
   }
   ::LeaveCriticalSection(&lock_);
@@ -1328,14 +1330,10 @@ std::string PhiFeedbackOutbox::CurrentUserId() {
 }
 
 std::wstring PhiFeedbackOutbox::AccountRoot(const std::string& user_id) const {
-  // The Auth0 subject ("auth0|5f…") as a directory name.
-  std::wstring key;
-  for (char c : user_id) {
-    const bool safe = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-                      (c >= '0' && c <= '9') || c == '-' || c == '_';
-    key += safe ? static_cast<wchar_t>(c) : L'_';
-  }
-  return Join(root_, key.empty() ? L"_" : key);
+  // <UserData>\Phi\users\<account>\feedbackOutbox, the account directory
+  // named as everywhere else (PhiAccountDirName: "auth0|5f…" -> "auth0_5f…").
+  return Join(Join(root_, Widen(PhiAccountDirName(user_id))),
+              L"feedbackOutbox");
 }
 
 bool PhiFeedbackOutbox::Enqueue(const PhiFeedbackDraft& draft,

@@ -1,0 +1,21 @@
+{
+  "families" : {
+    "bookmarks_merge" : 1000,
+    "client_tag_hash" : 201,
+    "clock_functions" : 600,
+    "clock_sequence" : 300,
+    "lww_winner" : 1000,
+    "pins_merge" : 1000,
+    "rank_assign" : 1000,
+    "rank_between" : 1000,
+    "rank_is_legal" : 714,
+    "settings_merge" : 1000,
+    "spaces_merge" : 1000,
+    "urlrule_normalized_host" : 318,
+    "urlrule_normalized_path_prefix" : 328,
+    "urlrules_merge" : 1000
+  },
+  "format" : 1,
+  "seed" : "0x5D1B2E9F00C0FFEE",
+  "source_revision" : "9ff12904404ad37f462c3b24ef0a710754a339a8"
+}

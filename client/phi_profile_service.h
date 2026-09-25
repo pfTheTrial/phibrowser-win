@@ -9,6 +9,7 @@
 
 #include <cstdint>
 #include <deque>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -16,6 +17,7 @@
 #include "base/values.h"
 #include "phibrowser-win/client/phi_ids.h"
 #include "phibrowser-win/client/phi_settings_types.h"
+#include "phibrowser-win/client/phi_sync_status.h"
 
 namespace phi_framework {
 class PhiFramework;
@@ -44,6 +46,7 @@ class PhiProfileService {
       kOpenSpace,  // "+ Space & profile": create a Space on it, switch.
       kFillForm,   // The create-Space form's picker selects it.
       kReplyOnly,  // profiles.create: answer the waiting verb.
+      kSyncPairing,  // The sync setup's "Create on this PC": adopt into it.
     };
     std::string display_name;
     SlotId slot;
@@ -67,6 +70,10 @@ class PhiProfileService {
     // basename) and the slot enters it.
     virtual void OpenSpaceOnNewProfile(SlotId slot,
                                        const std::string& profile_id) = 0;
+    // Then::kSyncPairing — the sync setup window's requested profile landed
+    // (`profile_id` empty: the creation failed or timed out).
+    virtual void SyncPairingProfileCreated(const std::string& display_name,
+                                           const std::string& profile_id) = 0;
     // A profile was renamed or deleted: the Settings panes re-read the list.
     virtual void NoteProfilesChanged() = 0;
     // Whether any Space is still bound to `profile_id` — such a profile is
@@ -130,6 +137,14 @@ class PhiProfileService {
       const std::string& profile_id) const;
   bool SetSearchEngine(const std::string& profile_id,
                        const std::string& keyword);
+  // Chromium sync's status for a LOADED profile (the Mac's
+  // ChromiumSyncStatus.read over the framework's ProfileSyncStatusJson);
+  // checking when the payload is unknown, nullopt when the profile is not
+  // loaded (its sync is not running; the query never loads it). Its
+  // enabled categories, when `categories` is given.
+  std::optional<sync::ContextStatus> ProfileSyncStatus(
+      const std::string& profile_id,
+      std::vector<std::string>* categories = nullptr) const;
   std::string DownloadDirectory(const std::string& profile_id) const;
   bool SetDownloadDirectory(const std::string& profile_id,
                             const std::string& dir);

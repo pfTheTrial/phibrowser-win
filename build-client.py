@@ -172,6 +172,33 @@ def target_machine(kit):
     return match.group(1).lower()
 
 
+# The vendored SQLite (third_party/sqlite, README.phi.md) is C, and the kit's
+# only compile recipe is the C++ one. The C recipe is that recipe with the
+# language and C++-only switches swapped out: /TC for /TP, no /std:c++*,
+# no Chromium clang plugins (they are C++ checks), and every warning off
+# (-w) because the amalgamation is not ours to fix — the target, CRT,
+# optimisation and debug-info switches are kept, so the object links like
+# any other.
+SQLITE_SOURCE = "../../phibrowser-win/third_party/sqlite/sqlite3.c"
+SQLITE_DEFINES = (
+    "-DSQLITE_THREADSAFE=1 -DSQLITE_DQS=0 -DSQLITE_DEFAULT_MEMSTATUS=0 "
+    "-DSQLITE_DEFAULT_WAL_SYNCHRONOUS=1 -DSQLITE_OMIT_DEPRECATED "
+    "-DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_OMIT_SHARED_CACHE "
+    "-DSQLITE_OMIT_PROGRESS_CALLBACK -DSQLITE_USE_ALLOCA")
+
+
+def c_recipe(template):
+    if " /TP" not in template:
+        sys.exit("the kit's compile recipe has no /TP to swap for /TC")
+    command = template.replace(" /TP", " /TC")
+    command = re.sub(r" /std:\S+", "", command)
+    command = re.sub(r" /WX\b", "", command)
+    command = re.sub(
+        r" -Xclang (?:-add-plugin|-plugin-arg-[\w-]+) -Xclang \S+", "",
+        command)
+    return command.replace(" /c ", f" -w {SQLITE_DEFINES} /c ", 1)
+
+
 def retarget(template, old_source, old_out, source, out):
     if old_source not in template or old_out not in template:
         sys.exit(f"cannot retarget recipe command onto {source}")
@@ -240,6 +267,18 @@ def main():
                     os.path.getmtime(source), headers_mtime):
             continue
         jobs.append((os.path.basename(source), cmd))
+
+    sqlite_obj = f"{OBJ_DIR}/sqlite3.obj"
+    client_objs.append(sqlite_obj)
+    sqlite_obj_path = os.path.join(out_dir, sqlite_obj)
+    sqlite_path = os.path.join(REPO_DIR, "third_party", "sqlite", "sqlite3.c")
+    if not args.only and (
+            args.force or not os.path.exists(sqlite_obj_path) or
+            os.path.getmtime(sqlite_obj_path) < max(
+                os.path.getmtime(sqlite_path), os.path.getmtime(__file__))):
+        jobs.append(("sqlite3.c", retarget(
+            c_recipe(compile_template), kit["template_source"],
+            kit["template_obj"], SQLITE_SOURCE, sqlite_obj)))
 
     res = f"{OBJ_DIR}/phi_client.res"
     client_objs.append(res)

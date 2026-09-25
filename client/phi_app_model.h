@@ -64,8 +64,12 @@ struct Space {
 struct UrlRule {
   std::string space_id;
   std::string host;
-  std::string path_prefix;
+  std::string path_prefix;  // Empty = any path; "/" = the root only.
   bool ask = false;
+  // The stored rule's stable id (SpaceURLRule.id), the one the Settings
+  // editor and the urlRules.* verbs name it by. Empty until the rule is
+  // first saved: the save mints it.
+  std::string id;
   bool operator==(const UrlRule&) const = default;
 };
 
@@ -146,7 +150,11 @@ inline bool NewTabBehaviorFromName(std::string_view name,
   return true;
 }
 
-// --- PhiSettings.json (schema 1) --------------------------------------------
+// --- PhiPreferences.json (schema 1) -----------------------------------------
+//
+// Device-wide, the Mac's UserDefaults.standard: keys spelled as the Mac
+// spells them (docs/user-data-parity.md §4.4) so the synced ones are the
+// same keys on both. Windows-only keys keep Windows names.
 //
 // TRUTH OWNER: client Settings (lane 4 §5 table, "restore-on-startup,
 // language, peek prefs") for EVERY key. RULE: the framework holds a pushed
@@ -161,6 +169,8 @@ inline bool NewTabBehaviorFromName(std::string_view name,
 struct PhiSettings {
   // Layout (PhiLayout.json).
   PhiLayoutMode layout_mode = PhiLayoutMode::kPerformance;
+  // ACCOUNT-SCOPED (the Mac's lastKnownSidebarWidth): the bound account's
+  // value, never in the global file.
   int sidebar_width = 240;  // kSidebarWidthDefault; clamped on decode.
   // The Settings window's last client size in dip (windows-native-ui.md
   // §7: a Windows Settings window remembers its size). 0 = the default.
@@ -188,8 +198,11 @@ struct PhiSettings {
   bool open_kiosk_on_ctrl_alt_click = true;
   bool restore_last_session = false;
   bool always_show_bookmark_bar = false;
-  bool bookmark_bar_on_new_tab = false;
-  // Keyed by the shortcut's STABLE NAME, never the command int.
+  // The Mac's showBookmarkBarOnNewTabPage, and its default.
+  bool bookmark_bar_on_new_tab = true;
+  // ACCOUNT-SCOPED (the Mac's CustomShortcuts.json beside the account's
+  // store): loaded by PhiPreferences::BindAccount, never in the global
+  // file. Keyed by the shortcut's STABLE NAME, never the command int.
   std::map<std::string, ShortcutChord> shortcut_overrides;
   ReaderStyle reader;
   std::string language;  // Empty = follow the system.
@@ -202,7 +215,9 @@ struct PhiSettings {
   // peer, so there is nothing meaningful to ask the user about it. Off,
   // the first connection raises a prompt that offers to turn it on.
   bool allow_agent_control = false;
-  bool allow_agent_user_spaces = false;
+  // The Mac's PhiAgentUserSpaceOperationsEnabled, and its default: on, but
+  // behind the master switch above.
+  bool allow_agent_user_spaces = true;
   // View ▸ Agent Autoview (the Mac's AgentSpaces.autoViewEnabled): while
   // on, the focused window follows the operating agent — a running,
   // agent-owned Space is surfaced when the user is not already watching
@@ -230,10 +245,15 @@ struct PhiSettings {
   // access state that persists; signed-in access is derived from the Auth0
   // session plus the account's finished onboarding.
   bool guest_mode_enabled = false;
-  // The onboarding phase reached per account (the Mac's per-account
-  // `loginPhase`, keyed by the Auth0 subject): 1 setName, 2 setTheme,
-  // 3 layoutSelection, 5 nextStep, 6 done. Absent = a brand-new account.
-  std::map<std::string, int> onboarding_phases;
+  // The Mac's app-level phiLoginPhase: the phase last written for any
+  // account (0 = at the login screen). The per-account `loginPhase` itself
+  // lives in each account's defaults (PhiPreferences::OnboardingPhase).
+  int login_phase = 0;
+  // Synced Mac settings Windows carries without a UI of its own yet, so a
+  // value set on a Mac is kept, not reset (docs/user-data-parity.md §4.4).
+  bool suppress_close_incognito_space_warning = false;
+  std::string auto_picture_in_picture_mode = "normal";  // off|normal|parked
+  bool selection_tint_enabled = true;
   // Test rig: never gate the browser and never show onboarding (the Mac's
   // -skip-onboarding). Never agent-settable.
   bool skip_onboarding = false;
@@ -251,9 +271,9 @@ struct PhiSettings {
 // carries the URL rules too (they were PhiUrlRules.json), because
 // DeleteSpace already edits both together.
 struct PhiSpacesModel {
-  std::vector<Space> spaces{Space{"1", "Space 1"}};
+  std::vector<Space> spaces{Space{"default-space", "Default"}};
   // The default ROLE's holder; validated against the list on decode.
-  std::string default_space_id = "1";
+  std::string default_space_id = "default-space";
   int next_space_id = 2;
   std::vector<UrlRule> url_rules;
   // Bumped on every rule write; the wire ids ("g<gen>-<index>") carry it so
@@ -350,8 +370,9 @@ inline int NextSpaceIdAfter(const std::vector<Space>& spaces) {
 }
 
 // The default ROLE's holder: the persisted one when it still exists, else
-// "1" when that does, else the first Space — a restored backup may name a
-// Space that is gone. "1" when the list is empty (the built-in default).
+// "default-space" when that does, else the first Space — a restored backup
+// may name a Space that is gone. "default-space" when the list is empty
+// (the built-in default, the Mac's LocalStore.defaultSpaceId).
 inline std::string ResolveDefaultSpaceId(const std::vector<Space>& spaces,
                                          const std::string& persisted) {
   const auto exists = [&](std::string_view id) {
@@ -361,8 +382,8 @@ inline std::string ResolveDefaultSpaceId(const std::vector<Space>& spaces,
   if (!persisted.empty() && exists(persisted)) {
     return persisted;
   }
-  if (exists("1") || spaces.empty()) {
-    return "1";
+  if (exists("default-space") || spaces.empty()) {
+    return "default-space";
   }
   return spaces.front().id;
 }
@@ -426,25 +447,13 @@ struct PhiStoreTraits;
 template <>
 struct PhiStoreTraits<model::PhiSettings> {
   static constexpr int kSchema = 1;
-  static constexpr const wchar_t* kFile = L"PhiSettings.json";
+  static constexpr const wchar_t* kFile = L"PhiPreferences.json";
   static constexpr bool kProtected = false;
   static base::DictValue Encode(const model::PhiSettings& value);
   static bool Decode(const base::DictValue& dict,
                      int schema,
                      model::PhiSettings* out);
   static bool Import(const std::wstring& dir, model::PhiSettings* out);
-};
-
-template <>
-struct PhiStoreTraits<model::PhiSpacesModel> {
-  static constexpr int kSchema = 2;
-  static constexpr const wchar_t* kFile = L"PhiSpaces.json";
-  static constexpr bool kProtected = false;
-  static base::DictValue Encode(const model::PhiSpacesModel& value);
-  static bool Decode(const base::DictValue& dict,
-                     int schema,
-                     model::PhiSpacesModel* out);
-  static bool Import(const std::wstring& dir, model::PhiSpacesModel* out);
 };
 
 template <>

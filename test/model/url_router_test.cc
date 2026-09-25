@@ -31,9 +31,9 @@ int g_failures = 0;
 
 PhiSpacesModel ModelWithRules() {
   PhiSpacesModel m;
-  m.url_rules = {{"1", "github.com", "", false},
-                 {"2", "*.example.com", "/docs", true},
-                 {"space.incognito", "*bank*", "", false}};
+  m.url_rules = {{"1", "github.com", "", false, ""},
+                 {"2", "*.example.com", "/docs", true, ""},
+                 {"space.incognito", "*bank*", "", false, ""}};
   m.url_rules_generation = 5;
   return m;
 }
@@ -43,7 +43,10 @@ void TestAdd() {
   CHECK(m.url_rules_generation == 1);
   CHECK(AddUrlRuleTo(&m, "1", "github.com", "", false));
   CHECK(m.url_rules.size() == 1 && m.url_rules_generation == 2);
-  CHECK(m.url_rules[0] == UrlRule({"1", "github.com", "", false}));
+  // A new rule gets its stable id at once (the Mac's SpaceURLRule.id).
+  CHECK(!m.url_rules[0].id.empty());
+  CHECK(m.url_rules[0] ==
+        UrlRule({"1", "github.com", "", false, m.url_rules[0].id}));
   CHECK(AddUrlRuleTo(&m, "2", "*.foo.com", "/p", true));
   CHECK(m.url_rules.size() == 2 && m.url_rules_generation == 3);
   // Refusals leave the model — generation included — untouched.
@@ -123,8 +126,8 @@ void TestLiveAndRows() {
   CHECK(UrlRuleIsLive(m.url_rules[0]));
   CHECK(UrlRuleIsLive(m.url_rules[1]));
   CHECK(UrlRuleIsLive(m.url_rules[2]));  // Incognito routes now (client-resolved).
-  CHECK(!UrlRuleIsLive(UrlRule({"1", "", "", false})));
-  CHECK(!UrlRuleIsLive(UrlRule({"", "h", "", false})));
+  CHECK(!UrlRuleIsLive(UrlRule({"1", "", "", false, ""})));
+  CHECK(!UrlRuleIsLive(UrlRule({"", "h", "", false, ""})));
   const std::vector<std::string> rows = UrlRuleRowsOf(m.url_rules);
   CHECK(rows.size() == 3);
   CHECK(rows[0] == "1\tgithub.com\t\t0");
@@ -148,8 +151,10 @@ void TestActionTargets() {
 
 // The Mac's normalizedPathPrefix, pinned by URLRouterTests.
 void TestNormalizePathPrefix() {
-  CHECK(NormalizeUrlRulePathPrefix("/") == "");
-  CHECK(NormalizeUrlRulePathPrefix("///") == "");
+  // The Mac's semantics: "/" is the ROOT only (not "any path"), and so is
+  // a run of slashes; empty is any path.
+  CHECK(NormalizeUrlRulePathPrefix("/") == "/");
+  CHECK(NormalizeUrlRulePathPrefix("///") == "/");
   CHECK(NormalizeUrlRulePathPrefix("") == "");
   CHECK(NormalizeUrlRulePathPrefix("   ") == "");
   CHECK(NormalizeUrlRulePathPrefix("/foo/") == "/foo");
@@ -163,8 +168,9 @@ void TestNormalizePathPrefix() {
   CHECK(NormalizeUrlRulePathPrefix("/100%complete") == "/100%25complete");
   CHECK(NormalizeUrlRulePathPrefix("/a b") == "/a%20b");
   CHECK(NormalizeUrlRulePathPrefix("/a?b#c") == "/a%3Fb%23c");
+  // Foundation's urlPathAllowed keeps every sub-delim but ';'.
   CHECK(NormalizeUrlRulePathPrefix("/ok-._~!$&'()*+,;=:@/x") ==
-        "/ok-._~!$&'()*+,;=:@/x");
+        "/ok-._~!$&'()*+,%3B=:@/x");
 }
 
 void TestNormalizeHost() {
@@ -240,17 +246,28 @@ void TestReplace() {
   PhiSpacesModel m = ModelWithRules();  // gen 5.
   CHECK(!ReplaceUrlRulesIn(&m, m.url_rules));  // Same list: untouched.
   CHECK(m.url_rules_generation == 5);
-  std::vector<UrlRule> next = {{"2", "*.Example.com", "/docs/", true},
-                               {"", "dropped.com", "", false},
-                               {"1", "", "", false},
-                               {"__phi_kiosk__", "news.com", "", false}};
+  std::vector<UrlRule> next = {{"2", "*.Example.com", "/docs/", true, ""},
+                               {"", "dropped.com", "", false, ""},
+                               {"1", "", "", false, ""},
+                               {"__phi_kiosk__", "news.com", "", false, ""}};
   CHECK(ReplaceUrlRulesIn(&m, next));
   CHECK(m.url_rules_generation == 6);
   CHECK(m.url_rules.size() == 2);
-  CHECK(m.url_rules[0] == UrlRule({"2", "*.example.com", "/docs", true}));
-  CHECK(m.url_rules[1] == UrlRule({"__phi_kiosk__", "news.com", "", false}));
-  CHECK(!ReplaceUrlRulesIn(&m, next));  // Canonically equal now.
+  // The editor's new rows get ids as they are stored.
+  CHECK(!m.url_rules[0].id.empty() && !m.url_rules[1].id.empty() &&
+        m.url_rules[0].id != m.url_rules[1].id);
+  CHECK(m.url_rules[0] ==
+        UrlRule({"2", "*.example.com", "/docs", true, m.url_rules[0].id}));
+  CHECK(m.url_rules[1] ==
+        UrlRule({"__phi_kiosk__", "news.com", "", false, m.url_rules[1].id}));
+  // Saving the list it read back (ids and all) is canonically equal.
+  const std::vector<UrlRule> stored = m.url_rules;
+  CHECK(!ReplaceUrlRulesIn(&m, stored));
   CHECK(m.url_rules_generation == 6);
+  // Rule ids resolve; so does the old generation spelling.
+  size_t at = 9;
+  CHECK(ResolveUrlRuleIndex(m, m.url_rules[1].id, &at) && at == 1);
+  CHECK(!ResolveUrlRuleIndex(m, "no-such-rule", &at));
   CHECK(ReplaceUrlRulesIn(&m, {}));
   CHECK(m.url_rules.empty() && m.url_rules_generation == 7);
 }

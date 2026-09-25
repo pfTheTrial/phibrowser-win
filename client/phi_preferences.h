@@ -11,6 +11,8 @@
 #include <string>
 #include <vector>
 
+#include "base/memory/raw_ptr_exclusion.h"
+#include "phibrowser-win/client/phi_account_storage.h"
 #include "phibrowser-win/client/phi_app_model.h"
 #include "phibrowser-win/client/phi_prompt.h"
 #include "phibrowser-win/client/phi_settings_types.h"
@@ -23,7 +25,7 @@ namespace phi_client {
 // The client's preferences service (docs/architecture-review.md §3.4, the
 // PhiPreferences row): layout, theme, the general prefs, shortcuts, restore,
 // peek, language and the developer gates — one model::PhiSettings, one
-// PhiSettings.json, and the palette derived from the theme.
+// PhiPreferences.json, and the palette derived from the theme.
 //
 // It is the ChromePrefsHost of §3.5: what a shell reads for its layout,
 // palette and bookmark-bar flags is answered here directly.
@@ -64,6 +66,7 @@ class PhiPreferences : public ChromePrefsHost {
     kAgentUserSpaces,
     kAnalytics,      // The telemetry consent.
     kPinScope,       // The write-through mirror of the tab store's scope.
+    kSyncedMisc,     // A synced value with no Windows consumer yet changed.
   };
   class Observer {
    public:
@@ -91,6 +94,12 @@ class PhiPreferences : public ChromePrefsHost {
   // then applies what the loaded values drive here: the client catalog's
   // language and the palette. No observer hears a load.
   void Load(const std::wstring& user_data_dir);
+  // Binds the ACCOUNT-SCOPED values to the open account (the Mac keeps them
+  // in the account's defaults and beside its store): the sidebar width
+  // (lastKnownSidebarWidth) and the shortcut overrides
+  // (<account>\CustomShortcuts.json). Observers hear what changed. Null
+  // unbinds (the account-scoped values fall back to their defaults).
+  void BindAccount(PhiAccountDefaults* defaults);
   // Writes the model. The owner's flush is the only caller.
   void Save();
   // The whole model, read-only. Every field the coordinator or the verb
@@ -136,6 +145,19 @@ class PhiPreferences : public ChromePrefsHost {
   void SetNewTabBehavior(model::NewTabBehavior behavior);
   bool AlwaysShowFullUrl() const { return settings_.always_show_full_url; }
   void SetAlwaysShowFullUrl(bool enabled);
+  // Synced from the Mac (Phi native sync's settings); stored here, no
+  // Windows surface reads them yet.
+  bool SuppressCloseIncognitoSpaceWarning() const {
+    return settings_.suppress_close_incognito_space_warning;
+  }
+  void SetSuppressCloseIncognitoSpaceWarning(bool suppress);
+  const std::string& AutoPictureInPictureMode() const {
+    return settings_.auto_picture_in_picture_mode;
+  }
+  // "off" / "normal" / "parked"; anything else is refused.
+  void SetAutoPictureInPictureMode(const std::string& mode);
+  bool SelectionTintEnabled() const { return settings_.selection_tint_enabled; }
+  void SetSelectionTintEnabled(bool enabled);
   void SetShowTabPreviews(bool enabled);
   void SetShowOpenTabIndicators(bool enabled);
   void SetDimUnloadedTabIcons(bool enabled);
@@ -225,8 +247,15 @@ class PhiPreferences : public ChromePrefsHost {
   void MarkDirty();
   void Notify(PreferenceChange what);
 
-  model::PhiSettings settings_;  // PhiSettings.json
+  // Writes the bound account's CustomShortcuts.json.
+  void SaveShortcuts() const;
+
+  model::PhiSettings settings_;  // PhiPreferences.json (+ the bound account's)
   PhiStore<model::PhiSettings> store_;
+  std::wstring user_data_dir_;
+  // The open account's defaults (the coordinator's); null before the first
+  // bind.
+  RAW_PTR_EXCLUSION PhiAccountDefaults* account_ = nullptr;
   PhiPalette palette_;
   DirtyCallback dirty_;
   std::vector<Observer*> observers_;

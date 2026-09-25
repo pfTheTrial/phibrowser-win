@@ -93,6 +93,21 @@ PhiHttpResult PhiHttpRequest(const wchar_t* method,
             WINHTTP_NO_HEADER_INDEX);
         result.status = static_cast<int>(status);
         result.transport_ok = true;
+        SYSTEMTIME date = {};
+        DWORD date_size = sizeof(date);
+        FILETIME file_time = {};
+        if (::WinHttpQueryHeaders(request,
+                                  WINHTTP_QUERY_DATE | WINHTTP_QUERY_FLAG_SYSTEMTIME,
+                                  WINHTTP_HEADER_NAME_BY_INDEX, &date,
+                                  &date_size, WINHTTP_NO_HEADER_INDEX) &&
+            ::SystemTimeToFileTime(&date, &file_time)) {
+          const uint64_t ticks =
+              (static_cast<uint64_t>(file_time.dwHighDateTime) << 32) |
+              file_time.dwLowDateTime;
+          // 100 ns since 1601 → ms since 1970.
+          result.server_date_ms =
+              static_cast<int64_t>(ticks / 10000) - 11644473600000LL;
+        }
         DWORD available = 0;
         while (::WinHttpQueryDataAvailable(request, &available) &&
                available > 0) {
@@ -107,6 +122,78 @@ PhiHttpResult PhiHttpRequest(const wchar_t* method,
       }
       ::WinHttpCloseHandle(request);
     }
+    ::WinHttpCloseHandle(connect);
+  }
+  ::WinHttpCloseHandle(session);
+  return result;
+}
+
+PhiHttpResult PhiHttpRequestBounded(const wchar_t* method,
+                                    const std::string& url,
+                                    const std::wstring& headers,
+                                    int timeout_ms,
+                                    size_t max_bytes) {
+  PhiHttpResult result;
+  std::wstring host;
+  std::wstring path;
+  int port = 0;
+  bool secure = false;
+  if (!PhiSplitUrl(url, &host, &path, &port, &secure)) {
+    return result;
+  }
+  HINTERNET session = ::WinHttpOpen(L"PhiBrowser-Win",
+                                    WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+                                    WINHTTP_NO_PROXY_NAME,
+                                    WINHTTP_NO_PROXY_BYPASS, 0);
+  if (!session) {
+    return result;
+  }
+  ::WinHttpSetTimeouts(session, timeout_ms, timeout_ms, timeout_ms, timeout_ms);
+  HINTERNET connect = ::WinHttpConnect(session, host.c_str(),
+                                       static_cast<INTERNET_PORT>(port), 0);
+  HINTERNET request =
+      connect ? ::WinHttpOpenRequest(connect, method, path.c_str(), nullptr,
+                                     WINHTTP_NO_REFERER,
+                                     WINHTTP_DEFAULT_ACCEPT_TYPES,
+                                     secure ? WINHTTP_FLAG_SECURE : 0)
+              : nullptr;
+  if (request) {
+    // No cookies and no credentials ride a background fetch.
+    DWORD no_cookies = WINHTTP_DISABLE_COOKIES;
+    ::WinHttpSetOption(request, WINHTTP_OPTION_DISABLE_FEATURE, &no_cookies,
+                       sizeof(no_cookies));
+    if (::WinHttpSendRequest(request,
+                             headers.empty() ? WINHTTP_NO_ADDITIONAL_HEADERS
+                                             : headers.c_str(),
+                             static_cast<DWORD>(-1), WINHTTP_NO_REQUEST_DATA, 0,
+                             0, 0) &&
+        ::WinHttpReceiveResponse(request, nullptr)) {
+      DWORD status = 0;
+      DWORD size = sizeof(status);
+      ::WinHttpQueryHeaders(
+          request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+          WINHTTP_HEADER_NAME_BY_INDEX, &status, &size, WINHTTP_NO_HEADER_INDEX);
+      result.status = static_cast<int>(status);
+      result.transport_ok = true;
+      DWORD available = 0;
+      while (::WinHttpQueryDataAvailable(request, &available) && available > 0) {
+        if (result.body.size() + available > max_bytes) {
+          result.transport_ok = false;  // too large
+          result.body.clear();
+          break;
+        }
+        std::string chunk(available, '\0');
+        DWORD read = 0;
+        if (!::WinHttpReadData(request, chunk.data(), available, &read) ||
+            read == 0) {
+          break;
+        }
+        result.body.append(chunk.data(), read);
+      }
+    }
+    ::WinHttpCloseHandle(request);
+  }
+  if (connect) {
     ::WinHttpCloseHandle(connect);
   }
   ::WinHttpCloseHandle(session);

@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <optional>
+#include <set>
 #include <string_view>
 #include <utility>
 
@@ -28,23 +29,26 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
 #include "base/values.h"
+#include "phibrowser-win/client/phi_agent_handoff_prompt.h"
 #include "phibrowser-win/client/phi_agent_overlay.h"
 #include "phibrowser-win/client/phi_client_analytics.h"
 #include "phibrowser-win/client/phi_control_dispatcher.h"
 #include "phibrowser-win/client/phi_create_space_window.h"
-#include "phibrowser-win/client/phi_updater.h"
-#include "phibrowser-win/client/phi_i18n.h"
-#include "phibrowser-win/client/phi_icons.h"
 #include "phibrowser-win/client/phi_extensions_popover.h"
-#include "phibrowser-win/client/phi_agent_handoff_prompt.h"
 #include "phibrowser-win/client/phi_features.h"
 #include "phibrowser-win/client/phi_file_io.h"
+#include "phibrowser-win/client/phi_guest_migration_win.h"
 #include "phibrowser-win/client/phi_fonts.h"
+#include "phibrowser-win/client/phi_i18n.h"
+#include "phibrowser-win/client/phi_icons.h"
 #include "phibrowser-win/client/phi_modal_scope.h"
 #include "phibrowser-win/client/phi_popup_chrome.h"
 #include "phibrowser-win/client/phi_prompt.h"
+#include "phibrowser-win/client/phi_sync_settings_win.h"
 #include "phibrowser-win/client/phi_telemetry.h"
+#include "phibrowser-win/client/phi_updater.h"
 #include "phibrowser-win/client/phi_url_rules_window.h"
+#include "phibrowser-win/client/phi_version.h"
 
 namespace phi_client {
 
@@ -55,7 +59,7 @@ PhiCoordinator* g_coordinator = nullptr;
 
 }  // namespace
 
-PhiCoordinator::PhiCoordinator() {
+PhiCoordinator::PhiCoordinator() : tab_store_(local_store_) {
   g_coordinator = this;
   // Every secondary window follows the app palette from here on.
   PhiSetPopupPalette(&preferences_.palette());
@@ -163,8 +167,8 @@ void PhiCoordinator::OnFrameworkReady(phi_framework::PhiFramework* framework,
   // before them. Both mark the one Spaces file dirty; this class is their
   // host and the manager's observer.
   space_manager_ = std::make_unique<PhiSpaceManager>(
-      registry_, window_model_, preferences_, *framework_, *this,
-      [this] { ScheduleSave(StoreDomain::kSpaces); });
+      registry_, window_model_, preferences_, *framework_, *this, local_store_,
+      account_defaults_, [this] { ScheduleSave(StoreDomain::kSpaces); });
   space_manager_->AddObserver(this);
   url_router_ = std::make_unique<PhiUrlRouter>(
       space_manager_->mutable_model(), registry_, *framework_, *this,
@@ -195,12 +199,17 @@ void PhiCoordinator::OnFrameworkReady(phi_framework::PhiFramework* framework,
 
   const std::wstring user_data_dir =
       base::UTF8ToWide(user_data_dir_utf8 ? user_data_dir_utf8 : "");
+  user_data_dir_ = user_data_dir;
   // The credential providers (PhiCredentialService): the real out-of-process
   // vault helper, with the local DPAPI dev vault as the --dev-hooks stand-in.
   credentials_.Init(user_data_dir);
+  // The Auth0 session and the feedback outbox (PhiAccountAndFeedback) come
+  // before the stores: the session decides WHICH account's data opens.
+  account_.Init(framework_, user_data_dir, msg_hwnd_, WM_PHI_AUTH_CHANGED);
+  chromium_sync_.Bind(framework_,
+                      [this] { return account_.AccessTokenForSync(); });
   LoadStores(user_data_dir);
-  tab_store_.Load(user_data_dir + L"\\PhiTabData.json");
-  MirrorPinScope();  // The tab store's file is the scope's truth.
+  MirrorPinScope();  // The local store's settings row is the scope's truth.
   // The framework mirrors (restore-on-startup, peek, display language) are
   // NOT pushed here: no profile is loaded yet, and OnProfileLoaded — which
   // follows this callback for every profile — is their one push point.
@@ -213,14 +222,13 @@ void PhiCoordinator::OnFrameworkReady(phi_framework::PhiFramework* framework,
   // A no-op when WinSparkle.dll is not deployed beside the client.
   PhiUpdater::Init(msg_hwnd_, WM_PHI_QUIT_FOR_UPDATE);
 
-  // The Auth0 session and the feedback outbox (PhiAccountAndFeedback).
-  account_.Init(framework_, user_data_dir, msg_hwnd_, WM_PHI_AUTH_CHANGED);
   // The brand faces for the onboarding titles (and the profile card).
   PhiLoadPrivateFonts();
   // The onboarding gate: decided here, with the stores and the session
   // loaded and no window announced yet (Chromium's startup window follows
   // this callback).
   ResolveInitialAccess();
+  SyncChromiumAccount();
 }
 
 // static
@@ -461,11 +469,48 @@ void PhiCoordinator::FlushDirtyStores() {
   }
 }
 
+void PhiCoordinator::MirrorProfileNames() {
+  // The Mac keeps each Chromium profile's display name on its ProfileModel
+  // row (upsertProfileDisplayNames), so the store — and a backup of it —
+  // can name the profiles its Spaces are bound to.
+  if (!framework_ || !local_store_.is_open()) {
+    return;
+  }
+  std::optional<base::Value> list = base::JSONReader::Read(
+      framework_->ListProfilesJson(), base::JSON_PARSE_RFC);
+  if (!list || !list->is_list()) {
+    return;
+  }
+  std::map<std::string, std::string> names;
+  for (const base::Value& entry : list->GetList()) {
+    const base::DictValue* d = entry.GetIfDict();
+    const std::string* id = d ? d->FindString("id") : nullptr;
+    const std::string* name = d ? d->FindString("name") : nullptr;
+    if (id && name && !id->empty()) {
+      names[*id] = *name;
+    }
+  }
+  local_store_.UpsertProfileDisplayNames(names);
+}
+
 void PhiCoordinator::OnProfileLoaded(const char* profile_id) {
   const std::string id = profile_id ? profile_id : "";
   LOG(INFO) << "[PhiClient] OnProfileLoaded " << id;
   if (!framework_ || id.empty()) {
     return;
+  }
+  MirrorProfileNames();
+  // A profile the key layer has not seen (created, or loaded for the first
+  // time): unlock and resolve again so it gets its account key.
+  if (sync_keys_) {
+    std::set<std::string> ids;
+    for (const keys::LocalProfile& local : SyncLocalProfiles()) {
+      ids.insert(local.profile_id);
+    }
+    if (ids != sync_profile_ids_) {
+      sync_profile_ids_ = std::move(ids);
+      sync_keys_->SilentUnlockAndResolve();
+    }
   }
   // Per profile: Chromium's SessionStartupPref is the profile's own copy
   // of the app-wide "Restore last session" choice, so each one takes it as
@@ -477,7 +522,7 @@ void PhiCoordinator::OnProfileLoaded(const char* profile_id) {
   }
   global_mirrors_pushed_ = true;
   // Global, once: the peek and Kiosk switches live on the framework, not a
-  // profile; the display language reconciles a PhiSettings.json edited while
+  // profile; the display language reconciles a PhiPreferences.json edited while
   // the browser was closed — Chromium read its own locale pref long before
   // this, and the first window is still to come, so it comes up in the
   // chosen language rather than flashing the old one.
@@ -689,6 +734,22 @@ PhiStoredRowView StoredRowView(const PhiRow& row) {
 
 }  // namespace
 
+void PhiCoordinator::NoteStoredRowSeen(const std::string& guid) {
+  const store::Tab* row = local_store_.FindTab(guid);
+  if (!row) {
+    return;
+  }
+  // A pinned pair is seen as one: the Mac stamps both halves.
+  const std::optional<std::string> partner =
+      row->type == store::RowType::kPinnedTab ? row->split_partner_guid
+                                              : std::nullopt;
+  const store::TimeMs now = store::DefaultEnv().now();
+  local_store_.SetLastSeen(guid, now);
+  if (partner) {
+    local_store_.SetLastSeen(*partner, now);
+  }
+}
+
 std::vector<PhiStoredRowView> PhiCoordinator::PinnedRows(int64_t slot) const {
   std::vector<PhiStoredRowView> out;
   std::string profile_id, space_id;
@@ -727,16 +788,12 @@ std::vector<SidebarStoredItem> PhiCoordinator::SidebarStoredItems(
   }
   // Read the entire owned tree, including children of collapsed folders.
   // Expansion is presentation state and cannot decide whether a tab binds.
-  for (const PhiRow& row : tab_store_.rows()) {
-    if (row.profile_id != profile_id || row.space_id != space_id) continue;
-    if (row.type == PhiRowType::kBookmark ||
-        row.type == PhiRowType::kBookmarkFolder) {
-      items.push_back({row.guid,
-                       row.type == PhiRowType::kBookmarkFolder
-                           ? SidebarStoredKind::kFolder
-                           : SidebarStoredKind::kBookmark,
-                       row.parent_guid, row.index, !row.url_b.empty()});
-    }
+  for (const PhiRow& row : tab_store_.BookmarkTree(profile_id, space_id)) {
+    items.push_back({row.guid,
+                     row.type == PhiRowType::kBookmarkFolder
+                         ? SidebarStoredKind::kFolder
+                         : SidebarStoredKind::kBookmark,
+                     row.parent_guid, row.index, !row.url_b.empty()});
   }
   return items;
 }
@@ -855,7 +912,7 @@ void PhiCoordinator::TagTab(BrowserId browser, int tab_id, const char* tag) {
 }
 
 TabId PhiCoordinator::OpenCell(BrowserId browser, const std::string& guid) {
-  const PhiRow* row = tab_store_.Find(guid);
+  const std::optional<PhiRow> row = tab_store_.Find(guid);
   if (!framework_ || !row || row->url.empty() ||
       row->type == PhiRowType::kBookmarkFolder) {
     return TabId();
@@ -1079,9 +1136,13 @@ bool PhiCoordinator::Apply(int64_t slot_number,
               // The stored panes and their tags follow the live order.
               const int a = TabOfKey(tree, cmd.key, 0);
               const int b = TabOfKey(tree, cmd.key, 1);
-              ok = tab_store_.SwapPanes(cmd.key.id) || ok;
-              if (a) TagTab(browser, a, TagFor(cmd.key.id, true).c_str());
-              if (b) TagTab(browser, b, TagFor(cmd.key.id, false).c_str());
+              // A pinned pair's cell is named by its first row, which the
+              // swap changes: retag under the name it has now.
+              const std::string cell = tab_store_.SwapPanes(cmd.key.id);
+              ok = !cell.empty() || ok;
+              const std::string& name = cell.empty() ? cmd.key.id : cell;
+              if (a) TagTab(browser, a, TagFor(name, true).c_str());
+              if (b) TagTab(browser, b, TagFor(name, false).c_str());
             }
             refresh();
             return ok;
@@ -1319,6 +1380,87 @@ std::vector<PhiCoordinator::BoundTab> PhiCoordinator::TabsBoundTo(
     }
   }
   return bound;
+}
+
+void PhiCoordinator::UnbindTabsOfMissingRows() {
+  if (!framework_) {
+    return;
+  }
+  // A synced delete removed rows under open tabs: those tabs become normal
+  // tabs again, as RemoveStoredRow makes them.
+  std::vector<BoundTab> stale;
+  for (const BrowserId browser : window_model_.Browsers()) {
+    for (const phi_framework::TabSnapshot& tab : window_model_.Get(browser)->tabs) {
+      SidebarTag parsed;
+      if (ParseTag(tab.tag, &parsed) && !parsed.guid.empty() &&
+          !local_store_.FindTab(parsed.guid)) {
+        stale.push_back({browser, tab.id, parsed.pane_b});
+      }
+    }
+  }
+  for (const BoundTab& bound : stale) {
+    TagTab(bound.browser, bound.tab.value, "");
+  }
+}
+
+void PhiCoordinator::BeginGuestMigration(const std::string& target) {
+  guest_rebind_.clear();
+  guest_cleanup_pending_ = false;
+  if (data_account_ != kGuestAccountId || target == kGuestAccountId) {
+    return;
+  }
+  // The Guest store is read by path: its pending writes go first, then it
+  // closes (the target opens after the import, in OpenDataAccount).
+  FlushDirtyStores();
+  local_store_.Close();
+  const PhiGuestMigrationResult result = PhiMigrateGuestData(
+      user_data_dir_, target,
+      base::WideToUTF8(
+          PhiStr("localData.bookmarks.importedFromGuestFolderTitle")));
+  if (result.outcome == PhiGuestMigrationResult::Outcome::kImported) {
+    guest_rebind_ = result.mappings.ModelGuids();
+    guest_cleanup_pending_ = true;
+  } else if (result.outcome != PhiGuestMigrationResult::Outcome::kNothing) {
+    // The Guest data stays in the Guest account (kFailedGuestIntact) or
+    // waits for a same-account retry at the next launch (kNeedsRecovery).
+    LOG(ERROR) << "[PhiClient] guest data not moved: " << result.error;
+  }
+}
+
+void PhiCoordinator::FinishGuestMigration(const std::string& target) {
+  if (framework_ && !guest_rebind_.empty()) {
+    // The Mac's rebindWindowControllers(migrationReceipt:): an open tab
+    // bound to a Guest row follows it to the row it became.
+    std::vector<std::pair<BoundTab, std::string>> moved;
+    for (const BrowserId browser : window_model_.Browsers()) {
+      for (const phi_framework::TabSnapshot& tab :
+           window_model_.Get(browser)->tabs) {
+        SidebarTag parsed;
+        if (!ParseTag(tab.tag, &parsed)) {
+          continue;
+        }
+        const auto mapped = guest_rebind_.find(parsed.guid);
+        if (mapped != guest_rebind_.end() && mapped->second != parsed.guid) {
+          moved.push_back({{browser, tab.id, parsed.pane_b},
+                           TagFor(mapped->second, parsed.pane_b)});
+        }
+      }
+    }
+    for (const auto& [bound, tag] : moved) {
+      TagTab(bound.browser, bound.tab.value, tag.c_str());
+    }
+  }
+  guest_rebind_.clear();
+  UnbindTabsOfMissingRows();
+  if (!guest_cleanup_pending_) {
+    return;
+  }
+  guest_cleanup_pending_ = false;
+  std::string error;
+  if (!PhiFinalizeGuestCleanup(user_data_dir_, target, &error)) {
+    // The journal keeps it: the next launch retries (never a re-import).
+    LOG(ERROR) << "[PhiClient] guest directory cleanup deferred: " << error;
+  }
 }
 
 void PhiCoordinator::RemoveStoredRow(const std::string& guid) {
@@ -1630,28 +1772,38 @@ void PhiCoordinator::NoteContentLayoutChanged(int64_t slot) {
   surface_coordinator_.NoteContentLayoutChanged(SlotId{slot});
 }
 
-void PhiCoordinator::ApplyLegacyTagAliases(BrowserId window_id) {
-  const auto& aliases = tab_store_.legacy_tag_aliases();
+void PhiCoordinator::CanonicalizePinTags(BrowserId window_id) {
   const phi_framework::WindowSnapshot* snapshot = window_model_.Get(window_id);
-  if (aliases.empty() || !framework_ || !snapshot) {
+  if (!framework_ || !snapshot) {
     return;
   }
-  std::vector<std::string> applied;
+  bool changed = false;
   for (const phi_framework::TabSnapshot& tab : snapshot->tabs) {
-    if (tab.tag.empty()) {
+    SidebarTag parsed;
+    if (tab.tag.empty() || !ParseTag(tab.tag, &parsed)) {
       continue;
     }
-    const auto alias = aliases.find(tab.tag);
-    if (alias == aliases.end()) {
+    const store::Tab* row = local_store_.FindTab(parsed.guid);
+    if (!row || row->type != store::RowType::kPinnedTab) {
+      continue;  // Bookmarks are one row: their tags never drift.
+    }
+    // The row this tab SHOWS: the tagged one, or for "#b" its partner.
+    std::string shows = row->guid;
+    if (parsed.pane_b) {
+      if (!row->split_partner_guid) {
+        continue;
+      }
+      shows = *row->split_partner_guid;
+    }
+    const std::optional<PhiRow> cell = tab_store_.Find(shows);
+    if (!cell) {
       continue;
     }
-    TagTab(window_id, tab.id.value,
-                              alias->second.c_str());
-    applied.push_back(alias->first);
-  }
-  const bool changed = !applied.empty();
-  for (const std::string& old_guid : applied) {
-    tab_store_.DropLegacyTagAlias(old_guid);
+    const std::string canonical = TagFor(cell->guid, cell->guid != shows);
+    if (canonical != tab.tag) {
+      TagTab(window_id, tab.id.value, canonical.c_str());
+      changed = true;
+    }
   }
   if (changed) {
     registry_.InvalidateAll();
@@ -1813,7 +1965,7 @@ std::string PhiCoordinator::AddBookmarkRow(int64_t slot,
 bool PhiCoordinator::MoveStoredRowToSpace(const std::string& guid,
                                           const std::string& space_id,
                                           bool clone) {
-  const PhiRow* found = tab_store_.Find(guid);
+  const std::optional<PhiRow> found = tab_store_.Find(guid);
   if (!found || found->type != PhiRowType::kBookmark || found->url.empty() ||
       found->space_id == space_id) {
     return false;  // Folders and pins do not travel between Spaces.
@@ -1823,9 +1975,29 @@ bool PhiCoordinator::MoveStoredRowToSpace(const std::string& guid,
   if (!target) {
     return false;
   }
-  // The copy first, at the target's root, carrying the favicon and — for a
-  // split bookmark — the second pane and its arrangement; then, for a move,
-  // the original goes (RemoveStoredRow also frees the bound tab's tag).
+  if (!clone) {
+    // A MOVE is the Mac's moveBookmarks(toSpace:): the same row — its
+    // identity, and with it its sync id — re-homed under the target's
+    // root, with the move recorded as a location edit. Tabs bound to it in
+    // the source Space go back to being plain tabs there, as before.
+    const std::vector<BoundTab> bound = TabsBoundTo(guid);
+    if (!local_store_.MoveBookmarksToSpace({guid}, row.profile_id,
+                                           target->profile_id, space_id,
+                                           std::nullopt, std::nullopt)) {
+      return false;
+    }
+    if (framework_) {
+      for (const BoundTab& b : bound) {
+        TagTab(b.browser, b.tab.value, "");
+      }
+    }
+    registry_.InvalidateAll();
+    NotifySettingsObservers(PhiSettingsChange::kStoredRows);
+    return true;
+  }
+  // A CLONE is a new bookmark (the Mac's cloneBookmarks): at the target's
+  // root, carrying the favicon and — for a split bookmark — the second pane
+  // and its arrangement.
   const std::string added = tab_store_.AddBookmark(
       target->profile_id, space_id, std::string(), row.title, row.url,
       /*folder=*/false, row.favicon_base64, row.favicon_width,
@@ -1843,9 +2015,6 @@ bool PhiCoordinator::MoveStoredRowToSpace(const std::string& guid,
   }
   if (!row.icon.empty()) {
     tab_store_.SetRowIcon(added, row.icon);
-  }
-  if (!clone) {
-    RemoveStoredRow(guid);
   }
   registry_.InvalidateAll();
   NotifySettingsObservers(PhiSettingsChange::kStoredRows);
@@ -1894,15 +2063,31 @@ void PhiCoordinator::RequestBookmarkActiveTab(int64_t slot_number) {
 }
 
 void PhiCoordinator::LoadStores(const std::wstring& user_data_dir) {
-  session_restore_->Load(user_data_dir);
   consent_store_.Init(user_data_dir);
   // Each Load leaves its model usable: decoded, imported from the
   // pre-phase-3 files on a first run over an old profile, or defaults over
   // a quarantined file (the truth-owner rules are in phi_app_model.h). The
   // preferences apply the display language and resolve the palette as they
   // load; the Space palettes follow once both are in.
-  space_manager_->Load(user_data_dir);
   preferences_.Load(user_data_dir);
+  // The account's own data (docs/user-data-parity.md): its LocalStore
+  // (Spaces, rules, pins, bookmarks) and defaults, and its restore file —
+  // the account the session and the Guest choice resolve to.
+  {
+    const PhiAuth& auth = account_.auth();
+    const std::string& sub = auth.user().sub;
+    const std::string account = PhiDataAccountFor(
+        auth.signed_in(), sub,
+        auth.signed_in() ? preferences_.OnboardingPhase(sub) : 0,
+        preferences_.GuestModeEnabled());
+    // A Guest migration a crash interrupted resumes (or is retired) before
+    // any account's data opens.
+    PhiRecoverGuestMigration(
+        user_data_dir, account,
+        base::WideToUTF8(
+            PhiStr("localData.bookmarks.importedFromGuestFolderTitle")));
+    OpenDataAccount(account, /*reconcile_windows=*/false);
+  }
   if (consent_store_.Load(&consent_) == PhiJsonFileStatus::kCorrupt) {
     // Fail closed (lane 5 §4.6): a file whose seal did not check out is
     // quarantined beside its replacement and the model holds NO grants, so
@@ -1937,6 +2122,59 @@ void PhiCoordinator::LoadStores(const std::wstring& user_data_dir) {
       PhiUserDefaultsSnapshotProperties(settings, PhiThisExeIsDefaultBrowser()));
   // The first-time-action record, beside the version file it pairs with.
   first_time_actions_.Load(user_data_dir, PhiNowUnixMs());
+}
+
+void PhiCoordinator::OpenDataAccount(const std::string& account_id,
+                                     bool reconcile_windows) {
+  if (account_id == data_account_ && local_store_.is_open()) {
+    return;
+  }
+  // A pending Spaces/restore write belongs to the account being left.
+  FlushDirtyStores();
+  data_account_ = account_id;
+  const std::wstring dir = PhiEnsureAccountDir(user_data_dir_, account_id);
+  local_store_.Close();
+  if (!dir.empty()) {
+    const store::LocalStore::OpenResult opened =
+        local_store_.Open(base::WideToUTF8(dir + L"\\localDB"));
+    if (opened == store::LocalStore::OpenResult::kRequiresNewerApp) {
+      // The Mac's requiresNewerApp: a newer Phi wrote this store. Nothing
+      // is read or written; the built-in default Space stands in.
+      LOG(ERROR) << "[PhiClient] the local store needs a newer Phi";
+    } else if (opened != store::LocalStore::OpenResult::kOk) {
+      LOG(ERROR) << "[PhiClient] the local store could not be opened";
+    }
+  }
+  account_defaults_.Load(dir);
+  // The account-scoped preferences (sidebar width, shortcuts) follow.
+  preferences_.BindAccount(&account_defaults_);
+  space_manager_->Load();
+  session_restore_->Load(dir.empty() ? user_data_dir_ : dir);
+  LOG(INFO) << "[PhiClient] data account "
+            << (account_id == kGuestAccountId ? "guest" : "signed-in")
+            << ": " << space_manager_->spaces().size() << " spaces, "
+            << local_store_.tabs().size() << " rows";
+  if (!reconcile_windows) {
+    return;
+  }
+  MirrorProfileNames();
+  MirrorPinScope();
+  space_manager_->RetreatFromMissingSpaces();
+  PushSpaceMenu();
+  SchedulePushRoutingTable();
+  registry_.InvalidateAll();
+  NotifySettingsObservers(PhiSettingsChange::kStoredRows);
+}
+
+void PhiCoordinator::SyncDataAccountToAccess() {
+  const PhiAuth& auth = account_.auth();
+  const std::string& sub = auth.user().sub;
+  const bool session = auth.signed_in();
+  OpenDataAccount(
+      PhiDataAccountFor(session, sub,
+                        session ? preferences_.OnboardingPhase(sub) : 0,
+                        access_ == Access::kGuest),
+      /*reconcile_windows=*/true);
 }
 
 void PhiCoordinator::MirrorPinScope() {
@@ -2183,7 +2421,13 @@ PhiPinScope PhiCoordinator::PinScope() const {
 }
 
 void PhiCoordinator::SetPinScope(PhiPinScope scope) {
-  if (!tab_store_.SetPinScope(scope)) {
+  // The Mac passes the window the change came from: its collection's order
+  // wins where collections merge.
+  std::string profile_id, space_id;
+  if (PhiShellWindow* window = registry_.FirstUserController()) {
+    OwnerForSlot(window->slot(), &profile_id, &space_id);
+  }
+  if (!tab_store_.SetPinScope(scope, profile_id, space_id)) {
     return;
   }
   MirrorPinScope();  // Its kPinScope notification refreshes Settings.
@@ -2263,6 +2507,10 @@ void PhiCoordinator::ForgetSpaceData(const std::string& space_id) {
   tab_store_.RemoveForSpace(space_id);
   url_router_->DropRulesForSpace(space_id);
   session_restore_->ForgetSpace(space_id);
+  // A user delete (not sync's own purge) tombstones the account's Space.
+  if (sync_keys_ && !space_manager_->sync_applying()) {
+    sync_keys_->NoteLocalSpaceDeleted(space_id);
+  }
 }
 
 void PhiCoordinator::RehomeSpaceData(const std::string& space_id,
@@ -2282,7 +2530,11 @@ bool PhiCoordinator::DeleteProfileById(const std::string& profile_id) {
 
 bool PhiCoordinator::RenameProfileById(const std::string& profile_id,
                                        const std::string& name) {
-  return profile_service_->RenameProfileById(profile_id, name);
+  const bool renamed = profile_service_->RenameProfileById(profile_id, name);
+  if (renamed) {
+    MirrorProfileNames();
+  }
+  return renamed;
 }
 
 bool PhiCoordinator::DeveloperMode() const {
@@ -2481,6 +2733,23 @@ void PhiCoordinator::NotifySettingsObservers(PhiSettingsChange what) {
 void PhiCoordinator::OnPreferencesChanged(
     PhiPreferences::PreferenceChange what) {
   using PreferenceChange = PhiPreferences::PreferenceChange;
+  // A synced preference changed here: Phi native sync publishes it after a
+  // short debounce (the service ignores its own writes of pulled values).
+  if (sync_keys_) {
+    switch (what) {
+      case PreferenceChange::kLayoutMode:
+      case PreferenceChange::kBookmarkBar:
+      case PreferenceChange::kTheme:
+      case PreferenceChange::kNewTab:
+      case PreferenceChange::kFullUrl:
+      case PreferenceChange::kSyncedMisc:
+      case PreferenceChange::kPinScope:
+        sync_keys_->NoteLocalSettingsChanged();
+        break;
+      default:
+        break;
+    }
+  }
   switch (what) {
     case PreferenceChange::kAccess:
       return;  // Read at the next resolve; nothing live to redo.
@@ -2565,6 +2834,7 @@ void PhiCoordinator::OnPreferencesChanged(
     case PreferenceChange::kDeveloper:
     case PreferenceChange::kAgentUserSpaces:
     case PreferenceChange::kPinScope:
+    case PreferenceChange::kSyncedMisc:
       break;  // Settings shows them; nothing else consumes a change.
   }
   NotifySettingsObservers(PhiSettingsChange::kPreferences);
@@ -2574,6 +2844,10 @@ void PhiCoordinator::OnPreferencesChanged(
 
 void PhiCoordinator::OnSpacesChanged(PhiSpaceManager::SpacesChange what) {
   using SpacesChange = PhiSpaceManager::SpacesChange;
+  // Phi native sync publishes the user's Space edits (not its own).
+  if (sync_keys_ && !space_manager_->sync_applying()) {
+    sync_keys_->NoteLocalSpacesChanged();
+  }
   switch (what) {
     case SpacesChange::kOrder:
       registry_.InvalidateAll();  // The chips; Settings keeps its own order.
@@ -2737,7 +3011,7 @@ bool PhiCoordinator::ConvertStoredRow(SlotId slot,
                                       bool to_bookmark,
                                       const std::string& parent_guid,
                                       int index) {
-  const PhiRow* found = tab_store_.Find(guid);
+  const std::optional<PhiRow> found = tab_store_.Find(guid);
   if (!found) {
     return false;
   }
@@ -2913,6 +3187,9 @@ void PhiCoordinator::ResolveInitialAccess() {
 
 void PhiCoordinator::GrantAccess(Access access) {
   access_ = access;
+  // The account now known is the one whose data the windows show.
+  SyncDataAccountToAccess();
+  SyncChromiumAccount();
   for (PhiShellWindow* controller : registry_.Controllers()) {
     controller->ShowHeldShell();
   }
@@ -2926,6 +3203,7 @@ void PhiCoordinator::GrantAccess(Access access) {
 
 void PhiCoordinator::RequireLogin() {
   access_ = Access::kLoginRequired;
+  SyncChromiumAccount();
   preferences_.SetGuestModeEnabled(false);
   for (PhiShellWindow* controller : registry_.UserControllers()) {
     controller->HideShell();
@@ -3011,8 +3289,13 @@ void PhiCoordinator::ReconcileAccessAfterAuth() {
     // The Mac's guest_mode_exited: the account is in, from Settings ▸ You.
     CaptureAnalytics(kAnalyticsModuleAccount, kEventGuestModeExited,
                      PhiGuestModeExitedProperties("account_setting"));
+    // The Guest data moves into the account (the Mac's GuestDataMigration)
+    // before the account's store opens.
+    BeginGuestMigration(sub);
     preferences_.SetGuestModeEnabled(false);
     access_ = Access::kSignedIn;
+    SyncDataAccountToAccess();
+    FinishGuestMigration(sub);
     NotifySettingsObservers(PhiSettingsChange::kAccount);
     return;
   }
@@ -3065,8 +3348,15 @@ void PhiCoordinator::OnboardingFinished(bool share_metrics) {
                        PhiGuestModeExitedProperties("account_setting"));
     }
   }
+  const bool from_guest = preferences_.GuestModeEnabled() && auth.signed_in();
+  if (from_guest) {
+    BeginGuestMigration(auth.user().sub);
+  }
   preferences_.SetGuestModeEnabled(false);
   GrantAccess(auth.signed_in() ? Access::kSignedIn : Access::kGuest);
+  if (from_guest) {
+    FinishGuestMigration(auth.user().sub);
+  }
 }
 
 void PhiCoordinator::OnboardingClosed() {
@@ -3116,6 +3406,242 @@ void PhiCoordinator::NoteAccountChanged() {
     onboarding_->OnAccountChanged();
   }
   ReconcileAccessAfterAuth();
+  // Chromium sync re-reads the account, and the token a refresh brought.
+  SyncChromiumAccount();
+  chromium_sync_.NotifyAuthChanged();
+}
+
+void PhiCoordinator::SyncChromiumAccount() {
+  const PhiAuth& auth = account_.auth();
+  if (access_ == Access::kGuest || !auth.signed_in()) {
+    chromium_sync_.SetAccount(PhiChromiumSync::AccountState::kSignedOut,
+                              std::string(), std::string());
+  } else {
+    // Reauthentication keeps the identity; the token is what it withholds.
+    chromium_sync_.SetAccount(PhiChromiumSync::AccountState::kSignedIn,
+                              auth.user().sub, auth.user().email);
+  }
+  UpdateSyncKeyService();
+}
+
+void PhiCoordinator::UpdateSyncKeyService() {
+  const PhiAuth& auth = account_.auth();
+  // The key layer belongs to a finished sign-in (the Mac builds it on
+  // loginCompleted); Guest Mode and a pending onboarding have none.
+  const std::string subject =
+      access_ == Access::kSignedIn && auth.signed_in() ? auth.user().sub
+                                                       : std::string();
+  if (sync_keys_ && sync_keys_->subject() == subject) {
+    return;
+  }
+  if (sync_keys_) {
+    // Retire first: nothing of the previous account's may reach Chromium or
+    // the next account's files. Its setup window goes with it.
+    PhiSyncSetupWindow::CloseForAccountChange();
+    sync_keys_.reset();
+    chromium_sync_.ClearProfileKeys();
+    sync_profile_ids_.clear();
+    space_manager_->SetSyncHiddenSpaces({});
+  }
+  if (subject.empty() || user_data_dir_.empty()) {
+    return;
+  }
+  const std::wstring account_dir = PhiEnsureAccountDir(user_data_dir_, subject);
+  if (account_dir.empty()) {
+    return;
+  }
+  // Phi native sync's state (docs/user-data-parity.md S5): the marker beside
+  // the account's data, the engine cursor outside it (logical time must not
+  // roll back with a restored folder), the settings sidecars device-wide.
+  PhiSyncKeyService::NativeSyncConfig native;
+  native.marker_path = account_dir + L"\\sync\\marker.json";
+  native.state_path = user_data_dir_ + L"\\Phi\\syncstate\\" +
+                      base::UTF8ToWide(PhiAccountDirName(subject)) + L".json";
+  native.sidecar_path = user_data_dir_ + L"\\PhiSyncSidecars.json";
+  native.build_identity = std::string("windows/") + PHI_WIN_VERSION_STRING;
+  native.make_settings =
+      [this, subject](
+          std::function<bool(const std::function<void()>&)> run_on_ui,
+          PhiSyncSidecarFile* held,
+          std::function<std::optional<std::string>(const std::string&)>
+              space_lookup) {
+        PhiSyncSettingsHooks hooks;
+        hooks.set_pin_scope = [this, subject](const std::string& scope_name) {
+          store::PinScope scope = store::PinScope::kProfile;
+          if (data_account_ == subject &&
+              store::PinScopeFromName(scope_name, &scope) &&
+              scope != tab_store_.pin_scope()) {
+            SetPinScope(scope);
+          }
+        };
+        hooks.space_lookup = std::move(space_lookup);
+        hooks.apply_default_space = [this, subject](const std::string& space_id) {
+          if (data_account_ == subject) {
+            space_manager_->ApplyAccountDefaultSpace(space_id);
+          }
+        };
+        return PhiSyncableSettings(&preferences_, std::move(run_on_ui), held,
+                                   std::move(hooks));
+      };
+  native.default_space_id = [this] { return space_manager_->DefaultSpaceId(); };
+  native.create_profile =
+      [this](const std::string& display_name,
+             std::function<void(const std::string&)> done) {
+        sync_profile_creations_[display_name].push_back(std::move(done));
+        PendingProfile pending;
+        pending.display_name = display_name;
+        pending.then = PendingProfile::Then::kSyncPairing;
+        RequestProfile(std::move(pending));
+      };
+  native.chromium_invalidation = [this, subject](
+                                     const std::string& uuid,
+                                     const std::vector<int>& types,
+                                     const std::string& excluding) {
+    chromium_sync_.Invalidate(subject, uuid, types, excluding);
+  };
+  space_manager_->set_on_default_role_moved([this](const std::string& space_id) {
+    if (sync_keys_) {
+      sync_keys_->NoteDefaultSpaceHandOff(space_id);
+    }
+  });
+  // The Space kind: this account's Space list, flushed so the store holds
+  // the user's latest edits, and only while this account's data is open.
+  native.space_table_path = account_dir + L"\\sync\\spaces.json";
+  native.spaces = [this, subject]() -> PhiSpaceManager* {
+    if (data_account_ != subject || !local_store_.is_open()) {
+      return nullptr;
+    }
+    FlushDirtyStores();
+    return space_manager_.get();
+  };
+  native.known_profiles = [this] {
+    std::set<std::string> ids = {store::kDefaultProfileId};
+    for (const keys::LocalProfile& local : SyncLocalProfiles()) {
+      ids.insert(local.profile_id);
+    }
+    return ids;
+  };
+  native.set_hidden_spaces = [this, subject](std::set<std::string> hidden) {
+    if (data_account_ == subject) {
+      space_manager_->SetSyncHiddenSpaces(hidden);
+    }
+  };
+  // Bookmarks and pins: the open account's store; a landing repaints.
+  native.bookmarks_table_path = account_dir + L"\\sync\\bookmarks-cursors.json";
+  native.pins_table_path = account_dir + L"\\sync\\pins-cursors.json";
+  native.rules_table_path = account_dir + L"\\sync\\urlrules-cursors.json";
+  native.owned.store = [this, subject]() -> store::LocalStore* {
+    return data_account_ == subject && local_store_.is_open() ? &local_store_
+                                                              : nullptr;
+  };
+  native.owned.applying = [this](bool applying) {
+    owned_sync_applying_ = applying;
+  };
+  native.owned.landed = [this] {
+    UnbindTabsOfMissingRows();
+    registry_.InvalidateAll();
+    NotifySettingsObservers(PhiSettingsChange::kStoredRows);
+  };
+  native.owned.flush_rules = [this] { FlushDirtyStores(); };
+  native.owned.rules_landed = [this] {
+    // The Space model mirrors the rules and Save diffs against the store.
+    space_manager_->ReloadUrlRulesFromStore();
+    SchedulePushRoutingTable();
+    NotifySettingsObservers(PhiSettingsChange::kSpaces);
+  };
+  // The user's own row edits start a round (not sync's landings).
+  local_store_.set_on_rows_changed([this] {
+    if (sync_keys_ && !owned_sync_applying_) {
+      sync_keys_->NoteLocalOwnedChanged();
+    }
+  });
+  sync_keys_ = std::make_unique<PhiSyncKeyService>(
+      account_dir, subject, account_.auth_for_sync_keys(),
+      [this] { return SyncLocalProfiles(); }, [this] { OnSyncKeysChanged(); },
+      std::move(native));
+  for (const keys::LocalProfile& local : SyncLocalProfiles()) {
+    sync_profile_ids_.insert(local.profile_id);
+  }
+  sync_keys_->SilentUnlockAndResolve();
+}
+
+void PhiCoordinator::OnSyncKeysChanged() {
+  if (!sync_keys_) {
+    return;
+  }
+  std::map<std::string, PhiChromiumSync::ProfileKey> exposed;
+  for (const auto& [profile_id, key] : sync_keys_->snapshot().exposed) {
+    exposed[profile_id] = PhiChromiumSync::ProfileKey{key.uuid, key.passphrase};
+  }
+  chromium_sync_.ReplaceProfileKeys(exposed);
+  NotifySettingsObservers(PhiSettingsChange::kAccount);
+}
+
+PhiSyncKeyService* PhiCoordinator::SyncKeys() {
+  return sync_keys_.get();
+}
+
+void PhiCoordinator::RequestSyncSetup(HWND anchor) {
+  PhiSyncSetupWindow::Open(this, anchor);
+}
+
+void PhiCoordinator::SyncSetupCreateProfile(const std::string& display_name) {
+  PendingProfile pending;
+  pending.display_name = display_name;
+  pending.then = PendingProfile::Then::kSyncPairing;
+  RequestProfile(std::move(pending));
+}
+
+bool PhiCoordinator::SyncProfileNameExists(const std::string& display_name) {
+  for (const keys::LocalProfile& local : SyncLocalProfiles()) {
+    if (local.display_name == display_name) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void PhiCoordinator::SyncSetupClosed() {
+  NotifySettingsObservers(PhiSettingsChange::kAccount);
+}
+
+void PhiCoordinator::SyncPairingProfileCreated(const std::string& display_name,
+                                               const std::string& profile_id) {
+  const auto waiting = sync_profile_creations_.find(display_name);
+  if (waiting != sync_profile_creations_.end() && !waiting->second.empty()) {
+    // Sync's own request (an account profile this PC lacked).
+    std::function<void(const std::string&)> done = std::move(waiting->second.front());
+    waiting->second.erase(waiting->second.begin());
+    if (waiting->second.empty()) {
+      sync_profile_creations_.erase(waiting);
+    }
+    done(profile_id);
+    return;
+  }
+  PhiSyncSetupWindow::NoteProfileCreated(display_name, profile_id);
+}
+
+std::vector<keys::LocalProfile> PhiCoordinator::SyncLocalProfiles() {
+  std::vector<keys::LocalProfile> out;
+  if (!framework_) {
+    return out;
+  }
+  // phi::ListProfiles already leaves out the reserved (Phi Chat) profile;
+  // Windows has no agent fallback profile to exclude.
+  std::optional<base::Value> list = base::JSONReader::Read(
+      framework_->ListProfilesJson(), base::JSON_PARSE_RFC);
+  if (!list || !list->is_list()) {
+    return out;
+  }
+  for (const base::Value& entry : list->GetList()) {
+    const base::DictValue* d = entry.GetIfDict();
+    const std::string* id = d ? d->FindString("id") : nullptr;
+    const std::string* name = d ? d->FindString("name") : nullptr;
+    if (id && !id->empty()) {
+      out.push_back(keys::LocalProfile{*id, name ? *name : std::string()});
+    }
+  }
+  return out;
 }
 
 void PhiCoordinator::RequestDefaultBrowser() {
@@ -3935,9 +4461,13 @@ void PhiCoordinator::OnImportCompleted(const char* source, bool success) {
         framework_->AllBookmarksJson(ResolveBrowser(focused->slot()).value),
         base::JSON_PARSE_RFC);
     if (tree && tree->is_list() && !tree->GetList().empty()) {
+      // The Mac tags a browser import's rows with their origin
+      // (TabSource.chromium = 1, importedBrowserSourceValue); it travels on
+      // the wire as the bookmark's `source`.
+      const store::Source chrome = store::Source::kChromium;
       const std::string root = tab_store_.AddBookmark(
           profile_id, space_id, std::string(), "Imported from Chrome",
-          std::string(), /*folder=*/true, std::string(), 0, 0);
+          std::string(), /*folder=*/true, std::string(), 0, 0, chrome);
       const auto copy = [&](const auto& self, const base::ListValue& nodes,
                             const std::string& parent) -> void {
         for (const base::Value& v : nodes) {
@@ -3955,13 +4485,13 @@ void PhiCoordinator::OnImportCompleted(const char* source, bool success) {
             const std::string guid = tab_store_.AddBookmark(
                 profile_id, space_id, parent,
                 title && !title->empty() ? *title : "Folder", std::string(),
-                /*folder=*/true, std::string(), 0, 0);
+                /*folder=*/true, std::string(), 0, 0, chrome);
             self(self, *children, guid);
           } else if (url && !url->empty()) {
             tab_store_.AddBookmark(profile_id, space_id, parent,
                                    title && !title->empty() ? *title : *url,
                                    *url, /*folder=*/false, std::string(), 0,
-                                   0);
+                                   0, chrome);
             ++copied;
           }
         }
@@ -4034,7 +4564,7 @@ void PhiCoordinator::NoteWindowSnapshot(
     // are folded: rule 1 already puts us after commit, on a fresh task,
     // once per window per flush, so there is nothing to defer for. A
     // favicon landing or a page colour moves no rows and needs neither.
-    ApplyLegacyTagAliases(browser);
+    CanonicalizePinTags(browser);
     surface_coordinator_.UpdateReaderPanelsForWindow(browser);
   }
   if (PhiShellWindow* shell = registry_.ControllerForBrowser(browser)) {

@@ -117,11 +117,13 @@ PhiVerbResult PhiControlDispatcher::VerbSpacesList(const PhiVerbContext& ctx) {
 
 PhiVerbResult PhiControlDispatcher::VerbSpacesCreate(
     const PhiVerbContext& ctx) {
-  const std::string id =
-      std::to_string(coordinator_->spaces_model().next_space_id++);
+  // A Space id is a UUID, as the Mac mints them (SpaceManager); the
+  // number only names a Space nobody named.
+  const std::string id = store::NewUppercaseUuid();
   std::string name = ctx.params.String("name");
   if (name.empty()) {
-    name = "Space " + id;
+    name = "Space " +
+           std::to_string(coordinator_->spaces_model().spaces.size() + 1);
   }
   std::string profile_id = ctx.params.String("profileId");
   if (profile_id.empty()) {
@@ -273,7 +275,7 @@ PhiVerbResult PhiControlDispatcher::VerbSpacesListTabs(
       const char* kind = "normal";
       SidebarTag parsed;
       if (!tab.tag.empty() && ParseTag(tab.tag, &parsed)) {
-        if (const PhiRow* stored =
+        if (const std::optional<PhiRow> stored =
                 coordinator_->tab_store().Find(parsed.guid)) {
           kind = stored->type == PhiRowType::kPinnedTab ? "pinned"
                                                         : "bookmark";
@@ -523,9 +525,8 @@ PhiVerbResult PhiControlDispatcher::VerbProfilesDelete(
 }
 
 // --- URL routing rules -------------------------------------------------------------
-// Rule "id" is "g<generation>-<index>" — the generation bumps on every rule
-// write, so ids REGENERATE across writes (the Mac contract; callers must
-// re-list before update/delete).
+// Rule "id" is the stored rule's stable id (the Mac's SpaceURLRule.id); the
+// old "g<generation>-<index>" spelling still resolves for older probes.
 
 PhiVerbResult PhiControlDispatcher::VerbUrlRulesList(
     const PhiVerbContext& ctx) {
@@ -534,8 +535,7 @@ PhiVerbResult PhiControlDispatcher::VerbUrlRulesList(
   for (size_t i = 0; i < rows.size(); ++i) {
     const std::vector<std::string> parts = SplitTabRow(rows[i]);
     base::DictValue d;
-    d.Set("id", model::UrlRuleWireId(
-                    coordinator_->spaces_model().url_rules_generation, i));
+    d.Set("id", UrlRuleIdAt(coordinator_->spaces_model(), i));
     d.Set("spaceId", parts.size() > 0 ? parts[0] : "");
     d.Set("host", parts.size() > 1 ? parts[1] : "");
     if (parts.size() > 2 && !parts[2].empty()) {
@@ -570,12 +570,9 @@ PhiVerbResult PhiControlDispatcher::UrlRuleEdit(const PhiVerbContext& ctx,
   int index = -1;
   if (const std::string* id = ctx.params.FindString("id")) {
     size_t parsed = 0;
-    if (model::ParseUrlRuleWireId(
-            *id, coordinator_->spaces_model().url_rules_generation, &parsed)) {
-      index = static_cast<int>(parsed);  // The parser saturates at INT_MAX.
-    } else if (id->find('-') != std::string::npos) {
-      // A prior generation's id (or one with no index): the list has been
-      // rewritten since it was read, so it no longer names anything.
+    if (ResolveUrlRuleIndex(coordinator_->spaces_model(), *id, &parsed)) {
+      index = static_cast<int>(parsed);
+    } else {
       return PhiVerbResult::Fail("unknown_rule");
     }
   }
@@ -692,12 +689,10 @@ PhiVerbResult PhiControlDispatcher::VerbPinnedOpen(
       coordinator_->OwnerForSlot(controller->slot(), &profile_id, &space_id)) {
     // Pins and sidebar bookmarks both bind (bookmarkGuidBacking) — resolve
     // the guid against either kind of stored row.
-    for (const PhiRow& row : coordinator_->tab_store().rows()) {
-      if (row.guid == guid && row.type != PhiRowType::kBookmarkFolder) {
-        url = row.url;
-        known = true;
-        break;
-      }
+    if (const std::optional<PhiRow> row = coordinator_->tab_store().Find(guid);
+        row && row->type != PhiRowType::kBookmarkFolder) {
+      url = row->url;
+      known = true;
     }
   }
   if (!known) {
@@ -752,8 +747,8 @@ PhiVerbResult PhiControlDispatcher::StoredRowRemove(
   // Route through RemoveStoredRow: it also clears the identity tag from
   // any tab bound to the row (verb and UI paths must behave alike).
   const std::string guid = ctx.params.String("guid");
-  const PhiRow* row =
-      guid.empty() ? nullptr : coordinator_->tab_store().Find(guid);
+  const std::optional<PhiRow> row =
+      guid.empty() ? std::nullopt : coordinator_->tab_store().Find(guid);
   if (!row) {
     return PhiVerbResult::Refuse(PhiErrorCode::kInvalidPayload);
   }
@@ -921,7 +916,7 @@ PhiVerbResult PhiControlDispatcher::BookmarkTreeAdd(const PhiVerbContext& ctx,
   const std::string space_id = target->id;
   std::string parent;
   if (const std::string* p = ctx.params.FindString("parentGuid")) {
-    const PhiRow* parent_row = coordinator_->tab_store().Find(*p);
+    const std::optional<PhiRow> parent_row = coordinator_->tab_store().Find(*p);
     if (!parent_row || parent_row->type != PhiRowType::kBookmarkFolder ||
         parent_row->space_id != space_id) {
       return PhiVerbResult::Fail("unknown_folder");
@@ -958,7 +953,7 @@ PhiVerbResult PhiControlDispatcher::VerbBookmarksAddFolder(
 PhiVerbResult PhiControlDispatcher::BookmarkTreeOp(const PhiVerbContext& ctx,
                                                    std::string_view op) {
   const std::string guid = ctx.params.String("guid");
-  const PhiRow* row = coordinator_->tab_store().Find(guid);
+  const std::optional<PhiRow> row = coordinator_->tab_store().Find(guid);
   if (!row || (row->type != PhiRowType::kBookmark &&
                row->type != PhiRowType::kBookmarkFolder)) {
     return PhiVerbResult::Fail("unknown_bookmark");
@@ -1043,7 +1038,7 @@ PhiVerbResult PhiControlDispatcher::VerbPinnedTabsAdd(
     coordinator_->tab_store().Reorder(guid, *index);
   }
   coordinator_->registry().InvalidateAll();
-  const PhiRow* row = coordinator_->tab_store().Find(guid);
+  const std::optional<PhiRow> row = coordinator_->tab_store().Find(guid);
   base::DictValue out;
   out.Set("guid", guid);
   out.Set("profileId",

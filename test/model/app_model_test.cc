@@ -52,7 +52,7 @@ void TestSettingsDefaults() {
   CHECK(s.auto_peek_view_enabled);
   CHECK(!s.restore_last_session);
   CHECK(!s.always_show_bookmark_bar);
-  CHECK(!s.bookmark_bar_on_new_tab);
+  CHECK(s.bookmark_bar_on_new_tab);  // The Mac's default.
   CHECK(s.shortcut_overrides.empty());
   CHECK(s.reader.font_size == 19);
   CHECK(s.reader.width == "normal");
@@ -65,7 +65,7 @@ void TestSettingsDefaults() {
   CHECK(s.language.empty());
   CHECK(!s.developer_mode);
   CHECK(!s.allow_agent_control);
-  CHECK(!s.allow_agent_user_spaces);
+  CHECK(s.allow_agent_user_spaces);  // The Mac's default; behind the master switch.
   CHECK(!s.test_rig);
   CHECK(s.pin_scope == PhiPinScope::kProfile);
   // New in phase 3 and OFF until the user opts in.
@@ -76,14 +76,14 @@ void TestSettingsDefaults() {
 void TestSpacesDefaults() {
   const PhiSpacesModel m;
   CHECK(m.spaces.size() == 1);
-  CHECK(m.spaces[0].id == "1");
-  CHECK(m.spaces[0].name == "Space 1");
+  CHECK(m.spaces[0].id == "default-space");
+  CHECK(m.spaces[0].name == "Default");
   CHECK(m.spaces[0].profile_id == "Default");
   CHECK(m.spaces[0].icon == "phi:phi-icon-view-grid-add");
   CHECK(m.spaces[0].theme_id.empty());
   CHECK(m.spaces[0].saturation == -1);
   CHECK(m.spaces[0].color_hex.empty());
-  CHECK(m.default_space_id == "1");
+  CHECK(m.default_space_id == "default-space");
   CHECK(m.next_space_id == 2);
   CHECK(m.url_rules.empty());
   CHECK(m.url_rules_generation == 1);
@@ -136,18 +136,18 @@ void TestNextSpaceId() {
 }
 
 void TestResolveDefaultSpaceId() {
-  const std::vector<Space> spaces = {MakeSpace("1"), MakeSpace("2"),
+  const std::vector<Space> spaces = {MakeSpace("default-space"), MakeSpace("2"),
                                      MakeSpace("9")};
   CHECK(ResolveDefaultSpaceId(spaces, "2") == "2");
-  // A persisted holder that is gone falls back to "1" when that exists.
-  CHECK(ResolveDefaultSpaceId(spaces, "4") == "1");
-  CHECK(ResolveDefaultSpaceId(spaces, "") == "1");
+  // A persisted holder that is gone falls back to "default-space" when that exists.
+  CHECK(ResolveDefaultSpaceId(spaces, "4") == "default-space");
+  CHECK(ResolveDefaultSpaceId(spaces, "") == "default-space");
   // ...else the first Space.
   const std::vector<Space> no_one = {MakeSpace("5"), MakeSpace("6")};
   CHECK(ResolveDefaultSpaceId(no_one, "6") == "6");
   CHECK(ResolveDefaultSpaceId(no_one, "7") == "5");
   // An empty list is the built-in default.
-  CHECK(ResolveDefaultSpaceId({}, "3") == "1");
+  CHECK(ResolveDefaultSpaceId({}, "3") == "default-space");
 }
 
 void TestUrlRuleWireIds() {
@@ -176,9 +176,9 @@ void TestValueEquality() {
   PhiSpacesModel a;
   PhiSpacesModel b;
   CHECK(a == b);
-  b.url_rules.push_back({"1", "github.com", "", false});
+  b.url_rules.push_back({"1", "github.com", "", false, ""});
   CHECK(!(a == b));
-  UrlRule r1{"1", "*.foo.com", "/x", true};
+  UrlRule r1{"1", "*.foo.com", "/x", true, ""};
   UrlRule r2 = r1;
   CHECK(r1 == r2);
   r2.ask = false;

@@ -22,6 +22,7 @@
 #include "phibrowser-win/client/phi_control_server.h"
 #include "phibrowser-win/client/phi_credential_service.h"
 #include "phibrowser-win/client/phi_ids.h"
+#include "phibrowser-win/client/phi_sync_keys.h"
 #include "phibrowser-win/client/phi_verb_registry.h"
 
 namespace phi_framework {
@@ -522,6 +523,14 @@ class PhiControlDispatcher : public PhiControlDelegate {
   PhiVerbResult VerbAccountSignOut(const PhiVerbContext& ctx);
   PhiVerbResult VerbOnboardingStatus(const PhiVerbContext& ctx);
   PhiVerbResult VerbOnboardingDrive(const PhiVerbContext& ctx);
+  PhiVerbResult VerbSyncStatus(const PhiVerbContext& ctx);
+  PhiVerbResult VerbSyncSetProfileKey(const PhiVerbContext& ctx);
+  PhiVerbResult VerbSyncKeyOp(const PhiVerbContext& ctx);
+  PhiVerbResult VerbSyncSetupOpen(const PhiVerbContext& ctx);
+  PhiVerbResult VerbSyncSetupStatus(const PhiVerbContext& ctx);
+  PhiVerbResult VerbSyncSetupDrive(const PhiVerbContext& ctx);
+  // Records a finished key operation for agentSpace.sync.status.
+  void FinishKeyOp(int seq, keys::KeyStatus status, base::DictValue result);
   // phi_verbs_credentials.cc: the vault.
   PhiVerbResult VerbCredentialsStatus(const PhiVerbContext& ctx);
   PhiVerbResult VerbCredentialsGet(const PhiVerbContext& ctx);
@@ -585,6 +594,12 @@ class PhiControlDispatcher : public PhiControlDelegate {
   base::Lock pending_replies_lock_;
   std::map<int, PendingReply> pending_replies_;
   int next_pending_reply_ = 1;
+  // agentSpace.sync.keyOp's last operation (the key layer answers
+  // asynchronously; agentSpace.sync.status reports it), and the approvals
+  // its last refresh listed, which approve/deny pick from. UI thread.
+  int key_op_seq_ = 0;
+  base::DictValue key_op_;
+  std::vector<keys::PendingApproval> key_op_pending_;
 };
 
 // What a handler receives: the caller, the scope the dispatcher resolved,

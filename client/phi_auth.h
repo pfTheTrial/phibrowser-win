@@ -7,6 +7,7 @@
 
 #include <windows.h>
 
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -113,6 +114,27 @@ class PhiAuth {
   // reauthentication is required, or the refresh fails. Blocks on the
   // network, so never from the UI thread.
   std::string AccessTokenBlocking();
+  // The bearer for Chromium sync, for the UI THREAD (the Mac's
+  // getAuth0AccessTokenSyncly as Chromium's sync service calls it): the
+  // cached access token while it has at least a minute left, else empty —
+  // and then ONE background refresh starts, whose success posts the notify
+  // message so the caller asks again. Never blocks.
+  std::string AccessTokenForSync();
+  // Chromium sync's server for this tenant, the value of --sync-url
+  // (the Mac ChromiumLauncher's default): https://sync[.stag].phibrowser.com
+  // /chromium-sync, following the auth domain so the token and the server
+  // always belong together. PHI_SYNC_URL overrides it in a dev-hooks build.
+  static std::string SyncServerUrl();
+  // The sync service's origin (no path): /keys/v1 and /chromium-sync live
+  // under it — the Mac's KeyEnvelopeAPIClient.syncBaseURL, which follows
+  // the tenant the same way. PHI_SYNC_BASE_URL overrides it.
+  static std::string SyncBaseUrl();
+  // AccessTokenBlocking, BOUND to an account: empty unless the token's
+  // `sub` is `subject` — a key flow started for one account never sends its
+  // next request with another account's bearer (the Mac's
+  // SyncKeyStack.boundToken). Renews a token with under a minute left.
+  // Worker threads only.
+  std::string AccessTokenBlockingFor(const std::string& subject);
   // Forgets the cached access token so the next AccessTokenBlocking refreshes
   // — a caller's answer to a 401. Any thread.
   void InvalidateAccessToken();
@@ -155,6 +177,7 @@ class PhiAuth {
 
   static DWORD WINAPI ExchangeThread(void* param);
   static DWORD WINAPI RefreshThread(void* param);
+  static DWORD WINAPI SyncRefreshThread(void* param);
   static DWORD WINAPI RevokeThread(void* param);
   static LRESULT CALLBACK OutcomeWndProc(HWND hwnd,
                                          UINT msg,
@@ -202,6 +225,8 @@ class PhiAuth {
   // validation and a worker asking for a bearer token) would invalidate
   // each other's session.
   CRITICAL_SECTION refresh_lock_;
+  // AccessTokenForSync's one background refresh at a time.
+  std::atomic<bool> sync_refresh_in_flight_{false};
 };
 
 }  // namespace phi_client

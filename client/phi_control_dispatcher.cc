@@ -917,8 +917,8 @@ bool PhiControlDispatcher::AuthorizeVerb(const PhiPrincipal& principal,
   }
   if (spec.flags & kVerbDestructiveOnFolder) {
     const std::string* guid = params.FindString("guid");
-    const PhiRow* row =
-        guid ? coordinator_->tab_store().Find(*guid) : nullptr;
+    const std::optional<PhiRow> row =
+        guid ? coordinator_->tab_store().Find(*guid) : std::nullopt;
     if (row && row->type == PhiRowType::kBookmarkFolder) {
       required |= kDestructive;
     }

@@ -31,6 +31,7 @@
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/logging.h"
+#include "base/no_destructor.h"
 #include "base/process/memory.h"
 #include "base/process/process.h"
 #include "base/strings/string_number_conversions.h"
@@ -59,6 +60,7 @@
 #include "components/crash/core/app/run_as_crashpad_handler_win.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/common/result_codes.h"
+#include "phibrowser-win/client/phi_auth.h"
 #include "phibrowser-win/client/phi_coordinator.h"
 #include "third_party/crashpad/crashpad/util/win/initial_client_data.h"
 
@@ -79,6 +81,16 @@ phi_framework::PhiFrameworkDelegate* PhiClientCreateDelegate() {
   // the leak keeps both alive.
   auto* coordinator = new phi_client::PhiCoordinator();
   return &coordinator->framework_dispatcher();
+}
+
+// Chromium sync's server (--sync-url), resolved by the framework from this
+// exe at startup (ChromeMainDelegate::BasicStartupComplete) — the Mac's
+// ChromiumLauncher passes the same switch. It follows the Auth0 tenant, so a
+// token and the server it is sent to always belong together.
+extern "C" __declspec(dllexport) const char* PhiClientSyncServerUrl() {
+  static const base::NoDestructor<std::string> url(
+      phi_client::PhiAuth::SyncServerUrl());
+  return url->c_str();
 }
 
 namespace {

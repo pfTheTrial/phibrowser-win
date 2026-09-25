@@ -917,7 +917,7 @@ Function un.ConfirmCreate
   ${Header} $hDlg "Remove Phi Browser" "Version ${PHI_VERSION} · $INSTDIR"
   ${Create} $R9 $hDlg "text.lead" 32 90 536 40 "The program, its shortcuts and the Apps & Features entry will be removed. Rollback copies go with them."
   ${If} ${FileExists} "$DataDir\Local State"
-  ${OrIf} ${FileExists} "$DataDir\PhiSettings.json"
+  ${OrIf} ${FileExists} "$DataDir\PhiPreferences.json"
     ${Create} $R9 $hDlg "card" 32 146 536 94 ""
     ${NsdButton} $hDeleteData "check/card" 48 160 20 20 ""
     ${NSD_OnClick} $hDeleteData un.ConfirmCheck
@@ -967,7 +967,7 @@ Section "Uninstall"
   ; a silent uninstall keeps it.
   ${If} $DeleteData == 1
     ${If} ${FileExists} "$DataDir\Local State"
-    ${OrIf} ${FileExists} "$DataDir\PhiSettings.json"
+    ${OrIf} ${FileExists} "$DataDir\PhiPreferences.json"
       RMDir /r "$DataDir"
     ${EndIf}
   ${EndIf}

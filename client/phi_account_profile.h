@@ -33,10 +33,10 @@ struct PhiAccountProfile {
 // The signed-in account's profile and avatar — the Mac AccountController's
 // prefetchProfile / refreshAvatar / storeAvatarImage, minus Kingfisher.
 //
-// Cached on disk beside PhiAuth.dat: PhiAccountProfile.json (the record;
-// not a secret, the Mac keeps it in the account's plist too) and
-// PhiAvatar.img (the picture's bytes as served). Both go on sign-out and
-// whenever the session's subject changes.
+// Cached on disk in the ACCOUNT's directory (Phi\users\<sub>, as the Mac
+// keeps cachedProfile in the account's plist): PhiAccountProfile.json (the
+// record; not a secret) and PhiAvatar.img (the picture's bytes as served).
+// Both go on sign-out; another subject reads its own.
 //
 // Threading: SINGLE WRITER, the same shape as PhiAuth. The UI thread owns
 // `profile_` and the avatar; fetch and update run on worker threads, park
@@ -52,7 +52,8 @@ class PhiAccountProfileService {
   PhiAccountProfileService& operator=(const PhiAccountProfileService&) =
       delete;
 
-  // Reads the caches. UI thread, once.
+  // Remembers where accounts live; the caches are read per subject as
+  // SyncWithSession names one. UI thread, once.
   void Load(const std::wstring& user_data_dir,
             HWND notify_hwnd,
             UINT notify_msg);
@@ -102,7 +103,10 @@ class PhiAccountProfileService {
   static DWORD WINAPI JobThread(void* param);
   void PersistProfile();
   void PersistAvatar();
+  // Points the caches at `sub`'s account directory and reads them.
+  void BindSubject(const std::string& sub);
 
+  std::wstring user_data_dir_;
   std::wstring profile_path_;
   std::wstring avatar_path_;
   HWND notify_hwnd_ = nullptr;

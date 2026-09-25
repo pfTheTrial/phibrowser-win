@@ -175,6 +175,9 @@ class SidebarHost {
   // caps can then be raised above THEM (see RaiseCornerCaps).
   virtual void RaiseReaderPanels(int64_t slot) = 0;
   // The slot's pinned tabs, in sibling order.
+  // A stored row (pin or bookmark) was opened or focused from the sidebar —
+  // the Mac's updateLastSeen (device-local; not synced).
+  virtual void NoteStoredRowSeen(const std::string& guid) = 0;
   virtual std::vector<PhiStoredRowView> PinnedRows(int64_t slot) const = 0;
   // Complete scoped identity inventory, independent of folder expansion,
   // layout, and favicon loading. The sidebar model owns live reconciliation.

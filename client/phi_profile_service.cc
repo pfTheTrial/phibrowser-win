@@ -13,6 +13,7 @@
 #include "base/values.h"
 #include "chrome/browser/phinomenon/phi_framework/phi_framework_api.h"
 #include "phibrowser-win/client/phi_client_analytics.h"
+#include "phibrowser-win/client/phi_util.h"
 
 namespace phi_client {
 
@@ -80,6 +81,9 @@ void PhiProfileService::OnProfileCreated(const char* profile_id) {
     if (request.pending_reply_id) {
       host_.CompleteProfileReply(request.pending_reply_id, kCreateFailedReply);
     }
+    if (request.then == PendingProfile::Then::kSyncPairing) {
+      host_.SyncPairingProfileCreated(request.display_name, std::string());
+    }
     return;
   }
   switch (request.then) {
@@ -103,6 +107,9 @@ void PhiProfileService::OnProfileCreated(const char* profile_id) {
       // slot enters it (a RequestBrowser, since the profile has no window).
       host_.OpenSpaceOnNewProfile(request.slot, id);
       return;
+    case PendingProfile::Then::kSyncPairing:
+      host_.SyncPairingProfileCreated(request.display_name, id);
+      return;
   }
 }
 
@@ -114,6 +121,9 @@ void PhiProfileService::ExpirePending(uint64_t now_ms,
                  << it->display_name << "'";
       if (it->pending_reply_id) {
         host_.CompleteProfileReply(it->pending_reply_id, timeout_reply);
+      }
+      if (it->then == PendingProfile::Then::kSyncPairing) {
+        host_.SyncPairingProfileCreated(it->display_name, std::string());
       }
       it = pending_.erase(it);
     } else {
@@ -221,6 +231,39 @@ bool PhiProfileService::DeleteProfileById(const std::string& profile_id) {
   framework_.DeleteProfile(profile_id.c_str());
   host_.NoteProfilesChanged();
   return true;
+}
+
+std::optional<sync::ContextStatus> PhiProfileService::ProfileSyncStatus(
+    const std::string& profile_id,
+    std::vector<std::string>* categories) const {
+  const char* json = framework_.ProfileSyncStatusJson(profile_id.c_str());
+  if (!json) {
+    return std::nullopt;
+  }
+  sync::ContextStatus unknown;
+  unknown.id = profile_id;
+  std::optional<base::Value> parsed =
+      base::JSONReader::Read(json, base::JSON_PARSE_RFC);
+  if (!parsed || !parsed->is_dict()) {
+    return unknown;
+  }
+  const base::DictValue& dict = parsed->GetDict();
+  const std::string* phase = dict.FindString("phase");
+  const base::ListValue* enabled = dict.FindList("enabled_categories");
+  if (!phase || !enabled) {
+    return unknown;
+  }
+  if (categories) {
+    for (const base::Value& category : *enabled) {
+      if (category.is_string()) {
+        categories->push_back(category.GetString());
+      }
+    }
+  }
+  return sync::DecodeProfileStatus(profile_id,
+                                   dict.FindInt("version").value_or(0), *phase,
+                                   dict.FindDouble("last_success_ms"),
+                                   PhiNowUnixMs());
 }
 
 std::vector<PhiSearchEngineRow> PhiProfileService::SearchEngines(

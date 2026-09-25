@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -16,6 +17,7 @@
 #include "base/memory/raw_ptr_exclusion.h"
 #include "phibrowser-win/client/phi_app_model.h"
 #include "phibrowser-win/client/phi_ids.h"
+#include "phibrowser-win/client/phi_url_rule_normalize.h"
 #include "phibrowser-win/client/phi_settings_types.h"
 #include "phibrowser-win/client/phi_window_registry.h"
 
@@ -32,11 +34,12 @@
 // it for names and profiles). Both services mark the same store dirty; the
 // coordinator coalesces the write.
 //
-// INVARIANTS. Rule ids ("g<gen>-<index>") regenerate on every write, so an
-// id read before a write stops resolving. Every write stores the CANONICAL
-// pattern (NormalizeUrlRuleHost / NormalizeUrlRulePathPrefix below — the
-// Mac's LocalStore.normalizedPathPrefix), so the routing table always
-// compares against what GURL hands the throttle. A rule may target two
+// INVARIANTS. A rule's id is the stored SpaceURLRule.id: minted once, stable
+// across edits, never reused (the Mac's contract; the old per-write
+// "g<gen>-<index>" ids are gone). Every write stores the CANONICAL pattern
+// (NormalizeUrlRuleHost / NormalizeUrlRulePathPrefix below — the Mac's
+// LocalStore normalisation), so identity and the routing table agree with
+// the Mac's. A rule may target two
 // ACTIONS beside the user's Spaces — Incognito (kPhiIncognitoRuleTargetId)
 // and Kiosk (kPhiKioskRuleTargetId) — the Mac's incognitoRuleTargetId /
 // kioskRuleTargetId; the Kiosk id is a wire value shared with the fork's
@@ -78,127 +81,18 @@ inline bool UrlRuleTargetIsAction(std::string_view id) {
 
 // --- Canonical pattern forms (host-tested) --------------------------------------
 
-// The host as the router compares it: trimmed and ASCII-lowercased (GURL
-// hosts are lowercase; the fork lowercases again on push, so this is about
-// what the file and the editor show).
-inline std::string NormalizeUrlRuleHost(std::string host) {
-  size_t begin = 0;
-  while (begin < host.size() &&
-         (host[begin] == ' ' || host[begin] == '\t' || host[begin] == '\r' ||
-          host[begin] == '\n')) {
-    ++begin;
-  }
-  size_t end = host.size();
-  while (end > begin &&
-         (host[end - 1] == ' ' || host[end - 1] == '\t' ||
-          host[end - 1] == '\r' || host[end - 1] == '\n')) {
-    --end;
-  }
-  host = host.substr(begin, end - begin);
-  for (char& c : host) {
-    if (c >= 'A' && c <= 'Z') {
-      c = static_cast<char>(c - 'A' + 'a');
-    }
-  }
-  return host;
+// The Mac's LocalStore.normalizedHost / normalizedPathPrefix, byte for byte
+// (phi_url_rule_normalize.h, pinned by the Mac-generated vectors). A path
+// prefix of "" means any path and "/" the ROOT only — the Chromium router's
+// PathMatches reads them the same way. The model spells the Mac's nil path
+// as "".
+inline std::string NormalizeUrlRuleHost(const std::string& host) {
+  return store::NormalizedRuleHost(host);
 }
 
-// The Mac's LocalStore.normalizedPathPrefix, step for step:
-//   1. trim whitespace; empty -> "" (any path);
-//   2. strip trailing slashes ("/foo/" == "/foo"), and a bare "/" becomes
-//      "" — under the matcher's boundary check a sole "/" would match only
-//      the root path, never "/foo", which is never what the user means;
-//   3. ensure the leading "/" (GURL::path() always starts with one);
-//   4. percent-DECODE then re-ENCODE, so "/résumé" and "/r%C3%A9sum%C3%A9"
-//      store identically and the result is idempotent (a re-encode alone
-//      would double-escape every "%" of an already-canonical prefix). A
-//      literal "%" that is not a valid escape ("/100%complete") is kept as
-//      typed by the decode and escaped to "%25" by the encode.
-// The encode keeps exactly what URL path characters may appear unescaped
-// (unreserved, sub-delims, ":" "@" "/") — Foundation's .urlPathAllowed,
-// which is also what GURL leaves alone.
-inline std::string NormalizeUrlRulePathPrefix(std::string raw) {
-  auto is_space = [](char c) {
-    return c == ' ' || c == '\t' || c == '\r' || c == '\n';
-  };
-  size_t begin = 0;
-  while (begin < raw.size() && is_space(raw[begin])) {
-    ++begin;
-  }
-  size_t end = raw.size();
-  while (end > begin && is_space(raw[end - 1])) {
-    --end;
-  }
-  std::string s = raw.substr(begin, end - begin);
-  if (s.empty()) {
-    return std::string();
-  }
-  while (s.size() > 1 && s.back() == '/') {
-    s.pop_back();
-  }
-  if (s == "/") {
-    return std::string();
-  }
-  if (s.front() != '/') {
-    s.insert(s.begin(), '/');
-  }
-  auto hex_value = [](char c) -> int {
-    if (c >= '0' && c <= '9') {
-      return c - '0';
-    }
-    if (c >= 'a' && c <= 'f') {
-      return c - 'a' + 10;
-    }
-    if (c >= 'A' && c <= 'F') {
-      return c - 'A' + 10;
-    }
-    return -1;
-  };
-  // Decode only when EVERY "%" heads a valid escape — Foundation's
-  // removingPercentEncoding leaves a string with a stray "%" untouched.
-  bool decodable = true;
-  for (size_t i = 0; i < s.size(); ++i) {
-    if (s[i] == '%' &&
-        (i + 2 >= s.size() || hex_value(s[i + 1]) < 0 ||
-         hex_value(s[i + 2]) < 0)) {
-      decodable = false;
-      break;
-    }
-  }
-  if (decodable && s.find('%') != std::string::npos) {
-    std::string decoded;
-    decoded.reserve(s.size());
-    for (size_t i = 0; i < s.size(); ++i) {
-      if (s[i] == '%') {
-        decoded.push_back(static_cast<char>(hex_value(s[i + 1]) * 16 +
-                                            hex_value(s[i + 2])));
-        i += 2;
-      } else {
-        decoded.push_back(s[i]);
-      }
-    }
-    s = std::move(decoded);
-  }
-  static constexpr std::string_view kHex = "0123456789ABCDEF";
-  std::string encoded;
-  encoded.reserve(s.size());
-  for (char c : s) {
-    const unsigned char u = static_cast<unsigned char>(c);
-    const bool allowed =
-        (u >= 'a' && u <= 'z') || (u >= 'A' && u <= 'Z') ||
-        (u >= '0' && u <= '9') || u == '-' || u == '.' || u == '_' ||
-        u == '~' || u == '!' || u == '$' || u == '&' || u == '\'' ||
-        u == '(' || u == ')' || u == '*' || u == '+' || u == ',' ||
-        u == ';' || u == '=' || u == ':' || u == '@' || u == '/';
-    if (allowed) {
-      encoded.push_back(c);
-    } else {
-      encoded.push_back('%');
-      encoded.push_back(kHex[u >> 4]);
-      encoded.push_back(kHex[u & 0xF]);
-    }
-  }
-  return encoded;
+inline std::string NormalizeUrlRulePathPrefix(const std::string& raw) {
+  return store::NormalizedRulePathPrefix(std::optional<std::string>(raw))
+      .value_or(std::string());
 }
 
 // --- The editor's match types (host-tested) -------------------------------------
@@ -273,7 +167,21 @@ inline void UrlRuleEncode(UrlRuleMatchType type,
                           std::string* path_prefix) {
   host->clear();
   path_prefix->clear();
-  value = NormalizeUrlRuleHost(std::move(value));  // Trim + lowercase.
+  // The editor's own reading of what was typed: trimmed and lowercased.
+  // Not the stored-form normaliser, which also strips trailing dots — that
+  // would turn a half-typed "*." into "*" here; the pieces this builds are
+  // canonicalised when they are stored.
+  {
+    const size_t begin = value.find_first_not_of(" \t\r\n");
+    const size_t end = value.find_last_not_of(" \t\r\n");
+    value = begin == std::string::npos ? std::string()
+                                       : value.substr(begin, end - begin + 1);
+    for (char& c : value) {
+      if (c >= 'A' && c <= 'Z') {
+        c = static_cast<char>(c - 'A' + 'a');
+      }
+    }
+  }
   const size_t scheme = value.find("://");
   if (scheme != std::string::npos) {
     value = value.substr(scheme + 3);
@@ -385,11 +293,12 @@ inline bool AddUrlRuleTo(model::PhiSpacesModel* model,
                          const std::string& host,
                          const std::string& path_prefix,
                          bool ask) {
-  const model::UrlRule rule =
-      CanonicalUrlRule({space_id, host, path_prefix, ask});
+  model::UrlRule rule =
+      CanonicalUrlRule({space_id, host, path_prefix, ask, std::string()});
   if (rule.space_id.empty() || rule.host.empty()) {
     return false;
   }
+  rule.id = store::NewRuleId();
   model->url_rules.push_back(rule);
   ++model->url_rules_generation;
   return true;
@@ -432,6 +341,12 @@ inline bool ReplaceUrlRulesIn(model::PhiSpacesModel* model,
   if (canonical == model->url_rules) {
     return false;
   }
+  // A rule the editor added has no id yet; it gets one now, and keeps it.
+  for (model::UrlRule& rule : canonical) {
+    if (rule.id.empty()) {
+      rule.id = store::NewRuleId();
+    }
+  }
   model->url_rules = std::move(canonical);
   ++model->url_rules_generation;
   return true;
@@ -473,21 +388,36 @@ inline size_t DropUrlRulesForSpace(model::PhiSpacesModel* model,
   return dropped;
 }
 
-// Resolves a wire id against the model's CURRENT generation to an index
-// that exists. False for a stale generation, a malformed id or an index
-// past the list — the Mac contract that callers re-list before update or
-// delete.
+// Resolves a rule id to its index: the stored rule id first; the old
+// "g<generation>-<index>" spelling is still read (against the CURRENT
+// generation) for probes written before rule ids were stable. False for an
+// unknown or stale id.
 inline bool ResolveUrlRuleIndex(const model::PhiSpacesModel& model,
-                                std::string_view wire_id,
+                                std::string_view id,
                                 size_t* index) {
+  for (size_t i = 0; i < model.url_rules.size(); ++i) {
+    if (!model.url_rules[i].id.empty() && model.url_rules[i].id == id) {
+      *index = i;
+      return true;
+    }
+  }
   size_t parsed = 0;
-  if (!model::ParseUrlRuleWireId(wire_id, model.url_rules_generation,
-                                 &parsed) ||
+  if (!model::ParseUrlRuleWireId(id, model.url_rules_generation, &parsed) ||
       parsed >= model.url_rules.size()) {
     return false;
   }
   *index = parsed;
   return true;
+}
+
+// The id a rule is named by: its stored id, or (before its first save) the
+// generation spelling.
+inline std::string UrlRuleIdAt(const model::PhiSpacesModel& model,
+                               size_t index) {
+  if (index < model.url_rules.size() && !model.url_rules[index].id.empty()) {
+    return model.url_rules[index].id;
+  }
+  return model::UrlRuleWireId(model.url_rules_generation, index);
 }
 
 // --- The service --------------------------------------------------------------
@@ -538,7 +468,7 @@ class PhiUrlRouter {
     return UrlRuleRowsOf(model_.url_rules);
   }
   std::string RuleWireId(size_t index) const {
-    return model::UrlRuleWireId(model_.url_rules_generation, index);
+    return UrlRuleIdAt(model_, index);
   }
   bool ResolveRuleIndex(std::string_view wire_id, size_t* index) const {
     return ResolveUrlRuleIndex(model_, wire_id, index);

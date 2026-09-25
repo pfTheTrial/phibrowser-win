@@ -38,6 +38,7 @@
 #include "phibrowser-win/client/phi_features.h"
 #include "phibrowser-win/client/phi_dwrite.h"
 #include "phibrowser-win/client/phi_fluent.h"
+#include "phibrowser-win/client/phi_sync_key_service.h"
 #include "phibrowser-win/client/phi_version.h"
 #include "phibrowser-win/client/phi_updater.h"
 #include "phibrowser-win/client/phi_sidebar_view.h"
@@ -219,8 +220,9 @@ struct SectionDef {
 };
 // The pages (windows-native-ui.md §7), in rail order. The ids are the
 // remote surface's (`account` stays `account` — impl log D19).
-constexpr std::array<SectionDef, 11> kSections = {{
+constexpr std::array<SectionDef, 12> kSections = {{
     {"account", L"You", 0xE77B},          // Contact
+    {"sync", L"Sync", 0xE895},            // Sync
     {"general", L"General", 0xE713},      // Settings
     {"appearance", L"Appearance", 0xE790},  // Color
     {"spaces", L"Spaces", 0xE8A9},        // ViewAll
@@ -360,6 +362,7 @@ bool PhiSettingsWindow::OpenWindow() {
     return false;
   }
   profile_poll_ = NewTimer();
+  sync_poll_ = NewTimer();
   card_timer_ = NewTimer();
   profile_card_.SetNotify(hwnd(), kMsgProfileCardFrame);
   // Content 680x561 under the caption strip and toolbar band — fixed,
@@ -569,6 +572,310 @@ void PhiSettingsWindow::ShowSpacePicker(const std::string& space_id) {
   g_instance->scroll_ = 0;
   g_instance->SyncTitle();
   Refresh();
+}
+
+// --- Sync (docs/user-data-parity.md S3) ------------------------------------------
+// The Mac's DevicesSettingView: the account, the key layer's state, the
+// devices with their pending join requests, and recovery / removal. The
+// sync STATUS card waits for the framework's profile sync status.
+
+namespace {
+
+// "3:41 PM": a deadline in the user's short time format.
+std::wstring ShortTime(int64_t unix_ms) {
+  const ULONGLONG ticks = static_cast<ULONGLONG>(unix_ms) * 10000ULL +
+                          116444736000000000ULL;  // 1601 epoch, 100 ns
+  FILETIME utc = {static_cast<DWORD>(ticks & 0xFFFFFFFF),
+                  static_cast<DWORD>(ticks >> 32)};
+  FILETIME local = {};
+  SYSTEMTIME st = {};
+  if (!::FileTimeToLocalFileTime(&utc, &local) ||
+      !::FileTimeToSystemTime(&local, &st)) {
+    return std::wstring();
+  }
+  wchar_t buffer[64] = {};
+  const int n = ::GetTimeFormatEx(LOCALE_NAME_USER_DEFAULT, TIME_NOSECONDS,
+                                  &st, nullptr, buffer, 64);
+  return n > 1 ? std::wstring(buffer, static_cast<size_t>(n - 1))
+               : std::wstring();
+}
+
+}  // namespace
+
+void PhiSettingsWindow::RefreshSyncDevices(bool force) {
+  PhiSyncKeyService* keys = host_ ? host_->SyncKeys() : nullptr;
+  if (!keys || sync_refreshing_) {
+    return;
+  }
+  const uint64_t now = ::GetTickCount64();
+  if (!force && sync_loaded_ && now - sync_refreshed_tick_ < 3000) {
+    return;
+  }
+  sync_refreshing_ = true;
+  std::weak_ptr<int> alive = sync_alive_;
+  keys->Refresh([this, alive](PhiSyncKeyService::DeviceList list) {
+    if (alive.expired()) {
+      return;
+    }
+    sync_refreshing_ = false;
+    sync_loaded_ = true;
+    sync_refreshed_tick_ = ::GetTickCount64();
+    sync_list_error_ = list.status.ok() ? std::string()
+                                        : keys::KeyStatusName(list.status);
+    if (list.status.ok()) {
+      sync_devices_ = std::move(list.devices);
+      sync_pending_ = std::move(list.pending);
+    }
+    ScheduleRebuild();
+  });
+}
+
+namespace {
+
+const wchar_t* SyncPhaseTitle(sync::SummaryPhase phase) {
+  switch (phase) {
+    case sync::SummaryPhase::kNotStarted:
+      return PhiStr("sync.setup.notStarted");
+    case sync::SummaryPhase::kChecking:
+      return PhiStr("sync.status.checking");
+    case sync::SummaryPhase::kInitialSync:
+      return PhiStr("sync.status.initial");
+    case sync::SummaryPhase::kSyncing:
+      return PhiStr("sync.status.syncing");
+    case sync::SummaryPhase::kUpToDate:
+      return PhiStr("sync.status.upToDate");
+    case sync::SummaryPhase::kOffline:
+      return PhiStr("sync.status.offline");
+    case sync::SummaryPhase::kNeedsAttention:
+      break;
+  }
+  return PhiStr("sync.status.needsAttention");
+}
+
+}  // namespace
+
+// The Mac's DevicesSettingView statusSection: one summary line over the
+// native engine ("Phi data") and every profile's Chromium sync, then each
+// context's own phase.
+void PhiSettingsWindow::BuildSyncStatus(int* y) {
+  PhiSyncKeyService* keys = host_ ? host_->SyncKeys() : nullptr;
+  if (!keys) {
+    return;
+  }
+  const PhiSyncKeyService::Snapshot& snap = keys->snapshot();
+  std::vector<sync::ContextStatus> contexts;
+  std::set<std::string> required;
+  // "Phi data" first, then the profiles in the framework's order. A profile
+  // that is not loaded has no running sync to report and is left out (the
+  // Mac lists every profile; Windows loads them lazily, and the status
+  // query must never load one).
+  std::vector<std::string> rows;
+  const std::vector<PhiProfileSummary> profiles = profiles_->Profiles();
+  if (!profiles.empty()) {
+    required.insert("phi");
+    rows.push_back("phi");
+  }
+  if (snap.native_sync_active) {
+    sync::ContextStatus native;
+    native.id = "phi";
+    native.phase = sync::ContextPhaseFromName(
+                       sync::SyncPhaseName(snap.native_sync_status.phase))
+                       .value_or(sync::SummaryPhase::kChecking);
+    native.last_success_ms = snap.native_sync_status.last_success_ms;
+    native.revision = snap.native_sync_status.revision;
+    contexts.push_back(native);
+  }
+  for (const PhiProfileSummary& profile : profiles) {
+    if (std::optional<sync::ContextStatus> status =
+            profiles_->ProfileSyncStatus(profile.id)) {
+      required.insert(profile.id);
+      rows.push_back(profile.id);
+      contexts.push_back(*status);
+    }
+  }
+  const sync::StatusSummary summary =
+      sync::ReduceStatus(snap.paired, required, contexts);
+
+  std::wstring hint;
+  if (summary.last_success_ms) {
+    hint = std::wstring(PhiStr("settings.sync.status.lastSuccess")) + L": " +
+           PhiFormatDate(*summary.last_success_ms, PhiDateStyle::kShortDate) +
+           L" " +
+           PhiFormatDate(*summary.last_success_ms, PhiDateStyle::kShortTime);
+  }
+  if (summary.phase == sync::SummaryPhase::kNeedsAttention) {
+    hint += (hint.empty() ? L"" : L"\n") +
+            std::wstring(PhiStr("sync.status.partialFailure"));
+  }
+  BeginSection(y, nullptr);
+  AddRow(y, SyncPhaseTitle(summary.phase), 0, 0,
+         hint.empty() ? nullptr : hint.c_str());
+  for (const std::string& id : rows) {
+    AddDividerRow(y);
+    sync::SummaryPhase phase = sync::SummaryPhase::kChecking;
+    for (const sync::ContextStatus& context : contexts) {
+      if (context.id == id) {
+        phase = context.phase;
+      }
+    }
+    std::wstring title;
+    if (id == "phi") {
+      title = PhiStr("sync.status.phiData");
+    } else {
+      const std::string name = profiles_->ProfileDisplayName(id);
+      title = name.empty() ? std::wstring(PhiStr("sync.status.profile"))
+                           : base::UTF8ToWide(name);
+    }
+    AddRow(y, title.c_str(), 0, 0, SyncPhaseTitle(phase));
+  }
+  EndSection(y);
+}
+
+void PhiSettingsWindow::BuildSync(int* y) {
+  PhiSyncKeyService* keys = host_ ? host_->SyncKeys() : nullptr;
+  const PhiAuth& auth = account_->auth();
+  auto button_in = [&](const RECT& area, const wchar_t* text,
+                       const char* action, bool primary, bool danger,
+                       bool enabled, const std::string& payload) {
+    Item button;
+    button.kind = ItemKind::kButton;
+    button.text = text;
+    button.selected = primary;
+    button.danger = danger;
+    button.enabled = enabled;
+    button.action = action;
+    button.payload = payload;
+    button.bounds = area;
+    items_.push_back(std::move(button));
+  };
+  auto message_row = [&](const wchar_t* title, const wchar_t* hint,
+                         const wchar_t* button, const char* action) {
+    BeginSection(y, nullptr);
+    const RECT area = AddRow(y, title, kPillHeight, button ? 230 : 0, hint);
+    if (button) {
+      button_in(area, button, action, true, false, true, std::string());
+    }
+    EndSection(y);
+  };
+
+  if (!keys) {
+    // Signed out, Guest Mode, or an onboarding still running.
+    message_row(PhiStr("settings.sync.signInPrompt"), nullptr,
+                PhiStr("settings.sync.signIn"), "signin");
+    return;
+  }
+  if (auth.signed_in() && !auth.user().email.empty()) {
+    AddHint(y, base::UTF8ToWide(auth.user().email).c_str());
+  }
+  const PhiSyncKeyService::Snapshot& snap = keys->snapshot();
+  switch (snap.unlock) {
+    case PhiSyncKeyService::Unlock::kUnknown:
+    case PhiSyncKeyService::Unlock::kWorking:
+      message_row(PhiStr("settings.sync.loading"), nullptr, nullptr, "");
+      return;
+    case PhiSyncKeyService::Unlock::kNotSignedIn:
+      message_row(PhiStr("settings.sync.signInPrompt"), nullptr,
+                  PhiStr("settings.sync.signIn"), "signin");
+      return;
+    case PhiSyncKeyService::Unlock::kFailed:
+      message_row(PhiStr("settings.sync.loadFailed"), nullptr,
+                  PhiStr("settings.sync.retry"), "syncretry");
+      return;
+    case PhiSyncKeyService::Unlock::kNeedsJoin:
+      message_row(PhiStr("settings.sync.notSetUp"), nullptr,
+                  PhiStr("settings.sync.setUp"), "syncsetup");
+      return;
+    case PhiSyncKeyService::Unlock::kUnlocked:
+      break;
+  }
+
+  // Unlocked: paired (the status card) or not, then the account's devices.
+  if (snap.paired) {
+    BuildSyncStatus(y);
+  } else {
+    message_row(PhiStr("settings.sync.notPaired"),
+                PhiStr("settings.sync.notStarted"),
+                PhiStr("settings.sync.continueSetup"), "syncsetup");
+  }
+
+  RefreshSyncDevices(/*force=*/false);
+  if (section_ == "sync" && ::IsWindowVisible(hwnd()) && !sync_poll_.running()) {
+    sync_poll_.Start(3000);
+  }
+
+  BeginSection(y, PhiStr("settings.sync.devices"));
+  bool first = true;
+  auto divider = [&]() {
+    if (!first) {
+      AddDividerRow(y);
+    }
+    first = false;
+  };
+  for (const keys::PendingApproval& request : sync_pending_) {
+    divider();
+    const std::wstring title = PhiStrF(
+        "settings.sync.requestFrom",
+        {base::UTF8ToWide(request.name), base::UTF8ToWide(request.platform)});
+    const std::wstring hint =
+        PhiStrF("settings.sync.expires", {ShortTime(request.deadline_ms)}) +
+        L"\n" +
+        PhiStrF("settings.sync.verifyCode",
+                {base::UTF8ToWide(request.verification_code)});
+    const RECT area = AddRow(y, title.c_str(), kPillHeight, 200, hint.c_str());
+    const int mid = area.left + (area.right - area.left) / 2;
+    button_in({area.left, area.top, mid - Scaled(4), area.bottom},
+              PhiStr("settings.sync.approve"), "syncapprove", true, false,
+              true, request.id);
+    button_in({mid + Scaled(4), area.top, area.right, area.bottom},
+              PhiStr("settings.sync.deny"), "syncdeny", false, false, true,
+              request.id);
+  }
+  for (const keys::AccountDevice& device : sync_devices_) {
+    if (device.status != "active" || device.revoked_at_ms) {
+      continue;
+    }
+    divider();
+    const bool mine = device.device_key_id == snap.device_key_id;
+    const std::wstring name = base::UTF8ToWide(device.name);
+    const std::wstring platform = base::UTF8ToWide(device.platform);
+    const RECT area = AddRow(y, name.c_str(), 24, mine ? 90 : 0,
+                             platform.c_str());
+    if (mine) {
+      Item badge;
+      badge.kind = ItemKind::kBadge;
+      badge.text = PhiStr("settings.sync.thisDevice");
+      badge.bounds = area;
+      items_.push_back(std::move(badge));
+    }
+  }
+  if (first && !sync_loaded_) {
+    AddRow(y, PhiStr("settings.sync.loading"), 0, 0, nullptr);
+  }
+  if (!sync_list_error_.empty() || !sync_action_error_.empty()) {
+    Item error;
+    error.kind = ItemKind::kHint;
+    error.danger = true;
+    error.wrap = true;
+    error.text = sync_action_error_.empty()
+                     ? std::wstring(PhiStr("settings.sync.error.requestFailed"))
+                     : sync_action_error_;
+    const int left = content_left_ + Scaled(kCardPadding);
+    const int right = content_right_ - Scaled(kCardPadding);
+    const int h = WrappedHeight(hint_font_, error.text.c_str(), right - left);
+    error.bounds = {left, *y, right, *y + h};
+    items_.push_back(std::move(error));
+    *y += h + Scaled(kRowPadding);
+  }
+  EndSection(y);
+
+  BeginSection(y, PhiStr("settings.sync.recoveryTitle"));
+  const RECT area = AddRow(y, PhiStr("settings.sync.recoveryBody"),
+                           kPillHeight, 230, sync_remove_note_.empty()
+                                                 ? nullptr
+                                                 : sync_remove_note_.c_str());
+  button_in(area, PhiStr("settings.sync.remove"), "syncremove", false, true,
+            !sync_last_device_, std::string());
+  EndSection(y);
 }
 
 // --- Section plumbing --------------------------------------------------------
@@ -2678,6 +2985,8 @@ void PhiSettingsWindow::Rebuild() {
     BuildAdvanced(&y);
   } else if (section_ == "developer") {
     BuildDeveloper(&y);
+  } else if (section_ == "sync") {
+    BuildSync(&y);
   } else {
     section_ = "general";  // A retired pane id (e.g. "phiLink").
     BuildGeneral(&y);
@@ -3019,7 +3328,10 @@ void PhiSettingsWindow::Paint(HDC dc, const RECT&) {
         if (hint_font_) {
           ::SelectObject(dc, hint_font_);
         }
-        ::SetTextColor(dc, item.enabled ? secondary : Blend(secondary, bg, 120));
+        // A danger hint is an action's failure line (Settings ▸ Sync).
+        ::SetTextColor(dc, item.danger ? prefs_->Palette().destructive
+                           : item.enabled ? secondary
+                                          : Blend(secondary, bg, 120));
         // Wrapped items were MEASURED at this width, so DT_TOP lands them
         // exactly in the box the layout reserved. DT_WORDBREAK silently
         // disables DT_VCENTER, which is why a one-line item keeps the
@@ -4157,6 +4469,64 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
     if (host_) {
       host_->RequestSignIn();
     }
+  } else if (item.action == "syncsetup") {
+    if (host_) {
+      host_->RequestSyncSetup(hwnd());
+    }
+  } else if (item.action == "syncretry") {
+    if (PhiSyncKeyService* keys = host_ ? host_->SyncKeys() : nullptr) {
+      keys->SilentUnlockAndResolve();
+    }
+  } else if (item.action == "syncapprove" || item.action == "syncdeny") {
+    PhiSyncKeyService* keys = host_ ? host_->SyncKeys() : nullptr;
+    const auto it = std::find_if(
+        sync_pending_.begin(), sync_pending_.end(),
+        [&](const keys::PendingApproval& a) { return a.id == item.payload; });
+    if (keys && it != sync_pending_.end()) {
+      sync_action_error_.clear();
+      std::weak_ptr<int> alive = sync_alive_;
+      auto done = [this, alive](keys::KeyStatus status) {
+        if (alive.expired()) {
+          return;
+        }
+        if (status.kind == keys::KeyErrorKind::kNotUnlocked) {
+          sync_action_error_ = PhiStr("settings.sync.error.notUnlocked");
+        } else if (status.kind == keys::KeyErrorKind::kNotPending ||
+                   status.kind == keys::KeyErrorKind::kNotFound) {
+          sync_action_error_ = PhiStr("settings.sync.error.expired");
+        } else if (!status.ok()) {
+          sync_action_error_ = PhiStr("settings.sync.error.requestFailed");
+        }
+        RefreshSyncDevices(/*force=*/true);
+      };
+      if (item.action == "syncapprove") {
+        keys->Approve(*it, done);
+      } else {
+        keys->Deny(it->id, done);
+      }
+      // The row leaves at once; the refresh confirms it.
+      sync_pending_.erase(it);
+    }
+  } else if (item.action == "syncremove") {
+    PhiSyncKeyService* keys = host_ ? host_->SyncKeys() : nullptr;
+    if (keys && PhiConfirm(hwnd(), PhiStr("settings.sync.remove.title"),
+                           PhiStr("settings.sync.remove.body"),
+                           PhiStr("settings.sync.remove.confirm"))) {
+      sync_remove_note_.clear();
+      std::weak_ptr<int> alive = sync_alive_;
+      keys->RemoveThisDevice([this, alive](keys::KeyStatus status) {
+        if (alive.expired()) {
+          return;
+        }
+        if (status.kind == keys::KeyErrorKind::kLastActiveDevice) {
+          sync_last_device_ = true;
+          sync_remove_note_ = PhiStr("settings.sync.remove.lastDevice");
+        } else if (!status.ok()) {
+          sync_remove_note_ = PhiStr("settings.sync.remove.unavailable");
+        }
+        ScheduleRebuild();
+      });
+    }
   } else if (item.action == "signout") {
     // The Mac asks first (settings.account.logoutConfirmation); its message
     // promises the sign-in screen, which Windows has none of.
@@ -4764,6 +5134,13 @@ void PhiSettingsWindow::OnTimerFired(UINT_PTR id) {
     }
     return;
   }
+  if (id == sync_poll_.id()) {
+    // Settings ▸ Sync's poll: a rebuild refetches when the list is due and
+    // re-arms while the pane stays up.
+    sync_poll_.Stop();
+    ScheduleRebuild();
+    return;
+  }
   if (id != profile_poll_.id()) {
     return;
   }
@@ -4786,6 +5163,7 @@ void PhiSettingsWindow::OnCaptureLost() {
 }
 
 void PhiSettingsWindow::OnNcDestroy() {
+  sync_poll_.Stop();
   profile_poll_.Stop();
   card_timer_.Stop();
   PhiSecondaryWindow::OnNcDestroy();

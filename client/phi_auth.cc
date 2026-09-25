@@ -17,6 +17,7 @@
 #include "base/logging.h"
 #include "base/memory/raw_ptr_exclusion.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/time/time.h"
 #include "base/values.h"
 #include "phibrowser-win/client/phi_auth_codec.h"
 #include "phibrowser-win/client/phi_features.h"
@@ -262,6 +263,105 @@ std::string PhiAuth::AccessTokenBlocking() {
     ::LeaveCriticalSection(&token_lock_);
   }
   ::LeaveCriticalSection(&refresh_lock_);
+  return token;
+}
+
+namespace {
+
+// Seconds until a JWT's `exp`, or nullopt when it carries none.
+std::optional<int64_t> JwtSecondsLeft(const std::string& jwt) {
+  const std::optional<std::string> payload = PhiJwtPayload(jwt);
+  if (!payload) {
+    return std::nullopt;
+  }
+  std::optional<base::DictValue> claims =
+      base::JSONReader::ReadDict(*payload, base::JSON_PARSE_RFC);
+  if (!claims) {
+    return std::nullopt;
+  }
+  const std::optional<double> exp = claims->FindDouble("exp");
+  if (!exp) {
+    return std::nullopt;
+  }
+  return static_cast<int64_t>(*exp) -
+         static_cast<int64_t>(base::Time::Now().InSecondsFSinceUnixEpoch());
+}
+
+}  // namespace
+
+std::string PhiAuth::AccessTokenForSync() {
+  if (!signed_in_ || reauth_required_) {
+    return std::string();
+  }
+  ::EnterCriticalSection(&token_lock_);
+  const std::string token = worker_access_token_;
+  ::LeaveCriticalSection(&token_lock_);
+  if (!token.empty()) {
+    const std::optional<int64_t> left = JwtSecondsLeft(token);
+    if (!left || *left > 60) {
+      return token;
+    }
+  }
+  bool expected = false;
+  if (sync_refresh_in_flight_.compare_exchange_strong(expected, true)) {
+    HANDLE thread = ::CreateThread(nullptr, 0, &PhiAuth::SyncRefreshThread,
+                                   this, 0, nullptr);
+    if (thread) {
+      ::CloseHandle(thread);
+    } else {
+      sync_refresh_in_flight_ = false;
+    }
+  }
+  return std::string();
+}
+
+// static
+DWORD WINAPI PhiAuth::SyncRefreshThread(void* param) {
+  auto* auth = static_cast<PhiAuth*>(param);
+  // The cached token is stale (or absent): drop it so the blocking fetch
+  // refreshes. The refresh's Outcome posts the notify message on success.
+  auth->InvalidateAccessToken();
+  auth->AccessTokenBlocking();
+  auth->sync_refresh_in_flight_ = false;
+  return 0;
+}
+
+// static
+std::string PhiAuth::SyncServerUrl() {
+  const std::string override = EnvOr("PHI_SYNC_URL", "");
+  if (!override.empty()) {
+    return override;
+  }
+  return SyncBaseUrl() + "/chromium-sync";
+}
+
+// static
+std::string PhiAuth::SyncBaseUrl() {
+  const std::string override = EnvOr("PHI_SYNC_BASE_URL", "");
+  if (!override.empty()) {
+    return override;
+  }
+  return Domain().find(".stag.") != std::string::npos
+             ? "https://sync.stag.phibrowser.com"
+             : "https://sync.phibrowser.com";
+}
+
+std::string PhiAuth::AccessTokenBlockingFor(const std::string& subject) {
+  std::string token = AccessTokenBlocking();
+  std::optional<int64_t> left = JwtSecondsLeft(token);
+  if (!token.empty() && left && *left <= 60) {
+    // About to lapse mid-flow: renew now rather than eat a 401.
+    InvalidateAccessToken();
+    token = AccessTokenBlocking();
+  }
+  const std::optional<std::string> payload = PhiJwtPayload(token);
+  std::optional<base::DictValue> claims =
+      payload ? base::JSONReader::ReadDict(*payload, base::JSON_PARSE_RFC)
+              : std::nullopt;
+  const std::string* sub = claims ? claims->FindString("sub") : nullptr;
+  if (!sub || subject.empty() || *sub != subject) {
+    return std::string();
+  }
   return token;
 }
 

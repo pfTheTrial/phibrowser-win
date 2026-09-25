@@ -140,7 +140,7 @@ export class Ws {
  *  `capability` is the X-Phi-Agent-Capability the client echoed on the 101
  *  (phase 4: the principal this connection joined — every connection of one
  *  image in a session shares it), or null on a build that issues none. The
- *  rig never needs to present it: PhiSettings.json testRig makes its
+ *  rig never needs to present it: PhiPreferences.json testRig makes its
  *  principal the host, which sees and drives every task.
  *
  *  `{protocol: 2}` asks for the typed control wire (`X-Phi-Protocol: 2`):

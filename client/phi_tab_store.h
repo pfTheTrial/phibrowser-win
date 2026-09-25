@@ -5,99 +5,81 @@
 #ifndef PHIBROWSER_WIN_CLIENT_PHI_TAB_STORE_H_
 #define PHIBROWSER_WIN_CLIENT_PHI_TAB_STORE_H_
 
-#include <map>
 #include <optional>
 #include <string>
 #include <vector>
 
+#include "base/memory/raw_ptr_exclusion.h"
+#include "phibrowser-win/client/phi_local_store.h"
+
 namespace phi_client {
 
-// The client's own store for pinned tabs and bookmarks — the Windows twin of
-// the Mac's LocalStore (Sources/LocalStorage). Same shape, deliberately: ONE
-// row type distinguished by `type`, so pinned tabs and bookmarks share their
-// storage, ordering and ownership rules exactly as they do on Mac.
-// Persisted as the integer; 0 was an unused "tab" kind and is rejected on
-// load.
+// Pinned tabs and bookmarks as the sidebar and the verbs see them: CELLS.
+// The rows themselves live in the account's local store
+// (phi_local_store.h, the Mac's LocalStore schema), where a split PIN is two
+// rows linked by splitPartnerGuid — as on the Mac and on the sync wire —
+// and a split BOOKMARK is one row with a second pane. This class is the
+// adapter between the two shapes: it composes a pinned pair into one cell
+// (pane B riding in url_b/title_b/favicon_b) and turns a cell operation into
+// the store's operations on the rows behind it. It also keeps the
+// sidebar's spelling of a bookmark tree, where the Space's root folder is
+// the empty parent ("") and never a row.
+//
+// Favicons cross this boundary base64-encoded (the framework's BGRA, as the
+// verbs and the sidebar view carry them); the store keeps the raw bytes.
+
 enum class PhiRowType { kPinnedTab = 1, kBookmark = 2, kBookmarkFolder = 3 };
 
-// The JSON file's schema version. 1: pinned splits were TWO rows cross-linked
-// by splitPartnerGuid. 2 (2026-09-07): ONE row per cell for pins and
-// bookmarks alike, pane B in url_b/title_b/favicon_b (see
-// docs/sidebar-architecture.md §4.1); Load folds schema-1 pairs.
-inline constexpr int kPhiTabStoreSchema = 2;
-
-// WHERE A PINNED TAB LIVES — the Mac's PinnedTabScope, an APP-WIDE setting
-// rather than a per-tab one. It decides who owns the row:
-//
-//   kSpace    profileId + spaceId   pinned in that one Space
-//   kProfile  profileId, no space   pinned across every Space of a profile
-//   kApp      neither               pinned everywhere
-//
-// Ordered by the Mac's hierarchyLevel (space 0, profile 1, app 2).
-enum class PhiPinScope { kSpace = 0, kProfile = 1, kApp = 2 };
-
+// WHERE A PINNED TAB LIVES — the Mac's PinnedTabScope (see store::PinScope).
+using PhiPinScope = store::PinScope;
 const char* PhiPinScopeName(PhiPinScope scope);
 bool PhiPinScopeFromName(const std::string& name, PhiPinScope* out);
 
 struct PhiRow {
-  std::string guid;
+  std::string guid;  // A pinned pair's cell is its FIRST row's guid.
   PhiRowType type = PhiRowType::kBookmark;
   std::string title;
   std::string url;
+  // Pins: the cell's position in its collection. Bookmarks: the position
+  // among the folder's children.
   int index = 0;
-  // Ownership. Empty means "not scoped to one", which is how the Mac's nil
-  // profileId/spaceId behave.
   std::string profile_id;
   std::string space_id;
-  std::string parent_guid;  // Bookmarks only: the tree.
-  // The site's favicon, captured when the row was created — the Mac keeps a
-  // Data blob on the row for the same reason: a pinned tab has no live
-  // WebContents to ask, so the icon has to be stored with it.
-  std::string favicon_base64;  // Raw BGRA, as PhiFramework hands it over.
+  std::string parent_guid;  // Bookmarks only; "" = the Space's root.
+  std::string favicon_base64;
   int favicon_width = 0;
   int favicon_height = 0;
-  // Survives a scope change so rows that came from one original pin can be
-  // merged back together, as the Mac's pinLineageId does.
   std::string lineage_id;
-  // Split cell (pins and bookmarks alike): ONE row, the second pane riding
-  // here. url_b non-empty is what makes a row a split. Pane B keeps its own
-  // title and favicon; a live pane B is tagged TagFor(guid, /*pane_b=*/true).
+  // Split cell: url_b non-empty. For a pin, pane B is the partner row
+  // (partner_guid); for a bookmark, the row's own second pane.
   std::string url_b;
   std::string title_b;
   std::string favicon_b_base64;
   int favicon_b_width = 0;
   int favicon_b_height = 0;
-  // Bookmark FOLDERS only: which catalog symbol the folder wears (the Mac's
-  // Bookmark.folderIconName). Empty and unknown ids both mean "default".
-  std::string icon;
-  // SPLIT rows only: the divider axis the split reopens with — "vertical"
-  // (side-by-side) or "horizontal" (stacked), the Mac's SplitLayout raw
-  // values. Empty means side-by-side, keeping older records compatible.
-  std::string layout;
+  std::string partner_guid;
+  std::string icon;    // Bookmark folders: the catalog symbol.
+  std::string layout;  // Split cells: "vertical" (default) / "horizontal".
 };
 
-// Rows plus the one scope setting, persisted as a single JSON file with a
-// schema number (kPhiTabStoreSchema). Older files are migrated on Load and
-// rewritten at once, so a change is a migration, never a guess.
 class PhiTabStore {
  public:
-  PhiTabStore();
+  explicit PhiTabStore(store::LocalStore& store);
   ~PhiTabStore();
 
-  // Reads `path` if it exists; an absent or unreadable file just means empty.
-  void Load(const std::wstring& path);
-  void Save() const;
+  PhiTabStore(const PhiTabStore&) = delete;
+  PhiTabStore& operator=(const PhiTabStore&) = delete;
 
-  PhiPinScope pin_scope() const { return pin_scope_; }
-  // Re-owns every pinned row for the new scope and merges rows that become
-  // indistinguishable, the way the Mac's scope migration does. Returns false
-  // when the scope was already set.
-  bool SetPinScope(PhiPinScope scope);
+  PhiPinScope pin_scope() const { return store_.pin_scope(); }
+  // The Mac's changePinnedTabScope; `preferred_*` name the window the change
+  // came from, whose collection's order wins where collections merge.
+  bool SetPinScope(PhiPinScope scope,
+                   const std::string& preferred_profile_id = std::string(),
+                   const std::string& preferred_space_id = std::string());
 
-  // Pinned tabs visible to (profile, space) under the current scope, ordered.
+  // Pinned cells visible to (profile, space) under the current scope.
   std::vector<PhiRow> PinnedFor(const std::string& profile_id,
                                 const std::string& space_id) const;
-  // Pins `url`/`title`, owned according to the current scope. Returns the guid.
   std::string AddPinned(const std::string& profile_id,
                         const std::string& space_id,
                         const std::string& title,
@@ -106,10 +88,13 @@ class PhiTabStore {
                         int favicon_width,
                         int favicon_height);
 
-  // Bookmarks directly under `parent_guid` (empty = the root for this owner).
+  // Bookmarks directly under `parent_guid` ("" = the Space's root).
   std::vector<PhiRow> BookmarksFor(const std::string& profile_id,
                                    const std::string& space_id,
                                    const std::string& parent_guid) const;
+  // The whole owned tree, every depth, in no particular order.
+  std::vector<PhiRow> BookmarkTree(const std::string& profile_id,
+                                   const std::string& space_id) const;
   std::string AddBookmark(const std::string& profile_id,
                           const std::string& space_id,
                           const std::string& parent_guid,
@@ -118,81 +103,61 @@ class PhiTabStore {
                           bool folder,
                           const std::string& favicon_base64,
                           int favicon_width,
-                          int favicon_height);
+                          int favicon_height,
+                          store::Source source = store::Source::kPhi);
 
-  // Removes a row and, for a folder, everything beneath it.
+  // Removes a cell (both rows of a pinned pair) or a bookmark with its
+  // subtree.
   bool Remove(const std::string& guid);
-  // Whether a row with `guid` exists (any type).
   bool Contains(const std::string& guid) const;
-  // Makes `guid` a split cell (pin or bookmark) by setting its second pane,
-  // or clears pane B when `url_b` is empty. False when unknown.
+  // Sets (or with an empty url_b clears) a cell's second pane. For a pin
+  // that creates, updates or deletes the partner row.
   bool SetRowSecondary(const std::string& guid,
                        const std::string& url_b,
                        const std::string& title_b,
                        const std::string& favicon_b_base64 = std::string(),
                        int favicon_b_width = 0,
                        int favicon_b_height = 0);
-  // Retitles a row (the context menus' Rename). False when unknown.
   bool RenameRow(const std::string& guid, const std::string& title);
-  // Sets a bookmark folder's catalog symbol. False when unknown or unchanged.
   bool SetRowIcon(const std::string& guid, const std::string& icon);
-  // Sets a split row's divider axis. False when unknown or unchanged.
   bool SetRowLayout(const std::string& guid, const std::string& layout);
-  // Swaps a split cell's two panes (title/url/favicon). False unless split.
-  bool SwapPanes(const std::string& guid);
-  // Removes every row OWNED by `space_id` (space-scoped pins, the Space's
-  // bookmarks) — what deleting a Space takes with it on Mac. Rows owned at
-  // profile or app scope carry no space id and stay. Returns removed count.
-  int RemoveForSpace(const std::string& space_id);
-  // Re-homes every row OWNED by `space_id` onto `profile_id` — what changing
-  // a Space's profile does. The Mac's promise is that bookmarks (and, at
-  // Space scope, pinned tabs) stay with the SPACE, so the profile half of
-  // their owner moves with it; rows owned at profile or app scope carry no
-  // space id and stay where they are. Returns the number rewritten.
-  int RehomeSpace(const std::string& space_id, const std::string& profile_id);
-  // Moves a row within its siblings.
+  // Swaps a split cell's panes. Returns the cell's guid AFTERWARDS (a
+  // pinned pair's cell is named by its first row, which a swap changes),
+  // or empty when `guid` is no split cell.
+  std::string SwapPanes(const std::string& guid);
+  // A Space's deletion and re-binding (the Mac's deleteSpaceCascade /
+  // changeSpaceProfile), which take the Space's rows with them.
+  bool RemoveForSpace(const std::string& space_id);
+  bool RehomeSpace(const std::string& space_id, const std::string& profile_id);
+  // Moves a cell among its siblings (pins: cell positions).
   bool Reorder(const std::string& guid, int new_index);
-  // The row with `guid`, or null. The pointer holds only until the next
-  // mutation on this store.
-  const PhiRow* Find(const std::string& guid) const;
-  // Rewrites a row's url (pinned tabs and bookmarks; folders refuse).
+  // The cell `guid` names (either row of a pinned pair).
+  std::optional<PhiRow> Find(const std::string& guid) const;
+  // Rewrites a cell's url (pane A). The stored favicon belonged to the old
+  // site and is dropped.
   bool SetRowUrl(const std::string& guid, const std::string& url);
-  // Reparents a bookmark row under `new_parent` (empty = the owner's root)
-  // at `new_index` (negative appends). The parent must be a folder with the
-  // same owner; moving a folder into itself or a descendant is refused.
+  // Reparents a bookmark under `new_parent` ("" = the root) at `new_index`
+  // (negative appends).
   bool Move(const std::string& guid,
             const std::string& new_parent,
             int new_index);
-
-  const std::vector<PhiRow>& rows() const { return rows_; }
-  // Schema 1 -> 2 leftovers: the guid of every pinned row folded away as a
-  // pane B, mapped to the tag its live tab must carry now
-  // (TagFor(survivor, true)). Session restore brings such tabs back with the
-  // old guid as their tag — possibly launches later — so the map is
-  // persisted with the file and each entry dropped once applied.
-  const std::map<std::string, std::string>& legacy_tag_aliases() const {
-    return legacy_tag_aliases_;
-  }
-  void DropLegacyTagAlias(const std::string& old_guid);
+  // Stores a favicon for a cell's pane, if the cell still shows `url`.
+  bool SetFavicon(const std::string& guid,
+                  bool pane_b,
+                  const std::string& favicon_base64,
+                  int width,
+                  int height);
 
  private:
-  // The (profileId, spaceId) a new pinned row gets under the current scope.
-  void OwnerForScope(const std::string& profile_id,
-                     const std::string& space_id,
-                     std::string* out_profile,
-                     std::string* out_space) const;
-  // Schema 1 -> 2 (see kPhiTabStoreSchema).
-  void FoldLegacySplitPairs(
-      const std::map<std::string, std::string>& partner_of);
-  int NextIndexFor(PhiRowType type,
-                   const std::string& profile_id,
-                   const std::string& space_id,
-                   const std::string& parent_guid) const;
+  PhiRow CellFromPin(const store::Tab& a, const store::Tab* b, int index) const;
+  PhiRow CellFromBookmark(const store::Tab& row) const;
+  // The Space root → "" translation for a bookmark's parent.
+  std::string ParentForUi(const store::Tab& row) const;
+  std::optional<std::string> ParentForStore(const std::string& profile_id,
+                                            const std::string& space_id,
+                                            const std::string& parent) const;
 
-  std::vector<PhiRow> rows_;
-  std::map<std::string, std::string> legacy_tag_aliases_;
-  PhiPinScope pin_scope_ = PhiPinScope::kProfile;  // The Mac's fallback.
-  std::wstring path_;
+  RAW_PTR_EXCLUSION store::LocalStore& store_;
 };
 
 }  // namespace phi_client

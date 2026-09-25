@@ -35,7 +35,7 @@ app_model_test.cc
 # model. Both headers are host-clean; the services' bodies stay on the
 # target.
 space_manager_test.cc        
-url_router_test.cc           
+url_router_test.cc           phi_url_rule_normalize.cc
 # The lazy-restore service's two pure decisions (the receipt's settle reason
 # and the last-active Space); the ghost store and the framework calls stay
 # on the target.
@@ -131,3 +131,15 @@ sidebar_drag_test.cc         phi_sidebar_model.cc
 # and reaches it through stubs/base/no_destructor.h, the same mechanism
 # raw_ptr_exclusion.h already uses.
 util_test.cc                 phi_util.cc phi_log.cc phi_theme.cc
+# The sync conformance gate (docs/user-data-parity.md, phase S0): the C++
+# port of the Mac's sync merge core replayed against the vectors the Mac's
+# own code wrote (test/sync-vectors; argument ../sync-vectors).
+sync_vectors_test.cc         phi_sync_rank.cc phi_url_rule_normalize.cc phi_sync_proto.cc phi_sync_merge.cc phi_key_crypto.cc (+ libcrypto.a)
+# The account's local store (docs/user-data-parity.md, phase S1).
+local_store_test.cc          phi_local_store.cc phi_url_rule_normalize.cc (+ sqlite3.o)
+# The sync key layer's primitives (docs/user-data-parity.md S3), over the
+# fork's BoringSSL built for the host (run.sh builds it once).
+key_crypto_test.cc           phi_key_crypto.cc (+ libcrypto.a)
+sync_keys_test.cc            phi_key_crypto.cc phi_sync_keys.cc (+ libcrypto.a)
+# Phi native sync's engine (S5), device to device over a fake server.
+sync_engine_test.cc          phi_key_crypto.cc phi_sync_proto.cc phi_sync_merge.cc phi_sync_protocol.cc phi_sync_engine.cc (+ libcrypto.a)

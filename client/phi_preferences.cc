@@ -5,10 +5,15 @@
 #include "phibrowser-win/client/phi_preferences.h"
 
 #include <algorithm>
+#include <map>
+#include <optional>
 #include <utility>
 
+#include "base/json/json_reader.h"
+#include "base/json/json_writer.h"
 #include "base/logging.h"
 #include "base/strings/utf_string_conversions.h"
+#include "phibrowser-win/client/phi_file_io.h"
 #include "phibrowser-win/client/phi_i18n.h"
 #include "phibrowser-win/client/phi_app_menu.h"
 
@@ -91,6 +96,7 @@ void PhiPreferences::RemoveObserver(Observer* observer) {
 }
 
 void PhiPreferences::Load(const std::wstring& user_data_dir) {
+  user_data_dir_ = user_data_dir;
   store_.Init(user_data_dir);
   // The load leaves the model usable: decoded, imported from the
   // pre-phase-3 files on a first run over an old profile, or defaults over
@@ -109,10 +115,106 @@ void PhiPreferences::Save() {
   store_.Save(settings_);
 }
 
+void PhiPreferences::BindAccount(PhiAccountDefaults* defaults) {
+  account_ = defaults;
+  const model::PhiSettings fresh;
+  // The sidebar width: the account's, clamped, or the default.
+  int width = fresh.sidebar_width;
+  if (account_) {
+    width = static_cast<int>(
+        account_->GetDouble(kDefaultsSidebarWidth, fresh.sidebar_width));
+  }
+  width = std::max(kSidebarWidthMin, std::min(width, kSidebarWidthMax));
+  // The shortcut overrides: <account>\CustomShortcuts.json — the Mac's file
+  // and place. The chords are Windows virtual keys keyed by the rebind
+  // name (a Mac key code means nothing here; shortcuts are not synced).
+  std::map<std::string, model::ShortcutChord> overrides;
+  if (account_ && !account_->dir().empty()) {
+    std::string bytes;
+    if (PhiReadFileBytes(account_->dir() + L"\\CustomShortcuts.json",
+                         &bytes)) {
+      std::optional<base::Value> list =
+          base::JSONReader::Read(bytes, base::JSON_PARSE_RFC);
+      if (list && list->is_list()) {
+        for (const base::Value& entry : list->GetList()) {
+          const base::DictValue* d = entry.GetIfDict();
+          const std::string* name = d ? d->FindString("name") : nullptr;
+          if (!name) {
+            continue;
+          }
+          overrides[*name] = {
+              static_cast<unsigned>(d->FindInt("vk").value_or(0)),
+              d->FindBool("ctrl").value_or(false),
+              d->FindBool("shift").value_or(false),
+              d->FindBool("alt").value_or(false)};
+        }
+      }
+    }
+  }
+  if (width != settings_.sidebar_width) {
+    settings_.sidebar_width = width;
+    Notify(PreferenceChange::kSidebarWidth);
+  }
+  if (overrides != settings_.shortcut_overrides) {
+    settings_.shortcut_overrides = std::move(overrides);
+    Notify(PreferenceChange::kShortcuts);
+  }
+}
+
+void PhiPreferences::SaveShortcuts() const {
+  if (!account_ || account_->dir().empty()) {
+    return;
+  }
+  base::ListValue list;
+  for (const auto& [name, chord] : settings_.shortcut_overrides) {
+    base::DictValue entry;
+    entry.Set("name", name);
+    entry.Set("vk", static_cast<int>(chord.vk));
+    entry.Set("ctrl", chord.ctrl);
+    entry.Set("shift", chord.shift);
+    entry.Set("alt", chord.alt);
+    list.Append(std::move(entry));
+  }
+  std::string json;
+  base::JSONWriter::Write(list, &json);
+  if (!PhiWriteFileAtomic(account_->dir() + L"\\CustomShortcuts.json",
+                          json)) {
+    LOG(ERROR) << "[PhiClient] shortcuts: write failed";
+  }
+}
+
 // --- ChromePrefsHost --------------------------------------------------------
 
 PhiLayoutMode PhiPreferences::LayoutMode() const {
   return settings_.layout_mode;
+}
+
+void PhiPreferences::SetSuppressCloseIncognitoSpaceWarning(bool suppress) {
+  if (settings_.suppress_close_incognito_space_warning == suppress) {
+    return;
+  }
+  settings_.suppress_close_incognito_space_warning = suppress;
+  MarkDirty();
+  Notify(PreferenceChange::kSyncedMisc);
+}
+
+void PhiPreferences::SetAutoPictureInPictureMode(const std::string& mode) {
+  if ((mode != "off" && mode != "normal" && mode != "parked") ||
+      settings_.auto_picture_in_picture_mode == mode) {
+    return;
+  }
+  settings_.auto_picture_in_picture_mode = mode;
+  MarkDirty();
+  Notify(PreferenceChange::kSyncedMisc);
+}
+
+void PhiPreferences::SetSelectionTintEnabled(bool enabled) {
+  if (settings_.selection_tint_enabled == enabled) {
+    return;
+  }
+  settings_.selection_tint_enabled = enabled;
+  MarkDirty();
+  Notify(PreferenceChange::kSyncedMisc);
 }
 
 void PhiPreferences::RequestLayoutMode(PhiLayoutMode mode) {
@@ -151,7 +253,9 @@ void PhiPreferences::RequestSidebarWidth(int dip) {
     return;
   }
   settings_.sidebar_width = clamped;
-  MarkDirty();
+  if (account_) {
+    account_->SetDouble(kDefaultsSidebarWidth, clamped);
+  }
   Notify(PreferenceChange::kSidebarWidth);
 }
 
@@ -360,16 +464,36 @@ void PhiPreferences::SetGuestModeEnabled(bool enabled) {
   Notify(PreferenceChange::kAccess);
 }
 
+// The Mac's per-account loginPhase, in THAT account's defaults — through
+// the bound instance when it is the open account (a second writer would be
+// overwritten by the bound one's next save), else read or written directly.
 int PhiPreferences::OnboardingPhase(const std::string& sub) const {
-  const auto found = settings_.onboarding_phases.find(sub);
-  return found == settings_.onboarding_phases.end() ? 0 : found->second;
+  if (sub.empty() || user_data_dir_.empty()) {
+    return 0;
+  }
+  const std::wstring dir = PhiAccountDirPath(user_data_dir_, sub);
+  if (account_ && account_->dir() == dir) {
+    return account_->GetInt(kDefaultsLoginPhase, 0);
+  }
+  PhiAccountDefaults defaults;
+  defaults.Load(dir);
+  return defaults.GetInt(kDefaultsLoginPhase, 0);
 }
 
 void PhiPreferences::SetOnboardingPhase(const std::string& sub, int phase) {
   if (sub.empty() || OnboardingPhase(sub) == phase) {
     return;
   }
-  settings_.onboarding_phases[sub] = phase;
+  const std::wstring dir = PhiAccountDirPath(user_data_dir_, sub);
+  if (account_ && account_->dir() == dir) {
+    account_->SetInt(kDefaultsLoginPhase, phase);
+  } else {
+    PhiAccountDefaults defaults;
+    defaults.Load(PhiEnsureAccountDir(user_data_dir_, sub));
+    defaults.SetInt(kDefaultsLoginPhase, phase);
+  }
+  // The Mac's app-level phiLoginPhase follows the account's.
+  settings_.login_phase = phase;
   MarkDirty();
   Notify(PreferenceChange::kAccess);
 }
@@ -529,7 +653,7 @@ void PhiPreferences::RebindShortcut(const std::string& name,
     settings_.shortcut_overrides[name] = {chord.vk, chord.ctrl, chord.shift,
                                           chord.alt};
   }
-  MarkDirty();
+  SaveShortcuts();
   Notify(PreferenceChange::kShortcuts);
 }
 
@@ -538,7 +662,7 @@ void PhiPreferences::RestoreAllShortcuts() {
     return;
   }
   settings_.shortcut_overrides.clear();
-  MarkDirty();
+  SaveShortcuts();
   Notify(PreferenceChange::kShortcuts);
 }
 

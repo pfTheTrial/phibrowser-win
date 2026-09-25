@@ -38,8 +38,7 @@ std::vector<PhiUrlRuleRow> PhiUrlRouter::RulesWithIds() const {
   std::vector<PhiUrlRuleRow> rows;
   rows.reserve(model_.url_rules.size());
   for (size_t i = 0; i < model_.url_rules.size(); ++i) {
-    rows.push_back({model::UrlRuleWireId(model_.url_rules_generation, i),
-                    model_.url_rules[i]});
+    rows.push_back({UrlRuleIdAt(model_, i), model_.url_rules[i]});
   }
   return rows;
 }

@@ -33,7 +33,7 @@ test('settings: the security prefs are not agent-settable', async () => {
   try {
     // docs/architecture-review.md §3.7: developerMode, allowAgentControl,
     // allowAgentUserSpaces and testRig can only be changed by the user
-    // (Settings) or by editing PhiPrefs.json — never over the pipe.
+    // (Settings) or by editing PhiPreferences.json — never over the pipe.
     for (const key of ['developerMode', 'allowAgentControl',
                        'allowAgentUserSpaces', 'testRig',
                        'disallowedAgentProfileIds']) {

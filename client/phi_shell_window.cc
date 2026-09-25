@@ -1117,7 +1117,8 @@ PhiShellWindow::PhiShellWindow(SlotId slot,
   // The window the slot was created with backs the DEFAULT Space — whichever
   // Space holds that role now (it moves when its holder is deleted).
   const std::string default_space =
-      services_.spaces ? services_.spaces->DefaultSpaceId() : std::string("1");
+      services_.spaces ? services_.spaces->DefaultSpaceId()
+                       : std::string("default-space");
   browsers_->AdoptFirst(default_space, browser, browser_hwnd);
   omnibox_->EnsureField();
   if (services_.spaces && !incognito_ && !agent_) {

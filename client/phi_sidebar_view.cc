@@ -1837,6 +1837,9 @@ void PhiSidebarView::OpenOrFocusPinned(const std::string& guid,
   if (!framework_ || guid.empty()) {
     return;
   }
+  if (sidebar_host_) {
+    sidebar_host_->NoteStoredRowSeen(guid);
+  }
   // Split rows route through their own open path (the Mac's
   // openOrFocusPinnedTab pair branch / openBookmark secondary branch).
   for (const ShortcutRow& pin : pinned_) {

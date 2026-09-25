@@ -3230,6 +3230,10 @@
    "comment": "kiosk — used in phi_kiosk_window.cc",
    "en": "Open in"
   },
+  "localData.bookmarks.importedFromGuestFolderTitle": {
+   "comment": "bookmarks — Container created when Guest bookmarks are moved into a signed-in account (phi_coordinator.cc)",
+   "en": "Imported from Guest"
+  },
   "menuBar.aboutBody": {
    "comment": "About Phi alert - body. {0} is the version string",
    "en": "Phi Browser for Windows {0}\nThe Phi client shell over the Phi framework.",
@@ -5139,6 +5143,130 @@
    "comment": "spaces — Set Theme panel, saturation row label; used at phi_space_theme_panel.cc",
    "en": "Saturation"
   },
+  "settings.sync.approve": {
+   "comment": "settings — Sync pane (Mac DevicesSettingView)",
+   "en": "Approve"
+  },
+  "settings.sync.continueSetup": {
+   "comment": "settings — Sync pane (Mac DevicesSettingView)",
+   "en": "Continue setup"
+  },
+  "settings.sync.deny": {
+   "comment": "settings — Sync pane (Mac DevicesSettingView)",
+   "en": "Deny"
+  },
+  "settings.sync.devices": {
+   "comment": "settings — Sync pane (Mac DevicesSettingView)",
+   "en": "Devices"
+  },
+  "settings.sync.error.expired": {
+   "comment": "settings — Sync pane (Mac DevicesSettingView)",
+   "en": "That request already expired."
+  },
+  "settings.sync.error.notUnlocked": {
+   "comment": "settings — Sync pane (Mac DevicesSettingView)",
+   "en": "This device isn’t unlocked yet."
+  },
+  "settings.sync.error.requestFailed": {
+   "comment": "settings — Sync pane (Mac DevicesSettingView)",
+   "en": "Couldn’t reach sync. Check your connection and try again."
+  },
+  "settings.sync.expires": {
+   "comment": "settings — Sync pane (Mac DevicesSettingView); {0} = a short time",
+   "en": "Expires: {0}"
+  },
+  "settings.sync.loadFailed": {
+   "comment": "settings — Sync pane (Mac DevicesSettingView)",
+   "en": "Couldn’t load sync information. Check your connection and retry."
+  },
+  "settings.sync.loading": {
+   "comment": "settings — Sync pane (Mac DevicesSettingView)",
+   "en": "Checking sync…"
+  },
+  "settings.sync.notPaired": {
+   "comment": "settings — Sync pane (Mac DevicesSettingView)",
+   "en": "Not paired"
+  },
+  "settings.sync.notSetUp": {
+   "comment": "settings — Sync pane (Mac DevicesSettingView)",
+   "en": "This device isn’t set up for sync yet."
+  },
+  "settings.sync.notStarted": {
+   "comment": "settings — Sync pane (Mac DevicesSettingView)",
+   "en": "Sync has not started"
+  },
+  "settings.sync.paired": {
+   "comment": "settings — Sync pane (Mac DevicesSettingView)",
+   "en": "Sync is on for this PC"
+  },
+  "settings.sync.recoveryBody": {
+   "comment": "settings — Sync pane (Mac DevicesSettingView)",
+   "en": "To join on another device, approve its request here or use your saved recovery code. The code is shown only when sync is first set up."
+  },
+  "settings.sync.recoveryTitle": {
+   "comment": "settings — Sync pane (Mac DevicesSettingView)",
+   "en": "Recovery and removal"
+  },
+  "settings.sync.remove": {
+   "comment": "settings — Sync pane (Mac DevicesSettingView)",
+   "en": "Remove this device from sync…"
+  },
+  "settings.sync.remove.body": {
+   "comment": "settings — Sync pane (Mac DevicesSettingView)",
+   "en": "This PC will stop syncing. Your local browsing data stays on this PC. To join again, use approval from another device or your saved recovery code."
+  },
+  "settings.sync.remove.confirm": {
+   "comment": "settings — Sync pane (Mac DevicesSettingView)",
+   "en": "Remove This Device"
+  },
+  "settings.sync.remove.lastDevice": {
+   "comment": "settings — Sync pane (Mac DevicesSettingView)",
+   "en": "This is the last authorized device and can’t be removed yet. Set up sync on another device first."
+  },
+  "settings.sync.remove.title": {
+   "comment": "settings — Sync pane (Mac DevicesSettingView)",
+   "en": "Remove this PC from account sync?"
+  },
+  "settings.sync.remove.unavailable": {
+   "comment": "settings — Sync pane (Mac DevicesSettingView)",
+   "en": "Sync isn’t available right now, so this device wasn’t removed. Check that you’re still signed in, then try again."
+  },
+  "settings.sync.requestFrom": {
+   "comment": "settings — Sync pane (Mac DevicesSettingView); {0} = device name, {1} = platform",
+   "en": "{0} · {1}"
+  },
+  "settings.sync.retry": {
+   "comment": "settings — Sync pane (Mac DevicesSettingView)",
+   "en": "Retry"
+  },
+  "settings.sync.setUp": {
+   "comment": "settings — Sync pane (Mac DevicesSettingView)",
+   "en": "Set up sync on this device"
+  },
+  "settings.sync.signIn": {
+   "comment": "settings — Sync pane (Mac DevicesSettingView)",
+   "en": "Sign in"
+  },
+  "settings.sync.signInPrompt": {
+   "comment": "settings — Sync pane (Mac DevicesSettingView)",
+   "en": "Sign in to sync across devices"
+  },
+  "settings.sync.status.lastSuccess": {
+   "comment": "settings — Sync status card: local completion timestamp label (the Mac says 'on this Mac')",
+   "en": "Last successful sync on this PC"
+  },
+  "settings.sync.thisDevice": {
+   "comment": "settings — Sync pane (Mac DevicesSettingView)",
+   "en": "This PC"
+  },
+  "settings.sync.title": {
+   "comment": "settings — Sync pane (Mac DevicesSettingView)",
+   "en": "Sync"
+  },
+  "settings.sync.verifyCode": {
+   "comment": "settings — Sync pane (Mac DevicesSettingView)",
+   "en": "Verify this code matches the other device: {0}"
+  },
   "settings.turningDeveloperModeOffTurns": {
    "comment": "settings — used at phi_settings_window.cc:835",
    "en": "Turning developer mode off turns off agent access "
@@ -5648,6 +5776,246 @@
     "zh-Hans": "{0} 个标签页",
     "zh-Hant": "{0} 個分頁"
    }
+  },
+  "sync.setup.applying": {
+   "comment": "sync setup — phi_sync_setup_window.cc (Mac KeyLayerView / PairingWizard)",
+   "en": "Applying your choices…"
+  },
+  "sync.setup.code.body": {
+   "comment": "sync setup — phi_sync_setup_window.cc (Mac KeyLayerView / PairingWizard)",
+   "en": "Store this code somewhere safe. You will need it to add another device to your account."
+  },
+  "sync.setup.code.copied": {
+   "comment": "sync setup — phi_sync_setup_window.cc (Mac KeyLayerView / PairingWizard)",
+   "en": "Copied"
+  },
+  "sync.setup.code.copy": {
+   "comment": "sync setup — phi_sync_setup_window.cc (Mac KeyLayerView / PairingWizard)",
+   "en": "Copy"
+  },
+  "sync.setup.code.saved": {
+   "comment": "sync setup — phi_sync_setup_window.cc (Mac KeyLayerView / PairingWizard)",
+   "en": "I’ve saved it"
+  },
+  "sync.setup.code.title": {
+   "comment": "sync setup — phi_sync_setup_window.cc (Mac KeyLayerView / PairingWizard)",
+   "en": "Save your recovery code"
+  },
+  "sync.setup.denied.body": {
+   "comment": "sync setup — phi_sync_setup_window.cc (Mac KeyLayerView / PairingWizard)",
+   "en": "The other device denied this request."
+  },
+  "sync.setup.denied.title": {
+   "comment": "sync setup — phi_sync_setup_window.cc (Mac KeyLayerView / PairingWizard)",
+   "en": "Request denied"
+  },
+  "sync.setup.enter.body": {
+   "comment": "sync setup — phi_sync_setup_window.cc (Mac KeyLayerView / PairingWizard)",
+   "en": "Enter the recovery code you saved when you set up sync on another device."
+  },
+  "sync.setup.enter.placeholder": {
+   "comment": "sync setup — phi_sync_setup_window.cc (Mac KeyLayerView / PairingWizard)",
+   "en": "Recovery code"
+  },
+  "sync.setup.enter.submit": {
+   "comment": "sync setup — phi_sync_setup_window.cc (Mac KeyLayerView / PairingWizard)",
+   "en": "Submit"
+  },
+  "sync.setup.enter.title": {
+   "comment": "sync setup — phi_sync_setup_window.cc (Mac KeyLayerView / PairingWizard)",
+   "en": "Enter your recovery code"
+  },
+  "sync.setup.error.badRecoveryCode": {
+   "comment": "sync setup — phi_sync_setup_window.cc (Mac KeyLayerView / PairingWizard)",
+   "en": "Check your recovery code and try again."
+  },
+  "sync.setup.error.connection": {
+   "comment": "sync setup — phi_sync_setup_window.cc (Mac KeyLayerView / PairingWizard)",
+   "en": "Couldn’t connect to sync. Check your connection and try again."
+  },
+  "sync.setup.error.createProfileFailed": {
+   "comment": "sync setup — phi_sync_setup_window.cc (Mac KeyLayerView / PairingWizard); {0} = profile name",
+   "en": "Couldn’t create a profile named “{0}” on this PC."
+  },
+  "sync.setup.error.profileDecisionFailed": {
+   "comment": "sync setup — phi_sync_setup_window.cc (Mac KeyLayerView / PairingWizard)",
+   "en": "Couldn’t apply one of your profile choices. Check your connection and retry."
+  },
+  "sync.setup.error.profileLoadFailed": {
+   "comment": "sync setup — phi_sync_setup_window.cc (Mac KeyLayerView / PairingWizard)",
+   "en": "Couldn’t load your account’s profiles. Check your connection and retry."
+  },
+  "sync.setup.error.signInRequired": {
+   "comment": "sync setup — phi_sync_setup_window.cc (Mac KeyLayerView / PairingWizard)",
+   "en": "Sign in again to continue setting up sync."
+  },
+  "sync.setup.error.title": {
+   "comment": "sync setup — phi_sync_setup_window.cc (Mac KeyLayerView / PairingWizard)",
+   "en": "Something went wrong"
+  },
+  "sync.setup.error.tooManyRequests": {
+   "comment": "sync setup — phi_sync_setup_window.cc (Mac KeyLayerView / PairingWizard)",
+   "en": "Too many pending requests. Try again later or use a recovery code."
+  },
+  "sync.setup.expired.body": {
+   "comment": "sync setup — phi_sync_setup_window.cc (Mac KeyLayerView / PairingWizard)",
+   "en": "This request timed out. You can try again."
+  },
+  "sync.setup.expired.title": {
+   "comment": "sync setup — phi_sync_setup_window.cc (Mac KeyLayerView / PairingWizard)",
+   "en": "Request expired"
+  },
+  "sync.setup.finishLater": {
+   "comment": "sync setup — phi_sync_setup_window.cc (Mac KeyLayerView / PairingWizard)",
+   "en": "Finish later"
+  },
+  "sync.setup.intro.body": {
+   "comment": "sync setup — phi_sync_setup_window.cc (Mac KeyLayerView / PairingWizard)",
+   "en": "Bring your Spaces, bookmarks, pinned tabs and supported browsing data to your other devices. Save a recovery code, then choose how this PC joins your account."
+  },
+  "sync.setup.intro.continue": {
+   "comment": "sync setup — phi_sync_setup_window.cc (Mac KeyLayerView / PairingWizard)",
+   "en": "Continue"
+  },
+  "sync.setup.intro.title": {
+   "comment": "sync setup — phi_sync_setup_window.cc (Mac KeyLayerView / PairingWizard)",
+   "en": "Set up sync"
+  },
+  "sync.setup.join.body": {
+   "comment": "sync setup — phi_sync_setup_window.cc (Mac KeyLayerView / PairingWizard)",
+   "en": "Choose how to set up sync on this device."
+  },
+  "sync.setup.join.requestApproval": {
+   "comment": "sync setup — phi_sync_setup_window.cc (Mac KeyLayerView / PairingWizard)",
+   "en": "Request approval from another device"
+  },
+  "sync.setup.join.title": {
+   "comment": "sync setup — phi_sync_setup_window.cc (Mac KeyLayerView / PairingWizard)",
+   "en": "Add this device to your account"
+  },
+  "sync.setup.join.useRecoveryCode": {
+   "comment": "sync setup — phi_sync_setup_window.cc (Mac KeyLayerView / PairingWizard)",
+   "en": "Enter a recovery code"
+  },
+  "sync.setup.notStarted": {
+   "comment": "settings — Sync status card (Mac DevicesSettingView)",
+   "en": "Sync has not started"
+  },
+  "sync.setup.profiles.assignTo": {
+   "comment": "sync setup — phi_sync_setup_window.cc (Mac KeyLayerView / PairingWizard); {0} = local profile name",
+   "en": "Assign to {0}"
+  },
+  "sync.setup.profiles.body": {
+   "comment": "sync setup — phi_sync_setup_window.cc (Mac KeyLayerView / PairingWizard)",
+   "en": "Choose how profiles on this PC connect to your account. Sync starts after you finish matching profiles. You can finish later and keep browsing."
+  },
+  "sync.setup.profiles.choose": {
+   "comment": "sync setup — phi_sync_setup_window.cc (Mac KeyLayerView / PairingWizard)",
+   "en": "Choose…"
+  },
+  "sync.setup.profiles.continue": {
+   "comment": "sync setup — phi_sync_setup_window.cc (Mac KeyLayerView / PairingWizard)",
+   "en": "Continue"
+  },
+  "sync.setup.profiles.createHere": {
+   "comment": "sync setup — phi_sync_setup_window.cc (Mac KeyLayerView / PairingWizard)",
+   "en": "Create on this PC"
+  },
+  "sync.setup.profiles.fallbackName": {
+   "comment": "sync setup — phi_sync_setup_window.cc (Mac KeyLayerView / PairingWizard); a created profile whose account name is empty",
+   "en": "Profile"
+  },
+  "sync.setup.profiles.registerNew": {
+   "comment": "sync setup — phi_sync_setup_window.cc (Mac KeyLayerView / PairingWizard)",
+   "en": "Register as new"
+  },
+  "sync.setup.profiles.title": {
+   "comment": "sync setup — phi_sync_setup_window.cc (Mac KeyLayerView / PairingWizard)",
+   "en": "Match your profiles"
+  },
+  "sync.setup.profiles.unclaimed": {
+   "comment": "sync setup — phi_sync_setup_window.cc (Mac KeyLayerView / PairingWizard)",
+   "en": "Unclaimed account profiles"
+  },
+  "sync.setup.profiles.unnamed": {
+   "comment": "sync setup — phi_sync_setup_window.cc (Mac KeyLayerView / PairingWizard); {0} = first 8 characters of the profile id",
+   "en": "Unnamed profile ({0})"
+  },
+  "sync.setup.profiles.unreadable": {
+   "comment": "sync setup — phi_sync_setup_window.cc (Mac KeyLayerView / PairingWizard)",
+   "en": "Can’t be read right now — Phi keeps retrying in the background"
+  },
+  "sync.setup.tryAgain": {
+   "comment": "sync setup — phi_sync_setup_window.cc (Mac KeyLayerView / PairingWizard)",
+   "en": "Try again"
+  },
+  "sync.setup.tryAnotherWay": {
+   "comment": "sync setup — phi_sync_setup_window.cc (Mac KeyLayerView / PairingWizard)",
+   "en": "Try another way"
+  },
+  "sync.setup.waiting.body": {
+   "comment": "sync setup — phi_sync_setup_window.cc (Mac KeyLayerView / PairingWizard)",
+   "en": "On an authorized device, open Settings → Sync and approve this request. Make sure this code matches:"
+  },
+  "sync.setup.waiting.cancel": {
+   "comment": "sync setup — phi_sync_setup_window.cc (Mac KeyLayerView / PairingWizard)",
+   "en": "Cancel"
+  },
+  "sync.setup.waiting.expiresIn": {
+   "comment": "sync setup — phi_sync_setup_window.cc (Mac KeyLayerView / PairingWizard); {0} = m:ss",
+   "en": "Expires in {0}"
+  },
+  "sync.setup.waiting.title": {
+   "comment": "sync setup — phi_sync_setup_window.cc (Mac KeyLayerView / PairingWizard)",
+   "en": "Waiting for approval"
+  },
+  "sync.setup.waiting.useRecoveryCode": {
+   "comment": "sync setup — phi_sync_setup_window.cc (Mac KeyLayerView / PairingWizard)",
+   "en": "Use a recovery code"
+  },
+  "sync.setup.windowTitle": {
+   "comment": "sync setup — phi_sync_setup_window.cc (Mac KeyLayerView / PairingWizard)",
+   "en": "Finish setting up sync"
+  },
+  "sync.setup.working": {
+   "comment": "sync setup — phi_sync_setup_window.cc (Mac KeyLayerView / PairingWizard)",
+   "en": "Working…"
+  },
+  "sync.status.checking": {
+   "comment": "settings — Sync status card (Mac DevicesSettingView)",
+   "en": "Checking sync status…"
+  },
+  "sync.status.initial": {
+   "comment": "settings — Sync status card (Mac DevicesSettingView)",
+   "en": "Initial sync in progress"
+  },
+  "sync.status.needsAttention": {
+   "comment": "settings — Sync status card (Mac DevicesSettingView)",
+   "en": "Needs attention"
+  },
+  "sync.status.offline": {
+   "comment": "settings — Sync status card (Mac DevicesSettingView)",
+   "en": "Offline — changes will sync when connected"
+  },
+  "sync.status.partialFailure": {
+   "comment": "settings — Sync status card (Mac DevicesSettingView)",
+   "en": "Some content needs attention. Check the details and your connection."
+  },
+  "sync.status.phiData": {
+   "comment": "settings — Sync status card: the native sync context's name",
+   "en": "Phi data"
+  },
+  "sync.status.profile": {
+   "comment": "settings — Sync status card: an unnamed profile",
+   "en": "Profile"
+  },
+  "sync.status.syncing": {
+   "comment": "settings — Sync status card (Mac DevicesSettingView)",
+   "en": "Syncing…"
+  },
+  "sync.status.upToDate": {
+   "comment": "settings — Sync status card (Mac DevicesSettingView)",
+   "en": "Up to date"
   },
   "tabs.tabGroup.colorName.blue": {
    "comment": "sidebar — used at phi_shell_window.cc:164",

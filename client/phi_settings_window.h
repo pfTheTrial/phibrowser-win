@@ -7,6 +7,7 @@
 
 #include <windows.h>
 
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -18,6 +19,7 @@
 #include "phibrowser-win/client/phi_profile_card.h"
 #include "phibrowser-win/client/phi_secondary_window.h"
 #include "phibrowser-win/client/phi_settings_types.h"
+#include "phibrowser-win/client/phi_sync_keys.h"
 #include "phibrowser-win/client/phi_tab_store.h"
 #include "phibrowser-win/client/phi_theme.h"
 #include "phibrowser-win/client/phi_shell_window.h"
@@ -29,6 +31,7 @@ class PhiPreferences;
 class PhiProfileService;
 class PhiSpaceManager;
 class PhiUrlRouter;
+class PhiSyncKeyService;
 
 // Is Phi the browser Windows launches for an http: URL? A registry read
 // (AssocQueryString through the user's choice, compared to this exe's
@@ -105,6 +108,12 @@ class PhiSettingsHost {
   // Navigation ▸ "Manage URL Rules…": the universal editor window, over
   // `anchor` (the settings window).
   virtual void RequestUrlRulesEditor(HWND anchor) = 0;
+  // --- Sync (docs/user-data-parity.md S3) -------------------------------------
+  // The signed-in account's key layer; null signed out or in Guest Mode.
+  virtual PhiSyncKeyService* SyncKeys() = 0;
+  // "Set up sync on this device" / "Continue setup": the setup window, over
+  // `anchor`.
+  virtual void RequestSyncSetup(HWND anchor) = 0;
 
   // --- Theme ----------------------------------------------------------------
   virtual void SetThemeId(const std::string& id) = 0;
@@ -378,6 +387,12 @@ class PhiSettingsWindow : public PhiSecondaryWindow,
   void BuildAi(int* y);
   void BuildShortcuts(int* y);
   void BuildDeveloper(int* y);
+  void BuildSync(int* y);
+  // The paired pane's status card (the Mac's statusSection).
+  void BuildSyncStatus(int* y);
+  // Settings ▸ Sync's device list, fetched through the key layer while the
+  // pane is up (the Mac's 3 s poll).
+  void RefreshSyncDevices(bool force);
   // The Mac's ProfileDetailSettingsView: the Search Engine / Download
   // Location card, then "Your Data and Settings" links. Shared by the
   // Profiles detail column and the General pane's single-profile case.
@@ -577,6 +592,20 @@ class PhiSettingsWindow : public PhiSecondaryWindow,
   PhiProfileCard profile_card_;
   Timer card_timer_;
   bool card_drag_ = false;
+  // Settings ▸ Sync: the last device list, whether one is being fetched, and
+  // the pane's action outcome lines. Replies find the window through
+  // `sync_alive_` (the key layer answers asynchronously).
+  Timer sync_poll_;
+  std::shared_ptr<int> sync_alive_ = std::make_shared<int>(0);
+  bool sync_loaded_ = false;
+  bool sync_refreshing_ = false;
+  uint64_t sync_refreshed_tick_ = 0;
+  std::string sync_list_error_;
+  std::vector<keys::AccountDevice> sync_devices_;
+  std::vector<keys::PendingApproval> sync_pending_;
+  std::wstring sync_action_error_;
+  std::wstring sync_remove_note_;
+  bool sync_last_device_ = false;
 };
 
 }  // namespace phi_client

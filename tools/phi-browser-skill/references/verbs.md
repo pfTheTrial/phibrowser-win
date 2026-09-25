@@ -91,7 +91,7 @@ These are what protocol 1 puts in `error`; protocol 2 reports the code beside th
 
 ## Verbs
 
-148 rows, 145 distinct names.
+154 rows, 151 distinct names.
 
 ### The agent-Space lifecycle
 
@@ -2095,6 +2095,81 @@ Presses a control of the onboarding window by name.
 | --- | --- | --- | --- | --- |
 | `action` | string | yes | — | signIn, guest, cancel, legal, metrics, name, swatch, layout, next, close. |
 | `value` | string | no | — | The name / theme id / layout. |
+
+### Chromium sync (docs/user-data-parity.md S2)
+
+#### `agentSpace.sync.status`
+
+What Chromium sync is told: the account state, the server, whether a bearer token is at hand, and which profiles have a key.
+
+- **Capabilities**: `host`
+- **Scope**: app-wide.
+- **Errors**: `test_rig_only`
+
+*No payload fields.*
+
+#### `agentSpace.sync.setProfileKey`
+
+Hands Chromium a profile's sync key by hand, standing in for the key layer.
+
+- **Capabilities**: `host`
+- **Scope**: app-wide.
+- **Errors**: `test_rig_only`, `invalid_payload`
+
+| field | type | required | also accepts | meaning |
+| --- | --- | --- | --- | --- |
+| `profileId` | string | yes | — | The Chromium profile id. |
+| `uuid` | string | no | — | The account-global profile uuid; empty removes the key. |
+| `passphrase` | string | no | — | The profile key, 64 lowercase hex chars. |
+
+#### `agentSpace.sync.setup.open`
+
+Opens the sync setup window, as Settings ▸ Sync's button does.
+
+- **Capabilities**: `host`
+- **Scope**: app-wide.
+- **Errors**: `test_rig_only`, `no_key_layer`
+
+*No payload fields.*
+
+#### `agentSpace.sync.setup.status`
+
+The sync setup window's page and state.
+
+- **Capabilities**: `host`
+- **Scope**: app-wide.
+- **Errors**: `test_rig_only`, `not_open`
+
+*No payload fields.*
+
+#### `agentSpace.sync.setup.drive`
+
+Presses a control of the sync setup window by name.
+
+- **Capabilities**: `host`
+- **Scope**: app-wide.
+- **Errors**: `test_rig_only`, `not_open`, `wrong_page`, `unknown_action`, `invalid_value`, `busy`, `undecided`
+
+| field | type | required | also accepts | meaning |
+| --- | --- | --- | --- | --- |
+| `action` | string | yes | — | continue, saved, copy, requestApproval, useRecovery, cancel, code, submit, tryAnother, tryAgain, local, remote, continueProfiles, finishLater. |
+| `value` | string | no | — | code: the text; local: "<row>:<remote row>\|new"; remote: "<row>:create\|assign:<local row>\|none". |
+
+#### `agentSpace.sync.keyOp`
+
+Starts one sync key-layer operation (the setup window's and Settings ▸ Sync's steps); agentSpace.sync.status's lastOp reports the outcome.
+
+- **Capabilities**: `host`
+- **Scope**: app-wide.
+- **Errors**: `test_rig_only`, `invalid_payload`, `no_key_layer`
+
+| field | type | required | also accepts | meaning |
+| --- | --- | --- | --- | --- |
+| `op` | string | yes | — | unlock, resolve, beginSetup, bootstrap, requestJoin, pollJoin, cancelJoin, recover, startPairing, applyDecisions, refresh, approve, deny, removeDevice, peek (read-only: the account's Phi sync data), syncNow (a Phi native sync round). |
+| `requestId` | string | no | — | pollJoin / cancelJoin / approve / deny: the join request. |
+| `code` | string | no | — | recover: the recovery code. |
+| `confirm` | string | no | — | bootstrap: must be "bootstrap" (it creates the account's keys). |
+| `decisions` | list | no | — | applyDecisions: [{kind: adopt\|registerNew\|createLocal, localProfileId, remoteUuid, displayName}]. |
 
 ### Credentials
 

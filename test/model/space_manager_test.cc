@@ -59,11 +59,15 @@ void TestDefaultSpaceId() {
   CHECK(DefaultSpaceIdOf(spaces, "1") == "1");
   CHECK(DefaultSpaceIdOf(spaces, "9") == "3");  // Gone: the first, not "1".
   CHECK(DefaultSpaceIdOf(spaces, "") == "3");
-  CHECK(DefaultSpaceIdOf({}, "4") == "1");
-  CHECK(DefaultSpaceIdOf({}, "") == "1");
-  // The decoder's rule differs on purpose (it prefers "1" when present);
-  // pin the difference so nobody "fixes" one into the other.
-  CHECK(ResolveDefaultSpaceId(spaces, "9") == "1");
+  CHECK(DefaultSpaceIdOf({}, "4") == "default-space");
+  CHECK(DefaultSpaceIdOf({}, "") == "default-space");
+  // The decoder's rule differs on purpose (it prefers the built-in
+  // "default-space" when present); pin the difference so nobody "fixes"
+  // one into the other.
+  CHECK(ResolveDefaultSpaceId(spaces, "9") == "3");
+  const std::vector<Space> with_builtin = Spaces({"3", "default-space"});
+  CHECK(ResolveDefaultSpaceId(with_builtin, "9") == "default-space");
+  CHECK(DefaultSpaceIdOf(with_builtin, "9") == "3");
 }
 
 // The hand-off on delete: the first REMAINING Space in strip order.

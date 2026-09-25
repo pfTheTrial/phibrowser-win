@@ -36,7 +36,7 @@ namespace phi_client {
 //
 //   template <> struct PhiStoreTraits<T> {
 //     static constexpr int kSchema;             // the schema this build writes
-//     static constexpr const wchar_t* kFile;    // e.g. L"PhiSettings.json"
+//     static constexpr const wchar_t* kFile;    // e.g. L"PhiPreferences.json"
 //     static constexpr bool kProtected;         // DPAPI + HMAC (consent)
 //     static base::DictValue Encode(const T&);
 //     // Fills `out` from a file of schema `schema` (<= kSchema: migrate;
@@ -205,6 +205,7 @@ class PhiStore {
   //             may still be there) and rewritten in the current schema.
   PhiJsonFileStatus Load(T* out) {
     *out = T();
+    loaded_ = base::DictValue();
     base::DictValue dict;
     int schema = 0;
     const PhiJsonFileStatus status = ReadDict(&dict, &schema);
@@ -228,7 +229,13 @@ class PhiStore {
       LOG(WARNING) << "[PhiStore] " << FileName() << " schema " << schema
                    << " is newer than " << Traits::kSchema;
     }
+    // Keys this build does not know (a newer build's, the Mac's) ride
+    // along: Save writes the known ones over them.
+    if constexpr (!Traits::kProtected) {
+      loaded_ = dict.Clone();
+    }
     if (!Traits::Decode(dict, schema, out)) {
+      loaded_ = base::DictValue();
       *out = T();
       PhiQuarantineFile(path_, "body did not decode");
       LOG(ERROR) << "[PhiStore] " << FileName()
@@ -255,7 +262,13 @@ class PhiStore {
   bool Save(const T& value) {
     base::DictValue dict = Traits::Encode(value);
     if constexpr (!Traits::kProtected) {
-      return PhiWriteJsonFile(path_, std::move(dict), Traits::kSchema);
+      // Top-level keys are replaced whole; unknown ones are kept.
+      base::DictValue merged = loaded_.Clone();
+      for (auto [key, entry] : dict) {
+        merged.Set(key, entry.Clone());
+      }
+      loaded_ = merged.Clone();
+      return PhiWriteJsonFile(path_, std::move(merged), Traits::kSchema);
     } else {
       dict.Set("schema", Traits::kSchema);
       std::string plain;
@@ -361,6 +374,8 @@ class PhiStore {
   std::wstring dir_;
   std::wstring path_;
   std::wstring key_path_;
+  // The file as last read or written (unsealed stores only).
+  base::DictValue loaded_;
 };
 
 }  // namespace phi_client

@@ -49,7 +49,7 @@ class PhiTelemetry {
   void Start(const std::wstring& user_data_dir);
 
   // The user's consent (Settings ▸ General ▸ "Share anonymous usage
-  // analytics", PhiSettings.json analyticsEnabled). Off until set: an event
+  // analytics", PhiPreferences.json analyticsEnabled). Off until set: an event
   // recorded while disabled is DROPPED, not spooled — nothing the user did
   // not agree to share ever reaches disk, let alone the collector — and
   // the uploader sends nothing while consent is off, whatever the queue
