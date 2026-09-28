@@ -1169,6 +1169,7 @@ PhiShellWindow::~PhiShellWindow() {
   // delivers WM_ACTIVATE / WM_SIZE / WM_CAPTURECHANGED) find a controller
   // that must do nothing but die.
   destroying_ = true;
+  EndSidebarResize();
   // A hosted agent Space goes back to its own shell first, whole: the
   // browser is the agent's, and it must not die with this window — the
   // one sliding home, then the one on screen.
@@ -2620,7 +2621,107 @@ void PhiShellWindow::ToggleDownloadsPopover() {
                               framework_, browser);
 }
 
+void PhiShellWindow::BeginSidebarResize() {
+  CancelContentSlide();
+  sidebar_resize_source_ = ComputeWindowLayout().content;
+  sidebar_resize_snapshot_ = CaptureLeavingComposite();
+  sidebar_resizing_ = true;
+  if (sidebar_resize_snapshot_) {
+    // Native chrome and Chromium present on different clocks. During the
+    // drag, paint the page preview and chrome in ONE shell frame; keep the
+    // real viewport unchanged until release.
+    for (HWND child = ::GetWindow(shell_hwnd_, GW_CHILD); child;
+         child = ::GetWindow(child, GW_HWNDNEXT)) {
+      if (::IsWindowVisible(child)) {
+        sidebar_resize_hidden_.push_back(child);
+      }
+    }
+    for (HWND child : sidebar_resize_hidden_) {
+      ::ShowWindow(child, SW_HIDE);
+    }
+    ::RedrawWindow(shell_hwnd_, nullptr, nullptr,
+                   RDW_INVALIDATE | RDW_UPDATENOW);
+  }
+  ::SetCapture(shell_hwnd_);
+}
+
+void PhiShellWindow::ResizeSidebar(int width_dip) {
+  sidebar_dip_ = width_dip;
+  if (!sidebar_resize_snapshot_) {
+    LayoutContents();  // Allocation/capture failure retains live resizing.
+  } else {
+    RefreshLayoutInputs();
+    ScheduleRefresh();
+  }
+  FlushPendingRebuild();
+  ::RedrawWindow(shell_hwnd_, nullptr, nullptr,
+                 RDW_INVALIDATE | RDW_UPDATENOW);
+}
+
+void PhiShellWindow::EndSidebarResize() {
+  if (sidebar_resize_snapshot_) {
+    ::DeleteObject(sidebar_resize_snapshot_);
+    sidebar_resize_snapshot_ = nullptr;
+    if (!destroying_) {
+      for (HWND child : sidebar_resize_hidden_) {
+        if (::IsWindow(child)) ::ShowWindow(child, SW_SHOWNA);
+      }
+      // Keep sidebar_resizing_ set while laying out: the live width wins
+      // over the preference, which the release handler persists next.
+      LayoutContents();
+      FlushPendingRebuild();
+      ::RedrawWindow(shell_hwnd_, nullptr, nullptr,
+                     RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+      // Navigation may have requested a native-page sync while its window
+      // was hidden for the preview. Apply the current route after release.
+      ::PostMessageW(shell_hwnd_, kMsgPhiSyncNativePages, 0, 0);
+    }
+    sidebar_resize_hidden_.clear();
+  }
+  sidebar_resizing_ = false;
+}
+
+void PhiShellWindow::PaintSidebarResizePreview(HDC dc) {
+  const RECT target = ComputeWindowLayout().content;
+  HDC source = ::CreateCompatibleDC(dc);
+  if (!source) return;
+  HGDIOBJ old = ::SelectObject(source, sidebar_resize_snapshot_);
+  // A scaled preview keeps all page content visible; the real page reflows
+  // once, at the final viewport size, when the mouse is released.
+  const int mode = ::SetStretchBltMode(dc, HALFTONE);
+  POINT brush_origin = {};
+  ::SetBrushOrgEx(dc, 0, 0, &brush_origin);
+  ::StretchBlt(dc, target.left, target.top,
+      target.right - target.left, target.bottom - target.top, source,
+      sidebar_resize_source_.left, sidebar_resize_source_.top,
+      sidebar_resize_source_.right - sidebar_resize_source_.left,
+      sidebar_resize_source_.bottom - sidebar_resize_source_.top, SRCCOPY);
+  ::SetBrushOrgEx(dc, brush_origin.x, brush_origin.y, nullptr);
+  ::SetStretchBltMode(dc, mode);
+  ::SelectObject(source, old);
+  ::DeleteDC(source);
+  ::GdiFlush();
+  // The capture is opaque GDI RGB. Supply alpha for presentation over the
+  // extended DWM frame, keeping the sidebar's existing translucent pixels.
+  auto pixels = UNSAFE_BUFFERS(base::span<uint32_t>(
+      static_cast<uint32_t*>(back_buffer_bits_),
+      static_cast<size_t>(back_buffer_size_.cx) * back_buffer_size_.cy));
+  for (int y = std::max<LONG>(0, target.top);
+       y < std::min(target.bottom, back_buffer_size_.cy); ++y) {
+    const int left = std::clamp<LONG>(target.left, 0, back_buffer_size_.cx);
+    const int right = std::clamp<LONG>(target.right, left, back_buffer_size_.cx);
+    for (auto& pixel : pixels.subspan(
+             static_cast<size_t>(y) * back_buffer_size_.cx + left,
+             static_cast<size_t>(right - left))) {
+      pixel |= 0xFF000000u;
+    }
+  }
+}
+
 void PhiShellWindow::LayoutContents() {
+  if (sidebar_resize_snapshot_) {
+    return;  // The live viewport is committed once when the drag ends.
+  }
   if (destroying_) {
     return;  // The shell's own DestroyWindow sends WM_SIZE on the way down.
   }
@@ -2668,6 +2769,7 @@ void PhiShellWindow::LayoutContents() {
 }
 
 void PhiShellWindow::PlaceContentChildren(const Layout& layout) {
+  if (sidebar_resize_snapshot_) return;
   PhiContentLayout content;
   content.content = layout.content;
   content.client = layout.client;
@@ -4052,6 +4154,10 @@ void PhiShellWindow::ComposeSlideFrame() {
 }
 
 void PhiShellWindow::ComposeFrame(HDC mem, const PhiPalette& palette) {
+  if (sidebar_resize_snapshot_) {
+    PaintChrome(mem, ComputeLayout(), palette, /*include_child_controls=*/true);
+    return;
+  }
   if (HDC entering = content_slide_->EnteringDC()) {
     // The comfortable Space slide: the entering chrome is painted at rest
     // into the slide's scratch — no caption buttons — with the entering
@@ -6669,7 +6775,7 @@ void PhiShellWindow::PaintChrome(HDC dc,
   // floating panel's paint: that runs against the expanded layout of a
   // collapsed shell, and re-seating the shell's live EDIT there dragged it
   // to the docked field's place on the collapsed card.
-  if (!floating_layout_) {
+  if (!floating_layout_ && !sidebar_resize_snapshot_) {
     omnibox_->Position();
   }
   const auto on_field = [&](const RECT& r) {
@@ -7204,9 +7310,7 @@ LRESULT CALLBACK PhiShellWindow::ShellWndProc(HWND hwnd,
                            static_cast<int>(self->dpi_),
                        kSidebarWidthMax));
           if (dip != self->sidebar_dip_) {
-            self->sidebar_dip_ = dip;
-            self->LayoutContents();
-            self->ScheduleRefresh();
+            self->ResizeSidebar(dip);
           }
           return 0;
         }
@@ -7228,7 +7332,7 @@ LRESULT CALLBACK PhiShellWindow::ShellWndProc(HWND hwnd,
       }
       break;
     case kMsgPhiSyncNativePages:
-      if (self) {
+      if (self && !self->sidebar_resize_snapshot_) {
         self->native_pages_->Sync();
       }
       return 0;
@@ -7340,8 +7444,7 @@ LRESULT CALLBACK PhiShellWindow::ShellWndProc(HWND hwnd,
       if (self) {
         POINT pt = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
         if (self->InSidebarResizeBand(pt)) {
-          self->sidebar_resizing_ = true;
-          ::SetCapture(hwnd);
+          self->BeginSidebarResize();
           return 0;
         }
         self->OnChromeClick(pt.x, pt.y);
@@ -7372,7 +7475,7 @@ LRESULT CALLBACK PhiShellWindow::ShellWndProc(HWND hwnd,
     case WM_LBUTTONUP:
       if (self) {
         if (self->sidebar_resizing_) {
-          self->sidebar_resizing_ = false;
+          self->EndSidebarResize();
           if (::GetCapture() == hwnd) {
             ::ReleaseCapture();
           }
@@ -7387,7 +7490,7 @@ LRESULT CALLBACK PhiShellWindow::ShellWndProc(HWND hwnd,
     case WM_CAPTURECHANGED:
       if (self) {
         if (self->sidebar_resizing_) {
-          self->sidebar_resizing_ = false;
+          self->EndSidebarResize();
           if (self->services_.prefs) {
             self->services_.prefs->RequestSidebarWidth(self->sidebar_dip_);
           }
@@ -7556,6 +7659,9 @@ LRESULT CALLBACK PhiShellWindow::ShellWndProc(HWND hwnd,
           const PhiPalette palette = self->CurrentPalette();
           self->ComposeFrame(mem, palette);
           self->PrepareBackdropPixels(palette);
+          if (self->sidebar_resize_snapshot_) {
+            self->PaintSidebarResizePreview(mem);
+          }
           ::BitBlt(dc, ps.rcPaint.left, ps.rcPaint.top,
                    ps.rcPaint.right - ps.rcPaint.left,
                    ps.rcPaint.bottom - ps.rcPaint.top, mem, ps.rcPaint.left,

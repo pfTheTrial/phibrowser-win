@@ -1238,6 +1238,13 @@ class PhiShellWindow : public PhiHitSource,
   // sidebar's trailing gutter; live while dragging, persisted on release.
   int sidebar_dip_ = kSidebarWidthDefault;
   bool sidebar_resizing_ = false;
+  HBITMAP sidebar_resize_snapshot_ = nullptr;
+  RECT sidebar_resize_source_{};
+  std::vector<HWND> sidebar_resize_hidden_;
+  void BeginSidebarResize();
+  void ResizeSidebar(int width_dip);
+  void EndSidebarResize();
+  void PaintSidebarResizePreview(HDC dc);
   bool InSidebarResizeBand(POINT client_pt);
 
 
