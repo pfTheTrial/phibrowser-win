@@ -5,6 +5,67 @@
 #ifndef PHIBROWSER_WIN_CLIENT_PHI_KEYBOARD_ACCELERATORS_H_
 #define PHIBROWSER_WIN_CLIENT_PHI_KEYBOARD_ACCELERATORS_H_
 
+#include <cstdint>
+#include <map>
+#include <optional>
+#include <string>
+#include <utility>
+
+#include "phibrowser-win/client/phi_ids.h"
+
+namespace phi_client {
+
+// Pure queue policy, shared with the host regression tests. Taking a command
+// consumes it even if its presentation has gone away; it is never replayed.
+class PhiKeyboardCommandQueue {
+ public:
+  PhiKeyboardCommandQueue();
+  ~PhiKeyboardCommandQueue();
+  PhiKeyboardCommandQueue(const PhiKeyboardCommandQueue&) = delete;
+  PhiKeyboardCommandQueue& operator=(const PhiKeyboardCommandQueue&) = delete;
+
+  struct Target {
+    std::string space;
+    BrowserId browser;
+    TabId tab;
+    bool operator==(const Target&) const = default;
+  };
+  struct Command {
+    unsigned int id;
+    Target target;
+    BrowserId find_browser;
+    uintptr_t focus;
+  };
+  uintptr_t Enqueue(Command command) {
+    const uintptr_t token = ++next_token_;
+    commands_.emplace(token, std::move(command));
+    return token;
+  }
+  std::optional<Command> Take(uintptr_t token, const Target& current) {
+    const auto it = commands_.find(token);
+    if (it == commands_.end()) {
+      return std::nullopt;
+    }
+    Command command = std::move(it->second);
+    commands_.erase(it);
+    if (command.target != current) {
+      return std::nullopt;
+    }
+    return command;
+  }
+  void Erase(uintptr_t token) { commands_.erase(token); }
+  void Clear() { commands_.clear(); }
+
+ private:
+  // Shared across instances: a destroyed/recreated shell cannot consume an
+  // old message even if Windows reuses its HWND. Accessed on the UI thread.
+  inline static uintptr_t next_token_ = 0;
+  std::map<uintptr_t, Command> commands_;
+};
+
+}  // namespace phi_client
+
+#if defined(_WIN32)
 #include <windows.h>
 
 #include "base/memory/raw_ptr_exclusion.h"
@@ -32,6 +93,8 @@ class PhiKeyboardAccelerators {
     virtual ~Host() = default;
     // The shell window owning the focus HWND, or null (focus is elsewhere).
     virtual HWND FocusedShellHwnd() const = 0;
+    // A focused Peek's browser, or invalid for the ordinary Space target.
+    virtual BrowserId FocusedFindBrowser(HWND shell) const = 0;
     // Esc with no modifiers over `shell`: dismiss the Peek card(s) floating
     // over it. True when one was dismissed — then the key is swallowed so
     // the page under the card does not also see it.
@@ -88,5 +151,6 @@ class PhiKeyboardAccelerators {
 };
 
 }  // namespace phi_client
+#endif  // defined(_WIN32)
 
 #endif  // PHIBROWSER_WIN_CLIENT_PHI_KEYBOARD_ACCELERATORS_H_

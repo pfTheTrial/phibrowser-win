@@ -558,6 +558,10 @@ class PhiShellWindow : public PhiHitSource,
   // A shell created behind the onboarding gate (start_hidden) comes on
   // screen here once access is granted; a no-op for a visible shell.
   void ShowHeldShell();
+  bool PresentBrowser(BrowserId browser, bool activate);
+  void SetShellFullscreen(BrowserId browser,
+                          bool fullscreen,
+                          const RECT& target);
   // The reverse (a sign-out re-arms the gate): off screen, browser alive.
   void HideShell();
   bool shell_hidden() const { return shell_hidden_; }

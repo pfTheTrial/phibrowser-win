@@ -1,0 +1,7 @@
+{
+  "manifest_version": 3,
+  "name": "Phi Hosted Optional Permission Isolated Fixture",
+  "version": "1.0.0",
+  "description": "Disposable optional-permission confirmation routing fixture; no network or background worker.",
+  "optional_permissions": ["tabs"]
+}

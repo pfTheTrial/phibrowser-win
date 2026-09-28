@@ -4,6 +4,13 @@
 
 #include "phibrowser-win/client/phi_keyboard_accelerators.h"
 
+namespace phi_client {
+PhiKeyboardCommandQueue::PhiKeyboardCommandQueue() = default;
+PhiKeyboardCommandQueue::~PhiKeyboardCommandQueue() = default;
+}  // namespace phi_client
+
+#if defined(_WIN32)
+
 #include "phibrowser-win/client/phi_app_menu.h"
 #include "phibrowser-win/client/phi_preferences.h"
 #include "phibrowser-win/client/phi_tab_switcher.h"
@@ -18,12 +25,13 @@ PhiKeyboardAccelerators* g_accelerators = nullptr;
 
 // The menu bar's FIXED shortcuts, reserved the way Chrome reserves its
 // browser shortcuts (they fire even while a page has focus). Edit keys
-// (Ctrl+C/V/X/Z/A/F...) stay with the web content; everything a user can
+// (Ctrl+C/V/X/Z/A...) stay with the web content; everything a user can
 // rebind lives in the preferences' rebindable table, not here.
 constexpr PhiKeyboardAccelerators::Accelerator kAccelerators[] = {
     {'Q', true, true, false, kCmdQuit},
     {'O', true, false, false, kCmdOpenFile},
     {'P', true, false, false, kCmdPrint},
+    {'F', true, false, false, kCmdFind},
     {VK_F5, false, false, false, kCmdReload},
     {'U', true, false, false, kCmdViewSource},
     {'I', true, true, false, kCmdDevTools},
@@ -141,7 +149,7 @@ LRESULT PhiKeyboardAccelerators::OnKey(WPARAM wparam, LPARAM lparam) {
     if (wparam == VK_MENU && alt_solo_) {
       alt_solo_ = false;
       if (HWND shell = host_.FocusedShellHwnd()) {
-        ::PostMessageW(shell, WM_COMMAND, MAKEWPARAM(kCmdShowAppMenu, 1), 0);
+        PhiAppMenu::PostAccelerator(shell, kCmdShowAppMenu);
       }
     }
     return 0;
@@ -172,20 +180,21 @@ LRESULT PhiKeyboardAccelerators::OnKey(WPARAM wparam, LPARAM lparam) {
   }
   // The REBINDABLE shortcuts first (their effective chords carry the user's
   // overrides), so a custom chord shadows any fixed one it collides with.
-  // Posted with HIWORD 1, Win32's own "this WM_COMMAND is an accelerator"
-  // mark, so a handler that cares (the reader's usage metric) can tell a
-  // chord from the menu row that shares its id.
+  // The menu captures the originating presentation before posting, and
+  // dispatches valid commands with HIWORD 1 (accelerator provenance).
   if (const UINT command = preferences_.MatchRebindableChord(
           static_cast<UINT>(wparam), ctrl, shift, alt)) {
     if (HWND shell = host_.FocusedShellHwnd()) {
-      ::PostMessageW(shell, WM_COMMAND, MAKEWPARAM(command, 1), 0);
+      PhiAppMenu::PostAccelerator(shell, command,
+                                  host_.FocusedFindBrowser(shell));
       return 1;
     }
   }
   if (const UINT command =
           MatchFixedAccelerator(static_cast<UINT>(wparam), ctrl, shift, alt)) {
     if (HWND shell = host_.FocusedShellHwnd()) {
-      ::PostMessageW(shell, WM_COMMAND, MAKEWPARAM(command, 1), 0);
+      PhiAppMenu::PostAccelerator(shell, command,
+                                  host_.FocusedFindBrowser(shell));
       return 1;  // Swallow: Chromium must not double-handle it.
     }
   }
@@ -193,3 +202,5 @@ LRESULT PhiKeyboardAccelerators::OnKey(WPARAM wparam, LPARAM lparam) {
 }
 
 }  // namespace phi_client
+
+#endif  // defined(_WIN32)

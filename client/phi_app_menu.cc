@@ -7,6 +7,7 @@
 
 #include "phibrowser-win/client/phi_bookmark_manager.h"
 
+#include <commctrl.h>
 #include <commdlg.h>
 
 #include <algorithm>
@@ -37,6 +38,13 @@
 namespace phi_client {
 
 namespace {
+
+constexpr UINT_PTR kAcceleratorSubclass = 0x50484941;
+UINT AcceleratorMessage() {
+  static const UINT message =
+      ::RegisterWindowMessageW(L"Phi.AppMenu.AttributedAccelerator");
+  return message;
+}
 
 // Dynamic ranges. Nothing overlaps the static kCmd* ids.
 constexpr UINT kSpaceFirst = 2000;       // + index into space_ids_
@@ -101,6 +109,9 @@ int IdcForCommand(UINT id) {
 PhiAppMenu::PhiAppMenu(PhiAppMenuShell* shell) : services_(shell) {}
 
 PhiAppMenu::~PhiAppMenu() {
+  if (shell_) {
+    ::RemoveWindowSubclass(shell_, &AcceleratorProc, kAcceleratorSubclass);
+  }
   // Never attached, so the tree is ours to destroy — it takes every
   // submenu with it; the rows go with the store.
   if (root_) {
@@ -124,6 +135,8 @@ void PhiAppMenu::Install(HWND shell) {
     return;
   }
   shell_ = shell;
+  ::SetWindowSubclass(shell_, &AcceleratorProc, kAcceleratorSubclass,
+                      reinterpret_cast<DWORD_PTR>(this));
   root_ = ::CreatePopupMenu();
   if (!root_) {
     return;
@@ -639,6 +652,76 @@ void PhiAppMenu::RefreshExtensions() {
   }
 }
 
+bool PhiAppMenu::PostAccelerator(HWND shell,
+                                 UINT command,
+                                 BrowserId find_browser) {
+  DWORD_PTR data = 0;
+  if (!::GetWindowSubclass(shell, &AcceleratorProc, kAcceleratorSubclass,
+                           &data) ||
+      !AcceleratorMessage()) {
+    return false;
+  }
+  auto* menu = reinterpret_cast<PhiAppMenu*>(data);
+  auto* c = menu->services_;
+  const UINT_PTR token = menu->pending_accelerators_.Enqueue(
+      {command,
+       {c->MenuActiveSpace(), c->MenuActiveBrowser(), c->MenuActiveTab()},
+       find_browser,
+       reinterpret_cast<uintptr_t>(::GetFocus())});
+  if (!::PostMessageW(shell, AcceleratorMessage(), token, 0)) {
+    menu->pending_accelerators_.Erase(token);
+    return false;
+  }
+  return true;
+}
+
+LRESULT CALLBACK PhiAppMenu::AcceleratorProc(HWND hwnd,
+                                             UINT message,
+                                             WPARAM wparam,
+                                             LPARAM lparam,
+                                             UINT_PTR subclass_id,
+                                             DWORD_PTR data) {
+  auto* menu = reinterpret_cast<PhiAppMenu*>(data);
+  if (message == AcceleratorMessage()) {
+    menu->DispatchAccelerator(wparam);
+    return 0;
+  }
+  if (message == WM_NCDESTROY) {
+    menu->pending_accelerators_.Clear();
+    menu->shell_ = nullptr;
+    ::RemoveWindowSubclass(hwnd, &AcceleratorProc, subclass_id);
+  }
+  return ::DefSubclassProc(hwnd, message, wparam, lparam);
+}
+
+void PhiAppMenu::DispatchAccelerator(UINT_PTR token) {
+  auto* c = services_;
+  const auto pending = pending_accelerators_.Take(
+      token,
+      {c->MenuActiveSpace(), c->MenuActiveBrowser(), c->MenuActiveTab()});
+  if (!pending) {
+    return;
+  }
+  if (pending->id == kCmdFind &&
+      ::GetFocus() != reinterpret_cast<HWND>(pending->focus)) {
+    return;
+  }
+  if (pending->id == kCmdFind && pending->find_browser.valid()) {
+    if (c->MenuModel() && c->MenuModel()->Has(pending->find_browser) &&
+        c->MenuFramework()) {
+      auto* framework = c->MenuFramework();
+      // Peek is a hosted child: Win32 SetFocus alone does not activate its
+      // Aura FocusManager. Find must open inside the surface's Views tree.
+      framework->FocusBrowserWindow(pending->find_browser.value);
+      framework->ExecuteChromiumCommand(pending->find_browser.value, IDC_FIND);
+    }
+    return;
+  }
+  // Synchronous only after validation; preserves the shell's app-menu route
+  // and accelerator provenance without a second unattributed queue hop.
+  ::SendMessageW(shell_, WM_COMMAND, MAKEWPARAM(pending->id, 1), 0);
+}
+
 bool PhiAppMenu::OnCommand(UINT id, bool from_accelerator) {
   PhiAppMenuShell* c = services_;
   // The browser the slot SHOWS — invalid when none is attached, and NEVER
@@ -789,6 +872,13 @@ bool PhiAppMenu::OnCommand(UINT id, bool from_accelerator) {
       // close it (lane 1 D2).
       if (c->MenuFramework() && target.valid() && c->MenuActiveTab().valid()) {
         c->MenuFramework()->CloseTabById(target.value, c->MenuActiveTab().value);
+      } else if (target.valid() && c->MenuModel()) {
+        // Only a known, empty browser is a placeholder. A cold Space whose
+        // browser has not attached yet must not accidentally close its shell.
+        const auto* snapshot = c->MenuModel()->Get(target);
+        if (snapshot && snapshot->tabs.empty()) {
+          ::PostMessageW(c->MenuShellWindow(), WM_CLOSE, 0, 0);
+        }
       }
       return true;
     case kCmdUndo:

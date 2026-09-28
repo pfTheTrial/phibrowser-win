@@ -13,6 +13,7 @@
 
 #include "base/memory/raw_ptr_exclusion.h"
 #include "phibrowser-win/client/phi_ids.h"
+#include "phibrowser-win/client/phi_keyboard_accelerators.h"
 #include "phibrowser-win/client/phi_menu_paint.h"
 #include "phibrowser-win/client/phi_theme.h"
 
@@ -286,6 +287,12 @@ class PhiAppMenu {
   // TPM_RETURNCMD), so the click path and the accelerator path are one.
   void Install(HWND shell);
 
+  // Queued shortcuts carry the originating presentation, never just an id.
+  // Stale commands are discarded; no replay into a newly attached Space.
+  static bool PostAccelerator(HWND shell,
+                              UINT command,
+                              BrowserId find_browser = BrowserId{});
+
   // Drops the menu with its top-right corner at SCREEN (x, y) — under the
   // ⋯ button's trailing edge — or top-left when `right_align` is false.
   // Runs the modal loop; returns when it is down.
@@ -309,6 +316,14 @@ class PhiAppMenu {
   bool InvokePath(const std::vector<std::string>& path);
 
  private:
+  static LRESULT CALLBACK AcceleratorProc(HWND hwnd,
+                                          UINT message,
+                                          WPARAM wparam,
+                                          LPARAM lparam,
+                                          UINT_PTR subclass_id,
+                                          DWORD_PTR data);
+  void DispatchAccelerator(UINT_PTR token);
+  PhiKeyboardCommandQueue pending_accelerators_;
   void BuildStatic();
   void RefreshRoot();
   void RefreshSpaces();

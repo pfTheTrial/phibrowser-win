@@ -1143,8 +1143,8 @@ PhiShellWindow::PhiShellWindow(SlotId slot,
     // browser HWND itself right after creation, so the child stays parked
     // where LayoutContents put it — inside a window that is not shown.
     shell_hidden_ = true;
-  } else {
-    ::ShowWindow(shell_hwnd_, agent_ ? SW_SHOWNOACTIVATE : SW_SHOW);
+  } else if (agent_) {
+    ::ShowWindow(shell_hwnd_, SW_SHOWNOACTIVATE);
   }
   LOG(INFO) << "[PhiClient] " << (agent_ ? "agent " : "") << "shell window "
             << slot_.value << " browser=" << browser.value
@@ -1557,6 +1557,36 @@ void PhiShellWindow::ShowHeldShell() {
   browsers_->FocusActiveBrowser();
 }
 
+bool PhiShellWindow::PresentBrowser(BrowserId browser, bool activate) {
+  const std::string space = browsers_->spaces().SpaceOf(browser);
+  if (space.empty()) {
+    return false;
+  }
+  // Never surface an agent shell or bypass the onboarding/access gate.
+  if (agent_ || shell_hidden_ || destroying_) {
+    return true;
+  }
+  // Restore and background shows may reveal the selected session only.
+  if (!activate && browser != active_browser_id()) {
+    return true;
+  }
+  if (!activate &&
+      (::IsWindowVisible(shell_hwnd_) || ::IsIconic(shell_hwnd_))) {
+    return true;
+  }
+  if (browser != active_browser_id()) {
+    ShowSpace(space);
+  }
+  ::ShowWindow(shell_hwnd_,
+               activate ? (::IsIconic(shell_hwnd_) ? SW_RESTORE : SW_SHOW)
+                        : SW_SHOWNOACTIVATE);
+  if (activate) {
+    ::SetForegroundWindow(shell_hwnd_);
+    FocusActiveBrowser();
+  }
+  return true;
+}
+
 void PhiShellWindow::HideShell() {
   if (shell_hidden_ || !shell_hwnd_ || agent_) {
     return;
@@ -1883,6 +1913,12 @@ void PhiShellWindow::OnPlaceholderModeChanged(BrowserId browser_id,
 void PhiShellWindow::OnContentFullscreenChanged(BrowserId browser_id,
                                                      bool fullscreen) {
   browsers_->OnContentFullscreenChanged(browser_id, fullscreen);
+}
+
+void PhiShellWindow::SetShellFullscreen(BrowserId browser,
+                                        bool fullscreen,
+                                        const RECT& target) {
+  browsers_->SetShellFullscreen(browser, fullscreen, target);
 }
 
 void PhiShellWindow::OnContentBoundsChanged(BrowserId browser_id) {
@@ -3946,7 +3982,14 @@ void PhiShellWindow::RevealSwappedContent() {
   if (had_reveal) {
     // Deferred past the slide, like the content itself.
     native_pages_->SyncNtp();
-    FocusActiveBrowser();
+    // Only restore page focus if no newer native control/window took it.
+    const HWND focus = ::GetFocus();
+    const HWND page = browsers_->content_hwnd();
+    if (::GetForegroundWindow() == shell_hwnd_ &&
+        (!focus || focus == shell_hwnd_ || focus == page ||
+         (page && ::IsChild(page, focus)))) {
+      FocusActiveBrowser();
+    }
   }
   FinishUnhost();  // An agent's page was the leaving one: hand it back.
 }
@@ -6881,6 +6924,14 @@ LRESULT CALLBACK PhiShellWindow::ShellWndProc(HWND hwnd,
     case WM_SETFOCUS:
       if (self && msg == WM_ACTIVATE && LOWORD(wparam) == WA_INACTIVE) {
         self->HideFloatingSidebar(/*animated=*/true);  // Tucks on deactivate.
+        // An owned popup retains this Browser's activation tree. A different
+        // shell/application does not; WS_CHILD never receives this edge itself.
+        if (::GetAncestor(reinterpret_cast<HWND>(lparam), GA_ROOTOWNER) !=
+                hwnd &&
+            self->framework_ && self->active_browser_id().valid()) {
+          self->framework_->FocusBrowserWindow(self->active_browser_id().value,
+                                               false);
+        }
       }
       // Activation/focus arriving at the shell top-level must be forwarded to
       // the child: as a WS_CHILD, Chromium's window reports IsTopLevelWindow()

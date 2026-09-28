@@ -4355,6 +4355,20 @@ HWND PhiCoordinator::FocusedShellHwnd() const {
   return ShellForFocus();
 }
 
+BrowserId PhiCoordinator::FocusedFindBrowser(HWND shell) const {
+  BrowserId target;
+  const HWND focus = ::GetFocus();
+  surface_coordinator_.registry().ForEach([&](PhiSurfacePanel& panel) {
+    if (panel.kind() == SidebarSurface::kPeek &&
+        ::IsWindowVisible(panel.hwnd()) &&
+        ::GetAncestor(panel.hwnd(), GA_ROOT) == shell &&
+        panel.ContainsWindow(focus)) {
+      target = BrowserId{panel.window_id()};
+    }
+  });
+  return target;
+}
+
 bool PhiCoordinator::DismissPeeksForShell(HWND shell) {
   // Esc's window-level escapes, nearest first: the floating sidebar slid
   // in over the page (windows-native-ui.md §4.4), then the Peek cards.
@@ -4393,6 +4407,23 @@ void PhiCoordinator::OnContentFullscreenChanged(int64_t window_id,
   if (PhiShellWindow* shell = registry_.ControllerForBrowser(browser)) {
     shell->OnContentFullscreenChanged(browser, fullscreen);
   }
+}
+
+bool PhiCoordinator::OnHostedWindowShow(BrowserId browser, bool activate) {
+  if (PhiShellWindow* shell = registry_.ControllerForBrowser(browser)) {
+    return shell->PresentBrowser(browser, activate);
+  }
+  return false;
+}
+
+bool PhiCoordinator::OnHostedWindowFullscreen(BrowserId browser,
+                                              bool fullscreen,
+                                              const RECT& target) {
+  if (PhiShellWindow* shell = registry_.ControllerForBrowser(browser)) {
+    shell->SetShellFullscreen(browser, fullscreen, target);
+    return true;
+  }
+  return false;
 }
 
 void PhiCoordinator::OnContentBoundsChanged(int64_t window_id) {

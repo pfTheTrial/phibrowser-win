@@ -151,6 +151,10 @@ class PhiCoordinator : public SidebarHost,
   void OnPlaceholderModeChanged(int64_t window_id, bool entered);
   void OnRefreshNewTab(int64_t window_id);
   void OnContentFullscreenChanged(int64_t window_id, bool fullscreen);
+  bool OnHostedWindowShow(BrowserId browser, bool activate);
+  bool OnHostedWindowFullscreen(BrowserId browser,
+                                bool fullscreen,
+                                const RECT& target);
   void OnContentBoundsChanged(int64_t window_id);
   // A page's pixels the comfortable Space slide asked for
   // (PhiShellWindow::StartSlideCapture): to the shell whose request it is.
@@ -899,6 +903,7 @@ class PhiCoordinator : public SidebarHost,
   // PhiKeyboardAccelerators::Host: the focused shell and the one key the
   // accelerators hand back to the app (Esc over a Peek card).
   HWND FocusedShellHwnd() const override;
+  BrowserId FocusedFindBrowser(HWND shell) const override;
   bool DismissPeeksForShell(HWND shell) override;
 
   // The client's one copy of framework window state (docs/architecture-

@@ -229,7 +229,7 @@ void PhiNativePagesHost::SyncNtpSlot(int slot, const Placement& want) {
     // not pull the focus over, and the other pane's page must not pull it
     // off the active pane.
     if (active && ::GetForegroundWindow() == shell) {
-      page->FocusField();
+      FocusNtpIfIdle();
     }
   }
 }

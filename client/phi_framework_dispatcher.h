@@ -43,6 +43,16 @@ class PhiFrameworkDispatcher : public phi_framework::PhiFrameworkDelegate {
   void OnBrowserWindowCreated(
       const phi_framework::WindowCreation& creation) override;
   void OnBrowserWindowClosing(int64_t window_id) override;
+  void OnHostedWindowShow(int64_t window_id,
+                          bool activate,
+                          bool* handled) override;
+  void OnHostedWindowFullscreen(int64_t window_id,
+                                bool fullscreen,
+                                int x,
+                                int y,
+                                int width,
+                                int height,
+                                bool* handled) override;
   void OnWindowChanged(const phi_framework::WindowSnapshot& snapshot,
                        phi_framework::WindowChangeReason reason) override;
   void OnOpenLinkInSpace(int64_t source_window_id,

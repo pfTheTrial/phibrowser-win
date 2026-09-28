@@ -9,6 +9,7 @@
 #include "base/logging.h"
 #include "base/no_destructor.h"
 #include "phibrowser-win/client/phi_dwrite.h"
+#include "ui/base/win/phi_hosted_window.h"
 
 namespace phi_client {
 
@@ -160,6 +161,7 @@ COLORREF GroundTintAt(const PhiPalette& palette, int y, int height) {
 PhiBrowserHost::PhiBrowserHost(PhiBrowserHostShell* shell) : shell_(shell) {}
 
 PhiBrowserHost::~PhiBrowserHost() {
+  ::RemovePropW(shell_hwnd(), ui::win::kPhiShellRestoredPlacement);
   // The overlays are shell children and would die with it; taking them down
   // here keeps their procs from finding a half-destroyed host.
   if (status_bubble_ && ::IsWindow(status_bubble_)) {
@@ -193,6 +195,9 @@ void PhiBrowserHost::AdoptFirst(const std::string& space_id,
 
 HWND PhiBrowserHost::ReleaseContentChildKeepRecord() {
   HWND child = content_hwnd_;
+  if (child) {
+    ui::win::SetPhiHostedWindow(child, shell_hwnd(), false);
+  }
   content_hwnd_ = nullptr;
   return child;
 }
@@ -205,6 +210,7 @@ HWND PhiBrowserHost::DetachSpaceBrowser(const std::string& space_id) {
   auto it = hwnds_.find(browser);
   HWND child = it != hwnds_.end() ? it->second : nullptr;
   if (child && ::IsWindow(child)) {
+    ui::win::SetPhiHostedWindow(child, shell_hwnd(), false);
     ::ShowWindow(child, SW_HIDE);
   }
   if (content_hwnd_ == child) {
@@ -226,6 +232,7 @@ void PhiBrowserHost::ReadoptContentChild(HWND browser_hwnd) {
 
 void PhiBrowserHost::ReleaseContentChild() {
   if (content_hwnd_ && ::IsWindow(content_hwnd_)) {
+    ui::win::SetPhiHostedWindow(content_hwnd_, nullptr, false);
     ::SetParent(content_hwnd_, nullptr);
   }
   content_hwnd_ = nullptr;
@@ -335,25 +342,41 @@ void PhiBrowserHost::PositionCornerCaps(const PhiContentLayout& layout) {
 
 void PhiBrowserHost::OnContentFullscreenChanged(BrowserId browser,
                                                 bool fullscreen) {
+  if (browser != spaces_.active()) {
+    return;
+  }
+  content_fullscreen_ = fullscreen;
+  shell_->BrowserHostRelayout();
+}
+
+void PhiBrowserHost::SetShellFullscreen(BrowserId browser,
+                                        bool fullscreen,
+                                        const RECT& target) {
   const HWND shell = shell_hwnd();
-  if (!shell) {
+  if (!shell || (fullscreen && (browser != spaces_.active() ||
+                                shell_->BrowserHostIsAgent()))) {
     return;
   }
   if (fullscreen) {
-    fullscreen_browser_ = browser;
-    if (content_fullscreen_) {
-      return;
-    }
-    content_fullscreen_ = true;
     // The standard borderless-fullscreen recipe: remember placement and
     // style, strip the frame, cover the window's monitor.
-    pre_fullscreen_placement_.length = sizeof(WINDOWPLACEMENT);
-    ::GetWindowPlacement(shell, &pre_fullscreen_placement_);
-    pre_fullscreen_style_ = ::GetWindowLongPtrW(shell, GWL_STYLE);
+    if (!shell_fullscreen_) {
+      pre_fullscreen_placement_.length = sizeof(WINDOWPLACEMENT);
+      ::GetWindowPlacement(shell, &pre_fullscreen_placement_);
+      pre_fullscreen_style_ = ::GetWindowLongPtrW(shell, GWL_STYLE);
+    }
+    shell_fullscreen_ = true;
+    ::SetPropW(shell, ui::win::kPhiShellRestoredPlacement,
+               reinterpret_cast<HANDLE>(&pre_fullscreen_placement_));
+    ::SetPropW(shell, ui::win::kPhiShellFullscreen,
+               reinterpret_cast<HANDLE>(1));
     MONITORINFO monitor = {};
     monitor.cbSize = sizeof(monitor);
     ::GetMonitorInfoW(
         ::MonitorFromWindow(shell, MONITOR_DEFAULTTONEAREST), &monitor);
+    if (target.right > target.left && target.bottom > target.top) {
+      monitor.rcMonitor = target;
+    }
     ::SetWindowLongPtrW(
         shell, GWL_STYLE,
         pre_fullscreen_style_ &
@@ -362,16 +385,15 @@ void PhiBrowserHost::OnContentFullscreenChanged(BrowserId browser,
                    monitor.rcMonitor.top,
                    monitor.rcMonitor.right - monitor.rcMonitor.left,
                    monitor.rcMonitor.bottom - monitor.rcMonitor.top,
-                   SWP_FRAMECHANGED | SWP_NOOWNERZORDER);
+                   SWP_FRAMECHANGED | SWP_NOOWNERZORDER | SWP_NOACTIVATE);
   } else {
-    // Exits arrive from whichever tab leaves fullscreen; only the one that
-    // took the shell fullscreen releases it.
-    if (!content_fullscreen_ ||
-        (fullscreen_browser_.valid() && browser != fullscreen_browser_)) {
+    // A late event from a hidden Space cannot change the visible shell.
+    if (!shell_fullscreen_ || browser != spaces_.active()) {
       return;
     }
-    content_fullscreen_ = false;
-    fullscreen_browser_ = BrowserId();
+    shell_fullscreen_ = false;
+    ::RemovePropW(shell, ui::win::kPhiShellRestoredPlacement);
+    ::RemovePropW(shell, ui::win::kPhiShellFullscreen);
     ::SetWindowLongPtrW(shell, GWL_STYLE, pre_fullscreen_style_);
     ::SetWindowPlacement(shell, &pre_fullscreen_placement_);
     ::SetWindowPos(shell, nullptr, 0, 0, 0, 0,
@@ -420,6 +442,7 @@ void PhiBrowserHost::AdoptContentChild() {
           WS_EX_STATICEDGE | WS_EX_APPWINDOW);
   ::SetWindowLongPtrW(content_hwnd_, GWL_EXSTYLE, ex);
   ::SetParent(content_hwnd_, shell_hwnd());
+  ui::win::SetPhiHostedWindow(content_hwnd_, shell_hwnd(), true);
   // Watch its z-order: Chromium raises this window on activation, which
   // would bury the corner caps riding above it.
   if (BrowserBaseProcs().find(content_hwnd_) == BrowserBaseProcs().end()) {
@@ -633,6 +656,16 @@ void PhiBrowserHost::AttachSpaceBrowser(const std::string& space_id,
   // Reparent it into this shell exactly like the primary browser, then show it
   // in place of the current Space's.
   HWND previous = content_hwnd_;
+  if (previous && previous != browser_hwnd) {
+    if (auto* framework = shell_->BrowserHostFramework()) {
+      framework->ExitContentFullscreen(spaces_.active().value);
+      ui::win::SetPhiHostedWindow(previous, shell_hwnd(), false);
+      framework->FocusBrowserWindow(spaces_.active().value, false);
+      framework->CloseExtensionPopup(spaces_.active().value);
+    }
+    content_fullscreen_ = false;
+    ui::win::SetPhiHostedWindow(previous, shell_hwnd(), false);
+  }
   shell_->BrowserHostBeginSpaceSwap(space_id, browser);
   content_hwnd_ = browser_hwnd;
   AdoptContentChild();
@@ -668,6 +701,10 @@ void PhiBrowserHost::AttachSpaceBrowser(const std::string& space_id,
 }
 
 void PhiBrowserHost::FocusActiveBrowser() {
+  // Deferred switches and background callbacks must never steal native focus.
+  if (::GetForegroundWindow() != shell_hwnd()) {
+    return;
+  }
   if (shell_->BrowserHostFocusNativePage()) {
     // The native new-tab page owns the keyboard while it is up: its omnibox
     // IS the page (the Mac focuses it in viewDidAppear).
@@ -700,10 +737,21 @@ bool PhiBrowserHost::ShowSpace(const std::string& space_id) {
                    ::IsWindow(content_hwnd_))
                       ? content_hwnd_
                       : nullptr;
+  if (previous) {
+    if (auto* framework = shell_->BrowserHostFramework()) {
+      framework->ExitContentFullscreen(spaces_.active().value);
+      ui::win::SetPhiHostedWindow(previous, shell_hwnd(), false);
+      framework->FocusBrowserWindow(spaces_.active().value, false);
+      framework->CloseExtensionPopup(spaces_.active().value);
+    }
+    content_fullscreen_ = false;
+    ui::win::SetPhiHostedWindow(previous, shell_hwnd(), false);
+  }
   SetStatusUrl(std::wstring());  // The leaving page's link target is stale.
   shell_->BrowserHostAbandonTyping();  // So is a half-typed query.
   shell_->BrowserHostBeginSpaceSwap(space_id, spaces_.ForSpace(space_id));
   content_hwnd_ = hwnd_it->second;
+  ui::win::SetPhiHostedWindow(content_hwnd_, shell_hwnd(), true);
   spaces_.Show(space_id);
   shell_->BrowserHostEndSpacePreview();
   if (shell_->BrowserHostSwapRunning()) {

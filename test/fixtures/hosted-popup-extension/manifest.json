@@ -1,0 +1,7 @@
+{
+  "manifest_version": 3,
+  "name": "Phi Hosted Popup Isolated Audit Fixture",
+  "version": "1.0.0",
+  "description": "Disposable delayed-load action popup. No permissions or storage.",
+  "action": { "default_popup": "popup.html", "default_title": "Hosted popup audit" }
+}

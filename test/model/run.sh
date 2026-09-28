@@ -14,6 +14,9 @@ set -e
 cd "$(dirname "$0")"
 FORK_SRC="${PHI_FORK_SRC:-../../../chromuim/src}"
 CXX="${CXX:-g++} -std=c++20 -Wall -Wextra -Werror -I ../../client -isystem stubs -isystem $FORK_SRC"
+$CXX ../../client/phi_keyboard_accelerators.cc keyboard_command_queue_test.cc \
+     -o /tmp/phi_keyboard_command_queue_test
+/tmp/phi_keyboard_command_queue_test
 $CXX ../../client/phi_sidebar_model.cc sidebar_model_test.cc -o /tmp/phi_sidebar_model_test
 $CXX ../../client/phi_sidebar_layout.cc sidebar_layout_test.cc -o /tmp/phi_sidebar_layout_test
 $CXX ../../client/phi_sidebar_model.cc ../../client/phi_sidebar_layout.cc \

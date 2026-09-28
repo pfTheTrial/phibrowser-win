@@ -1,0 +1,6 @@
+{
+  "manifest_version": 3,
+  "name": "Phi Hosted Shell Isolated Audit Fixture",
+  "version": "1.0.0",
+  "description": "Disposable windows.create regression fixture. No background worker, permissions, or external requests."
+}

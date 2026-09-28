@@ -12,6 +12,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "base/compiler_specific.h"
@@ -258,11 +259,17 @@ class Popover : public PhiPopover {
   }
 
   void OnClick(int hit, POINT) override {
+    if (context_menu_request_) {
+      return;
+    }
     OnHover(hit, -1);
     RunHoveredAction();
   }
 
   void OnWheel(int delta, POINT) override {
+    if (context_menu_request_) {
+      return;
+    }
     // The Mac scrolls the grid past four rows; a notch is a row here.
     const int next = std::clamp(scroll_row_ - delta / WHEEL_DELTA, 0,
                                 MaxScrollRow());
@@ -278,11 +285,26 @@ class Popover : public PhiPopover {
                     WPARAM wparam,
                     LPARAM lparam,
                     bool* handled) override {
+    if (message == WM_ACTIVATEAPP && !wparam && context_menu_request_) {
+      *handled = true;
+      Dismiss();
+      return 0;
+    }
+    if (message == WM_ACTIVATE && LOWORD(wparam) == WA_INACTIVE &&
+        context_menu_request_) {
+      // Views owns capture/focus while its asynchronous menu is up. The
+      // completion callback resumes normal dismissal. Destruction still
+      // cancels the request, and another application's activation dismisses.
+      const HWND next = reinterpret_cast<HWND>(lparam);
+      if (next && ::GetAncestor(next, GA_ROOTOWNER) ==
+                      ::GetAncestor(owner(), GA_ROOTOWNER)) {
+        *handled = true;
+        return 0;
+      }
+    }
     if (message == WM_RBUTTONUP) {
       // A tile's secondary click: the action's context menu at the pointer
-      // (the Mac ExtensionGridItem's onSecondaryTap). The menu takes the
-      // stage, so the popover leaves as it does after running an action.
-      // Dismiss() deletes this object; nothing after it touches a member.
+      // (the Mac ExtensionGridItem's onSecondaryTap), above this panel.
       const POINT pt = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
       const int hit = HitTest(pt);
       if (hit >= 0 && framework_) {
@@ -292,11 +314,7 @@ class Popover : public PhiPopover {
           POINT screen = pt;
           ::ClientToScreen(hwnd(), &screen);
           const std::string id = tiles_[tile].id;
-          phi_framework::PhiFramework* const framework = framework_;
-          const int64_t browser_id = browser_id_;
-          Dismiss();
-          framework->ShowExtensionContextMenu(browser_id, id.c_str(), screen.x,
-                                              screen.y);
+          ShowContextMenu(id, screen);
         }
       }
       *handled = true;
@@ -312,6 +330,10 @@ class Popover : public PhiPopover {
 
   void OnNcDestroy() override {
     poll_.Stop();
+    const uint64_t request = std::exchange(context_menu_request_, 0);
+    if (request && framework_) {
+      framework_->CancelExtensionContextMenu(browser_id_, request);
+    }
     PhiPopover::RecordClose(owner());
     if (instance == this) {
       instance = nullptr;
@@ -319,6 +341,38 @@ class Popover : public PhiPopover {
   }
 
  private:
+  void ShowContextMenu(const std::string& extension_id, POINT screen) {
+    if (context_menu_request_) {
+      return;
+    }
+    // Unique across panel instances: a completion for a destroyed panel must
+    // never refresh or activate its replacement, even if its HWND was reused.
+    static uint64_t next_request = 0;
+    context_menu_request_ = ++next_request;
+    framework_->ShowExtensionContextMenu(
+        browser_id_, extension_id.c_str(), screen.x, screen.y, hwnd(),
+        context_menu_request_, &ContextMenuClosed);
+    // Showing can dispatch native messages and destroy us. No member access.
+  }
+
+  static void ContextMenuClosed(uint64_t request) {
+    Popover* panel = instance;
+    if (!panel || panel->context_menu_request_ != request) {
+      return;
+    }
+    panel->context_menu_request_ = 0;
+    const HWND foreground = ::GetForegroundWindow();
+    // A click outside, a newly opened dialog/page, or another application
+    // ends the panel too. Normal menu dismissal leaves its native owner
+    // active, so pin/unpin and Escape retain the panel without stealing focus.
+    if (foreground != panel->hwnd()) {
+      panel->Dismiss();
+      return;
+    }
+    panel->Refresh();
+    // Do not reclaim focus: menu commands may have opened a dialog or page.
+  }
+
   // The Mac's 15 pt .medium section titles. Named face: asking "Segoe UI"
   // for a weight past regular rounds up to Bold; Semibold is the nearest
   // face Windows ships.
@@ -531,11 +585,12 @@ class Popover : public PhiPopover {
       return;
     }
     if (hover_manage_) {
-      // ManageExtensionsButton: the extensions page in a new tab of this
-      // window, then leave.
-      framework_->OpenTab(phi_framework::WindowId(browser_id_),
-                          "chrome://extensions");
+      // Opening a tab can activate another window and destroy this panel.
+      // Capture the target and dismiss before handing control to Chromium.
+      auto* framework = framework_;
+      const phi_framework::WindowId browser{browser_id_};
       Dismiss();
+      framework->OpenTab(browser, "chrome://extensions");
       return;
     }
     if (hover_tile_ < 0 || hover_tile_ >= static_cast<int>(tiles_.size())) {
@@ -559,14 +614,16 @@ class Popover : public PhiPopover {
     RECT anchor = tile.bounds;
     ::MapWindowPoints(hwnd(), nullptr, reinterpret_cast<POINT*>(&anchor), 2);
     if (!tile.state.enabled) {
-      framework_->ShowExtensionContextMenu(browser_id_, tile.id.c_str(),
-                                           anchor.left, anchor.bottom);
-    } else {
-      framework_->TriggerExtensionAction(
-          browser_id_, tile.id.c_str(), anchor.left, anchor.top,
-          anchor.right - anchor.left, anchor.bottom - anchor.top);
+      ShowContextMenu(tile.id, {anchor.left, anchor.bottom});
+      return;
     }
+    // Dismiss before handing off: showing the action can destroy this panel.
+    auto* framework = framework_;
+    const int64_t browser_id = browser_id_;
     Dismiss();
+    framework->TriggerExtensionAction(browser_id, tile.id.c_str(), anchor.left,
+                                      anchor.top, anchor.right - anchor.left,
+                                      anchor.bottom - anchor.top);
   }
 
   // Not rewritten to raw_ptr: the popover lives strictly inside the
@@ -583,6 +640,7 @@ class Popover : public PhiPopover {
   int hover_tile_ = -1;
   bool hover_pin_ = false;
   bool hover_manage_ = false;
+  uint64_t context_menu_request_ = 0;
 };
 
 Popover* Popover::instance = nullptr;

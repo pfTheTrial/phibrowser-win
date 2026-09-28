@@ -304,6 +304,9 @@ class PhiBrowserHost {
   // child resizes itself to the MONITOR, so the shell must go borderless
   // fullscreen for the duration or the render is clipped to the window.
   void OnContentFullscreenChanged(BrowserId browser, bool fullscreen);
+  void SetShellFullscreen(BrowserId browser,
+                          bool fullscreen,
+                          const RECT& target);
   bool content_fullscreen() const { return content_fullscreen_; }
 
   // --- The content area's geometry and overlays ----------------------------
@@ -352,7 +355,7 @@ class PhiBrowserHost {
   // monitor while a tab's content is fullscreen; placement and style are
   // restored on exit.
   bool content_fullscreen_ = false;
-  BrowserId fullscreen_browser_;
+  bool shell_fullscreen_ = false;
   WINDOWPLACEMENT pre_fullscreen_placement_ = {};
   LONG_PTR pre_fullscreen_style_ = 0;
 

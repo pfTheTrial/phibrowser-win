@@ -57,6 +57,24 @@ void PhiFrameworkDispatcher::OnBrowserWindowClosing(int64_t window_id) {
   coordinator_.RetireBrowserWindow(BrowserId{window_id});
 }
 
+void PhiFrameworkDispatcher::OnHostedWindowShow(int64_t window_id,
+                                                bool activate,
+                                                bool* handled) {
+  *handled = coordinator_.OnHostedWindowShow(BrowserId{window_id}, activate);
+}
+
+void PhiFrameworkDispatcher::OnHostedWindowFullscreen(int64_t window_id,
+                                                      bool fullscreen,
+                                                      int x,
+                                                      int y,
+                                                      int width,
+                                                      int height,
+                                                      bool* handled) {
+  const RECT target = {x, y, x + width, y + height};
+  *handled = coordinator_.OnHostedWindowFullscreen(BrowserId{window_id},
+                                                   fullscreen, target);
+}
+
 void PhiFrameworkDispatcher::OnWindowChanged(
     const phi_framework::WindowSnapshot& snapshot,
     phi_framework::WindowChangeReason reason) {
