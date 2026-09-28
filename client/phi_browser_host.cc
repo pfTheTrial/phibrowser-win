@@ -4,6 +4,8 @@
 
 #include "phibrowser-win/client/phi_browser_host.h"
 
+#include <dwmapi.h>
+
 #include <algorithm>
 
 #include "base/logging.h"
@@ -277,6 +279,19 @@ void PhiBrowserHost::PositionContentChild(const PhiContentLayout& layout) {
                    SWP_NOZORDER | SWP_NOACTIVATE |
                        (placeholding ? SWP_HIDEWINDOW : SWP_SHOWWINDOW));
   }
+}
+
+void PhiBrowserHost::HidePreviousContent(HWND previous) {
+  if (!previous || previous == content_hwnd_ || !::IsWindow(previous) ||
+      !::IsWindowVisible(previous)) {
+    return;
+  }
+  // SetWindowPos and GDI painting finish before DirectComposition presents
+  // their result. Hiding the outgoing child immediately can uncover the
+  // transparent shell for one desktop frame. Keep it underneath until the
+  // incoming child (or the full-content slide frame) has been presented.
+  ::DwmFlush();
+  ::ShowWindow(previous, SW_HIDE);
 }
 
 void PhiBrowserHost::PositionCornerCaps(const PhiContentLayout& layout) {
@@ -704,7 +719,7 @@ void PhiBrowserHost::AttachSpaceBrowser(const std::string& space_id,
       previous != browser_hwnd && ::IsWindow(previous)) {
     // Outgoing goes away only after the incoming one is shown in place, so
     // the content rect is never uncovered.
-    ::ShowWindow(previous, SW_HIDE);
+    HidePreviousContent(previous);
   }
   shell_->BrowserHostRefreshTabs();
 }
@@ -773,7 +788,7 @@ bool PhiBrowserHost::ShowSpace(const std::string& space_id) {
     shell_->BrowserHostRelayout();
     // ...and only then drop the outgoing one (never uncover the rect).
     if (previous) {
-      ::ShowWindow(previous, SW_HIDE);
+      HidePreviousContent(previous);
     }
     FocusActiveBrowser();
   }

@@ -2951,14 +2951,10 @@ void PhiShellWindow::ReleaseContentSlide() {
   content_slide_->Release();
   // The leaving page leaves the screen for its composite: the slide owns
   // the content rect from here until it lands (RevealSwappedContent). The
-  // composite goes under the child FIRST — a GDI paint reaches the desktop
-  // ahead of a window hide made in the same turn, and the other way round
-  // shows the shell's bare ground for a frame where the page was.
+  // composite must cover the parent beneath the child and reach DWM before
+  // the outgoing child is hidden, or the transparent shell shows for a frame.
   ComposeSlideFrame();
-  if (swap_conceal_ && ::IsWindow(swap_conceal_) &&
-      swap_conceal_ != browsers_->content_hwnd()) {
-    ::ShowWindow(swap_conceal_, SW_HIDE);
-  }
+  browsers_->HidePreviousContent(swap_conceal_);
 }
 
 void PhiShellWindow::CancelContentSlide() {
@@ -4048,6 +4044,19 @@ void PhiShellWindow::PrepareBackdropPixels(const PhiPalette& palette) {
   }
   // GDI can batch writes to a DIB; finish them before accessing its bits.
   ::GdiFlush();
+  if (content_slide_->running()) {
+    // During a full-content slide the shell owns the page pixels too:
+    // they are already-composited snapshots, not holes for a browser HWND.
+    // GDI copies can drop their alpha; clearing the content rectangle below
+    // would instead expose the desktop for an animation frame.
+    auto pixels = UNSAFE_BUFFERS(base::span<uint32_t>(
+        static_cast<uint32_t*>(back_buffer_bits_),
+        static_cast<size_t>(back_buffer_size_.cx) * back_buffer_size_.cy));
+    for (auto& pixel : pixels) {
+      pixel |= 0xFF000000u;
+    }
+    return;
+  }
   const int width = back_buffer_size_.cx;
   const Layout layout = ComputeWindowLayout();
   const int sidebar = std::clamp(layout.content.left, 0L,
@@ -4137,7 +4146,10 @@ void PhiShellWindow::ComposeSlideFrame() {
   if (!shell_hwnd_ || destroying_ || !content_slide_->running()) {
     return;
   }
-  HDC dc = ::GetDC(shell_hwnd_);
+  // Populate the parent surface beneath the outgoing browser too. GetDC
+  // inherits WS_CLIPCHILDREN and would leave that entire rectangle unpainted
+  // until after the browser is hidden.
+  HDC dc = ::GetDCEx(shell_hwnd_, nullptr, DCX_CACHE | DCX_CLIPSIBLINGS);
   if (!dc) {
     return;
   }
@@ -4145,6 +4157,7 @@ void PhiShellWindow::ComposeSlideFrame() {
   if (HDC mem = AcquireBackBuffer(dc, &old_bmp)) {
     content_slide_->Compose(mem);
     caption_band_->PaintButtons(mem);
+    PrepareBackdropPixels(CurrentPalette());
     ::BitBlt(dc, 0, 0, back_buffer_size_.cx, back_buffer_size_.cy, mem, 0, 0,
              SRCCOPY);
     ::SelectObject(mem, old_bmp);
@@ -4195,10 +4208,7 @@ void PhiShellWindow::RevealSwappedContent() {
                    layout.content.bottom - layout.content.top,
                    SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW);
   }
-  if (swap_conceal_ && ::IsWindow(swap_conceal_) &&
-      swap_conceal_ != browsers_->content_hwnd()) {
-    ::ShowWindow(swap_conceal_, SW_HIDE);
-  }
+  browsers_->HidePreviousContent(swap_conceal_);
   const bool had_reveal = swap_reveal_ != nullptr;
   swap_reveal_ = nullptr;
   swap_conceal_ = nullptr;

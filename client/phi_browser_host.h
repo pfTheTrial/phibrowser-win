@@ -315,6 +315,9 @@ class PhiBrowserHost {
   // the caps must end up ABOVE the agent watch overlay the shell moves in
   // between — one call would leave the overlay on top.
   void PositionContentChild(const PhiContentLayout& layout);
+  // Retain the outgoing browser until the replacement/slide frame has been
+  // presented by DWM, rather than merely positioned or painted by the CPU.
+  void HidePreviousContent(HWND previous);
   void PositionCornerCaps(const PhiContentLayout& layout);
   // Posts kMsgRaiseCaps to the shell (never touch sibling z-order from
   // inside a reorder).
