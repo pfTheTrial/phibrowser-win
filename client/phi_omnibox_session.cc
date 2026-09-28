@@ -12,11 +12,14 @@
 #include <utility>
 
 #include "base/json/json_reader.h"
+#include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/logging.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
 #include "phibrowser-win/client/phi_dwrite.h"
 #include "phibrowser-win/client/phi_i18n.h"
+#include "phibrowser-win/client/phi_panel.h"
 #include "phibrowser-win/client/phi_shell_menus.h"
 
 namespace phi_client {
@@ -763,6 +766,46 @@ void PhiOmniboxSession::PaintPopup(HWND popup, HDC dc) {
   }
 }
 
+bool PhiOmniboxSession::PaintField(HWND field) {
+  RECT rc = {};
+  ::GetClientRect(field, &rc);
+  if (rc.right <= 0 || rc.bottom <= 0) {
+    return false;
+  }
+  if (!field_surface_ || field_surface_->width() != rc.right ||
+      field_surface_->height() != rc.bottom) {
+    field_surface_ = std::make_unique<PhiLayerSurface>(rc.right, rc.bottom);
+  }
+  if (!field_surface_->valid()) {
+    return false;
+  }
+  PAINTSTRUCT ps = {};
+  HDC dc = ::BeginPaint(field, &ps);
+  const HDC buffer = field_surface_->dc();
+  const HBRUSH background = reinterpret_cast<HBRUSH>(::SendMessageW(
+      ::GetParent(field), WM_CTLCOLOREDIT, reinterpret_cast<WPARAM>(buffer),
+      reinterpret_cast<LPARAM>(field)));
+  ::FillRect(buffer, &rc,
+              background ? background : ::GetSysColorBrush(COLOR_WINDOW));
+  // Let the native EDIT draw selection, scrolling, cue text and IME using
+  // its parent's palette. Supply opaque alpha: zero-alpha GDI glyphs get
+  // washed out when the shell's DWM frame extends beneath the address row.
+  ::CallWindowProcW(g_edit_base_proc, field, WM_PRINTCLIENT,
+                    reinterpret_cast<WPARAM>(buffer),
+                    PRF_CLIENT | PRF_ERASEBKGND);
+  ::GdiFlush();
+  // SAFETY: PhiLayerSurface owns a tightly packed, top-down 32-bit DIB.
+  auto pixels = UNSAFE_BUFFERS(base::span<uint32_t>(
+      static_cast<uint32_t*>(field_surface_->bits()),
+      field_surface_->byte_size() / 4));
+  for (auto& pixel : pixels) {
+    pixel |= 0xFF000000u;
+  }
+  ::BitBlt(dc, 0, 0, rc.right, rc.bottom, buffer, 0, 0, SRCCOPY);
+  ::EndPaint(field, &ps);
+  return true;
+}
+
 // static
 LRESULT CALLBACK PhiOmniboxSession::FieldProc(HWND hwnd,
                                               UINT msg,
@@ -780,6 +823,16 @@ LRESULT CALLBACK PhiOmniboxSession::FieldProc(HWND hwnd,
     return ::CallWindowProcW(g_edit_base_proc, hwnd, msg, wparam, lparam);
   }
   switch (msg) {
+    case WM_PAINT:
+      if (self && self->PaintField(hwnd)) {
+        return 0;
+      }
+      break;
+    case WM_ERASEBKGND:
+      if (self) {
+        return 1;  // PaintField supplies the complete opaque background.
+      }
+      break;
     case WM_KEYDOWN:
       if (wparam == VK_RETURN) {
         if (self) {
@@ -850,6 +903,7 @@ LRESULT CALLBACK PhiOmniboxSession::FieldProc(HWND hwnd,
       const LRESULT result =
           ::CallWindowProcW(g_edit_base_proc, hwnd, msg, wparam, lparam);
       ::SendMessageW(hwnd, EM_SETSEL, 0, -1);  // Typing replaces the whole URL.
+      ::InvalidateRect(hwnd, nullptr, FALSE);
       return result;
     }
     case WM_CONTEXTMENU:
@@ -876,7 +930,21 @@ LRESULT CALLBACK PhiOmniboxSession::FieldProc(HWND hwnd,
       }
       break;
   }
-  return ::CallWindowProcW(g_edit_base_proc, hwnd, msg, wparam, lparam);
+  // EDIT also draws directly while editing/selecting. Repaint that output
+  // through the opaque buffer after the native operation has completed.
+  const bool repaint = self &&
+      (msg == WM_CHAR || msg == WM_KEYDOWN || msg == WM_SETTEXT ||
+       msg == WM_LBUTTONDOWN || msg == WM_LBUTTONUP || msg == WM_LBUTTONDBLCLK ||
+       (msg == WM_MOUSEMOVE && (wparam & MK_LBUTTON)) ||
+       msg == WM_KILLFOCUS || msg == EM_SETSEL || msg == EM_REPLACESEL ||
+       msg == EM_UNDO || msg == WM_PASTE || msg == WM_CUT || msg == WM_CLEAR ||
+       msg == WM_UNDO || msg == WM_IME_COMPOSITION);
+  const LRESULT result =
+      ::CallWindowProcW(g_edit_base_proc, hwnd, msg, wparam, lparam);
+  if (repaint && ::IsWindow(hwnd)) {
+    ::InvalidateRect(hwnd, nullptr, FALSE);
+  }
+  return result;
 }
 
 }  // namespace phi_client

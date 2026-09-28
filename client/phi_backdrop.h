@@ -42,14 +42,30 @@ inline uint32_t PhiBackdropPixel(uint32_t pixel, uint32_t ground) {
   return result;
 }
 
+// Skia's SkColor takes straight ARGB, unlike the shell's premultiplied DIB.
+// Use the same theme tint for compositor-owned surfaces such as split gaps.
+inline uint32_t PhiBackdropColor(uint32_t ground, bool dark) {
+  const uint32_t pixel = PhiBackdropPixel(ground, dark ? 0 : 0xFFFFFF);
+  const uint32_t alpha = pixel >> 24;
+  uint32_t result = alpha << 24;
+  for (int shift : {0, 8, 16}) {
+    result |= ((((pixel >> shift) & 255) * 255 + alpha / 2) / alpha) << shift;
+  }
+  return result;
+}
+
 // Replace a GDI image's opaque ground with a premultiplied backdrop, while
 // preserving its controls' coverage. Derive the backdrop by removing the
 // neutral white/black backing from the theme ground with PhiBackdropPixel:
 // fading the already-tinted ground itself would attenuate the theme twice.
 inline uint32_t PhiBackdropPixelOver(uint32_t pixel,
                                      uint32_t ground,
-                                     uint32_t backdrop) {
-  const int coverage = PhiBackdropCoverage(pixel, ground);
+                                     uint32_t backdrop,
+                                     int minimum_coverage = 0) {
+  // Known geometry can require opaque coverage even when a card happens
+  // to have the same RGB as the ground beneath it.
+  const int coverage = std::max(PhiBackdropCoverage(pixel, ground),
+                                std::clamp(minimum_coverage, 0, 255));
   const int remaining = 255 - coverage;
   const int alpha = coverage + ((backdrop >> 24) * remaining + 127) / 255;
   uint32_t result = static_cast<uint32_t>(alpha) << 24;

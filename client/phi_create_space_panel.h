@@ -99,6 +99,7 @@ class PhiCreateSpacePanel : public PhiPanel {
   // else — registration, the `this` binding, the cached back buffer, the
   // fonts, the dpi and the capture — comes from the base (phi_window.h).
   void Paint(HDC dc, const RECT& dirty) override;
+  bool PreservePaintAlpha() const override;
   void OnSize(int width, int height) override;
   void OnDpiChanged(UINT old_dpi) override;
   void OnMouseDown(int hit, POINT client_pt) override;

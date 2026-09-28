@@ -216,8 +216,7 @@ void PhiNewTabPage::Reposition() {
                                         inner.bottom - inner.top + 1, d, d),
                    TRUE);
   } else {
-    SetPanelBounds(controller_->ContentRect());
-    ::SetWindowRgn(hwnd(), nullptr, TRUE);
+    SetPagePanelBounds(controller_->ContentRect(), Scaled(8));
   }
   RaisePanel();
   LayoutField();

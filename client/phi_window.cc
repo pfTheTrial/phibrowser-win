@@ -185,6 +185,8 @@ int PhiLerpInt(int from, int to, double t) {
 #include <map>
 #include <utility>
 
+#include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/no_destructor.h"
 #include "phibrowser-win/client/phi_animator.h"
 #include "phibrowser-win/client/phi_dwrite.h"
@@ -900,7 +902,15 @@ bool PhiWindow::EnsureBackBuffer(int width, int height) {
   }
   buffer_dc_ = ::CreateCompatibleDC(screen);
   if (buffer_dc_) {
-    buffer_bitmap_ = ::CreateCompatibleBitmap(screen, width, height);
+    BITMAPINFO info = {};
+    info.bmiHeader.biSize = sizeof(info.bmiHeader);
+    info.bmiHeader.biWidth = width;
+    info.bmiHeader.biHeight = -height;
+    info.bmiHeader.biPlanes = 1;
+    info.bmiHeader.biBitCount = 32;
+    info.bmiHeader.biCompression = BI_RGB;
+    buffer_bitmap_ = ::CreateDIBSection(screen, &info, DIB_RGB_COLORS,
+                                       &buffer_bits_, nullptr, 0);
   }
   ::ReleaseDC(hwnd_, screen);
   if (!buffer_dc_ || !buffer_bitmap_) {
@@ -925,9 +935,14 @@ void PhiWindow::DropBackBuffer() {
   }
   buffer_dc_ = nullptr;
   buffer_bitmap_ = nullptr;
+  buffer_bits_ = nullptr;
   buffer_previous_ = nullptr;
   buffer_width_ = 0;
   buffer_height_ = 0;
+}
+
+bool PhiWindow::PreservePaintAlpha() const {
+  return false;
 }
 
 void PhiWindow::PaintNow() {
@@ -944,6 +959,26 @@ void PhiWindow::PaintNow() {
   }
   if (EnsureBackBuffer(client.right, client.bottom)) {
     Paint(buffer_dc_, dirty);
+    // Ordinary native surfaces are opaque; GDI leaves their alpha zero.
+    // DWM now composites them over glass, so supply explicit alpha before
+    // presenting. Shaped/layered panels use their own alpha paint path.
+    ::GdiFlush();
+    // SAFETY: the top-down 32bpp DIB owns width * height pixels; clamp the
+    // dirty rectangle to that allocation before taking its row spans.
+    auto pixels = UNSAFE_BUFFERS(base::span<uint32_t>(
+        static_cast<uint32_t*>(buffer_bits_),
+        static_cast<size_t>(buffer_width_) * buffer_height_));
+    const int left = std::clamp<int>(dirty.left, 0, buffer_width_);
+    const int right = std::clamp<int>(dirty.right, left, buffer_width_);
+    for (int y = std::clamp<int>(dirty.top, 0, buffer_height_);
+         !PreservePaintAlpha() &&
+         y < std::clamp<int>(dirty.bottom, 0, buffer_height_); ++y) {
+      for (auto& pixel : pixels.subspan(
+               static_cast<size_t>(y) * buffer_width_ + left,
+               static_cast<size_t>(right - left))) {
+        pixel |= 0xFF000000u;
+      }
+    }
     ::BitBlt(dc, dirty.left, dirty.top, dirty.right - dirty.left,
              dirty.bottom - dirty.top, buffer_dc_, dirty.left, dirty.top,
              SRCCOPY);

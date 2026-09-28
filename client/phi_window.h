@@ -463,6 +463,8 @@ class PhiWindow : public PhiHitSource {
   // `dc` is the cached back buffer (or the caller's DC for
   // WM_PRINTCLIENT), already origin-aligned with the client area.
   virtual void Paint(HDC dc, const RECT& dirty) = 0;
+  // Alpha-aware GDI surfaces already prepare premultiplied pixels.
+  virtual bool PreservePaintAlpha() const;
 
   // First refusal on every message. Set *handled and return a result to
   // stop the base from handling it.
@@ -565,6 +567,8 @@ class PhiWindow : public PhiHitSource {
   // The cached back buffer (lane 3 §3.4 retires ten copies of the block).
   HDC buffer_dc_ = nullptr;
   HBITMAP buffer_bitmap_ = nullptr;
+  // Borrowed from the GDI bitmap allocation, outside PartitionAlloc.
+  RAW_PTR_EXCLUSION void* buffer_bits_ = nullptr;
   HGDIOBJ buffer_previous_ = nullptr;
   int buffer_width_ = 0;
   int buffer_height_ = 0;

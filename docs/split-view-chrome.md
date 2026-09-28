@@ -28,9 +28,26 @@ chrome — the Windows client drives the native side-by-side through
 Colours are the client's: `PhiShellWindow::PushSplitViewStyle` sends
 `PhiFramework::SetSplitViewStyle(window_id, {background, border, focus,
 top_inset})` for every hosted browser on its own Space's settled palette
-(`window_bg`, `border`, `accent`), from `LayoutContents` and `ApplyPalette`,
+(`ground_top`, `border`, `accent`), from `LayoutContents` and `ApplyPalette`,
 only when a value moved. Until the first push Chromium paints its own
 colours.
+
+When the Windows backdrop is available, the ground uses the sidebar's
+theme-preserving tint, converted from premultiplied DIB pixels to straight
+ARGB for Skia (`PhiBackdropColor`). The shell extends Acrylic under the
+whole content area and leaves its backing pixels clear; Chromium paints the tint
+once, with the page surfaces remaining opaque. Split activation/dismissal,
+sidebar collapse and system backdrop changes refresh this contract.
+Without the backdrop, the pushed ground stays fully opaque.
+
+The framework must preserve alpha at every layer: the normal browser
+widget requests native translucency, its desktop host keeps full DWM
+frame margins and a transparent compositor root, and the split background
+layer advertises the pushed color's actual opacity. The hosted browser
+does not paint Chromium's hidden caption beneath the top gutter. These
+changes live in `browser_widget.cc`, `browser_desktop_window_tree_host_win.cc`,
+`browser_frame_view_win.cc` and `multi_contents_background_view.cc` in the
+Chromium fork; deployment needs both the matching client and framework.
 
 ## Drop cards
 
@@ -57,5 +74,28 @@ and the drop cards could read a stale layout or ratio. Mid-drag ratio steps
 `theme <id>`, `unsplit`, `state`. Shoot with PhiRm (a page click moves the
 ring), drag the divider or a strip tab with PhiDragCap.
 
-Known, unrelated: after `agentSpace.theme.set {appearance}` the content
-card's corner caps keep the old tint until the next relayout.
+Transparency verification uses desktop captures, because `PrintWindow`
+does not include the composed Windows backdrop. Put a black, then white,
+window behind Phi: the top split gap should match the sidebar, the divider
+should change with the backdrop (with its pane shadows), and opaque page
+pixels must remain unchanged. Check both split axes and a hidden sidebar.
+The host layout test checks that Skia's straight-alpha tint reconstructs
+the same premultiplied color as the sidebar in light and dark appearances.
+
+Rounded corners use the same ground in normal tabs and splits. A normal
+page is clipped at its lower-left corner by Chromium's compositor; the
+background view stays visible behind it. Native new-tab and bookmark
+overlays use a matching window region. Opaque corner-cap windows are
+removed while the backdrop is active (and always in split view). The
+shell preserves alpha outside the address row's rounded corners, while
+known card coverage keeps the row itself opaque even when its RGB matches
+the ground. Live palette changes therefore recolor the exposed ground
+without waiting for a resize. Fullscreen removes the single-page clip.
+Ordinary native surfaces use an opaque 32-bit GDI buffer (`PhiWindow`)
+so extending glass beneath them does not make the new-tab/bookmark page
+itself translucent. Shaped panels keep their existing per-pixel alpha path.
+
+Include the bottom-left page corner and the address row's upper-left
+corner in desktop pixel probes. In a split, also check the row's rounded
+lower-left corner and the pane corners beside the divider. Change theme
+without relayout and check an ordinary web page and a native new-tab page.

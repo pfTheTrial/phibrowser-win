@@ -1227,6 +1227,7 @@ class PhiShellWindow : public PhiHitSource,
   RAW_PTR_EXCLUSION void* back_buffer_bits_ = nullptr;
   SIZE back_buffer_size_{};
   bool sidebar_backdrop_ = false;
+  bool backdrop_split_ = false;
   void UpdateSidebarBackdrop();
   void PrepareBackdropPixels(const PhiPalette& palette);
   // The slot palette's window ground — what uncovered backbuffer pixels show.

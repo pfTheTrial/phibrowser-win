@@ -309,6 +309,24 @@ void PhiPanel::SetPanelBounds(const RECT& bounds) {
                  SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
+void PhiPanel::SetPagePanelBounds(const RECT& bounds, int radius) {
+  SetPanelBounds(bounds);
+  if (!alive()) {
+    return;
+  }
+  // Extend the other three arcs beyond the panel: only the lower-left
+  // corner belongs to the page, below the shell's address row.
+  const int width = std::max<LONG>(0, bounds.right - bounds.left);
+  const int height = std::max<LONG>(0, bounds.bottom - bounds.top);
+  ::SetWindowRgn(hwnd(),
+                 bounds.left > 0 && radius > 0
+                     ? ::CreateRoundRectRgn(0, -radius * 2,
+                                            width + radius * 2, height + 1,
+                                            radius * 2, radius * 2)
+                     : nullptr,
+                 TRUE);
+}
+
 void PhiPanel::ShowPanel() {
   if (!alive()) {
     return;

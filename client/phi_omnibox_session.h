@@ -6,6 +6,7 @@
 #define PHIBROWSER_WIN_CLIENT_PHI_OMNIBOX_SESSION_H_
 
 #include <string>
+#include <memory>
 #include <vector>
 
 #include "phibrowser-win/client/phi_sidebar_layout.h"
@@ -305,6 +306,7 @@ class PhiOmniboxSession {
   void CommitSelection();
   int RowAtY(int y) const;
   int Scaled(int design_units) const;
+  bool PaintField(HWND field);
 
   // Subclass proc: Enter commits, Escape reverts, focus selects all.
   static LRESULT CALLBACK FieldProc(HWND hwnd,
@@ -317,6 +319,7 @@ class PhiOmniboxSession {
   PhiPalette menu_palette_;
 
   HWND field_ = nullptr;
+  std::unique_ptr<class PhiLayerSurface> field_surface_;
   // The EDIT paints itself in SYSTEM colours, which clash under a dark
   // theme. WM_CTLCOLOREDIT hands it the palette instead; the brush must
   // outlive the message, so it is cached and rebuilt only when the colour

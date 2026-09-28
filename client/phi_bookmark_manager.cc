@@ -249,7 +249,7 @@ void PhiBookmarkManager::Reposition() {
     return;
   }
   SyncDpiFromParent();
-  SetPanelBounds(controller_->ContentRect());
+  SetPagePanelBounds(controller_->ContentRect(), Scaled(8));
   RaisePanel();
   LayoutChrome();
   Rebuild();

@@ -311,12 +311,31 @@ void Backdrop() {
   CHECK(PhiBackdropPixel(0, 0xFFFFFF) == 0xFF000000u);
   CHECK(PhiBackdropPixel(0xFFFFFF, 0) == 0xFFFFFFFFu);
   CHECK(PhiBackdropPixel(0xFF0000, 0xEEEEEE) == 0xFFFF0000u);
+  // The split compositor uses straight alpha; recompositing that color
+  // must recover the same tint as the sidebar's premultiplied pixels.
+  for (bool dark : {false, true}) {
+    for (uint32_t ground : {0u, 0xFFFFFFu, 0xE0DCFFu, 0x17312Bu}) {
+      const uint32_t premultiplied = PhiBackdropPixel(ground, dark ? 0 : 0xFFFFFF);
+      const uint32_t color = PhiBackdropColor(ground, dark);
+      CHECK((premultiplied >> 24) == (color >> 24));
+      for (int shift : {0, 8, 16}) {
+        CHECK(((((color >> shift) & 255) * (color >> 24) + 127) / 255) ==
+              ((premultiplied >> shift) & 255));
+      }
+    }
+  }
   // The theme's chroma survives translucency, instead of being multiplied
   // by 20% for a second time. Stronger saturation must remain visible.
   for (uint32_t ground : {0xFFF0F0u, 0xFFCFCFu, 0xE0DCFFu}) {
     const uint32_t tint = PhiBackdropPixel(ground, 0xFFFFFF);
     CHECK((tint >> 24) < 255);
     CHECK(PhiBackdropPixelOver(ground, ground, tint) == tint);
+    // A card may match the ground's RGB. Its known interior coverage must
+    // still keep it opaque while the outside of the rounded arc stays glass.
+    CHECK(PhiBackdropPixelOver(ground, ground, tint, 255) ==
+          (0xFF000000u | ground));
+    const uint32_t edge = PhiBackdropPixelOver(ground, ground, tint, 128);
+    CHECK((edge >> 24) > (tint >> 24) && (edge >> 24) < 255);
     CHECK(static_cast<int>((tint >> 16) & 255) -
               static_cast<int>(tint & 255) ==
           static_cast<int>((ground >> 16) & 255) -

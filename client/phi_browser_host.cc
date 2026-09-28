@@ -280,6 +280,15 @@ void PhiBrowserHost::PositionContentChild(const PhiContentLayout& layout) {
 }
 
 void PhiBrowserHost::PositionCornerCaps(const PhiContentLayout& layout) {
+  if (layout.corner_radius <= 0) {
+    for (HWND& cap : corner_caps_) {
+      if (cap) {
+        ::DestroyWindow(cap);
+        cap = nullptr;
+      }
+    }
+    return;
+  }
   // The rounded card corners. DComp ignores a region ON the browser child
   // (verified by pixel probe: corners stayed page-white), so the corners are
   // capped by sibling windows above it instead.

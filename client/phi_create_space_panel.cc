@@ -925,6 +925,10 @@ void PhiCreateSpacePanel::Paint(HDC dc, const RECT&) {
   PaintForm(dc);
 }
 
+bool PhiCreateSpacePanel::PreservePaintAlpha() const {
+  return UsesSidebarBackdrop();
+}
+
 bool PhiCreateSpacePanel::UsesSidebarBackdrop() const {
   return !standalone() && controller_ &&
          controller_->sidebar_backdrop_enabled();

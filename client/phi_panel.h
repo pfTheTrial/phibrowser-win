@@ -253,6 +253,8 @@ class PhiPanel : public PhiWindow {
 
   // Moves and/or resizes inside the parent WITHOUT touching z-order.
   void SetPanelBounds(const RECT& bounds);
+  // Native page overlays share the compositor's lower-left page clip.
+  void SetPagePanelBounds(const RECT& bounds, int radius);
   // SW_SHOWNA (never activates: the page keeps the focus) and a raise.
   void ShowPanel();
   void HidePanel();

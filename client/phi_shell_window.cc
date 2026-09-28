@@ -844,6 +844,7 @@ POINT PhiShellWindow::frame_offset() const {
 
 void PhiShellWindow::ApplyPalette() {
   UpdateSidebarBackdrop();
+  PlaceContentChildren(ComputeWindowLayout());
   RefreshTabs();  // Every colour is read from the host at paint time.
   PushSplitViewStyle();  // The framework paints the split's chrome itself.
 }
@@ -876,7 +877,10 @@ void PhiShellWindow::PushSplitViewStyle() {
         : services_.spaces  ? services_.spaces->PaletteForSpace(space_id)
                             : kFallback;
     phi_framework::SplitViewStyle style;
-    style.background_argb = argb(palette.ground_top);
+    style.background_argb =
+        sidebar_backdrop_
+            ? PhiBackdropColor(argb(palette.ground_top) & 0xFFFFFF, palette.dark)
+            : argb(palette.ground_top);
     style.border_argb = argb(palette.border);
     style.focus_argb = argb(palette.accent);
     // A 4 dip gutter of tint under the address row while split (§4.6):
@@ -2672,7 +2676,10 @@ void PhiShellWindow::PlaceContentChildren(const Layout& layout) {
   // pane is not flush with the window's edge (DWM rounds the window there).
   content.top_caps = false;
   content.right_caps = layout.content.right < layout.client.right;
-  content.corner_radius = Scaled(kContentRadius);
+  // Compositor clipping exposes the actual backdrop. Opaque sibling caps
+  // would cover it again; retain them only for the opaque fallback.
+  content.corner_radius =
+      sidebar_backdrop_ || ActiveTabIsSplit() ? 0 : Scaled(kContentRadius);
   // Either Space switch parks the entering child until it lands.
   content.parked = BrowserHostSwapRunning() ? swap_reveal_ : nullptr;
   browsers_->PositionContentChild(content);
@@ -3907,12 +3914,12 @@ void PhiShellWindow::UpdateSidebarBackdrop() {
   if (!shell_hwnd_ || destroying_) {
     return;
   }
-  const Layout layout = ComputeWindowLayout();
   HIGHCONTRASTW contrast = {sizeof(contrast)};
   ::SystemParametersInfoW(SPI_GETHIGHCONTRAST, sizeof(contrast), &contrast, 0);
-  const bool enabled = !layout.horizontal_tabs && !sidebar_collapsed_ &&
-                       !browsers_->content_fullscreen() &&
-                       !(contrast.dwFlags & HCF_HIGHCONTRASTON);
+  backdrop_split_ = ActiveTabIsSplit() && !browsers_->content_fullscreen();
+  const bool enabled =
+      !browsers_->content_fullscreen() &&
+      !(contrast.dwFlags & HCF_HIGHCONTRASTON);
   const BOOL dark = CurrentPalette().dark;
   ::DwmSetWindowAttribute(shell_hwnd_, DWMWA_USE_IMMERSIVE_DARK_MODE,
                           &dark, sizeof(dark));
@@ -3924,7 +3931,9 @@ void PhiShellWindow::UpdateSidebarBackdrop() {
       shell_hwnd_, DWMWA_SYSTEMBACKDROP_TYPE, &type, sizeof(type))) && enabled;
   MARGINS margins = {};
   if (sidebar_backdrop_) {
-    margins.cxLeftWidth = layout.content.left;
+    // Normal page corners and the rounded address row need the backdrop
+    // just as split gutters do, including with the sidebar hidden.
+    margins = {-1, -1, -1, -1};
   }
   if (FAILED(::DwmExtendFrameIntoClientArea(shell_hwnd_, &margins))) {
     sidebar_backdrop_ = false;
@@ -3938,8 +3947,9 @@ void PhiShellWindow::PrepareBackdropPixels(const PhiPalette& palette) {
   // GDI can batch writes to a DIB; finish them before accessing its bits.
   ::GdiFlush();
   const int width = back_buffer_size_.cx;
-  const int sidebar = std::clamp(ComputeWindowLayout().content.left, 0L,
-                                  back_buffer_size_.cx);
+  const Layout layout = ComputeWindowLayout();
+  const int sidebar = std::clamp(layout.content.left, 0L,
+                                back_buffer_size_.cx);
   const COLORREF ground = palette.ground_top;
   const uint32_t rgb = (GetRValue(ground) << 16) |
                        (GetGValue(ground) << 8) | GetBValue(ground);
@@ -3949,6 +3959,8 @@ void PhiShellWindow::PrepareBackdropPixels(const PhiPalette& palette) {
       static_cast<uint32_t*>(back_buffer_bits_),
       static_cast<size_t>(width) * back_buffer_size_.cy));
   const uint32_t tint = PhiBackdropPixel(rgb, palette.dark ? 0 : 0xFFFFFF);
+  const int radius = Scaled(kContentRadius);
+  const RECT& band = layout.top_bar;
   for (int y = 0; y < back_buffer_size_.cy; ++y) {
     auto row = pixels.subspan(static_cast<size_t>(y) * width,
                               static_cast<size_t>(width));
@@ -3956,9 +3968,31 @@ void PhiShellWindow::PrepareBackdropPixels(const PhiPalette& palette) {
       row[x] = (row[x] & 0xFFFFFF) == rgb
                    ? tint : PhiBackdropPixelOver(row[x], rgb, tint);
     }
-    // The address row and web-content area remain opaque.
+    // Chromium supplies the ground tint and clipped opaque page layers.
+    // Leave the shell underneath clear so its tint is not applied twice.
+    // Only the rounded address-row corners expose ground in shell chrome.
     for (int x = sidebar; x < width; ++x) {
-      row[x] |= 0xFF000000;
+      const bool bar_corner =
+          band.left > 0 && !layout.horizontal_tabs &&
+          x >= band.left && x < band.left + radius &&
+          y >= band.top && y < band.bottom &&
+          (y < band.top + radius ||
+           (backdrop_split_ && y >= band.bottom - radius));
+      if (x >= layout.content.left &&
+          x < layout.content.right && y >= layout.content.top &&
+          y < layout.content.bottom) {
+        row[x] = 0;
+      } else if (bar_corner) {
+        const double cx = band.left + radius;
+        const double cy = y < band.top + radius ? band.top + radius
+                                                : band.bottom - radius;
+        const double coverage = std::clamp(
+            radius + 0.5 - std::hypot(x + 0.5 - cx, y + 0.5 - cy), 0.0, 1.0);
+        row[x] = PhiBackdropPixelOver(row[x], rgb, tint,
+                                      static_cast<int>(coverage * 255 + 0.5));
+      } else {
+        row[x] |= 0xFF000000;
+      }
     }
   }
 }
@@ -4297,6 +4331,13 @@ void PhiShellWindow::RebuildTabs() {
   // sees the change and paint reads one settled value.
   page_color_ = ComputeActivePageColor();
   page_color_reader_ = ActiveTabShowsReader();
+  const bool split = ActiveTabIsSplit() && !browsers_->content_fullscreen();
+  if (split != backdrop_split_) {
+    UpdateSidebarBackdrop();
+    PlaceContentChildren(ComputeWindowLayout());
+    PushSplitViewStyle();
+    ::InvalidateRect(shell_hwnd_, nullptr, FALSE);
+  }
   // The strip row came or went (a second Space created, the last other one
   // deleted): the address bar and every band under it moved, and nothing
   // else repaints a band that was empty a moment ago.
@@ -7426,6 +7467,8 @@ LRESULT CALLBACK PhiShellWindow::ShellWndProc(HWND hwnd,
     case WM_SETTINGCHANGE:
       if (self) {
         self->UpdateSidebarBackdrop();
+        self->PlaceContentChildren(self->ComputeWindowLayout());
+        self->PushSplitViewStyle();
         ::InvalidateRect(hwnd, nullptr, FALSE);
       }
       return ::DefWindowProcW(hwnd, msg, wparam, lparam);
