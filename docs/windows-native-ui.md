@@ -1059,7 +1059,7 @@ Windows version:
 
 ### 5.9 Space icons and emoji (the "Space icons & emoji" artboard)
 
-The catalogue Jixiang migrated from the Mac is 88 outlined glyphs
+The shared catalogue contains 88 solid icons
 (`client/phi_icon_masks.cc`, 48 px alpha masks rasterised from
 `Assets.xcassets/icons`: academic-cap … view-grid-add, the letters A–Z
 and the digits 0–9) plus the shared emoji catalogue
@@ -1067,30 +1067,14 @@ and the digits 0–9) plus the shared emoji catalogue
 stored as `phi:<id>` / `emoji:<id>` so a Space means the same on both
 clients. The **stored ids do not change**; only how Windows draws them.
 
-* **Glyphs**: every `phi:` id maps to a **Segoe Fluent Icons** glyph (MDL2
-  on Windows 10) drawn at 16 dip in the pip, the chip, the switcher and
-  the hover flyout, 20 in Settings' Space rows, on the §2.2a hairline —
-  the same weight as every other icon in the chrome, which the Mac
-  masks (heroicons at 2 px) never were. Letters and digits are text:
-  Segoe UI Variable Semibold 13, centred. Ids without a Fluent twin keep
-  their compiled mask, re-rasterised to the hairline weight, so no Space
-  loses its icon. Sample of the map (the full 88-row table is generated
-  from the font's glyph names at implementation and checked in beside
-  the masks): briefcase → Work, academic-cap → Education, bell → Ringer,
-  camera → Camera, cog → Settings, globe-alt → Globe, mail → Mail,
-  lock-closed → Lock, light-bulb → Lightbulb, music-note → MusicNote,
-  paper-airplane → Send, user → Contact, chart-pie → PieSingle,
-  clipboard-list → ClipboardList, cloud → Cloud, color-swatch → Color,
-  credit-card → PaymentCard, device-mobile → CellPhone,
-  exclamation-mark → Important, film → Video, filter → Filter,
-  identification → ContactInfo, lightning-bolt → LightningBolt,
-  md-library → Library, moon → QuietHours, photograph → Photo,
-  play → Play, qrcode → QRCode, question-mark → Help,
-  search-circle → Search, shield-exclamation → Shield, sun → Brightness,
-  view-grid-add → ViewAll; keep the mask for cake, chip,
-  cube-transparent, rss, sparkles, ticket, truck, backtick and tilde
-  (text).
-* **Colour**: Fluent icons are monochrome, so **the coloured tile goes**.
+* **Artwork**: every `phi:` id renders the shared solid artwork from
+  `client/phi_icon_masks.cc`, including the original heavy letters, digits
+  and punctuation. Display codepoints remain stable lookup keys; they no
+  longer substitute Segoe Fluent icons or system-font text. The shared draw
+  path tints the masks and fits their ink to the existing Space icon slots.
+  The picker draws the complete 20 dip artwork canvas, preserving the
+  supplied design's proportions.
+* **Colour**: solid icons are monochrome, with no coloured tile.
   An inactive pip draws its glyph in `label` ink on the transparent 28
   dip pip; the **active pip** is the `card` tile with the glyph in the
   Space's accent; hover is the ink wash. The Space colour appears where
@@ -1101,26 +1085,17 @@ clients. The **stored ids do not change**; only how Windows draws them.
   Fluent Emoji, colour) at 14 in the pip and chip, 18 in the picker,
   20 in Settings rows; no tile, no tint. The GDI fallback path and the
   first-letter fallback stay for missing fonts.
-* **Picker** — one control for the pip's right-click "Change icon…", the
-  create form (§5.5) and Settings › Spaces: a 300 dip flyout (radius 8,
-  `flyout` ground) with the Icon | Emoji segmented control, a 32 dip
-  search box under it, then a 7-column grid of 28 dip cells (radius 6;
-  the chosen cell in `accent_soft` with a 1 px accent inset ring). Icon
-  tab: "Letters & numbers" then "Symbols". Emoji tab: the Win + .
-  panel's shape — a category strip (nine group glyphs, the current one
-  underlined in the accent), "Recently used" first, then the groups,
-  type-to-search on the catalogue's names, skin-tone variants on
-  right-click. Keyboard: arrows move, Enter picks, Esc closes; the
-  current icon is preselected and scrolled into view.
-* The complete sets are on the canvas: the "Icon catalogue (88)" board
-  draws every stored id on the hairline grid with its Fluent name (or
-  "compiled mask" / "text glyph"), and the "Emoji catalogue (all)" board
-  lays out the whole shared catalogue by group in the picker's cells.
-* Implementation: `phi_icon_masks.cc` gains a `fluent_glyph` column per
-  id (0 = keep the mask); `PhiSpacesStrip` and the catalog draw path
-  pick the glyph font first; `PhiCreateSpacePanel`'s grid and Settings'
-  icon picker become the one `PhiIconPicker` flyout; `phi_emoji.cc` is
-  unchanged (the catalogue file is shared with the Mac).
+* **Picker**: the "Change icon…" flyout is 262 dip wide, with 16 dip
+  padding, Icon | Emoji tabs and search. The icon grid has eight columns
+  of 20 dip cells with 10 dip gaps, in the supplied order: 48 pictograms,
+  digits 1–9 and 0, letters A–Z, then ? ! ~ and backtick. All 11 rows are
+  visible. Selected cells retain the accent fill and inset ring. Emoji
+  retain their category strip, group headings and name search. The create
+  form and Settings use the same catalog artwork in their existing layouts.
+* Implementation: `PhiIconCatalogAll` preserves all 88 stored ids and
+  display keys. `PhiDrawCatalogArtwork` draws the padded artwork canvas;
+  `PhiDrawCatalogIcon` fits its ink to a Space icon slot. Both resolve the
+  same compiled masks, with no dependency on an installed icon font.
 
 ### 5.10 Telling an agent Space from a user Space (the "Agent Space vs user Space" artboard)
 

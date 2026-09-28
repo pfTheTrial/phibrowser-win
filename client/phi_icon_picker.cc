@@ -26,19 +26,19 @@ namespace phi_client {
 
 namespace {
 
-// §5.9 metrics, in dip.
-constexpr int kWidth = 300;
-constexpr int kPad = 12;
+// Solid catalog grid: 20 dip artwork, 10 dip gaps, 16 dip padding.
+constexpr int kWidth = 262;
+constexpr int kPad = 16;
 constexpr int kSegmentHeight = 28;
 constexpr int kSegmentWidth = 72;
 constexpr int kSearchHeight = 32;
-constexpr int kColumns = 7;
-constexpr int kCell = 28;
+constexpr int kColumns = 8;
+constexpr int kCell = 20;
 constexpr int kCellRadius = 6;
-constexpr int kRowGap = 4;
+constexpr int kRowGap = 10;
 constexpr int kHeaderHeight = 22;
-constexpr int kVisibleRows = 6;
-constexpr int kCategoryCell = 28;
+constexpr int kVisibleRows = 11;
+constexpr int kCategoryCell = 24;
 constexpr int kCategoryStripHeight = 36;
 constexpr int kGap = 8;
 
@@ -324,9 +324,8 @@ class Picker : public PhiPopover {
         }
       }
       RECT art = cell;
-      ::InflateRect(&art, -Scaled(5), -Scaled(5));
       const COLORREF ink = selected ? p.accent : p.label;
-      if (PhiDrawCatalogIcon(dc, art, item.text, Scaled(16), ink)) {
+      if (PhiDrawCatalogArtwork(dc, art, item.text, Scaled(20), ink)) {
         continue;
       }
       if (!PhiIsPrivateGlyph(item.text) &&
@@ -360,25 +359,20 @@ class Picker : public PhiPopover {
     icon_font_ = PhiIconFont(dpi(), 14);
   }
 
-  // The two tabs' sections: the icon catalogue split into its symbols and
-  // its letters & numbers (single-character glyphs), the emoji groups.
+  // Preserve the supplied catalog order: pictograms, digits, letters, marks.
+  // Emoji retain their named categories.
   void BuildSections() {
     icon_sections_.clear();
     emoji_sections_.clear();
-    Section letters;
-    letters.title = L"Letters & numbers";
-    Section symbols;
-    symbols.title = L"Symbols";
+    Section icons;
     for (const PhiCatalogIcon& icon : PhiIconCatalogAll()) {
       Cell cell;
       cell.text = std::wstring(1, icon.glyph);
       cell.storage = std::string("phi:") + icon.id;
       cell.name = base::UTF8ToWide(icon.name);
-      const bool text_glyph = !PhiIsPrivateGlyph(cell.text);
-      (text_glyph ? letters : symbols).cells.push_back(std::move(cell));
+      icons.cells.push_back(std::move(cell));
     }
-    icon_sections_.push_back(std::move(letters));
-    icon_sections_.push_back(std::move(symbols));
+    icon_sections_.push_back(std::move(icons));
     category_glyphs_.clear();
     for (const PhiEmojiGroup& group : PhiEmojiGroups()) {
       Section section;
@@ -462,7 +456,7 @@ class Picker : public PhiPopover {
       if (shown.empty()) {
         continue;
       }
-      if (needle.empty() || !emoji_tab_) {
+      if (!section.title.empty() && (needle.empty() || !emoji_tab_)) {
         RECT header = {grid_.left, grid_.top + content_y - scroll_, grid_.right,
                        grid_.top + content_y - scroll_ + Scaled(kHeaderHeight)};
         if (header.bottom > grid_.top && header.top < grid_.bottom) {
