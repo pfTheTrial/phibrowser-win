@@ -557,25 +557,23 @@ placement; the "sidebar hidden" artboard on the canvas). The sidebar comes back 
 ways:
 
 * **Docked**: click the toggle, or Ctrl+S. The page shrinks to x 240.
-* **Floating**: while hidden, **the panel itself stays tucked at the
-  window's left edge with 8 dip showing** — its own tint ground, its
-  1 px stroke, its sheet shadow and its rounded right corners (radius
-  8), at the panel's height (y 52 to h − 8) — so what the user sees is
-  the sidebar peeking from behind the edge, not a grey bar (Jixiang,
-  2026-09-17: "colour must be the same as the sidebar"). Hovering it
-  (300 ms) slides the whole panel in; clicking it docks the sidebar, like
-  the toggle. The panel is a hover surface — Edge's auto-expanding
-  collapsed pane, Arc's hidden sidebar: it slides in over the page and
-  leaves when the pointer does, back to its tucked 8 dip.
+* **Floating**: while hidden, the panel is completely invisible, including
+  its border and shadow (Jixiang, 2026-09-28). Hovering the invisible
+  8 dip strip at the left edge for 300 ms slides the panel over the page.
+  Leaving slides it fully out and hides its native window. No strip of
+  the panel remains over the browser when the animation finishes.
 
 The panel: x 8, **y 52** (below the 44 address row plus 8 — the panel
 never covers the address bar, the nav buttons or the toggle), width 240
 (the docked width), bottom at h − 8, radius 8, over the pane's left
-edge, the Space tint as ground, 1 px `stroke_strong`, the sheet shadow
-(§2.4) under the flyout shadow so it floats like the pane. Inside it is the
+edge, the Space tint as ground and a 1 px `stroke_strong` border clipped
+to the browser area. Native popup shadows are disabled
+because they escape the clipping region during the slide. The popup never
+reserves page space: the browser viewport keeps the collapsed shell's
+width and height during reveal, interaction and dismissal. Inside it is the
 docked sidebar exactly — the pip row, the sections, the tab list, the
 bottom bar — and nothing more: no pin button (dropped 2026-09-18 at
-Jixiang's request; the tucked edge and the caption's toggle dock the
+Jixiang's request; the caption's toggle docks the
 sidebar). The omnibox stays in the address row; there is no field in the panel any more (the
 reparenting code goes with Performance, §4.3).
 
@@ -598,9 +596,9 @@ sidebar work of 2026-09-12) and hidden while the shell is minimised.
 Hit-testing: the panel is a `WS_POPUP` owned by the shell, activation-
 free (`WS_EX_NOACTIVATE`), so the page keeps focus; its rows route to
 the same `PhiSidebarView` hit path with the panel's origin, exactly as
-`floating_layout_` does today. Tucked, the same popup simply sits at
-x = 8 − 240 (its right 8 dip over the pane), so the peek is the panel's
-own paint; its hover starts the dwell timer, its click docks.
+`floating_layout_` does today. Hidden, the popup sits at x = −240 and
+uses `SW_HIDE`; its timer observes the invisible edge target independently
+of the popup's visibility. Repositioning the shell preserves this state.
 
 Remote surface: `agentSpace.window.layout` keeps reporting `sidebarToggle`
 and `sidebarCollapsed`, and gains `sidebarFloating` (true while the panel

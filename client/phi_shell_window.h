@@ -1067,12 +1067,14 @@ class PhiShellWindow : public PhiHitSource,
     bool horizontal_tabs = false;
     bool spaces_switch = true;  // The Spaces strip / compact pip exists.
   };
-  Layout ComputeLayout();
+  Layout ComputeLayout(bool include_floating = true);
+  // Physical shell/page bounds never use the floating panel's row geometry.
+  Layout ComputeWindowLayout();
   // The cache behind ComputeLayout: the inputs the last layout was derived
   // from and that layout. Re-derived whenever the inputs differ — a resize,
   // a DPI move, a mode/pref change, a count from the rebuild, the floating
   // panel's override — so no explicit invalidation can be forgotten.
-  ShellLayoutInputs CurrentLayoutInputs() const;
+  ShellLayoutInputs CurrentLayoutInputs(bool include_floating = true) const;
   static Layout ToLayout(const ShellLayout& shell);
   ShellLayoutInputs layout_inputs_;
   Layout layout_cache_;
@@ -1750,10 +1752,10 @@ class PhiShellWindow : public PhiHitSource,
   std::map<int64_t, phi_framework::SplitViewStyle> split_style_pushed_;
 
   // The floating sidebar (docs/windows-native-ui.md §4.4): with the
-  // sidebar hidden, a popup panel showing the REAL sidebar stays TUCKED at
-  // the window's left edge with 8 dip showing; hovering it slides it in
-  // over the page, leaving slides it back, clicking the tucked edge or
-  // its pin docks the sidebar. PaintChrome runs against the expanded
+  // sidebar hidden, an invisible left-edge hover zone reveals a popup
+  // showing the REAL sidebar over the page. Leaving slides it completely
+  // out and hides its native window; the toggle docks it. PaintChrome
+  // runs against the expanded
   // layout (floating_layout_ override, at the panel's own height) and
   // the panel forwards its mouse events through the normal handlers.
   bool sidebar_collapsed_ = false;
@@ -1821,7 +1823,7 @@ class PhiShellWindow : public PhiHitSource,
   int floating_offset_y_ = 0;
   ULONGLONG floating_shown_tick_ = 0;
   ULONGLONG floating_outside_tick_ = 0;
-  // The pointer entered the tucked edge at this tick (the 300 ms dwell).
+  // The pointer entered the invisible edge zone (the 300 ms dwell).
   ULONGLONG floating_hover_tick_ = 0;
   // The band (chips, pinned grid, outline, tab rows) belongs to this
   // shell's own paint and pointer: false while the sidebar is collapsed and
@@ -1839,10 +1841,9 @@ class PhiShellWindow : public PhiHitSource,
   void PositionFloatingPanel();
   // Clips the panel to the shell's client area: a popup is not clipped by
   // its owner, so the tucked panel's off-window part (and the slide's)
-  // would otherwise paint over the desktop beside the window. Fully in,
-  // the region goes and DWM's corners return.
+  // would otherwise paint over the desktop beside the window. The rounded
+  // region stays at rest too; native shadows are disabled to obey the clip.
   void ClipFloatingPanel();
-  bool floating_clipped_ = false;
   // Starts the 150 ms slide to the expanded or tucked position.
   void SlideFloatingPanel(bool expanded);
   // Slides the panel in (the left-edge hover, a drag crossing the edge).

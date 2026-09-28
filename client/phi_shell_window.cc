@@ -499,7 +499,8 @@ HFONT PhiShellWindow::EnsureChipNameFont() {
   return chip_name_font_;
 }
 
-ShellLayoutInputs PhiShellWindow::CurrentLayoutInputs() const {
+ShellLayoutInputs PhiShellWindow::CurrentLayoutInputs(bool include_floating) const {
+  const bool floating = include_floating && floating_layout_;
   ShellLayoutInputs in;
   in.mode = layout_mode_;
   if (shell_hwnd_) {
@@ -513,13 +514,13 @@ ShellLayoutInputs PhiShellWindow::CurrentLayoutInputs() const {
   // Collapsed: the content card widens to the left margin (which becomes
   // the floating sidebar's hover trigger). The floating panel paints with
   // floating_layout_ set, which restores the expanded layout.
-  in.sidebar_hidden = sidebar_collapsed_ && !floating_layout_;
-  in.floating_panel = floating_layout_;
+  in.sidebar_hidden = sidebar_collapsed_ && !floating;
+  in.floating_panel = floating;
   in.owned_tabs_label = !agent_chip_compact_ && !agent_chip_name_.empty();
   in.space_chip_dip = space_chip_dip_;
   in.agent_chip_dip = agent_chip_dip_;
   in.feedback_dip = feedback_dip_;
-  if (floating_layout_ && floating_panel_h_ > 0) {
+  if (floating && floating_panel_h_ > 0) {
     // The panel's own height: its bands (the bottom bar) fit the panel.
     in.client_height = floating_panel_h_;
   }
@@ -758,14 +759,14 @@ void PhiShellWindow::PaintAgentChip(HDC dc, const RECT& rect,
   }
 }
 
-PhiShellWindow::Layout PhiShellWindow::ComputeLayout() {
+PhiShellWindow::Layout PhiShellWindow::ComputeLayout(bool include_floating) {
   // A value, cached by its inputs: the geometry is recomputed only when
   // something it depends on moved (a resize, a DPI change, a mode or pref
   // change, the rebuild's counts), never per read — the old getter derived
   // it eight times per pointer move, each time re-querying the DPI and
   // creating fonts (lane 3 §3.2). dpi_ is written by WM_DPICHANGED and the
   // constructor alone.
-  const ShellLayoutInputs inputs = CurrentLayoutInputs();
+  const ShellLayoutInputs inputs = CurrentLayoutInputs(include_floating);
   if (!layout_cache_valid_ || inputs != layout_inputs_) {
     layout_inputs_ = inputs;
     layout_cache_ = ToLayout(ComputeShellLayout(inputs));
@@ -774,8 +775,12 @@ PhiShellWindow::Layout PhiShellWindow::ComputeLayout() {
   return layout_cache_;
 }
 
+PhiShellWindow::Layout PhiShellWindow::ComputeWindowLayout() {
+  return ComputeLayout(/*include_floating=*/false);
+}
+
 RECT PhiShellWindow::content_rect() {
-  return ComputeLayout().content;
+  return ComputeWindowLayout().content;
 }
 
 RECT PhiShellWindow::url_field_rect() {
@@ -1710,11 +1715,11 @@ PhiPalette PhiShellWindow::BrowserHostPalette() const {
 }
 
 RECT PhiShellWindow::BrowserHostContentRect() {
-  return ComputeLayout().content;
+  return ComputeWindowLayout().content;
 }
 
 RECT PhiShellWindow::BrowserHostClientRect() {
-  return ComputeLayout().client;
+  return ComputeWindowLayout().client;
 }
 
 HFONT PhiShellWindow::BrowserHostStatusFont() const {
@@ -1940,7 +1945,7 @@ void PhiShellWindow::ActivatePaneTab(int tab_id) {
 }
 
 PhiOmniboxCapsule PhiShellWindow::OmniboxCapsule() {
-  const Layout layout = ComputeLayout();
+  const Layout layout = ComputeWindowLayout();
   auto to_pure = [](const RECT& r) {
     return SidebarRect{r.left, r.top, r.right, r.bottom};
   };
@@ -2568,7 +2573,7 @@ void PhiShellWindow::OpenFeedback() {
 }
 
 RECT PhiShellWindow::ContentRect() {
-  return ComputeLayout().content;
+  return ComputeWindowLayout().content;
 }
 
 void PhiShellWindow::ToggleSidebar() {
@@ -2629,7 +2634,10 @@ void PhiShellWindow::LayoutContents() {
   ::InvalidateRect(shell_hwnd_, nullptr, FALSE);  // Every band moved.
   browsers_->SetStatusUrl(std::wstring());  // Anchored to the OLD rect.
   omnibox_->ClosePopup(/*stop_query=*/false);  // Anchored to the OLD rect.
-  const Layout layout = ComputeLayout();
+  // A tab/Space action or synchronous window message may relayout while
+  // floating_layout_ is set for popup hit testing. Only its rows expand;
+  // the actual browser viewport must retain the collapsed shell's bounds.
+  const Layout layout = ComputeWindowLayout();
   omnibox_->Position();
   UpdateSidebarBackdrop();
   if (spaces_->creating()) {
@@ -3899,7 +3907,7 @@ void PhiShellWindow::UpdateSidebarBackdrop() {
   if (!shell_hwnd_ || destroying_) {
     return;
   }
-  const Layout layout = ComputeLayout();
+  const Layout layout = ComputeWindowLayout();
   HIGHCONTRASTW contrast = {sizeof(contrast)};
   ::SystemParametersInfoW(SPI_GETHIGHCONTRAST, sizeof(contrast), &contrast, 0);
   const bool enabled = !layout.horizontal_tabs && !sidebar_collapsed_ &&
@@ -3930,7 +3938,7 @@ void PhiShellWindow::PrepareBackdropPixels(const PhiPalette& palette) {
   // GDI can batch writes to a DIB; finish them before accessing its bits.
   ::GdiFlush();
   const int width = back_buffer_size_.cx;
-  const int sidebar = std::clamp(ComputeLayout().content.left, 0L,
+  const int sidebar = std::clamp(ComputeWindowLayout().content.left, 0L,
                                   back_buffer_size_.cx);
   const COLORREF ground = palette.ground_top;
   const uint32_t rgb = (GetRValue(ground) << 16) |
@@ -4040,7 +4048,7 @@ void PhiShellWindow::ComposeFrame(HDC mem, const PhiPalette& palette) {
 
 void PhiShellWindow::RevealSwappedContent() {
   if (swap_reveal_ && ::IsWindow(swap_reveal_)) {
-    const Layout layout = ComputeLayout();
+    const Layout layout = ComputeWindowLayout();
     ::SetWindowPos(swap_reveal_, nullptr, layout.content.left,
                    layout.content.top,
                    layout.content.right - layout.content.left,
@@ -4275,14 +4283,15 @@ void PhiShellWindow::RebuildTabs() {
   // While it is up the rows are built in that geometry — the docked,
   // collapsed shell shows no rows of its own — so the panel paints them as
   // they are and never rebuilds inside its paint (lane 3 §3.1).
-  const base::AutoReset<bool> floating_scope(
-      &floating_layout_, floating_layout_ || floating_sidebar_ != nullptr);
-
   RebuildNavState();
   RefreshFieldExtensions();
-  RebuildChips();
-  rows_dirty_ = false;
-  sidebar_->Rebuild();
+  {
+    const base::AutoReset<bool> floating_scope(
+        &floating_layout_, floating_layout_ || floating_sidebar_ != nullptr);
+    RebuildChips();
+    rows_dirty_ = false;
+    sidebar_->Rebuild();
+  }
   // After the rows: the active tab (a reader redirects to its origin) is
   // theirs. Cached here like the nav state, so the rebuild turn's signature
   // sees the change and paint reads one settled value.
@@ -5570,8 +5579,8 @@ void PhiShellWindow::OnChromeContextMenu(int x, int y) {
 
 RECT PhiShellWindow::FloatingPanelRect(bool expanded) const {
   // x 8, y 52 (below the 44 address row plus 8), the docked width, bottom
-  // at h − 8; tucked, the same panel sits at x = 8 − width so its right 8
-  // dip peek from the window's edge (§4.4).
+  // at h − 8. The hidden endpoint is entirely outside the client area;
+  // the window is also hidden when the slide lands, removing its shadow.
   RECT client = {};
   ::GetClientRect(shell_hwnd_, &client);
   POINT origin = {0, 0};
@@ -5579,7 +5588,7 @@ RECT PhiShellWindow::FloatingPanelRect(bool expanded) const {
   const int inset = Scaled(kEdgeInset);
   const int row = Scaled(kAddressRowHeight);
   const int w = Scaled(sidebar_dip_);
-  const int x = origin.x + (expanded ? inset : inset - w);
+  const int x = origin.x + (expanded ? inset : -w);
   const int top = origin.y + row + inset;
   return {x, top, x + w, origin.y + client.bottom - inset};
 }
@@ -5597,7 +5606,8 @@ void PhiShellWindow::EnsureFloatingPanel() {
   if (!registered) {
     registered = true;
     WNDCLASSW cls = {};
-    cls.style = CS_DROPSHADOW;  // The panel floats: the flyout shadow.
+    // OS popup shadows are not clipped by SetWindowRgn and can leave an
+    // edge outside the browser as the panel slides through its left side.
     cls.lpfnWndProc = &PhiShellWindow::FloatingSidebarProc;
     cls.hInstance = ::GetModuleHandleW(nullptr);
     cls.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
@@ -5623,12 +5633,12 @@ void PhiShellWindow::EnsureFloatingPanel() {
   // layout mode change, not a paint-time rebuild.
   rows_dirty_ = true;
   RebuildTabs();
-  const DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_ROUND;
-  ::DwmSetWindowAttribute(floating_sidebar_, DWMWA_WINDOW_CORNER_PREFERENCE,
-                          &corner, sizeof(corner));
-  floating_clipped_ = false;
+  const DWMNCRENDERINGPOLICY nonclient = DWMNCRP_DISABLED;
+  ::DwmSetWindowAttribute(floating_sidebar_, DWMWA_NCRENDERING_POLICY,
+                          &nonclient, sizeof(nonclient));
   ClipFloatingPanel();
-  ::ShowWindow(floating_sidebar_, SW_SHOWNOACTIVATE);
+  // Keep the popup hidden until an explicit reveal. Its timer observes an
+  // invisible edge hover zone even while the native window is hidden.
   ::SetTimer(floating_sidebar_, kFloatingTickTimer, 30, nullptr);
 }
 
@@ -5666,7 +5676,8 @@ void PhiShellWindow::PositionFloatingPanel() {
   }
   floating_slide_start_ = 0;  // A move lands the slide where it is going.
   ::SetWindowPos(floating_sidebar_, nullptr, rc.left, rc.top, rc.right - rc.left,
-                 h, SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+                 h, SWP_NOZORDER | SWP_NOACTIVATE |
+                        (floating_expanded_ ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
   ClipFloatingPanel();
 }
 
@@ -5681,13 +5692,8 @@ void PhiShellWindow::ClipFloatingPanel() {
   ::MapWindowPoints(shell_hwnd_, nullptr, reinterpret_cast<POINT*>(&client), 2);
   RECT visible = {};
   ::IntersectRect(&visible, &panel_rc, &client);
-  if (::EqualRect(&visible, &panel_rc)) {
-    if (floating_clipped_) {
-      ::SetWindowRgn(floating_sidebar_, nullptr, TRUE);
-      floating_clipped_ = false;
-    }
-    return;
-  }
+  // Keep our rounded region even at rest: native nonclient rendering is
+  // disabled so neither a border nor a shadow escapes the owner's bounds.
   // The visible part, in the panel's own coordinates, with the panel's
   // 8 dip corners kept where they are visible.
   ::OffsetRect(&visible, -panel_rc.left, -panel_rc.top);
@@ -5699,7 +5705,6 @@ void PhiShellWindow::ClipFloatingPanel() {
   ::CombineRgn(region, region, box, RGN_AND);
   ::DeleteObject(box);
   ::SetWindowRgn(floating_sidebar_, region, TRUE);  // The system owns it now.
-  floating_clipped_ = true;
 }
 
 void PhiShellWindow::SlideFloatingPanel(bool expanded) {
@@ -5716,7 +5721,7 @@ void PhiShellWindow::SlideFloatingPanel(bool expanded) {
     floating_shown_tick_ = floating_slide_start_;
     floating_outside_tick_ = 0;
     ::SetWindowPos(floating_sidebar_, HWND_TOP, 0, 0, 0, 0,
-                   SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+                   SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
   }
   floating_hover_tick_ = 0;
 }
@@ -6026,7 +6031,7 @@ void PhiShellWindow::ShowFloatingSidebar() {
 }
 
 void PhiShellWindow::HideFloatingSidebar(bool animated) {
-  if (!floating_sidebar_ || !floating_expanded_) {
+  if (!floating_sidebar_) {
     return;
   }
   SlideFloatingPanel(/*expanded=*/false);
@@ -6037,7 +6042,8 @@ void PhiShellWindow::HideFloatingSidebar(bool animated) {
 }
 
 void PhiShellWindow::FloatingSidebarTick() {
-  if (!floating_sidebar_) {
+  if (!floating_sidebar_ || ::IsIconic(shell_hwnd_) ||
+      !::IsWindowVisible(shell_hwnd_)) {
     return;
   }
   const ULONGLONG now = ::GetTickCount64();
@@ -6056,10 +6062,15 @@ void PhiShellWindow::FloatingSidebarTick() {
     ClipFloatingPanel();
     if (t >= 1.0) {
       floating_slide_start_ = 0;
+      if (!floating_expanded_) {
+        ::ShowWindow(floating_sidebar_, SW_HIDE);
+      }
     }
   }
   // Hover states, hover cards and tab changes land on the next tick.
-  ::InvalidateRect(floating_sidebar_, nullptr, FALSE);
+  if (::IsWindowVisible(floating_sidebar_)) {
+    ::InvalidateRect(floating_sidebar_, nullptr, FALSE);
+  }
   POINT cursor = {};
   ::GetCursorPos(&cursor);
   RECT panel_rc = {};
@@ -6068,15 +6079,22 @@ void PhiShellWindow::FloatingSidebarTick() {
   // and the window's outer left edge: the frame's HTLEFT band slides the
   // panel in, so a pointer parked there must also hold it (else it flips
   // in and out for as long as the pointer rests on the edge), and the
-  // tucked panel's off-window part is no target.
+  // hidden panel's off-window part is no target.
   RECT shell_rc = {};
   ::GetWindowRect(shell_hwnd_, &shell_rc);
   RECT zone = panel_rc;
   zone.left = shell_rc.left;
+  if (!floating_expanded_) {
+    // Preserve the 8-DIP reveal target without keeping any popup pixels
+    // visible. Do not let the closing animation widen the hover target.
+    POINT origin = {};
+    ::ClientToScreen(shell_hwnd_, &origin);
+    zone.right = origin.x + Scaled(kEdgeInset);
+  }
   zone.right = std::min(zone.right, shell_rc.right);
   const bool inside = ::PtInRect(&zone, cursor) != FALSE;
   if (!floating_expanded_) {
-    // Tucked: the 300 ms dwell on the peeking edge slides the panel in.
+    // Hidden: a 300 ms dwell at the window's edge slides the panel in.
     if (!inside) {
       floating_hover_tick_ = 0;
     } else if (!floating_hover_tick_) {
@@ -6196,11 +6214,8 @@ LRESULT CALLBACK PhiShellWindow::FloatingSidebarProc(HWND hwnd,
       if (self) {
         const POINT pt = {GET_X_LPARAM(lparam),
                           GET_Y_LPARAM(lparam) + self->floating_offset_y_};
-        // The tucked edge DOCKS the sidebar (§4.4); the slid-in panel
-        // has no pin button, its toggle in the caption band docks.
         if (!self->floating_expanded_) {
-          self->SetSidebarCollapsed(false);
-          return 0;
+          return 0;  // Ignore clicks on the closing animation.
         }
         forward([&] {
           self->OnChromeClick(pt.x, pt.y);
