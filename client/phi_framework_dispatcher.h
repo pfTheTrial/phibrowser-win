@@ -40,6 +40,8 @@ class PhiFrameworkDispatcher : public phi_framework::PhiFrameworkDelegate {
   void OnFrameworkReady(phi_framework::PhiFramework* framework,
                         const char* user_data_dir_utf8) override;
   void OnProfileLoaded(const char* profile_id) override;
+  void GetAutoPictureInPicturePreferences(bool* enabled,
+                                         bool* park_at_edge) override;
   void OnBrowserWindowCreated(
       const phi_framework::WindowCreation& creation) override;
   void OnBrowserWindowClosing(int64_t window_id) override;

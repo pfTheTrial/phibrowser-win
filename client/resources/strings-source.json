@@ -4517,6 +4517,34 @@
    "comment": "settings — used at phi_settings_window.cc:3010",
    "en": "Add URL Rule"
   },
+  "settings.advanced.pictureInPicture.normalDescription": {
+   "comment": "Advanced settings - Hint for the Normal auto picture-in-picture mode",
+   "en": "Pop out playing video when you switch tabs or apps"
+  },
+  "settings.advanced.pictureInPicture.normalOption": {
+   "comment": "Auto picture-in-picture option - pop out and stay in place",
+   "en": "Normal"
+  },
+  "settings.advanced.pictureInPicture.offDescription": {
+   "comment": "Advanced settings - Hint for the Off auto picture-in-picture mode",
+   "en": "Never pop out automatically; manual picture-in-picture still works"
+  },
+  "settings.advanced.pictureInPicture.offOption": {
+   "comment": "Auto picture-in-picture option - never pop out automatically; manual picture-in-picture is unaffected",
+   "en": "Off"
+  },
+  "settings.advanced.pictureInPicture.parkAtEdgeDescription": {
+   "comment": "Advanced settings - Hint for the Park at edge auto picture-in-picture mode",
+   "en": "Pop out playing video, parked at the screen edge until you click it"
+  },
+  "settings.advanced.pictureInPicture.parkAtEdgeOption": {
+   "comment": "Auto picture-in-picture option - pop out, then park at the screen edge until clicked",
+   "en": "Park at edge"
+  },
+  "settings.advanced.pictureInPicture.title": {
+   "comment": "Advanced settings - Row title for the three-state auto picture-in-picture mode",
+   "en": "Auto picture-in-picture"
+  },
   "settings.agentAccessPermissionsAndThe": {
    "comment": "settings — used at phi_settings_window.cc:833",
    "en": "Agent access, permissions, and the password manager "

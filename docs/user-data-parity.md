@@ -251,7 +251,7 @@ guid.
 | `showBookmarkBarOnNewTabPage` | `bookmarkBarOnNewTab` | Mac default true |
 | `suppressCloseIncognitoSpaceWarning` | — | add |
 | `layoutMode` | same | Windows removed Performance: show `performance` as balanced **without writing it back**, so another Mac's value is not overwritten |
-| `autoPictureInPictureMode` | — | carry the value, even if unused on Windows |
+| `autoPictureInPictureMode` | Advanced → Auto picture-in-picture | Off / Normal / Park at edge; queried live by the framework |
 | `PhiPinnedTabScope` | `pinScope` | mirror of the store row |
 | `PhiDefaultSpaceUuid` | `PhiSpaces.defaultSpaceId` | mirror of the role |
 | `PhiUserAppearanceChoice` | `appearance` string | 0/1/2 |

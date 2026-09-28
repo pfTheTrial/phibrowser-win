@@ -1386,7 +1386,7 @@ void PhiSettingsWindow::BuildAdvanced(int* y) {
   BeginSection(y, nullptr);
   {
     // "Copy Link to Highlight" has no Windows counterpart yet: the row is a
-    // placeholder, like Auto picture-in-picture below it.
+    // placeholder.
     const size_t first = items_.size();
     AddToggleRow(y, L"Shorten links to selected text", /*on=*/true,
                  /*enabled=*/false, std::string(),
@@ -1399,18 +1399,24 @@ void PhiSettingsWindow::BuildAdvanced(int* y) {
   }
   AddDividerRow(y);
   {
-    const size_t first = items_.size();
+    const std::string& mode = prefs_->AutoPictureInPictureMode();
+    const char* label = mode == "off"
+                            ? "settings.advanced.pictureInPicture.offOption"
+                        : mode == "parked"
+                            ? "settings.advanced.pictureInPicture.parkAtEdgeOption"
+                            : "settings.advanced.pictureInPicture.normalOption";
+    const char* hint = mode == "off"
+                           ? "settings.advanced.pictureInPicture.offDescription"
+                       : mode == "parked"
+                           ? "settings.advanced.pictureInPicture.parkAtEdgeDescription"
+                           : "settings.advanced.pictureInPicture.normalDescription";
     const RECT area = AddRow(
-        y, L"Auto picture-in-picture", kPillHeight, kPillWidth,
-        L"Pop out playing video when you switch tabs or apps", kChipIndent,
-        0xE8A7);
-    for (size_t i = first; i < items_.size(); ++i) {
-      items_[i].enabled = false;  // The row is a placeholder, like its pill.
-    }
+        y, PhiStr("settings.advanced.pictureInPicture.title"), kPillHeight,
+        kPillWidth, PhiStr(hint), kChipIndent, 0xE8A7);
     Item pill;
     pill.kind = ItemKind::kPopup;
-    pill.text = L"Normal";
-    pill.enabled = false;
+    pill.text = PhiStr(label);
+    pill.action = "autopip";
     pill.bounds = area;
     items_.push_back(std::move(pill));
   }
@@ -4578,6 +4584,31 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
     profile_card_.ExportPng(hwnd());
   } else if (item.action == "card") {
     // The card's click is its drag (OnMouseDown); nothing on release.
+  } else if (item.action == "autopip") {
+    HMENU menu = ::CreatePopupMenu();
+    if (!menu) {
+      return;
+    }
+    constexpr std::array<const char*, 3> modes = {"off", "normal", "parked"};
+    constexpr std::array<const char*, 3> labels = {
+        "settings.advanced.pictureInPicture.offOption",
+        "settings.advanced.pictureInPicture.normalOption",
+        "settings.advanced.pictureInPicture.parkAtEdgeOption"};
+    const std::string current = prefs_->AutoPictureInPictureMode();
+    for (UINT i = 0; i < 3; ++i) {
+      ::AppendMenuW(menu, MF_STRING | (current == modes[i] ? MF_CHECKED : 0),
+                    i + 1, PhiStr(labels[i]));
+    }
+    POINT anchor = {item.bounds.left, item.bounds.bottom};
+    ::ClientToScreen(hwnd(), &anchor);
+    const UINT chosen = static_cast<UINT>(::TrackPopupMenu(
+        menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, anchor.x,
+        anchor.y, 0, hwnd(), nullptr));
+    ::DestroyMenu(menu);
+    if (chosen >= 1 && chosen <= 3) {
+      host_->SetAutoPictureInPictureMode(modes[chosen - 1]);
+      ScheduleRebuild();
+    }
   } else if (item.action == "language") {
     // System default, then every locale the catalog carries, each named in
     // its own language.

@@ -372,6 +372,7 @@ class PhiCoordinator : public SidebarHost,
   // PhiPreferences directly now); no longer a settings-host virtual.
   PhiNewTabBehavior NewTabBehavior() const;
   void SetNewTabBehavior(PhiNewTabBehavior behavior) override;
+  void SetAutoPictureInPictureMode(const std::string& mode) override;
   bool AlwaysShowFullUrl() const;
   void SetAlwaysShowFullUrl(bool enabled) override;
   bool ShowTabPreviews() const override;

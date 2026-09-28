@@ -139,6 +139,7 @@ class PhiSettingsHost {
 
   // --- Browsing -------------------------------------------------------------
   virtual void SetNewTabBehavior(PhiNewTabBehavior behavior) = 0;
+  virtual void SetAutoPictureInPictureMode(const std::string& mode) = 0;
   virtual void SetAlwaysShowFullUrl(bool enabled) = 0;
   // GeneralSettings.showTabPreviews — the hover cards on tab, pin and
   // bookmark rows. On by default, as on Mac.

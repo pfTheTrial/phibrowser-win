@@ -33,6 +33,13 @@ void PhiFrameworkDispatcher::OnFrameworkReady(
   coordinator_.OnFrameworkReady(framework, user_data_dir_utf8);
 }
 
+void PhiFrameworkDispatcher::GetAutoPictureInPicturePreferences(
+    bool* enabled, bool* park_at_edge) {
+  const auto& mode = coordinator_.preferences().AutoPictureInPictureMode();
+  *enabled = mode != "off";
+  *park_at_edge = mode == "parked";
+}
+
 void PhiFrameworkDispatcher::OnProfileLoaded(const char* profile_id) {
   coordinator_.OnProfileLoaded(profile_id);
 }

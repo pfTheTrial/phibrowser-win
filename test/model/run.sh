@@ -14,6 +14,10 @@ set -e
 cd "$(dirname "$0")"
 FORK_SRC="${PHI_FORK_SRC:-../../../chromuim/src}"
 CXX="${CXX:-g++} -std=c++20 -Wall -Wextra -Werror -I ../../client -isystem stubs -isystem $FORK_SRC"
+# Exercise the live native-client PiP query and its no-client fallback.
+$CXX "$FORK_SRC/chrome/browser/phinomenon/phi_framework/phi_framework_hooks.cc" \
+     auto_pip_preferences_test.cc -o /tmp/phi_auto_pip_preferences_test
+/tmp/phi_auto_pip_preferences_test
 $CXX ../../client/phi_keyboard_accelerators.cc keyboard_command_queue_test.cc \
      -o /tmp/phi_keyboard_command_queue_test
 /tmp/phi_keyboard_command_queue_test

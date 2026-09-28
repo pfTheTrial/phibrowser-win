@@ -5077,6 +5077,83 @@
   "settings.addUrlRule": {
    "en": "Add URL Rule"
   },
+  "settings.advanced.pictureInPicture.normalDescription": {
+   "de": "Laufendes Video als Bild-in-Bild öffnen, wenn du Tabs oder Apps wechselst",
+   "en": "Pop out playing video when you switch tabs or apps",
+   "es": "Muestra en una ventana flotante el contenido en reproducción cuando cambies de pestaña o de app",
+   "fr": "Affiche la vidéo en cours de lecture en Image dans l'image lorsque vous changez d'onglet ou d'app",
+   "ja": "タブやアプリを切り替えたときに、再生中の動画をポップアウトします",
+   "ko": "탭이나 앱을 전환하면 재생 중인 동영상을 화면 속 화면으로 띄워요",
+   "nl": "Start beeld in beeld voor spelende video als je van tabblad of app wisselt",
+   "zh-Hans": "切换标签页或应用时弹出正在播放的视频",
+   "zh-Hant": "切換分頁或 App 時，讓播放中的影片彈出"
+  },
+  "settings.advanced.pictureInPicture.normalOption": {
+   "de": "Normal",
+   "en": "Normal",
+   "es": "Normal",
+   "fr": "Normal",
+   "ja": "標準",
+   "ko": "일반",
+   "nl": "Normaal",
+   "zh-Hans": "标准",
+   "zh-Hant": "一般"
+  },
+  "settings.advanced.pictureInPicture.offDescription": {
+   "de": "Nie automatisch als Bild-in-Bild öffnen; manuelles Bild-in-Bild funktioniert weiterhin",
+   "en": "Never pop out automatically; manual picture-in-picture still works",
+   "es": "Nunca se abre la ventana flotante automáticamente; la imagen en imagen manual sigue funcionando",
+   "fr": "Ne passe jamais automatiquement en Image dans l'image ; le mode Image dans l'image manuel reste disponible",
+   "ja": "自動ではポップアウトしません。手動のピクチャインピクチャは引き続き使えます",
+   "ko": "자동으로 화면 속 화면을 띄우지 않아요. 수동 화면 속 화면은 계속 사용할 수 있어요",
+   "nl": "Nooit automatisch beeld in beeld starten; handmatig beeld in beeld werkt nog steeds",
+   "zh-Hans": "永不自动弹出；手动画中画仍然可用",
+   "zh-Hant": "永不自動彈出；手動子母畫面仍可使用"
+  },
+  "settings.advanced.pictureInPicture.offOption": {
+   "de": "Aus",
+   "en": "Off",
+   "es": "Desactivado",
+   "fr": "Désactivé",
+   "ja": "オフ",
+   "ko": "끔",
+   "nl": "Uit",
+   "zh-Hans": "关闭",
+   "zh-Hant": "關閉"
+  },
+  "settings.advanced.pictureInPicture.parkAtEdgeDescription": {
+   "de": "Laufendes Video als Bild-in-Bild öffnen und am Bildschirmrand parken, bis du es anklickst",
+   "en": "Pop out playing video, parked at the screen edge until you click it",
+   "es": "Muestra en una ventana flotante el contenido en reproducción y lo deja en el borde de la pantalla hasta que hagas clic en él",
+   "fr": "Affiche la vidéo en cours de lecture en Image dans l'image, ancrée sur le bord de l'écran jusqu'à ce que vous cliquiez dessus",
+   "ja": "再生中の動画をポップアウトし、クリックするまで画面端に待機させます",
+   "ko": "재생 중인 동영상을 화면 속 화면으로 띄우고, 클릭할 때까지 화면 가장자리에 둬요",
+   "nl": "Start beeld in beeld voor spelende video, geparkeerd aan de schermrand tot je erop klikt",
+   "zh-Hans": "弹出正在播放的视频，并停靠在屏幕边缘，直到你点击它",
+   "zh-Hant": "讓播放中的影片彈出，並停靠在螢幕邊緣，直到你按一下為止"
+  },
+  "settings.advanced.pictureInPicture.parkAtEdgeOption": {
+   "de": "Am Rand parken",
+   "en": "Park at edge",
+   "es": "Acoplar al borde",
+   "fr": "Ancrer sur le bord",
+   "ja": "画面端に待機",
+   "ko": "가장자리에 두기",
+   "nl": "Aan de rand parkeren",
+   "zh-Hans": "停靠在边缘",
+   "zh-Hant": "停靠於邊緣"
+  },
+  "settings.advanced.pictureInPicture.title": {
+   "de": "Automatisches Bild-in-Bild",
+   "en": "Auto picture-in-picture",
+   "es": "Imagen en imagen automática",
+   "fr": "Image dans l'image automatique",
+   "ja": "自動ピクチャ・イン・ピクチャ",
+   "ko": "자동 화면 속 화면",
+   "nl": "Automatisch beeld in beeld",
+   "zh-Hans": "自动画中画",
+   "zh-Hant": "自動子母畫面"
+  },
   "settings.agentAccessPermissionsAndThe": {
    "en": "Agent access, permissions, and the password manager "
   },

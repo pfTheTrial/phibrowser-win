@@ -2933,6 +2933,10 @@ void PhiCoordinator::SetThemeId(const std::string& id) {
   preferences_.SetThemeId(id);
 }
 
+void PhiCoordinator::SetAutoPictureInPictureMode(const std::string& mode) {
+  preferences_.SetAutoPictureInPictureMode(mode);
+}
+
 void PhiCoordinator::SetAppearance(PhiAppearance appearance) {
   preferences_.SetAppearance(appearance);
 }

@@ -49,3 +49,6 @@ suite-persist
 # parks every pipe verb until someone dismisses it (docs/architecture-review
 # .md §3.7). Run it by hand when someone can click:
 #   ./test-box.sh --suite suite-feedback
+
+# Floating document/video picture-in-picture (local generated media).
+suite-pip
