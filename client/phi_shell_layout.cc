@@ -222,10 +222,17 @@ ShellLayout ComputeShellLayout(const ShellLayoutInputs& in) {
   out.content = {pane_left, tb, w, h};
   carve_bookmark_bar(&out);
   const int mid = tb / 2;
-  // Leading: the sidebar toggle and tab search, then the nav trio.
-  out.sidebar_toggle = control_l(pane_left + inset, mid);
-  out.search_tabs = control_l(out.sidebar_toggle.right + btn_gap, mid);
-  out.back = control_l(out.search_tabs.right + scaled(kGroupGap), mid);
+  if (hide_sidebar) {
+    // Keep both controls reachable while the sidebar is tucked away.
+    out.sidebar_toggle = control_l(inset, mid);
+    out.search_tabs = control_l(out.sidebar_toggle.right + btn_gap, mid);
+    out.back = control_l(out.search_tabs.right + scaled(kGroupGap), mid);
+  } else {
+    out.app_icon = control_l(inset, mid);
+    out.sidebar_toggle = control_r(sidebar - inset, mid);
+    out.search_tabs = control_r(out.sidebar_toggle.left - btn_gap, mid);
+    out.back = control_l(pane_left + inset, mid);
+  }
   out.forward = control_l(out.back.right + btn_gap, mid);
   out.reload = control_l(out.forward.right + btn_gap, mid);
   // Trailing: the divider before the caption buttons, then the cluster.
@@ -264,21 +271,19 @@ ShellLayout ComputeShellLayout(const ShellLayoutInputs& in) {
     place_omnibox(field_left, field_right, mid);
   }
 
-  // The sidebar stack, top to bottom: the header row (pips only), the
-  // pinned band, the bookmark outline, "+ New tab", the tab list, the
-  // bottom bar. With a single Space the header row collapses.
-  // The header row: the pips (with something to switch to), and in the
-  // floating panel always — its pin lives there.
+  // The persistent app header sits above the optional Space strip, then
+  // pins, bookmarks, new tab, tabs and the bottom bar.
   const bool header_row = in.spaces_switch || in.floating_panel;
   if (!hide_sidebar && header_row) {
-    place_spaces(0, sidebar, 0, tb);
+    place_spaces(0, sidebar, tb, tb);
   }
   // No section labels (§4.2): the bands follow each other 8 dip apart;
   // only the agent Space's "<Agent>'s tabs" cue keeps a label row.
   const int label_h = scaled(kSectionLabelHeight);
   const int label_inset = scaled(kSectionLabelInset);
   const int gap = scaled(kSectionGap);
-  int y = header_row ? tb : 0;
+  const int sidebar_header_bottom = tb + (header_row ? tb : 0);
+  int y = sidebar_header_bottom;
   const int pinned_rows = in.pinned_row_count;
   const int pinned_height =
       pinned_rows > 0 ? 2 * scaled(kPinnedGap) +
@@ -309,7 +314,7 @@ ShellLayout ComputeShellLayout(const ShellLayoutInputs& in) {
                                       separator_top + separator_h}
                         : SidebarRect{};
   y = separator_top + separator_h;
-  if (y > (header_row ? tb : 0)) {
+  if (y > sidebar_header_bottom) {
     y += gap;
   }
   if (in.owned_tabs_label) {

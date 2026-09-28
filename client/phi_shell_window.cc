@@ -42,6 +42,7 @@
 #include "phibrowser-win/client/phi_search_tabs_panel.h"
 #include "phibrowser-win/client/phi_space_theme_panel.h"
 #include "phibrowser-win/client/phi_bookmark_manager.h"
+#include "phibrowser-win/client/phi_backdrop.h"
 #include "phibrowser-win/client/phi_client_analytics.h"
 #include "phibrowser-win/client/phi_create_space_panel.h"
 #include "phibrowser-win/client/phi_create_space_flyout.h"
@@ -446,6 +447,7 @@ PhiShellWindow::Layout PhiShellWindow::ToLayout(
   out.top_bar = PhiToRect(shell.top_bar);
   out.content = PhiToRect(shell.content);
   out.bookmark_bar = PhiToRect(shell.bookmark_bar);
+  out.app_icon = PhiToRect(shell.app_icon);
   out.search_tabs = PhiToRect(shell.search_tabs);
   out.band_divider = PhiToRect(shell.band_divider);
   out.back = PhiToRect(shell.back);
@@ -836,6 +838,7 @@ POINT PhiShellWindow::frame_offset() const {
 }
 
 void PhiShellWindow::ApplyPalette() {
+  UpdateSidebarBackdrop();
   RefreshTabs();  // Every colour is read from the host at paint time.
   PushSplitViewStyle();  // The framework paints the split's chrome itself.
 }
@@ -2628,6 +2631,7 @@ void PhiShellWindow::LayoutContents() {
   omnibox_->ClosePopup(/*stop_query=*/false);  // Anchored to the OLD rect.
   const Layout layout = ComputeLayout();
   omnibox_->Position();
+  UpdateSidebarBackdrop();
   if (spaces_->creating()) {
     // The form lives only in a docked vertical sidebar: a layout switch or
     // a collapse ends it (the Mac re-routes to its standalone window).
@@ -2759,7 +2763,7 @@ HBITMAP PhiShellWindow::CaptureLeavingComposite() {
     // stay put over the slide and are painted once, unslid, by the frame.
     // The address text is painted in (the EDIT itself is not captured).
     base::AutoReset<bool> suppress(&caption_buttons_suppressed_, true);
-    PaintChrome(mem, layout, /*include_child_controls=*/true);
+    PaintChrome(mem, layout, CurrentPalette(), /*include_child_controls=*/true);
   }
   // The page — and whatever sits over it (a native page, the watch fog):
   // the screen has it right now.
@@ -2924,7 +2928,8 @@ PhiDragBitmap PhiShellWindow::CaptureChromeRect(const RECT& client_rect) {
   ::FillRect(mem, &client, fill);
   ::DeleteObject(fill);
   // The same frame WM_PAINT composes, into our own bits.
-  PaintChrome(mem, ComputeLayout(), /*include_child_controls=*/false);
+  PaintChrome(mem, ComputeLayout(), CurrentPalette(),
+              /*include_child_controls=*/false);
   ::GdiFlush();
   const int w = clipped.right - clipped.left;
   const int h = clipped.bottom - clipped.top;
@@ -3890,6 +3895,66 @@ PhiPalette PhiShellWindow::BarPalette() const {
   return page ? PhiPageBarPalette(palette, *page) : palette;
 }
 
+void PhiShellWindow::UpdateSidebarBackdrop() {
+  if (!shell_hwnd_ || destroying_) {
+    return;
+  }
+  const Layout layout = ComputeLayout();
+  HIGHCONTRASTW contrast = {sizeof(contrast)};
+  ::SystemParametersInfoW(SPI_GETHIGHCONTRAST, sizeof(contrast), &contrast, 0);
+  const bool enabled = !layout.horizontal_tabs && !sidebar_collapsed_ &&
+                       !browsers_->content_fullscreen() &&
+                       !(contrast.dwFlags & HCF_HIGHCONTRASTON);
+  const BOOL dark = CurrentPalette().dark;
+  ::DwmSetWindowAttribute(shell_hwnd_, DWMWA_USE_IMMERSIVE_DARK_MODE,
+                          &dark, sizeof(dark));
+  // Desktop Acrylic exposes the wallpaper/windows behind the sidebar.
+  // Unsupported Windows versions retain the existing opaque palette.
+  const DWM_SYSTEMBACKDROP_TYPE type =
+      enabled ? DWMSBT_TRANSIENTWINDOW : DWMSBT_NONE;
+  sidebar_backdrop_ = SUCCEEDED(::DwmSetWindowAttribute(
+      shell_hwnd_, DWMWA_SYSTEMBACKDROP_TYPE, &type, sizeof(type))) && enabled;
+  MARGINS margins = {};
+  if (sidebar_backdrop_) {
+    margins.cxLeftWidth = layout.content.left;
+  }
+  if (FAILED(::DwmExtendFrameIntoClientArea(shell_hwnd_, &margins))) {
+    sidebar_backdrop_ = false;
+  }
+}
+
+void PhiShellWindow::PrepareBackdropPixels(const PhiPalette& palette) {
+  if (!sidebar_backdrop_ || !back_buffer_bits_) {
+    return;
+  }
+  // GDI can batch writes to a DIB; finish them before accessing its bits.
+  ::GdiFlush();
+  const int width = back_buffer_size_.cx;
+  const int sidebar = std::clamp(ComputeLayout().content.left, 0L,
+                                  back_buffer_size_.cx);
+  const COLORREF ground = palette.ground_top;
+  const uint32_t rgb = (GetRValue(ground) << 16) |
+                       (GetGValue(ground) << 8) | GetBValue(ground);
+  // SAFETY: AcquireBackBuffer allocated width * height 32-bit pixels in a
+  // top-down DIB; 32bpp rows require no additional stride padding.
+  auto pixels = UNSAFE_BUFFERS(base::span<uint32_t>(
+      static_cast<uint32_t*>(back_buffer_bits_),
+      static_cast<size_t>(width) * back_buffer_size_.cy));
+  const uint32_t tint = PhiBackdropPixel(rgb, palette.dark ? 0 : 0xFFFFFF);
+  for (int y = 0; y < back_buffer_size_.cy; ++y) {
+    auto row = pixels.subspan(static_cast<size_t>(y) * width,
+                              static_cast<size_t>(width));
+    for (int x = 0; x < sidebar; ++x) {
+      row[x] = (row[x] & 0xFFFFFF) == rgb
+                   ? tint : PhiBackdropPixelOver(row[x], rgb, tint);
+    }
+    // The address row and web-content area remain opaque.
+    for (int x = sidebar; x < width; ++x) {
+      row[x] |= 0xFF000000;
+    }
+  }
+}
+
 HDC PhiShellWindow::AcquireBackBuffer(HDC dc, HGDIOBJ* old_bitmap) {
   RECT rc = {};
   ::GetClientRect(shell_hwnd_, &rc);
@@ -3899,9 +3964,18 @@ HDC PhiShellWindow::AcquireBackBuffer(HDC dc, HGDIOBJ* old_bitmap) {
       (back_buffer_size_.cx != bw || back_buffer_size_.cy != bh)) {
     ::DeleteObject(back_buffer_);
     back_buffer_ = nullptr;
+    back_buffer_bits_ = nullptr;
   }
   if (!back_buffer_) {
-    back_buffer_ = ::CreateCompatibleBitmap(dc, bw, bh);
+    BITMAPINFO info = {};
+    info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    info.bmiHeader.biWidth = bw;
+    info.bmiHeader.biHeight = -bh;
+    info.bmiHeader.biPlanes = 1;
+    info.bmiHeader.biBitCount = 32;
+    info.bmiHeader.biCompression = BI_RGB;
+    back_buffer_ = ::CreateDIBSection(dc, &info, DIB_RGB_COLORS,
+                                     &back_buffer_bits_, nullptr, 0);
     back_buffer_size_ = {bw, bh};
   }
   if (!back_buffer_) {
@@ -3935,7 +4009,7 @@ void PhiShellWindow::ComposeSlideFrame() {
   ::ReleaseDC(shell_hwnd_, dc);
 }
 
-void PhiShellWindow::ComposeFrame(HDC mem) {
+void PhiShellWindow::ComposeFrame(HDC mem, const PhiPalette& palette) {
   if (HDC entering = content_slide_->EnteringDC()) {
     // The comfortable Space slide: the entering chrome is painted at rest
     // into the slide's scratch — no caption buttons — with the entering
@@ -3952,14 +4026,15 @@ void PhiShellWindow::ComposeFrame(HDC mem) {
     {
       base::AutoReset<bool> suppress(&caption_buttons_suppressed_, true);
       // The address text painted in: the EDIT is hidden for the slide.
-      PaintChrome(entering, ComputeLayout(), /*include_child_controls=*/true);
+      PaintChrome(entering, ComputeLayout(), palette,
+                  /*include_child_controls=*/true);
     }
     content_slide_->LayEnteringPage();
     content_slide_->Compose(mem);
     caption_band_->PaintButtons(mem);
     return;
   }
-  PaintChrome(mem, ComputeLayout(), /*include_child_controls=*/false);
+  PaintChrome(mem, ComputeLayout(), palette, /*include_child_controls=*/false);
   sidebar_->DrawDragIndicator(mem);
 }
 
@@ -4337,7 +4412,7 @@ void PhiShellWindow::OnChromeClick(int x, int y) {
     return;
   }
   if (::PtInRect(&layout.sidebar_toggle, pt)) {
-    ToggleSidebar();  // The band's leading control, View ▸ Toggle Sidebar.
+    ToggleSidebar();  // The sidebar header's toggle, View ▸ Toggle Sidebar.
     return;
   }
   if (::PtInRect(&layout.sidebar_downloads, pt)) {
@@ -6047,7 +6122,7 @@ void PhiShellWindow::PaintFloatingSidebar(HDC dc) {
   HGDIOBJ old = ::SelectObject(mem, bitmap);
   // include_child_controls: the panel has no live EDIT; the address text
   // is painted by hand where the layout has a field.
-  PaintChrome(mem, layout, /*include_child_controls=*/true);
+  PaintChrome(mem, layout, palette, /*include_child_controls=*/true);
   ::BitBlt(dc, 0, 0, panel_rc.right, panel_rc.bottom, mem, 0,
            floating_offset_y_, SRCCOPY);
   ::SelectObject(mem, old);
@@ -6310,18 +6385,18 @@ void PhiShellWindow::ShowBookmarkBarMenu(RECT anchor,
 }
 
 void PhiShellWindow::PaintChrome(HDC dc,
-                                     const Layout& layout,
-                                     bool include_child_controls) {
-  // The SLOT's palette (a Space may pin its own theme), ramped source →
-  // target while a Space swap slide is in flight.
-  const PhiPalette palette = CurrentPalette();
+                                 const Layout& layout,
+                                 const PhiPalette& palette,
+                                 bool include_child_controls) {
   // The address row's palette: the page's own colour while the row follows
   // it (ActivePageColor), CurrentPalette otherwise. A control takes the
   // palette of the row it stands in -- the comfortable strip row keeps the
   // tint.
-  const PhiPalette bar = BarPalette();
+  const std::optional<PhiColor> page = ActivePageColor();
+  const PhiPalette bar = page ? PhiPageBarPalette(palette, *page) : palette;
   const auto row_palette = [&](const RECT& r) -> const PhiPalette& {
-    return r.top >= layout.top_bar.top && r.bottom <= layout.top_bar.bottom &&
+    return r.left >= layout.top_bar.left && r.right <= layout.top_bar.right &&
+                   r.top >= layout.top_bar.top && r.bottom <= layout.top_bar.bottom &&
                    layout.top_bar.bottom > layout.top_bar.top
                ? bar
                : palette;
@@ -6459,6 +6534,15 @@ void PhiShellWindow::PaintChrome(HDC dc,
   // painted AFTER the row's ground so the fill cannot cover them
   // (phi_caption_band.h owns their hot states).
   caption_band_->Paint(dc, /*with_buttons=*/!caption_buttons_suppressed_);
+
+  if (layout.app_icon.right > layout.app_icon.left) {
+    const auto& logo = PhiLogoBgra256();
+    if (!logo.empty()) {
+      RECT mark = layout.app_icon;
+      ::InflateRect(&mark, -Scaled(6), -Scaled(6));
+      PhiDrawBgra(dc, mark, logo.data(), 256, 256);
+    }
+  }
 
   // The toolbar buttons (§2.2a): one painter, 32 square, radius 4, a 16
   // dip glyph, the state's wash. Each mode empties the rects it hides, so
@@ -7322,6 +7406,14 @@ LRESULT CALLBACK PhiShellWindow::ShellWndProc(HWND hwnd,
         return 0;
       }
       return ::DefWindowProcW(hwnd, msg, wparam, lparam);
+    case WM_DWMCOMPOSITIONCHANGED:
+    case WM_THEMECHANGED:
+    case WM_SETTINGCHANGE:
+      if (self) {
+        self->UpdateSidebarBackdrop();
+        ::InvalidateRect(hwnd, nullptr, FALSE);
+      }
+      return ::DefWindowProcW(hwnd, msg, wparam, lparam);
     case WM_SIZE:
       if (self) {
         // Band geometry changed under the slide.
@@ -7365,7 +7457,7 @@ LRESULT CALLBACK PhiShellWindow::ShellWndProc(HWND hwnd,
       // current runs FlushPendingRebuild first; nothing rebuilds here.
       if (self) {
         HDC dc = reinterpret_cast<HDC>(wparam);
-        self->PaintChrome(dc, self->ComputeLayout(),
+        self->PaintChrome(dc, self->ComputeLayout(), self->CurrentPalette(),
                           /*include_child_controls=*/true);
       }
       return 0;
@@ -7399,14 +7491,20 @@ LRESULT CALLBACK PhiShellWindow::ShellWndProc(HWND hwnd,
           HBRUSH fill = ::CreateSolidBrush(self->BackgroundFill());
           ::FillRect(mem, &rc, fill);
           ::DeleteObject(fill);
-          self->ComposeFrame(mem);
+          // Freeze the animated theme for the whole frame. Alpha recovery
+          // must remove the exact ground PaintChrome used: even a one-level
+          // RGB drift can interpret the ground as opaque foreground and
+          // flash the entire sidebar during a Space's theme ramp.
+          const PhiPalette palette = self->CurrentPalette();
+          self->ComposeFrame(mem, palette);
+          self->PrepareBackdropPixels(palette);
           ::BitBlt(dc, ps.rcPaint.left, ps.rcPaint.top,
                    ps.rcPaint.right - ps.rcPaint.left,
                    ps.rcPaint.bottom - ps.rcPaint.top, mem, ps.rcPaint.left,
                    ps.rcPaint.top, SRCCOPY);
           ::SelectObject(mem, old_bmp);
         } else {
-          self->PaintChrome(dc, self->ComputeLayout(),
+          self->PaintChrome(dc, self->ComputeLayout(), self->CurrentPalette(),
                             /*include_child_controls=*/false);
         }
         if (mem) {

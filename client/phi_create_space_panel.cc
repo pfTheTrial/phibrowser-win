@@ -12,10 +12,13 @@
 #include <cmath>
 #include <cstdio>
 
+#include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/no_destructor.h"
 #include "base/rand_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "phibrowser-win/client/phi_dwrite.h"
+#include "phibrowser-win/client/phi_backdrop.h"
 #include "phibrowser-win/client/phi_emoji.h"
 #include "phibrowser-win/client/phi_i18n.h"
 #include "phibrowser-win/client/phi_icons.h"
@@ -28,6 +31,33 @@ namespace {
 
 constexpr wchar_t kClassName[] = L"PhiCreateSpacePanel";
 constexpr UINT_PTR kFieldId = 1;
+
+bool EnsureSurface(std::unique_ptr<PhiLayerSurface>& surface, const RECT& rc) {
+  const int width = rc.right - rc.left;
+  const int height = rc.bottom - rc.top;
+  if (width <= 0 || height <= 0) {
+    return false;
+  }
+  if (!surface || surface->width() != width || surface->height() != height) {
+    surface = std::make_unique<PhiLayerSurface>(width, height);
+  }
+  return surface->valid();
+}
+
+void PrepareSurface(PhiLayerSurface& surface, const PhiPalette& palette) {
+  ::GdiFlush();
+  const COLORREF ground = palette.ground_top;
+  const uint32_t rgb = (GetRValue(ground) << 16) |
+                       (GetGValue(ground) << 8) | GetBValue(ground);
+  // SAFETY: PhiLayerSurface owns a top-down, tightly packed 32bpp DIB.
+  auto pixels = UNSAFE_BUFFERS(base::span<uint32_t>(
+      static_cast<uint32_t*>(surface.bits()), surface.byte_size() / 4));
+  const uint32_t tint = PhiBackdropPixel(rgb, palette.dark ? 0 : 0xFFFFFF);
+  for (uint32_t& pixel : pixels) {
+    pixel = (pixel & 0xFFFFFF) == rgb
+                ? tint : PhiBackdropPixelOver(pixel, rgb, tint);
+  }
+}
 
 // CreateSpacePanel's sidebar metrics (DIP).
 constexpr int kContentWidth = 320;  // sidebarContentWidth
@@ -463,6 +493,9 @@ void PhiCreateSpacePanel::Reposition(const RECT& bounds) {
 void PhiCreateSpacePanel::Refresh() {
   if (alive()) {
     NotifyThemeChanged();  // Re-reads QueryPalette() and repaints.
+    if (field_) {
+      ::InvalidateRect(field_, nullptr, FALSE);
+    }
   }
 }
 
@@ -880,7 +913,44 @@ void PhiCreateSpacePanel::Cancel() {
 }
 
 void PhiCreateSpacePanel::Paint(HDC dc, const RECT&) {
+  RECT rc = {};
+  ::GetClientRect(hwnd(), &rc);
+  if (UsesSidebarBackdrop() && EnsureSurface(backdrop_surface_, rc)) {
+    PaintForm(backdrop_surface_->dc());
+    PrepareSurface(*backdrop_surface_, QueryPalette());
+    ::BitBlt(dc, 0, 0, rc.right, rc.bottom, backdrop_surface_->dc(), 0, 0,
+             SRCCOPY);
+    return;
+  }
   PaintForm(dc);
+}
+
+bool PhiCreateSpacePanel::UsesSidebarBackdrop() const {
+  return !standalone() && controller_ &&
+         controller_->sidebar_backdrop_enabled();
+}
+
+bool PhiCreateSpacePanel::PaintBackdropField(HWND field) {
+  RECT rc = {};
+  ::GetClientRect(field, &rc);
+  if (!EnsureSurface(field_surface_, rc)) {
+    return false;
+  }
+  PAINTSTRUCT ps = {};
+  HDC dc = ::BeginPaint(field, &ps);
+  const PhiPalette palette = QueryPalette();
+  HBRUSH brush = ::CreateSolidBrush(Blend(palette.ink, palette.ground_top, 10));
+  ::FillRect(field_surface_->dc(), &rc, brush);
+  ::DeleteObject(brush);
+  // Keep native EDIT behavior (selection, scrolling, IME and cue banner),
+  // but give its GDI output the same alpha as the surrounding name row.
+  ::CallWindowProcW(field_base_proc_, field, WM_PRINTCLIENT,
+                    reinterpret_cast<WPARAM>(field_surface_->dc()),
+                    PRF_CLIENT | PRF_ERASEBKGND);
+  PrepareSurface(*field_surface_, palette);
+  ::BitBlt(dc, 0, 0, rc.right, rc.bottom, field_surface_->dc(), 0, 0, SRCCOPY);
+  ::EndPaint(field, &ps);
+  return true;
 }
 
 void PhiCreateSpacePanel::PaintForm(HDC dc) {
@@ -890,36 +960,12 @@ void PhiCreateSpacePanel::PaintForm(HDC dc) {
   RECT rc = {};
   ::GetClientRect(hwnd(), &rc);
   const PhiPalette palette = controller_->CurrentPalette();
-  // The sidebar's own tint under the form (the Mac's themed backdrop): the
-  // same top-to-bottom ramp the shell paints, continued at this window's
-  // offset so the two never seam. The standalone window's form sits on
-  // that window's flat ground instead.
-  if (host_) {
-    HBRUSH brush = ::CreateSolidBrush(host_->FormGround());
-    ::FillRect(dc, &rc, brush);
-    ::DeleteObject(brush);
-  } else {
-    RECT shell = {};
-    POINT origin = {0, 0};
-    if (HWND owner = controller_->shell_hwnd()) {
-      ::GetClientRect(owner, &shell);
-      ::MapWindowPoints(hwnd(), owner, &origin, 1);
-    }
-    const int total = std::max(1, static_cast<int>(shell.bottom));
-    const int bands = 24;
-    const int h = rc.bottom - rc.top;
-    for (int i = 0; i < bands; ++i) {
-      RECT band = {rc.left, rc.top + h * i / bands, rc.right,
-                   rc.top + h * (i + 1) / bands};
-      const int at = std::max(0, std::min(total, static_cast<int>(
-                                                   origin.y + band.top)));
-      const COLORREF tint = Blend(palette.ground_bottom, palette.ground_top,
-                                  at * 255 / total);
-      HBRUSH brush = ::CreateSolidBrush(tint);
-      ::FillRect(dc, &band, brush);
-      ::DeleteObject(brush);
-    }
-  }
+  // Match the shell's flat ground. Paint() turns the sidebar form into
+  // premultiplied pixels; standalone/flyout forms keep their opaque ground.
+  HBRUSH brush = ::CreateSolidBrush(host_ ? host_->FormGround()
+                                         : palette.ground_top);
+  ::FillRect(dc, &rc, brush);
+  ::DeleteObject(brush);
   const Geometry g = ComputeGeometry();
   ::SetBkMode(dc, TRANSPARENT);
   const COLORREF ink = palette.dark ? RGB(0xFF, 0xFF, 0xFF) : RGB(0, 0, 0);
@@ -1308,6 +1354,17 @@ LRESULT CALLBACK PhiCreateSpacePanel::FieldProc(HWND hwnd,
                            ? self->field_base_proc_
                            : ::DefWindowProcW;
   switch (msg) {
+    case WM_PAINT:
+      if (self && self->UsesSidebarBackdrop() &&
+          self->PaintBackdropField(hwnd)) {
+        return 0;
+      }
+      break;
+    case WM_ERASEBKGND:
+      if (self && self->UsesSidebarBackdrop()) {
+        return 1;  // The buffered paint owns the name field's whole ground.
+      }
+      break;
     case WM_KEYDOWN:
       if (self && w == VK_ESCAPE) {
         self->Cancel();
@@ -1326,7 +1383,22 @@ LRESULT CALLBACK PhiCreateSpacePanel::FieldProc(HWND hwnd,
     default:
       break;
   }
-  return ::CallWindowProcW(base, hwnd, msg, w, l);
+  // EDIT also paints synchronously during editing/selection. Follow those
+  // writes with the alpha-aware path so they cannot leave zero-alpha text.
+  const bool repaint = self && self->UsesSidebarBackdrop() &&
+      (msg == WM_CHAR || msg == WM_KEYDOWN || msg == WM_SETTEXT ||
+       msg == WM_LBUTTONDOWN || msg == WM_LBUTTONUP ||
+       (msg == WM_MOUSEMOVE && (w & MK_LBUTTON)) ||
+       msg == WM_SETFOCUS || msg == WM_KILLFOCUS || msg == EM_SETSEL ||
+       msg == EM_REPLACESEL || msg == EM_UNDO ||
+       msg == WM_PASTE || msg == WM_CUT || msg == WM_CLEAR || msg == WM_UNDO ||
+       msg == WM_IME_COMPOSITION);
+  const LRESULT result = ::CallWindowProcW(base, hwnd, msg, w, l);
+  // Native notifications may close the form; do not dereference self here.
+  if (repaint && ::IsWindow(hwnd)) {
+    ::InvalidateRect(hwnd, nullptr, FALSE);
+  }
+  return result;
 }
 
 }  // namespace phi_client

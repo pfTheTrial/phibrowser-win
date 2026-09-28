@@ -5,6 +5,7 @@
 #include <cstdio>
 
 #include "phi_shell_layout.h"
+#include "phi_backdrop.h"
 
 using namespace phi_client;
 
@@ -66,10 +67,12 @@ void Vertical() {
   // The pane: flush top / right / bottom, from the sidebar's edge.
   CHECK((l.top_bar == SidebarRect{240, 0, 1440, 44}));
   CHECK((l.content == SidebarRect{240, 44, 1440, 900}));
-  // Leading: toggle, search (32 buttons, 4 apart), a gap, the nav trio.
-  CHECK((l.sidebar_toggle == SidebarRect{248, 6, 280, 38}));
-  CHECK(l.search_tabs.left == l.sidebar_toggle.right + 4);
-  CHECK(l.back.left == l.search_tabs.right + 8);
+  // App mark leading; search and toggle trail the sidebar's own header.
+  CHECK((l.app_icon == SidebarRect{8, 6, 40, 38}));
+  CHECK((l.sidebar_toggle == SidebarRect{200, 6, 232, 38}));
+  CHECK(l.search_tabs.right == l.sidebar_toggle.left - 4);
+  CHECK(l.app_icon.right < l.search_tabs.left);
+  CHECK(l.back.left == l.top_bar.left + 8);
   CHECK(l.forward.left == l.back.right + 4);
   CHECK(l.reload.left == l.forward.right + 4);
   // Trailing: ⋯ 16 before minimize, the divider between, then extensions
@@ -90,23 +93,23 @@ void Vertical() {
   CHECK(l.reader.empty());
   CHECK(l.field_ext_strip.empty());
   // The header row: pips at x 8, 28 dip, "+" trailing.
-  CHECK((l.spaces_strip == SidebarRect{0, 0, 240, 44}));
+  CHECK((l.spaces_strip == SidebarRect{0, 44, 240, 88}));
   CHECK(l.chip_size == 28);
-  CHECK(l.chips_left == 8 && l.chips_top == 8);
-  CHECK((l.add_space == SidebarRect{240 - 8 - 28, 8, 232, 36}));
+  CHECK(l.chips_left == 8 && l.chips_top == 52);
+  CHECK((l.add_space == SidebarRect{240 - 8 - 28, 52, 232, 80}));
   CHECK(l.chips_limit == l.add_space.left - 4);
   // No pins, no bookmarks, no section labels: "+ New tab" right under
   // the header.
   CHECK(l.favorites.empty());
   CHECK(l.pinned_label.empty() && l.bookmarks_label.empty());
   CHECK(l.tabs_label.empty());
-  CHECK(l.new_tab_row.top == 44);
+  CHECK(l.new_tab_row.top == 88);
   // The agent Space's "<Agent>'s tabs" cue is the one label row left.
   ShellLayoutInputs owned = Base(PhiLayoutMode::kBalanced);
   owned.owned_tabs_label = true;
   const ShellLayout o = ComputeShellLayout(owned);
-  CHECK((o.tabs_label == SidebarRect{16, 44, 240 - 16, 44 + 28}));
-  CHECK(o.new_tab_row.top == 44 + 28);
+  CHECK((o.tabs_label == SidebarRect{16, 88, 240 - 16, 88 + 28}));
+  CHECK(o.new_tab_row.top == 88 + 28);
   CHECK(l.tabs_top == l.new_tab_row.bottom + 2);
   CHECK(l.tabs_left == 8);
   CHECK((l.bottom_bar == SidebarRect{0, 900 - 40, 240, 900}));
@@ -132,7 +135,7 @@ void VerticalExtras() {
   CHECK(l.field_ext_strip.right - l.field_ext_strip.left == 2 * 28 + 2);
   CHECK(l.url_field.right == l.field_ext_strip.left - 8);
   // Two pinned rows right under the header: 8 + 44 + 8 + 44 + 8.
-  CHECK(l.pinned_label.empty() && l.favorites.top == 44);
+  CHECK(l.pinned_label.empty() && l.favorites.top == 88);
   CHECK(l.favorites.bottom - l.favorites.top == 8 + 44 + 8 + 44 + 8);
   // An 8 dip gap, three bookmark rows, another gap, "+ New tab".
   CHECK(l.bookmarks_label.empty());
@@ -151,26 +154,27 @@ void VerticalExtras() {
   const ShellLayout lone = ComputeShellLayout(floating);
   CHECK(!lone.spaces_strip.empty());
   CHECK(lone.add_space.empty() && lone.chips_limit == lone.chips_left);
-  CHECK(lone.favorites.top == 44);
+  CHECK(lone.favorites.top == 88);
   // A narrow window hides the extension slots before crushing the text.
   ShellLayoutInputs narrow = in;
-  narrow.client_width = 760;
+  narrow.client_width = 680;
   const ShellLayout n = ComputeShellLayout(narrow);
   CHECK(n.field_ext_strip.empty());
   CHECK(n.url_field.right == n.extensions.left - 8);
 }
 
 void SingleSpace() {
-  std::printf("single space: no header row; the bands start at the top\n");
+  std::printf("single space: persistent app header, no Space strip\n");
   ShellLayoutInputs in = Base(PhiLayoutMode::kBalanced);
   in.spaces_switch = false;
   ShellLayout l = ComputeShellLayout(in);
   CHECK(l.spaces_strip.empty() && l.add_space.empty());
   CHECK(!l.spaces_switch);
-  CHECK(l.tabs_label.empty() && l.new_tab_row.top == 0);
+  CHECK(l.tabs_label.empty() && l.new_tab_row.top == 44);
+  CHECK(!l.app_icon.empty() && !l.search_tabs.empty());
   in.pinned_row_count = 1;
   l = ComputeShellLayout(in);
-  CHECK(l.pinned_label.empty() && l.favorites.top == 0);
+  CHECK(l.pinned_label.empty() && l.favorites.top == 44);
   CHECK(l.new_tab_row.top == l.favorites.bottom + 8);
   in = Base(PhiLayoutMode::kComfortable);
   in.spaces_switch = false;
@@ -233,10 +237,10 @@ void Horizontal() {
 }
 
 void SidebarToggle() {
-  std::printf("sidebar toggle: leads the address row, stays through a "
+  std::printf("sidebar toggle: trails the sidebar header, stays through a "
               "collapse, absent in horizontal\n");
   const ShellLayout b = ComputeShellLayout(Base(PhiLayoutMode::kBalanced));
-  CHECK((b.sidebar_toggle == SidebarRect{248, 6, 280, 38}));
+  CHECK((b.sidebar_toggle == SidebarRect{200, 6, 232, 38}));
   ShellLayoutInputs collapsed = Base(PhiLayoutMode::kBalanced);
   collapsed.sidebar_hidden = true;
   // Collapsed: the pane starts at x 0 and the toggle leads it there.
@@ -249,7 +253,7 @@ void SidebarToggle() {
   CHECK(ComputeShellLayout(fullscreen).sidebar_toggle.empty());
   // It scales with the row.
   const ShellLayout hi = ComputeShellLayout(Base(PhiLayoutMode::kBalanced, 144));
-  CHECK((hi.sidebar_toggle == SidebarRect{372, 9, 420, 57}));
+  CHECK((hi.sidebar_toggle == SidebarRect{300, 9, 348, 57}));
 }
 
 void Collapsed() {
@@ -260,6 +264,8 @@ void Collapsed() {
   CHECK((l.top_bar == SidebarRect{0, 0, 1440, 44}));
   CHECK((l.content == SidebarRect{0, 44, 1440, 900}));
   CHECK(l.spaces_strip.empty());
+  CHECK(l.app_icon.empty());
+  CHECK(l.search_tabs.right < l.back.left);
   CHECK(!l.url_field.empty());  // The address row is the pane's, not the sidebar's.
   CHECK(l.favorites.empty());
   CHECK(l.new_tab_row.empty());
@@ -282,6 +288,7 @@ void ContentFullscreen() {
   const ShellLayout l = ComputeShellLayout(in);
   CHECK((l.content == SidebarRect{0, 0, 1440, 900}));
   CHECK(l.title_bar.empty() && l.top_bar.empty() && l.sidebar.empty());
+  CHECK(l.app_icon.empty() && l.search_tabs.empty());
   CHECK(l.url_field.empty() && l.app_menu.empty());
 }
 
@@ -294,7 +301,45 @@ void Dpi() {
   CHECK((l.content == SidebarRect{360, 66, 2160, 1350}));
   CHECK(l.url_field.bottom - l.url_field.top == 48);
   CHECK(l.chip_size == 28);  // Design units; the paint scales.
-  CHECK(l.chips_left == 12 && l.chips_top == 12);
+  CHECK(l.chips_left == 12 && l.chips_top == 78);
+}
+
+void Backdrop() {
+  std::printf("backdrop: translucent ground, readable ink, premultiplied edges\n");
+  CHECK(PhiBackdropPixel(0xFFFFFF, 0xFFFFFF) == 0x33333333u);
+  CHECK(PhiBackdropPixel(0, 0) == 0x33000000u);
+  CHECK(PhiBackdropPixel(0, 0xFFFFFF) == 0xFF000000u);
+  CHECK(PhiBackdropPixel(0xFFFFFF, 0) == 0xFFFFFFFFu);
+  CHECK(PhiBackdropPixel(0xFF0000, 0xEEEEEE) == 0xFFFF0000u);
+  // The theme's chroma survives translucency, instead of being multiplied
+  // by 20% for a second time. Stronger saturation must remain visible.
+  for (uint32_t ground : {0xFFF0F0u, 0xFFCFCFu, 0xE0DCFFu}) {
+    const uint32_t tint = PhiBackdropPixel(ground, 0xFFFFFF);
+    CHECK((tint >> 24) < 255);
+    CHECK(PhiBackdropPixelOver(ground, ground, tint) == tint);
+    CHECK(static_cast<int>((tint >> 16) & 255) -
+              static_cast<int>(tint & 255) ==
+          static_cast<int>((ground >> 16) & 255) -
+              static_cast<int>(ground & 255));
+    CHECK(PhiBackdropPixelOver(0, ground, tint) == 0xFF000000u);
+    CHECK(PhiBackdropPixelOver(0xFFFFFF, ground, tint) == 0xFFFFFFFFu);
+  }
+  for (uint32_t ground : {0u, 0xFFFFFFu, 0xDAE6EFu, 0x252525u}) {
+    for (uint32_t value = 0; value < 256; ++value) {
+      const uint32_t rgb = value * 0x010101u;
+      const uint32_t pixel = PhiBackdropPixel(rgb, ground);
+      const int alpha = pixel >> 24;
+      CHECK(alpha >= 51 && alpha <= 255);
+      for (int shift : {0, 8, 16}) {
+        const int channel = (pixel >> shift) & 255;
+        CHECK(channel <= alpha);
+        // Compositing over the original ground reproduces the GDI image.
+        const int restored = channel +
+            (((ground >> shift) & 255) * (255 - alpha) + 127) / 255;
+        CHECK(restored == static_cast<int>(value));
+      }
+    }
+  }
 }
 
 void Inputs() {
@@ -331,6 +376,7 @@ int main() {
   Collapsed();
   ContentFullscreen();
   Dpi();
+  Backdrop();
   Inputs();
   if (g_failures) {
     std::printf("%d failure(s)\n", g_failures);

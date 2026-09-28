@@ -7,6 +7,7 @@
 
 #include <windows.h>
 
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -155,6 +156,8 @@ class PhiCreateSpacePanel : public PhiPanel {
   void Create();
   void Cancel();
   void PaintForm(HDC dc);
+  bool UsesSidebarBackdrop() const;
+  bool PaintBackdropField(HWND field);
   void PaintCells(HDC dc, const Geometry& g, const PhiPalette& palette);
   void PaintSlider(HDC dc, const RECT& bounds, const PhiPalette& palette);
 
@@ -167,6 +170,9 @@ class PhiCreateSpacePanel : public PhiPanel {
   WNDPROC field_base_proc_ = nullptr;
   HBRUSH field_brush_ = nullptr;
   COLORREF field_brush_color_ = 0;
+  // GDI child windows on the shell's glass need premultiplied pixels too.
+  std::unique_ptr<PhiLayerSurface> backdrop_surface_;
+  std::unique_ptr<PhiLayerSurface> field_surface_;
 
   // The form's state — CreateSpacePanel's @State.
   std::vector<std::pair<std::string, std::wstring>> profiles_;  // id, name

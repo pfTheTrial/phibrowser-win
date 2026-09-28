@@ -55,8 +55,8 @@ inline constexpr int kEdgeInset = 8;
 // The one toolbar button: 32 square, radius 4; 4 apart in a cluster.
 inline constexpr int kNavButton = 32;
 inline constexpr int kNavGroupSpacing = 4;
-// The gap between the two leading groups (toggle + search → nav trio) and
-// between the nav trio and the omnibox.
+// The gap before the nav trio when the sidebar is collapsed, and between
+// the nav trio and the omnibox.
 inline constexpr int kGroupGap = 8;
 // The tool cluster → the caption divider, and the divider's gap to the
 // caption buttons.
@@ -159,11 +159,10 @@ struct ShellLayoutInputs {
   // There is something to switch TO: more than one Space (agent pips
   // included), or a Space is being created. With a single Space the strip
   // row is pure noise (the Mac's updateSpaceSwitchVisibility): the vertical
-  // layouts drop the row and reclaim its 40pt, comfortable drops the
-  // compact pip.
+  // layouts drop the Space row (the app header remains), comfortable
+  // drops the compact pip.
   bool spaces_switch = true;
-  // The layout is the floating panel's (§4.4): the header row gains the
-  // pin button at its trailing edge and the "+" moves in by one slot.
+  // The floating panel keeps a Space row even with a single Space.
   bool floating_panel = false;
   // The agent Space's "<Agent>'s tabs" cue (§5.10) above the tab list;
   // the plain section labels are gone (§4.2).
@@ -223,11 +222,10 @@ struct ShellLayout {
   SidebarRect content;  // Where the reparented browser child goes.
   // The bookmark bar band, carved off the content's top when visible.
   SidebarRect bookmark_bar;
+  SidebarRect app_icon;  // The vertical sidebar's persistent header mark.
   SidebarRect search_tabs;
-  // The sidebar toggle (ClosePane / OpenPane): the address row's LEADING
-  // control in the vertical layout, docked or collapsed alike — so a
-  // collapsed sidebar is always one click from coming back. Empty in
-  // comfortable, which has no sidebar to toggle.
+  // Search and the toggle trail the sidebar header. When collapsed they
+  // lead the address row, keeping the sidebar one click away.
   SidebarRect sidebar_toggle;
   // The hairline closing the band's trailing cluster.
   SidebarRect band_divider;
@@ -252,8 +250,8 @@ struct ShellLayout {
   SidebarRect memory, feedback, chat;
   SidebarRect extensions;  // The puzzle button.
   // The app menu button (⋯, docs/windows-native-ui.md §3): comfortable's
-  // toolbar trailing button; the vertical layout's band cluster, before
-  // search-tabs. Every layout has one — it is the only way to the menu.
+  // toolbar trailing button; the vertical layout's band cluster.
+  // Every layout has one — it is the only way to the menu.
   SidebarRect app_menu;
   // The omnibox's leading site-info slot (lock / page glyph).
   SidebarRect page_icon;

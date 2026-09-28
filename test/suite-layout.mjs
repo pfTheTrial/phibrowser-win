@@ -63,9 +63,10 @@ test('layout: vertical tabs — sidebar beside a flush pane with the address row
     assertEq(v.y, scaled(ADDRESS_ROW, v.dpi), 'the address row above the pane')
     assertEq(v.titleBar, scaled(ADDRESS_ROW, v.dpi), 'the caption row IS the address row')
     assert(v.width > 0 && v.height > 0, 'content is non-empty')
-    // The address row's controls: the toggle leads at the pane's edge + 8,
-    // the omnibox is on the row, the app menu trails before the caption.
-    assertEq(v.sidebarToggle.x, v.sidebar + scaled(8, v.dpi), 'toggle at the pane edge + 8')
+    // The toggle trails the sidebar header; navigation and the omnibox
+    // occupy the adjacent address row.
+    assertEq(v.sidebarToggle.x, v.sidebar - scaled(8, v.dpi) - scaled(32, v.dpi),
+             'toggle at the trailing edge of the sidebar header')
     assert(v.urlField.y >= 0 && v.urlField.y + v.urlField.height <= v.y,
            'the omnibox lives in the address row')
     assert(v.appMenu.x > v.urlField.x + v.urlField.width, 'the app menu trails the omnibox')

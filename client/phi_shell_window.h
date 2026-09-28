@@ -887,6 +887,8 @@ class PhiShellWindow : public PhiHitSource,
   void ApplyLayoutMode(PhiLayoutMode mode);
   // Repaints for a palette the host just changed.
   void ApplyPalette();
+  // Child surfaces in the sidebar must use the same alpha contract.
+  bool sidebar_backdrop_enabled() const { return sidebar_backdrop_; }
   // The content region (client coords, physical pixels) the browser child
   // occupies.
   RECT content_rect();
@@ -1005,9 +1007,9 @@ class PhiShellWindow : public PhiHitSource,
     // The bookmark bar band, carved off the content's top when visible
     // (the Mac's 32pt BookmarkBar under the header).
     RECT bookmark_bar{};
-    // Navigation. In the vertical layouts back / forward / reload and
-    // search-tabs ride the caption band's trailing cluster; comfortable and
-    // balanced keep the trio on the top bar's leading edge.
+    RECT app_icon{};
+    // Search trails the sidebar header (the caption strip in comfortable).
+    // Navigation stays on the address row's leading edge.
     RECT search_tabs{};
     // The hairline closing the band's trailing cluster, in the gap between
     // search-tabs and the caption buttons. Every layout has one.
@@ -1047,7 +1049,7 @@ class PhiShellWindow : public PhiHitSource,
     // ACTIVE tab is distillable — the Mac shows the reader button only where
     // Reader View has something to offer.
     RECT reader{};
-    // The vertical layouts' leading sidebar toggle (phi_shell_layout.h).
+    // The vertical sidebar header's toggle (phi_shell_layout.h).
     RECT sidebar_toggle{};
     // The pinned-extension icon strip leading the copy-link button inside
     // the capsule. Empty when nothing is pinned OR the icons would squeeze
@@ -1086,7 +1088,8 @@ class PhiShellWindow : public PhiHitSource,
   // `include_child_controls` draws what child windows would draw themselves —
   // set only on the WM_PRINTCLIENT (PrintWindow) path, which renders the
   // parent alone. In WM_PAINT the URL field's EDIT child paints that region.
-  void PaintChrome(HDC dc, const Layout& layout, bool include_child_controls);
+  void PaintChrome(HDC dc, const Layout& layout, const PhiPalette& palette,
+                   bool include_child_controls);
   // Handles a click in the chrome (tab rows, close boxes, buttons, toolbar).
   void OnChromeClick(int x, int y);
   // Middle-click in the chrome: closes the tab row under the pointer (the
@@ -1219,7 +1222,11 @@ class PhiShellWindow : public PhiHitSource,
   // per WM_PAINT: the full-window backbuffer bitmap and the ground-gradient
   // band brushes.
   HBITMAP back_buffer_ = nullptr;
+  RAW_PTR_EXCLUSION void* back_buffer_bits_ = nullptr;
   SIZE back_buffer_size_{};
+  bool sidebar_backdrop_ = false;
+  void UpdateSidebarBackdrop();
+  void PrepareBackdropPixels(const PhiPalette& palette);
   // The slot palette's window ground — what uncovered backbuffer pixels show.
   COLORREF BackgroundFill() const;
 
@@ -1326,7 +1333,8 @@ class PhiShellWindow : public PhiHitSource,
   HWND swap_reveal_ = nullptr;   // Shown when the slide lands.
   HWND swap_conceal_ = nullptr;  // Hidden when the slide lands.
   void RevealSwappedContent();
-  void ComposeFrame(HDC mem);  // Chrome + drag indicator.
+  // Chrome + drag indicator, using the same palette as alpha recovery.
+  void ComposeFrame(HDC mem, const PhiPalette& palette);
 
   // --- The comfortable layout's Space switch (phi_content_slide.h) --------
   // No sidebar band to push in there: the whole client area slides — the
