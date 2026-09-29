@@ -39,7 +39,7 @@ class PhiSyncMarkerFile : public sync::MarkerStore {
 
   sync::MarkerFile Load() override;
   bool Save(const sync::MarkerFile& file) override;
-  void Remove();
+  bool Remove();
 
  private:
   const std::wstring path_;
@@ -54,6 +54,7 @@ class PhiSyncStateFile : public sync::EngineStateStore {
   std::optional<std::string> Get(const std::string& key) const override;
   void Set(const std::string& key,
            const std::optional<std::string>& value) override;
+  bool ClearSyncState();
 
  private:
   const std::wstring path_;
@@ -68,7 +69,7 @@ class PhiSpaceTableFile : public sync::SpaceTableStore {
 
   sync::SpaceSyncTable Load() override;
   bool Save(const sync::SpaceSyncTable& table) override;
-  void Remove();
+  bool Remove();
   // Runs after every successful save (worker thread).
   void set_on_saved(std::function<void(const sync::SpaceSyncTable&)> on_saved) {
     on_saved_ = std::move(on_saved);
@@ -94,8 +95,9 @@ class PhiSyncSidecarFile : public sync::SettingsSidecars {
   // Free-form device-wide entries beside the sidecars (the registry's HELD
   // values: a peer's value this platform shows through a local stand-in).
   // Self-removal (the Mac's clearLocalSyncState): every `<key>.phiSyncTs` /
-  // `.phiSyncVal` pair goes; extras stay.
-  void ClearSidecars();
+  // `.phiSyncVal` pair and the account's default-Space mirror go; other
+  // extras stay. False leaves the in-memory state unchanged for retry.
+  bool ClearSidecars();
 
   std::optional<std::string> Extra(const std::string& key) const;
   void SetExtra(const std::string& key, const std::optional<std::string>& value);

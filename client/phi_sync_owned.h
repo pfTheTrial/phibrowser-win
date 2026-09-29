@@ -101,7 +101,7 @@ class OwnedTableStore {
   // loss when the kind `had_records` (the engine then replays the type).
   virtual OwnedTable Load(bool had_records, bool* reported_loss) = 0;
   virtual bool Save(const OwnedTable& table) = 0;
-  virtual void Remove() = 0;
+  virtual bool Remove() = 0;
 };
 
 // --- Round context --------------------------------------------------------------------

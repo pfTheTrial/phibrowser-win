@@ -97,9 +97,9 @@ bool PhiSyncMarkerFile::Save(const sync::MarkerFile& file) {
   return Write(path_, dict);
 }
 
-void PhiSyncMarkerFile::Remove() {
+bool PhiSyncMarkerFile::Remove() {
   std::lock_guard<std::mutex> hold(lock_);
-  ::DeleteFileW(path_.c_str());
+  return PhiRemoveFileIfPresent(path_);
 }
 
 // --- engine state ---------------------------------------------------------------------
@@ -109,6 +109,19 @@ PhiSyncStateFile::PhiSyncStateFile(std::wstring path) : path_(std::move(path)) {
 }
 
 PhiSyncStateFile::~PhiSyncStateFile() = default;
+
+bool PhiSyncStateFile::ClearSyncState() {
+  std::lock_guard<std::mutex> hold(lock_);
+  base::DictValue cleared = values_.Clone();
+  for (const std::string& key : sync::EngineStateKeys()) {
+    cleared.Remove(key);
+  }
+  if (!Write(path_, cleared)) {
+    return false;
+  }
+  values_ = std::move(cleared);
+  return true;
+}
 
 std::optional<std::string> PhiSyncStateFile::Get(const std::string& key) const {
   std::lock_guard<std::mutex> hold(lock_);
@@ -334,9 +347,9 @@ bool PhiSpaceTableFile::Save(const sync::SpaceSyncTable& table) {
   return true;
 }
 
-void PhiSpaceTableFile::Remove() {
+bool PhiSpaceTableFile::Remove() {
   std::lock_guard<std::mutex> hold(lock_);
-  ::DeleteFileW(path_.c_str());
+  return PhiRemoveFileIfPresent(path_);
 }
 
 // --- sidecars ---------------------------------------------------------------------------
@@ -375,7 +388,7 @@ void PhiSyncSidecarFile::Set(const std::string& key,
   Write(path_, values_);
 }
 
-void PhiSyncSidecarFile::ClearSidecars() {
+bool PhiSyncSidecarFile::ClearSidecars() {
   std::lock_guard<std::mutex> hold(lock_);
   std::vector<std::string> keys;
   for (const auto [key, value] : values_) {
@@ -387,13 +400,16 @@ void PhiSyncSidecarFile::ClearSidecars() {
       keys.push_back(key);
     }
   }
-  if (keys.empty()) {
-    return;
-  }
+  base::DictValue cleared = values_.Clone();
+  cleared.Remove("PhiDefaultSpaceUuid.mirror");
   for (const std::string& key : keys) {
-    values_.Remove(key);
+    cleared.Remove(key);
   }
-  Write(path_, values_);
+  if (!Write(path_, cleared)) {
+    return false;
+  }
+  values_ = std::move(cleared);
+  return true;
 }
 
 std::optional<std::string> PhiSyncSidecarFile::Extra(

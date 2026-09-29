@@ -257,6 +257,8 @@ struct MemoryDeviceKeys : keys::DeviceKeyStore {
 };
 
 struct MemoryState : keys::KeyStateStore {
+  bool fail_mappings = false;
+  bool fail_enrollment = false;
   std::map<std::string, std::string> mappings;
   std::map<std::string, Bytes> parked;
   std::optional<keys::EnrollmentRecord> enrollment;
@@ -264,6 +266,9 @@ struct MemoryState : keys::KeyStateStore {
     return mappings;
   }
   bool SetProfileMappings(const std::map<std::string, std::string>& m) override {
+    if (fail_mappings) {
+      return false;
+    }
     mappings = m;
     return true;
   }
@@ -281,6 +286,9 @@ struct MemoryState : keys::KeyStateStore {
     return enrollment;
   }
   bool SetEnrollment(const keys::EnrollmentRecord& record) override {
+    if (fail_enrollment) {
+      return false;
+    }
     enrollment = record;
     return true;
   }
@@ -582,18 +590,48 @@ void TestRemoveThisDevice() {
   a.core.ApplyDecisions({{keys::PairingDecision::Kind::kRegisterNew, "Default",
                           "", "Your Phi"}},
                         kDefaultOnly);
-  Check(a.core.RemoveThisDevice().kind == KeyErrorKind::kLastActiveDevice &&
+  Check(a.core.RevokeThisDevice().kind == KeyErrorKind::kLastActiveDevice &&
             a.core.IsPaired() && !a.state.mappings.empty(),
         "the last active device cannot leave, and nothing local changes");
 
   Device b(server, "Box B");
   b.manager.JoinWithRecoveryCode(code);
   const std::string old_id = a.Id();
-  Check(a.core.RemoveThisDevice().ok(), "remove with another device active");
+  Check(a.core.RevokeThisDevice().ok(), "remove with another device active");
+  Check(a.core.IsPaired() && a.Id() == old_id && !a.state.mappings.empty(),
+        "remote revocation leaves local state for the service's cleanup journal");
+  a.state.fail_enrollment = true;
+  Check(!a.core.ClearLocalSyncState(true).ok() && a.core.ExposedKeys().empty(),
+        "failed enrollment cleanup clears exposed keys and remains retryable");
+  a.state.fail_enrollment = false;
+  a.state.fail_mappings = true;
+  Check(!a.core.ClearLocalSyncState(true).ok(),
+        "failed mapping cleanup is reported after revocation");
+  a.state.fail_mappings = false;
+  Check(a.core.ClearLocalSyncState(true).ok(),
+        "local removal can resume without revoking a second device key");
   Check(server.devices[old_id].status == "revoked" && a.Id() != old_id &&
             !a.core.IsPaired() && a.state.mappings.empty() &&
             !a.manager.current_ark() && a.core.ExposedKeys().empty(),
         "revoked remotely, key rotated, unpaired, mappings and ARK gone");
+}
+
+void TestReconfigureKeepsDeviceRegistration() {
+  FakeServer server;
+  Device a(server, "Box A");
+  std::string code;
+  a.manager.Bootstrap(&code);
+  a.core.ApplyDecisions({{keys::PairingDecision::Kind::kRegisterNew, "Default",
+                          "", "Your Phi"}}, kDefaultOnly);
+  const std::string id = a.Id();
+  Check(a.core.ClearLocalSyncState(false).ok() && a.Id() == id &&
+            server.devices[id].status == "active" && !a.core.IsPaired() &&
+            a.state.mappings.empty(),
+        "reconfiguration clears matching without revoking the last device");
+  keys::UnlockResult result;
+  Check(a.manager.UnlockAtStartup(&result).ok() &&
+            result == keys::UnlockResult::kUnlocked,
+        "the registered device can unlock and enter setup after reconfiguration");
 }
 
 void TestDomainKey() {
@@ -637,6 +675,7 @@ int main() {
   TestProfilesAcrossDevices();
   TestRegisterRefusesLiveMapping();
   TestRemoveThisDevice();
+  TestReconfigureKeepsDeviceRegistration();
   TestDomainKey();
   if (g_failures) {
     std::printf("sync_keys_test: %d failure(s)\n", g_failures);

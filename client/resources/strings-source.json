@@ -5805,6 +5805,26 @@
     "zh-Hant": "{0} 個分頁"
    }
   },
+  "sync.reconfigure.confirmation.windows": {
+   "comment": "Sync recovery after a server reset or incomplete local cleanup.",
+   "en": "This will clear this PC’s sync setup and matching information, then let you set up sync again. Your local browsing data and account’s synced data will be kept."
+  },
+  "sync.reconfigure.explanation": {
+   "comment": "Sync recovery after a server reset or incomplete local cleanup.",
+   "en": "The account’s sync data has changed. Syncing Phi data is paused. Review your account and connection before setting up sync again."
+  },
+  "sync.reconfigure.failed.windows": {
+   "comment": "Sync recovery after a server reset or incomplete local cleanup.",
+   "en": "Couldn’t finish clearing this PC’s sync setup. Sync remains paused. Try setting up sync again."
+  },
+  "sync.reconfigure.returnToSettings": {
+   "comment": "Sync recovery after a server reset or incomplete local cleanup.",
+   "en": "Sync needs to be set up again. Finish later, then choose Set up sync again in Settings → Sync. Your local browsing data is kept."
+  },
+  "sync.reconfigure.title": {
+   "comment": "Sync recovery after a server reset or incomplete local cleanup.",
+   "en": "Set up sync again"
+  },
   "sync.setup.applying": {
    "comment": "sync setup — phi_sync_setup_window.cc (Mac KeyLayerView / PairingWizard)",
    "en": "Applying your choices…"

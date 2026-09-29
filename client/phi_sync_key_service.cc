@@ -21,8 +21,9 @@
 #include "phibrowser-win/client/phi_favicon_fetch.h"
 #include "phibrowser-win/client/phi_key_api_win.h"
 #include "phibrowser-win/client/phi_local_store.h"
-#include "phibrowser-win/client/phi_sync_merge.h"
+#include "phibrowser-win/client/phi_sync_cleanup.h"
 #include "phibrowser-win/client/phi_sync_invalidation_win.h"
+#include "phibrowser-win/client/phi_sync_merge.h"
 #include "phibrowser-win/client/phi_sync_proto.h"
 #include "phibrowser-win/client/phi_sync_protocol.h"
 #include "phibrowser-win/client/phi_sync_settings_win.h"
@@ -183,7 +184,8 @@ struct PhiSyncKeyService::Worker {
   // The engine runs only while unlocked AND paired (all native rounds
   // require enrollment). Worker thread.
   sync::PhiSyncEngine* EnsureEngine() {
-    if (retired || !manager.current_ark() || !core.IsPaired()) {
+    if (retired || NeedsReconfiguration() || !manager.current_ark() ||
+        !core.IsPaired()) {
       return nullptr;
     }
     if (engine) {
@@ -422,6 +424,59 @@ struct PhiSyncKeyService::Worker {
     space_access.reset();
   }
 
+  bool NeedsReconfiguration() {
+    return cleanup_pending || marker_store.Load().requires_reconfiguration ||
+           (engine && engine->requires_reconfiguration());
+  }
+
+  KeyStatus ClearLocalSyncState(bool removing_device) {
+    cleanup_pending = true;
+    removal_pending = removal_pending || removing_device ||
+                      marker_store.Load().removal_pending;
+    StopEngine();
+    core.ClearResolved();
+    domain.Clear();
+    sync::CleanupActions actions;
+    actions.clear_keys = [this] {
+      return !retired && core.ClearLocalSyncState(removal_pending).ok();
+    };
+    actions.remove_owned_cursors = [this] {
+      return !retired && bookmark_table.Remove() && pin_table.Remove() &&
+             rule_table.Remove();
+    };
+    actions.clear_bookmark_ids = [this] {
+      auto cleared = std::make_shared<bool>(false);
+      PhiOwnedSyncHost host = config.owned;
+      return host.store && RunOnUiAndWait([host, cleared] {
+        if (store::LocalStore* s = host.store()) {
+          host.applying(true);
+          *cleared = s->ClearBookmarkSyncIds();
+          host.applying(false);
+        }
+      }) && *cleared;
+    };
+    actions.clear_engine_state = [this] {
+      return !retired && state_store.ClearSyncState() &&
+             sidecars.ClearSidecars();
+    };
+    actions.clear_spaces = [this] {
+      return !retired && state.SetSpaceMappings({}) && space_table.Remove();
+    };
+    actions.remove_marker = [this] {
+      return !retired && marker_store.Remove();
+    };
+    if (!sync::CleanupSyncState(marker_store, removal_pending, actions)) {
+      return KeyStatus::Error(KeyErrorKind::kStorage, "sync cleanup");
+    }
+    cleanup_pending = false;
+    removal_pending = false;
+    unlock = Unlock::kNeedsJoin;
+    if (config.set_hidden_spaces) {
+      RunOnUiAndWait([apply = config.set_hidden_spaces] { apply({}); });
+    }
+    return KeyStatus::Ok();
+  }
+
   // The table's hidden cursors, as local ids, to the Space list (async).
   // Worker thread.
   void PublishHiddenSpaces(const sync::SpaceSyncTable& table) {
@@ -554,6 +609,14 @@ struct PhiSyncKeyService::Worker {
       snapshot.invalidation_stream_healthy = stream_healthy;
       snapshot.native_sync_status = engine->status();
     }
+    if (NeedsReconfiguration()) {
+      snapshot.native_sync_needs_reconfiguration = true;
+      snapshot.native_sync_status.phase = sync::SyncPhase::kNeedsAttention;
+      if (cleanup_pending || marker_store.Load().removal_pending) {
+        snapshot.exposed.clear();
+        snapshot.paired = false;
+      }
+    }
     return snapshot;
   }
 
@@ -678,6 +741,8 @@ struct PhiSyncKeyService::Worker {
   }
 
   std::atomic<bool> retired{false};
+  bool cleanup_pending = false;
+  bool removal_pending = false;
   NativeSyncConfig config;
   PhiSyncMarkerFile marker_store;
   PhiSyncStateFile state_store;
@@ -817,6 +882,9 @@ void PhiSyncKeyService::SilentUnlockAndResolve() {
     ui_->snapshot.unlock = Unlock::kWorking;
   }
   Post([locals = local_profiles_()](Worker& w) -> std::function<void()> {
+    if (w.NeedsReconfiguration()) {
+      return nullptr;
+    }
     keys::UnlockResult result = keys::UnlockResult::kNeedsJoin;
     KeyStatus status;
     w.core.SilentUnlockAndResolve(locals, &result, &status);
@@ -834,7 +902,7 @@ void PhiSyncKeyService::SilentUnlockAndResolve() {
 
 void PhiSyncKeyService::ResolveMappings() {
   Post([locals = local_profiles_()](Worker& w) -> std::function<void()> {
-    if (w.manager.current_ark()) {
+    if (!w.NeedsReconfiguration() && w.manager.current_ark()) {
       w.core.ResolveMappings(locals);
     }
     return nullptr;
@@ -845,6 +913,11 @@ void PhiSyncKeyService::BeginSetup(
     std::function<void(SetupRoute, KeyStatus)> done) {
   Post([locals = local_profiles_(),
         done = std::move(done)](Worker& w) -> std::function<void()> {
+    if (w.NeedsReconfiguration()) {
+      return [done] {
+        done(SetupRoute::kNeedsReconfiguration, KeyStatus::Ok());
+      };
+    }
     keys::UnlockResult result = keys::UnlockResult::kNeedsJoin;
     KeyStatus status = w.manager.UnlockAtStartup(&result);
     w.unlock = UnlockFor(status, result);
@@ -960,7 +1033,9 @@ void PhiSyncKeyService::StartPairing(
   Post([locals = local_profiles_(),
         done = std::move(done)](Worker& w) -> std::function<void()> {
     keys::PairingCandidates candidates;
-    const KeyStatus status = w.core.StartPairing(locals, &candidates);
+    const KeyStatus status = w.NeedsReconfiguration()
+        ? KeyStatus::Error(KeyErrorKind::kStorage, "sync cleanup required")
+        : w.core.StartPairing(locals, &candidates);
     return [done, status, candidates] { done(status, candidates); };
   });
 }
@@ -970,7 +1045,9 @@ void PhiSyncKeyService::ApplyDecisions(
     std::function<void(KeyStatus)> done) {
   Post([locals = local_profiles_(), decisions = std::move(decisions),
         done = std::move(done)](Worker& w) -> std::function<void()> {
-    const KeyStatus status = w.core.ApplyDecisions(decisions, locals);
+    const KeyStatus status = w.NeedsReconfiguration()
+        ? KeyStatus::Error(KeyErrorKind::kStorage, "sync cleanup required")
+        : w.core.ApplyDecisions(decisions, locals);
     if (status.ok()) {
       w.RunRound(&sync::PhiSyncEngine::PullOnce);
     }
@@ -1224,45 +1301,23 @@ void PhiSyncKeyService::PeekPhiData(std::function<void(std::string)> done) {
 
 void PhiSyncKeyService::RemoveThisDevice(std::function<void(KeyStatus)> done) {
   Post([done = std::move(done)](Worker& w) -> std::function<void()> {
-    const KeyStatus status = w.core.RemoveThisDevice();
-    if (status.ok()) {
-      w.unlock = Unlock::kNeedsJoin;
-      // The Mac's clearLocalSyncState: the engine goes, and with it the
-      // marker, the cursor keys and the settings sidecars.
-      w.StopEngine();
-      w.marker_store.Remove();
-      for (const std::string& key : sync::EngineStateKeys()) {
-        w.state_store.Set(key, std::nullopt);
-      }
-      // The Space table and identities go too (SpaceSyncMappingManager's
-      // removeAllMappings); every hidden Space comes back.
-      w.space_table.Remove();
-      w.sidecars.SetExtra(kDefaultSpaceMirrorKey, std::nullopt);
-      w.sidecars.ClearSidecars();
-      // Bookmark identities go last, after their cursor files.
-      PhiOwnedSyncHost host = w.config.owned;
-      if (host.store) {
-        w.RunOnUiAndWait([host] {
-          if (store::LocalStore* s = host.store()) {
-            host.applying(true);
-            s->ClearBookmarkSyncIds();
-            host.applying(false);
-          }
-        });
-      }
-      w.bookmark_table.Remove();
-      w.pin_table.Remove();
-      w.rule_table.Remove();
-      w.state.SetSpaceMappings({});
-      if (w.config.set_hidden_spaces) {
-        std::function<void(std::set<std::string>)> apply =
-            w.config.set_hidden_spaces;
-        return [done, status, apply] {
-          apply({});
-          done(status);
-        };
-      }
+    // A retry after partial removal must not revoke the newly rotated key.
+    KeyStatus status =
+        w.removal_pending || w.marker_store.Load().removal_pending
+            ? KeyStatus::Ok()
+            : w.core.RevokeThisDevice();
+    if (status.ok() && !w.retired) {
+      status = w.ClearLocalSyncState(/*removing_device=*/true);
     }
+    return [done, status] { done(status); };
+  });
+}
+
+void PhiSyncKeyService::ReconfigureSync(std::function<void(KeyStatus)> done) {
+  Post([done = std::move(done)](Worker& w) -> std::function<void()> {
+    const KeyStatus status = w.NeedsReconfiguration()
+        ? w.ClearLocalSyncState(/*removing_device=*/false)
+        : KeyStatus::Error(KeyErrorKind::kCancelled);
     return [done, status] { done(status); };
   });
 }

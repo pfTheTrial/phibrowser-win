@@ -104,6 +104,19 @@ std::vector<SyncableSetting> PhiSyncableSettings(
   std::function<void(const std::string&)> set_pin_scope = hooks.set_pin_scope;
 
   // The default-Space role register (String): absent until seeded.
+  const auto reconcile_default_space = [held_store, run_on_ui, hooks] {
+    const std::optional<std::string> uuid =
+        held_store->Extra(kDefaultSpaceMirrorKey);
+    if (!uuid || !hooks.space_lookup || !hooks.apply_default_space) {
+      return;
+    }
+    const std::optional<std::string> local = hooks.space_lookup(*uuid);
+    if (local) {
+      run_on_ui([apply = hooks.apply_default_space, space_id = *local] {
+        apply(space_id);
+      });
+    }
+  };
   out.push_back(
       {"PhiDefaultSpaceUuid",
        [held_store]() -> std::optional<SettingValue> {
@@ -114,20 +127,15 @@ std::vector<SyncableSetting> PhiSyncableSettings(
          }
          return String(*uuid);
        },
-       [held_store, run_on_ui, hooks](const SettingValue& value) {
+       [held_store, reconcile_default_space](const SettingValue& value) {
          const std::string uuid = value.str();
          if (value.kind != SettingValue::Kind::kString || uuid.empty()) {
            return;
          }
          held_store->SetExtra(kDefaultSpaceMirrorKey, uuid);
-         const std::optional<std::string> local =
-             hooks.space_lookup ? hooks.space_lookup(uuid) : std::nullopt;
-         if (local && hooks.apply_default_space) {
-           std::function<void(const std::string&)> apply = hooks.apply_default_space;
-           const std::string space_id = *local;
-           run_on_ui([apply, space_id] { apply(space_id); });
-         }
-       }});
+         reconcile_default_space();
+       },
+       reconcile_default_space});
 
   // The pinned-tab scope (String): landing migrates the pins.
   out.push_back(

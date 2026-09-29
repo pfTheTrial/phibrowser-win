@@ -15,6 +15,14 @@
 
 namespace phi_client {
 
+bool PhiRemoveFileIfPresent(const std::wstring& path) {
+  if (::DeleteFileW(path.c_str())) {
+    return true;
+  }
+  const DWORD error = ::GetLastError();
+  return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND;
+}
+
 bool PhiReadFileBytes(const std::wstring& path, std::string* out) {
   out->clear();
   HANDLE file = ::CreateFileW(path.c_str(), GENERIC_READ,

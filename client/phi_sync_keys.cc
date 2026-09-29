@@ -1057,7 +1057,7 @@ KeyStatus SyncKeyCore::ApplyDecisions(
   return KeyStatus::Ok();
 }
 
-KeyStatus SyncKeyCore::RemoveThisDevice() {
+KeyStatus SyncKeyCore::RevokeThisDevice() {
   if (retired_) {
     return KeyStatus::Error(KeyErrorKind::kCancelled);
   }
@@ -1068,14 +1068,15 @@ KeyStatus SyncKeyCore::RemoveThisDevice() {
   }
   // Remote first: a refusal (the last active device, or offline) leaves
   // everything local as it was.
-  status = profiles_.RevokeDevice(id);
-  if (!status.ok()) {
-    return status;
-  }
+  return profiles_.RevokeDevice(id);
+}
+
+KeyStatus SyncKeyCore::ClearLocalSyncState(bool removing_device) {
   if (retired_) {
     return KeyStatus::Error(KeyErrorKind::kCancelled);
   }
-  status = InvalidateEnrollment();
+  ClearResolved();
+  KeyStatus status = InvalidateEnrollment();
   if (!status.ok()) {
     return status;
   }
@@ -1083,12 +1084,13 @@ KeyStatus SyncKeyCore::RemoveThisDevice() {
   if (!status.ok()) {
     return status;
   }
-  ClearResolved();
   // A new fingerprint is what lets this device rejoin: the server never
   // un-revokes the old one.
-  status = manager_.RotateDeviceKey();
-  if (!status.ok()) {
-    return status;
+  if (removing_device) {
+    status = manager_.RotateDeviceKey();
+    if (!status.ok()) {
+      return status;
+    }
   }
   if (!profiles_.RemoveAllMappings() || !profiles_.AllMappings().empty()) {
     return KeyStatus::Error(KeyErrorKind::kStorage, "mappings");

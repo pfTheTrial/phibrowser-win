@@ -370,6 +370,13 @@ void PhiSyncEngine::Run(Round round) {
       Push(/*retry_on_conflict=*/true);
       break;
   }
+  if (!stopped_ && !marker_.requires_reconfiguration) {
+    for (const SyncableSetting& setting : deps_.settings) {
+      if (setting.reconcile) {
+        setting.reconcile();
+      }
+    }
+  }
   RoundOutcome outcome = round_outcome_;
   if (outcome != RoundOutcome::kNotMyBirthday) {
     if (cursor_save_failures_ > 0) {
@@ -1333,25 +1340,8 @@ void PhiSyncEngine::ApplySpaces(const SpacePullBatch& batch,
       }
     }
 
-    // The pairing's same-name match (Windows has no Spaces page in its
-    // setup): a first landing adopts an unmapped — so never published —
-    // local Space of the same name in the same profile, when exactly one
-    // fits, instead of creating a twin.
-    if (!local_space_id && !is_default && !cursor.reconciled && profile_id) {
-      const std::string name = item.entity.name.get().str();
-      std::optional<std::string> twin;
-      int matches = 0;
-      for (const LocalSpace& space : access.PairableSpaces()) {
-        if (space.space_id != kDefaultSpaceUuid && space.name == name &&
-            space.profile_id == *profile_id && !access.SyncUuid(space.space_id)) {
-          twin = space.space_id;
-          ++matches;
-        }
-      }
-      if (matches == 1 && access.MapSpace(*twin, item.uuid)) {
-        local_space_id = twin;
-      }
-    }
+    // A name is not an identity. Until the user explicitly maps a local
+    // Space, keep it separate instead of overwriting it on first landing.
 
     std::optional<LocalSpace> existing;
     for (const LocalSpace& space : access.CurrentSpaces()) {

@@ -21,6 +21,7 @@
 
 #include "phi_key_crypto.h"
 #include "phi_sync_engine.h"
+#include "phi_sync_cleanup.h"
 #include "phi_sync_bookmarks.h"
 #include "phi_sync_merge.h"
 #include "phi_sync_owned.h"
@@ -305,8 +306,12 @@ struct FakeServer : psync::SyncTransport {
 
 struct MemoryMarker : psync::MarkerStore {
   psync::MarkerFile file;
+  bool fail_save = false;
   psync::MarkerFile Load() override { return file; }
   bool Save(const psync::MarkerFile& f) override {
+    if (fail_save) {
+      return false;
+    }
     file = f;
     return true;
   }
@@ -578,9 +583,10 @@ struct MemoryOwnedTable : psync::OwnedTableStore {
     exists = true;
     return true;
   }
-  void Remove() override {
+  bool Remove() override {
     table = psync::OwnedTable();
     exists = false;
+    return true;
   }
 };
 
@@ -978,7 +984,7 @@ struct FakeRules : psync::UrlRuleLocalAccess {
 // values fit) and a bool.
 struct Device {
   Device(FakeServer& server, const keys::Bytes& key, int64_t* clock,
-         const std::string& name = std::string())
+         const std::string& name = std::string(), bool sync_default_space = false)
       : client(server, [] { return std::string("device"); }) {
     domain.key = key;
     prefs["PhiCurrentThemeId"] = "default";
@@ -996,6 +1002,17 @@ struct Device {
                      StringSetting("layoutMode",
                                    {"balanced", "comfortable", "performance"}),
                      BoolSetting("alwaysShowURLPath")};
+    if (sync_default_space) {
+      prefs["PhiDefaultSpaceUuid"] = psync::kDefaultSpaceUuid;
+      auto setting = StringSetting("PhiDefaultSpaceUuid", {});
+      setting.reconcile = [this] {
+        const auto id = local.LocalSpaceId(prefs["PhiDefaultSpaceUuid"]);
+        if (id && local.IsKnownLocalSpace(*id)) {
+          applied_default_space = *id;
+        }
+      };
+      deps.settings.push_back(std::move(setting));
+    }
     if (!name.empty()) {
       // The Space section: every device has the default Space in its
       // default profile, which maps to the account's "profile-default".
@@ -1075,6 +1092,7 @@ struct Device {
   FakeRules rules;
   std::unique_ptr<psync::UrlRuleOwnedKind> rule_kind;
   int next_local_id = 1;
+  std::string applied_default_space = psync::kDefaultSpaceUuid;
   std::map<std::string, std::string> prefs;
   std::unique_ptr<psync::PhiSyncEngine> engine;
 };
@@ -1323,6 +1341,28 @@ void TestPagingAndBirthday() {
   const int commits = server.commits;
   a.engine->PullOnce();
   Check(server.commits == commits, "a paused engine does nothing");
+
+  a.engine->Stop();
+  psync::CleanupActions cleanup{
+      [] { return true; }, [] { return true; }, [] { return true; },
+      [&] { a.state.values.clear(); a.sidecars.values.clear(); return true; },
+      [] { return true; }, [&] { a.marker.file = {}; return true; }};
+  Check(psync::CleanupSyncState(a.marker, false, cleanup),
+        "confirmed server-reset cleanup completes without device removal");
+  psync::EngineDeps deps;
+  deps.client = &a.client;
+  deps.domain_keys = &a.domain;
+  deps.marker_store = &a.marker;
+  deps.state = &a.state;
+  deps.sidecars = &a.sidecars;
+  deps.now = [&] { return clock; };
+  deps.settings = {a.StringSetting("layoutMode", {})};
+  a.engine = std::make_unique<psync::PhiSyncEngine>(std::move(deps));
+  a.engine->PullOnce();
+  Check(!a.engine->requires_reconfiguration() &&
+            a.engine->last_outcome() == psync::RoundOutcome::kOk &&
+            a.marker.file.store_birthday == "birthday-2",
+        "setup after cleanup accepts the new server birthday and resumes syncing");
 }
 
 void TestClockCorrection() {
@@ -1843,7 +1883,7 @@ void TestDuplicateRulesCollapse() {
         "duplicate rules collapse into one everywhere");
 }
 
-void TestSameNamedSpaceIsAdopted() {
+void TestSameNamedSpacesRemainSeparate() {
   FakeServer server;
   const keys::Bytes key = keys::GenerateArk();
   int64_t clock = 1'000'000;
@@ -1854,16 +1894,99 @@ void TestSameNamedSpaceIsAdopted() {
 
   Device b(server, key, &clock, "b");
   b.local.Add("B-WORK", "Work", "Default", 3);
+  b.local.Find("B-WORK")->color_hex = "#112233";
   b.engine->SetSpaceSyncEnabled(true);
   b.engine->PullOnce();
-  Check(b.local.Names() == Names({"Default", "Work"}) &&
-            b.local.mappings["B-WORK"] == a.local.mappings["A-WORK"],
-        "a same-named local Space adopts the account's instead of a twin");
+  Check(b.local.spaces.size() == 3 &&
+            b.local.Find("B-WORK")->color_hex == "#112233" &&
+            b.local.mappings["B-WORK"] != a.local.mappings["A-WORK"],
+        "same-named Spaces retain separate identities and local fields");
+
+  Device c(server, key, &clock, "c");
+  c.local.Add("C-WORK", "Work", "Default", 3);
+  c.local.MapSpace("C-WORK", a.local.mappings["A-WORK"]);
+  c.engine->SetSpaceSyncEnabled(true);
+  c.engine->PullOnce();
+  Check(c.local.spaces.size() == 3 &&
+            c.local.mappings["C-WORK"] == a.local.mappings["A-WORK"],
+        "an existing explicit Space mapping still adopts the account Space");
+}
+
+void TestDefaultSpaceArrivesAfterSettings() {
+  FakeServer server;
+  const keys::Bytes key = keys::GenerateArk();
+  int64_t clock = 1'000'000;
+  Device a(server, key, &clock, "a", true);
+  a.local.Add("A-WORK", "Work", "Default", 2);
+  const std::string uuid = *a.local.EnsureMapped("A-WORK");
+  a.prefs["PhiDefaultSpaceUuid"] = uuid;
+  a.engine->SetSpaceSyncEnabled(true);
+  a.engine->PullOnce();
+
+  Device b(server, key, &clock, "b", true);
+  // Settings can arrive while Space sync is gated (or before a later page).
+  b.engine->PullOnce();
+  Check(b.prefs["PhiDefaultSpaceUuid"] == uuid &&
+            b.applied_default_space == psync::kDefaultSpaceUuid,
+        "an unresolved default-space register is retained without fallback writes");
+  const auto stamp = b.sidecars.Timestamp("PhiDefaultSpaceUuid");
+  b.engine->SetSpaceSyncEnabled(true);
+  b.engine->PullOnce();
+  Check(b.local.LocalSpaceId(uuid) == b.applied_default_space &&
+            b.sidecars.Timestamp("PhiDefaultSpaceUuid") == stamp,
+        "the role is reconciled after Spaces land without restamping the register");
+  // Simulate a missed local application with an unchanged incremental pull.
+  b.applied_default_space = psync::kDefaultSpaceUuid;
+  b.engine->PullOnce();
+  Check(b.local.LocalSpaceId(uuid) == b.applied_default_space,
+        "an incremental pull retries the stored register without new settings");
+}
+
+void TestCleanupResumesAfterEveryFailure() {
+  for (int failure = 0; failure <= 6; ++failure) {
+    int fail_at = failure;
+    MemoryMarker marker;
+    marker.file.marker = "progress";
+    marker.file.store_birthday = "birthday";
+    marker.fail_save = failure == 0;
+    std::vector<int> steps;
+    auto step = [&](int number) {
+      steps.push_back(number);
+      Check(marker.file.requires_reconfiguration && marker.file.removal_pending,
+            "cleanup is journaled before any destructive step");
+      return fail_at != number;
+    };
+    psync::CleanupActions actions{
+        [&] { return step(1); }, [&] { return step(2); },
+        [&] { return step(3); }, [&] { return step(4); },
+        [&] { return step(5); }, [&] {
+          if (!step(6)) {
+            return false;
+          }
+          marker.file = {};
+          return true;
+        }};
+    Check(!psync::CleanupSyncState(marker, true, actions),
+          "a failed cleanup step never reports success");
+    Check(static_cast<int>(steps.size()) == failure &&
+              marker.file.marker == "progress" &&
+              marker.file.store_birthday == "birthday",
+          "failure stops subsequent steps and retains the old progress boundary");
+    fail_at = -1;
+    marker.fail_save = false;
+    steps.clear();
+    Check(psync::CleanupSyncState(marker, failure == 0, actions) &&
+              steps == std::vector<int>({1, 2, 3, 4, 5, 6}) &&
+              !marker.file.requires_reconfiguration && !marker.file.removal_pending,
+          "retry preserves removal intent and deletes the journal last");
+  }
 }
 
 }  // namespace
 
 int main() {
+  TestCleanupResumesAfterEveryFailure();
+  TestDefaultSpaceArrivesAfterSettings();
   TestFirstDevicePublishesSecondAdopts();
   TestStatusPhases();
   TestEditsFlowBothWays();
@@ -1887,7 +2010,7 @@ int main() {
   TestRulesSyncBothWays();
   TestRuleClaimsATwin();
   TestDuplicateRulesCollapse();
-  TestSameNamedSpaceIsAdopted();
+  TestSameNamedSpacesRemainSeparate();
   if (g_failures) {
     std::printf("sync_engine_test: %d failure(s)\n", g_failures);
     return 1;

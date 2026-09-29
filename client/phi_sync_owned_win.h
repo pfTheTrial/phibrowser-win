@@ -33,7 +33,7 @@ class PhiOwnedTableFile : public sync::OwnedTableStore {
 
   sync::OwnedTable Load(bool had_records, bool* reported_loss) override;
   bool Save(const sync::OwnedTable& table) override;
-  void Remove() override;
+  bool Remove() override;
 
  private:
   const std::wstring path_;

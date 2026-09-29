@@ -28,6 +28,9 @@ bool PhiReadFileBytes(const std::wstring& path, std::string* out);
 // are checked; false means nothing changed on disk (logged with the error).
 bool PhiWriteFileAtomic(const std::wstring& path, std::string_view bytes);
 
+// Missing is already removed; access and sharing failures must be retried.
+bool PhiRemoveFileIfPresent(const std::wstring& path);
+
 // Renames a file the loader could not parse to `<path>.corrupt-<unix ms>` so
 // the next Save cannot overwrite the evidence with defaults. Logs at ERROR
 // with `reason`. Nothing happens if the file is missing.

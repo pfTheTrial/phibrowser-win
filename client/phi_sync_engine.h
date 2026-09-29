@@ -45,6 +45,9 @@ struct SyncableSetting {
   std::string key;
   std::function<std::optional<SettingValue>()> read;
   std::function<void(const SettingValue&)> write;
+  // Retry local application of a register whose referenced rows may arrive
+  // later in the round. Must not change the register or its timestamps.
+  std::function<void()> reconcile = nullptr;
 };
 
 // The two sidecars per key (the Mac's `<key>.phiSyncTs` / `<key>.phiSyncVal`):

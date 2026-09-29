@@ -279,9 +279,9 @@ bool PhiOwnedTableFile::Save(const sync::OwnedTable& table) {
          EnsureParent(path_) && PhiWriteFileAtomic(path_, json);
 }
 
-void PhiOwnedTableFile::Remove() {
+bool PhiOwnedTableFile::Remove() {
   std::lock_guard<std::mutex> hold(lock_);
-  ::DeleteFileW(path_.c_str());
+  return PhiRemoveFileIfPresent(path_);
 }
 
 // --- Bookmarks -------------------------------------------------------------------------

@@ -768,6 +768,15 @@ void PhiSettingsWindow::BuildSync(int* y) {
     AddHint(y, base::UTF8ToWide(auth.user().email).c_str());
   }
   const PhiSyncKeyService::Snapshot& snap = keys->snapshot();
+  if (snap.native_sync_needs_reconfiguration) {
+    message_row(PhiStr("sync.reconfigure.title"),
+                PhiStr("sync.reconfigure.explanation"),
+                PhiStr("sync.reconfigure.title"), "syncreconfigure");
+    if (!sync_action_error_.empty()) {
+      AddHint(y, sync_action_error_.c_str());
+    }
+    return;
+  }
   switch (snap.unlock) {
     case PhiSyncKeyService::Unlock::kUnknown:
     case PhiSyncKeyService::Unlock::kWorking:
@@ -4478,6 +4487,25 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
   } else if (item.action == "syncsetup") {
     if (host_) {
       host_->RequestSyncSetup(hwnd());
+    }
+  } else if (item.action == "syncreconfigure") {
+    PhiSyncKeyService* keys = host_ ? host_->SyncKeys() : nullptr;
+    if (keys && PhiConfirm(hwnd(), PhiStr("sync.reconfigure.title"),
+                           PhiStr("sync.reconfigure.confirmation.windows"),
+                           PhiStr("sync.reconfigure.title"))) {
+      sync_action_error_.clear();
+      std::weak_ptr<int> alive = sync_alive_;
+      keys->ReconfigureSync([this, alive](keys::KeyStatus status) {
+        if (alive.expired()) {
+          return;
+        }
+        if (status.ok()) {
+          host_->RequestSyncSetup(hwnd());
+        } else {
+          sync_action_error_ = PhiStr("sync.reconfigure.failed.windows");
+        }
+        ScheduleRebuild();
+      });
     }
   } else if (item.action == "syncretry") {
     if (PhiSyncKeyService* keys = host_ ? host_->SyncKeys() : nullptr) {

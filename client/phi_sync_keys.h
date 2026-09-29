@@ -521,9 +521,11 @@ class SyncKeyCore {
   KeyStatus ApplyDecisions(const std::vector<PairingDecision>& decisions,
                            const std::vector<LocalProfile>& locals);
 
-  // Settings ▸ Sync ▸ Remove this device: revoke remotely first, then clear
-  // this device's key-layer state and rotate its key.
-  KeyStatus RemoveThisDevice();
+  // Remote refusal leaves local state untouched. The service journals the
+  // successful removal before calling ClearLocalSyncState.
+  KeyStatus RevokeThisDevice();
+  // Idempotent local cleanup, also used for confirmed reconfiguration.
+  KeyStatus ClearLocalSyncState(bool removing_device);
 
  private:
   void ResolveOnce(const std::vector<LocalProfile>& locals);

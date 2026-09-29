@@ -343,6 +343,9 @@ void PhiSyncSetupWindow::BeginSetup() {
       case PhiSyncKeyService::SetupRoute::kIntroduction:
         ShowPage(Page::kIntroduction);
         return;
+      case PhiSyncKeyService::SetupRoute::kNeedsReconfiguration:
+        ShowError(PhiStr("sync.reconfigure.returnToSettings"));
+        return;
       case PhiSyncKeyService::SetupRoute::kError:
         LOG(WARNING) << "[SyncSetup] setup check failed: "
                      << keys::KeyStatusName(status);

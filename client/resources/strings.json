@@ -7506,6 +7506,45 @@
    "zh-Hans": "{0} 个标签页",
    "zh-Hant": "{0} 個分頁"
   },
+  "sync.reconfigure.confirmation.windows": {
+   "en": "This will clear this PC’s sync setup and matching information, then let you set up sync again. Your local browsing data and account’s synced data will be kept."
+  },
+  "sync.reconfigure.explanation": {
+   "de": "Die Synchronisierungsdaten des Accounts haben sich geändert. Die Synchronisierung von Phi-Daten ist pausiert. Überprüfe deinen Account und deine Verbindung, bevor du die Synchronisierung erneut einrichtest.",
+   "en": "The account’s sync data has changed. Syncing Phi data is paused. Review your account and connection before setting up sync again.",
+   "es": "Los datos de sincronización de la cuenta han cambiado. La sincronización de los datos de Phi está en pausa. Revisa tu cuenta y tu conexión antes de volver a configurar la sincronización.",
+   "fr": "Les données de synchronisation du compte ont changé. La synchronisation des données Phi est en pause. Vérifiez votre compte et votre connexion avant de configurer à nouveau la synchronisation.",
+   "ja": "アカウントの同期データが変更されています。Phiデータの同期は一時停止中です。もう一度同期を設定する前に、アカウントと接続を確認してください。",
+   "ko": "계정의 동기화 데이터가 변경되었어요. Phi 데이터 동기화가 일시 중지되었어요. 동기화를 다시 설정하기 전에 계정과 연결 상태를 확인해 주세요.",
+   "nl": "De synchronisatiegegevens van het account zijn gewijzigd. Het synchroniseren van Phi-gegevens is gepauzeerd. Controleer je account en verbinding voordat je synchronisatie opnieuw instelt.",
+   "zh-Hans": "该账户的同步数据已更改。Phi 数据的同步已暂停。请先检查你的账户和网络连接，然后再重新设置同步。",
+   "zh-Hant": "帳號的同步資料已變更。Phi 資料的同步已暫停。請先檢查你的帳號和網路連線，再重新設定同步。"
+  },
+  "sync.reconfigure.failed.windows": {
+   "en": "Couldn’t finish clearing this PC’s sync setup. Sync remains paused. Try setting up sync again."
+  },
+  "sync.reconfigure.returnToSettings": {
+   "de": "Die Synchronisierung muss erneut eingerichtet werden. Wähle „Später abschließen“ und dann in Einstellungen → Synchronisierung „Synchronisierung erneut einrichten“. Deine lokalen Browserdaten bleiben erhalten.",
+   "en": "Sync needs to be set up again. Finish later, then choose Set up sync again in Settings → Sync. Your local browsing data is kept.",
+   "es": "Es necesario volver a configurar la sincronización. Elige Finalizar más tarde y, luego, Volver a configurar la sincronización en Configuración → Sincronización. Tus datos de navegación locales se conservan.",
+   "fr": "La synchronisation doit être configurée à nouveau. Terminez plus tard, puis choisissez Configurer à nouveau la synchronisation dans Réglages → Synchronisation. Vos données de navigation locales sont conservées.",
+   "ja": "同期をもう一度設定する必要があります。「あとで完了」を選択してから、設定 → 同期で「同期をもう一度設定」を選択してください。ローカルの閲覧データは保持されます。",
+   "ko": "동기화를 다시 설정해야 해요. 나중에 완료를 선택한 다음, 설정 → 동기화에서 동기화 다시 설정을 선택하세요. 로컬 브라우징 데이터는 유지돼요.",
+   "nl": "Synchronisatie moet opnieuw worden ingesteld. Kies Voltooi later en kies daarna Stel synchronisatie opnieuw in via Instellingen → Synchronisatie. Je lokale browsegegevens blijven bewaard.",
+   "zh-Hans": "需要重新设置同步。请先点按「稍后完成」，然后在设置 → 同步中选取「重新设置同步」。你的本地浏览数据会保留。",
+   "zh-Hant": "同步需要重新設定。請先選擇「稍後完成」，然後在「設定 → 同步」中選擇「重新設定同步」。你的本機瀏覽資料會保留。"
+  },
+  "sync.reconfigure.title": {
+   "de": "Synchronisierung erneut einrichten",
+   "en": "Set up sync again",
+   "es": "Volver a configurar la sincronización",
+   "fr": "Configurer à nouveau la synchronisation",
+   "ja": "同期をもう一度設定",
+   "ko": "동기화 다시 설정",
+   "nl": "Stel synchronisatie opnieuw in",
+   "zh-Hans": "重新设置同步",
+   "zh-Hant": "重新設定同步"
+  },
   "sync.setup.applying": {
    "en": "Applying your choices…"
   },

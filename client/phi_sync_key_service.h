@@ -111,7 +111,7 @@ class PhiSyncKeyService {
 
   // KeyLayerViewModel.beginSetup's routes.
   enum class SetupRoute { kDone, kReadyToPair, kNotSignedIn, kChooseJoin,
-                          kIntroduction, kError };
+                          kIntroduction, kNeedsReconfiguration, kError };
 
   struct DeviceList {
     keys::KeyStatus status;
@@ -166,6 +166,8 @@ class PhiSyncKeyService {
   void Deny(const std::string& request_id,
             std::function<void(keys::KeyStatus)> done);
   void RemoveThisDevice(std::function<void(keys::KeyStatus)> done);
+  // Explicitly confirmed reset; ordinary setup/retry never clears metadata.
+  void ReconfigureSync(std::function<void(keys::KeyStatus)> done);
 
   // --- Phi native sync (S5) -------------------------------------------------
   // A round now (pull, then publish).

@@ -693,11 +693,19 @@ Done, live against the staging account together with the Mac:
 - Account profiles this PC lacks are created and adopted automatically
   (ensureLocalProfilesForAccount: a same-named unmapped profile first, at
   most three per round), so a Space bound to them lands.
-- A first-landing account Space adopts a unique same-named, never-published
-  local Space in the same profile (the pairing wizard's default match;
-  Windows has no Spaces page), instead of creating a twin.
-- Self-removal also clears every settings sidecar and the bookmarks' sync
-  ids (the Mac's clearLocalSyncState).
+- A first-landing account Space only adopts an already mapped local Space.
+  Unmapped same-named Spaces stay separate: a name is not consent to
+  overwrite local fields. Windows does not yet offer the Mac's Spaces
+  matching and overwrite-review step.
+- Self-removal and confirmed reconfiguration stop native writers and keep
+  `marker.json` as a cleanup journal. Cursor deletion must succeed before
+  clearing bookmark identities; all remaining metadata writes must succeed
+  before deleting the journal. A failed step stays paused and can be retried
+  through Settings → Sync → Set up sync again, including after restart.
+  Reconfiguration preserves device registration; removal rotates the key.
+- The default-Space role register is reconciled after every round, so a
+  setting received before its Space can take effect once the mapping and
+  local row exist, without changing the register's timestamp.
 - `PhiStore` keeps top-level keys it does not know when it saves
   (PhiPreferences.json and friends): a newer build's or the Mac's keys
   survive an older build's save.
@@ -707,7 +715,10 @@ Done, live against the staging account together with the Mac:
   new pin and its deleted bookmark reached Windows; the stream connects and
   reports ready.
 - Host tests: 26 engine scenarios (+ rules both ways, rule twin claim,
-  duplicate-rule collapse, same-name Space adoption) and the stream parser.
+  duplicate-rule collapse, separate same-name Spaces) and the stream parser.
+  Recovery tests inject failures at every cleanup step and cover resuming
+  after a server reset, last-device reconfiguration, and deferred default
+  role application.
 
 - Favicon backfill (the Mac's PhiFaviconBackfillQueue): after a round that
   landed bookmarks or pins, and once per session, rows with no icon get
@@ -734,7 +745,7 @@ Done, live against the staging account together with the Mac:
 
 Not yet:
 - The Spaces step of the setup wizard (map local Spaces to account Spaces
-  before the first publish); same-name adoption covers the common case.
+  before the first publish); unmapped Spaces are kept separate meanwhile.
 - A remote rebind of the Space holding the default role is refused by
   `SetSpaceProfile` and parks.
 
