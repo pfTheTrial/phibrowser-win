@@ -284,8 +284,14 @@ def main():
     client_objs.append(res)
     res_path = os.path.join(out_dir, res)
     rc_source = os.path.join(CLIENT_DIR, "phi_client.rc")
+    # The resource includes the version header and icon. Recompile it when
+    # either changes, even if phi_client.rc itself is untouched.
+    rc_inputs_mtime = max(
+        os.path.getmtime(rc_source),
+        os.path.getmtime(os.path.join(CLIENT_DIR, "phi_version.h")),
+        os.path.getmtime(os.path.join(CLIENT_DIR, "resources", "phi.ico")))
     if args.force or not os.path.exists(res_path) or \
-            os.path.getmtime(res_path) < os.path.getmtime(rc_source):
+            os.path.getmtime(res_path) < rc_inputs_mtime:
         jobs.append(("phi_client.rc", retarget(
             kit["rc_template"], kit["rc_template_source"],
             kit["rc_template_out"],
