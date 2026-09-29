@@ -16,23 +16,17 @@ namespace phi_client {
 
 namespace {
 
-// The Windows twin of the Mac's SUFEED_URL
-// (ota.phibrowser.com/mac-public/appcast/PhiBrowserMacUpdate.xml). A
-// --dev-hooks build may override it with the PHI_APPCAST_URL environment
-// variable; a release build has no such door (kPhiDevHooks).
+// NAS-hosted Windows update feed. A --dev-hooks build may override it with
+// the PHI_APPCAST_URL environment variable; a release build cannot.
 constexpr char kDefaultAppcastUrl[] =
-    "https://ota.phibrowser.com/win-nightly/appcast/PhiBrowserWinUpdate.xml";
+    "http://192.168.66.66:8080/phibrower-win/PhiBrowserWinUpdate.xml";
 
 // The appcast's EdDSA (Ed25519) public key, base64 — the counterpart of the
-// key installer/make-appcast.sh signs with (`openssl genpkey -algorithm
-// ed25519`; derive this value with `openssl pkey -in key.pem -pubout
-// -outform DER | tail -c32 | base64`). EMPTY until the release key is
-// minted, and WITHOUT IT THE UPDATER STAYS OFF: HTTPS authenticates the
-// server, not the feed — anyone who can write to the OTA bucket, or sit on
-// a proxy the box trusts, would otherwise hand every install an executable
-// that runs as the user. tools/release-gate.py refuses a release while this
-// is empty.
-constexpr char kEdDsaPublicKey[] = "";
+// key installer/make-appcast.sh signs with. The matching private key is kept
+// outside the client repository in phibrowser-win-build. A signed payload is
+// required because the LAN feed is served over HTTP.
+constexpr char kEdDsaPublicKey[] =
+    "D4xwuYEnKtPEo0h+VBKzG9vioEpcu4BHY8FxALF3vfk=";
 
 // The WinSparkle C surface we use, resolved by hand: the DLL is optional.
 using SetAppcastUrlFn = void(__cdecl*)(const char*);
