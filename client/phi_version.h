@@ -13,10 +13,10 @@
 // refuses a build where they disagree.
 #define PHI_WIN_VERSION_MAJOR 0
 #define PHI_WIN_VERSION_MINOR 0
-#define PHI_WIN_VERSION_PATCH 2
+#define PHI_WIN_VERSION_PATCH 3
 #define PHI_WIN_VERSION_BUILD 0
-#define PHI_WIN_VERSION_STRING "0.0.2"
-#define PHI_WIN_VERSION_WIDE L"0.0.2"
+#define PHI_WIN_VERSION_STRING "0.0.3"
+#define PHI_WIN_VERSION_WIDE L"0.0.3"
 
 // The release ring this build ships on, as feedback reports name it (the
 // Mac maps its nightly builds to "canary" and everything else to "stable";
