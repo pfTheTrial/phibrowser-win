@@ -1507,6 +1507,7 @@ class PhiShellWindow : public PhiHitSource,
   PhiPalette MenuPalette() const override;
   int MenuScaled(int design_units) const override;
   HWND MenuAddressField() const override;
+  void MenuFocusPageForFind() override;
   void MenuFocusAddressField() override;
   void MenuRefreshNavState() override;
   PhiAppMenuNavState MenuNavState() const override;

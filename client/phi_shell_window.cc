@@ -1479,6 +1479,16 @@ HWND PhiShellWindow::MenuAddressField() const {
   return omnibox_->field();
 }
 
+void PhiShellWindow::MenuFocusPageForFind() {
+  const BrowserId browser = active_browser_id();
+  const HWND page = browsers_->content_hwnd();
+  if (!framework_ || !browser.valid() || !page || !::IsWindow(page)) {
+    return;
+  }
+  ::SetFocus(page);
+  framework_->FocusBrowserWindow(browser.value);
+}
+
 void PhiShellWindow::MenuFocusAddressField() {
   FocusAddressField();
 }

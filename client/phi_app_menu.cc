@@ -818,6 +818,9 @@ bool PhiAppMenu::OnCommand(UINT id, bool from_accelerator) {
 
   if (const int idc = IdcForCommand(id)) {
     if (c->MenuFramework() && target.valid()) {
+      if (id == kCmdFind) {
+        c->MenuFocusPageForFind();
+      }
       c->MenuFramework()->ExecuteChromiumCommand(target.value, idc);
     }
     return true;
