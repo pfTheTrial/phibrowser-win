@@ -207,6 +207,31 @@ test('hosted popup: positive control fully loads and stays open', async () => {
   positivePassed = true
 })
 
+test('hosted popup: shell movement dismisses an anchored popup', async () => {
+  assert(positivePassed, 'positive popup control must pass before testing dismissal')
+  const entry = await prepare('moved', false)
+  await waitFor(() => entry.loaded > 0, { what: 'movable popup window.load beacon' })
+  const windowId = await currentWindow()
+  const before = await ctl.send('agentSpace.window.bounds', { windowId })
+  assertEq(before.ok, true, 'shell bounds available')
+  try {
+    const moved = await ctl.send('agentSpace.window.setBounds', {
+      windowId, x: before.x + 12, y: before.y + 12,
+      width: before.width, height: before.height,
+    })
+    assertEq(moved.ok, true, 'shell move accepted')
+    await waitFor(async () => !(await popupTargets()).length,
+                  { what: 'anchored popup destroyed on shell move' })
+    await noPopupFor(500)
+  } finally {
+    const restored = await ctl.send('agentSpace.window.setBounds', {
+      windowId, x: before.x, y: before.y,
+      width: before.width, height: before.height,
+    })
+    assertEq(restored.ok, true, 'original shell bounds restored')
+  }
+})
+
 test('hosted popup: pending load cancelled on Space exit without resurrection', async () => {
   assert(positivePassed, 'positive popup control must pass before interpreting cancellation')
   const entry = await prepare('delayed', true)

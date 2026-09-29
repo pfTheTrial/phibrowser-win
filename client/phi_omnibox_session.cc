@@ -908,6 +908,7 @@ LRESULT CALLBACK PhiOmniboxSession::FieldProc(HWND hwnd,
     }
     case WM_CONTEXTMENU:
       if (self) {
+        self->shell_->OmniboxFieldPressed();
         // The EDIT's stock menu is replaced by the Fluent flyout (§3.5).
         // Shift+F10 / the menu key arrive with (-1, -1): anchor those on
         // the caret's field.
@@ -922,6 +923,8 @@ LRESULT CALLBACK PhiOmniboxSession::FieldProc(HWND hwnd,
       }
       break;
     case WM_LBUTTONDOWN:
+    case WM_RBUTTONDOWN:
+    case WM_MBUTTONDOWN:
       // A press on the field is a press on the shell's chrome that the
       // shell's own click handler never sees (the EDIT is a child window):
       // the extension popup closes on it as on any other chrome press.

@@ -7135,6 +7135,16 @@ LRESULT CALLBACK PhiShellWindow::ShellWndProc(HWND hwnd,
     return ::DefWindowProcW(hwnd, msg, wparam, lparam);
   }
   switch (msg) {
+    case WM_PARENTNOTIFY:
+      // Native pages and their EDIT controls are child HWNDs. Their mouse
+      // presses bypass this window's button handlers and Chromium's widget
+      // activation, but Win32 forwards the press up the parent chain.
+      if (self && (LOWORD(wparam) == WM_LBUTTONDOWN ||
+                   LOWORD(wparam) == WM_RBUTTONDOWN ||
+                   LOWORD(wparam) == WM_MBUTTONDOWN)) {
+        self->CloseExtensionPopup();
+      }
+      break;
     case WM_ACTIVATEAPP:
       // Phi as a whole gained or lost the foreground (every top-level
       // window hears it; the host keeps the one edge). The Mac SDK's
@@ -7183,10 +7193,12 @@ LRESULT CALLBACK PhiShellWindow::ShellWndProc(HWND hwnd,
         // An owned popup retains this Browser's activation tree. A different
         // shell/application does not; WS_CHILD never receives this edge itself.
         if (::GetAncestor(reinterpret_cast<HWND>(lparam), GA_ROOTOWNER) !=
-                hwnd &&
-            self->framework_ && self->active_browser_id().valid()) {
-          self->framework_->FocusBrowserWindow(self->active_browser_id().value,
-                                               false);
+            hwnd) {
+          self->CloseExtensionPopup();
+          if (self->framework_ && self->active_browser_id().valid()) {
+            self->framework_->FocusBrowserWindow(
+                self->active_browser_id().value, false);
+          }
         }
       }
       // Activation/focus arriving at the shell top-level must be forwarded to
@@ -7239,11 +7251,20 @@ LRESULT CALLBACK PhiShellWindow::ShellWndProc(HWND hwnd,
       }
       break;
     case WM_NCLBUTTONDOWN:
+      if (self) {
+        self->CloseExtensionPopup();
+      }
       // The band swallows presses on its own caption buttons; the action
       // fires on release over the same button, like the OS ones.
       if (self && self->caption_band_ &&
           self->caption_band_->OnNcLButtonDown(wparam)) {
         return 0;
+      }
+      break;
+    case WM_NCRBUTTONDOWN:
+    case WM_NCMBUTTONDOWN:
+      if (self) {
+        self->CloseExtensionPopup();
       }
       break;
     case WM_NCLBUTTONUP:
@@ -7454,6 +7475,7 @@ LRESULT CALLBACK PhiShellWindow::ShellWndProc(HWND hwnd,
       if (self) {
         POINT pt = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
         if (self->InSidebarResizeBand(pt)) {
+          self->CloseExtensionPopup();
           self->BeginSidebarResize();
           return 0;
         }
@@ -7474,6 +7496,7 @@ LRESULT CALLBACK PhiShellWindow::ShellWndProc(HWND hwnd,
         const POINT pt = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
         for (const GroupHeader& gh : self->sidebar_->group_headers()) {
           if (::PtInRect(&gh.bounds, pt)) {
+            self->CloseExtensionPopup();
             PhiGroupOverview::Open(self, gh.id);
             return 0;
           }
@@ -7587,6 +7610,7 @@ LRESULT CALLBACK PhiShellWindow::ShellWndProc(HWND hwnd,
       return ::DefWindowProcW(hwnd, msg, wparam, lparam);
     case WM_SIZE:
       if (self) {
+        self->CloseExtensionPopup();
         // Band geometry changed under the slide.
         self->spaces_->CancelSwap();
         self->CancelContentSlide();
@@ -7595,6 +7619,7 @@ LRESULT CALLBACK PhiShellWindow::ShellWndProc(HWND hwnd,
       return 0;
     case WM_MOVE:
       if (self) {
+        self->CloseExtensionPopup();
         self->PositionFloatingPanel();  // The panel follows the shell.
       }
       break;

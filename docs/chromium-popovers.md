@@ -129,15 +129,20 @@ them; verified at 125 % DPI with the px→DIP conversion.
 2. `TOP_RIGHT` in the Windows `TriggerAction` branch (§2.4). **Done
    2026-09-16.**
 3. Close the popup on client chrome activity (§2.2). **Done 2026-09-16**:
-   `PhiFramework::CloseExtensionPopup(window)` → `ExtensionsProxy::ClosePopup`
-   → `ExtensionPopup::PhiCloseForBrowser` (a live-popup registry; the same
-   `CloseUnlessBlockedByInspectionOrJSDialog` an activation runs). The shell
+   `PhiFramework::CloseExtensionPopup(window)` → `CloseExtensionActionPopups`
+   finds live `ExtensionPopup` instances by Browser identity and applies the
+   same guarded dismissal used for widget activation. The shell
    calls it from every chrome press — left, right and middle clicks in
    `OnChromeClick` / `OnChromeContextMenu` / `OnChromeMiddleClick` — and from
    the address field's own `WM_LBUTTONDOWN` (a child EDIT the shell's handler
    never sees) through `PhiOmniboxShell::OmniboxFieldPressed`. Box: sidebar
    click and address-field click each dismiss an open Obsidian popup. The
-   shell's move/resize (§2.3) still does not reuse it.
+   2026-09-29 client also dismisses on non-client presses, sidebar-resize and
+   group-header double-click paths, all address-field button presses and its
+   context menu, child-window presses (native pages and their text fields),
+   and shell deactivation to another top-level window. Activation of the popup
+   itself remains exempt. Moving or resizing the shell dismisses the
+   fixed-anchor popup (§2.3).
 4. Widen the translate / content-setting bubble anchors to `IS_PHI_HOSTED`
    (§5) and box-check the permission prompt.
 5. Find bar placement and focus (§5).
