@@ -1346,7 +1346,8 @@ void PhiSettingsWindow::BuildAbout(int* y) {
   BeginSection(y, nullptr);
   {
     // The brand mark at 48 leading the name and version (§7 About).
-    const std::wstring version = std::wstring(L"Version ") + PHI_WIN_VERSION_WIDE;
+    const std::wstring version =
+        std::wstring(L"Version ") + PHI_WIN_VERSION_FULL_WIDE;
     RECT area = AddRow(y, L"Phi Browser", kAboutMark, 160, version.c_str(),
                        kAboutMark + 16);
     if (area.right > area.left) {

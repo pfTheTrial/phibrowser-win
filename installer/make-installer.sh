@@ -1,13 +1,17 @@
 #!/bin/bash
-# Builds PhiBrowserSetup-<version>.exe (x64) or PhiBrowserSetup-<version>-arm64.exe
+# Builds PhiBrowserSetup-<version>.<build>.exe (x64) or
+# PhiBrowserSetup-<version>.<build>-arm64.exe
 # on THIS machine: the payload is staged straight from the ship out dir into
 # installer/stage/<arch> in the installed layout, and makensis (the Debian
 # `nsis` package) packs it. The Windows box plays no part.
 #
-# Usage: make-installer.sh [--version X.Y.Z] [--arch x64|arm64] [--out <out dir>]
+# Usage: make-installer.sh [--version X.Y.Z] [--build-number N]
+#                          [--arch x64|arm64] [--out <out dir>]
 #                          [--telemetry phi_telemetry.json | --no-telemetry]
 #                          [--no-sign]
 #   --version    defaults to PHI_WIN_VERSION_STRING in client/phi_version.h
+#   --build-number  defaults to PHI_WIN_VERSION_BUILD in client/phi_version.h;
+#                   stamps the setup EXE's Windows file/product version.
 #   --arch       which build to package: x64 (default) from out/PhiFxWinShip,
 #                arm64 from out/PhiFxWinShipArm64 (docs/static-build-plan.md
 #                §10). The tree's Phi.exe and chrome.dll must be of that
@@ -43,6 +47,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SRC_ROOT=/home/jx/Phi/chromuim/src
 VERSION=""
+BUILD_NUMBER=""
 ARCH=x64
 OUT=""
 TELEMETRY=""
@@ -51,6 +56,7 @@ NO_SIGN=no
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --version) VERSION="$2"; shift 2 ;;
+    --build-number) BUILD_NUMBER="$2"; shift 2 ;;
     --arch) ARCH="$2"; shift 2 ;;
     --out) OUT="$2"; shift 2 ;;
     --telemetry) TELEMETRY="$2"; shift 2 ;;
@@ -63,6 +69,13 @@ if [[ -z "$VERSION" ]]; then
   VERSION=$(grep -oP '(?<=PHI_WIN_VERSION_STRING ")[^"]+' \
     "$HERE/../client/phi_version.h")
 fi
+if [[ -z "$BUILD_NUMBER" ]]; then
+  BUILD_NUMBER=$(grep -oP '(?<=PHI_WIN_VERSION_BUILD )\d+' \
+    "$HERE/../client/phi_version.h")
+fi
+[[ "$BUILD_NUMBER" =~ ^(0|[1-9][0-9]*)$ && ${#BUILD_NUMBER} -le 5 ]] &&
+  (( BUILD_NUMBER <= 65535 )) || {
+    echo "--build-number must be an integer from 0 to 65535" >&2; exit 2; }
 case "$ARCH" in
   x64) SUFFIX=""; : "${OUT:=$SRC_ROOT/out/PhiFxWinShip}" ;;
   arm64) SUFFIX="-arm64"; : "${OUT:=$SRC_ROOT/out/PhiFxWinShipArm64}" ;;
@@ -71,10 +84,11 @@ esac
 [[ -f "$OUT/Phi.exe" && -f "$OUT/chrome.dll" ]] || {
   echo "$OUT has no Phi.exe + chrome.dll (build-fx.sh chrome phi_client, then build-fx-client.sh)" >&2; exit 1; }
 command -v makensis >/dev/null || { echo "makensis not found (apt install nsis)" >&2; exit 1; }
-SETUP="PhiBrowserSetup-$VERSION$SUFFIX.exe"
+FULL_VERSION="$VERSION.$BUILD_NUMBER"
+SETUP="PhiBrowserSetup-$FULL_VERSION$SUFFIX.exe"
 STAGE="$HERE/stage/$ARCH"
 DIST="$HERE/dist"
-echo "version: $VERSION  arch: $ARCH  out: $OUT"
+echo "version: $FULL_VERSION  arch: $ARCH  out: $OUT"
 
 # The telemetry config: an explicit file, else the rendered deployment
 # config, else nothing. The rendered file is a throwaway in the temp dir so
@@ -188,7 +202,8 @@ fi
 mkdir -p "$DIST"
 echo "running makensis..."
 (makensis -V2 -INPUTCHARSET UTF8 \
-  "-DPHI_VERSION=$VERSION" "-DPHI_ARCH=$ARCH" "-DPHI_STAGE=$STAGE" \
+  "-DPHI_VERSION=$VERSION" "-DPHI_BUILD_NUMBER=$BUILD_NUMBER" \
+  "-DPHI_ARCH=$ARCH" "-DPHI_STAGE=$STAGE" \
   "-DPHI_OUTDIR=$DIST" -DPHI_LAYOUT_FRAMEWORK \
   "${TELEMETRY_DEFINE[@]}" "${SIGN_DEFINE[@]}" "$HERE/phi-installer.nsi") | tail -3
 [[ -f "$DIST/$SETUP" ]] || { echo "makensis produced no $DIST/$SETUP" >&2; exit 1; }

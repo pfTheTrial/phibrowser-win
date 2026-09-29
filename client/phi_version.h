@@ -10,13 +10,26 @@
 // release pipeline (installer/make-installer.sh) greps the string literal
 // below, so it stays a literal; the numeric parts feed FILEVERSION, which
 // needs four integers. Bump BOTH together — the static_assert at the bottom
-// refuses a build where they disagree.
+// refuses a build where they disagree. The test-release GitHub Action stamps
+// PHI_WIN_VERSION_BUILD with its increasing run number while building, then
+// restores this source file. The full X.Y.Z.build version is used for update
+// comparison and displayed to users.
 #define PHI_WIN_VERSION_MAJOR 0
 #define PHI_WIN_VERSION_MINOR 0
 #define PHI_WIN_VERSION_PATCH 3
 #define PHI_WIN_VERSION_BUILD 0
 #define PHI_WIN_VERSION_STRING "0.0.3"
 #define PHI_WIN_VERSION_WIDE L"0.0.3"
+
+#define PHI_WIN_VERSION_STRINGIFY_(x) #x
+#define PHI_WIN_VERSION_STRINGIFY(x) PHI_WIN_VERSION_STRINGIFY_(x)
+#define PHI_WIN_VERSION_WIDEN_(x) L##x
+#define PHI_WIN_VERSION_WIDEN(x) PHI_WIN_VERSION_WIDEN_(x)
+#define PHI_WIN_VERSION_FULL_STRING \
+  PHI_WIN_VERSION_STRING "." PHI_WIN_VERSION_STRINGIFY(PHI_WIN_VERSION_BUILD)
+#define PHI_WIN_VERSION_FULL_WIDE \
+  PHI_WIN_VERSION_WIDE L"." \
+      PHI_WIN_VERSION_WIDEN(PHI_WIN_VERSION_STRINGIFY(PHI_WIN_VERSION_BUILD))
 
 // The release ring this build ships on, as feedback reports name it (the
 // Mac maps its nightly builds to "canary" and everything else to "stable";
@@ -28,8 +41,6 @@
 // side can check that the literal and the numerics still agree.
 #ifndef RC_INVOKED
 #include <string_view>
-#define PHI_WIN_VERSION_STRINGIFY_(x) #x
-#define PHI_WIN_VERSION_STRINGIFY(x) PHI_WIN_VERSION_STRINGIFY_(x)
 static_assert(std::string_view(PHI_WIN_VERSION_STRING) ==
                   PHI_WIN_VERSION_STRINGIFY(PHI_WIN_VERSION_MAJOR) "."
                   PHI_WIN_VERSION_STRINGIFY(PHI_WIN_VERSION_MINOR) "."

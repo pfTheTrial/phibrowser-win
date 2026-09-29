@@ -34,7 +34,7 @@ base::DictValue PhiAppOpenedProperties(const model::PhiSettings& settings,
                                        bool from_background) {
   base::DictValue props;
   props.Set("from_background", from_background);
-  props.Set("version", PHI_WIN_VERSION_STRING);
+  props.Set("version", PHI_WIN_VERSION_FULL_STRING);
   props.Set("layout_mode", PhiLayoutModeName(settings.layout_mode));
   // The Mac's beforeSend enrichment. AI features do not exist in this
   // client yet, so that one is reported false rather than omitted: an
@@ -98,7 +98,7 @@ PhiVersionTransition PhiNoteAppVersion(const std::wstring& user_data_dir) {
           previous.back() == ' ')) {
     previous.pop_back();
   }
-  const std::string current = PHI_WIN_VERSION_STRING;
+  const std::string current = PHI_WIN_VERSION_FULL_STRING;
   if (previous == current) {
     return out;  // The common case: nothing to say.
   }

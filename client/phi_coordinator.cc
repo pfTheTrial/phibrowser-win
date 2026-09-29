@@ -3462,7 +3462,7 @@ void PhiCoordinator::UpdateSyncKeyService() {
   native.state_path = user_data_dir_ + L"\\Phi\\syncstate\\" +
                       base::UTF8ToWide(PhiAccountDirName(subject)) + L".json";
   native.sidecar_path = user_data_dir_ + L"\\PhiSyncSidecars.json";
-  native.build_identity = std::string("windows/") + PHI_WIN_VERSION_STRING;
+  native.build_identity = std::string("windows/") + PHI_WIN_VERSION_FULL_STRING;
   native.make_settings =
       [this, subject](
           std::function<bool(const std::function<void()>&)> run_on_ui,

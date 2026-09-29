@@ -203,7 +203,7 @@ void PhiUpdater::Init(HWND quit_hwnd, UINT quit_msg) {
   const std::string url = AppcastUrl();
   g_sparkle.set_appcast_url(url.c_str());
   g_sparkle.set_app_details(L"Fyde Innovations", L"Phi Browser",
-                            PHI_WIN_VERSION_WIDE);
+                            PHI_WIN_VERSION_FULL_WIDE);
   if (g_sparkle.set_automatic_check) {
     g_sparkle.set_automatic_check(1);  // Default daily background checks.
   }
@@ -213,7 +213,7 @@ void PhiUpdater::Init(HWND quit_hwnd, UINT quit_msg) {
   g_sparkle.set_shutdown_request(&RequestShutdown);
   g_sparkle.init();
   g_initialized = true;
-  LOG(INFO) << "[PhiUpdater] init v" << PHI_WIN_VERSION_STRING
+  LOG(INFO) << "[PhiUpdater] init v" << PHI_WIN_VERSION_FULL_STRING
             << " appcast=" << url;
 }
 

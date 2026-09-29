@@ -1972,7 +1972,7 @@ LRESULT PhiFeedbackWindow::OnWindowMessage(UINT msg,
             diagnostic_rows_.clear();
             diagnostic_rows_.emplace_back(
                 PhiStr("feedback.form.diagnostics.phi"),
-                Widen(PHI_WIN_VERSION_STRING));
+                Widen(PHI_WIN_VERSION_FULL_STRING));
             diagnostic_rows_.emplace_back(
                 PhiStr("feedback.form.diagnostics.windows"),
                 Widen(PhiFeedbackOutbox::OsVersion()));

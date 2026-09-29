@@ -3,9 +3,10 @@
 # the Mac's Sparkle feed (ota.phibrowser.com/win-<ring>/appcast/
 # PhiBrowserWinUpdate.xml).
 #
-# Usage: make-appcast.sh --version X.Y.Z --url https://.../PhiBrowserSetup-X.Y.Z.exe \
-#          --setup dist/PhiBrowserSetup-X.Y.Z.exe [--arch x64|arm64] \
-#          [--arm64-setup dist/PhiBrowserSetup-X.Y.Z-arm64.exe --arm64-url https://.../PhiBrowserSetup-X.Y.Z-arm64.exe] \
+# Usage: make-appcast.sh --version X.Y.Z --build-number N \
+#          --url https://.../PhiBrowserSetup-X.Y.Z.N.exe \
+#          --setup dist/PhiBrowserSetup-X.Y.Z.N.exe [--arch x64|arm64] \
+#          [--arm64-setup dist/PhiBrowserSetup-X.Y.Z.N-arm64.exe --arm64-url https://.../PhiBrowserSetup-X.Y.Z.N-arm64.exe] \
 #          [--ed25519-key key.pem] [--out appcast.xml]
 #
 # One item per version, one enclosure per architecture: the enclosure's
@@ -23,10 +24,11 @@
 # `openssl pkey -in key.pem -pubout -outform DER | tail -c32 | base64`).
 set -euo pipefail
 
-VERSION="" URL="" SETUP="" ARCH="" ARM64_SETUP="" ARM64_URL="" KEY="" OUT="appcast.xml"
+VERSION="" BUILD_NUMBER="" URL="" SETUP="" ARCH="" ARM64_SETUP="" ARM64_URL="" KEY="" OUT="appcast.xml"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --version) VERSION="$2"; shift 2 ;;
+    --build-number) BUILD_NUMBER="$2"; shift 2 ;;
     --url) URL="$2"; shift 2 ;;
     --setup) SETUP="$2"; shift 2 ;;
     --arch) ARCH="$2"; shift 2 ;;
@@ -39,6 +41,14 @@ while [[ $# -gt 0 ]]; do
 done
 [[ -n "$VERSION" && -n "$URL" && -n "$SETUP" ]] || {
   echo "need --version, --url, --setup" >&2; exit 2; }
+if [[ -z "$BUILD_NUMBER" ]]; then
+  BUILD_NUMBER=$(grep -oP '(?<=PHI_WIN_VERSION_BUILD )\d+' \
+    "$(dirname "$0")/../client/phi_version.h")
+fi
+[[ "$BUILD_NUMBER" =~ ^(0|[1-9][0-9]*)$ && ${#BUILD_NUMBER} -le 5 ]] &&
+  (( BUILD_NUMBER <= 65535 )) || {
+    echo "--build-number must be an integer from 0 to 65535" >&2; exit 2; }
+FULL_VERSION="$VERSION.$BUILD_NUMBER"
 if [[ -z "$ARCH" ]]; then
   [[ "$SETUP" == *-arm64.exe ]] && ARCH=arm64 || ARCH=x64
 fi
@@ -57,7 +67,8 @@ enclosure() {
   fi
   cat <<XML
       <enclosure url="$url"
-                 sparkle:version="$VERSION"
+                 sparkle:version="$FULL_VERSION"
+                 sparkle:shortVersionString="$FULL_VERSION"
                  sparkle:os="windows-$arch"
                  length="$length"
                  type="application/octet-stream"$signature_attr />
@@ -77,11 +88,11 @@ cat > "$OUT" <<XML
   <channel>
     <title>Phi Browser for Windows</title>
     <item>
-      <title>Version $VERSION</title>
+      <title>Version $FULL_VERSION</title>
       <pubDate>$(date -R)</pubDate>
 $ENCLOSURES
     </item>
   </channel>
 </rss>
 XML
-echo "wrote $OUT ($SUMMARY$([[ -n "$KEY" ]] && echo ', signed'))"
+echo "wrote $OUT (version $FULL_VERSION; $SUMMARY$([[ -n "$KEY" ]] && echo ', signed'))"

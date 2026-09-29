@@ -829,7 +829,7 @@ bool PhiAppMenu::OnCommand(UINT id, bool from_accelerator) {
   switch (id) {
     case kCmdAbout:
       PhiNotice(c->MenuShellWindow(), PhiStr("menuBar.aboutPhi"),
-                PhiStrF("menuBar.aboutBody", {PHI_WIN_VERSION_WIDE}).c_str());
+                PhiStrF("menuBar.aboutBody", {PHI_WIN_VERSION_FULL_WIDE}).c_str());
       return true;
     case kCmdReportIssue:
       c->MenuOpenFeedback();

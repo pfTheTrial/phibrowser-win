@@ -569,7 +569,7 @@ base::DictValue MakeMetadata(const std::string& job_id,
   const std::string chromium = ChromiumVersion();
   base::DictValue browser;
   browser.Set("name", "Phi Browser");
-  browser.Set("version", PHI_WIN_VERSION_STRING);
+  browser.Set("version", PHI_WIN_VERSION_FULL_STRING);
   browser.Set("channel", PhiFeedbackOutbox::BrowserChannelName());
   browser.Set("revision", chromium);
 

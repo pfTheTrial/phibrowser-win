@@ -417,8 +417,8 @@ base::DictValue PhiTelemetry::SenderProperties() {
   // how docs/analytics.md there splits the channels in dashboards.
   base::DictValue props;
   props.Set("$lib", "phibrowser-win");
-  props.Set("$lib_version", PHI_WIN_VERSION_STRING);
-  props.Set("$app_version", PHI_WIN_VERSION_STRING);
+  props.Set("$lib_version", PHI_WIN_VERSION_FULL_STRING);
+  props.Set("$app_version", PHI_WIN_VERSION_FULL_STRING);
   props.Set("$app_build", PHI_WIN_VERSION_BUILD);
   // The channel the feedback form reports ("canary", or "debug" for a
   // DCHECK build), spelled into the namespace the way the Mac bundle id

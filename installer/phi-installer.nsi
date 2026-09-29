@@ -60,6 +60,10 @@
 !ifndef PHI_VERSION
   !error "pass /DPHI_VERSION=x.y.z"
 !endif
+!ifndef PHI_BUILD_NUMBER
+  !define PHI_BUILD_NUMBER "0"
+!endif
+!define PHI_FULL_VERSION "${PHI_VERSION}.${PHI_BUILD_NUMBER}"
 !ifndef PHI_STAGE
   !error "pass /DPHI_STAGE=<staged payload dir>"
 !endif
@@ -92,7 +96,7 @@ UninstallCaption "Uninstall Phi Browser"
 !ifndef PHI_OUTDIR
   !define PHI_OUTDIR "."
 !endif
-OutFile "${PHI_OUTDIR}/PhiBrowserSetup-${PHI_VERSION}${PHI_ARCH_SUFFIX}.exe"
+OutFile "${PHI_OUTDIR}/PhiBrowserSetup-${PHI_FULL_VERSION}${PHI_ARCH_SUFFIX}.exe"
 ; Authenticode (make-installer.sh passes its sign-pe.sh): the setup exe once
 ; it is written, and the uninstaller stub before it is packed into the
 ; installer - WriteUninstaller only drops that stub, so this is the one
@@ -126,13 +130,13 @@ XPStyle on
 BrandingText " "
 LoadLanguageFile "${NSISDIR}\Contrib\Language files\English.nlf"
 
-VIProductVersion "${PHI_VERSION}.0"
+VIProductVersion "${PHI_FULL_VERSION}"
 VIAddVersionKey "ProductName" "Phi Browser"
 VIAddVersionKey "FileDescription" "Phi Browser Setup (${PHI_ARCH})"
 VIAddVersionKey "CompanyName" "Fyde Innovations"
 VIAddVersionKey "LegalCopyright" "Copyright 2026 The Fyde Innovations Limited"
-VIAddVersionKey "FileVersion" "${PHI_VERSION}"
-VIAddVersionKey "ProductVersion" "${PHI_VERSION}"
+VIAddVersionKey "FileVersion" "${PHI_FULL_VERSION}"
+VIAddVersionKey "ProductVersion" "${PHI_FULL_VERSION}"
 
 Var Dpi
 Var Dark
@@ -257,7 +261,7 @@ Function .onInit
 !if "${PHI_ARCH}" == "arm64"
   ${IfNot} ${IsNativeARM64}
     ${If} ${Silent}
-      MessageBox MB_OK|MB_ICONSTOP "This is Phi Browser for Windows on ARM, and this PC is not ARM-based.$\r$\n$\r$\nPlease use the standard installer, PhiBrowserSetup-${PHI_VERSION}.exe." /SD IDOK
+      MessageBox MB_OK|MB_ICONSTOP "This is Phi Browser for Windows on ARM, and this PC is not ARM-based.$\r$\n$\r$\nPlease use the standard installer, PhiBrowserSetup-${PHI_FULL_VERSION}.exe." /SD IDOK
       Abort
     ${EndIf}
     StrCpy $ArchState "block"
@@ -265,7 +269,7 @@ Function .onInit
 !else
   ${If} ${IsNativeARM64}
     ${If} ${Silent}
-      MessageBox MB_YESNO|MB_ICONEXCLAMATION "This PC is Windows on ARM. This installer carries the x64 build of Phi Browser, which runs here through emulation; the ARM64 build, PhiBrowserSetup-${PHI_VERSION}-arm64.exe, is the better fit.$\r$\n$\r$\nInstall the x64 build anyway?" /SD IDYES IDYES x64_on_arm_ok
+      MessageBox MB_YESNO|MB_ICONEXCLAMATION "This PC is Windows on ARM. This installer carries the x64 build of Phi Browser, which runs here through emulation; the ARM64 build, PhiBrowserSetup-${PHI_FULL_VERSION}-arm64.exe, is the better fit.$\r$\n$\r$\nInstall the x64 build anyway?" /SD IDYES IDYES x64_on_arm_ok
       Abort
     x64_on_arm_ok:
     ${EndIf}
@@ -297,15 +301,15 @@ Function .onInit
     StrCpy $PrevVersion $0
   ${EndIf}
   ${If} $PrevVersion == ""
-    StrCpy $SubLine "Version ${PHI_VERSION} · ${PHI_ARCH} · Fyde Innovations"
+    StrCpy $SubLine "Version ${PHI_FULL_VERSION} · ${PHI_ARCH} · Fyde Innovations"
     StrCpy $Verb "Install"
     StrCpy $VerbIng "Installing…"
-  ${ElseIf} $PrevVersion == "${PHI_VERSION}"
-    StrCpy $SubLine "Reinstall ${PHI_VERSION} · ${PHI_ARCH}"
+  ${ElseIf} $PrevVersion == "${PHI_FULL_VERSION}"
+    StrCpy $SubLine "Reinstall ${PHI_FULL_VERSION} · ${PHI_ARCH}"
     StrCpy $Verb "Reinstall"
     StrCpy $VerbIng "Reinstalling…"
   ${Else}
-    StrCpy $SubLine "Update $PrevVersion → ${PHI_VERSION} · ${PHI_ARCH}"
+    StrCpy $SubLine "Update $PrevVersion → ${PHI_FULL_VERSION} · ${PHI_ARCH}"
     StrCpy $Verb "Update"
     StrCpy $VerbIng "Updating…"
   ${EndIf}
@@ -553,8 +557,8 @@ Function SetupCreate
     ; The arm64 installer on a PC that is not ARM: the screen is the notice.
     ${Create} $R9 $hDlg "blockcircle" 32 20 48 48 ""
     ${Create} $R9 $hDlg "text.subtitle" 96 22 472 28 "This installer is for Windows on ARM"
-    ${Create} $R9 $hDlg "text.sub" 96 54 472 16 "PhiBrowserSetup-${PHI_VERSION}-arm64.exe"
-    ${Create} $R9 $hDlg "text.lead" 32 90 536 40 "This PC is not ARM-based, so the ARM64 build cannot run here. Use the standard installer instead: PhiBrowserSetup-${PHI_VERSION}.exe."
+    ${Create} $R9 $hDlg "text.sub" 96 54 472 16 "PhiBrowserSetup-${PHI_FULL_VERSION}-arm64.exe"
+    ${Create} $R9 $hDlg "text.lead" 32 90 536 40 "This PC is not ARM-based, so the ARM64 build cannot run here. Use the standard installer instead: PhiBrowserSetup-${PHI_FULL_VERSION}.exe."
     PhiSetupUI::Buttons "pri" "Close" ""
     PhiSetupUI::Footer ""
     nsDialogs::Show
@@ -854,7 +858,7 @@ Section "Install"
   ; install_static reads it (nt::WOW6432).
   SetRegView 64
   WriteRegStr HKLM "${UNINST_KEY}" "DisplayName" "Phi Browser"
-  WriteRegStr HKLM "${UNINST_KEY}" "DisplayVersion" "${PHI_VERSION}"
+  WriteRegStr HKLM "${UNINST_KEY}" "DisplayVersion" "${PHI_FULL_VERSION}"
   WriteRegStr HKLM "${UNINST_KEY}" "Publisher" "Fyde Innovations"
   WriteRegStr HKLM "${UNINST_KEY}" "InstallLocation" "$INSTDIR"
   WriteRegStr HKLM "${UNINST_KEY}" "DisplayIcon" "$INSTDIR\Phi.exe"
@@ -914,7 +918,7 @@ Function un.ConfirmCreate
   ${If} $hDlg == error
     Abort
   ${EndIf}
-  ${Header} $hDlg "Remove Phi Browser" "Version ${PHI_VERSION} · $INSTDIR"
+  ${Header} $hDlg "Remove Phi Browser" "Version ${PHI_FULL_VERSION} · $INSTDIR"
   ${Create} $R9 $hDlg "text.lead" 32 90 536 40 "The program, its shortcuts and the Apps & Features entry will be removed. Rollback copies go with them."
   ${If} ${FileExists} "$DataDir\Local State"
   ${OrIf} ${FileExists} "$DataDir\PhiPreferences.json"
@@ -933,7 +937,7 @@ Function un.ConfirmLeave
 FunctionEnd
 
 Function un.InstShow
-  !insertmacro DecorateInstFiles "Uninstall Phi Browser" "Remove Phi Browser" "Version ${PHI_VERSION} · $INSTDIR" "Removing…" "Removing from $INSTDIR" "Shortcuts and the Apps & Features entry go with the program."
+  !insertmacro DecorateInstFiles "Uninstall Phi Browser" "Remove Phi Browser" "Version ${PHI_FULL_VERSION} · $INSTDIR" "Removing…" "Removing from $INSTDIR" "Shortcuts and the Apps & Features entry go with the program."
 FunctionEnd
 
 Section "Uninstall"
