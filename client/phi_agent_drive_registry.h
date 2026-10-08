@@ -7,6 +7,7 @@
 
 #include <windows.h>
 
+#include <cstdint>
 #include <functional>
 #include <map>
 #include <set>

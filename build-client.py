@@ -196,6 +196,12 @@ def c_recipe(template):
     command = re.sub(
         r" -Xclang (?:-add-plugin|-plugin-arg-[\w-]+) -Xclang \S+", "",
         command)
+    # Clang modules (r154+): the prebuilt system module is a C++ one, and a C
+    # compile that loads it fails on a configuration mismatch.
+    command = re.sub(r" -Xclang -fmodules?[\w-]*(?:=\S+)?", "", command)
+    command = re.sub(
+        r' "?-fmodule-(?:file|map-file|name)=[^" ]+"?|'
+        r" -fmodules\b|-fno-implicit-module(?:-map)?s\b", "", command)
     return command.replace(" /c ", f" -w {SQLITE_DEFINES} /c ", 1)
 
 
