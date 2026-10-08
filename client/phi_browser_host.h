@@ -6,6 +6,7 @@
 #define PHIBROWSER_WIN_CLIENT_PHI_BROWSER_HOST_H_
 
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -43,6 +44,10 @@ class PhiSpaceBrowsers {
   // Drops `browser` and every Space it backed. True when it was the one the
   // slot was SHOWING, so the caller must put another Space on screen.
   bool Forget(BrowserId browser);
+  void Retire(const std::string& space_id);
+  BrowserId TakeRetiredBrowser();
+  bool NeedsReplacement() const;
+  const std::set<BrowserId>& retiring() const { return retiring_; }
 
   bool Has(const std::string& space_id) const;
   BrowserId ForSpace(const std::string& space_id) const;
@@ -59,13 +64,15 @@ class PhiSpaceBrowsers {
   const std::string& active_space() const { return active_space_; }
   const std::vector<std::string>& order() const { return order_; }
   const std::map<std::string, BrowserId>& all() const { return by_space_; }
-  bool empty() const { return by_space_.empty(); }
+  bool empty() const { return by_space_.empty() && retiring_.empty(); }
 
  private:
   std::map<std::string, BrowserId> by_space_;
   std::vector<std::string> order_;
   std::string active_space_;
   BrowserId active_;
+  std::set<BrowserId> retiring_;
+  std::set<BrowserId> closing_retired_;
 };
 
 // The table's operations, inline so the host test needs no .cc of its own
@@ -95,6 +102,8 @@ inline bool PhiSpaceBrowsers::Show(const std::string& space_id) {
 }
 
 inline bool PhiSpaceBrowsers::Forget(BrowserId browser) {
+  retiring_.erase(browser);
+  closing_retired_.erase(browser);
   for (auto it = by_space_.begin(); it != by_space_.end();) {
     if (it->second == browser) {
       std::erase(order_, it->first);
@@ -112,6 +121,37 @@ inline bool PhiSpaceBrowsers::Forget(BrowserId browser) {
 
 inline bool PhiSpaceBrowsers::Has(const std::string& space_id) const {
   return by_space_.find(space_id) != by_space_.end();
+}
+
+inline void PhiSpaceBrowsers::Retire(const std::string& space_id) {
+  const BrowserId browser = ForSpace(space_id);
+  if (browser.valid()) {
+    retiring_.insert(browser);
+  }
+}
+
+inline BrowserId PhiSpaceBrowsers::TakeRetiredBrowser() {
+  if (NeedsReplacement()) {
+    return BrowserId();
+  }
+  for (BrowserId browser : retiring_) {
+    if (closing_retired_.insert(browser).second) {
+      return browser;
+    }
+  }
+  return BrowserId();
+}
+
+inline bool PhiSpaceBrowsers::NeedsReplacement() const {
+  if (retiring_.empty()) {
+    return false;
+  }
+  for (const auto& [space_id, browser] : by_space_) {
+    if (browser.valid() && !retiring_.contains(browser)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 inline BrowserId PhiSpaceBrowsers::ForSpace(const std::string& space_id) const {
@@ -270,6 +310,10 @@ class PhiBrowserHost {
   // shows a dead one. No-op when the Space is not open here. If it was the
   // slot's ONLY browser, the slot closes with it.
   void CloseSpaceBrowser(const std::string& space_id);
+  void RetireSpaceBrowser(const std::string& space_id) {
+    spaces_.Retire(space_id);
+  }
+  BrowserId TakeRetiredBrowser() { return spaces_.TakeRetiredBrowser(); }
   // Drops a browser that went away; returns true if the slot still has one.
   bool ForgetBrowser(BrowserId browser);
   // Gives the shown browser Win32 focus AND Chromium activation: as a

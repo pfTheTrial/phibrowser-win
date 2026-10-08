@@ -1842,6 +1842,7 @@ void PhiShellWindow::AttachSpaceBrowser(const std::string& space_id,
                                              BrowserId browser,
                                              HWND browser_hwnd) {
   browsers_->AttachSpaceBrowser(space_id, browser, browser_hwnd);
+  PostDeferredClose();
 }
 
 bool PhiShellWindow::ShowSpace(const std::string& space_id) {
@@ -1909,6 +1910,15 @@ void PhiShellWindow::SwitchToSpace(const std::string& space_id) {
 
 void PhiShellWindow::CloseSpaceBrowser(const std::string& space_id) {
   browsers_->CloseSpaceBrowser(space_id);
+}
+
+void PhiShellWindow::RetireSpaceBrowser(const std::string& space_id) {
+  browsers_->RetireSpaceBrowser(space_id);
+  PostDeferredClose();
+}
+
+bool PhiShellWindow::NeedsSpaceReplacement() const {
+  return browsers_->spaces().NeedsReplacement();
 }
 
 bool PhiShellWindow::ForgetBrowser(BrowserId browser) {
@@ -4260,6 +4270,11 @@ void PhiShellWindow::RequestClose() {
   for (const auto& [space_id, browser_id] : browsers_->spaces().all()) {
     browsers.push_back(browser_id);
   }
+  for (BrowserId browser_id : browsers_->spaces().retiring()) {
+    if (std::find(browsers.begin(), browsers.end(), browser_id) == browsers.end()) {
+      browsers.push_back(browser_id);
+    }
+  }
   if (!framework || browsers.empty()) {
     if (shell && ::IsWindow(shell)) {
       ::DestroyWindow(shell);
@@ -4299,6 +4314,14 @@ void PhiShellWindow::RunDeferredClose() {
   if (deferred_slot_close_) {
     deferred_slot_close_ = false;
     RequestClose();  // May destroy `this`; nothing follows.
+    return;
+  }
+  if (framework_) {
+    const BrowserId retired = browsers_->TakeRetiredBrowser();
+    if (retired.valid()) {
+      PostDeferredClose();
+      framework_->CloseBrowserWindow(retired.value);
+    }
   }
 }
 

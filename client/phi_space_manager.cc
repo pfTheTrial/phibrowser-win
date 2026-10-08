@@ -664,12 +664,6 @@ void PhiSpaceManager::RetreatFromSpace(const std::string& space_id) {
     LOG(INFO) << "[PhiClient] default Space role handed to "
               << model_.default_space_id;
   }
-  // A slot whose ONLY browser is the deleted Space's would be torn down by
-  // the close below (a window closes with its last browser). Retreat it to
-  // the default Space first — spawning that Space's browser into the slot
-  // (synchronous for a loaded profile) — the Mac's retreat-then-close order.
-  // Now reachable for the default Space itself, whose browser is usually the
-  // slot's original one.
   const std::string retreat = DefaultSpaceId();
   for (PhiShellWindow* controller : registry_.Controllers()) {
     if (controller->is_agent() || !controller->HasSpace(space_id) ||
@@ -687,10 +681,12 @@ void PhiSpaceManager::RetreatFromSpace(const std::string& space_id) {
       host_.SurfaceSpaceInSlot(controller->slot(), retreat, nullptr);
     }
   }
-  // Close the Space's browser wherever it is open; each controller switches
-  // away first so a live window never keeps showing a deleted Space.
   for (PhiShellWindow* controller : registry_.Controllers()) {
-    controller->CloseSpaceBrowser(space_id);
+    if (controller->is_agent()) {
+      controller->CloseSpaceBrowser(space_id);
+    } else {
+      controller->RetireSpaceBrowser(space_id);
+    }
   }
 }
 

@@ -116,6 +116,65 @@ void TheActiveBrowserFallsBackToTheFirstStillAttached() {
   CHECK(spaces.active() == Id(9));
 }
 
+void RetirementWaitsForAnAttachedReplacement() {
+  PhiSpaceBrowsers spaces;
+  spaces.Attach("deleted", Id(7));
+  spaces.Retire("deleted");
+  CHECK(spaces.NeedsReplacement());
+  CHECK(!spaces.TakeRetiredBrowser().valid());
+  CHECK(!spaces.TakeRetiredBrowser().valid());
+  CHECK(!spaces.empty());
+  CHECK(spaces.active() == Id(7));
+  spaces.Attach("replacement", Id(9));
+  CHECK(!spaces.NeedsReplacement());
+  CHECK(spaces.TakeRetiredBrowser() == Id(7));
+  CHECK(!spaces.TakeRetiredBrowser().valid());
+  CHECK(!spaces.Forget(Id(7)));
+  CHECK(!spaces.empty());
+  CHECK(spaces.active() == Id(9));
+  CHECK(spaces.retiring().empty());
+}
+
+void RetiringTheReplacementStillKeepsABrowserAlive() {
+  PhiSpaceBrowsers spaces;
+  spaces.Attach("first", Id(7));
+  spaces.Retire("first");
+  spaces.Attach("second", Id(9));
+  spaces.Retire("second");
+  CHECK(spaces.NeedsReplacement());
+  CHECK(!spaces.TakeRetiredBrowser().valid());
+  spaces.Attach("third", Id(11));
+  CHECK(spaces.TakeRetiredBrowser() == Id(7));
+  spaces.Retire("third");
+  CHECK(!spaces.TakeRetiredBrowser().valid());
+  CHECK(!spaces.Forget(Id(7)));
+  CHECK(!spaces.TakeRetiredBrowser().valid());
+  spaces.Attach("fourth", Id(13));
+  CHECK(spaces.TakeRetiredBrowser() == Id(9));
+  CHECK(!spaces.Forget(Id(9)));
+  CHECK(spaces.TakeRetiredBrowser() == Id(11));
+  CHECK(!spaces.Forget(Id(11)));
+  CHECK(spaces.active() == Id(13));
+}
+
+void RetirementTracksBrowserIdentityAndExplicitClose() {
+  PhiSpaceBrowsers spaces;
+  spaces.Attach("space", Id(7));
+  spaces.Retire("missing");
+  CHECK(spaces.retiring().empty());
+  spaces.Retire("space");
+  spaces.Retire("space");
+  CHECK(spaces.retiring().size() == 1u);
+  spaces.Attach("space", Id(9));
+  CHECK(spaces.TakeRetiredBrowser() == Id(7));
+  CHECK(!spaces.Forget(Id(7)));
+  CHECK(spaces.ForSpace("space") == Id(9));
+  spaces.Retire("space");
+  CHECK(spaces.Forget(Id(9)));
+  CHECK(spaces.empty());
+  CHECK(spaces.retiring().empty());
+}
+
 }  // namespace
 
 int main() {
@@ -125,6 +184,9 @@ int main() {
   ForgetDropsTheBrowserAndEverySpaceItBacked();
   ForgettingAStrangerChangesNothing();
   TheActiveBrowserFallsBackToTheFirstStillAttached();
+  RetirementWaitsForAnAttachedReplacement();
+  RetiringTheReplacementStillKeepsABrowserAlive();
+  RetirementTracksBrowserIdentityAndExplicitClose();
   if (g_failures == 0) {
     std::printf("browser_host_test: all checks passed\n");
   }

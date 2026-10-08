@@ -3,6 +3,39 @@
 Date: 2026-09-28. Findings below record the original source review. The follow-up
 implementation status is tracked separately so original evidence is preserved.
 
+## 2026-10-08 source fixes for the remaining failures
+
+The two runtime failures recorded below now have source fixes in the Windows
+client and Chromium fork. The September results remain historical evidence;
+these changes have not been rerun on Winbox.
+
+- Extension UI resolves a requesting tab's owning Browser before considering
+  the active window. The install-dialog presentation gate can therefore reveal
+  the correct Space. Requests without a tab sender keep the existing fallback.
+  `PermissionUiUsesSenderInsteadOfActiveWindow` covers both ownership paths;
+  `suite-hosted-permission.mjs` remains the native hidden-Space acceptance test.
+- Space deletion retires its Browser until a replacement is actually attached.
+  Closure runs on the shell's deferred-close message, outside Browser creation
+  callbacks and nested client modal loops. A failed or timed-out replacement
+  leaves the original Browser alive; selecting another Space can retry. Further
+  Space deletion redirects the replacement to the surviving default. Late
+  creations for deleted/reprofiled Spaces, or expired requests, are closed
+  asynchronously instead of being attached as replacements.
+- Retirement tracks Browser IDs, retains closing Browsers until their close
+  notifications, and includes them in explicit whole-window closure. Host tests
+  cover replacement failure, repeated deletion, replacement identity, and cleanup.
+
+The host-model suite passes, including all 10,461 sync vectors. The Windows
+framework builds and links successfully, the complete client rebuilds and links,
+and the new permission browser-test object compiles. The updated Space suite
+passes JavaScript syntax checking and now asserts that default-role handoff
+preserves the original native shell. Logs: `/tmp/phi-1632-model-tests.log`,
+`/tmp/phi-1632-client-build.log`, and `/tmp/fx-build-PhiFxWinShip.log`.
+
+Native Windows runtime acceptance is still required for permission-dialog presentation,
+beforeunload cancellation during retirement, and default-Space deletion with a
+cold replacement profile.
+
 ## Follow-up implementation
 
 Changes span both the Chromium fork and Windows client. The paired Chromium

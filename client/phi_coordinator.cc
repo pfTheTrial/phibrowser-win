@@ -2866,6 +2866,14 @@ void PhiCoordinator::OnSpacesChanged(PhiSpaceManager::SpacesChange what) {
       break;
   }
   NotifySettingsObservers(PhiSettingsChange::kSpaces);
+  if (what == SpacesChange::kList) {
+    for (PhiShellWindow* controller : registry_.Controllers()) {
+      if (controller->NeedsSpaceReplacement()) {
+        SurfaceSpaceInSlot(controller->slot(), space_manager_->DefaultSpaceId(),
+                           nullptr);
+      }
+    }
+  }
 }
 
 void PhiCoordinator::RebuildSpacePalettes() {
@@ -4054,6 +4062,11 @@ void PhiCoordinator::AdoptCreatedWindow(
   if (creation.request_token.valid()) {
     pending = registry_.TakePending(creation.request_token);
     if (!pending) {
+      if (kind == WindowKind::kSpace) {
+        ::PostMessageW(hwnd, WM_CLOSE, 0, 0);
+        UpdateSweepTimer();
+        return;
+      }
       LOG(WARNING) << "[PhiClient] window " << browser.value
                    << " carries token " << creation.request_token.value
                    << " that is not pending; hosting as a user window";
@@ -4227,6 +4240,11 @@ bool PhiCoordinator::AttachRequestedSpaceBrowser(
     BrowserId browser,
     HWND hwnd,
     const PendingCreation& pending) {
+  const Space* space = space_manager_->Find(pending.space_id);
+  if (!space || space->profile_id != pending.profile_id) {
+    ::PostMessageW(hwnd, WM_CLOSE, 0, 0);
+    return true;
+  }
   PhiShellWindow* target = registry_.Get(pending.slot);
   if (!target) {
     if (pending.slot.valid()) {
@@ -4275,6 +4293,11 @@ bool PhiCoordinator::AttachRestoredGhost(BrowserId browser,
     slot = registry_.FirstUserSlot();
   }
   PhiShellWindow* target = registry_.Get(slot);
+  const Space* space = space_manager_->Find(space_id);
+  if (pending && (!space || space->profile_id != pending->profile_id)) {
+    ::PostMessageW(hwnd, WM_CLOSE, 0, 0);
+    return true;
+  }
   if (space_id.empty() || !target) {
     return false;
   }

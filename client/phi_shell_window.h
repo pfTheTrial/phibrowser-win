@@ -844,6 +844,8 @@ class PhiShellWindow : public PhiHitSource,
   // shows a dead one. No-op when the Space is not open here. If it was the
   // slot's ONLY browser, the slot closes with it.
   void CloseSpaceBrowser(const std::string& space_id);
+  void RetireSpaceBrowser(const std::string& space_id);
+  bool NeedsSpaceReplacement() const;
   // Starts closing the whole slot (its Space browsers, one per Space). MAY
   // DESTROY `this` before returning — the last browser going away tears the
   // slot down — so touch nothing on this object afterwards.

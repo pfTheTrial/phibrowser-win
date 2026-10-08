@@ -212,6 +212,8 @@ test('spaces: only the LAST space refuses deletion; the default hands its role o
   const ctl = await openControl()
   try {
     const windowId = (await ctl.send('agentSpace.list')).windows[0]
+    const originalShell = await ctl.send('agentSpace.window.handle', { windowId })
+    assertEq(originalShell.ok, true, 'original shell handle available')
     let { spaces } = await ctl.send('agentSpace.spaces.list', { windowId })
     const def = spaces.find((s) => s.isDefault)
     assert(def, 'a default space exists')
@@ -234,6 +236,15 @@ test('spaces: only the LAST space refuses deletion; the default hands its role o
                              { spaceId: spaces[0].id })).ok, false,
              'the last space is permanent')
     assertEq(spaces[0].isDefault, true, 'and it holds the default role')
+    const survivingSpace = spaces[0].id
+    await waitSpaces(ctl, windowId,
+      current => current.some(space => space.id === survivingSpace &&
+                                      space.active && space.open),
+      { timeout: 10000, what: 'surviving Space to attach in the original shell' })
+    const survivingShell = await ctl.send('agentSpace.window.handle', { windowId })
+    assertEq(survivingShell.ok, true, 'original shell remains live')
+    assertEq(String(survivingShell.hwnd), String(originalShell.hwnd),
+             'default-role handoff preserves the native shell')
   } finally { ctl.close() }
 })
 
