@@ -4094,16 +4094,18 @@ std::optional<PhiColor> PhiShellWindow::ComputeActivePageColor() const {
   // WebContentHeader.updatePageColor's eligibility: a real page (not the new
   // tab or bookmark page, not a placeholder), no group overview, not a split
   // -- each pane of a split is its own page. A crashed tab needs no test: the
-  // framework clears its colour.
+  // framework clears its colour. The native pages are judged by the active
+  // tab's URL, never by what is mounted: a Space switch rebuilds before the
+  // slide lands, while the LEAVING Space's page is still up (SyncNtp waits
+  // for the reveal), and nothing rebuilds after it comes down.
   if (!model_ || !browsers_ || browsers_->ActiveBrowserPlaceholding() ||
-      PhiGroupOverview::IsOpen() || ActiveTabIsSplit() ||
-      (native_pages_ && (native_pages_->ntp_mounted() ||
-                         native_pages_->bookmark_page_mounted()))) {
+      PhiGroupOverview::IsOpen() || ActiveTabIsSplit()) {
     return std::nullopt;
   }
   const PhiWindowModel::Tab* tab =
       model_->FindTab(active_browser_id(), active_tab_id());
-  if (!tab || !tab->has_page_color || PhiNewTabPage::IsNewTabUrl(tab->url)) {
+  if (!tab || !tab->has_page_color || PhiNewTabPage::IsNewTabUrl(tab->url) ||
+      PhiBookmarkManager::IsManagerUrl(tab->url)) {
     return std::nullopt;
   }
   const uint32_t argb = tab->page_color_argb;
