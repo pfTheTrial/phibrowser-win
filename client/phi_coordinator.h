@@ -1100,6 +1100,8 @@ class PhiCoordinator : public SidebarHost,
   // pre-login placeholder), and the user-data-dir it lives under.
   std::string data_account_;
   std::wstring user_data_dir_;
+  // What RememberStartupProfile last wrote ("" = nothing yet this run).
+  std::string startup_profile_written_;
   // Opens `account_id`'s store and defaults (creating its directory), and
   // points the Space manager, the router and the restore service at them.
   // With `reconcile_windows`, windows showing a Space the account does not
@@ -1153,6 +1155,12 @@ class PhiCoordinator : public SidebarHost,
   // peek/reader whose opener is gone, fall back to HostUserShell.
   void HostUserShell(BrowserId browser, HWND hwnd, bool incognito,
                      const std::string& first_space = std::string());
+  // The Space a new user window of `profile_id` opens on when the default
+  // Space is bound to ANOTHER profile ("" = the default Space, as before).
+  std::string SpaceForUserBrowser(const std::string& profile_id) const;
+  // Records the default Space's profile for the next launch's startup
+  // browser (phi_startup_profile.h); a no-op when it is unchanged.
+  void RememberStartupProfile();
   bool AttachRequestedSpaceBrowser(BrowserId browser,
                                    HWND hwnd,
                                    const PendingCreation& pending);

@@ -62,6 +62,7 @@
 #include "content/public/common/result_codes.h"
 #include "phibrowser-win/client/phi_auth.h"
 #include "phibrowser-win/client/phi_coordinator.h"
+#include "phibrowser-win/client/phi_startup_profile.h"
 #include "third_party/crashpad/crashpad/util/win/initial_client_data.h"
 
 #if defined(WIN_CONSOLE_APP)
@@ -91,6 +92,22 @@ extern "C" __declspec(dllexport) const char* PhiClientSyncServerUrl() {
   static const base::NoDestructor<std::string> url(
       phi_client::PhiAuth::SyncServerUrl());
   return url->c_str();
+}
+
+// The profile the browser process starts in, asked by the framework at the
+// same point (BasicStartupComplete): the default Space's profile as the
+// client last recorded it (phi_startup_profile.h), "" for Chromium to use
+// "Default". Resolved from the same user data dir Chromium will use
+// (--user-data-dir, the installer's Software\Phi\UserDataDir, the default).
+extern "C" __declspec(dllexport) const char* PhiClientStartupProfile() {
+  static const base::NoDestructor<std::string> profile([] {
+    std::wstring user_data_dir;
+    if (!install_static::GetUserDataDirectory(&user_data_dir, nullptr)) {
+      return std::string();
+    }
+    return phi_client::PhiReadStartupProfile(user_data_dir);
+  }());
+  return profile->c_str();
 }
 
 namespace {
@@ -294,13 +311,15 @@ int main() {
   // framework is up nothing goes to a file.
   phi_client::InitEarlyClientLogging();
 
-  // The BROWSER process must start in the Default profile: the startup
-  // browser becomes the default Space's window, and that Space is bound to
-  // Default — bindings are immutable in the fork's model. Chromium's own
-  // default is the LAST-USED profile, which is whatever Space was foreground
-  // at the previous exit; without this pin, a session that ended in another
-  // Space's profile hands the default Space a wrong-profile browser at the
-  // next launch.
+  // The BROWSER process must start in the DEFAULT SPACE's profile: the
+  // startup browser becomes that Space's window, and bindings are immutable
+  // in the fork's model. Chromium's own default is the LAST-USED profile,
+  // which is whatever Space was foreground at the previous exit; without
+  // this pin, a session that ended in another Space's profile hands the
+  // default Space a wrong-profile browser at the next launch. The default
+  // Space is not always in "Default" (its role moves on delete; a synced
+  // account may have no Space there), so the profile is the one the client
+  // recorded, "Default" before it has recorded any.
   //
   // These appends reach ONLY THIS EXE's base::CommandLine. In the component
   // build that is the one chrome.dll uses too; in a non-component build
@@ -310,8 +329,10 @@ int main() {
   // here so the exe's own reads (the fast-notify path below) agree.
   if (process_type.empty() &&
       !command_line->HasSwitch("profile-directory")) {
+    const char* startup_profile = PhiClientStartupProfile();
     base::CommandLine::ForCurrentProcess()->AppendSwitchASCII(
-        "profile-directory", "Default");
+        "profile-directory",
+        *startup_profile ? startup_profile : "Default");
   }
   // Chromium's own first run — the "make Phi your default browser" welcome
   // page and the default-browser check — has no place on Windows: Phi's

@@ -44,6 +44,7 @@
 #include "phibrowser-win/client/phi_modal_scope.h"
 #include "phibrowser-win/client/phi_popup_chrome.h"
 #include "phibrowser-win/client/phi_prompt.h"
+#include "phibrowser-win/client/phi_startup_profile.h"
 #include "phibrowser-win/client/phi_sync_settings_win.h"
 #include "phibrowser-win/client/phi_telemetry.h"
 #include "phibrowser-win/client/phi_updater.h"
@@ -2167,6 +2168,7 @@ void PhiCoordinator::OpenDataAccount(const std::string& account_id,
   // The account-scoped preferences (sidebar width, shortcuts) follow.
   preferences_.BindAccount(&account_defaults_);
   space_manager_->Load();
+  RememberStartupProfile();
   session_restore_->Load(dir.empty() ? user_data_dir_ : dir);
   LOG(INFO) << "[PhiClient] data account "
             << (account_id == kGuestAccountId ? "guest" : "signed-in")
@@ -2883,6 +2885,7 @@ void PhiCoordinator::OnPreferencesChanged(
 
 void PhiCoordinator::OnSpacesChanged(PhiSpaceManager::SpacesChange what) {
   using SpacesChange = PhiSpaceManager::SpacesChange;
+  RememberStartupProfile();  // The default Space or its binding may move.
   // Phi native sync publishes the user's Space edits (not its own).
   if (sync_keys_ && !space_manager_->sync_applying()) {
     sync_keys_->NoteLocalSpacesChanged();
@@ -4245,7 +4248,67 @@ void PhiCoordinator::AdoptCreatedWindow(
       AttachRestoredGhost(browser, hwnd, BrowserId{creation.restored_from})) {
     return;
   }
-  HostUserShell(browser, hwnd, creation.incognito);
+  HostUserShell(browser, hwnd, creation.incognito,
+                creation.incognito
+                    ? std::string()
+                    : SpaceForUserBrowser(creation.profile_id
+                                              ? creation.profile_id
+                                              : ""));
+}
+
+std::string PhiCoordinator::SpaceForUserBrowser(
+    const std::string& profile_id) const {
+  // A window's profile is baked in at spawn, so a user window shows a Space
+  // of ITS profile: hosted as the default Space of another profile it
+  // would run that Space's pages, cookies and extensions in the wrong
+  // profile (the startup browser did, before the launch followed the
+  // default Space's profile — PhiClientStartupProfile).
+  const model::Space* fallback =
+      space_manager_->Find(space_manager_->DefaultSpaceId());
+  if (profile_id.empty() || !fallback || fallback->profile_id == profile_id) {
+    return std::string();
+  }
+  // The Space the user last had up, when it is this profile's; else the
+  // first of this profile's in strip order.
+  std::string chosen;
+  const std::string last = LastActiveSpaceId();
+  if (const model::Space* space = space_manager_->Find(last);
+      space && space->profile_id == profile_id &&
+      !model::IsIncognitoSpaceId(last)) {
+    chosen = last;
+  }
+  if (chosen.empty()) {
+    for (const model::Space& space : space_manager_->spaces()) {
+      if (space.profile_id == profile_id) {
+        chosen = space.id;
+        break;
+      }
+    }
+  }
+  if (!chosen.empty()) {
+    LOG(INFO) << "[PhiClient] user window of profile " << profile_id
+              << " hosted on Space " << chosen << ", not the default Space "
+              << "(profile " << fallback->profile_id << ")";
+    return chosen;
+  }
+  LOG(WARNING) << "[PhiClient] a user window of profile " << profile_id
+               << " has no Space of its profile; hosted as the default "
+                  "Space (profile "
+               << fallback->profile_id << ")";
+  return std::string();
+}
+
+void PhiCoordinator::RememberStartupProfile() {
+  const model::Space* space =
+      space_manager_->Find(space_manager_->DefaultSpaceId());
+  if (!space || user_data_dir_.empty() ||
+      space->profile_id == startup_profile_written_) {
+    return;
+  }
+  if (PhiWriteStartupProfile(user_data_dir_, space->profile_id)) {
+    startup_profile_written_ = space->profile_id;
+    LOG(INFO) << "[PhiClient] startup profile -> " << space->profile_id;
+  }
 }
 
 bool PhiCoordinator::HostSurfacePanel(
