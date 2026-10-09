@@ -3998,7 +3998,12 @@ void PhiCoordinator::RequestNewIncognitoSpace(int64_t slot) {
                   /*incognito=*/true, BrowserId(), std::move(pending));
 }
 
-void PhiCoordinator::RequestCloseIncognitoSpace(const std::string& space_id) {
+void PhiCoordinator::RequestCloseIncognitoSpace(
+    const std::string& requested_space) {
+  // A copy: a caller's reference may be a shell's active_space(), which the
+  // switch-away below rewrites — the retire would then take the REGULAR
+  // Space's browser and leave the Incognito Space standing.
+  const std::string space_id = requested_space;
   if (!model::IsIncognitoSpaceId(space_id) ||
       !space_manager_->Find(space_id)) {
     return;

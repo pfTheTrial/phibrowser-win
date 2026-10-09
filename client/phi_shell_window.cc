@@ -1436,7 +1436,7 @@ SlotId PhiShellWindow::MenuSlot() const {
   return slot_;
 }
 
-void PhiShellWindow::CloseIncognitoSpaceAsking(const std::string& space_id) {
+void PhiShellWindow::CloseIncognitoSpaceAsking(std::string space_id) {
   // Locals only past the alert: its modal loop pumps messages.
   SpacesHost* const spaces = services_.spaces;
   ChromePrefsHost* const prefs = services_.prefs;
@@ -1485,6 +1485,12 @@ bool PhiShellWindow::CloseTabEndsIncognitoSpace() {
 
 bool PhiShellWindow::MenuCloseTabEndsIncognitoSpace() {
   return CloseTabEndsIncognitoSpace();
+}
+
+void PhiShellWindow::MenuCloseIncognitoSpace() {
+  if (!incognito_ && !agent_) {
+    CloseIncognitoSpaceAsking(active_space());
+  }
 }
 
 bool PhiShellWindow::ShowsIncognito() const {
@@ -5705,7 +5711,8 @@ void PhiShellWindow::ShowTabAreaMenu(POINT pt, bool space_only) {
     // The default Space's window cannot be re-bound (a fresh shell's first
     // browser lands there), so its rows read the binding out but stay
     // disabled.
-    in.can_reprofile = active_space() != services_.spaces->DefaultSpaceId();
+    in.can_reprofile = active_space() != services_.spaces->DefaultSpaceId() &&
+                       !in.incognito_space;
     for (const std::string& summary : services_.spaces->ProfileSummaries()) {
       const size_t tab = summary.find('\t');
       const std::string id = summary.substr(0, tab);

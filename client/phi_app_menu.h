@@ -152,6 +152,9 @@ enum : UINT {
   kCmdShowAppMenu,
   // Extensions ▸ Manage extensions (chrome://extensions in a new tab).
   kCmdManageExtensions,
+  // Spaces ▸ Close Incognito Space — the Mac Spaces menu's row, present
+  // while an Incognito Space is the active one.
+  kCmdCloseIncognitoSpace,
   // Layout ▸ Show sidebar — the same toggle as kCmdToggleSidebar, listed
   // under its own name so the remote surface can address the row.
   kCmdShowBookmarksBar = kCmdAlwaysShowBookmarkBar,
@@ -253,6 +256,8 @@ class PhiAppMenuShell {
   // Ctrl+W on an Incognito Space's last tab ends the Space instead (asked
   // first). True when it took the close — whatever the answer was.
   virtual bool MenuCloseTabEndsIncognitoSpace() = 0;
+  // Ends the active Incognito Space (asked first).
+  virtual void MenuCloseIncognitoSpace() = 0;
   virtual void MenuCreateSpace() = 0;
   // The Mac's Edit Theme: the panel drops under the caption, centred on the
   // window (the menu bar has no trigger point to hang it off).

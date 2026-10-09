@@ -32,7 +32,7 @@ constexpr wchar_t kPromptClass[] = L"PhiPrompt";
 constexpr int kWidth = 448;
 constexpr int kPadding = 24;
 constexpr int kContentWidth = kWidth - 2 * kPadding;  // 400
-constexpr int kTitleHeight = 28;  // 20 dip, one line.
+constexpr int kTitleHeight = 28;  // 20 dip, one line (a longer title wraps).
 constexpr int kCopySpacing = 12;
 constexpr int kAccessorySpacing = 16;
 constexpr int kActionHeight = 32;
@@ -289,8 +289,23 @@ class Alert : public PhiSecondaryWindow {
     const int content_w = Scaled(kContentWidth);
     int y = CaptionHeight() + Scaled(kPadding);
 
-    title_ = {x0, y, x0 + content_w, y + Scaled(kTitleHeight)};
-    y += Scaled(kTitleHeight);
+    // One line as a rule; a title longer than the content width wraps (the
+    // ContentDialog's does) instead of losing its end to an ellipsis.
+    int title_h = Scaled(kTitleHeight);
+    {
+      HDC dc = ::GetDC(hwnd());
+      HGDIOBJ previous = title_font_ ? ::SelectObject(dc, title_font_) : nullptr;
+      RECT measure = {0, 0, content_w, 0};
+      ::DrawTextW(dc, spec_.title.c_str(), -1, &measure,
+                  DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX);
+      title_h = std::max(title_h, static_cast<int>(measure.bottom));
+      if (previous) {
+        ::SelectObject(dc, previous);
+      }
+      ::ReleaseDC(hwnd(), dc);
+    }
+    title_ = {x0, y, x0 + content_w, y + title_h};
+    y += title_h;
 
     // The copy wraps at the content width; its height is the text's.
     int message_h = 0;
@@ -463,9 +478,11 @@ class Alert : public PhiSecondaryWindow {
     HGDIOBJ previous = title_font_ ? ::SelectObject(dc, title_font_) : nullptr;
     ::SetTextColor(dc, colors().label_strong);
     RECT title = title_;
+    const bool one_line = title.bottom - title.top <= Scaled(kTitleHeight);
     ::DrawTextW(dc, spec_.title.c_str(), -1, &title,
-                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX |
-                    DT_END_ELLIPSIS);
+                DT_LEFT | DT_NOPREFIX |
+                    (one_line ? DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS
+                              : DT_WORDBREAK));
     if (!spec_.message.empty()) {
       if (body_font_) {
         ::SelectObject(dc, body_font_);

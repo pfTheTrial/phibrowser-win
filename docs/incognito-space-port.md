@@ -136,12 +136,20 @@ incognito-spaces.mjs` / `incognito-route.mjs` and PhiSkillCap captures.
 * **Agent API** — `spaces.list` excludes them (stored list), `spaces.focus`
   reports `isIncognito` and withholds window/tab, `spaces.delete` closes.
 
+Fixed 2026-10-09 ("I can not close incognito space"): the tab-area / pip
+row "Close Incognito Space" passed `active_space()` — a reference — into
+`RequestCloseIncognitoSpace`, whose switch-away rewrote it, so the retire
+took the REGULAR Space's browser and the Incognito Space stayed. Both
+`CloseIncognitoSpaceAsking` and `RequestCloseIncognitoSpace` now copy the
+id. Same pass: ⋯ ▸ Spaces gained the Mac's "Close Incognito Space" row
+(`kCmdCloseIncognitoSpace`, WM_COMMAND 1099), the tab-area menu's Change
+Profile is off in an Incognito Space (as the ⋯ menu's was), and an alert
+title too long for one line wraps instead of ending in an ellipsis.
+
 Not ported / unverified:
 
-* The close confirmation's pixels: the box account has
-  `suppressCloseIncognitoSpaceWarning` on (synced from the Mac), so the
-  Ctrl+W path closed without asking — correct, but the dialog itself was
-  not seen.
+* The close confirmation was first seen on the box 2026-10-09 (pref flipped
+  off by hand, then restored — the account has it on, synced from the Mac).
 * Mac extras: the account-menu entry (Windows has no account menu), the
   AppleScript/Raycast command (no agent verb was added), the prewarmed
   native tree and the new-pip chip flight.

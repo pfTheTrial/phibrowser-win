@@ -644,7 +644,9 @@ class PhiShellWindow : public PhiHitSource,
   bool is_incognito() const { return incognito_; }
   // Ends the Incognito Space `space_id` — after the Mac's confirmation
   // unless "Do not ask again" was ticked. Cancel leaves everything open.
-  void CloseIncognitoSpaceAsking(const std::string& space_id);
+  // By value: callers pass active_space(), which the alert's loop and the
+  // close's own switch-away both rewrite.
+  void CloseIncognitoSpaceAsking(std::string space_id);
   // The last tab of the Incognito Space on screen is closing (Ctrl+W, its
   // row's close box): the Space ends instead, asked first. True when that
   // took the close, whatever the answer; false for any other tab.
@@ -1582,6 +1584,7 @@ class PhiShellWindow : public PhiHitSource,
   void MenuToggleSearchTabs() override;
   void MenuOpenFeedback() override;
   bool MenuCloseTabEndsIncognitoSpace() override;
+  void MenuCloseIncognitoSpace() override;
   void MenuCreateSpace() override;
   void MenuEditSpaceTheme() override;
   void MenuChangeSpaceIcon() override;

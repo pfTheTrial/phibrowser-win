@@ -487,6 +487,14 @@ void PhiAppMenu::RefreshSpaces() {
       spaces_, kCmdDeleteSpace, PhiStr("appMenu.deleteSpace"), fluent::kDelete,
       spaces_host && spaces_host->CanDeleteSpace(active));
   del->danger = true;
+  if (incognito_space) {
+    // The Mac's closeIncognitoSpaceFromMenu row: Delete is off for a
+    // runtime Space, so this is the menu's way to end it.
+    rows_.AppendSeparator(spaces_);
+    rows_.AppendCommand(spaces_, kCmdCloseIncognitoSpace,
+                        PhiStr("app.spacesMenu.closeActiveIncognitoSpace"),
+                        nullptr, spaces_host != nullptr);
+  }
   rows_.AppendSeparator(spaces_);
   const std::vector<SpaceEntry> spaces = SpaceList();
   const bool several = spaces.size() > 1;
@@ -1049,6 +1057,9 @@ bool PhiAppMenu::OnCommand(UINT id, bool from_accelerator) {
                      PhiStr("menuBar.deleteSpaceConfirmBody"), L"Delete")) {
         c->MenuSpacesHost()->DeleteSpace(c->MenuActiveSpace());
       }
+      return true;
+    case kCmdCloseIncognitoSpace:
+      c->MenuCloseIncognitoSpace();
       return true;
     case kCmdNewProfile: {
       std::wstring name;
