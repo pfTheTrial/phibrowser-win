@@ -64,6 +64,7 @@
 #include "phibrowser-win/client/phi_i18n.h"
 #include "phibrowser-win/client/phi_new_tab_page.h"
 #include "phibrowser-win/client/phi_reader.h"
+#include "phibrowser-win/client/phi_reveal_veil.h"
 #include "phibrowser-win/client/phi_uia.h"
 #include "phibrowser-win/client/phi_prompt.h"
 
@@ -4311,20 +4312,43 @@ void PhiShellWindow::ComposeFrame(HDC mem, const PhiPalette& palette) {
 }
 
 void PhiShellWindow::RevealSwappedContent() {
-  if (swap_reveal_ && ::IsWindow(swap_reveal_)) {
+  const HWND reveal = swap_reveal_;
+  const HWND conceal = swap_conceal_;
+  swap_reveal_ = nullptr;  // The native pages' swap gate opens.
+  swap_conceal_ = nullptr;
+  const bool had_reveal = reveal != nullptr;
+  if (had_reveal && layout_mode_ != PhiLayoutMode::kComfortable) {
+    // The card as the screen shows it now holds over the swap: an area a
+    // native page uncovers stays empty until the entering child's next
+    // commit — a black frame. (The comfortable slide lands from its own
+    // composite under the child, ReleaseContentSlide.)
+    RECT card = ComputeWindowLayout().content;
+    ::MapWindowPoints(shell_hwnd_, nullptr, reinterpret_cast<POINT*>(&card),
+                      2);
+    if (!reveal_veil_) {
+      reveal_veil_ = std::make_unique<PhiRevealVeil>();
+    }
+    reveal_veil_->Cover(shell_hwnd_, card);
+  }
+  if (had_reveal) {
+    // Deferred past the slide, like the content itself — and up BEFORE the
+    // entering child shows, or the framework's own new-tab page under it
+    // blinks on screen for a frame.
+    native_pages_->MountNtpForReveal();
+  }
+  if (reveal && ::IsWindow(reveal)) {
     const Layout layout = ComputeWindowLayout();
-    ::SetWindowPos(swap_reveal_, nullptr, layout.content.left,
-                   layout.content.top,
+    ::SetWindowPos(reveal, nullptr, layout.content.left, layout.content.top,
                    layout.content.right - layout.content.left,
                    layout.content.bottom - layout.content.top,
                    SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    // Chromium commits the moved, uncovered child on its next frame; ask
+    // for one now rather than whenever the page next draws.
+    ::RedrawWindow(reveal, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN);
   }
-  browsers_->HidePreviousContent(swap_conceal_);
-  const bool had_reveal = swap_reveal_ != nullptr;
-  swap_reveal_ = nullptr;
-  swap_conceal_ = nullptr;
+  browsers_->HidePreviousContent(conceal);
   if (had_reveal) {
-    // Deferred past the slide, like the content itself.
+    // The leaving content's pages come down only now it is gone.
     native_pages_->SyncNtp();
     // Only restore page focus if no newer native control/window took it.
     const HWND focus = ::GetFocus();
@@ -7921,6 +7945,9 @@ LRESULT CALLBACK PhiShellWindow::ShellWndProc(HWND hwnd,
         // Band geometry changed under the slide.
         self->spaces_->CancelSwap();
         self->CancelContentSlide();
+        if (self->reveal_veil_) {
+          self->reveal_veil_->Lift();  // Pixels of the old geometry.
+        }
         self->LayoutContents();  // Re-seats the floating panel too.
       }
       return 0;
@@ -7928,6 +7955,9 @@ LRESULT CALLBACK PhiShellWindow::ShellWndProc(HWND hwnd,
       if (self) {
         self->CloseExtensionPopup();
         self->PositionFloatingPanel();  // The panel follows the shell.
+        if (self->reveal_veil_) {
+          self->reveal_veil_->Lift();  // An owned popup does not follow.
+        }
       }
       break;
     case WM_DPICHANGED:

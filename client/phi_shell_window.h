@@ -129,6 +129,7 @@ inline std::wstring PhiAgentPipLabel(const PhiAgentPipView& pip) {
 // Every `int64_t slot` parameter carries SlotId::value (the controller's
 // slot()) and becomes SlotId in phase 2; a `browser` parameter carries
 // BrowserId::value.
+class PhiRevealVeil;
 class PhiTabPreview;
 class PhiBookmarkManager;
 class PhiNewTabPage;
@@ -1404,6 +1405,8 @@ class PhiShellWindow : public PhiHitSource,
   // the entering page as pixels the compositor hands over
   // (StartTabSurfaceCapture) instead of moving the live child.
   std::unique_ptr<PhiContentSlide> content_slide_;
+  // The band slide's reveal, bridged (phi_reveal_veil.h). Made on first use.
+  std::unique_ptr<PhiRevealVeil> reveal_veil_;
   void BeginContentSlide(const std::string& space_id, BrowserId entering);
   // The client area as it is on screen right now: the chrome from our own
   // paint (caption buttons left out, as the Mac fades its traffic lights

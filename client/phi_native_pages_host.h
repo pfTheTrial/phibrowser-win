@@ -105,6 +105,11 @@ class PhiNativePagesHost {
   // The new-tab page alone: the Space-switch slide defers its mount past
   // the reveal, exactly as the content itself is deferred.
   void SyncNtp();
+  // The reveal's first half: the pages the entering content wants go up,
+  // painted, BEFORE its browser child shows — the framework's own new-tab
+  // page under them never reaches the screen. Pages no longer wanted stay
+  // up over the leaving child until the SyncNtp after the reveal.
+  void MountNtpForReveal();
   // A rebuild noticed the route may have moved. Refreshes a mounted NTP in
   // place (a palette ramp repaints it with the chrome, a pane that moved
   // is followed) and posts kMsgPhiSyncNativePages when the mount state

@@ -247,6 +247,21 @@ void PhiNativePagesHost::SyncNtp() {
   }
 }
 
+void PhiNativePagesHost::MountNtpForReveal() {
+  const std::array<Placement, kSlots> want = ComputePlacements();
+  for (int slot = 0; slot < kSlots; ++slot) {
+    if (!want[slot].wanted) {
+      continue;
+    }
+    SyncNtpSlot(slot, want[slot]);
+    if (PageMounted(slot)) {
+      // Painted now: a GDI paint made in this turn lands before the window
+      // shows that follow it, an invalidation left to WM_PAINT does not.
+      ::UpdateWindow(pages_[slot]->hwnd());
+    }
+  }
+}
+
 void PhiNativePagesHost::Sync() {
   SyncBookmarkPage();
   SyncNtp();
