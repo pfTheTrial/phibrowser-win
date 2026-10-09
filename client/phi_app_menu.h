@@ -250,6 +250,9 @@ class PhiAppMenuShell {
   virtual void MenuToggleDownloads() = 0;
   virtual void MenuToggleSearchTabs() = 0;
   virtual void MenuOpenFeedback() = 0;
+  // Ctrl+W on an Incognito Space's last tab ends the Space instead (asked
+  // first). True when it took the close — whatever the answer was.
+  virtual bool MenuCloseTabEndsIncognitoSpace() = 0;
   virtual void MenuCreateSpace() = 0;
   // The Mac's Edit Theme: the panel drops under the caption, centred on the
   // window (the menu bar has no trigger point to hang it off).

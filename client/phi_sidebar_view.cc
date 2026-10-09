@@ -5,6 +5,7 @@
 #include "phibrowser-win/client/phi_sidebar_view.h"
 
 #include "phibrowser-win/client/phi_agent_spaces.h"
+#include "phibrowser-win/client/phi_app_model.h"
 
 #include <algorithm>
 #include <cmath>
@@ -862,7 +863,7 @@ void PhiSidebarView::Rebuild() {
       in.policy.horizontal_layout =
           prefs_host_->LayoutMode() == PhiLayoutMode::kComfortable;
     }
-    in.policy.incognito = incognito_;
+    in.policy.incognito = incognito();
     for (const TabSnapshot& tab : snapshot.tabs) {
       in.strip.push_back({tab.id.value, tab.index, tab.tag, tab.split_id,
                           tab.group_id, tab.active, PhiSurfaceOf(tab),
@@ -896,7 +897,7 @@ void PhiSidebarView::Rebuild() {
       units.push_back(pin.split ? 2 : 1);
     }
     const bool isolated =
-        incognito_ || agent_ || PhiIsAgentSpaceId(shell_->SidebarActiveSpace());
+        incognito() || agent_ || PhiIsAgentSpaceId(shell_->SidebarActiveSpace());
     stored_bands_isolated_ = isolated;
     pinned_grid_rows_ =
         comfortable || isolated
@@ -924,7 +925,7 @@ void PhiSidebarView::Rebuild() {
       label = "Bookmarks";
     }
     *title = base::UTF8ToWide(label);
-    if (incognito_ && PhiNewTabPage::IsNewTabUrl(tab.url)) {
+    if (incognito() && PhiNewTabPage::IsNewTabUrl(tab.url)) {
       // The Mac's incognito new-tab title (Tab.incognitoNewTabTitle) in
       // place of Chromium's plain "New Tab".
       *title = PhiStr("common.newTabPage.incognitoTitle");
@@ -1368,11 +1369,15 @@ void PhiSidebarView::Rebuild() {
   }
 }
 
+bool PhiSidebarView::incognito() const {
+  return incognito_ || model::IsIncognitoSpaceId(shell_->SidebarActiveSpace());
+}
+
 void PhiSidebarView::RebuildShortcuts(const PhiSidebarRects& layout,
                                       const WindowSnapshot& snapshot) {
   pinned_.clear();
   bookmarks_.clear();
-  if (!sidebar_host_ || incognito_ || agent_ ||
+  if (!sidebar_host_ || incognito() || agent_ ||
       PhiIsAgentSpaceId(shell_->SidebarActiveSpace())) {
     return;  // Nothing persists from an incognito window or an agent Space.
   }

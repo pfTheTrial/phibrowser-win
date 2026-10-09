@@ -388,6 +388,10 @@
    "comment": "app — used in phi_theme.cc",
    "en": "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"
   },
+  "app.spacesMenu.closeActiveIncognitoSpace": {
+   "comment": "spaces — Incognito Spaces (docs/incognito-space-port.md), phi_space_manager.cc / phi_shell_window.cc",
+   "en": "Close Incognito Space"
+  },
   "app.spacesMenu.deleteProfile.emptyPlaceholder": {
    "comment": "menuBar — used at phi_menu_bar.cc:610",
    "en": "No Profiles to Delete"
@@ -974,6 +978,20 @@
     "nl": "Meer hulpprogramma's",
     "zh-Hans": "更多工具",
     "zh-Hant": "更多工具"
+   }
+  },
+  "appMenu.newIncognitoSpace": {
+   "comment": "appMenu — the ⋯ app menu's New Incognito Space row (docs/incognito-space-port.md), phi_app_menu.cc. Translations from the Mac's app.fileMenu.createNewIncognitoSpace.",
+   "en": "New incognito Space\tCtrl+Alt+N",
+   "translations": {
+    "de": "Neuer Inkognito-Space",
+    "es": "Nuevo Espacio de incógnito",
+    "fr": "Nouvel Espace de navigation privée",
+    "ja": "新しいシークレットスペース",
+    "ko": "새 시크릿 스페이스",
+    "nl": "Nieuwe Incognito-Space",
+    "zh-Hans": "新建无痕空间",
+    "zh-Hant": "新增無痕空間"
    }
   },
   "appMenu.newIncognitoWindow": {
@@ -5743,9 +5761,33 @@
    "comment": "sidebar — used at phi_shell_window.cc:6394",
    "en": "will also be removed. This action cannot be undone."
   },
+  "spaces.builtIn.incognito.numberedName": {
+   "comment": "spaces — Incognito Spaces (docs/incognito-space-port.md), phi_space_manager.cc / phi_shell_window.cc",
+   "en": "Incognito {0}"
+  },
   "spaces.builtIn.incognito.routingTargetName": {
    "comment": "Built-in Incognito target name used by URL routing (phi_url_rules_window.cc, phi_url_router.cc)",
    "en": "Incognito"
+  },
+  "spaces.builtIn.incognito.singleSpaceName": {
+   "comment": "spaces — Incognito Spaces (docs/incognito-space-port.md), phi_space_manager.cc / phi_shell_window.cc",
+   "en": "Incognito"
+  },
+  "spaces.closeIncognitoConfirmation.cancelButton": {
+   "comment": "spaces — Incognito Spaces (docs/incognito-space-port.md), phi_space_manager.cc / phi_shell_window.cc",
+   "en": "Cancel"
+  },
+  "spaces.closeIncognitoConfirmation.closeButton": {
+   "comment": "spaces — Incognito Spaces (docs/incognito-space-port.md), phi_space_manager.cc / phi_shell_window.cc",
+   "en": "Close"
+  },
+  "spaces.closeIncognitoConfirmation.doNotAskAgainCheckbox": {
+   "comment": "spaces — Incognito Spaces (docs/incognito-space-port.md), phi_space_manager.cc / phi_shell_window.cc",
+   "en": "Do not ask again"
+  },
+  "spaces.closeIncognitoConfirmation.title": {
+   "comment": "spaces — Incognito Spaces (docs/incognito-space-port.md), phi_space_manager.cc / phi_shell_window.cc",
+   "en": "This will also close this Incognito Space, are you sure?"
   },
   "spaces.hoverCard.status.completed": {
    "comment": "spaces — the pip hover flyout's second line (docs/windows-native-ui.md §5.6). Translations authored for Windows (impl log D14).",

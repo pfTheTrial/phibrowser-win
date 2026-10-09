@@ -710,6 +710,17 @@
   "app.softwareMicrosoftWindowsCurrentversionThemes": {
    "en": "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"
   },
+  "app.spacesMenu.closeActiveIncognitoSpace": {
+   "de": "Inkognito-Space schließen",
+   "en": "Close Incognito Space",
+   "es": "Cerrar Espacio de incógnito",
+   "fr": "Fermer l'Espace de navigation privée",
+   "ja": "シークレットスペースを閉じる",
+   "ko": "시크릿 스페이스 닫기",
+   "nl": "Sluit Incognito-Space",
+   "zh-Hans": "关闭无痕空间",
+   "zh-Hant": "關閉無痕空間"
+  },
   "app.spacesMenu.deleteProfile.emptyPlaceholder": {
    "de": "Keine Profile zum Löschen",
    "en": "No Profiles to Delete",
@@ -1304,6 +1315,17 @@
    "nl": "Meer hulpprogramma's",
    "zh-Hans": "更多工具",
    "zh-Hant": "更多工具"
+  },
+  "appMenu.newIncognitoSpace": {
+   "de": "Neuer Inkognito-Space\tCtrl+Alt+N",
+   "en": "New incognito Space\tCtrl+Alt+N",
+   "es": "Nuevo Espacio de incógnito\tCtrl+Alt+N",
+   "fr": "Nouvel Espace de navigation privée\tCtrl+Alt+N",
+   "ja": "新しいシークレットスペース\tCtrl+Alt+N",
+   "ko": "새 시크릿 스페이스\tCtrl+Alt+N",
+   "nl": "Nieuwe Incognito-Space\tCtrl+Alt+N",
+   "zh-Hans": "新建无痕空间\tCtrl+Alt+N",
+   "zh-Hant": "新增無痕空間\tCtrl+Alt+N"
   },
   "appMenu.newIncognitoWindow": {
    "de": "Neues Inkognitofenster\tCtrl+Shift+N\tCtrl+Shift+N",
@@ -7528,6 +7550,17 @@
   "sidebar.willAlsoBeRemovedThis": {
    "en": "will also be removed. This action cannot be undone."
   },
+  "spaces.builtIn.incognito.numberedName": {
+   "de": "Inkognito {0}",
+   "en": "Incognito {0}",
+   "es": "Incógnito {0}",
+   "fr": "Navigation privée {0}",
+   "ja": "シークレット{0}",
+   "ko": "시크릿 모드 {0}",
+   "nl": "Incognito {0}",
+   "zh-Hans": "无痕 {0}",
+   "zh-Hant": "無痕 {0}"
+  },
   "spaces.builtIn.incognito.routingTargetName": {
    "de": "Inkognito",
    "en": "Incognito",
@@ -7538,6 +7571,61 @@
    "nl": "Incognito",
    "zh-Hans": "无痕",
    "zh-Hant": "無痕"
+  },
+  "spaces.builtIn.incognito.singleSpaceName": {
+   "de": "Inkognito",
+   "en": "Incognito",
+   "es": "Incógnito",
+   "fr": "Navigation privée",
+   "ja": "シークレット",
+   "ko": "시크릿 모드",
+   "nl": "Incognito",
+   "zh-Hans": "无痕",
+   "zh-Hant": "無痕"
+  },
+  "spaces.closeIncognitoConfirmation.cancelButton": {
+   "de": "Abbrechen",
+   "en": "Cancel",
+   "es": "Cancelar",
+   "fr": "Annuler",
+   "ja": "キャンセル",
+   "ko": "취소",
+   "nl": "Annuleer",
+   "zh-Hans": "取消",
+   "zh-Hant": "取消"
+  },
+  "spaces.closeIncognitoConfirmation.closeButton": {
+   "de": "Schließen",
+   "en": "Close",
+   "es": "Cerrar",
+   "fr": "Fermer",
+   "ja": "閉じる",
+   "ko": "닫기",
+   "nl": "Sluit",
+   "zh-Hans": "关闭",
+   "zh-Hant": "關閉"
+  },
+  "spaces.closeIncognitoConfirmation.doNotAskAgainCheckbox": {
+   "de": "Nicht erneut fragen",
+   "en": "Do not ask again",
+   "es": "No volver a preguntar",
+   "fr": "Ne plus demander",
+   "ja": "今後確認しない",
+   "ko": "다시 묻지 않음",
+   "nl": "Niet opnieuw vragen",
+   "zh-Hans": "不再询问",
+   "zh-Hant": "不要再詢問"
+  },
+  "spaces.closeIncognitoConfirmation.title": {
+   "de": "Dadurch wird auch dieser Inkognito-Space geschlossen. Bist du sicher?",
+   "en": "This will also close this Incognito Space, are you sure?",
+   "es": "Esto también cerrará este Espacio de incógnito. ¿Seguro que quieres continuar?",
+   "fr": "Cela fermera également cet Espace de navigation privée. Voulez-vous vraiment continuer ?",
+   "ja": "この操作を行うと、このシークレットスペースも閉じられます。よろしいですか？",
+   "ko": "이 시크릿 스페이스도 함께 닫혀요. 계속할까요?",
+   "nl": "Hiermee wordt ook deze Incognito-Space gesloten. Weet je het zeker?",
+   "zh-Hans": "这也会关闭此无痕空间，确定吗？",
+   "zh-Hant": "這也會關閉這個無痕空間，確定要繼續嗎？"
   },
   "spaces.hoverCard.status.completed": {
    "de": "Abgeschlossen",

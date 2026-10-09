@@ -197,7 +197,13 @@ PhiMenuSpec PhiBuildBookmarkBarAreaMenu(bool incognito);
 // The tab AREA's menu (the Mac's TabAreaContextMenuHelper): new tab, reopen,
 // the bookmark block, the layout switch, then the active Space's controls.
 struct PhiTabAreaMenuInputs {
+  // Nothing persists here: an incognito window or an Incognito Space.
   bool incognito = false;
+  // The active Space is an Incognito Space (docs/incognito-space-port.md):
+  // the Space block stays — rename, theme and profile read but are off —
+  // and "Close Incognito Space" trails it (the Mac's
+  // appendActiveSpaceMenuItems). An incognito WINDOW has no Space block.
+  bool incognito_space = false;
   bool tabs_empty = false;
   PhiLayoutMode mode = PhiLayoutMode::kPerformance;
   bool can_delete_space = false;

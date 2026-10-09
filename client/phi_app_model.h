@@ -57,6 +57,20 @@ struct Space {
   bool operator==(const Space&) const = default;
 };
 
+// An Incognito Space (docs/incognito-space-port.md): a RUNTIME-only Space —
+// never stored, synced or restored — whose browser runs in the shared
+// "PhiIncognitoSpace" off-the-record profile. Its id is this prefix plus a
+// UUID (the Mac's SpaceManager.incognitoSpaceIdPrefix); the bare
+// "space.incognito" is the URL-rule TARGET, not a Space.
+inline constexpr char kIncognitoSpaceIdPrefix[] = "space.incognito.";
+// The Mac's incognito Space icon (🥷) and colour.
+inline constexpr char kIncognitoSpaceIcon[] = "emoji:1F977";
+inline constexpr char kIncognitoSpaceColorHex[] = "#5F6368";
+
+inline bool IsIncognitoSpaceId(std::string_view id) {
+  return id.starts_with(kIncognitoSpaceIdPrefix);
+}
+
 // A Space URL routing rule (the Mac's SpaceURLRule). `host` is in the wire
 // form ("github.com" exact, "*.foo.com" suffix, "*needle*" contains);
 // `path_prefix` empty means any path; `ask` prompts instead of routing

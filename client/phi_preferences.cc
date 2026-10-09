@@ -38,6 +38,10 @@ constexpr RebindableShortcut kRebindableShortcuts[] = {
        {'N', true, false, false}},
       {"newIncognitoWindow", L"File", L"New Incognito Window",
        kCmdNewIncognitoWindow, {'N', true, true, false}},
+      // The Mac's ⌃⇧N has no free twin here (Ctrl+Shift+N is the incognito
+      // window); Ctrl+Alt follows the reader's Ctrl+Alt+R.
+      {"newIncognitoSpace", L"File", L"New Incognito Space",
+       kCmdNewIncognitoSpace, {'N', true, false, true}},
       {"reopenClosedTab", L"File", L"Reopen Closed Tab", kCmdReopenClosedTab,
        {'T', true, true, false}},
       {"openLocation", L"File", L"Open Location", kCmdOpenLocation,
@@ -187,6 +191,10 @@ void PhiPreferences::SaveShortcuts() const {
 
 PhiLayoutMode PhiPreferences::LayoutMode() const {
   return settings_.layout_mode;
+}
+
+bool PhiPreferences::SuppressCloseIncognitoSpaceWarning() const {
+  return settings_.suppress_close_incognito_space_warning;
 }
 
 void PhiPreferences::SetSuppressCloseIncognitoSpaceWarning(bool suppress) {

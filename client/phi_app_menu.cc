@@ -5,6 +5,8 @@
 #include "phibrowser-win/client/phi_features.h"
 #include "phibrowser-win/client/phi_app_menu.h"
 
+#include "phibrowser-win/client/phi_app_model.h"
+
 #include "phibrowser-win/client/phi_bookmark_manager.h"
 
 #include <commctrl.h>
@@ -195,6 +197,9 @@ void PhiAppMenu::BuildStatic() {
   row(root_, kCmdNewWindow, "appMenu.newWindow", fluent::kNewWindow);
   row(root_, kCmdNewIncognitoWindow, "appMenu.newIncognitoWindow",
       fluent::kIncognito, false);
+  // The Mac's File ▸ New Incognito Space (docs/incognito-space-port.md):
+  // joins this window's Spaces, unlike the incognito window above it.
+  row(root_, kCmdNewIncognitoSpace, "appMenu.newIncognitoSpace", nullptr);
   rows_.AppendSeparator(root_);
   sub(root_, spaces_, "appMenu.spaces", fluent::kTabs);
   sub(root_, history_, "appMenu.history", fluent::kHistory);
@@ -394,18 +399,23 @@ void PhiAppMenu::RefreshSpaces() {
   SpacesHost* spaces_host = services_->MenuSpacesHost();
   const std::string active = services_->MenuActiveSpace();
 
+  // An Incognito Space keeps its generated name, its fixed-dark theme and
+  // its off-the-record session (docs/incognito-space-port.md).
+  const bool incognito_space = model::IsIncognitoSpaceId(active);
   rows_.AppendCommand(spaces_, kCmdNewSpace, PhiStr("appMenu.newSpace"),
                       fluent::kAdd, spaces_host != nullptr);
   rows_.AppendSeparator(spaces_);
   rows_.AppendCommand(spaces_, kCmdRenameSpace, PhiStr("appMenu.renameSpace"),
-                      fluent::kRename, spaces_host != nullptr);
+                      fluent::kRename,
+                      spaces_host != nullptr && !incognito_space);
   rows_.AppendCommand(spaces_, kCmdChangeIcon, PhiStr("appMenu.changeIcon"),
                       fluent::kEmoji, spaces_host != nullptr);
   // Edit theme — the Mac's item: it presents the Space theme editor (swatch
   // row + saturation slider) on the ACTIVE Space.
   rows_.AppendCommand(spaces_, kCmdEditSpaceTheme, PhiStr("appMenu.editTheme"),
                       fluent::kColor,
-                      spaces_host != nullptr && !active.empty());
+                      spaces_host != nullptr && !active.empty() &&
+                          !incognito_space);
 
   // Change profile ▸ — the Mac's radio list: picking a row re-binds the
   // ACTIVE Space, respawning its window in the new profile. The default
@@ -422,8 +432,9 @@ void PhiAppMenu::RefreshSpaces() {
       }
     }
   }
-  const bool can_reprofile =
-      spaces_host && !active.empty() && active != spaces_host->DefaultSpaceId();
+  const bool can_reprofile = spaces_host && !active.empty() &&
+                             active != spaces_host->DefaultSpaceId() &&
+                             !incognito_space;
   int profile_count = 0;
   if (spaces_host) {
     for (const std::string& summary : spaces_host->ProfileSummaries()) {
@@ -866,10 +877,18 @@ bool PhiAppMenu::OnCommand(UINT id, bool from_accelerator) {
         c->MenuWindowHost()->RequestNewWindow(c->MenuSlot().value);
       }
       return true;
+    case kCmdNewIncognitoSpace:
+      if (c->MenuSpacesHost()) {
+        c->MenuSpacesHost()->RequestNewIncognitoSpace(c->MenuSlot().value);
+      }
+      return true;
     case kCmdOpenLocation:
       c->MenuFocusAddressField();
       return true;
     case kCmdCloseTab:
+      if (c->MenuCloseTabEndsIncognitoSpace()) {
+        return true;
+      }
       // The TREE's active tab, not the active ROW: a tab bound to a pinned
       // cell or a bookmark is no row in the list, and Ctrl+W must still
       // close it (lane 1 D2).

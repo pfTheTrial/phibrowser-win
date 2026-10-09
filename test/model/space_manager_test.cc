@@ -103,6 +103,20 @@ void TestReorderClamp() {
   CHECK(ClampSpaceInsertIndex(0, 5) == 0);
 }
 
+void TestIncognitoIds() {
+  // An Incognito Space is the prefix plus a UUID; the bare rule target and
+  // a plain Space are not one.
+  CHECK(model::IsIncognitoSpaceId("space.incognito.0f1e"));
+  CHECK(!model::IsIncognitoSpaceId("space.incognito"));
+  CHECK(!model::IsIncognitoSpaceId("default-space"));
+  // The lowest free ordinal: "Incognito 2" comes back once the second
+  // closes.
+  CHECK(NextIncognitoOrdinal({}) == 1);
+  CHECK(NextIncognitoOrdinal({1}) == 2);
+  CHECK(NextIncognitoOrdinal({1, 3}) == 2);
+  CHECK(NextIncognitoOrdinal({2, 3}) == 1);
+}
+
 }  // namespace
 
 int main() {
@@ -111,6 +125,7 @@ int main() {
   TestDefaultRoleSuccessor();
   TestCanDelete();
   TestReorderClamp();
+  TestIncognitoIds();
   if (g_failures) {
     std::fprintf(stderr, "%d failure(s)\n", g_failures);
     return EXIT_FAILURE;

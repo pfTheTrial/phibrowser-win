@@ -284,7 +284,7 @@ PhiNewTabPage::Geometry PhiNewTabPage::ComputeGeometry() const {
   ::GetClientRect(hwnd(), &rc);
   const int clip_w = rc.right - rc.left;
   const int clip_h = rc.bottom - rc.top;
-  const bool incognito = controller_->is_incognito();
+  const bool incognito = controller_->ShowsIncognito();
 
   // updateContentLayout: the box fits the visible clip — its natural 680
   // overflows a narrow card (a split pane) — and the column stays centred.
@@ -364,7 +364,7 @@ void PhiNewTabPage::Paint(HDC dc, const RECT&) {
 
   // The mark: the imageset's light variant is pure black, its dark one
   // #F8F8F8 — tinted from the shared mask rather than shipped twice.
-  const PhiMacIcon& art = controller_->is_incognito()
+  const PhiMacIcon& art = controller_->ShowsIncognito()
                               ? PhiNativeNtpIncognito()
                               : PhiNativeNtpLogo();
   const COLORREF ink =
@@ -376,7 +376,7 @@ void PhiNewTabPage::Paint(HDC dc, const RECT&) {
     PhiBlendBgra(dc, g.icon, bgra.data(), icon_px, icon_px);
   }
 
-  if (controller_->is_incognito()) {
+  if (controller_->ShowsIncognito()) {
     HGDIOBJ prev = ::SelectObject(dc, LabelFont());
     ::SetTextColor(dc, palette.label);
     RECT label = g.label;

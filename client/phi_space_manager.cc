@@ -12,9 +12,13 @@
 
 #include "base/json/json_writer.h"
 #include "base/logging.h"
+#include "base/strings/string_number_conversions.h"
+#include "base/strings/utf_string_conversions.h"
+#include "base/uuid.h"
 #include "base/values.h"
 #include "chrome/browser/phinomenon/phi_framework/phi_framework_api.h"
 #include "phibrowser-win/client/phi_emoji.h"
+#include "phibrowser-win/client/phi_i18n.h"
 #include "phibrowser-win/client/phi_preferences.h"
 #include "phibrowser-win/client/phi_theme.h"
 #include "phibrowser-win/client/phi_shell_window.h"
@@ -283,17 +287,37 @@ void PhiSpaceManager::RetreatFromMissingSpaces() {
 
 // --- Reads --------------------------------------------------------------------
 
+const model::Space* PhiSpaceManager::Find(const std::string& id) const {
+  if (const model::Space* stored = FindSpaceIn(model_.spaces, id)) {
+    return stored;
+  }
+  for (const IncognitoEntry& entry : incognito_) {
+    if (entry.space.id == id) {
+      return &entry.space;
+    }
+  }
+  return nullptr;
+}
+
 std::vector<PhiSpaceView> PhiSpaceManager::Spaces() const {
   std::vector<PhiSpaceView> out;
-  out.reserve(model_.spaces.size());
-  for (const model::Space& space : model_.spaces) {
+  out.reserve(model_.spaces.size() + incognito_.size());
+  const auto add = [&](const model::Space& space) {
     PhiSpaceView view;
     view.id = space.id;
     view.name = space.name;
     view.profile_id = space.profile_id;
     view.icon = space.icon;
     view.icon_text = PhiIconDisplayText(space.icon);
+    view.incognito = model::IsIncognitoSpaceId(space.id);
     out.push_back(std::move(view));
+  };
+  for (const model::Space& space : model_.spaces) {
+    add(space);
+  }
+  // After the user Spaces, before the agent pips (the Mac's order).
+  for (const IncognitoEntry& entry : incognito_) {
+    add(entry.space);
   }
   return out;
 }
@@ -320,7 +344,9 @@ bool PhiSpaceManager::CanDeleteSpace(const std::string& space_id) const {
 std::string PhiSpaceManager::KioskTargetSpaceId() const {
   if (PhiShellWindow* main = registry_.FirstUserController()) {
     const std::string& active = main->active_space();
-    if (!active.empty()) {
+    // A Kiosk page never lands in an Incognito Space by default: the regular
+    // profile's page would re-open off the record.
+    if (!active.empty() && !model::IsIncognitoSpaceId(active)) {
       return active;
     }
   }
@@ -405,6 +431,14 @@ void PhiSpaceManager::SetSpaceIcon(const std::string& space_id,
                                    const std::string& icon) {
   if (!PhiIconIsValid(icon)) {
     return;
+  }
+  // An Incognito Space's icon is the user's for its lifetime only.
+  for (IncognitoEntry& entry : incognito_) {
+    if (entry.space.id == space_id) {
+      entry.space.icon = icon;
+      Notify(SpacesChange::kList);
+      return;
+    }
   }
   for (model::Space& space : model_.spaces) {
     if (space.id != space_id) {
@@ -537,6 +571,70 @@ bool PhiSpaceManager::SetSpaceProfile(const std::string& space_id,
   return true;
 }
 
+// --- Incognito Spaces ---------------------------------------------------------
+
+namespace {
+
+// "Incognito" while it is the only one, else "Incognito N" (the Mac's
+// incognitoSpaceDisplayName).
+std::string IncognitoSpaceName(int ordinal, size_t count) {
+  if (count <= 1) {
+    return base::WideToUTF8(PhiStr("spaces.builtIn.incognito.singleSpaceName"));
+  }
+  return base::WideToUTF8(PhiStrF("spaces.builtIn.incognito.numberedName",
+                                  {base::NumberToWString(ordinal)}));
+}
+
+}  // namespace
+
+std::string PhiSpaceManager::CreateIncognitoSpace() {
+  std::vector<int> used;
+  for (const IncognitoEntry& entry : incognito_) {
+    used.push_back(entry.ordinal);
+  }
+  IncognitoEntry entry;
+  entry.ordinal = NextIncognitoOrdinal(used);
+  entry.space.id = std::string(model::kIncognitoSpaceIdPrefix) +
+                   base::Uuid::GenerateRandomV4().AsLowercaseString();
+  // The OTR session's parent; the framework ignores it for an incognito
+  // request (the parent is always the initial profile).
+  entry.space.profile_id = "Default";
+  entry.space.icon = model::kIncognitoSpaceIcon;
+  entry.space.color_hex = model::kIncognitoSpaceColorHex;
+  const std::string id = entry.space.id;
+  incognito_.push_back(std::move(entry));
+  for (IncognitoEntry& each : incognito_) {
+    each.space.name = IncognitoSpaceName(each.ordinal, incognito_.size());
+  }
+  LOG(INFO) << "[PhiClient] Incognito Space " << id << " created";
+  Notify(SpacesChange::kList);
+  return id;
+}
+
+bool PhiSpaceManager::RemoveIncognitoSpace(const std::string& space_id) {
+  const auto it = std::find_if(
+      incognito_.begin(), incognito_.end(),
+      [&](const IncognitoEntry& entry) { return entry.space.id == space_id; });
+  if (it == incognito_.end()) {
+    return false;
+  }
+  incognito_.erase(it);
+  for (IncognitoEntry& each : incognito_) {
+    each.space.name = IncognitoSpaceName(each.ordinal, incognito_.size());
+  }
+  LOG(INFO) << "[PhiClient] Incognito Space " << space_id << " closed";
+  Notify(SpacesChange::kList);
+  return true;
+}
+
+std::vector<std::string> PhiSpaceManager::IncognitoSpaceIds() const {
+  std::vector<std::string> ids;
+  for (const IncognitoEntry& entry : incognito_) {
+    ids.push_back(entry.space.id);
+  }
+  return ids;
+}
+
 // --- Palettes -----------------------------------------------------------------
 
 void PhiSpaceManager::RebuildSpacePalettes() {
@@ -557,6 +655,10 @@ void PhiSpaceManager::RebuildSpacePalettes() {
     graphite.window_bg = ground;
     agent_palette_ = std::make_unique<PhiPalette>(graphite);
   }
+  // Incognito Spaces: the incognito window's fixed-dark chrome, whatever
+  // the theme or appearance (the Mac's Theme.incognito, forced dark).
+  incognito_palette_ = std::make_unique<PhiPalette>(
+      PhiResolvePalette(PhiThemeById("pure"), PhiAppearance::kDark));
   for (const model::Space& space : model_.spaces) {
     COLORREF accent = 0;
     // The Mac's default colorHex is what every Space nobody coloured
@@ -598,6 +700,9 @@ const PhiPalette& PhiSpaceManager::PaletteForSpace(
   if (agent_palette_ && PhiIsAgentSpaceId(space_id)) {
     return *agent_palette_;
   }
+  if (incognito_palette_ && model::IsIncognitoSpaceId(space_id)) {
+    return *incognito_palette_;
+  }
   return preferences_.palette();
 }
 
@@ -612,7 +717,17 @@ const PhiPalette& PhiSpaceManager::PaletteForSlot(int64_t slot) const {
 
 void PhiSpaceManager::PushSpaceMenuNow() {
   base::ListValue list;
+  // "Open Link in Space" lists the live Incognito Spaces too (the Mac's
+  // payload); the menu is not offered from an off-the-record page.
+  std::vector<const model::Space*> listed;
   for (const model::Space& space : model_.spaces) {
+    listed.push_back(&space);
+  }
+  for (const IncognitoEntry& entry : incognito_) {
+    listed.push_back(&entry.space);
+  }
+  for (const model::Space* listed_space : listed) {
+    const model::Space& space = *listed_space;
     base::DictValue d;
     d.Set("id", space.id);
     d.Set("name", space.name);

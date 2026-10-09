@@ -651,8 +651,14 @@ void PhiCoordinator::PostAskSpace() {
 
 void PhiCoordinator::RequestSpaceBrowser(const std::string& profile_id,
                                          PendingCreation pending) {
-  RequestCreation(phi_framework::WindowKind::kSpace, profile_id,
-                  /*incognito=*/false, BrowserId(), std::move(pending));
+  const bool incognito = model::IsIncognitoSpaceId(pending.space_id);
+  RequestCreation(phi_framework::WindowKind::kSpace, profile_id, incognito,
+                  BrowserId(), std::move(pending));
+}
+
+std::string PhiCoordinator::ResolveIncognitoRouteSpace() {
+  const std::vector<std::string> live = space_manager_->IncognitoSpaceIds();
+  return live.empty() ? space_manager_->CreateIncognitoSpace() : live.front();
 }
 
 bool PhiCoordinator::OwnerForSlot(SlotId slot, std::string* profile_id,
@@ -1072,6 +1078,12 @@ bool PhiCoordinator::Apply(int64_t slot_number,
             return ok;
           },
           [&](const SidebarClose& cmd) {
+            // The close box on an Incognito Space's last tab ends the Space
+            // (asked first), as Ctrl+W does.
+            if (PhiShellWindow* shell = registry_.Get(slot);
+                shell && shell->CloseTabEndsIncognitoSpace()) {
+              return true;
+            }
             bool ok = false;
             for (int pane : {1, 0}) {  // Pane B first; ids hold either way.
               if (cmd.pane >= 0 && cmd.pane != pane) {
@@ -1519,8 +1531,11 @@ std::string PhiCoordinator::LastActiveSpaceId() const {
 }
 
 void PhiCoordinator::NoteActiveSpace(const std::string& space_id) {
-  if (PhiIsAgentSpaceId(space_id)) {
-    return;  // A hosted agent Space is never the one to restore first.
+  if (PhiIsAgentSpaceId(space_id) || model::IsIncognitoSpaceId(space_id)) {
+    // A hosted agent Space is never the one to restore first, and an
+    // Incognito Space does not outlive the run (the slot is remembered on
+    // its last regular Space, the Mac's persistableLandingSpaceId).
+    return;
   }
   session_restore_->NoteActiveSpace(space_id);
 }
@@ -1821,6 +1836,9 @@ void PhiCoordinator::NoteSlotActiveSpace(const std::string& space_id) {
 
 void PhiCoordinator::NoteSpaceWindow(const std::string& space_id,
                                      int64_t browser_window_id) {
+  if (model::IsIncognitoSpaceId(space_id)) {
+    return;  // Off the record: never a window a later run rebuilds.
+  }
   std::string profile = "Default";
   if (const Space* space = space_manager_->Find(space_id)) {
     profile = space->profile_id;
@@ -2275,7 +2293,10 @@ void PhiCoordinator::RequestTabToSpace(SlotId slot,
           window_model_.FindTab(source_browser, tab)) {
     url = live->url;
   }
-  // An open target Space (any slot) gets the real move.
+  // An open target Space (any slot) gets the real move — within one
+  // profile. Into an Incognito Space's off-the-record session the framework
+  // refuses, and the URL is re-opened there and the original closed (the
+  // Mac's transfer for differing profiles).
   BrowserId target_browser;
   for (PhiShellWindow* controller : registry_.UserControllers()) {
     target_browser = controller->BrowserIdForSpace(space_id);
@@ -2287,8 +2308,11 @@ void PhiCoordinator::RequestTabToSpace(SlotId slot,
     if (framework_->MoveTabToWindowById(source_browser, tab, target_browser)) {
       FocusWindowForBrowser(target_browser.value);
       source->ScheduleRefresh();
+      return;
     }
-    return;
+    if (!model::IsIncognitoSpaceId(space_id)) {
+      return;
+    }
   }
   if (url.empty()) {
     return;
@@ -2353,6 +2377,14 @@ bool PhiCoordinator::AlwaysShowFullUrl() const {
 
 void PhiCoordinator::SetAlwaysShowFullUrl(bool enabled) {
   preferences_.SetAlwaysShowFullUrl(enabled);
+}
+
+bool PhiCoordinator::SuppressCloseIncognitoSpaceWarning() const {
+  return preferences_.SuppressCloseIncognitoSpaceWarning();
+}
+
+void PhiCoordinator::SetSuppressCloseIncognitoSpaceWarning(bool suppress) {
+  preferences_.SetSuppressCloseIncognitoSpaceWarning(suppress);
 }
 
 bool PhiCoordinator::ShowTabPreviews() const {
@@ -2457,6 +2489,13 @@ bool PhiCoordinator::DeleteSpace(const std::string& space_id) {
   // The hosts' spelling — the menu bar's and Settings' confirmed deletes.
   // The agent's spaces.delete reaches the manager directly and is not the
   // Mac's space_deleted (which its two confirm dialogs capture).
+  if (model::IsIncognitoSpaceId(space_id)) {
+    // Deleting an Incognito Space is closing it (the Mac's deleteSpace
+    // redirect); nothing persisted goes, so no space_deleted.
+    const bool live = space_manager_->Find(space_id) != nullptr;
+    RequestCloseIncognitoSpace(space_id);
+    return live;
+  }
   if (!space_manager_->DeleteSpace(space_id)) {
     return false;
   }
@@ -3933,6 +3972,62 @@ void PhiCoordinator::RequestCreateSpace(int64_t slot, bool new_profile) {
   }
 }
 
+void PhiCoordinator::RequestNewIncognitoSpace(int64_t slot) {
+  // The Mac's openNewIncognitoSpace: the Space joins the asking window's
+  // strip and that window switches to it. An incognito window or an agent
+  // shell has no strip: the first user window takes it instead.
+  // (No analytics event: the Mac fires none for it.)
+  PhiShellWindow* asking = registry_.Resolve(slot);
+  PhiShellWindow* shell = asking;
+  if (!shell || shell->is_agent() || shell->is_incognito()) {
+    shell = FirstUserController();
+  }
+  const std::string id = space_manager_->CreateIncognitoSpace();
+  if (shell) {
+    RequestSwitchSpace(shell->slot().value, id);
+    if (shell != asking) {
+      shell->BringToFront();
+    }
+    return;
+  }
+  // No user window: its browser comes up in a shell of its own
+  // (AdoptCreatedWindow hosts a slot-less incognito Space browser so).
+  PendingCreation pending;
+  pending.space_id = id;
+  RequestCreation(phi_framework::WindowKind::kSpace, "Default",
+                  /*incognito=*/true, BrowserId(), std::move(pending));
+}
+
+void PhiCoordinator::RequestCloseIncognitoSpace(const std::string& space_id) {
+  if (!model::IsIncognitoSpaceId(space_id) ||
+      !space_manager_->Find(space_id)) {
+    return;
+  }
+  // The Mac's closeIncognitoSpace: every slot showing it moves to its last
+  // regular Space (else the default) first, so no window is left blank;
+  // then its browsers go — a slot with nothing else keeps its browser
+  // until the replacement attaches (PhiSpaceBrowsers::NeedsReplacement) —
+  // and the entry with them. When the last one is closed the framework
+  // tears the shared off-the-record session down with its last browser.
+  for (PhiShellWindow* controller : registry_.Controllers()) {
+    if (controller->is_agent() || controller->active_space() != space_id) {
+      continue;
+    }
+    std::string back = controller->last_regular_space();
+    if (back.empty() || !space_manager_->Find(back)) {
+      back = DefaultSpaceId();
+    }
+    SurfaceSpaceInSlot(controller->slot(), back, nullptr);
+  }
+  for (PhiShellWindow* controller : registry_.Controllers()) {
+    if (!controller->is_agent() && controller->HasSpace(space_id)) {
+      controller->RetireSpaceBrowser(space_id);
+    }
+  }
+  space_manager_->RemoveIncognitoSpace(space_id);
+  PushSpaceMenu();
+}
+
 void PhiCoordinator::RequestCreateProfileForSpaceForm(int64_t slot,
                                                       const std::string& name) {
   if (name.empty()) {
@@ -4125,6 +4220,14 @@ void PhiCoordinator::AdoptCreatedWindow(
       if (AttachRequestedSpaceBrowser(browser, hwnd, *pending)) {
         return;
       }
+      if (model::IsIncognitoSpaceId(pending->space_id) &&
+          space_manager_->Find(pending->space_id)) {
+        // An Incognito Space with no user window to join: a regular shell
+        // of its own whose first Space it is (the Mac mints a slot) — NOT
+        // an incognito-window shell, which has no Spaces at all.
+        HostUserShell(browser, hwnd, /*incognito=*/false, pending->space_id);
+        return;
+      }
       break;  // Its slot closed meanwhile: host it as a shell of its own.
     case WindowKind::kUser:
       break;
@@ -4310,7 +4413,8 @@ bool PhiCoordinator::AttachRestoredGhost(BrowserId browser,
 }
 
 void PhiCoordinator::HostUserShell(BrowserId browser, HWND hwnd,
-                                   bool incognito) {
+                                   bool incognito,
+                                   const std::string& first_space) {
   // Option B: the client owns a shell window and reparents Chromium's
   // content in. The shell routes activation back through the framework. An
   // off-the-record browser (IDC_NEW_INCOGNITO_WINDOW) becomes an INCOGNITO
@@ -4321,7 +4425,8 @@ void PhiCoordinator::HostUserShell(BrowserId browser, HWND hwnd,
       std::make_unique<PhiShellWindow>(slot, browser, hwnd, framework_,
                                             SlotServices(), &window_model_,
                                             /*agent=*/false, incognito,
-                                            /*start_hidden=*/!CanUseBrowser()),
+                                            /*start_hidden=*/!CanUseBrowser(),
+                                            first_space),
       /*agent=*/false, incognito);
   registry_.Bind(browser, slot);
   controller->ScheduleRefresh();  // After registration (lane 1 D12).
@@ -4787,9 +4892,25 @@ void PhiCoordinator::RetireClosingBrowser(BrowserId browser) {
   if (!shell->is_incognito()) {
     NoteActiveSpace(shell->active_space());
   }
+  const std::string closed_space = shell->SpaceForBrowser(browser);
   // The slot survives while any Space browser remains.
   if (!shell->ForgetBrowser(browser)) {
     registry_.Remove(*slot);
+  }
+  // An Incognito Space whose last browser went another way than its own
+  // close (a script's window.close(), Chromium closing it) goes with it —
+  // the Mac's reapIncognitoSpaceIfWindowless. Its own close already
+  // dropped the entry.
+  if (model::IsIncognitoSpaceId(closed_space) &&
+      space_manager_->Find(closed_space)) {
+    bool held = registry_.FindPendingSpace(SlotId(), closed_space) != nullptr;
+    for (PhiShellWindow* controller : registry_.Controllers()) {
+      held = held || controller->HasSpace(closed_space) ||
+             registry_.FindPendingSpace(controller->slot(), closed_space);
+    }
+    if (!held) {
+      space_manager_->RemoveIncognitoSpace(closed_space);
+    }
   }
   PushSpaceMenu();  // A Space lost its window id.
 }
@@ -4882,9 +5003,11 @@ bool PhiCoordinator::SwitchSlotToSpace(
   }
   // First visit: ask for this Space's browser IN ITS PROFILE; the request
   // attaches it to the slot when it arrives (a cold profile loads first).
+  // An Incognito Space's browser is the shared incognito-Space session.
   const RequestToken token = RequestCreation(
       phi_framework::WindowKind::kSpace, space->profile_id,
-      /*incognito=*/false, BrowserId(), std::move(creation));
+      /*incognito=*/model::IsIncognitoSpaceId(space_id), BrowserId(),
+      std::move(creation));
   if (!token.valid() && pending) {
     *pending = false;
   }

@@ -69,6 +69,18 @@ int PhiAlert(HWND owner,
              int default_index = -1,
              int cancel_index = -1);
 
+// PhiAlert with a checkbox under the copy — the Mac's NSAlert
+// suppressionButton ("Do not ask again"). `checked` carries the box's
+// state in and out (read whichever action ended the alert).
+int PhiAlertWithCheckbox(HWND owner,
+                         const wchar_t* title,
+                         const wchar_t* message,
+                         const std::vector<PhiAlertAction>& actions,
+                         const wchar_t* checkbox_label,
+                         bool* checked,
+                         int default_index = -1,
+                         int cancel_index = -1);
+
 // A one-button notice — the MessageBox(MB_OK) stand-in.
 void PhiNotice(HWND owner, const wchar_t* title, const wchar_t* message);
 

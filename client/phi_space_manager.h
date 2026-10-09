@@ -91,6 +91,17 @@ inline bool CanDeleteSpaceIn(const std::vector<model::Space>& spaces,
   return FindSpaceIn(spaces, id) != nullptr && spaces.size() > 1;
 }
 
+// The ordinal a new Incognito Space takes: the lowest one not in `used`
+// (the Mac's lowest free ordinal), so "Incognito 2" comes back after the
+// second one closes.
+inline int NextIncognitoOrdinal(const std::vector<int>& used) {
+  int ordinal = 1;
+  while (std::find(used.begin(), used.end(), ordinal) != used.end()) {
+    ++ordinal;
+  }
+  return ordinal;
+}
+
 // Where a Space re-enters a list of `count` (after its own removal) when
 // asked for `new_index`: clamped to [0, count].
 inline size_t ClampSpaceInsertIndex(size_t count, int new_index) {
@@ -191,9 +202,8 @@ class PhiSpaceManager {
 
   // --- Reads --------------------------------------------------------------
   const std::vector<model::Space>& spaces() const { return model_.spaces; }
-  const model::Space* Find(const std::string& id) const {
-    return FindSpaceIn(model_.spaces, id);
-  }
+  // A stored Space or a live Incognito Space.
+  const model::Space* Find(const std::string& id) const;
   bool Has(const std::string& id) const { return Find(id) != nullptr; }
   // The number a new Space's default name carries ("Space 3"). Only a
   // name: Space ids are UUIDs, as on the Mac.
@@ -248,6 +258,19 @@ class PhiSpaceManager {
   // browser is the one a fresh shell binds to. False when nothing changed.
   bool SetSpaceProfile(const std::string& space_id,
                        const std::string& profile_id);
+
+  // --- Incognito Spaces (docs/incognito-space-port.md) ----------------------
+  // Runtime-only Spaces that ride the list's reads — Find, Spaces, the
+  // palettes, the framework's Space menu — and none of its writes: Save,
+  // sync, Summaries and the default role never see them, since they live
+  // apart from model_. Adds one after every Space ("Incognito", or
+  // "Incognito N" once there are several) and answers its id.
+  std::string CreateIncognitoSpace();
+  // Drops the entry. The caller has moved every slot off it and retired its
+  // browsers first (the coordinator's CloseIncognitoSpace).
+  bool RemoveIncognitoSpace(const std::string& space_id);
+  // The live Incognito Spaces in strip order.
+  std::vector<std::string> IncognitoSpaceIds() const;
 
   // --- Palettes -------------------------------------------------------------
   // Re-resolves the per-Space overrides against the app-wide theme. Run
@@ -343,6 +366,15 @@ class PhiSpaceManager {
   // §5.10: the fixed graphite ground every agent Space wears (never a
   // user theme), rebuilt with the Space palettes.
   std::unique_ptr<PhiPalette> agent_palette_;
+  // The live Incognito Spaces, apart from model_ so nothing persists them;
+  // each keeps the ordinal its name was given for its whole life.
+  struct IncognitoEntry {
+    model::Space space;
+    int ordinal = 1;
+  };
+  std::vector<IncognitoEntry> incognito_;
+  // Their fixed-dark palette (the incognito window's), whatever the theme.
+  std::unique_ptr<PhiPalette> incognito_palette_;
   // Non-owning; all outlive the service (see the constructor). The
   // framework is a singleton across a module boundary.
   RAW_PTR_EXCLUSION PhiWindowRegistry& registry_;

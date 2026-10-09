@@ -710,8 +710,9 @@ constexpr PhiParamField kProfileDelete[] = {
 };
 constexpr PhiParamField kUrlRuleAdd[] = {
     {"spaceId", kParamString, kRequired, "space",
-     "Where matches are routed: a Space id, space.incognito (the profile's "
-     "Incognito window) or __phi_kiosk__ (a new Kiosk window)."},
+     "Where matches are routed: a Space id, space.incognito (the first "
+     "Incognito Space, opened if none is) or __phi_kiosk__ (a new Kiosk "
+     "window)."},
     {"host", kParamString, kRequired, "", "The host to match."},
     {"pathPrefix", kParamString, kOptional, "", "An optional path prefix."},
     {"ask", kParamBool, kOptional, "", "Ask instead of routing silently."},

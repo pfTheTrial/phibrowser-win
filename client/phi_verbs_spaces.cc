@@ -197,8 +197,14 @@ PhiVerbResult PhiControlDispatcher::VerbSpacesDelete(
     const PhiVerbContext& ctx) {
   // The manager directly: the Mac's space_deleted is its two confirm
   // dialogs' (the coordinator's host override), never an agent's verb.
-  return PhiVerbOk(
-      coordinator_->space_manager().DeleteSpace(ctx.params.String("spaceId")));
+  const std::string space_id = ctx.params.String("spaceId");
+  if (model::IsIncognitoSpaceId(space_id)) {
+    // Deleting an Incognito Space closes it (the Mac passes it through).
+    const bool live = coordinator_->space_manager().Find(space_id) != nullptr;
+    coordinator_->RequestCloseIncognitoSpace(space_id);
+    return PhiVerbOk(live);
+  }
+  return PhiVerbOk(coordinator_->space_manager().DeleteSpace(space_id));
 }
 
 PhiVerbResult PhiControlDispatcher::VerbSpacesReorder(
@@ -356,16 +362,20 @@ PhiVerbResult PhiControlDispatcher::VerbSpacesFocus(
   }
   const std::string space_id = controller->active_space();
   std::string name = space_id;
-  if (const Space* space = FindSpace(space_id)) {
+  // The Space list's own lookup: it knows the live Incognito Spaces too.
+  if (const Space* space = coordinator_->space_manager().Find(space_id)) {
     name = space->name;
   }
+  // An Incognito Space is runtime-only and off the managed surface: no
+  // window and no tab detail (the Mac's handleSpacesFocus).
+  const bool incognito_space = model::IsIncognitoSpaceId(space_id);
   base::DictValue out;
   out.Set("spaceId", space_id);
   out.Set("spaceName", name);
   out.Set("isAgentSpace", false);
-  out.Set("isIncognito", controller->is_incognito());
+  out.Set("isIncognito", controller->is_incognito() || incognito_space);
   const BrowserId browser = controller->active_browser_id();
-  if (browser.valid()) {
+  if (browser.valid() && !incognito_space) {
     out.Set("windowId", static_cast<double>(browser.value));
     if (coordinator_->window_model().ActiveTab(browser)) {
       out.Set("tab", ActiveTabRow(browser));

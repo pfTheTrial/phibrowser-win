@@ -25,7 +25,8 @@ test('menu: the app menu, top to bottom', async () => {
     const rows = await menu(ctl, await firstWindow(ctl))
     const titles = rows.filter((r) => r.title).map((r) => r.title)
     assertEq(titles.join('|'),
-             'New tab|New window|New incognito window|Spaces|History|' +
+             'New tab|New window|New incognito window|New incognito Space|' +
+             'Spaces|History|' +
              'Bookmarks|Downloads|Extensions|Zoom|Print…|Find on page…|' +
              'Reader view|Layout|More tools|Settings|Help|Exit',
              'Chrome and Edge\'s order (docs/windows-native-ui.md §3.1)')
@@ -43,6 +44,10 @@ test('menu: implemented items enabled, placeholders disabled', async () => {
     const rows = await menu(ctl, await firstWindow(ctl))
     assertEq(item(rows, 'New tab').enabled, true, 'New tab works')
     assertEq(item(rows, 'New window').enabled, true, 'New window works')
+    assertEq(item(rows, 'New incognito Space').enabled, true,
+             'New incognito Space works')
+    assertEq(item(rows, 'New incognito Space').shortcut, 'Ctrl+Alt+N',
+             'its chord rides the row')
     assertEq(item(rows, 'Settings').enabled, true, 'Settings works')
     // Chromium's own command state drives the routed rows (incognito is
     // live through IDC_NEW_INCOGNITO_WINDOW); the unrouted placeholders

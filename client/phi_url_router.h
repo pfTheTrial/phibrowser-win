@@ -434,6 +434,10 @@ class PhiUrlRouter {
     // coordinator's RequestCreation for WindowKind::kSpace.
     virtual void RequestSpaceBrowser(const std::string& profile_id,
                                      PendingCreation pending) = 0;
+    // The generic Incognito target's Space: the first live Incognito Space,
+    // else a new one (not switched to — the route surfaces it) — the Mac's
+    // resolveIncognitoRouteTarget.
+    virtual std::string ResolveIncognitoRouteSpace() = 0;
     // The routing table is due a (coalesced) push — every rule write.
     virtual void SchedulePushRoutingTable() = 0;
     // The Space menu (and with it the table) is due a push — the visible-

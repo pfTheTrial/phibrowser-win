@@ -259,6 +259,8 @@ class PhiCoordinator : public SidebarHost,
   void RequestShowTranscript(const std::string& task_id) override;
 
   void RequestCreateSpace(int64_t slot, bool new_profile) override;
+  void RequestNewIncognitoSpace(int64_t slot) override;
+  void RequestCloseIncognitoSpace(const std::string& space_id) override;
   bool AccountInfo(std::string* name, std::string* email) const;
   bool AccountSigningIn() const;
   void RequestSignIn() override;
@@ -375,6 +377,8 @@ class PhiCoordinator : public SidebarHost,
   void SetAutoPictureInPictureMode(const std::string& mode) override;
   bool AlwaysShowFullUrl() const override;
   void SetAlwaysShowFullUrl(bool enabled) override;
+  bool SuppressCloseIncognitoSpaceWarning() const override;
+  void SetSuppressCloseIncognitoSpaceWarning(bool suppress) override;
   bool ShowTabPreviews() const override;
   bool ShowOpenTabIndicators() const override;
   bool DimUnloadedTabIcons() const override;
@@ -841,6 +845,7 @@ class PhiCoordinator : public SidebarHost,
   // the posted turn the ask prompt runs on.
   void RequestSpaceBrowser(const std::string& profile_id,
                            PendingCreation pending) override;
+  std::string ResolveIncognitoRouteSpace() override;
   void SchedulePushRoutingTable() override;
   void SchedulePushSpaceMenu() override;
   void PostAskSpace() override;
@@ -1146,7 +1151,8 @@ class PhiCoordinator : public SidebarHost,
   // The OnBrowserWindowCreated branches. Each adopts `hwnd` for `browser`.
   // A requested kind whose pending record names a slot that is gone, and a
   // peek/reader whose opener is gone, fall back to HostUserShell.
-  void HostUserShell(BrowserId browser, HWND hwnd, bool incognito);
+  void HostUserShell(BrowserId browser, HWND hwnd, bool incognito,
+                     const std::string& first_space = std::string());
   bool AttachRequestedSpaceBrowser(BrowserId browser,
                                    HWND hwnd,
                                    const PendingCreation& pending);

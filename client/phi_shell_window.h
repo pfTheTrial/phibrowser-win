@@ -74,6 +74,8 @@ struct PhiSpaceView {
   std::string profile_id;
   std::string icon;       // Storage form ("emoji:<id>" / "phi:<id>").
   std::string icon_text;  // Resolved display glyph, UTF-8 (may be PUA).
+  // A runtime Incognito Space (docs/incognito-space-port.md).
+  bool incognito = false;
 };
 
 // What the create-Space form commits — CreateSpacePanel.create's arguments.
@@ -240,6 +242,13 @@ class SpacesHost {
   // Creates a Space in this slot's current profile (`new_profile` = false) or
   // in a freshly created profile (true), then switches to it.
   virtual void RequestCreateSpace(int64_t slot, bool new_profile) = 0;
+  // Incognito Spaces (docs/incognito-space-port.md): a new one joins this
+  // slot's strip and the slot switches to it (or, from a slot with no
+  // Spaces — an incognito window — the first user window's); closing one
+  // moves every slot showing it to its last regular Space, closes its
+  // browsers and drops it. No confirmation here: the shell asks first.
+  virtual void RequestNewIncognitoSpace(int64_t slot) = 0;
+  virtual void RequestCloseIncognitoSpace(const std::string& space_id) = 0;
   // A Space's browser is live in this slot. The coordinator remembers the
   // (Space, window id) pair so a later run can name that window when it asks
   // the framework to park or rebuild it (lazy Space restore).
@@ -356,6 +365,10 @@ class ChromePrefsHost {
   // show the full URL"; synced with the Mac's alwaysShowURLPath).
   virtual bool AlwaysShowFullUrl() const = 0;
   virtual void SetAlwaysShowFullUrl(bool enabled) = 0;
+  // Closing an Incognito Space asks first unless the user ticked "Do not
+  // ask again" (the Mac's suppressCloseIncognitoSpaceWarning, synced).
+  virtual bool SuppressCloseIncognitoSpaceWarning() const = 0;
+  virtual void SetSuppressCloseIncognitoSpaceWarning(bool suppress) = 0;
   // The create-Space form's theme defaults. The three are the Settings
   // host's spellings, so one coordinator override serves both.
   virtual std::string ThemeId() const = 0;  // The app-wide theme.
@@ -550,6 +563,9 @@ class PhiShellWindow : public PhiHitSource,
   // §3.3): every row, nav state and split this shell shows is read from
   // it, never parsed from the framework's JSON. Owned by the coordinator,
   // which outlives every controller.
+  // `first_space` names the Space `browser` backs when it is not the
+  // default one — an Incognito Space opened with no user window up, which
+  // gets a shell of its own (the Mac mints a slot for it).
   PhiShellWindow(SlotId slot,
                       BrowserId browser,
                       HWND browser_hwnd,
@@ -558,7 +574,8 @@ class PhiShellWindow : public PhiHitSource,
                       const PhiWindowModel* model,
                       bool agent = false,
                       bool incognito = false,
-                      bool start_hidden = false);
+                      bool start_hidden = false,
+                      const std::string& first_space = std::string());
   // A shell created behind the onboarding gate (start_hidden) comes on
   // screen here once access is granted; a no-op for a visible shell.
   void ShowHeldShell();
@@ -622,7 +639,19 @@ class PhiShellWindow : public PhiHitSource,
   // ReaderExtractionService.canOfferReader.
   static bool CanOfferReaderForUrl(const std::string& url);
   bool is_agent() const { return agent_; }
+  // An incognito WINDOW: no Spaces at all (window-level).
   bool is_incognito() const { return incognito_; }
+  // Ends the Incognito Space `space_id` — after the Mac's confirmation
+  // unless "Do not ask again" was ticked. Cancel leaves everything open.
+  void CloseIncognitoSpaceAsking(const std::string& space_id);
+  // The last tab of the Incognito Space on screen is closing (Ctrl+W, its
+  // row's close box): the Space ends instead, asked first. True when that
+  // took the close, whatever the answer; false for any other tab.
+  bool CloseTabEndsIncognitoSpace();
+  // Nothing persists from what the window shows: an incognito window, or
+  // an Incognito Space on screen (content-level — the look, the omnibox
+  // glyph, the new-tab page, the greyed bookmark and pin rows).
+  bool ShowsIncognito() const;
   // For satellite surfaces (search palette, popovers) that act through the
   // same seams the controller does — each takes the ONE interface its own
   // job needs, never the set (docs/architecture-review.md §3.5).
@@ -920,6 +949,10 @@ class PhiShellWindow : public PhiHitSource,
   // sheet of its own, §4.6).
   bool ActiveTabIsSplit() const;
   bool sidebar_collapsed() const { return sidebar_collapsed_; }
+  // The last user Space this slot showed (never an agent or Incognito
+  // Space): where it retreats when its Incognito Space closes. Empty for a
+  // shell opened on an Incognito Space that never left it.
+  const std::string& last_regular_space() const { return last_regular_space_; }
   // The floating panel is slid in over the page right now (§4.4).
   bool sidebar_floating() const { return floating_sidebar_ && floating_expanded_; }
   // Docks (`collapsed` false) or hides the sidebar; hidden, the panel
@@ -1144,7 +1177,9 @@ class PhiShellWindow : public PhiHitSource,
   // The dynamic rows the builders take: every Space but this slot's (for the
   // transfer submenus), the full list (for the switchers), this Space's
   // bookmark folders in outline order, and the tab groups other than one.
-  std::vector<PhiMenuChoice> SpaceMenuChoices() const;
+  // `with_incognito`: list the live Incognito Spaces too (a tab may move
+  // into one; a bookmark may not).
+  std::vector<PhiMenuChoice> SpaceMenuChoices(bool with_incognito) const;
   std::vector<PhiMenuChoice> SpaceSwitcherChoices() const;
   std::vector<PhiMenuChoice> BookmarkFolderChoices() const;
   std::vector<PhiMenuChoice> GroupMenuChoices(const std::string& exclude) const;
@@ -1543,6 +1578,7 @@ class PhiShellWindow : public PhiHitSource,
   void MenuToggleDownloads() override;
   void MenuToggleSearchTabs() override;
   void MenuOpenFeedback() override;
+  bool MenuCloseTabEndsIncognitoSpace() override;
   void MenuCreateSpace() override;
   void MenuEditSpaceTheme() override;
   void MenuChangeSpaceIcon() override;
@@ -1722,6 +1758,11 @@ class PhiShellWindow : public PhiHitSource,
   bool page_color_reader_ = false;
   // The site menu is tracking (its button stays lit and shown).
   bool site_menu_open_ = false;
+  std::string last_regular_space_;  // See last_regular_space().
+  // The dark flag the DWM backdrop was last given (UpdateSidebarBackdrop).
+  bool backdrop_dark_ = false;
+  // Whether the slot's settled palette (its active Space's) is dark.
+  bool SettledDark() const;
   // Rebuilds the paint caches (tabs_/pinned_/bookmarks_/group_headers_,
   // the nav state, the chips) from model_ and the host's stores WITHOUT
   // invalidating. Runs on the posted rebuild turn; a few structural view

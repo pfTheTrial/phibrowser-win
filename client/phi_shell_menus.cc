@@ -392,7 +392,7 @@ PhiMenuSpec PhiBuildTabAreaMenu(const PhiTabAreaMenuInputs& in) {
     layouts.push_back(std::move(item));
   }
   items.push_back(PhiMenuItem::Submenu(PhiStr("contextMenu.layout"), std::move(layouts)));
-  if (in.incognito) {
+  if (in.incognito && !in.incognito_space) {
     // Incognito shells have no Spaces: the active-Space block never appears.
     return spec;
   }
@@ -419,13 +419,17 @@ PhiMenuSpec PhiBuildTabAreaMenu(const PhiTabAreaMenuInputs& in) {
   }
   items.push_back(PhiMenuItem::Separator());
   items.push_back(PhiMenuItem::Command("area.newSpace", PhiStr("contextMenu.newSpace")));
-  items.push_back(
-      PhiMenuItem::Command("area.renameSpace", PhiStr("contextMenu.renameSpace")));
+  // An Incognito Space keeps the generated name and the fixed-dark theme.
+  PhiMenuItem rename =
+      PhiMenuItem::Command("area.renameSpace", PhiStr("contextMenu.renameSpace"));
+  rename.enabled = !in.incognito_space;
+  items.push_back(std::move(rename));
   items.push_back(PhiMenuItem::Command("area.changeIcon", PhiStr("contextMenu.changeIcon")));
   // Set Theme opens the Mac's editor panel (swatch row + saturation slider)
   // rather than a list of theme names.
-  items.push_back(
-      PhiMenuItem::Command("area.setTheme", PhiStr("sidebar.setTheme")));
+  PhiMenuItem theme = PhiMenuItem::Command("area.setTheme", PhiStr("sidebar.setTheme"));
+  theme.enabled = !in.incognito_space;
+  items.push_back(std::move(theme));
   items.push_back(PhiMenuItem::Submenu(
       PhiStr("app.activeSpaceContextMenu.profileSubmenuTitle"),
       std::move(profiles)));
@@ -433,6 +437,13 @@ PhiMenuSpec PhiBuildTabAreaMenu(const PhiTabAreaMenuInputs& in) {
       PhiMenuItem::Command("area.deleteSpace", PhiStr("contextMenu.deleteSpace"));
   del.enabled = in.can_delete_space;
   items.push_back(std::move(del));
+  if (in.incognito_space) {
+    // The Incognito Space's own end (asked first by the shell).
+    items.push_back(PhiMenuItem::Separator());
+    items.push_back(PhiMenuItem::Command(
+        "area.closeIncognitoSpace",
+        PhiStr("app.spacesMenu.closeActiveIncognitoSpace")));
+  }
   return spec;
 }
 

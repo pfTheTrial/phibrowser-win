@@ -917,7 +917,8 @@ PhiShellWindow::PhiShellWindow(SlotId slot,
                                         const PhiWindowModel* model,
                                         bool agent,
                                bool incognito,
-                               bool start_hidden)
+                               bool start_hidden,
+                               const std::string& first_space)
     : // The URL-driven client-drawn pages (bookmark manager, new-tab page).
       // First, so the early return below still leaves a usable host.
       native_pages_(std::make_unique<PhiNativePagesHost>(
@@ -1130,11 +1131,17 @@ PhiShellWindow::PhiShellWindow(SlotId slot,
   // The window the slot was created with backs the DEFAULT Space — whichever
   // Space holds that role now (it moves when its holder is deleted).
   const std::string default_space =
-      services_.spaces ? services_.spaces->DefaultSpaceId()
-                       : std::string("default-space");
+      !first_space.empty() ? first_space
+      : services_.spaces   ? services_.spaces->DefaultSpaceId()
+                           : std::string("default-space");
   browsers_->AdoptFirst(default_space, browser, browser_hwnd);
+  if (!model::IsIncognitoSpaceId(default_space)) {
+    last_regular_space_ = default_space;
+  }
   omnibox_->EnsureField();
-  if (services_.spaces && !incognito_ && !agent_) {
+  // An Incognito Space's browser is never a lazy-restore window.
+  if (services_.spaces && !incognito_ && !agent_ &&
+      !model::IsIncognitoSpaceId(default_space)) {
     // The default Space binds here rather than through AttachSpaceBrowser,
     // so it needs its own note or lazy restore would never learn its window.
     // NEVER for an agent/shadow window: it nominally binds the default Space
@@ -1428,8 +1435,63 @@ SlotId PhiShellWindow::MenuSlot() const {
   return slot_;
 }
 
+void PhiShellWindow::CloseIncognitoSpaceAsking(const std::string& space_id) {
+  // Locals only past the alert: its modal loop pumps messages.
+  SpacesHost* const spaces = services_.spaces;
+  ChromePrefsHost* const prefs = services_.prefs;
+  if (!spaces || !model::IsIncognitoSpaceId(space_id)) {
+    return;
+  }
+  if (!prefs || !prefs->SuppressCloseIncognitoSpaceWarning()) {
+    // The Mac's NSAlert: the title alone, Close (default) and Cancel, and
+    // "Do not ask again" as the suppression box (honoured on Close only).
+    bool dont_ask = false;
+    const int chosen = PhiAlertWithCheckbox(
+        shell_hwnd_, PhiStr("spaces.closeIncognitoConfirmation.title"),
+        nullptr,
+        {{PhiStr("spaces.closeIncognitoConfirmation.closeButton"),
+          PhiAlertRole::kPrimary},
+         {PhiStr("spaces.closeIncognitoConfirmation.cancelButton"),
+          PhiAlertRole::kSecondary}},
+        PhiStr("spaces.closeIncognitoConfirmation.doNotAskAgainCheckbox"),
+        &dont_ask, /*default_index=*/0, /*cancel_index=*/1);
+    if (chosen != 0) {
+      return;
+    }
+    if (dont_ask && prefs) {
+      prefs->SetSuppressCloseIncognitoSpaceWarning(true);
+    }
+  }
+  spaces->RequestCloseIncognitoSpace(space_id);
+}
+
+bool PhiShellWindow::CloseTabEndsIncognitoSpace() {
+  const std::string space = active_space();
+  if (incognito_ || agent_ || !model::IsIncognitoSpaceId(space)) {
+    return false;
+  }
+  const BrowserId browser = active_browser_id();
+  const phi_framework::WindowSnapshot* snapshot =
+      model_ && browser.valid() ? model_->Get(browser) : nullptr;
+  if (snapshot && snapshot->tabs.size() > 1) {
+    return false;
+  }
+  // The Mac's Cmd-W on the last tab: the Space, not just its tab — and a
+  // Cancel swallows the close.
+  CloseIncognitoSpaceAsking(space);
+  return true;
+}
+
+bool PhiShellWindow::MenuCloseTabEndsIncognitoSpace() {
+  return CloseTabEndsIncognitoSpace();
+}
+
+bool PhiShellWindow::ShowsIncognito() const {
+  return incognito_ || model::IsIncognitoSpaceId(active_space());
+}
+
 bool PhiShellWindow::MenuIncognito() const {
-  return incognito_;
+  return ShowsIncognito();
 }
 
 SidebarHost* PhiShellWindow::MenuSidebarHost() const {
@@ -1802,6 +1864,15 @@ void PhiShellWindow::BrowserHostNoteSpaceWindow(
 
 void PhiShellWindow::BrowserHostNoteActiveSpace(
     const std::string& space_id) {
+  if (!PhiIsAgentSpaceId(space_id) && !model::IsIncognitoSpaceId(space_id)) {
+    last_regular_space_ = space_id;  // Where closing an Incognito Space lands.
+  }
+  // An Incognito Space is fixed-dark whatever the app's appearance: the
+  // acrylic behind the sidebar follows (DWM's dark flag), or its light
+  // tint shows through under the dark palette's white text.
+  if (SettledDark() != backdrop_dark_) {
+    UpdateSidebarBackdrop();
+  }
   if (services_.spaces && !agent_ && !PhiIsAgentSpaceId(space_id)) {
     services_.spaces->NoteSlotActiveSpace(space_id);
   }
@@ -2023,7 +2094,7 @@ PhiShellWindow* PhiShellWindow::NativePagesOwner() {
 }
 
 bool PhiShellWindow::NativePagesIncognito() const {
-  return incognito_;
+  return ShowsIncognito();
 }
 
 bool PhiShellWindow::NativePagesIsAgent() const {
@@ -3989,6 +4060,15 @@ void PhiShellWindow::InvalidateChangedBands(
   }
 }
 
+bool PhiShellWindow::SettledDark() const {
+  // The palette the slot SETTLES on — not the switch ramp's frame, which
+  // still reads the Space being left while the switch is noted.
+  if (incognito_ || !services_.spaces) {
+    return CurrentPalette().dark;
+  }
+  return services_.spaces->PaletteForSlot(slot_.value).dark;
+}
+
 PhiPalette PhiShellWindow::CurrentPalette() const {
   static const PhiPalette kFallback =
       PhiResolvePalette(PhiThemeById("pure"), PhiAppearance::kLight);
@@ -4046,7 +4126,8 @@ void PhiShellWindow::UpdateSidebarBackdrop() {
   const bool enabled =
       !browsers_->content_fullscreen() &&
       !(contrast.dwFlags & HCF_HIGHCONTRASTON);
-  const BOOL dark = CurrentPalette().dark;
+  const BOOL dark = SettledDark();
+  backdrop_dark_ = dark != FALSE;
   ::DwmSetWindowAttribute(shell_hwnd_, DWMWA_USE_IMMERSIVE_DARK_MODE,
                           &dark, sizeof(dark));
   // Desktop Acrylic exposes the wallpaper/windows behind the sidebar.
@@ -5001,7 +5082,8 @@ RECT PhiShellWindow::site_menu_rect() {
   return ComputeLayout().site_menu;
 }
 
-std::vector<PhiMenuChoice> PhiShellWindow::SpaceMenuChoices() const {
+std::vector<PhiMenuChoice> PhiShellWindow::SpaceMenuChoices(
+    bool with_incognito) const {
   // Every Space but the one this slot shows — the Mac's
   // appendSpaceTransferMenuItems. Ids, never rows: the list may be rebuilt
   // while the menu is up.
@@ -5010,7 +5092,8 @@ std::vector<PhiMenuChoice> PhiShellWindow::SpaceMenuChoices() const {
     return choices;
   }
   for (const PhiSpaceView& space : services_.spaces->Spaces()) {
-    if (space.id == active_space() || choices.size() >= 99u) {
+    if (space.id == active_space() || choices.size() >= 99u ||
+        (space.incognito && !with_incognito)) {
       continue;
     }
     PhiMenuChoice choice;
@@ -5101,8 +5184,12 @@ std::vector<PhiMenuChoice> PhiShellWindow::SpaceSwitcherChoices() const {
                                                         : "Space " + space.id);
     choice.glyph = base::UTF8ToWide(space.icon_text);
     const int tabs = SpacesTabCount(space.id);
-    choice.hint = profile_name(space.profile_id) + L"  \u00B7  " +
-                  std::to_wstring(tabs) + (tabs == 1 ? L" tab" : L" tabs");
+    choice.hint = (space.incognito
+                       ? std::wstring(PhiStr(
+                             "spaces.builtIn.incognito.singleSpaceName"))
+                       : profile_name(space.profile_id)) +
+                  L"  \u00B7  " + std::to_wstring(tabs) +
+                  (tabs == 1 ? L" tab" : L" tabs");
     if (ordinal <= 9) {
       choice.shortcut = L"Ctrl+" + std::to_wstring(ordinal);
     }
@@ -5184,7 +5271,7 @@ void PhiShellWindow::ShowTabRowMenu(POINT pt, const MenuRow& row) {
   }
   PhiTabMenuInputs in;
   in.merged = row.merged;
-  in.incognito = incognito_;
+  in.incognito = ShowsIncognito();
   in.grouped = !row.group_id.empty();
   in.split_bound = !row.split_id.empty();
   in.split_stacked = row.merged && SplitIsStacked(row.id);
@@ -5208,12 +5295,14 @@ void PhiShellWindow::ShowTabRowMenu(POINT pt, const MenuRow& row) {
   // Groups take a split row whole (both panes), so every row gets the list.
   in.groups = GroupMenuChoices(row.group_id);
   if (!row.merged) {
-    in.bookmark_folders = !incognito_ && services_.sidebar != nullptr;
+    in.bookmark_folders = !ShowsIncognito() && services_.sidebar != nullptr;
     if (in.bookmark_folders) {
       in.folders = BookmarkFolderChoices();
     }
-    if (!incognito_) {
-      in.spaces = SpaceMenuChoices();
+    // Out of an Incognito Space nothing moves (the Mac offers no Move);
+    // into one, a tab may.
+    if (!ShowsIncognito()) {
+      in.spaces = SpaceMenuChoices(/*with_incognito=*/true);
     }
   }
   const PhiMenuAction action =
@@ -5421,7 +5510,9 @@ void PhiShellWindow::ShowBookmarkRowMenu(POINT pt, const MenuRow& row) {
   in.split_row = !row.url_b.empty();
   in.horizontal = row.layout == "horizontal";
   if (!row.folder && !incognito_) {
-    in.spaces = SpaceMenuChoices();
+    // A bookmark belongs to a Space's stored rows; an Incognito Space keeps
+    // none.
+    in.spaces = SpaceMenuChoices(/*with_incognito=*/false);
   }
   const PhiMenuAction action =
       PhiRunPopupMenu(PhiBuildBookmarkRowMenu(in),
@@ -5551,7 +5642,7 @@ bool PhiShellWindow::ShowBookmarkBarContextMenu(POINT pt) {
   }
   // The bar's bare run: the Mac BookmarkBar's own menu, New Folder only.
   const PhiMenuAction action =
-      PhiRunPopupMenu(PhiBuildBookmarkBarAreaMenu(incognito_),
+      PhiRunPopupMenu(PhiBuildBookmarkBarAreaMenu(ShowsIncognito()),
                       PopupAt(pt, TPM_LEFTALIGN | TPM_TOPALIGN |
                                       TPM_RIGHTBUTTON));
   if (action.is("bar.newRootFolder") && services_.sidebar) {
@@ -5572,7 +5663,8 @@ void PhiShellWindow::ShowTabAreaMenu(POINT pt, bool space_only) {
     return;
   }
   PhiTabAreaMenuInputs in;
-  in.incognito = incognito_;
+  in.incognito = ShowsIncognito();
+  in.incognito_space = !incognito_ && model::IsIncognitoSpaceId(active_space());
   in.tabs_empty = sidebar_->tabs().empty();
   in.mode = layout_mode_;
   in.space_only = space_only;
@@ -5653,6 +5745,8 @@ void PhiShellWindow::ShowTabAreaMenu(POINT pt, bool space_only) {
                           {screen.x, screen.y, screen.x + 1, screen.y + 1});
     } else if (action.is("area.deleteSpace")) {
       bar->OnCommand(kCmdDeleteSpace);
+    } else if (action.is("area.closeIncognitoSpace")) {
+      CloseIncognitoSpaceAsking(active_space());
     }
   }
 }
@@ -6590,7 +6684,7 @@ LRESULT CALLBACK PhiShellWindow::FloatingSidebarProc(HWND hwnd,
 }
 
 bool PhiShellWindow::BookmarkBarVisible() {
-  if (!services_.prefs || incognito_ || browsers_->content_fullscreen()) {
+  if (!services_.prefs || ShowsIncognito() || browsers_->content_fullscreen()) {
     return false;
   }
   // A comfortable-layout feature only (the Mac's bookmarkBarSupported =
@@ -7001,7 +7095,7 @@ void PhiShellWindow::PaintChrome(HDC dc,
       // §4.9: an incognito window wears the incognito glyph in the
       // field's leading slot (its chrome is fixed dark, CurrentPalette).
       PhiDrawIconGlyph(dc, layout.page_icon,
-                       incognito_ ? fluent::kIncognito : fluent::kGlobe,
+                       ShowsIncognito() ? fluent::kIncognito : fluent::kGlobe,
                        Scaled(fluent::kIconToolbar), bar.label_dim);
     }
   }

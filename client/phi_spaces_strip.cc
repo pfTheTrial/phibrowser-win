@@ -15,6 +15,7 @@
 #include "phibrowser-win/client/phi_create_space_window.h"
 #include "phibrowser-win/client/phi_dwrite.h"
 #include "phibrowser-win/client/phi_fluent.h"
+#include "phibrowser-win/client/phi_app_model.h"
 #include "phibrowser-win/client/phi_i18n.h"
 #include "phibrowser-win/client/phi_emoji.h"
 #include "phibrowser-win/client/phi_icons.h"
@@ -579,6 +580,11 @@ void PhiSpacesStrip::ResolveHoverCard(const std::string& space_id) {
   // form and the tab-area menu read ("id\tname"); the raw id stands in
   // when unnamed.
   card_profile_ = base::UTF8ToWide(profile_id);
+  if (model::IsIncognitoSpaceId(space_id)) {
+    // Off the record, not the parent profile it nominally names.
+    card_profile_ = PhiStr("spaces.builtIn.incognito.singleSpaceName");
+    return;
+  }
   if (profile_id.empty()) {
     return;
   }

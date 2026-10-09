@@ -803,7 +803,9 @@ class PhiSidebarView {
   SpacesHost* spaces_host() const { return spaces_host_; }
   WindowHost* window_host() const { return window_host_; }
   SlotId slot() const { return slot_; }
-  bool incognito() const { return incognito_; }
+  // Nothing persists from here: an incognito window, or a window showing
+  // an Incognito Space (docs/incognito-space-port.md).
+  bool incognito() const;
   // The agent holds this (agent) window: the rows' close boxes are inert.
   void set_agent_holds_input(bool holds) { agent_holds_input_ = holds; }
 

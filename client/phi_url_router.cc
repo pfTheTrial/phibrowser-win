@@ -282,27 +282,15 @@ void PhiUrlRouter::RouteUrlToSpace(const std::string& space_id,
   }
   if (UrlRuleTargetIsIncognito(space_id)) {
     // The Mac's generic Incognito target resolves to a LIVE Incognito
-    // Space, created on demand. Here: the first open Incognito shell (the
-    // routing table aliases the same one), else the framework opens the
-    // source profile's off-the-record window — announced as an incognito
-    // user window, which the coordinator hosts as an Incognito shell.
-    for (PhiShellWindow* controller : registry_.Controllers()) {
-      if (!controller->is_incognito() || controller->is_agent() ||
-          !controller->active_browser_id().valid()) {
-        continue;
-      }
-      framework_.OpenTabBypassingSpaceRouting(
-          controller->active_browser_id().value, url.c_str());
-      if (controller->shell_hwnd()) {
-        ::SetForegroundWindow(controller->shell_hwnd());
-      }
-      controller->ScheduleRefresh();
-      return;
-    }
-    if (!framework_.OpenUrlOffTheRecord(source_window.value, url.c_str())) {
+    // Space, created on demand (docs/incognito-space-port.md D8) — then it
+    // is routed like any Space below.
+    const std::string incognito_space = host_.ResolveIncognitoRouteSpace();
+    if (incognito_space.empty()) {
       framework_.OpenTabBypassingSpaceRouting(source_window.value,
                                               url.c_str());
+      return;
     }
+    RouteUrlToSpace(incognito_space, url, source_window);
     return;
   }
   // A slot that already holds the Space: switch to it there and open the
@@ -326,12 +314,24 @@ void PhiUrlRouter::RouteUrlToSpace(const std::string& space_id,
   // Cold Space: ask for its browser in its profile; the link opens once the
   // browser attaches (the spaces.switch machinery), so a request already in
   // flight for this slot and Space just gains the url.
-  const model::Space* space = FindSpaceIn(model_.spaces, space_id);
-  if (!space) {
-    return;
+  // An Incognito Space is no stored Space: its browser is the shared
+  // off-the-record session's, whose parent the framework picks.
+  std::string profile_id = "Default";
+  if (!model::IsIncognitoSpaceId(space_id)) {
+    const model::Space* space = FindSpaceIn(model_.spaces, space_id);
+    if (!space) {
+      return;
+    }
+    profile_id = space->profile_id;
   }
-  const SlotId slot =
+  SlotId slot =
       registry_.SlotFor(source_window).value_or(registry_.FirstUserSlot());
+  // An incognito window or an agent shell holds no Spaces: the first user
+  // window takes the Space instead.
+  if (PhiShellWindow* source = registry_.Get(slot);
+      source && (source->is_incognito() || source->is_agent())) {
+    slot = registry_.FirstUserSlot();
+  }
   if (!slot.valid()) {
     return;
   }
@@ -343,7 +343,7 @@ void PhiUrlRouter::RouteUrlToSpace(const std::string& space_id,
   pending.slot = slot;
   pending.space_id = space_id;
   pending.open_urls.push_back(url);
-  host_.RequestSpaceBrowser(space->profile_id, std::move(pending));
+  host_.RequestSpaceBrowser(profile_id, std::move(pending));
 }
 
 // --- The framework's copy -------------------------------------------------------
@@ -376,16 +376,23 @@ void PhiUrlRouter::PushRoutingTableNow() {
     if (controller->is_agent()) {
       continue;
     }
-    // An Incognito shell has no Space; it stands in for the generic
-    // Incognito target (the first one wins, the Mac's strip-order alias).
-    const std::string& space_id = controller->is_incognito()
-                                      ? std::string(kPhiIncognitoRuleTargetId)
-                                      : controller->active_space();
+    // An incognito WINDOW is no routing target any more: the generic
+    // Incognito target means an Incognito Space (D8).
+    if (controller->is_incognito()) {
+      continue;
+    }
+    const std::string& space_id = controller->active_space();
     const BrowserId browser_id = controller->active_browser_id();
     if (space_id.empty() || !browser_id.valid() || map.Find(space_id)) {
       continue;
     }
     map.Set(space_id, static_cast<double>(browser_id.value));
+    // An Incognito Space on screen also stands in for the generic target
+    // (the first one wins, the Mac's strip-order alias).
+    if (model::IsIncognitoSpaceId(space_id) &&
+        !map.Find(kPhiIncognitoRuleTargetId)) {
+      map.Set(kPhiIncognitoRuleTargetId, static_cast<double>(browser_id.value));
+    }
   }
   root.Set("spaceWindows", std::move(map));
   std::string json;

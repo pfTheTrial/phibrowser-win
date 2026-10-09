@@ -45,11 +45,12 @@ constexpr int kListRowHeight = 32;
 constexpr int kListMaxRows = 8;
 constexpr int kListInset = 4;
 constexpr int kRecorderHeight = 32;
+constexpr int kCheckboxHeight = 20;
 
 constexpr UINT_PTR kControlId = 100;
 constexpr UINT_PTR kActionIdFirst = 1000;
 
-enum class Accessory { kNone, kField, kList, kRecorder };
+enum class Accessory { kNone, kField, kList, kRecorder, kCheckbox };
 
 struct Action {
   std::wstring label;
@@ -69,6 +70,8 @@ struct Spec {
   Accessory accessory = Accessory::kNone;
   std::wstring field_text;      // kField's initial text.
   std::wstring placeholder;     // kRecorder's resting line.
+  std::wstring checkbox_label;  // kCheckbox's text.
+  bool checked = false;         // kCheckbox's initial state.
   std::vector<std::wstring> options;  // kList's rows.
   int selected = -1;                  // kList's preselected row.
   // kList drawn by the alert instead of the LISTBOX: a divider above a
@@ -235,6 +238,11 @@ class Alert : public PhiSecondaryWindow {
     return scrim;
   }
 
+  bool ControlChecked() const {
+    return control_ &&
+           ::SendMessageW(control_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+  }
+
   std::wstring ControlText() const {
     if (!control_) {
       return std::wstring();
@@ -318,6 +326,9 @@ class Alert : public PhiSecondaryWindow {
       case Accessory::kRecorder:
         well_h = Scaled(kRecorderHeight);
         break;
+      case Accessory::kCheckbox:
+        well_h = Scaled(kCheckboxHeight);
+        break;
     }
     if (well_h) {
       y += Scaled(kAccessorySpacing);
@@ -396,6 +407,16 @@ class Alert : public PhiSecondaryWindow {
                          kControlId, body_font_);
         break;
       }
+      case Accessory::kCheckbox:
+        // The ContentDialog's CheckBox (the Mac's suppression button): a
+        // plain row on the body, no well.
+        control_ = Child(L"BUTTON", spec_.checkbox_label.c_str(),
+                         WS_TABSTOP | BS_AUTOCHECKBOX, well_, kControlId,
+                         body_font_);
+        if (control_ && spec_.checked) {
+          ::SendMessageW(control_, BM_SETCHECK, BST_CHECKED, 0);
+        }
+        break;
     }
     PhiPopupThemeControl(control_, colors().dark);
   }
@@ -454,7 +475,8 @@ class Alert : public PhiSecondaryWindow {
       ::DrawTextW(dc, spec_.message.c_str(), -1, &message,
                   DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
     }
-    if (spec_.accessory != Accessory::kNone) {
+    if (spec_.accessory != Accessory::kNone &&
+        spec_.accessory != Accessory::kCheckbox) {
       PhiPopupPaintWell(dc, well_, colors(), dpi());
     }
     if (previous) {
@@ -670,6 +692,38 @@ int PhiAlert(HWND owner,
       cancel_index < static_cast<int>(actions.size()) ? cancel_index : -1;
   Alert alert(owner, std::move(spec));
   return alert.Open() ? alert.Run() : -1;
+}
+
+int PhiAlertWithCheckbox(HWND owner,
+                         const wchar_t* title,
+                         const wchar_t* message,
+                         const std::vector<PhiAlertAction>& actions,
+                         const wchar_t* checkbox_label,
+                         bool* checked,
+                         int default_index,
+                         int cancel_index) {
+  Spec spec;
+  spec.title = title ? title : L"";
+  spec.message = message ? message : L"";
+  for (const PhiAlertAction& action : actions) {
+    spec.actions.push_back({action.label, RoleFor(action.role)});
+  }
+  spec.default_index =
+      default_index < static_cast<int>(actions.size()) ? default_index : -1;
+  spec.cancel_index =
+      cancel_index < static_cast<int>(actions.size()) ? cancel_index : -1;
+  spec.accessory = Accessory::kCheckbox;
+  spec.checkbox_label = checkbox_label ? checkbox_label : L"";
+  spec.checked = checked && *checked;
+  Alert alert(owner, std::move(spec));
+  if (!alert.Open()) {
+    return -1;
+  }
+  const int chosen = alert.Run();
+  if (checked) {
+    *checked = alert.ControlChecked();
+  }
+  return chosen;
 }
 
 void PhiNotice(HWND owner, const wchar_t* title, const wchar_t* message) {

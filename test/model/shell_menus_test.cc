@@ -323,6 +323,28 @@ void TabAreaMenuStopsAtTheLayoutForIncognito() {
   CHECK(spec.Find("area.newSpace") == nullptr);
 }
 
+void TabAreaMenuEndsAnIncognitoSpace() {
+  // An Incognito Space keeps the Space block — rename, theme and profile
+  // off — and trails it with "Close Incognito Space" (the Mac's
+  // appendActiveSpaceMenuItems); the bookmark rows grey as off the record.
+  PhiTabAreaMenuInputs in;
+  in.incognito = true;
+  in.incognito_space = true;
+  const PhiMenuSpec spec = PhiBuildTabAreaMenu(in);
+  CHECK(!spec.Find("area.newRootFolder")->enabled);
+  CHECK(spec.Find("area.renameSpace") && !spec.Find("area.renameSpace")->enabled);
+  CHECK(spec.Find("area.setTheme") && !spec.Find("area.setTheme")->enabled);
+  CHECK(spec.Find("area.changeIcon")->enabled);
+  CHECK(!spec.Find("area.deleteSpace")->enabled);
+  CHECK(spec.Keys().back() == "area.closeIncognitoSpace");
+  // The pip's menu (space_only) keeps the close too.
+  in.space_only = true;
+  CHECK(PhiBuildTabAreaMenu(in).Find("area.closeIncognitoSpace") != nullptr);
+  // A regular Space has no close row.
+  PhiTabAreaMenuInputs plain;
+  CHECK(PhiBuildTabAreaMenu(plain).Find("area.closeIncognitoSpace") == nullptr);
+}
+
 void TabAreaMenuSaysWhenThereAreNoProfiles() {
   PhiTabAreaMenuInputs in;
   const PhiMenuSpec spec = PhiBuildTabAreaMenu(in);
@@ -496,6 +518,7 @@ int main() {
   SpaceSwitcherMarksTheActiveSpace();
   AgentChipMenuHasTwoRows();
   SiteMenuFollowsTheMacOrder();
+  TabAreaMenuEndsAnIncognitoSpace();
   BookmarkBarMenuSkipsThePillsAlreadyShown();
   BookmarkBarMenuNestsFourDeepAndStopsAt200();
   EmptyFolderIsStillASubmenu();
