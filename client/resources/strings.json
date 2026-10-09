@@ -1663,6 +1663,116 @@
   "bookmarkManager.selectedItems": {
    "en": " selected items?"
   },
+  "browser.addressBarMenu.clearCacheAction": {
+   "de": "Cache leeren",
+   "en": "Clear Cache",
+   "es": "Borrar caché",
+   "fr": "Vider le cache",
+   "ja": "キャッシュを消去",
+   "ko": "캐시 삭제",
+   "nl": "Wis cache",
+   "zh-Hans": "清除缓存",
+   "zh-Hant": "清除快取"
+  },
+  "browser.addressBarMenu.clearCookiesAction": {
+   "de": "Cookies löschen",
+   "en": "Clear Cookie",
+   "es": "Borrar cookies",
+   "fr": "Effacer les cookies",
+   "ja": "Cookieを消去",
+   "ko": "쿠키 삭제",
+   "nl": "Wis cookies",
+   "zh-Hans": "清除 Cookie",
+   "zh-Hant": "清除 Cookie"
+  },
+  "browser.addressBarMenu.contentBlocking.toggle": {
+   "de": "Inhaltsblockierung auf dieser Website",
+   "en": "Content blocking on this site",
+   "es": "Bloqueo de contenido en este sitio",
+   "fr": "Blocage de contenu sur ce site",
+   "ja": "このサイトでのコンテンツブロック",
+   "ko": "이 사이트에서 콘텐츠 차단",
+   "nl": "Contentblokkering op deze site",
+   "zh-Hans": "在此网站上拦截内容",
+   "zh-Hant": "在此網站封鎖內容"
+  },
+  "browser.addressBarMenu.openBrowserSettingsAction": {
+   "de": "Weitere Einstellungen",
+   "en": "More Settings",
+   "es": "Más configuración",
+   "fr": "Plus de paramètres",
+   "ja": "その他の設定",
+   "ko": "추가 설정",
+   "nl": "Meer instellingen",
+   "zh-Hans": "更多设置",
+   "zh-Hant": "更多設定"
+  },
+  "browser.addressBarMenu.security.notSecureStatus": {
+   "de": "Verbindung ist nicht sicher",
+   "en": "Connection is not secure",
+   "es": "La conexión no es segura",
+   "fr": "La connexion n'est pas sécurisée",
+   "ja": "接続は保護されていません",
+   "ko": "연결이 안전하지 않음",
+   "nl": "Verbinding is niet beveiligd",
+   "zh-Hans": "连接不安全",
+   "zh-Hant": "連線不安全"
+  },
+  "browser.addressBarMenu.security.partiallySecureStatus": {
+   "de": "Verbindung ist nicht vollständig sicher",
+   "en": "Connection is not fully secure",
+   "es": "La conexión no es totalmente segura",
+   "fr": "La connexion n'est pas entièrement sécurisée",
+   "ja": "接続は完全には保護されていません",
+   "ko": "연결이 완전히 안전하지 않음",
+   "nl": "Verbinding is niet volledig beveiligd",
+   "zh-Hans": "连接并非完全安全",
+   "zh-Hant": "連線並非完全安全"
+  },
+  "browser.addressBarMenu.security.secureStatus": {
+   "de": "Verbindung ist sicher",
+   "en": "Connection is secure",
+   "es": "La conexión es segura",
+   "fr": "La connexion est sécurisée",
+   "ja": "接続は保護されています",
+   "ko": "연결이 안전함",
+   "nl": "Verbinding is beveiligd",
+   "zh-Hans": "连接安全",
+   "zh-Hant": "連線安全"
+  },
+  "browser.addressBarMenu.security.unknownStatus": {
+   "de": "Unbekannt",
+   "en": "Unknown",
+   "es": "Desconocido",
+   "fr": "Inconnu",
+   "ja": "不明",
+   "ko": "알 수 없음",
+   "nl": "Onbekend",
+   "zh-Hans": "未知",
+   "zh-Hant": "未知"
+  },
+  "browser.addressBarMenu.showFullURLToggle": {
+   "de": "URL-Pfad immer anzeigen",
+   "en": "Always Show URL Path",
+   "es": "Mostrar siempre la ruta de la URL",
+   "fr": "Toujours afficher le chemin de l'URL",
+   "ja": "URLパスを常に表示",
+   "ko": "URL 경로 항상 표시",
+   "nl": "Toon URL-pad altijd",
+   "zh-Hans": "始终显示网址路径",
+   "zh-Hant": "一律顯示網址路徑"
+  },
+  "browser.addressBarMenu.siteSettingsAction": {
+   "de": "Website-Einstellungen",
+   "en": "Site Settings",
+   "es": "Configuración del sitio",
+   "fr": "Paramètres du site",
+   "ja": "サイトの設定",
+   "ko": "사이트 설정",
+   "nl": "Site-instellingen",
+   "zh-Hans": "网站设置",
+   "zh-Hant": "網站設定"
+  },
   "browser.headerMoreMenu.downloadsAction": {
    "de": "Downloads\tCtrl+J",
    "en": "Downloads\tCtrl+J",

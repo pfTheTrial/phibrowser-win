@@ -8,6 +8,7 @@
 #include <windowsx.h>
 
 #include <algorithm>
+#include <iterator>
 #include <optional>
 #include <utility>
 
@@ -497,13 +498,22 @@ void PhiOmniboxSession::SetFieldHover(bool hovered) {
 void PhiOmniboxSession::CopyLinkToClipboard() {
   const HWND shell_hwnd = shell_->OmniboxShellWindow();
   if (nav_url_.empty() || !shell_hwnd || !::OpenClipboard(shell_hwnd)) {
+    LOG(WARNING) << "copy link: nothing copied (url empty " << nav_url_.empty()
+                 << ", clipboard error " << ::GetLastError() << ")";
     return;
   }
+  // The Mac's phiBrandEnsuredUrlString: Chromium's own pages travel as
+  // phi:// links.
+  std::wstring url = nav_url_;
+  static constexpr wchar_t kChromeScheme[] = L"chrome://";
+  if (url.rfind(kChromeScheme, 0) == 0) {
+    url = L"phi://" + url.substr(std::size(kChromeScheme) - 1);
+  }
   ::EmptyClipboard();
-  const size_t bytes = (nav_url_.size() + 1) * sizeof(wchar_t);
+  const size_t bytes = (url.size() + 1) * sizeof(wchar_t);
   if (HGLOBAL mem = ::GlobalAlloc(GMEM_MOVEABLE, bytes)) {
     if (wchar_t* dest = static_cast<wchar_t*>(::GlobalLock(mem))) {
-      std::copy_n(nav_url_.c_str(), nav_url_.size() + 1, dest);
+      std::copy_n(url.c_str(), url.size() + 1, dest);
       ::GlobalUnlock(mem);
       if (!::SetClipboardData(CF_UNICODETEXT, mem)) {
         ::GlobalFree(mem);

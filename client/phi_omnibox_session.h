@@ -35,7 +35,8 @@ struct PhiOmniboxCapsule {
   SidebarRect page_icon;        // Comfortable's leading site chip.
   SidebarRect field_ext_strip;  // Pinned-extension icons.
   SidebarRect reader;
-  SidebarRect star;  // Bookmark this tab.
+  SidebarRect copy_link;  // The Mac's hover-only pair: Copy link …
+  SidebarRect site_menu;  // … and the site menu.
   SidebarRect extensions;
 };
 
@@ -55,8 +56,8 @@ inline SidebarRect PhiOmniboxTextRect(const PhiOmniboxCapsule& capsule,
   // extensions button in the top bar) are not candidates.
   int right_stop = box.right;
   for (const SidebarRect& accessory :
-       {capsule.field_ext_strip, capsule.reader, capsule.star,
-        capsule.extensions}) {
+       {capsule.field_ext_strip, capsule.reader, capsule.copy_link,
+        capsule.site_menu, capsule.extensions}) {
     if (accessory.right > accessory.left && accessory.left > box.left &&
         accessory.left < right_stop) {
       right_stop = accessory.left;

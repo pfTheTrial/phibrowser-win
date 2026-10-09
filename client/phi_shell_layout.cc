@@ -115,8 +115,8 @@ ShellLayout ComputeShellLayout(const ShellLayoutInputs& in) {
     return left;
   };
   // The omnibox between `left` and `right` on `mid`, with its in-field
-  // slots: the site-info slot leading, Reader (when offered) and the star
-  // trailing.
+  // slots: the site-info slot leading; Reader (when offered), Copy link and
+  // the site menu trailing, in the Mac's order.
   const auto place_omnibox = [&](int left, int right, int mid) {
     const int field_h = scaled(kOmniboxHeight);
     out.url_field = {left, mid - field_h / 2, right, mid + field_h / 2};
@@ -125,8 +125,10 @@ ShellLayout ComputeShellLayout(const ShellLayoutInputs& in) {
     out.page_icon = {left + slot_inset, mid - slot / 2, left + slot_inset + slot,
                      mid + slot / 2};
     int r = right - slot_inset;
-    out.star = {r - slot, mid - slot / 2, r, mid + slot / 2};
-    r = out.star.left - scaled(2);
+    out.site_menu = {r - slot, mid - slot / 2, r, mid + slot / 2};
+    r = out.site_menu.left - scaled(2);
+    out.copy_link = {r - slot, mid - slot / 2, r, mid + slot / 2};
+    r = out.copy_link.left - scaled(2);
     if (in.reader_offerable) {
       out.reader = {r - slot, mid - slot / 2, r, mid + slot / 2};
     }
@@ -259,8 +261,8 @@ ShellLayout ComputeShellLayout(const ShellLayoutInputs& in) {
     // Below the minimum text width the pinned-extension slots hide first
     // (the Mac's minimumAddressTextWidth rule), then the field simply gets
     // narrow.
-    const int min_field = scaled(kFieldTextInset + kFieldMinText + 2 * kFieldSlot +
-                                 2 * kFieldSlotInset + 8);
+    const int min_field = scaled(kFieldTextInset + kFieldMinText + 3 * kFieldSlot +
+                                 2 * 2 + 2 * kFieldSlotInset + 8);
     if (field_right - field_left < min_field && !out.field_ext_strip.empty()) {
       out.field_ext_strip = SidebarRect{};
       field_right = out.extensions.left - scaled(kGroupGap);

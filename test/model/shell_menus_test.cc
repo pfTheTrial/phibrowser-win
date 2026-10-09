@@ -372,6 +372,34 @@ void AgentChipMenuHasTwoRows() {
                              : "agent.finish "));
 }
 
+// --- The address bar's site menu ------------------------------------------
+
+void SiteMenuFollowsTheMacOrder() {
+  // A plain page with blocking off: no blocking row, the security row last.
+  PhiSiteMenuInputs in;
+  in.security = "secure";
+  PhiMenuSpec spec = PhiBuildSiteMenu(in);
+  CHECK(Joined(spec) ==
+        ". site.clearCache site.clearCookies - site.moreSettings - "
+        "site.showFullUrl - site.security ");
+  CHECK(!spec.Find("site.showFullUrl")->checked);
+  // Blocking on and the path pref set: the blocking row ticks after the
+  // submenu, the URL row ticks too, an insecure page gets the warning row.
+  in.content_blocking_row = true;
+  in.content_blocking_on = true;
+  in.always_show_url_path = true;
+  in.security = "partial";
+  spec = PhiBuildSiteMenu(in);
+  CHECK(Joined(spec) ==
+        ". site.clearCache site.clearCookies - site.moreSettings "
+        "site.contentBlocking - site.showFullUrl - site.securityWarning ");
+  CHECK(spec.Find("site.contentBlocking")->checked);
+  CHECK(spec.Find("site.showFullUrl")->checked);
+  // Phi's own pages: no security row (nor its separator).
+  in.security.clear();
+  CHECK(PhiBuildSiteMenu(in).Keys().back() == "site.showFullUrl");
+}
+
 // --- The bookmark bar ------------------------------------------------------
 
 PhiMenuBookmarkNode Leaf(const char* guid, const char* url) {
@@ -467,6 +495,7 @@ int main() {
   TabAreaMenuSaysWhenThereAreNoProfiles();
   SpaceSwitcherMarksTheActiveSpace();
   AgentChipMenuHasTwoRows();
+  SiteMenuFollowsTheMacOrder();
   BookmarkBarMenuSkipsThePillsAlreadyShown();
   BookmarkBarMenuNestsFourDeepAndStopsAt200();
   EmptyFolderIsStillASubmenu();

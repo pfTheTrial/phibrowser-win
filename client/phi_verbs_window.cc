@@ -170,6 +170,10 @@ PhiVerbResult PhiControlDispatcher::VerbWindowLayout(
   out.Set("sidebarToggle", RectDict(shell->sidebar_toggle_rect()));
   // The app menu button (⋯), every layout's way to the menu.
   out.Set("appMenu", RectDict(shell->app_menu_rect()));
+  // The in-field Copy link / site-menu pair (laid out always, painted only
+  // while the field is hovered).
+  out.Set("copyLink", RectDict(shell->copy_link_rect()));
+  out.Set("siteMenu", RectDict(shell->site_menu_rect()));
   out.Set("sidebarCollapsed", shell->sidebar_collapsed());
   out.Set("sidebarFloating", shell->sidebar_floating());
   out.Set("tabsTop", shell->tabs_top());

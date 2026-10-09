@@ -352,6 +352,10 @@ class ChromePrefsHost {
   virtual void SetAlwaysShowBookmarkBar(bool enabled) = 0;
   virtual bool BookmarkBarOnNewTab() const = 0;
   virtual void SetBookmarkBarOnNewTab(bool enabled) = 0;
+  // The address bar site menu's "Always Show URL Path" (Settings' "Always
+  // show the full URL"; synced with the Mac's alwaysShowURLPath).
+  virtual bool AlwaysShowFullUrl() const = 0;
+  virtual void SetAlwaysShowFullUrl(bool enabled) = 0;
   // The create-Space form's theme defaults. The three are the Settings
   // host's spellings, so one coordinator override serves both.
   virtual std::string ThemeId() const = 0;  // The app-wide theme.
@@ -909,6 +913,9 @@ class PhiShellWindow : public PhiHitSource,
   RECT sidebar_toggle_rect();
   // The app menu button (⋯), for the layout verb.
   RECT app_menu_rect();
+  // The in-field Copy link and site-menu slots, for the layout verb.
+  RECT copy_link_rect();
+  RECT site_menu_rect();
   // The active tab is one pane of a split (the address row is then a
   // sheet of its own, §4.6).
   bool ActiveTabIsSplit() const;
@@ -1040,8 +1047,6 @@ class PhiShellWindow : public PhiHitSource,
     // The globe leading comfortable's omnibox pill, where Chrome shows the
     // site chip. Empty in the other layouts, whose fields carry no icon.
     RECT page_icon{};
-    // The in-field Bookmark-this-tab slot (the star), trailing the field.
-    RECT star{};
     // The floating panel's pin (empty on the shell's own layout) and the
     // sidebar's section labels.
     RECT pin{};
@@ -1051,6 +1056,12 @@ class PhiShellWindow : public PhiHitSource,
     // ACTIVE tab is distillable — the Mac shows the reader button only where
     // Reader View has something to offer.
     RECT reader{};
+    // The Mac's hover-only pair trailing Reader: Copy link and the site
+    // menu (WebContentAddressBarMenu). Laid out always, painted and
+    // live only while the field is hovered (or the menu / flash is up);
+    // Reader shows on the same rule, or while Reader View is on.
+    RECT copy_link{};
+    RECT site_menu{};
     // The vertical sidebar header's toggle (phi_shell_layout.h).
     RECT sidebar_toggle{};
     // The pinned-extension icon strip leading the copy-link button inside
@@ -1270,7 +1281,7 @@ class PhiShellWindow : public PhiHitSource,
   RECT HoverRect(HoverKind kind, int index);
   void SetHover(HoverKind kind, int index);
   // The chrome buttons a kNav hover indexes, in PaintChrome's order.
-  std::array<RECT, 18> NavHoverTable(const Layout& layout) const;
+  std::array<RECT, 20> NavHoverTable(const Layout& layout) const;
   // The 12/600 face the Space chip, the agent chip and the Feedback pill
   // share; built on demand and rebuilt when the DPI moves.
   HFONT EnsureChipNameFont();
@@ -1431,6 +1442,12 @@ class PhiShellWindow : public PhiHitSource,
   // corner (`slot` in shell client coordinates) — the Mac's secondaryAction,
   // and what a click on a disabled action falls back to.
   void ShowFieldExtensionMenu(size_t index, const RECT& slot);
+  // The in-field site menu (the Mac's WebContentAddressBarMenu) under
+  // `slot`, for the active tab; applies the chosen row after the loop.
+  void ShowSiteMenu(const RECT& slot);
+  // The in-field Copy link / site-menu pair shows: the field is hovered,
+  // the menu is open, or the copy flash is still up.
+  bool FieldToolsShown() const;
   // Dismisses the active browser's extension action popup when native shell
   // activity bypasses Chromium's widget activation.
   void CloseExtensionPopup();
@@ -1703,6 +1720,8 @@ class PhiShellWindow : public PhiHitSource,
   // the nav state, so a colour that arrives alone still repaints.
   std::optional<PhiColor> page_color_;
   bool page_color_reader_ = false;
+  // The site menu is tracking (its button stays lit and shown).
+  bool site_menu_open_ = false;
   // Rebuilds the paint caches (tabs_/pinned_/bookmarks_/group_headers_,
   // the nav state, the chips) from model_ and the host's stores WITHOUT
   // invalidating. Runs on the posted rebuild turn; a few structural view

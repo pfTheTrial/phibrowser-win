@@ -50,10 +50,20 @@ void TextRectStartsAfterThePageIcon() {
 
 void TextRectStopsAtTheLeftMOSTAccessoryInsideTheCapsule() {
   PhiOmniboxCapsule capsule = BareCapsule();
-  capsule.star = SidebarRect{200, 104, 224, 126};
+  capsule.site_menu = SidebarRect{200, 104, 224, 126};
   capsule.reader = SidebarRect{172, 104, 196, 126};
   const SidebarRect r = PhiOmniboxTextRect(capsule, 20, 12, 8, 8);
-  CHECK(r.right == 164);  // reader.left - trailing_gap, not the star's.
+  CHECK(r.right == 164);  // reader.left - trailing_gap, not the menu's.
+}
+
+void TextRectStopsBeforeTheHoverOnlyPair() {
+  // Copy link and the site menu are laid out even while hidden: the text
+  // must not run under them and jump when the pointer arrives.
+  PhiOmniboxCapsule capsule = BareCapsule();
+  capsule.site_menu = SidebarRect{200, 104, 224, 126};
+  capsule.copy_link = SidebarRect{174, 104, 198, 126};
+  const SidebarRect r = PhiOmniboxTextRect(capsule, 20, 12, 8, 8);
+  CHECK(r.right == 166);  // copy_link.left - trailing_gap.
 }
 
 void TextRectIgnoresAccessoriesOutsideTheCapsule() {
@@ -124,6 +134,7 @@ int main() {
   TextRectCentresTheLine();
   TextRectStartsAfterThePageIcon();
   TextRectStopsAtTheLeftMOSTAccessoryInsideTheCapsule();
+  TextRectStopsBeforeTheHoverOnlyPair();
   TextRectIgnoresAccessoriesOutsideTheCapsule();
   TextRectNeverInvertsWhenTheCapsuleIsTiny();
   PopupHeightIsRowsPlusPadding();

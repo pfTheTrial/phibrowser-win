@@ -255,10 +255,14 @@ struct ShellLayout {
   SidebarRect app_menu;
   // The omnibox's leading site-info slot (lock / page glyph).
   SidebarRect page_icon;
-  // The in-field trailing slots: Reader View (empty unless offered) and
-  // Bookmark-this-tab (the star, always).
+  // The in-field trailing slots, the Mac's stack: Reader View (empty
+  // unless offered), Copy link and the site menu (CopyURLButtonView and the
+  // address-bar menu button). All three show while the field is hovered,
+  // Reader also while Reader View is on. No star — the Mac's address bar
+  // has none; Ctrl+D and the app menu bookmark.
   SidebarRect reader;
-  SidebarRect star;
+  SidebarRect copy_link;
+  SidebarRect site_menu;
   // The pinned-extension icon strip in the tool cluster; empty when nothing
   // is pinned or the icons would squeeze the omnibox text below 84 dip.
   SidebarRect field_ext_strip;

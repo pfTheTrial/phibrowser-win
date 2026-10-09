@@ -373,7 +373,7 @@ class PhiCoordinator : public SidebarHost,
   PhiNewTabBehavior NewTabBehavior() const;
   void SetNewTabBehavior(PhiNewTabBehavior behavior) override;
   void SetAutoPictureInPictureMode(const std::string& mode) override;
-  bool AlwaysShowFullUrl() const;
+  bool AlwaysShowFullUrl() const override;
   void SetAlwaysShowFullUrl(bool enabled) override;
   bool ShowTabPreviews() const override;
   bool ShowOpenTabIndicators() const override;

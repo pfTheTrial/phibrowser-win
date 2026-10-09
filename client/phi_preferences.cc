@@ -374,6 +374,10 @@ void PhiPreferences::SetNewTabBehavior(model::NewTabBehavior behavior) {
   Notify(PreferenceChange::kNewTab);
 }
 
+bool PhiPreferences::AlwaysShowFullUrl() const {
+  return settings_.always_show_full_url;
+}
+
 void PhiPreferences::SetAlwaysShowFullUrl(bool enabled) {
   if (enabled == settings_.always_show_full_url) {
     return;

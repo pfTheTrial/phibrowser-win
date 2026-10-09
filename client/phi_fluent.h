@@ -100,6 +100,13 @@ inline constexpr wchar_t kAccept[] = L"";
 inline constexpr wchar_t kEye[] = L"";  // Peek.
 inline constexpr wchar_t kRobot[] = L"";
 inline constexpr wchar_t kHome[] = L"";
+// The address bar's site menu: sliders, the Mac's "set" mark
+// (extension-button.json). Equalizer in both MDL2 and Fluent Icons.
+inline constexpr wchar_t kEqualizer[] = L"\uE9E9";
+// The site menu's rows: content blocking and the security row.
+inline constexpr wchar_t kShield[] = L"\uEA18";
+inline constexpr wchar_t kLock[] = L"\uE72E";
+inline constexpr wchar_t kStatusError[] = L"\uEA39";
 inline constexpr wchar_t kClock[] = L"";  // Recently closed.
 inline constexpr wchar_t kUpload[] = L"";  // Drop zone.
 inline constexpr wchar_t kDiagnostic[] = L"";  // Feedback diagnostics.

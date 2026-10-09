@@ -1424,6 +1424,46 @@
    "comment": "bookmarkManager — used at phi_bookmark_manager.cc:714",
    "en": " selected items?"
   },
+  "browser.addressBarMenu.clearCacheAction": {
+   "comment": "addressBar — the in-field site menu (the Mac WebContentAddressBarMenu), phi_shell_menus.cc PhiBuildSiteMenu",
+   "en": "Clear Cache"
+  },
+  "browser.addressBarMenu.clearCookiesAction": {
+   "comment": "addressBar — the in-field site menu (the Mac WebContentAddressBarMenu), phi_shell_menus.cc PhiBuildSiteMenu",
+   "en": "Clear Cookie"
+  },
+  "browser.addressBarMenu.contentBlocking.toggle": {
+   "comment": "addressBar — the in-field site menu (the Mac WebContentAddressBarMenu), phi_shell_menus.cc PhiBuildSiteMenu",
+   "en": "Content blocking on this site"
+  },
+  "browser.addressBarMenu.openBrowserSettingsAction": {
+   "comment": "addressBar — the in-field site menu (the Mac WebContentAddressBarMenu), phi_shell_menus.cc PhiBuildSiteMenu",
+   "en": "More Settings"
+  },
+  "browser.addressBarMenu.security.notSecureStatus": {
+   "comment": "addressBar — the in-field site menu (the Mac WebContentAddressBarMenu), phi_shell_menus.cc PhiBuildSiteMenu",
+   "en": "Connection is not secure"
+  },
+  "browser.addressBarMenu.security.partiallySecureStatus": {
+   "comment": "addressBar — the in-field site menu (the Mac WebContentAddressBarMenu), phi_shell_menus.cc PhiBuildSiteMenu",
+   "en": "Connection is not fully secure"
+  },
+  "browser.addressBarMenu.security.secureStatus": {
+   "comment": "addressBar — the in-field site menu (the Mac WebContentAddressBarMenu), phi_shell_menus.cc PhiBuildSiteMenu",
+   "en": "Connection is secure"
+  },
+  "browser.addressBarMenu.security.unknownStatus": {
+   "comment": "addressBar — the in-field site menu (the Mac WebContentAddressBarMenu), phi_shell_menus.cc PhiBuildSiteMenu",
+   "en": "Unknown"
+  },
+  "browser.addressBarMenu.showFullURLToggle": {
+   "comment": "addressBar — the in-field site menu (the Mac WebContentAddressBarMenu), phi_shell_menus.cc PhiBuildSiteMenu",
+   "en": "Always Show URL Path"
+  },
+  "browser.addressBarMenu.siteSettingsAction": {
+   "comment": "addressBar — the in-field site menu (the Mac WebContentAddressBarMenu), phi_shell_menus.cc PhiBuildSiteMenu",
+   "en": "Site Settings"
+  },
   "browser.headerMoreMenu.downloadsAction": {
    "comment": "menuBar — used at phi_menu_bar.cc:384",
    "en": "Downloads\tCtrl+J"

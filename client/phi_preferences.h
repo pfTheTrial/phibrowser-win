@@ -143,8 +143,8 @@ class PhiPreferences : public ChromePrefsHost {
     return settings_.new_tab_behavior;
   }
   void SetNewTabBehavior(model::NewTabBehavior behavior);
-  bool AlwaysShowFullUrl() const { return settings_.always_show_full_url; }
-  void SetAlwaysShowFullUrl(bool enabled);
+  bool AlwaysShowFullUrl() const override;
+  void SetAlwaysShowFullUrl(bool enabled) override;
   // Synced from the Mac (Phi native sync's settings); stored here, no
   // Windows surface reads them yet.
   bool SuppressCloseIncognitoSpaceWarning() const {

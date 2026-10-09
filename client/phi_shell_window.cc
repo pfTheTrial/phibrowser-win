@@ -467,12 +467,13 @@ PhiShellWindow::Layout PhiShellWindow::ToLayout(
   out.extensions = PhiToRect(shell.extensions);
   out.app_menu = PhiToRect(shell.app_menu);
   out.page_icon = PhiToRect(shell.page_icon);
-  out.star = PhiToRect(shell.star);
   out.pinned_label = PhiToRect(shell.pinned_label);
   out.bookmarks_label = PhiToRect(shell.bookmarks_label);
   out.tabs_label = PhiToRect(shell.tabs_label);
   out.agent_chip = PhiToRect(shell.agent_chip);
   out.reader = PhiToRect(shell.reader);
+  out.copy_link = PhiToRect(shell.copy_link);
+  out.site_menu = PhiToRect(shell.site_menu);
   out.sidebar_toggle = PhiToRect(shell.sidebar_toggle);
   out.field_ext_strip = PhiToRect(shell.field_ext_strip);
   out.add_space = PhiToRect(shell.add_space);
@@ -1979,7 +1980,8 @@ PhiOmniboxCapsule PhiShellWindow::OmniboxCapsule() {
   capsule.page_icon = to_pure(layout.page_icon);
   capsule.field_ext_strip = to_pure(layout.field_ext_strip);
   capsule.reader = to_pure(layout.reader);
-  capsule.star = to_pure(layout.star);
+  capsule.copy_link = to_pure(layout.copy_link);
+  capsule.site_menu = to_pure(layout.site_menu);
   capsule.extensions = to_pure(layout.extensions);
   return capsule;
 }
@@ -3092,7 +3094,7 @@ PhiDragBitmap PhiShellWindow::CaptureChromeRect(const RECT& client_rect) {
 
 
 
-std::array<RECT, 18> PhiShellWindow::NavHoverTable(
+std::array<RECT, 20> PhiShellWindow::NavHoverTable(
     const Layout& layout) const {
   // The nav buttons' hover washes (back/forward/reload/search).
   // The first six MUST stay in the paint table's order — PaintChrome keys
@@ -3103,15 +3105,17 @@ std::array<RECT, 18> PhiShellWindow::NavHoverTable(
   // keeps every later ordinal where the rigs aim.
   // Ordinal 6 was the address row's Downloads button, 11 the copy-link
   // slot and 12 the Phi button, all gone: empty rects keep every later
-  // ordinal where the rigs aim. 15 is the star (Bookmark this tab),
-  // appended; 17 the bottom bar's own Downloads button (§4.2), appended
-  // after it.
+  // ordinal where the rigs aim. 15 was the in-field star, gone with the
+  // Mac's star-less address bar; 17 is the bottom bar's own Downloads
+  // button (§4.2); 18 Copy link and 19 the site menu, back as the Mac's
+  // hover-only pair (a pointer on either is on the field, which shows them).
   return {layout.back,        layout.forward,    layout.reload,
           layout.search_tabs, sidebar_->add_tab_button(),   layout.app_menu,
           RECT{},             layout.memory,     layout.feedback,
           layout.chat,        layout.extensions, RECT{},
           RECT{},             layout.reader,     layout.sidebar_toggle,
-          layout.star,        layout.agent_chip, layout.sidebar_downloads};
+          RECT{},             layout.agent_chip, layout.sidebar_downloads,
+          layout.copy_link,   layout.site_menu};
 }
 
 // The client rect a hovered element's wash covers, empty for none — so a
@@ -3315,6 +3319,10 @@ void PhiShellWindow::ClearHover() {
     tab_preview_->PointerExited();
   }
   SetHover(HoverKind::kNone, -1);
+  // The capsule's hover too: it gates the in-field Copy link / site-menu
+  // pair. SetFieldHover re-checks the cursor, so a leave onto the EDIT
+  // child keeps the field lit.
+  omnibox_->SetFieldHover(false);
 }
 
 void PhiShellWindow::ShowCreateSpaceForm() {
@@ -4453,6 +4461,124 @@ void PhiShellWindow::ShowFieldExtensionMenu(size_t index, const RECT& slot) {
                                        anchor.left, anchor.bottom);
 }
 
+bool PhiShellWindow::FieldToolsShown() const {
+  // The Mac fades the pair in with the address bar's hover and keeps it
+  // while its menu is up; the copy flash holds Copy link for its second.
+  // A window with no tab (the placeholder) offers neither.
+  if (browsers_->ActiveBrowserPlaceholding()) {
+    return false;
+  }
+  return omnibox_->field_hover() || site_menu_open_ ||
+         omnibox_->copy_link_flash();
+}
+
+namespace {
+
+// `url`'s origin ("https://example.com:8080"), or the URL itself when it
+// has no authority to cut at.
+std::string SiteOrigin(const std::string& url) {
+  const size_t scheme_end = url.find("://");
+  if (scheme_end == std::string::npos) {
+    return url;
+  }
+  const size_t path = url.find_first_of("/?#", scheme_end + 3);
+  return path == std::string::npos ? url : url.substr(0, path);
+}
+
+// A query-parameter value, percent-encoded (Chromium's
+// EscapeQueryParamValue for the characters an origin can carry).
+std::string EscapeQueryValue(const std::string& value) {
+  static constexpr std::string_view kHex = "0123456789ABCDEF";
+  std::string out;
+  for (const unsigned char c : value) {
+    if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+        (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' ||
+        c == '~') {
+      out += static_cast<char>(c);
+    } else {
+      out += '%';
+      out += kHex[c >> 4];
+      out += kHex[c & 0xF];
+    }
+  }
+  return out;
+}
+
+}  // namespace
+
+void PhiShellWindow::ShowSiteMenu(const RECT& slot) {
+  const BrowserId browser = active_browser_id();
+  if (!framework_ || !browser.valid()) {
+    return;
+  }
+  // What the menu shows, read once before the loop (the Mac builds its
+  // NSMenu from the tab's state the same way).
+  PhiSiteMenuInputs inputs;
+  std::string url;
+  if (const char* json = framework_->SiteMenuJson(browser.value)) {
+    std::optional<base::DictValue> info =
+        base::JSONReader::ReadDict(json, base::JSON_PARSE_RFC);
+    if (info) {
+      if (const std::string* value = info->FindString("url")) {
+        url = *value;
+      }
+      if (const std::string* value = info->FindString("security")) {
+        inputs.security = *value;
+      }
+      if (const base::DictValue* blocking = info->FindDict("contentBlocking")) {
+        inputs.content_blocking_row = true;
+        inputs.content_blocking_on =
+            blocking->FindBool("blocking").value_or(true);
+      }
+    }
+  }
+  inputs.always_show_url_path =
+      services_.prefs && services_.prefs->AlwaysShowFullUrl();
+
+  // Under the button, its left edge on the button's (the Mac pops the menu
+  // 6pt below its anchor).
+  site_menu_open_ = true;
+  ::InvalidateRect(shell_hwnd_, &slot, FALSE);
+  const PhiMenuAction action = PhiRunPopupMenu(
+      PhiBuildSiteMenu(inputs),
+      PopupAt(POINT{slot.left, slot.bottom + Scaled(4)},
+              TPM_LEFTALIGN | TPM_TOPALIGN));
+  site_menu_open_ = false;
+  // The loop ate the pointer's moves: settle the field's hover from where
+  // the cursor is now, which also repaints the pair away if it left.
+  omnibox_->SetFieldHover(false);
+  ::InvalidateRect(shell_hwnd_, &slot, FALSE);
+
+  // The browser may have gone under the loop; re-read before acting.
+  const BrowserId target = active_browser_id();
+  if (!action.valid() || !framework_ || !target.valid()) {
+    return;
+  }
+  if (action.is("site.clearCache")) {
+    framework_->ClearActiveSiteData(target.value, /*cookies=*/false);
+  } else if (action.is("site.clearCookies")) {
+    framework_->ClearActiveSiteData(target.value, /*cookies=*/true);
+  } else if (action.is("site.moreSettings")) {
+    // Chromium's per-site settings page for the tab's origin.
+    const std::string page = "chrome://settings/content/siteDetails?site=" +
+                             EscapeQueryValue(SiteOrigin(url));
+    framework_->OpenTab(target, page.c_str());
+  } else if (action.is("site.contentBlocking")) {
+    // The page picks the rule set up on its next load, so reload it (the
+    // Mac's onToggled).
+    if (framework_->SetActiveSiteContentBlocking(
+            target.value, !inputs.content_blocking_on)) {
+      framework_->Reload(target.value, /*bypass_cache=*/false);
+    }
+  } else if (action.is("site.showFullUrl")) {
+    if (services_.prefs) {
+      services_.prefs->SetAlwaysShowFullUrl(!inputs.always_show_url_path);
+    }
+  } else if (action.is("site.security") || action.is("site.securityWarning")) {
+    framework_->ShowActiveSiteCertificate(target.value);
+  }
+}
+
 void PhiShellWindow::RebuildChips() {
   spaces_->Rebuild();
 }
@@ -4676,15 +4802,19 @@ void PhiShellWindow::OnChromeClick(int x, int y) {
       return;
     }
   }
-  if (::PtInRect(&layout.reader, pt)) {
+  if ((FieldToolsShown() || ActiveTabShowsReader()) &&
+      ::PtInRect(&layout.reader, pt)) {
     ToggleReaderView("address_bar");  // The in-field reader button.
     return;
   }
-  if (::PtInRect(&layout.star, pt)) {
-    // The in-field star: Bookmark this tab (Ctrl+D's row).
-    if (app_menu_) {
-      app_menu_->OnCommand(kCmdBookmarkThisTab);
-    }
+  if (FieldToolsShown() && ::PtInRect(&layout.copy_link, pt)) {
+    // The in-field Copy link (the Mac's CopyURLButtonView): the URL to the
+    // clipboard and a check mark for a second — no toast, the shortcut's.
+    omnibox_->CopyLinkToClipboard();
+    return;
+  }
+  if (FieldToolsShown() && ::PtInRect(&layout.site_menu, pt)) {
+    ShowSiteMenu(layout.site_menu);
     return;
   }
   for (const BarItem& item : bar_items_) {
@@ -4861,6 +4991,14 @@ bool PhiShellWindow::ActiveTabIsSplit() const {
 
 RECT PhiShellWindow::app_menu_rect() {
   return ComputeLayout().app_menu;
+}
+
+RECT PhiShellWindow::copy_link_rect() {
+  return ComputeLayout().copy_link;
+}
+
+RECT PhiShellWindow::site_menu_rect() {
+  return ComputeLayout().site_menu;
 }
 
 std::vector<PhiMenuChoice> PhiShellWindow::SpaceMenuChoices() const {
@@ -6829,9 +6967,13 @@ void PhiShellWindow::PaintChrome(HDC dc,
     return hover_kind_ == HoverKind::kNav && hover_index_ == index &&
            r.right > r.left;
   };
+  const bool field_tools = FieldToolsShown();
   const bool pointer_on_field_accessory =
       (accessory_hot(13, layout.reader) && on_field(layout.reader)) ||
-      (accessory_hot(15, layout.star) && on_field(layout.star));
+      (field_tools && accessory_hot(18, layout.copy_link) &&
+       on_field(layout.copy_link)) ||
+      (field_tools && accessory_hot(19, layout.site_menu) &&
+       on_field(layout.site_menu));
   const bool field_hot =
       omnibox_->field_hover() && !pointer_on_field_accessory;
   const bool field_focused = omnibox_->FieldHasFocus();
@@ -6875,7 +7017,8 @@ void PhiShellWindow::PaintChrome(HDC dc,
     // accessory that actually sits inside the capsule (the same rule
     // PhiOmniboxTextRect applies to the EDIT).
     int text_right = url_rc.right;
-    for (const RECT& accessory : {layout.reader, layout.star}) {
+    for (const RECT& accessory :
+         {layout.reader, layout.copy_link, layout.site_menu}) {
       if (accessory.right > accessory.left &&
           accessory.left > layout.url_field.left &&
           accessory.left < text_right) {
@@ -6943,9 +7086,13 @@ void PhiShellWindow::PaintChrome(HDC dc,
     }
   }
   // The in-field trailing slots (24, the icon in `dim`): Reader View when
-  // offered — held lit while the reader is up — and the star.
-  if (layout.reader.right > layout.reader.left) {
-    const bool active = ActiveTabShowsReader();
+  // offered, then Copy link and the site menu — all three hover-only.
+  // Reader is hover-only too (the Mac's ReaderButtonView), except that it
+  // stays while Reader View is on so the lit state does not vanish.
+  const bool reader_active = ActiveTabShowsReader();
+  if (layout.reader.right > layout.reader.left &&
+      (field_tools || reader_active)) {
+    const bool active = reader_active;
     PhiPaintIconButton(dc, layout.reader, fluent::kReadingMode,
                        active                        ? PhiButtonState::kToggled
                        : accessory_hot(13, layout.reader) ? PhiButtonState::kHover
@@ -6953,10 +7100,26 @@ void PhiShellWindow::PaintChrome(HDC dc,
                        bar, bar.label_dim, Scaled(fluent::kIconToolbar),
                        Scaled(fluent::kButtonRadius));
   }
-  if (layout.star.right > layout.star.left) {
-    PhiPaintIconButton(dc, layout.star, fluent::kFavoriteStar,
-                       accessory_hot(15, layout.star) ? PhiButtonState::kHover
-                                                      : PhiButtonState::kRest,
+  // The Mac's hover-only pair (CopyURLButtonView, the address-bar menu
+  // button): shown while the pointer is on the field, the menu is open or
+  // the copy flash is up. Copy link swaps to a check mark for a second; the
+  // site menu's button stays lit while its menu tracks.
+  if (field_tools && layout.copy_link.right > layout.copy_link.left) {
+    PhiPaintIconButton(dc, layout.copy_link,
+                       omnibox_->copy_link_flash() ? fluent::kCheckMark
+                                                   : fluent::kLink,
+                       accessory_hot(18, layout.copy_link)
+                           ? PhiButtonState::kHover
+                           : PhiButtonState::kRest,
+                       bar, bar.label_dim, Scaled(fluent::kIconToolbar),
+                       Scaled(fluent::kButtonRadius));
+  }
+  if (field_tools && layout.site_menu.right > layout.site_menu.left) {
+    PhiPaintIconButton(dc, layout.site_menu, fluent::kEqualizer,
+                       site_menu_open_ ? PhiButtonState::kPressed
+                       : accessory_hot(19, layout.site_menu)
+                           ? PhiButtonState::kHover
+                           : PhiButtonState::kRest,
                        bar, bar.label_dim, Scaled(fluent::kIconToolbar),
                        Scaled(fluent::kButtonRadius));
   }

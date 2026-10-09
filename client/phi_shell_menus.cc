@@ -535,6 +535,54 @@ PhiMenuSpec PhiBuildOmniboxFieldMenu(bool has_selection,
   return spec;
 }
 
+// --- The address bar's site menu ------------------------------------------
+
+PhiMenuSpec PhiBuildSiteMenu(const PhiSiteMenuInputs& in) {
+  PhiMenuSpec spec;
+  std::vector<PhiMenuItem>& items = spec.items;
+  std::vector<PhiMenuItem> settings;
+  settings.push_back(PhiMenuItem::Command(
+      "site.clearCache", PhiStr("browser.addressBarMenu.clearCacheAction")));
+  settings.push_back(PhiMenuItem::Command(
+      "site.clearCookies", PhiStr("browser.addressBarMenu.clearCookiesAction")));
+  settings.push_back(PhiMenuItem::Separator());
+  settings.push_back(PhiMenuItem::Command(
+      "site.moreSettings",
+      PhiStr("browser.addressBarMenu.openBrowserSettingsAction")));
+  PhiMenuItem settings_item = PhiMenuItem::Submenu(
+      PhiStr("browser.addressBarMenu.siteSettingsAction"), std::move(settings));
+  settings_item.glyph = L"\uE713";  // MDL2 Settings, the Mac's gearshape.
+  items.push_back(std::move(settings_item));
+  if (in.content_blocking_row) {
+    // The page picks the rule set up on its next load (the shell reloads).
+    PhiMenuItem blocking = PhiMenuItem::Command(
+        "site.contentBlocking",
+        PhiStr("browser.addressBarMenu.contentBlocking.toggle"));
+    blocking.checked = in.content_blocking_on;
+    items.push_back(std::move(blocking));
+  }
+  items.push_back(PhiMenuItem::Separator());
+  PhiMenuItem full_url = PhiMenuItem::Command(
+      "site.showFullUrl", PhiStr("browser.addressBarMenu.showFullURLToggle"));
+  full_url.checked = in.always_show_url_path;
+  items.push_back(std::move(full_url));
+  if (!in.security.empty()) {
+    // The Mac's status row: a lock when the connection is secure, the red
+    // error mark (a danger row) for anything else; a click opens the
+    // certificate when the page has one.
+    items.push_back(PhiMenuItem::Separator());
+    const bool secure = in.security == "secure";
+    const char* label =
+        secure                         ? "browser.addressBarMenu.security.secureStatus"
+        : in.security == "partial"     ? "browser.addressBarMenu.security.partiallySecureStatus"
+        : in.security == "insecure"    ? "browser.addressBarMenu.security.notSecureStatus"
+                                       : "browser.addressBarMenu.security.unknownStatus";
+    items.push_back(PhiMenuItem::Command(
+        secure ? "site.security" : "site.securityWarning", PhiStr(label)));
+  }
+  return spec;
+}
+
 // --- The bookmark bar ------------------------------------------------------
 
 namespace {
@@ -607,6 +655,8 @@ constexpr RowDecor kRowDecor[] = {
     {"tab.pin", nullptr, false, fluent::kPin},
     {"tab.duplicate", nullptr, false, fluent::kCopy},
     {"tab.copyUrl", L"Ctrl+Shift+C", false, fluent::kLink},
+    {"site.security", nullptr, false, fluent::kLock},
+    {"site.securityWarning", nullptr, true, fluent::kStatusError},
     {"tab.moveToNewWindow", nullptr, false, fluent::kOpenInNewWindow},
     {"edit.undo", L"Ctrl+Z", false, fluent::kUndo},
     {"edit.cut", L"Ctrl+X", false, fluent::kCut},

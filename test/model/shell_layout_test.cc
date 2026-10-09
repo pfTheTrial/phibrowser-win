@@ -89,7 +89,12 @@ void Vertical() {
   // In-field slots: site info leading, the star trailing, no reader.
   CHECK((l.page_icon == SidebarRect{l.url_field.left + 4, 10,
                                     l.url_field.left + 28, 34}));
-  CHECK(l.star.right == l.url_field.right - 4);
+  // The Mac's hover-only pair trails the field (no star): the site menu
+  // last, Copy link before it.
+  CHECK((l.site_menu == SidebarRect{l.url_field.right - 28, 10,
+                                    l.url_field.right - 4, 34}));
+  CHECK(l.copy_link.right == l.site_menu.left - 2);
+  CHECK(l.copy_link.top == 10 && l.copy_link.bottom == 34);
   CHECK(l.reader.empty());
   CHECK(l.field_ext_strip.empty());
   // The header row: pips at x 8, 28 dip, "+" trailing.
@@ -127,7 +132,7 @@ void VerticalExtras() {
   in.pinned_row_count = 2;
   in.bookmark_row_count = 3;
   const ShellLayout l = ComputeShellLayout(in);
-  CHECK(l.reader.right == l.star.left - 2);
+  CHECK(l.reader.right == l.copy_link.left - 2);
   // The pinned-extension slots lead the cluster: 28 wide, 2 apart, 4
   // before the extensions button.
   CHECK(!l.field_ext_strip.empty());
@@ -220,7 +225,7 @@ void Horizontal() {
   CHECK(l.url_field.left == l.reload.right + 8);
   CHECK(l.url_field.right == l.extensions.left - 8);
   CHECK(l.url_field.top == 44 && l.url_field.bottom == 76);
-  CHECK(!l.page_icon.empty() && !l.star.empty());
+  CHECK(!l.page_icon.empty() && !l.site_menu.empty());
   CHECK(l.sidebar_toggle.empty());
   CHECK(l.spaces_strip.empty());
   CHECK(l.new_tab_row.empty());
@@ -230,7 +235,9 @@ void Horizontal() {
   reading.reader_offerable = true;
   reading.bookmark_bar = true;
   const ShellLayout r = ComputeShellLayout(reading);
-  CHECK(!r.reader.empty() && r.reader.right == r.star.left - 2);
+  CHECK(!r.reader.empty() && r.reader.right == r.copy_link.left - 2);
+  CHECK(r.copy_link.right == r.site_menu.left - 2);
+  CHECK(r.site_menu.right == r.url_field.right - 4);
   // The bookmark bar takes the content's first 28 dip band.
   CHECK((r.bookmark_bar == SidebarRect{0, 80, 1440, 108}));
   CHECK(r.content.top == 108);

@@ -247,6 +247,24 @@ PhiMenuSpec PhiBuildBookmarkBarMenu(
     const std::vector<PhiMenuBookmarkNode>& roots,
     size_t skip_first);
 
+// --- The address bar's site menu ------------------------------------------
+
+// What the Mac's WebContentAddressBarMenu shows for the active tab
+// (framework SiteMenuJson plus the client pref).
+struct PhiSiteMenuInputs {
+  // "Content blocking on this site": the row exists, and its check.
+  bool content_blocking_row = false;
+  bool content_blocking_on = false;
+  bool always_show_url_path = false;
+  // The security row: "secure" | "partial" | "insecure" | "unknown", or
+  // empty for none (Chromium's and Phi's own pages).
+  std::string security;
+};
+// Site Settings ▸ (Clear Cache · Clear Cookie · ─ · More Settings),
+// Content blocking on this site, ─, Always Show URL Path, then ─ and the
+// security row. The Mac's leading Share ▸ is not ported yet.
+PhiMenuSpec PhiBuildSiteMenu(const PhiSiteMenuInputs& in);
+
 // --- Showing one ----------------------------------------------------------
 
 #if defined(_WIN32)
