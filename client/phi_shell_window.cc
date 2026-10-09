@@ -7442,6 +7442,11 @@ LRESULT CALLBACK PhiShellWindow::ShellWndProc(HWND hwnd,
       if (self && self->services_.window) {
         self->services_.window->NoteAppActivation(wparam != FALSE);
       }
+      if (!wparam) {
+        // Drop the active look kept for an owned popup (WM_ACTIVATE below):
+        // the app itself is in the background now.
+        ::DefWindowProcW(hwnd, WM_NCACTIVATE, FALSE, 0);
+      }
       break;
     case WM_MOUSEACTIVATE: {
       // Let clicks activate without being eaten, and drive Chromium's own
@@ -7482,8 +7487,18 @@ LRESULT CALLBACK PhiShellWindow::ShellWndProc(HWND hwnd,
         self->HideFloatingSidebar(/*animated=*/true);  // Tucks on deactivate.
         // An owned popup retains this Browser's activation tree. A different
         // shell/application does not; WS_CHILD never receives this edge itself.
-        if (::GetAncestor(reinterpret_cast<HWND>(lparam), GA_ROOTOWNER) !=
-            hwnd) {
+        const HWND next = reinterpret_cast<HWND>(lparam);
+        if (next && ::GetAncestor(next, GA_ROOTOWNER) == hwnd) {
+          // One of this window's own flyouts (Set theme, the icon picker,
+          // a popover — the WS_EX_TOOLWINDOW family) took the keyboard: the
+          // window stays ACTIVE-looking, as under an in-window flyout. DWM
+          // draws the acrylic sidebar only on an active frame; inactive, it
+          // falls back to an opaque fill for as long as the flyout is up.
+          // An owned regular window (Settings) deactivates it as usual.
+          if (::GetWindowLongPtrW(next, GWL_EXSTYLE) & WS_EX_TOOLWINDOW) {
+            ::DefWindowProcW(hwnd, WM_NCACTIVATE, TRUE, 0);
+          }
+        } else {
           self->CloseExtensionPopup();
           if (self->framework_ && self->active_browser_id().valid()) {
             self->framework_->FocusBrowserWindow(

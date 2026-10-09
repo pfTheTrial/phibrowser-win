@@ -143,6 +143,19 @@ bool PhiPopover::InOpeningGrace() const {
 }
 
 void PhiPopover::Dismiss() {
+  // A popover that closes while it holds the foreground (Escape, a pick)
+  // hands it back to its owner first. Left to DestroyWindow, Windows picks
+  // the next window in z-order — another app or Phi's console — and the
+  // owner stays inactive: its acrylic sidebar falls back to an opaque fill
+  // until clicked. Hiding moves activation before WM_DESTROY, so this runs
+  // ahead of Destroy. A dismissal by deactivation (a click elsewhere) has
+  // already lost the foreground and leaves it where the user put it.
+  if (alive() && ::GetForegroundWindow() == hwnd()) {
+    const HWND owner = ::GetWindow(hwnd(), GW_OWNER);
+    if (owner && ::IsWindowVisible(owner) && ::IsWindowEnabled(owner)) {
+      ::SetForegroundWindow(owner);
+    }
+  }
   Destroy();
 }
 
