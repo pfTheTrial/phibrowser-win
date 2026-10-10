@@ -16,15 +16,16 @@ namespace phi_client {
 
 namespace {
 
-// NAS-hosted Windows update feed. A --dev-hooks build may override it with
-// the PHI_APPCAST_URL environment variable; a release build cannot.
+// The win-nightly update feed beside the Mac's mac-nightly. A --dev-hooks
+// build may override it with the PHI_APPCAST_URL environment variable; a
+// release build cannot.
 constexpr char kDefaultAppcastUrl[] =
-    "http://192.168.66.66:8080/phibrower-win/PhiBrowserWinUpdate.xml";
+    "https://ota.phibrowser.com/win-nightly/appcast/PhiBrowserWinUpdate.xml";
 
 // The appcast's EdDSA (Ed25519) public key, base64 — the counterpart of the
 // key installer/make-appcast.sh signs with. The matching private key is kept
 // outside the client repository in phibrowser-win-build. A signed payload is
-// required because the LAN feed is served over HTTP.
+// required whatever the transport.
 constexpr char kEdDsaPublicKey[] =
     "D4xwuYEnKtPEo0h+VBKzG9vioEpcu4BHY8FxALF3vfk=";
 
