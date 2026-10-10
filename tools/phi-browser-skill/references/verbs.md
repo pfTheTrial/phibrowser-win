@@ -810,7 +810,7 @@ Adds a routing rule.
 
 | field | type | required | also accepts | meaning |
 | --- | --- | --- | --- | --- |
-| `spaceId` | string | yes | `space` | Where matches are routed: a Space id, space.incognito (the profile's Incognito window) or __phi_kiosk__ (a new Kiosk window). |
+| `spaceId` | string | yes | `space` | Where matches are routed: a Space id, space.incognito (the first Incognito Space, opened if none is) or __phi_kiosk__ (a new Kiosk window). |
 | `host` | string | yes | — | The host to match. |
 | `pathPrefix` | string | no | — | An optional path prefix. |
 | `ask` | boolean | no | — | Ask instead of routing silently. |
