@@ -4443,6 +4443,50 @@
    "zh-Hans": "缩小\tCtrl+-",
    "zh-Hant": "縮小\tCtrl+-"
   },
+  "notifications.card.close": {
+   "de": "Ablehnen",
+   "en": "Dismiss",
+   "es": "Descartar",
+   "fr": "Ignorer",
+   "ja": "閉じる",
+   "ko": "닫기",
+   "nl": "Negeer",
+   "zh-Hans": "关闭",
+   "zh-Hant": "關閉"
+  },
+  "notifications.card.hide": {
+   "de": "Ausblenden",
+   "en": "Hide",
+   "es": "Ocultar",
+   "fr": "Masquer",
+   "ja": "隠す",
+   "ko": "숨기기",
+   "nl": "Verberg",
+   "zh-Hans": "隐藏",
+   "zh-Hant": "隱藏"
+  },
+  "notifications.card.next": {
+   "de": "Nächste",
+   "en": "Next",
+   "es": "Siguiente",
+   "fr": "Suivante",
+   "ja": "次へ",
+   "ko": "다음",
+   "nl": "Volgende",
+   "zh-Hans": "下一条",
+   "zh-Hant": "下一則"
+  },
+  "notifications.card.previous": {
+   "de": "Vorherige",
+   "en": "Previous",
+   "es": "Anterior",
+   "fr": "Précédente",
+   "ja": "前へ",
+   "ko": "이전",
+   "nl": "Vorige",
+   "zh-Hans": "上一条",
+   "zh-Hant": "上一則"
+  },
   "oobe.guestPrivacy.aiFeaturesUnavailable": {
    "de": "KI-Funktionen erst nach der Anmeldung",
    "en": "No AI features until you sign in",

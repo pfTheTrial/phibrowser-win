@@ -5995,6 +5995,58 @@ export async function waitForUserMessage({ timeout = 300 } = {}) {
 }
 
 /**
+ * Asks the user something without moving their focus: a native card (title,
+ * message, one button) in Phi's notification stack — app-level, no agent
+ * Space or page needed. The user accepts (the button), rejects (the close
+ * button) or lets it expire; hiding the stack decides nothing. Resolves
+ * `{notificationId, decision}`, decision being 'accept' | 'reject' |
+ * 'timeout', once the user decides — keep `expiresInSeconds` (1..86400,
+ * default 300) within what this round can wait. `{wait: false}` resolves
+ * `{notificationId}` at once; the decision is then lost to this process.
+ * A full five-card queue evicts its oldest card, which answers 'timeout'.
+ * The card is the user's interruption: one per question, never a status
+ * line (that is narrate's job).
+ */
+export async function notifyUser(title, message,
+                                 { buttonTitle, expiresInSeconds, wait = true } = {}) {
+  const client = await cdpClient()
+  // Subscribe BEFORE sending: decisions are live events with no replay, and
+  // a fast click can beat the reply.
+  const decisions = new Map()
+  let settle = null
+  const off = client.phi.onEvent('notification.response',
+    ({ notificationId, decision }) => {
+      decisions.set(notificationId, decision)
+      if (settle) settle()
+    })
+  try {
+    const { notificationId } = await phiSend('notification.show', {
+      title: String(title ?? ''),
+      message: String(message ?? ''),
+      ...(buttonTitle != null ? { buttonTitle: String(buttonTitle) } : {}),
+      ...(expiresInSeconds != null ? { expiresInSeconds } : {}),
+    })
+    if (!wait) return { notificationId }
+    // The card answers 'timeout' itself at expiry; the margin only covers
+    // a connection that dropped meanwhile.
+    const limitMs = ((expiresInSeconds ?? 300) + 30) * 1000
+    const deadline = Date.now() + limitMs
+    while (!decisions.has(notificationId)) {
+      const remaining = deadline - Date.now()
+      if (remaining <= 0) throw new Error('notifyUser: no decision arrived')
+      await new Promise((resolve) => {
+        settle = resolve
+        setTimeout(resolve, Math.min(remaining, 5000))
+      })
+      settle = null
+    }
+    return { notificationId, decision: decisions.get(notificationId) }
+  } finally {
+    off()
+  }
+}
+
+/**
  * Driver-reported activity for the pip badge: `running` while a heredoc drives
  * the Space, `idle` once the round ends. Best-effort — never throws, so it can
  * sit in start/teardown paths without masking the real work's errors.
@@ -6449,8 +6501,8 @@ async function resolveSpaceId(ref) {
   throw new Error(`unknown space '${ref}' — see listSpaces()`)
 }
 
-/** The user's normal Spaces, as [{spaceId, name, colorHex, iconName,
- *  profileId, sortOrder, isDefault, isActive, windowIds}]. `windowIds`
+/** The user's normal Spaces, as [{spaceId, name, colorHex, themeId,
+ *  iconName, profileId, sortOrder, isDefault, isActive, windowIds}]. `windowIds`
  *  lists the Space's open windows (empty when none) — the ids that
  *  enterContext({kind:'user', window}), openSpaceTab({window}), and
  *  listSpaceTabs({window}) accept. Agent and Incognito Spaces are not
@@ -6461,11 +6513,11 @@ export async function listSpaces() {
 }
 
 /** Creates a normal user Space. Options: {profile} (profileId or display
- *  name; defaults to the active Space's profile), {colorHex}, {iconName}
- *  ("phi:phi-icon-N" or "emoji:<hex codepoint>"), {activate: true} to also
+ *  name; defaults to the active Space's profile), {themeId} or {colorHex}
+ *  (see updateSpace), {iconName} (see updateSpace), {activate: true} to also
  *  surface it in the user's focused window (default false — don't yank the
- *  user's window). Returns {spaceId, profileId}. */
-export async function createSpace(name, { profile = '', colorHex, iconName,
+ *  user's window). Returns {spaceId, profileId, themeId, iconName}. */
+export async function createSpace(name, { profile = '', themeId, colorHex, iconName,
                                           activate = false } = {}) {
   if (!name || typeof name !== 'string') {
     throw new Error('createSpace(name): name is required')
@@ -6473,30 +6525,41 @@ export async function createSpace(name, { profile = '', colorHex, iconName,
   const created = await phiSend('agentSpace.spaces.create', {
     name,
     ...(profile ? { profileId: profile } : {}),
+    ...(themeId ? { themeId } : {}),
     ...(colorHex ? { colorHex } : {}),
     ...(iconName ? { iconName } : {}),
     ...(activate ? { activate: true } : {}),
   })
-  return { spaceId: created.spaceId, profileId: created.profileId }
+  return { spaceId: created.spaceId, profileId: created.profileId,
+           themeId: created.themeId, iconName: created.iconName }
 }
 
-/** Renames / recolors / re-icons a Space. `space` is a spaceId or name;
- *  fields in the options object are each optional. */
-export async function updateSpace(space, { name, colorHex, iconName } = {}) {
+/** Renames / rethemes / re-icons a Space. `space` is a spaceId or name;
+ *  fields in the options object are each optional. A Space's color is one
+ *  of the built-in themes (pure, mist, mint, aqua, iris, petal, coral,
+ *  amber): pass {themeId}, or {colorHex: "#RRGGBB"} to snap to the nearest
+ *  theme by hue. {iconName} is "phi:phi-icon-<name>" (e.g. "phi:phi-icon-mail"),
+ *  a bare catalog name ("mail"), "emoji:<hex codepoints>" (e.g.
+ *  "emoji:1F977"), or the emoji itself ("🥷"). Unknown values fail with
+ *  unknown_theme / invalid_color / invalid_icon. Returns
+ *  {spaceId, themeId, iconName, settled} — themeId/iconName are what landed. */
+export async function updateSpace(space, { name, themeId, colorHex, iconName } = {}) {
   const spaceId = await resolveSpaceId(space)
-  await phiSend('agentSpace.spaces.update', {
+  const reply = await phiSend('agentSpace.spaces.update', {
     spaceId,
     ...(name ? { name } : {}),
+    ...(themeId ? { themeId } : {}),
     ...(colorHex ? { colorHex } : {}),
     ...(iconName ? { iconName } : {}),
   })
+  const retheme = !!(themeId || colorHex)
   const settled = !!(await settle(async () => {
     const s = (await listSpaces()).find((x) => x.spaceId === spaceId)
     return s && (!name || s.name === name) &&
-           (!colorHex || s.colorHex === colorHex) &&
-           (!iconName || s.iconName === iconName)
+           (!retheme || s.themeId === reply.themeId) &&
+           (!iconName || s.iconName === reply.iconName)
   }))
-  return { spaceId, settled }
+  return { spaceId, themeId: reply.themeId, iconName: reply.iconName, settled }
 }
 
 /** Deletes a Space: closes its windows and cascade-deletes its bookmarks and
@@ -7207,15 +7270,19 @@ export async function listSpaceTabs(space, { window: windowId = null } = {}) {
   return tabs.map((t) => ({ ...t, targetId: byTabId.get(t.tabId) ?? null }))
 }
 
-/** Opens `url` as a new tab in a USER Space's open window — the user-Space
+/** Opens `url` as a new tab in a USER Space's window — the user-Space
  *  counterpart of the agent-window openTab. App-level like the rest of
  *  browser management: no agent Space, no control ownership. `activate`
  *  (default true) selects the new tab in the user's window; `{window}` (a
  *  windowId) targets one specific window when several show the Space
- *  (failing `window_not_open` on a mismatch). Returns the new tab as
- *  {tabId, targetId, url, title, active, windowId}, settled by diffing the
- *  Space's tab strip. Fails with `space_not_open` when the Space has no
- *  open window. */
+ *  (failing `window_not_open` on a mismatch). A Space with no open window
+ *  gets one first — a closed window is not a closed Space, and this is the
+ *  one way to reach a Space when the user has no browser window at all:
+ *  surfaced when `activate` is true, opened BEHIND the user's windows when
+ *  false, so a background open never moves their focus. Returns the new
+ *  tab as {tabId, targetId, url, title, active, windowId, windowOpened},
+ *  settled by diffing the Space's tab strip (a freshly opened window also
+ *  carries its seed New Tab — the requested URL's tab is the one returned). */
 // Tabs already claimed by an openSpaceTab call this round. Concurrent opens
 // (Promise.all over URLs) each diff the same tab strip, so every call must
 // claim its tab synchronously inside the settle check — mirroring openTab's
@@ -7228,10 +7295,18 @@ export async function openSpaceTab(space, url, { activate = true,
     throw new Error('openSpaceTab(space, url): url is required')
   }
   const spaceId = await resolveSpaceId(space)
+  // A windowless Space has no strip to diff against: every tab of the window
+  // the open creates is new, and the URL match below picks ours out.
   const before = new Set(
-    (await listSpaceTabs(spaceId, { window: windowId })).map((t) => t.tabId))
+    (await listSpaceTabs(spaceId, { window: windowId }).catch((err) => {
+      if (windowId == null && /space_not_open/.test(String(err?.message))) return []
+      throw err
+    })).map((t) => t.tabId))
   const opened = await phiSend('agentSpace.spaces.openTab',
     { spaceId, url, activate, ...(windowId != null ? { windowId } : {}) })
+  const wanted = (u) => {
+    try { return new URL(u).href === new URL(url).href } catch { return u === url }
+  }
   let tab = null
   await settle(async () => {
     // Require a live targetId: the tab row can appear in the strip a poll
@@ -7239,14 +7314,18 @@ export async function openSpaceTab(space, url, { activate = true,
     // find-then-add is synchronous — that's what makes the claim race-free.
     // Diff the strip of the window the open actually landed in — the
     // key-window default could resolve differently across the two listings.
+    // Several new tabs (a fresh window's seed New Tab beside ours): the one
+    // at the requested URL wins; a lone newcomer is ours whatever it shows,
+    // since the page may have redirected already.
     const fresh = (await listSpaceTabs(spaceId, { window: opened.windowId }))
-      .find((t) =>
+      .filter((t) =>
         !before.has(t.tabId) && !claimedSpaceTabs.has(t.tabId) && t.targetId)
-    if (fresh) { claimedSpaceTabs.add(fresh.tabId); tab = fresh }
+    const pick = fresh.length > 1 ? fresh.find((t) => wanted(t.url)) : fresh[0]
+    if (pick) { claimedSpaceTabs.add(pick.tabId); tab = pick }
     return !!tab
   }, { timeout: 10 })
   if (!tab) throw new Error(`openSpaceTab: no new tab appeared for ${url}`)
-  return { ...tab, windowId: opened.windowId }
+  return { ...tab, windowId: opened.windowId, windowOpened: !!opened.windowOpened }
 }
 
 /** Where the user currently is: {spaceId, spaceName, isAgentSpace,
@@ -7269,8 +7348,10 @@ export async function userFocus() {
 }
 
 /** Surfaces a user Space in the user's focused window, opening its window
- *  when it has none — the programmatic Space-switcher click. On-screen
- *  change the user sees immediately: only on their ask. */
+ *  there when it has none — the programmatic Space-switcher click. On-screen
+ *  change the user sees immediately: only on their ask. With no user window
+ *  open at all there is nothing to switch: fails `no_focused_window`
+ *  (`openSpaceTab` opens a window regardless). */
 export async function activateSpace(space) {
   const spaceId = await resolveSpaceId(space)
   await phiSend('agentSpace.spaces.activate', { spaceId })
@@ -7290,9 +7371,12 @@ export async function activateSpace(space) {
  * real).
  *
  * Resolution: an unknown name is created as a new Space when `create` is
- * true (then activated — a window must exist to drive); an existing Space
- * with no open window is opened via activation; `{activate: true}` also
- * surfaces an already-open Space in the user's focused window. `{window}`
+ * true (then opened — a window must exist to drive); an existing Space
+ * with no open window is opened by opening a New Tab in it
+ * (`spaces.openTab` opens the window: BEHIND the user's windows by
+ * default, surfaced when `activate` is true — and it works when the user
+ * has no browser window at all); `{activate: true}` also surfaces an
+ * already-open Space in the user's focused window. `{window}`
  * (a windowId) pins the binding to that exact window when the Space is open
  * in several — and stands alone: with `window` given, `space` may be
  * omitted entirely and is derived from the window. The pinned window must
@@ -7332,7 +7416,7 @@ async function enterUserContext(space, { profile = '', create = true,
       created = true
     }
   }
-  // A window must exist to drive: activation is the only way to open one.
+  // A window must exist to drive: opening a New Tab in the Space opens one.
   let reply = null
   if (!created && !activate) {
     // window_not_ready is a window mid-attach (it exists, its state does
@@ -7368,7 +7452,24 @@ async function enterUserContext(space, { profile = '', create = true,
       (space != null ? ` of space '${space}'` : '') + ' has no usable tabs')
   }
   if (!reply) {
-    await phiSend('agentSpace.spaces.activate', { spaceId })
+    if (activate && (await listSpaces()).find((s) => s.spaceId === spaceId)
+                                         ?.windowIds.length) {
+      // Already open: surfacing it is the whole ask.
+      await phiSend('agentSpace.spaces.activate', { spaceId })
+    } else {
+      // Windowless: a New Tab open gives the Space a window — its seed tab
+      // is that New Tab, so nothing is doubled — behind the user's windows
+      // unless `activate` asked for it in front. An app build from before
+      // openTab learned to open windows answers `space_not_open`; there the
+      // old activation is the only way, focus steal and all.
+      try {
+        await phiSend('agentSpace.spaces.openTab',
+          { spaceId, url: 'chrome://newtab/', activate })
+      } catch (err) {
+        if (!/space_not_open/.test(String(err?.message))) throw err
+        await phiSend('agentSpace.spaces.activate', { spaceId })
+      }
+    }
     // A freshly opened window fills progressively (restore delivers tabs in
     // batches from Chromium), so "has a tab" is not "has its tabs" — settle
     // on the count holding still for a beat, not on the first arrival.

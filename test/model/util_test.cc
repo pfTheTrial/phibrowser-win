@@ -399,6 +399,23 @@ void TestParseColorHex() {
   CHECK(!PhiParseColorHex("", &out));
 }
 
+// An agent's free colour becomes one of the eight themes (the Mac's
+// BrowserMigrationSpaceTheme): nearest light overlay by hue, Pure for a
+// colour with no hue to match.
+void TestNearestTheme() {
+  CHECK_EQ(PhiNearestThemeId(PhiRgb(0xFF, 0x00, 0x00)), std::string("coral"));
+  CHECK_EQ(PhiNearestThemeId(PhiRgb(0x00, 0xFF, 0x00)), std::string("mint"));
+  CHECK_EQ(PhiNearestThemeId(PhiRgb(0xFF, 0xD9, 0x66)), std::string("amber"));
+  CHECK_EQ(PhiNearestThemeId(PhiRgb(0xD9, 0x66, 0xFF)), std::string("petal"));
+  CHECK_EQ(PhiNearestThemeId(PhiRgb(0x80, 0x80, 0x80)), std::string("pure"));
+  CHECK_EQ(PhiNearestThemeId(PhiRgb(0x10, 0x00, 0x00)), std::string("pure"));
+  CHECK_EQ(PhiThemeOverlayHex("coral"), std::string("#FF6666"));
+  CHECK_EQ(PhiThemeOverlayHex("no-such"), std::string("#FFFFFF"));
+  CHECK_EQ(PhiThemeIdForName("Coral"), std::string("coral"));
+  CHECK_EQ(PhiThemeIdForName("MIST"), std::string("mist"));
+  CHECK_EQ(PhiThemeIdForName("chartreuse"), std::string());
+}
+
 void TestMetrics() {
   // The design-unit table is constexpr, so a metric can be used in an array
   // bound or a switch label without a runtime read.
@@ -432,6 +449,7 @@ int main() {
   TestPaletteRoles();
   TestPageBarPalette();
   TestParseColorHex();
+  TestNearestTheme();
   TestMetrics();
   if (g_failures) {
     std::fprintf(stderr, "%d failure(s)\n", g_failures);

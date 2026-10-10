@@ -42,6 +42,7 @@
 #include "phibrowser-win/client/phi_i18n.h"
 #include "phibrowser-win/client/phi_icons.h"
 #include "phibrowser-win/client/phi_modal_scope.h"
+#include "phibrowser-win/client/phi_new_tab_page.h"
 #include "phibrowser-win/client/phi_popup_chrome.h"
 #include "phibrowser-win/client/phi_prompt.h"
 #include "phibrowser-win/client/phi_startup_profile.h"
@@ -128,6 +129,9 @@ constexpr UINT WM_PHI_DISMISS_PEEKS = WM_APP + 13;
 // PhiUpdater::UpdateAvailable changed (posted from WinSparkle's thread):
 // every window shows or drops its Update reminder.
 constexpr UINT WM_PHI_UPDATE_STATE = WM_APP + 14;
+// A user window came up: agent notification cards that waited for one show
+// in it, on a turn after the shell finished hosting its browser.
+constexpr UINT WM_PHI_REFRESH_CARDS = WM_APP + 15;
 }  // namespace
 
 void PhiCoordinator::OnFrameworkReady(phi_framework::PhiFramework* framework,
@@ -221,6 +225,24 @@ void PhiCoordinator::OnFrameworkReady(phi_framework::PhiFramework* framework,
   PushSpaceMenu();  // The page context menu's "Open Link in Space" list.
 
   control_server_.Start(user_data_dir, dispatcher_.get(), framework_);
+  notification_cards_ = std::make_unique<PhiNotificationCards>(
+      // A decision is the asking agent session's alone (the Mac's
+      // principal-scoped broadcastToAgent): every live connection of that
+      // capability, no other agent's.
+      [this](const std::string& capability_id,
+             const std::string& payload_json) {
+        control_server_.SendEventToConnections(
+            "notification.response", payload_json,
+            dispatcher().ConnectionsOfCapability(capability_id));
+      },
+      // The user's focused window, when one is on screen.
+      [this]() -> HWND {
+        PhiShellWindow* shell = FocusedUserController();
+        return shell && ::IsWindowVisible(shell->shell_hwnd())
+                   ? shell->shell_hwnd()
+                   : nullptr;
+      },
+      [this] { return Palette(); });
 
   // Background update checks (WinSparkle over the Mac's appcast pipeline).
   // A no-op when WinSparkle.dll is not deployed beside the client.
@@ -330,6 +352,14 @@ LRESULT CALLBACK PhiCoordinator::MsgWndProc(HWND hwnd,
     if (self && !self->CanUseBrowser()) {
       self->OpenOnboarding(
           static_cast<PhiOnboardingWindow::Page>(static_cast<int>(wparam)));
+    }
+    return 0;
+  }
+  if (msg == WM_PHI_REFRESH_CARDS) {
+    auto* self = reinterpret_cast<PhiCoordinator*>(
+        ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    if (self && self->notification_cards_) {
+      self->notification_cards_->Refresh();
     }
     return 0;
   }
@@ -4241,15 +4271,15 @@ void PhiCoordinator::AdoptCreatedWindow(
       if (AttachRequestedSpaceBrowser(browser, hwnd, *pending)) {
         return;
       }
-      if (model::IsIncognitoSpaceId(pending->space_id) &&
-          space_manager_->Find(pending->space_id)) {
-        // An Incognito Space with no user window to join: a regular shell
-        // of its own whose first Space it is (the Mac mints a slot) — NOT
-        // an incognito-window shell, which has no Spaces at all.
-        HostUserShell(browser, hwnd, /*incognito=*/false, pending->space_id);
+      if (space_manager_->Find(pending->space_id)) {
+        // No slot to join (none asked for, or it closed meanwhile): a
+        // regular shell of its own whose first Space it is — for an
+        // Incognito Space too, NOT an incognito-window shell, which has no
+        // Spaces at all.
+        HostRequestedSpaceShell(browser, hwnd, *pending);
         return;
       }
-      break;  // Its slot closed meanwhile: host it as a shell of its own.
+      break;
     case WindowKind::kUser:
       break;
   }
@@ -4427,6 +4457,10 @@ bool PhiCoordinator::AttachRequestedSpaceBrowser(
   const Space* space = space_manager_->Find(pending.space_id);
   if (!space || space->profile_id != pending.profile_id) {
     ::PostMessageW(hwnd, WM_CLOSE, 0, 0);
+    if (pending.pending_reply_id) {
+      dispatcher().CompletePendingReply(pending.pending_reply_id,
+                                        kCreateFailedReply);
+    }
     return true;
   }
   PhiShellWindow* target = registry_.Get(pending.slot);
@@ -4441,20 +4475,92 @@ bool PhiCoordinator::AttachRequestedSpaceBrowser(
   // A Space browser for an existing slot: attach, don't open a new shell.
   target->AttachSpaceBrowser(pending.space_id, browser, hwnd);
   registry_.Bind(browser, pending.slot);
+  if (!target->is_agent()) {
+    NoteActiveSpace(target->active_space());
+  }
+  PushSpaceMenu();  // The Space gained a window id.
+  FinishRequestedSpaceBrowser(browser, pending);
+  return true;
+}
+
+void PhiCoordinator::HostRequestedSpaceShell(BrowserId browser,
+                                             HWND hwnd,
+                                             const PendingCreation& pending) {
+  // Read BEFORE the shell exists: hosting it may already make it the
+  // foreground window.
+  const HWND foreground = pending.background ? ::GetForegroundWindow()
+                                             : nullptr;
+  HostUserShell(browser, hwnd, /*incognito=*/false, pending.space_id);
+  if (pending.background) {
+    if (PhiShellWindow* shell = registry_.ControllerForBrowser(browser)) {
+      shell->PresentBehindOnFirstShow(foreground);
+    }
+  }
+  FinishRequestedSpaceBrowser(browser, pending);
+}
+
+void PhiCoordinator::FinishRequestedSpaceBrowser(
+    BrowserId browser,
+    const PendingCreation& pending) {
   // "Open Link in Space" / a routed URL into a cold Space / a re-profiled
-  // Space's tabs: they open once the Space's browser exists. Bypassing URL
-  // routing — the URL may be the navigation a rule just re-homed HERE, and
-  // the table rebuilt below races the open, so exempt it outright.
+  // Space's tabs / spaces.openTab: they open once the Space's browser
+  // exists. Bypassing URL routing — the URL may be the navigation a rule
+  // just re-homed HERE, and the routing table rebuilt with the Space's new
+  // window races the open, so exempt it outright.
   for (const std::string& url : pending.open_urls) {
     if (framework_) {
       framework_->OpenTabBypassingSpaceRouting(browser.value, url.c_str());
     }
   }
-  if (!target->is_agent()) {
-    NoteActiveSpace(target->active_space());
+  if (pending.pending_reply_id) {
+    base::DictValue reply;
+    reply.Set("ok", true);
+    reply.Set("windowId", static_cast<double>(browser.value));
+    reply.Set("windowOpened", true);
+    std::string json;
+    base::JSONWriter::Write(reply, &json);
+    dispatcher().CompletePendingReply(pending.pending_reply_id,
+                                      std::move(json));
   }
-  PushSpaceMenu();  // The Space gained a window id.
-  return true;
+}
+
+void PhiCoordinator::OpenUserSpaceWindow(const std::string& space_id,
+                                         const std::string& url,
+                                         bool activate,
+                                         int reply_id) {
+  const Space* space = space_manager_->Find(space_id);
+  if (!space || model::IsIncognitoSpaceId(space_id) ||
+      PhiIsAgentSpaceId(space_id)) {
+    dispatcher().CompletePendingReply(
+        reply_id, "{\"ok\":false,\"error\":\"unknown_space\"}");
+    return;
+  }
+  if (!CanUseBrowser()) {
+    // Behind the onboarding gate a shell would only sit hidden.
+    dispatcher().CompletePendingReply(reply_id, kCreateFailedReply);
+    return;
+  }
+  PendingCreation creation;
+  creation.space_id = space_id;
+  creation.pending_reply_id = reply_id;
+  // A fresh window seeds one New Tab, so "open a New Tab there" and "open
+  // the Space" are the same ask — never a doubled New Tab.
+  if (!url.empty() && !PhiNewTabPage::IsNewTabUrl(url)) {
+    creation.open_urls.push_back(url);
+  }
+  if (activate) {
+    // The switcher click: the user's focused window shows it. With no user
+    // window at all, a window of its own (shown and activated as usual).
+    if (PhiShellWindow* focused = FocusedUserController()) {
+      creation.slot = focused->slot();
+    }
+  } else {
+    creation.background = true;
+  }
+  LOG(INFO) << "[PhiClient] openWindow(" << space_id
+            << ") activate=" << activate
+            << " slot=" << creation.slot.value;
+  RequestSpaceBrowser(std::move(creation), /*pending=*/nullptr);
 }
 
 bool PhiCoordinator::AttachRestoredGhost(BrowserId browser,
@@ -4480,6 +4586,17 @@ bool PhiCoordinator::AttachRestoredGhost(BrowserId browser,
   const Space* space = space_manager_->Find(space_id);
   if (pending && (!space || space->profile_id != pending->profile_id)) {
     ::PostMessageW(hwnd, WM_CLOSE, 0, 0);
+    if (pending->pending_reply_id) {
+      dispatcher().CompletePendingReply(pending->pending_reply_id,
+                                        kCreateFailedReply);
+    }
+    return true;
+  }
+  if (pending && !target && space) {
+    // Asked for with no slot to join (OpenUserSpaceWindow): the rebuilt
+    // window is a shell of its own, as a fresh one would have been.
+    session_restore_->ClearParked(space_id);
+    HostRequestedSpaceShell(browser, hwnd, *pending);
     return true;
   }
   if (space_id.empty() || !target) {
@@ -4490,6 +4607,9 @@ bool PhiCoordinator::AttachRestoredGhost(BrowserId browser,
   session_restore_->ClearParked(space_id);
   NoteActiveSpace(target->active_space());
   PushSpaceMenu();
+  if (pending) {
+    FinishRequestedSpaceBrowser(browser, *pending);
+  }
   return true;
 }
 
@@ -4518,6 +4638,10 @@ void PhiCoordinator::HostUserShell(BrowserId browser, HWND hwnd,
   session_restore_->NoteUserWindowUp();
   NoteActiveSpace(controller->active_space());
   PushSpaceMenu();  // The slot's Space gained a window id.
+  if (notification_cards_) {
+    // Cards that waited for a window show in this one once it is up.
+    ::PostMessageW(msg_hwnd_, WM_PHI_REFRESH_CARDS, 0, 0);
+  }
 }
 
 // static
@@ -5030,17 +5154,40 @@ bool PhiCoordinator::SwitchSlotToSpace(
   if (cold) {
     *cold = true;
   }
+  return RequestSpaceBrowser(std::move(creation), pending);
+}
+
+bool PhiCoordinator::RequestSpaceBrowser(PendingCreation creation,
+                                         bool* pending) {
+  const Space* space = space_manager_->Find(creation.space_id);
+  if (!framework_ || !space) {
+    if (creation.pending_reply_id) {
+      dispatcher().CompletePendingReply(creation.pending_reply_id,
+                                        kCreateFailedReply);
+    }
+    return false;
+  }
+  const std::string space_id = creation.space_id;
   if (pending) {
     *pending = true;
   }
   // Already asked for: a second switch before the browser arrives must not
   // ask for a second browser (the doubled-Space bug of the single-flight
-  // globals). Anything new to open rides on the request in flight.
+  // globals). Anything new to open rides on the request in flight, and so
+  // does a waiting reply when the request in flight has none.
   if (PendingCreation* in_flight =
           registry_.FindPendingSpace(creation.slot, space_id)) {
     in_flight->open_urls.insert(in_flight->open_urls.end(),
                                 creation.open_urls.begin(),
                                 creation.open_urls.end());
+    if (creation.pending_reply_id) {
+      if (in_flight->pending_reply_id) {
+        dispatcher().CompletePendingReply(creation.pending_reply_id,
+                                          kCreateFailedReply);
+      } else {
+        in_flight->pending_reply_id = creation.pending_reply_id;
+      }
+    }
     return true;
   }
   // LAZY RESTORE: this Space may exist only as a PARKED window from the
@@ -5079,6 +5226,10 @@ bool PhiCoordinator::SwitchSlotToSpace(
         if (pending) {
           *pending = false;
         }
+        if (creation.pending_reply_id) {
+          dispatcher().CompletePendingReply(creation.pending_reply_id,
+                                            kCreateFailedReply);
+        }
         return false;
     }
   }
@@ -5099,7 +5250,15 @@ BrowserId PhiCoordinator::BrowserForSpace(const std::string& space_id) const {
   if (space_id.empty()) {
     return BrowserId();
   }
+  // Only the Space's own user-facing windows count: an agent or shadow
+  // shell nominally adopts the DEFAULT Space as its first Space, and
+  // resolving that here listed the agent's tabs under the user's Space —
+  // or landed the user's tab in an invisible window (the Mac's a4e46767).
+  const bool agent_space = PhiIsAgentSpaceId(space_id);
   for (PhiShellWindow* controller : registry_.Controllers()) {
+    if (controller->is_agent() && !agent_space) {
+      continue;
+    }
     const BrowserId browser = controller->BrowserIdForSpace(space_id);
     if (browser.valid()) {
       return browser;

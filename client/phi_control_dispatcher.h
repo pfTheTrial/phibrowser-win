@@ -208,6 +208,10 @@ class PhiControlDispatcher : public PhiControlDelegate {
   // task window that just arrived must be visible to its owner's sessions
   // BEFORE the owner learns of it from the reply.
   void CompletePendingReply(int id, std::string json);
+  // The live connections acting as capability `capability_id` — where an
+  // event meant for one agent session goes. Any thread.
+  std::set<uint64_t> ConnectionsOfCapability(
+      const std::string& capability_id);
   // UI thread: the reader options a slot was registered with — false when
   // the waiter already gave up and released it.
   bool PendingReplyShape(int id, bool* document, bool* include_html);
@@ -536,6 +540,8 @@ class PhiControlDispatcher : public PhiControlDelegate {
   PhiVerbResult VerbCredentialsGet(const PhiVerbContext& ctx);
   PhiVerbResult VerbCredentialsGetTotp(const PhiVerbContext& ctx);
   PhiVerbResult VerbCredentialsAutofill(const PhiVerbContext& ctx);
+  // phi_verbs_notifications.cc: agent notification cards.
+  PhiVerbResult VerbNotificationShow(const PhiVerbContext& ctx);
   // The Mac's agent_credential_access_requested (every decision) and
   // _approved (the allowed ones), with the caller's brand label.
   void CaptureCredentialDecision(const PhiVerbContext& ctx,

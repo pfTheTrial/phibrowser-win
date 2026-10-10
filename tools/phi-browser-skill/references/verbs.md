@@ -73,6 +73,9 @@ These are what protocol 1 puts in `error`; protocol 2 reports the code beside th
 | `unknown_download` | `invalid_payload` |
 | `unknown_target` | `invalid_payload` |
 | `duplicate_name` | `invalid_payload` |
+| `unknown_theme` | `invalid_payload` |
+| `invalid_color` | `invalid_payload` |
+| `invalid_icon` | `invalid_payload` |
 | `shadow_incognito_mismatch` | `invalid_payload` |
 | `fill_requires_autofill` | `invalid_payload` |
 | `not_a_login` | `invalid_payload` |
@@ -83,15 +86,18 @@ These are what protocol 1 puts in `error`; protocol 2 reports the code beside th
 | `ambiguous` | `invalid_payload` |
 | `No target with given id found` | `invalid_payload` |
 | `no_window` | `window_not_open` |
+| `no_focused_window` | `window_not_open` |
 | `not_ready` | `busy` |
 | `capture_failed` | `internal` |
 | `no_framework` | `internal` |
 | `provider_error` | `internal` |
 | `autofill_not_available` | `not_installed` |
+| `invalid_params` | `invalid_payload` |
+| `agent_session_required` | `capability_required` |
 
 ## Verbs
 
-154 rows, 151 distinct names.
+155 rows, 152 distinct names.
 
 ### The agent-Space lifecycle
 
@@ -573,19 +579,20 @@ Every Space, in both the client-UI and the management shape, with the windows ea
 
 #### `agentSpace.spaces.create`
 
-Creates a Space.
+Creates a Space with a pinned theme; answers the themeId and iconName that landed.
 
 - **Capabilities**: `userSpaceWrite`
 - **Scope**: app-wide.
 - Mutates the user's state (arms the agent drive context).
-- **Errors**: `user_space_operations_disabled`
+- **Errors**: `invalid_payload`, `unknown_theme`, `invalid_color`, `invalid_icon`, `user_space_operations_disabled`
 
 | field | type | required | also accepts | meaning |
 | --- | --- | --- | --- | --- |
 | `name` | string | no | `displayName` | The Space's name. |
 | `profileId` | string | no | `profileName` | The profile it binds (Default when absent). |
-| `colorHex` | string | no | — | Its tint. |
-| `iconName` | string | no | — | A phi: icon id; a random catalog draw when absent or unknown. |
+| `themeId` | string | no | — | A built-in theme by id or name (pure mist mint aqua iris petal coral amber); an agent's Space pins the app-wide theme when neither this nor colorHex is given. |
+| `colorHex` | string | no | — | "#RRGGBB", snapped to the nearest built-in theme by hue (themeId wins). |
+| `iconName` | string | no | — | A phi: icon, a bare catalog name, an emoji:<codepoints> or the emoji itself; a random catalog draw when absent. |
 | `activate` | boolean | no | — | Surface it in the focused user window. |
 
 #### `agentSpace.spaces.switch`
@@ -685,12 +692,12 @@ The tabs of a user Space's open window, with their binding tags and splits.
 
 #### `agentSpace.spaces.openTab`
 
-Opens a tab in a user Space's window, bypassing url routing.
+Opens a tab in a user Space's window, bypassing url routing. A Space with no window gets one first (surfaced when activate, else behind the user's windows without taking focus) and the reply says windowOpened:true; a New Tab URL is then the window's own seed tab. A windowId never opens one.
 
 - **Capabilities**: `userSpaceWrite`
 - **Scope**: agent, shadow, user — aimed with `taskId`, `windowId` or `spaceId`. A verb aimed at an agent or shadow window of the caller's OWN task needs only `agentSpace`.
 - Mutates the user's state (arms the agent drive context).
-- **Errors**: `invalid_payload`, `space_not_open`, `window_not_open`, `user_space_operations_disabled`
+- **Errors**: `invalid_payload`, `unknown_space`, `window_not_open`, `create_failed`, `create_timeout`, `user_space_operations_disabled`
 
 | field | type | required | also accepts | meaning |
 | --- | --- | --- | --- | --- |
@@ -711,12 +718,12 @@ What the foreground window is showing — the orientation read every round start
 
 #### `agentSpace.spaces.activate`
 
-Surfaces a Space in whichever window already hosts it, else in the focused one.
+Surfaces a Space in whichever window already hosts it, else in the focused one; with no user window open at all there is nothing to switch (spaces.openTab opens one).
 
 - **Capabilities**: `userSpaceWrite`
 - **Scope**: app-wide.
 - Mutates the user's state (arms the agent drive context).
-- **Errors**: `invalid_payload`, `unknown_space`, `no_window`, `user_space_operations_disabled`
+- **Errors**: `invalid_payload`, `unknown_space`, `no_focused_window`, `user_space_operations_disabled`
 
 | field | type | required | also accepts | meaning |
 | --- | --- | --- | --- | --- |
@@ -724,19 +731,20 @@ Surfaces a Space in whichever window already hosts it, else in the focused one.
 
 #### `agentSpace.spaces.update`
 
-Renames, re-icons or re-tints a Space in one call.
+Renames, re-icons or re-themes a Space in one call, validating every field before writing any; answers the themeId (and iconName) that landed.
 
 - **Capabilities**: `userSpaceWrite`
 - **Scope**: app-wide.
 - Mutates the user's state (arms the agent drive context).
-- **Errors**: `invalid_payload`, `unknown_space`, `user_space_operations_disabled`
+- **Errors**: `invalid_payload`, `unknown_space`, `unknown_theme`, `invalid_color`, `invalid_icon`, `user_space_operations_disabled`
 
 | field | type | required | also accepts | meaning |
 | --- | --- | --- | --- | --- |
 | `spaceId` | string | yes | `space` | The Space. |
 | `name` | string | no | `displayName` | Its new name. |
-| `iconName` | string | no | — | A phi: icon id. |
-| `colorHex` | string | no | — | Its tint. |
+| `themeId` | string | no | — | A built-in theme by id or name to pin. |
+| `colorHex` | string | no | — | "#RRGGBB", snapped to the nearest built-in theme by hue (themeId wins). |
+| `iconName` | string | no | — | A phi: icon, a bare catalog name, an emoji:<codepoints> or the emoji itself. |
 
 ### Profiles
 
@@ -2227,4 +2235,21 @@ Fills a tagged field on a page — the secret goes vault → framework → DOM a
 | `targetId` | string | yes | — | The page's CDP target. |
 | `field` | string | no | — | password (default) or username. |
 | `allowCrossOrigin` | boolean | no | — | Allow a fill whose item does not belong to the page's host. |
+
+### Notification cards
+
+#### `notification.show`
+
+Shows the user a card (title, message, one button) without taking focus; answers {notificationId} on queue insertion. The decision — accept (the button), reject (the close button) or timeout (expiry, or eviction from the shared five-card queue) — arrives later as a notification.response event {notificationId, decision} on this agent session's live connections only; hiding the stack decides nothing. Subscribe before sending.
+
+- **Capabilities**: `agentSpace`
+- **Scope**: app-wide.
+- **Errors**: `invalid_params`, `agent_session_required`
+
+| field | type | required | also accepts | meaning |
+| --- | --- | --- | --- | --- |
+| `title` | string | no | — | The card's title (nonblank). |
+| `message` | string | no | — | The card's message (nonblank). |
+| `buttonTitle` | string | no | — | The accept button's label (default Run). |
+| `expiresInSeconds` | number | no | — | Whole seconds, 1 to 86400 (default 300); the card then answers timeout. |
 

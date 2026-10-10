@@ -10,6 +10,7 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -163,6 +164,12 @@ class PhiControlServer {
   // wedged peer drops its event instead of stalling the caller.
   void BroadcastEvent(const std::string& type,
                       const std::string& payload_json);
+  // The same push, to the control channels of `connection_ids` only — an
+  // event meant for one agent session (notification.response), never the
+  // other agents connected to the same Phi.
+  void SendEventToConnections(const std::string& type,
+                              const std::string& payload_json,
+                              const std::set<uint64_t>& connection_ids);
 
   // Cuts every admitted connection — control channels and CDP sessions
   // alike — the way the Mac's AgentCDPListener.revokeActiveAccess does when
@@ -187,8 +194,14 @@ class PhiControlServer {
     // The wire the peer asked for on its upgrade (1 unless it sent
     // `X-Phi-Protocol: 2`); a pushed event is shaped for it.
     int protocol = 1;
+    // The connection this channel serves (see PhiControlDelegate).
+    uint64_t connection_id = 0;
     base::Lock write_lock;
   };
+  // BroadcastEvent's body; a null `connection_ids` reaches every channel.
+  void PushEvent(const std::string& type,
+                 const std::string& payload_json,
+                 const std::set<uint64_t>* connection_ids);
   void RegisterChannel(const std::shared_ptr<ControlChannel>& channel);
   void UnregisterChannel(const std::shared_ptr<ControlChannel>& channel);
 

@@ -48,6 +48,9 @@ struct PendingCreation {
   // A deferred control reply (PhiCoordinator::RegisterPendingReply) that
   // the announcement completes; 0 when nobody is waiting.
   int pending_reply_id = 0;
+  // kSpace with no slot: the new shell is shown behind the foreground
+  // window and never activated (a background spaces.openTab).
+  bool background = false;
   // The tick (GetTickCount64 ms) after which the request is presumed lost:
   // the framework has no failure callback for a request that produced no
   // window, so the sweep completes any waiting reply with create_timeout.

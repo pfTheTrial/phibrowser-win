@@ -47,6 +47,18 @@ std::string PhiIconDisplayText(const std::string& storage_value);
 // store — an emoji id in the catalog, or any "phi:" id.
 bool PhiIconIsValid(const std::string& storage_value);
 
+// The id of the emoji whose glyph is `text` (skin variants included,
+// variation selectors ignored, so "❤" and "❤️" both match), or empty.
+std::string PhiEmojiIdForText(const std::string& text);
+// Maps the icon spellings an agent plausibly sends to a storage value the
+// strip can draw (the Mac's normalizedIconStorageValue): the storage forms
+// themselves ("phi:phi-icon-mail", "emoji:1F680"), a Phi icon by catalog
+// name, id or legacy number with or without "phi:" ("mail",
+// "phi-icon-mail", "phi:22"), and an emoji by codepoints in either case or
+// by the character itself ("🚀", "emoji:🚀"). Empty when nothing matches —
+// unlike PhiIconIsValid, an unknown "phi:" id is refused here.
+std::string PhiNormalizeIconName(const std::string& raw);
+
 }  // namespace phi_client
 
 #endif  // PHIBROWSER_WIN_CLIENT_PHI_EMOJI_H_

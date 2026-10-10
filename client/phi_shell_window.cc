@@ -63,6 +63,7 @@
 #include "phibrowser-win/client/phi_modal_scope.h"
 #include "phibrowser-win/client/phi_i18n.h"
 #include "phibrowser-win/client/phi_new_tab_page.h"
+#include "phibrowser-win/client/phi_notification_cards.h"
 #include "phibrowser-win/client/phi_reader.h"
 #include "phibrowser-win/client/phi_reveal_veil.h"
 #include "phibrowser-win/client/phi_uia.h"
@@ -1697,6 +1698,19 @@ bool PhiShellWindow::PresentBrowser(BrowserId browser, bool activate) {
   if (agent_ || shell_hidden_ || destroying_) {
     return true;
   }
+  if (present_behind_pending_) {
+    // A background open's first show: on screen, never in front of what
+    // the user is looking at, never active.
+    present_behind_pending_ = false;
+    ::ShowWindow(shell_hwnd_, SW_SHOWNOACTIVATE);
+    if (present_behind_ && ::IsWindow(present_behind_) &&
+        present_behind_ != shell_hwnd_) {
+      ::SetWindowPos(shell_hwnd_, present_behind_, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    }
+    present_behind_ = nullptr;
+    return true;
+  }
   // Restore and background shows may reveal the selected session only.
   if (!activate && browser != active_browser_id()) {
     return true;
@@ -1716,6 +1730,21 @@ bool PhiShellWindow::PresentBrowser(BrowserId browser, bool activate) {
     FocusActiveBrowser();
   }
   return true;
+}
+
+void PhiShellWindow::PresentBehindOnFirstShow(HWND above) {
+  if (::IsWindowVisible(shell_hwnd_)) {
+    // Already up (Chromium showed it while it was being hosted): only the
+    // z-order is left to fix.
+    if (above && ::IsWindow(above) && above != shell_hwnd_) {
+      ::SetWindowPos(shell_hwnd_, above, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+      ::SetForegroundWindow(above);
+    }
+    return;
+  }
+  present_behind_pending_ = true;
+  present_behind_ = above;
 }
 
 void PhiShellWindow::HideShell() {
@@ -8024,12 +8053,14 @@ LRESULT CALLBACK PhiShellWindow::ShellWndProc(HWND hwnd,
           self->reveal_veil_->Lift();  // Pixels of the old geometry.
         }
         self->LayoutContents();  // Re-seats the floating panel too.
+        PhiNotificationCards::NoteOwnerMoved(hwnd);  // The card's corner.
       }
       return 0;
     case WM_MOVE:
       if (self) {
         self->CloseExtensionPopup();
         self->PositionFloatingPanel();  // The panel follows the shell.
+        PhiNotificationCards::NoteOwnerMoved(hwnd);
         if (self->reveal_veil_) {
           self->reveal_veil_->Lift();  // An owned popup does not follow.
         }

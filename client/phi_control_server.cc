@@ -940,6 +940,7 @@ void PhiControlServer::ServeControlChannel(Connection* conn,
   channel->pipe = conn->pipe;
   channel->write_event = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
   channel->protocol = protocol;
+  channel->connection_id = connection_id;
   RegisterChannel(channel);
   if (delegate_) {
     delegate_->OnControlProtocol(connection_id, protocol);
@@ -1232,6 +1233,21 @@ void PhiControlServer::UnregisterChannel(
 
 void PhiControlServer::BroadcastEvent(const std::string& type,
                                       const std::string& payload_json) {
+  PushEvent(type, payload_json, nullptr);
+}
+
+void PhiControlServer::SendEventToConnections(
+    const std::string& type,
+    const std::string& payload_json,
+    const std::set<uint64_t>& connection_ids) {
+  if (!connection_ids.empty()) {
+    PushEvent(type, payload_json, &connection_ids);
+  }
+}
+
+void PhiControlServer::PushEvent(const std::string& type,
+                                 const std::string& payload_json,
+                                 const std::set<uint64_t>* connection_ids) {
   // One event, two spellings — {event, payloadJson} on v1, {event, payload}
   // on v2. Both are built once here, not per channel.
   base::DictValue v1_frame;
@@ -1256,7 +1272,11 @@ void PhiControlServer::BroadcastEvent(const std::string& type,
   std::vector<std::shared_ptr<ControlChannel>> targets;
   {
     base::AutoLock lock(channels_lock_);
-    targets = channels_;
+    for (const std::shared_ptr<ControlChannel>& channel : channels_) {
+      if (!connection_ids || connection_ids->count(channel->connection_id)) {
+        targets.push_back(channel);
+      }
+    }
   }
   for (const std::shared_ptr<ControlChannel>& channel : targets) {
     const std::string& bytes =

@@ -71,6 +71,9 @@ constexpr ReasonCode kReasonCodes[] = {
     {"unknown_download", PhiErrorCode::kInvalidPayload},
     {"unknown_target", PhiErrorCode::kInvalidPayload},
     {"duplicate_name", PhiErrorCode::kInvalidPayload},
+    {"unknown_theme", PhiErrorCode::kInvalidPayload},
+    {"invalid_color", PhiErrorCode::kInvalidPayload},
+    {"invalid_icon", PhiErrorCode::kInvalidPayload},
     {"shadow_incognito_mismatch", PhiErrorCode::kInvalidPayload},
     {"fill_requires_autofill", PhiErrorCode::kInvalidPayload},
     {"not_a_login", PhiErrorCode::kInvalidPayload},
@@ -82,6 +85,7 @@ constexpr ReasonCode kReasonCodes[] = {
     {"No target with given id found", PhiErrorCode::kInvalidPayload},
     // No window to aim at.
     {"no_window", PhiErrorCode::kWindowNotOpen},
+    {"no_focused_window", PhiErrorCode::kWindowNotOpen},
     // Ask again later.
     {"not_ready", PhiErrorCode::kBusy},
     // Something inside the client failed, not the request.
@@ -90,6 +94,9 @@ constexpr ReasonCode kReasonCodes[] = {
     {"provider_error", PhiErrorCode::kInternal},
     // The vault helper is not installed / cannot fill.
     {"autofill_not_available", PhiErrorCode::kNotInstalled},
+    // notification.show (the Mac's callPrivate contract).
+    {"invalid_params", PhiErrorCode::kInvalidPayload},
+    {"agent_session_required", PhiErrorCode::kCapabilityRequired},
 };
 
 // The name of one '|'-separated alias, or the empty view past the end.
@@ -646,9 +653,16 @@ constexpr PhiParamField kSpacesCreate[] = {
     {"name", kParamString, kOptional, "displayName", "The Space's name."},
     {"profileId", kParamString, kOptional, "profileName",
      "The profile it binds (Default when absent)."},
-    {"colorHex", kParamString, kOptional, "", "Its tint."},
+    {"themeId", kParamString, kOptional, "",
+     "A built-in theme by id or name (pure mist mint aqua iris petal coral "
+     "amber); an agent's Space pins the app-wide theme when neither this "
+     "nor colorHex is given."},
+    {"colorHex", kParamString, kOptional, "",
+     "\"#RRGGBB\", snapped to the nearest built-in theme by hue "
+     "(themeId wins)."},
     {"iconName", kParamString, kOptional, "",
-     "A phi: icon id; a random catalog draw when absent or unknown."},
+     "A phi: icon, a bare catalog name, an emoji:<codepoints> or the emoji "
+     "itself; a random catalog draw when absent."},
     {"activate", kParamBool, kOptional, "",
      "Surface it in the focused user window."},
 };
@@ -693,8 +707,14 @@ constexpr PhiParamField kSpaceIdOnly[] = {
 constexpr PhiParamField kSpacesUpdate[] = {
     {"spaceId", kParamString, kRequired, "space", "The Space."},
     {"name", kParamString, kOptional, "displayName", "Its new name."},
-    {"iconName", kParamString, kOptional, "", "A phi: icon id."},
-    {"colorHex", kParamString, kOptional, "", "Its tint."},
+    {"themeId", kParamString, kOptional, "",
+     "A built-in theme by id or name to pin."},
+    {"colorHex", kParamString, kOptional, "",
+     "\"#RRGGBB\", snapped to the nearest built-in theme by hue "
+     "(themeId wins)."},
+    {"iconName", kParamString, kOptional, "",
+     "A phi: icon, a bare catalog name, an emoji:<codepoints> or the emoji "
+     "itself."},
 };
 constexpr PhiParamField kProfileName[] = {
     {"name", kParamString, kOptional, "displayName", "The display name."},
@@ -1035,6 +1055,20 @@ constexpr PhiParamField kCredentialsAutofill[] = {
      "Allow a fill whose item does not belong to the page's host."},
 };
 
+// --- Notification cards -----------------------------------------------------
+// Every field optional at the schema: a missing or blank one is the
+// handler's invalid_params, the Mac's answer, not the schema's.
+constexpr PhiParamField kNotificationShow[] = {
+    {"title", kParamString, kOptional, "", "The card's title (nonblank)."},
+    {"message", kParamString, kOptional, "",
+     "The card's message (nonblank)."},
+    {"buttonTitle", kParamString, kOptional, "",
+     "The accept button's label (default Run)."},
+    {"expiresInSeconds", kParamDouble, kOptional, "",
+     "Whole seconds, 1 to 86400 (default 300); the card then answers "
+     "timeout."},
+};
+
 }  // namespace
 
 // static
@@ -1220,7 +1254,10 @@ base::span<const PhiVerbSpec> PhiControlDispatcher::Registry() {
       {"agentSpace.spaces.create", "", kScopeNone, kUserSpaceWrite,
        kVerbMutates, kSpacesCreate, false, false,
        &Call<&PhiControlDispatcher::VerbSpacesCreate>,
-       "user_space_operations_disabled", "Creates a Space."},
+       "invalid_payload unknown_theme invalid_color invalid_icon "
+       "user_space_operations_disabled",
+       "Creates a Space with a pinned theme; answers the themeId and "
+       "iconName that landed."},
       {"agentSpace.spaces.switch", "", kScopeNone, kUserSpaceWrite,
        kVerbMutates, kSpacesSwitch, false, false,
        &Call<&PhiControlDispatcher::VerbSpacesSwitch>,
@@ -1255,9 +1292,13 @@ base::span<const PhiVerbSpec> PhiControlDispatcher::Registry() {
       {"agentSpace.spaces.openTab", "", kAny, kUserSpaceWrite, kTargetWrite,
        kSpacesOpenTab, false, false,
        &Call<&PhiControlDispatcher::VerbSpacesOpenTab>,
-       "invalid_payload space_not_open window_not_open "
-       "user_space_operations_disabled",
-       "Opens a tab in a user Space's window, bypassing url routing."},
+       "invalid_payload unknown_space window_not_open create_failed "
+       "create_timeout user_space_operations_disabled",
+       "Opens a tab in a user Space's window, bypassing url routing. A Space "
+       "with no window gets one first (surfaced when activate, else behind "
+       "the user's windows without taking focus) and the reply says "
+       "windowOpened:true; a New Tab URL is then the window's own seed tab. "
+       "A windowId never opens one."},
       {"agentSpace.spaces.focus", "", kScopeNone, kAgentSpace, kVerbPlain, {},
        false, false, &Call<&PhiControlDispatcher::VerbSpacesFocus>,
        "no_window",
@@ -1266,15 +1307,19 @@ base::span<const PhiVerbSpec> PhiControlDispatcher::Registry() {
       {"agentSpace.spaces.activate", "", kScopeNone, kUserSpaceWrite,
        kVerbMutates, kSpaceIdOnly, false, false,
        &Call<&PhiControlDispatcher::VerbSpacesActivate>,
-       "invalid_payload unknown_space no_window "
+       "invalid_payload unknown_space no_focused_window "
        "user_space_operations_disabled",
        "Surfaces a Space in whichever window already hosts it, else in the "
-       "focused one."},
+       "focused one; with no user window open at all there is nothing to "
+       "switch (spaces.openTab opens one)."},
       {"agentSpace.spaces.update", "", kScopeNone, kUserSpaceWrite,
        kVerbMutates, kSpacesUpdate, false, false,
        &Call<&PhiControlDispatcher::VerbSpacesUpdate>,
-       "invalid_payload unknown_space user_space_operations_disabled",
-       "Renames, re-icons or re-tints a Space in one call."},
+       "invalid_payload unknown_space unknown_theme invalid_color "
+       "invalid_icon user_space_operations_disabled",
+       "Renames, re-icons or re-themes a Space in one call, validating every "
+       "field before writing any; answers the themeId (and iconName) that "
+       "landed."},
 
       // --- Profiles ---------------------------------------------------------
       {"agentSpace.profiles.list", "", kScopeNone, kAgentSpace, kVerbPlain, {},
@@ -1807,6 +1852,19 @@ base::span<const PhiVerbSpec> PhiControlDispatcher::Registry() {
        "autofill_not_available capability_required",
        "Fills a tagged field on a page — the secret goes vault → framework → "
        "DOM and never to the agent."},
+
+      // --- Notification cards ------------------------------------------------
+      {"notification.show", "", kScopeNone, kAgentSpace, kVerbPlain,
+       kNotificationShow, false, false,
+       &Call<&PhiControlDispatcher::VerbNotificationShow>,
+       "invalid_params agent_session_required",
+       "Shows the user a card (title, message, one button) without taking "
+       "focus; answers {notificationId} on queue insertion. The decision — "
+       "accept (the button), reject (the close button) or timeout (expiry, "
+       "or eviction from the shared five-card queue) — arrives later as a "
+       "notification.response event {notificationId, decision} on this "
+       "agent session's live connections only; hiding the stack decides "
+       "nothing. Subscribe before sending."},
   };
   return base::span<const PhiVerbSpec>(kTable);
 }

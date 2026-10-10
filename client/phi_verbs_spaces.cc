@@ -64,6 +64,58 @@ std::vector<std::string> SplitTabRow(const std::string& value) {
   return parts;
 }
 
+// The theme a spaces.create / spaces.update payload asks to pin (the Mac's
+// requestedThemeId): `themeId` names a built-in theme by id or display
+// name, a bare `colorHex` snaps to the nearest one by hue; `themeId` wins
+// when both are given. A Space's colour IS its pinned theme — storing the
+// hex alone answered ok while the window kept its old colour (PHI-1648).
+// Leaves `theme_id` empty when the payload names none; false with `error`
+// set on a value nothing matches.
+bool RequestedThemeId(const PhiParams& params,
+                      std::string* theme_id,
+                      std::string* error) {
+  const std::string theme = std::string(
+      base::TrimWhitespaceASCII(params.String("themeId"), base::TRIM_ALL));
+  if (!theme.empty()) {
+    *theme_id = PhiThemeIdForName(theme);
+    if (theme_id->empty()) {
+      *error = "unknown_theme";
+      return false;
+    }
+    return true;
+  }
+  const std::string hex = std::string(
+      base::TrimWhitespaceASCII(params.String("colorHex"), base::TRIM_ALL));
+  if (!hex.empty()) {
+    PhiColor color = 0;
+    if (!PhiParseColorHex(hex, &color)) {
+      *error = "invalid_color";
+      return false;
+    }
+    *theme_id = PhiNearestThemeId(color);
+  }
+  return true;
+}
+
+// The payload's `iconName` normalized to a storage value the strip can
+// draw (PhiNormalizeIconName); empty when it names none. An unknown value
+// is `invalid_icon` rather than a Space stored with a blank icon
+// (PHI-1649).
+bool RequestedIconName(const PhiParams& params,
+                       std::string* icon,
+                       std::string* error) {
+  const std::string raw = params.String("iconName");
+  if (base::TrimWhitespaceASCII(raw, base::TRIM_ALL).empty()) {
+    return true;
+  }
+  *icon = PhiNormalizeIconName(raw);
+  if (icon->empty()) {
+    *error = "invalid_icon";
+    return false;
+  }
+  return true;
+}
+
 }  // namespace
 
 // --- Spaces ---------------------------------------------------------------------
@@ -85,7 +137,11 @@ PhiVerbResult PhiControlDispatcher::VerbSpacesList(const PhiVerbContext& ctx) {
     s.Set("icon", space.icon);
     s.Set("iconName", space.icon);
     s.Set("colorHex", space.color_hex);
-    s.Set("themeId", space.theme_id);
+    // What the Space renders with: its pinned theme, else the app-wide one
+    // (the Mac's resolvedThemeId) — never empty, so a caller can compare
+    // it with what spaces.update answered.
+    s.Set("themeId", space.theme_id.empty() ? coordinator_->ThemeId()
+                                            : space.theme_id);
     s.Set("iconText", PhiIconDisplayText(space.icon));
     s.Set("sortOrder", sort_order++);
     s.Set("isDefault", space.id == coordinator_->DefaultSpaceId());
@@ -129,9 +185,27 @@ PhiVerbResult PhiControlDispatcher::VerbSpacesCreate(
   if (profile_id.empty()) {
     profile_id = "Default";  // A Space always binds exactly one profile.
   }
-  // A named icon when the skill gave a valid one; a random catalog draw
+  // An agent's payload is validated before anything is written: an unknown
+  // theme, colour or icon fails the create instead of storing a Space that
+  // renders blank or in the wrong colour. Every agent-made Space owns a
+  // pinned theme, as the Mac's does — the one asked for, else the look it
+  // would render with today (the app-wide theme). The user's own forms
+  // (kInternal) pin their theme themselves and keep the lenient path.
+  const bool from_agent = ctx.caller != ControlCaller::kInternal;
+  std::string theme_id, icon_name, error;
+  if (from_agent) {
+    if (!RequestedThemeId(ctx.params, &theme_id, &error) ||
+        !RequestedIconName(ctx.params, &icon_name, &error)) {
+      return PhiVerbResult::Fail(error);
+    }
+    if (theme_id.empty()) {
+      theme_id = coordinator_->ThemeId();
+    }
+  } else {
+    icon_name = ctx.params.String("iconName");
+  }
+  // A named icon when one was given and valid; a random catalog draw
   // otherwise, as the Mac's create panel does.
-  const std::string icon_name = ctx.params.String("iconName");
   const auto& catalog = PhiIconCatalogAll();
   const std::string icon =
       PhiIconIsValid(icon_name)
@@ -139,9 +213,13 @@ PhiVerbResult PhiControlDispatcher::VerbSpacesCreate(
           : "phi:" +
                 std::string(catalog[base::RandGenerator(catalog.size())].id);
   Space space{id, name, profile_id, icon};
-  space.color_hex = ctx.params.String("colorHex");
+  space.color_hex = from_agent ? PhiThemeOverlayHex(theme_id)
+                               : ctx.params.String("colorHex");
   coordinator_->spaces_model().spaces.push_back(std::move(space));
   coordinator_->ScheduleSave(PhiCoordinator::StoreDomain::kSpaces);
+  if (from_agent) {
+    coordinator_->SetSpaceTheme(id, theme_id);
+  }
   if (ctx.caller == ControlCaller::kInternal) {
     // The user's own create form (the Mac's space_created is the panel's,
     // never an agent's spaces.create): counts, not the Space.
@@ -171,6 +249,12 @@ PhiVerbResult PhiControlDispatcher::VerbSpacesCreate(
   out.Set("spaceId", id);
   out.Set("name", name);
   out.Set("profileId", profile_id);
+  if (from_agent) {
+    // What landed, so the caller reports the snapped theme rather than the
+    // hex it asked for.
+    out.Set("themeId", theme_id);
+    out.Set("iconName", icon);
+  }
   return PhiVerbResult::Ok(std::move(out));
 }
 
@@ -310,10 +394,25 @@ PhiVerbResult PhiControlDispatcher::VerbSpacesOpenTab(
     const PhiVerbContext& ctx) {
   std::string space_id, error;
   const BrowserId browser = UserWindowOf(ctx.scope, &space_id, &error);
+  const bool activate = ctx.params.Bool("activate", true);
+  if (framework_ && !browser.valid() && error == "space_not_open" &&
+      !ctx.params.Has("windowId")) {
+    // A closed window is not a closed Space: a Space with no window gets
+    // one first — the one way to reach it when the user has no browser
+    // window at all (the Mac's SpaceManager.openWindow). Surfaced when
+    // `activate`, opened behind the user's windows otherwise; answered
+    // once the window is up, with windowOpened:true. A {windowId} never
+    // opens one: it names a window that must already show the Space.
+    const int reply_id =
+        RegisterPendingReply(/*document=*/false, /*include_html=*/false);
+    coordinator_->OpenUserSpaceWindow(ctx.scope.space_id,
+                                      ctx.params.String("url"), activate,
+                                      reply_id);
+    return PhiVerbResult::Deferred(reply_id);
+  }
   if (!browser.valid() || !framework_) {
     return PhiVerbResult::Fail(error.empty() ? "space_not_open" : error);
   }
-  const bool activate = ctx.params.Bool("activate", true);
   const TabId previous_active =
       activate ? TabId() : coordinator_->ActiveTabId(browser);
   // Bypassed like every client-side deliberate open: a URL rule pointing
@@ -406,7 +505,10 @@ PhiVerbResult PhiControlDispatcher::VerbSpacesActivate(
   }
   PhiShellWindow* focused = coordinator_->FocusedUserController();
   if (!focused) {
-    return PhiVerbResult::Fail("no_window");
+    // No user window at all: there is nothing to switch, and saying so
+    // beats reporting a switch that did not happen. spaces.openTab opens
+    // a window regardless.
+    return PhiVerbResult::Fail("no_focused_window");
   }
   bool pending = false, cold = false;
   if (!coordinator_->SwitchSlotToSpace(focused->slot(), space_id, &pending,
@@ -423,24 +525,30 @@ PhiVerbResult PhiControlDispatcher::VerbSpacesUpdate(
   if (!entry) {
     return PhiVerbResult::Fail("unknown_space");
   }
+  // Validate everything before writing anything, so a bad field never
+  // leaves a half-applied update behind.
+  std::string theme_id, icon, error;
+  if (!RequestedThemeId(ctx.params, &theme_id, &error) ||
+      !RequestedIconName(ctx.params, &icon, &error)) {
+    return PhiVerbResult::Fail(error);
+  }
   bool ok = true;
-  if (const std::string* name = ctx.params.FindString("name")) {
+  if (const std::string* name = ctx.params.FindString("name");
+      name && !base::TrimWhitespaceASCII(*name, base::TRIM_ALL).empty()) {
     ok &= coordinator_->RenameSpace(space_id, *name);
   }
-  if (const std::string* icon = ctx.params.FindString("iconName")) {
-    if (PhiIconIsValid(*icon)) {
-      entry->icon = *icon;
-      coordinator_->ScheduleSave(PhiCoordinator::StoreDomain::kSpaces);
-      coordinator_->registry().InvalidateAll();
-    } else {
-      ok = false;
-    }
-  }
-  if (const std::string* color = ctx.params.FindString("colorHex")) {
-    entry->color_hex = *color;
+  if (!icon.empty()) {
+    entry->icon = icon;
     coordinator_->ScheduleSave(PhiCoordinator::StoreDomain::kSpaces);
-    // The hex drives the Space's tint when no theme is pinned.
-    coordinator_->RebuildSpacePalettes();
+    coordinator_->registry().InvalidateAll();
+  }
+  if (!theme_id.empty()) {
+    // The theme is what the window paints with; the stored hex follows it
+    // (the Mac's setTheme re-derives colorHex), so a later unpin falls back
+    // to the same colour rather than a stale one.
+    entry->color_hex = PhiThemeOverlayHex(theme_id);
+    coordinator_->ScheduleSave(PhiCoordinator::StoreDomain::kSpaces);
+    coordinator_->SetSpaceTheme(space_id, theme_id);
     for (PhiShellWindow* controller :
          coordinator_->registry().Controllers()) {
       controller->ApplyPalette();
@@ -448,6 +556,13 @@ PhiVerbResult PhiControlDispatcher::VerbSpacesUpdate(
   }
   base::DictValue out;
   out.Set("spaceId", space_id);
+  // What landed: the theme the Space now renders with and the normalized
+  // icon, so the caller can see a snapped colour for what it is.
+  const std::string pinned = coordinator_->SpaceThemeId(space_id);
+  out.Set("themeId", pinned.empty() ? coordinator_->ThemeId() : pinned);
+  if (!icon.empty()) {
+    out.Set("iconName", icon);
+  }
   return PhiVerbOk(ok, std::move(out));
 }
 

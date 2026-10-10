@@ -6,7 +6,9 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
+#include <cstdio>
 
 #include "base/no_destructor.h"
 #include "phibrowser-win/client/phi_util.h"
@@ -298,6 +300,98 @@ bool PhiParseColorHex(const std::string& hex, PhiColor* out) {
   }
   *out = PhiRgb(channels[0], channels[1], channels[2]);
   return true;
+}
+
+namespace {
+
+// NSColor.getHue(_:saturation:brightness:alpha:) on an sRGB colour, each
+// 0...1 — the Mac's snapping reads exactly these.
+struct Hsb {
+  double hue = 0;
+  double saturation = 0;
+  double brightness = 0;
+};
+
+Hsb HsbOf(PhiColor color) {
+  const double r = PhiRed(color) / 255.0;
+  const double g = PhiGreen(color) / 255.0;
+  const double b = PhiBlue(color) / 255.0;
+  const double max = std::max({r, g, b});
+  const double min = std::min({r, g, b});
+  const double delta = max - min;
+  Hsb out;
+  out.brightness = max;
+  out.saturation = max > 0 ? delta / max : 0;
+  if (delta > 0) {
+    double hue = 0;
+    if (max == r) {
+      hue = (g - b) / delta;
+    } else if (max == g) {
+      hue = 2 + (b - r) / delta;
+    } else {
+      hue = 4 + (r - g) / delta;
+    }
+    hue /= 6;
+    out.hue = hue < 0 ? hue + 1 : hue;
+  }
+  return out;
+}
+
+// Below these a colour names no hue worth matching (the Mac's
+// neutralSaturation / neutralBrightness).
+constexpr double kNeutralSaturation = 0.15;
+constexpr double kNeutralBrightness = 0.12;
+
+}  // namespace
+
+std::string PhiNearestThemeId(PhiColor color) {
+  const PhiTheme& fallback = PhiBuiltInThemes().front();
+  const Hsb source = HsbOf(color);
+  if (source.saturation < kNeutralSaturation ||
+      source.brightness < kNeutralBrightness) {
+    return fallback.id;
+  }
+  // Hue wraps, so the distance is the shorter way round. Pure's overlay is
+  // white — no hue — so it is only ever the fallback, never the nearest.
+  const PhiTheme* nearest = nullptr;
+  double best = 2;
+  for (const PhiTheme& theme : PhiBuiltInThemes()) {
+    if (&theme == &fallback) {
+      continue;
+    }
+    const double delta = std::abs(source.hue - HsbOf(theme.light.overlay).hue);
+    const double distance = std::min(delta, 1 - delta);
+    if (distance < best) {
+      best = distance;
+      nearest = &theme;
+    }
+  }
+  return nearest ? nearest->id : fallback.id;
+}
+
+std::string PhiThemeOverlayHex(const std::string& theme_id) {
+  const PhiColor overlay = PhiThemeById(theme_id).light.overlay;
+  char hex[8];
+  std::snprintf(hex, sizeof(hex), "#%02X%02X%02X", PhiRed(overlay),
+                PhiGreen(overlay), PhiBlue(overlay));
+  return hex;
+}
+
+std::string PhiThemeIdForName(const std::string& raw) {
+  auto same = [](const std::string& a, const char* b) {
+    const std::string other(b);
+    return a.size() == other.size() &&
+           std::equal(a.begin(), a.end(), other.begin(), [](char x, char y) {
+             return std::tolower(static_cast<unsigned char>(x)) ==
+                    std::tolower(static_cast<unsigned char>(y));
+           });
+  };
+  for (const PhiTheme& theme : PhiBuiltInThemes()) {
+    if (same(raw, theme.id) || same(raw, theme.name)) {
+      return theme.id;
+    }
+  }
+  return std::string();
 }
 
 }  // namespace phi_client

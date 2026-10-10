@@ -192,6 +192,19 @@ bool PhiSystemPrefersDark();
 // into a COLORREF. False on anything else — the caller keeps its default.
 bool PhiParseColorHex(const std::string& hex, PhiColor* out);
 
+// The built-in theme a free colour snaps to (the Mac's
+// BrowserMigrationSpaceTheme): the nearest light overlay by hue, the way an
+// imported or agent-given Space colour becomes one of the eight themes. A
+// colour too close to neutral or too dark to carry a hue takes the default
+// (Pure), which is never a hue target itself.
+std::string PhiNearestThemeId(PhiColor color);
+// "#RRGGBB" of `theme_id`'s light overlay — the colour a Space pinned to that
+// theme stores as its colorHex (an unknown id reads as Pure's).
+std::string PhiThemeOverlayHex(const std::string& theme_id);
+// The built-in theme `raw` names by id or by display name, any case; empty
+// when it names none.
+std::string PhiThemeIdForName(const std::string& raw);
+
 }  // namespace phi_client
 
 #endif  // PHIBROWSER_WIN_CLIENT_PHI_THEME_H_

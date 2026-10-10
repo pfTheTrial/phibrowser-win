@@ -581,6 +581,11 @@ class PhiShellWindow : public PhiHitSource,
   // screen here once access is granted; a no-op for a visible shell.
   void ShowHeldShell();
   bool PresentBrowser(BrowserId browser, bool activate);
+  // The shell's first show places it directly below `above` (null: just
+  // not on top) without activating it — a window opened for a background
+  // spaces.openTab must not move the user's focus. Chromium's own Show()
+  // asks to activate; this answers it once, inactive.
+  void PresentBehindOnFirstShow(HWND above);
   void SetShellFullscreen(BrowserId browser,
                           bool fullscreen,
                           const RECT& target);
@@ -1849,6 +1854,10 @@ class PhiShellWindow : public PhiHitSource,
   bool incognito_ = false;
   // Behind the onboarding gate: created but not shown (see ShowHeldShell).
   bool shell_hidden_ = false;
+  // PresentBehindOnFirstShow: the next PresentBrowser shows the shell
+  // inactive, below `present_behind_`.
+  bool present_behind_pending_ = false;
+  HWND present_behind_ = nullptr;
   // For an agent window: whether it is currently surfaced (being watched).
   bool agent_visible_ = false;
   bool agent_owned_ = false;

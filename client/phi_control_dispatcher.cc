@@ -630,6 +630,21 @@ PhiPrincipal PhiControlDispatcher::PrincipalFor(ControlCaller caller,
   return it->second;
 }
 
+std::set<uint64_t> PhiControlDispatcher::ConnectionsOfCapability(
+    const std::string& capability_id) {
+  std::set<uint64_t> ids;
+  if (capability_id.empty()) {
+    return ids;
+  }
+  base::AutoLock lock(principals_lock_);
+  for (const auto& [id, principal] : principals_) {
+    if (principal.capability_id == capability_id) {
+      ids.insert(id);
+    }
+  }
+  return ids;
+}
+
 PhiAgentCapability* PhiControlDispatcher::FindCapability(
     const std::string& id) {
   auto it = capabilities_.find(id);

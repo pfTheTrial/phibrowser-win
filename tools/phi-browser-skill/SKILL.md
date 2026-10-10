@@ -170,6 +170,12 @@ Core surface — full semantics in this file:
   `markError(message)`, `say(text, {role})` — see "Task lifecycle"
 - User console: `readUserMessages()`, `waitForUserMessage({timeout})` — see
   "Task lifecycle"
+- Ask the user: `notifyUser(title, message, {buttonTitle,
+  expiresInSeconds, wait})` — a native card that never takes focus;
+  resolves `{notificationId, decision}` with `accept` (its button),
+  `reject` (its close button) or `timeout`. One card per real question,
+  never for status (that is `narrate`); keep the expiry within what this
+  round can wait
 - Raw protocol: `cdp(method, params)` — current tab session for page domains,
   browser session for Target/Browser/PhiAgentSpace. Raw `Input.*` commands
   still pass the pre-input operability gate (release phases stay unblocked).

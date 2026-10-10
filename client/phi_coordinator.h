@@ -27,6 +27,7 @@
 #include "phibrowser-win/client/phi_client_analytics.h"
 #include "phibrowser-win/client/phi_credential_service.h"
 #include "phibrowser-win/client/phi_kiosk_window.h"
+#include "phibrowser-win/client/phi_notification_cards.h"
 #include "phibrowser-win/client/phi_peek_panel.h"
 #include "phibrowser-win/client/phi_emoji.h"
 #include "phibrowser-win/client/phi_prompt.h"
@@ -644,6 +645,31 @@ class PhiCoordinator : public SidebarHost,
   bool SwitchSlotToSpace(SlotId slot, const std::string& space_id,
                          bool* pending, bool* cold,
                          const std::vector<std::string>* reopen_urls = nullptr);
+  // Gives user Space `space_id`, which has NO window, one — the Mac's
+  // SpaceManager.openWindow behind spaces.openTab on a windowless Space.
+  // `activate`: the user's focused window switches to it (a fresh window of
+  // its own when the user has none open). Otherwise a window of its own is
+  // opened BEHIND the foreground window, never activated, so a background
+  // open never moves the user's focus — this client has no hidden sibling
+  // a slot could hold the Space in, as the Mac's does. `url` (a New Tab
+  // URL is satisfied by the window's own seed tab) opens once it is up.
+  // ALWAYS answers `reply_id`: {ok, windowId, windowOpened:true} once the
+  // browser is up, else unknown_space / create_failed / create_timeout.
+  // The agent notification card queue (notification.show); null before
+  // the control server starts.
+  PhiNotificationCards* notification_cards() {
+    return notification_cards_.get();
+  }
+  void OpenUserSpaceWindow(const std::string& space_id,
+                           const std::string& url,
+                           bool activate,
+                           int reply_id);
+  // The browser-request half of SwitchSlotToSpace, for a Space `creation`
+  // names that its slot (`creation.slot`, invalid = a shell of its own)
+  // does not host yet: rides a request already in flight, rebuilds a
+  // parked lazy-restore window, or asks for a fresh browser. A waiting
+  // reply in `creation` is answered whatever happens.
+  bool RequestSpaceBrowser(PendingCreation creation, bool* pending);
   // Opens a shell on the default Space when a restore left no user window.
   void OpenDefaultShellIfNoUserWindow(const char* reason);
   // Publishes the Space list (with each Space's open browser id) into the
@@ -894,6 +920,9 @@ class PhiCoordinator : public SidebarHost,
   std::unique_ptr<PhiControlDispatcher> dispatcher_;
   // The unified control/CDP socket.
   PhiControlServer control_server_;
+  // Agent notification cards (notification.show); built with the control
+  // server, decisions go back over it to the asking agent only.
+  std::unique_ptr<PhiNotificationCards> notification_cards_;
   // Message-only window on the UI thread: the coordinator's timers, the
   // auth worker's completion and the deferred reader-panel messages. (The
   // control verbs marshal to the dispatcher's own window.)
@@ -1083,6 +1112,9 @@ class PhiCoordinator : public SidebarHost,
   // dispatcher's deferred-reply slot, answered by the sweep).
   static constexpr char kCreateTimeoutReply[] =
       "{\"ok\":false,\"error\":\"create_timeout\"}";
+  // ... and when the request could not be made at all.
+  static constexpr char kCreateFailedReply[] =
+      "{\"ok\":false,\"error\":\"create_failed\"}";
   // Hands the display language to the framework, which owns Chromium's own
   // locale (context menus, error pages, Accept-Language). The client catalog
   // and Chromium keep separate copies of the choice, so this runs both when
@@ -1163,6 +1195,17 @@ class PhiCoordinator : public SidebarHost,
   void RememberStartupProfile();
   bool AttachRequestedSpaceBrowser(BrowserId browser,
                                    HWND hwnd,
+                                   const PendingCreation& pending);
+  // A requested Space browser with no slot to join — none was asked for
+  // (the default-shell rescue, OpenUserSpaceWindow) or the slot closed
+  // meanwhile: a regular shell whose first Space it is (the Mac mints a
+  // slot). `pending.background` keeps it behind the foreground window.
+  void HostRequestedSpaceShell(BrowserId browser,
+                               HWND hwnd,
+                               const PendingCreation& pending);
+  // What every requested Space browser gets once it is hosted: the URLs
+  // that waited for it (bypassing URL routing) and its waiting reply.
+  void FinishRequestedSpaceBrowser(BrowserId browser,
                                    const PendingCreation& pending);
   void HostAgentWindow(BrowserId browser,
                        HWND hwnd,

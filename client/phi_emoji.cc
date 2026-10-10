@@ -169,4 +169,126 @@ bool PhiIconIsValid(const std::string& storage_value) {
   return !PhiIconDisplayText(storage_value).empty();
 }
 
+namespace {
+
+// U+FE0E / U+FE0F (EF B8 8E / EF B8 8F in UTF-8) dropped.
+std::string StripVariationSelectors(const std::string& text) {
+  std::string out;
+  out.reserve(text.size());
+  for (size_t i = 0; i < text.size(); ++i) {
+    if (i + 2 < text.size() && static_cast<unsigned char>(text[i]) == 0xEF &&
+        static_cast<unsigned char>(text[i + 1]) == 0xB8 &&
+        (static_cast<unsigned char>(text[i + 2]) == 0x8E ||
+         static_cast<unsigned char>(text[i + 2]) == 0x8F)) {
+      i += 2;
+      continue;
+    }
+    out.push_back(text[i]);
+  }
+  return out;
+}
+
+// A catalog id ("phi-icon-mail") or a legacy numbered one ("phi-icon-22")
+// as the canonical catalog id, or empty. The Mac matched legacy numbers by
+// shape: the first 47 pictograms count down from 47, the map is 48.
+std::string CanonicalIconId(const std::string& id) {
+  const std::vector<PhiCatalogIcon>& icons = PhiIconCatalogAll();
+  for (const PhiCatalogIcon& icon : icons) {
+    if (id == icon.id) {
+      return icon.id;
+    }
+  }
+  constexpr char kPrefix[] = "phi-icon-";
+  if (!StartsWith(id, kPrefix)) {
+    return std::string();
+  }
+  const std::string number = id.substr(sizeof(kPrefix) - 1);
+  if (number.empty() || number.size() > 2 ||
+      number.find_first_not_of("0123456789") != std::string::npos) {
+    return std::string();
+  }
+  const int legacy = std::stoi(number);
+  const int index = legacy == 48 ? 47 : 47 - legacy;
+  if (legacy < 1 || legacy > 48 || index >= static_cast<int>(icons.size())) {
+    return std::string();
+  }
+  return icons[index].id;
+}
+
+std::string IconIdForName(const std::string& name) {
+  for (const PhiCatalogIcon& icon : PhiIconCatalogAll()) {
+    if (name == icon.name) {
+      return icon.id;
+    }
+  }
+  return std::string();
+}
+
+std::string UpperAscii(std::string value) {
+  for (char& c : value) {
+    if (c >= 'a' && c <= 'z') {
+      c = static_cast<char>(c - 'a' + 'A');
+    }
+  }
+  return value;
+}
+
+}  // namespace
+
+std::string PhiEmojiIdForText(const std::string& text) {
+  const std::string key = StripVariationSelectors(text);
+  if (key.empty()) {
+    return std::string();
+  }
+  for (const auto& [id, glyph] : GetCatalog().text_by_id) {
+    if (StripVariationSelectors(glyph) == key) {
+      return id;
+    }
+  }
+  return std::string();
+}
+
+std::string PhiNormalizeIconName(const std::string& raw) {
+  const size_t first = raw.find_first_not_of(" \t\r\n");
+  if (first == std::string::npos) {
+    return std::string();
+  }
+  const std::string value =
+      raw.substr(first, raw.find_last_not_of(" \t\r\n") - first + 1);
+  // The storage forms, as the picker stores them.
+  if (StartsWith(value, kPhiIconPrefix)) {
+    const std::string id =
+        CanonicalIconId(value.substr(std::string(kPhiIconPrefix).size()));
+    if (!id.empty()) {
+      return kPhiIconPrefix + id;
+    }
+  } else if (StartsWith(value, kPhiEmojiPrefix) &&
+             !PhiIconDisplayText(value).empty()) {
+    return value;
+  }
+  std::string body = value;
+  for (const char* prefix : {kPhiIconPrefix, kPhiEmojiPrefix}) {
+    if (StartsWith(body, prefix)) {
+      body = body.substr(std::string(prefix).size());
+    }
+  }
+  std::string id = CanonicalIconId(body);
+  if (id.empty()) {
+    id = IconIdForName(body);
+  }
+  if (id.empty()) {
+    id = CanonicalIconId("phi-icon-" + body);
+  }
+  if (!id.empty()) {
+    return kPhiIconPrefix + id;
+  }
+  if (!PhiEmojiTextForId(UpperAscii(body)).empty()) {
+    return kPhiEmojiPrefix + UpperAscii(body);
+  }
+  if (const std::string emoji = PhiEmojiIdForText(body); !emoji.empty()) {
+    return kPhiEmojiPrefix + emoji;
+  }
+  return std::string();
+}
+
 }  // namespace phi_client
