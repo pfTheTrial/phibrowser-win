@@ -368,6 +368,63 @@ void Backdrop() {
   }
 }
 
+bool Empty(const SidebarRect& r) {
+  return r.right <= r.left;
+}
+
+void UpdateReminder() {
+  std::printf("update: the reminder pill leads search in every layout\n");
+  // No update on offer: no pill anywhere.
+  CHECK(Empty(ComputeShellLayout(Base(PhiLayoutMode::kBalanced)).update));
+  CHECK(Empty(ComputeShellLayout(Base(PhiLayoutMode::kComfortable)).update));
+
+  // Horizontal: left of search on the strip's line, and the tabs stop
+  // before it rather than before search.
+  ShellLayoutInputs in = Base(PhiLayoutMode::kComfortable);
+  const ShellLayout plain = ComputeShellLayout(in);
+  in.update_dip = 64;
+  const ShellLayout h = ComputeShellLayout(in);
+  CHECK(h.update.right == h.search_tabs.left - 4);
+  CHECK(h.update.right - h.update.left == 64);
+  CHECK(h.update.bottom - h.update.top == 24);
+  CHECK(h.update.top + h.update.bottom == h.search_tabs.top + h.search_tabs.bottom);
+  CHECK(h.tabs_limit == plain.tabs_limit - (64 + 4));
+
+  // Vertical, sidebar shown: in the header, left of search, clear of the
+  // app mark; the address row does not move.
+  in = Base(PhiLayoutMode::kBalanced);
+  in.update_dip = 64;
+  const ShellLayout v = ComputeShellLayout(in);
+  CHECK(v.update.right == v.search_tabs.left - 4);
+  CHECK(v.update.left >= v.app_icon.right + 4);
+  CHECK(v.update.right <= v.sidebar.right);
+  CHECK(v.back.left == ComputeShellLayout(Base(PhiLayoutMode::kBalanced)).back.left);
+
+  // A sidebar at the Mac's 225 dip threshold drops the pill.
+  in.sidebar_dip = 225;
+  CHECK(Empty(ComputeShellLayout(in).update));
+  in.sidebar_dip = 226;
+  CHECK(!Empty(ComputeShellLayout(in).update));
+
+  // Collapsed: the pill follows search at the address row's lead and the
+  // nav trio moves after it.
+  in = Base(PhiLayoutMode::kBalanced);
+  in.sidebar_hidden = true;
+  const ShellLayout collapsed_plain = ComputeShellLayout(in);
+  in.update_dip = 64;
+  const ShellLayout c = ComputeShellLayout(in);
+  CHECK(c.update.left == c.search_tabs.right + 4);
+  CHECK(c.back.left == c.update.right + 8);
+  CHECK(c.back.left == collapsed_plain.back.left + 4 + 64);
+
+  // HiDPI scales the measured width.
+  in = Base(PhiLayoutMode::kComfortable, 144);
+  in.update_dip = 64;
+  const ShellLayout hi = ComputeShellLayout(in);
+  CHECK(hi.update.right - hi.update.left == 96);
+  CHECK(hi.update.bottom - hi.update.top == 36);
+}
+
 void Inputs() {
   std::printf("inputs: the cache key sees every field\n");
   ShellLayoutInputs a = Base(PhiLayoutMode::kBalanced);
@@ -387,6 +444,9 @@ void Inputs() {
   b = a;
   b.floating_panel = true;
   CHECK(a != b);
+  b = a;
+  b.update_dip = 64;
+  CHECK(a != b);
 }
 
 }  // namespace
@@ -403,6 +463,7 @@ int main() {
   ContentFullscreen();
   Dpi();
   Backdrop();
+  UpdateReminder();
   Inputs();
   if (g_failures) {
     std::printf("%d failure(s)\n", g_failures);

@@ -170,6 +170,8 @@ PhiVerbResult PhiControlDispatcher::VerbWindowLayout(
   out.Set("sidebarToggle", RectDict(shell->sidebar_toggle_rect()));
   // The app menu button (⋯), every layout's way to the menu.
   out.Set("appMenu", RectDict(shell->app_menu_rect()));
+  // The Update reminder pill; empty unless an update is on offer.
+  out.Set("update", RectDict(shell->update_rect()));
   // The in-field Copy link / site-menu pair (laid out always, painted only
   // while the field is hovered).
   out.Set("copyLink", RectDict(shell->copy_link_rect()));

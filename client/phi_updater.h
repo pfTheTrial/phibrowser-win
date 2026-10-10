@@ -33,8 +33,9 @@ class PhiUpdater {
   // environment overrides for dev/test rings. `quit_msg` is posted to
   // `quit_hwnd` (from WinSparkle's own thread) once the installer is
   // running and the app must go: the handler closes every window through
-  // the normal paths, the way the user's own quit does.
-  static void Init(HWND quit_hwnd, UINT quit_msg);
+  // the normal paths, the way the user's own quit does. `state_msg` is
+  // posted to the same window whenever UpdateAvailable changes.
+  static void Init(HWND quit_hwnd, UINT quit_msg, UINT state_msg);
 
   // "Check for Update..." — the interactive check with WinSparkle's UI.
   // False when the updater is unavailable (DLL missing, no key).
@@ -43,6 +44,11 @@ class PhiUpdater {
   // True when the DLL loads and a signing key is built in (drives the menu
   // item's enabled state).
   static bool Available();
+
+  // A check found an update the user has neither installed nor skipped:
+  // the windows show the Update reminder (the Mac's upgrade button). Any
+  // thread.
+  static bool UpdateAvailable();
 
   // win_sparkle_cleanup on shutdown.
   static void Shutdown();

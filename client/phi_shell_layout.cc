@@ -133,6 +133,13 @@ ShellLayout ComputeShellLayout(const ShellLayoutInputs& in) {
       out.reader = {r - slot, mid - slot / 2, r, mid + slot / 2};
     }
   };
+  // The Update reminder's pill, `in.update_dip` wide from `left`, centred
+  // on `mid`.
+  const auto update_l = [&](int left, int mid) {
+    const int pill_h = scaled(kPillHeight);
+    return SidebarRect{left, mid - pill_h / 2, left + scaled(in.update_dip),
+                       mid + pill_h / 2};
+  };
   // The Space pips in a header band: 28 dip, 4 apart, from the band's
   // edge inset, the "+" trailing them.
   const auto place_spaces = [&](int left, int right, int top, int height) {
@@ -182,13 +189,21 @@ ShellLayout ComputeShellLayout(const ShellLayoutInputs& in) {
     out.search_tabs = control_r(out.caption_min.left - scaled(kBandTrailingGap),
                                 strip_mid);
     place_band_divider(out.search_tabs);
+    // The Update reminder leads the strip's trailing controls (the Mac's
+    // TabStripRightButtons order), and the tabs stop before it.
+    int strip_right = out.search_tabs.left;
+    if (in.update_dip > 0) {
+      out.update = update_l(strip_right - btn_gap - scaled(in.update_dip),
+                            strip_mid);
+      strip_right = out.update.left;
+    }
     // The "+" follows the last tab; the strip is full when the next tab
     // would need the room the button is holding.
     const int new_tab_gap = scaled(kTopBarSpacing);
     out.tabs_left = (in.spaces_switch ? out.chips_limit : inset) +
                     scaled(kHTabStripLeading);
     out.tabs_top = scaled(kHTabStripTop);
-    out.tabs_limit = out.search_tabs.left - new_tab_gap - btn - new_tab_gap;
+    out.tabs_limit = strip_right - new_tab_gap - btn - new_tab_gap;
     out.horizontal_tabs = true;
 
     // The toolbar: nav trio leading, the omnibox filling the middle, the
@@ -228,11 +243,25 @@ ShellLayout ComputeShellLayout(const ShellLayoutInputs& in) {
     // Keep both controls reachable while the sidebar is tucked away.
     out.sidebar_toggle = control_l(inset, mid);
     out.search_tabs = control_l(out.sidebar_toggle.right + btn_gap, mid);
-    out.back = control_l(out.search_tabs.right + scaled(kGroupGap), mid);
+    int nav_left = out.search_tabs.right + scaled(kGroupGap);
+    if (in.update_dip > 0) {
+      out.update = update_l(out.search_tabs.right + btn_gap, mid);
+      nav_left = out.update.right + scaled(kGroupGap);
+    }
+    out.back = control_l(nav_left, mid);
   } else {
     out.app_icon = control_l(inset, mid);
     out.sidebar_toggle = control_r(sidebar - inset, mid);
     out.search_tabs = control_r(out.sidebar_toggle.left - btn_gap, mid);
+    // The header's Update reminder, before search — unless the sidebar is
+    // too narrow for it beside the app mark.
+    if (in.update_dip > 0 && in.sidebar_dip > kUpdatePillMinSidebar) {
+      const SidebarRect pill = update_l(
+          out.search_tabs.left - btn_gap - scaled(in.update_dip), mid);
+      if (pill.left >= out.app_icon.right + btn_gap) {
+        out.update = pill;
+      }
+    }
     out.back = control_l(pane_left + inset, mid);
   }
   out.forward = control_l(out.back.right + btn_gap, mid);

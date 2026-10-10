@@ -7327,6 +7327,17 @@
   "sidebar.takeControl": {
    "en": "Take Control"
   },
+  "sidebar.updateReminder.updateButton": {
+   "de": "Aktualisieren",
+   "en": "Update",
+   "es": "Actualizar",
+   "fr": "Mettre à jour",
+   "ja": "アップデート",
+   "ko": "업데이트",
+   "nl": "Updaten",
+   "zh-Hans": "更新",
+   "zh-Hant": "更新"
+  },
   "sidebar.urlRulesEditor.addRuleButton": {
    "de": "Regel hinzufügen",
    "en": "Add Rule",

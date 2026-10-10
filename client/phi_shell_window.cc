@@ -66,6 +66,7 @@
 #include "phibrowser-win/client/phi_reader.h"
 #include "phibrowser-win/client/phi_reveal_veil.h"
 #include "phibrowser-win/client/phi_uia.h"
+#include "phibrowser-win/client/phi_updater.h"
 #include "phibrowser-win/client/phi_prompt.h"
 
 namespace phi_client {
@@ -450,6 +451,7 @@ PhiShellWindow::Layout PhiShellWindow::ToLayout(
   out.bookmark_bar = PhiToRect(shell.bookmark_bar);
   out.app_icon = PhiToRect(shell.app_icon);
   out.search_tabs = PhiToRect(shell.search_tabs);
+  out.update = PhiToRect(shell.update);
   out.band_divider = PhiToRect(shell.band_divider);
   out.back = PhiToRect(shell.back);
   out.forward = PhiToRect(shell.forward);
@@ -522,6 +524,7 @@ ShellLayoutInputs PhiShellWindow::CurrentLayoutInputs(bool include_floating) con
   in.space_chip_dip = space_chip_dip_;
   in.agent_chip_dip = agent_chip_dip_;
   in.feedback_dip = feedback_dip_;
+  in.update_dip = update_dip_;
   if (floating && floating_panel_h_ > 0) {
     // The panel's own height: its bands (the bottom bar) fit the panel.
     in.client_height = floating_panel_h_;
@@ -609,7 +612,37 @@ void PhiShellWindow::RefreshLayoutInputs() {
       ::ReleaseDC(shell_hwnd_, dc);
     }
   }
+  // The Update reminder (the Mac's upgrade button): 8 + the label in the
+  // same 12/600 face + 8, never under 56 dip; 0 while nothing is on offer.
+  update_dip_ = 0;
+  if (shell_hwnd_ && PhiUpdater::UpdateAvailable()) {
+    update_dip_ = kUpdatePillMinWidth;
+    EnsureChipNameFont();
+    if (HDC dc = ::GetDC(shell_hwnd_)) {
+      HGDIOBJ previous =
+          chip_name_font_ ? ::SelectObject(dc, chip_name_font_) : nullptr;
+      const std::wstring label = PhiStr("sidebar.updateReminder.updateButton");
+      SIZE extent = {};
+      if (::GetTextExtentPoint32W(dc, label.c_str(),
+                                  static_cast<int>(label.size()), &extent)) {
+        const int label_dip = (static_cast<int>(extent.cx) * 96 +
+                               static_cast<int>(dpi_) - 1) /
+                              static_cast<int>(dpi_);
+        update_dip_ = std::max(kUpdatePillMinWidth, 8 + label_dip + 8);
+      }
+      if (previous) {
+        ::SelectObject(dc, previous);
+      }
+      ::ReleaseDC(shell_hwnd_, dc);
+    }
+  }
   ComputeAgentChip();
+}
+
+void PhiShellWindow::NoteUpdateAvailabilityChanged() {
+  if (shell_hwnd_) {
+    LayoutContents();  // The pill moves the strip's tabs and the nav trio.
+  }
 }
 
 void PhiShellWindow::ComputeAgentChip() {
@@ -795,6 +828,10 @@ RECT PhiShellWindow::reader_button_rect() {
 
 RECT PhiShellWindow::sidebar_toggle_rect() {
   return ComputeLayout().sidebar_toggle;
+}
+
+RECT PhiShellWindow::update_rect() {
+  return ComputeLayout().update;
 }
 
 bool PhiShellWindow::ActiveTabExtensionOfferable() const {
@@ -1365,6 +1402,7 @@ PhiCaptionRects PhiShellWindow::CaptionRects() {
   rects.forward = layout.forward;
   rects.reload = layout.reload;
   rects.search_tabs = layout.search_tabs;
+  rects.update = layout.update;
   rects.sidebar_toggle = layout.sidebar_toggle;
   rects.app_menu = layout.app_menu;
   rects.url_field = layout.url_field;
@@ -2190,7 +2228,11 @@ PhiSidebarRects PhiShellWindow::BandRects(const Layout& layout) const {
   rects.new_tab_row = layout.new_tab_row;
   rects.bottom_bar = layout.bottom_bar;
   rects.spaces_strip = layout.spaces_strip;
-  rects.search_tabs = layout.search_tabs;
+  // The strip's first trailing control, which the "+" and a dragged tab
+  // stop before: the Update reminder when one shows, else search.
+  rects.search_tabs = layout.update.right > layout.update.left && layout.horizontal_tabs
+                          ? layout.update
+                          : layout.search_tabs;
   rects.tabs_left = layout.tabs_left;
   rects.tabs_top = layout.tabs_top;
   rects.tabs_limit = layout.tabs_limit;
@@ -3172,7 +3214,7 @@ PhiDragBitmap PhiShellWindow::CaptureChromeRect(const RECT& client_rect) {
 
 
 
-std::array<RECT, 20> PhiShellWindow::NavHoverTable(
+std::array<RECT, 21> PhiShellWindow::NavHoverTable(
     const Layout& layout) const {
   // The nav buttons' hover washes (back/forward/reload/search).
   // The first six MUST stay in the paint table's order — PaintChrome keys
@@ -3187,13 +3229,14 @@ std::array<RECT, 20> PhiShellWindow::NavHoverTable(
   // Mac's star-less address bar; 17 is the bottom bar's own Downloads
   // button (§4.2); 18 Copy link and 19 the site menu, back as the Mac's
   // hover-only pair (a pointer on either is on the field, which shows them).
+  // 20 is the Update reminder pill.
   return {layout.back,        layout.forward,    layout.reload,
           layout.search_tabs, sidebar_->add_tab_button(),   layout.app_menu,
           RECT{},             layout.memory,     layout.feedback,
           layout.chat,        layout.extensions, RECT{},
           RECT{},             layout.reader,     layout.sidebar_toggle,
           RECT{},             layout.agent_chip, layout.sidebar_downloads,
-          layout.copy_link,   layout.site_menu};
+          layout.copy_link,   layout.site_menu,  layout.update};
 }
 
 // The client rect a hovered element's wash covers, empty for none — so a
@@ -4847,6 +4890,12 @@ void PhiShellWindow::OnChromeClick(int x, int y) {
   }
   if (::PtInRect(&layout.search_tabs, pt)) {
     PhiSearchTabsPanel::Toggle(this);  // The header's magnifier.
+    return;
+  }
+  if (::PtInRect(&layout.update, pt)) {
+    // The Update reminder: WinSparkle's update window, where the user
+    // installs, skips or postpones (the Mac's checkForUpdate).
+    PhiUpdater::CheckForUpdateWithUi();
     return;
   }
   if (::PtInRect(&layout.sidebar_toggle, pt)) {
@@ -7054,6 +7103,25 @@ void PhiShellWindow::PaintChrome(HDC dc,
     // The agent chip (§5.10), ordinal 16 in the hover table.
     PaintAgentChip(dc, layout.agent_chip, row_palette(layout.agent_chip),
                    hover_kind_ == HoverKind::kNav && hover_index_ == 16);
+  }
+  // The Update reminder (nav-hover ordinal 20), the Mac's upgrade button:
+  // a radius 6 accent pill with the label on it, the accent's hover shade
+  // under the pointer.
+  if (layout.update.right > layout.update.left) {
+    const bool hot = hover_kind_ == HoverKind::kNav && hover_index_ == 20;
+    const PhiPalette& ink = row_palette(layout.update);
+    PhiFillRounded(dc, layout.update, hot ? ink.accent_hover : ink.accent,
+                   Scaled(6));
+    HGDIOBJ previous_label = ::SelectObject(dc, EnsureChipNameFont());
+    ::SetTextColor(dc, ink.on_accent);
+    RECT text_rc = layout.update;
+    PhiDrawTextAA(dc, PhiStr("sidebar.updateReminder.updateButton"), -1,
+                  &text_rc,
+                  DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX |
+                      DT_END_ELLIPSIS);
+    if (previous_label) {
+      ::SelectObject(dc, previous_label);
+    }
   }
   // The sidebar toggle (nav-hover ordinal 14): ClosePane while the sidebar
   // is shown, OpenPane while it is hidden — the stateful Fluent pair.

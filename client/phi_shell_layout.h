@@ -121,6 +121,11 @@ inline constexpr int kFeedbackIconWidth = 32;
 inline constexpr int kFeedbackPillHeight = 26;
 inline constexpr int kChatWidth = 58;
 inline constexpr int kPillHeight = 24;
+// The Update reminder (the Mac's upgrade button): a 24 dip accent pill at
+// least 56 wide, left of the tab-search button. The sidebar header drops it
+// at or below 225 dip (SidebarHeaderView's tooNarrowForUpgrade).
+inline constexpr int kUpdatePillMinWidth = 56;
+inline constexpr int kUpdatePillMinSidebar = 225;
 // Legacy names still read by the box rigs' arithmetic: the band height
 // the layout verb reports. The vertical row is 44, the strip row 40.
 inline constexpr int kTitleBarHeight = kAddressRowHeight;
@@ -177,6 +182,9 @@ struct ShellLayoutInputs {
   // The Feedback pill's measured width (10 + icon 16 + 6 + label + 10) in
   // dip; 0 means the icon-only slot.
   int feedback_dip = 0;
+  // The Update reminder's measured width in dip (label + padding, at least
+  // kUpdatePillMinWidth); 0 = no update on offer, no pill.
+  int update_dip = 0;
 
   friend bool operator==(const ShellLayoutInputs& a,
                          const ShellLayoutInputs& b) {
@@ -198,7 +206,8 @@ struct ShellLayoutInputs {
            a.owned_tabs_label == b.owned_tabs_label &&
            a.space_chip_dip == b.space_chip_dip &&
            a.agent_chip_dip == b.agent_chip_dip &&
-           a.feedback_dip == b.feedback_dip;
+           a.feedback_dip == b.feedback_dip &&
+           a.update_dip == b.update_dip;
   }
   friend bool operator!=(const ShellLayoutInputs& a,
                          const ShellLayoutInputs& b) {
@@ -224,6 +233,9 @@ struct ShellLayout {
   SidebarRect bookmark_bar;
   SidebarRect app_icon;  // The vertical sidebar's persistent header mark.
   SidebarRect search_tabs;
+  // The Update reminder, just before search (strip, sidebar header, or the
+  // collapsed address row's lead); empty without an update on offer.
+  SidebarRect update;
   // Search and the toggle trail the sidebar header. When collapsed they
   // lead the address row, keeping the sidebar one click away.
   SidebarRect sidebar_toggle;

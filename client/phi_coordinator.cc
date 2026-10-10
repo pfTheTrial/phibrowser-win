@@ -125,6 +125,9 @@ constexpr UINT WM_PHI_QUIT_FOR_UPDATE = WM_APP + 12;
 // meant to open the NEXT peek opened nothing. wparam is the window the
 // button went down in, lparam the press's screen point (x, y packed).
 constexpr UINT WM_PHI_DISMISS_PEEKS = WM_APP + 13;
+// PhiUpdater::UpdateAvailable changed (posted from WinSparkle's thread):
+// every window shows or drops its Update reminder.
+constexpr UINT WM_PHI_UPDATE_STATE = WM_APP + 14;
 }  // namespace
 
 void PhiCoordinator::OnFrameworkReady(phi_framework::PhiFramework* framework,
@@ -221,7 +224,7 @@ void PhiCoordinator::OnFrameworkReady(phi_framework::PhiFramework* framework,
 
   // Background update checks (WinSparkle over the Mac's appcast pipeline).
   // A no-op when WinSparkle.dll is not deployed beside the client.
-  PhiUpdater::Init(msg_hwnd_, WM_PHI_QUIT_FOR_UPDATE);
+  PhiUpdater::Init(msg_hwnd_, WM_PHI_QUIT_FOR_UPDATE, WM_PHI_UPDATE_STATE);
 
   // The brand faces for the onboarding titles (and the profile card).
   PhiLoadPrivateFonts();
@@ -327,6 +330,16 @@ LRESULT CALLBACK PhiCoordinator::MsgWndProc(HWND hwnd,
     if (self && !self->CanUseBrowser()) {
       self->OpenOnboarding(
           static_cast<PhiOnboardingWindow::Page>(static_cast<int>(wparam)));
+    }
+    return 0;
+  }
+  if (msg == WM_PHI_UPDATE_STATE) {
+    auto* self = reinterpret_cast<PhiCoordinator*>(
+        ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    if (self) {
+      for (PhiShellWindow* controller : self->registry_.Controllers()) {
+        controller->NoteUpdateAvailabilityChanged();
+      }
     }
     return 0;
   }

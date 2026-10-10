@@ -6,6 +6,7 @@
 
 #include <windows.h>
 
+#include <atomic>
 #include <string>
 
 #include "base/logging.h"
@@ -40,6 +41,7 @@ using VoidFn = void(__cdecl*)();
 using CanShutdownFn = int(__cdecl*)();
 using SetCanShutdownFn = void(__cdecl*)(CanShutdownFn);
 using SetShutdownRequestFn = void(__cdecl*)(VoidFn);
+using SetCallbackFn = void(__cdecl*)(VoidFn);
 
 struct Sparkle {
   HMODULE dll = nullptr;
@@ -52,6 +54,11 @@ struct Sparkle {
   VoidFn init = nullptr;
   VoidFn check_update_with_ui = nullptr;
   VoidFn cleanup = nullptr;
+  // The update-state callbacks (WinSparkle 0.5 / 0.8): optional — without
+  // them the updater still works, there is just no in-window reminder.
+  SetCallbackFn set_did_find_update = nullptr;
+  SetCallbackFn set_did_not_find_update = nullptr;
+  SetCallbackFn set_update_skipped = nullptr;
 };
 
 Sparkle g_sparkle;
@@ -60,6 +67,10 @@ bool g_initialized = false;
 // thread, so set before init and never changed.
 HWND g_quit_hwnd = nullptr;
 UINT g_quit_msg = 0;
+UINT g_state_msg = 0;
+// An update is on offer (the Mac's sparkleDidDownloadUpdate .. skip): set
+// from WinSparkle's thread, read by the windows' layout.
+std::atomic<bool> g_update_available{false};
 
 // WinSparkle's "may I close you?" — always yes: Chromium has no unsaved
 // documents, and the close path itself saves the session.
@@ -73,6 +84,22 @@ int __cdecl CanShutdown() {
 void __cdecl RequestShutdown() {
   LOG(INFO) << "[PhiUpdater] installer launched; requesting quit";
   ::PostMessageW(g_quit_hwnd, g_quit_msg, 0, 0);
+}
+
+// A check found an update, found none, or the user skipped the one it
+// found (all from WinSparkle's thread). "Remind me later" and closing the
+// dialog leave the reminder up — that is what it is for.
+void SetUpdateAvailable(bool available) {
+  if (g_update_available.exchange(available) != available) {
+    LOG(INFO) << "[PhiUpdater] update available=" << available;
+    ::PostMessageW(g_quit_hwnd, g_state_msg, 0, 0);
+  }
+}
+void __cdecl DidFindUpdate() {
+  SetUpdateAvailable(true);
+}
+void __cdecl DidNotFindUpdate() {
+  SetUpdateAvailable(false);
 }
 
 // WinSparkle.dll sits beside phi_client.exe (the sync and the installer both
@@ -129,6 +156,12 @@ bool Load() {
   sparkle.check_update_with_ui = reinterpret_cast<VoidFn>(
       proc("win_sparkle_check_update_with_ui"));
   sparkle.cleanup = reinterpret_cast<VoidFn>(proc("win_sparkle_cleanup"));
+  sparkle.set_did_find_update = reinterpret_cast<SetCallbackFn>(
+      proc("win_sparkle_set_did_find_update_callback"));
+  sparkle.set_did_not_find_update = reinterpret_cast<SetCallbackFn>(
+      proc("win_sparkle_set_did_not_find_update_callback"));
+  sparkle.set_update_skipped = reinterpret_cast<SetCallbackFn>(
+      proc("win_sparkle_set_update_skipped_callback"));
   if (!sparkle.set_appcast_url || !sparkle.set_app_details ||
       !sparkle.set_eddsa_public_key || !sparkle.set_can_shutdown ||
       !sparkle.set_shutdown_request || !sparkle.init ||
@@ -177,12 +210,13 @@ std::string EdDsaPublicKey() {
 }  // namespace
 
 // static
-void PhiUpdater::Init(HWND quit_hwnd, UINT quit_msg) {
+void PhiUpdater::Init(HWND quit_hwnd, UINT quit_msg, UINT state_msg) {
   if (g_initialized) {
     return;
   }
   g_quit_hwnd = quit_hwnd;
   g_quit_msg = quit_msg;
+  g_state_msg = state_msg;
   // No key, no updater — in every build. A feed that cannot be verified is
   // never fetched, let alone installed; the menu item goes dark
   // (Available) rather than offering an unsigned download.
@@ -212,6 +246,14 @@ void PhiUpdater::Init(HWND quit_hwnd, UINT quit_msg) {
   // must already know how to close us.
   g_sparkle.set_can_shutdown(&CanShutdown);
   g_sparkle.set_shutdown_request(&RequestShutdown);
+  // The reminder's state, before init for the same reason: the first
+  // background check may find an update.
+  if (g_sparkle.set_did_find_update && g_sparkle.set_did_not_find_update &&
+      g_sparkle.set_update_skipped) {
+    g_sparkle.set_did_find_update(&DidFindUpdate);
+    g_sparkle.set_did_not_find_update(&DidNotFindUpdate);
+    g_sparkle.set_update_skipped(&DidNotFindUpdate);
+  }
   g_sparkle.init();
   g_initialized = true;
   LOG(INFO) << "[PhiUpdater] init v" << PHI_WIN_VERSION_FULL_STRING
@@ -225,6 +267,11 @@ bool PhiUpdater::CheckForUpdateWithUi() {
   }
   g_sparkle.check_update_with_ui();
   return true;
+}
+
+// static
+bool PhiUpdater::UpdateAvailable() {
+  return g_update_available.load();
 }
 
 // static

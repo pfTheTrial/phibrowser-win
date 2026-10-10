@@ -817,6 +817,9 @@ class PhiShellWindow : public PhiHitSource,
   // (public so the owner can push app-wide layout changes, e.g. the sidebar
   // width, into every window).
   void LayoutContents();
+  // PhiUpdater::UpdateAvailable changed: the Update reminder appears or
+  // goes, and what it pushes along moves with it.
+  void NoteUpdateAvailabilityChanged();
 
   // --- Spaces (client-owned, as on Mac) ------------------------------------
   // A slot shows ONE Space at a time. Each Space has its own Browser; the
@@ -945,6 +948,8 @@ class PhiShellWindow : public PhiHitSource,
   RECT sidebar_toggle_rect();
   // The app menu button (⋯), for the layout verb.
   RECT app_menu_rect();
+  // The Update reminder pill (empty without an update), for the layout verb.
+  RECT update_rect();
   // The in-field Copy link and site-menu slots, for the layout verb.
   RECT copy_link_rect();
   RECT site_menu_rect();
@@ -1056,6 +1061,9 @@ class PhiShellWindow : public PhiHitSource,
     // Search trails the sidebar header (the caption strip in comfortable).
     // Navigation stays on the address row's leading edge.
     RECT search_tabs{};
+    // The Update reminder pill (the Mac's upgrade button) just before
+    // search; empty unless an update is on offer.
+    RECT update{};
     // The hairline closing the band's trailing cluster, in the gap between
     // search-tabs and the caption buttons. Every layout has one.
     RECT band_divider{};
@@ -1319,7 +1327,7 @@ class PhiShellWindow : public PhiHitSource,
   RECT HoverRect(HoverKind kind, int index);
   void SetHover(HoverKind kind, int index);
   // The chrome buttons a kNav hover indexes, in PaintChrome's order.
-  std::array<RECT, 20> NavHoverTable(const Layout& layout) const;
+  std::array<RECT, 21> NavHoverTable(const Layout& layout) const;
   // The 12/600 face the Space chip, the agent chip and the Feedback pill
   // share; built on demand and rebuilt when the DPI moves.
   HFONT EnsureChipNameFont();
@@ -1866,6 +1874,8 @@ class PhiShellWindow : public PhiHitSource,
   int agent_chip_dip_ = 0;
   // The Feedback pill's measured width in dip (0 = the icon-only slot).
   int feedback_dip_ = 0;
+  // The Update reminder's measured width in dip (0 = no update on offer).
+  int update_dip_ = 0;
   bool agent_chip_compact_ = false;
   std::string agent_chip_task_;
   std::string agent_chip_space_;

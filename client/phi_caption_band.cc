@@ -70,6 +70,7 @@ int PhiCaptionBand::HitTest(POINT client_pt) {
       ::PtInRect(&rects.forward, client_pt) ||
       ::PtInRect(&rects.reload, client_pt) ||
       ::PtInRect(&rects.search_tabs, client_pt) ||
+      ::PtInRect(&rects.update, client_pt) ||
       ::PtInRect(&rects.app_menu, client_pt) ||
       ::PtInRect(&rects.sidebar_toggle, client_pt) ||
       ::PtInRect(&rects.url_field, client_pt) ||

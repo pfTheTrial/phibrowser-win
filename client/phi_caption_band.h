@@ -37,6 +37,8 @@ struct PhiCaptionRects {
   // The band's own controls: they take their own clicks, so the drag space
   // must not swallow them.
   RECT back{}, forward{}, reload{}, search_tabs{}, app_menu{};
+  // The Update reminder pill, before search (empty without an update).
+  RECT update{};
   // The vertical layout's leading sidebar toggle.
   RECT sidebar_toggle{};
   // The rest of the address row (vertical layout, where the row IS the

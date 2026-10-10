@@ -5677,6 +5677,10 @@
    "comment": "sidebar — used at phi_shell_window.cc:5536",
    "en": "Take Control"
   },
+  "sidebar.updateReminder.updateButton": {
+   "comment": "sidebar — the Update reminder pill (strip / sidebar header), used at phi_shell_window.cc:7114",
+   "en": "Update"
+  },
   "sidebar.urlRulesEditor.addRuleButton": {
    "comment": "settings — used in phi_url_rules_window.cc",
    "en": "Add Rule"
