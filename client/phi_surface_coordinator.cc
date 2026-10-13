@@ -427,6 +427,11 @@ void PhiSurfaceCoordinator::UpdateReaderPanelsForWindow(BrowserId window_id) {
   }
   const int focused = active_tab.value;
   const int partner = SplitPartnerOf(window_id, active_tab).value;
+  // A window hosts one browser per Space and shows one: surfaces over a
+  // browser that is not on screen stay hidden (and keep their fit — the
+  // pane rects are the shown browser's).
+  const bool on_screen =
+      active_tab.valid() && host_.WindowShowingTab(active_tab) != nullptr;
   const PhiVisiblePeek peek = PhiVisiblePeekFor(focused, partner, peeks);
   const std::vector<int> shown_readers =
       PhiVisibleReaderOrigins(focused, partner, peeks, readers);
@@ -437,8 +442,10 @@ void PhiSurfaceCoordinator::UpdateReaderPanelsForWindow(BrowserId window_id) {
             ? origin == peek.opener
             : std::find(shown_readers.begin(), shown_readers.end(), origin) !=
                   shown_readers.end();
-    panel->Reposition();
-    panel->SetSurfaceShown(shown);
+    if (on_screen) {
+      panel->Reposition();
+    }
+    panel->SetSurfaceShown(shown && on_screen);
   }
   for (const BrowserId panel_id : orphaned) {
     LOG(INFO) << "[PhiClient] surface " << panel_id.value
@@ -638,11 +645,17 @@ void PhiSurfaceCoordinator::RaiseReaderPanels(SlotId slot) {
 }
 
 void PhiSurfaceCoordinator::NoteContentLayoutChanged(SlotId slot) {
+  // Re-settles every browser of the slot with a surface: a Space switch
+  // changes which one is on screen, a layout change where its panes sit.
+  std::set<int64_t> windows;
   surfaces_.ForEach([&](PhiSurfacePanel& panel) {
     if (host_.SlotForBrowser(BrowserId{panel.origin_window_id()}) == slot) {
-      panel.Reposition();
+      windows.insert(panel.origin_window_id());
     }
   });
+  for (const int64_t window : windows) {
+    UpdateReaderPanelsForWindow(BrowserId{window});
+  }
 }
 
 bool PhiSurfaceCoordinator::DismissPeeksForShell(HWND shell,

@@ -2544,6 +2544,17 @@
    "zh-Hans": "名称",
    "zh-Hant": "名稱"
   },
+  "common.iconPicker.emojiSearchPlaceholder": {
+   "de": "Emoji suchen",
+   "en": "Search emoji",
+   "es": "Buscar emoji",
+   "fr": "Rechercher un emoji",
+   "ja": "絵文字を検索",
+   "ko": "이모지 검색",
+   "nl": "Zoek emoji",
+   "zh-Hans": "搜索表情符号",
+   "zh-Hant": "搜尋表情符號"
+  },
   "common.iconPicker.emojiTabTitle": {
    "de": "Emoji",
    "en": "Emoji",
@@ -2565,6 +2576,28 @@
    "nl": "Symbool",
    "zh-Hans": "图标",
    "zh-Hant": "圖像"
+  },
+  "common.iconPicker.iconsSearchPlaceholder": {
+   "de": "Symbole suchen",
+   "en": "Search icons",
+   "es": "Buscar iconos",
+   "fr": "Rechercher une icône",
+   "ja": "アイコンを検索",
+   "ko": "아이콘 검색",
+   "nl": "Zoek symbolen",
+   "zh-Hans": "搜索图标",
+   "zh-Hant": "搜尋圖示"
+  },
+  "common.iconPicker.searchEmptyMessage": {
+   "de": "Keine Ergebnisse",
+   "en": "No results",
+   "es": "Sin resultados",
+   "fr": "Aucun résultat",
+   "ja": "結果がありません",
+   "ko": "결과 없음",
+   "nl": "Geen resultaten",
+   "zh-Hans": "无结果",
+   "zh-Hant": "沒有結果"
   },
   "common.newTabPage.incognitoTitle": {
    "de": "Neuer Inkognito-Tab",
@@ -4611,6 +4644,17 @@
    "nl": "Openen in",
    "zh-Hans": "打开到",
    "zh-Hant": "開啟於"
+  },
+  "library.spaces.reorder": {
+   "de": "Ziehen, um den Space neu anzuordnen",
+   "en": "Drag to reorder Space",
+   "es": "Arrastra para reordenar el Espacio",
+   "fr": "Faites glisser pour réorganiser l'Espace",
+   "ja": "ドラッグしてスペースを並べ替え",
+   "ko": "드래그하여 스페이스 순서 변경",
+   "nl": "Sleep om de Space opnieuw te ordenen",
+   "zh-Hans": "拖移以调整空间顺序",
+   "zh-Hant": "拖曳來重新排序空間"
   },
   "localData.bookmarks.importedFromGuestFolderTitle": {
    "de": "Aus dem Gastmodus importiert",
@@ -8999,6 +9043,17 @@
    "zh-Hans": "更改…",
    "zh-Hant": "變更…"
   },
+  "settings.spaces.deleteButtonTooltip": {
+   "de": "Ausgewählten Space löschen",
+   "en": "Delete selected Space",
+   "es": "Eliminar el Espacio seleccionado",
+   "fr": "Supprimer l'Espace sélectionné",
+   "ja": "選択したスペースを削除",
+   "ko": "선택한 스페이스 삭제",
+   "nl": "Verwijder geselecteerde Space",
+   "zh-Hans": "删除所选空间",
+   "zh-Hant": "刪除所選空間"
+  },
   "settings.spaces.deleteConfirmation.deleteButton": {
    "de": "Löschen",
    "en": "Delete",
@@ -9152,6 +9207,17 @@
    "nl": "Profiel {0}",
    "zh-Hans": "个人资料：{0}",
    "zh-Hant": "設定檔：{0}"
+  },
+  "settings.spaces.renameButtonTooltip": {
+   "de": "Ausgewählten Space umbenennen",
+   "en": "Rename selected Space",
+   "es": "Renombrar el Espacio seleccionado",
+   "fr": "Renommer l'Espace sélectionné",
+   "ja": "選択したスペースの名前を変更",
+   "ko": "선택한 스페이스 이름 변경",
+   "nl": "Wijzig naam van geselecteerde Space",
+   "zh-Hans": "重命名所选空间",
+   "zh-Hant": "重新命名所選空間"
   },
   "settings.spaces.shortcutHint": {
    "de": "folgt der Reihenfolge in der Leiste",

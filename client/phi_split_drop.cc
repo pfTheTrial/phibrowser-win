@@ -47,11 +47,10 @@ constexpr double kEdgeZoneFraction = 1.0 / 3.0;
 // Once a zone is active it keeps its grip until the pointer leaves it by
 // this much, so tremble in a corner cannot alternate two cards.
 constexpr int kZoneExitTolerance = 12;
-// The Mac's SplitPaneHostView geometry, which the framework's
-// MultiContentsView draws on Windows too (phi_split_view_style.h): 4 DIP of
-// ground around the pane cards and a 4 DIP divider between them. Only the
-// ESTIMATE uses these — the real pane rects arrive with the hints.
-constexpr int kSplitPaneInset = 4;
+// The framework's split geometry (phi_split_view_style.h): the panes flush
+// in the page area, a 4 DIP divider strip between them. Only the ESTIMATE
+// uses these — the real pane rects arrive with the hints.
+constexpr int kSplitPaneInset = 0;
 constexpr int kSplitDividerThickness = 4;
 
 int Width(const RECT& r) {
@@ -430,7 +429,7 @@ void PhiSplitReplacePaneRects(const PhiSplitDropHints& hints,
     *secondary = hints.secondary;
     return;
   }
-  // The estimate: the cards inset from the page area, the divider between.
+  // The estimate: the panes over the page area, the divider between.
   RECT area = hints.area;
   ::InflateRect(&area, -kSplitPaneInset, -kSplitPaneInset);
   area.right = std::max(area.right, area.left);

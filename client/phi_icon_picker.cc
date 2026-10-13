@@ -14,6 +14,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/no_destructor.h"
 #include "base/strings/utf_string_conversions.h"
 #include "phibrowser-win/client/phi_dwrite.h"
 #include "phibrowser-win/client/phi_emoji.h"
@@ -47,11 +48,8 @@ constexpr int kHitIconTab = -1;
 constexpr int kHitEmojiTab = -2;
 constexpr int kHitCategoryFirst = -100;  // -100 - group index.
 
-struct Cell {
-  std::wstring text;    // What is drawn (a glyph or an emoji).
-  std::string storage;  // "phi:<id>" / "emoji:<id>".
-  std::wstring name;    // Searched.
-};
+// One grid cell: what is drawn, what is stored, what is searched.
+using Cell = PhiIconChoice;
 
 struct Section {
   std::wstring title;
@@ -59,10 +57,7 @@ struct Section {
 };
 
 std::wstring Lower(std::wstring text) {
-  for (wchar_t& c : text) {
-    c = static_cast<wchar_t>(::towlower(c));
-  }
-  return text;
+  return PhiIconSearchFold(text);
 }
 
 class Picker : public PhiPopover {
@@ -374,29 +369,14 @@ class Picker : public PhiPopover {
   void BuildSections() {
     icon_sections_.clear();
     emoji_sections_.clear();
-    Section icons;
-    for (const PhiCatalogIcon& icon : PhiIconCatalogAll()) {
-      Cell cell;
-      cell.text = std::wstring(1, icon.glyph);
-      cell.storage = std::string("phi:") + icon.id;
-      cell.name = base::UTF8ToWide(icon.name);
-      icons.cells.push_back(std::move(cell));
+    for (const PhiIconChoiceGroup& group : PhiIconChoiceGroups(false)) {
+      icon_sections_.push_back({group.title, group.items});
     }
-    icon_sections_.push_back(std::move(icons));
     category_glyphs_.clear();
-    for (const PhiEmojiGroup& group : PhiEmojiGroups()) {
-      Section section;
-      section.title = base::UTF8ToWide(group.name);
-      for (const PhiEmoji& emoji : group.items) {
-        Cell cell;
-        cell.text = base::UTF8ToWide(emoji.text);
-        cell.storage = "emoji:" + emoji.id;
-        cell.name = base::UTF8ToWide(emoji.name);
-        section.cells.push_back(std::move(cell));
-      }
+    for (const PhiIconChoiceGroup& group : PhiIconChoiceGroups(true)) {
       category_glyphs_.push_back(
-          section.cells.empty() ? std::wstring() : section.cells.front().text);
-      emoji_sections_.push_back(std::move(section));
+          group.items.empty() ? std::wstring() : group.items.front().text);
+      emoji_sections_.push_back({group.title, group.items});
     }
   }
 
@@ -546,6 +526,49 @@ class Picker : public PhiPopover {
 };
 
 }  // namespace
+
+std::wstring PhiIconSearchFold(const std::wstring& text) {
+  std::wstring folded = text;
+  for (wchar_t& c : folded) {
+    c = static_cast<wchar_t>(::towlower(c));
+  }
+  return folded;
+}
+
+const std::vector<PhiIconChoiceGroup>& PhiIconChoiceGroups(bool emoji) {
+  // Built on first use and kept: the emoji catalogue is ~1900 entries, and
+  // an embedded grid rebuilds on every change of the page around it.
+  static const base::NoDestructor<std::vector<PhiIconChoiceGroup>> icons([] {
+    PhiIconChoiceGroup group;
+    for (const PhiCatalogIcon& icon : PhiIconCatalogAll()) {
+      PhiIconChoice choice;
+      choice.text = std::wstring(1, icon.glyph);
+      choice.storage = std::string(kPhiIconPrefix) + icon.id;
+      choice.name = base::UTF8ToWide(icon.name);
+      choice.folded = PhiIconSearchFold(choice.name);
+      group.items.push_back(std::move(choice));
+    }
+    return std::vector<PhiIconChoiceGroup>{std::move(group)};
+  }());
+  static const base::NoDestructor<std::vector<PhiIconChoiceGroup>> emojis([] {
+    std::vector<PhiIconChoiceGroup> groups;
+    for (const PhiEmojiGroup& source : PhiEmojiGroups()) {
+      PhiIconChoiceGroup group;
+      group.title = base::UTF8ToWide(source.name);
+      for (const PhiEmoji& emoji : source.items) {
+        PhiIconChoice choice;
+        choice.text = base::UTF8ToWide(emoji.text);
+        choice.storage = std::string(kPhiEmojiPrefix) + emoji.id;
+        choice.name = base::UTF8ToWide(emoji.name);
+        choice.folded = PhiIconSearchFold(choice.name);
+        group.items.push_back(std::move(choice));
+      }
+      groups.push_back(std::move(group));
+    }
+    return groups;
+  }());
+  return emoji ? *emojis : *icons;
+}
 
 void PhiOpenSpaceIconPicker(HWND owner,
                             const PhiPalette& palette,

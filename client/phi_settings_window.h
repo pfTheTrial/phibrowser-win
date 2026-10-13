@@ -183,6 +183,10 @@ class PhiSettingsHost {
   virtual bool RenameSpace(const std::string& space_id,
                            const std::string& name) = 0;
   virtual bool DeleteSpace(const std::string& space_id) = 0;
+  // Moves a Space to `new_index` in the Space list — the Spaces list's
+  // grip. The SAME signature as SpacesHost's chip drag, so the
+  // coordinator's one override serves both.
+  virtual void ReorderSpace(const std::string& space_id, int new_index) = 0;
   virtual bool DeleteProfileById(const std::string& profile_id) = 0;
   virtual bool RenameProfileById(const std::string& profile_id,
                                  const std::string& name) = 0;
@@ -329,7 +333,6 @@ class PhiSettingsWindow : public PhiSecondaryWindow,
     kPopup,          // Trailing pill that opens a popup menu on click.
     kListRow,        // Master-list row (Spaces / Profiles).
     kToolButton,     // 34x34 glyph button in a list's bottom strip.
-    kEmojiCell,      // One 26pt cell of the icon picker grid.
     kBadge,          // Small capsule ("Default", "Not linked", …).
     kButton,
     kIcon,           // A lone MDL2 glyph (row gutters, drag handles).
@@ -343,6 +346,19 @@ class PhiSettingsWindow : public PhiSecondaryWindow,
     kAppMark,        // The Phi mark at `bounds` size (About).
     kAccountBlock,   // The rail's account block: 44 avatar, name, email.
     kLayoutCard,     // The Layout picker's half: 110 preview + radio row.
+    // Settings › Spaces (the two-pane card, design node 9056:18105).
+    kSpaceCard,      // The card: `value` = divider x, `total` = bar line y.
+    kSpaceRow,       // A Space list row's body: icon, name (to `value` px).
+    kDragHandle,     // A row's three-line reorder grip.
+    kRowPopup,       // A row's profile pill; `on` = its row is selected.
+    kBarButton,      // The list's + / − / edit glyph buttons.
+    kHairline,       // A 1 px 10 % rule over `backdrop` (or the card).
+    kGroupBox,       // A 3 % grey well; `value`/`visible`/`total` = grid scroll.
+    kPaneLabel,      // 13 px label inside the card; `value` 1 = centred note.
+    kSegment,        // Icon | Emoji: the pill (no action), then its segments.
+    kIconSearch,     // The embedded picker's search pill (a text input).
+    kPickerCell,     // One glyph of the embedded picker; `value` = its index.
+    kUrlRow,         // The page's "URL Rules" row under the card.
   };
   struct Item {
     ItemKind kind = ItemKind::kRowLabel;
@@ -372,6 +388,18 @@ class PhiSettingsWindow : public PhiSecondaryWindow,
     std::string space;
     // The profile a profile-SCOPED action (a "Your data" page) runs in.
     std::string profile;
+    // The accessible name when the drawn text is not one (the Spaces
+    // card's glyph buttons, a row's profile pill); a slider's LABEL.
+    std::wstring a11y;
+    // The ground an item sits on when it is not the card (the Spaces
+    // editor's grey wells), for the paint's blends.
+    COLORREF backdrop = CLR_INVALID;
+    // A scrolled grid's extent, in rows (kGroupBox).
+    int total = 0;
+    int visible = 0;
+    // False keeps a focusable item out of the Tab walk (an unselected
+    // Space row's grip and profile pill: the list is ONE stop).
+    bool tab_stop = true;
   };
 
   void Rebuild();
@@ -418,9 +446,26 @@ class PhiSettingsWindow : public PhiSecondaryWindow,
   // control kDetailLabelWidth further in; returns the control's rect.
   RECT AddDetailRow(int* y, const wchar_t* label, int control_height,
                     int control_width);
-  // The Space expander's body (name, profile, icon + inline picker,
-  // colour, saturation, shortcut, delete), inside the open card.
-  void AddSpaceBody(int* y, const PhiSpaceSummary& space, int ordinal);
+  // Settings › Spaces' two-pane card: the Space list (reorder grip, icon,
+  // name, profile pill; + / − / edit under it) beside the selected Space's
+  // editor (colour, saturation, the embedded icon / emoji picker).
+  void BuildSpaceCard(int* y,
+                      const std::vector<PhiSpaceSummary>& spaces,
+                      const std::vector<PhiProfileSummary>& profiles);
+  void BuildSpaceEditor(const RECT& pane, const PhiSpaceSummary& space);
+  // The design's "URL Rules" row closing the Spaces page.
+  void AddSpacesUrlRow(int* y);
+  // Selects a Space in the list; a new selection resets the picker (tab,
+  // search, grid scroll). `reveal` scrolls the list to it.
+  void SelectSpace(const std::string& space_id, bool reveal);
+  // Keyboard: the list's Up / Down (selects), the grip's Up / Down
+  // (moves the Space), the picker grid's arrows (focus, scrolling).
+  void MoveSpaceSelection(int delta);
+  void ReorderByKey(int delta);
+  void MoveIconFocus(int delta);
+  // The grip's drag: the list index under client `y`, and the drop.
+  int ReorderIndexAt(int y);
+  void EndReorder(bool commit);
   // The profile expander's body (name, search engine, download location,
   // used by, data pages, delete), inside the open card.
   void AddProfileBody(int* y, const PhiProfileSummary& profile,
@@ -593,6 +638,8 @@ class PhiSettingsWindow : public PhiSecondaryWindow,
   HFONT hint_font_ = nullptr;   // 11pt hints and captions.
   HFONT emoji_font_ = nullptr;  // The icon-picker grid's emoji.
   HFONT mdl2_font_ = nullptr;   // The grid's Phi-icon MDL2 stand-ins.
+  HFONT body_font_ = nullptr;   // 13 px: the Spaces card's text.
+  HFONT page_title_font_ = nullptr;  // The page title, 28 bold.
   // The caption strip is PhiPopupChrome's now, through
   // PhiSecondaryWindow: the OS caption is retired so the title can sit
   // CENTERED with the Phi mark leading, and the close button's hover,
@@ -620,6 +667,30 @@ class PhiSettingsWindow : public PhiSecondaryWindow,
   // Master-list selections (the Mac remembers per pane).
   std::string selected_space_;
   std::string selected_profile_;
+  // Settings › Spaces: the list's first shown row and whether the next
+  // build scrolls the selection into it; the editor's picker tab (-1
+  // follows the Space's icon, 0 Icon, 1 Emoji), search text and grid
+  // scroll (first row; -1 = reveal the current icon). The rects are where
+  // the wheel scrolls the list and the grid rather than the page.
+  int list_first_ = 0;
+  bool list_reveal_ = true;
+  int list_visible_ = 0;
+  int list_pitch_ = 0;
+  RECT list_rect_{};
+  int icon_tab_ = -1;
+  std::wstring icon_search_;
+  int grid_first_row_ = -1;
+  int grid_rows_ = 0;
+  int grid_visible_ = 0;
+  int grid_count_ = 0;
+  RECT grid_rect_{};
+  int wheel_accum_ = 0;
+  // The grip's drag: the Space being moved, the list order as it is
+  // dragged (the Mac's orderedIds) and where it started.
+  bool reorder_drag_ = false;
+  std::string reorder_id_;
+  std::vector<std::string> reorder_order_;
+  int reorder_from_ = -1;
   // The Shortcuts pane's filter text ("Find shortcut keys"), fed by WM_CHAR
   // while that pane is up.
   std::wstring shortcut_search_;

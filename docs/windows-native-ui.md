@@ -645,6 +645,12 @@ Every state the sidebar tree can produce, with its Windows look. Rows are
 
 ### 4.6 Split view (the two "Split view" artboards)
 
+> **Superseded 2026-10-13 for the panes' chrome** (Figma 9044:26952): the
+> panes sit flush in the content card with no sheets, no gutter and an
+> unchanged address row; a 1 dip divider; the 2 dip ring inside the
+> focused pane only. See `split-view-chrome.md`. The one-omnibox rule and
+> the hover chip below still hold.
+
 The reference is the second pair of screenshots Jixiang sent: **each pane
 is its own sheet with its own address row**, and the window buttons sit
 in whichever pane touches the window's top-right corner. The divider is

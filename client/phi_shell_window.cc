@@ -891,29 +891,43 @@ void PhiShellWindow::PushSplitViewStyle() {
     }
     // The SETTLED palette of the browser's own Space, not the ramp a switch
     // animation is painting the chrome with: the framework should not be
-    // re-laid out per frame. The pane sheets stand on the Space TINT (§4.6:
-    // the same ground the sidebar and the gutters paint), not the card's
-    // window background — that is the sheets' own colour.
+    // re-laid out per frame.
     const PhiPalette& palette =
         incognito_          ? kIncognito
         : services_.spaces  ? services_.spaces->PaletteForSpace(space_id)
                             : kFallback;
+    // The split (Figma 9044:26952, docs/split-view-chrome.md): two panes
+    // flush in the content card, a 1 px divider and a 2 px accent ring
+    // inside the focused pane. The ground shows only outside a pane's
+    // rounded corner, against the sidebar, so it is the Space TINT the
+    // sidebar paints; the divider is the design's neutrals — #FAFAFA with
+    // 4 % ink over it in light; dark is not in the design (derived: the
+    // dark ground with 6 % white). A contrast theme keeps its own edges.
     phi_framework::SplitViewStyle style;
     style.background_argb =
         sidebar_backdrop_
             ? PhiBackdropColor(argb(palette.ground_top) & 0xFFFFFF, palette.dark)
             : argb(palette.ground_top);
-    style.border_argb = argb(palette.border);
+    if (PhiHighContrastActive()) {
+      style.divider_ground_argb = argb(palette.ground_top);
+      style.border_argb = argb(palette.border);
+    } else if (palette.dark) {
+      style.divider_ground_argb = argb(palette.ground_top);
+      style.border_argb = 0x0FFFFFFFu;  // White at 6 %.
+    } else {
+      style.divider_ground_argb = 0xFFFAFAFAu;
+      style.border_argb = 0x0A000000u;  // Black at 4 %.
+    }
     style.focus_argb = argb(palette.accent);
-    // A 4 dip gutter of tint under the address row while split (§4.6):
-    // the row becomes a sheet of its own. Unsplit, the pane touches it.
-    style.top_inset = 4;
+    // Flush under the address row: the row's separator is the panes' top.
+    style.top_inset = 0;
     auto it = split_style_pushed_.find(browser.value);
     if (it != split_style_pushed_.end() &&
         it->second.background_argb == style.background_argb &&
         it->second.border_argb == style.border_argb &&
         it->second.focus_argb == style.focus_argb &&
-        it->second.top_inset == style.top_inset) {
+        it->second.top_inset == style.top_inset &&
+        it->second.divider_ground_argb == style.divider_ground_argb) {
       continue;
     }
     split_style_pushed_[browser.value] = style;
@@ -1964,6 +1978,11 @@ void PhiShellWindow::BrowserHostNoteActiveSpace(
       !PhiIsAgentSpaceId(space_id)) {
     services_.spaces->NoteSlotActiveSpace(space_id);
   }
+  // Another browser is on screen: the Peek/Reader surfaces of the one that
+  // left hide, the arriving one's show again.
+  if (services_.sidebar) {
+    services_.sidebar->NoteContentLayoutChanged(slot_.value);
+  }
 }
 
 void PhiShellWindow::BrowserHostAbandonTyping() {
@@ -2999,9 +3018,9 @@ void PhiShellWindow::PlaceContentChildren(const Layout& layout) {
   content.top_caps = false;
   content.right_caps = layout.content.right < layout.client.right;
   // Compositor clipping exposes the actual backdrop. Opaque sibling caps
-  // would cover it again; retain them only for the opaque fallback.
-  content.corner_radius =
-      sidebar_backdrop_ || ActiveTabIsSplit() ? 0 : Scaled(kContentRadius);
+  // would cover it again; retain them only for the opaque fallback. A split
+  // keeps them: its flush panes meet the card's corners as a page does.
+  content.corner_radius = sidebar_backdrop_ ? 0 : Scaled(kContentRadius);
   // Either Space switch parks the entering child until it lands.
   content.parked = BrowserHostSwapRunning() ? swap_reveal_ : nullptr;
   browsers_->PositionContentChild(content);
@@ -4426,17 +4445,14 @@ void PhiShellWindow::PrepareBackdropPixels(const PhiPalette& palette) {
       const bool bar_corner =
           band.left > 0 && !layout.horizontal_tabs &&
           x >= band.left && x < band.left + radius &&
-          y >= band.top && y < band.bottom &&
-          (y < band.top + radius ||
-           (backdrop_split_ && y >= band.bottom - radius));
+          y >= band.top && y < band.bottom && y < band.top + radius;
       if (x >= layout.content.left &&
           x < layout.content.right && y >= layout.content.top &&
           y < layout.content.bottom) {
         row[x] = 0;
       } else if (bar_corner) {
         const double cx = band.left + radius;
-        const double cy = y < band.top + radius ? band.top + radius
-                                                : band.bottom - radius;
+        const double cy = band.top + radius;
         const double coverage = std::clamp(
             radius + 0.5 - std::hypot(x + 0.5 - cx, y + 0.5 - cy), 0.0, 1.0);
         row[x] = PhiBackdropPixelOver(row[x], rgb, tint,
@@ -4578,6 +4594,12 @@ void PhiShellWindow::RevealSwappedContent() {
   if (had_reveal) {
     // The leaving content's pages come down only now it is gone.
     native_pages_->SyncNtp();
+    // The entering browser was parked off-card for the swap, so the Space
+    // switch's surface settle fitted pane readers to the parked panes:
+    // fit them again now the panes are on the card.
+    if (services_.sidebar) {
+      services_.sidebar->NoteContentLayoutChanged(slot_.value);
+    }
     // Only restore page focus if no newer native control/window took it.
     const HWND focus = ::GetFocus();
     const HWND page = browsers_->content_hwnd();
@@ -5332,6 +5354,31 @@ bool PhiShellWindow::ActiveTabIsSplit() const {
   const TabId tab = active_tab_id();
   return model_ && browser.valid() && tab.valid() &&
          model_->SplitOfTab(browser, tab) != nullptr;
+}
+
+unsigned PhiShellWindow::SplitPaneCardCorners(const RECT& pane) {
+  if (!shell_hwnd_ || ::IsRectEmpty(&pane) ||
+      browsers_->content_fullscreen()) {
+    return 0;
+  }
+  // Geometric, so either split axis reads the same: a pane edge on the
+  // card's edge (within a DIP rounding or two).
+  const RECT content = ComputeWindowLayout().content;
+  const int slack = Scaled(2);
+  const bool bottom = pane.bottom >= content.bottom - slack;
+  unsigned corners = 0;
+  if (bottom && pane.left <= content.left + slack) {
+    corners |= 4;  // Against the sidebar: the card's own corner.
+  }
+  if (bottom && pane.right >= content.right - slack &&
+      !::IsZoomed(shell_hwnd_)) {
+    corners |= 8;  // The window's corner, which Windows rounds when restored.
+  }
+  return corners;
+}
+
+int PhiShellWindow::ContentCornerRadius() const {
+  return Scaled(kContentRadius);
 }
 
 RECT PhiShellWindow::app_menu_rect() {
@@ -7207,13 +7254,11 @@ void PhiShellWindow::PaintChrome(HDC dc,
   // The pane (§4.2): flush to the window's top, right and bottom; its LEFT
   // corners round at kContentRadius against the sidebar's tint, a 1 px
   // stroke on that edge and the sheet shadow (§2.4) so it floats. The
-  // horizontal layout has no pane: its page runs edge to edge.
-  // While the active tab is split the framework draws two sheets of its
-  // own inside the content (§4.6) and the row is a sheet below: this frame
-  // around the whole content would run a stray line down the sidebar seam.
+  // horizontal layout has no pane: its page runs edge to edge. A split
+  // keeps it: the framework's two panes sit flush inside this one card
+  // (docs/split-view-chrome.md).
   if (layout.content.right > layout.content.left &&
-      layout.mode != PhiLayoutMode::kComfortable && layout.content.left > 0 &&
-      !ActiveTabIsSplit()) {
+      layout.mode != PhiLayoutMode::kComfortable && layout.content.left > 0) {
     RECT pane = layout.content;
     if (layout.top_bar.right > layout.top_bar.left) {
       pane.top = layout.top_bar.top;
@@ -7250,35 +7295,9 @@ void PhiShellWindow::PaintChrome(HDC dc,
     const RECT& band = layout.top_bar;
     const int radius = Scaled(kContentRadius);
     HBRUSH bg = ::CreateSolidBrush(bar.window_bg);
-    // While the active tab is split the row is a sheet of its own: its
-    // bottom corners round at kContentRadius and the hairline under it
-    // goes, the tint showing in the framework's 4 dip gutter (§4.6).
-    const bool split_row = ActiveTabIsSplit();
-    if (split_row) {
-      RECT rounded = band;
-      if (band.left == 0 || layout.mode == PhiLayoutMode::kComfortable) {
-        rounded.left -= radius * 2;  // Square at the window's left edge.
-      }
-      rounded.right += radius * 2;
-      // The sheet shadow (§2.4) under the row's edge, on the tint, then
-      // the 1 px stroke: the row floats like the panes below it.
-      const std::array<int, 3> row_alphas = {14, 8, 4};
-      for (int i = 3; i >= 1; --i) {
-        RECT ring = rounded;
-        ::InflateRect(&ring, i, i);
-        ring.top += i + 1;  // Falls downward: nothing above the top edge.
-        PhiStrokeRoundRectAA(
-            dc, ring, radius + i,
-            PhiBlend(palette.ink, palette.ground_top,
-                     row_alphas[static_cast<size_t>(i - 1)]),
-            1);
-      }
-      RECT row_frame = rounded;
-      ::InflateRect(&row_frame, 1, 1);
-      row_frame.top += 2;
-      PhiStrokeRoundRectAA(dc, row_frame, radius + 1, palette.border, 1);
-      PhiFillRoundRectAA(dc, rounded, radius, bar.window_bg);
-    } else if (layout.mode == PhiLayoutMode::kComfortable || band.left == 0) {
+    // A split leaves the row as it is: the panes sit flush under its
+    // separator (docs/split-view-chrome.md).
+    if (layout.mode == PhiLayoutMode::kComfortable || band.left == 0) {
       // Edge to edge and square: the horizontal toolbar, or the pane
       // filling the window with the sidebar hidden.
       ::FillRect(dc, &band, bg);
@@ -7292,12 +7311,10 @@ void PhiShellWindow::PaintChrome(HDC dc,
       ::FillRect(dc, &lower, bg);
     }
     ::DeleteObject(bg);
-    if (!split_row) {
-      RECT sep = {band.left, band.bottom - 1, band.right, band.bottom};
-      HBRUSH sep_brush = ::CreateSolidBrush(bar.separator);
-      ::FillRect(dc, &sep, sep_brush);
-      ::DeleteObject(sep_brush);
-    }
+    RECT sep = {band.left, band.bottom - 1, band.right, band.bottom};
+    HBRUSH sep_brush = ::CreateSolidBrush(bar.separator);
+    ::FillRect(dc, &sep, sep_brush);
+    ::DeleteObject(sep_brush);
   }
 
   // The caption buttons and the divider, over the row they share (the
@@ -7635,8 +7652,21 @@ void PhiShellWindow::PaintChrome(HDC dc,
                          Scaled(fluent::kButtonRadius));
     };
     if (layout.sidebar_downloads.right > layout.sidebar_downloads.left) {
-      // The bottom bar's own Downloads button (§4.2), nav-hover ordinal 17.
-      tool(layout.sidebar_downloads, fluent::kDownload, bottom_hot(11));
+      // The bottom bar's own Downloads button (§4.2), nav-hover ordinal 17:
+      // the design's line icon (a 24 dip frame, margin included) over the
+      // same wash the Fluent tools use.
+      const PhiButtonState state =
+          bottom_hot(11) ? PhiButtonState::kHover : PhiButtonState::kRest;
+      PhiPaintButtonWash(dc, layout.sidebar_downloads, state, palette,
+                         Scaled(fluent::kButtonRadius));
+      const int art = Scaled(24);
+      const RECT& b = layout.sidebar_downloads;
+      const int left = (b.left + b.right - art) / 2;
+      const int top = (b.top + b.bottom - art) / 2;
+      const RECT art_rc = {left, top, left + art, top + art};
+      const std::vector<unsigned char> download_bgra = PhiTintedIconBgra(
+          PhiDownloadIcon(), PhiButtonInk(state, palette, kLabel), art);
+      PhiBlendBgra(dc, art_rc, download_bgra.data(), art, art);
     }
     if (layout.memory.right > layout.memory.left) {
       if (bottom_hot(1)) {

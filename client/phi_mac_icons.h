@@ -27,6 +27,9 @@ const PhiMacIcon& PhiMemoryIcon();
 // has no bug near it, so this one mask stays (§2.2a's exception list).
 const PhiMacIcon& PhiFeedbackIcon();
 const PhiMacIcon& PhiChatIcon();
+// The sidebar bottom bar's Download line icon (Figma node 9044:27222): a
+// 24x24-frame artwork, so it is drawn at 24 dip and keeps its own margin.
+const PhiMacIcon& PhiDownloadIcon();
 
 // The native new-tab page's artwork (native-NTP-icon / native-NTP-incognito
 // imagesets), 192px masks generated into phi_ntp_art.cc by

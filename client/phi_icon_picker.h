@@ -9,6 +9,7 @@
 
 #include <functional>
 #include <string>
+#include <vector>
 
 #include "phibrowser-win/client/phi_theme.h"
 
@@ -41,6 +42,26 @@ std::string PhiPickSpaceIcon(HWND owner,
                              const PhiPalette& palette,
                              const RECT& anchor_screen,
                              const std::string& current_storage);
+
+// The picker's catalogue, for a surface that embeds the grid instead of
+// opening the flyout (Settings › Spaces' editor pane). The flyout reads
+// the same lists, so both offer the same icons in the same order.
+struct PhiIconChoice {
+  std::wstring text;     // What is drawn (a catalog stand-in or an emoji).
+  std::string storage;   // "phi:<id>" / "emoji:<id>".
+  std::wstring name;     // The catalogue name: searched, and announced.
+  std::wstring folded;   // `name` folded by PhiIconSearchFold.
+};
+struct PhiIconChoiceGroup {
+  std::wstring title;  // Empty for the icon tab's one group.
+  std::vector<PhiIconChoice> items;
+};
+// The Icon tab (`emoji` false: one untitled group, the Mac catalog's
+// order) or the Emoji tab (one group per catalogue group). Built once.
+const std::vector<PhiIconChoiceGroup>& PhiIconChoiceGroups(bool emoji);
+// The search's case folding: a query matches a choice whose `folded`
+// name contains PhiIconSearchFold(query).
+std::wstring PhiIconSearchFold(const std::wstring& text);
 
 }  // namespace phi_client
 

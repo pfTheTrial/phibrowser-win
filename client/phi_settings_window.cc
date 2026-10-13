@@ -131,7 +131,9 @@ constexpr int kContentRightPad = 40;
 constexpr int kContentTop = 24;
 constexpr int kContentMaxWidth = 1000;
 constexpr int kPageTitleHeight = 36;   // 28 dip.
-constexpr int kPageTitleGap = 20;
+// The content column is one stack with 24 between its blocks (design node
+// 9056:18105): the title, then the page.
+constexpr int kPageTitleGap = 24;
 // The custom caption strip: the OS caption is retired (WM_NCCALCSIZE) so
 // the pane title can sit CENTERED with the Phi mark leading — the Mac
 // window's look. Both the strip and its close button (Win11's 46dip
@@ -165,17 +167,11 @@ constexpr int kRadius = 4;
 constexpr int kSwatchDot = 22;  // Selection ring = dot + 4.
 constexpr int kSwatchItemGeneral = 26;   // Per-item width in Appearance…
 constexpr int kSwatchGapGeneral = 4;     // …on 30 dip centres, no caption.
-// The Space expander's swatches: 20 dots, 10 apart.
-constexpr int kSwatchDotSpaces = 20;
-constexpr int kSwatchItemSpaces = 24;
-constexpr int kSwatchGapSpaces = 6;
 constexpr int kSwatchBlock = 26;  // The ring frame; no caption.
-constexpr int kSwatchBlockSpaces = 24;
 // The saturation slider: 10pt-tall full-width rounded bar with a gradient,
 // an 18pt white knob (ThemeOpacitySliderView).
 constexpr int kSliderHeight = 20;
 constexpr int kSliderGeneral = 200;
-constexpr int kSliderSpaces = 200;  // themeSliderWidth in the Spaces detail.
 constexpr int kSliderKnob = 18;
 // Layout / appearance / new-tab picture cards: 122x72 image, r5, 2pt accent
 // ring when selected, 11pt caption 10 below, 16 apart (GeneralSttingCardView).
@@ -217,6 +213,79 @@ constexpr int kPillHeight = 32;
 constexpr int kChipSize = 20;
 constexpr int kChipGap = 16;
 constexpr int kChipIndent = kChipSize + kChipGap;
+// Settings › Spaces (design node 9056:18105), dip. The card: 431 inside
+// its 1 px border, the Space list 300 wide, a 1 px divider, the editor.
+constexpr int kSpacesCardInner = 431;
+constexpr int kSpacesListWidth = 300;
+constexpr int kSpacesStackGap = 24;
+// The list: 16 down, rows of 36 on a 2 gap — the 24 grip at 8, 10 to the
+// row body (radius 5, 6 in), 4 off the divider; a 1 px rule 230 wide,
+// right-aligned, between rows; a 24 bar of 24 glyph buttons under a rule.
+constexpr int kSpaceListTop = 16;
+constexpr int kSpaceRowHeight = 36;
+constexpr int kSpaceRowGap = 2;
+constexpr int kSpaceGrip = 24;
+constexpr int kSpaceGripLeft = 8;
+constexpr int kSpaceGripGap = 10;
+constexpr int kSpaceRowRight = 4;
+constexpr int kSpaceRowInset = 6;
+constexpr int kSpaceRowRadius = 5;
+constexpr int kSpaceIcon = 20;
+constexpr int kSpaceIconGap = 6;
+constexpr int kSpaceRule = 230;
+constexpr int kSpaceBar = 24;
+constexpr int kSpaceBarButton = 24;
+// The row's profile pill: 120 x 24, radius 6, label 12 in, the up/down
+// chevrons in a trailing 24 cell.
+constexpr int kSpacePillWidth = 120;
+constexpr int kSpacePillHeight = 24;
+// The editor: 14 padding, 16 between its two wells; the appearance well's
+// rows are 42 with 12 side padding; 8 swatches of 16 across a 200 strip
+// (selection ring 20); the saturation track 199 x 10, its knob 16.
+constexpr int kEditorPad = 14;
+constexpr int kEditorGap = 16;
+constexpr int kWellPadX = 12;
+constexpr int kWellRow = 42;
+constexpr int kWellRadius = 4;
+constexpr int kSpaceSwatchStrip = 200;
+constexpr int kSpaceSwatchDot = 16;
+constexpr int kSpaceTrackWidth = 199;
+constexpr int kSpaceTrackHeight = 10;
+constexpr int kSpaceKnob = 16;
+// The picker well: 12 top and bottom; the Icon | Emoji pill (26, 2 in,
+// 4 between, segments 16 to the side), the 231 x 24 search pill 12 under
+// it, then the grid 16 under that: 8 columns of 24 glyphs spread across
+// the well less 24 a side, 6 between rows.
+constexpr int kWellPadY = 12;
+constexpr int kSegmentHeight = 26;
+constexpr int kSegmentInset = 2;
+constexpr int kSegmentGap = 4;
+constexpr int kSegmentPadX = 16;
+constexpr int kIconSearchWidth = 231;
+constexpr int kIconSearchHeight = 24;
+constexpr int kGridTopGap = 16;
+constexpr int kGridColumns = 8;
+constexpr int kGridCell = 24;
+constexpr int kGridRowGap = 6;
+constexpr int kGridSide = 24;
+// The URL Rules row: 68 at least, 16 padding, 16 between its parts.
+constexpr int kUrlRowMinHeight = 68;
+constexpr int kUrlRowPad = 16;
+constexpr int kUrlRowIcon = 20;
+// One wheel notch (120) scrolls the list or the grid three rows.
+constexpr int kWheelPerRow = 40;
+// The design's swatch fills (light), by theme id — the Mac's themeColor
+// stand-ins drawn as the dots, independent of the saturation slider.
+struct SpaceSwatch {
+  const char* theme_id;
+  COLORREF fill;
+};
+constexpr SpaceSwatch kSpaceSwatches[] = {
+    {"pure", RGB(0xFF, 0xFF, 0xFF)},  {"mint", RGB(0x8D, 0xDA, 0x86)},
+    {"mist", RGB(0x66, 0xCC, 0xFF)},  {"aqua", RGB(0x73, 0xDA, 0xE0)},
+    {"iris", RGB(0x86, 0x82, 0xF6)},  {"petal", RGB(0xDA, 0x7B, 0xE7)},
+    {"coral", RGB(0xF5, 0x86, 0x7B)}, {"amber", RGB(0xF5, 0xD6, 0x7B)},
+};
 
 // The Mac's panes(), in order (AppController+Settings.panes(): Account,
 // General, Profiles, Spaces, Navigation, Phi & AI, Shortcuts, Developer —
@@ -334,7 +403,8 @@ PhiSettingsWindow::~PhiSettingsWindow() {
     measure_dc_ = nullptr;
   }
   for (HFONT font :
-       {font_, title_font_, small_font_, hint_font_, emoji_font_, mdl2_font_}) {
+       {font_, title_font_, small_font_, hint_font_, emoji_font_, mdl2_font_,
+        body_font_, page_title_font_}) {
     if (font) {
       ::DeleteObject(font);
     }
@@ -369,6 +439,8 @@ bool PhiSettingsWindow::OpenWindow() {
   options.caption_buttons =
       kPhiCaptionClose | kPhiCaptionMinimize | kPhiCaptionMaximize;
   options.dim_when_inactive = false;
+  // The design's title bar: "Settings" at x = 12, no mark leading it.
+  options.show_mark = false;
   // Every control here is drawn, so the dialog manager has nothing to move
   // the focus between: the window runs its own focus model over the drawn
   // items (HandleKey), Tab included.
@@ -448,6 +520,10 @@ void PhiSettingsWindow::EnsureFont() {
   swap(&title_font_, PhiFluentFont(dpi(), 28, FW_SEMIBOLD));
   swap(&small_font_, PhiFluentFont(dpi(), 14, FW_SEMIBOLD));
   swap(&hint_font_, PhiFluentFont(dpi(), 12));
+  // The design's 13 px body (Settings › Spaces) and the page title,
+  // Segoe UI Variable Bold 28 (node 9056:18105).
+  swap(&body_font_, PhiFluentFont(dpi(), 13));
+  swap(&page_title_font_, PhiFluentFont(dpi(), 28, FW_BOLD));
   (void)make;
   LOGFONTW emoji = metrics.lfMessageFont;
   const std::wstring face = L"Segoe UI Emoji";
@@ -561,7 +637,8 @@ void PhiSettingsWindow::ScheduleRebuild() {
   // copy of it. Never during a slider drag: that move handler rebuilds, and
   // feeding it its own message would not terminate.
   POINT pt = {};
-  if (!dragging_ && ::GetCursorPos(&pt) && ::WindowFromPoint(pt) == hwnd()) {
+  if (!dragging_ && !reorder_drag_ && ::GetCursorPos(&pt) &&
+      ::WindowFromPoint(pt) == hwnd()) {
     ::ScreenToClient(hwnd(), &pt);
     ::SendMessageW(hwnd(), WM_MOUSEMOVE, 0,
                    MAKELPARAM(static_cast<WORD>(pt.x),
@@ -606,7 +683,7 @@ void PhiSettingsWindow::ShowSpacePicker(const std::string& space_id) {
     return;
   }
   g_instance->section_ = "spaces";
-  g_instance->selected_space_ = space_id;
+  g_instance->SelectSpace(space_id, /*reveal=*/true);
   g_instance->rail_search_.clear();
   g_instance->search_filter_.clear();
   g_instance->scroll_ = 0;
@@ -1688,239 +1765,83 @@ RECT PhiSettingsWindow::AddDetailRow(int* y, const wchar_t* label,
   return control;
 }
 
-void PhiSettingsWindow::AddSpaceBody(int* y, const PhiSpaceSummary& space,
-                                     int ordinal) {
-  const std::vector<PhiProfileSummary> profiles = profiles_->Profiles();
-  *y += Scaled(4);
-  // Name — the value in a field; clicking it opens the rename prompt.
-  {
-    const RECT area = AddDetailRow(y, PhiStr("common.editor.nameField.label"),
-                                   kPillHeight, kDetailFieldWidth);
-    Item field;
-    field.kind = ItemKind::kSearchField;
-    field.text = base::UTF8ToWide(space.name);
-    field.value = 1;  // A value field: no magnifier.
-    field.action = "renspace";
-    field.payload = space.id;
-    field.bounds = area;
-    items_.push_back(std::move(field));
+void PhiSettingsWindow::SelectSpace(const std::string& space_id,
+                                    bool reveal) {
+  if (selected_space_ != space_id) {
+    selected_space_ = space_id;
+    // A new Space's editor opens on ITS icon: the tab it lives on, no
+    // search, the grid scrolled to it.
+    icon_tab_ = -1;
+    icon_search_.clear();
+    grid_first_row_ = -1;
   }
-  // Profile — a ComboBox of the profiles; re-binding respawns the Space's
-  // browser in the new profile (the Mac's changeProfile).
-  {
-    const RECT area =
-        AddDetailRow(y, PhiStr("sidebar.createSpace.profilePicker.label"),
-                     kPillHeight, kDetailFieldWidth);
-    Item pill;
-    pill.kind = ItemKind::kPopup;
-    for (const PhiProfileSummary& profile : profiles) {
-      if (profile.id == space.profile_id) {
-        pill.text = base::UTF8ToWide(profile.name);
-      }
-    }
-    if (pill.text.empty()) {
-      pill.text = base::UTF8ToWide(space.profile_id);
-    }
-    pill.action = "spaceprofile";
-    pill.payload = space.id;
-    // The default Space keeps its binding (PhiSpaceManager refuses it: its
-    // browser exists before any Space is chosen), so the pill is inert
-    // rather than a choice that is refused after the fact.
-    pill.enabled = space.id != spaces_->DefaultSpaceId();
-    pill.bounds = area;
-    items_.push_back(std::move(pill));
+  if (reveal) {
+    list_reveal_ = true;
   }
-  // Icon — the current icon in a 32 tile, "Change…" beside it; both open
-  // the §5.9 picker flyout under the tile.
-  {
-    const RECT area = AddDetailRow(y, PhiStr("common.iconPicker.iconTabTitle"),
-                                   32, 32 + 8 + 88);
-    Item cell;
-    cell.kind = ItemKind::kEmojiCell;
-    cell.text = base::UTF8ToWide(space.icon_text);
-    cell.selected = true;
-    cell.action = "spaceiconpicker";
-    cell.payload = space.id;
-    cell.bounds = {area.left, area.top, area.left + Scaled(32), area.bottom};
-    items_.push_back(std::move(cell));
-    Item button;
-    button.kind = ItemKind::kButton;
-    button.text = PhiStr("settings.spaces.changeIconButton");
-    button.action = "spaceiconpicker";
-    button.payload = space.id;
-    button.bounds = {area.right - Scaled(88), area.top, area.right,
-                     area.bottom};
-    items_.push_back(std::move(button));
-  }
-  // Color — the theme dots; a Space pinning no theme follows the app's.
-  {
-    const auto& themes = PhiBuiltInThemes();
-    const int block = static_cast<int>(themes.size()) *
-                          (kSwatchItemSpaces + kSwatchGapSpaces) -
-                      kSwatchGapSpaces;
-    const bool inherited = space.theme_id.empty();
-    const std::string effective_theme =
-        inherited ? prefs_->ThemeId() : space.theme_id;
-    const RECT area =
-        AddDetailRow(y, PhiStr("settings.spaces.theme.colorLabel"),
-                     kSwatchBlockSpaces, block);
-    int x = area.left;
-    for (size_t i = 0; i < themes.size(); ++i) {
-      Item swatch;
-      swatch.kind = ItemKind::kSwatch;
-      swatch.selected = effective_theme == themes[i].id;
-      swatch.on = swatch.selected && inherited;
-      const PhiPalette resolved = PhiResolvePalette(
-          themes[i], prefs_->Appearance(), prefs_->Saturation());
-      swatch.swatch = i == 0 ? RGB(0xFF, 0xFF, 0xFF) : resolved.ground_top;
-      swatch.ring = resolved.accent;
-      swatch.value = kSwatchDotSpaces;
-      swatch.action = "spacetheme";
-      swatch.payload = themes[i].id;
-      swatch.space = space.id;
-      swatch.bounds = {x, area.top, x + Scaled(kSwatchItemSpaces),
-                       area.top + Scaled(kSwatchBlockSpaces)};
-      items_.push_back(std::move(swatch));
-      x += Scaled(kSwatchItemSpaces + kSwatchGapSpaces);
-    }
-  }
-  // Saturation — this Space's slider (−1 follows the app-wide one).
-  {
-    const RECT area =
-        AddDetailRow(y, PhiStr("settings.spaces.theme.saturationLabel"),
-                     kSliderHeight, kSliderSpaces);
-    Item slider;
-    slider.kind = ItemKind::kSliderTrack;
-    slider.value =
-        space.saturation < 0 ? prefs_->Saturation() : space.saturation;
-    slider.action = "spacesat";
-    slider.payload = space.id;
-    slider.bounds = area;
-    items_.push_back(std::move(slider));
-  }
-  // Shortcut — Ctrl+n follows the strip order (the first nine Spaces):
-  // two keycaps and the note, with Delete Space trailing on the same row.
-  {
-    const RECT area = AddDetailRow(y, PhiStr("settings.spaces.shortcutLabel"),
-                                   24, 200);
-    int x = area.left;
-    if (ordinal >= 1 && ordinal <= 9) {
-      // Key names, not numbers: the digit is the key on the keyboard.
-      const std::wstring caps[] = {PhiStr("sidebar.ctrl"),
-                                   std::to_wstring(ordinal)};
-      for (const std::wstring& cap_text : caps) {
-        Item cap;
-        cap.kind = ItemKind::kKeycap;
-        cap.text = cap_text;
-        const int w = Scaled(cap_text.size() > 1 ? 34 : 24);
-        cap.bounds = {x, area.top, x + w, area.bottom};
-        items_.push_back(std::move(cap));
-        x += w + Scaled(6);
-      }
-    }
-    Item note;
-    note.kind = ItemKind::kHint;
-    note.text = PhiStr("settings.spaces.shortcutHint");
-    note.bounds = {x + Scaled(8), area.top, x + Scaled(200), area.bottom};
-    items_.push_back(std::move(note));
-    const bool deletable = spaces_->CanDeleteSpace(space.id);
-    Item button;
-    button.kind = ItemKind::kButton;
-    button.text = PhiStr("menuBar.deleteSpace");
-    button.danger = true;
-    button.enabled = deletable;
-    button.action = "delspace";
-    button.payload = space.id;
-    const int mid = (area.top + area.bottom) / 2;
-    button.bounds = {content_right_ - Scaled(kCardPadding) - Scaled(110),
-                     mid - Scaled(kPillHeight) / 2,
-                     content_right_ - Scaled(kCardPadding),
-                     mid + Scaled(kPillHeight) / 2};
-    items_.push_back(std::move(button));
-  }
-  *y += Scaled(4);
 }
 
+// Settings › Spaces (design node 9056:18105; the Mac's SpacesSettingsView,
+// master-detail): the two-pane card, then the pane-wide rows the card has
+// no room for, then URL Rules.
 void PhiSettingsWindow::BuildSpaces(int* y) {
   const std::vector<PhiSpaceSummary> spaces = spaces_->Summaries();
   const std::vector<PhiProfileSummary> profiles = profiles_->Profiles();
   const bool searching = !search_filter_.empty();
-  // The group header: "Your Spaces" with the "+ New Space" button on the
-  // same line (§7.1). Neither shows on the results page.
-  if (!searching) {
-    Item heading;
-    heading.kind = ItemKind::kSectionTitle;
-    heading.text = PhiStr("settings.spaces.listTitle");
-    heading.bounds = {content_left_, *y, content_right_ - Scaled(140),
-                      *y + Scaled(kPillHeight)};
-    items_.push_back(std::move(heading));
-    Item add;
-    add.kind = ItemKind::kButton;
-    // The leading MDL2 "+" is the paint's cue to draw it from the icon
-    // face; the words after it are the catalog's.
-    add.text = std::wstring(L"\uE710 ") +
-               PhiStr("settings.spaces.newButtonTooltip");
-    add.action = "newspace";
-    add.bounds = {content_right_ - Scaled(122), *y, content_right_,
-                  *y + Scaled(kPillHeight)};
-    items_.push_back(std::move(add));
-    *y += Scaled(kPillHeight) + Scaled(kTitleToCard);
-  }
-  // One card stacks every Space's expander row (design "Settings ·
-  // Spaces"): the open one's body sits under its header.
-  BeginSection(y, nullptr);
-  *y -= Scaled(kRowPadding);
-  int ordinal = 0;
-  bool first = true;
-  for (const PhiSpaceSummary& space : spaces) {
-    ++ordinal;
-    const std::wstring name = base::UTF8ToWide(space.name);
-    std::wstring profile_name;
-    for (const PhiProfileSummary& profile : profiles) {
-      if (profile.id == space.profile_id) {
-        profile_name = base::UTF8ToWide(profile.name);
+  // A selection always exists while a Space does: the one kept, else the
+  // default role's (the Mac's selectInitialSpace).
+  const auto find = [&spaces](const std::string& id) -> const PhiSpaceSummary* {
+    for (const PhiSpaceSummary& space : spaces) {
+      if (space.id == id) {
+        return &space;
       }
     }
-    if (searching && !SearchMatches(name.c_str(), profile_name.c_str())) {
-      continue;
+    return nullptr;
+  };
+  if (!find(selected_space_) && !spaces.empty()) {
+    const PhiSpaceSummary* fallback = find(spaces_->DefaultSpaceId());
+    SelectSpace(fallback ? fallback->id : spaces.front().id, /*reveal=*/true);
+  }
+  const PhiSpaceSummary* selected = find(selected_space_);
+
+  // The results page shows the card when the query names a Space (or its
+  // profile) or one of the card's own controls.
+  bool show_card = !searching;
+  if (searching) {
+    for (const PhiSpaceSummary& space : spaces) {
+      std::wstring profile_name;
+      for (const PhiProfileSummary& profile : profiles) {
+        if (profile.id == space.profile_id) {
+          profile_name = base::UTF8ToWide(profile.name);
+        }
+      }
+      show_card = show_card ||
+                  SearchMatches(base::UTF8ToWide(space.name).c_str(),
+                                profile_name.c_str());
     }
-    ++filter_hits_;
-    // Two independent facts, each its own phrase, joined by the list
-    // separator the other hover lines use.
-    std::wstring hint =
-        profile_name.empty()
-            ? std::wstring()
-            : PhiStrF("settings.spaces.profileHint", {profile_name});
-    if (ordinal <= 9) {
-      // A chord is key names joined by "+" (layout, not language).
-      hint += (hint.empty() ? L"" : L" · ") +
-              std::wstring(PhiStr("sidebar.ctrl")) + L"+" +
-              std::to_wstring(ordinal);
-    }
-    if (!first) {
-      Item divider;
-      divider.kind = ItemKind::kDivider;
-      divider.bounds = {content_left_ + 1, *y, content_right_ - 1, *y + 1};
-      items_.push_back(std::move(divider));
-    }
-    first = false;
-    const bool expanded = !searching && selected_space_ == space.id;
-    const PhiPalette space_palette = PhiResolvePalette(
-        PhiThemeById(space.theme_id.empty() ? prefs_->ThemeId()
-                                            : space.theme_id),
-        prefs_->Appearance(),
-        space.saturation < 0 ? prefs_->Saturation() : space.saturation);
-    AddExpander(y, name, hint, base::UTF8ToWide(space.icon_text), false,
-                space_palette.accent, expanded, false, "selectspace",
-                space.id);
-    if (expanded) {
-      AddSpaceBody(y, space, ordinal);
+    for (const char* key :
+         {"settings.navigation.spacesTitle", "settings.spaces.theme.colorLabel",
+          "settings.spaces.theme.saturationLabel",
+          "common.iconPicker.iconTabTitle", "common.iconPicker.emojiTabTitle",
+          "settings.spaces.newButtonTooltip"}) {
+      show_card = show_card || SearchMatches(PhiStr(key), nullptr);
     }
   }
-  EndSection(y);
+  if (show_card && selected) {
+    if (searching) {
+      ++filter_hits_;
+    }
+    BuildSpaceCard(y, spaces, profiles);
+    *y += Scaled(kSpacesStackGap);
+  }
 
-  // Pane-wide card: pinned tab scope, with the live description.
-  BeginSection(y, PhiStr("settings.spaces.pinnedTabs.sectionTitle"));
+  // The design's URL Rules row closes its composition…
+  AddSpacesUrlRow(y);
+
+  // …and under it, what the old expander page carried that the design has
+  // no place for: the pane-wide pinned-tab scope (the Mac keeps it under
+  // its card too) and the selected Space's Ctrl+n, which follows the list
+  // order.
+  BeginSection(y, nullptr);
   {
     const char* description = "";
     switch (host_->PinScope()) {
@@ -1943,11 +1864,565 @@ void PhiSettingsWindow::BuildSpaces(int* y) {
                 "pinscope", *description ? PhiStr(description) : nullptr,
                 kChipIndent, 0xE718);
   }
+  if (selected) {
+    AddDividerRow(y);
+    int ordinal = 0;
+    for (size_t i = 0; i < spaces.size(); ++i) {
+      if (spaces[i].id == selected->id) {
+        ordinal = static_cast<int>(i) + 1;
+      }
+    }
+    // "Shortcut: Work", the keycaps trailing; past the ninth Space there
+    // is no chord, only the note.
+    const std::wstring title =
+        PhiStrF("settings.a11y.labelValue",
+                {PhiStr("settings.spaces.shortcutLabel"),
+                 base::UTF8ToWide(selected->name)});
+    const bool chord = ordinal >= 1 && ordinal <= 9;
+    const RECT area =
+        AddRow(y, title.c_str(), 24, chord ? 34 + 6 + 24 : 20,
+               PhiStr("settings.spaces.shortcutHint"), kChipIndent, 0xE765);
+    if (chord && area.right > area.left) {
+      // Key names, not numbers: the digit is the key on the keyboard.
+      const std::wstring caps[] = {PhiStr("sidebar.ctrl"),
+                                   std::to_wstring(ordinal)};
+      int x = area.left;
+      for (const std::wstring& cap_text : caps) {
+        Item cap;
+        cap.kind = ItemKind::kKeycap;
+        cap.text = cap_text;
+        const int w = Scaled(cap_text.size() > 1 ? 34 : 24);
+        cap.bounds = {x, area.top, x + w, area.bottom};
+        items_.push_back(std::move(cap));
+        x += w + Scaled(6);
+      }
+    }
+  }
   EndSection(y);
+}
 
-  // The routing rules belong with the Spaces they route into; the same row
-  // also sits on the Navigation pane beside the other link-opening controls.
-  AddUrlRulesSection(y);
+void PhiSettingsWindow::BuildSpaceCard(
+    int* y,
+    const std::vector<PhiSpaceSummary>& spaces,
+    const std::vector<PhiProfileSummary>& profiles) {
+  const RECT card = {content_left_, *y, content_right_,
+                     *y + Scaled(kSpacesCardInner) + 2};
+  const RECT inner = {card.left + 1, card.top + 1, card.right - 1,
+                      card.bottom - 1};
+  const int divider_x = inner.left + Scaled(kSpacesListWidth);
+  // The bar's rule; the 24 bar sits under it, flush with the card.
+  const int bar_line = inner.bottom - Scaled(kSpaceBar) - 1;
+  {
+    Item frame;
+    frame.kind = ItemKind::kSpaceCard;
+    frame.bounds = card;
+    frame.value = divider_x;
+    frame.total = bar_line;
+    items_.push_back(std::move(frame));
+  }
+
+  // --- The list -------------------------------------------------------------
+  // In drag order while the grip is held (the Mac's orderedIds), with any
+  // Space the drag does not know appended; otherwise the model's order.
+  std::vector<const PhiSpaceSummary*> order;
+  if (reorder_drag_) {
+    for (const std::string& id : reorder_order_) {
+      for (const PhiSpaceSummary& space : spaces) {
+        if (space.id == id) {
+          order.push_back(&space);
+        }
+      }
+    }
+  }
+  for (const PhiSpaceSummary& space : spaces) {
+    if (std::find(order.begin(), order.end(), &space) == order.end()) {
+      order.push_back(&space);
+    }
+  }
+  const int count = static_cast<int>(order.size());
+  const int list_top = inner.top + Scaled(kSpaceListTop);
+  const int list_bottom = bar_line - Scaled(kSpaceRowRight);
+  const int pitch = Scaled(kSpaceRowHeight + kSpaceRowGap);
+  const int fit = std::max(
+      1, (list_bottom - list_top + Scaled(kSpaceRowGap)) / pitch);
+  int selected_index = 0;
+  for (int i = 0; i < count; ++i) {
+    if (order[static_cast<size_t>(i)]->id == selected_space_) {
+      selected_index = i;
+    }
+  }
+  if (list_reveal_) {
+    if (selected_index < list_first_) {
+      list_first_ = selected_index;
+    } else if (selected_index >= list_first_ + fit) {
+      list_first_ = selected_index - fit + 1;
+    }
+    list_reveal_ = false;
+  }
+  list_first_ = std::max(0, std::min(list_first_, std::max(0, count - fit)));
+  list_visible_ = fit;
+  list_pitch_ = pitch;
+  list_rect_ = {inner.left, list_top, divider_x, list_bottom};
+  const int last = std::min(count, list_first_ + fit);
+  const std::string default_id = spaces_->DefaultSpaceId();
+  struct RowGeometry {
+    RECT grip;
+    RECT body;
+    RECT pill;
+  };
+  std::vector<RowGeometry> rows;
+  for (int i = list_first_; i < last; ++i) {
+    const int top = list_top + (i - list_first_) * pitch;
+    const int mid = top + Scaled(kSpaceRowHeight) / 2;
+    RowGeometry row;
+    const int grip_left = inner.left + Scaled(kSpaceGripLeft);
+    row.grip = {grip_left, mid - Scaled(kSpaceGrip) / 2,
+                grip_left + Scaled(kSpaceGrip),
+                mid - Scaled(kSpaceGrip) / 2 + Scaled(kSpaceGrip)};
+    row.body = {row.grip.right + Scaled(kSpaceGripGap), top,
+                divider_x - Scaled(kSpaceRowRight),
+                top + Scaled(kSpaceRowHeight)};
+    const int pill_right = row.body.right - Scaled(kSpaceRowInset);
+    row.pill = {pill_right - Scaled(kSpacePillWidth),
+                mid - Scaled(kSpacePillHeight) / 2, pill_right,
+                mid - Scaled(kSpacePillHeight) / 2 + Scaled(kSpacePillHeight)};
+    rows.push_back(row);
+  }
+  // Pass 1 — the row bodies, one run in build order so the list is ONE
+  // focus group (Up / Down walk it, as a list box), and the rules.
+  for (int i = list_first_; i < last; ++i) {
+    const PhiSpaceSummary& space = *order[static_cast<size_t>(i)];
+    const RowGeometry& row = rows[static_cast<size_t>(i - list_first_)];
+    Item body;
+    body.kind = ItemKind::kSpaceRow;
+    body.text = base::UTF8ToWide(space.name);
+    body.icon = base::UTF8ToWide(space.icon_text);
+    body.selected = space.id == selected_space_;
+    body.value = row.pill.left;  // Where the name stops.
+    body.action = "pickspace";
+    body.payload = space.id;
+    body.bounds = row.body;
+    items_.push_back(std::move(body));
+  }
+  for (int i = list_first_; i + 1 < last; ++i) {
+    // No rule against the selected row's fill.
+    if (i == selected_index || i + 1 == selected_index) {
+      continue;
+    }
+    const RowGeometry& row = rows[static_cast<size_t>(i - list_first_)];
+    Item rule;
+    rule.kind = ItemKind::kHairline;
+    rule.bounds = {row.body.right - Scaled(kSpaceRule), row.body.bottom,
+                   row.body.right, row.body.bottom + 1};
+    items_.push_back(std::move(rule));
+  }
+  // Pass 2 — each row's grip and profile pill. Only the selected row's
+  // are Tab stops; the others take a click (and keep the keyboard focus
+  // it gives them).
+  for (int i = list_first_; i < last; ++i) {
+    const PhiSpaceSummary& space = *order[static_cast<size_t>(i)];
+    const RowGeometry& row = rows[static_cast<size_t>(i - list_first_)];
+    const bool is_selected = space.id == selected_space_;
+    const std::wstring name = base::UTF8ToWide(space.name);
+    Item grip;
+    grip.kind = ItemKind::kDragHandle;
+    grip.action = "spacedrag";
+    grip.payload = space.id;
+    grip.a11y = PhiStrF("settings.a11y.labelValue",
+                        {PhiStr("library.spaces.reorder"), name});
+    grip.tab_stop = is_selected;
+    grip.bounds = row.grip;
+    items_.push_back(std::move(grip));
+    std::wstring profile_name;
+    for (const PhiProfileSummary& profile : profiles) {
+      if (profile.id == space.profile_id) {
+        profile_name = base::UTF8ToWide(profile.name);
+      }
+    }
+    if (profile_name.empty()) {
+      profile_name = base::UTF8ToWide(space.profile_id);
+    }
+    Item pill;
+    pill.kind = ItemKind::kRowPopup;
+    pill.text = profile_name;
+    pill.on = is_selected;
+    pill.action = "spaceprofile";
+    pill.payload = space.id;
+    // The default Space keeps its binding (PhiSpaceManager refuses it: its
+    // browser exists before any Space is chosen), so its pill is inert
+    // rather than a choice that is refused after the fact.
+    pill.enabled = space.id != default_id;
+    pill.a11y = PhiStrF(
+        "settings.a11y.labelValue",
+        {name, PhiStrF("settings.spaces.profileHint", {profile_name})});
+    pill.tab_stop = is_selected;
+    pill.bounds = row.pill;
+    items_.push_back(std::move(pill));
+  }
+
+  // The bar: + / − / edit, 24 square, split by 1 px rules.
+  {
+    const int top = bar_line + 1;
+    int x = inner.left + Scaled(4);
+    const bool deletable = spaces_->CanDeleteSpace(selected_space_);
+    const struct {
+      const wchar_t* glyph;
+      const char* action;
+      const char* name;  // The Mac's .help strings.
+      bool enabled;
+    } kButtons[] = {
+        {L"", "newspace", "settings.spaces.newButtonTooltip", true},
+        {L"", "delspace", "settings.spaces.deleteButtonTooltip",
+         deletable},
+        {L"", "renspace", "settings.spaces.renameButtonTooltip", true},
+    };
+    bool first = true;
+    for (const auto& definition : kButtons) {
+      if (!first) {
+        Item rule;
+        rule.kind = ItemKind::kHairline;
+        rule.bounds = {x, top, x + 1, top + Scaled(kSpaceBar)};
+        items_.push_back(std::move(rule));
+        x += 1;
+      }
+      first = false;
+      Item button;
+      button.kind = ItemKind::kBarButton;
+      button.text = definition.glyph;
+      button.action = definition.action;
+      button.a11y = PhiStr(definition.name);
+      button.enabled = definition.enabled;
+      button.bounds = {x, top, x + Scaled(kSpaceBarButton),
+                       top + Scaled(kSpaceBar)};
+      items_.push_back(std::move(button));
+      x += Scaled(kSpaceBarButton);
+    }
+  }
+
+  // --- The editor -----------------------------------------------------------
+  for (const PhiSpaceSummary& space : spaces) {
+    if (space.id == selected_space_) {
+      const RECT pane = {divider_x + 1 + Scaled(kEditorPad),
+                         inner.top + Scaled(kEditorPad),
+                         inner.right - Scaled(kEditorPad),
+                         inner.bottom - Scaled(kEditorPad)};
+      BuildSpaceEditor(pane, space);
+      break;
+    }
+  }
+  *y = card.bottom;
+}
+
+void PhiSettingsWindow::BuildSpaceEditor(const RECT& pane,
+                                         const PhiSpaceSummary& space) {
+  const bool dark = prefs_->Palette().dark;
+  // The wells' ground: ink 3 % over the card (white 3 % in dark).
+  const COLORREF card_ground =
+      dark ? RGB(0x2B, 0x2B, 0x2B) : RGB(0xFF, 0xFF, 0xFF);
+  const COLORREF well =
+      Blend(dark ? RGB(0xFF, 0xFF, 0xFF) : RGB(0x00, 0x00, 0x00), card_ground,
+            8);
+  // A row's label, stopping 8 short of the control trailing it.
+  const auto label = [&](const RECT& row, const wchar_t* text,
+                         int control_width) {
+    Item item;
+    item.kind = ItemKind::kPaneLabel;
+    item.text = text;
+    item.backdrop = well;
+    item.bounds = {row.left + Scaled(kWellPadX), row.top,
+                   std::max<int>(row.left + Scaled(kWellPadX),
+                                 row.right - Scaled(kWellPadX) -
+                                     Scaled(control_width) - Scaled(8)),
+                   row.bottom};
+    items_.push_back(std::move(item));
+  };
+
+  // 1) Appearance: Color, a rule, Saturation.
+  const RECT appearance = {pane.left, pane.top, pane.right,
+                           pane.top + 2 * Scaled(kWellRow) + 1};
+  {
+    Item box;
+    box.kind = ItemKind::kGroupBox;
+    box.backdrop = well;
+    box.bounds = appearance;
+    items_.push_back(std::move(box));
+  }
+  const RECT color_row = {appearance.left, appearance.top, appearance.right,
+                          appearance.top + Scaled(kWellRow)};
+  label(color_row, PhiStr("settings.spaces.theme.colorLabel"),
+        kSpaceSwatchStrip + 2);
+  {
+    // One dot per built-in theme in the Mac's order; a Space pinning no
+    // theme shows the app's with a hairline ring instead of the accent.
+    const auto& themes = PhiBuiltInThemes();
+    const bool inherited = space.theme_id.empty();
+    const std::string effective =
+        inherited ? prefs_->ThemeId() : space.theme_id;
+    const PhiAppearance appearance_mode =
+        dark ? PhiAppearance::kDark : PhiAppearance::kLight;
+    const int strip_right = color_row.right - Scaled(kWellPadX);
+    const int strip_left = strip_right - Scaled(kSpaceSwatchStrip);
+    const int dot = Scaled(kSpaceSwatchDot);
+    const int frame = dot + Scaled(4);
+    const int count = static_cast<int>(themes.size());
+    const int mid = (color_row.top + color_row.bottom) / 2;
+    for (int i = 0; i < count; ++i) {
+      const PhiTheme& theme = themes[static_cast<size_t>(i)];
+      Item swatch;
+      swatch.kind = ItemKind::kSwatch;
+      swatch.selected = effective == theme.id;
+      swatch.on = swatch.selected && inherited;
+      // The design's fill (light); dark mode draws the theme's own dark
+      // themeColor, as the Mac's ThemeSwatchView does. Pure stays white.
+      COLORREF fill = dark ? theme.dark.accent : theme.light.accent;
+      for (const SpaceSwatch& entry : kSpaceSwatches) {
+        if (std::string(entry.theme_id) == theme.id && !dark) {
+          fill = entry.fill;
+        }
+      }
+      if (std::string(theme.id) == "pure") {
+        fill = RGB(0xFF, 0xFF, 0xFF);
+      }
+      swatch.swatch = fill;
+      swatch.ring =
+          PhiResolvePalette(theme, appearance_mode, prefs_->Saturation())
+              .accent;
+      swatch.value = kSpaceSwatchDot;
+      swatch.backdrop = well;
+      swatch.action = "spacetheme";
+      swatch.payload = theme.id;
+      swatch.space = space.id;
+      // Spread across the strip (space-between); the item is the ring's
+      // square, centred on the dot.
+      const int cx = strip_left + dot / 2 +
+                     (count > 1 ? (Scaled(kSpaceSwatchStrip) - dot) * i /
+                                      (count - 1)
+                                : 0);
+      swatch.bounds = {cx - frame / 2, mid - frame / 2, cx - frame / 2 + frame,
+                       mid - frame / 2 + frame};
+      items_.push_back(std::move(swatch));
+    }
+  }
+  {
+    Item rule;
+    rule.kind = ItemKind::kHairline;
+    rule.backdrop = well;
+    rule.bounds = {appearance.left + Scaled(kWellPadX), color_row.bottom,
+                   appearance.right - Scaled(kWellPadX), color_row.bottom + 1};
+    items_.push_back(std::move(rule));
+  }
+  const RECT saturation_row = {appearance.left, color_row.bottom + 1,
+                               appearance.right, appearance.bottom};
+  label(saturation_row, PhiStr("settings.spaces.theme.saturationLabel"),
+        kSpaceTrackWidth);
+  {
+    // The Mac's ThemeOpacitySliderView: a 10 track in a hairline, the
+    // well's ground running into the theme's window tint, a white knob.
+    const PhiTheme& theme = PhiThemeById(
+        space.theme_id.empty() ? prefs_->ThemeId() : space.theme_id);
+    const int right = saturation_row.right - Scaled(kWellPadX);
+    const int mid = (saturation_row.top + saturation_row.bottom) / 2;
+    Item slider;
+    slider.kind = ItemKind::kSliderTrack;
+    slider.on = true;  // The Spaces editor's track, not the accent bar.
+    slider.value =
+        space.saturation < 0 ? prefs_->Saturation() : space.saturation;
+    slider.swatch = dark ? theme.dark.overlay : theme.light.overlay;
+    slider.backdrop = well;
+    slider.action = "spacesat";
+    slider.payload = space.id;
+    slider.a11y = PhiStr("settings.spaces.theme.saturationLabel");
+    slider.bounds = {right - Scaled(kSpaceTrackWidth),
+                     mid - Scaled(kSpaceKnob) / 2, right,
+                     mid - Scaled(kSpaceKnob) / 2 + Scaled(kSpaceKnob)};
+    items_.push_back(std::move(slider));
+  }
+
+  // 2) The picker well: Icon | Emoji, search, the grid.
+  const RECT picker = {pane.left, appearance.bottom + Scaled(kEditorGap),
+                       pane.right, pane.bottom};
+  const size_t picker_index = items_.size();
+  {
+    Item box;
+    box.kind = ItemKind::kGroupBox;
+    box.backdrop = well;
+    box.bounds = picker;
+    items_.push_back(std::move(box));
+  }
+  const bool emoji_tab =
+      icon_tab_ >= 0 ? icon_tab_ == 1
+                     : space.icon.rfind(kPhiEmojiPrefix, 0) == 0;
+  const int centre = (picker.left + picker.right) / 2;
+  int top = picker.top + Scaled(kWellPadY);
+  {
+    const std::array<const wchar_t*, 2> labels = {
+        PhiStr("common.iconPicker.iconTabTitle"),
+        PhiStr("common.iconPicker.emojiTabTitle")};
+    std::array<int, 2> widths = {};
+    for (size_t i = 0; i < 2; ++i) {
+      int text_px = 0;
+      if (hint_font_) {
+        if (!measure_dc_) {
+          measure_dc_ = ::CreateCompatibleDC(nullptr);
+        }
+        if (measure_dc_) {
+          HGDIOBJ previous = ::SelectObject(measure_dc_, hint_font_);
+          RECT box = {0, 0, 0, 0};
+          ::DrawTextW(measure_dc_, labels[i], -1, &box,
+                      DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX);
+          ::SelectObject(measure_dc_, previous);
+          text_px = box.right - box.left;
+        }
+      }
+      widths[i] = text_px + 2 * Scaled(kSegmentPadX);
+    }
+    const int inset = Scaled(kSegmentInset);
+    const int pill_w = inset + widths[0] + Scaled(kSegmentGap) + widths[1] + inset;
+    const int pill_left = centre - pill_w / 2;
+    Item track;
+    track.kind = ItemKind::kSegment;
+    track.backdrop = well;
+    track.bounds = {pill_left, top, pill_left + pill_w,
+                    top + Scaled(kSegmentHeight)};
+    items_.push_back(std::move(track));
+    int x = pill_left + inset;
+    for (size_t i = 0; i < 2; ++i) {
+      Item segment;
+      segment.kind = ItemKind::kSegment;
+      segment.text = labels[i];
+      segment.selected = (i == 1) == emoji_tab;
+      segment.value = static_cast<int>(i);
+      segment.action = "icontab";
+      segment.payload = i == 0 ? "icon" : "emoji";
+      segment.backdrop = well;
+      segment.bounds = {x, top + inset, x + widths[i],
+                        top + Scaled(kSegmentHeight) - inset};
+      items_.push_back(std::move(segment));
+      x += widths[i] + Scaled(kSegmentGap);
+    }
+    top += Scaled(kSegmentHeight) + Scaled(kWellPadY);
+  }
+  {
+    const int width = std::min(Scaled(kIconSearchWidth),
+                               static_cast<int>(picker.right - picker.left) -
+                                   2 * Scaled(kWellPadX));
+    Item search;
+    search.kind = ItemKind::kIconSearch;
+    search.text = icon_search_;
+    search.detail = PhiStr(emoji_tab ? "common.iconPicker.emojiSearchPlaceholder"
+                                     : "common.iconPicker.iconsSearchPlaceholder");
+    search.backdrop = well;
+    search.bounds = {centre - width / 2, top, centre - width / 2 + width,
+                     top + Scaled(kIconSearchHeight)};
+    items_.push_back(std::move(search));
+    top += Scaled(kIconSearchHeight) + Scaled(kGridTopGap);
+  }
+  // The grid: whole rows only, scrolled by row (the wheel, or the arrows
+  // walking off its edge); only the rows in view are built.
+  const std::wstring needle = PhiIconSearchFold(icon_search_);
+  std::vector<const PhiIconChoice*> shown;
+  for (const PhiIconChoiceGroup& group : PhiIconChoiceGroups(emoji_tab)) {
+    for (const PhiIconChoice& choice : group.items) {
+      if (needle.empty() || choice.folded.find(needle) != std::wstring::npos) {
+        shown.push_back(&choice);
+      }
+    }
+  }
+  const int cell = Scaled(kGridCell);
+  const int row_pitch = cell + Scaled(kGridRowGap);
+  const int grid_left = picker.left + Scaled(kGridSide);
+  const int grid_right = picker.right - Scaled(kGridSide);
+  const int grid_bottom = picker.bottom - Scaled(kWellPadY);
+  const int visible = std::max(
+      1, (grid_bottom - top + Scaled(kGridRowGap)) / row_pitch);
+  const int count = static_cast<int>(shown.size());
+  const int rows = (count + kGridColumns - 1) / kGridColumns;
+  const int max_first = std::max(0, rows - visible);
+  if (grid_first_row_ < 0) {
+    // Reveal the Space's icon: its row in view, a little down from the top.
+    int current = -1;
+    for (int i = 0; i < count; ++i) {
+      if (shown[static_cast<size_t>(i)]->storage == space.icon) {
+        current = i;
+      }
+    }
+    const int row = current < 0 ? 0 : current / kGridColumns;
+    grid_first_row_ = row < visible ? 0 : row - visible / 2;
+  }
+  grid_first_row_ = std::max(0, std::min(grid_first_row_, max_first));
+  grid_rows_ = rows;
+  grid_visible_ = visible;
+  grid_count_ = count;
+  grid_rect_ = {picker.left, top, picker.right,
+                top + visible * row_pitch - Scaled(kGridRowGap)};
+  items_[picker_index].value = grid_first_row_;
+  items_[picker_index].total = rows;
+  items_[picker_index].visible = visible;
+  if (shown.empty()) {
+    Item none;
+    none.kind = ItemKind::kPaneLabel;
+    none.value = 1;  // Centred, secondary.
+    none.text = PhiStr("common.iconPicker.searchEmptyMessage");
+    none.backdrop = well;
+    none.bounds = {grid_left, top, grid_right, top + row_pitch};
+    items_.push_back(std::move(none));
+    return;
+  }
+  const int span = std::max(cell, grid_right - grid_left);
+  const int first = grid_first_row_ * kGridColumns;
+  const int end = std::min(count, first + visible * kGridColumns);
+  for (int i = first; i < end; ++i) {
+    const PhiIconChoice& choice = *shown[static_cast<size_t>(i)];
+    const int col = i % kGridColumns;
+    const int row = i / kGridColumns - grid_first_row_;
+    const int x = grid_left + (span - cell) * col / (kGridColumns - 1);
+    const int cell_top = top + row * row_pitch;
+    Item glyph;
+    glyph.kind = ItemKind::kPickerCell;
+    glyph.text = choice.text;
+    glyph.a11y = choice.name;
+    glyph.selected = choice.storage == space.icon;
+    glyph.value = i;
+    glyph.backdrop = well;
+    glyph.action = "spaceicon";
+    glyph.payload = choice.storage;
+    glyph.space = space.id;
+    glyph.bounds = {x, cell_top, x + cell, cell_top + cell};
+    items_.push_back(std::move(glyph));
+  }
+}
+
+// The design's "URL Rules" row under the card: the link glyph, the title
+// over its description, a chevron; the whole row opens the universal
+// editor (PhiUrlRulesWindow), as the Navigation page's row does.
+void PhiSettingsWindow::AddSpacesUrlRow(int* y) {
+  const wchar_t* title = PhiStr("settings.navigations.urlRules.sectionTitle");
+  const wchar_t* subtitle =
+      PhiStr("settings.navigations.urlRules.sectionDescription");
+  if (!SearchMatches(title, subtitle)) {
+    return;
+  }
+  if (!search_filter_.empty()) {
+    ++filter_hits_;
+  }
+  const int pad = Scaled(kUrlRowPad);
+  const int text_left = content_left_ + pad + Scaled(kUrlRowIcon) + pad;
+  const int text_right = content_right_ - pad - Scaled(16) - pad;
+  const int title_h = Scaled(18);
+  const int sub_h =
+      std::max(Scaled(16), WrappedHeight(hint_font_, subtitle,
+                                         std::max(1, text_right - text_left)));
+  const int height = std::max(Scaled(kUrlRowMinHeight),
+                              title_h + Scaled(2) + sub_h + 2 * pad + 1);
+  Item row;
+  row.kind = ItemKind::kUrlRow;
+  row.text = title;
+  row.detail = subtitle;
+  row.value = sub_h;
+  row.action = "urlrules";
+  row.bounds = {content_left_, *y, content_right_, *y + height};
+  items_.push_back(std::move(row));
+  *y += height + Scaled(kSpacesStackGap);
 }
 
 // The Mac's Navigations pane (NavigationsSettingsView): the link-opening
@@ -2958,6 +3433,9 @@ void PhiSettingsWindow::BuildDeveloper(int* y) {
 void PhiSettingsWindow::Rebuild() {
   items_.clear();
   open_card_ = 0;
+  // The Spaces card's inner scrollers exist only while a build lays it out.
+  list_rect_ = {};
+  grid_rect_ = {};
   if (!host_) {
     ClearHits();
     return;
@@ -3262,6 +3740,9 @@ void PhiSettingsWindow::PublishHits() {
       }
     }
     std::wstring name = item.text.empty() ? item.detail : item.text;
+    if (!item.a11y.empty()) {
+      name = item.a11y;  // The drawn text is not the name (or there is none).
+    }
     switch (item.kind) {
       case ItemKind::kSwatch:
         // Every theme dot used to take its row's label, so a screen reader
@@ -3273,7 +3754,11 @@ void PhiSettingsWindow::PublishHits() {
         // rides the name — and a keyboard step renames it, which UIA
         // announces.
         name = PhiStrF("settings.a11y.sliderValue",
-                       {row_label(i), PhiFormatNumber(item.value)});
+                       {item.a11y.empty() ? row_label(i) : item.a11y,
+                        PhiFormatNumber(item.value)});
+        break;
+      case ItemKind::kIconSearch:
+        name = item.detail;  // The placeholder names the field.
         break;
       case ItemKind::kPopup: {
         // A ComboBox announces its label AND its current choice.
@@ -3291,9 +3776,6 @@ void PhiSettingsWindow::PublishHits() {
           name = PhiStrF("settings.a11y.labelValue",
                          {row_label(i), item.text});
         }
-        break;
-      case ItemKind::kEmojiCell:
-        name.clear();  // The icon itself is no name; its row ("Icon") is.
         break;
       case ItemKind::kButton:
         // "+ New Space": the leading icon-face glyph is paint, not words.
@@ -3342,10 +3824,17 @@ void PhiSettingsWindow::PublishHits() {
         role = PhiHitRole::kSlider;
         break;
       case ItemKind::kListRow:
-      case ItemKind::kEmojiCell:
       case ItemKind::kSwatch:
       case ItemKind::kImageCard:
+      case ItemKind::kSpaceRow:
+      case ItemKind::kPickerCell:
         role = PhiHitRole::kListItem;
+        break;
+      case ItemKind::kSegment:
+        role = PhiHitRole::kTab;
+        break;
+      case ItemKind::kIconSearch:
+        role = PhiHitRole::kNone;  // A text input, as the rail's field.
         break;
       default:
         break;
@@ -3396,7 +3885,8 @@ bool PhiSettingsWindow::InvokeHit(int index) {
 // focus ring in Paint and reported to UI Automation (PhiUiaSetFocusedHit).
 
 bool PhiSettingsWindow::IsTextInput(const Item& item) const {
-  return item.kind == ItemKind::kSearchField && item.action.empty();
+  return (item.kind == ItemKind::kSearchField && item.action.empty()) ||
+         item.kind == ItemKind::kIconSearch;
 }
 
 bool PhiSettingsWindow::InRail(const Item& item) const {
@@ -3425,10 +3915,15 @@ bool PhiSettingsWindow::SameFocusGroup(const Item& a, const Item& b) const {
   if (rail_entry(a) || rail_entry(b)) {
     return rail_entry(a) && rail_entry(b);  // The pages: Up / Down.
   }
-  // One row of theme dots, one picture-card picker: Left / Right.
+  // One row of theme dots, one picture-card picker: Left / Right. The
+  // Spaces list (Up / Down), the Icon | Emoji pair and the picker grid
+  // are groups the same way.
   const bool grouped = a.kind == ItemKind::kSwatch ||
                        a.kind == ItemKind::kImageCard ||
-                       a.kind == ItemKind::kLayoutCard;
+                       a.kind == ItemKind::kLayoutCard ||
+                       a.kind == ItemKind::kSpaceRow ||
+                       a.kind == ItemKind::kSegment ||
+                       a.kind == ItemKind::kPickerCell;
   return grouped && a.kind == b.kind && a.action == b.action &&
          a.space == b.space;
 }
@@ -3439,7 +3934,7 @@ void PhiSettingsWindow::FocusOrder(std::vector<int>* order,
   group->clear();
   int run = -1;
   for (size_t i = 0; i < items_.size(); ++i) {
-    if (!Focusable(items_[i])) {
+    if (!Focusable(items_[i]) || !items_[i].tab_stop) {
       continue;
     }
     // A group is a RUN of neighbours in build order; the same kind of
@@ -3563,9 +4058,21 @@ void PhiSettingsWindow::TabFocus(bool backward) {
       break;
     }
   }
-  const int next = current < 0 ? (backward ? groups - 1 : 0)
-                               : (current + (backward ? groups - 1 : 1)) %
-                                     groups;
+  int next = current < 0 ? (backward ? groups - 1 : 0)
+                         : (current + (backward ? groups - 1 : 1)) % groups;
+  if (current < 0 && focus_ >= 0) {
+    // A focused item outside the Tab walk (a click on an unselected Space
+    // row's grip or pill): carry on from where it sits.
+    for (size_t i = 0; i < order.size(); ++i) {
+      if (!backward && order[i] > focus_) {
+        next = group[i];
+        break;
+      }
+      if (backward && order[i] < focus_) {
+        next = group[i];
+      }
+    }
+  }
   // A group is entered on its chosen member (the page shown, the theme in
   // force), else its first — the Windows radio-group rule.
   int target = -1;
@@ -3659,6 +4166,123 @@ void PhiSettingsWindow::StepSlider(const Item& item, int delta) {
   ScheduleRebuild();
 }
 
+void PhiSettingsWindow::MoveSpaceSelection(int delta) {
+  const std::vector<PhiSpaceSummary> spaces = spaces_->Summaries();
+  int index = -1;
+  for (size_t i = 0; i < spaces.size(); ++i) {
+    if (spaces[i].id == selected_space_) {
+      index = static_cast<int>(i);
+    }
+  }
+  const int next = index + delta;
+  if (index < 0 || next < 0 || next >= static_cast<int>(spaces.size())) {
+    return;
+  }
+  const std::string target = spaces[static_cast<size_t>(next)].id;
+  SelectSpace(target, /*reveal=*/true);
+  ScheduleRebuild();
+  for (size_t i = 0; i < items_.size(); ++i) {
+    if (items_[i].kind == ItemKind::kSpaceRow && items_[i].payload == target) {
+      SetFocusItem(static_cast<int>(i), /*keyboard=*/true);
+      return;
+    }
+  }
+}
+
+void PhiSettingsWindow::ReorderByKey(int delta) {
+  if (focus_ < 0 || focus_ >= static_cast<int>(items_.size())) {
+    return;
+  }
+  const std::string id = items_[static_cast<size_t>(focus_)].payload;
+  const std::vector<PhiSpaceSummary> spaces = spaces_->Summaries();
+  int index = -1;
+  for (size_t i = 0; i < spaces.size(); ++i) {
+    if (spaces[i].id == id) {
+      index = static_cast<int>(i);
+    }
+  }
+  const int next = index + delta;
+  if (index < 0 || next < 0 || next >= static_cast<int>(spaces.size())) {
+    return;
+  }
+  SelectSpace(id, /*reveal=*/true);
+  host_->ReorderSpace(id, next);
+  // The coordinator does not notify Settings of an order-only change.
+  ScheduleRebuild();
+  for (size_t i = 0; i < items_.size(); ++i) {
+    if (items_[i].kind == ItemKind::kDragHandle && items_[i].payload == id) {
+      SetFocusItem(static_cast<int>(i), /*keyboard=*/true);
+      return;
+    }
+  }
+}
+
+void PhiSettingsWindow::MoveIconFocus(int delta) {
+  if (focus_ < 0 || focus_ >= static_cast<int>(items_.size()) ||
+      grid_count_ <= 0) {
+    return;
+  }
+  const int from = items_[static_cast<size_t>(focus_)].value;
+  const int target = std::max(0, std::min(grid_count_ - 1, from + delta));
+  if (target == from) {
+    return;
+  }
+  // Walking off the grid's edge scrolls it a row at a time.
+  const int row = target / kGridColumns;
+  if (row < grid_first_row_) {
+    grid_first_row_ = row;
+  } else if (row >= grid_first_row_ + grid_visible_) {
+    grid_first_row_ = row - grid_visible_ + 1;
+  }
+  ScheduleRebuild();
+  for (size_t i = 0; i < items_.size(); ++i) {
+    if (items_[i].kind == ItemKind::kPickerCell && items_[i].value == target) {
+      SetFocusItem(static_cast<int>(i), /*keyboard=*/true);
+      return;
+    }
+  }
+}
+
+int PhiSettingsWindow::ReorderIndexAt(int y) {
+  const int count = static_cast<int>(reorder_order_.size());
+  if (count == 0 || list_pitch_ <= 0) {
+    return 0;
+  }
+  const int offset = y - list_rect_.top;
+  int index = offset < 0 ? list_first_ - 1 : list_first_ + offset / list_pitch_;
+  index = std::max(0, std::min(count - 1, index));
+  // Past either edge of the list the rows scroll under the pointer, one
+  // per move.
+  if (index < list_first_) {
+    list_first_ = index;
+  } else if (index >= list_first_ + list_visible_) {
+    list_first_ = index - list_visible_ + 1;
+  }
+  return index;
+}
+
+void PhiSettingsWindow::EndReorder(bool commit) {
+  if (!reorder_drag_) {
+    return;
+  }
+  reorder_drag_ = false;  // Before the release: it reports a capture loss.
+  drag_.Release();
+  const auto it =
+      std::find(reorder_order_.begin(), reorder_order_.end(), reorder_id_);
+  const int index = it == reorder_order_.end()
+                        ? -1
+                        : static_cast<int>(it - reorder_order_.begin());
+  if (commit && index >= 0 && index != reorder_from_) {
+    // The Mac writes the order once, on the drop.
+    host_->ReorderSpace(reorder_id_, index);
+  }
+  reorder_order_.clear();
+  reorder_id_.clear();
+  reorder_from_ = -1;
+  list_reveal_ = true;
+  ScheduleRebuild();
+}
+
 void PhiSettingsWindow::ActivateFocus() {
   if (focus_ < 0 || focus_ >= static_cast<int>(items_.size())) {
     return;
@@ -3679,7 +4303,8 @@ void PhiSettingsWindow::ActivateFocus() {
 
 int PhiSettingsWindow::SearchFieldItem(bool rail) const {
   for (size_t i = 0; i < items_.size(); ++i) {
-    if (IsTextInput(items_[i]) && items_[i].on == rail) {
+    if (items_[i].kind == ItemKind::kSearchField && IsTextInput(items_[i]) &&
+        items_[i].on == rail) {
       return static_cast<int>(i);
     }
   }
@@ -3721,7 +4346,8 @@ bool PhiSettingsWindow::HandleKey(WPARAM virtual_key, LPARAM lparam,
     // Alt+Down opens a ComboBox, as on Windows; every other Alt chord is
     // the system's (the window menu, Alt+F4).
     if (virtual_key == VK_DOWN && focused &&
-        focused->kind == ItemKind::kPopup) {
+        (focused->kind == ItemKind::kPopup ||
+         focused->kind == ItemKind::kRowPopup)) {
       show_ring();
       activate();
       return true;
@@ -3750,7 +4376,8 @@ bool PhiSettingsWindow::HandleKey(WPARAM virtual_key, LPARAM lparam,
       }
       return true;
     case VK_F4:
-      if (focused && focused->kind == ItemKind::kPopup) {
+      if (focused && (focused->kind == ItemKind::kPopup ||
+                      focused->kind == ItemKind::kRowPopup)) {
         show_ring();
         activate();
         return true;
@@ -3759,6 +4386,15 @@ bool PhiSettingsWindow::HandleKey(WPARAM virtual_key, LPARAM lparam,
     case VK_LEFT:
     case VK_RIGHT: {
       const int step = virtual_key == VK_RIGHT ? 1 : -1;
+      if (focused && focused->kind == ItemKind::kPickerCell) {
+        show_ring();
+        MoveIconFocus(step);
+        return true;
+      }
+      if (focused && (focused->kind == ItemKind::kSpaceRow ||
+                      focused->kind == ItemKind::kDragHandle)) {
+        return true;  // A vertical list: Left / Right do nothing.
+      }
       if (slider) {
         show_ring();
         StepSlider(*focused, 5 * step);
@@ -3774,6 +4410,21 @@ bool PhiSettingsWindow::HandleKey(WPARAM virtual_key, LPARAM lparam,
     case VK_UP:
     case VK_DOWN: {
       const int step = virtual_key == VK_DOWN ? 1 : -1;
+      if (focused && focused->kind == ItemKind::kSpaceRow) {
+        show_ring();
+        MoveSpaceSelection(step);  // A list box: the arrow selects.
+        return true;
+      }
+      if (focused && focused->kind == ItemKind::kDragHandle) {
+        show_ring();
+        ReorderByKey(step);  // The grip moves its Space.
+        return true;
+      }
+      if (focused && focused->kind == ItemKind::kPickerCell) {
+        show_ring();
+        MoveIconFocus(step * kGridColumns);
+        return true;
+      }
       if (focused && InRail(*focused) && !typing) {
         show_ring();
         ArrowFocus(step);  // The pages.
@@ -3827,6 +4478,45 @@ void PhiSettingsWindow::Paint(HDC dc, const RECT&) {
   // The pointer's wash — the one cue every control here lacked.
   const COLORREF hover_wash = Blend(ink, bg, dark ? 15 : 11);
   const COLORREF accent = prefs_->Palette().accent;
+  // Settings › Spaces (design node 9056:18105, light only; dark derived as
+  // the same alphas of white): rules and the card's border at 10 %, text
+  // at 85 %, the wells at 3 %, a selected row's content at white 85 %.
+  const COLORREF white = RGB(0xFF, 0xFF, 0xFF);
+  const COLORREF sp_text = Blend(ink, card_bg, 217);
+  const COLORREF sp_secondary = Blend(ink, card_bg, 158);
+  const COLORREF sp_on_accent = Blend(white, accent, 217);
+  const auto fill_rect = [dc](const RECT& rc, COLORREF color) {
+    HBRUSH brush = ::CreateSolidBrush(color);
+    ::FillRect(dc, &rc, brush);
+    ::DeleteObject(brush);
+  };
+  // The ground an item says it sits on, else the card.
+  const auto ground_of = [&card_bg](const Item& item) {
+    return item.backdrop != CLR_INVALID ? item.backdrop : card_bg;
+  };
+  // A glyph from the Space-icon catalogue (artwork, colour emoji, then the
+  // GDI font as the last resort) — the list's and the picker's one ladder.
+  const auto draw_space_icon = [&](const RECT& rc, const std::wstring& text,
+                                   int ink_size, COLORREF color) {
+    if (PhiDrawCatalogIcon(dc, rc, text, ink_size, color)) {
+      return;
+    }
+    if (!PhiIsPrivateGlyph(text) &&
+        PhiDrawColorIcon(dc, rc, text, ink_size, color)) {
+      return;
+    }
+    HFONT icon_font = PhiIsPrivateGlyph(text) ? mdl2_font_ : emoji_font_;
+    if (icon_font) {
+      ::SelectObject(dc, icon_font);
+    }
+    ::SetTextColor(dc, color);
+    RECT box = rc;
+    PhiDrawTextAA(dc, text.c_str(), -1, &box,
+                  DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    if (font_) {
+      ::SelectObject(dc, font_);
+    }
+  };
 
   RECT client = {};
   ::GetClientRect(hwnd(), &client);
@@ -3891,7 +4581,8 @@ void PhiSettingsWindow::Paint(HDC dc, const RECT&) {
         const std::wstring mark_text(1, mark);
         PhiDrawGlyphIcon(dc, glyph, mark_text.c_str(), icon_px, row_ink);
         if (!item.text.empty()) {
-          RECT caption = {glyph.right + Scaled(12), bounds.top,
+          // The label at 42 in the row (design: icon 16 at 12, label 42).
+          RECT caption = {bounds.left + Scaled(42), bounds.top,
                           bounds.right - Scaled(8), bounds.bottom};
           ::SetTextColor(dc, row_ink);
           PhiDrawTextAA(dc, item.text.c_str(), -1, &caption,
@@ -3949,10 +4640,12 @@ void PhiSettingsWindow::Paint(HDC dc, const RECT&) {
         break;
       }
       case ItemKind::kPageTitle:
-        if (title_font_) {
-          ::SelectObject(dc, title_font_);
+        // Segoe UI Variable Bold 28, #1A1A1A (white 90 % in dark).
+        if (page_title_font_) {
+          ::SelectObject(dc, page_title_font_);
         }
-        ::SetTextColor(dc, ink);
+        ::SetTextColor(dc, dark ? Blend(white, bg, 230)
+                                : RGB(0x1A, 0x1A, 0x1A));
         PhiDrawTextAA(dc, item.text.c_str(), -1, &bounds,
                     DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX |
                         DT_END_ELLIPSIS);
@@ -4033,18 +4726,19 @@ void PhiSettingsWindow::Paint(HDC dc, const RECT&) {
         const int ring = dot + Scaled(4);
         RECT ring_rc = {cx - ring / 2, bounds.top, cx + ring / 2,
                         bounds.top + ring};
+        const COLORREF swatch_ground = ground_of(item);
         if (item.selected) {
           // The design's selected swatch: the dot, a 2 gap of the card,
           // then 2 of the theme's own accent (`on` = a colour the Space
           // inherits from the app-wide choice: a hairline in the
           // secondary ink instead).
           const COLORREF ring_color = item.ring ? item.ring : accent;
-          Ellipse(dc, ring_rc, card_bg,
+          Ellipse(dc, ring_rc, swatch_ground,
                   !item.enabled ? tertiary
                                 : (item.on ? secondary : ring_color),
                   Scaled(item.on ? 1 : 2));
         } else if (hot) {
-          Ellipse(dc, ring_rc, card_bg, Blend(ink, bg, 46), 1);
+          Ellipse(dc, ring_rc, swatch_ground, Blend(ink, bg, 46), 1);
         }
         RECT dot_rc = {cx - dot / 2, bounds.top + (ring - dot) / 2,
                        cx + dot / 2, bounds.top + (ring + dot) / 2};
@@ -4287,6 +4981,34 @@ void PhiSettingsWindow::Paint(HDC dc, const RECT&) {
         break;
       }
       case ItemKind::kSliderTrack: {
+        if (item.on) {
+          // The Spaces editor's track (the Mac's ThemeOpacitySliderView):
+          // 10 high, the well's ground running into the theme's tint
+          // (`swatch`), a 10 % hairline; a 16 white knob, 10 % stroke.
+          const COLORREF ground = ground_of(item);
+          const int mid = (bounds.top + bounds.bottom) / 2;
+          const int half = Scaled(kSpaceTrackHeight) / 2;
+          const RECT track = {bounds.left, mid - half, bounds.right,
+                              mid - half + Scaled(kSpaceTrackHeight)};
+          const int span = std::max(1, static_cast<int>(track.right -
+                                                        track.left) - 1);
+          for (int x = track.left; x < track.right; x += 2) {
+            const int alpha = (x - track.left) * 255 / span;
+            const RECT column = {x, track.top, std::min<LONG>(x + 2, track.right),
+                                 track.bottom};
+            fill_rect(column, Blend(item.swatch, ground, alpha));
+          }
+          PhiKnockOutRoundRectAA(dc, track, (track.bottom - track.top) / 2,
+                                 ground);
+          PhiStrokeCapsuleAA(dc, track, Blend(ink, ground, 26), 1);
+          const int knob = Scaled(kSpaceKnob);
+          const int at = bounds.left +
+                         (static_cast<int>(bounds.right - bounds.left) - knob) *
+                             item.value / 100;
+          RECT dot = {at, mid - knob / 2, at + knob, mid - knob / 2 + knob};
+          Ellipse(dc, dot, white, Blend(ink, ground, hot ? 60 : 26), 1);
+          break;
+        }
         // The design's Slider: a 4 dip track (ink 20 %) filled in the
         // accent up to an 18 white knob carrying an 8 accent dot.
         const int mid = (bounds.top + bounds.bottom) / 2;
@@ -4595,47 +5317,6 @@ void PhiSettingsWindow::Paint(HDC dc, const RECT&) {
         }
         break;
       }
-      case ItemKind::kEmojiCell: {
-        if (item.selected) {
-          // The design's chosen tile: accent_soft under a 1 px accent.
-          StrokeRounded(dc, bounds, Blend(accent, card_bg, 36), accent,
-                        Scaled(4), 1);
-        } else if (hot) {
-          FillRounded(dc, bounds, hover_wash, Scaled(10));
-        }
-        {
-          // Inset: the colour pass repaints its whole rect, and a selected
-          // cell's rounded fill must survive at the corners.
-          RECT glyph_rc = bounds;
-          ::InflateRect(&glyph_rc, -Scaled(4), -Scaled(4));
-          // One ink size for every cell: the catalog's shapes and the
-          // emoji each cover a different share of their own box, so sizing
-          // by canvas or em leaves the grid visibly ragged.
-          if (PhiDrawCatalogIcon(dc, glyph_rc, item.text, Scaled(15),
-                                 row_ink)) {
-            break;  // The Mac catalog's own artwork, tinted the row ink.
-          }
-          if (!PhiIsPrivateGlyph(item.text) &&
-              PhiDrawColorIcon(dc, glyph_rc, item.text, Scaled(15),
-                               row_ink)) {
-            break;  // Colour emoji via DirectWrite; GDI is the fallback.
-          }
-        }
-        {
-          HFONT cell_font =
-              PhiIsPrivateGlyph(item.text) ? mdl2_font_ : emoji_font_;
-          if (cell_font) {
-            ::SelectObject(dc, cell_font);
-          }
-        }
-        ::SetTextColor(dc, row_ink);
-        PhiDrawTextAA(dc, item.text.c_str(), -1, &bounds,
-                    DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-        if (font_) {
-          ::SelectObject(dc, font_);
-        }
-        break;
-      }
       case ItemKind::kAvatar: {
         // The account's picture as a circle (premultiplied BGRA from the
         // profile service, decoded once per size), the Contact glyph
@@ -4799,6 +5480,286 @@ void PhiSettingsWindow::Paint(HDC dc, const RECT&) {
         }
         break;
       }
+      case ItemKind::kSpaceCard: {
+        // The two-pane card: white, a 10 % border at radius 4, the 1 px
+        // divider between the panes and the rule over the list's bar.
+        StrokeRounded(dc, bounds, card_bg, Blend(ink, bg, 26),
+                      Scaled(kCardRadius), 1);
+        fill_rect({item.value, bounds.top + 1, item.value + 1,
+                   bounds.bottom - 1},
+                  Blend(ink, card_bg, 26));
+        fill_rect({bounds.left + 1, item.total, item.value, item.total + 1},
+                  Blend(ink, card_bg, 26));
+        break;
+      }
+      case ItemKind::kSpaceRow: {
+        // A Space: the solid accent when selected (content white 85 %),
+        // the pointer's wash otherwise; the 20 icon, 6, the 13 name.
+        if (item.selected) {
+          FillRounded(dc, bounds, accent, Scaled(kSpaceRowRadius));
+        } else if (hot) {
+          FillRounded(dc, bounds, Blend(ink, card_bg, dark ? 15 : 11),
+                      Scaled(kSpaceRowRadius));
+        }
+        const COLORREF content = item.selected ? sp_on_accent : sp_text;
+        const int mid = (bounds.top + bounds.bottom) / 2;
+        const int icon_left = bounds.left + Scaled(kSpaceRowInset);
+        const RECT icon_rc = {icon_left, mid - Scaled(kSpaceIcon) / 2,
+                              icon_left + Scaled(kSpaceIcon),
+                              mid - Scaled(kSpaceIcon) / 2 + Scaled(kSpaceIcon)};
+        if (!item.icon.empty()) {
+          // The Mac draws the icon at 0.8 of its 20 frame.
+          draw_space_icon(icon_rc, item.icon, Scaled(16), content);
+        }
+        if (body_font_) {
+          ::SelectObject(dc, body_font_);
+        }
+        ::SetTextColor(dc, content);
+        RECT name = {icon_rc.right + Scaled(kSpaceIconGap), bounds.top,
+                     item.value - Scaled(8), bounds.bottom};
+        PhiDrawTextAA(dc, item.text.c_str(), -1, &name,
+                      DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
+                          DT_NOPREFIX);
+        if (font_) {
+          ::SelectObject(dc, font_);
+        }
+        break;
+      }
+      case ItemKind::kDragHandle: {
+        // Three 9 x 1 lines, 3 apart, centred in the 24 grip.
+        if (hot || (reorder_drag_ && item.payload == reorder_id_)) {
+          FillRounded(dc, bounds, Blend(ink, card_bg, dark ? 15 : 11),
+                      Scaled(kRadius));
+        }
+        const int cx = (bounds.left + bounds.right) / 2;
+        const int cy = (bounds.top + bounds.bottom) / 2;
+        const int line_w = Scaled(9);
+        const int line_h = std::max(1, Scaled(1));
+        const int gap = Scaled(3) + line_h;
+        for (int k = -1; k <= 1; ++k) {
+          const int top = cy - line_h / 2 + k * gap;
+          fill_rect({cx - line_w / 2, top, cx - line_w / 2 + line_w,
+                     top + line_h},
+                    sp_text);
+        }
+        break;
+      }
+      case ItemKind::kRowPopup: {
+        // The row's profile pill: white 15 % on a selected row, ink 5 %
+        // elsewhere; the 13 label 12 in, chevron.up.chevron.down trailing
+        // in a 24 cell. Inert (dimmed) on the default Space.
+        const COLORREF fill =
+            item.on ? Blend(white, accent, hot && item.enabled ? 64 : 38)
+                    : Blend(ink, card_bg, hot && item.enabled ? 23 : 13);
+        FillRounded(dc, bounds, fill, Scaled(6));
+        COLORREF content = item.on ? sp_on_accent : sp_text;
+        if (!item.enabled) {
+          content = Blend(content, fill, 128);
+        }
+        if (body_font_) {
+          ::SelectObject(dc, body_font_);
+        }
+        ::SetTextColor(dc, content);
+        RECT text = {bounds.left + Scaled(12), bounds.top,
+                     bounds.right - Scaled(24), bounds.bottom};
+        PhiDrawTextAA(dc, item.text.c_str(), -1, &text,
+                      DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
+                          DT_NOPREFIX);
+        const int cy = (bounds.top + bounds.bottom) / 2;
+        const RECT up = {bounds.right - Scaled(24), cy - Scaled(7),
+                         bounds.right, cy + Scaled(1)};
+        const RECT down = {bounds.right - Scaled(24), cy - Scaled(1),
+                           bounds.right, cy + Scaled(7)};
+        PhiDrawGlyphIcon(dc, up, L"", Scaled(8), content);
+        PhiDrawGlyphIcon(dc, down, L"", Scaled(8), content);
+        if (font_) {
+          ::SelectObject(dc, font_);
+        }
+        break;
+      }
+      case ItemKind::kBarButton: {
+        // + / − / edit: a 24 square, radius 4 wash under the pointer.
+        if (hot) {
+          FillRounded(dc, bounds, Blend(ink, card_bg, dark ? 20 : 13),
+                      Scaled(kRadius));
+        }
+        PhiDrawGlyphIcon(dc, bounds, item.text.c_str(), Scaled(12),
+                         item.enabled ? Blend(ink, card_bg, 178)
+                                      : Blend(ink, card_bg, 64));
+        break;
+      }
+      case ItemKind::kHairline:
+        fill_rect(bounds, Blend(ink, ground_of(item), 26));
+        break;
+      case ItemKind::kGroupBox: {
+        // A well: ink 3 % at radius 4. The picker's well carries its
+        // grid's scroll position as a 2 px thumb in its right padding.
+        FillRounded(dc, bounds, ground_of(item), Scaled(kWellRadius));
+        if (item.total > item.visible && item.visible > 0 &&
+            grid_rect_.bottom > grid_rect_.top) {
+          const int track = grid_rect_.bottom - grid_rect_.top;
+          const int thumb =
+              std::max(Scaled(16), track * item.visible / item.total);
+          const int at = grid_rect_.top + (track - thumb) * item.value /
+                                              std::max(1, item.total -
+                                                              item.visible);
+          const RECT bar = {bounds.right - Scaled(8), at,
+                            bounds.right - Scaled(6), at + thumb};
+          FillRounded(dc, bar, Blend(ink, ground_of(item), 64), Scaled(1));
+        }
+        break;
+      }
+      case ItemKind::kPaneLabel: {
+        if (body_font_) {
+          ::SelectObject(dc, body_font_);
+        }
+        const COLORREF ground = ground_of(item);
+        ::SetTextColor(dc, item.value == 1 ? Blend(ink, ground, 107)
+                                           : Blend(ink, ground, 217));
+        PhiDrawTextAA(dc, item.text.c_str(), -1, &bounds,
+                      (item.value == 1 ? DT_CENTER : DT_LEFT) | DT_VCENTER |
+                          DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+        if (font_) {
+          ::SelectObject(dc, font_);
+        }
+        break;
+      }
+      case ItemKind::kSegment: {
+        const COLORREF ground = ground_of(item);
+        // The pill under the segments: white 80 % (dark: white 8 %), a
+        // 10 % hairline. The design's 0 20 50 6 % shadow is too faint to
+        // read over the 3 % well and is not drawn.
+        const COLORREF pill = dark ? Blend(white, ground, 20)
+                                   : Blend(white, ground, 204);
+        const int radius = (bounds.bottom - bounds.top) / 2;
+        if (item.action.empty()) {
+          FillRounded(dc, bounds, pill, radius);
+          PhiStrokeCapsuleAA(dc, bounds, Blend(ink, ground, 26), 1);
+          break;
+        }
+        if (item.selected) {
+          FillRounded(dc, bounds, accent, radius);
+        } else if (hot) {
+          FillRounded(dc, bounds, Blend(ink, pill, 13), radius);
+        }
+        if (hint_font_) {
+          ::SelectObject(dc, hint_font_);
+        }
+        ::SetTextColor(dc, item.selected ? white : ink);
+        PhiDrawTextAA(dc, item.text.c_str(), -1, &bounds,
+                      DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        if (font_) {
+          ::SelectObject(dc, font_);
+        }
+        break;
+      }
+      case ItemKind::kIconSearch: {
+        // The picker's search pill: ink 5 %, a 20 magnifier and the 12
+        // placeholder at 30 %; focused, an accent hairline and the caret.
+        const COLORREF ground = ground_of(item);
+        const COLORREF fill = Blend(ink, ground, hot ? 20 : 13);
+        const int radius = (bounds.bottom - bounds.top) / 2;
+        FillRounded(dc, bounds, fill, radius);
+        const bool field_focused =
+            static_cast<int>(item_index) == focus_ && window_active_;
+        if (field_focused) {
+          PhiStrokeCapsuleAA(dc, bounds, accent, 1);
+        }
+        const COLORREF dim = Blend(ink, fill, 77);
+        const RECT glass = {bounds.left + Scaled(6), bounds.top,
+                            bounds.left + Scaled(26), bounds.bottom};
+        PhiDrawGlyphIcon(dc, glass, L"", Scaled(12), dim);
+        if (hint_font_) {
+          ::SelectObject(dc, hint_font_);
+        }
+        RECT text = {glass.right + Scaled(4), bounds.top,
+                     bounds.right - Scaled(12), bounds.bottom};
+        ::SetTextColor(dc, item.text.empty() ? dim : sp_text);
+        PhiDrawTextAA(dc,
+                      item.text.empty() ? item.detail.c_str()
+                                        : item.text.c_str(),
+                      -1, &text,
+                      DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
+                          DT_NOPREFIX);
+        if (field_focused) {
+          RECT measured = {0, 0, 0, 0};
+          if (!item.text.empty()) {
+            PhiDrawTextAA(dc, item.text.c_str(), -1, &measured,
+                          DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX);
+          }
+          const int x = std::min<int>(text.left + measured.right + Scaled(1),
+                                      text.right);
+          const int mid = (text.top + text.bottom) / 2;
+          fill_rect({x, mid - Scaled(7), x + std::max(1, Scaled(1)),
+                     mid + Scaled(7)},
+                    sp_text);
+        }
+        if (font_) {
+          ::SelectObject(dc, font_);
+        }
+        break;
+      }
+      case ItemKind::kPickerCell: {
+        // A 24 glyph in the ink; the Space's own on a white tile (radius
+        // 5) over a 1 px shadow, the pointer's on a 5 % wash.
+        const COLORREF ground = ground_of(item);
+        const int radius = Scaled(5);
+        if (item.selected) {
+          RECT shadow = bounds;
+          ::OffsetRect(&shadow, 0, std::max(1, Scaled(1)));
+          FillRounded(dc, shadow, Blend(ink, ground, 38), radius);
+          FillRounded(dc, bounds, dark ? Blend(white, ground, 38) : white,
+                      radius);
+        } else if (hot) {
+          FillRounded(dc, bounds, Blend(ink, ground, 13), radius);
+        }
+        // Inset: the colour pass repaints its whole rect, and the tile's
+        // rounded corners must survive.
+        RECT glyph_rc = bounds;
+        ::InflateRect(&glyph_rc, -Scaled(3), -Scaled(3));
+        draw_space_icon(PhiIsPrivateGlyph(item.text) ? bounds : glyph_rc,
+                        item.text, Scaled(17), ink);
+        break;
+      }
+      case ItemKind::kUrlRow: {
+        // The design's row: white, a 9 % border at radius 4; the 20 link
+        // glyph, 16, the 13 title over its 12 description, the chevron.
+        StrokeRounded(dc, bounds, hot ? Blend(ink, card_bg, 8) : card_bg,
+                      Blend(ink, bg, 23), Scaled(kCardRadius), 1);
+        const int pad = Scaled(kUrlRowPad);
+        const int mid = (bounds.top + bounds.bottom) / 2;
+        const RECT icon = {bounds.left + pad, mid - Scaled(kUrlRowIcon) / 2,
+                           bounds.left + pad + Scaled(kUrlRowIcon),
+                           mid - Scaled(kUrlRowIcon) / 2 + Scaled(kUrlRowIcon)};
+        PhiDrawGlyphIcon(dc, icon, L"", Scaled(kUrlRowIcon), sp_text);
+        const int text_left = icon.right + pad;
+        const int text_right = bounds.right - pad - Scaled(16) - pad;
+        const int block = Scaled(18) + Scaled(2) + item.value;
+        const int top = mid - block / 2;
+        if (body_font_) {
+          ::SelectObject(dc, body_font_);
+        }
+        ::SetTextColor(dc, sp_text);
+        RECT title = {text_left, top, text_right, top + Scaled(18)};
+        PhiDrawTextAA(dc, item.text.c_str(), -1, &title,
+                      DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
+                          DT_NOPREFIX);
+        if (hint_font_) {
+          ::SelectObject(dc, hint_font_);
+        }
+        ::SetTextColor(dc, sp_secondary);
+        RECT subtitle = {text_left, title.bottom + Scaled(2), text_right,
+                         title.bottom + Scaled(2) + item.value};
+        PhiDrawTextAA(dc, item.detail.c_str(), -1, &subtitle,
+                      DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX);
+        const RECT chevron = {bounds.right - pad - Scaled(16), bounds.top,
+                              bounds.right - pad, bounds.bottom};
+        PhiDrawGlyphIcon(dc, chevron, L"", Scaled(12), sp_secondary);
+        if (font_) {
+          ::SelectObject(dc, font_);
+        }
+        break;
+      }
       case ItemKind::kExpander: {
         // An expander header (design "Settings · Spaces / Profiles"):
         // hover wash, a bare 20 icon (the Space's, in its own colour) or
@@ -4913,8 +5874,31 @@ void PhiSettingsWindow::Paint(HDC dc, const RECT&) {
       case ItemKind::kExpander:
         outset = 0;  // A row's ring sits on its own wash, inside the card.
         break;
+      case ItemKind::kSpaceRow:
+        outset = 0;
+        radius = Scaled(kSpaceRowRadius);
+        break;
+      case ItemKind::kUrlRow:
+        outset = 0;
+        radius = Scaled(kCardRadius);
+        break;
+      case ItemKind::kRowPopup:
+        radius = Scaled(6);
+        break;
+      case ItemKind::kSegment:
+      case ItemKind::kIconSearch:
+        radius = (ring.bottom - ring.top) / 2;
+        break;
+      case ItemKind::kPickerCell:
+        radius = Scaled(5);
+        break;
       case ItemKind::kToggle:
         radius = (ring.bottom - ring.top) / 2;
+        break;
+      case ItemKind::kSliderTrack:
+        if (item.on) {
+          radius = (ring.bottom - ring.top) / 2;  // The knob-high capsule.
+        }
         break;
       case ItemKind::kSwatch: {
         // Round the dot's selection-ring frame, as the paint above draws it.
@@ -5608,31 +6592,20 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
     host_->SetSpaceTheme(item.space, item.payload);
   } else if (item.action == "spaceicon") {
     host_->SetSpaceIcon(item.space, item.payload);
-  } else if (item.action == "selectspace") {
-    // The expander header: a click folds the open one, opens another.
-    selected_space_ = selected_space_ == item.payload ? "" : item.payload;
+  } else if (item.action == "pickspace") {
+    SelectSpace(item.payload, /*reveal=*/false);
+  } else if (item.action == "spacedrag") {
+    // The grip's press is its drag (OnMouseDown); the keyboard moves it
+    // with Up / Down (ReorderByKey). Nothing to do on activation.
+  } else if (item.action == "icontab") {
+    if (icon_tab_ != item.value) {
+      icon_tab_ = item.value;
+      icon_search_.clear();
+      grid_first_row_ = -1;
+    }
   } else if (item.action == "selectprofile") {
     selected_profile_ =
         selected_profile_ == item.payload ? "" : item.payload;
-  } else if (item.action == "spaceiconpicker") {
-    // The §5.9 picker flyout under the cell; the pick applies at once.
-    std::string current;
-    for (const PhiSpaceSummary& space : spaces_->Summaries()) {
-      if (space.id == item.payload) {
-        current = space.icon;
-      }
-    }
-    POINT top_left = {item.bounds.left, item.bounds.top};
-    POINT bottom_right = {item.bounds.right, item.bounds.bottom};
-    ::ClientToScreen(hwnd(), &top_left);
-    ::ClientToScreen(hwnd(), &bottom_right);
-    const RECT anchor = {top_left.x, top_left.y, bottom_right.x,
-                         bottom_right.y};
-    const std::string picked =
-        PhiPickSpaceIcon(hwnd(), prefs_->Palette(), anchor, current);
-    if (!picked.empty() && alive()) {
-      host_->SetSpaceIcon(item.payload, picked);
-    }
   } else if (item.action == "spaceprofile") {
     // The Profile ComboBox: a menu of the profiles, the bound one checked.
     HMENU menu = ::CreatePopupMenu();
@@ -5778,6 +6751,27 @@ void PhiSettingsWindow::OnMouseDown(int hit, POINT client_pt) {
     drag_ = Capture(this);
     Apply(item, client_pt.x);
     ScheduleRebuild();
+  } else if (item.kind == ItemKind::kDragHandle) {
+    // The grip: the row follows the pointer through the list (the order
+    // rearranged live, as the Mac's orderedIds), written once on release.
+    reorder_order_.clear();
+    reorder_from_ = -1;
+    for (const PhiSpaceSummary& space : spaces_->Summaries()) {
+      if (space.id == item.payload) {
+        reorder_from_ = static_cast<int>(reorder_order_.size());
+      }
+      reorder_order_.push_back(space.id);
+    }
+    if (reorder_from_ < 0) {
+      reorder_order_.clear();
+      return;
+    }
+    reorder_drag_ = true;
+    reorder_id_ = item.payload;
+    SelectSpace(item.payload, /*reveal=*/false);
+    drag_ = Capture(this);
+    ::SetCursor(::LoadCursorW(nullptr, IDC_SIZENS));
+    ScheduleRebuild();
   } else if (item.kind == ItemKind::kProfileCard) {
     // The card is dragged through its grid, and springs back on release.
     card_drag_ = true;
@@ -5790,6 +6784,10 @@ void PhiSettingsWindow::OnMouseDown(int hit, POINT client_pt) {
 void PhiSettingsWindow::OnClick(int hit, POINT client_pt) {
   const int pressed = pressed_;
   pressed_ = -1;
+  if (reorder_drag_) {
+    EndReorder(/*commit=*/true);
+    return;
+  }
   if (dragging_) {
     dragging_ = false;
     drag_.Release();
@@ -5826,6 +6824,28 @@ void PhiSettingsWindow::OnWheel(int delta, POINT client_pt) {
   // Pane content can outgrow the fixed window; the Mac scrolls, so do we.
   // The offset feeds Rebuild(), so the scroll is a rebuild — not something
   // WM_PAINT discovers.
+  // Over Settings › Spaces' list or icon grid, the wheel scrolls THAT by
+  // whole rows while it has rows to scroll, as the Mac's inner scrollers do.
+  const bool over_grid = ::PtInRect(&grid_rect_, client_pt) &&
+                         grid_rows_ > grid_visible_;
+  const bool over_list =
+      ::PtInRect(&list_rect_, client_pt) &&
+      static_cast<int>(spaces_->Summaries().size()) > list_visible_;
+  if (over_grid || over_list) {
+    wheel_accum_ += delta;
+    const int rows = wheel_accum_ / kWheelPerRow;
+    wheel_accum_ -= rows * kWheelPerRow;
+    if (rows != 0) {
+      if (over_grid) {
+        grid_first_row_ = std::max(0, grid_first_row_ - rows);
+      } else {
+        list_first_ = std::max(0, list_first_ - rows);
+      }
+      ScheduleRebuild();  // The build clamps the far end.
+    }
+    return;
+  }
+  wheel_accum_ = 0;
   RECT client = {};
   ::GetClientRect(hwnd(), &client);
   const int visible = client.bottom - Scaled(kChromeTop);
@@ -5838,14 +6858,25 @@ void PhiSettingsWindow::OnEscape() {
   // Esc walks back out, one step at a time — an open expander (the focus
   // lands on its header), the filter, then the window (which only hides,
   // as WM_CLOSE does). A popup menu is modal and takes its own Esc.
+  if (reorder_drag_) {
+    // The grip's drag is dropped where it started.
+    EndReorder(/*commit=*/false);
+    return;
+  }
+  if (!icon_search_.empty() && focus_ >= 0 &&
+      focus_ < static_cast<int>(items_.size()) &&
+      items_[static_cast<size_t>(focus_)].kind == ItemKind::kIconSearch) {
+    icon_search_.clear();
+    grid_first_row_ = -1;
+    ScheduleRebuild();
+    return;
+  }
   for (size_t i = 0; i < items_.size(); ++i) {
     const Item& header = items_[i];
     if (header.kind != ItemKind::kExpander || !header.on) {
       continue;
     }
-    if (header.action == "selectspace") {
-      selected_space_.clear();
-    } else if (header.action == "selectprofile") {
+    if (header.action == "selectprofile") {
       selected_profile_.clear();
     } else {
       break;
@@ -5948,6 +6979,24 @@ LRESULT PhiSettingsWindow::OnWindowMessage(UINT msg,
       // the base, which updates the hover the paint pass reads. The drag
       // replays the item CAPTURED on the press, not whatever happens to
       // sit under the pointer now.
+      if (reorder_drag_ && (wparam & MK_LBUTTON)) {
+        const int target = ReorderIndexAt(GET_Y_LPARAM(lparam));
+        const auto it = std::find(reorder_order_.begin(),
+                                  reorder_order_.end(), reorder_id_);
+        if (it != reorder_order_.end()) {
+          const int at = static_cast<int>(it - reorder_order_.begin());
+          if (at != target) {
+            reorder_order_.erase(it);
+            reorder_order_.insert(
+                reorder_order_.begin() + static_cast<ptrdiff_t>(target),
+                reorder_id_);
+          }
+        }
+        ScheduleRebuild();
+        ::SetCursor(::LoadCursorW(nullptr, IDC_SIZENS));
+        *handled = true;
+        return 0;
+      }
       if (dragging_ && (wparam & MK_LBUTTON)) {
         Apply(drag_item_, GET_X_LPARAM(lparam));
         ScheduleRebuild();
@@ -6007,6 +7056,26 @@ LRESULT PhiSettingsWindow::OnWindowMessage(UINT msg,
       // Typing anywhere feeds a filter: the Shortcuts pane's own field,
       // or the rail's "Find a setting" on every other page — Esc clears,
       // Backspace deletes.
+      if (focus_ >= 0 && focus_ < static_cast<int>(items_.size()) &&
+          items_[static_cast<size_t>(focus_)].kind ==
+              ItemKind::kIconSearch) {
+        // The Spaces editor's picker search: typing filters the grid.
+        const wchar_t c = static_cast<wchar_t>(wparam);
+        if (c == VK_BACK) {
+          if (!icon_search_.empty()) {
+            icon_search_.pop_back();
+          }
+        } else if (c >= L' ') {
+          icon_search_.push_back(c);
+        } else {
+          *handled = true;
+          return 0;  // Escape is OnEscape's; Enter and Tab type nothing.
+        }
+        grid_first_row_ = 0;
+        ScheduleRebuild();
+        *handled = true;
+        return 0;
+      }
       {
         const bool shortcuts = section_ == "shortcuts";
         std::wstring& target = shortcuts ? shortcut_search_ : rail_search_;
@@ -6110,6 +7179,14 @@ void PhiSettingsWindow::OnTimerFired(UINT_PTR id) {
 
 void PhiSettingsWindow::OnCaptureLost() {
   scroll_drag_ = false;
+  if (reorder_drag_) {
+    // A stolen capture drops the grip's drag where it started.
+    reorder_drag_ = false;
+    reorder_order_.clear();
+    reorder_id_.clear();
+    reorder_from_ = -1;
+    ScheduleRebuild();
+  }
   // A stolen capture ends the card drag where the release would have.
   if (card_drag_) {
     card_drag_ = false;

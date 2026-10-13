@@ -983,9 +983,16 @@ class PhiShellWindow : public PhiHitSource,
   // The in-field Copy link and site-menu slots, for the layout verb.
   RECT copy_link_rect();
   RECT site_menu_rect();
-  // The active tab is one pane of a split (the address row is then a
-  // sheet of its own, §4.6).
+  // The active tab is one pane of a split.
   bool ActiveTabIsSplit() const;
+  // Which corners of the split pane `pane` (client coordinates) meet the
+  // content card's rounded outer corners -- PhiRoundRectCoverage's bits
+  // (1 TL, 2 TR, 4 BL, 8 BR) -- the framework's rule
+  // (phi_split_view_style.h: the lower-left against the sidebar, the
+  // lower-right while Windows rounds the window, none in fullscreen); and
+  // the card's radius there. A surface over a pane rounds the same corners.
+  unsigned SplitPaneCardCorners(const RECT& pane);
+  int ContentCornerRadius() const;
   bool sidebar_collapsed() const { return sidebar_collapsed_; }
   // The last user Space this slot showed (never an agent or Incognito
   // Space): where it retreats when its Incognito Space closes. Empty for a

@@ -1,11 +1,24 @@
-# Split view chrome (the Mac look inside the content card)
+# Split view chrome (flush panes inside the content card)
 
-Since 2026-09-16 a split in the Windows client looks like the Mac's
-`SplitPaneHostView`: two rounded pane cards on the window ground, a 1 DIP
-hairline on each, a 2 DIP accent ring on the focused pane, a transparent
-4 DIP divider between them, 4 DIP of ground around the cards (0 at the top
-under a top address bar), snap points at 1/3, 1/2 and 2/3, no mini toolbars,
-no attention dimming.
+Since 2026-10-13 a split follows the Figma design (node 9044:26952): no
+pane cards. Both panes sit **flush** in the content card, under the
+address row's separator — no inset, no per-pane border, radius or shadow,
+no gap but the divider. The divider is a 1 DIP hairline down a 4 DIP drag
+strip; the focused pane wears a 2 DIP accent ring **inside** its bounds
+(over the page edge), the other pane no edge at all. Snap points at 1/3,
+1/2 and 2/3, no mini toolbars, no attention dimming. (It replaced the
+2026-09-16 port of the Mac's `SplitPaneHostView` pane cards and the
+§4.6 "row becomes a sheet" look of `windows-native-ui.md`.)
+
+A pane's corners are square except where it meets the content card's
+rounded outer corner: side by side, the left pane's lower-left and the
+right pane's lower-right; stacked, the lower pane's two lower corners.
+The lower-left is the card's corner against the sidebar (`kContentRadius`
+8, the same corner the single page's clip rounds); the lower-right is the
+shell window's own corner, which Windows 11 rounds at 8 only while the
+window is restored — maximized it is square. Fullscreen squares all.
+The design's card radius is 6; the Windows card is 8 (it follows the
+window's corner), and the panes follow the card.
 
 ## Who draws what
 
@@ -13,24 +26,55 @@ Chromium's `MultiContentsView` still lays the panes out and paints the
 chrome — the Windows client drives the native side-by-side through
 `PhiFramework` and reads geometry back (`TabContentBoundsById`,
 `OnContentBoundsChanged`). The fork restyles that chrome under
-`IS_WIN_PHI_CLIENT` with the Mac's numbers, all in one Phi-owned header,
+`IS_WIN_PHI_CLIENT`, its numbers in one Phi-owned header,
 `chrome/browser/ui/views/frame/phi_split_view_style.h`:
 
-| Mac (SplitPaneHostView.swift) | Windows |
+| Design | Windows |
 | --- | --- |
-| `paneInset` 4, top 0 in Comfortable/Balanced, 4 in Performance | `kPhiSplitPaneInset`, top from the pushed style |
-| `dividerThickness` 4, transparent | resize area 4 DIP, handle layer never shown |
-| card radius 10 (macOS 26), 1 pt `border` inside it | outline radius 10, thickness 1; content clip 9 |
-| `FocusRingView` 2 pt `themeColor` | outline thickness 2 in the pushed accent on the active pane |
-| `magneticSnapRatios` 1/3, 1/2, 2/3 within 18 pt | `snap_points_` + `kSnapDistance` 18 |
+| panes flush, inset 0 | `kPhiSplitPaneInset` 0; top from the pushed style (0) |
+| no per-pane border | split border insets 0 (`kSplitViewContentPadding` = −outline thickness): the page fills its pane |
+| divider 1 px, rgba(0,0,0,.04) over #FAFAFA | resize area `kPhiSplitDivider` 4 DIP (the hit strip, handle never shown); the ground paints the strip in `divider_ground_argb` and a `kPhiSplitHairline` 1 DIP line (whole device pixels) down its middle in `border_argb` |
+| focus ring 2 px inside the active pane | `kPhiSplitFocusRing` 2, stroked inside the pane's bounds on the outline's layer (over the page); nothing on the inactive pane |
+| corners: square but at the card's | `PhiSplitPaneCorners` (`kPhiSplitPaneRadius` 8) clips the page and shapes the ring |
+| snap (unspecified) | `snap_points_` 1/3, 1/2, 2/3 + `kSnapDistance` 18 |
 | no mini toolbar, no dimming | mini toolbar hidden, no `SplitTabHighlightController` |
+
+The drag strip stays 4 DIP wide, not 1: a view over the page cannot take
+the mouse (the page's aura window is hit first), so the hit area is the
+gap between the panes. The 1.5 DIP of #FAFAFA either side of the hairline
+is what shows of the design's split ground.
 
 Colours are the client's: `PhiShellWindow::PushSplitViewStyle` sends
 `PhiFramework::SetSplitViewStyle(window_id, {background, border, focus,
-top_inset})` for every hosted browser on its own Space's settled palette
-(`ground_top`, `border`, `accent`), from `LayoutContents` and `ApplyPalette`,
-only when a value moved. Until the first push Chromium paints its own
-colours.
+top_inset, divider_ground})` for every hosted browser on its own Space's
+settled palette, from `LayoutContents` and `ApplyPalette`, only when a
+value moved. Until the first push Chromium paints its own colours.
+
+| Field | Light | Dark (not in the design: derived) |
+| --- | --- | --- |
+| `background_argb` — outside a pane's rounded corner | Space tint (`ground_top`, or its backdrop colour) | same |
+| `divider_ground_argb` — the drag strip | #FAFAFA (fixed neutral) | `ground_top`, opaque |
+| `border_argb` — the hairline, blended over the strip | black at 4 % (0x0A000000) | white at 6 % (0x0FFFFFFF) |
+| `focus_argb` — the ring | the Space accent (Pure: #3AA4D5, the design's) | the Space accent (Pure: #1E7099) |
+| `top_inset` | 0 | 0 |
+
+A contrast theme keeps its own edges: strip `ground_top`, hairline
+`border`. `divider_ground_argb` was appended to the API struct on
+2026-10-13 (a client/framework ABI change: ship both together).
+
+The shell paints the card the same split or not: its left frame and
+sheet shadow, the address row's rounded top-left and its separator, and
+(without the backdrop) the opaque corner caps — the panes meet the
+card's corners as a single page does.
+
+Surfaces over a pane — the pane-hosted new-tab page
+(`PhiNewTabPage::Reposition`) and a pane reader
+(`PhiReaderPanel::Reposition`) — sit 2 dip inside it so the ring shows,
+and round only the corners the pane shares with the card
+(`PhiShellWindow::SplitPaneCardCorners`, the framework's rule read
+geometrically) at the card's radius less the inset, 6, concentric with
+it. The unfocused pane's hover chip is placed from the real pane rect
+(8 dip in from its top-right), so the flush panes needed no offset change.
 
 When the Windows backdrop is available, the ground uses the sidebar's
 theme-preserving tint, converted from premultiplied DIB pixels to straight
@@ -54,9 +98,9 @@ Chromium fork; deployment needs both the matching client and framework.
 `phi_split_drop.cc`'s replace-mode cards trace the panes Chromium actually
 laid out: `PhiSplitDropHints` carries the two pane rects from
 `PhiSidebarShell::SidebarSplitPaneRects` (the framework's
-`TabContentBoundsById`, mapped into the shell). The ratio estimate (4 DIP
-inset + 4 DIP divider over the page area) only stands in before the first
-layout.
+`TabContentBoundsById`, mapped into the shell). The ratio estimate (flush
+panes + the 4 DIP divider strip over the page area) only stands in before
+the first layout.
 
 ## Model notifications
 
@@ -76,9 +120,9 @@ ring), drag the divider or a strip tab with PhiDragCap.
 
 Transparency verification uses desktop captures, because `PrintWindow`
 does not include the composed Windows backdrop. Put a black, then white,
-window behind Phi: the top split gap should match the sidebar, the divider
-should change with the backdrop (with its pane shadows), and opaque page
-pixels must remain unchanged. Check both split axes and a hidden sidebar.
+window behind Phi: a split pane's rounded corner should show the same
+backdrop as the sidebar, the divider strip stays opaque (#FAFAFA in light)
+and opaque page pixels must remain unchanged. Check both split axes and a hidden sidebar.
 The host layout test checks that Skia's straight-alpha tint reconstructs
 the same premultiplied color as the sidebar in light and dark appearances.
 
@@ -86,8 +130,8 @@ Rounded corners use the same ground in normal tabs and splits. A normal
 page is clipped at its lower-left corner by Chromium's compositor; the
 background view stays visible behind it. Native new-tab and bookmark
 overlays use a matching window region. Opaque corner-cap windows are
-removed while the backdrop is active (and always in split view). The
-shell preserves alpha outside the address row's rounded corners, while
+removed while the backdrop is active. The shell preserves alpha outside
+the address row's rounded upper corner, while
 known card coverage keeps the row itself opaque even when its RGB matches
 the ground. Live palette changes therefore recolor the exposed ground
 without waiting for a resize. Fullscreen removes the single-page clip.
@@ -96,6 +140,7 @@ so extending glass beneath them does not make the new-tab/bookmark page
 itself translucent. Shaped panels keep their existing per-pixel alpha path.
 
 Include the bottom-left page corner and the address row's upper-left
-corner in desktop pixel probes. In a split, also check the row's rounded
-lower-left corner and the pane corners beside the divider. Change theme
+corner in desktop pixel probes. In a split, also check the left pane's
+lower-left and the right pane's lower-right (restored and maximized), the
+divider strip and its hairline, and the ring's corners. Change theme
 without relayout and check an ordinary web page and a native new-tab page.

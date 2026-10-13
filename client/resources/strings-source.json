@@ -2156,6 +2156,10 @@
    "comment": "Mac key (translations by key); settings — Settings window (phi_settings_window.cc): an expander body's Name row label",
    "en": "Name"
   },
+  "common.iconPicker.emojiSearchPlaceholder": {
+   "comment": "Mac key (translations by key); settings — Settings window (phi_settings_window.cc): Spaces editor, the embedded icon picker's search placeholder (Emoji tab)",
+   "en": "Search emoji"
+  },
   "common.iconPicker.emojiTabTitle": {
    "comment": "settings — used at phi_settings_window.cc:1045",
    "en": "Emoji"
@@ -2163,6 +2167,14 @@
   "common.iconPicker.iconTabTitle": {
    "comment": "settings — used at phi_settings_window.cc:1045",
    "en": "Icon"
+  },
+  "common.iconPicker.iconsSearchPlaceholder": {
+   "comment": "Mac key (translations by key); settings — Settings window (phi_settings_window.cc): Spaces editor, the embedded icon picker's search placeholder (Icon tab)",
+   "en": "Search icons"
+  },
+  "common.iconPicker.searchEmptyMessage": {
+   "comment": "Mac key (translations by key); settings — Settings window (phi_settings_window.cc): Spaces editor, the embedded icon picker when the search matches nothing",
+   "en": "No results"
   },
   "common.newTabPage.incognitoTitle": {
    "comment": "sidebar — used at phi_shell_window.cc (incognito new-tab row title)",
@@ -4147,6 +4159,10 @@
   "kiosk.toolbar.openInSpace": {
    "comment": "kiosk — used in phi_kiosk_window.cc",
    "en": "Open in"
+  },
+  "library.spaces.reorder": {
+   "comment": "Mac key (translations by key); settings — Settings window (phi_settings_window.cc): Spaces list, a row's reorder grip (accessible name, followed by the Space name)",
+   "en": "Drag to reorder Space"
   },
   "localData.bookmarks.importedFromGuestFolderTitle": {
    "comment": "bookmarks — Container created when Guest bookmarks are moved into a signed-in account (phi_coordinator.cc)",
@@ -7681,6 +7697,10 @@
     "zh-Hant": "變更…"
    }
   },
+  "settings.spaces.deleteButtonTooltip": {
+   "comment": "Mac key (translations by key); settings — Settings window (phi_settings_window.cc): Spaces list bar, the − button's accessible name",
+   "en": "Delete selected Space"
+  },
   "settings.spaces.deleteConfirmation.deleteButton": {
    "comment": "Mac key (translations by key); settings — Settings window (phi_settings_window.cc)",
    "en": "Delete"
@@ -7746,6 +7766,10 @@
     "zh-Hans": "个人资料：{0}",
     "zh-Hant": "設定檔：{0}"
    }
+  },
+  "settings.spaces.renameButtonTooltip": {
+   "comment": "Mac key (translations by key); settings — Settings window (phi_settings_window.cc): Spaces list bar, the edit button's accessible name",
+   "en": "Rename selected Space"
   },
   "settings.spaces.shortcutHint": {
    "comment": "settings — Settings window (phi_settings_window.cc): note beside a Space's Ctrl+n keycaps",

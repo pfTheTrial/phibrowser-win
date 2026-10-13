@@ -202,10 +202,10 @@ void PhiNewTabPage::Reposition() {
   }
   SyncDpiFromParent();
   if (has_pane_) {
-    // Inside a split the page sits INSIDE the pane sheet's edge: the
-    // framework strokes the 1 dip hairline and the focused pane's 2 dip
-    // accent ring within the pane's own bounds (§4.6), and a child window
-    // over the whole pane would cover them and square the sheet's corners.
+    // Inside a split the page sits INSIDE the pane's edge: the framework
+    // strokes the focused pane's 2 dip accent ring within the pane's own
+    // bounds (docs/split-view-chrome.md), and a child window over the whole
+    // pane would cover it and square the pane's rounded corner.
     RECT inner = pane_;
     const int ring = Scaled(2);
     ::InflateRect(&inner, -ring, -ring);
@@ -220,14 +220,18 @@ void PhiNewTabPage::Reposition() {
 }
 
 void PhiNewTabPage::ApplyPaneCorners() {
-  if (!has_pane_) {
+  if (!has_pane_ || !controller_) {
     return;
   }
-  // The sheet's radius less the ring. Not a bare region (it stair-steps):
-  // the EDIT child rules out a shaped layer, and what lies outside the curve
-  // is the framework's pane chrome, which no corner cap could match — so the
-  // fringe carries the arc's partial pixels in the page's own ground.
-  SetCornerFringe(Scaled(6), 0xF, QueryPalette().card);
+  // Square, but where the pane meets the content card's rounded corner:
+  // there the card's radius less the ring, concentric with it. Not a bare
+  // region (it stair-steps): the EDIT child rules out a shaped layer, and
+  // what lies outside the curve is the framework's pane chrome, which no
+  // corner cap could match — so the fringe carries the arc's partial pixels
+  // in the page's own ground.
+  SetCornerFringe(controller_->ContentCornerRadius() - Scaled(2),
+                  controller_->SplitPaneCardCorners(pane_),
+                  QueryPalette().card);
 }
 
 void PhiNewTabPage::OnThemeChanged() {

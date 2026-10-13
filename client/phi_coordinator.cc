@@ -3153,8 +3153,9 @@ void PhiCoordinator::OnSpacesChanged(PhiSpaceManager::SpacesChange what) {
   }
   switch (what) {
     case SpacesChange::kOrder:
-      registry_.InvalidateAll();  // The chips; Settings keeps its own order.
-      return;
+      // The chips, and Settings' Space list (a strip drag reorders it too).
+      registry_.InvalidateAll();
+      break;
     case SpacesChange::kList:
       registry_.InvalidateAll();
       break;

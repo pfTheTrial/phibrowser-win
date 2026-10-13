@@ -142,10 +142,9 @@ void PhiReaderPanel::Reposition() {
     if (::IsRectEmpty(&pane)) {
       return;
     }
-    // Inside the pane sheet's edge, like a pane's new-tab page: the
-    // framework strokes the hairline and the focused pane's 2 dip accent
-    // ring within the pane's own bounds, and the ring is what shows which
-    // pane is focused.
+    // Inside the pane's edge, like a pane's new-tab page: the framework
+    // strokes the focused pane's 2 dip accent ring within the pane's own
+    // bounds, and the ring is what shows which pane is focused.
     ::InflateRect(&pane, -Scaled(2), -Scaled(2));
     in_pane_ = true;
     SetPanelBounds(pane);
@@ -177,9 +176,19 @@ void PhiReaderPanel::ApplyCardShape() {
     return;
   }
   if (in_pane_) {
-    // The pane sheet's radius less the ring; the fringe carries the arc's
-    // partial pixels, over the framework's pane chrome no cap could match.
-    SetCornerFringe(Scaled(6), 0xF, QueryPalette().card);
+    // Square, but where the pane meets the content card's rounded corner:
+    // the card's radius less the ring there, concentric with it. The fringe
+    // carries the arc's partial pixels, over the framework's pane chrome no
+    // cap could match.
+    RECT pane = {};
+    const unsigned corners =
+        origin_ && origin_->SplitPaneRectForTab(
+                       static_cast<int>(origin_tab_id_), &pane)
+            ? origin_->SplitPaneCardCorners(pane)
+            : 0;
+    SetCornerFringe(
+        origin_ ? origin_->ContentCornerRadius() - Scaled(2) : 0, corners,
+        QueryPalette().card);
     return;
   }
   // Square: the panel covers the content card exactly, and the shell's

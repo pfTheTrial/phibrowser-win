@@ -93,8 +93,8 @@ PhiSplitDropZone PhiSplitReplaceZoneAt(const PhiSplitDropHints& hints,
                                        UINT dpi = 96);
 
 // The live panes of the split `hints` describes: the real rects when it has
-// them, else an estimate from the ratio over `hints.area` with the Mac's
-// 4 DIP card inset and divider.
+// them, else an estimate from the ratio over `hints.area` with the
+// framework's flush panes and 4 DIP divider.
 void PhiSplitReplacePaneRects(const PhiSplitDropHints& hints,
                               RECT* primary,
                               RECT* secondary);
