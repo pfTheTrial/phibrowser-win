@@ -112,6 +112,9 @@ class PhiFrameworkDispatcher : public phi_framework::PhiFrameworkDelegate {
                           const char* type,
                           const char* payload_json) override;
   void OnOpenReaderView(int64_t window_id, int64_t tab_id) override;
+  void OnOpenLinkAsSplitFromSurface(int64_t surface_window_id,
+                                    int64_t surface_tab_id,
+                                    const char* url) override;
   void OnSessionRestoreSettled(const char* receipt_json) override;
   void OnAnalyticsEventCaptured(const char* module,
                                 const char* event_name,

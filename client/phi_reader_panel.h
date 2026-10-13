@@ -43,8 +43,10 @@ class PhiWindowModel;
 // panel is a WS_CHILD of the origin's shell, so it clips into the content card
 // and travels with the window.
 //
-// One reader per origin tab, any number of origins: a panel shows only while
-// its origin tab is the active one, exactly like a peek.
+// One reader per origin tab, any number of origins: a panel shows while its
+// origin tab is the active one — or the active tab's split partner, for a
+// reader over a split pane, which covers that pane alone (phibrowser-mac
+// 89dd8a48: each pane of a split can show its own reader, both up at once).
 class PhiReaderPanel : public PhiSurfacePanel, public PhiPanel {
  public:
   // `model` is the coordinator's window model: the surface browser's strip
@@ -80,10 +82,13 @@ class PhiReaderPanel : public PhiSurfacePanel, public PhiPanel {
   // corner caps that have to sit above IT (see PhiShellWindow::
   // RaiseCornerCaps) — raising this window alone squares the card's corners.
   void Raise() override;
-  // The origin window moved or resized: re-fit to its content rect.
+  // The origin window moved or resized, or Chromium laid the split panes
+  // out again: re-fit to the content rect, or to the origin's pane while it
+  // is a pane of the split on screen.
   void Reposition() override;
-  // The origin switched tabs: a reader belongs to the tab it was opened for.
-  void SetVisibleForActiveTab(int64_t active_tab_id) override;
+  // A reader belongs to the tab it was opened for (the surface coordinator
+  // decides when that tab's page is on screen).
+  void SetSurfaceShown(bool shown) override;
   // The hosted page moved. A link inside the reader is a plain link, so a
   // click navigates the surface away from reader.html — the panel then hands
   // the URL back to the origin window as a normal tab rather than showing an
@@ -99,11 +104,14 @@ class PhiReaderPanel : public PhiSurfacePanel, public PhiPanel {
   void Paint(HDC dc, const RECT& dirty) override;
   void OnSize(int width, int height) override;
   PhiPalette QueryPalette() const override;
+  void OnThemeChanged() override;
 
  private:
-  // Keeps the panel square: it covers the content card exactly, so the
-  // shell's antialiased corner caps, raised above it, round it — no window
-  // region (a region cuts on the pixel grid).
+  // Over the whole card the panel stays square: it covers the content card
+  // exactly, so the shell's antialiased corner caps, raised above it, round
+  // it — no window region (a region cuts on the pixel grid). Over a split
+  // pane it rounds itself inside the pane's sheet, as a pane's new-tab page
+  // does (PhiNewTabPage::ApplyPaneCorners): no cap sits at a pane's corners.
   void ApplyCardShape();
   void PositionContent();
   int64_t surface_tab_id() const override;
@@ -121,6 +129,8 @@ class PhiReaderPanel : public PhiSurfacePanel, public PhiPanel {
   std::wstring url_;
   int64_t surface_tab_id_ = 0;
   bool expanded_ = false;
+  // Covering the origin's split pane rather than the whole content card.
+  bool in_pane_ = false;
 };
 
 }  // namespace phi_client

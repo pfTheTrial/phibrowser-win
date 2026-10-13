@@ -127,10 +127,12 @@ class PhiSurfaceCoordinator {
   // `peek_end_reason` is what a closing Peek reports as its end — the
   // user's own close by default ("closed": the sidebar's surface badge,
   // Back/Forward, an address-bar navigation), "replaced" from a second
-  // peek on the same opener.
+  // peek on the same opener. `hands_back_strip` false leaves the focused
+  // tab alone instead of re-activating the origin as the panel goes.
   void CloseSurfacesForOrigin(TabId origin_tab_id,
                               SidebarSurface kind = SidebarSurface::kContent,
-                              const char* peek_end_reason = "closed");
+                              const char* peek_end_reason = "closed",
+                              bool hands_back_strip = true);
   // A link inside the reading surface navigated it away from reader.html:
   // hand `url` back to the origin window as a normal tab and drop the panel.
   void ExpandReaderPanelIntoTab(int64_t panel_window_id,
@@ -145,8 +147,37 @@ class PhiSurfaceCoordinator {
   bool DeferRetireOnPlaceholder(BrowserId browser, bool entered);
   // A window's tab strip changed: re-fit, re-hide and retire the panels
   // bound to it. Reads the model, so it runs AFTER the snapshot that reports
-  // the change has been stored.
+  // the change has been stored. Which panels show follows the Mac's rules
+  // (phi_surface_visibility.h): a peek covers its opener's whole split, each
+  // pane keeps its own reader, a peek in front hides the pane readers.
   void UpdateReaderPanelsForWindow(BrowserId window_id);
+
+  // --- Split view from a surface (phibrowser-mac 89dd8a48) ------------------
+  // "Open Link in Split View" (context menu or Alt-click) on a link inside
+  // the surface whose browser is `surface_window` (the framework's
+  // OnOpenLinkAsSplitFromSurface). A Peek's page becomes a regular tab
+  // paired with a new tab on `url` — re-opened, like every Peek expand on
+  // this client — and the peek closes (the Mac's openOverlaySurfaceAsSplit).
+  // A reader's page cannot be a strip tab here (the framework diverts a
+  // reader page out of every user strip), so the tab the reader stands over
+  // pairs with the link instead and keeps its reader, now over its pane.
+  void OpenSurfaceLinkAsSplit(BrowserId surface_window, const std::string& url);
+  // The peek's "Open as Split View" when its opener is already a pane: the
+  // opener stays in its split, and a duplicate of it (its URL, on the left)
+  // pairs with the peek's page as a new split. Falls back to expanding the
+  // peek into a tab when there is nothing to duplicate. False when the
+  // opener is in no split, for the caller's ordinary peek-beside-opener.
+  bool OpenPeekBesideSplitOpener(BrowserId peek_window);
+  // Back/Forward on `tab_id` with no surface of its own: closes the peek
+  // bound to its split partner, which covers this pane too. False when
+  // there is none.
+  bool ClosePartnerPeek(BrowserId window_id, TabId tab_id);
+  // A mouse button went down in `target`: when that is inside a reader over
+  // a split pane other than the focused one, focus that pane (the Mac's
+  // activateOriginPaneIfClicked) — Chromium's pane under the reader never
+  // sees the click, and the address bar and the focus ring follow the
+  // focused tab.
+  void ActivatePaneUnderPress(HWND target);
 
   // --- The sidebar's reader affordance --------------------------------------
   bool IsReaderOfferable(int tab_id, const std::string& url) const;
@@ -168,6 +199,8 @@ class PhiSurfaceCoordinator {
   void NoteContentLayoutChanged(SlotId slot);
   // Whether any Peek card is up (the click-outside hook's cheap guard).
   bool HasPeek() const;
+  // Whether any surface at all is attached (the press hook's guard).
+  bool HasSurfaces() const { return !surfaces_.empty(); }
   // Dismisses the Peek card(s) floating over `shell`, skipping any whose
   // card contains `inside` (a click landing in the card itself). Returns
   // true when one was dismissed.
@@ -176,6 +209,17 @@ class PhiSurfaceCoordinator {
                             const POINT* screen_point = nullptr);
 
  private:
+  // `tab`'s split partner in `window`, or an invalid id.
+  TabId SplitPartnerOf(BrowserId window, TabId tab) const;
+  // Opens the peek's page and a tab on `partner_url` in the opener window,
+  // in that strip order (`partner_leading` puts the partner first, on the
+  // left), splits the two, focuses the partner and closes the peek without
+  // handing the strip back to its opener. False, touching nothing, when the
+  // peek's page has no URL yet.
+  bool PairPeekPageWith(PhiSurfacePanel& peek,
+                        const std::string& partner_url,
+                        bool partner_leading);
+
   RAW_PTR_EXCLUSION const PhiWindowModel& window_model_;
   RAW_PTR_EXCLUSION Host& host_;
   // Non-owning, across a module boundary, so not a raw_ptr. Null until Init.

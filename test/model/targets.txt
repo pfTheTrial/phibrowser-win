@@ -45,6 +45,11 @@ session_restore_test.cc
 # window lands. Header-only; the manager that consults it needs the shells
 # and stays on the target.
 agent_space_route_test.cc    
+# Which Peek and Reader View surfaces show over a window (phibrowser-mac
+# 89dd8a48 ported): a peek covers its opener's whole split, each pane keeps
+# its own reader, a peek in front hides them. Header-only; the coordinator
+# that applies it stays on the target.
+surface_visibility_test.cc   
 # The onboarding's analytics session (phi_oobe_analytics.h): the Mac's
 # OOBEAnalyticsSession ported as a pure state machine — the same cases as
 # its OOBEAnalyticsSessionTests. The .cc is the out-of-line constructor and

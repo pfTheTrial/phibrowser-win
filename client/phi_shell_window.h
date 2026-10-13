@@ -165,6 +165,11 @@ class SidebarHost {
   // the origin — so every surface attached to it closes first. A surface
   // cannot be left over a page that changed beneath it.
   virtual void RequestCloseSurfaces(int tab_id) = 0;
+  // The same for a peek that covers `tab_id` without being its own: one
+  // bound to its split partner in `browser`, which covers the whole split
+  // (the Mac's visiblePeek). The partner's reader, over the other pane
+  // only, stays. False when there is no such peek.
+  virtual bool RequestClosePartnerPeek(int64_t browser, int tab_id) = 0;
   // §5.8: the favicon the row tile shows for the surface attached to
   // `tab_id` (the peeked page's; the origin's own for a reader). False
   // when nothing is attached or the page has none yet.
@@ -630,8 +635,11 @@ class PhiShellWindow : public PhiHitSource,
   void ToggleReaderView(const char* entry_point);
   // Back/Forward or an address-bar commit on a tab the reader is covering:
   // leaves the reader and returns true, so the caller skips the navigation
-  // (Back) or lets it land on the page underneath (the address bar). False
-  // when no reader is up and the command is an ordinary one.
+  // (Back) or lets it land on the page underneath (the address bar). The
+  // same for the peek on screen — the tab's own, or its split partner's,
+  // which covers the whole split (the Mac's closePeekForBackForward-
+  // Navigation). False when no such surface is up and the command is an
+  // ordinary one.
   bool LeaveReaderViewForNavigation();
   // What the tab a Peek was opened from is bound to, for the peek's usage
   // metric — the Mac's peekOpenerKind: "pinned", "bookmark" or "normal"
@@ -694,6 +702,10 @@ class PhiShellWindow : public PhiHitSource,
   const std::vector<TabId>& TabMruOrder() const;
   // The content card's client-coordinate rect (the group overview covers it).
   RECT ContentRect();
+  // Whether `tab_id` is a pane of the split on screen; `*pane` is then its
+  // client-coordinate rect, empty until Chromium has laid the panes out
+  // (OnContentBoundsChanged follows). What a reader over one pane covers.
+  bool SplitPaneRectForTab(int tab_id, RECT* pane) const;
   // The create-Space form — the Mac's CreateSpacePanel hosted in the
   // sidebar (SidebarViewController.showCreateSpaceOverlay). Every "New
   // Space" entry point (the strip's "+", the switcher menus, the menu bar)

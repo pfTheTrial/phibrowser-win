@@ -209,9 +209,11 @@ class PhiCoordinator : public SidebarHost,
   // tab: the panel browsers close, and OnBrowserWindowClosing forgets them.
   void CloseSurfacesForOrigin(TabId origin_tab_id,
                               SidebarSurface kind = SidebarSurface::kContent,
-                              const char* peek_end_reason = "closed") {
+                              const char* peek_end_reason = "closed",
+                              bool hands_back_strip = true) {
     surface_coordinator_.CloseSurfacesForOrigin(origin_tab_id, kind,
-                                                peek_end_reason);
+                                                peek_end_reason,
+                                                hands_back_strip);
   }
   // A link inside the reading surface navigated it away from reader.html:
   // hand `url` back to the origin window as a normal tab and drop the panel.
@@ -397,6 +399,7 @@ class PhiCoordinator : public SidebarHost,
                                const std::string& url,
                                const char* entry_point) override;
   void RequestCloseSurfaces(int tab_id) override;
+  bool RequestClosePartnerPeek(int64_t browser, int tab_id) override;
   bool SurfaceFaviconForOrigin(int tab_id,
                                std::vector<unsigned char>* bgra,
                                int* width,

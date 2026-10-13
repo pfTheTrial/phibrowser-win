@@ -92,9 +92,10 @@ class PhiPeekPanel : public PhiSurfacePanel, public PhiPanel {
   // The opener window moved or resized: re-fit the card to its content rect.
   void Reposition() override;
 
-  // The opener switched tabs: a peek belongs to the tab that opened it, so it
-  // shows only while that tab is active.
-  void SetVisibleForActiveTab(int64_t active_tab_id) override;
+  // A peek belongs to the tab that opened it and covers that tab's whole
+  // split: it shows while the opener or its split partner is active (the
+  // surface coordinator decides).
+  void SetSurfaceShown(bool shown) override;
 
   // The framework says this peek's page moved: re-read the url for the title
   // strip and repaint.

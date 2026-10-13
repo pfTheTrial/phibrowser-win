@@ -133,12 +133,34 @@ void PhiReaderPanel::Reposition() {
   // Windows-native layout (docs/windows-native-ui.md §4) the row carries the
   // caption buttons and the tool cluster, which stay in reach while reading
   // — the reader is a surface over the page, not over the window's chrome.
+  // A pane of the split on screen: the reader covers that pane only, so the
+  // other pane — and its own reader — stay in view beside it. Chromium lays
+  // the panes out; before it has, the rect is empty and the framework's
+  // OnContentBoundsChanged re-fits this panel once it has.
+  RECT pane = {};
+  if (origin_->SplitPaneRectForTab(static_cast<int>(origin_tab_id_), &pane)) {
+    if (::IsRectEmpty(&pane)) {
+      return;
+    }
+    // Inside the pane sheet's edge, like a pane's new-tab page: the
+    // framework strokes the hairline and the focused pane's 2 dip accent
+    // ring within the pane's own bounds, and the ring is what shows which
+    // pane is focused.
+    ::InflateRect(&pane, -Scaled(2), -Scaled(2));
+    in_pane_ = true;
+    SetPanelBounds(pane);
+    PositionContent();
+    ApplyCardShape();
+    Invalidate();
+    return;
+  }
   const RECT content = origin_->ContentRect();
   const int width = content.right - content.left;
   const int height = content.bottom - content.top;
   if (width <= 0 || height <= 0) {
     return;
   }
+  in_pane_ = false;
   SetPanelBounds(content);
   PositionContent();
   ApplyCardShape();
@@ -154,6 +176,12 @@ void PhiReaderPanel::ApplyCardShape() {
   if (!alive()) {
     return;
   }
+  if (in_pane_) {
+    // The pane sheet's radius less the ring; the fringe carries the arc's
+    // partial pixels, over the framework's pane chrome no cap could match.
+    SetCornerFringe(Scaled(6), 0xF, QueryPalette().card);
+    return;
+  }
   // Square: the panel covers the content card exactly, and the shell's
   // antialiased corner caps round the card from ABOVE it — the reader comes
   // up before them on every caps raise (kMsgRaiseCaps), and Reposition and
@@ -163,6 +191,11 @@ void PhiReaderPanel::ApplyCardShape() {
   ClearCornerFringe();
 }
 
+void PhiReaderPanel::OnThemeChanged() {
+  PhiPanel::OnThemeChanged();
+  ApplyCardShape();  // The pane fringe keeps the colour it was made with.
+}
+
 void PhiReaderPanel::Raise() {
   if (!IsPanelVisible()) {
     return;
@@ -170,14 +203,13 @@ void PhiReaderPanel::Raise() {
   RaisePanel();
 }
 
-void PhiReaderPanel::SetVisibleForActiveTab(int64_t active_tab_id) {
+void PhiReaderPanel::SetSurfaceShown(bool shown) {
   if (!alive()) {
     return;
   }
-  const bool mine = active_tab_id == origin_tab_id_;
-  if (mine) {
+  if (shown) {
     ShowPanel();
-    if (origin_) {
+    if (origin_ && !in_pane_) {
       origin_->RaiseCornerCaps();
     }
   } else {

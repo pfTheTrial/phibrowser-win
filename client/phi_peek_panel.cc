@@ -462,12 +462,11 @@ void PhiPeekPanel::UpdateShadow() {
                   colors.dark ? kShadowAlphaDark : kShadowAlphaLight);
 }
 
-void PhiPeekPanel::SetVisibleForActiveTab(int64_t active_tab_id) {
+void PhiPeekPanel::SetSurfaceShown(bool shown) {
   if (!alive()) {
     return;
   }
-  const bool mine = active_tab_id == opener_tab_id_;
-  if (mine) {
+  if (shown) {
     Show();  // The shadow, then the card, then the chips, in that order.
   } else {
     HidePanel();
@@ -735,6 +734,14 @@ void PhiPeekPanel::ClickControl(int index) {
     NoteEndReason("opened_as_tab");
     Dismiss();
   } else if (index == kHotSplit) {
+    // An opener already in a split stays there: the page pairs with a
+    // duplicate of the opener instead, as a new split (the Mac's
+    // openPeekAsSplitWithOpener). That close announces its own end.
+    if (coordinator_ &&
+        coordinator_->surface_coordinator().OpenPeekBesideSplitOpener(
+            window_id_)) {
+      return;
+    }
     // Split: the same page as a fresh tab, put beside the one that opened
     // the peek — which is what the reader is comparing it against. Both by
     // stable id: OpenTab answers with the new tab's, the opener's is known.

@@ -136,7 +136,8 @@ constexpr UINT WM_PHI_OPEN_ONBOARDING = WM_APP + 11;
 // thread): QuitForUpdate closes every window through the normal paths.
 constexpr UINT WM_PHI_QUIT_FOR_UPDATE = WM_APP + 12;
 // A mouse button went down somewhere in a shell: dismiss the peek it landed
-// outside of. DEFERRED out of the WH_MOUSE hook, where it used to run:
+// outside of, and focus the split pane whose reader it landed in.
+// DEFERRED out of the WH_MOUSE hook, where it used to run:
 // closing the peek's browser inside the button-down hook — a focused window
 // destroyed under a press in flight — cost the click itself, so a Shift-click
 // meant to open the NEXT peek opened nothing. wparam is the window the
@@ -376,6 +377,9 @@ LRESULT CALLBACK PhiCoordinator::MsgWndProc(HWND hwnd,
       const POINT pt = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
       self->surface_coordinator_.DismissPeeksForShell(
           ::GetAncestor(target, GA_ROOT), target, &pt);
+      if (::IsWindow(target)) {
+        self->surface_coordinator_.ActivatePaneUnderPress(target);
+      }
     }
     return 0;
   }
@@ -1901,6 +1905,11 @@ void PhiCoordinator::RequestToggleReaderView(int tab_id,
 
 void PhiCoordinator::RequestCloseSurfaces(int tab_id) {
   surface_coordinator_.CloseSurfacesForOrigin(TabId{tab_id});
+}
+
+bool PhiCoordinator::RequestClosePartnerPeek(int64_t browser, int tab_id) {
+  return surface_coordinator_.ClosePartnerPeek(BrowserId{browser},
+                                               TabId{tab_id});
 }
 
 bool PhiCoordinator::SurfaceFaviconForOrigin(int tab_id,
@@ -4640,14 +4649,24 @@ bool PhiCoordinator::HostSurfacePanel(
     const phi_framework::WindowCreation& creation) {
   const BrowserId browser = creation.window;
   const HWND hwnd = reinterpret_cast<HWND>(creation.hwnd);
+  BrowserId opener_window = creation.opener_window;
+  TabId opener_tab = creation.opener_tab;
+  if (creation.kind == phi_framework::WindowKind::kPeek) {
+    // A link inside a surface — a Peek, a Reader View panel — peeks from the
+    // strip tab that surface stands over: the surface's own browser has no
+    // shell to float in. One peek per opener, so from inside a Peek the new
+    // one replaces it (the Mac's openLinkAsPeek, phibrowser-mac 89dd8a48).
+    if (const PhiSurfacePanel* source = surfaces().Find(opener_window)) {
+      opener_window = BrowserId{source->origin_window_id()};
+      opener_tab = TabId{static_cast<int32_t>(source->origin_tab_id())};
+    }
+  }
   // The opener is named by BROWSER id; the controller is filed under its
   // slot, and the two only coincide until that slot switches Space.
-  PhiShellWindow* opener =
-      registry_.ControllerForBrowser(creation.opener_window);
+  PhiShellWindow* opener = registry_.ControllerForBrowser(opener_window);
   if (!opener) {
     LOG(WARNING) << "[PhiClient] surface " << browser.value
-                 << " without an opener window "
-                 << creation.opener_window.value;
+                 << " without an opener window " << opener_window.value;
     return false;
   }
   if (creation.kind == phi_framework::WindowKind::kReaderPanel) {
@@ -4663,23 +4682,24 @@ bool PhiCoordinator::HostSurfacePanel(
     return true;
   }
   // A Peek: floats inside its opener window's content card rather than
-  // taking a window of its own. One peek per opener: a second replaces the
-  // first (the Mac's presentPeek `.replaced`).
+  // taking a window of its own — over the opener's whole split when it is a
+  // pane. One peek per opener: a second replaces the first (the Mac's
+  // presentPeek `.replaced`).
   LOG(INFO) << "[PhiClient] peek " << browser.value << " over tab "
-            << creation.opener_tab.value << " in window "
-            << creation.opener_window.value;
-  CloseSurfacesForOrigin(creation.opener_tab, SidebarSurface::kPeek,
-                         "replaced");
+            << opener_tab.value << " in window " << opener_window.value;
+  // The replaced peek hands no focus back: the new one takes its place
+  // over whichever pane is focused.
+  CloseSurfacesForOrigin(opener_tab, SidebarSurface::kPeek, "replaced",
+                         /*hands_back_strip=*/false);
   surfaces().Attach(std::make_unique<PhiPeekPanel>(
-      browser.value, hwnd, creation.opener_window.value,
-      creation.opener_tab.value, opener, framework_, &window_model_, this));
+      browser.value, hwnd, opener_window.value, opener_tab.value, opener,
+      framework_, &window_model_, this));
   // The Mac's peek_view_opened: the panel actually presented. "restored"
   // never happens here — a peek is omitted from session restore.
   CaptureAnalytics(
       kAnalyticsModulePeek, kEventPeekOpened,
-      PhiPeekOpenedProperties(
-          creation.peek_explicit ? "explicit" : "auto",
-          opener->PeekOpenerKind(creation.opener_tab.value)));
+      PhiPeekOpenedProperties(creation.peek_explicit ? "explicit" : "auto",
+                              opener->PeekOpenerKind(opener_tab.value)));
   return true;
 }
 
@@ -4972,13 +4992,14 @@ LRESULT CALLBACK PhiCoordinator::MouseHookProc(int code,
     if (self->accelerators_) {
       self->accelerators_->OnMouseButtonDown();
     }
-    if (self->surface_coordinator_.HasPeek() && self->msg_hwnd_) {
+    if (self->surface_coordinator_.HasSurfaces() && self->msg_hwnd_) {
       const auto* hook = reinterpret_cast<MOUSEHOOKSTRUCT*>(lparam);
       // The click is delivered regardless: dismissing is a side effect of
       // clicking elsewhere, not a swallowed click (the Mac lets the click
       // through too) — and it runs on a turn of its own, after this press
       // has been dispatched (WM_PHI_DISMISS_PEEKS). The press's point goes
-      // along: only a press on the page pane dismisses.
+      // along: only a press on the page pane dismisses. A press in a pane's
+      // reader focuses that pane on the same turn.
       ::PostMessageW(self->msg_hwnd_, WM_PHI_DISMISS_PEEKS,
                      reinterpret_cast<WPARAM>(hook->hwnd),
                      MAKELPARAM(hook->pt.x, hook->pt.y));
@@ -5080,6 +5101,9 @@ void PhiCoordinator::OnContentBoundsChanged(int64_t window_id) {
   const BrowserId browser{window_id};
   if (PhiShellWindow* shell = registry_.ControllerForBrowser(browser)) {
     shell->OnContentBoundsChanged(browser);
+    // A reader over one split pane follows that pane: a divider drag, the
+    // panes' first layout after a tab switch.
+    surface_coordinator_.NoteContentLayoutChanged(shell->slot());
   }
 }
 
@@ -5355,7 +5379,7 @@ void PhiCoordinator::RetireClosingBrowser(BrowserId browser) {
   }
   if (const std::optional<PhiSurfaceRegistry::Origin> gone =
           surfaces().Detach(browser)) {
-    if (framework_) {
+    if (framework_ && gone->hands_back_strip) {
       framework_->ActivateTabById(gone->origin_window_id.value,
                                   gone->origin_tab_id.value);
     }

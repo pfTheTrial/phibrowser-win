@@ -41,6 +41,7 @@ std::optional<PhiSurfaceRegistry::Origin> PhiSurfaceRegistry::Detach(
   origin.window_id = window_id;
   origin.origin_window_id = BrowserId{it->second->origin_window_id()};
   origin.origin_tab_id = TabId{static_cast<int32_t>(it->second->origin_tab_id())};
+  origin.hands_back_strip = it->second->hands_back_strip();
   panels_.erase(it);
   return origin;
 }

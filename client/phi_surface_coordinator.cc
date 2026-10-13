@@ -4,7 +4,10 @@
 
 #include "phibrowser-win/client/phi_surface_coordinator.h"
 
+#include <algorithm>
+#include <map>
 #include <optional>
+#include <set>
 #include <utility>
 #include <vector>
 
@@ -15,6 +18,7 @@
 #include "base/values.h"
 #include "chrome/browser/phinomenon/phi_framework/phi_framework_api.h"
 #include "phibrowser-win/client/phi_shell_window.h"
+#include "phibrowser-win/client/phi_surface_visibility.h"
 #include "phibrowser-win/client/phi_window_model.h"
 
 namespace phi_client {
@@ -312,7 +316,8 @@ void PhiSurfaceCoordinator::CloseReaderPanelForOrigin(TabId origin_tab_id) {
 
 void PhiSurfaceCoordinator::CloseSurfacesForOrigin(TabId origin_tab_id,
                                                    SidebarSurface kind,
-                                                   const char* peek_end_reason) {
+                                                   const char* peek_end_reason,
+                                                   bool hands_back_strip) {
   if (!framework_) {
     return;
   }
@@ -323,6 +328,9 @@ void PhiSurfaceCoordinator::CloseSurfacesForOrigin(TabId origin_tab_id,
     if (panel.origin_tab_id() == origin_tab_id.value &&
         (kind == SidebarSurface::kContent || panel.kind() == kind)) {
       panel.NoteEndReason(peek_end_reason);
+      if (!hands_back_strip) {
+        panel.set_hands_back_strip(false);
+      }
       doomed.push_back(BrowserId{panel.window_id()});
     }
   });
@@ -395,18 +403,42 @@ void PhiSurfaceCoordinator::UpdateReaderPanelsForWindow(BrowserId window_id) {
   }
   // Every surface over this window, both kinds: an origin that left the
   // strip — closed, torn off, moved to another Space — takes its surface
-  // with it (the Mac's origin watch); the rest re-fit and show only over
-  // the active tab.
+  // with it (the Mac's origin watch); the rest re-fit and show by the Mac's
+  // rules over the active tab and its split partner: a peek covers its
+  // opener's whole split, each pane keeps its own reader, and a peek in
+  // front hides the pane readers (phi_surface_visibility.h).
   std::vector<BrowserId> orphaned;
+  std::vector<PhiSurfacePanel*> live;
+  std::map<int, int> peeks;  // Opener tab -> the peek's own tab.
+  std::set<int> readers;     // Origin tabs with a reader over them.
   for (PhiSurfacePanel* panel : surfaces_.OverWindow(window_id)) {
-    if (!window_model_.FindTab(
-            window_id, TabId{static_cast<int32_t>(panel->origin_tab_id())})) {
+    const int origin = static_cast<int>(panel->origin_tab_id());
+    if (!window_model_.FindTab(window_id, TabId{origin})) {
       panel->NoteEndReason("opener_closed");
       orphaned.push_back(BrowserId{panel->window_id()});
       continue;
     }
+    live.push_back(panel);
+    if (panel->kind() == SidebarSurface::kPeek) {
+      peeks[origin] = static_cast<int>(panel->surface_tab_id());
+    } else {
+      readers.insert(origin);
+    }
+  }
+  const int focused = active_tab.value;
+  const int partner = SplitPartnerOf(window_id, active_tab).value;
+  const PhiVisiblePeek peek = PhiVisiblePeekFor(focused, partner, peeks);
+  const std::vector<int> shown_readers =
+      PhiVisibleReaderOrigins(focused, partner, peeks, readers);
+  for (PhiSurfacePanel* panel : live) {
+    const int origin = static_cast<int>(panel->origin_tab_id());
+    const bool shown =
+        panel->kind() == SidebarSurface::kPeek
+            ? origin == peek.opener
+            : std::find(shown_readers.begin(), shown_readers.end(), origin) !=
+                  shown_readers.end();
     panel->Reposition();
-    panel->SetVisibleForActiveTab(active_tab.value);
+    panel->SetSurfaceShown(shown);
   }
   for (const BrowserId panel_id : orphaned) {
     LOG(INFO) << "[PhiClient] surface " << panel_id.value
@@ -414,6 +446,163 @@ void PhiSurfaceCoordinator::UpdateReaderPanelsForWindow(BrowserId window_id) {
     if (framework_) {
       framework_->CloseBrowserWindow(panel_id.value);
     }
+  }
+}
+
+TabId PhiSurfaceCoordinator::SplitPartnerOf(BrowserId window,
+                                            TabId tab) const {
+  const phi_framework::SplitSnapshot* split =
+      tab.valid() ? window_model_.SplitOfTab(window, tab) : nullptr;
+  if (!split) {
+    return TabId();
+  }
+  return split->primary == tab ? split->secondary : split->primary;
+}
+
+bool PhiSurfaceCoordinator::PairPeekPageWith(PhiSurfacePanel& peek,
+                                             const std::string& partner_url,
+                                             bool partner_leading) {
+  // The peek's page, read from its own browser's snapshot: the panel's copy
+  // is for its header.
+  const BrowserId peek_window{peek.window_id()};
+  const phi_framework::WindowSnapshot* snapshot =
+      window_model_.Get(peek_window);
+  const std::string page_url = snapshot ? snapshot->nav.url : std::string();
+  if (!framework_ || page_url.empty() || partner_url.empty()) {
+    return false;
+  }
+  const BrowserId window{peek.origin_window_id()};
+  LOG(INFO) << "[PhiClient] peek " << peek_window.value
+            << " opened as split with " << partner_url;
+  // Strip order is pane order: the tab opened first is the leading pane.
+  const std::string& first_url = partner_leading ? partner_url : page_url;
+  const std::string& second_url = partner_leading ? page_url : partner_url;
+  const TabId first = framework_->OpenTab(window, first_url.c_str());
+  const TabId second = framework_->OpenTab(window, second_url.c_str());
+  if (first.valid() && second.valid()) {
+    framework_->CreateSplitViewForTabs(window.value, first.value, second.value,
+                                       "vertical");
+  }
+  // The partner's new tab takes focus and the split forms around it; the
+  // peek's close must not hand the strip back to its opener after that.
+  const TabId partner = partner_leading ? first : second;
+  if (partner.valid()) {
+    framework_->ActivateTabById(window.value, partner.value);
+  }
+  peek.NoteEndReason("opened_as_split");
+  peek.set_hands_back_strip(false);
+  framework_->CloseBrowserWindow(peek_window.value);
+  return true;
+}
+
+void PhiSurfaceCoordinator::OpenSurfaceLinkAsSplit(BrowserId surface_window,
+                                                   const std::string& url) {
+  PhiSurfacePanel* surface = surfaces_.Find(surface_window);
+  if (!surface || !framework_ || url.empty()) {
+    LOG(WARNING) << "[PhiClient] split from surface " << surface_window.value
+                 << ": no such surface";
+    return;
+  }
+  if (surface->kind() == SidebarSurface::kPeek) {
+    if (!PairPeekPageWith(*surface, url, /*partner_leading=*/false)) {
+      // The peek's page has not reported a URL yet: the link alone, as a
+      // tab of the opener window, rather than nothing.
+      framework_->OpenTab(BrowserId{surface->origin_window_id()},
+                          url.c_str());
+    }
+    return;
+  }
+  // A reader: its origin tab pairs with the link, and the reader stays over
+  // the origin's pane.
+  const BrowserId window{surface->origin_window_id()};
+  const TabId origin{static_cast<int32_t>(surface->origin_tab_id())};
+  if (const TabId partner = SplitPartnerOf(window, origin); partner.valid()) {
+    // Already a pane: the link replaces the other pane's page, as a split
+    // link open from any pane does (Browser::OpenURLFromTab). Whatever
+    // stood over that page goes first — it cannot stay over a page that
+    // changed beneath it.
+    CloseSurfacesForOrigin(partner);
+    framework_->ActivateTabById(window.value, partner.value);
+    framework_->Navigate(window.value, url.c_str());
+    return;
+  }
+  const TabId link = framework_->OpenTab(window, url.c_str());
+  if (!link.valid()) {
+    return;
+  }
+  framework_->CreateSplitViewForTabs(window.value, origin.value, link.value,
+                                     "vertical");
+  framework_->ActivateTabById(window.value, link.value);
+}
+
+bool PhiSurfaceCoordinator::OpenPeekBesideSplitOpener(BrowserId peek_window) {
+  PhiSurfacePanel* peek = surfaces_.Find(peek_window);
+  if (!peek || peek->kind() != SidebarSurface::kPeek || !framework_) {
+    return false;
+  }
+  const BrowserId window{peek->origin_window_id()};
+  const TabId opener{static_cast<int32_t>(peek->origin_tab_id())};
+  if (!SplitPartnerOf(window, opener).valid()) {
+    return false;
+  }
+  const phi_framework::TabSnapshot* opener_tab =
+      window_model_.FindTab(window, opener);
+  const std::string opener_url = opener_tab ? opener_tab->url : std::string();
+  if (PairPeekPageWith(*peek, opener_url, /*partner_leading=*/true)) {
+    return true;
+  }
+  // Nothing to duplicate (or no page yet): expand instead, as the Mac does.
+  const phi_framework::WindowSnapshot* snapshot = window_model_.Get(peek_window);
+  if (snapshot && !snapshot->nav.url.empty()) {
+    framework_->OpenTab(window, snapshot->nav.url.c_str());
+  }
+  peek->NoteEndReason("opened_as_tab");
+  framework_->CloseBrowserWindow(peek_window.value);
+  return true;
+}
+
+bool PhiSurfaceCoordinator::ClosePartnerPeek(BrowserId window_id,
+                                             TabId tab_id) {
+  const TabId partner = SplitPartnerOf(window_id, tab_id);
+  if (!partner.valid() || surfaces_.ForOrigin(tab_id, SidebarSurface::kPeek) ||
+      !surfaces_.ForOrigin(partner, SidebarSurface::kPeek)) {
+    return false;
+  }
+  LOG(INFO) << "[PhiClient] back/forward on pane " << tab_id.value
+            << " — closing the peek of " << partner.value;
+  // The focused pane keeps focus: the opener is only the peek's anchor.
+  CloseSurfacesForOrigin(partner, SidebarSurface::kPeek, "closed",
+                         /*hands_back_strip=*/false);
+  return true;
+}
+
+void PhiSurfaceCoordinator::ActivatePaneUnderPress(HWND target) {
+  if (!framework_ || !target) {
+    return;
+  }
+  PhiSurfacePanel* pressed = nullptr;
+  surfaces_.ForEach([&](PhiSurfacePanel& panel) {
+    if (panel.kind() == SidebarSurface::kReader &&
+        ::IsWindowVisible(panel.hwnd()) && panel.ContainsWindow(target)) {
+      pressed = &panel;
+    }
+  });
+  if (!pressed) {
+    return;
+  }
+  const BrowserId window{pressed->origin_window_id()};
+  const TabId origin{static_cast<int32_t>(pressed->origin_tab_id())};
+  const phi_framework::TabSnapshot* active = window_model_.ActiveTab(window);
+  if (!SplitPartnerOf(window, origin).valid() ||
+      (active && active->id == origin)) {
+    return;
+  }
+  // Activating the pane moves Chromium's focus into the page under the
+  // reader; the press already gave it to the reader, so it goes back there.
+  const HWND focus = ::GetFocus();
+  framework_->ActivateTabById(window.value, origin.value);
+  if (focus && ::IsWindow(focus) && ::GetFocus() != focus) {
+    ::SetFocus(focus);
   }
 }
 

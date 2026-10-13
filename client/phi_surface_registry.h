@@ -24,6 +24,7 @@
 //   origin closes / leaves the window   -> the surface closes
 //   origin window closes                -> the surface closes
 //   origin's window switches tabs       -> the surface shows only over its tab
+//                                          (or its split: phi_surface_visibility.h)
 //   the card moves                      -> the surface re-fits
 //   address bar / Back / Forward on the origin -> the surface closes first
 // The sidebar consumes only Surfaces(): origin tab -> kind, for the
@@ -57,8 +58,11 @@ class PhiSurfacePanel {
 
   // The origin window moved or resized: re-fit to its content card.
   virtual void Reposition() = 0;
-  // The origin switched tabs: show only while the origin tab is active.
-  virtual void SetVisibleForActiveTab(int64_t active_tab_id) = 0;
+  // Shows or hides the surface. The surface coordinator decides, by the
+  // origin window's active tab and its split partner (phi_surface_
+  // visibility.h): a peek covers its opener's whole split, a reader its
+  // origin's pane. Showing never takes the keyboard.
+  virtual void SetSurfaceShown(bool shown) = 0;
   // The hosted page changed.
   virtual void RefreshState() = 0;
   // Above the origin's browser child (the corner caps go above it after).
@@ -73,6 +77,16 @@ class PhiSurfacePanel {
   // is what reports (PhiCoordinator::RetireClosingBrowser). A close nobody
   // announced is the page's own doing. Default no-op.
   virtual void NoteEndReason(const char* reason) {}
+
+  // Whether closing the surface hands the strip back to its origin tab
+  // (the Mac reveals the page the overlay covered). Off for a close that
+  // moved the page into a new split without the origin, which keeps the
+  // focus that split was given.
+  bool hands_back_strip() const { return hands_back_strip_; }
+  void set_hands_back_strip(bool hands_back) { hands_back_strip_ = hands_back; }
+
+ private:
+  bool hands_back_strip_ = true;
 };
 
 class PhiSurfaceRegistry {
@@ -82,6 +96,7 @@ class PhiSurfaceRegistry {
     BrowserId window_id;  // The panel browser.
     BrowserId origin_window_id;
     TabId origin_tab_id;
+    bool hands_back_strip = true;  // PhiSurfacePanel::hands_back_strip.
   };
 
   PhiSurfaceRegistry();

@@ -3815,29 +3815,30 @@ bool PhiShellWindow::LeaveReaderViewForNavigation() {
   if (!services_.sidebar || !active_tab_id().valid()) {
     return false;
   }
-  const bool reader = services_.sidebar->IsReaderActive(active_tab_id().value,
-                                                         active_tab_url());
-  bool peek = false;
-  for (const SidebarContentNode& node : sidebar_->tree().content) {
-    if (node.active && node.attached_surface != SidebarSurface::kContent) {
-      peek = true;
+  const int tab = active_tab_id().value;
+  const bool reader = services_.sidebar->IsReaderActive(tab, active_tab_url());
+  // By the ACTIVE TAB, not by the active row: a split's row carries either
+  // pane's surface, and a reader over the other pane covers another page.
+  const bool attached =
+      services_.sidebar->AttachedSurfaces(active_browser_id().value)
+          .count(tab) != 0;
+  if (reader || attached) {
+    services_.sidebar->RequestCloseSurfaces(tab);
+    return true;
+  }
+  // The split partner's peek covers this pane too.
+  return services_.sidebar->RequestClosePartnerPeek(active_browser_id().value,
+                                                    tab);
+}
+
+bool PhiShellWindow::SplitPaneRectForTab(int tab_id, RECT* pane) const {
+  for (const NativePane& candidate : NativePagesSplitPanes()) {
+    if (candidate.tab_id == tab_id) {
+      *pane = candidate.rect;
+      return true;
     }
   }
-  for (const SidebarCell& cell : sidebar_->tree().pins) {
-    if (cell.binding.active && cell.attached_surface != SidebarSurface::kContent) {
-      peek = true;
-    }
-  }
-  for (const SidebarCell& cell : sidebar_->tree().bookmarks) {
-    if (cell.binding.active && cell.attached_surface != SidebarSurface::kContent) {
-      peek = true;
-    }
-  }
-  if (!reader && !peek) {
-    return false;
-  }
-  services_.sidebar->RequestCloseSurfaces(active_tab_id().value);
-  return true;
+  return false;
 }
 
 const char* PhiShellWindow::PeekOpenerKind(int tab_id) const {
@@ -6544,6 +6545,18 @@ void PhiShellWindow::SplitChipTick() {
   // The UNFOCUSED pane: the one the active tab is not in.
   const int active = active_tab_id().value;
   const NativePane& other = panes[0].tab_id == active ? panes[1] : panes[0];
+  // No chip over a surface: a reader over the unfocused pane, or a peek
+  // (either pane's covers the whole split) would sit under it.
+  if (services_.sidebar) {
+    const std::map<int, SidebarSurface> surfaces =
+        services_.sidebar->AttachedSurfaces(active_browser_id().value);
+    const auto own = surfaces.find(active);
+    if (surfaces.count(other.tab_id) ||
+        (own != surfaces.end() && own->second == SidebarSurface::kPeek)) {
+      HideSplitChip();
+      return;
+    }
+  }
   POINT cursor = {};
   ::GetCursorPos(&cursor);
   RECT pane_screen = other.rect;

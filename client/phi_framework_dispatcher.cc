@@ -223,6 +223,15 @@ void PhiFrameworkDispatcher::OnOpenReaderView(int64_t window_id,
   coordinator_.surface_coordinator().OnOpenReaderView(window_id, tab_id);
 }
 
+void PhiFrameworkDispatcher::OnOpenLinkAsSplitFromSurface(
+    int64_t surface_window_id,
+    int64_t surface_tab_id,
+    const char* url) {
+  // Copied: the framework's string lives only for this call.
+  coordinator_.surface_coordinator().OpenSurfaceLinkAsSplit(
+      BrowserId{surface_window_id}, url ? std::string(url) : std::string());
+}
+
 void PhiFrameworkDispatcher::OnTabDistillable(int64_t window_id,
                                               int tab_id,
                                               bool distillable) {

@@ -61,6 +61,11 @@ $CXX session_restore_test.cc -o /tmp/phi_session_restore_test
 # window lands. Header-only; the manager that consults it stays on the target.
 $CXX agent_space_route_test.cc -o /tmp/phi_agent_space_route_test
 /tmp/phi_agent_space_route_test
+# Which Peek and Reader View surfaces show over a window (phibrowser-mac
+# 89dd8a48 ported). Header-only; the coordinator applying it stays on the
+# target.
+$CXX surface_visibility_test.cc -o /tmp/phi_surface_visibility_test
+/tmp/phi_surface_visibility_test
 # The onboarding's analytics session (phi_oobe_analytics.h): the Mac's
 # OOBEAnalyticsSession ported as a pure state machine — the same cases as
 # its OOBEAnalyticsSessionTests. Header-only; the window that drives it
