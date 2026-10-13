@@ -66,11 +66,11 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 if [[ -z "$VERSION" ]]; then
-  VERSION=$(grep -oP '(?<=PHI_WIN_VERSION_STRING ")[^"]+' \
+  VERSION=$(grep -oP '(?<=^#define PHI_WIN_VERSION_STRING ")[^"]+' \
     "$HERE/../client/phi_version.h")
 fi
 if [[ -z "$BUILD_NUMBER" ]]; then
-  BUILD_NUMBER=$(grep -oP '(?<=PHI_WIN_VERSION_BUILD )\d+' \
+  BUILD_NUMBER=$(grep -oP '(?<=^#define PHI_WIN_VERSION_BUILD )\d+' \
     "$HERE/../client/phi_version.h")
 fi
 [[ "$BUILD_NUMBER" =~ ^(0|[1-9][0-9]*)$ && ${#BUILD_NUMBER} -le 5 ]] &&
