@@ -346,8 +346,8 @@ void Dpi() {
 
 void Backdrop() {
   std::printf("backdrop: translucent ground, readable ink, premultiplied edges\n");
-  CHECK(PhiBackdropPixel(0xFFFFFF, 0xFFFFFF) == 0x33333333u);
-  CHECK(PhiBackdropPixel(0, 0) == 0x33000000u);
+  CHECK(PhiBackdropPixel(0xFFFFFF, 0xFFFFFF) == 0x80808080u);
+  CHECK(PhiBackdropPixel(0, 0) == 0x80000000u);
   CHECK(PhiBackdropPixel(0, 0xFFFFFF) == 0xFF000000u);
   CHECK(PhiBackdropPixel(0xFFFFFF, 0) == 0xFFFFFFFFu);
   CHECK(PhiBackdropPixel(0xFF0000, 0xEEEEEE) == 0xFFFF0000u);
@@ -365,7 +365,7 @@ void Backdrop() {
     }
   }
   // The theme's chroma survives translucency, instead of being multiplied
-  // by 20% for a second time. Stronger saturation must remain visible.
+  // by the tint for a second time. Stronger saturation must remain visible.
   for (uint32_t ground : {0xFFF0F0u, 0xFFCFCFu, 0xE0DCFFu}) {
     const uint32_t tint = PhiBackdropPixel(ground, 0xFFFFFF);
     CHECK((tint >> 24) < 255);
@@ -388,7 +388,7 @@ void Backdrop() {
       const uint32_t rgb = value * 0x010101u;
       const uint32_t pixel = PhiBackdropPixel(rgb, ground);
       const int alpha = pixel >> 24;
-      CHECK(alpha >= 51 && alpha <= 255);
+      CHECK(alpha >= kPhiBackdropTintAlpha && alpha <= 255);
       for (int shift : {0, 8, 16}) {
         const int channel = (pixel >> shift) & 255;
         CHECK(channel <= alpha);
