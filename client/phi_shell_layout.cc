@@ -398,15 +398,8 @@ ShellLayout ComputeShellLayout(const ShellLayoutInputs& in) {
                 chat_top + scaled(kPillHeight)};
     br = out.chat.left - btn_gap;
   }
-  // ViewThatFits: the measured pill where the bar has room for it after
-  // the leading buttons, else the icon-only slot.
-  const int pill_h = scaled(kFeedbackPillHeight);
-  const int pill_top = bar_mid - pill_h / 2;
-  int pill_w = scaled(in.feedback_dip);
-  if (pill_w <= 0 || br - pill_w < bx + btn_gap) {
-    pill_w = scaled(kFeedbackIconWidth);
-  }
-  out.feedback = {br - pill_w, pill_top, br, pill_top + pill_h};
+  // Feedback trails as an icon button, the same slot as Downloads leads.
+  out.feedback = {br - btn, bar_mid - btn / 2, br, bar_mid + btn / 2};
 
   out.tabs_left = inset;
   out.tabs_limit = out.bottom_bar.top - scaled(kFavoritesSpacer);

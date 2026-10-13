@@ -77,16 +77,6 @@ namespace {
 
 constexpr wchar_t kShellClassName[] = L"PhiClientShell";
 
-// The sidebar bottom bar's Feedback pill label (§4.2), measured in the
-// shell's 12/600 face so the pill is laid out around the real text.
-constexpr wchar_t kFeedbackLabel[] = L"Feedback";
-// The bug's box. The canvas draws a 16 dip icon; the 48 px mask behind it
-// carries a 4 px margin the canvas's drawing does not, so the artwork is
-// laid out and drawn a fifth larger and its INK then measures the
-// canvas's.
-constexpr int kFeedbackArtwork = 20;
-constexpr int kFeedbackLabelLen = static_cast<int>(std::size(kFeedbackLabel)) - 1;
-
 using phi_framework::SplitSnapshot;
 using phi_framework::TabSnapshot;
 using phi_framework::WindowSnapshot;
@@ -544,7 +534,6 @@ ShellLayoutInputs PhiShellWindow::CurrentLayoutInputs(bool include_floating) con
   in.owned_tabs_label = !agent_chip_compact_ && !agent_chip_name_.empty();
   in.space_chip_dip = space_chip_dip_;
   in.agent_chip_dip = agent_chip_dip_;
-  in.feedback_dip = feedback_dip_;
   in.update_dip = update_dip_;
   if (floating && floating_panel_h_ > 0) {
     // The panel's own height: its bands (the bottom bar) fit the panel.
@@ -605,33 +594,6 @@ void PhiShellWindow::RefreshLayoutInputs() {
       ::ReleaseDC(shell_hwnd_, dc);
     }
     space_chip_dip_ = 8 + 16 + 6 + std::min(120, name_dip) + 4 + 12 + 8;
-  }
-  // The bottom bar's Feedback pill (§4.2): 10 + icon 16 + 6 + the label in
-  // the same 12/600 face + 10. Measured here so the layout never guesses a
-  // text width — an unmeasurable label leaves 0 and the icon-only slot.
-  feedback_dip_ = 0;
-  if (shell_hwnd_) {
-    EnsureChipNameFont();
-    if (HDC dc = ::GetDC(shell_hwnd_)) {
-      HGDIOBJ previous =
-          chip_name_font_ ? ::SelectObject(dc, chip_name_font_) : nullptr;
-      SIZE extent = {};
-      if (::GetTextExtentPoint32W(dc, kFeedbackLabel, kFeedbackLabelLen,
-                                  &extent)) {
-        // 10 pad + the 20 dip artwork + 6 + the label + 10 pad. The label
-        // is rounded UP into dip: truncating it (and scaling the total back
-        // to pixels) lost a pixel or two and clipped the word's last
-        // letter.
-        const int label_dip = (static_cast<int>(extent.cx) * 96 +
-                               static_cast<int>(dpi_) - 1) /
-                              static_cast<int>(dpi_);
-        feedback_dip_ = 10 + kFeedbackArtwork + 6 + label_dip + 10;
-      }
-      if (previous) {
-        ::SelectObject(dc, previous);
-      }
-      ::ReleaseDC(shell_hwnd_, dc);
-    }
   }
   // The Update reminder (the Mac's upgrade button): 8 + the label in the
   // same 12/600 face + 8, never under 56 dip; 0 while nothing is on offer.
@@ -3586,6 +3548,7 @@ std::wstring PhiShellWindow::ChromeTipAt(POINT pt) {
       {layout.site_menu, "shell.toolbar.siteInfo"},
       {layout.reader, "appMenu.readerView"},
       {layout.sidebar_downloads, "app.downloads"},
+      {layout.feedback, "appMenu.reportIssue"},
   };
   for (const auto& tip : kTips) {
     if (tip.rect.right > tip.rect.left && ::PtInRect(&tip.rect, pt)) {
@@ -7689,46 +7652,9 @@ void PhiShellWindow::PaintChrome(HDC dc,
       // The extensions puzzle button (nav-hover ordinal 10 = bottom_hot(4)).
       tool(layout.extensions, fluent::kPuzzle, bottom_hot(4));
     }
-  }
-  if (layout.feedback.right > layout.feedback.left) {
-    // The Feedback pill (§4.2): 26 high, a 1 px stroke_strong capsule, the
-    // 16 dip glyph then a 6 dip gap and the 12/600 label, 10 dip of padding
-    // at each end. ViewThatFits: a bar too narrow for the label takes the
-    // icon-only slot, and the glyph then centres in it.
-    const bool icon_only = layout.feedback.right - layout.feedback.left <=
-                           Scaled(kFeedbackIconWidth);
-    if (bottom_hot(2)) {
-      PhiFillCapsuleAA(dc, layout.feedback, palette.hover);
-    }
-    PhiStrokeCapsuleAA(dc, layout.feedback, palette.stroke_strong,
-                       std::max(1, Scaled(1)));
-    HGDIOBJ previous_label =
-        ::SelectObject(dc, EnsureChipNameFont());
-    const int icon_w = Scaled(kFeedbackArtwork);
-    const int mid_y = (layout.feedback.top + layout.feedback.bottom) / 2;
-    const int left = icon_only
-                         ? (layout.feedback.left + layout.feedback.right -
-                            icon_w) / 2
-                         : layout.feedback.left + Scaled(10);
-    RECT icon_rc = {left, mid_y - icon_w / 2, left + icon_w,
-                    mid_y + icon_w / 2};
-    // The canvas's bug, the one mask the Fluent face has no answer for
-    // (§2.2a's exception list), tinted like every other template icon.
-    const std::vector<unsigned char> bug_bgra =
-        PhiTintedIconBgra(PhiFeedbackIcon(), kLabel, icon_w);
-    PhiBlendBgra(dc, icon_rc, bug_bgra.data(), icon_w, icon_w);
-    if (!icon_only) {
-      ::SetTextColor(dc, kLabel);
-      // The trailing padding is in the MEASURED width already; clipping the
-      // text rect to it again cost the last letter whenever the two
-      // measurements disagreed by a pixel.
-      RECT text_rc = {icon_rc.right + Scaled(6), layout.feedback.top,
-                      layout.feedback.right, layout.feedback.bottom};
-      PhiDrawTextAA(dc, kFeedbackLabel, -1, &text_rc,
-                    DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-    }
-    if (previous_label) {
-      ::SelectObject(dc, previous_label);
+    if (layout.feedback.right > layout.feedback.left) {
+      // Feedback: the app menu's Report-an-issue glyph, icon only.
+      tool(layout.feedback, fluent::kFeedback, bottom_hot(2));
     }
   }
   if (layout.chat.right > layout.chat.left) {

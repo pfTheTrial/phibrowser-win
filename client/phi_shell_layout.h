@@ -120,11 +120,7 @@ inline constexpr int kTopBarSpacing = kNavGroupSpacing;
 // the compact pip / Space chip leads them after the edge inset.
 inline constexpr int kHTabStripTop = 6;
 inline constexpr int kHTabStripLeading = 8;
-// The bottom bar's capsules (Feedback bordered, Chat on the accent).
-inline constexpr int kFeedbackIconWidth = 32;
-// The Feedback pill's own height (§4.2's bottom bar); the Chat capsule
-// keeps kPillHeight.
-inline constexpr int kFeedbackPillHeight = 26;
+// The bottom bar's Chat capsule (on the accent).
 inline constexpr int kChatWidth = 58;
 inline constexpr int kPillHeight = 24;
 // The Update reminder (the Mac's upgrade button): a 24 dip accent pill at
@@ -185,9 +181,6 @@ struct ShellLayoutInputs {
   // width in the agent's own Space, 40 for the compact form in a user
   // Space while an agent works elsewhere, 0 for none.
   int agent_chip_dip = 0;
-  // The Feedback pill's measured width (10 + icon 16 + 6 + label + 10) in
-  // dip; 0 means the icon-only slot.
-  int feedback_dip = 0;
   // The Update reminder's measured width in dip (label + padding, at least
   // kUpdatePillMinWidth); 0 = no update on offer, no pill.
   int update_dip = 0;
@@ -212,7 +205,6 @@ struct ShellLayoutInputs {
            a.owned_tabs_label == b.owned_tabs_label &&
            a.space_chip_dip == b.space_chip_dip &&
            a.agent_chip_dip == b.agent_chip_dip &&
-           a.feedback_dip == b.feedback_dip &&
            a.update_dip == b.update_dip;
   }
   friend bool operator!=(const ShellLayoutInputs& a,

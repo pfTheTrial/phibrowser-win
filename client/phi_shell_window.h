@@ -1952,8 +1952,6 @@ class PhiShellWindow : public PhiHitSource,
   // inputs. `agent_chip_task_` names the task it stands for; compact =
   // the mark and dot only (a user Space while an agent works elsewhere).
   int agent_chip_dip_ = 0;
-  // The Feedback pill's measured width in dip (0 = the icon-only slot).
-  int feedback_dip_ = 0;
   // The Update reminder's measured width in dip (0 = no update on offer).
   int update_dip_ = 0;
   bool agent_chip_compact_ = false;
