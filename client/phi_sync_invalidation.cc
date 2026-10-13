@@ -177,7 +177,11 @@ class JsonReader {
       return Eat(']');
     }
   }
-  bool SkipValue() {
+  // Nesting past 32 levels is refused: each level is one stack frame.
+  bool SkipValue(int depth = 0) {
+    if (depth >= 32) {
+      return false;
+    }
     SkipSpace();
     const char c = Peek();
     if (c == '"') {
@@ -203,7 +207,7 @@ class JsonReader {
             return false;
           }
         }
-        if (!SkipValue()) {
+        if (!SkipValue(depth + 1)) {
           return false;
         }
         SkipSpace();

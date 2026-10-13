@@ -83,9 +83,14 @@ bool Reader::Bytes(std::string_view* value) {
   return Varint(&length) && Advance(static_cast<size_t>(length), value);
 }
 
-bool Reader::Group(int field, std::string_view* body) {
+bool Reader::Group(int field, std::string_view* body, int depth) {
+  // Each nesting level is one stack frame: a hostile response must not
+  // overflow the stack.
+  if (depth >= 64) {
+    return false;
+  }
   const size_t start = pos_;
-  for (int depth = 0; depth < 64;) {
+  for (;;) {
     const size_t tag_at = pos_;
     int inner = 0;
     WireType inner_type = kVarint;
@@ -101,7 +106,7 @@ bool Reader::Group(int field, std::string_view* body) {
     }
     if (inner_type == kStartGroup) {
       std::string_view nested;
-      if (!Group(inner, &nested)) {
+      if (!Group(inner, &nested, depth + 1)) {
         return false;
       }
       continue;
@@ -110,7 +115,6 @@ bool Reader::Group(int field, std::string_view* body) {
       return false;
     }
   }
-  return false;
 }
 
 bool Reader::Skip(WireType type, std::string* unknown) {

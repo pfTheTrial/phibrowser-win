@@ -610,7 +610,13 @@ KeyStatus PhiDpapiDeviceKeyStore::LoadOrCreate(keys::DeviceKeyPair* out) {
     return KeyStatus::Ok();
   }
   std::string blob;
-  if (PhiReadFileBytes(path_, &blob)) {
+  const PhiReadStatus read = PhiReadFile(path_, &blob);
+  if (read == PhiReadStatus::kError) {
+    // There but locked or denied: the next call retries; a new key would
+    // replace the device's registered identity.
+    return KeyStatus::Error(KeyErrorKind::kDeviceKey, "read");
+  }
+  if (read == PhiReadStatus::kOk) {
     std::optional<Bytes> private_key = Unprotect(blob);
     if (!private_key || private_key->size() != keys::kKeyBytes) {
       // Unreadable (another machine or user, or damage): never mint over
@@ -650,18 +656,47 @@ KeyStatus PhiDpapiDeviceKeyStore::Rotate() {
 
 PhiKeyStateFile::PhiKeyStateFile(std::wstring path) : path_(std::move(path)) {
   int schema = 0;
-  PhiReadJsonFile(path_, &values_, &schema);
+  if (PhiReadJsonFile(path_, &values_, &schema) ==
+      PhiJsonFileStatus::kUnreadable) {
+    // Locked or denied: empty in memory, and no write may replace the
+    // mappings on disk this session (every Set* then fails, so sync parks).
+    save_blocked_ = true;
+    LOG(ERROR) << "[PhiSyncKeys] key state could not be read; saves off";
+  }
 }
 
 PhiKeyStateFile::~PhiKeyStateFile() = default;
 
 bool PhiKeyStateFile::SaveLocked() {
+  if (save_blocked_) {
+    return false;
+  }
   std::string json;
   if (!base::JSONWriter::WriteWithOptions(
           values_, base::JSONWriter::OPTIONS_PRETTY_PRINT, &json)) {
     return false;
   }
   return EnsureDirectoryFor(path_) && PhiWriteFileAtomic(path_, json);
+}
+
+bool PhiKeyStateFile::SetAndSaveLocked(std::string_view key,
+                                       base::DictValue value) {
+  // A write that did not land leaves memory as the disk has it: a mapping
+  // must never be used before it is durable.
+  std::optional<base::Value> before;
+  if (const base::Value* old = values_.Find(key)) {
+    before = old->Clone();
+  }
+  values_.Set(key, std::move(value));
+  if (SaveLocked()) {
+    return true;
+  }
+  if (before) {
+    values_.Set(key, std::move(*before));
+  } else {
+    values_.Remove(key);
+  }
+  return false;
 }
 
 std::map<std::string, std::string> PhiKeyStateFile::ProfileMappings() const {
@@ -684,8 +719,7 @@ bool PhiKeyStateFile::SetProfileMappings(
   for (const auto& [key, value] : mappings) {
     dict.Set(key, value);
   }
-  values_.Set(kMappingsKey, std::move(dict));
-  return SaveLocked();
+  return SetAndSaveLocked(kMappingsKey, std::move(dict));
 }
 
 std::map<std::string, std::string> PhiKeyStateFile::SpaceMappings() const {
@@ -708,8 +742,7 @@ bool PhiKeyStateFile::SetSpaceMappings(
   for (const auto& [key, value] : mappings) {
     dict.Set(key, value);
   }
-  values_.Set(kSpaceMappingsKey, std::move(dict));
-  return SaveLocked();
+  return SetAndSaveLocked(kSpaceMappingsKey, std::move(dict));
 }
 
 std::optional<Bytes> PhiKeyStateFile::PendingRegistration(
@@ -759,8 +792,7 @@ bool PhiKeyStateFile::SetEnrollment(const keys::EnrollmentRecord& record) {
   dict.Set("version", record.version);
   dict.Set("deviceKeyID", record.device_key_id);
   dict.Set("paired", record.paired);
-  values_.Set(kEnrollmentKey, std::move(dict));
-  return SaveLocked();
+  return SetAndSaveLocked(kEnrollmentKey, std::move(dict));
 }
 
 // --- PhiProfilePayloadJson -----------------------------------------------------
@@ -835,7 +867,10 @@ sync::ProtocolStatus PhiSyncHttpTransport::Post(
     const std::wstring headers = L"Authorization: Bearer " +
                                  base::UTF8ToWide(token) +
                                  L"\r\nContent-Type: application/octet-stream\r\n";
-    PhiHttpResult http = PhiHttpRequest(L"POST", url, headers, body);
+    // A replay's GetUpdates page can carry far more than the default cap.
+    constexpr size_t kSyncResponseMaxBytes = 64u * 1024 * 1024;
+    PhiHttpResult http =
+        PhiHttpRequest(L"POST", url, headers, body, kSyncResponseMaxBytes);
     if (!http.transport_ok) {
       result.error = sync::ProtocolError::kTransport;
       return result;

@@ -92,7 +92,9 @@ PhiVersionTransition PhiNoteAppVersion(const std::wstring& user_data_dir) {
   }
   const std::wstring path = user_data_dir + L"\\phi_last_version";
   std::string previous;
-  PhiReadFileBytes(path, &previous);
+  if (PhiReadFile(path, &previous) == PhiReadStatus::kError) {
+    return out;  // locked: never "installed", never written over
+  }
   while (!previous.empty() &&
          (previous.back() == '\n' || previous.back() == '\r' ||
           previous.back() == ' ')) {
@@ -338,9 +340,13 @@ void PhiFirstTimeActions::Load(const std::wstring& user_data_dir,
   }
   path_ = user_data_dir + L"\\phi_first_time_actions";
   std::string bytes;
-  PhiReadFileBytes(path_, &bytes);
   recorded_.clear();
   installed_unix_ms_ = 0;
+  if (PhiReadFile(path_, &bytes) == PhiReadStatus::kError) {
+    // Locked: nothing is recorded (or written over) this session.
+    path_.clear();
+    return;
+  }
   for (std::string_view line : base::SplitStringPiece(
            bytes, "\r\n", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY)) {
     if (installed_unix_ms_ == 0) {

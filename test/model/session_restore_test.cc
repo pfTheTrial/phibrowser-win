@@ -64,11 +64,32 @@ void TestLastActiveSpace() {
   CHECK(PhiSessionRestore::ResolveLastActiveSpace("", "", true, "2") == "2");
 }
 
+// Release review B6: a Space's newly noted window stands BESIDE the
+// remembered primary while that primary still holds tabs (parked, on its
+// way from the eager set, live in another shell) — overwriting it got the
+// primary orphan-dropped on the next restore. Otherwise it takes the row.
+void TestKeepsPrimary() {
+  // Args: has_primary, is_this_window, parked, awaited, live_elsewhere.
+  CHECK(!PhiSessionRestore::KeepsPrimary(false, false, false, false, false));
+  // Re-noting the primary itself never demotes it.
+  CHECK(!PhiSessionRestore::KeepsPrimary(true, true, true, true, true));
+  // A second window (Ctrl+N, tear-off) while the first shows the Space.
+  CHECK(PhiSessionRestore::KeepsPrimary(true, false, false, false, true));
+  // A window noted while the Space's own window sits parked.
+  CHECK(PhiSessionRestore::KeepsPrimary(true, false, true, false, false));
+  // A sibling restored before the Space's eager window arrived.
+  CHECK(PhiSessionRestore::KeepsPrimary(true, false, false, true, false));
+  // The primary is gone (closed, never coming back): the new window takes
+  // the row.
+  CHECK(!PhiSessionRestore::KeepsPrimary(true, false, false, false, false));
+}
+
 }  // namespace
 
 int main() {
   TestSettleReason();
   TestLastActiveSpace();
+  TestKeepsPrimary();
   if (g_failures) {
     std::fprintf(stderr, "%d failure(s)\n", g_failures);
     return EXIT_FAILURE;

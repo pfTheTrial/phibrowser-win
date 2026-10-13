@@ -32,10 +32,14 @@ class PhiWindow;
 //
 // WHAT IT LISTENS FOR
 //   WM_SETTINGCHANGE with lParam == L"ImmersiveColorSet"  (app light/dark)
+//   WM_SETTINGCHANGE with wParam == SPI_SETHIGHCONTRAST   (contrast theme)
 //   WM_THEMECHANGED                                       (visual style)
 //   WM_DWMCOLORIZATIONCOLORCHANGED                        (accent colour)
-// Any of them re-reads PhiSystemPrefersDark() and, when the answer moved,
-// broadcasts.
+//   WM_SYSCOLORCHANGE                                     (system colours)
+// Any of them re-reads PhiSystemPrefersDark() and PhiHighContrastActive()
+// and, when either answer moved, broadcasts. Under a contrast theme the
+// palette is the system colours themselves (phi_theme.h), so a
+// WM_SYSCOLORCHANGE then broadcasts unconditionally.
 //
 // WHAT A BROADCAST DOES, in order:
 //   1. every observer callback runs (see AddObserver below);
@@ -88,6 +92,8 @@ class PhiThemeBus {
   // last OS notification (or the first read). Cheaper than
   // PhiSystemPrefersDark(), which opens the registry.
   bool system_prefers_dark() const { return system_dark_; }
+  // True while a Windows contrast theme is on, as of the last notification.
+  bool high_contrast() const { return high_contrast_; }
 
   // Test/diagnostic seam: pretend the OS just changed. Re-reads the
   // registry and broadcasts when the answer moved.
@@ -113,6 +119,7 @@ class PhiThemeBus {
 
   HWND hwnd_ = nullptr;
   bool system_dark_ = false;
+  bool high_contrast_ = false;
   int next_token_ = 1;
   std::vector<Observer> observers_;
   // Back-pointers to windows that unregister themselves at WM_NCDESTROY.

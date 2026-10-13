@@ -95,6 +95,32 @@ bool PhiPromptText(HWND owner,
                    std::wstring* value,
                    const wchar_t* confirm_label = nullptr);
 
+// What a NAME prompt (rename / new Space, profile, account) enforces before
+// it returns. `trim` drops leading and trailing white space, so a blank
+// entry counts as empty (false, as Cancel). `max_code_points` (0 = none)
+// refuses a longer name with the reason and asks again, the text kept.
+// Lengths are CODE POINTS, as the onboarding name step counts them — an
+// emoji is one, not two UTF-16 units.
+struct PhiTextRules {
+  bool trim = false;
+  size_t max_code_points = 0;
+};
+// The length every name prompt shares (the Mac's 100-character names).
+inline constexpr size_t kPhiMaxNameCodePoints = 100;
+// The rules a rename / create prompt uses.
+inline constexpr PhiTextRules kPhiNameRules = {true, kPhiMaxNameCodePoints};
+bool PhiPromptText(HWND owner,
+                   const wchar_t* title,
+                   const wchar_t* message,
+                   std::wstring* value,
+                   const wchar_t* confirm_label,
+                   const PhiTextRules& rules);
+
+// Code points in `text` (a surrogate pair counts once).
+size_t PhiCodePointCount(const std::wstring& text);
+// `text` without leading or trailing white space.
+std::wstring PhiTrimWhitespace(const std::wstring& text);
+
 // A modal confirmation. The confirming button (`confirm_label`, null = the
 // localized prompt.ok) is destructive red by default — "Delete …?" — or the
 // accent when `destructive` is false. True when the user confirms.
@@ -139,6 +165,13 @@ bool PhiPromptShortcut(HWND owner,
 // cancelling button takes the focus and Return, so Enter returns -1 and
 // only a deliberate click on the confirming button (or a double-click on a
 // row) approves. The preselected row still says what "Continue" would do.
+//
+// `require_hardware_input` (the same prompts): the confirming button, the
+// row double-click and the row they confirm answer only real keyboard or
+// mouse input (GetCurrentInputMessageSource: IMO_HARDWARE / IMO_SYSTEM) —
+// another program's BM_CLICK, UI Automation Invoke / Select, LB_SETCURSEL
+// or SendInput cannot approve. Cancel, Esc and the close button still
+// refuse whatever sent them.
 int PhiPromptChoose(HWND owner,
                     const wchar_t* title,
                     const wchar_t* message,
@@ -146,7 +179,8 @@ int PhiPromptChoose(HWND owner,
                     int default_index,
                     const wchar_t* confirm_label = nullptr,
                     const wchar_t* cancel_label = nullptr,
-                    bool cancel_is_default = false);
+                    bool cancel_is_default = false,
+                    bool require_hardware_input = false);
 
 // One row of the sectioned chooser below. `starts_section` draws a divider
 // above the row (the Mac SpaceChooserView's Kiosk section); `current`

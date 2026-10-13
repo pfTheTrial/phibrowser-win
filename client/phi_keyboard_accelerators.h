@@ -132,6 +132,10 @@ class PhiKeyboardAccelerators {
   // the release must not summon the menu titles -- Windows' own Alt-revealed
   // bar stands down the same way. Called from the coordinator's mouse hook.
   void OnMouseButtonDown() { alt_solo_ = false; }
+  // The app gained or lost the foreground (WM_ACTIVATEAPP). An Alt held
+  // across it was Alt+Tab, whose release must not open the ⋯ menu — the
+  // Tab never reached this hook, so the hold still looks solo.
+  void OnAppActivationChanged() { alt_solo_ = false; }
 
  private:
   static LRESULT CALLBACK HookProc(int code, WPARAM wparam, LPARAM lparam);

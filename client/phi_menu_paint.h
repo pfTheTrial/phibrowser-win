@@ -34,7 +34,9 @@ struct PhiMenuRow {
   // arrive at the same message with their own data.
   unsigned magic = kMagic;
   static constexpr unsigned kMagic = 0x504D4E55;  // "PMNU"
-  std::wstring label;     // Mnemonic '&' allowed; no "\t" chord inside.
+  // Mnemonic '&' allowed ("&&" is a literal '&'); no "\t" chord inside.
+  // A USER-SUPPLIED name goes through PhiEscapeMenuText first.
+  std::wstring label;
   std::wstring shortcut;  // "Ctrl+T", drawn right-aligned. Empty = none.
   // A second, dim line under the label (the switcher's "profile · N tabs",
   // windows-native-ui.md §5.3). Rows with one are 40 dip.
@@ -110,6 +112,13 @@ class PhiMenuRowStore {
 void PhiMenuSplitText(const std::wstring& text,
                       std::wstring* label,
                       std::wstring* shortcut);
+// A user-supplied name (a bookmark title, a Space or profile name, an
+// extension name) as menu text that shows LITERALLY: every '&' doubled so
+// "AT&T" is not "AT" with an underlined T that the T key opens, and a tab
+// turned into a space so it is not read as a chord. For owner-drawn rows
+// (AppendCommand / AppendSubmenu) and plain AppendMenuW items alike; append
+// a "\tChord" AFTER escaping.
+std::wstring PhiEscapeMenuText(const std::wstring& text);
 // The row an item carries, or null when the item is not one of ours.
 const PhiMenuRow* PhiMenuRowAt(HMENU menu, int position);
 const PhiMenuRow* PhiMenuRowOf(HMENU menu, UINT id);

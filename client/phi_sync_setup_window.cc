@@ -19,6 +19,7 @@
 #include "base/values.h"
 #include "phibrowser-win/client/phi_dwrite.h"
 #include "phibrowser-win/client/phi_i18n.h"
+#include "phibrowser-win/client/phi_menu_paint.h"
 #include "phibrowser-win/client/phi_popup_chrome.h"
 #include "phibrowser-win/client/phi_sync_key_service.h"
 
@@ -79,7 +80,9 @@ void PhiSyncSetupWindow::Open(Host* host, HWND anchor) {
     }
     g_window->BeginSetup();
   }
-  ::ShowWindow(g_window->hwnd(), SW_SHOW);
+  // A minimized window comes back; SW_SHOW alone leaves it on the taskbar.
+  ::ShowWindow(g_window->hwnd(),
+               ::IsIconic(g_window->hwnd()) ? SW_RESTORE : SW_SHOW);
   ::SetForegroundWindow(g_window->hwnd());
 }
 
@@ -759,8 +762,9 @@ void PhiSyncSetupWindow::PickLocal(int row) {
       continue;
     }
     ids.push_back(remote);
+    // Profile names are the user's: an '&' is a character.
     ::AppendMenuW(menu, MF_STRING | (local_choice_[l] == remote ? MF_CHECKED : 0),
-                  ids.size(), RemoteName(remote).c_str());
+                  ids.size(), PhiEscapeMenuText(RemoteName(remote)).c_str());
   }
   ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
   const UINT register_id = static_cast<UINT>(ids.size() + 1);
@@ -820,7 +824,8 @@ void PhiSyncSetupWindow::PickRemote(int row) {
     ::AppendMenuW(menu, MF_STRING | (checked ? MF_CHECKED : 0),
                   kAssignBase + static_cast<UINT>(l),
                   PhiStrF("sync.setup.profiles.assignTo",
-                          {W(candidates_.locals[l].display_name)})
+                          {PhiEscapeMenuText(
+                              W(candidates_.locals[l].display_name))})
                       .c_str());
   }
   const PickerRow& picker =
@@ -1388,28 +1393,99 @@ std::wstring PhiSyncSetupWindow::CodeFieldText() const {
 }
 
 void PhiSyncSetupWindow::CopyToClipboard(const std::wstring& value) {
-  if (value.empty() || !::OpenClipboard(hwnd())) {
+  PhiCopySecretToClipboard(hwnd(), value);
+}
+
+namespace {
+
+// The clipboard state PhiCopySecretToClipboard left, for its timed clear.
+DWORD g_secret_clipboard_sequence = 0;
+UINT_PTR g_secret_clear_timer = 0;
+
+// A registered format carrying one DWORD (the clipboard-history opt-outs).
+// The clipboard must be open.
+void SetClipboardDword(const wchar_t* format_name, DWORD value) {
+  const UINT format = ::RegisterClipboardFormatW(format_name);
+  if (!format) {
     return;
   }
+  HGLOBAL mem = ::GlobalAlloc(GMEM_MOVEABLE, sizeof(DWORD));
+  if (!mem) {
+    return;
+  }
+  if (void* dest = ::GlobalLock(mem)) {
+    *static_cast<DWORD*>(dest) = value;
+    ::GlobalUnlock(mem);
+    if (::SetClipboardData(format, mem)) {
+      return;  // The system owns it now.
+    }
+  }
+  ::GlobalFree(mem);
+}
+
+void CALLBACK ClearSecretClipboard(HWND, UINT, UINT_PTR id, DWORD) {
+  ::KillTimer(nullptr, id);
+  if (id != g_secret_clear_timer) {
+    return;
+  }
+  g_secret_clear_timer = 0;
+  // Anything copied since (by the user, by another app) is left alone.
+  if (::GetClipboardSequenceNumber() != g_secret_clipboard_sequence) {
+    return;
+  }
+  if (::OpenClipboard(nullptr)) {
+    ::EmptyClipboard();
+    ::CloseClipboard();
+  }
+}
+
+}  // namespace
+
+bool PhiCopySecretToClipboard(HWND owner,
+                              const std::wstring& text,
+                              UINT clear_after_ms) {
+  if (text.empty() || !::OpenClipboard(owner)) {
+    return false;
+  }
   ::EmptyClipboard();
-  const size_t count = value.size() + 1;
+  bool written = false;
+  const size_t count = text.size() + 1;
   if (HGLOBAL mem = ::GlobalAlloc(GMEM_MOVEABLE, count * sizeof(wchar_t))) {
     if (void* dest = ::GlobalLock(mem)) {
       // SAFETY: the allocation above is exactly `count` wchar_t.
       auto span = UNSAFE_BUFFERS(
           base::span<wchar_t>(static_cast<wchar_t*>(dest), count));
-      std::copy(value.begin(), value.end(), span.begin());
-      span[value.size()] = L'\0';
+      std::copy(text.begin(), text.end(), span.begin());
+      span[text.size()] = L'\0';
       ::GlobalUnlock(mem);
       if (::SetClipboardData(CF_UNICODETEXT, mem)) {
         mem = nullptr;  // The system owns it now.
+        written = true;
       }
     }
     if (mem) {
       ::GlobalFree(mem);
     }
   }
+  if (written) {
+    // Not into Win+V history, not to other devices, not to monitors
+    // (learn.microsoft.com, "Clipboard Formats": cloud clipboard and
+    // clipboard history formats).
+    SetClipboardDword(L"ExcludeClipboardContentFromMonitorProcessing", 0);
+    SetClipboardDword(L"CanIncludeInClipboardHistory", 0);
+    SetClipboardDword(L"CanUploadToCloudClipboard", 0);
+  }
   ::CloseClipboard();
+  if (!written) {
+    return false;
+  }
+  g_secret_clipboard_sequence = ::GetClipboardSequenceNumber();
+  if (g_secret_clear_timer) {
+    ::KillTimer(nullptr, g_secret_clear_timer);
+  }
+  g_secret_clear_timer =
+      ::SetTimer(nullptr, 0, clear_after_ms, &ClearSecretClipboard);
+  return true;
 }
 
 // --- The harness -----------------------------------------------------------------------

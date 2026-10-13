@@ -7,6 +7,8 @@
 
 #include <functional>
 #include <memory>
+#include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -34,7 +36,9 @@ class PhiStore;
 // attach or a restore match; deleting a Space erases its record and drops
 // the parked window on the session side too; parked windows no Space claims
 // are dropped once the restore settles, or the next unfiltered replay would
-// bring them back as loose windows.
+// bring them back as loose windows — but a parked window a Space's
+// SECONDARY row claims (its second window, release review B6) is re-hosted
+// as a shell of its own, never dropped.
 //
 // The app phases are NOT this service's: it reports the milestones it
 // reaches through Host and the coordinator owns the ladder.
@@ -116,14 +120,39 @@ class PhiSessionRestore {
   void NoteUserWindowUp();
 
   // --- The ghost records ---------------------------------------------------
-  // The Space a materialized window belonged to, or null.
-  const std::string* SpaceForWindowId(BrowserId window_id) const;
+  // The Space a materialized window belonged to, or null. `secondary`
+  // (optional) says the window was one of the Space's secondary windows.
+  const std::string* SpaceForWindowId(BrowserId window_id,
+                                      bool* secondary = nullptr) const;
+  // The Space's primary remembered window, if any.
+  std::optional<PhiGhostSpaces::Remembered> PrimaryWindow(
+      const std::string& space_id) const;
+  // True while the Space's primary row still names a window of the LAST
+  // run that may yet come back this run: in the cold start's eager set and
+  // not announced, or of a profile whose cold start has not reported what
+  // it parked (the report lands after that profile's eager windows are
+  // built). Such a row must not be overwritten by a sibling window.
+  bool PrimaryAwaited(const std::string& space_id) const;
+  // Whether `window_id` is one of the Space's secondary windows.
+  bool HasSecondaryWindow(const std::string& space_id,
+                          BrowserId window_id) const;
+  // A restored window (previous-session id) was announced.
+  void NoteRestoredWindowArrived(BrowserId restored_from);
   // The parked record for `space_id`, or null when it has none.
   const PhiGhostSpaces::Remembered* Parked(const std::string& space_id) const;
   // The Space's window is live now (an attach or a restore match).
   void NoteLiveWindow(const std::string& space_id,
                       const std::string& profile,
                       BrowserId window_id);
+  // A second live window of a Space whose primary still stands (see
+  // KeepsPrimary): remembered beside it so it comes back as a shell of its
+  // own (PhiGhostSpaces::NoteSecondaryWindow).
+  void NoteSecondaryWindow(const std::string& space_id,
+                           const std::string& profile,
+                           BrowserId window_id);
+  // The secondary window closed for good, or is re-keyed under this run's
+  // id.
+  void ForgetSecondaryWindow(const std::string& space_id, BrowserId window_id);
   // The parked window was materialized, refused for good, or belongs to a
   // profile the Space no longer lives in: stop offering it.
   void ClearParked(const std::string& space_id);
@@ -139,7 +168,9 @@ class PhiSessionRestore {
   void ClearLastReceipt() { last_receipt_.clear(); }
 
  private:
-  // Drops (framework side) and forgets the parked windows no Space claims.
+  // Drops (framework side) and forgets the parked windows no Space claims,
+  // and re-hosts the parked secondary windows of Spaces that still exist —
+  // a window holding a live Space's tabs is never dropped.
   void DropOrphanGhosts();
 
   // The framework command interface; handed over at construction and never
@@ -162,6 +193,13 @@ class PhiSessionRestore {
   // True from OnColdStartRestorePlan arming a filter until a user window
   // exists — the window the fallback timer checks for.
   bool cold_start_armed_ = false;
+  // The cold start's eager window ids (previous-session) not announced yet;
+  // emptied when the restore settles.
+  std::set<int64_t> awaiting_eager_;
+  // The profiles the armed cold start has not heard a parked report from
+  // yet (one arrives per profile as its diversion lands); emptied when the
+  // restore settles.
+  std::set<std::string> unreported_profiles_;
 
  public:
   // --- Pure helpers (host-tested; test/model/session_restore_test.cc) ------
@@ -176,6 +214,24 @@ class PhiSessionRestore {
       return "matchednothing";
     }
     return restored_any ? "receipt" : "nothingrestored";
+  }
+  // Release review B6: whether a Space's newly noted window must stand
+  // BESIDE the Space's remembered primary (a secondary row) rather than
+  // replace it. It must while that primary still holds tabs the user can
+  // get back — parked, on its way from the cold start's eager set, or live
+  // as the Space's browser in another shell. Overwriting it then left the
+  // primary unclaimed and the settle pass orphan-dropped it, deleting its
+  // tabs (a second window via Ctrl+N / tear-off, or a restored window
+  // hosted on the default Space).
+  static bool KeepsPrimary(bool has_primary,
+                           bool primary_is_this_window,
+                           bool primary_parked,
+                           bool primary_awaited,
+                           bool primary_live_elsewhere) {
+    if (!has_primary || primary_is_this_window) {
+      return false;
+    }
+    return primary_parked || primary_awaited || primary_live_elsewhere;
   }
   // The last-active Space, given what the live window says and what the
   // file remembers. The live window always wins; a remembered id that no

@@ -99,6 +99,8 @@ class PhiAccountDefaults {
   std::wstring dir_;
   std::wstring path_;
   base::DictValue values_;
+  // The file was there but unreadable at Load: never overwritten.
+  bool save_blocked_ = false;
 };
 
 // The Mac's key names.

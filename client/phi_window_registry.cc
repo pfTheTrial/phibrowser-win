@@ -247,6 +247,13 @@ std::vector<PendingCreation> PhiWindowRegistry::ExpirePending(
   std::vector<PendingCreation> expired;
   for (auto it = pending_.begin(); it != pending_.end();) {
     if (it->second.deadline_tick && it->second.deadline_tick <= now_tick) {
+      if (it->second.kind == phi_framework::WindowKind::kSpace &&
+          !it->second.open_urls.empty()) {
+        expired_spaces_.insert_or_assign(it->first, it->second);
+        if (expired_spaces_.size() > kMaxExpiredSpaces) {
+          expired_spaces_.erase(expired_spaces_.begin());
+        }
+      }
       expired.push_back(std::move(it->second));
       it = pending_.erase(it);
     } else {
@@ -262,6 +269,17 @@ std::vector<PendingCreation> PhiWindowRegistry::ExpirePending(
     }
   }
   return expired;
+}
+
+std::optional<PendingCreation> PhiWindowRegistry::TakeExpiredSpace(
+    phi_framework::RequestToken token) {
+  auto it = expired_spaces_.find(token);
+  if (it == expired_spaces_.end()) {
+    return std::nullopt;
+  }
+  PendingCreation creation = std::move(it->second);
+  expired_spaces_.erase(it);
+  return creation;
 }
 
 }  // namespace phi_client

@@ -17,6 +17,7 @@
 #include "phibrowser-win/client/phi_client_analytics.h"
 #include "phibrowser-win/client/phi_dwrite.h"
 #include "phibrowser-win/client/phi_folder_icons.h"
+#include "phibrowser-win/client/phi_i18n.h"
 #include "phibrowser-win/client/phi_mac_icons.h"
 #include "phibrowser-win/client/phi_prompt.h"
 #include "phibrowser-win/client/phi_theme.h"
@@ -384,7 +385,13 @@ void PhiBookmarkManager::Rebuild() {
   } else {
     AppendMatches(std::string());
   }
+  LayoutRows();
+}
 
+void PhiBookmarkManager::LayoutRows() {
+  // Clamp FIRST, against the new row count, so a delete at the bottom of a
+  // scrolled list lays out flush instead of leaving a blank gap.
+  ClampScroll();
   RECT rc = {};
   ::GetClientRect(hwnd(), &rc);
   const int pad = Scaled(kPagePad);
@@ -398,15 +405,34 @@ void PhiBookmarkManager::Rebuild() {
                       y + (Scaled(kRowHeight) + Scaled(kTwisty)) / 2};
     y += Scaled(kRowHeight);
   }
-  ClampScroll();
   RebuildHits();
+}
+
+RECT PhiBookmarkManager::BodyRect() const {
+  RECT rc = {};
+  ::GetClientRect(hwnd(), &rc);
+  rc.top += Scaled(kHeaderHeight);
+  return rc;
+}
+
+bool PhiBookmarkManager::RowVisible(const Row& row) const {
+  const RECT body = BodyRect();
+  RECT shown = {};
+  return ::IntersectRect(&shown, &row.bounds, &body) != FALSE;
 }
 
 void PhiBookmarkManager::RebuildHits() {
   ClearHits();
+  // Rows are clipped to the body: a row scrolled under the header (or past
+  // the bottom) is not pointable, as it is not painted.
+  const RECT body = BodyRect();
   for (size_t i = 0; i < rows_.size(); ++i) {
     const Row& row = rows_[i];
-    AddHit(row.bounds, static_cast<int>(i), row.title,
+    RECT shown = {};
+    if (!::IntersectRect(&shown, &row.bounds, &body)) {
+      continue;
+    }
+    AddHit(shown, static_cast<int>(i), row.title,
            row.folder ? PhiHitRole::kGroup : PhiHitRole::kListItem,
            selected_.count(row.guid) > 0);
   }
@@ -432,6 +458,12 @@ void PhiBookmarkManager::ClampScroll() {
 }
 
 int PhiBookmarkManager::RowAt(POINT pt) const {
+  // Only the body is a row surface; the header covers whatever scrolled
+  // under it.
+  const RECT body = BodyRect();
+  if (!::PtInRect(&body, pt)) {
+    return -1;
+  }
   for (size_t i = 0; i < rows_.size(); ++i) {
     if (::PtInRect(&rows_[i].bounds, pt)) {
       return static_cast<int>(i);
@@ -694,9 +726,11 @@ void PhiBookmarkManager::NewFolder(const std::string& parent_guid) {
   if (!controller_ || !controller_->sidebar_host()) {
     return;
   }
-  std::wstring name = L"Untitled";
-  if (!PhiPromptText(controller_->shell_hwnd(), L"New Folder",
-                     L"Folder name:", &name)) {
+  std::wstring name = PhiStr("common.bookmarkFolder.defaultName");
+  if (!PhiPromptText(controller_->shell_hwnd(),
+                     PhiStr("app.bookmarkFolderDialog.createTitle"),
+                     PhiStr("bookmarkManager.folderName"), &name,
+                     /*confirm_label=*/nullptr, kPhiNameRules)) {
     return;
   }
   if (!parent_guid.empty()) {
@@ -715,10 +749,11 @@ void PhiBookmarkManager::EditRow(const Row& row) {
   }
   std::wstring name = row.title;
   if (PhiPromptText(controller_->shell_hwnd(),
-                    row.folder ? L"Rename Folder" : L"Rename Bookmark",
-                    row.folder ? L"Enter a new name for this folder."
-                               : L"Enter a new name for this bookmark.",
-                    &name)) {
+                    PhiStr(row.folder ? "bookmarkManager.renameFolder"
+                                      : "bookmarkManager.renameBookmark"),
+                    PhiStr(row.folder ? "bookmarkManager.enterANewNameFor2"
+                                      : "bookmarkManager.enterANewNameFor"),
+                    &name, /*confirm_label=*/nullptr, kPhiNameRules)) {
     controller_->sidebar_host()->RenameStoredRow(row.guid,
                                                  base::WideToUTF8(name));
     MarkEdited();
@@ -736,10 +771,14 @@ void PhiBookmarkManager::DeleteSelection() {
   }
   // The spec: a multi-item or folder deletion confirms; a single leaf goes
   // straight through, as the sidebar already behaves.
+  // A selection scrolled out of sight confirms too: Delete never removes
+  // something the user cannot see without asking.
   bool needs_confirm = guids.size() > 1;
+  bool folder = false;
   for (const Row& row : rows_) {
-    if (row.folder && selected_.count(row.guid) > 0) {
-      needs_confirm = true;
+    if (selected_.count(row.guid) > 0) {
+      folder = folder || row.folder;
+      needs_confirm = needs_confirm || row.folder || !RowVisible(row);
     }
   }
   if (needs_confirm) {
@@ -748,7 +787,8 @@ void PhiBookmarkManager::DeleteSelection() {
             ? L"Delete the " +
                   base::UTF8ToWide(base::NumberToString(guids.size())) +
                   L" selected items?"
-            : L"Delete this folder and everything inside it?";
+        : folder ? L"Delete this folder and everything inside it?"
+                 : PhiStr("bookmarkManager.deleteThisBookmark");
     if (!PhiConfirm(controller_->shell_hwnd(), L"Delete Bookmarks",
                     message.c_str(), L"Delete")) {
       return;
@@ -851,9 +891,15 @@ void PhiBookmarkManager::OnMouseDown(int, POINT pt) {
 }
 
 void PhiBookmarkManager::OnWheel(int delta, POINT) {
+  // Scrolling moves the existing rows; the tree (and its favicons) is only
+  // re-read when the store or the outline changes.
+  const int before = scroll_;
   scroll_ -= delta / 2;
   ClampScroll();
-  Rebuild();
+  if (scroll_ == before) {
+    return;
+  }
+  LayoutRows();
   Invalidate();
 }
 

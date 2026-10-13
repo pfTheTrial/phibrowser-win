@@ -110,9 +110,13 @@ bool PhiLayerShapesContain(const std::vector<PhiLayerShape>& shapes,
 
 #if defined(_WIN32)
 
+#include <array>
 #include <map>
 
+#include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/no_destructor.h"
+#include "phibrowser-win/client/phi_browser_host.h"
 #include "phibrowser-win/client/phi_dwrite.h"
 
 namespace phi_client {
@@ -125,6 +129,214 @@ std::map<HWND, PhiCardStack*>& Stacks() {
 }
 
 }  // namespace
+
+void PhiReleaseHostedChild(HWND child) {
+  if (!child || !::IsWindow(child)) {
+    return;
+  }
+  ::ShowWindow(child, SW_HIDE);
+  LONG_PTR style = ::GetWindowLongPtrW(child, GWL_STYLE);
+  style = (style & ~static_cast<LONG_PTR>(WS_CHILD)) | WS_POPUP;
+  ::SetWindowLongPtrW(child, GWL_STYLE, style);
+  ::SetParent(child, nullptr);
+  ::SetWindowPos(child, nullptr, -32000, -32000, 0, 0,
+                 SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE |
+                     SWP_FRAMECHANGED);
+}
+
+// ---------------------------------------------------------------------------
+// PhiCornerFringe — see PhiPanel::SetCornerFringe.
+
+class PhiCornerFringe {
+ public:
+  PhiCornerFringe(HWND panel, HWND parent) : panel_(panel), parent_(parent) {}
+  ~PhiCornerFringe() = default;
+  PhiCornerFringe(const PhiCornerFringe&) = delete;
+  PhiCornerFringe& operator=(const PhiCornerFringe&) = delete;
+
+  void Set(int radius, unsigned corners, COLORREF fill) {
+    if (radius == radius_ && corners == corners_ && fill == fill_ &&
+        width_ >= 0) {
+      return;
+    }
+    radius_ = radius;
+    corners_ = corners;
+    fill_ = fill;
+    width_ = -1;  // Cut and render again on the Sync below.
+    for (std::unique_ptr<Layer>& layer : layers_) {
+      if (!layer) {
+        layer = std::make_unique<Layer>();
+        layer->Open(parent_);
+      }
+    }
+    Sync();
+  }
+
+  // Follows the panel: re-cut on a resize, then put the four layers on its
+  // corners, directly beneath it, shown exactly while it is.
+  void Sync() {
+    if (syncing_ || !panel_ || !::IsWindow(panel_)) {
+      return;
+    }
+    syncing_ = true;  // SetWindowRgn below re-enters WM_WINDOWPOSCHANGED.
+    RECT client = {};
+    ::GetClientRect(panel_, &client);
+    if (client.right != width_ || client.bottom != height_) {
+      width_ = client.right;
+      height_ = client.bottom;
+      Cut();
+      for (int i = 0; i < 4; ++i) {
+        Render(i);
+      }
+    }
+    POINT origin = {0, 0};
+    ::MapWindowPoints(panel_, parent_, &origin, 1);
+    const int tile = Tile();
+    const bool shown = ::IsWindowVisible(panel_) != FALSE && tile > 0;
+    for (int i = 0; i < 4; ++i) {
+      Layer* layer = layers_[static_cast<size_t>(i)].get();
+      if (!layer || !layer->alive()) {
+        continue;
+      }
+      const bool on = shown && (corners_ & (1u << i)) != 0;
+      const int x = origin.x + ((i == 0 || i == 2) ? 0 : width_ - tile);
+      const int y = origin.y + (i < 2 ? 0 : height_ - tile);
+      // Beneath the panel, not above it: a layer only ever shows outside
+      // the panel's region, so the slot right under it is above whatever
+      // the panel itself is above — the page, the shadow.
+      ::SetWindowPos(layer->hwnd(), panel_, x, y, tile, tile,
+                     SWP_NOACTIVATE |
+                         (on ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
+    }
+    syncing_ = false;
+  }
+
+  // Squares the panel; the layers go with this object.
+  void Clear() {
+    if (panel_ && ::IsWindow(panel_)) {
+      syncing_ = true;
+      ::SetWindowRgn(panel_, nullptr, TRUE);
+      syncing_ = false;
+    }
+  }
+
+ private:
+  // One corner: a click-through layered sibling of the panel.
+  class Layer : public PhiPanel {
+   public:
+    Layer() = default;
+    ~Layer() override { Destroy(); }
+
+    bool Open(HWND parent) {
+      ClassSpec spec;
+      spec.name = L"PhiCornerFringe";
+      spec.cursor = nullptr;
+      Options options;
+      options.layered = true;
+      options.click_through = true;
+      // Its z-order is its panel's (Sync), never the card stack's.
+      options.in_card_stack = false;
+      options.ex_style = WS_EX_NOPARENTNOTIFY;
+      const RECT nothing = {0, 0, 0, 0};
+      return CreatePanel(spec, parent, nothing, options);
+    }
+  };
+
+  // The corner square the arc lives in; never more than half the panel.
+  int Tile() const {
+    return std::max(0, std::min(radius_, std::min(width_, height_) / 2));
+  }
+
+  double Coverage(int x, int y) const {
+    return PhiRoundRectCoverage(x + 0.5, y + 0.5, width_, height_, radius_,
+                                corners_);
+  }
+
+  // The region: every pixel the rounded rect covers fully, and no other.
+  // Only the corner rows can lose pixels, and they lose a run off each end.
+  void Cut() {
+    const int tile = Tile();
+    if (width_ <= 0 || height_ <= 0) {
+      return;
+    }
+    HRGN region = ::CreateRectRgn(0, 0, width_, height_);
+    if (!region) {
+      return;
+    }
+    for (int y = 0; y < height_; ++y) {
+      if (y >= tile && y < height_ - tile) {
+        continue;
+      }
+      int left = 0;
+      while (left < tile && Coverage(left, y) < 1.0) {
+        ++left;
+      }
+      int right = width_;
+      while (right > width_ - tile && Coverage(right - 1, y) < 1.0) {
+        --right;
+      }
+      if (left > 0) {
+        if (HRGN bite = ::CreateRectRgn(0, y, left, y + 1)) {
+          ::CombineRgn(region, region, bite, RGN_DIFF);
+          ::DeleteObject(bite);
+        }
+      }
+      if (right < width_) {
+        if (HRGN bite = ::CreateRectRgn(right, y, width_, y + 1)) {
+          ::CombineRgn(region, region, bite, RGN_DIFF);
+          ::DeleteObject(bite);
+        }
+      }
+    }
+    ::SetWindowRgn(panel_, region, TRUE);  // The window owns it now.
+  }
+
+  // Corner `index`'s pixels: `fill` at the coverage of every pixel the
+  // region left out, premultiplied; nothing where the panel itself shows.
+  void Render(int index) {
+    Layer* layer = layers_[static_cast<size_t>(index)].get();
+    const int tile = Tile();
+    if (!layer || !layer->alive() || tile <= 0) {
+      return;
+    }
+    PhiLayerSurface surface(tile, tile);
+    if (!surface.valid()) {
+      return;
+    }
+    const int ox = (index == 0 || index == 2) ? 0 : width_ - tile;
+    const int oy = index < 2 ? 0 : height_ - tile;
+    // SAFETY: the surface holds exactly tile*tile 32-bit pixels.
+    const base::span<uint32_t> pixels = UNSAFE_BUFFERS(base::span<uint32_t>(
+        static_cast<uint32_t*>(surface.bits()),
+        static_cast<size_t>(tile) * static_cast<size_t>(tile)));
+    for (int y = 0; y < tile; ++y) {
+      for (int x = 0; x < tile; ++x) {
+        double c = Coverage(ox + x, oy + y);
+        if (c >= 1.0) {
+          c = 0.0;  // Inside the region: the panel's own pixel.
+        }
+        const unsigned a = static_cast<unsigned>(c * 255.0 + 0.5);
+        const unsigned r = GetRValue(fill_) * a / 255;
+        const unsigned g = GetGValue(fill_) * a / 255;
+        const unsigned b = GetBValue(fill_) * a / 255;
+        pixels[static_cast<size_t>(y) * static_cast<size_t>(tile) +
+               static_cast<size_t>(x)] = (a << 24) | (r << 16) | (g << 8) | b;
+      }
+    }
+    surface.Commit(layer->hwnd(), nullptr);
+  }
+
+  HWND panel_ = nullptr;
+  HWND parent_ = nullptr;
+  int radius_ = 0;
+  unsigned corners_ = 0;
+  COLORREF fill_ = 0;
+  // The client size the region and the layers were made for; -1 forces.
+  int width_ = -1;
+  int height_ = -1;
+  bool syncing_ = false;
+  std::array<std::unique_ptr<Layer>, 4> layers_;
+};
 
 // ---------------------------------------------------------------------------
 // PhiCardStack.
@@ -296,6 +508,9 @@ bool PhiPanel::CreatePanel(const ClassSpec& spec,
   if (options_.in_card_stack) {
     PhiCardStack::For(parent_).Add(hwnd());
   }
+  // Hit names are the tooltips (phi_window.h): a panel's icon-only
+  // controls are otherwise unlabelled to a sighted user.
+  EnableTooltips(true);
   return true;
 }
 
@@ -314,17 +529,42 @@ void PhiPanel::SetPagePanelBounds(const RECT& bounds, int radius) {
   if (!alive()) {
     return;
   }
-  // Extend the other three arcs beyond the panel: only the lower-left
-  // corner belongs to the page, below the shell's address row.
-  const int width = std::max<LONG>(0, bounds.right - bounds.left);
-  const int height = std::max<LONG>(0, bounds.bottom - bounds.top);
-  ::SetWindowRgn(hwnd(),
-                 bounds.left > 0 && radius > 0
-                     ? ::CreateRoundRectRgn(0, -radius * 2,
-                                            width + radius * 2, height + 1,
-                                            radius * 2, radius * 2)
-                     : nullptr,
-                 TRUE);
+  // No region: the panel covers the content card exactly, and the shell's
+  // antialiased corner caps round the card from ABOVE every page-level
+  // surface (kMsgRaiseCaps lifts them after the panels). A region here
+  // only stair-stepped the curve the caps already draw.
+  static_cast<void>(radius);
+  ClearCornerFringe();
+  page_panel_ = true;
+}
+
+void PhiPanel::SetCornerFringe(int radius, unsigned corners, COLORREF fill) {
+  if (!alive()) {
+    return;
+  }
+  page_panel_ = false;
+  if (radius <= 0 || (corners & 0xFu) == 0) {
+    ClearCornerFringe();
+    return;
+  }
+  if (!fringe_) {
+    fringe_ = std::make_unique<PhiCornerFringe>(hwnd(), parent_);
+  }
+  fringe_->Set(radius, corners, fill);
+}
+
+void PhiPanel::ClearCornerFringe() {
+  if (fringe_) {
+    fringe_->Clear();
+    fringe_.reset();
+    return;
+  }
+  // Only when there is one to drop: a SetWindowRgn redraws the panel, and
+  // the page panels call this on every reposition.
+  RECT box = {};
+  if (alive() && ::GetWindowRgnBox(hwnd(), &box) != ERROR) {
+    ::SetWindowRgn(hwnd(), nullptr, TRUE);
+  }
 }
 
 void PhiPanel::ShowPanel() {
@@ -356,6 +596,11 @@ void PhiPanel::RaisePanel() {
     return;
   }
   PhiCardStack::For(parent_).Raise(hwnd());
+  if (page_panel_) {
+    // Raised above the caps that round it: ask the shell for them back on
+    // top, on its own turn (never reorder siblings inside a reorder).
+    ::PostMessageW(parent_, PhiBrowserHost::kMsgRaiseCaps, 0, 0);
+  }
 }
 
 void PhiPanel::SyncDpiFromParent() {
@@ -464,10 +709,15 @@ LRESULT PhiPanel::OnMessage(UINT message,
     *handled = true;
     return 0;
   }
+  if (message == WM_WINDOWPOSCHANGED && fringe_) {
+    // Left unhandled: DefWindowProc still turns it into WM_SIZE / WM_MOVE.
+    fringe_->Sync();
+  }
   return PhiWindow::OnMessage(message, wparam, lparam, handled);
 }
 
 void PhiPanel::OnNcDestroy() {
+  fringe_.reset();  // Its layers are siblings: they do not die with us.
   if (options_.in_card_stack && parent_) {
     PhiCardStack& stack = PhiCardStack::For(parent_);
     stack.Remove(hwnd());

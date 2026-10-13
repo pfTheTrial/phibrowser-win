@@ -49,7 +49,7 @@ class PhiSyncInvalidationStream {
 
  private:
   void Run();
-  // One connection; true when it had been healthy.
+  // One connection; true when it stayed healthy for a minute after `ready`.
   bool Connect();
   void SetHealthy(bool healthy);
 

@@ -38,6 +38,8 @@ class PhiOwnedTableFile : public sync::OwnedTableStore {
  private:
   const std::wstring path_;
   std::mutex lock_;
+  // The last Load found the file unreadable or a newer build's.
+  bool save_blocked_ = false;
 };
 
 // What the owned kinds need from the UI side (the coordinator).

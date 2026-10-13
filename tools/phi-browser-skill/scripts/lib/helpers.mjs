@@ -7,6 +7,7 @@
 
 import {
   mkdirSync, readFileSync, writeFileSync, unlinkSync, readdirSync, existsSync,
+  copyFileSync,
 } from 'node:fs'
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
@@ -4012,9 +4013,15 @@ export async function screenshotBrowser(path) {
   } catch { /* no page/session — chrome only */ }
 
   try {
+    // No outPath: choosing where Phi writes is the host's capability, so a
+    // shipped Phi answers with a file of its own, which lands at outFile.
     const res = await phiSend('agentSpace.captureWindow',
-                              { taskId: task.taskId, outPath: outFile, webPath })
-    return res.path || outFile
+                              { taskId: task.taskId, webPath })
+    if (res.path && res.path !== outFile) {
+      copyFileSync(res.path, outFile)
+      try { unlinkSync(res.path) } catch {}
+    }
+    return outFile
   } finally {
     if (webPath) { try { unlinkSync(webFile) } catch {} }
   }
@@ -6854,8 +6861,8 @@ function ambiguousCredentialMessage(label, err) {
     })
     .filter(Boolean)
   return `${label}: ${reply.matches || 'several'} vault items match this query ` +
-    'and Phi will not pick one — narrow it to a single item with ' +
-    '{domain, username} (or {id: credentialId})' +
+    'and Phi will not pick one — ask the user which account, then narrow ' +
+    'it to a single item with {domain, username} (or {id: credentialId})' +
     (names.length ? `. Candidates: ${names.join(', ')}` : '') +
     (Array.isArray(reply.candidates) && reply.matches > reply.candidates.length
       ? ` (first ${reply.candidates.length} of ${reply.matches})` : '') +
@@ -6875,9 +6882,9 @@ function ambiguousCredentialMessage(label, err) {
  *  privateKey/publicKey/fingerprint. opts.purpose is a short line shown in
  *  the approval prompt saying why the item is needed. Returns the credential
  *  object; a served item is always the query's UNIQUE match — when several
- *  vault items fit, Phi releases no secret and this throws 'ambiguous' with
- *  the candidate identities, so narrow with {domain, username} (or {id}) and
- *  call again. Throws 'user_denied' if the user declines. */
+ *  vault items fit, Phi has the USER pick one in its prompt; if it cannot,
+ *  this throws 'ambiguous' with only the count, so ask the user and narrow
+ *  with {domain, username}. Throws 'user_denied' if the user declines. */
 export async function getCredential(query, { fields, purpose } = {}) {
   const payload = { query: normalizeCredentialQuery(query), mode: 'reveal' }
   if (Array.isArray(fields)) payload.fields = fields
@@ -6901,9 +6908,9 @@ export async function getCredential(query, { fields, purpose } = {}) {
  * marker; Phi then opens its own DevTools session on this tab, finds the
  * marker, and sets the value itself (`credentials.autofill`): the value goes
  * app → page, and this call gets back only {filled, field}. The filled value
- * is always the query's UNIQUE vault match — several matches throw
- * 'ambiguous' with candidate usernames (no secret moves); narrow with
- * {domain, username} or {id} and retry. `field` is 'password' (default) or
+ * is always the query's UNIQUE vault match — several matches are put to
+ * the user to pick in Phi's prompt, else throw 'ambiguous' with the count
+ * only (no secret moves); ask the user, narrow with {domain, username}. `field` is 'password' (default) or
  * 'username'. 2FA/TOTP steps are the user's — hand off.
  *
  * On an older Phi build without the in-app dispatch this throws

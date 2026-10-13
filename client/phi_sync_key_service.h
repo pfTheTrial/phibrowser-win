@@ -89,6 +89,10 @@ class PhiSyncKeyService {
     // ids, and where the sync table's hidden set goes after every write.
     std::wstring space_table_path;  // <account dir>\sync\spaces.json
     std::function<PhiSpaceManager*()> spaces;
+    // True when `spaces` is null because this account's store could not
+    // open (failed, needs a newer Phi) — no stall: Space arrivals park and
+    // the rest of sync moves on.
+    std::function<bool()> space_store_unavailable;
     std::function<std::set<std::string>()> known_profiles;
     // Creates a local profile for an account profile this device lacks
     // (UI thread; `done` gets the basename, "" on failure).

@@ -60,6 +60,9 @@ constexpr int kLegalLineH = 16;
 constexpr int kFooterH = 64;
 constexpr int kButtonW = 120;
 constexpr int kSentH = 204;  // The confirmation above its footer.
+// One wheel notch of the form's scroll, when the work area is too short
+// for the whole form (the body scrolls between the band and the footer).
+constexpr int kScrollStep = 48;
 constexpr int kRadius = 4;
 constexpr int kMaxDescriptionLength = 4096;
 constexpr int kCounterThreshold = 3000;
@@ -382,6 +385,9 @@ void PhiFeedbackWindow::Open(PhiFeedbackHost* host,
   g_window = window;
   // Centered on the invoking shell, as the Mac centers its panel.
   window->CenterOn(anchor);
+  // The first layout capped the height to whichever monitor the window was
+  // created on; CenterOn may have moved it to another.
+  window->Layout();
   ::ShowWindow(window->hwnd(), SW_SHOW);
   ::SetForegroundWindow(window->hwnd());
   ::SetFocus(window->description_);
@@ -692,7 +698,7 @@ void PhiFeedbackWindow::LayoutLegal(HDC dc, int x, int* y, int width) {
       ++line;
       px = left;
     }
-    const int top = band + Scaled(*y) + line * line_h;
+    const int top = band + Scaled(*y) + line * line_h - scroll_;
     const RECT r = {px, top, px + w, top + line_h};
     if (piece.link) {
       ::SetWindowPos(piece.link, nullptr, r.left, r.top, w, line_h,
@@ -702,16 +708,17 @@ void PhiFeedbackWindow::LayoutLegal(HDC dc, int x, int* y, int width) {
     }
     px += w;
   }
-  geo_.legal = {left, band + Scaled(*y), right,
-                band + Scaled(*y) + (line + 1) * line_h};
+  geo_.legal = {left, band + Scaled(*y) - scroll_, right,
+                band + Scaled(*y) - scroll_ + (line + 1) * line_h};
   *y += (line + 1) * kLegalLineH;
 }
 
 void PhiFeedbackWindow::Layout() {
   const int band = CaptionHeight();
+  // The form's body, scrolled when the work area is too short for it.
   const auto R = [&](int x, int y, int w, int h) {
-    return RECT{Scaled(x), band + Scaled(y), Scaled(x + w),
-                band + Scaled(y + h)};
+    return RECT{Scaled(x), band + Scaled(y) - scroll_, Scaled(x + w),
+                band + Scaled(y + h) - scroll_};
   };
   const auto place = [&](HWND control, const RECT& r, bool show) {
     if (!control) {
@@ -822,33 +829,136 @@ void PhiFeedbackWindow::Layout() {
     }
   }
 
-  geo_.footer = R(0, y, kWidth, kFooterH);
-  geo_.progress = R(kMargin, y + 30, 64, 3);
-  const int buttons_y = y + 16;
+  geo_.content_height = y + kFooterH;
+  // Never taller than the work area: what does not fit comes off the
+  // body, which then scrolls; the footer (Send / Cancel) stays pinned to
+  // the bottom edge.
+  SIZE outer = chrome().OuterSize(kWidth, geo_.content_height);
+  const RECT work = WorkArea();
+  const int over = std::max<int>(0, outer.cy - (work.bottom - work.top));
+  outer.cy -= over;
+  if (std::clamp(scroll_, 0, over) != scroll_) {
+    // The form shrank (or the screen grew) under a scrolled body: lay out
+    // again from the clamped offset.
+    scroll_ = std::clamp(scroll_, 0, over);
+    Layout();
+    return;
+  }
+  max_scroll_ = over;
+  // The footer, in px from the (possibly cut) body's end.
+  const int footer_top = band + Scaled(y) - over;
+  const auto F = [&](int x, int dy, int w, int h) {
+    return RECT{Scaled(x), footer_top + Scaled(dy), Scaled(x + w),
+                footer_top + Scaled(dy + h)};
+  };
+  geo_.footer = F(0, 0, kWidth, kFooterH);
+  geo_.progress = F(kMargin, 30, 64, 3);
   if (sent_) {
     show(send_, false);
-    place(cancel_, R(kWidth - kMargin - kButtonW, buttons_y, kButtonW, 32),
-          true);
+    place(cancel_, F(kWidth - kMargin - kButtonW, 16, kButtonW, 32), true);
   } else {
-    place(send_,
-          R(kWidth - kMargin - 2 * kButtonW - 8, buttons_y, kButtonW, 32),
+    place(send_, F(kWidth - kMargin - 2 * kButtonW - 8, 16, kButtonW, 32),
           true);
-    place(cancel_, R(kWidth - kMargin - kButtonW, buttons_y, kButtonW, 32),
-          true);
+    place(cancel_, F(kWidth - kMargin - kButtonW, 16, kButtonW, 32), true);
   }
-  geo_.content_height = y + kFooterH;
+  ClipBodyControls();
   if (form) {
     RefreshCounter();
   }
 
-  const SIZE outer = chrome().OuterSize(kWidth, geo_.content_height);
   RECT now = {};
   ::GetWindowRect(hwnd(), &now);
   if (now.right - now.left != outer.cx || now.bottom - now.top != outer.cy) {
     ::SetWindowPos(hwnd(), nullptr, 0, 0, outer.cx, outer.cy,
                    SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    // Grown past the taskbar: back up into the work area.
+    FitToWorkArea();
   }
   Invalidate();
+}
+
+void PhiFeedbackWindow::ClipBodyControls() {
+  // Child windows paint over the parent, so a field scrolled under the
+  // band or the footer must be cut to the body's viewport by a plain
+  // rectangular window region (no curve, so no AA concern).
+  if (max_scroll_ <= 0 && !clipped_children_) {
+    return;
+  }
+  RECT client = {};
+  ::GetClientRect(hwnd(), &client);
+  const RECT view = {client.left, CaptionHeight(), client.right,
+                     geo_.footer.top};
+  for (HWND child = ::GetWindow(hwnd(), GW_CHILD); child;
+       child = ::GetWindow(child, GW_HWNDNEXT)) {
+    if (child == send_ || child == cancel_) {
+      continue;
+    }
+    RECT r = {};
+    ::GetWindowRect(child, &r);
+    POINT top_left = {r.left, r.top};
+    POINT bottom_right = {r.right, r.bottom};
+    ::ScreenToClient(hwnd(), &top_left);
+    ::ScreenToClient(hwnd(), &bottom_right);
+    const RECT box = {top_left.x, top_left.y, bottom_right.x, bottom_right.y};
+    RECT shown = {};
+    const bool any = ::IntersectRect(&shown, &box, &view) != FALSE;
+    if (max_scroll_ <= 0 || ::EqualRect(&shown, &box)) {
+      ::SetWindowRgn(child, nullptr, TRUE);
+      continue;
+    }
+    HRGN region =
+        any ? ::CreateRectRgn(shown.left - box.left, shown.top - box.top,
+                              shown.right - box.left, shown.bottom - box.top)
+            : ::CreateRectRgn(0, 0, 0, 0);
+    // The window owns the region from here.
+    ::SetWindowRgn(child, region, TRUE);
+  }
+  clipped_children_ = max_scroll_ > 0;
+}
+
+void PhiFeedbackWindow::ScrollTo(int px) {
+  const int next = std::clamp(px, 0, max_scroll_);
+  if (next == scroll_) {
+    return;
+  }
+  scroll_ = next;
+  Layout();
+}
+
+void PhiFeedbackWindow::ScrollIntoView(HWND control) {
+  if (max_scroll_ <= 0 || !control || control == send_ ||
+      control == cancel_) {
+    return;
+  }
+  // The fields' drawn boxes are a little larger than the EDITs inside.
+  RECT r = {};
+  if (control == description_) {
+    r = geo_.description_box;
+  } else if (control == url_) {
+    r = geo_.page_box;
+  } else {
+    ::GetWindowRect(control, &r);
+    POINT top_left = {r.left, r.top};
+    POINT bottom_right = {r.right, r.bottom};
+    ::ScreenToClient(hwnd(), &top_left);
+    ::ScreenToClient(hwnd(), &bottom_right);
+    r = {top_left.x, top_left.y, bottom_right.x, bottom_right.y};
+  }
+  const int margin = Scaled(12);
+  const int view_top = CaptionHeight() + margin;
+  const int view_bottom = geo_.footer.top - margin;
+  if (r.top < view_top) {
+    ScrollTo(scroll_ - (view_top - r.top));
+  } else if (r.bottom > view_bottom) {
+    // Taller than the view: its top edge wins.
+    ScrollTo(scroll_ + std::min<int>(r.bottom - view_bottom, r.top - view_top));
+  }
+}
+
+void PhiFeedbackWindow::OnWheel(int delta, POINT) {
+  if (max_scroll_ > 0) {
+    ScrollTo(scroll_ - delta * Scaled(kScrollStep) / WHEEL_DELTA);
+  }
 }
 
 // --- Painting --------------------------------------------------------------
@@ -870,12 +980,36 @@ void PhiFeedbackWindow::Paint(HDC dc, const RECT&) {
   ::GetClientRect(hwnd(), &client);
   ::FillRect(dc, &client, bg_brush_);
   PaintBand(dc);
+  // The body paints only between the band and the footer (it scrolls
+  // there when the work area is short).
+  const int saved = ::SaveDC(dc);
+  ::IntersectClipRect(dc, client.left, CaptionHeight(), client.right,
+                      geo_.footer.top);
   if (sent_) {
     PaintSent(dc);
   } else {
     PaintForm(dc);
   }
+  ::RestoreDC(dc, saved);
   PaintFooter(dc);
+  if (max_scroll_ > 0) {
+    // A thin overlay thumb on the body's trailing edge, as Fluent's
+    // ScrollViewer shows while it can scroll.
+    const int view_top = CaptionHeight();
+    const int view_h = geo_.footer.top - view_top;
+    const int total = view_h + max_scroll_;
+    const int thumb_h = std::max(
+        Scaled(24),
+        static_cast<int>(static_cast<int64_t>(view_h) * view_h /
+                         std::max(1, total)));
+    const int thumb_top =
+        view_top + static_cast<int>(static_cast<int64_t>(view_h - thumb_h) *
+                                    scroll_ / max_scroll_);
+    const RECT thumb = {client.right - Scaled(6), thumb_top + Scaled(2),
+                        client.right - Scaled(3),
+                        thumb_top + thumb_h - Scaled(2)};
+    PhiFillCapsuleAA(dc, thumb, Ink(110));
+  }
 }
 
 void PhiFeedbackWindow::PaintTextBox(HDC dc, const RECT& box, HWND edit) {
@@ -1327,7 +1461,11 @@ void PhiFeedbackWindow::Rebind(const PhiFeedbackContext& context) {
     return;
   }
   context_ = context;
-  ::SetWindowTextW(url_, Widen(BrandedUrl(context.url)).c_str());
+  if (context_.incognito) {
+    context_.url.clear();  // Nothing of an off-the-record page leaves it.
+    context_.title.clear();
+  }
+  ::SetWindowTextW(url_, Widen(BrandedUrl(context_.url)).c_str());
   if (diagnostics_expanded_) {
     diagnostics_expanded_ = false;  // Its rows named the old window.
     Layout();
@@ -1411,6 +1549,23 @@ std::string PhiFeedbackWindow::DescriptionText() const {
 
 std::string PhiFeedbackWindow::UrlText() const {
   return Trim(Narrow(WindowText(url_)));
+}
+
+bool PhiFeedbackWindow::ConfirmDiscard() {
+  if (sent_ || Trim(DescriptionText()).empty()) {
+    return true;
+  }
+  return PhiConfirm(hwnd(), PhiStr("feedback.form.discardAlert.title"),
+                    PhiStr("feedback.form.discardAlert.message"),
+                    PhiStr("feedback.form.discardAlert.discardButton"),
+                    /*destructive=*/true);
+}
+
+std::string PhiFeedbackWindow::PageTitleForReport() const {
+  const std::string url = UrlText();
+  return !url.empty() && url == Trim(BrandedUrl(context_.url))
+             ? context_.title
+             : std::string();
 }
 
 void PhiFeedbackWindow::ShowAttachmentError(const std::wstring& text) {
@@ -1696,7 +1851,7 @@ void PhiFeedbackWindow::CompleteSend(const char* logs) {
   PhiFeedbackDraft draft;
   draft.description = Trim(DescriptionText());
   draft.page_url = UrlText();
-  draft.page_title = context_.title;
+  draft.page_title = PageTitleForReport();
   draft.extension_versions = host_->PhiExtensionVersions(context_.window_id);
   if (logs) {
     draft.chromium_system_logs = std::string(logs);
@@ -1775,6 +1930,11 @@ LRESULT CALLBACK PhiFeedbackWindow::ControlProc(HWND hwnd,
     const POINT pt = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
     const RECT x = self->TileRemoveRect(hwnd);
     self->press_on_remove_ = ::PtInRect(&x, pt) != 0;
+  }
+
+  if (msg == WM_SETFOCUS) {
+    // Tab onto a field scrolled out of the body brings it into view.
+    self->ScrollIntoView(hwnd);
   }
 
   const bool ctrl = ::GetKeyState(VK_CONTROL) < 0;
@@ -1976,10 +2136,11 @@ LRESULT PhiFeedbackWindow::OnWindowMessage(UINT msg,
             diagnostic_rows_.emplace_back(
                 PhiStr("feedback.form.diagnostics.windows"),
                 Widen(PhiFeedbackOutbox::OsVersion()));
-            if (!context_.title.empty()) {
+            const std::string title = PageTitleForReport();
+            if (!title.empty()) {
               diagnostic_rows_.emplace_back(
                   PhiStr("feedback.form.diagnostics.pageTitle"),
-                  Widen(context_.title));
+                  Widen(title));
             }
             std::wstring extensions;
             for (const auto& [name, version] :
@@ -2033,10 +2194,30 @@ LRESULT PhiFeedbackWindow::OnWindowMessage(UINT msg,
       *handled = true;
       return 0;
     }
-    case WM_CLOSE:
-      Destroy();
+    case WM_CLOSE: {
+      // Escape and the caption's close land here: a typed report is only
+      // thrown away once the user says so. The prompt's modal loop runs
+      // other messages, so the window is re-checked before it is touched.
       *handled = true;
+      const HWND self = hwnd();
+      if (!ConfirmDiscard()) {
+        return 0;
+      }
+      if (::IsWindow(self) && g_window == this) {
+        Destroy();
+      }
       return 0;
+    }
+    case WM_DISPLAYCHANGE:
+      Layout();  // Re-caps the height to the new work area.
+      FitToWorkArea();
+      break;
+    case WM_SETTINGCHANGE:
+      if (wparam == SPI_SETWORKAREA) {
+        Layout();  // The taskbar moved or grew.
+        FitToWorkArea();
+      }
+      break;
     default:
       break;
   }

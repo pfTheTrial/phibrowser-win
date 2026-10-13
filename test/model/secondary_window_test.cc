@@ -193,6 +193,35 @@ void DialogOwner() {
   CHECK(PhiDialogOwner({0}, {edit, 0}) == -1);
 }
 
+// Where a window opens: cut down to the work area, then moved inside it.
+void Placement() {
+  // 1920x1080 at 150 %: a 1032 px tall work area above the taskbar.
+  const PhiRectI work = R(0, 0, 1920, 1032);
+  // The 640x832 dip onboarding is 1248 px tall there: it is cut to the work
+  // area and pinned to its top, so nothing sits under the taskbar.
+  CHECK(PhiFitRectInto(R(100, 50, 1060, 1298), work) == R(100, 0, 1060, 1032));
+  // A frame that fits is moved the least distance: up off the taskbar …
+  CHECK(PhiFitRectInto(R(10, 900, 410, 1200), work) == R(10, 732, 410, 1032));
+  // … and in from the left edge; one already inside is untouched.
+  CHECK(PhiFitRectInto(R(-50, 10, 350, 310), work) == R(0, 10, 400, 310));
+  CHECK(PhiFitRectInto(R(10, 10, 410, 310), work) == R(10, 10, 410, 310));
+  // A monitor left of and above the primary: negative coordinates are
+  // kept, not clamped to 0 (the old std::max(x, 0) dragged the dialog onto
+  // the primary).
+  const PhiRectI left = R(-1366, -200, 0, 528);
+  CHECK(PhiFitRectInto(R(-1000, -100, -500, 300), left) ==
+        R(-1000, -100, -500, 300));
+  CHECK(PhiFitRectInto(R(-1000, -100, -500, 700), left) ==
+        R(-1000, -200, -500, 528));
+  // Centred across the anchor, one third down, then fitted.
+  CHECK(PhiPlaceCentered(400, 300, R(0, 0, 1000, 900), work) ==
+        R(300, 200, 700, 500));
+  CHECK(PhiPlaceCentered(400, 300, left, left) ==
+        R(-883, -58, -483, 242));
+  // Taller than the work area: as tall as it, from its top.
+  CHECK(PhiPlaceCentered(960, 1248, work, work) == R(480, 0, 1440, 1032));
+}
+
 }  // namespace
 
 int main() {
@@ -201,6 +230,7 @@ int main() {
   CaptionTitle();
   DialogKeys();
   DialogOwner();
+  Placement();
   if (g_failures) {
     std::printf("%d failure(s)\n", g_failures);
     return 1;

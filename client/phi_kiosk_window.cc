@@ -22,6 +22,7 @@
 #include "phibrowser-win/client/phi_glyph_bitmap.h"
 #include "phibrowser-win/client/phi_i18n.h"
 #include "phibrowser-win/client/phi_icons.h"
+#include "phibrowser-win/client/phi_menu_paint.h"
 #include "phibrowser-win/client/phi_new_tab_page.h"
 #include "phibrowser-win/client/phi_theme.h"
 #include "phibrowser-win/client/phi_window_model.h"
@@ -64,6 +65,9 @@ constexpr int kSpaceChevron = 32;        // menuButtonWidth.
 constexpr int kSpaceIcon = 12;           // iconSize.
 constexpr int kSpacePad = 6;
 constexpr int kGap = 8;
+// An off-the-record Kiosk's Space row when no Incognito Space exists yet:
+// choosing it creates one. Not a Space id (those never contain spaces).
+constexpr char kNewIncognitoSpaceRow[] = "new incognito space";
 // The trailing cluster's breath before the window controls, as the shell's
 // band gives its own (kBandTrailingGap).
 constexpr int kCaptionGap = 12;
@@ -165,12 +169,14 @@ PhiKioskWindow::PhiKioskWindow(int64_t window_id,
                                HWND browser_hwnd,
                                phi_framework::PhiFramework* framework,
                                const PhiWindowModel* model,
-                               PhiCoordinator* coordinator)
+                               PhiCoordinator* coordinator,
+                               bool incognito)
     : window_id_(BrowserId{window_id}),
       browser_hwnd_(browser_hwnd),
       framework_(framework),
       model_(model),
-      coordinator_(coordinator) {
+      coordinator_(coordinator),
+      incognito_(incognito) {
   RECT work = {0, 0, kInitialWidth, kInitialHeight};
   ::SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
   const int dpi = ::GetDpiForSystem();
@@ -306,13 +312,27 @@ void PhiKioskWindow::RefreshSpaces() {
     return;
   }
   for (const PhiSpaceView& space : coordinator_->Spaces()) {
+    if (incognito_ && !model::IsIncognitoSpaceId(space.id)) {
+      continue;  // Off the record: Incognito Spaces only.
+    }
     SpaceRow row;
     row.id = space.id;
     row.name = Widen(!space.name.empty() ? space.name : "Space " + space.id);
     row.icon = Widen(space.icon_text);
     spaces_.push_back(std::move(row));
   }
-  target_space_id_ = coordinator_->KioskTargetSpaceId();
+  if (!incognito_) {
+    target_space_id_ = coordinator_->KioskTargetSpaceId();
+    return;
+  }
+  if (spaces_.empty()) {
+    // None yet: the one row creates it (OpenInSpace).
+    SpaceRow row;
+    row.id = kNewIncognitoSpaceRow;
+    row.name = PhiStr("app.fileMenu.createNewIncognitoSpace");
+    spaces_.push_back(std::move(row));
+  }
+  target_space_id_ = spaces_.front().id;
 }
 
 const PhiKioskWindow::SpaceRow* PhiKioskWindow::TargetSpace() const {
@@ -763,9 +783,19 @@ void PhiKioskWindow::CopyUrl() {
   Invalidate();
 }
 
-void PhiKioskWindow::OpenInSpace(const std::string& space_id) {
-  if (!framework_ || !coordinator_ || space_id.empty()) {
+void PhiKioskWindow::OpenInSpace(const std::string& requested) {
+  if (!framework_ || !coordinator_ || requested.empty()) {
     return;
+  }
+  std::string space_id = requested;
+  if (incognito_) {
+    // Off the record: an Incognito Space only, made now if the row said so.
+    if (space_id == kNewIncognitoSpaceRow) {
+      space_id = coordinator_->KioskIncognitoSpaceId();
+    }
+    if (!model::IsIncognitoSpaceId(space_id)) {
+      return;
+    }
   }
   const std::string url = Narrow(url_);
   if (url.empty()) {
@@ -800,7 +830,8 @@ void PhiKioskWindow::ShowSpaceList(const RECT& anchor) {
                   MF_STRING | (spaces_[i].id == target_space_id_
                                    ? MF_CHECKED | MF_DEFAULT
                                    : 0),
-                  static_cast<UINT>(i) + 1, spaces_[i].name.c_str());
+                  static_cast<UINT>(i) + 1,
+                  PhiEscapeMenuText(spaces_[i].name).c_str());
     if (HBITMAP bitmap = PhiSpaceGlyphBitmap(spaces_[i].icon, Scaled(16),
                                              ::GetSysColor(COLOR_MENUTEXT))) {
       bitmaps.push_back(bitmap);

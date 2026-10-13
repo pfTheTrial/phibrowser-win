@@ -216,7 +216,8 @@ class Reader {
   bool Skip(WireType type, std::string* unknown);
   // The body of the group whose start-group tag (field `field`) was just
   // read, up to (not including) its end-group tag, which is consumed.
-  bool Group(int field, std::string_view* body);
+  // Groups nested deeper than 64 are malformed (`depth` is this one's).
+  bool Group(int field, std::string_view* body, int depth = 0);
 
  private:
   bool Advance(size_t count, std::string_view* out);

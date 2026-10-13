@@ -29,14 +29,18 @@
 ;     make-installer.sh stages it so, /DPHI_LAYOUT_FRAMEWORK tells this
 ;     script). A component framework can only be flat: the exe's static
 ;     imports must sit in its own directory.
-;   - VERSIONED-SWAP UPDATE: chrome.dll is locked while Phi runs, so the
-;     installer runs when the app has quit (WinSparkle's flow), snapshots
-;     the live program files into rollback\ first, then copies the new ones
-;     over - the stable path keeps taskbar pins and shortcuts valid, the
-;     snapshot is the Mac TimeMachineInstaller's rollback. While Phi still
-;     runs the Setup screen shows an InfoBar and polls; the section keeps a
-;     60 s wait as the safety net. Silent (/S) installs keep the recorded
-;     program and data folders.
+;   - IN-PLACE UPDATE: chrome.dll is locked while Phi runs, so the
+;     installer runs when the app has quit (WinSparkle's flow), replaces
+;     framework\ whole and copies the new files over - the stable path keeps
+;     taskbar pins and shortcuts valid. No rollback snapshot: nothing ever
+;     restored from one (an older version is reinstalled with its own
+;     installer and /ALLOWDOWNGRADE). While Phi still runs the Setup screen
+;     shows an InfoBar and polls; the section keeps a 60 s wait as the
+;     safety net. Silent (/S) installs keep the recorded program and data
+;     folders.
+;   - NO SILENT DOWNGRADE: an older installer over a newer install stops
+;     (the Setup screen is the notice; /S exits with code 3) unless run with
+;     /ALLOWDOWNGRADE. The same version reinstalls.
 ;   - ONE INSTALLER PER ARCHITECTURE: PhiBrowserSetup-<ver>.exe carries the
 ;     x64 build, PhiBrowserSetup-<ver>-arm64.exe the Windows on ARM build
 ;     (/DPHI_ARCH). The stub itself is NSIS's 32-bit code, which every
@@ -47,6 +51,18 @@
 ;     runs there emulated and continues - WinSparkle picks the enclosure by
 ;     architecture, so a silent update on an ARM PC that has the x64 build
 ;     is the x64 build again.
+;   - DEFAULT-BROWSER REGISTRATION: a Program Files install is system-level
+;     to install_static, and Chromium leaves a system-level install's
+;     registration to its installer (shell_util.cc RegisterChromeBrowserImpl)
+;     - so this script writes what Chrome's setup would (ProgIds,
+;     StartMenuInternet\<app>\Capabilities, RegisteredApplications, App
+;     Paths) under HKLM, never the user's choice itself: Windows keeps that
+;     for the user, and Phi's "Make default" opens Settings at this entry.
+;   - REMOVAL IS BY NAME: the uninstaller deletes the stage's own file list
+;     (uninstall-list.py, at compile time) and removes a folder only once it
+;     is empty - never a wildcard or RMDir /r in a folder the user may have
+;     picked; "delete my data" removes the whole data folder only when it is
+;     the default one or Setup created it, else only Phi's own entries.
 ;
 ; Build (makensis 3.x, on Linux via make-installer.sh):
 ;   makensis -INPUTCHARSET UTF8 -DPHI_VERSION=0.1.0 -DPHI_STAGE=<staged tree> \
@@ -54,8 +70,8 @@
 ;            [-DPHI_TELEMETRY_JSON=phi_telemetry.json] [-DPHI_SIGN_CMD=<sign-pe.sh>] \
 ;            [-DPHI_UI_TEST] phi-installer.nsi
 ;   PHI_UI_TEST builds a look-and-feel test: it installs to C:\phi-setup-test
-;   and records itself under Software\PhiSetupTest, so a throwaway payload
-;   never touches a real install.
+;   and records itself under Software\PhiSetupTest (and registers no
+;   browser), so a throwaway payload never touches a real install.
 
 !ifndef PHI_VERSION
   !error "pass /DPHI_VERSION=x.y.z"
@@ -86,6 +102,8 @@ ManifestDPIAware true
 !include "LogicLib.nsh"
 !include "x64.nsh"
 !include "WinMessages.nsh"
+!include "FileFunc.nsh"
+!include "WordFunc.nsh"
 !addplugindir /x86-unicode "${__FILEDIR__}/ui/x86-unicode"
 
 Name "Phi Browser"
@@ -117,6 +135,23 @@ RequestExecutionLevel admin
   InstallDir "$PROGRAMFILES64\Phi Browser"
 !endif
 InstallDirRegKey HKLM "${REG_PRODUCT}" "InstallDir"
+; The default-browser names Chromium derives for this brand - install_static
+; (chromium_install_modes.h: base_app_name, browser/pdf_prog_id_prefix,
+; direct_launch_url_scheme; system-level = no suffix) and the display
+; strings installer::GetLocalizedString reads from chromium_strings.grd.
+; They must stay what chrome.dll computes, or Settings' deep link
+; (registeredAppMachine=<app>) and the default-state checks miss this entry.
+; The doc icons are the exe's one icon (Phi.exe has no kHtmlDocIndex /
+; kPDFDocIndex slots).
+!define BROWSER_APP "Chromium"
+!define BROWSER_HTML_PROGID "ChromiumHTM"
+!define BROWSER_PDF_PROGID "ChromiumPDF"
+!define BROWSER_URL_SCHEME "chromium"
+!define BROWSER_NAME "Phi"
+!define BROWSER_TOOLTIP "Access the Internet"
+!define BROWSER_LONG_DESC "Phi is a web browser that runs webpages and applications with lightning speed. It's fast, stable, and easy to use. Browse the web more safely with malware and phishing protection built into Phi."
+!define BROWSER_COMPANY "Phinomenon"
+!define BROWSER_CLIENT_KEY "Software\Clients\StartMenuInternet\${BROWSER_APP}"
 SetCompressor /SOLID lzma
 Icon "${PHI_STAGE}\resources\phi.ico"
 UninstallIcon "${PHI_STAGE}\resources\phi.ico"
@@ -143,12 +178,16 @@ Var Dark
 Var DataDir          ; the data folder in effect
 Var DataDirDefault   ; %LOCALAPPDATA%\Phi\User Data
 Var DataDirChosen    ; 1 once the Setup screen ran (silent installs leave the record alone)
+Var DataDirRecorded  ; the data folder a previous install recorded (or the default)
+Var DataDirOwned     ; 1 when Setup created the (non-default) data folder: removable whole
 Var DesktopShortcut  ; 1 = write the desktop shortcut (the expander's toggle)
 Var PrevVersion      ; the installed version when this is an update, else ""
 Var SubLine          ; the header's second line: version, update or reinstall
 Var Verb             ; Install | Update | Reinstall
 Var VerbIng          ; Installing… | Updating… | Reinstalling…
 Var ArchState        ; "" | block (arm64 installer on a non-ARM PC) | warn (x64 on ARM)
+Var Downgrade        ; 1 = a newer version is installed and /ALLOWDOWNGRADE was not given
+Var OtherAdmin       ; 1 = elevated as another account than the session's (over-the-shoulder UAC)
 Var Stage            ; setup | install | done - what Cancel means
 Var Expanded         ; the expander's state
 Var Running          ; 1 while Phi holds chrome.dll
@@ -244,6 +283,19 @@ Var DeleteData
   PhiSetupUI::Footer "${footer}"
 !macroend
 
+; Whether the recorded data folder is one Setup created (UserDataDirOwned,
+; written beside UserDataDir): only then may "delete my data" remove it
+; whole.
+!macro ReadDataDirOwned
+  ReadRegDWORD $DataDirOwned HKCU "${REG_PRODUCT}" "UserDataDirOwned"
+  ${If} $DataDirOwned == ""
+    ReadRegDWORD $DataDirOwned HKLM "${REG_PRODUCT}" "UserDataDirOwned"
+  ${EndIf}
+  ${If} $DataDirOwned != 1
+    StrCpy $DataDirOwned 0
+  ${EndIf}
+!macroend
+
 ; ---------------------------------------------------------------- pages
 Page custom SetupCreate SetupLeave
 Page instfiles "" InstShow
@@ -285,7 +337,24 @@ Function .onInit
   ${If} $DataDir == ""
     StrCpy $DataDir $DataDirDefault
   ${EndIf}
+  StrCpy $DataDirRecorded $DataDir
+  !insertmacro ReadDataDirOwned
   StrCpy $DataDirChosen 0
+  ; Over-the-shoulder UAC runs this as the admin who typed the password:
+  ; HKCU and %LOCALAPPDATA% are then THEIR profile, not the session user's.
+  ; The session's user (WTSUserName) against this token's (GetUserName).
+  StrCpy $OtherAdmin 0
+  System::Call 'wtsapi32::WTSQuerySessionInformationW(p 0, i -1, i 5, *p .r1, *i .r2) i .r0'
+  ${If} $0 != 0
+    System::Call '*$1(&w${NSIS_MAX_STRLEN} .r3)'
+    System::Call 'wtsapi32::WTSFreeMemory(p r1)'
+    System::Call 'advapi32::GetUserNameW(w .r4, *i ${NSIS_MAX_STRLEN}) i .r0'
+    ${If} $0 != 0
+    ${AndIf} $3 != ""
+    ${AndIf} $3 != $4
+      StrCpy $OtherAdmin 1
+    ${EndIf}
+  ${EndIf}
   StrCpy $DesktopShortcut 1
   StrCpy $Stage "setup"
   StrCpy $Expanded 0
@@ -300,6 +369,26 @@ Function .onInit
   ${AndIf} ${FileExists} "$INSTDIR\Phi.exe"
     StrCpy $PrevVersion $0
   ${EndIf}
+  ; An older version over a newer one only on purpose (/ALLOWDOWNGRADE):
+  ; the Setup screen becomes the notice, a silent run exits with 3 (1 is a
+  ; cancel, 2 an abort) and changes nothing.
+  StrCpy $Downgrade 0
+  StrCpy $1 0
+  ${If} $PrevVersion != ""
+    ${VersionCompare} $PrevVersion "${PHI_FULL_VERSION}" $1
+  ${EndIf}
+  ${If} $1 == 1
+    ${GetParameters} $2
+    ClearErrors
+    ${GetOptions} $2 "/ALLOWDOWNGRADE" $3
+    ${If} ${Errors}
+      ${If} ${Silent}
+        SetErrorLevel 3
+        Quit
+      ${EndIf}
+      StrCpy $Downgrade 1
+    ${EndIf}
+  ${EndIf}
   ${If} $PrevVersion == ""
     StrCpy $SubLine "Version ${PHI_FULL_VERSION} · ${PHI_ARCH} · Fyde Innovations"
     StrCpy $Verb "Install"
@@ -308,6 +397,10 @@ Function .onInit
     StrCpy $SubLine "Reinstall ${PHI_FULL_VERSION} · ${PHI_ARCH}"
     StrCpy $Verb "Reinstall"
     StrCpy $VerbIng "Reinstalling…"
+  ${ElseIf} $1 == 1
+    StrCpy $SubLine "Downgrade $PrevVersion → ${PHI_FULL_VERSION} · ${PHI_ARCH}"
+    StrCpy $Verb "Install"
+    StrCpy $VerbIng "Installing…"
   ${Else}
     StrCpy $SubLine "Update $PrevVersion → ${PHI_FULL_VERSION} · ${PHI_ARCH}"
     StrCpy $Verb "Update"
@@ -343,8 +436,10 @@ FunctionEnd
 
 ; 1 in $0 while a Phi process keeps chrome.dll mapped in the recorded
 ; program folder (open for write is the test; a rename is not - Windows
-; lets a mapped image be renamed). Nothing installed yet: 0.
-Function IsPhiRunning
+; lets a mapped image be renamed). Nothing installed yet: 0. The
+; uninstaller has its own copy (un.IsPhiRunning).
+!macro IsPhiRunningFn un
+Function ${un}IsPhiRunning
   StrCpy $0 0
   StrCpy $2 "$INSTDIR\framework\chrome.dll"
   ${IfNot} ${FileExists} $2
@@ -360,6 +455,32 @@ Function IsPhiRunning
     ${EndIf}
   ${EndIf}
 FunctionEnd
+!macroend
+!insertmacro IsPhiRunningFn ""
+!insertmacro IsPhiRunningFn "un."
+
+!ifndef PHI_UI_TEST
+; 1 in $1 when $2 occurs in $0, case-insensitively (paths). Uses $3-$5.
+!macro StrHasFn un
+Function ${un}StrHas
+  StrCpy $1 0
+  StrLen $3 $2
+  StrCpy $4 0
+  loop:
+    StrCpy $5 $0 $3 $4
+    StrCmp $5 "" done
+    StrCmp $5 $2 0 next
+      StrCpy $1 1
+      Goto done
+    next:
+    IntOp $4 $4 + 1
+    Goto loop
+  done:
+FunctionEnd
+!macroend
+!insertmacro StrHasFn ""
+!insertmacro StrHasFn "un."
+!endif
 
 ; ---------------------------------------------------------------- setup screen
 ; The whole install is one click: the header, one lead sentence and the
@@ -509,6 +630,16 @@ Function SetupBrowseProgram
   nsDialogs::SelectFolderDialog "Choose the folder for the Phi Browser program" "$1"
   Pop $0
   ${If} $0 != error
+    ; The picked folder is the PARENT: Phi gets a "Phi Browser" folder of its
+    ; own in it (a drive root comes back as D:\), unless it is one already.
+    StrCpy $1 $0 1 -1
+    ${If} $1 == "\"
+      StrCpy $0 $0 -1
+    ${EndIf}
+    StrCpy $1 $0 "" -12
+    ${If} $1 != "\Phi Browser"
+      StrCpy $0 "$0\Phi Browser"
+    ${EndIf}
     PhiSetupUI::Text $hR1Edit "$0"
   ${EndIf}
 FunctionEnd
@@ -564,10 +695,21 @@ Function SetupCreate
     nsDialogs::Show
     Return
   ${EndIf}
+  ${If} $Downgrade == 1
+    ; A newer version is installed: the screen is the notice.
+    ${Create} $R9 $hDlg "blockcircle" 32 20 48 48 ""
+    ${Create} $R9 $hDlg "text.subtitle" 96 22 472 28 "A newer Phi Browser is installed"
+    ${Create} $R9 $hDlg "text.sub" 96 54 472 16 "Installed $PrevVersion · this installer ${PHI_FULL_VERSION}"
+    ${Create} $R9 $hDlg "text.lead" 32 90 536 60 "Setup doesn't replace a newer version with an older one. To go back anyway, run this installer with /ALLOWDOWNGRADE - your browsing data stays where it is, but a newer version's profile may not open in an older one."
+    PhiSetupUI::Buttons "pri" "Close" ""
+    PhiSetupUI::Footer ""
+    nsDialogs::Show
+    Return
+  ${EndIf}
 
   ${Header} $hDlg "Phi Browser" "$SubLine"
   ${If} $PrevVersion != ""
-    ${Create} $hLead $hDlg "text.lead" 32 90 536 40 "Your Spaces, settings and browsing data stay where they are. The previous version is kept for rollback."
+    ${Create} $hLead $hDlg "text.lead" 32 90 536 40 "Your Spaces, settings and browsing data stay where they are."
   ${Else}
     ${Create} $hLead $hDlg "text.lead" 32 90 536 40 "A browser built around Spaces and agents. Setup puts the program in Program Files and keeps your browsing data in a folder of its own."
   ${EndIf}
@@ -655,6 +797,10 @@ Function SetupLeave
   ${If} $ArchState == "block"
     Quit
   ${EndIf}
+  ${If} $Downgrade == 1
+    SetErrorLevel 3
+    Quit
+  ${EndIf}
   ${NSD_KillTimer} SetupTick
   ${If} $Running == 1
     Abort
@@ -684,6 +830,21 @@ Function SetupLeave
   ${OrIf} $0 != ":\"
     !insertmacro SetupError "Enter a full folder path for the browsing data." "Something like D:\Phi Data."
   ${EndIf}
+  ; A folder other than the recorded one is Phi's own only if it is new or
+  ; empty now - checked before the probe below creates it.
+  ${If} $DataDir != $DataDirRecorded
+    StrCpy $DataDirOwned 1
+    FindFirst $0 $1 "$DataDir\*.*"
+    ${DoWhile} $1 != ""
+      ${If} $1 != "."
+      ${AndIf} $1 != ".."
+        StrCpy $DataDirOwned 0
+        ${Break}
+      ${EndIf}
+      FindNext $0 $1
+    ${Loop}
+    FindClose $0
+  ${EndIf}
   ClearErrors
   CreateDirectory "$DataDir"
   FileOpen $0 "$DataDir\.phi-write-probe" w
@@ -699,7 +860,7 @@ FunctionEnd
 ; ---------------------------------------------------------------- progress screen
 Function InstShow
   ${If} $PrevVersion != ""
-    !insertmacro DecorateInstFiles "Phi Browser Setup" "Phi Browser" "$SubLine" "$VerbIng" "Installing to $INSTDIR" "The previous version is kept in the program folder for rollback. Phi Browser opens as you, not as the installer."
+    !insertmacro DecorateInstFiles "Phi Browser Setup" "Phi Browser" "$SubLine" "$VerbIng" "Installing to $INSTDIR" "Your Spaces, settings and browsing data stay where they are. Phi Browser opens as you, not as the installer."
   ${Else}
     !insertmacro DecorateInstFiles "Phi Browser Setup" "Phi Browser" "$SubLine" "$VerbIng" "Installing to $INSTDIR" "Phi Browser opens as you, not as the installer."
   ${EndIf}
@@ -735,6 +896,187 @@ FunctionEnd
 Function DoneLeave
   Call LaunchPhi
 FunctionEnd
+
+; ---------------------------------------------------------------- default browser
+!ifndef PHI_UI_TEST
+; What Chrome's setup registers for a system-level install (shell_util.cc:
+; GetChromeProgIdEntries, GetShellIntegrationEntries,
+; GetChromeAppRegistrationEntries, GetDirectLaunchEntries), in HKLM's
+; 64-bit view (the caller's SetRegView). It makes Phi a browser Windows can
+; offer; choosing it stays the user's, in Settings.
+!macro BrowserFileType ext progid
+  WriteRegStr HKLM "${BROWSER_CLIENT_KEY}\Capabilities\FileAssociations" "${ext}" "${progid}"
+  WriteRegStr HKLM "Software\Classes\${ext}\OpenWithProgids" "${progid}" ""
+!macroend
+
+!macro BrowserUrlType scheme
+  WriteRegStr HKLM "${BROWSER_CLIENT_KEY}\Capabilities\URLAssociations" "${scheme}" "${BROWSER_HTML_PROGID}"
+!macroend
+
+!macro BrowserProgId progid desc
+  WriteRegStr HKLM "Software\Classes\${progid}" "" "${desc}"
+  WriteRegStr HKLM "Software\Classes\${progid}" "AppUserModelId" "${BROWSER_APP}"
+  WriteRegStr HKLM "Software\Classes\${progid}\DefaultIcon" "" $R3
+  WriteRegStr HKLM "Software\Classes\${progid}\shell\open\command" "" $R2
+  WriteRegStr HKLM "Software\Classes\${progid}\Application" "AppUserModelId" "${BROWSER_APP}"
+  WriteRegStr HKLM "Software\Classes\${progid}\Application" "ApplicationIcon" $R3
+  WriteRegStr HKLM "Software\Classes\${progid}\Application" "ApplicationName" "${BROWSER_NAME}"
+  WriteRegStr HKLM "Software\Classes\${progid}\Application" "ApplicationDescription" "${BROWSER_TOOLTIP}"
+  WriteRegStr HKLM "Software\Classes\${progid}\Application" "ApplicationCompany" "${BROWSER_COMPANY}"
+!macroend
+
+Function RegisterBrowser
+  ; The brand's names are Chromium's own, so a Chromium build on this PC may
+  ; hold them: a client key or HTML ProgId that launches anything but a
+  ; Phi.exe is left alone - taking it over would send that browser's links
+  ; to Phi.
+  StrCpy $2 "\Phi.exe"
+  ReadRegStr $0 HKLM "${BROWSER_CLIENT_KEY}\shell\open\command" ""
+  ${If} $0 != ""
+    Call StrHas
+    ${If} $1 == 0
+      DetailPrint "Default-browser registration skipped: ${BROWSER_APP} belongs to $0"
+      Return
+    ${EndIf}
+  ${EndIf}
+  ReadRegStr $0 HKLM "Software\Classes\${BROWSER_HTML_PROGID}\shell\open\command" ""
+  ${If} $0 != ""
+    Call StrHas
+    ${If} $1 == 0
+      DetailPrint "Default-browser registration skipped: ${BROWSER_HTML_PROGID} belongs to $0"
+      Return
+    ${EndIf}
+  ${EndIf}
+  StrCpy $R1 '"$INSTDIR\Phi.exe"'
+  ; ShellUtil::GetChromeShellOpenCmd: the URL or file is one argument.
+  StrCpy $R2 '"$INSTDIR\Phi.exe" --single-argument %1'
+  StrCpy $R3 "$INSTDIR\Phi.exe,0"
+
+  ; The ProgIds: HTML (pages, http/https and the rest) and PDF.
+  !insertmacro BrowserProgId "${BROWSER_HTML_PROGID}" "Chromium HTML Document"
+  !insertmacro BrowserProgId "${BROWSER_PDF_PROGID}" "Chromium PDF Document"
+
+  ; StartMenuInternet\<app>: the browser client, its install info and the
+  ; Default Programs capabilities.
+  WriteRegStr HKLM "${BROWSER_CLIENT_KEY}" "" "${BROWSER_NAME}"
+  WriteRegStr HKLM "${BROWSER_CLIENT_KEY}\shell\open\command" "" $R1
+  WriteRegStr HKLM "${BROWSER_CLIENT_KEY}\DefaultIcon" "" $R3
+  WriteRegStr HKLM "${BROWSER_CLIENT_KEY}\InstallInfo" "ReinstallCommand" "$R1 --make-default-browser"
+  WriteRegStr HKLM "${BROWSER_CLIENT_KEY}\InstallInfo" "HideIconsCommand" "$R1 --hide-icons"
+  WriteRegStr HKLM "${BROWSER_CLIENT_KEY}\InstallInfo" "ShowIconsCommand" "$R1 --show-icons"
+  WriteRegDWORD HKLM "${BROWSER_CLIENT_KEY}\InstallInfo" "IconsVisible" 1
+  WriteRegStr HKLM "${BROWSER_CLIENT_KEY}\Capabilities" "ApplicationDescription" "${BROWSER_LONG_DESC}"
+  WriteRegStr HKLM "${BROWSER_CLIENT_KEY}\Capabilities" "ApplicationIcon" $R3
+  WriteRegStr HKLM "${BROWSER_CLIENT_KEY}\Capabilities" "ApplicationName" "${BROWSER_NAME}"
+  WriteRegStr HKLM "${BROWSER_CLIENT_KEY}\Capabilities\Startmenu" "StartMenuInternet" "${BROWSER_APP}"
+  ; ShellUtil::kPotentialFileAssociations, and .pdf to the PDF ProgId.
+  !insertmacro BrowserFileType ".htm" "${BROWSER_HTML_PROGID}"
+  !insertmacro BrowserFileType ".html" "${BROWSER_HTML_PROGID}"
+  !insertmacro BrowserFileType ".mhtml" "${BROWSER_HTML_PROGID}"
+  !insertmacro BrowserFileType ".shtml" "${BROWSER_HTML_PROGID}"
+  !insertmacro BrowserFileType ".svg" "${BROWSER_HTML_PROGID}"
+  !insertmacro BrowserFileType ".xht" "${BROWSER_HTML_PROGID}"
+  !insertmacro BrowserFileType ".xhtml" "${BROWSER_HTML_PROGID}"
+  !insertmacro BrowserFileType ".webp" "${BROWSER_HTML_PROGID}"
+  !insertmacro BrowserFileType ".pdf" "${BROWSER_PDF_PROGID}"
+  ; ShellUtil::kPotentialProtocolAssociations, and the direct-launch scheme.
+  !insertmacro BrowserUrlType "http"
+  !insertmacro BrowserUrlType "https"
+  !insertmacro BrowserUrlType "irc"
+  !insertmacro BrowserUrlType "mailto"
+  !insertmacro BrowserUrlType "mms"
+  !insertmacro BrowserUrlType "news"
+  !insertmacro BrowserUrlType "nntp"
+  !insertmacro BrowserUrlType "sms"
+  !insertmacro BrowserUrlType "smsto"
+  !insertmacro BrowserUrlType "snews"
+  !insertmacro BrowserUrlType "tel"
+  !insertmacro BrowserUrlType "urn"
+  !insertmacro BrowserUrlType "webcal"
+  !insertmacro BrowserUrlType "${BROWSER_URL_SCHEME}"
+  WriteRegStr HKLM "Software\RegisteredApplications" "${BROWSER_APP}" "${BROWSER_CLIENT_KEY}\Capabilities"
+
+  ; App Paths (Win+R "phi") and the direct-launch scheme itself.
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\App Paths\Phi.exe" "" "$INSTDIR\Phi.exe"
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\App Paths\Phi.exe" "Path" "$INSTDIR"
+  WriteRegStr HKLM "Software\Classes\${BROWSER_URL_SCHEME}" "" "URL:${BROWSER_URL_SCHEME}"
+  WriteRegStr HKLM "Software\Classes\${BROWSER_URL_SCHEME}" "URL Protocol" ""
+  WriteRegStr HKLM "Software\Classes\${BROWSER_URL_SCHEME}\shell\open\command" "" $R2
+
+  ; SHCNE_ASSOCCHANGED, SHCNF_IDLIST - as RegisterChromeBrowserImpl does.
+  System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
+FunctionEnd
+
+; The uninstaller's half: in ROOT, everything above - and what chrome.dll
+; itself writes there (a per-user install registers in HKCU when "Make
+; default" is pressed; making Phi default adds the XP-style http/https and
+; StartMenuInternet values) - but each key only while it launches this
+; install's exe ($2).
+!macro UnBrowserFileType root ext progid
+  DeleteRegValue ${root} "Software\Classes\${ext}\OpenWithProgids" "${progid}"
+  ReadRegStr $0 ${root} "Software\Classes\${ext}" ""
+  ${If} $0 == "${progid}"
+    DeleteRegValue ${root} "Software\Classes\${ext}" ""
+  ${EndIf}
+!macroend
+
+!macro UnBrowserScheme root scheme
+  ReadRegStr $0 ${root} "Software\Classes\${scheme}\shell\open\command" ""
+  Call un.StrHas
+  ${If} $1 == 1
+    DeleteRegKey ${root} "Software\Classes\${scheme}"
+  ${EndIf}
+!macroend
+
+!macro UnregisterBrowserIn root
+  ReadRegStr $0 ${root} "${BROWSER_CLIENT_KEY}\shell\open\command" ""
+  Call un.StrHas
+  ${If} $1 == 1
+    DeleteRegKey ${root} "${BROWSER_CLIENT_KEY}"
+    ReadRegStr $0 ${root} "Software\RegisteredApplications" "${BROWSER_APP}"
+    ${If} $0 == "${BROWSER_CLIENT_KEY}\Capabilities"
+      DeleteRegValue ${root} "Software\RegisteredApplications" "${BROWSER_APP}"
+    ${EndIf}
+    ReadRegStr $0 ${root} "Software\Clients\StartMenuInternet" ""
+    ${If} $0 == "${BROWSER_APP}"
+      DeleteRegValue ${root} "Software\Clients\StartMenuInternet" ""
+    ${EndIf}
+  ${EndIf}
+  ReadRegStr $0 ${root} "Software\Classes\${BROWSER_HTML_PROGID}\shell\open\command" ""
+  Call un.StrHas
+  ${If} $1 == 1
+    DeleteRegKey ${root} "Software\Classes\${BROWSER_HTML_PROGID}"
+    !insertmacro UnBrowserFileType ${root} ".htm" "${BROWSER_HTML_PROGID}"
+    !insertmacro UnBrowserFileType ${root} ".html" "${BROWSER_HTML_PROGID}"
+    !insertmacro UnBrowserFileType ${root} ".mhtml" "${BROWSER_HTML_PROGID}"
+    !insertmacro UnBrowserFileType ${root} ".shtml" "${BROWSER_HTML_PROGID}"
+    !insertmacro UnBrowserFileType ${root} ".svg" "${BROWSER_HTML_PROGID}"
+    !insertmacro UnBrowserFileType ${root} ".xht" "${BROWSER_HTML_PROGID}"
+    !insertmacro UnBrowserFileType ${root} ".xhtml" "${BROWSER_HTML_PROGID}"
+    !insertmacro UnBrowserFileType ${root} ".webp" "${BROWSER_HTML_PROGID}"
+  ${EndIf}
+  ReadRegStr $0 ${root} "Software\Classes\${BROWSER_PDF_PROGID}\shell\open\command" ""
+  Call un.StrHas
+  ${If} $1 == 1
+    DeleteRegKey ${root} "Software\Classes\${BROWSER_PDF_PROGID}"
+    !insertmacro UnBrowserFileType ${root} ".pdf" "${BROWSER_PDF_PROGID}"
+  ${EndIf}
+  !insertmacro UnBrowserScheme ${root} "${BROWSER_URL_SCHEME}"
+  !insertmacro UnBrowserScheme ${root} "http"
+  !insertmacro UnBrowserScheme ${root} "https"
+  ReadRegStr $0 ${root} "Software\Microsoft\Windows\CurrentVersion\App Paths\Phi.exe" ""
+  ${If} $0 == "$INSTDIR\Phi.exe"
+    DeleteRegKey ${root} "Software\Microsoft\Windows\CurrentVersion\App Paths\Phi.exe"
+  ${EndIf}
+!macroend
+
+Function un.UnregisterBrowser
+  StrCpy $2 "$INSTDIR\Phi.exe"
+  !insertmacro UnregisterBrowserIn HKLM
+  !insertmacro UnregisterBrowserIn HKCU
+  System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
+FunctionEnd
+!endif
 
 ; ---------------------------------------------------------------- install
 Section "Install"
@@ -774,32 +1116,41 @@ Section "Install"
   not_running:
     FileClose $0
 
-    ; Rollback snapshot: exactly ONE previous version's program files.
-    RMDir /r "$INSTDIR\rollback"
-    CreateDirectory "$INSTDIR\rollback"
-    CopyFiles /SILENT "$INSTDIR\Phi.exe" "$INSTDIR\rollback"
-    CopyFiles /SILENT "$INSTDIR\WinSparkle.dll" "$INSTDIR\rollback"
-    CopyFiles /SILENT "$INSTDIR\framework" "$INSTDIR\rollback\framework"
-    CopyFiles /SILENT "$INSTDIR\resources" "$INSTDIR\rollback\resources"
-
 !ifdef PHI_LAYOUT_FRAMEWORK
     ; Upgrading a FLAT install: its 500-odd DLLs, paks and manifests sit
     ; beside the exe and nothing in the framework\ layout would ever
     ; remove them. Everything at the top level but the client's own
-    ; resources goes; the stage puts back what belongs there.
-    Delete "$INSTDIR\*.dll"
-    Delete "$INSTDIR\*.pak"
-    Delete "$INSTDIR\*.bin"
-    Delete "$INSTDIR\*.dat"
-    Delete "$INSTDIR\*.manifest"
-    Delete "$INSTDIR\Phi.exe"
-    Delete "$INSTDIR\chrome_proxy.exe"
-    RMDir /r "$INSTDIR\locales"
-    RMDir /r "$INSTDIR\MEIPreload"
-    RMDir /r "$INSTDIR\Dictionaries"
-    RMDir /r "$INSTDIR\resources\accessibility"
-    RMDir /r "$INSTDIR\resources\inspector_overlay"
+    ; resources goes; the stage puts back what belongs there. Only when
+    ; the folder IS that layout - Phi.exe with chrome.dll beside it and no
+    ; framework\ - never as a sweep of whatever folder holds an install.
+    ${If} ${FileExists} "$INSTDIR\chrome.dll"
+    ${AndIf} ${FileExists} "$INSTDIR\Phi.exe"
+    ${AndIfNot} ${FileExists} "$INSTDIR\framework\chrome.dll"
+      Delete "$INSTDIR\*.dll"
+      Delete "$INSTDIR\*.pak"
+      Delete "$INSTDIR\*.bin"
+      Delete "$INSTDIR\*.dat"
+      Delete "$INSTDIR\*.manifest"
+      Delete "$INSTDIR\Phi.exe"
+      Delete "$INSTDIR\chrome_proxy.exe"
+      RMDir /r "$INSTDIR\locales"
+      RMDir /r "$INSTDIR\MEIPreload"
+      RMDir /r "$INSTDIR\Dictionaries"
+      RMDir /r "$INSTDIR\resources\accessibility"
+      RMDir /r "$INSTDIR\resources\inspector_overlay"
+    ${EndIf}
 !endif
+
+    ; The previous framework\ goes whole - it is Phi's (its chrome.dll is
+    ; the one just probed) - so nothing a previous version had and this
+    ; one dropped lingers past the uninstaller's file list. The rollback\
+    ; snapshot earlier installers made (never restored from) goes too.
+    ${If} ${FileExists} "$INSTDIR\framework\chrome.dll"
+      RMDir /r "$INSTDIR\framework"
+    ${EndIf}
+    ${If} ${FileExists} "$INSTDIR\rollback\Phi.exe"
+      RMDir /r "$INSTDIR\rollback"
+    ${EndIf}
 
   fresh_install:
   SetOutPath "$INSTDIR"
@@ -827,6 +1178,14 @@ Section "Install"
   WriteRegStr HKCU "${REG_PRODUCT}" "InstallDir" "$INSTDIR"
   ${If} $DataDirChosen == 1
     ${If} $DataDir == $DataDirDefault
+    ${OrIf} $DataDirOwned != 1
+      DeleteRegValue HKLM "${REG_PRODUCT}" "UserDataDirOwned"
+      DeleteRegValue HKCU "${REG_PRODUCT}" "UserDataDirOwned"
+    ${Else}
+      WriteRegDWORD HKLM "${REG_PRODUCT}" "UserDataDirOwned" 1
+      WriteRegDWORD HKCU "${REG_PRODUCT}" "UserDataDirOwned" 1
+    ${EndIf}
+    ${If} $DataDir == $DataDirDefault
       DeleteRegValue HKLM "${REG_PRODUCT}" "UserDataDir"
       DeleteRegValue HKCU "${REG_PRODUCT}" "UserDataDir"
     ${Else}
@@ -842,13 +1201,16 @@ Section "Install"
   ; rotated key or endpoint reaches the machine with the next update.
   ; Crash uploads also need the consent install_static reads
   ; (Software\Phi\usagestats = 1 - HKLM for a Program Files install, HKCU
-  ; otherwise; both are written). Analytics stay behind the in-app switch.
+  ; otherwise; both are written, HKCU only when it is the session user's).
+  ; Analytics stay behind the in-app switch.
   CreateDirectory "$DataDir"
   SetOutPath "$DataDir"
   File "/oname=phi_telemetry.json" "${PHI_TELEMETRY_JSON}"
   SetOutPath "$INSTDIR"
   WriteRegDWORD HKLM "${REG_PRODUCT}" "usagestats" 1
-  WriteRegDWORD HKCU "${REG_PRODUCT}" "usagestats" 1
+  ${If} $OtherAdmin != 1
+    WriteRegDWORD HKCU "${REG_PRODUCT}" "usagestats" 1
+  ${EndIf}
 !endif
 
   WriteUninstaller "$INSTDIR\Uninstall.exe"
@@ -866,6 +1228,9 @@ Section "Install"
   WriteRegStr HKLM "${UNINST_KEY}" "QuietUninstallString" '"$INSTDIR\Uninstall.exe" /S'
   WriteRegDWORD HKLM "${UNINST_KEY}" "NoModify" 1
   WriteRegDWORD HKLM "${UNINST_KEY}" "NoRepair" 1
+!ifndef PHI_UI_TEST
+  Call RegisterBrowser
+!endif
   SetRegView 32
   ; On to the Done screen without a click (AutoCloseWindow covers the
   ; installer; the flag is set again here so the uninstaller's copy below
@@ -883,7 +1248,82 @@ Function un.onInit
   ${If} $DataDir == ""
     StrCpy $DataDir $DataDirDefault
   ${EndIf}
+  !insertmacro ReadDataDirOwned
   StrCpy $DeleteData 0
+FunctionEnd
+
+; "Delete my data" in a folder Setup did not create: only what Phi and
+; Chromium keep there, by name - the profiles (a folder counts only with
+; its Preferences in it), the browser-wide state, Phi's own store and
+; files. Anything else stays, and so does the folder unless it is empty.
+!macro UnDataDir name
+  RMDir /r "$DataDir\${name}"
+!macroend
+!macro UnDataFile name
+  Delete "$DataDir\${name}"
+!macroend
+Function un.DeletePhiData
+  ${If} ${FileExists} "$DataDir\Default\Preferences"
+    RMDir /r "$DataDir\Default"
+  ${EndIf}
+  ${If} ${FileExists} "$DataDir\Guest Profile\Preferences"
+    RMDir /r "$DataDir\Guest Profile"
+  ${EndIf}
+  ${If} ${FileExists} "$DataDir\System Profile\Preferences"
+    RMDir /r "$DataDir\System Profile"
+  ${EndIf}
+  FindFirst $0 $1 "$DataDir\Profile *"
+  ${DoWhile} $1 != ""
+    ${If} ${FileExists} "$DataDir\$1\Preferences"
+      RMDir /r "$DataDir\$1"
+    ${EndIf}
+    FindNext $0 $1
+  ${Loop}
+  FindClose $0
+  ${If} ${FileExists} "$DataDir\Phi\users\*.*"
+  ${OrIf} ${FileExists} "$DataDir\Phi\syncstate\*.*"
+  ${OrIf} ${FileExists} "$DataDir\Phi\guestDataMigration\*.*"
+    RMDir /r "$DataDir\Phi"
+  ${EndIf}
+  !insertmacro UnDataDir "Crashpad"
+  !insertmacro UnDataDir "BrowserMetrics"
+  !insertmacro UnDataDir "DeferredBrowserMetrics"
+  !insertmacro UnDataDir "Safe Browsing"
+  !insertmacro UnDataDir "ShaderCache"
+  !insertmacro UnDataDir "GrShaderCache"
+  !insertmacro UnDataDir "GraphiteDawnCache"
+  !insertmacro UnDataDir "Webstore Downloads"
+  !insertmacro UnDataDir "component_crx_cache"
+  !insertmacro UnDataDir "extensions_crx_cache"
+  !insertmacro UnDataFile "Local State"
+  !insertmacro UnDataFile "First Run"
+  !insertmacro UnDataFile "Last Version"
+  !insertmacro UnDataFile "Last Browser"
+  !insertmacro UnDataFile "lockfile"
+  !insertmacro UnDataFile "Variations"
+  !insertmacro UnDataFile "chrome_debug.log"
+  !insertmacro UnDataFile "BrowserMetrics-spare.pma"
+  !insertmacro UnDataFile "CrashpadMetrics-active.pma"
+  !insertmacro UnDataFile "CDPAgentSocket"
+  !insertmacro UnDataFile "PhiAuth.dat"
+  !insertmacro UnDataFile "PhiConsent.json"
+  !insertmacro UnDataFile "PhiCredentialGrants.json"
+  !insertmacro UnDataFile "PhiCredentialGrants.json.imported"
+  !insertmacro UnDataFile "PhiCredentials.dat"
+  !insertmacro UnDataFile "PhiGhostSpaces.json"
+  !insertmacro UnDataFile "PhiGhostSpaces.json.imported"
+  !insertmacro UnDataFile "PhiPreferences.json"
+  !insertmacro UnDataFile "PhiPrefs.json"
+  !insertmacro UnDataFile "PhiPrefs.json.imported"
+  !insertmacro UnDataFile "PhiRestore.json"
+  !insertmacro UnDataFile "PhiStartupProfile"
+  !insertmacro UnDataFile "PhiSyncSidecars.json"
+  !insertmacro UnDataFile "phi_first_time_actions"
+  !insertmacro UnDataFile "phi_last_version"
+  !insertmacro UnDataFile "phi_telemetry.json"
+  !insertmacro UnDataFile "phi_telemetry_id"
+  !insertmacro UnDataFile "phi_telemetry_spool.json"
+  RMDir "$DataDir"
 FunctionEnd
 
 Function un.onGUIInit
@@ -919,7 +1359,7 @@ Function un.ConfirmCreate
     Abort
   ${EndIf}
   ${Header} $hDlg "Remove Phi Browser" "Version ${PHI_FULL_VERSION} · $INSTDIR"
-  ${Create} $R9 $hDlg "text.lead" 32 90 536 40 "The program, its shortcuts and the Apps & Features entry will be removed. Rollback copies go with them."
+  ${Create} $R9 $hDlg "text.lead" 32 90 536 40 "The program, its shortcuts and the Apps & Features entry will be removed."
   ${If} ${FileExists} "$DataDir\Local State"
   ${OrIf} ${FileExists} "$DataDir\PhiPreferences.json"
     ${Create} $R9 $hDlg "card" 32 146 536 94 ""
@@ -943,40 +1383,70 @@ FunctionEnd
 Section "Uninstall"
   SetShellVarContext all
 
-  ; Only what this installer put there - never a blind RMDir /r of a folder
-  ; the user chose.
-  Delete "$INSTDIR\Phi.exe"
-  Delete "$INSTDIR\WinSparkle.dll"
+  ; Not while Phi runs: chrome.dll would stay and the rest would go. The
+  ; install section's probe and prompt; Cancel (and a silent run) leaves
+  ; everything in place.
+  check_running:
+    Call un.IsPhiRunning
+    ${If} $0 == 1
+      MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION \
+        "Phi Browser is running. Close it, then press Retry." \
+        /SD IDCANCEL IDRETRY check_running
+      SetErrorLevel 2
+      Quit
+    ${EndIf}
+
+  ; Only what this installer put there, by name - never a wildcard or a
+  ; blind RMDir /r in a folder the user chose. The payload's own list
+  ; (uninstall-list.py over the stage this uninstaller was built with);
+  ; each folder goes only once empty. A rollback\ snapshot an earlier
+  ; installer made is all ours, so it goes whole when it holds a Phi.exe.
+  !tempfile PHI_UNINSTALL_LIST
+  !system 'python3 "${__FILEDIR__}/uninstall-list.py" "${PHI_STAGE}" > "${PHI_UNINSTALL_LIST}"' = 0
+  !include "${PHI_UNINSTALL_LIST}"
+  !delfile "${PHI_UNINSTALL_LIST}"
+  !undef PHI_UNINSTALL_LIST
   Delete "$INSTDIR\Uninstall.exe"
-  RMDir /r "$INSTDIR\framework"
-  RMDir /r "$INSTDIR\resources"
-  RMDir /r "$INSTDIR\rollback"
-  ; A flat (component-era) install's files, should one be uninstalled by
-  ; this uninstaller.
-  Delete "$INSTDIR\*.dll"
-  Delete "$INSTDIR\*.pak"
-  Delete "$INSTDIR\*.bin"
-  Delete "$INSTDIR\*.dat"
-  Delete "$INSTDIR\*.manifest"
-  Delete "$INSTDIR\*.exe"
-  RMDir /r "$INSTDIR\locales"
-  RMDir /r "$INSTDIR\MEIPreload"
-  RMDir /r "$INSTDIR\Dictionaries"
+  ${If} ${FileExists} "$INSTDIR\rollback\Phi.exe"
+    RMDir /r "$INSTDIR\rollback"
+  ${EndIf}
   RMDir "$INSTDIR"
 
   Delete "$SMPROGRAMS\Phi Browser.lnk"
   Delete "$DESKTOP\Phi Browser.lnk"
 
   ; The browsing data goes only when the confirm screen's checkbox was on;
-  ; a silent uninstall keeps it.
+  ; a silent uninstall keeps it. Whole only when the folder is Phi's: the
+  ; default one (then its empty Phi parent too) or one Setup created;
+  ; anywhere else only Phi's own entries in it.
   ${If} $DeleteData == 1
     ${If} ${FileExists} "$DataDir\Local State"
     ${OrIf} ${FileExists} "$DataDir\PhiPreferences.json"
-      RMDir /r "$DataDir"
+      ${If} $DataDir == $DataDirDefault
+        RMDir /r "$DataDir"
+        StrCpy $0 $DataDirDefault -10
+        RMDir "$0"
+      ${ElseIf} $DataDirOwned == 1
+        RMDir /r "$DataDir"
+      ${Else}
+        Call un.DeletePhiData
+      ${EndIf}
     ${EndIf}
+  ${EndIf}
+  ; The deployment config is the installer's file, so it goes with the
+  ; program either way (the telemetry spool and id are data: they go only
+  ; with the box ticked); a data folder left empty goes too.
+  Delete "$DataDir\phi_telemetry.json"
+  RMDir "$DataDir"
+  ${If} $DataDir == $DataDirDefault
+    StrCpy $0 $DataDirDefault -10
+    RMDir "$0"
   ${EndIf}
 
   SetRegView 64
+!ifndef PHI_UI_TEST
+  Call un.UnregisterBrowser
+!endif
   DeleteRegKey HKLM "${UNINST_KEY}"
   SetRegView 32
   DeleteRegKey HKLM "${UNINST_KEY}"

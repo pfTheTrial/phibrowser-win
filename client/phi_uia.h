@@ -228,6 +228,17 @@ void PhiUiaHitsChanged(PhiHitSource* window);
 // reference goes, answering UIA_E_ELEMENTNOTAVAILABLE.
 void PhiUiaWindowDestroyed(PhiHitSource* window);
 
+// Keyboard focus AMONG a surface's hits. A surface that moves a focus ring
+// over its own drawn controls (Settings) reports it here, after every
+// rebuild of hits_ and on every move: from the first call on, that
+// surface's actionable hits answer IsKeyboardFocusable, the focused one
+// answers HasKeyboardFocus while the HWND has the system focus, and the
+// root's GetFocus returns it. `index` indexes hits(), -1 for none.
+// `announce` raises UIA_AutomationFocusChangedEventId on it — what a screen
+// reader speaks — and is a no-op when no client is listening. A surface
+// that never calls this keeps the old answer: nothing is focusable.
+void PhiUiaSetFocusedHit(PhiHitSource* window, int index, bool announce);
+
 #endif  // defined(_WIN32)
 
 }  // namespace phi_client

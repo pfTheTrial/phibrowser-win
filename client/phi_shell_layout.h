@@ -105,6 +105,12 @@ inline constexpr int kBookmarkSeparatorHeight = 16;
 inline constexpr int kNewTabRowHeight = 36;
 // The empty pinned band's drop zone while a tab drag is in flight.
 inline constexpr int kPinnedDropZoneHeight = 100;
+// The stored bands' cap (the pinned grid and the bookmark outline share one
+// scrolling viewport): they may take the room down to "+ New Tab" and this
+// many tab rows under it, and never less than 2/5 of the room between the
+// header and the bottom bar — so a long outline cannot push the tab list
+// off the sidebar.
+inline constexpr int kMinTabListRows = 4;
 // Pinned tabs: 44 dip cells, 8 gaps and insets.
 inline constexpr int kPinnedCellHeight = 44;
 inline constexpr int kPinnedGap = 8;
@@ -251,6 +257,12 @@ struct ShellLayout {
   // over any of it lands in the outline; below the last row means the
   // root's end.
   SidebarRect bookmarks;
+  // The stored bands' VIEWPORT: the pinned grid and the bookmark outline
+  // scroll together inside it once their natural height passes the cap
+  // (kMinTabListRows). `favorites` and `bookmarks` above are their NATURAL,
+  // unscrolled rects and may run past its bottom; the sidebar view scrolls
+  // and clips them to this. Empty without pins or bookmarks.
+  SidebarRect stored_band;
   // The 16pt separator row between the bookmark outline and "+ New Tab".
   SidebarRect bookmark_separator;
   SidebarRect new_tab_row;  // The sidebar's "+ New Tab" row.

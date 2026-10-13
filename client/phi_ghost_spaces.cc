@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <optional>
+#include <set>
 #include <utility>
 
 #include "base/json/json_reader.h"
@@ -53,11 +54,110 @@ void PhiGhostSpaces::NoteLiveWindow(const std::string& space_id,
     model_->remembered.push_back({space_id, profile, window_id.value});
     changed = true;
   }
+  // A secondary promoted to primary keeps one row, not two.
+  if (EraseSecondaryRow(space_id, window_id)) {
+    changed = true;
+  }
   // A live window is by definition not parked.
   parked_.erase(space_id);
+  noted_this_run_.insert(space_id);
   if (changed) {
     MarkDirty();
   }
+}
+
+void PhiGhostSpaces::NoteSecondaryWindow(const std::string& space_id,
+                                         const std::string& profile,
+                                         BrowserId window_id) {
+  if (space_id.empty() || !window_id.valid()) {
+    return;
+  }
+  if (!FindRemembered(space_id)) {
+    // No primary to stand beside: this window IS the Space's window.
+    NoteLiveWindow(space_id, profile, window_id);
+    return;
+  }
+  bool first = true;
+  for (model::RememberedWindow& row : model_->remembered) {
+    if (row.space_id != space_id) {
+      continue;
+    }
+    if (first) {
+      first = false;  // The primary is never rewritten from here.
+      continue;
+    }
+    if (row.window_id == window_id.value) {
+      if (row.profile != profile) {
+        row.profile = profile;
+        MarkDirty();
+      }
+      return;
+    }
+  }
+  model_->remembered.push_back({space_id, profile, window_id.value});
+  MarkDirty();
+}
+
+void PhiGhostSpaces::ForgetSecondaryWindow(const std::string& space_id,
+                                           BrowserId window_id) {
+  if (space_id.empty() || !window_id.valid()) {
+    return;
+  }
+  if (EraseSecondaryRow(space_id, window_id)) {
+    MarkDirty();
+  }
+}
+
+bool PhiGhostSpaces::EraseSecondaryRow(const std::string& space_id,
+                                       BrowserId window_id) {
+  bool primary_seen = false;
+  for (auto it = model_->remembered.begin(); it != model_->remembered.end();
+       ++it) {
+    if (it->space_id != space_id) {
+      continue;
+    }
+    if (!primary_seen) {
+      primary_seen = true;  // The Space's first row is its primary: kept.
+      continue;
+    }
+    if (it->window_id == window_id.value) {
+      model_->remembered.erase(it);
+      return true;
+    }
+  }
+  return false;
+}
+
+bool PhiGhostSpaces::HasSecondaryWindow(const std::string& space_id,
+                                        BrowserId window_id) const {
+  bool first = true;
+  for (const model::RememberedWindow& row : model_->remembered) {
+    if (row.space_id != space_id) {
+      continue;
+    }
+    if (!first && row.window_id == window_id.value) {
+      return true;
+    }
+    first = false;
+  }
+  return false;
+}
+
+std::set<std::string> PhiGhostSpaces::Profiles() const {
+  std::set<std::string> profiles;
+  for (const model::RememberedWindow& row : model_->remembered) {
+    profiles.insert(row.profile);
+  }
+  return profiles;
+}
+
+std::optional<PhiGhostSpaces::Remembered> PhiGhostSpaces::PrimaryWindow(
+    const std::string& space_id) const {
+  const model::RememberedWindow* row = FindRemembered(space_id);
+  if (!row) {
+    return std::nullopt;
+  }
+  return Remembered{row->profile, BrowserId{row->window_id}};
 }
 
 void PhiGhostSpaces::MarkDirty() const {
@@ -73,6 +173,16 @@ std::vector<int> PhiGhostSpaces::EagerWindowIds(
   if (row && BrowserId{row->window_id}.valid()) {
     eager.push_back(static_cast<int>(row->window_id));
   }
+  // Every secondary window too: a parked one could only come back through
+  // the settle pass's re-host, a beat later and one by one.
+  std::set<std::string> seen;
+  for (const model::RememberedWindow& r : model_->remembered) {
+    if (!seen.insert(r.space_id).second && BrowserId{r.window_id}.valid() &&
+        std::find(eager.begin(), eager.end(),
+                  static_cast<int>(r.window_id)) == eager.end()) {
+      eager.push_back(static_cast<int>(r.window_id));
+    }
+  }
   return eager;
 }
 
@@ -83,6 +193,7 @@ void PhiGhostSpaces::ReplaceFromReceipt(const std::string& receipt_json) {
   // replaced the same way — it records what the LAST receipt said.
   parked_.clear();
   orphans_.clear();
+  strays_.clear();
   model_->parked.clear();
   MarkDirty();
   std::optional<base::DictValue> root =
@@ -107,11 +218,19 @@ void PhiGhostSpaces::ReplaceFromReceipt(const std::string& receipt_json) {
       }
       const BrowserId window_id{id_value.GetInt()};
       model_->parked[*profile].push_back(window_id.value);
-      // Map back to whichever Space remembers this window.
+      // Map back to whichever Space remembers this window: its primary
+      // parks behind the Space, a secondary is re-hosted on settle.
       bool claimed = false;
+      std::set<std::string> seen;
       for (const model::RememberedWindow& row : model_->remembered) {
+        const bool primary = seen.insert(row.space_id).second;
         if (row.window_id == window_id.value && row.profile == *profile) {
-          parked_[row.space_id] = Remembered{row.profile, window_id};
+          if (primary) {
+            parked_[row.space_id] = Remembered{row.profile, window_id};
+          } else {
+            strays_.push_back(
+                Stray{row.space_id, Remembered{row.profile, window_id}});
+          }
           claimed = true;
           break;
         }
@@ -133,12 +252,18 @@ const PhiGhostSpaces::Remembered* PhiGhostSpaces::Parked(
   return it == parked_.end() ? nullptr : &it->second;
 }
 
-const std::string* PhiGhostSpaces::SpaceForWindowId(BrowserId window_id) const {
+const std::string* PhiGhostSpaces::SpaceForWindowId(BrowserId window_id,
+                                                    bool* secondary) const {
   if (!window_id.valid()) {
     return nullptr;
   }
+  std::set<std::string> seen;
   for (const model::RememberedWindow& row : model_->remembered) {
+    const bool primary = seen.insert(row.space_id).second;
     if (row.window_id == window_id.value) {
+      if (secondary) {
+        *secondary = !primary;
+      }
       return &row.space_id;
     }
   }
@@ -163,7 +288,13 @@ PhiGhostSpaces::Remembered PhiGhostSpaces::Forget(const std::string& space_id) {
     if (!gone.window_id.valid()) {
       gone = Remembered{row->profile, BrowserId{row->window_id}};
     }
-    model_->remembered.erase(row);
+    // The primary and every secondary row with it.
+    model_->remembered.erase(
+        std::remove_if(model_->remembered.begin(), model_->remembered.end(),
+                       [&](const model::RememberedWindow& r) {
+                         return r.space_id == space_id;
+                       }),
+        model_->remembered.end());
     MarkDirty();
   }
   return gone;
@@ -175,6 +306,21 @@ std::vector<PhiGhostSpaces::Remembered> PhiGhostSpaces::Orphans() const {
 
 void PhiGhostSpaces::ClearOrphans() {
   orphans_.clear();
+}
+
+std::vector<PhiGhostSpaces::Stray> PhiGhostSpaces::TakeStrays() {
+  return std::exchange(strays_, {});
+}
+
+std::vector<PhiGhostSpaces::Stray> PhiGhostSpaces::TakeStrays(
+    const std::string& space_id) {
+  std::vector<Stray> taken;
+  std::vector<Stray> kept;
+  for (Stray& stray : strays_) {
+    (stray.space_id == space_id ? taken : kept).push_back(std::move(stray));
+  }
+  strays_ = std::move(kept);
+  return taken;
 }
 
 }  // namespace phi_client

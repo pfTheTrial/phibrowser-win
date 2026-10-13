@@ -110,13 +110,20 @@ void PhiAccountDefaults::Load(const std::wstring& account_dir) {
   path_ = account_dir.empty()
               ? std::wstring()
               : account_dir + L"\\defaults\\account_defaults.json";
+  save_blocked_ = false;
   if (!path_.empty()) {
-    // A corrupt file is quarantined by the reader and reads as empty.
-    PhiReadJsonFile(path_, &values_);
+    // A corrupt file is quarantined by the reader and reads as empty; a
+    // locked one reads as empty too but is never saved over this session.
+    if (PhiReadJsonFile(path_, &values_) == PhiJsonFileStatus::kUnreadable) {
+      save_blocked_ = true;
+      LOG(ERROR) << "[PhiClient] account defaults could not be read; "
+                    "saves off";
+    }
   }
 }
 
 void PhiAccountDefaults::Clear() {
+  save_blocked_ = false;
   values_ = base::DictValue();
   dir_.clear();
   path_.clear();
@@ -229,7 +236,7 @@ void PhiAccountDefaults::SetDict(std::string_view key, base::DictValue value) {
 }
 
 void PhiAccountDefaults::Save() {
-  if (path_.empty()) {
+  if (path_.empty() || save_blocked_) {
     return;
   }
   if (!PhiWriteJsonFile(path_, values_.Clone())) {

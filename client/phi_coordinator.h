@@ -304,6 +304,9 @@ class PhiCoordinator : public SidebarHost,
   // Space, the Space holding the default role when no window is up — the
   // Mac's KioskSpaceMenuTargetResolver.primarySpace.
   std::string KioskTargetSpaceId() const;
+  // An OFF-THE-RECORD Kiosk's hand-over target: the first Incognito Space,
+  // created when there is none. Never a regular Space.
+  std::string KioskIncognitoSpaceId();
   void RequestSettings() override;
   void RequestUrlRulesEditor(HWND anchor) override;
   // PhiSettingsHost + PhiSyncSetupWindow::Host (the same answer for both).
@@ -482,6 +485,8 @@ class PhiCoordinator : public SidebarHost,
                               bool allowed) override;
   void OpenBrowserSettings() override;
   void OpenBrowserPage(const std::string& url) override;
+  void OpenBrowserPageInProfile(const std::string& profile_id,
+                                const std::string& url) override;
   void SetSpaceTheme(const std::string& space_id,
                      const std::string& theme_id) override;
   std::vector<std::string> ProfileSummaries() const override;
@@ -805,6 +810,10 @@ class PhiCoordinator : public SidebarHost,
 
   // --- Lifecycle -----------------------------------------------------------
   AppPhase phase_ = AppPhase::kBooting;
+  // Every shell was asked to close at once (QuitForUpdate): their windows
+  // are going away as a quit, not one closed by hand, so their secondary
+  // restore rows stay (RetireClosingBrowser).
+  bool closing_all_windows_ = false;
   // Moves to `next`, logging the move at INFO with `reason` (one word). A
   // move backwards is refused with a WARNING and the phase kept: the phases
   // are promises the rest of the coordinator relies on, and a promise once
@@ -911,6 +920,11 @@ class PhiCoordinator : public SidebarHost,
                                      UINT msg,
                                      WPARAM wparam,
                                      LPARAM lparam);
+  // The session-end window's proc (session_hwnd_).
+  static LRESULT CALLBACK SessionWndProc(HWND hwnd,
+                                         UINT msg,
+                                         WPARAM wparam,
+                                         LPARAM lparam);
 
   // The framework command interface (a singleton in chrome.dll); non-owning,
   // across a module boundary, so not a raw_ptr.
@@ -927,6 +941,10 @@ class PhiCoordinator : public SidebarHost,
   // auth worker's completion and the deferred reader-panel messages. (The
   // control verbs marshal to the dispatcher's own window.)
   HWND msg_hwnd_ = nullptr;
+  // A hidden TOP-LEVEL window (never shown, no owner, off the taskbar) for
+  // WM_QUERYENDSESSION / WM_ENDSESSION: those are sent to top-level windows
+  // only, never to a message-only one like msg_hwnd_.
+  HWND session_hwnd_ = nullptr;
   // Thread-scoped mouse hook: a click anywhere in a shell OUTSIDE its open
   // Peek card dismisses the card (the Mac's click-outside monitor). Clicks
   // reach the browser child's own HWNDs, never the shell, so a hook is the
@@ -1203,6 +1221,14 @@ class PhiCoordinator : public SidebarHost,
   void HostRequestedSpaceShell(BrowserId browser,
                                HWND hwnd,
                                const PendingCreation& pending);
+  // A kSpace browser whose request expired before it came, carrying URLs
+  // to open: hosted as a shell of its own (its Space if it still exists in
+  // the browser's profile, else where a user window of the profile lands)
+  // with those URLs, instead of being closed with them.
+  void HostLateSpaceBrowser(BrowserId browser,
+                            HWND hwnd,
+                            const phi_framework::WindowCreation& creation,
+                            PendingCreation late);
   // What every requested Space browser gets once it is hosted: the URLs
   // that waited for it (bypassing URL routing) and its waiting reply.
   void FinishRequestedSpaceBrowser(BrowserId browser,
@@ -1211,9 +1237,15 @@ class PhiCoordinator : public SidebarHost,
                        HWND hwnd,
                        bool incognito,
                        const PendingCreation& pending);
+  // A window restore rebuilt under its previous-session id: hosted on the
+  // Space that remembers it — joining a slot, or a shell of its own when
+  // none can take it (never as the default Space, release review B6).
+  // `profile_id` is the window's own profile ("" = unknown). False when no
+  // Space claims it: the caller hosts it as a user window.
   bool AttachRestoredGhost(BrowserId browser,
                            HWND hwnd,
-                           BrowserId restored_from);
+                           BrowserId restored_from,
+                           const std::string& profile_id);
   bool HostSurfacePanel(const phi_framework::WindowCreation& creation);
   // A tear-off's drop point, waiting for the new window it asked for (the
   // Mac's pendingTearOffWindowPlacement): the next shell opens around it.

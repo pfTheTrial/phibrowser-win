@@ -68,15 +68,32 @@ const PhiMenuRow* RowFromData(ULONG_PTR data) {
   return row->magic == PhiMenuRow::kMagic ? row : nullptr;
 }
 
+// The label as shown: a mnemonic '&' dropped, "&&" read as one literal '&'
+// (DrawText's own prefix rule).
 std::wstring StripMnemonic(const std::wstring& label) {
   std::wstring out;
   for (size_t i = 0; i < label.size(); ++i) {
     if (label[i] == L'&' && i + 1 < label.size()) {
-      continue;
+      ++i;  // The next character is shown as is — a '&' too.
     }
     out.push_back(label[i]);
   }
   return out;
+}
+
+// The mnemonic character of `label` (the one after a single '&'), or 0.
+wchar_t MnemonicOf(const std::wstring& label) {
+  for (size_t i = 0; i + 1 < label.size(); ++i) {
+    if (label[i] != L'&') {
+      continue;
+    }
+    if (label[i + 1] == L'&') {
+      ++i;  // "&&": a literal '&', not a mnemonic.
+      continue;
+    }
+    return label[i + 1];
+  }
+  return 0;
 }
 
 int TextWidth(HDC dc, HFONT font, const std::wstring& text) {
@@ -286,6 +303,21 @@ void PhiMenuSplitText(const std::wstring& text,
   const size_t tab = text.find(L'\t');
   *label = text.substr(0, tab);
   *shortcut = tab == std::wstring::npos ? std::wstring() : text.substr(tab + 1);
+}
+
+std::wstring PhiEscapeMenuText(const std::wstring& text) {
+  std::wstring out;
+  out.reserve(text.size());
+  for (wchar_t c : text) {
+    if (c == L'&') {
+      out += L"&&";
+    } else if (c == L'\t') {
+      out.push_back(L' ');
+    } else {
+      out.push_back(c);
+    }
+  }
+  return out;
 }
 
 const PhiMenuRow* PhiMenuRowAt(HMENU menu, int position) {
@@ -523,9 +555,8 @@ LRESULT PhiMenuOnMenuChar(HMENU menu, wchar_t ch) {
     if (!row || row->separator) {
       continue;
     }
-    const size_t amp = row->label.find(L'&');
-    if (amp != std::wstring::npos && amp + 1 < row->label.size() &&
-        static_cast<wchar_t>(::towupper(row->label[amp + 1])) == want) {
+    const wchar_t mnemonic = MnemonicOf(row->label);
+    if (mnemonic && static_cast<wchar_t>(::towupper(mnemonic)) == want) {
       return MAKELRESULT(i, MNC_EXECUTE);
     }
   }

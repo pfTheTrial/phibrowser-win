@@ -618,7 +618,12 @@ void PhiTabPreview::PaintCard(HDC dc) {
     ::DeleteObject(line);
   }
 
-  // A hairline rim, as the Mac tooltip chrome carries.
+  // A hairline rim, as the Mac tooltip chrome carries — Windows 10 only:
+  // on Windows 11 DWM rounds the card and draws its border along the curve,
+  // and a square rim inside it would cut across both corners.
+  if (dwm_rounded()) {
+    return;
+  }
   HPEN pen = ::CreatePen(PS_SOLID, 1, palette.border);
   HGDIOBJ old_pen = ::SelectObject(dc, pen);
   HGDIOBJ old_brush = ::SelectObject(dc, ::GetStockObject(NULL_BRUSH));

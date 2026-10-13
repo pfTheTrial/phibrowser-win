@@ -45,6 +45,13 @@ class PhiSpaceBrowsers {
   // slot was SHOWING, so the caller must put another Space on screen.
   bool Forget(BrowserId browser);
   void Retire(const std::string& space_id);
+  // Retire(), and the Space stops being held here: the slot keeps SHOWING
+  // the browser until a replacement attaches (then TakeRetiredBrowser hands
+  // it over for closing), but a switch to the Space asks for a NEW browser.
+  // For a re-profiled Space's respawn and a vanished Space's retreat, whose
+  // old browser may be the slot's only one — closing it first closed the
+  // window (and, the last one, the app) before the replacement came.
+  void RetireAndUnmap(const std::string& space_id);
   BrowserId TakeRetiredBrowser();
   bool NeedsReplacement() const;
   const std::set<BrowserId>& retiring() const { return retiring_; }
@@ -128,6 +135,16 @@ inline void PhiSpaceBrowsers::Retire(const std::string& space_id) {
   if (browser.valid()) {
     retiring_.insert(browser);
   }
+}
+
+inline void PhiSpaceBrowsers::RetireAndUnmap(const std::string& space_id) {
+  const BrowserId browser = ForSpace(space_id);
+  if (!browser.valid()) {
+    return;
+  }
+  retiring_.insert(browser);
+  by_space_.erase(space_id);
+  std::erase(order_, space_id);
 }
 
 inline BrowserId PhiSpaceBrowsers::TakeRetiredBrowser() {
@@ -312,6 +329,9 @@ class PhiBrowserHost {
   void CloseSpaceBrowser(const std::string& space_id);
   void RetireSpaceBrowser(const std::string& space_id) {
     spaces_.Retire(space_id);
+  }
+  void RetireAndUnmapSpaceBrowser(const std::string& space_id) {
+    spaces_.RetireAndUnmap(space_id);
   }
   BrowserId TakeRetiredBrowser() { return spaces_.TakeRetiredBrowser(); }
   // Drops a browser that went away; returns true if the slot still has one.

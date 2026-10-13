@@ -61,6 +61,9 @@ class PhiCreateSpaceWindow : public PhiSecondaryWindow,
   // The form fills the client area below the band; the window is as tall
   // as the form wants (the Mac's setContentSize(fittingSize)).
   void FitToForm();
+  // Commit / Cancel from inside the form: hide now, destroy on a posted
+  // turn (see the .cc).
+  void CloseFromForm();
 
   // PhiSecondaryWindow.
   void Paint(HDC dc, const RECT& dirty) override;
@@ -81,6 +84,8 @@ class PhiCreateSpaceWindow : public PhiSecondaryWindow,
   RAW_PTR_EXCLUSION PhiShellWindow* const controller_;
   std::unique_ptr<PhiCreateSpacePanel> form_;
   HBRUSH bg_brush_ = nullptr;
+  // Committed or cancelled: hidden, a WM_CLOSE posted.
+  bool closing_ = false;
 };
 
 }  // namespace phi_client

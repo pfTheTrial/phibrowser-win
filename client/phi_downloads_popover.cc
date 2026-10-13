@@ -4,6 +4,8 @@
 
 #include "phibrowser-win/client/phi_downloads_popover.h"
 
+#include <commctrl.h>
+#include <commoncontrols.h>  // IImageList, for SHGetImageList.
 #include <dwmapi.h>
 #include <shellapi.h>
 #include <windowsx.h>
@@ -12,6 +14,7 @@
 #include <array>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <ctime>
 #include <optional>
@@ -142,8 +145,40 @@ struct DownloadRow {
 struct RowAction {
   const char* verb;     // Framework DownloadAction verb, or "copy".
   wchar_t glyph;        // MDL2.
+  // The catalog key of its tooltip / accessible name (DownloadItemRow's
+  // per-state tooltip keys): a raw verb is no name for a user.
+  const char* name_key;
   bool enabled = true;
 };
+
+// A completed download the user can open from the list: the file is there
+// and nothing about it is in question (DownloadItemRow.openCompletedFile).
+bool CanOpen(const DownloadRow& row) {
+  return row.state == "complete" && row.exists && row.danger == "normal";
+}
+
+// The icon the shell shows for `path`'s type, from the system image list
+// nearest `px` (32, 48), not a 32 px icon stretched. Caller destroys it.
+HICON ShellIconFor(const std::wstring& path, int px) {
+  SHFILEINFOW info = {};
+  if (!::SHGetFileInfoW(path.c_str(), FILE_ATTRIBUTE_NORMAL, &info,
+                        sizeof(info),
+                        SHGFI_SYSICONINDEX | SHGFI_USEFILEATTRIBUTES)) {
+    return nullptr;
+  }
+  IImageList* list = nullptr;
+  if (FAILED(::SHGetImageList(px <= 32 ? SHIL_LARGE : SHIL_EXTRALARGE,
+                              IID_PPV_ARGS(&list))) ||
+      !list) {
+    return nullptr;
+  }
+  HICON icon = nullptr;
+  if (FAILED(list->GetIcon(info.iIcon, ILD_TRANSPARENT, &icon))) {
+    icon = nullptr;
+  }
+  list->Release();
+  return icon;
+}
 
 // The popover keeps its download rows, its Paint() and its per-row
 // actions. The window, the placement, the back buffer, hover, the poll
@@ -166,24 +201,25 @@ class Popover : public PhiPopover {
   bool Open(HWND owner, const RECT& anchor, const PhiPalette& colors) {
     ClassSpec spec;
     spec.name = L"PhiDownloadsPopover";
+    // A double-click on a finished row opens the file (DownloadItemRow).
+    spec.style = CS_DBLCLKS;
 
     Options options;  // Activating, DWM-rounded, 500 ms opening grace.
 
-    Placement placement;
-    placement.anchor = anchor;
-    placement.side = PhiPopoverSide::kAbove;
-    placement.gap_dip = 8;
-    placement.flip = false;  // The bottom-bar button always drops upward.
-    placement.monitor_from_owner = true;
+    placement_.anchor = anchor;
+    placement_.side = PhiPopoverSide::kAbove;
+    placement_.gap_dip = 8;
+    placement_.flip = false;  // The bottom-bar button always drops upward.
+    placement_.monitor_from_owner = true;
 
     SIZE probe = {1, 1};
-    if (!CreatePopover(spec, owner, probe, placement, options)) {
+    if (!CreatePopover(spec, owner, probe, placement_, options)) {
       return false;
     }
     instance = this;  // Before Show(): activation churn can destroy us.
     SetPalette(colors);
     SIZE size = {Scaled(kPanelWidth), Scaled(kPanelHeight)};
-    Reposition(placement, size);
+    Reposition(placement_, size);
     Refresh();
     Show();
     poll_ = NewTimer();
@@ -237,10 +273,43 @@ class Popover : public PhiPopover {
   }
 
   void OnDpiChanged(UINT) override {
-    ::SetWindowPos(hwnd(), nullptr, 0, 0, Scaled(kPanelWidth),
-                   Scaled(kPanelHeight),
-                   SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    // Placement again, not a resize in place: the panel hangs ABOVE its
+    // button, so growing it with SWP_NOMOVE ran it down over the button.
+    Reposition(placement_, {Scaled(kPanelWidth), Scaled(kPanelHeight)});
+    // The icons were picked for the old size.
+    for (auto& [ext, icon] : icons_) {
+      if (icon) {
+        ::DestroyIcon(icon);
+      }
+    }
+    icons_.clear();
     BuildHits();
+  }
+
+  LRESULT OnMessage(UINT message,
+                    WPARAM wparam,
+                    LPARAM lparam,
+                    bool* handled) override {
+    if (message == WM_LBUTTONDBLCLK) {
+      // The second press of a double-click. On a finished row's body it
+      // opens the file; anywhere else it is an ordinary press, and the
+      // WM_LBUTTONUP that follows still clicks an action button.
+      const POINT pt = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+      const int hit = HitTest(pt);
+      if (hit >= 0 && framework_) {
+        const int key = hits_[static_cast<size_t>(hit)].key;
+        const size_t row = static_cast<size_t>(key / kKeyStride);
+        if (key != kAllDownloadsKey && key % kKeyStride == 0 &&
+            row < rows_.size() && CanOpen(rows_[row])) {
+          framework_->DownloadAction(browser_id_,
+                                     static_cast<uint32_t>(rows_[row].id),
+                                     "open");
+        }
+      }
+      *handled = true;
+      return 0;
+    }
+    return PhiPopover::OnMessage(message, wparam, lparam, handled);
   }
 
   void OnNcDestroy() override {
@@ -301,11 +370,12 @@ class Popover : public PhiPopover {
         }
         AddHit(button,
                static_cast<int>(i) * kKeyStride + 1 + static_cast<int>(a),
-               base::UTF8ToWide(actions[a].verb), PhiHitRole::kButton, false,
+               PhiStr(actions[a].name_key), PhiHitRole::kButton, false,
                actions[a].enabled);
       }
     }
-    AddHit(AllDownloadsRect(), kAllDownloadsKey, L"All Downloads",
+    AddHit(AllDownloadsRect(), kAllDownloadsKey,
+           PhiStr("downloads.list.openAllDownloadsButton"),
            PhiHitRole::kButton);
   }
 
@@ -371,39 +441,68 @@ class Popover : public PhiPopover {
     // warning offers Keep + Discard, a block offers Discard only.
     // "remove" IS the discard — Chromium's bubble does the same (cancel +
     // delete the temporary file). Scanning rows keep the normal actions.
+    // Glyphs are escapes: private-use characters do not survive every
+    // editor round-trip.
     if (row.danger == "warning") {
-      return {{"keep", L''}, {"remove", L''}};
+      return {{"keep", L'\uE73E',
+               "downloads.item.safetyWarning.keepButtonTooltip"},
+              {"remove", L'\uE74D',
+               "downloads.item.safetyWarning.discardButtonTooltip"}};
     }
     if (row.danger == "blocked" || row.danger == "policyBlocked") {
-      return {{"remove", L''}};
+      return {{"remove", L'\uE74D',
+               "downloads.item.blocked.discardButtonTooltip"}};
     }
     if (row.state == "in_progress") {
-      return {{"copy", L''},
+      return {{"copy", L'\uE8C8',
+               "downloads.item.inProgress.copyLinkButtonTooltip"},
               {row.paused ? "resume" : "pause",
-               row.paused ? L'' : L''},
-              {"cancel", L''}};
+               row.paused ? L'\uE768' : L'\uE769',
+               row.paused ? "downloads.item.resumeButtonTooltip"
+                          : "downloads.item.pauseButtonTooltip"},
+              {"cancel", L'\uE74D', "downloads.item.cancelButtonTooltip"}};
     }
     if (row.state == "complete") {
-      return {{"copy", L''},
-              {"show", L'', row.exists},
-              {"remove", L''}};
+      return {{"copy", L'\uE8C8',
+               "downloads.item.completed.copyLinkButtonTooltip"},
+              {"show", L'\uE838',
+               "downloads.item.showInFolderButtonTooltip", row.exists},
+              {"remove", L'\uE74D',
+               "downloads.item.completed.removeButtonTooltip"}};
     }
-    return {{"copy", L''}, {"remove", L''}};
+    if (row.state == "interrupted") {
+      // Retry (DownloadItemRow's, for a failed download): the framework's
+      // "resume" restarts an interrupted item, from where it stopped when
+      // the server allows it. MDL2 Refresh.
+      return {{"copy", L'\uE8C8',
+               "downloads.item.interrupted.copyLinkButtonTooltip"},
+              {"resume", L'\uE72C', "downloads.item.retryButtonTooltip"},
+              {"remove", L'\uE74D',
+               "downloads.item.interrupted.removeButtonTooltip"}};
+    }
+    return {{"copy", L'\uE8C8',
+             "downloads.item.interrupted.copyLinkButtonTooltip"},
+            {"remove", L'\uE74D',
+             "downloads.item.interrupted.removeButtonTooltip"}};
   }
 
-  HICON IconFor(const std::wstring& path) {
+  HICON IconFor(const std::wstring& path, int px) {
     size_t dot = path.find_last_of(L'.');
     std::wstring ext = dot == std::wstring::npos ? L"" : path.substr(dot);
     auto found = icons_.find(ext);
     if (found != icons_.end()) {
       return found->second;
     }
-    SHFILEINFOW info = {};
-    ::SHGetFileInfoW((L"file" + ext).c_str(), FILE_ATTRIBUTE_NORMAL, &info,
-                     sizeof(info),
-                     SHGFI_ICON | SHGFI_LARGEICON | SHGFI_USEFILEATTRIBUTES);
-    icons_[ext] = info.hIcon;
-    return info.hIcon;
+    HICON icon = ShellIconFor(L"file" + ext, px);
+    if (!icon) {
+      SHFILEINFOW info = {};
+      ::SHGetFileInfoW((L"file" + ext).c_str(), FILE_ATTRIBUTE_NORMAL, &info,
+                       sizeof(info),
+                       SHGFI_ICON | SHGFI_LARGEICON | SHGFI_USEFILEATTRIBUTES);
+      icon = info.hIcon;
+    }
+    icons_[ext] = icon;
+    return icon;
   }
 
   RECT ListRect() const {
@@ -434,8 +533,8 @@ class Popover : public PhiPopover {
     RECT measure = {0, 0, 0, 0};
     HDC dc = ::GetDC(hwnd());
     HGDIOBJ old = ::SelectObject(dc, SmallFont());
-    PhiDrawTextAA(dc, L"All Downloads", -1, &measure,
-                DT_CALCRECT | DT_SINGLELINE);
+    PhiDrawTextAA(dc, PhiStr("downloads.list.openAllDownloadsButton"), -1,
+                  &measure, DT_CALCRECT | DT_SINGLELINE);
     ::SelectObject(dc, old);
     ::ReleaseDC(hwnd(), dc);
     const int w = measure.right + Scaled(8 + 4 + 10 + 8);
@@ -462,7 +561,7 @@ class Popover : public PhiPopover {
       ::SelectObject(dc, SmallFont());
       RECT text = list;
       text.top = glyph.bottom + Scaled(8);
-      PhiDrawTextAA(dc, L"No Downloads", -1, &text,
+      PhiDrawTextAA(dc, PhiStr("downloads.list.emptyMessage"), -1, &text,
                   DT_CENTER | DT_TOP | DT_SINGLELINE);
       ::SelectObject(dc, old);
     }
@@ -481,9 +580,28 @@ class Popover : public PhiPopover {
       // File-type icon, from the shell like NSWorkspace's.
       const int icon = Scaled(kIconSize);
       const int mid = (row.top + row.bottom) / 2;
-      if (HICON handle = IconFor(item.path)) {
-        ::DrawIconEx(dc, row.left, mid - icon / 2, handle, icon, icon, 0,
-                     nullptr, DI_NORMAL);
+      if (HICON handle = IconFor(item.path, icon)) {
+        // At the image list's own size when that is within a pixel or two
+        // of the slot (32 for 30, 48 for 45), centred on it: a GDI stretch
+        // of an icon is nearest-neighbour, and blurs or jags it.
+        int draw = icon;
+        ICONINFO info = {};
+        if (::GetIconInfo(handle, &info)) {
+          BITMAP bitmap = {};
+          if (info.hbmColor &&
+              ::GetObjectW(info.hbmColor, sizeof(bitmap), &bitmap) &&
+              std::abs(static_cast<int>(bitmap.bmWidth) - icon) <= 3) {
+            draw = static_cast<int>(bitmap.bmWidth);
+          }
+          if (info.hbmColor) {
+            ::DeleteObject(info.hbmColor);
+          }
+          if (info.hbmMask) {
+            ::DeleteObject(info.hbmMask);
+          }
+        }
+        ::DrawIconEx(dc, row.left + (icon - draw) / 2, mid - draw / 2, handle,
+                     draw, draw, 0, nullptr, DI_NORMAL);
       }
 
       const std::vector<RowAction> actions = ActionsFor(item);
@@ -500,16 +618,18 @@ class Popover : public PhiPopover {
       ::SetTextColor(dc, p.label);
       RECT name_rc = {info.left, mid - Scaled(18), info.right,
                       mid - Scaled(1)};
-      const wchar_t* status =
-          item.danger == "warning"         ? L"Dangerous"
-          : item.danger == "blocked"       ? L"Blocked"
-          : item.danger == "policyBlocked" ? L"Blocked by policy"
-          : item.danger == "scanning"      ? L"Scanning..."
-          : item.state == "cancelled"      ? L"Canceled"
+      const char* status_key =
+          item.danger == "warning"         ? "downloads.dangerous"
+          : item.danger == "blocked"       ? "download.safety.short.blocked"
+          : item.danger == "policyBlocked" ? "downloads.blockedByPolicy"
+          : item.danger == "scanning"      ? "download.safety.short.scanning"
+          : item.state == "cancelled"      ? "downloads.item.status.cancelled"
           : item.state == "interrupted"
-              ? L"Failed"
-              : (item.state == "complete" && !item.exists ? L"Deleted"
-                                                          : nullptr);
+              ? "downloads.item.status.failed"
+              : (item.state == "complete" && !item.exists
+                     ? "downloads.item.status.deleted"
+                     : nullptr);
+      const wchar_t* status = status_key ? PhiStr(status_key) : nullptr;
       RECT name_measure = name_rc;
       PhiDrawTextAA(dc, item.name.c_str(), -1, &name_measure,
                   DT_CALCRECT | DT_SINGLELINE);
@@ -553,7 +673,8 @@ class Popover : public PhiPopover {
               PhiStrF("downloads.item.transfer.progressLabel",
                       {FormatBytes(item.received), FormatBytes(item.total)});
           if (item.paused) {
-            text += L" ・Paused";
+            text += L" ";
+            text += PhiStr("downloads.item.status.pausedIndicator");
           } else if (item.speed > 0) {
             text += L" ・ " + FormatBytes(item.speed) + L"/s";
           }
@@ -566,10 +687,16 @@ class Popover : public PhiPopover {
           FillRounded(dc, track, PhiBlend(p.accent, p.window_bg, 51),
                       Scaled(3));
           if (item.total > 0) {
+            // Clamped: a server that under-reports its length sends more
+            // bytes than the total, and the fill ran out of the track.
+            const double done =
+                std::clamp(item.received / item.total, 0.0, 1.0);
             RECT fill = track;
             fill.right = fill.left + static_cast<int>(
-                (track.right - track.left) * item.received / item.total);
-            FillRounded(dc, fill, p.accent, Scaled(3));
+                (track.right - track.left) * done);
+            if (fill.right > fill.left) {
+              FillRounded(dc, fill, p.accent, Scaled(3));
+            }
           }
         }
       } else {
@@ -619,15 +746,20 @@ class Popover : public PhiPopover {
     ::SetTextColor(dc, p.accent);
     RECT text = {button.left + Scaled(8), button.top,
                  button.right - Scaled(18), button.bottom};
-    PhiDrawTextAA(dc, L"All Downloads", -1, &text,
-                DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    PhiDrawTextAA(dc, PhiStr("downloads.list.openAllDownloadsButton"), -1,
+                  &text, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     ::SelectObject(dc, GlyphFont());
     RECT chevron = {text.right, button.top, button.right, button.bottom};
     PhiDrawTextAA(dc, L"", 1, &chevron,
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     ::SelectObject(dc, old);
 
-    // Hairline border over everything (the panel edge).
+    // Hairline border over everything (the panel edge) — Windows 10 only:
+    // on 11 DWM rounds the panel and draws its border along the curve, and
+    // a square rim inside it would cut across all four corners.
+    if (dwm_rounded()) {
+      return;
+    }
     HPEN pen = ::CreatePen(PS_SOLID, 1, p.border);
     HGDIOBJ old_pen = ::SelectObject(dc, pen);
     HGDIOBJ old_brush = ::SelectObject(dc, ::GetStockObject(NULL_BRUSH));
@@ -639,10 +771,32 @@ class Popover : public PhiPopover {
 
   void RunHoveredAction() {
     if (hover_all_) {
-      if (framework_) {
-        framework_->Navigate(browser_id_, "chrome://downloads/");
-      }
+      // A tab of its own, not the current page navigated away (the Mac's
+      // "All Downloads" opens the downloads page beside what you were
+      // reading) — and the one already open, when there is one. Opening a
+      // tab can activate another window and destroy this panel: capture
+      // the target and dismiss before handing control to Chromium.
+      auto* framework = framework_;
+      const int64_t browser_id = browser_id_;
       Dismiss();
+      if (!framework) {
+        return;
+      }
+      int existing = 0;
+      if (const phi_framework::WindowSnapshot* snapshot =
+              framework->Snapshot(phi_framework::WindowId{browser_id})) {
+        for (const phi_framework::TabSnapshot& tab : snapshot->tabs) {
+          if (tab.url.rfind("chrome://downloads", 0) == 0) {
+            existing = tab.id.value;
+            break;
+          }
+        }
+      }
+      if (existing > 0 && framework->ActivateTabById(browser_id, existing)) {
+        return;
+      }
+      framework->OpenTab(phi_framework::WindowId{browser_id},
+                         "chrome://downloads");
       return;
     }
     if (hover_row_ < 0 || hover_action_ < 0 ||
@@ -693,6 +847,7 @@ class Popover : public PhiPopover {
   // The browser the popover was opened for (BrowserId::value; the
   // framework calls below are still int64_t until phase 2).
   int64_t browser_id_;
+  Placement placement_;
   Timer poll_;
   std::vector<DownloadRow> rows_;
   std::string last_json_;

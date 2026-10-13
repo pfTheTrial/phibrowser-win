@@ -33,22 +33,28 @@ void PhiCreateSpaceWindow::Open(PhiShellWindow* controller,
   if (!controller) {
     return;
   }
-  if (g_window && g_window->alive() && g_window->controller_ != controller) {
+  if (g_window && g_window->alive() &&
+      (g_window->controller_ != controller || g_window->closing_)) {
     // A form is up for another window's slot: the new request takes over,
-    // as the Mac's shared window opens for the active window.
-    g_window->Destroy();
+    // as the Mac's shared window opens for the active window. (A form that
+    // already committed or cancelled is on its way out; a fresh one opens.)
+    g_window->Destroy();  // Self-owned: clears g_window and frees it.
   }
   if (!g_window || !g_window->alive()) {
-    delete g_window;
-    g_window = new PhiCreateSpaceWindow(controller);
-    if (!g_window->OpenWindow(initial_profile_id, source_theme_id,
-                              saturation, anchor)) {
-      delete g_window;
-      g_window = nullptr;
+    auto* window = new PhiCreateSpaceWindow(controller);
+    if (!window->OpenWindow(initial_profile_id, source_theme_id, saturation,
+                            anchor)) {
+      delete window;
       return;
     }
+    // Self-owned from here: the object (its form and the form's fonts) goes
+    // with its HWND; OnNcDestroy clears g_window first.
+    window->DeleteWhenDestroyed();
+    g_window = window;
   }
-  ::ShowWindow(g_window->hwnd(), SW_SHOW);
+  // A minimized window comes back; SW_SHOW alone leaves it on the taskbar.
+  ::ShowWindow(g_window->hwnd(),
+               ::IsIconic(g_window->hwnd()) ? SW_RESTORE : SW_SHOW);
   ::SetForegroundWindow(g_window->hwnd());
   if (g_window->form_) {
     g_window->form_->FocusField();
@@ -196,11 +202,24 @@ void PhiCreateSpaceWindow::FormCommit(const PhiNewSpaceSpec& spec) {
     controller_->spaces_host()->RequestCreateSpaceWithOptions(
         controller_->slot().value, spec);
   }
-  Destroy();
+  CloseFromForm();
 }
 
 void PhiCreateSpaceWindow::FormCancel() {
-  Destroy();
+  CloseFromForm();
+}
+
+void PhiCreateSpaceWindow::CloseFromForm() {
+  // The form calls in from its own click / key / field handlers, still on
+  // its stack, and destroying the window now would free the form (the
+  // window is self-owned) under it. Hide at once; the posted close tears it
+  // down from the window's own turn.
+  if (closing_ || !alive()) {
+    return;
+  }
+  closing_ = true;
+  ::ShowWindow(hwnd(), SW_HIDE);
+  ::PostMessageW(hwnd(), WM_CLOSE, 0, 0);
 }
 
 COLORREF PhiCreateSpaceWindow::FormGround() const {

@@ -376,8 +376,10 @@ std::vector<PhiAppMenu::SpaceEntry> PhiAppMenu::SpaceList() const {
   for (const PhiSpaceView& space : services_->MenuSpacesHost()->Spaces()) {
     spaces.push_back(
         {space.id,
-         base::UTF8ToWide(!space.name.empty() ? space.name
-                                              : "Space " + space.id),
+         !space.name.empty()
+             ? base::UTF8ToWide(space.name)
+             : PhiStrF("sidebar.createSpace.defaultName",
+                       {base::UTF8ToWide(space.id)}),
          base::UTF8ToWide(space.icon_text), false});
   }
   // Then this window's agent Spaces, in strip order — the Mac's
@@ -446,10 +448,12 @@ void PhiAppMenu::RefreshSpaces() {
           profile_count >= static_cast<int>(kProfileLast - kProfileFirst)) {
         continue;
       }
+      // `title` stays raw for the confirm dialogs; the ROWS escape it (a
+      // user-chosen name with "&" would otherwise grow a mnemonic).
       const std::wstring title = base::UTF8ToWide(!name.empty() ? name : id);
       PhiMenuRow* r = rows_.AppendCommand(
-          profiles_, kProfileFirst + static_cast<UINT>(profile_count), title,
-          nullptr, can_reprofile);
+          profiles_, kProfileFirst + static_cast<UINT>(profile_count),
+          PhiEscapeMenuText(title), nullptr, can_reprofile);
       r->radio = true;
       if (id == active_profile) {
         ::CheckMenuItem(profiles_, kProfileFirst + static_cast<UINT>(profile_count),
@@ -462,7 +466,8 @@ void PhiAppMenu::RefreshSpaces() {
       const bool deletable = id != "Default" && !in_use;
       // The Mac marks in-use rows "<name> — in use by a Space".
       const std::wstring delete_title =
-          in_use ? PhiStrF("menuBar.profileInUse", {title}) : title;
+          in_use ? PhiStrF("menuBar.profileInUse", {PhiEscapeMenuText(title)})
+                 : PhiEscapeMenuText(title);
       PhiMenuRow* d = rows_.AppendCommand(
           delete_profiles_,
           kDeleteProfileFirst + static_cast<UINT>(profile_count),
@@ -510,7 +515,9 @@ void PhiAppMenu::RefreshSpaces() {
       rows_.AppendSeparator(spaces_);  // Agent Spaces after a divider.
       agent_divider = true;
     }
-    std::wstring title = spaces[i].title;
+    // Escaped BEFORE the accelerator column joins it: the tab and the
+    // shortcut are menu syntax, the name is the user's text.
+    std::wstring title = PhiEscapeMenuText(spaces[i].title);
     if (i < 9) {
       title += L"\tCtrl+" + std::to_wstring(i + 1);
     }
@@ -549,8 +556,8 @@ void PhiAppMenu::AppendBookmarkRows(HMENU menu, const std::string& parent_guid,
   for (const PhiStoredRowView& row :
        services_->MenuSidebarHost()->BookmarkRows(services_->MenuSlot().value,
                                                   parent_guid)) {
-    const std::wstring shown =
-        base::UTF8ToWide(!row.title.empty() ? row.title : row.url);
+    const std::wstring shown = PhiEscapeMenuText(
+        base::UTF8ToWide(!row.title.empty() ? row.title : row.url));
     if (row.folder) {
       HMENU sub = ::CreatePopupMenu();
       AppendBookmarkRows(sub, row.guid, depth + 1);
@@ -665,7 +672,8 @@ void PhiAppMenu::RefreshExtensions() {
     }
     rows_.AppendCommand(
         extensions_, kExtensionFirst + static_cast<UINT>(extension_ids_.size()),
-        base::UTF8ToWide(name && !name->empty() ? *name : *id),
+        PhiEscapeMenuText(
+            base::UTF8ToWide(name && !name->empty() ? *name : *id)),
         fluent::kPuzzle, enabled);
     extension_ids_.push_back(*id);
   }
@@ -739,6 +747,52 @@ void PhiAppMenu::DispatchAccelerator(UINT_PTR token) {
   // Synchronous only after validation; preserves the shell's app-menu route
   // and accelerator provenance without a second unattributed queue hop.
   ::SendMessageW(shell_, WM_COMMAND, MAKEWPARAM(pending->id, 1), 0);
+}
+
+void PhiAppMenu::RenameSpace(const std::string& space_id) {
+  PhiAppMenuShell* c = services_;
+  if (!c->MenuSpacesHost() || space_id.empty()) {
+    return;
+  }
+  // Prefill with the Space's current name (from the owner's list; the
+  // chip label is the same string).
+  std::wstring name;
+  for (const PhiSpaceView& space : c->MenuSpacesHost()->Spaces()) {
+    if (space.id == space_id) {
+      name = base::UTF8ToWide(space.name);
+      break;
+    }
+  }
+  // Trimmed, a blank name refused, the shared name length enforced.
+  if (PhiPromptText(c->MenuShellWindow(), PhiStr("app.renameSpaceDialog.title"),
+                    PhiStr("app.renameSpaceDialog.message"), &name,
+                    /*confirm_label=*/nullptr, kPhiNameRules)) {
+    c->MenuSpacesHost()->RenameSpace(space_id, base::WideToUTF8(name));
+  }
+}
+
+void PhiAppMenu::DeleteSpace(const std::string& space_id) {
+  PhiAppMenuShell* c = services_;
+  if (!c->MenuSpacesHost() || space_id.empty()) {
+    return;
+  }
+  // The confirm names the Space: a pip's menu may be deleting one that is
+  // not the Space on screen.
+  std::wstring name;
+  for (const PhiSpaceView& space : c->MenuSpacesHost()->Spaces()) {
+    if (space.id == space_id) {
+      name = base::UTF8ToWide(space.name);
+      break;
+    }
+  }
+  const std::wstring title =
+      name.empty() ? std::wstring(PhiStr("dialog.deleteSpace.title"))
+                   : PhiStrF("dialog.deleteNamedSpace.title", {name});
+  if (PhiConfirm(c->MenuShellWindow(), title.c_str(),
+                 PhiStr("menuBar.deleteSpaceConfirmBody"),
+                 PhiStr("settings.spaces.deleteConfirmation.deleteButton"))) {
+    c->MenuSpacesHost()->DeleteSpace(space_id);
+  }
 }
 
 bool PhiAppMenu::OnCommand(UINT id, bool from_accelerator) {
@@ -829,7 +883,8 @@ bool PhiAppMenu::OnCommand(UINT id, bool from_accelerator) {
     if (c->MenuSpacesHost() && i < profile_ids_.size() &&
         PhiConfirm(c->MenuShellWindow(),
                    PhiStr("dialog.deleteProfile.title"),
-                   PhiStr("menuBar.deleteProfileConfirmBody"), L"Delete")) {
+                   PhiStr("menuBar.deleteProfileConfirmBody"),
+                   PhiStr("settings.profiles.deleteConfirmation.deleteButton"))) {
       c->MenuSpacesHost()->DeleteProfileById(profile_ids_[i]);
     }
     return true;
@@ -1022,26 +1077,9 @@ bool PhiAppMenu::OnCommand(UINT id, bool from_accelerator) {
     case kCmdNewSpace:
       c->MenuCreateSpace();  // The sidebar form, or at once without one.
       return true;
-    case kCmdRenameSpace: {
-      if (!c->MenuSpacesHost()) {
-        return true;
-      }
-      // Prefill with the Space's current name (from the owner's list; the
-      // chip label is the same string).
-      std::wstring name;
-      for (const PhiSpaceView& space : c->MenuSpacesHost()->Spaces()) {
-        if (space.id == c->MenuActiveSpace()) {
-          name = base::UTF8ToWide(space.name);
-          break;
-        }
-      }
-      if (PhiPromptText(c->MenuShellWindow(), PhiStr("app.renameSpaceDialog.title"),
-                        PhiStr("app.renameSpaceDialog.message"), &name)) {
-        c->MenuSpacesHost()->RenameSpace(c->MenuActiveSpace(),
-                                         base::WideToUTF8(name));
-      }
+    case kCmdRenameSpace:
+      RenameSpace(c->MenuActiveSpace());
       return true;
-    }
     case kCmdChangeIcon:
       c->MenuChangeSpaceIcon();
       return true;
@@ -1052,11 +1090,7 @@ bool PhiAppMenu::OnCommand(UINT id, bool from_accelerator) {
       c->MenuEditSpaceTheme();
       return true;
     case kCmdDeleteSpace:
-      if (c->MenuSpacesHost() &&
-          PhiConfirm(c->MenuShellWindow(), PhiStr("dialog.deleteSpace.title"),
-                     PhiStr("menuBar.deleteSpaceConfirmBody"), L"Delete")) {
-        c->MenuSpacesHost()->DeleteSpace(c->MenuActiveSpace());
-      }
+      DeleteSpace(c->MenuActiveSpace());
       return true;
     case kCmdCloseIncognitoSpace:
       c->MenuCloseIncognitoSpace();
@@ -1066,7 +1100,8 @@ bool PhiAppMenu::OnCommand(UINT id, bool from_accelerator) {
       if (c->MenuFramework() &&
           PhiPromptText(c->MenuShellWindow(),
                         PhiStr("settings.profiles.createDialog.title"),
-                        PhiStr("menuBar.newProfilePromptBody"), &name)) {
+                        PhiStr("menuBar.newProfilePromptBody"), &name,
+                        /*confirm_label=*/nullptr, kPhiNameRules)) {
         c->MenuFramework()->CreateProfile(base::WideToUTF8(name).c_str());
       }
       return true;
@@ -1109,7 +1144,9 @@ bool PhiAppMenu::OnCommand(UINT id, bool from_accelerator) {
       }
       return true;
     case kCmdBookmarkThisTab:
-      if (c->MenuSidebarHost()) {
+      // Ctrl+D reaches here even though the row is greyed off the record:
+      // an incognito page never becomes a regular (synced) bookmark.
+      if (c->MenuSidebarHost() && !c->MenuIncognito()) {
         c->MenuSidebarHost()->RequestBookmarkActiveTab(c->MenuSlot().value);
       }
       return true;
@@ -1121,7 +1158,8 @@ bool PhiAppMenu::OnCommand(UINT id, bool from_accelerator) {
       if (!PhiPromptText(
               c->MenuShellWindow(),
               PhiStr("common.tabAreaContextMenu.bookmarkAllTabsAction"),
-              PhiStr("menuBar.bookmarkAllTabsPromptBody"), &name) ||
+              PhiStr("menuBar.bookmarkAllTabsPromptBody"), &name,
+              /*confirm_label=*/nullptr, kPhiNameRules) ||
           name.empty()) {
         return true;
       }
@@ -1160,9 +1198,15 @@ bool PhiAppMenu::OnCommand(UINT id, bool from_accelerator) {
         return true;
       }
       wchar_t path[MAX_PATH] = L"bookmarks.html";
+      // "<label>\0*.html\0\0": the label localized, the pattern not.
+      std::wstring filter = PhiStr("menuBar.exportBookmarks.htmlFileFilter");
+      filter.push_back(L'\0');
+      filter += L"*.html";
+      filter.push_back(L'\0');
+      filter.push_back(L'\0');
       OPENFILENAMEW ofn = {sizeof(ofn)};
       ofn.hwndOwner = c->MenuShellWindow();
-      ofn.lpstrFilter = L"HTML File\0*.html\0\0";
+      ofn.lpstrFilter = filter.c_str();
       ofn.lpstrFile = path;
       ofn.nMaxFile = MAX_PATH;
       ofn.Flags = OFN_OVERWRITEPROMPT;

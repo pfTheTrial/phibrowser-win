@@ -823,8 +823,12 @@ void PhiTelemetry::LoadSpool() {
     }
     event.unix_ms = static_cast<int64_t>(row->FindDouble("ts").value_or(0));
     if (const base::Value* props = row->Find("properties")) {
+      // The file is outside our control between runs (an older build, an
+      // edit, a narrowed table): re-apply today's allow-list, as RecordEvent
+      // does, before anything from it can reach the collector.
       std::optional<std::string> json = base::WriteJson(*props);
-      event.properties_json = json ? *json : std::string("{}");
+      event.properties_json =
+          json ? ScrubProperties(event.module, *json) : std::string("{}");
     } else {
       event.properties_json = "{}";
     }

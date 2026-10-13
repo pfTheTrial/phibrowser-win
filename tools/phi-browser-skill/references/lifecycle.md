@@ -22,11 +22,11 @@ through the console.
 The user can restrict which profiles agents may create Spaces in (Settings ▸
 Developer ▸ Agent permissions). `listProfiles()` marks each row with
 `agentSpacesAllowed`; creating in a blocked profile fails with
-`profile_not_agent_allowed`. The default (empty `{profile}`) always resolves
-to a usable profile — a still-allowed one if any exists, otherwise the app
-auto-creates a dedicated "Agent" profile for you (so a default create never
-fails for lack of a profile). You only hit `profile_not_agent_allowed` by
-EXPLICITLY naming a blocked profile — pick an `agentSpacesAllowed: true`
+`profile_not_agent_allowed`. The default (empty `{profile}`) resolves to the
+first still-allowed profile; on Windows, when the user has blocked EVERY
+profile, a default create fails `profile_not_agent_allowed` too (no "Agent"
+profile is auto-created). Otherwise you only hit `profile_not_agent_allowed`
+by EXPLICITLY naming a blocked profile — pick an `agentSpacesAllowed: true`
 profile instead, and if the user asked for a blocked one, tell them it's
 disallowed rather than retrying.
 

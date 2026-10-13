@@ -7,6 +7,7 @@
 #include <windowsx.h>
 
 #include <algorithm>
+#include <cwctype>
 #include <functional>
 #include <utility>
 
@@ -78,7 +79,23 @@ struct Spec {
   // section's first row and a trailing "Current" status. Parallel to
   // `options` when non-empty.
   std::vector<PhiChoiceRow> rows;
+  // The security prompts: the confirming action (action 0, or a row
+  // double-click) and the list selection it confirms count only when
+  // genuine hardware input made them — see Alert::hardware_target_.
+  bool hardware_confirm = false;
 };
+
+// Whether the input message just retrieved came from a real keyboard or
+// mouse (or the system, e.g. accessibility input) rather than SendInput
+// or a posted / sent message.
+bool IsHardwareInput(const MSG& msg) {
+  const bool input =
+      (msg.message >= WM_KEYFIRST && msg.message <= WM_KEYLAST) ||
+      (msg.message >= WM_MOUSEFIRST && msg.message <= WM_MOUSELAST);
+  INPUT_MESSAGE_SOURCE source = {};
+  return input && ::GetCurrentInputMessageSource(&source) &&
+         (source.originId == IMO_HARDWARE || source.originId == IMO_SYSTEM);
+}
 
 // One alert window: built from a Spec, run modally, read back.
 //
@@ -115,6 +132,7 @@ class Alert : public PhiSecondaryWindow {
   // Created hidden at a placeholder size; Build measures the copy and
   // sizes the window to fit, then Run centres it on the owner.
   bool Open() {
+    hardware_selection_ = spec_.selected;
     ClassSpec spec;
     spec.name = kPromptClass;
     Options options;
@@ -190,10 +208,17 @@ class Alert : public PhiSecondaryWindow {
         if (filter && filter(msg)) {
           continue;
         }
+        // Asked right after GetMessageW, while this message is the
+        // thread's current input; the controls' notifications arrive
+        // synchronously inside the dispatch below.
+        hardware_target_ = spec_.hardware_confirm && IsHardwareInput(msg)
+                               ? msg.hwnd
+                               : nullptr;
         if (!::IsDialogMessageW(hwnd(), &msg)) {
           ::TranslateMessage(&msg);
           ::DispatchMessageW(&msg);
         }
+        hardware_target_ = nullptr;
       }
     }
     if (scrim) {
@@ -260,6 +285,9 @@ class Alert : public PhiSecondaryWindow {
   int ListSelection() const {
     if (!control_) {
       return -1;
+    }
+    if (spec_.hardware_confirm) {
+      return hardware_selection_;  // ConfirmIsGenuine checked they agree.
     }
     const LRESULT sel = ::SendMessageW(control_, LB_GETCURSEL, 0, 0);
     return sel == LB_ERR ? -1 : static_cast<int>(sel);
@@ -525,9 +553,23 @@ class Alert : public PhiSecondaryWindow {
         if (id >= kActionIdFirst &&
             id < kActionIdFirst + spec_.actions.size() &&
             (code == BN_CLICKED || code == 0)) {
-          Finish(static_cast<int>(id - kActionIdFirst));
+          const int index = static_cast<int>(id - kActionIdFirst);
+          // A security prompt's confirming button answers only a real
+          // click or key press on it — never BM_CLICK, UI Automation's
+          // Invoke or SendInput from another program. Cancel always works.
+          if (index == 0 && spec_.hardware_confirm &&
+              !ConfirmIsGenuine(buttons_[0])) {
+            *handled = true;
+            return 0;
+          }
+          Finish(index);
           *handled = true;
           return 0;
+        }
+        if (id == kControlId && code == LBN_SELCHANGE &&
+            spec_.hardware_confirm && hardware_target_ == control_) {
+          hardware_selection_ = static_cast<int>(
+              ::SendMessageW(control_, LB_GETCURSEL, 0, 0));
         }
         if (id == IDOK) {
           // Return with no default action registered: nothing happens,
@@ -547,6 +589,11 @@ class Alert : public PhiSecondaryWindow {
           const int activate = spec_.list_activate_index >= 0
                                    ? spec_.list_activate_index
                                    : spec_.default_index;
+          if (activate == 0 && spec_.hardware_confirm &&
+              !ConfirmIsGenuine(control_)) {
+            *handled = true;
+            return 0;
+          }
           if (activate >= 0) {
             Finish(activate);  // A double-click confirms the row.
           }
@@ -586,6 +633,45 @@ class Alert : public PhiSecondaryWindow {
         break;
     }
     return PhiSecondaryWindow::OnWindowMessage(msg, wparam, lparam, handled);
+  }
+
+  // hardware_confirm: the confirming notification is being raised by
+  // hardware input aimed at `source` (the button, or the list for a
+  // double-click), and the list still shows the rows and the selection the
+  // user made by hand. A tampered list (LB_SETCURSEL, rows swapped) is put
+  // back to the user's choice and the confirmation ignored.
+  bool ConfirmIsGenuine(HWND source) {
+    if (!source || hardware_target_ != source) {
+      return false;
+    }
+    if (spec_.accessory != Accessory::kList || !control_) {
+      return true;
+    }
+    bool intact = ::SendMessageW(control_, LB_GETCOUNT, 0, 0) ==
+                  static_cast<LRESULT>(spec_.options.size());
+    for (size_t i = 0; intact && i < spec_.options.size(); ++i) {
+      const LRESULT length =
+          ::SendMessageW(control_, LB_GETTEXTLEN, static_cast<WPARAM>(i), 0);
+      if (length == LB_ERR ||
+          static_cast<size_t>(length) != spec_.options[i].size()) {
+        intact = false;
+        break;
+      }
+      std::wstring text(static_cast<size_t>(length) + 1, L'\0');
+      ::SendMessageW(control_, LB_GETTEXT, static_cast<WPARAM>(i),
+                     reinterpret_cast<LPARAM>(text.data()));
+      text.resize(static_cast<size_t>(length));
+      intact = text == spec_.options[i];
+    }
+    if (intact && ::SendMessageW(control_, LB_GETCURSEL, 0, 0) ==
+                      static_cast<LRESULT>(hardware_selection_)) {
+      return true;
+    }
+    if (intact) {
+      ::SendMessageW(control_, LB_SETCURSEL,
+                     static_cast<WPARAM>(hardware_selection_), 0);
+    }
+    return false;
   }
 
   // One owner-drawn chooser row: the selection as the Mac's accent wash,
@@ -675,6 +761,11 @@ class Alert : public PhiSecondaryWindow {
   int actions_top_ = 0;
   bool done_ = false;
   int chosen_ = -1;
+  // hardware_confirm: the window the input message being dispatched was
+  // aimed at when it came from real hardware (null otherwise, and between
+  // messages), and the list row the user last picked by hand.
+  HWND hardware_target_ = nullptr;
+  int hardware_selection_ = -1;
 };
 
 PhiPopupButtonRole RoleFor(PhiAlertRole role) {
@@ -748,34 +839,87 @@ void PhiNotice(HWND owner, const wchar_t* title, const wchar_t* message) {
            {{PhiStr("prompt.ok"), PhiAlertRole::kPrimary}}, 0, 0);
 }
 
+size_t PhiCodePointCount(const std::wstring& text) {
+  size_t count = 0;
+  for (const wchar_t c : text) {
+    // A low surrogate is the second half of a pair already counted.
+    if (c < 0xDC00 || c > 0xDFFF) {
+      ++count;
+    }
+  }
+  return count;
+}
+
+std::wstring PhiTrimWhitespace(const std::wstring& text) {
+  size_t first = 0;
+  size_t last = text.size();
+  while (first < last && std::iswspace(text[first])) {
+    ++first;
+  }
+  while (last > first && std::iswspace(text[last - 1])) {
+    --last;
+  }
+  return text.substr(first, last - first);
+}
+
 bool PhiPromptText(HWND owner,
                    const wchar_t* title,
                    const wchar_t* message,
                    std::wstring* value,
                    const wchar_t* confirm_label) {
-  Spec spec;
-  spec.title = title ? title : L"";
-  spec.message = message ? message : L"";
-  spec.accessory = Accessory::kField;
-  spec.field_text = value ? *value : std::wstring();
-  spec.actions = {{confirm_label ? confirm_label : PhiStr("prompt.ok"),
-                   PhiPopupButtonRole::kPrimary},
-                  {PhiStr("prompt.cancel"), PhiPopupButtonRole::kSecondary}};
-  spec.default_index = 0;
-  spec.cancel_index = 1;
-  Alert alert(owner, std::move(spec));
-  if (!alert.Open()) {
-    return false;
+  return PhiPromptText(owner, title, message, value, confirm_label,
+                       PhiTextRules());
+}
+
+bool PhiPromptText(HWND owner,
+                   const wchar_t* title,
+                   const wchar_t* message,
+                   std::wstring* value,
+                   const wchar_t* confirm_label,
+                   const PhiTextRules& rules) {
+  std::wstring text = value ? *value : std::wstring();
+  // A name that breaks a rule asks AGAIN, the typed text kept, rather than
+  // returning a value the caller would only refuse after the fact.
+  for (;;) {
+    Spec spec;
+    spec.title = title ? title : L"";
+    spec.message = message ? message : L"";
+    spec.accessory = Accessory::kField;
+    spec.field_text = text;
+    spec.actions = {{confirm_label ? confirm_label : PhiStr("prompt.ok"),
+                     PhiPopupButtonRole::kPrimary},
+                    {PhiStr("prompt.cancel"), PhiPopupButtonRole::kSecondary}};
+    spec.default_index = 0;
+    spec.cancel_index = 1;
+    Alert alert(owner, std::move(spec));
+    if (!alert.Open()) {
+      return false;
+    }
+    const bool accepted = alert.Run() == 0;
+    std::wstring entered = alert.ControlText();
+    if (rules.trim) {
+      entered = PhiTrimWhitespace(entered);
+    }
+    if (!accepted || entered.empty()) {
+      return false;
+    }
+    if (rules.max_code_points > 0 &&
+        PhiCodePointCount(entered) > rules.max_code_points) {
+      PhiNotice(
+          owner,
+          PhiStr("settings.account.renameDialog.nameTooLongError.title"),
+          PhiStrF("settings.account.renameDialog.nameTooLongError.message",
+                  {PhiFormatNumber(
+                      static_cast<long long>(rules.max_code_points))})
+              .c_str());
+      text = entered;
+      continue;
+    }
+    if (value) {
+      *value = entered;
+    }
+    return true;
   }
-  const bool accepted = alert.Run() == 0;
-  const std::wstring entered = alert.ControlText();
-  if (!accepted || entered.empty()) {
-    return false;
-  }
-  if (value) {
-    *value = entered;
-  }
-  return true;
 }
 
 bool PhiConfirm(HWND owner,
@@ -848,12 +992,12 @@ bool PhiPromptShortcut(HWND owner,
                        const wchar_t* title,
                        const wchar_t* message,
                        PhiShortcutChord* out) {
-  constexpr wchar_t kResting[] = L"Type the new shortcut\u2026";
+  const std::wstring resting = PhiStr("prompt.shortcut.placeholder");
   Spec spec;
   spec.title = title ? title : L"";
   spec.message = message ? message : L"";
   spec.accessory = Accessory::kRecorder;
-  spec.placeholder = kResting;
+  spec.placeholder = resting;
   spec.actions = {{PhiStr("prompt.cancel"), PhiPopupButtonRole::kSecondary}};
   spec.cancel_index = 0;
   Alert alert(owner, std::move(spec));
@@ -879,7 +1023,29 @@ bool PhiPromptShortcut(HWND owner,
     if (::GetKeyState(VK_SHIFT) & 0x8000) {
       text += L"Shift+";
     }
-    return text.empty() ? std::wstring(kResting) : text + L"\u2026";
+    return text.empty() ? resting : text + L"\u2026";
+  };
+  // Chords a shortcut may not take, with the reason the preview shows.
+  // Ctrl+C / V / X / Z / Y / A (Shift or not) are every text field's
+  // editing keys; a shortcut on one would swallow them on every page. And
+  // Ctrl+Alt on a character key IS AltGr on many keyboard layouts (German
+  // @, Polish ą, …): bound, it would stop people typing that character.
+  const auto refusal = [](const PhiShortcutChord& chord) -> std::wstring {
+    const UINT vk = chord.vk;
+    if (chord.ctrl && !chord.alt &&
+        (vk == 'C' || vk == 'V' || vk == 'X' || vk == 'Z' || vk == 'Y' ||
+         vk == 'A')) {
+      return PhiStrF("prompt.shortcut.reservedForEditing",
+                     {PhiFormatChord(chord)});
+    }
+    const bool types_character =
+        (::MapVirtualKeyW(vk, MAPVK_VK_TO_CHAR) & 0xFFFF) != 0 &&
+        vk != VK_SPACE && vk != VK_RETURN && vk != VK_TAB && vk != VK_BACK;
+    if (chord.ctrl && chord.alt && types_character) {
+      return PhiStrF("prompt.shortcut.reservedForAltGr",
+                     {PhiFormatChord(chord)});
+    }
+    return std::wstring();
   };
 
   PhiShortcutChord captured;
@@ -902,13 +1068,20 @@ bool PhiPromptShortcut(HWND owner,
         return true;
       }
       if (ctrl || alt || (vk >= VK_F1 && vk <= VK_F24)) {
-        captured = {vk, ctrl, shift, alt};
+        const PhiShortcutChord chord = {vk, ctrl, shift, alt};
+        const std::wstring refused = refusal(chord);
+        if (!refused.empty()) {
+          // Not taken; the recorder keeps listening for another chord.
+          ::SetWindowTextW(preview, refused.c_str());
+          return true;
+        }
+        captured = chord;
         accepted = true;
         alert.Finish(-1);
         return true;
       }
       // A bare key: browsers require a modifier so pages keep their typing.
-      ::SetWindowTextW(preview, L"Include Ctrl or Alt");
+      ::SetWindowTextW(preview, PhiStr("prompt.shortcut.needsModifier"));
       return true;
     }
     if (msg.message == WM_KEYUP || msg.message == WM_SYSKEYUP) {
@@ -936,12 +1109,14 @@ int PhiPromptChoose(HWND owner,
                     int default_index,
                     const wchar_t* confirm_label,
                     const wchar_t* cancel_label,
-                    bool cancel_is_default) {
+                    bool cancel_is_default,
+                    bool require_hardware_input) {
   Spec spec;
   spec.title = title ? title : L"";
   spec.message = message ? message : L"";
   spec.accessory = Accessory::kList;
   spec.options = options;
+  spec.hardware_confirm = require_hardware_input;
   spec.selected = default_index;
   spec.actions = {{confirm_label ? confirm_label : PhiStr("prompt.open"),
                    PhiPopupButtonRole::kPrimary},

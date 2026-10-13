@@ -16,6 +16,7 @@
 #include "phibrowser-win/client/phi_client_analytics.h"
 #include "phibrowser-win/client/phi_surface_coordinator.h"
 #include "phibrowser-win/client/phi_i18n.h"
+#include "phibrowser-win/client/phi_log.h"
 #include "phibrowser-win/client/phi_toast.h"
 #include "phibrowser-win/client/phi_shell_window.h"
 
@@ -257,7 +258,7 @@ bool PhiReaderBridge::HandleExtensionMessage(const std::string& request_id,
     if (tab_id && offerable) {
       offerable_[*tab_id] = url ? *url : std::string();
       LOG(INFO) << "[Reader] offerable granted tab=" << *tab_id << " url="
-                << (url ? *url : std::string("(unnamed)"));
+                << (url ? PhiRedactUrl(*url) : std::string("(unnamed)"));
       owner_->OnReaderOfferabilityChanged(TabId{*tab_id});
     }
     owner_->RespondToExtension(request_id, "{}");

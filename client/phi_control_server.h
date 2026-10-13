@@ -9,7 +9,9 @@
 
 #include <atomic>
 #include <cstdint>
+#include <deque>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -42,6 +44,14 @@ struct PhiAgentPeer {
   // wire alphabet ([A-Za-z0-9_-]{32,128}); empty when absent. Whether it
   // still names a live capability is the delegate's call.
   std::string presented_capability;
+};
+
+// One DevTools target as /json/list names it, for the delegate's scope
+// check. `type` is the descriptor's type ("page", "iframe", "service_worker",
+// ...); empty when the caller does not know it (a session open).
+struct PhiDevToolsTargetRef {
+  std::string id;
+  std::string type;
 };
 
 // Handles /phi-agent control commands and the per-connection trust
@@ -90,6 +100,28 @@ class PhiControlDelegate {
                                        uint64_t session_id) = 0;
   virtual void OnDevToolsSessionClosed(uint64_t connection_id,
                                        uint64_t session_id) = 0;
+  // The client's half of the DevTools scope (phi_devtools_transport.h: the
+  // framework filters neither discovery nor the target a session is opened
+  // on). One answer per entry of `targets`: true when the connection's
+  // principal may see that target — its tab's window is in the set its
+  // sessions are scoped to, or the principal is unrestricted. Fails closed
+  // (all false) for an unknown connection or when the UI thread does not
+  // answer. The implementation marshals to the UI thread.
+  virtual std::vector<bool> DevToolsTargetsInScope(
+      uint64_t connection_id,
+      const std::vector<PhiDevToolsTargetRef>& targets) = 0;
+  // Whether the connection's CDP sessions may create targets
+  // (Target.createTarget opens a tab in the user's window): only a principal
+  // that may write the user's Spaces, or an unrestricted one. Connection
+  // thread; answers from the principal's cached capabilities, no UI hop.
+  virtual bool DevToolsMayCreateTargets(uint64_t connection_id) = 0;
+  // Which connections a pushed event may reach (BroadcastEvent): nullopt
+  // for every channel, else exactly the returned set — an event about a
+  // task (its payload names `taskId`) goes to that task's owner only. UI
+  // thread.
+  virtual std::optional<std::set<uint64_t>> EventAudience(
+      const std::string& type,
+      const base::DictValue& payload) = 0;
   // The connection is gone (after its sessions closed). Called only for
   // connections AuthorizeAgentPeer accepted.
   virtual void OnConnectionClosed(uint64_t connection_id) = 0;
@@ -102,7 +134,9 @@ class PhiControlDelegate {
 //   /phi-agent...          -> WebSocket, client control served HERE
 //                             (dispatched to the delegate).
 //   /json, /json/version,  -> the DevTools discovery documents, answered
-//   /json/list                from the framework (plain HTTP GET).
+//   /json/list                from the framework (plain HTTP GET); the
+//                             target lists keep only what the principal
+//                             may see (DevToolsTargetsInScope).
 //   /devtools/<kind>/<id>  -> WebSocket, a CDP session pumped through the
 //                             framework's IN-PROCESS DevTools transport
 //                             (PhiFramework::OpenDevToolsSession). There is
@@ -158,10 +192,11 @@ class PhiControlServer {
              phi_framework::PhiFramework* framework);
 
   // Pushes an unsolicited event frame — {"event":<type>,"payloadJson":<json>}
-  // — to every live control channel (the Mac's broadcastToTaskDriver). Safe
-  // to call from any thread, including the UI thread: each channel's writes
-  // are serialized by its own lock and bounded by a short timeout, so one
-  // wedged peer drops its event instead of stalling the caller.
+  // — to the live control channels the delegate's EventAudience allows
+  // (every one for an app-wide event; a task's owner only for an event about
+  // a task) — the Mac's broadcastToTaskDriver. UI thread (the audience reads
+  // the task owners). Never blocks: the frame is queued on each channel and
+  // that channel's own thread writes it, so a wedged peer stalls only itself.
   void BroadcastEvent(const std::string& type,
                       const std::string& payload_json);
   // The same push, to the control channels of `connection_ids` only — an
@@ -184,19 +219,30 @@ class PhiControlServer {
   // One accepted pipe plus its read-ahead buffer; defined in the .cc.
   struct Connection;
 
-  // One live /phi-agent channel. Reply writes (the serve loop) and pushed
-  // events (any thread) share the pipe, so they share `write_lock`; the
-  // broadcast uses its own OVERLAPPED event because one event handle cannot
-  // back two concurrent operations.
+  // One live /phi-agent channel. Only its serve loop ever writes the pipe:
+  // a pushed event (any thread) is queued in `outbox` and `wake` tells the
+  // loop to write it. Shared (shared_ptr) between the loop and any pusher
+  // that snapshotted it, so it owns `wake` and closes it in its destructor —
+  // a pusher can never signal a closed handle.
   struct ControlChannel {
-    HANDLE pipe = nullptr;
-    HANDLE write_event = nullptr;
+    ControlChannel();
+    ~ControlChannel();
+    ControlChannel(const ControlChannel&) = delete;
+    ControlChannel& operator=(const ControlChannel&) = delete;
+    // Auto-reset: one wake drains the whole outbox.
+    HANDLE wake = nullptr;
     // The wire the peer asked for on its upgrade (1 unless it sent
     // `X-Phi-Protocol: 2`); a pushed event is shaped for it.
     int protocol = 1;
     // The connection this channel serves (see PhiControlDelegate).
     uint64_t connection_id = 0;
-    base::Lock write_lock;
+    // Event frames waiting for the serve loop, and their total size;
+    // `overflow` (sticky) when a peer that stopped reading let them pile
+    // past the cap — the loop then drops the connection.
+    base::Lock outbox_lock;
+    std::deque<std::string> outbox;
+    size_t outbox_bytes = 0;
+    bool overflow = false;
   };
   // BroadcastEvent's body; a null `connection_ids` reaches every channel.
   void PushEvent(const std::string& type,
@@ -218,9 +264,17 @@ class PhiControlServer {
                            const std::string& head,
                            uint64_t connection_id,
                            const std::string& capability_id);
+  // True when the peer's CDP `message` must not reach the browser for this
+  // connection (Target.createTarget without user-Space write), with the
+  // protocol error to answer in `reply`.
+  bool RefusedCdpCommand(const std::string& message,
+                         uint64_t connection_id,
+                         std::string* reply);
   // Serves one CDP WebSocket session (/devtools/<kind>/<id>) through the
   // framework's in-process transport until either side closes, reporting
-  // the session to delegate_ so it can be scoped to the principal.
+  // the session to delegate_ so it can be scoped to the principal. An
+  // empty `target_id` is the browser target; any other must be in the
+  // principal's scope (DevToolsTargetsInScope) or the open is refused.
   void ServeDevToolsSession(Connection* conn,
                             const std::string& head,
                             const std::string& target_id,
@@ -242,7 +296,8 @@ class PhiControlServer {
   // The next connection id (see PhiControlDelegate); 0 is never handed out
   // — the dispatcher uses it for its internal principal.
   std::atomic<uint64_t> next_connection_id_{1};
-  // Live control channels, for BroadcastEvent.
+  // Live control channels, for BroadcastEvent. The shared_ptr keeps a
+  // channel (and its wake event) alive while a pusher still holds it.
   std::vector<std::shared_ptr<ControlChannel>> channels_;
   mutable base::Lock channels_lock_;
   // Every admitted connection's pipe while it is served, for

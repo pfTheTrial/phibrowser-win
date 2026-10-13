@@ -67,7 +67,8 @@ class PhiKioskWindow : public PhiSecondaryWindow {
                  HWND browser_hwnd,
                  phi_framework::PhiFramework* framework,
                  const PhiWindowModel* model,
-                 PhiCoordinator* coordinator);
+                 PhiCoordinator* coordinator,
+                 bool incognito);
   ~PhiKioskWindow() override;
 
   PhiKioskWindow(const PhiKioskWindow&) = delete;
@@ -145,6 +146,10 @@ class PhiKioskWindow : public PhiSecondaryWindow {
   RAW_PTR_EXCLUSION phi_framework::PhiFramework* framework_ = nullptr;
   RAW_PTR_EXCLUSION const PhiWindowModel* model_ = nullptr;
   RAW_PTR_EXCLUSION PhiCoordinator* coordinator_ = nullptr;
+  // Opened from an off-the-record page: its Space list holds Incognito
+  // Spaces only (one to create, when none exists) — the page must never be
+  // re-opened in a regular profile.
+  const bool incognito_ = false;
   // This browser's snapshot: the model's copy, or pulled typed for a
   // browser the model has not been pushed yet (the window is built inside
   // its Browser::Create). `pulled` is the pull's storage.

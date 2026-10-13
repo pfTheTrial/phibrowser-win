@@ -7,6 +7,8 @@
 
 #include <functional>
 #include <map>
+#include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -72,15 +74,47 @@ class PhiGhostSpaces {
   }
 
   // A Space's browser is live: remember the pair so a later run can name it,
-  // and clear any ghost record (it is not parked any more).
+  // and clear any ghost record (it is not parked any more). This is the
+  // Space's PRIMARY row — the window a switch materializes — and it
+  // replaces whatever window the Space remembered before.
   void NoteLiveWindow(const std::string& space_id,
                       const std::string& profile,
                       BrowserId window_id);
 
+  // SECONDARY rows (release review B6): a second live window of a Space
+  // whose primary window still stands — live in another shell, parked, or
+  // still on its way from the cold start. Remembered BESIDE the primary,
+  // never over it, so the next run brings the window back as a shell of
+  // its own instead of orphan-dropping it (or, before this existed, the
+  // primary it would have overwritten). The primary is the Space's FIRST
+  // row in the model; every later row of the same Space is a secondary, so
+  // the file's shape is unchanged.
+  void NoteSecondaryWindow(const std::string& space_id,
+                           const std::string& profile,
+                           BrowserId window_id);
+  // The secondary window is gone for good (closed while other windows
+  // stay up) or is being re-keyed under this run's id. Never touches the
+  // primary row.
+  void ForgetSecondaryWindow(const std::string& space_id, BrowserId window_id);
+  // The Space's primary row, if it has one.
+  std::optional<Remembered> PrimaryWindow(const std::string& space_id) const;
+  // Whether `window_id` is one of the Space's secondary windows.
+  bool HasSecondaryWindow(const std::string& space_id,
+                          BrowserId window_id) const;
+  // Whether the Space's primary row was written THIS run (else it still
+  // names the last run's window, which may yet park or arrive).
+  bool PrimaryNotedThisRun(const std::string& space_id) const {
+    return noted_this_run_.count(space_id) > 0;
+  }
+  // Every profile a row names.
+  std::set<std::string> Profiles() const;
+
   // What the client should ARM as the eager set: the window ids it wants
   // rebuilt immediately (everything else parks). Empty means "park all".
-  // Plain ints: OnColdStartRestorePlan feeds them to the framework's
-  // ColdStartPlan sink one by one.
+  // The active Space's primary window, plus every secondary window: those
+  // have no Space switch to come back through, so they come back as the
+  // windows they were. Plain ints: OnColdStartRestorePlan feeds them to the
+  // framework's ColdStartPlan sink one by one.
   std::vector<int> EagerWindowIds(const std::string& active_space_id) const;
 
   // Takes the framework's settlement receipt and REPLACES the park set from
@@ -109,13 +143,26 @@ class PhiGhostSpaces {
 
   // Which Space remembers `window_id` as its window, or nullptr. This is how
   // a materialized window — announced with the PREVIOUS session's id — finds
-  // the Space it belongs to.
-  const std::string* SpaceForWindowId(BrowserId window_id) const;
+  // the Space it belongs to. `secondary` (optional) says whether the row is
+  // one of the Space's secondary windows rather than its primary.
+  const std::string* SpaceForWindowId(BrowserId window_id,
+                                      bool* secondary = nullptr) const;
 
   // Every parked window that no Space claims — dropped rather than left to
   // be replayed as a loose window by the next unfiltered restore.
   std::vector<Remembered> Orphans() const;
   void ClearOrphans();
+
+  // Parked windows a SECONDARY row claims: they hold a live Space's tabs
+  // and have no switch to come back through, so they are re-hosted
+  // (materialized as shells of their own), never dropped. Taken by the
+  // settle pass; `space_id` narrows to one Space's (a delete).
+  struct Stray {
+    std::string space_id;
+    Remembered window;
+  };
+  std::vector<Stray> TakeStrays();
+  std::vector<Stray> TakeStrays(const std::string& space_id);
 
  private:
   // The model row for `space_id`, or nullptr.
@@ -125,6 +172,9 @@ class PhiGhostSpaces {
   // The remembered set (or the advisory parked copy) changed: schedule the
   // write.
   void MarkDirty() const;
+  // Erases the Space's secondary row for `window_id` (never its primary);
+  // true when one went. Does not mark dirty.
+  bool EraseSecondaryRow(const std::string& space_id, BrowserId window_id);
 
   // The persisted rows: Space -> the window it had, whether or not it is
   // currently parked. Non-owning; a plain pointer across a client-only
@@ -134,6 +184,9 @@ class PhiGhostSpaces {
   // The subset that the last receipt says is parked right now.
   std::map<std::string, Remembered> parked_;
   std::vector<Remembered> orphans_;
+  std::vector<Stray> strays_;
+  // The Spaces whose primary row NoteLiveWindow wrote this run.
+  std::set<std::string> noted_this_run_;
 };
 
 }  // namespace phi_client

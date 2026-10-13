@@ -384,8 +384,8 @@ goal.
 
 It picks the first browser profile by default; pass `{profile: 'Default'}`
 (profileId or display name) to choose — `listProfiles()` enumerates what's
-available. The default always resolves to a usable profile; only explicitly
-naming a profile the user blocked for agents fails
+available. The default resolves to the first profile agents may use; naming
+a profile the user blocked for agents (or every profile being blocked) fails
 (`profile_not_agent_allowed`) — pick an allowed one instead of retrying
 (permission model: `references/lifecycle.md`).
 
@@ -602,8 +602,9 @@ visible window). Read `references/management.md` BEFORE first use. The
 always-true rules:
 
 - The whole surface is gated by Settings ▸ Developer ▸ "Allow agents to
-  operate your Spaces"; `user_space_operations_disabled` means the toggle is
-  off — tell the user, don't retry or work around it. Agent-Space work is
+  operate your Spaces" (off by default on Windows);
+  `user_space_operations_disabled` means the toggle is off — tell the user,
+  don't retry or work around it. Agent-Space work is
   never affected.
 - `deleteSpace` (cascade-deletes bookmarks and URL rules) and
   `removeBookmark` on a folder (deletes the subtree) are DESTRUCTIVE — only

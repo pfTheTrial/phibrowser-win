@@ -5,6 +5,7 @@
 #include "phibrowser-win/client/phi_omnibox_session.h"
 
 #include <commctrl.h>
+#include <dwmapi.h>
 #include <windowsx.h>
 
 #include <algorithm>
@@ -22,6 +23,8 @@
 #include "phibrowser-win/client/phi_i18n.h"
 #include "phibrowser-win/client/phi_panel.h"
 #include "phibrowser-win/client/phi_shell_menus.h"
+
+#pragma comment(lib, "dwmapi.lib")
 
 namespace phi_client {
 
@@ -48,6 +51,22 @@ std::wstring TextOf(HWND edit) {
     ::GetWindowTextW(edit, buffer.data(), len + 1);
   }
   return std::wstring(buffer.data());
+}
+
+// The clipboard's Unicode text, or empty.
+std::wstring ClipboardText(HWND owner) {
+  std::wstring text;
+  if (::OpenClipboard(owner)) {
+    if (HANDLE data = ::GetClipboardData(CF_UNICODETEXT)) {
+      if (const wchar_t* chars =
+              static_cast<const wchar_t*>(::GlobalLock(data))) {
+        text = chars;
+        ::GlobalUnlock(data);
+      }
+    }
+    ::CloseClipboard();
+  }
+  return text;
 }
 
 RECT ToRect(const SidebarRect& r) {
@@ -81,7 +100,15 @@ LRESULT CALLBACK PopupProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
     }
     case WM_MOUSEMOVE:
       if (self) {
+        // The hover wash leaves with the pointer (WM_MOUSELEAVE below).
+        TRACKMOUSEEVENT track = {sizeof(track), TME_LEAVE, hwnd, 0};
+        ::TrackMouseEvent(&track);
         self->PopupHover(GET_Y_LPARAM(lparam));
+      }
+      return 0;
+    case WM_MOUSELEAVE:
+      if (self) {
+        self->PopupHover(-1);
       }
       return 0;
     case WM_LBUTTONDOWN:
@@ -285,32 +312,27 @@ void PhiOmniboxSession::ShowFieldMenu(HWND edit, POINT screen) {
   } else if (action.is("edit.selectAll")) {
     ::SendMessageW(edit, EM_SETSEL, 0, -1);
   } else if (action.is("edit.pasteAndGo")) {
-    // Chrome's and Edge's row: the clipboard's first line replaces the
-    // field and goes, without a round trip through the keyboard.
-    std::wstring text;
-    if (::OpenClipboard(edit)) {
-      if (HANDLE data = ::GetClipboardData(CF_UNICODETEXT)) {
-        if (const wchar_t* chars =
-                static_cast<const wchar_t*>(::GlobalLock(data))) {
-          text = chars;
-          ::GlobalUnlock(data);
-        }
-      }
-      ::CloseClipboard();
-    }
-    const size_t cut = text.find_first_of(L"\r\n");
-    if (cut != std::wstring::npos) {
-      text.resize(cut);
-    }
-    while (!text.empty() && (text.front() == L' ' || text.front() == L'\t')) {
-      text.erase(text.begin());
-    }
+    // Chrome's and Edge's row: the clipboard replaces the field and goes,
+    // without a round trip through the keyboard — sanitized as Chrome's
+    // paste is (line breaks folded, javascript: schemes stripped).
+    const std::wstring text =
+        PhiOmniboxTrimTyped(PhiOmniboxSanitizePaste(ClipboardText(edit)));
     if (text.empty()) {
       return;
     }
     ::SetWindowTextW(edit, text.c_str());
     ClosePopup(/*stop_query=*/false);
     Commit(edit);
+  }
+}
+
+void PhiOmniboxSession::PasteInto(HWND edit) {
+  // Every paste into the field (WM_PASTE, Ctrl+V, Shift+Insert, the menu)
+  // lands sanitized: a pasted "javascript:..." never reaches Enter intact.
+  const std::wstring text = PhiOmniboxSanitizePaste(ClipboardText(edit));
+  if (!text.empty()) {
+    ::SendMessageW(edit, EM_REPLACESEL, TRUE,
+                   reinterpret_cast<LPARAM>(text.c_str()));
   }
 }
 
@@ -550,6 +572,7 @@ void PhiOmniboxSession::OnResults(BrowserId browser_id,
       base::JSONReader::ReadDict(json, base::JSON_PARSE_RFC);
   rows_.clear();
   selected_ = -1;
+  hovered_ = -1;
   if (root) {
     if (const base::ListValue* matches = root->FindList("matches")) {
       for (const base::Value& v : *matches) {
@@ -595,10 +618,21 @@ void PhiOmniboxSession::ShowPopup() {
                                L"PhiOmniboxPopup", L"", WS_POPUP, 0, 0, 0, 0,
                                shell_hwnd, nullptr,
                                ::GetModuleHandleW(nullptr), this);
+    if (popup_) {
+      // The flyout look PhiPopover gives its windows: DWM rounds the corners
+      // and casts the shadow, so nothing here draws a curve or a square
+      // rim inside the rounding.
+      const DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_ROUND;
+      ::DwmSetWindowAttribute(popup_, DWMWA_WINDOW_CORNER_PREFERENCE, &corner,
+                              sizeof(corner));
+    }
   }
   if (!popup_) {
     return;
   }
+  // DWM's hairline follows the palette (a Space or theme switch moves it).
+  const COLORREF border = shell_->OmniboxPalette().border;
+  ::DwmSetWindowAttribute(popup_, DWMWA_BORDER_COLOR, &border, sizeof(border));
   const int height = PhiOmniboxPopupHeight(static_cast<int>(rows_.size()),
                                            Scaled(kRowHeight),
                                            Scaled(kPopupPad));
@@ -623,6 +657,7 @@ void PhiOmniboxSession::ShowPopup() {
 void PhiOmniboxSession::ClosePopup(bool stop_query) {
   rows_.clear();
   selected_ = -1;
+  hovered_ = -1;
   if (stop_query) {
     new_tab_pending_ = false;  // The gesture was abandoned.
   }
@@ -660,12 +695,15 @@ void PhiOmniboxSession::MoveSelection(int delta) {
 }
 
 void PhiOmniboxSession::CommitSelection() {
+  CommitRow(selected_);
+}
+
+void PhiOmniboxSession::CommitRow(int index) {
   phi_framework::PhiFramework* framework = shell_->OmniboxFramework();
-  if (selected_ < 0 || selected_ >= static_cast<int>(rows_.size()) ||
-      !framework) {
+  if (index < 0 || index >= static_cast<int>(rows_.size()) || !framework) {
     return;
   }
-  const int line = rows_[static_cast<size_t>(selected_)].line;
+  const int line = rows_[static_cast<size_t>(index)].line;
   // The framework opens it with Chromium's own semantics (fixup,
   // switch-to-tab, shortcuts learning). Omnibox new-tab mode opens it in a
   // FRESH tab.
@@ -686,9 +724,12 @@ int PhiOmniboxSession::RowAtY(int y) const {
 }
 
 void PhiOmniboxSession::PopupHover(int y) {
-  const int row = RowAtY(y);
-  if (row >= 0 && row != selected_) {
-    selected_ = row;
+  // The pointer only LIGHTS a row; it never arms it. Enter commits what the
+  // field shows unless the arrows picked a row, so a cursor resting over the
+  // list cannot redirect a typed URL.
+  const int row = y < 0 ? -1 : RowAtY(y);
+  if (row != hovered_) {
+    hovered_ = row;
     if (popup_) {
       ::InvalidateRect(popup_, nullptr, TRUE);
     }
@@ -696,11 +737,8 @@ void PhiOmniboxSession::PopupHover(int y) {
 }
 
 void PhiOmniboxSession::PopupClick(int y) {
-  const int row = RowAtY(y);
-  if (row >= 0) {
-    selected_ = row;
-    CommitSelection();
-  }
+  // A click opens the row under it, whatever the arrows had armed.
+  CommitRow(RowAtY(y));
 }
 
 void PhiOmniboxSession::PaintPopup(HWND popup, HDC dc) {
@@ -710,13 +748,7 @@ void PhiOmniboxSession::PaintPopup(HWND popup, HDC dc) {
   HBRUSH bg = ::CreateSolidBrush(palette.card);
   ::FillRect(dc, &rc, bg);
   ::DeleteObject(bg);
-  HPEN pen = ::CreatePen(PS_SOLID, 1, palette.border);
-  HGDIOBJ old_pen = ::SelectObject(dc, pen);
-  HGDIOBJ old_brush = ::SelectObject(dc, ::GetStockObject(NULL_BRUSH));
-  ::Rectangle(dc, rc.left, rc.top, rc.right, rc.bottom);
-  ::SelectObject(dc, old_brush);
-  ::SelectObject(dc, old_pen);
-  ::DeleteObject(pen);
+  // No rim here: DWM draws the rounded border and shadow (ShowPopup).
   ::SetBkMode(dc, TRANSPARENT);
   HFONT text_font = shell_->OmniboxTextFont();
   HFONT icon_font = shell_->OmniboxIconFont();
@@ -729,6 +761,8 @@ void PhiOmniboxSession::PaintPopup(HWND popup, HDC dc) {
     r.bottom = r.top + Scaled(kRowHeight);
     if (static_cast<int>(i) == selected_) {
       PhiFillRoundRectAA(dc, r, Scaled(6), palette.hover_strong);
+    } else if (static_cast<int>(i) == hovered_) {
+      PhiFillRoundRectAA(dc, r, Scaled(6), palette.hover);
     }
     // Type glyph: search rows a magnifier, bookmarks a star, history a
     // clock, everything else a globe.
@@ -880,11 +914,26 @@ LRESULT CALLBACK PhiOmniboxSession::FieldProc(HWND hwnd,
         self->MoveSelection(wparam == VK_DOWN ? 1 : -1);
         return 0;
       }
+      if (wparam == VK_INSERT && self && ::GetKeyState(VK_SHIFT) < 0 &&
+          ::GetKeyState(VK_CONTROL) >= 0) {
+        self->PasteInto(hwnd);  // Shift+Insert: the EDIT's own paste.
+        return 0;
+      }
       break;
     case WM_CHAR:
       // Both keys are handled above; letting them reach the EDIT would only
       // produce the "unhandled character" beep.
       if (wparam == VK_RETURN || wparam == VK_ESCAPE) {
+        return 0;
+      }
+      if (wparam == 0x16 && self) {
+        self->PasteInto(hwnd);  // Ctrl+V pastes inside the EDIT, not by
+        return 0;               // WM_PASTE: sanitize it here too.
+      }
+      break;
+    case WM_PASTE:
+      if (self) {
+        self->PasteInto(hwnd);
         return 0;
       }
       break;

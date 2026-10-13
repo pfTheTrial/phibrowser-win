@@ -4,6 +4,8 @@
 
 #include "phibrowser-win/client/phi_keyboard_accelerators.h"
 
+#include <array>
+
 namespace phi_client {
 PhiKeyboardCommandQueue::PhiKeyboardCommandQueue() = default;
 PhiKeyboardCommandQueue::~PhiKeyboardCommandQueue() = default;
@@ -66,6 +68,35 @@ constexpr PhiKeyboardAccelerators::Accelerator kAccelerators[] = {
     {'8', true, false, false, kCmdSpace8},
     {'9', true, false, false, kCmdSpace9},
 };
+
+// AltGr reaches the app as LEFT Ctrl + RIGHT Alt, so Polish AltGr+N (ń) or
+// US-International AltGr+R (®) reads as the Ctrl+Alt+N / Ctrl+Alt+R chords.
+// True when Right Alt is down and the focused thread's layout types
+// something for `vk` at that shift state: the key is text, not a chord.
+// A layout with no AltGr plane (US) answers 0, so Ctrl+Alt chords still
+// work there, and Left Ctrl + Left Alt never asks.
+bool IsAltGrCharacter(UINT vk, LPARAM lparam, bool shift) {
+  if ((::GetKeyState(VK_RMENU) & 0x8000) == 0) {
+    return false;
+  }
+  const HWND focus = ::GetFocus();
+  const HKL layout = ::GetKeyboardLayout(
+      focus ? ::GetWindowThreadProcessId(focus, nullptr) : 0);
+  std::array<BYTE, 256> keys = {};
+  keys[VK_CONTROL] = keys[VK_LCONTROL] = 0x80;
+  keys[VK_MENU] = keys[VK_RMENU] = 0x80;
+  if (shift) {
+    keys[VK_SHIFT] = 0x80;
+  }
+  std::array<wchar_t, 4> out = {};
+  // Flag bit 2 (Windows 10 1607+): translate without touching the
+  // keyboard state, so a pending dead key the user typed is not consumed.
+  const int produced = ::ToUnicodeEx(
+      vk, static_cast<UINT>((lparam >> 16) & 0xFF), keys.data(), out.data(),
+      static_cast<int>(out.size()), 0x4, layout);
+  // -1 is an AltGr dead key (still text); a control character is not.
+  return produced < 0 || (produced > 0 && out[0] >= 0x20);
+}
 }  // namespace
 
 PhiKeyboardAccelerators::PhiKeyboardAccelerators(
@@ -160,6 +191,19 @@ LRESULT PhiKeyboardAccelerators::OnKey(WPARAM wparam, LPARAM lparam) {
   const bool ctrl = (::GetKeyState(VK_CONTROL) & 0x8000) != 0;
   const bool shift = (::GetKeyState(VK_SHIFT) & 0x8000) != 0;
   const bool alt = (lparam & 0x20000000) != 0;  // The context code bit.
+  if (ctrl) {
+    // Alt under a held Ctrl — Ctrl+Alt, or AltGr, which arrives as
+    // LCtrl+RAlt — is never the bare tap that opens the menu.
+    alt_solo_ = false;
+  }
+  if (ctrl && alt &&
+      IsAltGrCharacter(static_cast<UINT>(wparam), lparam, shift)) {
+    return 0;  // AltGr typing a character: the page / field gets it.
+  }
+  // Esc under an open Ctrl+Tab HUD cancels it, and the page never sees it.
+  if (PhiTabSwitcher::HandleKeyDown(static_cast<UINT>(wparam))) {
+    return 1;
+  }
   // Esc dismisses the Peek card floating over the focused shell (the Mac's
   // window-level Escape), swallowed so the page under it does not also see
   // it. With no card open the key goes to the page as usual.
@@ -168,6 +212,14 @@ LRESULT PhiKeyboardAccelerators::OnKey(WPARAM wparam, LPARAM lparam) {
       if (host_.DismissPeeksForShell(shell)) {
         return 1;
       }
+    }
+  }
+  if (wparam == VK_F6 && !ctrl && !alt) {
+    // F6 / Shift+F6 cycle the focus: address field -> sidebar -> page.
+    if (HWND shell = host_.FocusedShellHwnd()) {
+      ::PostMessageW(shell, kMsgPhiCycleFocus,
+                     shift ? kPhiFocusPrevious : kPhiFocusNext, 0);
+      return 1;
     }
   }
   if (wparam == VK_TAB && ctrl && !alt) {

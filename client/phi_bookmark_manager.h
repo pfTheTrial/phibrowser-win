@@ -114,6 +114,12 @@ class PhiBookmarkManager : public PhiPanel {
   void Rebuild();
   void AppendSubtree(const std::string& parent_guid, int depth);
   void AppendMatches(const std::string& parent_guid);
+  // Positions `rows_` at the (clamped) scroll offset and rebuilds the hits;
+  // no store read, so a wheel notch stays cheap.
+  void LayoutRows();
+  // The client area below the header — the only part rows paint or hit in.
+  RECT BodyRect() const;
+  bool RowVisible(const Row& row) const;
 
   void PaintRow(HDC dc, const Row& row, const PhiPalette& palette);
   int RowAt(POINT pt) const;  // -1 when the point is on no row.

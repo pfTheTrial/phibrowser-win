@@ -63,9 +63,15 @@ constexpr size_t kMaxWsMessage = 16u << 20;
 // Bytes of DevTools output allowed to pile up for a peer that has stopped
 // reading before the session is dropped instead of the browser's memory.
 constexpr size_t kMaxQueuedDevToolsBytes = 64u << 20;
+// The same bound for pushed control events waiting on one channel.
+constexpr size_t kMaxQueuedEventBytes = 16u << 20;
 // How long the connection thread waits on a write before deciding the peer
 // is wedged. Only that connection's own thread ever waits this long.
 constexpr DWORD kPeerWriteTimeoutMs = 30000;
+// How long a peer has to deliver its whole HTTP request head. A connection
+// that never finishes one would otherwise hold a kMaxConnections slot (and
+// its thread) for good.
+constexpr ULONGLONG kHeadReadTimeoutMs = 10000;
 // Pipe: owner + SYSTEM + admins only, never remote, and an explicit medium
 // integrity label with no-write-up so a sandboxed (low-IL / AppContainer)
 // process cannot open it for write even if a future edit drops the DACL.
@@ -239,6 +245,26 @@ bool OvRead(HANDLE pipe, HANDLE ev, void* buf, DWORD len, DWORD* read) {
     return false;
   }
   return ::GetOverlappedResult(pipe, &ov, read, TRUE) && *read > 0;
+}
+
+// OvRead with a deadline: false on disconnect or when nothing arrived in
+// `timeout_ms`, in which case the read is cancelled AND reaped (the
+// OVERLAPPED lives on this stack frame).
+bool OvReadTimeout(HANDLE pipe, HANDLE ev, void* buf, DWORD len, DWORD* read,
+                   DWORD timeout_ms) {
+  OVERLAPPED ov = {};
+  ov.hEvent = ev;
+  ::ResetEvent(ev);
+  BOOL ok = ::ReadFile(pipe, buf, len, nullptr, &ov);
+  if (!ok && ::GetLastError() != ERROR_IO_PENDING) {
+    return false;
+  }
+  if (::WaitForSingleObject(ev, timeout_ms) != WAIT_OBJECT_0) {
+    ::CancelIoEx(pipe, &ov);
+    ::GetOverlappedResult(pipe, &ov, read, TRUE);
+    return false;
+  }
+  return ::GetOverlappedResult(pipe, &ov, read, FALSE) && *read > 0;
 }
 
 // Writes all of `data`, giving up after `timeout_ms` per chunk. A pushed
@@ -512,6 +538,67 @@ PhiAgentPeer ResolvePeer(HANDLE pipe) {
   return peer;
 }
 
+// /json and /json/list cut down to the targets `connection_id`'s principal
+// may see (PhiControlDelegate::DevToolsTargetsInScope): the framework serves
+// the process-wide list and leaves the filtering to the client
+// (phi_devtools_transport.h). A document that does not parse becomes an
+// empty list — fail closed.
+std::string FilterTargetList(PhiControlDelegate* delegate,
+                             uint64_t connection_id,
+                             const std::string& doc) {
+  std::optional<base::Value> parsed =
+      base::JSONReader::Read(doc, base::JSON_PARSE_RFC);
+  if (!delegate || !parsed || !parsed->is_list()) {
+    return "[]";
+  }
+  base::ListValue& list = parsed->GetList();
+  std::vector<PhiDevToolsTargetRef> targets;
+  targets.reserve(list.size());
+  for (const base::Value& entry : list) {
+    PhiDevToolsTargetRef ref;
+    if (const base::DictValue* dict = entry.GetIfDict()) {
+      if (const std::string* id = dict->FindString("id")) {
+        ref.id = *id;
+      }
+      if (const std::string* type = dict->FindString("type")) {
+        ref.type = *type;
+      }
+    }
+    targets.push_back(std::move(ref));
+  }
+  const std::vector<bool> keep =
+      delegate->DevToolsTargetsInScope(connection_id, targets);
+  base::ListValue out;
+  for (size_t i = 0; i < list.size(); ++i) {
+    if (i < keep.size() && keep[i] && !targets[i].id.empty()) {
+      out.Append(std::move(list[i]));
+    }
+  }
+  std::string json;
+  base::JSONWriter::Write(out, &json);
+  return json;
+}
+
+// The error a refused CDP command is answered with — Chromium's own wording
+// for a method a session may not call, echoing the id (and the flattened
+// child session, when the command named one) so the peer's promise settles.
+std::string CdpNotAllowedReply(const base::DictValue& command) {
+  base::DictValue reply;
+  if (const base::Value* id = command.Find("id")) {
+    reply.Set("id", id->Clone());
+  }
+  if (const std::string* session = command.FindString("sessionId")) {
+    reply.Set("sessionId", *session);
+  }
+  base::DictValue error;
+  error.Set("code", -32000);
+  error.Set("message", "Not allowed in this session");
+  reply.Set("error", std::move(error));
+  std::string json;
+  base::JSONWriter::Write(reply, &json);
+  return json;
+}
+
 // --- DevTools session pump --------------------------------------------------
 
 // The PhiDevToolsClient half of one CDP session. Callbacks land on the UI
@@ -608,8 +695,10 @@ struct PhiControlServer::Connection {
   }
 
   // Reads the HTTP request head (through the blank line) into `head`,
-  // leaving whatever followed it in `inbuf`.
+  // leaving whatever followed it in `inbuf`. Gives up kHeadReadTimeoutMs
+  // after it started.
   bool ReadHttpHead(std::string* head) {
+    const ULONGLONG deadline = ::GetTickCount64() + kHeadReadTimeoutMs;
     for (;;) {
       size_t end = inbuf.find("\r\n\r\n");
       if (end != std::string::npos) {
@@ -620,12 +709,29 @@ struct PhiControlServer::Connection {
       if (inbuf.size() > (1u << 20)) {
         return false;  // Runaway head.
       }
-      if (!ReadMore()) {
+      const ULONGLONG now = ::GetTickCount64();
+      if (now >= deadline) {
+        return false;  // Too slow: free the slot.
+      }
+      char buf[kBufSize];
+      DWORD read = 0;
+      if (!OvReadTimeout(pipe, read_event, buf, sizeof(buf), &read,
+                         static_cast<DWORD>(deadline - now))) {
         return false;
       }
+      inbuf.append(buf, read);
     }
   }
 };
+
+PhiControlServer::ControlChannel::ControlChannel()
+    : wake(::CreateEventW(nullptr, FALSE, FALSE, nullptr)) {}
+
+PhiControlServer::ControlChannel::~ControlChannel() {
+  if (wake) {
+    ::CloseHandle(wake);
+  }
+}
 
 PhiControlServer::PhiControlServer() = default;
 
@@ -878,10 +984,18 @@ void PhiControlServer::HandleConnection(HANDLE pipe) {
       if (path.rfind(kDevToolsPathPrefix, 0) != 0) {
         conn.Write(HttpText("404 Not Found", "No such WebSocket path.\n"));
       } else {
-        size_t id_start = path.find('/', sizeof(kDevToolsPathPrefix) - 1);
+        const size_t kind_start = sizeof(kDevToolsPathPrefix) - 1;
+        size_t id_start = path.find('/', kind_start);
+        const std::string kind = path.substr(
+            kind_start, id_start == std::string::npos ? std::string::npos
+                                                      : id_start - kind_start);
+        // /devtools/browser/<id> is always opened as THE browser target
+        // (""): passing its id through would let a page id ride the
+        // browser path past ServeDevToolsSession's scope check.
         const std::string target_id =
-            id_start == std::string::npos ? std::string()
-                                          : path.substr(id_start + 1);
+            id_start == std::string::npos || kind == "browser"
+                ? std::string()
+                : path.substr(id_start + 1);
         ServeDevToolsSession(&conn, head, target_id, connection_id,
                              capability_id);
       }
@@ -892,6 +1006,9 @@ void PhiControlServer::HandleConnection(HANDLE pipe) {
       StringSink sink(&doc);
       if (framework_ &&
           framework_->DevToolsDiscoveryJson(path.c_str(), &sink)) {
+        if (path != "/json/version") {
+          doc = FilterTargetList(delegate_, connection_id, doc);
+        }
         conn.Write(HttpResponse("200 OK", "application/json; charset=UTF-8",
                                 doc));
       } else {
@@ -933,12 +1050,13 @@ void PhiControlServer::ServeControlChannel(Connection* conn,
   }
 
   // Live for pushed events (ownership changes and friends) until this loop
-  // ends. The channel keeps its OWN write event: a broadcast may land while
-  // the loop is blocked reading, and one event handle cannot back two
-  // overlapped operations.
+  // ends. A pusher only queues on the channel and signals `wake`; this
+  // thread is the pipe's one writer, so frames never interleave and a
+  // wedged peer stalls nobody else.
   auto channel = std::make_shared<ControlChannel>();
-  channel->pipe = conn->pipe;
-  channel->write_event = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+  if (!channel->wake) {
+    return;
+  }
   channel->protocol = protocol;
   channel->connection_id = connection_id;
   RegisterChannel(channel);
@@ -947,9 +1065,63 @@ void PhiControlServer::ServeControlChannel(Connection* conn,
   }
 
   auto send_frame = [&](const std::string& frame) {
-    // Shares the pipe with BroadcastEvent — never interleave two frames.
-    base::AutoLock lock(channel->write_lock);
     return conn->Write(frame);
+  };
+  // Writes every queued event; false when the peer is gone or let the
+  // outbox overflow.
+  auto flush_events = [&]() {
+    std::deque<std::string> frames;
+    bool overflow = false;
+    {
+      base::AutoLock lock(channel->outbox_lock);
+      frames.swap(channel->outbox);
+      channel->outbox_bytes = 0;
+      overflow = channel->overflow;
+    }
+    if (overflow) {
+      return false;
+    }
+    for (const std::string& frame : frames) {
+      if (!send_frame(frame)) {
+        return false;
+      }
+    }
+    return true;
+  };
+  // One thread, two sources (the DevTools pump's shape): a pending
+  // overlapped read on the pipe and the channel's wake. Returns once more
+  // bytes are in `inbuf`; false when the peer is gone.
+  std::vector<char> read_buf(kBufSize);
+  OVERLAPPED read_ov = {};
+  read_ov.hEvent = conn->read_event;
+  bool read_pending = false;
+  auto read_more = [&]() {
+    for (;;) {
+      if (!read_pending) {
+        ::ResetEvent(conn->read_event);
+        if (!::ReadFile(conn->pipe, read_buf.data(), kBufSize, nullptr,
+                        &read_ov) &&
+            ::GetLastError() != ERROR_IO_PENDING) {
+          return false;
+        }
+        read_pending = true;
+      }
+      HANDLE waits[2] = {conn->read_event, channel->wake};
+      const DWORD w = ::WaitForMultipleObjects(2, waits, FALSE, INFINITE);
+      if (w == WAIT_OBJECT_0) {
+        DWORD read = 0;
+        read_pending = false;
+        if (!::GetOverlappedResult(conn->pipe, &read_ov, &read, FALSE) ||
+            read == 0) {
+          return false;
+        }
+        conn->inbuf.append(read_buf.data(), read);
+        return true;
+      }
+      if (w != WAIT_OBJECT_0 + 1 || !flush_events()) {
+        return false;
+      }
+    }
   };
 
   // Message loop. The delegate answers a PhiVerbResult either way; the two
@@ -969,7 +1141,7 @@ void PhiControlServer::ServeControlChannel(Connection* conn,
       break;
     }
     if (r == WsDecoder::kNeedMore) {
-      if (!conn->ReadMore()) {
+      if (!read_more()) {
         break;
       }
       continue;
@@ -1051,12 +1223,16 @@ void PhiControlServer::ServeControlChannel(Connection* conn,
       break;
     }
   }
+  // Unregistered first, so no new event is queued for a loop that is gone;
+  // the pending read is cancelled AND reaped before read_ov leaves scope.
+  UnregisterChannel(channel);
+  if (read_pending) {
+    ::CancelIoEx(conn->pipe, &read_ov);
+    DWORD ignored = 0;
+    ::GetOverlappedResult(conn->pipe, &read_ov, &ignored, TRUE);
+  }
   if (!close_sent) {
     send_frame(WsCloseFrame(1001));  // Going away; best effort.
-  }
-  UnregisterChannel(channel);
-  if (channel->write_event) {
-    ::CloseHandle(channel->write_event);
   }
 }
 
@@ -1075,6 +1251,17 @@ void PhiControlServer::ServeDevToolsSession(Connection* conn,
   if (!framework_) {
     conn->Write(HttpText("503 Service Unavailable", "No DevTools.\n"));
     return;
+  }
+  // The framework opens whatever target it is handed; choosing only
+  // in-scope ones is the client's job (phi_devtools_transport.h). The
+  // browser target ("") is always allowed — the session scope filters it.
+  if (!target_id.empty()) {
+    const std::vector<bool> allowed = delegate_->DevToolsTargetsInScope(
+        connection_id, {PhiDevToolsTargetRef{target_id, std::string()}});
+    if (allowed.empty() || !allowed.front()) {
+      conn->Write(HttpText("404 Not Found", "No such target.\n"));
+      return;
+    }
   }
   // Auto-reset: one wake drains the whole queue, and a message queued
   // between drain and wait leaves it signalled for the next wait.
@@ -1153,6 +1340,14 @@ void PhiControlServer::ServeDevToolsSession(Connection* conn,
           continue;
         }
         if (opcode == kWsText) {
+          std::string refusal;
+          if (RefusedCdpCommand(msg, connection_id, &refusal)) {
+            if (!conn->Write(WsFrame(kWsText, refusal))) {
+              done = true;
+              break;
+            }
+            continue;
+          }
           framework_->SendDevToolsMessage(session, msg.data(), msg.size());
         }
       }
@@ -1199,22 +1394,44 @@ void PhiControlServer::ServeDevToolsSession(Connection* conn,
   ::CloseHandle(wake);
 }
 
+bool PhiControlServer::RefusedCdpCommand(const std::string& message,
+                                         uint64_t connection_id,
+                                         std::string* reply) {
+  // Target.createTarget opens a FOREGROUND tab in the user's last window —
+  // outside an agent's own windows, and nothing the session scope can take
+  // back. Cheap substring test first: only a candidate is parsed.
+  if (message.find("Target.createTarget") == std::string::npos) {
+    return false;
+  }
+  std::optional<base::DictValue> command =
+      base::JSONReader::ReadDict(message, base::JSON_PARSE_RFC);
+  const std::string* method = command ? command->FindString("method") : nullptr;
+  if (!method || *method != "Target.createTarget" ||
+      delegate_->DevToolsMayCreateTargets(connection_id)) {
+    return false;
+  }
+  *reply = CdpNotAllowedReply(*command);
+  return true;
+}
+
 void PhiControlServer::SeverAgentConnections() {
-  std::vector<HANDLE> pipes;
+  size_t severed = 0;
   {
+    // UNDER the lock: a serving thread takes its pipe out of the list (under
+    // the same lock) before it closes the handle, so every handle touched
+    // here is still open — never a closed one, or a reused value.
     base::AutoLock lock(live_pipes_lock_);
-    pipes = live_pipes_;
+    for (HANDLE pipe : live_pipes_) {
+      // The serving thread's pending read completes with an abort and its
+      // loop breaks; the disconnect makes any write it tries fail too.
+      // Neither call blocks.
+      ::CancelIoEx(pipe, nullptr);
+      ::DisconnectNamedPipe(pipe);
+    }
+    severed = live_pipes_.size();
   }
-  for (HANDLE pipe : pipes) {
-    // The serving thread's pending read completes with an abort and its
-    // loop breaks; the disconnect makes any write it tries fail too. The
-    // handle stays open until that thread closes it (HandleConnection).
-    ::CancelIoEx(pipe, nullptr);
-    ::DisconnectNamedPipe(pipe);
-  }
-  if (!pipes.empty()) {
-    LOG(INFO) << "[PhiAgent] severed " << pipes.size()
-              << " agent connection(s)";
+  if (severed) {
+    LOG(INFO) << "[PhiAgent] severed " << severed << " agent connection(s)";
   }
 }
 
@@ -1233,7 +1450,21 @@ void PhiControlServer::UnregisterChannel(
 
 void PhiControlServer::BroadcastEvent(const std::string& type,
                                       const std::string& payload_json) {
-  PushEvent(type, payload_json, nullptr);
+  // An event about a task is that task's owner's business alone (a user's
+  // console line, an ownership flip); the delegate says who that is.
+  std::optional<std::set<uint64_t>> audience;
+  if (delegate_) {
+    std::optional<base::DictValue> parsed =
+        base::JSONReader::ReadDict(payload_json, base::JSON_PARSE_RFC);
+    if (!parsed) {
+      parsed.emplace();
+    }
+    audience = delegate_->EventAudience(type, *parsed);
+  }
+  if (audience && audience->empty()) {
+    return;
+  }
+  PushEvent(type, payload_json, audience ? &*audience : nullptr);
 }
 
 void PhiControlServer::SendEventToConnections(
@@ -1267,8 +1498,8 @@ void PhiControlServer::PushEvent(const std::string& type,
   base::JSONWriter::Write(v2_frame, &v2_text);
   const std::string v2_bytes = WsFrame(kWsText, v2_text);
 
-  // Snapshot under the registry lock, then write outside it: a slow peer must
-  // not block another connection from arriving or leaving.
+  // Snapshot under the registry lock, then queue outside it. Nothing here
+  // touches a pipe: each channel's own serve loop writes its frames.
   std::vector<std::shared_ptr<ControlChannel>> targets;
   {
     base::AutoLock lock(channels_lock_);
@@ -1281,9 +1512,16 @@ void PhiControlServer::PushEvent(const std::string& type,
   for (const std::shared_ptr<ControlChannel>& channel : targets) {
     const std::string& bytes =
         channel->protocol == kProtocolV2 ? v2_bytes : v1_bytes;
-    base::AutoLock lock(channel->write_lock);
-    OvWriteTimeout(channel->pipe, channel->write_event, bytes.data(),
-                   bytes.size(), 1000);
+    {
+      base::AutoLock lock(channel->outbox_lock);
+      if (channel->outbox_bytes + bytes.size() > kMaxQueuedEventBytes) {
+        channel->overflow = true;  // The loop drops the peer.
+      } else {
+        channel->outbox.push_back(bytes);
+        channel->outbox_bytes += bytes.size();
+      }
+    }
+    ::SetEvent(channel->wake);
   }
 }
 

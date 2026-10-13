@@ -60,6 +60,13 @@ std::string Sanitize(const std::string& in, bool keep_newlines, size_t cap) {
 
 }  // namespace
 
+// static
+std::string PhiAgentTranscript::SanitizeText(const std::string& text,
+                                             bool keep_newlines,
+                                             size_t cap) {
+  return Sanitize(text, keep_newlines, cap);
+}
+
 PhiAgentTranscript::PhiAgentTranscript() = default;
 PhiAgentTranscript::~PhiAgentTranscript() = default;
 

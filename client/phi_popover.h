@@ -111,6 +111,10 @@ class PhiPopover : public PhiWindow {
   RECT PlacementRect(const Placement& placement, SIZE size) const;
 
   HWND owner() const { return owner_; }
+  // True when DWM rounds this popover's corners (Windows 11) — and draws
+  // its border with them, so a square GDI rim inside would cut across the
+  // curve. False on Windows 10, where the popover is square.
+  bool dwm_rounded() const { return dwm_rounded_; }
   bool InOpeningGrace() const;
   // Closes the popover (DestroyWindow). Safe when already gone.
   void Dismiss();
@@ -137,6 +141,7 @@ class PhiPopover : public PhiWindow {
  private:
   HWND owner_ = nullptr;
   Options options_;
+  bool dwm_rounded_ = false;
   ULONGLONG shown_tick_ = 0;
 };
 

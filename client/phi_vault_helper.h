@@ -39,9 +39,13 @@ namespace phi_client {
 //     before it serves anything; a mismatch means it refuses.
 //
 // Threading: Start() and Call() run on the browser UI thread and Call() BLOCKS
-// on the helper's reply (bounded by a timeout). Vault operations are
-// user-initiated and rare, so a blocking call is acceptable — but never call it
-// from a paint path.
+// on the helper's reply (bounded by a timeout — the agent-facing callers pass
+// a few seconds). Vault operations are user-initiated and rare, so a blocking
+// call is acceptable — but never call it from a paint path.
+//
+// A call whose reply could not be read whole stops the helper: a timeout
+// after a frame header leaves the pipe mid-frame, and every later read would
+// parse garbage. Restart() brings it back for the next call.
 class PhiVaultHelper {
  public:
   PhiVaultHelper();
@@ -71,6 +75,12 @@ class PhiVaultHelper {
   // Terminates the helper and closes the channel.
   void Stop();
 
+  // Respawns the helper Start() last launched (the user must unlock the
+  // vault again — its state died with it), at most once a minute so a
+  // helper that keeps failing cannot stall every caller. False when nothing
+  // was ever started or the respawn failed.
+  bool Restart();
+
  private:
   // Reads/writes one 4-byte big-endian length-prefixed JSON frame. Frames
   // larger than kMaxFrame are refused (a hostile or wedged peer must not be
@@ -86,6 +96,10 @@ class PhiVaultHelper {
   HANDLE read_ = nullptr;
   bool handshaked_ = false;
   uint64_t next_request_id_ = 1;
+  // The binary Start() resolved, for Restart(); empty until a Start found
+  // one.
+  std::wstring path_;
+  ULONGLONG last_restart_tick_ = 0;
 };
 
 }  // namespace phi_client

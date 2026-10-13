@@ -26,9 +26,16 @@ namespace phi_client {
 // the empty parent ("") and never a row.
 //
 // Favicons cross this boundary base64-encoded (the framework's BGRA, as the
-// verbs and the sidebar view carry them); the store keeps the raw bytes.
+// verbs carry them) — or raw, for the sidebar, which paints the bytes and
+// would only decode them again; the store keeps the raw bytes.
 
 enum class PhiRowType { kPinnedTab = 1, kBookmark = 2, kBookmarkFolder = 3 };
+
+// How a reader wants a row's favicons: base64 (the verbs' JSON), the raw
+// BGRA bytes (the sidebar's paint rows, no encode/decode round trip), or
+// not at all (the sidebar's tree, which reads only guid/kind/parent/index —
+// on EVERY rebuild).
+enum class PhiFaviconForm { kBase64, kRaw, kNone };
 
 // WHERE A PINNED TAB LIVES — the Mac's PinnedTabScope (see store::PinScope).
 using PhiPinScope = store::PinScope;
@@ -46,7 +53,10 @@ struct PhiRow {
   std::string profile_id;
   std::string space_id;
   std::string parent_guid;  // Bookmarks only; "" = the Space's root.
-  std::string favicon_base64;
+  std::string favicon_base64;  // PhiFaviconForm::kBase64 only.
+  // PhiFaviconForm::kRaw only: the premultiplied BGRA, exactly
+  // width*height*4 bytes (a buffer of any other size is dropped).
+  std::string favicon_raw;
   int favicon_width = 0;
   int favicon_height = 0;
   std::string lineage_id;
@@ -55,6 +65,7 @@ struct PhiRow {
   std::string url_b;
   std::string title_b;
   std::string favicon_b_base64;
+  std::string favicon_b_raw;
   int favicon_b_width = 0;
   int favicon_b_height = 0;
   std::string partner_guid;
@@ -78,8 +89,10 @@ class PhiTabStore {
                    const std::string& preferred_space_id = std::string());
 
   // Pinned cells visible to (profile, space) under the current scope.
-  std::vector<PhiRow> PinnedFor(const std::string& profile_id,
-                                const std::string& space_id) const;
+  std::vector<PhiRow> PinnedFor(
+      const std::string& profile_id,
+      const std::string& space_id,
+      PhiFaviconForm favicons = PhiFaviconForm::kBase64) const;
   std::string AddPinned(const std::string& profile_id,
                         const std::string& space_id,
                         const std::string& title,
@@ -89,12 +102,16 @@ class PhiTabStore {
                         int favicon_height);
 
   // Bookmarks directly under `parent_guid` ("" = the Space's root).
-  std::vector<PhiRow> BookmarksFor(const std::string& profile_id,
-                                   const std::string& space_id,
-                                   const std::string& parent_guid) const;
+  std::vector<PhiRow> BookmarksFor(
+      const std::string& profile_id,
+      const std::string& space_id,
+      const std::string& parent_guid,
+      PhiFaviconForm favicons = PhiFaviconForm::kBase64) const;
   // The whole owned tree, every depth, in no particular order.
-  std::vector<PhiRow> BookmarkTree(const std::string& profile_id,
-                                   const std::string& space_id) const;
+  std::vector<PhiRow> BookmarkTree(
+      const std::string& profile_id,
+      const std::string& space_id,
+      PhiFaviconForm favicons = PhiFaviconForm::kBase64) const;
   std::string AddBookmark(const std::string& profile_id,
                           const std::string& space_id,
                           const std::string& parent_guid,
@@ -149,8 +166,11 @@ class PhiTabStore {
                   int height);
 
  private:
-  PhiRow CellFromPin(const store::Tab& a, const store::Tab* b, int index) const;
-  PhiRow CellFromBookmark(const store::Tab& row) const;
+  PhiRow CellFromPin(const store::Tab& a,
+                     const store::Tab* b,
+                     int index,
+                     PhiFaviconForm favicons) const;
+  PhiRow CellFromBookmark(const store::Tab& row, PhiFaviconForm favicons) const;
   // The Space root → "" translation for a bookmark's parent.
   std::string ParentForUi(const store::Tab& row) const;
   std::optional<std::string> ParentForStore(const std::string& profile_id,

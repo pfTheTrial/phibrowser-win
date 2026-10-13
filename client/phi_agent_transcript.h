@@ -60,6 +60,14 @@ class PhiAgentTranscript {
   // the console still shows it — then until the console closes.
   static constexpr int64_t kContinuityMs = 30 * 60 * 1000;
 
+  // The transcript's own clean-up, for agent text shown elsewhere (the
+  // handoff prompt): control characters dropped, newlines kept only when
+  // `keep_newlines`, trimmed, then cut to `cap` bytes at a UTF-8 boundary
+  // with an ellipsis.
+  static std::string SanitizeText(const std::string& text,
+                                  bool keep_newlines,
+                                  size_t cap);
+
   PhiAgentTranscript();
   ~PhiAgentTranscript();
   PhiAgentTranscript(const PhiAgentTranscript&) = delete;

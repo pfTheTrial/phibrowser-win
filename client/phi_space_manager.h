@@ -342,6 +342,9 @@ class PhiSpaceManager {
   // The sync table's hidden set (local ids), after every table write.
   void SetSyncHiddenSpaces(const std::set<std::string>& ids);
   bool sync_applying() const { return sync_applying_; }
+  // The sync-hidden Spaces: in no list, but still stored and still bound
+  // to their profiles (a hidden Space can come back).
+  const std::vector<model::Space>& hidden_spaces() const { return hidden_; }
 
  private:
   void MarkDirty();

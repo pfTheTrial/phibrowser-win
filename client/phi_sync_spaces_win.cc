@@ -31,32 +31,47 @@ PhiSyncSpaceAccess::PhiSyncSpaceAccess(
     keys::ProfileKeyManager& profiles,
     PhiRunOnUi run_on_ui,
     std::function<PhiSpaceManager*()> spaces,
+    std::function<bool()> store_unavailable,
     std::function<std::set<std::string>()> known_profiles,
     ProfileHooks profile_hooks)
     : state_(state),
       profiles_(profiles),
       run_on_ui_(std::move(run_on_ui)),
       spaces_(std::move(spaces)),
+      store_unavailable_(std::move(store_unavailable)),
       known_profiles_(std::move(known_profiles)),
       profile_hooks_(std::move(profile_hooks)) {}
 
 PhiSyncSpaceAccess::~PhiSyncSpaceAccess() = default;
 
-std::vector<PhiSyncSpaceAccess::Row> PhiSyncSpaceAccess::Rows() {
+std::optional<std::vector<PhiSyncSpaceAccess::Row>> PhiSyncSpaceAccess::Rows() {
   // The closure owns what it fills: a hop that times out finds nothing
-  // dangling.
-  auto rows = std::make_shared<std::vector<PhiSpaceManager::SyncRow>>();
+  // dangling. A failed hop or no open Space list is no answer, never an
+  // empty list.
+  struct Read {
+    std::optional<std::vector<PhiSpaceManager::SyncRow>> rows;
+    bool store_unavailable = false;
+  };
+  auto read = std::make_shared<Read>();
   std::function<PhiSpaceManager*()> spaces = spaces_;
-  if (!run_on_ui_([rows, spaces] {
+  std::function<bool()> unavailable = store_unavailable_;
+  last_read_store_unavailable_ = false;
+  if (!run_on_ui_([read, spaces, unavailable] {
         if (PhiSpaceManager* manager = spaces()) {
-          *rows = manager->SyncRows();
+          read->rows = manager->SyncRows();
+        } else if (unavailable) {
+          read->store_unavailable = unavailable();
         }
       })) {
-    return {};
+    return std::nullopt;  // a stalled or retired hop: transient
+  }
+  if (!read->rows) {
+    last_read_store_unavailable_ = read->store_unavailable;
+    return std::nullopt;
   }
   std::vector<Row> out;
   int order = 0;
-  for (const PhiSpaceManager::SyncRow& row : *rows) {
+  for (const PhiSpaceManager::SyncRow& row : *read->rows) {
     if (PhiIsAgentSpaceId(row.id)) {
       continue;
     }
@@ -105,9 +120,14 @@ std::set<std::string> PhiSyncSpaceAccess::HiddenLocalIds(
 
 // --- Reads ----------------------------------------------------------------------------
 
-std::vector<sync::LocalSpace> PhiSyncSpaceAccess::CurrentSpaces() {
+std::optional<std::vector<sync::LocalSpace>>
+PhiSyncSpaceAccess::CurrentSpaces() {
+  std::optional<std::vector<Row>> rows = Rows();
+  if (!rows) {
+    return std::nullopt;
+  }
   std::vector<sync::LocalSpace> out;
-  for (Row& row : Rows()) {
+  for (Row& row : *rows) {
     if (row.hidden) {
       continue;
     }
@@ -122,22 +142,36 @@ std::vector<sync::LocalSpace> PhiSyncSpaceAccess::CurrentSpaces() {
   return out;
 }
 
-std::vector<sync::LocalSpace> PhiSyncSpaceAccess::AllSpacesForOrdering() {
+std::optional<std::vector<sync::LocalSpace>>
+PhiSyncSpaceAccess::AllSpacesForOrdering() {
+  std::optional<std::vector<Row>> rows = Rows();
+  if (!rows) {
+    return std::nullopt;
+  }
   std::vector<sync::LocalSpace> out;
-  for (Row& row : Rows()) {
+  for (Row& row : *rows) {
     out.push_back(std::move(row.space));
   }
   return out;
 }
 
-std::vector<sync::LocalSpace> PhiSyncSpaceAccess::PairableSpaces() {
+std::optional<std::vector<sync::LocalSpace>>
+PhiSyncSpaceAccess::PairableSpaces() {
+  std::optional<std::vector<Row>> rows = Rows();
+  if (!rows) {
+    return std::nullopt;
+  }
   std::vector<sync::LocalSpace> out;
-  for (Row& row : Rows()) {
+  for (Row& row : *rows) {
     if (!row.hidden) {
       out.push_back(std::move(row.space));
     }
   }
   return out;
+}
+
+bool PhiSyncSpaceAccess::SpaceStoreUnavailable() {
+  return last_read_store_unavailable_;
 }
 
 std::optional<std::string> PhiSyncSpaceAccess::GlobalUuid(
@@ -150,13 +184,15 @@ std::optional<std::string> PhiSyncSpaceAccess::LocalProfileId(
   return profiles_.LocalProfileIdFor(uuid);
 }
 
-bool PhiSyncSpaceAccess::IsKnownLocalProfile(const std::string& profile_id) {
+sync::LocalPresence PhiSyncSpaceAccess::IsKnownLocalProfile(
+    const std::string& profile_id) {
   auto known = std::make_shared<std::set<std::string>>();
   std::function<std::set<std::string>()> list = known_profiles_;
-  if (!run_on_ui_([known, list] { *known = list(); })) {
-    return false;
+  if (!list || !run_on_ui_([known, list] { *known = list(); })) {
+    return sync::LocalPresence::kUnreachable;
   }
-  return known->count(profile_id) > 0;
+  return known->count(profile_id) ? sync::LocalPresence::kPresent
+                                  : sync::LocalPresence::kAbsent;
 }
 
 void PhiSyncSpaceAccess::DropProfileMapping(const std::string& profile_id) {
@@ -238,13 +274,18 @@ void PhiSyncSpaceAccess::DropSpaceMapping(const std::string& space_id) {
   }
 }
 
-bool PhiSyncSpaceAccess::IsKnownLocalSpace(const std::string& space_id) {
-  for (const Row& row : Rows()) {
+sync::LocalPresence PhiSyncSpaceAccess::IsKnownLocalSpace(
+    const std::string& space_id) {
+  const std::optional<std::vector<Row>> rows = Rows();
+  if (!rows) {
+    return sync::LocalPresence::kUnreachable;
+  }
+  for (const Row& row : *rows) {
     if (row.space.space_id == space_id) {
-      return true;
+      return sync::LocalPresence::kPresent;
     }
   }
-  return false;
+  return sync::LocalPresence::kAbsent;
 }
 
 std::map<std::string, std::string> PhiSyncSpaceAccess::AllSpaceMappings() {
@@ -258,6 +299,8 @@ bool PhiSyncSpaceAccess::IsImporting(const std::string&) {
 namespace {
 
 constexpr int kMaxAutoCreatesPerRound = 3;
+// An unanswered profile creation blocks another one for its uuid this long.
+constexpr auto kCreationGiveUp = std::chrono::minutes(10);
 
 std::string LowerAscii(std::string text) {
   for (char& c : text) {
@@ -303,6 +346,26 @@ sync::ProfileRefreshOutcome PhiSyncSpaceAccess::RefreshAccountProfiles() {
   for (const std::string& uuid : missing) {
     if (created >= kMaxAutoCreatesPerRound) {
       break;
+    }
+    // A creation an earlier round stopped waiting for: its answer is the
+    // profile to reuse; while it may still land, nothing more is created.
+    if (const auto it = creating_.find(uuid); it != creating_.end()) {
+      bool answered = false;
+      std::string answered_id;
+      {
+        std::lock_guard<std::mutex> hold(it->second->lock);
+        answered = it->second->answered;
+        answered_id = it->second->profile_id;
+      }
+      if (!answered &&
+          std::chrono::steady_clock::now() - it->second->started <
+              kCreationGiveUp) {
+        continue;
+      }
+      creating_.erase(it);
+      if (!answered_id.empty()) {
+        pending_created_[uuid] = answered_id;
+      }
     }
     keys::RemoteProfile remote;
     if (!profiles_.Remote(uuid, &remote).ok() || !remote.name) {
@@ -351,13 +414,10 @@ sync::ProfileRefreshOutcome PhiSyncSpaceAccess::RefreshAccountProfiles() {
         name = *remote.name + " " + std::to_string(n);
       }
       // The creation is asynchronous on the UI thread: wait for its answer.
-      struct Wait {
-        std::mutex lock;
-        std::condition_variable done;
-        bool answered = false;
-        std::string profile_id;
-      };
-      auto wait = std::make_shared<Wait>();
+      // A wait that timed out may still create the profile, so it is
+      // remembered rather than retried (a failed hop never runs).
+      auto wait = std::make_shared<Creation>();
+      wait->started = std::chrono::steady_clock::now();
       auto create = profile_hooks_.create_profile;
       if (!run_on_ui_([create, name, wait] {
             create(name, [wait](const std::string& id) {
@@ -370,8 +430,11 @@ sync::ProfileRefreshOutcome PhiSyncSpaceAccess::RefreshAccountProfiles() {
         continue;
       }
       std::unique_lock<std::mutex> hold(wait->lock);
-      wait->done.wait_for(hold, std::chrono::seconds(60),
-                          [&wait] { return wait->answered; });
+      if (!wait->done.wait_for(hold, std::chrono::seconds(60),
+                               [&wait] { return wait->answered; })) {
+        creating_[uuid] = wait;
+        continue;
+      }
       profile_id = wait->profile_id;
       if (profile_id.empty()) {
         continue;

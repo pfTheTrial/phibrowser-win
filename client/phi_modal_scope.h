@@ -5,6 +5,8 @@
 #ifndef PHIBROWSER_WIN_CLIENT_PHI_MODAL_SCOPE_H_
 #define PHIBROWSER_WIN_CLIENT_PHI_MODAL_SCOPE_H_
 
+#include <windows.h>
+
 namespace phi_client {
 
 // UI-thread nesting counter for every nested message loop the client runs:
@@ -19,16 +21,25 @@ namespace phi_client {
 //
 // Usage: `PhiModalScope modal;` on the stack around the nested loop.
 //
+// Each scope also records the top-level window its loop belongs to (the
+// root owner of the window active when it opened, or the one passed in),
+// so a window asks about ITS loops only: closing one window does not wait
+// on a menu or dialog up in another. A scope whose window cannot be told
+// (nothing active) counts for every window.
+//
 // The counter is defined in phi_modal_scope.cc, not as a function-local
 // static in an inline function: the client is one exe, but the kit's
 // -Wunique-object-duplication rejects that shape on principle.
 int& PhiModalDepthRef();
 int PhiModalDepth();
+// The open scopes that belong to `window`'s root owner (plus the unowned).
+int PhiModalDepthFor(HWND window);
 
 class PhiModalScope {
  public:
-  PhiModalScope() { ++PhiModalDepthRef(); }
-  ~PhiModalScope() { --PhiModalDepthRef(); }
+  PhiModalScope();
+  explicit PhiModalScope(HWND owner);
+  ~PhiModalScope();
   PhiModalScope(const PhiModalScope&) = delete;
   PhiModalScope& operator=(const PhiModalScope&) = delete;
 };

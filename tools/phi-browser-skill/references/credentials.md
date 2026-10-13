@@ -101,10 +101,15 @@ readback or error echo can't smuggle the value back to you. Don't try to read
 a filled value back; verify a login by its outcome (the post-submit page).
 
 **Ambiguity**: a served credential is always the query's unique match. When
-several vault items fit, Phi releases nothing and the call throws `ambiguous`,
-listing the candidate usernames — narrow with `{domain, username}` (or
-`{id: credentialId}`) and call again, asking the user which account when it
-isn't obvious from the task. Phi never picks an account on the user's behalf.
+several vault items fit, Phi asks the USER to pick one in its own prompt
+(then asks them to approve the request as usual); you never see the
+candidates. If no pick can be offered, the call throws `ambiguous` with only
+the match count — ask the user which account and narrow with
+`{domain, username}`. Phi never picks an account on the user's behalf.
+
+**Repeated denials pause prompts**: after three denials within two minutes
+(any items), every credential request is refused without a prompt for five
+minutes (`user_denied`). Stop and ask the user instead of retrying.
 
 Every secret-touching call (fills and runs included) pops an approve/deny
 prompt in Phi that names you and the site; the user may grant a 10-minute

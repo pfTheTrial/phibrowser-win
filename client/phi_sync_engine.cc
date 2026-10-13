@@ -173,7 +173,8 @@ bool MarkerFile::operator==(const MarkerFile& other) const {
 
 SettingEntity SnapshotSettings(const std::vector<SyncableSetting>& settings,
                                SettingsSidecars& sidecars,
-                               int64_t now) {
+                               int64_t now,
+                               bool* sidecars_failed) {
   SettingEntity entity;
   for (const SyncableSetting& setting : settings) {
     std::optional<SettingValue> value = setting.read ? setting.read()
@@ -188,7 +189,9 @@ SettingEntity SnapshotSettings(const std::vector<SyncableSetting>& settings,
       stamp = *stored;
     } else {
       stamp = HybridClock::EditStamp(now, stored.value_or(0));
-      sidecars.Set(setting.key, stamp, current);
+      if (!sidecars.Set(setting.key, stamp, current) && sidecars_failed) {
+        *sidecars_failed = true;
+      }
     }
     value->updated_at_ms = stamp;
     entity.values[setting.key] = std::move(*value);
@@ -198,7 +201,8 @@ SettingEntity SnapshotSettings(const std::vector<SyncableSetting>& settings,
 
 std::vector<std::string> ApplySettings(const SettingEntity& entity,
                                        const std::vector<SyncableSetting>& settings,
-                                       SettingsSidecars& sidecars) {
+                                       SettingsSidecars& sidecars,
+                                       bool* sidecars_failed) {
   std::vector<std::string> applied;
   for (const SyncableSetting& setting : settings) {
     const auto it = entity.values.find(setting.key);
@@ -216,7 +220,10 @@ std::vector<std::string> ApplySettings(const SettingEntity& entity,
     if (!stored || ValueSignature(*stored) != expected) {
       continue;
     }
-    sidecars.Set(setting.key, it->second.updated_at_ms, expected);
+    if (!sidecars.Set(setting.key, it->second.updated_at_ms, expected) &&
+        sidecars_failed) {
+      *sidecars_failed = true;
+    }
     applied.push_back(setting.key);
   }
   return applied;
@@ -314,6 +321,7 @@ void PhiSyncEngine::Run(Round round) {
   round_marker_advanced_ = false;
   round_outbound_failed_ = false;
   space_counters_ = SpaceRoundCounters();
+  space_list_unreachable_ = false;
   did_refresh_profiles_this_round_ = false;
   owned_round_started_.clear();
   owned_read_failed_.clear();
@@ -380,7 +388,8 @@ void PhiSyncEngine::Run(Round round) {
   RoundOutcome outcome = round_outcome_;
   if (outcome != RoundOutcome::kNotMyBirthday) {
     if (cursor_save_failures_ > 0) {
-      outcome = RoundOutcome::kCursorSaveFailed;
+      outcome = space_list_unreachable_ ? RoundOutcome::kLocalReadFailed
+                                        : RoundOutcome::kCursorSaveFailed;
     } else if (outcome == RoundOutcome::kOk && deps_.space_store &&
                !space_section_enabled_) {
       outcome = RoundOutcome::kGated;
@@ -838,6 +847,7 @@ void PhiSyncEngine::Apply(const SettingEntity& remote, bool adopt) {
   } else {
     std::optional<SettingEntity> local = SnapshotLocalSettings();
     if (!local) {
+      ++cursor_save_failures_;  // the page replays
       return;
     }
     merged = MergeSettings(*local, remote);
@@ -848,9 +858,15 @@ void PhiSyncEngine::Apply(const SettingEntity& remote, bool adopt) {
   if (deps_.applying_remote) {
     deps_.applying_remote(true);
   }
-  ApplySettings(merged, deps_.settings, *deps_.sidecars);
+  bool sidecars_failed = false;
+  ApplySettings(merged, deps_.settings, *deps_.sidecars, &sidecars_failed);
   if (deps_.applying_remote) {
     deps_.applying_remote(false);
+  }
+  if (sidecars_failed) {
+    // A landed value without its sidecar would read as a local edit later:
+    // the page replays rather than move past it.
+    ++cursor_save_failures_;
   }
   // What the server holds, not what this device now holds.
   set_stored_last_entity(remote);
@@ -871,9 +887,13 @@ void PhiSyncEngine::PushSettings(bool retry_on_conflict) {
     return;
   }
   // The server holds bytes this device could not read: never overwrite
-  // them. Rewind so the next pull re-reads the entity.
+  // them. A refusal already on record is re-read by Pull itself once the key
+  // or the build changes — rewinding here would replay the whole account
+  // every round; only an unexplained missing baseline rewinds.
   if (stored_entity_id() && !stored_last_entity()) {
-    PersistStoredMarker(std::nullopt);
+    if (!unreadable_record()) {
+      PersistStoredMarker(std::nullopt);
+    }
     return;
   }
   keys::Bytes key;
@@ -976,8 +996,15 @@ std::optional<SettingEntity> PhiSyncEngine::SnapshotLocalSettings() {
   if (stopped_) {
     return std::nullopt;
   }
-  SettingEntity entity =
-      SnapshotSettings(deps_.settings, *deps_.sidecars, HlcNow());
+  bool sidecars_failed = false;
+  SettingEntity entity = SnapshotSettings(deps_.settings, *deps_.sidecars,
+                                          HlcNow(), &sidecars_failed);
+  if (sidecars_failed) {
+    // A stamp that did not persist would be issued again later as a new
+    // edit: nothing publishes from this snapshot.
+    round_outbound_failed_ = true;
+    return std::nullopt;
+  }
   // The sidecars outlive an account switch while hlcMax does not: fold the
   // stamps back in so no stamp below a published one is ever issued.
   ObserveStamps(entity);
@@ -1237,6 +1264,30 @@ void PhiSyncEngine::ApplySpaces(const SpacePullBatch& batch,
   for (const Item& item : all) {
     ObserveStamps(item.entity);
   }
+  // The Space list could not be read: nothing more lands or is dropped — an
+  // unanswered "is it there?" never reads as "gone" (which dropped live
+  // mappings and landed duplicates on every device). A stalled hop replays
+  // this page next round; a store that cannot open parks the page's
+  // arrivals instead, so the marker and every other kind move on.
+  auto unreachable = [&] {
+    *table = table_at_entry;
+    if (!access.SpaceStoreUnavailable()) {
+      NoteSpaceListUnreachable();
+      return;
+    }
+    for (const Item& item : all) {
+      if (!item.from_server) {
+        continue;
+      }
+      SpaceCursor& cursor = table->cursors[item.uuid];
+      cursor.pending_apply = item.entity.Serialize();
+      if (!item.entity_id.empty()) {
+        cursor.entity_id = item.entity_id;
+      }
+      cursor.version = std::max(cursor.version, item.version);
+      ++space_counters_.parked;
+    }
+  };
 
   // This device's own local projection per Space with history: the merge's
   // LOCAL side (what the user did here since the baseline).
@@ -1250,8 +1301,14 @@ void PhiSyncEngine::ApplySpaces(const SpacePullBatch& batch,
         cursor.pending_apply.reset();
       }
     }
+    const std::optional<std::vector<LocalSpace>> current =
+        access.CurrentSpaces();
+    if (!current) {
+      unreachable();
+      return;
+    }
     for (auto& [uuid, entity] :
-         SnapshotLocal(access.CurrentSpaces(), projection_table, false)) {
+         SnapshotLocal(*current, projection_table, false)) {
       if (with_history.count(uuid)) {
         projections[uuid] = std::move(entity);
       }
@@ -1299,19 +1356,32 @@ void PhiSyncEngine::ApplySpaces(const SpacePullBatch& batch,
 
     const bool is_default = item.uuid == kDefaultSpaceUuid;
     std::optional<std::string> local_space_id = access.LocalSpaceId(item.uuid);
-    if (!is_default && local_space_id &&
-        !access.IsKnownLocalSpace(*local_space_id)) {
-      // A dead mapping: the entity lands as a new Space.
-      access.DropSpaceMapping(*local_space_id);
-      local_space_id.reset();
+    if (!is_default && local_space_id) {
+      const LocalPresence known = access.IsKnownLocalSpace(*local_space_id);
+      if (known == LocalPresence::kUnreachable) {
+        unreachable();
+        return;
+      }
+      if (known == LocalPresence::kAbsent) {
+        // A dead mapping: the entity lands as a new Space.
+        access.DropSpaceMapping(*local_space_id);
+        local_space_id.reset();
+      }
     }
     std::optional<std::string> profile_id;
     if (!is_default) {
       const std::string remote_uuid = item.entity.profile_uuid.get().str();
       profile_id = access.LocalProfileId(remote_uuid);
-      if (profile_id && !access.IsKnownLocalProfile(*profile_id)) {
-        access.DropProfileMapping(*profile_id);
-        profile_id.reset();
+      if (profile_id) {
+        const LocalPresence known = access.IsKnownLocalProfile(*profile_id);
+        if (known == LocalPresence::kUnreachable) {
+          unreachable();
+          return;
+        }
+        if (known == LocalPresence::kAbsent) {
+          access.DropProfileMapping(*profile_id);
+          profile_id.reset();
+        }
       }
       if (!profile_id) {
         if (!cursor.reconciled) {
@@ -1327,9 +1397,15 @@ void PhiSyncEngine::ApplySpaces(const SpacePullBatch& batch,
           continue;
         }
         // Fallback A: hold the remote binding, keep the local one.
+        const std::optional<std::vector<LocalSpace>> current =
+            access.CurrentSpaces();
+        if (!current) {
+          unreachable();
+          return;
+        }
         cursor.held_profile_uuid = remote_uuid;
         cursor.held_for_local_profile_id.reset();
-        for (const LocalSpace& space : access.CurrentSpaces()) {
+        for (const LocalSpace& space : *current) {
           if (local_space_id && space.space_id == *local_space_id) {
             cursor.held_for_local_profile_id = space.profile_id;
           }
@@ -1343,15 +1419,28 @@ void PhiSyncEngine::ApplySpaces(const SpacePullBatch& batch,
     // A name is not an identity. Until the user explicitly maps a local
     // Space, keep it separate instead of overwriting it on first landing.
 
+    const std::optional<std::vector<LocalSpace>> current =
+        access.CurrentSpaces();
+    if (!current) {
+      unreachable();
+      return;
+    }
     std::optional<LocalSpace> existing;
-    for (const LocalSpace& space : access.CurrentSpaces()) {
+    for (const LocalSpace& space : *current) {
       if (local_space_id && space.space_id == *local_space_id) {
         existing = space;
       }
     }
-    if (is_default && !existing &&
-        access.IsKnownLocalProfile(access.DefaultProfileId())) {
-      profile_id = access.DefaultProfileId();
+    if (is_default && !existing) {
+      const LocalPresence known =
+          access.IsKnownLocalProfile(access.DefaultProfileId());
+      if (known == LocalPresence::kUnreachable) {
+        unreachable();
+        return;
+      }
+      if (known == LocalPresence::kPresent) {
+        profile_id = access.DefaultProfileId();
+      }
     }
     SpaceEntity merged = item.entity;
     if (std::optional<SpaceEntity> baseline = ParseSpaceBytes(cursor.reconciled)) {
@@ -1391,8 +1480,14 @@ void PhiSyncEngine::ApplySpaces(const SpacePullBatch& batch,
     }
     if (!is_default && profile_id && existing &&
         existing->profile_id != *profile_id) {
+      const std::optional<std::vector<LocalSpace>> after =
+          access.CurrentSpaces();
+      if (!after) {
+        unreachable();
+        return;
+      }
       bool rebound = false;
-      for (const LocalSpace& space : access.CurrentSpaces()) {
+      for (const LocalSpace& space : *after) {
         if (space.space_id == *landed && space.profile_id == *profile_id) {
           rebound = true;
         }
@@ -1438,8 +1533,13 @@ void PhiSyncEngine::ApplySpaces(const SpacePullBatch& batch,
               : *entity;
       ranks[*local] = {effective.rank.get().str(), uuid};
     }
-    const std::vector<std::string> order =
-        PlannedSpaceOrder(access.AllSpacesForOrdering(), ranks);
+    const std::optional<std::vector<LocalSpace>> strip =
+        access.AllSpacesForOrdering();
+    if (!strip) {
+      unreachable();
+      return;
+    }
+    const std::vector<std::string> order = PlannedSpaceOrder(*strip, ranks);
     if (!access.ApplyOrder(order)) {
       // Replay this page next round rather than record half of it.
       *table = table_at_entry;
@@ -1480,12 +1580,16 @@ void PhiSyncEngine::ApplySpaceTombstones(const SpacePullBatch& batch,
         table->cursors[item.uuid] = cursor;
         continue;
       }
-      // Never hide the last live user Space for the default identity.
-      if (item.uuid == kDefaultSpaceUuid &&
-          LiveLocalUserSpaceIds(*table) == std::set<std::string>{*local}) {
-        cursor.pending_tombstone = true;
-        table->cursors[item.uuid] = cursor;
-        continue;
+      // Never hide the last live user Space for the default identity — nor
+      // one the Space list cannot say is not the last.
+      if (item.uuid == kDefaultSpaceUuid) {
+        const std::optional<std::set<std::string>> live =
+            LiveLocalUserSpaceIds(*table);
+        if (!live || *live == std::set<std::string>{*local}) {
+          cursor.pending_tombstone = true;
+          table->cursors[item.uuid] = cursor;
+          continue;
+        }
       }
       if (!access.Hide(*local)) {
         cursor.pending_tombstone = true;
@@ -1512,7 +1616,7 @@ void PhiSyncEngine::ApplySpaceTombstones(const SpacePullBatch& batch,
   }
 }
 
-std::set<std::string> PhiSyncEngine::LiveLocalUserSpaceIds(
+std::optional<std::set<std::string>> PhiSyncEngine::LiveLocalUserSpaceIds(
     const SpaceSyncTable& table) {
   SpaceLocalAccess& access = *deps_.space_access;
   std::set<std::string> gone;
@@ -1523,13 +1627,25 @@ std::set<std::string> PhiSyncEngine::LiveLocalUserSpaceIds(
       }
     }
   }
+  const std::optional<std::vector<LocalSpace>> pairable =
+      access.PairableSpaces();
+  if (!pairable) {
+    return std::nullopt;
+  }
   std::set<std::string> live;
-  for (const LocalSpace& space : access.PairableSpaces()) {
+  for (const LocalSpace& space : *pairable) {
     if (!gone.count(space.space_id)) {
       live.insert(space.space_id);
     }
   }
   return live;
+}
+
+// Rides the cursor-save channel: the page's marker is not written, the drain
+// does not complete and nothing publishes this round.
+void PhiSyncEngine::NoteSpaceListUnreachable() {
+  space_list_unreachable_ = true;
+  ++cursor_save_failures_;
 }
 
 void PhiSyncEngine::StampLocalSpaceEdits() {
@@ -1543,8 +1659,13 @@ void PhiSyncEngine::StampLocalSpaceEdits() {
   if (!any_baseline) {
     return;
   }
+  const std::optional<std::vector<LocalSpace>> current =
+      deps_.space_access->CurrentSpaces();
+  if (!current) {
+    return;  // the edits are stamped by the next local change
+  }
   const std::map<std::string, SpaceEntity> projections =
-      SnapshotLocal(deps_.space_access->CurrentSpaces(), table, false);
+      SnapshotLocal(*current, table, false);
   bool changed = false;
   for (const auto& [uuid, projection] : projections) {
     const std::optional<SpaceEntity> baseline =
@@ -1578,8 +1699,17 @@ void PhiSyncEngine::PushSpaces(bool retry_on_conflict,
     return;
   }
   SpaceLocalAccess& access = *deps_.space_access;
+  const std::optional<std::vector<LocalSpace>> current = access.CurrentSpaces();
+  if (!current) {
+    if (access.SpaceStoreUnavailable()) {
+      round_outbound_failed_ = true;  // nothing to publish from
+    } else {
+      NoteSpaceListUnreachable();
+    }
+    return;
+  }
   const std::map<std::string, SpaceEntity> outgoing =
-      SnapshotLocal(access.CurrentSpaces(), table, /*ensure_mapped=*/true);
+      SnapshotLocal(*current, table, /*ensure_mapped=*/true);
 
   struct Work {
     std::string uuid;
@@ -1927,7 +2057,18 @@ const OwnedOwnerMaps& PhiSyncEngine::OwnedRoundMaps() {
     // The default Space's constant identity is no stored mapping.
     maps.sync_uuid_by_space_id[kDefaultSpaceUuid] = kDefaultSpaceUuid;
     maps.local_space_id_by_sync_uuid[kDefaultSpaceUuid] = kDefaultSpaceUuid;
-    for (const LocalSpace& space : access.CurrentSpaces()) {
+    const std::optional<std::vector<LocalSpace>> current =
+        access.CurrentSpaces();
+    if (!current) {
+      // Without the Space list every owner reads as gone: the kinds park
+      // arrivals and publish nothing this round (BeginOwnedRound's path).
+      for (OwnedKindAdapter* kind : deps_.owned_kinds) {
+        if (owned_read_failed_.insert(kind->label()).second) {
+          ++owned_counters_[kind->label()].local_read_failed;
+        }
+      }
+    }
+    for (const LocalSpace& space : current.value_or(std::vector<LocalSpace>())) {
       maps.local_profile_id_by_space_id[space.space_id] = space.profile_id;
       const auto uuid = maps.sync_uuid_by_space_id.find(space.space_id);
       if (uuid != maps.sync_uuid_by_space_id.end()) {
@@ -3281,7 +3422,9 @@ void PhiSyncEngine::WriteState(const std::string& key,
   if (stopped_) {
     return;
   }
-  deps_.state->Set(key, value);
+  if (!deps_.state->Set(key, value)) {
+    ++cursor_save_failures_;  // the round stops before its marker
+  }
 }
 
 std::optional<std::string> PhiSyncEngine::stored_entity_id() const {

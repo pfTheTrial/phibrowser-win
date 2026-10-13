@@ -536,7 +536,11 @@ KeyStatus ProfileKeyManager::RegisterLocalProfile(
   if (!created) {
     return AdoptRemoteProfile(uuid, profile_id, out);
   }
-  SetMapping(profile_id, uuid);
+  if (!SetMapping(profile_id, uuid)) {
+    // The envelope is up but unmapped here: the account-profile refresh
+    // adopts it by name rather than this profile minting another.
+    return KeyStatus::Error(KeyErrorKind::kStorage, "save profile mapping");
+  }
   out->uuid = uuid;
   out->passphrase = HexLower(key);
   out->name = display_name;
@@ -561,7 +565,9 @@ KeyStatus ProfileKeyManager::AdoptRemoteProfile(const std::string& uuid,
     return KeyStatus::Error(KeyErrorKind::kBadEnvelope);
   }
   // The mapping is written only once the envelope has opened.
-  SetMapping(profile_id, uuid);
+  if (!SetMapping(profile_id, uuid)) {
+    return KeyStatus::Error(KeyErrorKind::kStorage, "save profile mapping");
+  }
   out->uuid = uuid;
   out->passphrase = HexLower(key);
   out->name = name;

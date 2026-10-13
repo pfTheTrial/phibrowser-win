@@ -128,9 +128,10 @@ async function tier2() {
 
   // Reference values. The test process is allowed to see them — the property
   // under test is that fillCredential's RESULTS and ERRORS never carry them.
-  // When several vault items match the domain, Phi refuses with `ambiguous`
-  // and candidate usernames instead of picking one; narrow to the first
-  // candidate and continue with that query throughout.
+  // When several vault items match the domain, Phi asks the tester to pick
+  // one in its own chooser before the approval (the candidates never reach
+  // this process). An older Phi refused with `ambiguous` and candidate
+  // usernames instead; then narrow to the first candidate and continue.
   let q = DOMAIN
   let cred
   try {

@@ -228,7 +228,7 @@ static_assert(kPhiUiaGroupControlType == UIA_GroupControlTypeId, "");
 //
 // The framework's link recipe (out/phi_clientkit/kit.json) is generated on
 // the Chromium side and carries no uiautomationcore.lib; importing one
-// would mean regenerating the kit for every consumer of the SDK. The six
+// would mean regenerating the kit for every consumer of the SDK. The seven
 // entry points below are resolved once instead, which also means a machine
 // without the UIA core (or with it disabled) degrades to "no accessibility"
 // rather than failing to start.
@@ -239,6 +239,7 @@ struct UiaApi {
   decltype(&::UiaClientsAreListening) clients_are_listening = nullptr;
   decltype(&::UiaRaiseStructureChangedEvent) raise_structure = nullptr;
   decltype(&::UiaRaiseAutomationPropertyChangedEvent) raise_property = nullptr;
+  decltype(&::UiaRaiseAutomationEvent) raise_event = nullptr;
   bool ready = false;
 };
 
@@ -267,6 +268,8 @@ const UiaApi& Uia() {
         ::GetProcAddress(core, "UiaRaiseStructureChangedEvent"));
     loaded.raise_property = reinterpret_cast<decltype(loaded.raise_property)>(
         ::GetProcAddress(core, "UiaRaiseAutomationPropertyChangedEvent"));
+    loaded.raise_event = reinterpret_cast<decltype(loaded.raise_event)>(
+        ::GetProcAddress(core, "UiaRaiseAutomationEvent"));
     loaded.ready = loaded.return_provider && loaded.host_from_hwnd &&
                    loaded.clients_are_listening;
     return loaded;
@@ -323,6 +326,49 @@ POINT ClientOrigin(HWND hwnd) {
   POINT origin = {0, 0};
   ::ClientToScreen(hwnd, &origin);
   return origin;
+}
+
+// ---------------------------------------------------------------------------
+// Keyboard focus among a surface's hits (PhiUiaSetFocusedHit).
+//
+// Kept beside the providers, not in PhiHitSource, for the same reason the
+// roots are: a window that never moves a focus ring over its hits has no
+// entry and pays nothing. The index is re-resolved by key, exactly as an
+// element's is, so a rebuild between two reports cannot point it at a
+// neighbour. UI thread only.
+
+struct FocusedHit {
+  int index = -1;
+  int key = 0;
+};
+
+std::map<PhiHitSource*, FocusedHit>& FocusedHits() {
+  static base::NoDestructor<std::map<PhiHitSource*, FocusedHit>> focused;
+  return *focused;
+}
+
+// Whether `window` reports its focus at all.
+bool TracksFocus(PhiHitSource* window) {
+  return window && FocusedHits().count(window) > 0;
+}
+
+// The hits() index holding the window's keyboard focus, or -1.
+int FocusedHitOf(PhiHitSource* window) {
+  if (!window) {
+    return -1;
+  }
+  const auto it = FocusedHits().find(window);
+  if (it == FocusedHits().end() || it->second.index < 0) {
+    return -1;
+  }
+  return PhiUiaResolveHit(window->hits(), it->second.index, it->second.key);
+}
+
+// The roles a focus ring can sit on: everything a user can act on, and not
+// the static text, pictures and group boxes announced around them.
+bool RoleTakesFocus(PhiHitRole role) {
+  return role != PhiHitRole::kText && role != PhiHitRole::kImage &&
+         role != PhiHitRole::kGroup;
 }
 
 class PhiUiaRoot;
@@ -593,12 +639,19 @@ IFACEMETHODIMP PhiUiaElement::GetPropertyValue(PROPERTYID property,
       return VariantBool(value, true);
     case UIA_IsContentElementPropertyId:
       return VariantBool(value, PhiUiaIsContent(hit->role));
-    case UIA_HasKeyboardFocusPropertyId:
+    case UIA_HasKeyboardFocusPropertyId: {
+      // Only a surface that moves a focus ring over its hits reports one
+      // (PhiUiaSetFocusedHit), and only while its HWND holds the system
+      // focus; everywhere else this stays false rather than a claim the
+      // surface cannot honour.
+      PhiHitSource* owner = window();
+      return VariantBool(value, owner && owner->hwnd() &&
+                                    ::GetFocus() == owner->hwnd() &&
+                                    FocusedHitOf(owner) == index_);
+    }
     case UIA_IsKeyboardFocusablePropertyId:
-      // No PhiHitSource surface moves keyboard focus between its hits yet —
-      // the base has no focus ring and no arrow-key traversal — so this is
-      // false everywhere rather than a claim the surface cannot honour.
-      return VariantBool(value, false);
+      return VariantBool(value, TracksFocus(window()) && hit->enabled &&
+                                    RoleTakesFocus(hit->role));
     case UIA_IsOffscreenPropertyId: {
       PhiHitSource* owner = window();
       RECT client = {};
@@ -1006,10 +1059,19 @@ IFACEMETHODIMP PhiUiaRoot::GetFocus(IRawElementProviderFragment** target) {
   if (!target) {
     return E_INVALIDARG;
   }
-  // No hit takes keyboard focus (see UIA_IsKeyboardFocusablePropertyId in
-  // the element): the focused element is the window itself.
   *target = nullptr;
-  return attached() ? S_OK : UIA_E_ELEMENTNOTAVAILABLE;
+  if (!attached()) {
+    return UIA_E_ELEMENTNOTAVAILABLE;
+  }
+  // The hit holding the surface's focus ring (PhiUiaSetFocusedHit), while
+  // the window has the system focus; otherwise no hit takes keyboard focus
+  // and the focused element is the window itself.
+  if (::GetFocus() == hwnd_) {
+    if (ComPtr<PhiUiaElement> child = ChildAt(FocusedHitOf(window_))) {
+      *target = static_cast<IRawElementProviderFragment*>(child.Detach());
+    }
+  }
+  return S_OK;
 }
 
 ComPtr<PhiUiaElement> PhiUiaRoot::ChildAt(int index) {
@@ -1178,10 +1240,42 @@ void PhiUiaHitsChanged(PhiHitSource* window) {
   }
 }
 
+void PhiUiaSetFocusedHit(PhiHitSource* window, int index, bool announce) {
+  if (!window) {
+    return;
+  }
+  const std::vector<PhiHit>& hits = window->hits();
+  FocusedHit& focused = FocusedHits()[window];
+  focused.index = index >= 0 && index < static_cast<int>(hits.size()) ? index
+                                                                       : -1;
+  focused.key =
+      focused.index >= 0 ? hits[static_cast<size_t>(focused.index)].key : 0;
+  if (!announce || focused.index < 0) {
+    return;
+  }
+  // Raised only into a room someone is in, for a window a client has
+  // already asked about (no root: nobody holds this tree), and while the
+  // window actually has the system focus.
+  PhiUiaRoot* root = FindRoot(window);
+  const UiaApi& api = Uia();
+  if (!root || !api.raise_event || !ClientsAreListening() ||
+      ::GetFocus() != window->hwnd()) {
+    return;
+  }
+  // A rebuild that came with the move is announced first, so the client
+  // resolves the focused element in the tree it now has.
+  root->AnnounceHits();
+  if (ComPtr<PhiUiaElement> child = root->ChildAt(focused.index)) {
+    api.raise_event(static_cast<IRawElementProviderSimple*>(child.Get()),
+                    UIA_AutomationFocusChangedEventId);
+  }
+}
+
 void PhiUiaWindowDestroyed(PhiHitSource* window) {
   if (!window) {
     return;
   }
+  FocusedHits().erase(window);
   std::map<PhiHitSource*, ComPtr<PhiUiaRoot>>& roots = Roots();
   const auto it = roots.find(window);
   if (it == roots.end()) {

@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <deque>
 #include <map>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -182,6 +183,13 @@ class PhiControlDispatcher : public PhiControlDelegate {
                                uint64_t session_id) override;
   void OnDevToolsSessionClosed(uint64_t connection_id,
                                uint64_t session_id) override;
+  std::vector<bool> DevToolsTargetsInScope(
+      uint64_t connection_id,
+      const std::vector<PhiDevToolsTargetRef>& targets) override;
+  bool DevToolsMayCreateTargets(uint64_t connection_id) override;
+  std::optional<std::set<uint64_t>> EventAudience(
+      const std::string& type,
+      const base::DictValue& payload) override;
   void OnConnectionClosed(uint64_t connection_id) override;
 
   // Runs a control command on the UI thread; returns the legacy (v1) JSON
@@ -237,6 +245,14 @@ class PhiControlDispatcher : public PhiControlDelegate {
   // once the loop unwinds. The UI side owns its reference to the call and
   // releases it after running it.
   void RunOrDeferUiCall(PhiUiCall* call);
+  // The shell window a consent prompt is owned by; null before the first.
+  HWND PromptOwner();
+  // True when an admission would prompt but no window exists to ask in —
+  // RunUiCall then parks the call in awaiting_window_.
+  bool AuthorizeWaitsForWindow();
+  // kAwaitWindowTimer: runs the parked admissions once a window exists (or
+  // the switch answers them), and lets go of those whose waiter gave up.
+  void ResumeAuthorizationsAwaitingWindow();
   void RunUiCall(PhiUiCall* call);
   void DrainDeferredUiCalls();
   // I/O thread: waits up to `timeout_ms` and returns the stored reply (or
@@ -322,6 +338,21 @@ class PhiControlDispatcher : public PhiControlDelegate {
   void SyncDevToolsScopes();
   // Pushes `principal`'s cached scope to one session (any thread).
   void ApplySessionScope(const PhiPrincipal& principal, uint64_t session_id);
+  // THE target check, for /json/list, the CDP session open and every verb
+  // that takes a `targetId`: true when the DevTools target's tab sits in a
+  // window `principal` may see (VisibleWindows), always for an unrestricted
+  // one. An unknown target, or one with no tab (a worker), is out of scope
+  // for everyone else. UI thread; reads only, so it may run inside a nested
+  // modal loop.
+  bool TargetInScope(const PhiPrincipal& principal,
+                     const std::string& target_id);
+  // TargetInScope's tab lookup against an already computed window set.
+  bool TargetWindowIn(const std::string& target_id,
+                      const std::set<int64_t>& windows);
+  // The UI-thread half of DevToolsTargetsInScope.
+  std::vector<bool> TargetsInScopeOnUi(
+      uint64_t connection_id,
+      const std::vector<PhiDevToolsTargetRef>& targets);
 
   // The registry's trampoline. PhiVerbSpec cannot hold a pointer-to-member
   // (see PhiVerbHandler): the spec type is complete before this class is
@@ -562,9 +593,14 @@ class PhiControlDispatcher : public PhiControlDelegate {
   // SyncDevToolsScopes).
   static constexpr UINT_PTR kScopeSyncTimer = 2;
   static constexpr UINT kScopeSyncMs = 1000;
+  // Polls for the first window while an admission waits for one.
+  static constexpr UINT_PTR kAwaitWindowTimer = 3;
+  static constexpr UINT kAwaitWindowPollMs = 250;
   // Verbs and consent decisions that arrived while a modal loop was on the
   // UI thread, in arrival order (see RunOrDeferUiCall).
   std::deque<PhiUiCall*> deferred_ui_calls_;
+  // Admissions parked until a window can own the turn-on prompt.
+  std::vector<PhiUiCall*> awaiting_window_;
   bool draining_ui_calls_ = false;
   // The prompt mutex: a verb whose spec says `prompts` is running (its
   // dialog may be up); every other call parks in the deferred queue until

@@ -240,8 +240,8 @@ void EnsureClassRegistered(const PhiWindow::ClassSpec& spec, WNDPROC proc) {
 // and forget the other, and no surface needs a TOOLTIPS_CLASS, a TTM_
 // message or a second rect list. One window per UI thread, re-created when
 // the owning surface changes (the owner is what fixes the dpi and the
-// palette). Opt-in per surface — PhiWindow::EnableTooltips — so nothing
-// that ships today moves a pixel.
+// palette). Opt-in per surface — PhiWindow::EnableTooltips — which the
+// PhiPopover and PhiPanel bases opt every surface of theirs into.
 constexpr int kTipPaddingX = 8;      // Design units.
 constexpr int kTipPaddingY = 5;
 constexpr int kTipMaxWidth = 320;
@@ -253,11 +253,17 @@ constexpr int kTipFontSize = 12;
 class PhiTipWindow final : public PhiWindow {
  public:
   void ShowFor(PhiWindow* owner, const std::wstring& text);
+  // The same for an owner that is not a PhiWindow (PhiShowTooltipFor):
+  // `key` identifies it, `owner_hwnd` fixes the dpi.
+  void ShowFor(const void* key,
+               HWND owner_hwnd,
+               const PhiPalette& palette,
+               const std::wstring& text);
   void Hide();
   // The owner is going away: drop the window with it (Windows destroys an
   // owned popup anyway) so the next ShowFor() re-creates at the new dpi.
   void Forget();
-  const PhiWindow* owner_window() const { return owner_window_; }
+  const void* owner_window() const { return owner_window_; }
 
  protected:
   void Paint(HDC dc, const RECT& dirty) override;
@@ -266,8 +272,9 @@ class PhiTipWindow final : public PhiWindow {
   SIZE Measure();
 
   // Compared, never dereferenced after Forget().
-  RAW_PTR_EXCLUSION PhiWindow* owner_window_ = nullptr;
+  RAW_PTR_EXCLUSION const void* owner_window_ = nullptr;
   std::wstring text_;
+  bool dwm_rounded_ = false;
 };
 
 SIZE PhiTipWindow::Measure() {
@@ -289,14 +296,25 @@ SIZE PhiTipWindow::Measure() {
 }
 
 void PhiTipWindow::ShowFor(PhiWindow* owner, const std::wstring& text) {
-  if (!owner || !owner->hwnd() || text.empty()) {
+  if (!owner) {
     Hide();
     return;
   }
-  if (alive() && owner_window_ != owner) {
+  ShowFor(owner, owner->hwnd(), owner->palette(), text);
+}
+
+void PhiTipWindow::ShowFor(const void* key,
+                           HWND owner_hwnd,
+                           const PhiPalette& owner_palette,
+                           const std::wstring& text) {
+  if (!key || !owner_hwnd || text.empty()) {
+    Hide();
+    return;
+  }
+  if (alive() && owner_window_ != key) {
     Destroy();  // A different owner means a different dpi and palette.
   }
-  owner_window_ = owner;
+  owner_window_ = key;
   text_ = text;
   if (!alive()) {
     ClassSpec spec;
@@ -305,17 +323,17 @@ void PhiTipWindow::ShowFor(PhiWindow* owner, const std::wstring& text) {
     if (!Create(spec,
                 WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST |
                     WS_EX_TRANSPARENT,
-                WS_POPUP, origin, owner->hwnd())) {
+                WS_POPUP, origin, owner_hwnd)) {
       owner_window_ = nullptr;
       return;
     }
     // DWM rounds the corners; nothing here draws a curve, so the AA rule
     // (memory: phi-win-antialiasing) is not in play.
     const DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_ROUNDSMALL;
-    ::DwmSetWindowAttribute(hwnd(), DWMWA_WINDOW_CORNER_PREFERENCE, &corner,
-                            sizeof(corner));
+    dwm_rounded_ = SUCCEEDED(::DwmSetWindowAttribute(
+        hwnd(), DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner)));
   }
-  SetPalette(owner->palette());
+  SetPalette(owner_palette);
   const SIZE size = Measure();
   POINT cursor = {0, 0};
   ::GetCursorPos(&cursor);
@@ -362,7 +380,10 @@ void PhiTipWindow::Paint(HDC dc, const RECT&) {
     ::FillRect(dc, &client, fill);
     ::DeleteObject(fill);
   }
-  if (HBRUSH edge = ::CreateSolidBrush(colors.border)) {
+  // Windows 10 only: on 11 DWM draws the border along its rounded corners,
+  // and a square frame inside would cut across them.
+  HBRUSH edge = dwm_rounded_ ? nullptr : ::CreateSolidBrush(colors.border);
+  if (edge) {
     ::FrameRect(dc, &client, edge);
     ::DeleteObject(edge);
   }
@@ -400,6 +421,23 @@ PhiTipWindow& Tip() {
 }
 
 }  // namespace
+
+void PhiShowTooltipFor(HWND owner,
+                       const std::wstring& text,
+                       const PhiPalette& palette) {
+  if (!owner || text.empty()) {
+    PhiHideTooltipFor(owner);
+    return;
+  }
+  Tip().ShowFor(owner, owner, palette, text);
+}
+
+void PhiHideTooltipFor(HWND owner) {
+  PhiTipWindow* tip = TipIfCreated();
+  if (tip && owner && tip->owner_window() == owner) {
+    tip->Hide();
+  }
+}
 
 // ---------------------------------------------------------------------------
 // PhiFontSet.

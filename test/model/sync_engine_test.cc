@@ -324,13 +324,14 @@ struct MemoryState : psync::EngineStateStore {
     return it == values.end() ? std::nullopt
                               : std::optional<std::string>(it->second);
   }
-  void Set(const std::string& key,
+  bool Set(const std::string& key,
            const std::optional<std::string>& value) override {
     if (value) {
       values[key] = *value;
     } else {
       values.erase(key);
     }
+    return true;
   }
 };
 
@@ -346,9 +347,10 @@ struct MemorySidecars : psync::SettingsSidecars {
     return it == values.end() ? std::nullopt
                               : std::optional<std::string>(it->second.second);
   }
-  void Set(const std::string& key, int64_t stamp,
+  bool Set(const std::string& key, int64_t stamp,
            const std::string& value) override {
     values[key] = {stamp, value};
+    return true;
   }
 };
 
@@ -379,6 +381,10 @@ struct FakeSpaces : psync::SpaceLocalAccess {
   std::set<std::string> hidden;
   int next_uuid = 1;
   std::string device;
+  // The Space list cannot be asked (a stalled UI hop on Windows), or — with
+  // `store_closed` — the account's store cannot open at all.
+  bool unreachable = false;
+  bool store_closed = false;
 
   psync::LocalSpace* Find(const std::string& id) {
     for (psync::LocalSpace& space : spaces) {
@@ -405,7 +411,10 @@ struct FakeSpaces : psync::SpaceLocalAccess {
     return out;
   }
 
-  std::vector<psync::LocalSpace> CurrentSpaces() override {
+  std::optional<std::vector<psync::LocalSpace>> CurrentSpaces() override {
+    if (unreachable) {
+      return std::nullopt;
+    }
     std::vector<psync::LocalSpace> out;
     for (const psync::LocalSpace& space : Visible()) {
       if (space.space_id == psync::kDefaultSpaceUuid ||
@@ -415,10 +424,19 @@ struct FakeSpaces : psync::SpaceLocalAccess {
     }
     return out;
   }
-  std::vector<psync::LocalSpace> AllSpacesForOrdering() override {
+  std::optional<std::vector<psync::LocalSpace>> AllSpacesForOrdering() override {
+    if (unreachable) {
+      return std::nullopt;
+    }
     return spaces;
   }
-  std::vector<psync::LocalSpace> PairableSpaces() override { return Visible(); }
+  std::optional<std::vector<psync::LocalSpace>> PairableSpaces() override {
+    if (unreachable) {
+      return std::nullopt;
+    }
+    return Visible();
+  }
+  bool SpaceStoreUnavailable() override { return unreachable && store_closed; }
   std::optional<std::string> GlobalUuid(const std::string& profile_id) override {
     const auto it = profile_uuids.find(profile_id);
     return it == profile_uuids.end() ? std::nullopt
@@ -432,8 +450,14 @@ struct FakeSpaces : psync::SpaceLocalAccess {
     }
     return std::nullopt;
   }
-  bool IsKnownLocalProfile(const std::string& profile_id) override {
-    return profile_id == "Default" || profile_uuids.count(profile_id);
+  psync::LocalPresence IsKnownLocalProfile(
+      const std::string& profile_id) override {
+    if (unreachable) {
+      return psync::LocalPresence::kUnreachable;
+    }
+    return profile_id == "Default" || profile_uuids.count(profile_id)
+               ? psync::LocalPresence::kPresent
+               : psync::LocalPresence::kAbsent;
   }
   void DropProfileMapping(const std::string& profile_id) override {
     profile_uuids.erase(profile_id);
@@ -476,8 +500,12 @@ struct FakeSpaces : psync::SpaceLocalAccess {
   void DropSpaceMapping(const std::string& space_id) override {
     mappings.erase(space_id);
   }
-  bool IsKnownLocalSpace(const std::string& space_id) override {
-    return Find(space_id) != nullptr;
+  psync::LocalPresence IsKnownLocalSpace(const std::string& space_id) override {
+    if (unreachable) {
+      return psync::LocalPresence::kUnreachable;
+    }
+    return Find(space_id) ? psync::LocalPresence::kPresent
+                          : psync::LocalPresence::kAbsent;
   }
   std::map<std::string, std::string> AllSpaceMappings() override {
     return mappings;
@@ -1007,7 +1035,8 @@ struct Device {
       auto setting = StringSetting("PhiDefaultSpaceUuid", {});
       setting.reconcile = [this] {
         const auto id = local.LocalSpaceId(prefs["PhiDefaultSpaceUuid"]);
-        if (id && local.IsKnownLocalSpace(*id)) {
+        if (id && local.IsKnownLocalSpace(*id) ==
+                      psync::LocalPresence::kPresent) {
           applied_default_space = *id;
         }
       };
@@ -1307,6 +1336,8 @@ void TestUndecryptableIsNeverOverwritten() {
   Check(ServerSetting(server, key, "PhiCurrentThemeId") == "default" &&
             b.prefs["PhiCurrentThemeId"] == "clobber",
         "an unreadable entity is never overwritten");
+  Check(b.marker.file.marker.has_value(),
+        "a refusal on record does not rewind the marker every round");
   // The key catches up: one replay re-reads it.
   b.domain.key = key;
   b.engine->PullOnce();
@@ -1912,6 +1943,70 @@ void TestSameNamedSpacesRemainSeparate() {
         "an existing explicit Space mapping still adopts the account Space");
 }
 
+void TestUnreachableSpaceListNeverDuplicates() {
+  FakeServer server;
+  const keys::Bytes key = keys::GenerateArk();
+  int64_t clock = 1'000'000;
+  Device a(server, key, &clock, "a");
+  a.local.Add("A-WORK", "Work", "Default", 2);
+  a.engine->SetSpaceSyncEnabled(true);
+  a.engine->PullOnce();
+  Device b(server, key, &clock, "b");
+  b.engine->SetSpaceSyncEnabled(true);
+  b.engine->PullOnce();
+  const std::string b_work = *b.local.LocalSpaceId(a.local.mappings["A-WORK"]);
+
+  // A rename arrives while B's Space list cannot be asked (a UI stall): no
+  // answer is never "gone", so nothing is dropped, created or published, and
+  // the page waits behind its marker.
+  clock += 1'000;
+  a.local.Find("A-WORK")->name = "Office";
+  a.engine->HandleLocalSpaceChange();
+  const auto marker_before = b.marker.file.marker;
+  const int commits = server.commits;
+  b.local.unreachable = true;
+  b.engine->PullOnce();
+  b.local.unreachable = false;
+  Check(b.local.spaces.size() == 2 && b.local.mappings.count(b_work) &&
+            b.local.Find(b_work)->name == "Work" &&
+            b.local.profile_uuids.count("Default"),
+        "an unreachable Space list keeps every mapping and lands no Space");
+  Check(b.engine->last_outcome() == psync::RoundOutcome::kLocalReadFailed &&
+            b.marker.file.marker == marker_before &&
+            server.commits == commits,
+        "the round stops behind its marker and publishes nothing");
+
+  // The next round replays the page into the same Space.
+  b.engine->PullOnce();
+  Check(b.local.spaces.size() == 2 && b.local.Find(b_work)->name == "Office" &&
+            b.engine->last_outcome() == psync::RoundOutcome::kOk,
+        "the next round lands the rename in place");
+
+  // A store that cannot open is no stall: the arrival parks, nothing is
+  // dropped or created, and the marker (with every other kind) moves on.
+  clock += 1'000;
+  a.local.Find("A-WORK")->name = "Studio";
+  a.engine->HandleLocalSpaceChange();
+  const auto parked_from = b.marker.file.marker;
+  b.local.unreachable = true;
+  b.local.store_closed = true;
+  b.engine->PullOnce();
+  b.local.unreachable = false;
+  b.local.store_closed = false;
+  const std::string work_uuid = a.local.mappings["A-WORK"];
+  Check(b.local.spaces.size() == 2 && b.local.mappings.count(b_work) &&
+            b.local.Find(b_work)->name == "Office" &&
+            b.spaces.table.cursors[work_uuid].pending_apply.has_value(),
+        "a store that cannot open parks the arrival and keeps every mapping");
+  Check(b.engine->last_outcome() != psync::RoundOutcome::kLocalReadFailed &&
+            b.marker.file.marker != parked_from,
+        "a store that cannot open does not hold the marker");
+  b.engine->PullOnce();
+  Check(b.local.spaces.size() == 2 && b.local.Find(b_work)->name == "Studio" &&
+            !b.spaces.table.cursors[work_uuid].pending_apply,
+        "the parked arrival lands once the store opens");
+}
+
 void TestDefaultSpaceArrivesAfterSettings() {
   FakeServer server;
   const keys::Bytes key = keys::GenerateArk();
@@ -2011,6 +2106,7 @@ int main() {
   TestRuleClaimsATwin();
   TestDuplicateRulesCollapse();
   TestSameNamedSpacesRemainSeparate();
+  TestUnreachableSpaceListNeverDuplicates();
   if (g_failures) {
     std::printf("sync_engine_test: %d failure(s)\n", g_failures);
     return 1;

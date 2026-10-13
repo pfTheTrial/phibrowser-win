@@ -210,17 +210,36 @@ void PhiNewTabPage::Reposition() {
     const int ring = Scaled(2);
     ::InflateRect(&inner, -ring, -ring);
     SetPanelBounds(inner);
-    const int d = Scaled(6) * 2;  // The sheet's radius 8, less the ring.
-    ::SetWindowRgn(hwnd(),
-                   ::CreateRoundRectRgn(0, 0, inner.right - inner.left + 1,
-                                        inner.bottom - inner.top + 1, d, d),
-                   TRUE);
+    ApplyPaneCorners();
   } else {
     SetPagePanelBounds(controller_->ContentRect(), Scaled(8));
   }
   RaisePanel();
   LayoutField();
   Invalidate();
+}
+
+void PhiNewTabPage::ApplyPaneCorners() {
+  if (!has_pane_) {
+    return;
+  }
+  // The sheet's radius less the ring. Not a bare region (it stair-steps):
+  // the EDIT child rules out a shaped layer, and what lies outside the curve
+  // is the framework's pane chrome, which no corner cap could match — so the
+  // fringe carries the arc's partial pixels in the page's own ground.
+  SetCornerFringe(Scaled(6), 0xF, QueryPalette().card);
+}
+
+void PhiNewTabPage::OnThemeChanged() {
+  PhiPanel::OnThemeChanged();
+  ApplyPaneCorners();
+  // The EDIT keeps the brush and colours it was last painted with until it
+  // repaints itself: WM_CTLCOLOREDIT only runs then, and an invalidate of
+  // this window does not reach a child it clips out (WS_CLIPCHILDREN).
+  if (field_ && ::IsWindow(field_)) {
+    ::RedrawWindow(field_, nullptr, nullptr,
+                   RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN);
+  }
 }
 
 void PhiNewTabPage::Refresh() {

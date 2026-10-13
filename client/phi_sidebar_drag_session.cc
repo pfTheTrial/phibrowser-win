@@ -14,6 +14,7 @@
 
 #include "base/compiler_specific.h"
 #include "base/containers/span.h"
+#include "phibrowser-win/client/phi_app_model.h"
 #include "phibrowser-win/client/phi_dwrite.h"
 #include "phibrowser-win/client/phi_new_tab_page.h"
 #include "phibrowser-win/client/phi_sidebar_view.h"
@@ -28,6 +29,7 @@ using phi_framework::SplitSnapshot;
 using phi_framework::TabSnapshot;
 using phi_framework::WindowSnapshot;
 
+using sidebar_metrics::BookmarkIndentDepth;
 using sidebar_metrics::kBookmarkIndent;
 using sidebar_metrics::kCornerRadius;
 using sidebar_metrics::kHTabGap;
@@ -354,7 +356,7 @@ void PhiSidebarDragSession::RetargetDragSlide() {
         const std::vector<RECT> target = view_->PinnedGridWalk(preview, layout, &preview_rows);
         for (int i = 0; i < static_cast<int>(view_->pinned().size()); ++i) {
           const size_t j = static_cast<size_t>(i < at ? i : i + 1);
-          const SlideVec v = GridSlide(pins[i].bounds, target[j]);
+          const SlideVec v = GridSlide(pins[i].frame, target[j]);
           if (v.moved()) {
             row_to[view_->pinned()[static_cast<size_t>(i)].guid] = v;
           }
@@ -390,7 +392,7 @@ void PhiSidebarDragSession::RetargetDragSlide() {
         if (j >= target.size()) {
           continue;
         }
-        const SlideVec v = GridSlide(pins[i].bounds, target[j]);
+        const SlideVec v = GridSlide(pins[i].frame, target[j]);
         if (v.moved()) {
           row_to[view_->pinned()[static_cast<size_t>(i)].guid] = v;
         }
@@ -430,7 +432,7 @@ void PhiSidebarDragSession::RetargetDragSlide() {
         if (j >= target.size()) {
           continue;
         }
-        const SlideVec v = GridSlide(pins[i].bounds, target[j]);
+        const SlideVec v = GridSlide(pins[i].frame, target[j]);
         if (v.moved()) {
           row_to[view_->pinned()[static_cast<size_t>(i)].guid] = v;
         }
@@ -467,7 +469,7 @@ void PhiSidebarDragSession::RetargetDragSlide() {
         }
         const int j = i > Index() ? i - 1 : i;
         const size_t jj = static_cast<size_t>(j >= to_pos ? j + 1 : j);
-        const SlideVec v = GridSlide(pins[i].bounds, target[jj]);
+        const SlideVec v = GridSlide(pins[i].frame, target[jj]);
         if (v.moved()) {
           row_to[view_->pinned()[static_cast<size_t>(i)].guid] = v;
         }
@@ -712,7 +714,10 @@ PhiDropBand PhiSidebarDragSession::DropBandAt(
   if (!::PtInRect(&window_rect, screen)) {
     return PhiDropBand::kOutside;
   }
-  const PhiSidebarRects layout = shell_->SidebarRects();
+  // The stored bands where they sit on screen — scrolled inside their
+  // capped viewport — not their natural rects.
+  const PhiSidebarRects layout =
+      view_->ScrolledStoredBands(shell_->SidebarRects());
   // The PAGE first, and before the incognito and horizontal-layout exits
   // below: a split drop is offered in every layout and off the record too
   // (it forms no stored row, so there is nothing to keep).
@@ -849,7 +854,13 @@ void PhiSidebarDragSession::Update(POINT pt) {
     const int chip = strip()->ChipAt(pt);
     if (chip >= 0 && chip < static_cast<int>(strip()->chips().size())) {
       const PhiSpaceChip& target = strip()->chips()[static_cast<size_t>(chip)];
-      if (!target.is_agent && target.id != shell_->SidebarActiveSpace()) {
+      // An off-the-record tab only ever drops onto an Incognito Space's
+      // pip: a regular one would re-open it in the regular profile.
+      const PhiShellWindow* owner = shell_->SidebarOwner();
+      const bool otr_into_regular = owner && owner->ShowsIncognito() &&
+                                    !model::IsIncognitoSpaceId(target.id);
+      if (!target.is_agent && !otr_into_regular &&
+          target.id != shell_->SidebarActiveSpace()) {
         pip_target = target.id;
         pip_label = target.label;
       }
@@ -893,6 +904,26 @@ void PhiSidebarDragSession::Update(POINT pt) {
       }
     }
     UpdateBadge(pt);
+    return;
+  }
+  if (band == PhiDropBand::kNone) {
+    // §4.8's cancel band (DropBandAt): nothing is resolved here — no place,
+    // no gap, no badge. The list closes the gap behind the row, as it does
+    // while the row hovers the page, and a release is a cancel (Commit).
+    CancelHoverExpand();
+    place_valid_ = false;
+    folder_key_ = {};
+    bookmark_drop_folder_row_ = -1;
+    strip_anchor_ = -1;
+    gap_group_.clear();
+    if (insert_ != -1 || band_changed) {
+      insert_ = -1;
+      RetargetDragSlide();
+      if (shell_hwnd()) {
+        ::InvalidateRect(shell_hwnd(), nullptr, FALSE);
+      }
+    }
+    UpdateBadge(pt);  // No text for the band: the badge hides.
     return;
   }
   // The pure resolvers describe the drop as a SidebarPlace and the gap slot
@@ -1003,7 +1034,10 @@ void PhiSidebarDragSession::Commit() {
   // Read before the drop clears them: whether the image slides home or just
   // goes depends on where the pointer was and whether anything happened.
   const bool active = active_;
-  const bool inside = image_inside_;
+  // A release in the cancel band is a cancel: the ghost slides home even
+  // though it hangs over the page as the card there.
+  const bool inside = image_inside_ ||
+                      (band_ == PhiDropBand::kNone && pip_target_.empty());
   finished_ = true;  // The destructor that follows aborts nothing.
   const bool acted = CommitDragImpl();
   if (active) {
@@ -1062,6 +1096,9 @@ bool PhiSidebarDragSession::CommitDragImpl() {
   }
   if (!active) {
     return false;
+  }
+  if (band == PhiDropBand::kNone && kind != PhiDragKind::kChip) {
+    return false;  // §4.8's cancel band: the release cancels.
   }
   if (band == PhiDropBand::kOutside) {
     return TearOffToNewWindow(kind, key, release);
@@ -1252,7 +1289,9 @@ RECT PhiSidebarDragSession::DragSourceRect() {
         r = row.bounds;
         r.top += Scaled(kRowPad);
         r.bottom -= Scaled(kRowPad);
-        r.left += row.depth * Scaled(kBookmarkIndent);
+        r.left = std::min(
+            r.left + BookmarkIndentDepth(row.depth) * Scaled(kBookmarkIndent),
+            r.right - Scaled(shell_metrics::kFaviconSlot) - Scaled(12));
       }
       break;
     case PhiDragKind::kChip:
@@ -2388,6 +2427,9 @@ int PhiSidebarDragSession::DragInsertSlot(POINT pt) {
     return r.gap_slot;
   };
   const PhiSidebarRects layout = shell_->SidebarRects();
+  if (band_ == PhiDropBand::kNone && kind_ != PhiDragKind::kChip) {
+    return -1;  // The cancel band (or a pip target): no place, no gap.
+  }
   switch (kind_) {
     case PhiDragKind::kTab:
       switch (band_) {

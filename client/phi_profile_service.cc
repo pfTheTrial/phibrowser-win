@@ -57,10 +57,20 @@ void PhiProfileService::OnProfileCreated(const char* profile_id) {
     return;  // Settings' "New Profile" (CreateProfileNamed) asks for nothing.
   }
   // The request this profile answers: by the display name it was asked
-  // under, else the oldest — the framework reports the name only once the
-  // attributes entry exists, which a failed creation never reaches.
+  // under, and ONLY by that. A creation nobody here asked for (Settings'
+  // "New Profile", a second window's) answers none, and a FAILED creation
+  // carries no name to match — the framework reports the name only once
+  // the attributes entry exists — so it consumes nothing either: taking
+  // the oldest request instead handed another request's waiter the wrong
+  // profile (or a failure). An unanswered request ends at its deadline
+  // (ExpirePending), with the timeout reply.
+  if (id.empty()) {
+    LOG(ERROR) << "[PhiClient] a profile creation failed; its request (if "
+                  "any) ends at its deadline";
+    return;
+  }
+  const std::string name = ProfileDisplayName(id);
   auto pending = pending_.end();
-  const std::string name = id.empty() ? std::string() : ProfileDisplayName(id);
   if (!name.empty()) {
     for (auto it = pending_.begin(); it != pending_.end(); ++it) {
       if (it->display_name == name) {
@@ -70,22 +80,11 @@ void PhiProfileService::OnProfileCreated(const char* profile_id) {
     }
   }
   if (pending == pending_.end()) {
-    pending = pending_.begin();
+    return;  // Not one of ours.
   }
   const PendingProfile request = std::move(*pending);
   pending_.erase(pending);
   host_.UpdateSweepTimer();
-  if (id.empty()) {
-    LOG(ERROR) << "[PhiClient] profile creation failed for '"
-               << request.display_name << "'";
-    if (request.pending_reply_id) {
-      host_.CompleteProfileReply(request.pending_reply_id, kCreateFailedReply);
-    }
-    if (request.then == PendingProfile::Then::kSyncPairing) {
-      host_.SyncPairingProfileCreated(request.display_name, std::string());
-    }
-    return;
-  }
   switch (request.then) {
     case PendingProfile::Then::kReplyOnly: {
       base::DictValue out;

@@ -7,6 +7,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 #include "base/memory/raw_ptr_exclusion.h"
@@ -48,10 +49,13 @@
 //     region (SetWindowRgn) cuts a shape on the pixel grid and every
 //     corner it makes is stair-stepped; a WS_EX_LAYERED child carries
 //     per-pixel alpha instead. See
-//     ~/.claude/projects/-home-jx-Phi/memory/phi-win-antialiasing.md. The
-//     peek CARD and the reader panel keep their regions because they host
-//     a reparented browser child and the region is what clips IT — that is
-//     the sanctioned exception, and it is the only one.
+//     ~/.claude/projects/-home-jx-Phi/memory/phi-win-antialiasing.md. A
+//     panel that HOSTS a child (the peek card's reparented browser, the
+//     new-tab page's EDIT) cannot be a layer: it takes a corner FRINGE
+//     (SetCornerFringe) — a region of only the pixels the curve covers
+//     fully, plus the arc's partial pixels on layered siblings beneath it.
+//     A panel over the whole content card (the reader, the page panels) is
+//     rounded by the shell's own corner caps above it and cuts nothing.
 //
 // A PANEL IS NOT SELF-OWNED. The controller and the surface registry own
 // these objects; a subclass therefore calls Destroy() as the FIRST thing
@@ -205,6 +209,15 @@ class PhiLayerSurface {
   RAW_PTR_EXCLUSION void* bits_ = nullptr;
 };
 
+// Hands a reparented browser child back to the desktop before the panel
+// that hosts it goes (destroying the parent would take Chromium's HWND down
+// under it). Hidden FIRST, re-styled as a popup and parked off-screen: a
+// visible WS_CHILD of the desktop flashes the page at the screen's top-left
+// until Chromium gets round to closing it.
+void PhiReleaseHostedChild(HWND child);
+
+class PhiCornerFringe;
+
 // ---------------------------------------------------------------------------
 // PhiPanel.
 
@@ -275,6 +288,21 @@ class PhiPanel : public PhiWindow {
   // normally just calls Invalidate() like any other surface.
   bool CommitLayer();
 
+  // Rounds a panel no shaped layer can round: one that hosts a child
+  // window, over pixels this client does not paint (the opener's live page,
+  // a split pane's sheet), so no corner cap could know their colour. The
+  // window region keeps only the pixels a rounded rect of `radius` covers
+  // FULLY; the arcs' partly covered pixels go to four click-through layered
+  // siblings stacked right beneath the panel, each carrying `fill` at its
+  // coverage, which DWM composites over whatever lies under them — an
+  // antialiased curve with no guess at the outside. `corners` masks which
+  // corners round (PhiRoundRectCoverage's bits: TL, TR, BL, BR). From here
+  // on the fringe follows the panel's size, position, visibility and
+  // z-order by itself; call again when `fill` moves (a theme change).
+  void SetCornerFringe(int radius, unsigned corners, COLORREF fill);
+  // Squares the panel again and drops the fringe.
+  void ClearCornerFringe();
+
  protected:
   // The default is a no-op: a LAYERED panel's pixels come from
   // ComposeLayer() and its back-buffer path is never taken. Every opaque
@@ -308,6 +336,10 @@ class PhiPanel : public PhiWindow {
  private:
   HWND parent_ = nullptr;
   Options options_;
+  std::unique_ptr<PhiCornerFringe> fringe_;
+  // Set by SetPagePanelBounds: the panel covers the content card, whose
+  // corners the shell's caps round — so a raise asks for them back on top.
+  bool page_panel_ = false;
 };
 
 #endif  // defined(_WIN32)

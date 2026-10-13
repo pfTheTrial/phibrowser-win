@@ -203,7 +203,146 @@ std::string AddingPathPercentEncoding(std::string_view s) {
   return out;
 }
 
+// RFC 3492 §6.1 bias adaptation.
+uint32_t PunycodeAdapt(uint32_t delta, uint32_t points, bool first) {
+  constexpr uint32_t kBase = 36, kTMin = 1, kTMax = 26, kSkew = 38,
+                     kDamp = 700;
+  delta = first ? delta / kDamp : delta / 2;
+  delta += delta / points;
+  uint32_t k = 0;
+  while (delta > ((kBase - kTMin) * kTMax) / 2) {
+    delta /= kBase - kTMin;
+    k += kBase;
+  }
+  return k + (kBase - kTMin + 1) * delta / (delta + kSkew);
+}
+
+// RFC 3492 §6.3 encoding of one label's scalars. False on overflow.
+bool PunycodeEncode(const std::u32string& input, std::string* out) {
+  constexpr uint32_t kBase = 36, kTMin = 1, kTMax = 26;
+  const auto digit = [](uint32_t d) {
+    return static_cast<char>(d < 26 ? 'a' + d : '0' + (d - 26));
+  };
+  uint32_t n = 0x80;
+  uint32_t delta = 0;
+  uint32_t bias = 72;
+  uint32_t basic = 0;
+  for (char32_t c : input) {
+    if (c < 0x80) {
+      out->push_back(static_cast<char>(c));
+      ++basic;
+    }
+  }
+  uint32_t handled = basic;
+  if (basic > 0) {
+    out->push_back('-');
+  }
+  const uint32_t length = static_cast<uint32_t>(input.size());
+  while (handled < length) {
+    uint32_t m = UINT32_MAX;
+    for (char32_t c : input) {
+      if (c >= n && c < m) {
+        m = c;
+      }
+    }
+    if (m - n > (UINT32_MAX - delta) / (handled + 1)) {
+      return false;
+    }
+    delta += (m - n) * (handled + 1);
+    n = m;
+    for (char32_t c : input) {
+      if (c < n && ++delta == 0) {
+        return false;
+      }
+      if (c != n) {
+        continue;
+      }
+      uint32_t q = delta;
+      for (uint32_t k = kBase;; k += kBase) {
+        const uint32_t t =
+            k <= bias ? kTMin : (k >= bias + kTMax ? kTMax : k - bias);
+        if (q < t) {
+          break;
+        }
+        out->push_back(digit(t + (q - t) % (kBase - t)));
+        q = (q - t) / (kBase - t);
+      }
+      out->push_back(digit(q));
+      bias = PunycodeAdapt(delta, handled + 1, handled == basic);
+      delta = 0;
+      ++handled;
+    }
+    ++delta;
+    ++n;
+  }
+  return true;
+}
+
+// One label of RuleHostForRouting: sigils kept, the core ACE-encoded when it
+// is not ASCII. False when it cannot be encoded.
+bool AppendRoutingLabel(const std::u32string& label, std::string* out) {
+  size_t begin = 0;
+  size_t end = label.size();
+  while (begin < end && label[begin] == U'*') {
+    ++begin;
+  }
+  while (end > begin && label[end - 1] == U'*') {
+    --end;
+  }
+  out->append(begin, '*');
+  const std::u32string core = label.substr(begin, end - begin);
+  const bool ascii = std::all_of(core.begin(), core.end(),
+                                 [](char32_t c) { return c < 0x80; });
+  if (ascii) {
+    for (char32_t c : core) {
+      out->push_back(static_cast<char>(c));
+    }
+  } else {
+    out->append("xn--");
+    if (!PunycodeEncode(core, out)) {
+      return false;
+    }
+  }
+  out->append(label.size() - end, '*');
+  return true;
+}
+
 }  // namespace
+
+std::string RuleHostForRouting(std::string_view host) {
+  const bool ascii = std::all_of(host.begin(), host.end(), [](char c) {
+    return static_cast<unsigned char>(c) < 0x80;
+  });
+  if (ascii || !ValidUtf8(host)) {
+    return std::string(host);
+  }
+  std::string out;
+  std::u32string label;
+  size_t at = 0;
+  while (at <= host.size()) {
+    char32_t cp = U'.';  // The end closes the last label.
+    size_t len = 1;
+    if (at < host.size()) {
+      cp = DecodeAt(host, at, &len);
+    }
+    const bool stop = cp == U'.' || cp == 0x3002 || cp == 0xFF0E ||
+                      cp == 0xFF61;
+    if (!stop) {
+      label.push_back(cp);
+      at += len;
+      continue;
+    }
+    if (!AppendRoutingLabel(label, &out)) {
+      return std::string(host);
+    }
+    label.clear();
+    if (at < host.size()) {
+      out.push_back('.');
+    }
+    at += len;
+  }
+  return out;
+}
 
 std::string NewRuleId() {
   static thread_local std::mt19937_64 rng([] {

@@ -5,6 +5,7 @@
 #include "phibrowser-win/client/phi_folder_icon_picker.h"
 
 #include <algorithm>
+#include <memory>
 #include <utility>
 #include <vector>
 
@@ -73,6 +74,14 @@ class Picker : public PhiPopover {
     Reposition(placement, size);
     Show();
     return true;
+  }
+
+  // Hands the callback back when Open() failed: no window means no
+  // OnNcDestroy, so the caller answers it.
+  PhiFolderIconChosen TakeCallback() {
+    PhiFolderIconChosen callback = std::move(on_chosen_);
+    on_chosen_ = PhiFolderIconChosen();
+    return callback;
   }
 
  protected:
@@ -198,35 +207,51 @@ void PhiOpenFolderIconPicker(PhiShellWindow* controller,
   picker->DeleteWhenDestroyed();
   if (!picker->Open(anchor_screen)) {
     // Open() never showed a window, so OnNcDestroy will not run: answer
-    // here and drop the object.
+    // here (a cancel) and drop the object.
+    PhiFolderIconChosen callback = picker->TakeCallback();
     delete picker;
+    if (callback) {
+      callback(std::string());
+    }
   }
 }
 
 std::string PhiPickFolderIcon(PhiShellWindow* controller,
                               const RECT& anchor_screen,
                               const std::string& selected) {
-  std::string chosen;
-  bool done = false;
+  // On the heap, not this frame: a WM_QUIT can end the loop below while
+  // the picker is still up, and its later answer must land somewhere.
+  struct Answer {
+    std::string chosen;
+    bool done = false;
+  };
+  auto answer = std::make_shared<Answer>();
   PhiOpenFolderIconPicker(controller, anchor_screen, selected,
-                          [&chosen, &done](const std::string& icon_id) {
-                            chosen = icon_id;
-                            done = true;
+                          [answer](const std::string& icon_id) {
+                            answer->chosen = icon_id;
+                            answer->done = true;
                           });
-  if (done) {
-    return chosen;  // The picker never opened.
+  if (answer->done) {
+    return answer->chosen;  // The picker never opened.
   }
   // Control verbs from the pipe are deferred while this loop is on the
   // stack, so nothing can destroy the owning controller under it. Unlike
-  // the loop this replaced, no state lives on this frame beyond two
-  // locals the callback writes — the picker owns itself.
-  PhiModalScope modal;
-  MSG msg;
-  while (!done && ::GetMessageW(&msg, nullptr, 0, 0)) {
-    ::TranslateMessage(&msg);
-    ::DispatchMessageW(&msg);
+  // the loop this replaced, no state lives on this frame — the picker
+  // owns itself and the answer is shared.
+  {
+    PhiModalScope modal;
+    MSG msg = {};
+    BOOL got = 1;  // > 0 until GetMessageW says otherwise.
+    while (!answer->done && (got = ::GetMessageW(&msg, nullptr, 0, 0)) > 0) {
+      ::TranslateMessage(&msg);
+      ::DispatchMessageW(&msg);
+    }
+    if (got == 0) {
+      // WM_QUIT belongs to the outer loop: put it back for it to see.
+      ::PostQuitMessage(static_cast<int>(msg.wParam));
+    }
   }
-  return chosen;
+  return answer->chosen;
 }
 
 }  // namespace phi_client

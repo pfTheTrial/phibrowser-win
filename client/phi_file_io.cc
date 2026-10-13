@@ -23,13 +23,20 @@ bool PhiRemoveFileIfPresent(const std::wstring& path) {
   return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND;
 }
 
-bool PhiReadFileBytes(const std::wstring& path, std::string* out) {
+namespace {
+
+PhiReadStatus ReadOnce(const std::wstring& path,
+                       std::string* out,
+                       DWORD* error) {
   out->clear();
   HANDLE file = ::CreateFileW(path.c_str(), GENERIC_READ,
                               FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
                               OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
   if (file == INVALID_HANDLE_VALUE) {
-    return false;
+    *error = ::GetLastError();
+    return *error == ERROR_FILE_NOT_FOUND || *error == ERROR_PATH_NOT_FOUND
+               ? PhiReadStatus::kNotFound
+               : PhiReadStatus::kError;
   }
   char buffer[16384];
   DWORD read = 0;
@@ -44,13 +51,37 @@ bool PhiReadFileBytes(const std::wstring& path, std::string* out) {
     }
     out->append(buffer, read);
   }
-  ::CloseHandle(file);
   if (!ok) {
-    LOG(ERROR) << "[PhiFile] read failed " << base::WideToUTF8(path)
-               << " err=" << ::GetLastError();
+    *error = ::GetLastError();
     out->clear();
   }
-  return ok;
+  ::CloseHandle(file);
+  return ok ? PhiReadStatus::kOk : PhiReadStatus::kError;
+}
+
+}  // namespace
+
+PhiReadStatus PhiReadFile(const std::wstring& path, std::string* out) {
+  // A scanner's lock is usually gone in well under a second.
+  constexpr int kAttempts = 3;
+  DWORD error = 0;
+  for (int attempt = 1;; ++attempt) {
+    const PhiReadStatus status = ReadOnce(path, out, &error);
+    if (status != PhiReadStatus::kError) {
+      return status;
+    }
+    if (attempt == kAttempts) {
+      break;
+    }
+    ::Sleep(100);
+  }
+  LOG(ERROR) << "[PhiFile] read failed " << base::WideToUTF8(path)
+             << " err=" << error;
+  return PhiReadStatus::kError;
+}
+
+bool PhiReadFileBytes(const std::wstring& path, std::string* out) {
+  return PhiReadFile(path, out) == PhiReadStatus::kOk;
 }
 
 bool PhiWriteFileAtomic(const std::wstring& path, std::string_view bytes) {
@@ -114,8 +145,13 @@ PhiJsonFileStatus PhiReadJsonFile(const std::wstring& path,
     *schema_out = 0;
   }
   std::string json;
-  if (!PhiReadFileBytes(path, &json)) {
-    return PhiJsonFileStatus::kMissing;
+  switch (PhiReadFile(path, &json)) {
+    case PhiReadStatus::kNotFound:
+      return PhiJsonFileStatus::kMissing;
+    case PhiReadStatus::kError:
+      return PhiJsonFileStatus::kUnreadable;
+    case PhiReadStatus::kOk:
+      break;
   }
   std::optional<base::DictValue> root =
       base::JSONReader::ReadDict(json, base::JSON_PARSE_RFC);

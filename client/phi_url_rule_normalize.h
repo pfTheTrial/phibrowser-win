@@ -34,6 +34,20 @@ std::string NewRuleId();
 std::optional<std::string> NormalizedRulePathPrefix(
     const std::optional<std::string>& raw);
 
+// The ROUTING-TABLE form of a stored (canonical, Unicode) rule host: the
+// fork matches against GURL::host(), which spells an internationalised
+// domain in its ASCII form, so a Unicode host would never match. Each
+// label holding a non-ASCII scalar becomes "xn--" + its RFC 3492 Punycode
+// (IDNA's ACE form); the wildcard sigils stay where they were ("*.bücher.de"
+// -> "*.xn--bcher-kva.de", "*bücher*" -> "*xn--bcher-kva*"), and the IDNA
+// full stops U+3002 / U+FF0E / U+FF61 separate labels as '.' does. The
+// stored rule — what the editor shows and sync carries — keeps the Unicode.
+// Limits: no NFC step (the stored host is already lowercased, and typed
+// text is NFC in practice), and a "contains" needle matches only when it is
+// whole labels — a fragment of a label has no ACE form of its own. ASCII
+// hosts, and bytes that are not UTF-8, come back unchanged.
+std::string RuleHostForRouting(std::string_view host);
+
 }  // namespace phi_client::store
 
 #endif  // PHIBROWSER_WIN_CLIENT_PHI_URL_RULE_NORMALIZE_H_

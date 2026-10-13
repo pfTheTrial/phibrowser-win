@@ -25,7 +25,9 @@ PhiThemeBus& PhiThemeBus::Get() {
   return *bus;
 }
 
-PhiThemeBus::PhiThemeBus() : system_dark_(PhiSystemPrefersDark()) {
+PhiThemeBus::PhiThemeBus()
+    : system_dark_(PhiSystemPrefersDark()),
+      high_contrast_(PhiHighContrastActive()) {
   EnsureWindow();
 }
 
@@ -60,7 +62,8 @@ LRESULT CALLBACK PhiThemeBus::BusProc(HWND hwnd,
   switch (message) {
     case WM_SETTINGCHANGE: {
       const auto* area = reinterpret_cast<const wchar_t*>(lparam);
-      if (area && ::lstrcmpW(area, L"ImmersiveColorSet") == 0) {
+      if ((area && ::lstrcmpW(area, L"ImmersiveColorSet") == 0) ||
+          wparam == SPI_SETHIGHCONTRAST) {
         PhiThemeBus::Get().PollSystemAppearance();
       }
       break;
@@ -68,6 +71,17 @@ LRESULT CALLBACK PhiThemeBus::BusProc(HWND hwnd,
     case WM_THEMECHANGED:
     case WM_DWMCOLORIZATIONCOLORCHANGED:
       PhiThemeBus::Get().PollSystemAppearance();
+      break;
+    case WM_SYSCOLORCHANGE:
+      // Under a contrast theme the palette IS the system colours, so a
+      // change of them (a different contrast theme, an edited one) is a
+      // palette change even though nothing PollSystemAppearance compares
+      // has moved.
+      if (PhiHighContrastActive()) {
+        PhiThemeBus::Get().Broadcast();
+      } else {
+        PhiThemeBus::Get().PollSystemAppearance();
+      }
       break;
     default:
       break;
@@ -77,10 +91,12 @@ LRESULT CALLBACK PhiThemeBus::BusProc(HWND hwnd,
 
 void PhiThemeBus::PollSystemAppearance() {
   const bool dark = PhiSystemPrefersDark();
-  if (dark == system_dark_) {
+  const bool high_contrast = PhiHighContrastActive();
+  if (dark == system_dark_ && high_contrast == high_contrast_) {
     return;
   }
   system_dark_ = dark;
+  high_contrast_ = high_contrast;
   Broadcast();
 }
 

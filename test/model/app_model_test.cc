@@ -65,7 +65,7 @@ void TestSettingsDefaults() {
   CHECK(s.language.empty());
   CHECK(!s.developer_mode);
   CHECK(!s.allow_agent_control);
-  CHECK(s.allow_agent_user_spaces);  // The Mac's default; behind the master switch.
+  CHECK(!s.allow_agent_user_spaces);  // Off on Windows (the Mac's is on).
   CHECK(!s.test_rig);
   CHECK(s.pin_scope == PhiPinScope::kProfile);
   // New in phase 3 and OFF until the user opts in.

@@ -316,6 +316,12 @@ class PhiAppMenu {
   // `from_accelerator` is WM_COMMAND's HIWORD 1: the chord, not the row.
   bool OnCommand(UINT id, bool from_accelerator = false);
 
+  // The Space block's Rename… and Delete… for `space_id`. The menu's own
+  // rows pass the active Space; a pip's right-click passes the pip's, which
+  // a switch to a cold Space has not made active yet (release review).
+  void RenameSpace(const std::string& space_id);
+  void DeleteSpace(const std::string& space_id);
+
   // The whole tree as JSON (refreshing dynamic menus first), for the
   // control socket: [{"title","enabled","checked","id"?,"items"?},…] —
   // the root's rows, submenus nested under "items".

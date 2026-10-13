@@ -61,6 +61,40 @@ constexpr CapabilityName kCapabilityNames[] = {
     {kCredentialReveal, "credentialReveal"},
 };
 
+// The profile a new agent or shadow window is created in, for Developer ▸
+// "Profiles agents can use". A named profile is itself (the caller checks
+// it). "" would let the framework pick its default (the first loaded
+// profile, else the first of any) — possibly one the user switched off —
+// so it resolves here instead, in the framework's order, to the first
+// profile agents may use. Empty when none qualifies.
+std::string ResolveAgentProfile(phi_framework::PhiFramework* framework,
+                                const PhiPreferences& preferences,
+                                const std::string& requested) {
+  if (!requested.empty() || !framework) {
+    return requested;
+  }
+  std::optional<base::Value> parsed = base::JSONReader::Read(
+      framework->ListProfilesJson(), base::JSON_PARSE_RFC);
+  if (!parsed || !parsed->is_list()) {
+    return std::string();
+  }
+  std::string first_allowed;
+  for (const base::Value& v : parsed->GetList()) {
+    const base::DictValue* d = v.GetIfDict();
+    const std::string* id = d ? d->FindString("id") : nullptr;
+    if (!id || id->empty() || !preferences.AgentProfileAllowed(*id)) {
+      continue;
+    }
+    if (d->FindBool("loaded").value_or(false)) {
+      return *id;
+    }
+    if (first_allowed.empty()) {
+      first_allowed = *id;
+    }
+  }
+  return first_allowed;
+}
+
 }  // namespace
 
 // --- Liveness and orientation -------------------------------------------------
@@ -220,13 +254,16 @@ PhiVerbResult PhiControlDispatcher::VerbAgentCreate(
     coordinator_->agent_spaces().Remove(
         task_id);  // Stale record; recreate below.
   }
-  const std::string profile_id = ctx.params.String("profileId");
+  const std::string profile_id = ResolveAgentProfile(
+      framework_, coordinator_->preferences(),
+      ctx.params.String("profileId"));
   const bool persistent = ctx.params.Bool("persistent", false);
   // Developer ▸ "Profiles agents can use". The refusal lands HERE and not
   // at the re-bind above: a Space already open in a profile the user has
   // since switched off keeps working, exactly as the pane's description
-  // promises — only the next new Space is stopped.
-  if (!profile_id.empty() &&
+  // promises — only the next new Space is stopped. The default profile was
+  // resolved above, so it is checked too.
+  if (profile_id.empty() ||
       !coordinator_->preferences().AgentProfileAllowed(profile_id)) {
     LOG(INFO) << "[PhiAgent] refused an agent Space in profile "
               << profile_id << " (switched off in Settings)";
@@ -555,11 +592,11 @@ PhiVerbResult PhiControlDispatcher::VerbAgentListProfiles(
         const std::string* name = d->FindString("name");
         e.Set("profileId", id ? *id : "");
         e.Set("displayName", name ? *name : (id ? *id : ""));
-        // Whether an agent may reach the USER's Spaces in this profile —
-        // the Developer-pane toggle, app-wide (agent Spaces are always
-        // allowed).
+        // Whether an agent may open its own Spaces in this profile —
+        // Developer ▸ "Profiles agents can use", the check agentSpace.create
+        // and shadow.create make (the skill's listProfiles contract).
         e.Set("agentSpacesAllowed",
-              coordinator_->settings().allow_agent_user_spaces);
+              id && coordinator_->preferences().AgentProfileAllowed(*id));
         profiles.Append(std::move(e));
       }
     }
@@ -631,7 +668,19 @@ PhiVerbResult PhiControlDispatcher::VerbAgentCaptureWindow(
   // the content rect — the hidden agent window's DComp surface cannot be
   // read back, exactly as the Mac's GPU surface cannot.
   const std::string task_id = ctx.params.String("taskId");
-  const std::string out_path = ctx.params.String("outPath");
+  // `outPath` (a path of the caller's choosing) is the host's; an agent
+  // gets the PNG in a fresh file under the user's temp folder instead.
+  std::string out_path = ctx.params.String("outPath");
+  if (out_path.empty()) {
+    wchar_t temp[MAX_PATH + 1] = {};
+    const DWORD length = ::GetTempPathW(MAX_PATH + 1, temp);
+    if (length == 0 || length > MAX_PATH) {
+      return PhiVerbResult::Fail("capture_failed");
+    }
+    out_path = base::WideToUTF8(std::wstring(temp, length)) +
+               "phi-window-" + std::to_string(::GetCurrentProcessId()) + "-" +
+               std::to_string(::GetTickCount64()) + ".png";
+  }
   PhiAgentSpaces::Space* space = coordinator_->agent_spaces().Find(task_id);
   if (!space || !space->window_id.valid()) {
     return PhiVerbResult::Fail("unknown_task");
@@ -754,6 +803,17 @@ PhiVerbResult PhiControlDispatcher::VerbShadowCreate(
   if (!framework_) {
     return PhiVerbResult::Fail("create_failed");
   }
+  // Developer ▸ "Profiles agents can use" binds shadow windows as it binds
+  // agent Spaces (an Incognito one too: it is that profile's off-the-record
+  // session). Like agentSpace.create, only a NEW window is refused.
+  const std::string resolved_profile =
+      ResolveAgentProfile(framework_, coordinator_->preferences(), profile_id);
+  if (resolved_profile.empty() ||
+      !coordinator_->preferences().AgentProfileAllowed(resolved_profile)) {
+    LOG(INFO) << "[PhiAgent] refused a shadow window in profile "
+              << resolved_profile << " (switched off in Settings)";
+    return PhiVerbResult::Fail("profile_not_agent_allowed");
+  }
   if (coordinator_->registry().HasPendingTask(task_id)) {
     return PhiVerbResult::Fail("busy");  // Its window is already on its way.
   }
@@ -765,8 +825,8 @@ PhiVerbResult PhiControlDispatcher::VerbShadowCreate(
       RegisterPendingReply(/*document=*/false, /*include_html=*/false);
   const int reply_id = pending.pending_reply_id;
   RecordTask(ctx.principal, task_id);  // Owned from the request on.
-  coordinator_->RequestCreation(phi_framework::WindowKind::kShadow, profile_id,
-                                incognito, BrowserId(),
+  coordinator_->RequestCreation(phi_framework::WindowKind::kShadow,
+                                resolved_profile, incognito, BrowserId(),
                                 std::move(pending));  // Answers if refused.
   return PhiVerbResult::Deferred(reply_id);
 }
@@ -828,7 +888,9 @@ PhiVerbResult PhiControlDispatcher::VerbResolveTabIds(
   base::ListValue ids;
   if (const base::ListValue* targets = ctx.params.FindList("targetIds")) {
     for (const base::Value& v : *targets) {
-      ids.Append(framework_ && v.is_string()
+      // A target outside the caller's windows names nothing it may see.
+      ids.Append(framework_ && v.is_string() &&
+                         TargetInScope(ctx.principal, v.GetString())
                      ? framework_->TabIdForCdpTarget(v.GetString().c_str())
                      : -1);
     }

@@ -778,13 +778,13 @@ std::vector<UploadAttachment> TrimPrepared(
 // zips its whole PhiLogs directory (latest file); chrome_debug.log grows
 // without bound under --enable-logging, so only its last planning-budget
 // bytes ride along, which keeps the archive under the limit and the
-// recent history in.
+// recent history in. OPTIONAL: an archive that cannot be built (a locked
+// log, a full disk) sends the report without it rather than failing it.
 std::vector<UploadAttachment> PrepareLogZipAttachments(
     const std::wstring& job_root,
     const std::wstring& prepared_dir,
     const std::optional<SourceAttachment>& system_logs,
-    const std::wstring& user_data_dir,
-    std::string* error) {
+    const std::wstring& user_data_dir) {
   std::vector<PhiArchiveItem> items;
   if (system_logs) {
     const std::wstring path = Resolve(job_root, system_logs->relative_path);
@@ -815,7 +815,11 @@ std::vector<UploadAttachment> PrepareLogZipAttachments(
   std::vector<UploadAttachment> attachments;
   const std::wstring destination =
       Join(prepared_dir, Widen(kPrimaryLogsZipFilename));
-  if (!PhiWriteZip(items, destination, error)) {
+  std::string zip_error;
+  if (!PhiWriteZip(items, destination, &zip_error)) {
+    ::DeleteFileW(destination.c_str());
+    LOG(WARNING) << "[Feedback] log zip skipped because it could not be "
+                 << "written: " << zip_error;
     return attachments;
   }
   const int64_t size = FileSize(destination);
@@ -827,7 +831,7 @@ std::vector<UploadAttachment> PrepareLogZipAttachments(
   }
   attachments.push_back(MakeUpload(destination, job_root,
                                    kPrimaryLogsZipFilename,
-                                   "application/zip", size, "log", true));
+                                   "application/zip", size, "log", false));
   return attachments;
 }
 
@@ -968,11 +972,7 @@ std::string PrepareAttachments(const std::wstring& job_root,
   }
   std::string error;
   std::vector<UploadAttachment> logs = PrepareLogZipAttachments(
-      job_root, prepared_dir, manifest.chromium_system_logs, user_data_dir,
-      &error);
-  if (!error.empty()) {
-    return error;
-  }
+      job_root, prepared_dir, manifest.chromium_system_logs, user_data_dir);
   const int slots_after_logs = std::max(
       PhiFeedbackOutbox::kMaxSubmitAttachments - static_cast<int>(logs.size()),
       0);
@@ -994,7 +994,8 @@ std::string PrepareAttachments(const std::wstring& job_root,
   if (!error.empty()) {
     return error;
   }
-  // Required first (images, then logs), optional into what is left.
+  // Images (required), then the optional logs and files into what is left
+  // (the logs reserved their slot above).
   std::vector<UploadAttachment> required = images;
   required.insert(required.end(), logs.begin(), logs.end());
   if (static_cast<int>(required.size()) >
@@ -1241,8 +1242,10 @@ std::string Retrying(int attempts, const std::function<std::string()>& op) {
   return last;
 }
 
+// 1, 2, 4 … minutes, capped at an hour: a week of failures is ~170
+// attempts, not a tight loop.
 int64_t BackoffMs(int retry_count) {
-  const int exponent = std::min(retry_count, 6);
+  const int exponent = std::min(retry_count, 7);
   const int64_t seconds = std::min<int64_t>(3600, (1LL << exponent) * 30);
   return seconds * 1000;
 }
@@ -1299,6 +1302,63 @@ void PhiFeedbackOutbox::SetAccount(const std::string& user_id,
   ::LeaveCriticalSection(&lock_);
   if (changed) {
     Kick();
+  }
+}
+
+void PhiFeedbackOutbox::SetNotify(HWND hwnd, UINT msg) {
+  ::EnterCriticalSection(&lock_);
+  notify_hwnd_ = hwnd;
+  notify_msg_ = msg;
+  ::LeaveCriticalSection(&lock_);
+}
+
+int PhiFeedbackOutbox::TakeAbandonedJobCount() {
+  ::EnterCriticalSection(&lock_);
+  const int count = abandoned_jobs_;
+  abandoned_jobs_ = 0;
+  ::LeaveCriticalSection(&lock_);
+  return count;
+}
+
+void PhiFeedbackOutbox::NoteJobAbandoned() {
+  ::EnterCriticalSection(&lock_);
+  ++abandoned_jobs_;
+  const HWND hwnd = notify_hwnd_;
+  const UINT msg = notify_msg_;
+  ::LeaveCriticalSection(&lock_);
+  if (hwnd && msg) {
+    ::PostMessageW(hwnd, msg, 0, 0);
+  }
+}
+
+void PhiFeedbackOutbox::PurgeAccount(const std::string& user_id) {
+  if (user_id.empty()) {
+    return;
+  }
+  ::EnterCriticalSection(&lock_);
+  pending_purges_.push_back(user_id);
+  ::LeaveCriticalSection(&lock_);
+  Kick();
+}
+
+void PhiFeedbackOutbox::RunPendingPurges() {
+  std::vector<std::string> purges;
+  std::string current;
+  std::wstring root;
+  ::EnterCriticalSection(&lock_);
+  purges.swap(pending_purges_);
+  current = user_id_;
+  root = root_;
+  ::LeaveCriticalSection(&lock_);
+  if (root.empty()) {
+    return;
+  }
+  for (const std::string& user_id : purges) {
+    if (user_id == current) {
+      continue;  // Signed back in before the purge ran: the jobs are live.
+    }
+    LOG(INFO) << "[Feedback] signed out; outbox purged";
+    RemoveTree(AccountRoot(user_id));
   }
 }
 
@@ -1454,6 +1514,9 @@ void PhiFeedbackOutbox::RunLoop() {
   DWORD wait = INFINITE;
   for (;;) {
     ::WaitForSingleObject(wake_, wait);
+    // Before the stop check: a sign-out right before quitting still
+    // deletes that account's reports.
+    RunPendingPurges();
     ::EnterCriticalSection(&lock_);
     const bool stopping = stopping_;
     ::LeaveCriticalSection(&lock_);
@@ -1502,12 +1565,21 @@ bool PhiFeedbackOutbox::ProcessJob(const std::wstring& job_root,
   if (manifest.next_attempt_at_ms > NowMs()) {
     return true;
   }
-  if (ShouldDiscardFailedJob(manifest.retry_count)) {
+  if (ShouldDiscardFailedJob(manifest.retry_count, manifest.created_at_ms,
+                             NowMs())) {
     LOG(ERROR) << "[Feedback] job discarded because retry limit was already "
                << "exceeded: job=" << manifest.id
                << " retryCount=" << manifest.retry_count;
     RemoveTree(job_root);
+    NoteJobAbandoned();
     return false;
+  }
+  // Jobs prepared before logs.zip became optional still mark it required;
+  // a log archive never holds a report back.
+  for (UploadAttachment& a : manifest.prepared) {
+    if (a.attachment_type == "log") {
+      a.required = false;
+    }
   }
   if (CurrentUserId() != user_id) {
     return false;
@@ -1672,11 +1744,13 @@ bool PhiFeedbackOutbox::ProcessJob(const std::wstring& job_root,
   manifest.status = "failedWaitingRetry";
   manifest.retry_count += 1;
   manifest.last_error = error;
-  if (ShouldDiscardFailedJob(manifest.retry_count)) {
+  if (ShouldDiscardFailedJob(manifest.retry_count, manifest.created_at_ms,
+                             NowMs())) {
     LOG(ERROR) << "[Feedback] job discarded after retry limit: job="
                << manifest.id << " retryCount=" << manifest.retry_count
                << " error=" << error;
     RemoveTree(job_root);
+    NoteJobAbandoned();
     return false;
   }
   manifest.next_attempt_at_ms = NowMs() + BackoffMs(manifest.retry_count);

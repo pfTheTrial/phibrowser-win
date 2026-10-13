@@ -150,6 +150,36 @@ void StripWidthsRule() {
   CHECK(w.active == 0 && w.rest == 160);
 }
 
+void StripWindowRule() {
+  std::printf("strip window: items past the strip scroll by whole items\n");
+  // Ten 60-wide tabs from x 100: 600 needed.
+  std::vector<StripSpan> tabs(10, StripSpan{0, 60, 0});
+  StripWindow w = SolveStripWindow(tabs, 100, 700, 36, 0, -1);
+  CHECK(!w.overflow && w.first == 0 && w.end == 10 && w.limit == 700);
+  CHECK(w.first_max == 0);
+  // 400 of room, 36 held for the chevron: five fit (100 + 5*60 = 400 <=
+  // 464, a sixth would end at 460 — fits; a seventh at 520 does not).
+  w = SolveStripWindow(tabs, 100, 500, 36, 0, -1);
+  CHECK(w.overflow && w.limit == 464);
+  CHECK(w.first == 0 && w.end == 6);
+  CHECK(w.first_max == 4);  // Items 4..9 reach the end.
+  // A scroll past the range clamps; the window still ends on the last item.
+  w = SolveStripWindow(tabs, 100, 500, 36, 9, -1);
+  CHECK(w.first == 4 && w.end == 10);
+  // Revealing item 8 from the start moves the least that shows it.
+  w = SolveStripWindow(tabs, 100, 500, 36, 0, 8);
+  CHECK(w.first == 3 && w.end == 9);
+  // Revealing an item ahead of the window makes it the first.
+  w = SolveStripWindow(tabs, 100, 500, 36, 4, 1);
+  CHECK(w.first == 1 && w.end == 7);
+  // A chip too wide for the window does not drop the tabs after it: it
+  // scrolls out like any item.
+  std::vector<StripSpan> mixed = {{2, 300, 4}, {0, 60, 0}, {0, 60, 0},
+                                  {0, 60, 0}, {0, 60, 0}};
+  w = SolveStripWindow(mixed, 100, 400, 36, 0, 4);
+  CHECK(w.overflow && w.first == 1 && w.end == 5);
+}
+
 // The Mac's TabGroupChipView constants at 100%.
 StripChipMetrics Chip100() {
   StripChipMetrics m;
@@ -245,6 +275,7 @@ int main() {
   ListBasics();
   ListScrollAndClip();
   StripWidthsRule();
+  StripWindowRule();
   StripChipWidthRule();
   StripChipPlacementRule();
   StripMosaicRule();

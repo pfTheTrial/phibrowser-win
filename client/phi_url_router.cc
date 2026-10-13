@@ -15,6 +15,7 @@
 #include "phibrowser-win/client/phi_i18n.h"
 #include "phibrowser-win/client/phi_prompt.h"
 #include "phibrowser-win/client/phi_space_manager.h"
+#include "phibrowser-win/client/phi_url_rule_normalize.h"
 #include "phibrowser-win/client/phi_shell_window.h"
 
 namespace phi_client {
@@ -296,8 +297,10 @@ void PhiUrlRouter::RouteUrlToSpace(const std::string& space_id,
   // A slot that already holds the Space: switch to it there and open the
   // link (the Mac activates the Space's window and opens the tab). The open
   // bypasses URL routing — the URL may be the very navigation a rule just
-  // re-homed, and re-matching it would loop.
-  for (PhiShellWindow* controller : registry_.Controllers()) {
+  // re-homed, and re-matching it would loop. User shells only: an incognito
+  // window and a hidden agent shell nominally hold the DEFAULT Space (their
+  // first browser is adopted under it) but are never its window.
+  for (PhiShellWindow* controller : registry_.UserControllers()) {
     if (!controller->HasSpace(space_id)) {
       continue;
     }
@@ -358,7 +361,7 @@ void PhiUrlRouter::PushRoutingTableNow() {
     }
     base::DictValue d;
     d.Set("spaceId", rule.space_id);
-    d.Set("host", rule.host);
+    d.Set("host", store::RuleHostForRouting(rule.host));
     if (!rule.path_prefix.empty()) {
       d.Set("pathPrefix", rule.path_prefix);
     }

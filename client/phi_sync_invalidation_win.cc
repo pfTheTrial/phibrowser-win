@@ -21,6 +21,10 @@ namespace phi_client {
 namespace {
 
 constexpr int kReadWatchdogMs = 45000;
+// A connection resets the backoff only after staying healthy this long: a
+// server that sends `ready` and closes must not get a reconnect (and a full
+// catch-up on every client) each second.
+constexpr auto kHealthyResetAfter = std::chrono::seconds(60);
 
 std::wstring QueryHeader(HINTERNET request, DWORD query) {
   DWORD size = 0;
@@ -137,6 +141,7 @@ bool PhiSyncInvalidationStream::Connect() {
                                      secure ? WINHTTP_FLAG_SECURE : 0)
               : nullptr;
   bool was_healthy = false;
+  std::chrono::steady_clock::time_point ready_at;
   if (request) {
     {
       std::lock_guard<std::mutex> hold(lock_);
@@ -207,6 +212,9 @@ bool PhiSyncInvalidationStream::Connect() {
           for (const sync::InvalidationEvent& event : events) {
             if (event.kind == sync::InvalidationEvent::Kind::kReady) {
               LOG(INFO) << "[PhiSync] invalidation stream ready";
+              if (!was_healthy) {
+                ready_at = std::chrono::steady_clock::now();
+              }
               was_healthy = true;
               SetHealthy(true);
               if (callbacks_.on_ready) {
@@ -239,7 +247,8 @@ bool PhiSyncInvalidationStream::Connect() {
     ::WinHttpCloseHandle(connect);
   }
   ::WinHttpCloseHandle(session);
-  return was_healthy;
+  return was_healthy &&
+         std::chrono::steady_clock::now() - ready_at >= kHealthyResetAfter;
 }
 
 }  // namespace phi_client

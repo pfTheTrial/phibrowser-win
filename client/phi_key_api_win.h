@@ -9,6 +9,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 
 #include "base/values.h"
 #include "phibrowser-win/client/phi_sync_keys.h"
@@ -140,10 +141,14 @@ class PhiKeyStateFile : public keys::KeyStateStore {
 
  private:
   bool SaveLocked();
+  // Sets `key` and saves; on a failed save `key` is restored in memory.
+  bool SetAndSaveLocked(std::string_view key, base::DictValue value);
 
   const std::wstring path_;
   mutable std::mutex lock_;
   base::DictValue values_;
+  // The file was there but unreadable at construction: never overwritten.
+  bool save_blocked_ = false;
 };
 
 class PhiProfilePayloadJson : public keys::ProfilePayloadCodec {

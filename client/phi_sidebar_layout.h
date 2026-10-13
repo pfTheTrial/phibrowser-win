@@ -104,6 +104,35 @@ StripWidths SolveStripWidths(int resting_count,
                              int ideal_active,
                              int floor);
 
+// ---- The horizontal strip's window (overflow) ------------------------------
+// Past the tabs' floor width the strip's items (chips and tabs, in order) no
+// longer fit, and the strip becomes a WINDOW onto them, stepped by whole
+// items so none is ever cut in half: `first` items are scrolled out ahead of
+// it, the ones past `end` hide, and the window gives `chevron_room` back for
+// the overflow chevron. Each item takes `lead` + `width` and leaves `trail`
+// after it; an item shows only if its right edge stays inside the limit.
+struct StripSpan {
+  int lead = 0;
+  int width = 0;
+  int trail = 0;
+};
+struct StripWindow {
+  bool overflow = false;
+  int first = 0;      // The first item shown.
+  int end = 0;        // One past the last item shown.
+  int first_max = 0;  // The latest `first` whose window still reaches the end.
+  int limit = 0;      // Where the items stop (the chevron's room held back).
+};
+// `first` is the current scroll (clamped to the range); `reveal`, when not
+// -1, is an item the window must show — the newly active tab — and moves
+// `first` the least that does it.
+StripWindow SolveStripWindow(const std::vector<StripSpan>& items,
+                             int left,
+                             int limit,
+                             int chevron_room,
+                             int first,
+                             int reveal);
+
 // ---- The horizontal strip's group chips (the Mac's TabGroupChipView) -------
 // A group on the strip is a CHIP standing before its first member: the
 // colour dot, the title, then — trailing — the collapse chevron, and before

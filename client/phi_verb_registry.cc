@@ -596,8 +596,10 @@ constexpr PhiParamField kAgentEffect[] = {
 };
 constexpr PhiParamField kAgentCapture[] = {
     {"taskId", kParamString, kRequired, "", "The task."},
-    {"outPath", kParamString, kRequired, "",
-     "Where the PNG lands on the host's disk (needs the host capability)."},
+    {"outPath", kParamString, kOptional, "",
+     "Where the PNG lands on the host's disk (needs the host capability); "
+     "absent, Phi writes it under the user's temp folder and answers the "
+     "path."},
     {"webPath", kParamString, kOptional, "",
      "A CDP capture of the page to composite under the chrome."},
 };
@@ -1095,7 +1097,8 @@ base::span<const PhiVerbSpec> PhiControlDispatcher::Registry() {
        "protocol version and every verb name it may call."},
       {"agentSpace.create", "", kTask, kAgentSpace, kVerbPlain, kAgentCreate,
        false, true, &Call<&PhiControlDispatcher::VerbAgentCreate>,
-       "invalid_payload not_owner busy create_failed create_timeout",
+       "invalid_payload not_owner busy create_failed create_timeout "
+       "profile_not_agent_allowed",
        "Binds a task to an agent Space, creating its hidden window when "
        "there is none (or the old one went tabless)."},
       {"agentSpace.complete", "", kTask, kAgentSpace, kVerbPlain,
@@ -1166,13 +1169,15 @@ base::span<const PhiVerbSpec> PhiControlDispatcher::Registry() {
       {"agentSpace.readerArticle", "", kAny, kUserSpaceRead, kVerbPlain,
        kReader, false, true,
        &Call<&PhiControlDispatcher::VerbReaderArticle>,
-       "unknown_task window_not_open space_not_open unknown_target timeout",
+       "unknown_task window_not_open space_not_open unknown_target timeout "
+       "scope_not_allowed",
        "Distils the scope's tab into a reader article without navigating "
        "it."},
       {"agentSpace.readerDocument", "", kAny, kUserSpaceRead, kVerbPlain,
        kReader, false, true,
        &Call<&PhiControlDispatcher::VerbReaderDocument>,
-       "unknown_task window_not_open space_not_open unknown_target timeout",
+       "unknown_task window_not_open space_not_open unknown_target timeout "
+       "scope_not_allowed",
        "The same distillation as a saveable document."},
 
       // --- Shadow windows -------------------------------------------------
@@ -1184,7 +1189,7 @@ base::span<const PhiVerbSpec> PhiControlDispatcher::Registry() {
        kShadowCreate, false, true,
        &Call<&PhiControlDispatcher::VerbShadowCreate>,
        "invalid_payload not_owner busy create_failed create_timeout "
-       "shadow_incognito_mismatch",
+       "shadow_incognito_mismatch profile_not_agent_allowed",
        "Binds a task to a hidden background window, creating it when there "
        "is none."},
       {"agentSpace.shadow.openTab", "", kTask, kAgentSpace, kVerbPlain,
@@ -1207,15 +1212,15 @@ base::span<const PhiVerbSpec> PhiControlDispatcher::Registry() {
        kResolveTabIds, false, false,
        &Call<&PhiControlDispatcher::VerbResolveTabIds>, "",
        "Translates CDP target ids into chrome tab ids (-1 for one that names "
-       "nothing)."},
+       "nothing, or a tab outside the caller's windows)."},
       {"agentSpace.getJavaScriptDialogState", "", kScopeNone, kAgentSpace,
        kVerbPlain, kJsDialogState, false, false,
        &Call<&PhiControlDispatcher::VerbJsDialogState>,
-       "invalid_payload", "Whether a target has a JavaScript dialog up."},
+       "invalid_payload scope_not_allowed", "Whether a target has a JavaScript dialog up."},
       {"agentSpace.handleJavaScriptDialog", "", kScopeNone, kAgentSpace,
        kVerbPlain, kJsDialogHandle, false, false,
        &Call<&PhiControlDispatcher::VerbJsDialogHandle>,
-       "invalid_payload", "Accepts or dismisses a target's dialog."},
+       "invalid_payload scope_not_allowed", "Accepts or dismisses a target's dialog."},
       {"agentSpace.telemetry.status", "", kScopeNone, kAgentSpace, kVerbPlain,
        {}, false, false, &Call<&PhiControlDispatcher::VerbTelemetryStatus>, "",
        "What the outbound telemetry pipeline is doing."},
@@ -1261,8 +1266,10 @@ base::span<const PhiVerbSpec> PhiControlDispatcher::Registry() {
       {"agentSpace.spaces.switch", "", kScopeNone, kUserSpaceWrite,
        kVerbMutates, kSpacesSwitch, false, false,
        &Call<&PhiControlDispatcher::VerbSpacesSwitch>,
-       "user_space_operations_disabled",
-       "Shows a Space in a slot, cold-spawning its browser when needed."},
+       "user_space_operations_disabled scope_not_allowed",
+       "Shows a Space in a user slot (never an agent or incognito window, "
+       "never an Incognito Space for an agent), cold-spawning its browser "
+       "when needed."},
       {"agentSpace.spaces.rename", "", kScopeNone, kUserSpaceWrite,
        kVerbMutates, kSpacesRename, false, false,
        &Call<&PhiControlDispatcher::VerbSpacesRename>,
@@ -1849,7 +1856,7 @@ base::span<const PhiVerbSpec> PhiControlDispatcher::Registry() {
        "invalid_payload not_installed not_ready not_found ambiguous "
        "provider_error not_a_login field_unavailable origin_mismatch "
        "origin_changed user_denied target_not_found page_not_found "
-       "autofill_not_available capability_required",
+       "autofill_not_available capability_required scope_not_allowed",
        "Fills a tagged field on a page — the secret goes vault → framework → "
        "DOM and never to the agent."},
 

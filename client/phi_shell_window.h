@@ -524,11 +524,16 @@ enum : UINT {
   // fetch the entering page and release the slide (StartSlideCapture).
   kMsgPhiSlideCapture,
   // A close that arrived while a nested message loop of this window was on
-  // the stack (PhiModalDepth() > 0): the handler retries on this posted
+  // the stack (PhiModalDepthFor > 0): the handler retries on this posted
   // turn, and keeps retrying by timer until the loop has unwound. See
   // RequestClose.
   kMsgPhiDeferredClose,
+  // F6 / Shift+F6 from the keyboard hook, and the sidebar's Esc: moves the
+  // focus round address field -> sidebar -> page. WPARAM is the direction
+  // (kPhiFocusNext / kPhiFocusPrevious) or kPhiFocusPage.
+  kMsgPhiCycleFocus,
 };
+enum : WPARAM { kPhiFocusNext = 0, kPhiFocusPrevious = 1, kPhiFocusPage = 2 };
 
 // The shell window (docs/architecture-review.md §3.5): a window procedure,
 // the layout cache, the DPI and fonts, focus routing, and dispatch to the
@@ -647,6 +652,9 @@ class PhiShellWindow : public PhiHitSource,
   bool is_agent() const { return agent_; }
   // An incognito WINDOW: no Spaces at all (window-level).
   bool is_incognito() const { return incognito_; }
+  // The whole window is closing (RequestClose ran): its browsers go one by
+  // one, and the Spaces it falls back to meanwhile are no user choice.
+  bool closing() const { return closing_; }
   // Ends the Incognito Space `space_id` — after the Mac's confirmation
   // unless "Do not ask again" was ticked. Cancel leaves everything open.
   // By value: callers pass active_space(), which the alert's loop and the
@@ -889,6 +897,10 @@ class PhiShellWindow : public PhiHitSource,
   // slot's ONLY browser, the slot closes with it.
   void CloseSpaceBrowser(const std::string& space_id);
   void RetireSpaceBrowser(const std::string& space_id);
+  // Retires the Space's browser AND stops holding the Space, so a switch to
+  // it asks for a new browser while this one stays on screen until that
+  // replacement attaches (PhiSpaceBrowsers::RetireAndUnmap).
+  void RetireAndUnmapSpaceBrowser(const std::string& space_id);
   bool NeedsSpaceReplacement() const;
   // Starts closing the whole slot (its Space browsers, one per Space). MAY
   // DESTROY `this` before returning — the last browser going away tears the
@@ -897,7 +909,8 @@ class PhiShellWindow : public PhiHitSource,
   // INVARIANT: the controller is never destroyed while one of its own nested
   // message loops (a context menu, a prompt, the icon picker — anything
   // under a PhiModalScope) is on the stack. Both close entry points check
-  // PhiModalDepth() and, while it is non-zero, park the request and post
+  // PhiModalDepthFor(this window) and, while it is non-zero, park the
+  // request (a loop up in ANOTHER window does not hold this one) and post
   // kMsgPhiDeferredClose to the shell instead; the handler re-arms itself
   // (kDeferredCloseTimer) until the loop has unwound and only then runs the
   // close for real. Callers therefore may not assume the close happened
@@ -1007,6 +1020,13 @@ class PhiShellWindow : public PhiHitSource,
   // the WINDOW origin, so a capture is offset by exactly this — a caller
   // comparing against client coordinates has to add it.
   POINT frame_offset() const;
+  // Layout coordinates to SCREEN, for anything hung off a row, chip or
+  // button (menus, previews, popovers, pickers). While the floating panel's
+  // events run (floating_layout_), the layout is the EXPANDED one and the
+  // panel shows it from floating_offset_y_ down at its own origin, so the
+  // mapping goes through the panel — the strip's hover card's convention.
+  POINT LayoutToScreen(POINT pt) const;
+  RECT LayoutToScreen(const RECT& rect) const;
 
   // Shell window geometry (client-owned; no framework round-trip).
   bool GetBounds(int* x, int* y, int* w, int* h) const;
@@ -1077,6 +1097,7 @@ class PhiShellWindow : public PhiHitSource,
     RECT url_field{};
     RECT favorites{};      // Pinned-tab band (or its reserved drop zone).
     RECT bookmarks{};      // The outline band: rows (or zone) + separator.
+    RECT stored_band{};    // The two bands' capped, scrolling viewport.
     // The 16pt separator row between the bookmark outline and "+ New Tab"
     // (the Mac's SeparatorItem); empty without bookmarks.
     RECT bookmark_separator{};
@@ -1203,6 +1224,10 @@ class PhiShellWindow : public PhiHitSource,
   std::vector<PhiMenuBookmarkNode> BookmarkTreeSnapshot(
       const std::string& parent_guid,
       int depth) const;
+  // The browser a menu was opened for, re-checked after its loop: still
+  // one of this slot's, else invalid. The actions act on THAT browser, never
+  // on whichever is active once the loop has unwound.
+  BrowserId StillHeld(BrowserId opening_browser) const;
   // One menu each, from a snapshot. The by-value parameters are the point:
   // the copy happens at the call, before the loop.
   void ShowGroupHeaderMenu(POINT pt,
@@ -1213,8 +1238,12 @@ class PhiShellWindow : public PhiHitSource,
   void ShowPinnedCellMenu(POINT pt, const MenuRow& row);
   void ShowBookmarkRowMenu(POINT pt, const MenuRow& row);
   // `space_only`: the Space block alone — a right-click on a Space pip or
-  // the Space chip (docs/windows-native-ui.md §5.4).
-  void ShowTabAreaMenu(POINT pt, bool space_only = false);
+  // the Space chip (docs/windows-native-ui.md §5.4). `space_id`: the Space
+  // the block acts on (empty = the active Space) — a pip's, by value, so
+  // the menu acts on it whether or not the switch to it has landed.
+  void ShowTabAreaMenu(POINT pt,
+                       bool space_only = false,
+                       std::string space_id = std::string());
   // A right-click inside the bookmark bar's band: a pill takes the bookmark
   // row's menu, the bare run the bar's own. False when `pt` is off the bar.
   bool ShowBookmarkBarContextMenu(POINT pt);
@@ -1277,6 +1306,15 @@ class PhiShellWindow : public PhiHitSource,
   // ExtensionBadge). Built with ui_font_.
   HFONT badge_font_ = nullptr;
   UINT dpi_ = 96;
+  // A move/size this controller asked for (the framework's SetBounds, the
+  // agent watch taking its watcher's frame) is in flight: a WM_DPICHANGED
+  // it triggers keeps the requested rect instead of Windows' rescaled one.
+  bool exact_bounds_pending_ = false;
+  // Where the keyboard was when the window lost activation, for the
+  // activation that brings it back (Alt+Tab returns to the address field,
+  // or the sidebar ring, rather than always to the page).
+  enum class KeyboardHome { kPage, kField, kSidebar };
+  KeyboardHome keyboard_home_ = KeyboardHome::kPage;
 
 
   // Model freshness: rebuilds happen on the posted turn ScheduleRefresh
@@ -1305,6 +1343,9 @@ class PhiShellWindow : public PhiHitSource,
   HBITMAP sidebar_resize_snapshot_ = nullptr;
   RECT sidebar_resize_source_{};
   std::vector<HWND> sidebar_resize_hidden_;
+  // The browser child on screen when the drag began: LayoutContents shows
+  // the CURRENT one on release, so this one is never re-shown blindly.
+  HWND sidebar_resize_content_ = nullptr;
   void BeginSidebarResize();
   void ResizeSidebar(int width_dip);
   void EndSidebarResize();
@@ -1326,13 +1367,29 @@ class PhiShellWindow : public PhiHitSource,
   bool surface_tile_hot_ = false;
   void OnChromeMouseMove(POINT client_pt);
   void ClearHover();
+  // Tooltips for the chrome's own icon buttons (the caption trio, the nav
+  // and address-row buttons, the sidebar's header and bottom bar, and the
+  // button hits the sidebar publishes — close boxes, the strip chevron),
+  // on THE tooltip (PhiShowTooltipFor). The name under a layout point, or
+  // empty; the caption buttons answer by their non-client hit code.
+  std::wstring ChromeTipAt(POINT client_pt);
+  std::wstring CaptionTip(WPARAM hit) const;
+  // The pointer is over `text` (empty: over nothing named): a change hides
+  // the tip and restarts the system's tooltip delay. Dismiss hides it for a
+  // press until the pointer moves on to something else.
+  void UpdateChromeTip(const std::wstring& text);
+  void DismissChromeTip();
+  // UpdateChromeTip for whatever is under the pointer now (a leave
+  // notification: client and non-client leaves cross in either order).
+  void RetipAtCursor();
+  std::wstring chrome_tip_;
   // The client rect a hovered element's wash covers, empty for none — so a
   // hover change invalidates the old and new element, not the whole shell
   // (lane 3 §7 item 3).
   RECT HoverRect(HoverKind kind, int index);
   void SetHover(HoverKind kind, int index);
   // The chrome buttons a kNav hover indexes, in PaintChrome's order.
-  std::array<RECT, 21> NavHoverTable(const Layout& layout) const;
+  std::array<RECT, 22> NavHoverTable(const Layout& layout) const;
   // The 12/600 face the Space chip, the agent chip and the Feedback pill
   // share; built on demand and rebuilt when the DPI moves.
   HFONT EnsureChipNameFont();
@@ -1526,6 +1583,8 @@ class PhiShellWindow : public PhiHitSource,
   // loop was up (see the RequestClose invariant); drained by
   // RunDeferredClose on the posted kMsgPhiDeferredClose turn.
   bool deferred_slot_close_ = false;
+  // RequestClose began tearing the window down (see closing()).
+  bool closing_ = false;
   std::vector<std::string> deferred_space_closes_;
   void PostDeferredClose();
   void RunDeferredClose();
@@ -1903,6 +1962,12 @@ class PhiShellWindow : public PhiHitSource,
   // The panel's client height while it is up: the expanded layout the
   // panel paints is computed for THIS height, so its bands fit the panel.
   int floating_panel_h_ = 0;
+  // The shell's paints, counted, and the count the panel last repainted
+  // at: the tick repaints the panel only when the chrome it mirrors did
+  // (a rebuild, a hover card, a theme ramp) or while it slides — an idle
+  // panel stays idle. Its own pointer events repaint it directly.
+  uint32_t chrome_paints_ = 0;
+  uint32_t floating_painted_at_ = 0;
   HWND split_chip_ = nullptr;
   int split_chip_tab_ = 0;  // The pane's tab while shown; 0 = hidden.
   ULONGLONG split_chip_leave_tick_ = 0;

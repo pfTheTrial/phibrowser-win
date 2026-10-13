@@ -74,7 +74,12 @@ class PhiFeedbackOutbox {
   // measured afterwards and split when it still exceeds the limit.
   static constexpr int64_t kZipPlanningBytes =
       kMaxAttachmentBytes - 512 * 1024;
-  static constexpr int kMaxJobRetryCount = 5;
+  // A failing job keeps retrying (with capped backoff) for a week of wall
+  // clock, and is abandoned only once it is that old AND has had at least
+  // this many attempts — so a report filed just before a week offline
+  // still gets its tries when the network comes back.
+  static constexpr int64_t kMaxJobAgeMs = 7LL * 24 * 60 * 60 * 1000;
+  static constexpr int kMinJobRetryCount = 5;
   // Bumped when the archive layout changes: older jobs are re-prepared.
   static constexpr int kArchiveStrategyVersion = 6;
 
@@ -98,6 +103,17 @@ class PhiFeedbackOutbox {
   void Kick();
   // Stops the worker; a job mid-flight resumes on the next run.
   void Stop();
+  // `hwnd` gets `msg` posted (from the worker) when a job is abandoned;
+  // the UI thread then drains TakeAbandonedJobCount() and tells the user.
+  void SetNotify(HWND hwnd, UINT msg);
+  // Jobs abandoned since the last call (the user already saw "sent" for
+  // each). UI thread.
+  int TakeAbandonedJobCount();
+  // `user_id` signed out: its queued reports (description, page URL,
+  // attachments) are deleted. Runs on the worker, between jobs, so it never
+  // races an upload in flight; skipped when that account is current again
+  // by then (a quick sign-in back keeps its reports).
+  void PurgeAccount(const std::string& user_id);
 
   // The outbox as the harness sees it: the account, the root, and every job
   // with its state — {"account","root","jobs":[{id,status,retryCount,
@@ -121,8 +137,11 @@ class PhiFeedbackOutbox {
   // One of Phi's own extensions (the Mac's phiExtensionIds) — the ones
   // whose versions a report carries as components.
   static bool IsPhiExtensionId(const std::string& id);
-  static bool ShouldDiscardFailedJob(int retry_count) {
-    return retry_count > kMaxJobRetryCount;
+  static bool ShouldDiscardFailedJob(int retry_count,
+                                     int64_t created_at_ms,
+                                     int64_t now_ms) {
+    return retry_count >= kMinJobRetryCount &&
+           now_ms - created_at_ms > kMaxJobAgeMs;
   }
 
  private:
@@ -138,6 +157,10 @@ class PhiFeedbackOutbox {
   // The account this thread should be working for, or empty.
   std::string CurrentUserId();
   std::wstring AccountRoot(const std::string& user_id) const;
+  // Deletes the outboxes PurgeAccount queued. Worker thread.
+  void RunPendingPurges();
+  // A job was given up on: count it and wake the UI thread.
+  void NoteJobAbandoned();
 
   CRITICAL_SECTION lock_;
   HANDLE wake_ = nullptr;
@@ -150,6 +173,10 @@ class PhiFeedbackOutbox {
   RAW_PTR_EXCLUSION PhiAuth* auth_ = nullptr;
   std::string user_id_;
   std::string email_;
+  std::vector<std::string> pending_purges_;
+  int abandoned_jobs_ = 0;
+  HWND notify_hwnd_ = nullptr;
+  UINT notify_msg_ = 0;
 };
 
 }  // namespace phi_client

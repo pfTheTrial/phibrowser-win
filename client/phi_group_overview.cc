@@ -87,6 +87,23 @@ class Overview : public PhiPanel {
   PhiShellWindow* controller() const { return controller_; }
   const std::string& group_id() const { return group_id_; }
 
+  // The window model moved. Re-reads the group's members when they (or
+  // their titles) changed — tabs closed, added or renamed elsewhere — and
+  // leaves when the group is gone. False when the overview should close.
+  bool Refresh() {
+    const std::string signature = MemberSignature();
+    if (signature.empty()) {
+      return false;  // No members: the group no longer exists.
+    }
+    if (signature == signature_) {
+      return true;
+    }
+    BuildCards();
+    LayoutCards();
+    Invalidate();
+    return true;
+  }
+
  protected:
   void Paint(HDC dc, const RECT& dirty) override;
 
@@ -96,6 +113,38 @@ class Overview : public PhiPanel {
   }
 
   void OnEscape() override { PhiGroupOverview::Close(); }
+
+  void OnWheel(int delta, POINT) override { ScrollBy(-delta / 2); }
+
+  bool OnKey(WPARAM key) override {
+    RECT rc = {};
+    ::GetClientRect(hwnd(), &rc);
+    const int line = Scaled(kCardHeight) + Scaled(kCardGap);
+    const int page = std::max(line, static_cast<int>(rc.bottom - rc.top) - line);
+    switch (key) {
+      case VK_UP:
+        ScrollBy(-line);
+        return true;
+      case VK_DOWN:
+        ScrollBy(line);
+        return true;
+      case VK_PRIOR:
+        ScrollBy(-page);
+        return true;
+      case VK_NEXT:
+      case VK_SPACE:
+        ScrollBy(page);
+        return true;
+      case VK_HOME:
+        ScrollBy(-ContentHeight());
+        return true;
+      case VK_END:
+        ScrollBy(ContentHeight());
+        return true;
+      default:
+        return PhiPanel::OnKey(key);
+    }
+  }
 
   LRESULT OnMessage(UINT message,
                     WPARAM wparam,
@@ -125,6 +174,42 @@ class Overview : public PhiPanel {
     return controller_ ? controller_->CurrentPalette() : PhiPalette();
   }
 
+  // The group's tab ids and titles, in strip order; "" when it has none.
+  std::string MemberSignature() const {
+    const PhiWindowModel* model = controller_->model();
+    const BrowserId browser = controller_->active_browser_id();
+    const phi_framework::WindowSnapshot* snapshot =
+        model && browser.valid() ? model->Get(browser) : nullptr;
+    std::string out;
+    if (snapshot) {
+      for (const phi_framework::TabSnapshot& tab : snapshot->tabs) {
+        if (tab.group_id == group_id_) {
+          out += base::NumberToString(tab.id.value) + ":" + tab.title + "\n";
+        }
+      }
+    }
+    return out;
+  }
+
+  // The grid's full height, both pads included.
+  int ContentHeight() const {
+    if (cards_.empty()) {
+      return 0;
+    }
+    const int rows = (static_cast<int>(cards_.size()) + per_row_ - 1) / per_row_;
+    return Scaled(kGridPad) * 2 + rows * Scaled(kCardHeight) +
+           (rows - 1) * Scaled(kCardGap);
+  }
+
+  void ScrollBy(int dy) {
+    const int before = scroll_;
+    scroll_ += dy;
+    LayoutCards();  // Clamps.
+    if (scroll_ != before) {
+      Invalidate();
+    }
+  }
+
   void Reposition() {
     // The overlay covers the CONTENT card (the page area).
     SetPanelBounds(controller_->ContentRect());
@@ -135,6 +220,7 @@ class Overview : public PhiPanel {
   // sidebar's rows come from, never a parse of the framework's JSON.
   void BuildCards() {
     cards_.clear();
+    signature_ = MemberSignature();
     phi_framework::PhiFramework* framework = controller_->framework();
     const PhiWindowModel* model = controller_->model();
     const BrowserId browser = controller_->active_browser_id();
@@ -180,8 +266,14 @@ class Overview : public PhiPanel {
     const int per_row = std::max(
         1, (usable + Scaled(kCardGap)) /
                (Scaled(kCardWidth) + Scaled(kCardGap)));
+    per_row_ = per_row;
+    // Clamped against the current card count, so a card leaving at the
+    // bottom of a scrolled grid never leaves a gap.
+    const int limit =
+        std::max(0, ContentHeight() - static_cast<int>(rc.bottom - rc.top));
+    scroll_ = std::clamp(scroll_, 0, limit);
     int x = rc.left + Scaled(kGridPad);
-    int y = rc.top + Scaled(kGridPad);
+    int y = rc.top + Scaled(kGridPad) - scroll_;
     int in_row = 0;
     for (Card& card : cards_) {
       card.bounds = {x, y, x + Scaled(kCardWidth), y + Scaled(kCardHeight)};
@@ -311,6 +403,9 @@ class Overview : public PhiPanel {
   RAW_PTR_EXCLUSION PhiShellWindow* const controller_;
   const std::string group_id_;
   std::vector<Card> cards_;
+  std::string signature_;  // MemberSignature() the cards were built from.
+  int per_row_ = 1;
+  int scroll_ = 0;
 };
 
 Overview* Overview::instance = nullptr;
@@ -339,6 +434,14 @@ void PhiGroupOverview::Open(PhiShellWindow* controller,
     Overview::instance = new Overview(controller, group_id);
     // The address row drops the page colour under the overview.
     controller->ScheduleRefresh();
+  }
+}
+
+// static
+void PhiGroupOverview::RefreshIfBoundTo(const PhiShellWindow* controller) {
+  if (Overview::instance && Overview::instance->controller() == controller &&
+      !Overview::instance->Refresh()) {
+    Close();
   }
 }
 

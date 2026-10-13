@@ -20,6 +20,19 @@ namespace phi_client {
 
 class PhiSyncKeyService;
 
+// Puts a SECRET (the sync recovery code; reusable for any credential) on
+// the clipboard as CF_UNICODETEXT with the formats that keep it out of
+// Win+V clipboard history, Cloud Clipboard and clipboard monitors
+// (ExcludeClipboardContentFromMonitorProcessing, CanIncludeInClipboardHistory
+// = 0, CanUploadToCloudClipboard = 0), and clears it after
+// `clear_after_ms` unless something else has been copied since
+// (GetClipboardSequenceNumber). The clear rides a thread timer, so it fires
+// even after `owner` has closed. UI thread. False when the clipboard could
+// not be opened or written.
+bool PhiCopySecretToClipboard(HWND owner,
+                              const std::wstring& text,
+                              UINT clear_after_ms = 60 * 1000);
+
 // "Finish setting up sync" (docs/user-data-parity.md S3 UI plan) — the
 // Mac's AppModalPairingHost with KeyLayerView and the pairing wizard's
 // Profiles step in one window: how this device joins the account (first

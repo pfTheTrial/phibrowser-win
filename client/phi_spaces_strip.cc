@@ -1018,7 +1018,7 @@ void PhiSpacesStrip::Paint(HDC dc,
         const std::wstring initial =
             chip.label.empty() ? std::wstring(L"?") : chip.label.substr(0, 1);
         PhiDrawTextAA(dc, initial.c_str(), -1, &icon_rc,
-                      DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                      DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
       }
       const int chevron_px = scaled(12);
       RECT chevron_rc = {tile.right - scaled(8) - chevron_px, tile.top,
@@ -1091,7 +1091,7 @@ void PhiSpacesStrip::Paint(HDC dc,
       HGDIOBJ previous_icon_font =
           icon_font ? ::SelectObject(dc, icon_font) : nullptr;
       PhiDrawTextAA(dc, chip.icon.c_str(), -1, &glyph_rc,
-                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                    DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
       if (previous_icon_font) {
         ::SelectObject(dc, previous_icon_font);
       }
@@ -1106,7 +1106,7 @@ void PhiSpacesStrip::Paint(HDC dc,
               ? ::SelectObject(dc, shell_->SpacesPipTextFont())
               : nullptr;
       PhiDrawTextAA(dc, initial.c_str(), -1, const_cast<RECT*>(&chip.bounds),
-                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                    DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
       if (previous_initial_font) {
         ::SelectObject(dc, previous_initial_font);
       }
@@ -1192,7 +1192,7 @@ void PhiSpacesStrip::Paint(HDC dc,
             pip_icon_font ? ::SelectObject(dc, pip_icon_font) : nullptr;
         ::SetTextColor(dc, kLabel);
         PhiDrawTextAA(dc, creating_icon_.c_str(), -1, &glyph_rc,
-                      DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                      DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
         if (previous_pip_font) {
           ::SelectObject(dc, previous_pip_font);
         }
@@ -1404,7 +1404,7 @@ void PhiSpacesStrip::PaintHoverCard(HDC dc,
     const std::wstring initial = g.name_text.substr(0, 1);
     HGDIOBJ previous = card_name_font_ ? ::SelectObject(dc, card_name_font_) : nullptr;
     PhiDrawTextAA(dc, initial.c_str(), -1, &icon_rc,
-                  DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                  DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
     if (previous) {
       ::SelectObject(dc, previous);
     }

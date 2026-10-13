@@ -30,7 +30,11 @@ class PhiPreferences;
 // The first-launch flow — the Mac's OnboardingWindowController and its
 // pages (docs/login-port.md §8), a fixed 640x800 window that GATES the
 // browser: no shell is shown until the user signs in or explores as a
-// guest. Pages, in the Mac's order and phase numbering:
+// guest. On a work area shorter than that (1366x768, 1080p at 150 %) the
+// window is cut to fit and the page splits — its body scrolls (wheel,
+// arrows, Page Up/Down) above a footer anchored to the bottom edge, so
+// the primary button is always on screen. Pages, in the Mac's order and
+// phase numbering:
 //
 //   Login          "Sign in" / "Explore Phi without signing in"
 //   SigningIn      the Auth0 hosted login, embedded (a shadow browser the
@@ -136,6 +140,8 @@ class PhiOnboardingWindow : public PhiSecondaryWindow {
   // PhiWindow / PhiSecondaryWindow:
   void Paint(HDC dc, const RECT& dirty) override;
   void OnHover(int hit, int previous) override;
+  void OnWheel(int delta, POINT client_pt) override;
+  bool OnKey(WPARAM virtual_key) override;
   void OnMouseDown(int hit, POINT client_pt) override;
   void OnClick(int hit, POINT client_pt) override;
   void OnEscape() override;
@@ -175,6 +181,23 @@ class PhiOnboardingWindow : public PhiSecondaryWindow {
   };
 
   void Layout();  // Rebuilds hits_ for the page and the hit list.
+  // A page taller than the window (the work area cut it down) SPLITS: the
+  // part above FooterTopDip() scrolls by scroll_, the footer below it is
+  // anchored to the window's bottom so the primary button stays on
+  // screen. On a page that fits, scroll_ stays 0 and nothing changes.
+  int FooterTopDip() const;
+  int MaxScroll() const;  // 0 when the page fits.
+  // The design page in client px: scrolled, or bottom-anchored (`footer`).
+  RECT PageRect(bool footer) const;
+  int FooterSplit() const;  // Client y where the footer begins.
+  void ScrollTo(int px);
+  // Back to the design size, cut to the work area, laid out again (a DPI,
+  // display or taskbar change).
+  void Refit();
+  void PaintPage(HDC dc, const RECT& content);
+  void PaintGround(HDC dc, const RECT& content);
+  // The sign-in / guest / Next row and the Login retry note.
+  void PaintFooterControls(HDC dc);
   void PaintLogin(HDC dc, const RECT& content);
   void PaintSigningIn(HDC dc, const RECT& content);
   void PaintGuestPrivacy(HDC dc, const RECT& content);
@@ -261,6 +284,7 @@ class PhiOnboardingWindow : public PhiSecondaryWindow {
   // Decoded resources, keyed by file and size.
   std::map<std::wstring, std::unique_ptr<Image>> images_;
   int pressed_ = -1;
+  int scroll_ = 0;  // Device px the page is scrolled (see MaxScroll).
   // The Mac's OOBEAnalyticsSession, fed through the host's capture path.
   PhiOobeAnalyticsSession oobe_;
 };

@@ -130,11 +130,16 @@ inline bool MacEquals(std::string_view a, std::string_view b) {
 
 // The per-install HMAC key: 32 random bytes, DPAPI-wrapped, beside the
 // file it seals. `create` makes one when there is none (or none that this
-// user can open); a Load never creates, so a missing key fails closed.
+// user can open); a Load never creates, so a missing key fails closed. A key
+// file that is there but locked is never replaced.
 inline std::optional<std::string> LoadSealKey(const std::wstring& key_path,
                                               bool create) {
   std::string blob;
-  if (PhiReadFileBytes(key_path, &blob)) {
+  const PhiReadStatus read = PhiReadFile(key_path, &blob);
+  if (read == PhiReadStatus::kError) {
+    return std::nullopt;
+  }
+  if (read == PhiReadStatus::kOk) {
     if (std::optional<std::string> key = DpapiUnprotect(blob)) {
       if (key->size() == 32) {
         return key;
@@ -200,12 +205,16 @@ class PhiStore {
   //             run is a plain kOk), else defaults.
   //   kCorrupt  the file (or its seal) did not check out and has been
   //             quarantined as <name>.corrupt-<ms>; defaults.
+  //   kUnreadable  the file is there but could not be read (an antivirus
+  //             or backup lock): defaults in memory, and every Save this
+  //             session is refused so the user's file is never replaced.
   //   kOk       decoded. A body older than kSchema is migrated by Decode,
   //             topped up by Import (the legacy siblings it was split from
   //             may still be there) and rewritten in the current schema.
   PhiJsonFileStatus Load(T* out) {
     *out = T();
     loaded_ = base::DictValue();
+    save_blocked_ = false;
     base::DictValue dict;
     int schema = 0;
     const PhiJsonFileStatus status = ReadDict(&dict, &schema);
@@ -220,6 +229,11 @@ class PhiStore {
         LOG(ERROR) << "[PhiStore] " << FileName()
                    << " unreadable; using defaults";
         return PhiJsonFileStatus::kCorrupt;
+      case PhiJsonFileStatus::kUnreadable:
+        save_blocked_ = true;
+        LOG(ERROR) << "[PhiStore] " << FileName()
+                   << " could not be read; defaults this session, saves off";
+        return PhiJsonFileStatus::kUnreadable;
       case PhiJsonFileStatus::kOk:
         break;
     }
@@ -260,6 +274,11 @@ class PhiStore {
   // this install wrote, makes a same-user rewrite of the blob detectable
   // (lane 5 §4.6) — Load quarantines on a bad MAC rather than trusting it.
   bool Save(const T& value) {
+    if (save_blocked_) {
+      LOG(WARNING) << "[PhiStore] " << FileName()
+                   << " not saved: it could not be read this session";
+      return false;
+    }
     base::DictValue dict = Traits::Encode(value);
     if constexpr (!Traits::kProtected) {
       // Top-level keys are replaced whole; unknown ones are kept.
@@ -376,6 +395,8 @@ class PhiStore {
   std::wstring key_path_;
   // The file as last read or written (unsealed stores only).
   base::DictValue loaded_;
+  // The last Load could not read the file: no Save may replace it.
+  bool save_blocked_ = false;
 };
 
 }  // namespace phi_client

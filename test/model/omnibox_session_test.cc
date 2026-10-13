@@ -130,6 +130,26 @@ void TheNewTabPagesUrlShowsAsThePlaceholder() {
 
 }  // namespace
 
+void PasteIsSanitizedLikeChromes() {
+  // javascript: schemes are stripped, repeatedly and case-blind, past the
+  // blanks and control characters in front of them.
+  CHECK(PhiOmniboxSanitizePaste(L"javascript:alert(1)") == L"alert(1)");
+  CHECK(PhiOmniboxSanitizePaste(L"  JavaScript:\tjavascript: x") == L"x");
+  CHECK(PhiOmniboxStripJavascript(L"\x01javascript:a") == L"a");
+  CHECK(PhiOmniboxSanitizePaste(L"https://javascript:x") ==
+        L"https://javascript:x");
+  // A URL wrapped over lines is joined; search text gets a space.
+  CHECK(PhiOmniboxSanitizePaste(L"https://example.com/a\r\n/b") ==
+        L"https://example.com/a/b");
+  CHECK(PhiOmniboxSanitizePaste(L"hello big\nworld") == L"hello big world");
+  // Blank runs without a line break survive; the ends are trimmed.
+  CHECK(PhiOmniboxSanitizePaste(L"  a  b \n") == L"a  b");
+  CHECK(PhiOmniboxSanitizePaste(L" \r\n ") == L" ");
+  CHECK(PhiOmniboxSanitizePaste(L"").empty());
+  // The line break cannot smuggle a scheme past the strip.
+  CHECK(PhiOmniboxSanitizePaste(L"\njavascript:\nalert(1)") == L"alert(1)");
+}
+
 int main() {
   TextRectCentresTheLine();
   TextRectStartsAfterThePageIcon();
@@ -142,6 +162,7 @@ int main() {
   SelectionWrapsThroughTheFieldsOwnText();
   TrimTakesTheBlanksOffWhatWasTyped();
   TheNewTabPagesUrlShowsAsThePlaceholder();
+  PasteIsSanitizedLikeChromes();
   if (g_failures == 0) {
     std::printf("omnibox_session_test: all checks passed\n");
   }

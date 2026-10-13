@@ -188,6 +188,34 @@ double PhiContrastRatio(PhiColor a, PhiColor b);
 // True when Windows is currently set to a dark app appearance.
 bool PhiSystemPrefersDark();
 
+// Windows contrast themes (Settings > Accessibility > Contrast themes). While
+// one is on, every palette this file resolves is the SYSTEM's — the user
+// chose those colours for legibility, and a tinted theme over them defeats
+// the point — so PhiResolvePalette answers with PhiHighContrastPalette()
+// and PhiPageBarPalette leaves the page colour out. False on the host.
+bool PhiHighContrastActive();
+
+// The system colours a contrast theme sets, as RGB.
+struct PhiSystemColors {
+  PhiColor window = PhiRgb(0xFF, 0xFA, 0xEF);          // COLOR_WINDOW
+  PhiColor window_text = PhiRgb(0x3D, 0x3D, 0x3D);     // COLOR_WINDOWTEXT
+  PhiColor highlight = PhiRgb(0x90, 0x39, 0x09);       // COLOR_HIGHLIGHT
+  PhiColor highlight_text = PhiRgb(0xFF, 0xF5, 0xE3);  // COLOR_HIGHLIGHTTEXT
+  PhiColor hot_light = PhiRgb(0x1C, 0x5E, 0x75);       // COLOR_HOTLIGHT
+  PhiColor gray_text = PhiRgb(0x67, 0x67, 0x67);       // COLOR_GRAYTEXT
+  PhiColor button_face = PhiRgb(0xFF, 0xFA, 0xEF);     // COLOR_BTNFACE
+};
+
+// The palette roles mapped onto `colors`: grounds and cards are the window,
+// ink is the window text, washes are the button face, borders are drawn in
+// the text colour so they stay visible, the accent is the selection
+// highlight (with its own text on top). Pure, so the host can test it.
+PhiPalette PhiPaletteFromSystemColors(const PhiSystemColors& colors);
+
+// The live contrast theme's palette, from GetSysColor. The host answers
+// with PhiSystemColors' defaults (the "Desert" light scheme).
+PhiPalette PhiHighContrastPalette();
+
 // Parses the wire's "#RRGGBB" (case-insensitive; the leading '#' optional)
 // into a COLORREF. False on anything else — the caller keeps its default.
 bool PhiParseColorHex(const std::string& hex, PhiColor* out);

@@ -314,6 +314,10 @@ ShellLayout ComputeShellLayout(const ShellLayoutInputs& in) {
   const int label_inset = scaled(kSectionLabelInset);
   const int gap = scaled(kSectionGap);
   const int sidebar_header_bottom = tb + (header_row ? tb : 0);
+  // The bottom bar's top, up front: the stored bands' cap is a share of the
+  // room between the header and it.
+  const int bar_h = scaled(kBottomBarHeight);
+  const int bar_top = h - scaled(kBottomSpacer) - bar_h;
   int y = sidebar_header_bottom;
   const int pinned_rows = in.pinned_row_count;
   const int pinned_height =
@@ -345,6 +349,23 @@ ShellLayout ComputeShellLayout(const ShellLayoutInputs& in) {
                                       separator_top + separator_h}
                         : SidebarRect{};
   y = separator_top + separator_h;
+  // The cap: the two stored bands scroll inside one viewport once they
+  // would take the tab list's minimum room ("+ New Tab" and
+  // kMinTabListRows rows) — but never shrink below 2/5 of the sidebar's
+  // room. The rects above stay natural; the view scrolls them.
+  out.stored_band = SidebarRect{};
+  if (y > sidebar_header_bottom) {
+    const int room = bar_top - scaled(kFavoritesSpacer) - sidebar_header_bottom;
+    const int list_floor = gap + (in.owned_tabs_label ? label_h : 0) +
+                           scaled(kNewTabRowHeight) +
+                           kMinTabListRows * scaled(kTabRowHeight + kTabRowGap);
+    const int stored_cap =
+        std::max(0, std::max(room * 2 / 5, room - list_floor));
+    const int visible = std::min(y - sidebar_header_bottom, stored_cap);
+    out.stored_band = {0, sidebar_header_bottom, sidebar,
+                       sidebar_header_bottom + visible};
+    y = out.stored_band.bottom;
+  }
   if (y > sidebar_header_bottom) {
     y += gap;
   }
@@ -359,8 +380,6 @@ ShellLayout ComputeShellLayout(const ShellLayoutInputs& in) {
 
   // The bottom bar: downloads (and the memory chip while the AI suite is
   // on) leading, the Feedback pill trailing.
-  const int bar_h = scaled(kBottomBarHeight);
-  const int bar_top = h - scaled(kBottomSpacer) - bar_h;
   out.bottom_bar = {0, bar_top, sidebar, bar_top + bar_h};
   const int bar_mid = bar_top + bar_h / 2;
   int bx = inset;
@@ -395,6 +414,7 @@ ShellLayout ComputeShellLayout(const ShellLayoutInputs& in) {
     const SidebarRect zero = {};
     out.favorites = zero;
     out.bookmarks = zero;
+    out.stored_band = zero;
     out.bookmark_separator = zero;
     out.pinned_label = zero;
     out.bookmarks_label = zero;

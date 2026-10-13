@@ -107,8 +107,17 @@ class PhiCaptionBand {
   // return value where one is needed).
   bool OnNcCalcSize(HWND hwnd, WPARAM wparam, LPARAM lparam, LRESULT* result);
   bool OnNcHitTest(HWND hwnd, LPARAM lparam, LRESULT* result);
+  // A press on a caption button CAPTURES the mouse until the release, so
+  // the release lands here wherever it happens (OnLButtonUp, a client
+  // message under capture) and a press that never sees its release cannot
+  // stay armed: losing the capture (WM_CAPTURECHANGED, WM_CANCELMODE)
+  // disarms it, as does any other non-client press.
   bool OnNcLButtonDown(WPARAM hit);
   bool OnNcLButtonUp(HWND hwnd, WPARAM hit);
+  // True when the release belonged to a caption press (the shell then
+  // handles nothing else for it).
+  bool OnLButtonUp(POINT client_pt);
+  void OnCaptureLost();
   // The non-client move: the caption buttons' hover (most of the band
   // hit-tests as HTCAPTION, so the pointer crossing it never arrives as
   // WM_MOUSEMOVE).

@@ -77,6 +77,32 @@ int PhiCaptionTitleInset(const PhiCaptionMetrics& metrics, int leading) {
   return std::max(leading, trailing);
 }
 
+PhiRectI PhiFitRectInto(const PhiRectI& frame, const PhiRectI& work) {
+  const int w = std::max(0, std::min(frame.width(), work.width()));
+  const int h = std::max(0, std::min(frame.height(), work.height()));
+  // w/h never exceed the work area, so the clamp bounds are ordered.
+  const int x = std::clamp(frame.left, work.left, work.right - w);
+  const int y = std::clamp(frame.top, work.top, work.bottom - h);
+  PhiRectI out;
+  out.left = x;
+  out.top = y;
+  out.right = x + w;
+  out.bottom = y + h;
+  return out;
+}
+
+PhiRectI PhiPlaceCentered(int width,
+                          int height,
+                          const PhiRectI& anchor,
+                          const PhiRectI& work) {
+  PhiRectI frame;
+  frame.left = anchor.left + (anchor.width() - width) / 2;
+  frame.top = anchor.top + (anchor.height() - height) / 3;
+  frame.right = frame.left + width;
+  frame.bottom = frame.top + height;
+  return PhiFitRectInto(frame, work);
+}
+
 bool PhiDialogWantsKey(unsigned keys,
                        PhiDialogMessageKind kind,
                        unsigned virtual_key) {
@@ -269,6 +295,26 @@ bool PhiFilterDialogMessage(MSG* msg) {
 
 namespace {
 
+PhiRectI ToRectI(const RECT& r) {
+  PhiRectI out;
+  out.left = r.left;
+  out.top = r.top;
+  out.right = r.right;
+  out.bottom = r.bottom;
+  return out;
+}
+
+RECT MonitorWorkArea(HMONITOR monitor) {
+  MONITORINFO info = {};
+  info.cbSize = sizeof(info);
+  if (monitor && ::GetMonitorInfoW(monitor, &info)) {
+    return info.rcWork;
+  }
+  RECT work = {};
+  ::SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
+  return work;
+}
+
 // The C-style probe PhiPopupChrome asks before answering HTCAPTION, so
 // the frame needs no knowledge of the window that owns it (and no
 // friend).
@@ -337,18 +383,59 @@ void PhiSecondaryWindow::CenterOn(HWND around) {
   if (!alive()) {
     return;
   }
+  // The monitor the window opens on: the anchor's (a minimized anchor
+  // answers for where it was restored), else the owner's, else the one
+  // under the pointer — never simply the primary.
+  HWND reference = around && ::IsWindow(around)
+                       ? around
+                       : ::GetWindow(hwnd(), GW_OWNER);
+  HMONITOR monitor = nullptr;
+  if (reference) {
+    monitor = ::MonitorFromWindow(reference, MONITOR_DEFAULTTONEAREST);
+  } else {
+    POINT cursor = {};
+    ::GetCursorPos(&cursor);
+    monitor = ::MonitorFromPoint(cursor, MONITOR_DEFAULTTOPRIMARY);
+  }
+  const RECT work = MonitorWorkArea(monitor);
   RECT anchor = {};
-  if (!around || !::GetWindowRect(around, &anchor)) {
-    ::SystemParametersInfoW(SPI_GETWORKAREA, 0, &anchor, 0);
+  if (!around || ::IsIconic(around) || !::GetWindowRect(around, &anchor)) {
+    anchor = work;
   }
   RECT frame = {};
   ::GetWindowRect(hwnd(), &frame);
   const int w = frame.right - frame.left;
   const int h = frame.bottom - frame.top;
-  const int x = anchor.left + ((anchor.right - anchor.left) - w) / 2;
-  const int y = anchor.top + ((anchor.bottom - anchor.top) - h) / 3;
-  ::SetWindowPos(hwnd(), nullptr, std::max(x, 0), std::max(y, 0), 0, 0,
-                 SWP_NOSIZE | SWP_NOZORDER);
+  const PhiRectI placed =
+      PhiPlaceCentered(w, h, ToRectI(anchor), ToRectI(work));
+  const bool same_size = placed.width() == w && placed.height() == h;
+  ::SetWindowPos(hwnd(), nullptr, placed.left, placed.top, placed.width(),
+                 placed.height(),
+                 SWP_NOZORDER | SWP_NOACTIVATE | (same_size ? SWP_NOSIZE : 0));
+}
+
+RECT PhiSecondaryWindow::WorkArea() const {
+  return MonitorWorkArea(
+      alive() ? ::MonitorFromWindow(hwnd(), MONITOR_DEFAULTTONEAREST)
+              : nullptr);
+}
+
+void PhiSecondaryWindow::FitToWorkArea() {
+  if (!alive() || ::IsZoomed(hwnd()) || ::IsIconic(hwnd())) {
+    return;
+  }
+  RECT frame = {};
+  ::GetWindowRect(hwnd(), &frame);
+  const PhiRectI now = ToRectI(frame);
+  const PhiRectI fitted = PhiFitRectInto(now, ToRectI(WorkArea()));
+  if (fitted == now) {
+    return;
+  }
+  const bool same_size =
+      fitted.width() == now.width() && fitted.height() == now.height();
+  ::SetWindowPos(hwnd(), nullptr, fitted.left, fitted.top, fitted.width(),
+                 fitted.height(),
+                 SWP_NOZORDER | SWP_NOACTIVATE | (same_size ? SWP_NOSIZE : 0));
 }
 
 void PhiSecondaryWindow::PaintBand(HDC dc, const wchar_t* title) {

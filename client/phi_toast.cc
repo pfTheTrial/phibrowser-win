@@ -4,6 +4,9 @@
 
 #include "phibrowser-win/client/phi_toast.h"
 
+#include <oleauto.h>
+#include <uiautomation.h>
+
 #include <algorithm>
 #include <string>
 
@@ -30,6 +33,67 @@ constexpr int kHeightTwoLine = 56;
 constexpr int kTopOffset = 56;
 constexpr int kTitleSize = 13;
 constexpr int kMessageSize = 12;
+// A long title or message wraps inside this width (and inside the owner,
+// less a margin each side) instead of stretching the toast off the window;
+// past a few lines it ends in an ellipsis.
+constexpr int kMaxWidth = 440;
+constexpr int kOwnerMargin = 24;
+constexpr int kTitleMaxLines = 2;
+constexpr int kMessageMaxLines = 3;
+constexpr int kTextInsetY = 10;
+constexpr int kLineGap = 2;
+constexpr UINT kWrapFlags =
+    DT_CENTER | DT_WORDBREAK | DT_EDITCONTROL | DT_END_ELLIPSIS | DT_NOPREFIX;
+
+// Screen readers learn of a toast through a UIA notification
+// (UiaRaiseNotificationEvent, Windows 10 1709+). uiautomationcore.dll is
+// resolved by hand, as phi_uia.cc does: the framework's link recipe carries
+// no uiautomationcore.lib, and an older system just stays silent.
+void AnnounceToScreenReaders(HWND hwnd, const std::wstring& text) {
+  using HostFromHwnd = decltype(&::UiaHostProviderFromHwnd);
+  using ClientsListening = decltype(&::UiaClientsAreListening);
+  using RaiseNotification = decltype(&::UiaRaiseNotificationEvent);
+  struct Api {
+    HostFromHwnd host_from_hwnd = nullptr;
+    ClientsListening clients_listening = nullptr;
+    RaiseNotification raise = nullptr;
+  };
+  static const Api api = [] {
+    Api loaded;
+    HMODULE core = ::LoadLibraryExW(L"uiautomationcore.dll", nullptr,
+                                    LOAD_LIBRARY_SEARCH_SYSTEM32);
+    if (!core) {
+      return loaded;
+    }
+    loaded.host_from_hwnd = reinterpret_cast<HostFromHwnd>(
+        ::GetProcAddress(core, "UiaHostProviderFromHwnd"));
+    loaded.clients_listening = reinterpret_cast<ClientsListening>(
+        ::GetProcAddress(core, "UiaClientsAreListening"));
+    loaded.raise = reinterpret_cast<RaiseNotification>(
+        ::GetProcAddress(core, "UiaRaiseNotificationEvent"));
+    return loaded;
+  }();
+  if (!api.host_from_hwnd || !api.clients_listening || !api.raise ||
+      !hwnd || text.empty() || !api.clients_listening()) {
+    return;
+  }
+  IRawElementProviderSimple* provider = nullptr;
+  if (FAILED(api.host_from_hwnd(hwnd, &provider)) || !provider) {
+    return;
+  }
+  BSTR display =
+      ::SysAllocStringLen(text.c_str(), static_cast<UINT>(text.size()));
+  BSTR activity = ::SysAllocString(L"PhiToast");
+  if (display && activity) {
+    // A newer toast replaces the one before it, so the reader may drop a
+    // superseded one.
+    api.raise(provider, NotificationKind_Other,
+              NotificationProcessing_ImportantMostRecent, display, activity);
+  }
+  ::SysFreeString(display);
+  ::SysFreeString(activity);
+  provider->Release();
+}
 
 // The Mac queues toasts; replacement is still the simpler v1, so exactly
 // one lives at a time.
@@ -82,6 +146,10 @@ class Toast : public PhiPopover {
     placement.anchor = {x, y, x, y};
     Reposition(placement, size);
     Show();
+    // Raised on the owner, the window the reader is in: the toast itself
+    // is click-through and never focused.
+    AnnounceToScreenReaders(
+        owner, message_.empty() ? title_ : title_ + L"\n" + message_);
 
     PhiAnimator::ForThread().Animate(
         hwnd(), kFadeInMs, PhiEasing::kLinear,
@@ -99,29 +167,28 @@ class Toast : public PhiPopover {
     PhiFillRoundRectAA(dc, rc, Scaled(kCornerRadius), colors.card);
     PhiStrokeRoundRectAA(dc, rc, Scaled(kCornerRadius), colors.border, 1);
     ::SetBkMode(dc, TRANSPARENT);
+    // The title (and the message under it) as measured, wrapped, the block
+    // centred vertically.
     RECT text = rc;
     text.left += Scaled(kTextInset);
     text.right -= Scaled(kTextInset);
-    if (message_.empty()) {
-      ::SelectObject(dc, TitleFont());
-      ::SetTextColor(dc, colors.label);
-      ::DrawTextW(dc, title_.c_str(), -1, &text,
-                  DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-      return;
-    }
+    const int block =
+        title_h_ + (message_.empty() ? 0 : Scaled(kLineGap) + message_h_);
     RECT top = text;
-    top.bottom = (rc.top + rc.bottom) / 2;
+    top.top = (rc.top + rc.bottom - block) / 2;
+    top.bottom = top.top + title_h_;
     ::SelectObject(dc, TitleFont());
     ::SetTextColor(dc, colors.label);
-    ::DrawTextW(dc, title_.c_str(), -1, &top,
-                DT_CENTER | DT_BOTTOM | DT_SINGLELINE | DT_NOPREFIX);
+    ::DrawTextW(dc, title_.c_str(), -1, &top, kWrapFlags);
+    if (message_.empty()) {
+      return;
+    }
     RECT bottom = text;
-    bottom.top = top.bottom + Scaled(2);
+    bottom.top = top.bottom + Scaled(kLineGap);
+    bottom.bottom = bottom.top + message_h_;
     ::SelectObject(dc, MessageFont());
     ::SetTextColor(dc, colors.label_dim);
-    ::DrawTextW(dc, message_.c_str(), -1, &bottom,
-                DT_CENTER | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS |
-                    DT_NOPREFIX);
+    ::DrawTextW(dc, message_.c_str(), -1, &bottom, kWrapFlags);
   }
 
   void OnTimerFired(UINT_PTR id) override {
@@ -160,33 +227,72 @@ class Toast : public PhiPopover {
     }
   }
 
-  // Size to the text, the Mac's topCenter slot.
+  // The widest the text may run: kMaxWidth, and never past the owner.
+  int MaxTextWidth() const {
+    int width = Scaled(kMaxWidth);
+    RECT owner_rect = {};
+    if (owner() && ::GetWindowRect(owner(), &owner_rect)) {
+      width = std::min(width, static_cast<int>(owner_rect.right -
+                                               owner_rect.left) -
+                                  2 * Scaled(kOwnerMargin));
+    }
+    return std::max(width - Scaled(kSideInset), Scaled(80));
+  }
+
+  // One block's wrapped extent at `max_width`, at most `max_lines` tall.
+  static SIZE MeasureBlock(HDC dc,
+                           const std::wstring& text,
+                           int max_width,
+                           int max_lines) {
+    TEXTMETRICW metrics = {};
+    ::GetTextMetricsW(dc, &metrics);
+    RECT bounds = {0, 0, max_width, 0};
+    ::DrawTextW(dc, text.c_str(), -1, &bounds,
+                DT_CALCRECT | DT_WORDBREAK | DT_EDITCONTROL | DT_NOPREFIX);
+    SIZE size = {};
+    size.cx = std::min<LONG>(bounds.right - bounds.left, max_width);
+    size.cy = std::min<LONG>(bounds.bottom - bounds.top,
+                             metrics.tmHeight * max_lines);
+    return size;
+  }
+
+  // Size to the text, the Mac's topCenter slot; long text wraps.
   SIZE Measure() {
+    const int max_width = MaxTextWidth();
     HDC probe = ::GetDC(nullptr);
     SIZE title_size = {};
     SIZE message_size = {};
     if (probe) {
       HGDIOBJ prev = ::SelectObject(probe, TitleFont());
-      ::GetTextExtentPoint32W(probe, title_.c_str(),
-                              static_cast<int>(title_.size()), &title_size);
+      title_size = MeasureBlock(probe, title_, max_width, kTitleMaxLines);
       if (!message_.empty()) {
         ::SelectObject(probe, MessageFont());
-        ::GetTextExtentPoint32W(probe, message_.c_str(),
-                                static_cast<int>(message_.size()),
-                                &message_size);
+        message_size =
+            MeasureBlock(probe, message_, max_width, kMessageMaxLines);
       }
       ::SelectObject(probe, prev);
       ::ReleaseDC(nullptr, probe);
     }
+    title_h_ = static_cast<int>(title_size.cy);
+    message_h_ = static_cast<int>(message_size.cy);
     SIZE size = {};
     size.cx = std::max<LONG>(std::max(title_size.cx, message_size.cx), 1) +
               Scaled(kSideInset);
-    size.cy = Scaled(message_.empty() ? kHeightOneLine : kHeightTwoLine);
+    // One- and two-line toasts keep their fixed heights; wrapped text
+    // grows the toast.
+    const int block =
+        title_h_ + (message_.empty() ? 0 : Scaled(kLineGap) + message_h_);
+    size.cy = std::max(
+        Scaled(message_.empty() ? kHeightOneLine : kHeightTwoLine),
+        block + 2 * Scaled(kTextInsetY));
     return size;
   }
 
   std::wstring title_;
   std::wstring message_;
+  // Measured block heights (Measure), laid out by Paint.
+  int title_h_ = 0;
+  int message_h_ = 0;
   PhiPalette pending_palette_;
   Timer dismiss_;
   bool fading_out_ = false;

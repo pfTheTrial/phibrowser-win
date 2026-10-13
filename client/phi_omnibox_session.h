@@ -6,6 +6,7 @@
 #define PHIBROWSER_WIN_CLIENT_PHI_OMNIBOX_SESSION_H_
 
 #include <string>
+#include <string_view>
 #include <memory>
 #include <vector>
 
@@ -106,6 +107,95 @@ inline std::wstring PhiOmniboxTrimTyped(const std::wstring& typed) {
   const size_t last = typed.find_last_not_of(L" \t");
   return first == std::wstring::npos ? std::wstring()
                                      : typed.substr(first, last - first + 1);
+}
+
+// Chrome's StripJavascriptSchemas: skips leading blanks and control
+// characters and any number of "javascript:" prefixes (ASCII case-blind);
+// when at least one was found, the text from the first character after the
+// last of them. A pasted bookmarklet must never run from the field.
+inline std::wstring PhiOmniboxStripJavascript(const std::wstring& text) {
+  constexpr std::wstring_view kScheme = L"javascript:";
+  constexpr size_t kSchemeLength = kScheme.size();
+  const auto is_scheme_at = [&](size_t at) {
+    if (text.size() - at < kSchemeLength) {
+      return false;
+    }
+    for (size_t k = 0; k < kSchemeLength; ++k) {
+      wchar_t c = text[at + k];
+      if (c >= L'A' && c <= L'Z') {
+        c = static_cast<wchar_t>(c - L'A' + L'a');
+      }
+      if (c != kScheme[k]) {
+        return false;
+      }
+    }
+    return true;
+  };
+  bool found = false;
+  size_t i = 0;
+  while (i < text.size()) {
+    const wchar_t c = text[i];
+    if (c <= 0x20 || c == 0x7F || c == 0xA0 || c == 0x3000 ||
+        (c >= 0x2000 && c <= 0x200B) || c == 0xFEFF) {
+      ++i;  // Blank or control character.
+    } else if (is_scheme_at(i)) {
+      found = true;
+      i += kSchemeLength;
+    } else {
+      break;
+    }
+  }
+  return found ? text.substr(i) : text;
+}
+
+// Chrome's OmniboxView::SanitizeTextForPaste: leading and trailing blanks
+// go; a blank run holding a line break is removed when the text looks like
+// a URL wrapped across lines (no other inner blanks, and a '.' or ':' in
+// it), else it collapses to one space; blank runs without a line break are
+// kept. All-blank text becomes one space. Then the javascript: schemes are
+// stripped.
+inline std::wstring PhiOmniboxSanitizePaste(const std::wstring& text) {
+  static constexpr wchar_t kBlank[] = L" \t\r\n\v\f";
+  size_t end = text.find_first_not_of(kBlank);
+  if (end == std::wstring::npos) {
+    return text.empty() ? std::wstring() : std::wstring(L" ");
+  }
+  const size_t last = text.find_last_not_of(kBlank);
+  const std::wstring body = text.substr(end, last - end + 1);
+  // Does it read as one URL broken over lines?
+  bool plain_inner_blank = false;
+  for (size_t at = body.find_first_of(kBlank); at != std::wstring::npos;) {
+    const size_t stop = body.find_first_not_of(kBlank, at);
+    const size_t line = body.find_first_of(L"\r\n", at);
+    if (line == std::wstring::npos || line >= stop) {
+      plain_inner_blank = true;
+    }
+    at = body.find_first_of(kBlank, stop);
+  }
+  const bool url_like = !plain_inner_blank &&
+                        body.find_first_of(L".:") != std::wstring::npos;
+  std::wstring result;
+  result.reserve(body.size());
+  end = 0;
+  for (;;) {
+    const size_t begin = end;
+    end = body.find_first_of(kBlank, begin);
+    result += body.substr(begin, end == std::wstring::npos
+                                     ? std::wstring::npos
+                                     : end - begin);
+    if (end == std::wstring::npos) {
+      break;
+    }
+    const size_t run = end;
+    end = body.find_first_not_of(kBlank, run);  // Never npos: body is trimmed.
+    const size_t line = body.find_first_of(L"\r\n", run);
+    if (line == std::wstring::npos || line >= end) {
+      result += body.substr(run, end - run);
+    } else if (!url_like) {
+      result += L' ';
+    }
+  }
+  return PhiOmniboxStripJavascript(result);
 }
 
 // True when the page's url must show as the PLACEHOLDER rather than itself —
@@ -232,6 +322,8 @@ class PhiOmniboxSession {
   // Navigates to whatever is typed in `edit` — the address field or the
   // native page's omnibox — then hands focus back to the page.
   void Commit(HWND edit);
+  // Pastes the clipboard into `edit` through PhiOmniboxSanitizePaste.
+  void PasteInto(HWND edit);
   // The field's right-click menu (windows-native-ui.md §3.5): the Fluent
   // flyout with the EDIT's own verbs and "Paste and go" at the top, which
   // pastes the clipboard's text over the field and commits it.
@@ -286,7 +378,7 @@ class PhiOmniboxSession {
   void ClosePopup(bool stop_query);
   // Called by the dropdown's own window procedure.
   void PaintPopup(HWND popup, HDC dc);
-  void PopupHover(int y);
+  void PopupHover(int y);  // y < 0: the pointer left the list.
   void PopupClick(int y);
 
  private:
@@ -304,7 +396,8 @@ class PhiOmniboxSession {
 
   void ShowPopup();  // Creates/positions the popup under the focused field.
   void MoveSelection(int delta);
-  void CommitSelection();
+  void CommitSelection();  // CommitRow(selected_).
+  void CommitRow(int index);
   int RowAtY(int y) const;
   int Scaled(int design_units) const;
   bool PaintField(HWND field);
@@ -338,6 +431,9 @@ class PhiOmniboxSession {
 
   std::vector<Row> rows_;
   int selected_ = -1;  // -1 = nothing armed; Enter commits the text.
+  // The row under the pointer — a lighter wash only. Only the arrows set
+  // selected_, so hovering never changes what Enter commits.
+  int hovered_ = -1;
   HWND popup_ = nullptr;
   bool programmatic_ = false;  // Suppresses EN_CHANGE feedback.
   // Set by StartNewTab in omnibox mode: the next commit opens a NEW tab.

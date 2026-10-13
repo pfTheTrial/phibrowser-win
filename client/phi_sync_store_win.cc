@@ -61,7 +61,11 @@ sync::MarkerFile PhiSyncMarkerFile::Load() {
   std::lock_guard<std::mutex> hold(lock_);
   base::DictValue dict;
   sync::MarkerFile file;
-  if (PhiReadJsonFile(path_, &dict) != PhiJsonFileStatus::kOk ||
+  const PhiJsonFileStatus status = PhiReadJsonFile(path_, &dict);
+  // A locked file is not a missing one: its flags (removal intent, the
+  // reconfiguration latch) must not be saved away until a Load reads it.
+  save_blocked_ = status == PhiJsonFileStatus::kUnreadable;
+  if (status != PhiJsonFileStatus::kOk ||
       dict.FindInt("formatVersion").value_or(0) < 1) {
     return file;
   }
@@ -82,6 +86,9 @@ sync::MarkerFile PhiSyncMarkerFile::Load() {
 
 bool PhiSyncMarkerFile::Save(const sync::MarkerFile& file) {
   std::lock_guard<std::mutex> hold(lock_);
+  if (save_blocked_) {
+    return false;
+  }
   base::DictValue dict;
   dict.Set("formatVersion", 1);
   if (file.marker) {
@@ -99,19 +106,28 @@ bool PhiSyncMarkerFile::Save(const sync::MarkerFile& file) {
 
 bool PhiSyncMarkerFile::Remove() {
   std::lock_guard<std::mutex> hold(lock_);
-  return PhiRemoveFileIfPresent(path_);
+  if (!PhiRemoveFileIfPresent(path_)) {
+    return false;
+  }
+  save_blocked_ = false;
+  return true;
 }
 
 // --- engine state ---------------------------------------------------------------------
 
 PhiSyncStateFile::PhiSyncStateFile(std::wstring path) : path_(std::move(path)) {
-  PhiReadJsonFile(path_, &values_);
+  // Locked or denied: empty in memory, never saved over this session.
+  save_blocked_ =
+      PhiReadJsonFile(path_, &values_) == PhiJsonFileStatus::kUnreadable;
 }
 
 PhiSyncStateFile::~PhiSyncStateFile() = default;
 
 bool PhiSyncStateFile::ClearSyncState() {
   std::lock_guard<std::mutex> hold(lock_);
+  if (save_blocked_) {
+    return false;
+  }
   base::DictValue cleared = values_.Clone();
   for (const std::string& key : sync::EngineStateKeys()) {
     cleared.Remove(key);
@@ -129,19 +145,28 @@ std::optional<std::string> PhiSyncStateFile::Get(const std::string& key) const {
   return value ? std::optional<std::string>(*value) : std::nullopt;
 }
 
-void PhiSyncStateFile::Set(const std::string& key,
+bool PhiSyncStateFile::Set(const std::string& key,
                            const std::optional<std::string>& value) {
   std::lock_guard<std::mutex> hold(lock_);
   const std::string* current = values_.FindString(key);
   if ((!value && !current) || (value && current && *current == *value)) {
-    return;
+    return true;
   }
+  if (save_blocked_) {
+    return false;
+  }
+  // Memory follows the disk: a write that did not land changes nothing.
+  base::DictValue updated = values_.Clone();
   if (value) {
-    values_.Set(key, *value);
+    updated.Set(key, *value);
   } else {
-    values_.Remove(key);
+    updated.Remove(key);
   }
-  Write(path_, values_);
+  if (!Write(path_, updated)) {
+    return false;
+  }
+  values_ = std::move(updated);
+  return true;
 }
 
 // --- spaces.json ------------------------------------------------------------------------
@@ -271,13 +296,20 @@ sync::SpaceSyncTable PhiSpaceTableFile::Load() {
   std::lock_guard<std::mutex> hold(lock_);
   base::DictValue dict;
   sync::SpaceSyncTable table;
-  if (PhiReadJsonFile(path_, &dict) != PhiJsonFileStatus::kOk) {
+  const PhiJsonFileStatus status = PhiReadJsonFile(path_, &dict);
+  // A locked table is not an empty one: it is never saved over until a
+  // Load reads it again.
+  save_blocked_ = status == PhiJsonFileStatus::kUnreadable;
+  if (status != PhiJsonFileStatus::kOk) {
     return table;
   }
   // A newer build's table is not read (nor written over) by guesswork: it
-  // reads as empty, which replays.
-  if (dict.FindInt("formatVersion").value_or(0) !=
-      sync::SpaceSyncTable::kFormatVersion) {
+  // reads as empty, and every Save is refused until a newer build runs.
+  const int format = dict.FindInt("formatVersion").value_or(0);
+  if (format > sync::SpaceSyncTable::kFormatVersion) {
+    save_blocked_ = true;
+  }
+  if (format != sync::SpaceSyncTable::kFormatVersion) {
     return table;
   }
   if (const base::DictValue* cursors = dict.FindDict("cursors")) {
@@ -313,6 +345,9 @@ bool PhiSpaceTableFile::Save(const sync::SpaceSyncTable& table) {
   std::function<void(const sync::SpaceSyncTable&)> on_saved;
   {
     std::lock_guard<std::mutex> hold(lock_);
+    if (save_blocked_) {
+      return false;
+    }
     base::DictValue dict;
     dict.Set("formatVersion", sync::SpaceSyncTable::kFormatVersion);
     base::DictValue cursors;
@@ -349,14 +384,20 @@ bool PhiSpaceTableFile::Save(const sync::SpaceSyncTable& table) {
 
 bool PhiSpaceTableFile::Remove() {
   std::lock_guard<std::mutex> hold(lock_);
-  return PhiRemoveFileIfPresent(path_);
+  if (!PhiRemoveFileIfPresent(path_)) {
+    return false;
+  }
+  save_blocked_ = false;
+  return true;
 }
 
 // --- sidecars ---------------------------------------------------------------------------
 
 PhiSyncSidecarFile::PhiSyncSidecarFile(std::wstring path)
     : path_(std::move(path)) {
-  PhiReadJsonFile(path_, &values_);
+  // Locked or denied: empty in memory, never saved over this session.
+  save_blocked_ =
+      PhiReadJsonFile(path_, &values_) == PhiJsonFileStatus::kUnreadable;
 }
 
 PhiSyncSidecarFile::~PhiSyncSidecarFile() = default;
@@ -379,17 +420,30 @@ std::optional<std::string> PhiSyncSidecarFile::Value(
   return text ? FromBase64(*text) : std::nullopt;
 }
 
-void PhiSyncSidecarFile::Set(const std::string& key,
+bool PhiSyncSidecarFile::Set(const std::string& key,
                              int64_t stamp,
                              const std::string& value_signature) {
   std::lock_guard<std::mutex> hold(lock_);
-  values_.Set(key + ".phiSyncTs", base::NumberToString(stamp));
-  values_.Set(key + ".phiSyncVal", ToBase64(value_signature));
-  Write(path_, values_);
+  if (save_blocked_) {
+    return false;
+  }
+  // Memory follows the disk: a stamp that did not persist is not kept, or
+  // it would be lost at the next launch and re-stamped as a new edit.
+  base::DictValue updated = values_.Clone();
+  updated.Set(key + ".phiSyncTs", base::NumberToString(stamp));
+  updated.Set(key + ".phiSyncVal", ToBase64(value_signature));
+  if (!Write(path_, updated)) {
+    return false;
+  }
+  values_ = std::move(updated);
+  return true;
 }
 
 bool PhiSyncSidecarFile::ClearSidecars() {
   std::lock_guard<std::mutex> hold(lock_);
+  if (save_blocked_) {
+    return false;
+  }
   std::vector<std::string> keys;
   for (const auto [key, value] : values_) {
     const auto ends_with = [&key](std::string_view suffix) {
@@ -419,19 +473,27 @@ std::optional<std::string> PhiSyncSidecarFile::Extra(
   return text ? std::optional<std::string>(*text) : std::nullopt;
 }
 
-void PhiSyncSidecarFile::SetExtra(const std::string& key,
+bool PhiSyncSidecarFile::SetExtra(const std::string& key,
                                   const std::optional<std::string>& value) {
   std::lock_guard<std::mutex> hold(lock_);
   const std::string* current = values_.FindString(key);
   if ((!value && !current) || (value && current && *current == *value)) {
-    return;
+    return true;
   }
+  if (save_blocked_) {
+    return false;
+  }
+  base::DictValue updated = values_.Clone();
   if (value) {
-    values_.Set(key, *value);
+    updated.Set(key, *value);
   } else {
-    values_.Remove(key);
+    updated.Remove(key);
   }
-  Write(path_, values_);
+  if (!Write(path_, updated)) {
+    return false;
+  }
+  values_ = std::move(updated);
+  return true;
 }
 
 }  // namespace phi_client

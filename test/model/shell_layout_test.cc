@@ -168,6 +168,39 @@ void VerticalExtras() {
   CHECK(n.url_field.right == n.extensions.left - 8);
 }
 
+void StoredBandCap() {
+  std::printf("vertical: the stored bands scroll inside a capped viewport\n");
+  // Short bands: the viewport is their natural height.
+  ShellLayoutInputs in = Base(PhiLayoutMode::kBalanced);
+  in.pinned_row_count = 2;
+  in.bookmark_row_count = 3;
+  const ShellLayout fits = ComputeShellLayout(in);
+  CHECK(fits.stored_band.top == 88);
+  CHECK(fits.stored_band.bottom == fits.bookmarks.bottom);
+  CHECK(fits.new_tab_row.top == fits.stored_band.bottom + 8);
+  // A long outline: the viewport stops where "+ New Tab" and four tab rows
+  // still fit above the bottom bar; the natural rects run past it.
+  in.bookmark_row_count = 60;
+  const ShellLayout l = ComputeShellLayout(in);
+  const int room = (900 - 40 - 4) - 88;
+  const int floor = 8 + 36 + 4 * 38;
+  CHECK(l.stored_band.top == 88);
+  CHECK(l.stored_band.bottom == 88 + room - floor);
+  CHECK(l.bookmarks.bottom > l.stored_band.bottom);
+  CHECK(l.new_tab_row.top == l.stored_band.bottom + 8);
+  CHECK(l.tabs_limit - l.tabs_top >= 4 * 38 - 2);
+  // A short window keeps 3/5 of its room for the list.
+  in.client_height = 400;
+  const ShellLayout s = ComputeShellLayout(in);
+  const int short_room = (400 - 40 - 4) - 88;
+  CHECK(s.stored_band.bottom - s.stored_band.top == short_room * 2 / 5);
+  CHECK(s.new_tab_row.top == s.stored_band.bottom + 8);
+  CHECK(s.tabs_top < s.tabs_limit);
+  // No stored rows: no viewport.
+  const ShellLayout none = ComputeShellLayout(Base(PhiLayoutMode::kBalanced));
+  CHECK(none.stored_band.empty());
+}
+
 void SingleSpace() {
   std::printf("single space: persistent app header, no Space strip\n");
   ShellLayoutInputs in = Base(PhiLayoutMode::kBalanced);
@@ -456,6 +489,7 @@ int main() {
   Names();
   Vertical();
   VerticalExtras();
+  StoredBandCap();
   SingleSpace();
   Horizontal();
   SidebarToggle();

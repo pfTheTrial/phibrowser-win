@@ -28,6 +28,9 @@ struct PhiFeedbackContext {
   int64_t window_id = 0;  // The browser whose profile supplies system logs.
   std::string url;
   std::string title;
+  // Off the record (an incognito window, an Incognito Space): the form
+  // prefills nothing of the page — the user types a URL if they want one.
+  bool incognito = false;
 };
 
 // What the form needs from the coordinator.
@@ -61,7 +64,8 @@ class PhiFeedbackHost {
 // ground, Fluent text boxes (a 2 dip accent bottom edge on focus), cards,
 // InfoBars for "sign in to send" and refused files instead of modal
 // boxes. The window's height follows its content (an InfoBar, a second tile
-// row or the expanded diagnostics grow it). Modeless, like the Mac's — the
+// row or the expanded diagnostics grow it) up to the work area's height;
+// past that the body scrolls above a pinned Send / Cancel footer. Modeless, like the Mac's — the
 // user can go back to the page to check a detail while composing: it is a
 // PhiSecondaryWindow that registers kPhiDialogTab, so its control set gets
 // tab navigation from the MAIN message loop and no nested loop exists here
@@ -153,6 +157,12 @@ class PhiFeedbackWindow : public PhiSecondaryWindow {
   // sizes the window to the content.
   void Layout();
   void LayoutLegal(HDC dc, int x, int* y, int width);
+  // A form taller than the work area: the body scrolls (wheel, and the
+  // focused control is kept in view) between the band and the pinned
+  // footer.
+  void ClipBodyControls();
+  void ScrollTo(int px);
+  void ScrollIntoView(HWND control);
   void Rebind(const PhiFeedbackContext& context);
   void RefreshAccount();
   void RebuildTiles();
@@ -184,6 +194,12 @@ class PhiFeedbackWindow : public PhiSecondaryWindow {
   void SetDragging(bool dragging, int count);
   std::string DescriptionText() const;
   std::string UrlText() const;
+  // The page's title, but only while the URL field still names the page
+  // it came with: cleared or edited, the title no longer describes it.
+  std::string PageTitleForReport() const;
+  // Escape / the caption's close: a typed report is not thrown away
+  // without asking. True when the window may close.
+  bool ConfirmDiscard();
   HWND Child(const wchar_t* cls,
              const wchar_t* text,
              DWORD style,
@@ -220,6 +236,7 @@ class PhiFeedbackWindow : public PhiSecondaryWindow {
   void OnDpiChanged(UINT old_dpi) override;
   void OnNcDestroy() override;
   void OnTimerFired(UINT_PTR id) override;
+  void OnWheel(int delta, POINT client_pt) override;
 
   RAW_PTR_EXCLUSION PhiFeedbackHost* const host_;
   PhiFeedbackContext context_;
@@ -281,6 +298,12 @@ class PhiFeedbackWindow : public PhiSecondaryWindow {
   // WM_DROPFILES carries drops instead.
   RAW_PTR_EXCLUSION DropTarget* drop_target_ = nullptr;
   int pending_request_ = 0;
+  // Device px the body is scrolled, and how far it can go (0 = the whole
+  // form fits the work area).
+  int scroll_ = 0;
+  int max_scroll_ = 0;
+  // Body controls carry viewport regions (ClipBodyControls).
+  bool clipped_children_ = false;
 };
 
 }  // namespace phi_client

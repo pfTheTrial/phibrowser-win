@@ -118,8 +118,8 @@ std::string AccountCall(PhiAuth* auth,
 // Downloads the avatar. The URL is stable while its content changes, so
 // the request bypasses caches (the Mac's .forceRefresh).
 bool FetchAvatar(const std::string& url, std::string* bytes) {
-  if (url.empty()) {
-    return false;
+  if (url.rfind("https://", 0) != 0) {
+    return false;  // Also refuses an empty URL.
   }
   const PhiHttpResult result = PhiHttpRequest(
       L"GET", url, L"Cache-Control: no-cache\r\nPragma: no-cache\r\n",

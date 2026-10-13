@@ -24,6 +24,38 @@ std::string Decode(const std::string& b64) {
   return out;
 }
 
+// One pane's favicon in the form the reader asked for. A raw buffer whose
+// size disagrees with its dimensions (a damaged row, a bad sync payload) is
+// dropped with them, so no painter reads past it.
+void FillFavicon(const std::string& bytes,
+                 int width,
+                 int height,
+                 PhiFaviconForm form,
+                 std::string* base64,
+                 std::string* raw,
+                 int* out_width,
+                 int* out_height) {
+  switch (form) {
+    case PhiFaviconForm::kNone:
+      return;
+    case PhiFaviconForm::kBase64:
+      *base64 = Encode(bytes);
+      *out_width = width;
+      *out_height = height;
+      return;
+    case PhiFaviconForm::kRaw:
+      if (bytes.empty() || width <= 0 || height <= 0 ||
+          bytes.size() != static_cast<size_t>(width) *
+                              static_cast<size_t>(height) * 4) {
+        return;
+      }
+      *raw = bytes;
+      *out_width = width;
+      *out_height = height;
+      return;
+  }
+}
+
 }  // namespace
 
 const char* PhiPinScopeName(PhiPinScope scope) {
@@ -46,7 +78,8 @@ bool PhiTabStore::SetPinScope(PhiPinScope scope,
 
 PhiRow PhiTabStore::CellFromPin(const store::Tab& a,
                                 const store::Tab* b,
-                                int index) const {
+                                int index,
+                                PhiFaviconForm favicons) const {
   PhiRow row;
   row.guid = a.guid;
   row.type = PhiRowType::kPinnedTab;
@@ -55,17 +88,17 @@ PhiRow PhiTabStore::CellFromPin(const store::Tab& a,
   row.index = index;
   row.profile_id = a.profile_id.value_or(std::string());
   row.space_id = a.space_id.value_or(std::string());
-  row.favicon_base64 = Encode(a.favicon);
-  row.favicon_width = a.favicon_width;
-  row.favicon_height = a.favicon_height;
+  FillFavicon(a.favicon, a.favicon_width, a.favicon_height, favicons,
+              &row.favicon_base64, &row.favicon_raw, &row.favicon_width,
+              &row.favicon_height);
   row.lineage_id = a.pin_lineage_id.value_or(a.guid);
   row.layout = a.layout.value_or(std::string());
   if (b) {
     row.url_b = b->url;
     row.title_b = b->title;
-    row.favicon_b_base64 = Encode(b->favicon);
-    row.favicon_b_width = b->favicon_width;
-    row.favicon_b_height = b->favicon_height;
+    FillFavicon(b->favicon, b->favicon_width, b->favicon_height, favicons,
+                &row.favicon_b_base64, &row.favicon_b_raw,
+                &row.favicon_b_width, &row.favicon_b_height);
     row.partner_guid = b->guid;
     if (row.layout.empty()) {
       row.layout = b->layout.value_or(std::string());
@@ -94,7 +127,8 @@ std::optional<std::string> PhiTabStore::ParentForStore(
   return parent;
 }
 
-PhiRow PhiTabStore::CellFromBookmark(const store::Tab& t) const {
+PhiRow PhiTabStore::CellFromBookmark(const store::Tab& t,
+                                     PhiFaviconForm favicons) const {
   PhiRow row;
   row.guid = t.guid;
   row.type = t.type == store::RowType::kBookmarkFolder
@@ -107,26 +141,29 @@ PhiRow PhiTabStore::CellFromBookmark(const store::Tab& t) const {
   row.profile_id = t.profile_id.value_or(std::string());
   row.space_id = t.space_id.value_or(std::string());
   row.parent_guid = ParentForUi(t);
-  row.favicon_base64 = Encode(t.favicon);
-  row.favicon_width = t.favicon_width;
-  row.favicon_height = t.favicon_height;
+  FillFavicon(t.favicon, t.favicon_width, t.favicon_height, favicons,
+              &row.favicon_base64, &row.favicon_raw, &row.favicon_width,
+              &row.favicon_height);
   row.url_b = t.secondary_url.value_or(std::string());
   row.title_b = t.secondary_title.value_or(std::string());
-  row.favicon_b_base64 = Encode(t.secondary_favicon);
-  row.favicon_b_width = t.secondary_favicon_width;
-  row.favicon_b_height = t.secondary_favicon_height;
+  FillFavicon(t.secondary_favicon, t.secondary_favicon_width,
+              t.secondary_favicon_height, favicons, &row.favicon_b_base64,
+              &row.favicon_b_raw, &row.favicon_b_width,
+              &row.favicon_b_height);
   row.icon = t.icon == store::kDefaultFolderIcon ? std::string() : t.icon;
   row.layout = t.layout.value_or(std::string());
   return row;
 }
 
 std::vector<PhiRow> PhiTabStore::PinnedFor(const std::string& profile_id,
-                                           const std::string& space_id) const {
+                                           const std::string& space_id,
+                                           PhiFaviconForm favicons) const {
   std::vector<PhiRow> out;
   int index = 0;
   for (const store::LocalStore::PinUnit& unit :
        store_.PinUnits(profile_id, space_id)) {
-    out.push_back(CellFromPin(*unit.primary, unit.secondary, index++));
+    out.push_back(
+        CellFromPin(*unit.primary, unit.secondary, index++, favicons));
   }
   return out;
 }
@@ -152,7 +189,8 @@ std::string PhiTabStore::AddPinned(const std::string& profile_id,
 std::vector<PhiRow> PhiTabStore::BookmarksFor(
     const std::string& profile_id,
     const std::string& space_id,
-    const std::string& parent_guid) const {
+    const std::string& parent_guid,
+    PhiFaviconForm favicons) const {
   const std::string parent =
       parent_guid.empty() ? store_.ExistingBookmarkRoot(profile_id, space_id)
                           : parent_guid;
@@ -163,7 +201,7 @@ std::vector<PhiRow> PhiTabStore::BookmarksFor(
   for (const store::Tab* t : store_.Children(parent)) {
     if (t->is_bookmark_kind() && t->profile_id == profile_id &&
         t->space_id == space_id) {
-      out.push_back(CellFromBookmark(*t));
+      out.push_back(CellFromBookmark(*t, favicons));
     }
   }
   return out;
@@ -171,13 +209,14 @@ std::vector<PhiRow> PhiTabStore::BookmarksFor(
 
 std::vector<PhiRow> PhiTabStore::BookmarkTree(
     const std::string& profile_id,
-    const std::string& space_id) const {
+    const std::string& space_id,
+    PhiFaviconForm favicons) const {
   std::vector<PhiRow> out;
   for (const auto& [guid, t] : store_.tabs()) {
     if (t.is_bookmark_kind() && t.profile_id == profile_id &&
         t.space_id == space_id && !store_.IsBookmarkRoot(guid) &&
         t.parent_guid) {
-      out.push_back(CellFromBookmark(t));
+      out.push_back(CellFromBookmark(t, favicons));
     }
   }
   return out;
@@ -393,7 +432,7 @@ std::optional<PhiRow> PhiTabStore::Find(const std::string& guid) const {
     return std::nullopt;
   }
   if (t->type != store::RowType::kPinnedTab) {
-    return CellFromBookmark(*t);
+    return CellFromBookmark(*t, PhiFaviconForm::kBase64);
   }
   int index = 0;
   for (const store::LocalStore::PinUnit& unit :
@@ -401,12 +440,13 @@ std::optional<PhiRow> PhiTabStore::Find(const std::string& guid) const {
                        t->space_id.value_or(std::string()))) {
     if (unit.primary->guid == guid ||
         (unit.secondary && unit.secondary->guid == guid)) {
-      return CellFromPin(*unit.primary, unit.secondary, index);
+      return CellFromPin(*unit.primary, unit.secondary, index,
+                         PhiFaviconForm::kBase64);
     }
     ++index;
   }
   // An inactive-scope backup: shown as itself.
-  return CellFromPin(*t, nullptr, t->index);
+  return CellFromPin(*t, nullptr, t->index, PhiFaviconForm::kBase64);
 }
 
 bool PhiTabStore::SetRowUrl(const std::string& guid, const std::string& url) {

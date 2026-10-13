@@ -148,7 +148,7 @@ Binds a task to an agent Space, creating its hidden window when there is none (o
 - **Capabilities**: `agentSpace`
 - **Scope**: agent, shadow — aimed with `taskId`, `windowId` or `spaceId`. A verb aimed at an agent or shadow window of the caller's OWN task needs only `agentSpace`.
 - Answers asynchronously — the reply arrives when the work lands.
-- **Errors**: `invalid_payload`, `not_owner`, `busy`, `create_failed`, `create_timeout`
+- **Errors**: `invalid_payload`, `not_owner`, `busy`, `create_failed`, `create_timeout`, `profile_not_agent_allowed`
 
 | field | type | required | also accepts | meaning |
 | --- | --- | --- | --- | --- |
@@ -353,7 +353,7 @@ Renders the task window's client-drawn chrome to a PNG, compositing a CDP page c
 | field | type | required | also accepts | meaning |
 | --- | --- | --- | --- | --- |
 | `taskId` | string | yes | — | The task. |
-| `outPath` | string | yes | — | Where the PNG lands on the host's disk (needs the host capability). |
+| `outPath` | string | no | — | Where the PNG lands on the host's disk (needs the host capability); absent, Phi writes it under the user's temp folder and answers the path. |
 | `webPath` | string | no | — | A CDP capture of the page to composite under the chrome. |
 
 #### `agentSpace.readerArticle`
@@ -363,7 +363,7 @@ Distils the scope's tab into a reader article without navigating it.
 - **Capabilities**: `userSpaceRead`
 - **Scope**: agent, shadow, user — aimed with `taskId`, `windowId` or `spaceId`. A verb aimed at an agent or shadow window of the caller's OWN task needs only `agentSpace`.
 - Answers asynchronously — the reply arrives when the work lands.
-- **Errors**: `unknown_task`, `window_not_open`, `space_not_open`, `unknown_target`, `timeout`
+- **Errors**: `unknown_task`, `window_not_open`, `space_not_open`, `unknown_target`, `timeout`, `scope_not_allowed`
 
 | field | type | required | also accepts | meaning |
 | --- | --- | --- | --- | --- |
@@ -380,7 +380,7 @@ The same distillation as a saveable document.
 - **Capabilities**: `userSpaceRead`
 - **Scope**: agent, shadow, user — aimed with `taskId`, `windowId` or `spaceId`. A verb aimed at an agent or shadow window of the caller's OWN task needs only `agentSpace`.
 - Answers asynchronously — the reply arrives when the work lands.
-- **Errors**: `unknown_task`, `window_not_open`, `space_not_open`, `unknown_target`, `timeout`
+- **Errors**: `unknown_task`, `window_not_open`, `space_not_open`, `unknown_target`, `timeout`, `scope_not_allowed`
 
 | field | type | required | also accepts | meaning |
 | --- | --- | --- | --- | --- |
@@ -408,7 +408,7 @@ Binds a task to a hidden background window, creating it when there is none.
 - **Capabilities**: `agentSpace`
 - **Scope**: agent, shadow — aimed with `taskId`, `windowId` or `spaceId`. A verb aimed at an agent or shadow window of the caller's OWN task needs only `agentSpace`.
 - Answers asynchronously — the reply arrives when the work lands.
-- **Errors**: `invalid_payload`, `not_owner`, `busy`, `create_failed`, `create_timeout`, `shadow_incognito_mismatch`
+- **Errors**: `invalid_payload`, `not_owner`, `busy`, `create_failed`, `create_timeout`, `shadow_incognito_mismatch`, `profile_not_agent_allowed`
 
 | field | type | required | also accepts | meaning |
 | --- | --- | --- | --- | --- |
@@ -458,7 +458,7 @@ Closes the shadow window.
 
 #### `agentSpace.resolveTabIds`
 
-Translates CDP target ids into chrome tab ids (-1 for one that names nothing).
+Translates CDP target ids into chrome tab ids (-1 for one that names nothing, or a tab outside the caller's windows).
 
 - **Capabilities**: `agentSpace`
 - **Scope**: app-wide.
@@ -473,7 +473,7 @@ Whether a target has a JavaScript dialog up.
 
 - **Capabilities**: `agentSpace`
 - **Scope**: app-wide.
-- **Errors**: `invalid_payload`
+- **Errors**: `invalid_payload`, `scope_not_allowed`
 
 | field | type | required | also accepts | meaning |
 | --- | --- | --- | --- | --- |
@@ -485,7 +485,7 @@ Accepts or dismisses a target's dialog.
 
 - **Capabilities**: `agentSpace`
 - **Scope**: app-wide.
-- **Errors**: `invalid_payload`
+- **Errors**: `invalid_payload`, `scope_not_allowed`
 
 | field | type | required | also accepts | meaning |
 | --- | --- | --- | --- | --- |
@@ -597,12 +597,12 @@ Creates a Space with a pinned theme; answers the themeId and iconName that lande
 
 #### `agentSpace.spaces.switch`
 
-Shows a Space in a slot, cold-spawning its browser when needed.
+Shows a Space in a user slot (never an agent or incognito window, never an Incognito Space for an agent), cold-spawning its browser when needed.
 
 - **Capabilities**: `userSpaceWrite`
 - **Scope**: app-wide.
 - Mutates the user's state (arms the agent drive context).
-- **Errors**: `user_space_operations_disabled`
+- **Errors**: `user_space_operations_disabled`, `scope_not_allowed`
 
 | field | type | required | also accepts | meaning |
 | --- | --- | --- | --- | --- |
@@ -2225,7 +2225,7 @@ Fills a tagged field on a page — the secret goes vault → framework → DOM a
 - **Capabilities**: `credentialFill`
 - **Scope**: app-wide.
 - Shows the user a prompt; serialised so two never stack.
-- **Errors**: `invalid_payload`, `not_installed`, `not_ready`, `not_found`, `ambiguous`, `provider_error`, `not_a_login`, `field_unavailable`, `origin_mismatch`, `origin_changed`, `user_denied`, `target_not_found`, `page_not_found`, `autofill_not_available`, `capability_required`
+- **Errors**: `invalid_payload`, `not_installed`, `not_ready`, `not_found`, `ambiguous`, `provider_error`, `not_a_login`, `field_unavailable`, `origin_mismatch`, `origin_changed`, `user_denied`, `target_not_found`, `page_not_found`, `autofill_not_available`, `capability_required`, `scope_not_allowed`
 
 | field | type | required | also accepts | meaning |
 | --- | --- | --- | --- | --- |

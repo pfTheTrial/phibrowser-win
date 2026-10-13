@@ -24,6 +24,7 @@
 #include "chrome/browser/phinomenon/phi_framework/phi_framework_api.h"
 #include "phibrowser-win/client/phi_dwrite.h"
 #include "phibrowser-win/client/phi_extension_action.h"
+#include "phibrowser-win/client/phi_i18n.h"
 #include "phibrowser-win/client/phi_popover.h"
 
 #pragma comment(lib, "dwmapi.lib")
@@ -35,7 +36,7 @@ namespace {
 // The Mac ExtensionList's geometry (ExtensionList.swift), in design units:
 // a 240 pt panel, 12 pt side padding, an "Extensions" title, a 4-column
 // grid of 50x32 tiles on a 6 pt gutter (four rows visible, the rest
-// scroll), then a "Setting" title and the "Manage Extensions" row.
+// scroll), then a "Settings" title and the "Manage Extensions" row.
 constexpr int kPanelWidth = 240;
 constexpr int kSidePadding = 12;
 constexpr int kTopPadding = 12;
@@ -57,6 +58,11 @@ constexpr int kManageRowHeight = 22;
 constexpr int kManageRowInset = 8;   // The row's horizontal padding.
 constexpr int kManageTextInset = 4;  // Text/chevron inside the row.
 constexpr int kManageRadius = 6;
+// The scroll cue beside a grid that scrolls: a 3 pt capsule in the side
+// padding, 3 pt in from the panel's edge.
+constexpr int kScrollThumbWidth = 3;
+constexpr int kScrollThumbInset = 3;
+constexpr int kScrollThumbMin = 16;
 constexpr UINT kPollIntervalMs = 700;
 // hits_ keys: tile i is i * kKeyStride, its pin toggle is + 1; the Manage
 // Extensions row is kManageKey. The base resolves hover and clicks over
@@ -464,10 +470,12 @@ class Popover : public PhiPopover {
                       tile.bounds.bottom + overhang};
       AddHit(tile.bounds, i * kKeyStride, tile.name, PhiHitRole::kButton);
       AddHit(tile.pin_box, i * kKeyStride + 1,
-             tile.pinned ? L"Unpin extension" : L"Pin extension",
+             PhiStr(tile.pinned ? "extensions.popover.unpinButtonTooltip"
+                                : "extensions.popover.pinButtonTooltip"),
              PhiHitRole::kToggle, tile.pinned);
     }
-    AddHit(ManageRow(), kManageKey, L"Manage Extensions",
+    AddHit(ManageRow(), kManageKey,
+           PhiStr("extensions.list.manageExtensionsButton"),
            PhiHitRole::kButton);
   }
 
@@ -485,14 +493,16 @@ class Popover : public PhiPopover {
                   Scaled(kTopPadding) + Scaled(kTitleHeight)};
     ::SelectObject(dc, TitleFont());
     ::SetTextColor(dc, label);
-    PhiDrawTextAA(dc, L"Extensions", -1, &title,
+    PhiDrawTextAA(dc,
+                  PhiStr("extensions.popover.browserExtensionsSectionTitle"),
+                  -1, &title,
                   DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
 
     if (tiles_.empty()) {
       RECT empty = {0, GridTop(), client.right, GridTop() + GridHeight()};
       ::SelectObject(dc, RowFont());
       ::SetTextColor(dc, dim);
-      PhiDrawTextAA(dc, L"No extensions found", -1, &empty,
+      PhiDrawTextAA(dc, PhiStr("extensions.popover.emptyMessage"), -1, &empty,
                     DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
     } else {
       for (size_t i = 0; i < tiles_.size(); ++i) {
@@ -500,15 +510,17 @@ class Popover : public PhiPopover {
           PaintTile(dc, tiles_[i], static_cast<int>(i) == hover_tile_);
         }
       }
+      PaintScrollCue(dc, client, Mix(dim, bg, 0.5f));
     }
 
-    // "Setting" and the Manage Extensions row (ManageExtensionsButton).
+    // "Settings" and the Manage Extensions row (ManageExtensionsButton).
     RECT setting = {Scaled(kSidePadding), SettingTop(),
                     client.right - Scaled(kSidePadding),
                     SettingTop() + Scaled(kTitleHeight)};
     ::SelectObject(dc, TitleFont());
     ::SetTextColor(dc, label);
-    PhiDrawTextAA(dc, L"Setting", -1, &setting,
+    PhiDrawTextAA(dc, PhiStr("extensions.popover.settingsHeading"), -1,
+                  &setting,
                   DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
     const RECT row = ManageRow();
     if (hover_manage_) {
@@ -519,7 +531,8 @@ class Popover : public PhiPopover {
                  row.bottom};
     ::SelectObject(dc, RowFont());
     ::SetTextColor(dc, dim);
-    PhiDrawTextAA(dc, L"Manage Extensions", -1, &text,
+    PhiDrawTextAA(dc, PhiStr("extensions.list.manageExtensionsButton"), -1,
+                  &text,
                   DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
     // chevron.right, 12 pt medium, secondary at 60 %.
     RECT chevron = {row.right - Scaled(kManageTextInset) - Scaled(16),
@@ -529,6 +542,27 @@ class Popover : public PhiPopover {
     ::SetTextColor(dc, Mix(dim, hover_manage_ ? p.hover : bg, 0.6f));
     PhiDrawTextAA(dc, L"", -1, &chevron,
                   DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+  }
+
+  // Past sixteen extensions the grid scrolls, and nothing said so: a thumb
+  // in the side padding, as long as the share of rows in view and as far
+  // down as the scroll, tells the reader there is more under the wheel.
+  void PaintScrollCue(HDC dc, const RECT& client, COLORREF ink) {
+    const int max_row = MaxScrollRow();
+    if (max_row <= 0) {
+      return;
+    }
+    const int track_top = GridTop();
+    const int track_h = GridHeight();
+    const int thumb_h =
+        std::max(Scaled(kScrollThumbMin),
+                 track_h * VisibleRows() / std::max(1, TotalRows()));
+    const int top =
+        track_top + (track_h - thumb_h) * scroll_row_ / max_row;
+    const int right = client.right - Scaled(kScrollThumbInset);
+    const RECT thumb = {right - Scaled(kScrollThumbWidth), top, right,
+                        top + thumb_h};
+    PhiFillCapsuleAA(dc, thumb, ink);
   }
 
   // One 50x32 tile (ExtensionGridItem): the radius-8 wash (emphasized on

@@ -101,10 +101,9 @@ class PhiReaderPanel : public PhiSurfacePanel, public PhiPanel {
   PhiPalette QueryPalette() const override;
 
  private:
-  // Rounds the panel to the page card's radius. THE sanctioned SetWindowRgn
-  // (lane 3 §3.6): this window hosts the reader's reparented browser child
-  // and the region is what clips IT — a shaped layer cannot, because a
-  // child window paints over its layered parent's alpha.
+  // Keeps the panel square: it covers the content card exactly, so the
+  // shell's antialiased corner caps, raised above it, round it — no window
+  // region (a region cuts on the pixel grid).
   void ApplyCardShape();
   void PositionContent();
   int64_t surface_tab_id() const override;

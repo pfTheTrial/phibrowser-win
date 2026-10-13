@@ -102,6 +102,51 @@ StripWidths SolveStripWidths(int resting_count,
   return w;
 }
 
+StripWindow SolveStripWindow(const std::vector<StripSpan>& items,
+                             int left,
+                             int limit,
+                             int chevron_room,
+                             int first,
+                             int reveal) {
+  const int count = static_cast<int>(items.size());
+  // The index past the last item that fits from `from` inside `edge`.
+  const auto fit_end = [&](int from, int edge) {
+    int x = left;
+    int i = from;
+    for (; i < count; ++i) {
+      const StripSpan& item = items[static_cast<size_t>(i)];
+      const int right = x + item.lead + item.width;
+      if (right > edge) {
+        break;
+      }
+      x = right + item.trail;
+    }
+    return i;
+  };
+  StripWindow out;
+  out.overflow = fit_end(0, limit) < count;
+  out.limit = out.overflow ? limit - chevron_room : limit;
+  if (!out.overflow) {
+    out.end = count;
+    return out;
+  }
+  out.first_max = std::max(0, count - 1);
+  while (out.first_max > 0 && fit_end(out.first_max - 1, out.limit) == count) {
+    --out.first_max;
+  }
+  out.first = std::max(0, std::min(first, out.first_max));
+  if (reveal >= 0 && reveal < count) {
+    if (reveal < out.first) {
+      out.first = reveal;
+    }
+    while (out.first < reveal && fit_end(out.first, out.limit) <= reveal) {
+      ++out.first;
+    }
+  }
+  out.end = fit_end(out.first, out.limit);
+  return out;
+}
+
 int SolveStripChipWidth(int label_px,
                         int count_px,
                         bool collapsed,

@@ -21,6 +21,7 @@
 #include "base/logging.h"
 #include "chrome/browser/phinomenon/phi_framework/phi_framework_api.h"
 #include "phibrowser-win/client/phi_coordinator.h"
+#include "phibrowser-win/client/phi_i18n.h"
 #include "phibrowser-win/client/phi_theme.h"
 #include "phibrowser-win/client/phi_shell_window.h"
 #include "phibrowser-win/client/phi_window_model.h"
@@ -121,7 +122,9 @@ class PhiPeekShadow : public PhiPanel {
     return CreatePanel(spec, shell, nothing, options);
   }
 
-  // `radius`, `blur` and `margin` are already in device pixels.
+  // `radius`, `blur` and `margin` are already in device pixels. A call with
+  // the inputs of the last one is free: the committed layer still holds
+  // those pixels, and a reposition only moves the window.
   void Render(int width,
               int height,
               int margin,
@@ -129,6 +132,10 @@ class PhiPeekShadow : public PhiPanel {
               double blur,
               double base_alpha) {
     if (!alive() || width <= 0 || height <= 0) {
+      return;
+    }
+    const Inputs inputs = {width, height, margin, radius, blur, base_alpha};
+    if (rendered_ && inputs == last_) {
       return;
     }
     PhiLayerSurface layer(width, height);
@@ -146,8 +153,21 @@ class PhiPeekShadow : public PhiPanel {
     const base::span<uint32_t> pixels = UNSAFE_BUFFERS(base::span<uint32_t>(
         static_cast<uint32_t*>(layer.bits()),
         static_cast<size_t>(width) * height));
+    // Everything deeper inside than half a blur past the corner arcs is at
+    // full strength (t clamps to 1 there), so only a band round the edge
+    // needs the distance field: a fill, then four strips, instead of a
+    // sqrt for every pixel of a card-sized surface.
+    std::fill(pixels.begin(), pixels.end(),
+              static_cast<uint32_t>(base_alpha * 255.0 + 0.5) << 24);
+    const int band = margin + static_cast<int>(std::ceil(radius + blur)) + 2;
+    const int band_x = std::min(width, band);
+    const int band_y = std::min(height, band);
     for (int y = 0; y < height; ++y) {
+      const bool edge_row = y < band_y || y >= height - band_y;
       for (int x = 0; x < width; ++x) {
+        if (!edge_row && x == band_x) {
+          x = std::max(x, width - band_x);  // Skip the solid middle.
+        }
         const double dx = std::abs(x + 0.5 - cx) - half_x;
         const double dy = std::abs(y + 0.5 - cy) - half_y;
         double distance;
@@ -169,8 +189,26 @@ class PhiPeekShadow : public PhiPanel {
             static_cast<uint32_t>(alpha * 255.0 + 0.5) << 24;
       }
     }
-    layer.Commit(hwnd(), nullptr);
+    rendered_ = layer.Commit(hwnd(), nullptr);
+    last_ = inputs;
   }
+
+ private:
+  struct Inputs {
+    int width = 0;
+    int height = 0;
+    int margin = 0;
+    double radius = 0;
+    double blur = 0;
+    double alpha = 0;
+    bool operator==(const Inputs& other) const {
+      return width == other.width && height == other.height &&
+             margin == other.margin && radius == other.radius &&
+             blur == other.blur && alpha == other.alpha;
+    }
+  };
+  Inputs last_;
+  bool rendered_ = false;
 };
 
 // ---------------------------------------------------------------------------
@@ -329,9 +367,9 @@ PhiPalette PhiPeekPanel::QueryPalette() const {
 }
 
 PhiPeekPanel::~PhiPeekPanel() {
-  if (browser_hwnd_ && ::IsWindow(browser_hwnd_)) {
-    ::SetParent(browser_hwnd_, nullptr);
-  }
+  // Out from under the card before the card goes, hidden first — never a
+  // visible page at the desktop's top-left while Chromium closes it.
+  PhiReleaseHostedChild(browser_hwnd_);
   // The chips first (they are this window's child), then the shadow, then
   // the card. Each destructor destroys its own HWND and the base clears
   // GWLP_USERDATA at WM_NCDESTROY, so no teardown message can reach a
@@ -378,14 +416,22 @@ void PhiPeekPanel::ApplyCardShape() {
   if (client.right <= 0 || client.bottom <= 0) {
     return;
   }
-  // CreateRoundRectRgn takes the ELLIPSE size, so it is twice the radius.
-  // The page is a child of this window, so this region rounds IT too — the
-  // shell needs sibling corner caps for the same job only because
-  // DirectComposition ignores a region set on the browser child itself.
-  const int ellipse = Scaled(kCardRadius) * 2;
-  HRGN shape = ::CreateRoundRectRgn(0, 0, client.right + 1, client.bottom + 1,
-                                    ellipse, ellipse);
-  ::SetWindowRgn(hwnd(), shape, TRUE);  // The window owns it now.
+  // The page is a child of this window, so this window's region rounds IT
+  // too — the shell needs sibling corner caps for the same job only because
+  // DirectComposition ignores a region set on the browser child itself. But
+  // a region alone cuts on the pixel grid, and caps cannot paint the live
+  // opener page around the card: the fringe keeps the region to the pixels
+  // the curve covers fully and lays the arc's partial pixels over the page
+  // in the frame's stroke, the outermost thing the card draws.
+  SetCornerFringe(Scaled(kCardRadius), 0xF, QueryPalette().stroke_strong);
+}
+
+void PhiPeekPanel::OnThemeChanged() {
+  PhiPanel::OnThemeChanged();
+  // The fringe and the shadow keep the colours they were made with: the
+  // stroke, and the shadow's strength (stronger on dark).
+  ApplyCardShape();
+  UpdateShadow();
 }
 
 void PhiPeekPanel::UpdateShadow() {
@@ -634,9 +680,13 @@ void PhiPeekPanel::LayoutHits() {
     return;
   }
   const Layout layout = ComputeLayout();
-  AddHit(layout.close, kHotClose, L"Close Peek (Esc)", PhiHitRole::kButton);
-  AddHit(layout.expand, kHotExpand, L"Open as tab", PhiHitRole::kButton);
-  AddHit(layout.split, kHotSplit, L"Open in split view", PhiHitRole::kButton);
+  // The tooltips and accessible names: the Mac PeekPanel's.
+  AddHit(layout.close, kHotClose, PhiStr("peek.panel.closeButtonTooltip"),
+         PhiHitRole::kButton);
+  AddHit(layout.expand, kHotExpand, PhiStr("peek.panel.expandButtonTooltip"),
+         PhiHitRole::kButton);
+  AddHit(layout.split, kHotSplit, PhiStr("peek.panel.splitButtonTooltip"),
+         PhiHitRole::kButton);
 }
 
 void PhiPeekPanel::OnHover(int hit, int) {

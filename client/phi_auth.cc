@@ -134,6 +134,27 @@ std::optional<std::string> DpapiEncrypt(const std::string& plain) {
   return result;
 }
 
+// The session file: the refresh token, the reauthentication flag and the
+// identity, DPAPI-sealed and written atomically. False when it did not land.
+bool WriteSession(const std::wstring& path,
+                  const std::string& refresh_token,
+                  bool reauth_required,
+                  const PhiAuthUser& session_user) {
+  base::DictValue root;
+  root.Set("refreshToken", refresh_token);
+  root.Set("reauthRequired", reauth_required);
+  base::DictValue user;
+  user.Set("sub", session_user.sub);
+  user.Set("name", session_user.name);
+  user.Set("email", session_user.email);
+  user.Set("picture", session_user.picture);
+  root.Set("user", std::move(user));
+  std::string json;
+  base::JSONWriter::Write(root, &json);
+  const std::optional<std::string> blob = DpapiEncrypt(json);
+  return blob && PhiWriteFileAtomic(path, *blob);
+}
+
 // --- The tenant's token endpoint -----------------------------------------
 
 // POSTs `body` (form-encoded) to https://<domain>/oauth/token. False on
@@ -461,6 +482,7 @@ void PhiAuth::Load(const std::wstring& user_data_dir,
   worker_signed_in_ = !reauth;
   worker_refresh_token_ = reauth ? std::string() : refresh_token_;
   worker_access_token_.clear();
+  worker_user_ = user_;
   ::LeaveCriticalSection(&token_lock_);
   LOG(INFO) << "[PhiAuth] session restored for " << PhiRedactId(user_.sub)
             << (reauth ? " (reauthentication required)" : "");
@@ -695,9 +717,27 @@ bool PhiAuth::RefreshSession() {
   }
   // The workers' copy first: the old refresh token may already be revoked,
   // and the next round trip must not wait on the UI thread to learn that.
+  // A rotated token reaches the disk BEFORE anyone uses it — an exit or a
+  // crash before the UI applied the outcome must not leave the revoked one
+  // stored — and a token that could not be stored is never used: the
+  // session keeps the one on disk.
   ::EnterCriticalSection(&token_lock_);
   if (worker_generation_ == generation && worker_signed_in_) {
-    worker_refresh_token_ = outcome->refresh_token;
+    const PhiAuthUser user = outcome->user.value_or(worker_user_);
+    if (outcome->refresh_token != refresh_token || outcome->user) {
+      const bool written =
+          store_path_.empty() ||
+          WriteSession(store_path_, outcome->refresh_token, false, user) ||
+          WriteSession(store_path_, outcome->refresh_token, false, user);
+      if (written) {
+        worker_refresh_token_ = outcome->refresh_token;
+        worker_user_ = user;
+      } else {
+        LOG(ERROR) << "[PhiAuth] failed to persist the rotated session; "
+                      "keeping the stored refresh token";
+        outcome->refresh_token = refresh_token;
+      }
+    }
     worker_access_token_ = outcome->access_token;
   }
   ::LeaveCriticalSection(&token_lock_);
@@ -782,6 +822,7 @@ void PhiAuth::ApplyOutcome(const Outcome& outcome) {
       worker_signed_in_ = true;
       worker_refresh_token_ = refresh_token_;
       worker_access_token_ = outcome.access_token;
+      worker_user_ = user_;
       ::LeaveCriticalSection(&token_lock_);
       Persist();
       LOG(INFO) << "[PhiAuth] signed in as " << PhiRedactId(user_.sub);
@@ -799,17 +840,16 @@ void PhiAuth::ApplyOutcome(const Outcome& outcome) {
           outcome.generation != generation_) {
         return;  // A round trip for a session that is no longer this one.
       }
-      bool changed = false;
-      if (outcome.refresh_token != refresh_token_) {
-        refresh_token_ = outcome.refresh_token;
-        changed = true;
+      // The worker already stored what it rotated; the session follows the
+      // workers' copy (a later refresh may have rotated again since — an
+      // older outcome must not write its token back over the newer one).
+      ::EnterCriticalSection(&token_lock_);
+      if (worker_generation_ == generation_ && worker_signed_in_) {
+        refresh_token_ = worker_refresh_token_;
       }
+      ::LeaveCriticalSection(&token_lock_);
       if (outcome.user) {
         user_ = *outcome.user;
-        changed = true;
-      }
-      if (changed) {
-        Persist();
       }
       break;
     }
@@ -855,6 +895,7 @@ void PhiAuth::SignOut() {
   worker_signed_in_ = false;
   worker_refresh_token_.clear();
   worker_access_token_.clear();
+  worker_user_ = PhiAuthUser();
   ::LeaveCriticalSection(&token_lock_);
   if (!store_path_.empty()) {
     ::DeleteFileW(store_path_.c_str());
@@ -863,19 +904,12 @@ void PhiAuth::SignOut() {
 }
 
 void PhiAuth::Persist() {
-  base::DictValue root;
-  root.Set("refreshToken", refresh_token_);
-  root.Set("reauthRequired", reauth_required_);
-  base::DictValue user;
-  user.Set("sub", user_.sub);
-  user.Set("name", user_.name);
-  user.Set("email", user_.email);
-  user.Set("picture", user_.picture);
-  root.Set("user", std::move(user));
-  std::string json;
-  base::JSONWriter::Write(root, &json);
-  const std::optional<std::string> blob = DpapiEncrypt(json);
-  if (!blob || !PhiWriteFileAtomic(store_path_, *blob)) {
+  // Under token_lock_: a worker storing a rotated token writes the same file.
+  ::EnterCriticalSection(&token_lock_);
+  const bool written =
+      WriteSession(store_path_, refresh_token_, reauth_required_, user_);
+  ::LeaveCriticalSection(&token_lock_);
+  if (!written) {
     LOG(ERROR) << "[PhiAuth] failed to persist the session";
   }
 }

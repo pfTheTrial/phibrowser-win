@@ -17,9 +17,11 @@
 #include "base/strings/utf_string_conversions.h"
 #include "phibrowser-win/client/phi_dwrite.h"
 #include "phibrowser-win/client/phi_i18n.h"
+#include "phibrowser-win/client/phi_menu_paint.h"
 #include "phibrowser-win/client/phi_panel.h"
 #include "phibrowser-win/client/phi_popup_chrome.h"
 #include "phibrowser-win/client/phi_profile_service.h"
+#include "phibrowser-win/client/phi_prompt.h"
 #include "phibrowser-win/client/phi_settings_window.h"
 #include "phibrowser-win/client/phi_space_manager.h"
 
@@ -188,6 +190,21 @@ class PhiUrlRulesWindow::RuleList : public PhiPanel {
     scroll_ = std::max(
         0, content_height_ - static_cast<int>(client.bottom - client.top));
     Relayout();
+  }
+
+  // Scrolls just far enough that row `index` is fully in view.
+  void ScrollToRow(int index) {
+    RECT client = {};
+    ::GetClientRect(hwnd(), &client);
+    const int viewport = static_cast<int>(client.bottom - client.top);
+    const int top = index * Scaled(kRowHeight + kRowGap);
+    const int bottom = top + Scaled(kRowHeight) + 2 * Scaled(kListPad);
+    if (top < scroll_) {
+      scroll_ = top;
+    } else if (bottom > scroll_ + viewport) {
+      scroll_ = bottom - viewport;
+    }
+    Relayout();  // Clamps to the content.
   }
 
   void FocusField(int row_id) {
@@ -375,8 +392,14 @@ class PhiUrlRulesWindow::RuleList : public PhiPanel {
       // The card, lifted with a wash while it is being dragged.
       PhiFillRoundRectAA(dc, g.row, Scaled(kRadius),
                          lifted ? PhiPopupBlend(c.accent, c.card, 30) : c.card);
-      PhiStrokeRoundRectAA(dc, g.row, Scaled(kRadius),
-                           lifted ? c.accent : c.card_border, 1);
+      // A row the last Save refused: outlined in the destructive red until
+      // it is edited.
+      PhiStrokeRoundRectAA(
+          dc, g.row, Scaled(kRadius),
+          lifted        ? c.accent
+          : row.invalid ? c.destructive
+                        : c.card_border,
+          row.invalid && !lifted ? Scaled(2) : 1);
       const int base = (static_cast<int>(i) + 1) * 4;
       // Line 1: the match-type pill, the field well, the remove glyph.
       PaintPill(dc, g.type, window_->MatchTypeLabel(row.type),
@@ -591,15 +614,19 @@ class PhiUrlRulesWindow::RuleList : public PhiPanel {
 // static
 void PhiUrlRulesWindow::Open(PhiSettingsHost* host, HWND anchor) {
   if (!g_window || !g_window->alive()) {
-    delete g_window;
-    g_window = new PhiUrlRulesWindow(host);
-    if (!g_window->OpenWindow(anchor)) {
-      delete g_window;
-      g_window = nullptr;
+    auto* window = new PhiUrlRulesWindow(host);
+    if (!window->OpenWindow(anchor)) {
+      delete window;
       return;
     }
+    // Self-owned from here: the object goes with its HWND (OnNcDestroy
+    // clears g_window first).
+    window->DeleteWhenDestroyed();
+    g_window = window;
   }
-  ::ShowWindow(g_window->hwnd(), SW_SHOW);
+  // A minimized window comes back; SW_SHOW alone leaves it on the taskbar.
+  ::ShowWindow(g_window->hwnd(),
+               ::IsIconic(g_window->hwnd()) ? SW_RESTORE : SW_SHOW);
   ::SetForegroundWindow(g_window->hwnd());
 }
 
@@ -780,6 +807,34 @@ void PhiUrlRulesWindow::Paint(HDC dc, const RECT&) {
   RECT bottom = {client.left, footer_.top - 1, client.right, footer_.top};
   ::FillRect(dc, &top, divider_brush_);
   ::FillRect(dc, &bottom, divider_brush_);
+  // The note a refused Save leaves, between Add Rule and Cancel.
+  if (HasInvalidRows()) {
+    if (small_font_) {
+      previous = ::SelectObject(dc, small_font_);
+    }
+    ::SetTextColor(dc, colors().destructive);
+    RECT note = {Scaled(kFooterPadX) + Scaled(kAddWidth) + Scaled(kButtonGap),
+                 footer_.top,
+                 client.right - Scaled(kFooterPadX) - 2 * Scaled(kActionWidth) -
+                     2 * Scaled(kButtonGap),
+                 footer_.bottom};
+    const wchar_t* text = PhiStr("sidebar.urlRulesEditor.invalidRows");
+    // Wrapped, then centred on the footer by hand (DT_VCENTER is
+    // single-line only).
+    RECT measure = note;
+    ::DrawTextW(dc, text, -1, &measure,
+                DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX);
+    const int height = std::min(static_cast<int>(measure.bottom - measure.top),
+                                static_cast<int>(note.bottom - note.top));
+    note.top = (footer_.top + footer_.bottom - height) / 2;
+    note.bottom = note.top + height;
+    ::DrawTextW(dc, text, -1, &note,
+                DT_LEFT | DT_WORDBREAK | DT_NOPREFIX | DT_END_ELLIPSIS |
+                    DT_EDITCONTROL);
+    if (small_font_) {
+      ::SelectObject(dc, previous);
+    }
+  }
 }
 
 void PhiUrlRulesWindow::Load() {
@@ -830,7 +885,7 @@ std::wstring PhiUrlRulesWindow::TargetLabel(const Row& row) const {
     }
   }
   // An auto-route rule whose Space was deleted: say so (never a false "Ask
-  // every time") so the user re-targets it; left alone, Save drops it.
+  // every time") so the user re-targets it; Save refuses it until then.
   return PhiStr("sidebar.urlRulesEditor.target.unavailablePlaceholder");
 }
 
@@ -891,15 +946,35 @@ void PhiUrlRulesWindow::RemoveRow(int row_index) {
   if (list_) {
     list_->Relayout();
   }
+  Invalidate();  // The footer note may go with the row.
 }
 
 void PhiUrlRulesWindow::SetRowValue(int row_id, std::string value) {
   for (Row& row : rows_) {
     if (row.id == row_id) {
+      if (row.value != value) {
+        ClearInvalid(&row);
+      }
       row.value = std::move(value);
       return;
     }
   }
+}
+
+bool PhiUrlRulesWindow::HasInvalidRows() const {
+  return std::any_of(rows_.begin(), rows_.end(),
+                     [](const Row& row) { return row.invalid; });
+}
+
+void PhiUrlRulesWindow::ClearInvalid(Row* row) {
+  if (!row->invalid) {
+    return;
+  }
+  row->invalid = false;
+  if (list_ && list_->alive()) {
+    list_->Invalidate();
+  }
+  Invalidate();  // The footer note may go.
 }
 
 void PhiUrlRulesWindow::PickMatchType(int row_index, const RECT& anchor) {
@@ -931,6 +1006,7 @@ void PhiUrlRulesWindow::PickMatchType(int row_index, const RECT& anchor) {
   // The type is the source of truth; the typed value stays as it is and
   // encodes under the new type at Save (the Mac's matchTypeChanged).
   rows_[static_cast<size_t>(row_index)].type = kTypes[chosen - 1];
+  ClearInvalid(&rows_[static_cast<size_t>(row_index)]);
   list_->Relayout();
 }
 
@@ -959,8 +1035,10 @@ void PhiUrlRulesWindow::PickTarget(int row_index, const RECT& anchor) {
       ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);  // Kiosk in its own section.
     }
     const bool checked = !snapshot.ask && destinations[i].id == snapshot.target_id;
+    // Space and profile names are the user's: an '&' is a character.
     ::AppendMenuW(menu, MF_STRING | (checked ? MF_CHECKED : 0),
-                  static_cast<UINT>(i) + 1, destinations[i].label.c_str());
+                  static_cast<UINT>(i) + 1,
+                  PhiEscapeMenuText(destinations[i].label).c_str());
   }
   ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
   ::AppendMenuW(menu, MF_STRING | (snapshot.ask ? MF_CHECKED : 0), kAsk,
@@ -985,6 +1063,7 @@ void PhiUrlRulesWindow::PickTarget(int row_index, const RECT& anchor) {
   } else {
     return;
   }
+  ClearInvalid(&row);
   list_->Relayout();
 }
 
@@ -1008,7 +1087,9 @@ void PhiUrlRulesWindow::Save() {
     // rule only uses its target as the prompt's default, so a deleted
     // Space falls back to the first promptable destination (never Kiosk,
     // which the chooser lists as a section of its own) rather than dropping
-    // the rule.
+    // the rule. A row that has no usable pattern or no live destination is
+    // NOT dropped: it is outlined and the window stays open so the user
+    // fixes or removes it.
     std::set<std::string> valid;
     std::vector<std::string> promptable;
     for (const Destination& destination : Destinations()) {
@@ -1018,11 +1099,10 @@ void PhiUrlRulesWindow::Save() {
       }
     }
     std::vector<model::UrlRule> rules;
-    for (const Row& row : rows_) {
-      const std::string value = NormalizeUrlRuleHost(row.value);
-      if (value.empty()) {
-        continue;
-      }
+    int first_invalid = -1;
+    for (size_t i = 0; i < rows_.size(); ++i) {
+      Row& row = rows_[i];
+      row.invalid = false;
       std::string target;
       if (row.ask && valid.count(row.target_id) &&
           !UrlRuleTargetIsKiosk(row.target_id)) {
@@ -1031,21 +1111,60 @@ void PhiUrlRulesWindow::Save() {
         target = promptable.front();
       } else if (!row.ask && valid.count(row.target_id)) {
         target = row.target_id;
-      } else {
-        continue;
       }
       model::UrlRule rule;
-      UrlRuleEncode(row.type, value, &rule.host, &rule.path_prefix);
-      if (rule.host.empty()) {
+      const std::string value = NormalizeUrlRuleHost(row.value);
+      if (!value.empty()) {
+        UrlRuleEncode(row.type, value, &rule.host, &rule.path_prefix);
+      }
+      if (rule.host.empty() || target.empty()) {
+        row.invalid = true;
+        if (first_invalid < 0) {
+          first_invalid = static_cast<int>(i);
+        }
         continue;
       }
       rule.space_id = target;
       rule.ask = row.ask;
       rules.push_back(std::move(rule));
     }
+    if (first_invalid >= 0) {
+      if (list_) {
+        list_->ScrollToRow(first_invalid);
+        list_->FocusField(rows_[static_cast<size_t>(first_invalid)].id);
+      }
+      Invalidate();  // The footer note.
+      return;
+    }
     host_->UrlRules().ReplaceRules(rules);
   }
   Destroy();
+}
+
+bool PhiUrlRulesWindow::ConfirmDiscard() {
+  if (list_) {
+    list_->CommitFields();
+  }
+  if (Fingerprint() == initial_fingerprint_) {
+    return true;
+  }
+  // Discard first (the affirmative of "Discard changes?"), Keep Editing
+  // last; Escape and the alert's close button keep editing. The alert runs
+  // a modal loop: should this window be torn down meanwhile (the object is
+  // self-owned), nothing of it is touched afterwards.
+  const HWND self = hwnd();
+  const int choice = PhiAlert(
+      hwnd(), PhiStr("sidebar.urlRulesEditor.discardAlert.title"),
+      PhiStr("sidebar.urlRulesEditor.discardAlert.message"),
+      {{PhiStr("sidebar.urlRulesEditor.discardAlert.discardButton"),
+        PhiAlertRole::kDestructive},
+       {PhiStr("sidebar.urlRulesEditor.discardAlert.keepEditingButton"),
+        PhiAlertRole::kSecondary}},
+      /*default_index=*/1, /*cancel_index=*/1);
+  if (!::IsWindow(self) || g_window != this) {
+    return false;
+  }
+  return choice == 0;
 }
 
 // static
@@ -1107,7 +1226,9 @@ LRESULT PhiUrlRulesWindow::OnWindowMessage(UINT msg,
           *handled = true;
           return 0;
         case kIdCancel:
-          Destroy();
+          if (ConfirmDiscard()) {
+            Destroy();
+          }
           *handled = true;
           return 0;
         case kIdSave:
@@ -1125,7 +1246,9 @@ LRESULT PhiUrlRulesWindow::OnWindowMessage(UINT msg,
       }
       break;
     case WM_CLOSE:
-      Destroy();
+      if (ConfirmDiscard()) {
+        Destroy();
+      }
       *handled = true;
       return 0;
     default:
@@ -1135,7 +1258,9 @@ LRESULT PhiUrlRulesWindow::OnWindowMessage(UINT msg,
 }
 
 void PhiUrlRulesWindow::OnEscape() {
-  Destroy();
+  if (ConfirmDiscard()) {
+    Destroy();
+  }
 }
 
 void PhiUrlRulesWindow::OnColorsChanged() {

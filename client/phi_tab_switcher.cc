@@ -34,6 +34,17 @@ constexpr int kCardGap = 12;
 constexpr int kPanelPad = 16;
 constexpr int kFooterHeight = 28;
 constexpr size_t kMaxCards = 7;
+// The HUD's watchdog: focus leaving the owner or Esc cancels it; a Ctrl
+// release the keyboard hook never saw commits it.
+constexpr UINT kPollMs = 50;
+// Inset from the work-area edges the card strip keeps (DIP).
+constexpr int kScreenMargin = 16;
+
+// A close requested from inside the HUD's own window procedure runs from
+// the message loop instead (a thread timer), so the window is never
+// destroyed under its own dispatch.
+UINT_PTR g_deferred_close = 0;
+void CALLBACK DeferredClose(HWND, UINT, UINT_PTR id, DWORD);
 
 struct Card {
   TabId tab_id;
@@ -67,14 +78,30 @@ class Hud : public PhiPopover {
 
     Placement placement;
     placement.side = PhiPopoverSide::kExplicit;
-    placement.clamp = false;
+    // Kept on the owner's monitor: a window straddling an edge still gets
+    // the whole strip on screen.
+    placement.clamp = true;
+    placement.monitor_from_owner = true;
     SIZE probe = {1, 1};
     if (!CreatePopover(spec, controller_->shell_hwnd(), probe, placement,
                        options)) {
       return;
     }
+    // As many cards as the work area holds (7 × 192 dip overflow a
+    // 1366 px screen), never more than kMaxCards.
+    MONITORINFO monitor = {sizeof(monitor)};
+    if (::GetMonitorInfoW(::MonitorFromWindow(controller_->shell_hwnd(),
+                                              MONITOR_DEFAULTTONEAREST),
+                          &monitor)) {
+      const int room = monitor.rcWork.right - monitor.rcWork.left -
+                       Scaled(kScreenMargin) * 2 - Scaled(kPanelPad) * 2 +
+                       Scaled(kCardGap);
+      const int fit = room / (Scaled(kCardWidth) + Scaled(kCardGap));
+      max_cards_ = static_cast<size_t>(
+          std::clamp(fit, 1, static_cast<int>(kMaxCards)));
+    }
     BuildCards();
-    const int count = static_cast<int>(std::min(cards_.size(), kMaxCards));
+    const int count = static_cast<int>(std::min(cards_.size(), max_cards_));
     SIZE size = {};
     size.cx = Scaled(kPanelPad) * 2 + count * Scaled(kCardWidth) +
               std::max(0, count - 1) * Scaled(kCardGap);
@@ -86,9 +113,32 @@ class Hud : public PhiPopover {
     placement.anchor = {x, y, x, y};
     Reposition(placement, size);
     Show();
+    poll_ = NewTimer();
+    poll_.Start(kPollMs);
   }
 
   ~Hud() override { Destroy(); }
+
+  // Set once a close is pending: the HUD is hidden and takes no more
+  // input; DeferredClose commits (when `commit_pending`) and deletes it.
+  bool cancelled() const { return cancelled_; }
+  bool commit_pending() const { return commit_pending_; }
+
+  // Hides now and finishes from the message loop (see DeferredClose).
+  void RequestClose(bool commit) {
+    if (cancelled_) {
+      return;
+    }
+    cancelled_ = true;
+    commit_pending_ = commit;
+    poll_.Stop();
+    if (alive()) {
+      ::ShowWindow(hwnd(), SW_HIDE);
+    }
+    if (!g_deferred_close) {
+      g_deferred_close = ::SetTimer(nullptr, 0, 0, &DeferredClose);
+    }
+  }
 
   void Advance(int direction) {
     if (cards_.empty()) {
@@ -123,6 +173,46 @@ class Hud : public PhiPopover {
   }
 
   void Paint(HDC dc, const RECT&) override { PaintCards(dc); }
+
+  // The app losing activation (Alt+Tab, a click into another program, the
+  // Start menu) cancels: the Ctrl release that would commit goes to
+  // another app, and a topmost HUD must not outlive the gesture.
+  LRESULT OnMessage(UINT message,
+                    WPARAM wparam,
+                    LPARAM lparam,
+                    bool* handled) override {
+    if (message == WM_ACTIVATEAPP && !wparam) {
+      RequestClose(/*commit=*/false);
+    }
+    return PhiPopover::OnMessage(message, wparam, lparam, handled);
+  }
+
+  void OnTimerFired(UINT_PTR id) override {
+    if (id != poll_.id() || cancelled_) {
+      return;
+    }
+    // Another of our own windows taking activation (a second Phi window,
+    // a dialog) is the same as the app losing it.
+    HWND foreground = ::GetForegroundWindow();
+    const bool owner_active =
+        foreground && ::GetAncestor(foreground, GA_ROOTOWNER) ==
+                          ::GetAncestor(owner(), GA_ROOTOWNER);
+    // Esc held: the hook did not route it (PhiTabSwitcher::HandleKeyDown
+    // is the swallowing path).
+    const bool escape = (::GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0;
+    if (!owner_active || escape) {
+      RequestClose(/*commit=*/false);
+      return;
+    }
+    // Ctrl released for two ticks with no commit arriving (a WM_TIMER only
+    // runs once the input queue is drained): the hook missed the key-up —
+    // a Ctrl+Tab tap released before the HUD opened. Releasing commits.
+    ctrl_up_ticks_ =
+        (::GetAsyncKeyState(VK_CONTROL) & 0x8000) ? 0 : ctrl_up_ticks_ + 1;
+    if (ctrl_up_ticks_ >= 2) {
+      RequestClose(/*commit=*/true);
+    }
+  }
 
  private:
   // MRU-ordered cards: the controller's MRU list first, then any tabs it
@@ -163,7 +253,7 @@ class Hud : public PhiPopover {
       }
     }
     for (const Entry& entry : ordered) {
-      if (cards_.size() >= kMaxCards) {
+      if (cards_.size() >= max_cards_) {
         break;
       }
       Card card;
@@ -200,7 +290,7 @@ class Hud : public PhiPopover {
     PhiStrokeRoundRectAA(dc, rc, Scaled(16), palette.border, 1);
     ::SetBkMode(dc, TRANSPARENT);
     int x = rc.left + Scaled(kPanelPad);
-    for (size_t i = 0; i < cards_.size() && i < kMaxCards; ++i) {
+    for (size_t i = 0; i < cards_.size() && i < max_cards_; ++i) {
       const Card& card = cards_[i];
       RECT card_rc = {x, rc.top + Scaled(kPanelPad),
                       x + Scaled(kCardWidth),
@@ -249,19 +339,45 @@ class Hud : public PhiPopover {
   RAW_PTR_EXCLUSION PhiShellWindow* const controller_;
   std::vector<Card> cards_;
   int selected_ = 0;
+  size_t max_cards_ = kMaxCards;
+  Timer poll_;
+  int ctrl_up_ticks_ = 0;
+  bool cancelled_ = false;
+  bool commit_pending_ = false;
 };
 
 Hud* Hud::instance = nullptr;
+
+void CALLBACK DeferredClose(HWND, UINT, UINT_PTR id, DWORD) {
+  ::KillTimer(nullptr, id);
+  g_deferred_close = 0;
+  if (Hud::instance && Hud::instance->commit_pending()) {
+    Hud::instance->Commit();
+  }
+  PhiTabSwitcher::Cancel();
+}
 
 }  // namespace
 
 // static
 bool PhiTabSwitcher::IsActive() {
-  return Hud::instance != nullptr;
+  return Hud::instance != nullptr && !Hud::instance->cancelled();
+}
+
+// static
+bool PhiTabSwitcher::HandleKeyDown(unsigned int virtual_key) {
+  if (virtual_key != VK_ESCAPE || !IsActive()) {
+    return false;
+  }
+  Cancel();
+  return true;
 }
 
 // static
 void PhiTabSwitcher::Cycle(PhiShellWindow* controller, int direction) {
+  if (Hud::instance && Hud::instance->cancelled()) {
+    Cancel();  // A pending close: this press starts a fresh gesture.
+  }
   if (!Hud::instance) {
     if (!controller) {
       return;
@@ -277,13 +393,19 @@ void PhiTabSwitcher::Commit() {
   if (!Hud::instance) {
     return;
   }
-  Hud::instance->Commit();
+  if (!Hud::instance->cancelled()) {
+    Hud::instance->Commit();
+  }
   delete Hud::instance;
   Hud::instance = nullptr;
 }
 
 // static
 void PhiTabSwitcher::Cancel() {
+  if (g_deferred_close) {
+    ::KillTimer(nullptr, g_deferred_close);
+    g_deferred_close = 0;
+  }
   delete Hud::instance;
   Hud::instance = nullptr;
 }

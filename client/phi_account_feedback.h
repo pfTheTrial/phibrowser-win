@@ -106,7 +106,8 @@ class PhiAccountAndFeedback : public PhiFeedbackHost {
   // the tab it landed in.
   bool HandleAuthCallbackUrl(const std::string& url);
   // Drops the session, revokes the refresh token and opens the tenant's
-  // logout page in a tab so the hosted-login session ends too. The
+  // logout page in a tab so the hosted-login session ends too; the
+  // account's unsent feedback reports are deleted from disk. The
   // confirmation is the caller's (the pane asks; the harness does not).
   void RequestSignOut();
   // Drops the local session without the tenant's logout page — the

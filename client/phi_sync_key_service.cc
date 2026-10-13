@@ -152,7 +152,9 @@ struct PhiSyncKeyService::Worker {
 
   // Runs `work` on the UI thread and waits (up to 10 s). The closure owns
   // everything it touches: one that runs after a timeout finds nothing
-  // dangling.
+  // dangling. A hop that times out before the UI took it is withdrawn, so
+  // false means `work` never runs — a late write (a Space create) cannot
+  // land after the caller parked and retried it.
   bool RunOnUiAndWait(const std::function<void()>& work) {
     if (retired) {
       return false;
@@ -171,14 +173,26 @@ struct PhiSyncKeyService::Worker {
       return false;
     }
     std::weak_ptr<UiState> ui_state = ui;
-    PostToUi(sink, [work, event, ui_state] {
-      if (!ui_state.expired()) {
+    // kQueued → kTaken (the UI runs it) or kWithdrawn (the worker gave up).
+    enum : int { kQueued, kTaken, kWithdrawn };
+    auto hop = std::make_shared<std::atomic<int>>(kQueued);
+    PostToUi(sink, [work, event, ui_state, hop] {
+      int queued = kQueued;
+      if (hop->compare_exchange_strong(queued, kTaken) &&
+          !ui_state.expired()) {
         work();
       }
       ::SetEvent(event->handle);
     });
-    return ::WaitForSingleObject(event->handle, 10000) == WAIT_OBJECT_0 &&
-           !ui.expired();
+    if (::WaitForSingleObject(event->handle, 10000) != WAIT_OBJECT_0) {
+      int queued = kQueued;
+      if (hop->compare_exchange_strong(queued, kWithdrawn)) {
+        return false;  // never runs
+      }
+      // The UI thread is running it now: its effects land, so wait them out.
+      ::WaitForSingleObject(event->handle, INFINITE);
+    }
+    return !ui.expired();
   }
 
   // The engine runs only while unlocked AND paired (all native rounds
@@ -221,7 +235,10 @@ struct PhiSyncKeyService::Worker {
               .count());
     };
     deps.build_identity = config.build_identity;
-    deps.request_follow_up = [this] { follow_up_due = true; };
+    deps.request_follow_up = [this] {
+      std::lock_guard<std::mutex> hold(lock);
+      follow_up_due = true;
+    };
     deps.applying_remote = [this](bool applying) {
       applying_remote = applying;
     };
@@ -242,7 +259,8 @@ struct PhiSyncKeyService::Worker {
           [this](const std::function<void()>& work) {
             return RunOnUiAndWait(work);
           },
-          config.spaces, config.known_profiles, std::move(profile_hooks));
+          config.spaces, config.space_store_unavailable, config.known_profiles,
+          std::move(profile_hooks));
       space_table.set_on_saved([this](const sync::SpaceSyncTable& table) {
         PublishHiddenSpaces(table);
       });

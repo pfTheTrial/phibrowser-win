@@ -58,20 +58,25 @@ class SettingsSidecars {
   virtual ~SettingsSidecars() = default;
   virtual std::optional<int64_t> Timestamp(const std::string& key) const = 0;
   virtual std::optional<std::string> Value(const std::string& key) const = 0;
-  virtual void Set(const std::string& key, int64_t stamp,
+  // False when it did not persist; the stored stamp and value stay as they
+  // were then.
+  virtual bool Set(const std::string& key, int64_t stamp,
                    const std::string& value_signature) = 0;
 };
 
 // SyncableSettings.snapshot: every registered key, a changed one stamped
 // EditStamp(now, previous stamp) and its sidecars refreshed.
+// `sidecars_failed` (optional) is set when a sidecar did not persist.
 SettingEntity SnapshotSettings(const std::vector<SyncableSetting>& settings,
                                SettingsSidecars& sidecars,
-                               int64_t now);
+                               int64_t now,
+                               bool* sidecars_failed = nullptr);
 // SyncableSettings.apply: registered keys only; the sidecars follow a value
 // that actually landed. Returns the keys that landed.
 std::vector<std::string> ApplySettings(const SettingEntity& entity,
                                        const std::vector<SyncableSetting>& settings,
-                                       SettingsSidecars& sidecars);
+                                       SettingsSidecars& sidecars,
+                                       bool* sidecars_failed = nullptr);
 
 // --- Persisted state --------------------------------------------------------------
 
@@ -99,7 +104,8 @@ class EngineStateStore {
  public:
   virtual ~EngineStateStore() = default;
   virtual std::optional<std::string> Get(const std::string& key) const = 0;
-  virtual void Set(const std::string& key,
+  // False when it did not persist; Get then still answers the old value.
+  virtual bool Set(const std::string& key,
                    const std::optional<std::string>& value) = 0;
 };
 
@@ -484,7 +490,12 @@ class PhiSyncEngine {
   void FlushSpaceObservations(const SpacePullBatch& batch);
   void ApplySpaces(const SpacePullBatch& batch, SpaceSyncTable* table);
   void ApplySpaceTombstones(const SpacePullBatch& batch, SpaceSyncTable* table);
-  std::set<std::string> LiveLocalUserSpaceIds(const SpaceSyncTable& table);
+  // nullopt when the Space list could not be read.
+  std::optional<std::set<std::string>> LiveLocalUserSpaceIds(
+      const SpaceSyncTable& table);
+  // The local side could not answer a Space read: the round lands, drops and
+  // publishes nothing more, and the marker stays (the next round replays).
+  void NoteSpaceListUnreachable();
   void PushSpaces(bool retry_on_conflict,
                   const std::set<std::string>* only_uuids);
   void StampLocalSpaceEdits();
@@ -611,6 +622,7 @@ class PhiSyncEngine {
   bool did_refresh_profiles_this_round_ = false;
   SpaceRoundCounters space_counters_;
   std::string pending_deletion_space_id_;
+  bool space_list_unreachable_ = false;
 
   // The owned kinds' round state (reset by Run).
   std::set<std::string> owned_round_started_;

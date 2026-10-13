@@ -8,14 +8,27 @@
 #include <utility>
 
 #include "base/logging.h"
+#include "base/strings/utf_string_conversions.h"
 #include "phibrowser-win/client/phi_features.h"
-#include "phibrowser-win/client/phi_modal_scope.h"
+#include "phibrowser-win/client/phi_i18n.h"
 #include "phibrowser-win/client/phi_prompt.h"
 
 namespace phi_client {
 
 namespace {
 using CredentialAccessKind = model::CredentialAccessKind;
+
+// The helper is asked on the UI thread, so its answers are bounded tightly:
+// a status read and a lookup are local to the unlocked vault.
+constexpr DWORD kHelperStatusTimeoutMs = 3000;
+constexpr DWORD kHelperLookupTimeoutMs = 5000;
+// How long a status answer is reused (agents poll credentials.status).
+constexpr ULONGLONG kHelperStatusCacheMs = 2000;
+// The prompt-spam brake: this many denials (any item) inside the window
+// refuse every request without a prompt for the back-off.
+constexpr size_t kDenialBurst = 3;
+constexpr ULONGLONG kDenialWindowMs = 2 * 60 * 1000;
+constexpr ULONGLONG kDenialBackoffMs = 5 * 60 * 1000;
 }  // namespace
 
 PhiCredentialService::PhiCredentialService(model::PhiConsentModel& consent,
@@ -77,18 +90,27 @@ base::ListValue CandidateList(
 
 }  // namespace
 
+bool PhiCredentialService::HelperUp() {
+  return vault_helper_.running() || vault_helper_.Restart();
+}
+
 std::string PhiCredentialService::HelperStatus() {
-  if (!vault_helper_.running()) {
+  if (!HelperUp()) {
+    cached_status_.clear();
     return std::string();
+  }
+  const ULONGLONG now = ::GetTickCount64();
+  if (!cached_status_.empty() &&
+      now - cached_status_tick_ < kHelperStatusCacheMs) {
+    return cached_status_;
   }
   std::string error;
-  std::optional<base::DictValue> result =
-      vault_helper_.Call("status", base::DictValue(), &error);
-  if (!result) {
-    return std::string();
-  }
-  const std::string* status = result->FindString("status");
-  return status ? *status : std::string();
+  std::optional<base::DictValue> result = vault_helper_.Call(
+      "status", base::DictValue(), &error, kHelperStatusTimeoutMs);
+  const std::string* status = result ? result->FindString("status") : nullptr;
+  cached_status_ = status ? *status : std::string();
+  cached_status_tick_ = now;
+  return cached_status_;
 }
 
 std::optional<base::DictValue> PhiCredentialService::HelperLookup(
@@ -110,7 +132,7 @@ std::optional<base::DictValue> PhiCredentialService::HelperLookup(
   }
   base::DictValue params;
   params.Set("query", std::move(query));
-  return vault_helper_.Call("lookup", params, error);
+  return vault_helper_.Call("lookup", params, error, kHelperLookupTimeoutMs);
 }
 
 bool PhiCredentialService::ResolveCredentialItem(const std::string& domain,
@@ -119,7 +141,7 @@ bool PhiCredentialService::ResolveCredentialItem(const std::string& domain,
                                                  const std::string& username,
                                                  base::DictValue* item,
                                                  base::DictValue* out) {
-  if (vault_helper_.running()) {
+  if (HelperUp()) {
     std::string error;
     std::optional<base::DictValue> result =
         HelperLookup(domain, id, search, username, &error);
@@ -251,6 +273,17 @@ bool PhiCredentialService::PromptCredentialApproval(
     out.approval_type = "existing_grant";
     return true;
   }
+  if (InDenialBackoff(grant_key, kind)) {
+    return false;
+  }
+  HWND owner = host_.CredentialPromptOwner();
+  if (!owner) {
+    // No Phi window to ask in. The old MessageBox fallback's Yes answered
+    // BM_CLICK from any program, so nothing is released without the
+    // hardened prompt below; not remembered as the user's denial.
+    AppendCredentialAudit(grant_key, kind, "denied (no window to ask in)");
+    return false;
+  }
   out.prompted = true;
   // The exposure banner is the load-bearing line, as on Mac — and it says
   // what is TRUE: a filled page is a page the agent holds a CDP session on.
@@ -259,7 +292,6 @@ bool PhiCredentialService::PromptCredentialApproval(
              : L"Phi types the secret into the page. Any automation attached "
                L"to that page can read it.";
   const std::wstring text = detail + L"\n\n" + exposure;
-  HWND owner = host_.CredentialPromptOwner();
   // No "Always allow": a standing grant plus an agent-chosen page was the
   // exfil path. A once-only ask (cross-origin) offers no timed grant either.
   std::vector<std::wstring> options = {L"Allow once"};
@@ -269,24 +301,15 @@ bool PhiCredentialService::PromptCredentialApproval(
   options.push_back(L"Deny");
   const int deny_index = static_cast<int>(options.size()) - 1;
   const int timed_index = once_only ? -1 : 1;
-  int chosen = -1;
-  if (owner) {
-    // Deny preselected AND Cancel holding Return: Enter refuses; only a
-    // deliberate click on Continue (or a row double-click) approves.
-    chosen = PhiPromptChoose(owner, L"Credential request", text.c_str(),
-                             options, deny_index, L"Continue", L"Cancel",
-                             /*cancel_is_default=*/true);
-  } else {
-    // No window yet: the MessageBox fallback offers allow-ONCE only — a
-    // timed grant must never be given through a degraded dialog.
-    PhiModalScope modal;
-    chosen = ::MessageBoxW(nullptr, (text + L"\n\nAllow this once?").c_str(),
-                           L"Phi — Credential request",
-                           MB_YESNO | MB_ICONQUESTION | MB_SETFOREGROUND |
-                               MB_TOPMOST | MB_DEFBUTTON2) == IDYES
-                 ? 0
-                 : deny_index;
-  }
+  // Deny preselected AND Cancel holding Return: Enter refuses; only a
+  // deliberate click on Continue (or a row double-click) approves — and
+  // only a real one: another program's BM_CLICK, UI Automation or
+  // SendInput cannot press Continue or move the selection.
+  const int chosen = PhiPromptChoose(owner, L"Credential request",
+                                     text.c_str(), options, deny_index,
+                                     L"Continue", L"Cancel",
+                                     /*cancel_is_default=*/true,
+                                     /*require_hardware_input=*/true);
   if (chosen == timed_index) {
     TimedGrant grant;
     grant.kind = kind;
@@ -307,7 +330,92 @@ bool PhiCredentialService::PromptCredentialApproval(
   }
   denials_[grant_key] = now + 5 * 60 * 1000;
   AppendCredentialAudit(grant_key, kind, "denied");
+  NoteDenial(grant_key, kind);
   return false;
+}
+
+bool PhiCredentialService::InDenialBackoff(const std::string& scope,
+                                           CredentialAccessKind kind) {
+  if (::GetTickCount64() >= backoff_until_tick_) {
+    return false;
+  }
+  AppendCredentialAudit(scope, kind, "denied (prompts paused)");
+  return true;
+}
+
+void PhiCredentialService::NoteDenial(const std::string& scope,
+                                      CredentialAccessKind kind) {
+  // Keyed on nothing: an agent that walks through item after item after
+  // the user said no is the spam this stops.
+  const ULONGLONG now = ::GetTickCount64();
+  recent_denials_.push_back(now);
+  while (!recent_denials_.empty() &&
+         now - recent_denials_.front() > kDenialWindowMs) {
+    recent_denials_.pop_front();
+  }
+  if (recent_denials_.size() >= kDenialBurst) {
+    recent_denials_.clear();
+    backoff_until_tick_ = now + kDenialBackoffMs;
+    AppendCredentialAudit(scope, kind,
+                          "prompts paused for 5 minutes (repeated denials)");
+  }
+}
+
+PhiCredentialService::PickResult PhiCredentialService::PromptCredentialPick(
+    const std::wstring& detail,
+    const base::ListValue& candidates,
+    CredentialAccessKind kind,
+    const std::string& scope,
+    std::string* credential_id) {
+  credential_id->clear();
+  // Every row must carry an id to re-query by; otherwise the user's pick
+  // could not be honoured exactly, and nothing is offered.
+  std::vector<std::string> ids;
+  std::vector<std::wstring> options;
+  for (const base::Value& entry : candidates) {
+    const base::DictValue* d = entry.GetIfDict();
+    const std::string* id = d ? d->FindString("credentialId") : nullptr;
+    if (!id || id->empty()) {
+      return PickResult::kUnavailable;
+    }
+    const std::string* name = d->FindString("name");
+    const std::string* username = d->FindString("username");
+    const std::string* uri = d->FindString("uri");
+    std::string label = name && !name->empty() ? *name
+                        : uri               ? *uri
+                                            : *id;
+    if (username && !username->empty()) {
+      label += "  (" + *username + ")";
+    }
+    ids.push_back(*id);
+    options.push_back(base::UTF8ToWide(label));
+  }
+  if (ids.empty()) {
+    return PickResult::kUnavailable;
+  }
+  if (InDenialBackoff(scope, kind)) {
+    return PickResult::kDenied;
+  }
+  HWND owner = host_.CredentialPromptOwner();
+  if (!owner) {
+    return PickResult::kUnavailable;
+  }
+  options.push_back(PhiStr("agent.credentialPick.noneRow"));
+  const int none_index = static_cast<int>(options.size()) - 1;
+  const std::wstring text =
+      detail + L"\n\n" + PhiStr("agent.credentialPick.message");
+  const int chosen = PhiPromptChoose(
+      owner, PhiStr("agent.credentialPick.title"), text.c_str(), options,
+      none_index, PhiStr("agent.credentialPick.continueButton"),
+      PhiStr("prompt.cancel"), /*cancel_is_default=*/true,
+      /*require_hardware_input=*/true);
+  if (chosen < 0 || chosen >= none_index) {
+    AppendCredentialAudit(scope, kind, "denied (no item chosen)");
+    NoteDenial(scope, kind);
+    return PickResult::kDenied;
+  }
+  *credential_id = ids[static_cast<size_t>(chosen)];
+  return PickResult::kChosen;
 }
 
 void PhiCredentialService::AppendCredentialAudit(const std::string& scope,

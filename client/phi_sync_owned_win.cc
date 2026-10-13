@@ -239,15 +239,22 @@ PhiOwnedTableFile::PhiOwnedTableFile(std::wstring path) : path_(std::move(path))
 
 PhiOwnedTableFile::~PhiOwnedTableFile() = default;
 
-// A missing, unreadable, older or empty table reads as empty and reports a
-// loss when the kind had records; it is never written back here.
+// A missing, unreadable, older, newer or empty table reads as empty and
+// reports a loss when the kind had records; it is never written back here.
+// A locked table or a newer build's is not saved over either (the Space
+// table's rule) until a Load reads one this build owns.
 sync::OwnedTable PhiOwnedTableFile::Load(bool had_records, bool* reported_loss) {
   std::lock_guard<std::mutex> hold(lock_);
   *reported_loss = had_records;
   base::DictValue dict;
   sync::OwnedTable table;
-  if (PhiReadJsonFile(path_, &dict) != PhiJsonFileStatus::kOk ||
-      dict.FindInt("formatVersion").value_or(0) < sync::OwnedTable::kFormatVersion) {
+  const PhiJsonFileStatus status = PhiReadJsonFile(path_, &dict);
+  const int format = dict.FindInt("formatVersion").value_or(0);
+  save_blocked_ = status == PhiJsonFileStatus::kUnreadable ||
+                  (status == PhiJsonFileStatus::kOk &&
+                   format > sync::OwnedTable::kFormatVersion);
+  if (status != PhiJsonFileStatus::kOk ||
+      format != sync::OwnedTable::kFormatVersion) {
     return sync::OwnedTable();
   }
   if (const base::DictValue* cursors = dict.FindDict("cursors")) {
@@ -266,6 +273,9 @@ sync::OwnedTable PhiOwnedTableFile::Load(bool had_records, bool* reported_loss) 
 
 bool PhiOwnedTableFile::Save(const sync::OwnedTable& table) {
   std::lock_guard<std::mutex> hold(lock_);
+  if (save_blocked_) {
+    return false;
+  }
   base::DictValue dict;
   dict.Set("formatVersion", table.format_version);
   base::DictValue cursors;
@@ -281,7 +291,11 @@ bool PhiOwnedTableFile::Save(const sync::OwnedTable& table) {
 
 bool PhiOwnedTableFile::Remove() {
   std::lock_guard<std::mutex> hold(lock_);
-  return PhiRemoveFileIfPresent(path_);
+  if (!PhiRemoveFileIfPresent(path_)) {
+    return false;
+  }
+  save_blocked_ = false;
+  return true;
 }
 
 // --- Bookmarks -------------------------------------------------------------------------

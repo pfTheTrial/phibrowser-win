@@ -107,24 +107,35 @@ struct LocalSpace {
 
 enum class ProfileRefreshOutcome { kUnchanged, kChanged, kSkipped, kFailed };
 
+// A presence query's answer. kUnreachable: the local side could not be asked
+// (a stalled or retired UI hop, no Space list open) — never "absent", which
+// would drop a live mapping and land a duplicate.
+enum class LocalPresence { kPresent, kAbsent, kUnreachable };
+
 // PhiSpaceLocalAccess. Reads are queries; every write is one entity landing
-// and returns false when it did not land. Identities: local Space ids and
-// Chromium profile basenames on this side; sync uuids on the wire.
+// and returns false when it did not land. A Space list the local side could
+// not read is nullopt, never empty. Identities: local Space ids and Chromium
+// profile basenames on this side; sync uuids on the wire.
 class SpaceLocalAccess {
  public:
   virtual ~SpaceLocalAccess() = default;
 
   // Publishable Spaces: user Spaces whose profile has an account uuid (the
   // default Space always) — no Incognito, no agent Spaces.
-  virtual std::vector<LocalSpace> CurrentSpaces() = 0;
+  virtual std::optional<std::vector<LocalSpace>> CurrentSpaces() = 0;
   // Every local Space in strip order (the order projection's input).
-  virtual std::vector<LocalSpace> AllSpacesForOrdering() = 0;
+  virtual std::optional<std::vector<LocalSpace>> AllSpacesForOrdering() = 0;
   // The pairing's candidates: user Spaces regardless of profile mapping.
-  virtual std::vector<LocalSpace> PairableSpaces() = 0;
+  virtual std::optional<std::vector<LocalSpace>> PairableSpaces() = 0;
+  // After an unanswered Space read: true when the account's store cannot
+  // open (failed, needs a newer app) — persistent, so Space arrivals park
+  // and the marker moves on — rather than a stalled hop, which blocks the
+  // round until the next one can ask.
+  virtual bool SpaceStoreUnavailable() = 0;
 
   virtual std::optional<std::string> GlobalUuid(const std::string& profile_id) = 0;
   virtual std::optional<std::string> LocalProfileId(const std::string& uuid) = 0;
-  virtual bool IsKnownLocalProfile(const std::string& profile_id) = 0;
+  virtual LocalPresence IsKnownLocalProfile(const std::string& profile_id) = 0;
   virtual void DropProfileMapping(const std::string& profile_id) = 0;
   // This device's default profile (the Mac's LocalStore.defaultProfileId).
   virtual std::string DefaultProfileId() = 0;
@@ -136,7 +147,7 @@ class SpaceLocalAccess {
   virtual std::optional<std::string> EnsureMapped(const std::string& space_id) = 0;
   virtual bool MapSpace(const std::string& space_id, const std::string& uuid) = 0;
   virtual void DropSpaceMapping(const std::string& space_id) = 0;
-  virtual bool IsKnownLocalSpace(const std::string& space_id) = 0;
+  virtual LocalPresence IsKnownLocalSpace(const std::string& space_id) = 0;
   virtual std::map<std::string, std::string> AllSpaceMappings() = 0;
   virtual bool IsImporting(const std::string& space_id) = 0;
 

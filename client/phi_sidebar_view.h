@@ -154,6 +154,14 @@ inline constexpr int kRowPad = 2;
 inline constexpr int kCornerRadius = 6;  // The row radius (windows-native-ui.md §2.1).
 inline constexpr int kFaviconSize = 14;  // The 16pt slot holds a 14pt icon.
 inline constexpr int kBookmarkIndent = 10;  // SideBarOutlineView.indentation.
+// The outline stops indenting past this depth: a deep tree must never push a
+// row's pill past its own trailing edge (an inverted rect).
+inline constexpr int kBookmarkMaxIndentDepth = 8;
+inline constexpr int BookmarkIndentDepth(int depth) {
+  return depth < 0 ? 0
+                   : (depth > kBookmarkMaxIndentDepth ? kBookmarkMaxIndentDepth
+                                                      : depth);
+}
 inline constexpr int kFolderIconSize = 16;  // The outline glyph fills the slot (§4.2).
 // Pinned tabs: PinnedTabLayout — column limit by width breakpoint (3 at
 // this sidebar width), 53pt minimum width.
@@ -184,6 +192,19 @@ inline constexpr int kHTabActiveWidth = 240;  // The active tab takes more room.
 inline constexpr int kHTabMinWidth = 56;
 inline constexpr int kHTabGap = 0;        // Tabs abut; a hairline divides them.
 inline constexpr int kCloseBoxSize = 24;  // UnifiedTabCloseButton frame.
+// The overlay scrollbars (Windows 11's thin bar): a 4 dip capsule 3 dip in
+// from the band's trailing edge, at least 24 dip long, shown while the band
+// scrolls or is hovered and faded out after it rests.
+inline constexpr int kScrollbarWidth = 4;
+inline constexpr int kScrollbarInset = 3;
+inline constexpr int kScrollbarMinThumb = 24;
+inline constexpr int kScrollbarHoldMs = 900;
+inline constexpr int kScrollbarFadeMs = 300;
+// Drag auto-scroll (D31): the edge zone that scrolls a band under a drag,
+// the fastest step per animation tick, and the strip's pace per item.
+inline constexpr int kAutoScrollEdge = 28;
+inline constexpr int kAutoScrollMaxStep = 14;
+inline constexpr int kAutoScrollStripMs = 250;
 // The strip's group chips (the Mac's TabGroupChipView, 32pt, radius 8 like
 // the tabs): the 16pt colour dot 6pt in, a 6pt gap, the semibold title,
 // then trailing the 16pt chevron 6pt from the edge and, 4pt before it, the
@@ -325,6 +346,10 @@ struct PhiSidebarRects {
   // The bookmark outline's band: its rows (or the reserved drop zone) and
   // the separator row under them. Empty without bookmarks.
   RECT bookmarks{};
+  // The two bands' capped viewport (ShellLayout::stored_band): `favorites`
+  // and `bookmarks` are NATURAL rects that may run past it — the view
+  // scrolls and clips them (PhiSidebarView::ScrolledStoredBands).
+  RECT stored_band{};
   RECT bookmark_separator{};
   RECT new_tab_row{};
   RECT bottom_bar{};
@@ -463,6 +488,12 @@ struct ShortcutRow {
   // closed cell has no tab and so is never dormant.
   bool unloaded = false;
   bool unloaded_b = false;
+  // Where the row SITS (scrolled with the stored bands) — what paint and
+  // the drag geometry read — and that rect clipped to the stored viewport,
+  // what every hit test reads: a row scrolled out of the viewport (or the
+  // part of it that is) must not catch the pointer over "+ New Tab" or the
+  // tab list. The two agree whenever nothing is scrolled.
+  RECT frame{};
   RECT bounds{};
   // The favicon stored with the row (a pinned tab has no live tab to ask).
   std::vector<unsigned char> favicon;
@@ -633,6 +664,13 @@ class PhiSidebarView {
   }
   // Comfortable's "+" in the caption band, trailing the last tab.
   const RECT& add_tab_button() const { return add_tab_button_; }
+  // Comfortable's overflow chevron, between the last tab that fits and the
+  // "+": up while any strip item is scrolled out of the strip's window;
+  // a click opens the tab search palette over every tab. Empty otherwise.
+  const RECT& strip_overflow_button() const { return strip_overflow_button_; }
+  // Its ordinal in the shell's nav-hover table (PhiShellWindow::
+  // NavHoverTable), whose hover wash the chevron paints with.
+  static constexpr int kStripOverflowNavOrdinal = 21;
   // The ACTIVE tab, after the tree's surface -> origin redirection, and its
   // URL — what the omnibox, the reader affordance and the native-page route
   // all read.
@@ -661,8 +699,16 @@ class PhiSidebarView {
   bool IsExpanded(const std::string& guid) const {
     return expanded_bookmarks_.count(guid) > 0;
   }
-  // The wheel over the sidebar; true when consumed (vertical layouts only).
+  // The wheel over the sidebar — the stored bands' viewport scrolls the
+  // pinned grid and the outline, anywhere else the tab list — or over
+  // comfortable's strip, which steps its window one item per notch. True
+  // when consumed.
   bool OnWheel(POINT client_pt, int wheel_delta);
+  // `layout` (the shell's, natural) with the pinned grid and the outline
+  // where they sit on screen: scrolled with the stored bands and clipped to
+  // their capped viewport (layout.stored_band). What the drop bands and
+  // the drop zones read; the row placement reads the natural rects.
+  PhiSidebarRects ScrolledStoredBands(const PhiSidebarRects& layout) const;
 
   // --- Gestures -----------------------------------------------------------
   // The stored bands (the pinned grid, the bookmark outline) and the
@@ -674,6 +720,23 @@ class PhiSidebarView {
   // Middle-click closes a tab row (the Mac tab list's otherMouseDown);
   // pins and bookmarks are persistent and ignore it.
   bool OnMiddleClick(POINT client_pt);
+
+  // --- Keyboard (F6) ------------------------------------------------------
+  // The sidebar in the F6 cycle (address field -> sidebar -> page): a
+  // keyboard-only focus ring over the pins, the outline, the group headers
+  // and the tabs, in paint order. The shell window holds the system focus
+  // meanwhile and hands its keys here. Begin answers false when the band
+  // has nothing to focus (collapsed, empty).
+  bool BeginKeyboardFocus();
+  void EndKeyboardFocus();
+  bool keyboard_focused() const { return kb_focus_; }
+  // Up/Down (Left/Right) move the ring, Home/End jump, Enter activates,
+  // Space toggles a folder or a group (activates anything else), Delete
+  // closes a tab, Esc hands the focus to the page. True when consumed.
+  bool OnKeyDown(UINT vk);
+  // Where Shift+F10 / the Menu key opens the focused row's context menu
+  // (its centre, client coordinates); false with no focused row.
+  bool KeyboardMenuPoint(POINT* client_pt) const;
   // Sends a command to the host against the current tree; the host refreshes.
   bool Apply(const SidebarCommand& command);
   // Click on a pin or a sidebar bookmark row: focus the bound live tab if it
@@ -751,6 +814,11 @@ class PhiSidebarView {
   void DrawFavicon(HDC dc, const RECT& dest, const unsigned char* bgra,
                    int width, int height, COLORREF background,
                    float opacity = 1.0f);
+  // The same from a row's own buffer, which is checked first: one that is
+  // not exactly width*height*4 bytes draws nothing.
+  void DrawFavicon(HDC dc, const RECT& dest,
+                   const std::vector<unsigned char>& bgra, int width,
+                   int height, COLORREF background, float opacity = 1.0f);
   // A bookmark folder's icon slot: the catalog symbol it wears, or the
   // plain folder glyph for the catalog's "default".
   void DrawFolderIcon(HDC dc, const RECT& slot, const std::string& icon_id,
@@ -852,6 +920,32 @@ class PhiSidebarView {
   // Publishes the rows into the shell's hit list — one hit per row, keyed
   // so a provider handed out before a rebuild finds its row again.
   void PublishHits(const PhiSidebarRects& layout);
+  // The keyboard ring: the rows in focus order, a key's rect, a move (which
+  // reveals the row on the next rebuild), and what Enter / Space do.
+  std::vector<SidebarKey> KeyboardOrder() const;
+  RECT KeyRect(const SidebarKey& key) const;
+  void MoveKeyboardFocus(const SidebarKey& key);
+  void ActivateKey(const SidebarKey& key, bool toggle);
+  // The overlay scrollbars: shown (and faded) after a scroll, painted per
+  // band at the opacity the clock and the hover give.
+  void ShowScrollbars();
+  double ScrollbarOpacity(bool hovered) const;
+  void PaintScrollbar(HDC dc,
+                      const RECT& track,
+                      int scroll,
+                      int scroll_max,
+                      const PhiPalette& palette,
+                      double opacity);
+  // The drag's context (the Space, the layout, the band's collapse) moved
+  // under it: the rows it resolved against are gone, so it aborts.
+  bool DragContextChanged() const;
+  // Drag auto-scroll (D31): a drag resting near a scrolling band's edge
+  // scrolls it on the animator's clock until it leaves the zone.
+  // `target` 0 = the tab list, 1 = the stored bands, 2 = the strip.
+  int DragAutoScrollZone(POINT pt, int* target, int* depth) const;
+  void UpdateDragAutoScroll(POINT pt);
+  void DragAutoScrollTick();
+  void StopDragAutoScroll();
 
   // Owns this view and outlives it.
   RAW_PTR_EXCLUSION PhiSidebarShell* const shell_;
@@ -892,6 +986,31 @@ class PhiSidebarView {
   std::set<std::string> expanded_bookmarks_;
   int scroll_offset_ = 0;
   int tabs_scroll_max_ = 0;
+  // The stored bands' scroll inside their capped viewport, in pixels.
+  int stored_scroll_ = 0;
+  int stored_scroll_max_ = 0;
+  // Comfortable's strip window: how many strip items (chips and tabs, in
+  // order) are scrolled out ahead of it, and the most that may be — the
+  // window never ends short of the strip's last item.
+  int strip_first_ = 0;
+  int strip_first_max_ = 0;
+  RECT strip_overflow_button_{};
+  // The scroll state is per Space (a switch must not land the incoming
+  // Space's list at the leaving one's offset): saved under the Space it
+  // belongs to, restored when that Space shows again.
+  struct ScrollState {
+    int list = 0;
+    int stored = 0;
+    int strip_first = 0;
+  };
+  std::map<std::string, ScrollState> scroll_by_space_;
+  std::string scroll_space_;
+  // The active tab the list / the strip last scrolled into view, and the
+  // strip's extent then: a new activation (or a changed strip) reveals the
+  // row once, so a later wheel can still move away.
+  TabId revealed_active_;
+  int revealed_strip_limit_ = 0;
+  int revealed_strip_items_ = 0;
   // The pinned grid's ROW count, counted from the tree before the layout is
   // derived (the band it occupies pushes everything below it down) and read
   // back when the outline is placed under it.
@@ -935,6 +1054,31 @@ class PhiSidebarView {
   double landing_from_ = 0.0;
   double landing_dx_ = 0.0;
   int landing_animation_ = 0;
+
+  // The keyboard ring (BeginKeyboardFocus): on, the row it is on, and
+  // whether the next hits publish announces it to UI Automation.
+  bool kb_focus_ = false;
+  SidebarKey kb_key_;
+  bool kb_announce_ = false;
+  bool kb_uia_published_ = false;
+  // A row the next rebuild scrolls into view (the keyboard's), and the
+  // active tab the stored bands last revealed a cell for.
+  SidebarKey reveal_key_;
+  TabId revealed_stored_tab_;
+  // The overlay scrollbars' clock.
+  ULONGLONG scrollbar_shown_at_ = 0;
+  int scrollbar_animation_ = 0;
+  // Drag auto-scroll: its animation, the pointer it reads, the strip's
+  // last step, and the strip window's edges it scrolls at.
+  int auto_scroll_animation_ = 0;
+  POINT auto_scroll_pt_{};
+  ULONGLONG auto_scroll_last_ = 0;
+  int strip_window_left_ = 0;
+  int strip_window_right_ = 0;
+  // What the armed drag resolved against (DragContextChanged).
+  std::string drag_space_;
+  bool drag_horizontal_ = false;
+  bool drag_band_hidden_ = false;
 };
 
 }  // namespace phi_client

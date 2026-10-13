@@ -22,6 +22,7 @@
 #include "phibrowser-win/client/phi_emoji.h"
 #include "phibrowser-win/client/phi_i18n.h"
 #include "phibrowser-win/client/phi_icons.h"
+#include "phibrowser-win/client/phi_menu_paint.h"
 #include "phibrowser-win/client/phi_prompt.h"
 #include "phibrowser-win/client/phi_shell_window.h"
 
@@ -831,7 +832,8 @@ void PhiCreateSpacePanel::ShowProfileMenu(const Geometry& g) {
     ::AppendMenuW(menu,
                   MF_STRING | (profiles_[i].first == profile_id_ ? MF_CHECKED
                                                                  : 0),
-                  static_cast<UINT>(i) + 1, profiles_[i].second.c_str());
+                  static_cast<UINT>(i) + 1,
+                  PhiEscapeMenuText(profiles_[i].second).c_str());
   }
   const UINT kNewProfile = static_cast<UINT>(profiles_.size()) + 1;
   ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
@@ -850,7 +852,7 @@ void PhiCreateSpacePanel::ShowProfileMenu(const Geometry& g) {
     if (PhiPromptText(host_hwnd_ ? host_hwnd_ : controller_->shell_hwnd(),
                       PhiStr("settings.profiles.createDialog.title"),
                       PhiStr("settings.profiles.createDialog.message"),
-                      &name)) {
+                      &name, /*confirm_label=*/nullptr, kPhiNameRules)) {
       controller_->spaces_host()->RequestCreateProfileForSpaceForm(
           controller_->slot().value, base::WideToUTF8(name));
     }

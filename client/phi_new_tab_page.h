@@ -94,6 +94,9 @@ class PhiNewTabPage : public PhiPanel {
   void OnDpiChanged(UINT old_dpi) override;
   void OnMouseDown(int hit, POINT client_pt) override;
   PhiPalette QueryPalette() const override;
+  // The base repaints the page; the EDIT child and a pane's corner fringe
+  // carry colours of their own and are refreshed here.
+  void OnThemeChanged() override;
   LRESULT OnMessage(UINT message,
                     WPARAM wparam,
                     LPARAM lparam,
@@ -114,6 +117,9 @@ class PhiNewTabPage : public PhiPanel {
   HFONT FieldFont() const;
   HFONT GlyphFont() const;
   void PushFieldFont();
+  // A pane-hosted page's rounded corners (see Reposition), in the page's
+  // current ground.
+  void ApplyPaneCorners();
   Geometry ComputeGeometry() const;
   void LayoutField();
 

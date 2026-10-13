@@ -34,12 +34,14 @@ inline constexpr bool kPhiTranscriptEnabled = false;
 //     signing key (phi_updater.cc);
 //   * PHI_VAULT_HELPER — replace the credential helper binary, and the
 //     local "dev vault" fallback that accepts a PLAINTEXT PhiCredentials.dat
-//     when the helper is absent (phi_coordinator.cc, phi_credentials.cc).
-// Runtime test-rig switches (harness-only verbs, agent access to the user's
-// own Spaces) are NOT here: they are PhiPrefs.json keys the agent cannot set
-// (see PhiCoordinator::SetPref refusals), so one binary serves both the box
-// and a release. Gate with `if constexpr (kPhiDevHooks)` so the code still
-// compiles in both configurations.
+//     when the helper is absent (phi_coordinator.cc, phi_credentials.cc);
+//   * the `testRig` pref — every capability for a pipe principal and the
+//     harness-only verbs (PhiControlDispatcher::EvaluatePipeCaps). The pref
+//     file is user-writable, so a release ignores it.
+// Agent access to the user's own Spaces stays a runtime pref the agent
+// cannot set (see PhiCoordinator::SetPref refusals). Gate with
+// `if constexpr (kPhiDevHooks)` so the code still compiles in both
+// configurations.
 #if defined(PHI_DEV_HOOKS)
 inline constexpr bool kPhiDevHooks = true;
 #else

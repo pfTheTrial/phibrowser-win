@@ -137,6 +137,9 @@ class PhiPreferences : public ChromePrefsHost {
   // the saturation — derived, never persisted. Its address is stable for
   // the life of the service (the popup chrome keeps a pointer to it).
   const PhiPalette& palette() const { return palette_; }
+  // Re-resolves palette() in place after a live OS light/dark or contrast
+  // switch; nothing is saved and no observer is told.
+  void RefreshPalette() { ResolvePalette(); }
 
   // --- General -------------------------------------------------------------
   model::NewTabBehavior new_tab_behavior() const {
@@ -248,6 +251,8 @@ class PhiPreferences : public ChromePrefsHost {
 
   // Writes the bound account's CustomShortcuts.json.
   void SaveShortcuts() const;
+  // The bound account's CustomShortcuts.json was there but unreadable.
+  bool shortcuts_save_blocked_ = false;
 
   model::PhiSettings settings_;  // PhiPreferences.json (+ the bound account's)
   PhiStore<model::PhiSettings> store_;

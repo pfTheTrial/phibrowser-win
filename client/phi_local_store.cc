@@ -2380,9 +2380,21 @@ bool LocalStore::SwapBookmarkPanes(const std::string& guid) {
 
 void LocalStore::CollectSubtree(const std::string& guid,
                                 std::vector<std::string>* out) const {
-  out->push_back(guid);
-  for (const Tab* child : Children(guid)) {
-    CollectSubtree(child->guid, out);
+  // Iterative and each row once: a corrupt parentGuid cycle (a self-parented
+  // row) must neither loop nor overflow the stack. Pre-order, as before.
+  std::set<std::string> seen;
+  std::vector<std::string> pending = {guid};
+  while (!pending.empty()) {
+    std::string next = std::move(pending.back());
+    pending.pop_back();
+    if (!seen.insert(next).second) {
+      continue;
+    }
+    out->push_back(next);
+    const auto children = Children(next);
+    for (auto child = children.rbegin(); child != children.rend(); ++child) {
+      pending.push_back((*child)->guid);
+    }
   }
 }
 

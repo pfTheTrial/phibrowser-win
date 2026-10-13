@@ -122,6 +122,7 @@ bool PhiVaultHelper::Start(const std::wstring& helper_path) {
     // No helper installed — the caller falls back to the dev vault.
     return false;
   }
+  path_ = path;
 
   // Two ANONYMOUS pipes: no name means no third party can connect. Only the
   // ends the child needs are marked inheritable; our own ends never are.
@@ -253,6 +254,21 @@ void PhiVaultHelper::Stop() {
   }
 }
 
+bool PhiVaultHelper::Restart() {
+  if (running()) {
+    return true;
+  }
+  constexpr ULONGLONG kRestartIntervalMs = 60 * 1000;
+  const ULONGLONG now = ::GetTickCount64();
+  if (path_.empty() ||
+      (last_restart_tick_ && now - last_restart_tick_ < kRestartIntervalMs)) {
+    return false;
+  }
+  last_restart_tick_ = now;
+  LOG(INFO) << "[PhiVault] restarting the helper";
+  return Start(path_);
+}
+
 bool PhiVaultHelper::WriteFrame(const base::Value& value) {
   if (!write_) {
     return false;
@@ -326,6 +342,8 @@ std::optional<base::DictValue> PhiVaultHelper::Call(
   request.Set("params", params.Clone());
   request.Set("request_id", request_id);
   if (!WriteFrame(base::Value(std::move(request)))) {
+    // A half-written request desyncs the helper's reader the same way.
+    Stop();
     if (error) {
       *error = "helper_write_failed";
     }
@@ -346,6 +364,10 @@ std::optional<base::DictValue> PhiVaultHelper::Call(
     base::Value frame;
     if (!ReadFrame(&frame, static_cast<DWORD>(deadline - now)) ||
         !frame.is_dict()) {
+      // The read may have stopped inside a frame (a timeout after the
+      // header): the stream cannot be trusted again. Restart() respawns.
+      LOG(WARNING) << "[PhiVault] helper reply unreadable; stopping it";
+      Stop();
       if (error) {
         *error = "helper_read_failed";
       }

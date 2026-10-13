@@ -107,14 +107,15 @@ class Panel : public PhiPopover {
     Options options;  // Activating, dismiss on inactive, 500 ms grace.
     options.dwm_round = false;  // The panel draws its own square rim.
 
-    // Centred over the shell's upper fifth. The palette is placed on its
-    // owner, not on an anchor, and is deliberately NOT clamped — exactly
-    // where it sat before the substrate landed.
+    // Centred over the shell's upper fifth, then clamped into the work
+    // area of the owner's monitor: a shell dragged half off screen (or
+    // smaller than the palette) still gets the whole palette on screen.
     RECT owner_rect = {};
     ::GetWindowRect(owner, &owner_rect);
     Placement placement;
     placement.side = PhiPopoverSide::kExplicit;
-    placement.clamp = false;
+    placement.clamp = true;
+    placement.monitor_from_owner = true;
 
     SIZE probe = {1, 1};
     if (!CreatePopover(spec, owner, probe, placement, options)) {
@@ -122,6 +123,15 @@ class Panel : public PhiPopover {
     }
     instance = this;  // Before Show(): activation churn can destroy us.
     SIZE size = {Scaled(kPanelWidth), Scaled(kPanelHeight)};
+    // Never larger than the work area either (the list scrolls).
+    MONITORINFO monitor = {sizeof(monitor)};
+    if (::GetMonitorInfoW(::MonitorFromWindow(owner, MONITOR_DEFAULTTONEAREST),
+                          &monitor)) {
+      size.cx = std::min<LONG>(size.cx,
+                               monitor.rcWork.right - monitor.rcWork.left);
+      size.cy = std::min<LONG>(size.cy,
+                               monitor.rcWork.bottom - monitor.rcWork.top);
+    }
     const LONG x = (owner_rect.left + owner_rect.right) / 2 - size.cx / 2;
     const LONG y =
         owner_rect.top + (owner_rect.bottom - owner_rect.top) / 5;
@@ -349,6 +359,13 @@ class Panel : public PhiPopover {
     rc.right -= Scaled(kPad);
     rc.bottom -= Scaled(kPad);
     return rc;
+  }
+
+  // The furthest the list scrolls: its last row flush with the bottom.
+  int MaxScroll() const {
+    const RECT list = ListRect();
+    return std::max(0, RowTop(rows_.size()) -
+                           static_cast<int>(list.bottom - list.top));
   }
 
   int RowTop(size_t index) const {
@@ -629,7 +646,7 @@ class Panel : public PhiPopover {
   }
 
   void OnWheel(int delta, POINT) override {
-    scroll_ = std::max(0, scroll_ - delta / 2);
+    scroll_ = std::clamp(scroll_ - delta / 2, 0, MaxScroll());
     BuildHits();
     Invalidate();
   }

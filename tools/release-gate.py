@@ -8,7 +8,8 @@ Asserts, on a BUILT exe and the tree it came from, that the developer-only
 hooks are absent and the packaging is consistent. Every check is one the
 review found violated at least once; each failure names the finding.
 
-  tools/release-gate.py [--out <dir>] [--source-only]
+  tools/release-gate.py [--out <dir>] [--source-only] [--signer <subject>]
+                        [--release]
 
 Exit 0 = all checks pass. Run it from build-client.py's release path and
 before cutting an installer. --source-only skips the binary checks.
@@ -28,7 +29,14 @@ DEFAULT_OUT = "/home/jx/Phi/chromuim/src/out/PhiFxWinShip"
 # are the environment-variable NAMES the hooks read, which the compiler
 # keeps verbatim; a release exe must not contain them.
 DEV_HOOK_STRINGS = [b"PHI_APPCAST_URL", b"PHI_APPCAST_ED25519",
-                    b"PHI_VAULT_HELPER"]
+                    b"PHI_VAULT_HELPER",
+                    # phi_auth.cc's EnvOr tenant / sync overrides.
+                    b"PHI_AUTH0_DOMAIN", b"PHI_AUTH0_CLIENT_ID",
+                    b"PHI_AUTH0_AUDIENCE", b"PHI_SYNC_URL",
+                    b"PHI_SYNC_BASE_URL", b"PHI_ACCOUNT_BASE_URL"]
+
+# PHI_WIN_CHANNEL values the gate knows how to pair with a feed and signer.
+CHANNELS = ("stable", "canary", "nightly")
 
 
 def fail(msg):
@@ -144,6 +152,51 @@ def check_sources():
     return rc
 
 
+def check_channel(signer, release):
+    """PHI_WIN_CHANNEL, the appcast feed and the signing identity must name
+    the same ring: a stable build reads a stable feed and is signed with a
+    real certificate; a canary/nightly build reads a pre-release feed
+    (win-nightly) and may carry the TEST identity. --release additionally
+    demands the stable channel."""
+    rc = 0
+    with open(os.path.join(CLIENT, "phi_version.h"), errors="replace") as f:
+        m = re.search(r'#define\s+PHI_WIN_CHANNEL\s+"([^"]*)"', f.read())
+    if not m:
+        return fail("phi_version.h: PHI_WIN_CHANNEL not found")
+    channel = m.group(1)
+    if channel not in CHANNELS:
+        return fail(f"phi_version.h: PHI_WIN_CHANNEL \"{channel}\" is not one "
+                    "of " + ", ".join(CHANNELS))
+    with open(os.path.join(CLIENT, "phi_updater.cc"), errors="replace") as f:
+        m = re.search(r'kDefaultAppcastUrl\[\]\s*=\s*((?:"[^"]*"\s*)+);',
+                      f.read())
+    if not m:
+        return fail("phi_updater.cc: kDefaultAppcastUrl not found")
+    feed = "".join(re.findall(r'"([^"]*)"', m.group(1)))
+    prerelease_feed = re.search(r"nightly|canary", feed) is not None
+    stable = channel == "stable"
+    if release and not stable:
+        rc |= fail(f"--release needs PHI_WIN_CHANNEL \"stable\", not "
+                   f"\"{channel}\" (phi_version.h)")
+    if stable and prerelease_feed:
+        rc |= fail(f"channel stable reads the pre-release feed {feed} "
+                   "(phi_updater.cc kDefaultAppcastUrl)")
+    if not stable and not prerelease_feed:
+        rc |= fail(f"channel {channel} reads the non-nightly feed {feed}; a "
+                   "pre-release build would update from the stable ring")
+    if stable:
+        if not signer:
+            rc |= fail("channel stable needs the signing identity checked — "
+                       "pass --signer \"$(sign-pe.sh --info)\"")
+        elif "TEST" in signer:
+            rc |= fail(f"channel stable signed with the TEST identity "
+                       f"({signer})")
+    if rc == 0:
+        print(f"ok: channel {channel}, feed {feed}"
+              + (f", signer {signer}" if signer else ""))
+    return rc
+
+
 API_HEADER = "chrome/browser/phinomenon/phi_framework/phi_framework_api.h"
 
 
@@ -228,9 +281,15 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", default=DEFAULT_OUT)
     parser.add_argument("--source-only", action="store_true")
+    parser.add_argument("--signer", default="",
+                        help="Authenticode subject the build is signed with "
+                        "(sign-pe.sh --info); required for channel stable")
+    parser.add_argument("--release", action="store_true",
+                        help="require PHI_WIN_CHANNEL stable")
     args = parser.parse_args()
     out_dir = os.path.abspath(args.out)
     rc = check_sources()
+    rc |= check_channel(args.signer, args.release)
     # The out dir sits two levels under the source root (out/<name>), in a
     # checkout and in an unzipped SDK alike.
     rc |= check_api_boundary(

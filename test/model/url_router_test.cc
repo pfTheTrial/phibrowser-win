@@ -179,6 +179,27 @@ void TestNormalizeHost() {
   CHECK(NormalizeUrlRuleHost("") == "");
 }
 
+// The routing table's host: IDN labels in their ASCII (ACE) form, the
+// way GURL::host() spells them; sigils kept; ASCII untouched.
+void TestRoutingHost() {
+  using store::RuleHostForRouting;
+  CHECK(RuleHostForRouting("github.com") == "github.com");
+  CHECK(RuleHostForRouting("*.example.com") == "*.example.com");
+  CHECK(RuleHostForRouting("") == "");
+  CHECK(RuleHostForRouting("b\xC3\xBC" "cher.de") == "xn--bcher-kva.de");
+  CHECK(RuleHostForRouting("*.b\xC3\xBC" "cher.de") == "*.xn--bcher-kva.de");
+  CHECK(RuleHostForRouting("*b\xC3\xBC" "cher*") == "*xn--bcher-kva*");
+  CHECK(RuleHostForRouting("m\xC3\xBC" "nchen") == "xn--mnchen-3ya");
+  // 日本語.jp, and 例え。テスト with the ideographic full stop.
+  CHECK(RuleHostForRouting("\xE6\x97\xA5\xE6\x9C\xAC\xE8\xAA\x9E.jp") ==
+        "xn--wgv71a119e.jp");
+  CHECK(RuleHostForRouting("\xE4\xBE\x8B\xE3\x81\x88\xE3\x80\x82"
+                           "\xE3\x83\x86\xE3\x82\xB9\xE3\x83\x88") ==
+        "xn--r8jz45g.xn--zckzah");
+  // Not UTF-8: left as it is.
+  CHECK(RuleHostForRouting("a\xFF.com") == "a\xFF.com");
+}
+
 // The editor's match types: decode a stored pair, encode a typed value.
 void TestMatchTypes() {
   CHECK(UrlRuleMatchTypeOf("github.com", "") == UrlRuleMatchType::kDomain);
@@ -279,6 +300,7 @@ int main() {
   TestActionTargets();
   TestNormalizePathPrefix();
   TestNormalizeHost();
+  TestRoutingHost();
   TestMatchTypes();
   TestWritesCanonicalize();
   TestReplace();

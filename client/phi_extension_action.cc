@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <string>
 #include <string_view>
 
 #include "base/strings/string_number_conversions.h"
@@ -76,9 +77,24 @@ void PhiDrawExtensionBadge(HDC dc,
   const auto scaled = [dpi](int design) {
     return ::MulDiv(design, static_cast<int>(dpi), 96);
   };
+  // At most four characters, as Chrome draws them: an extension that sets a
+  // long string would otherwise stretch the pill across the whole tile. A
+  // surrogate pair is one character, never split in half.
+  std::wstring badge;
+  int characters = 0;
+  for (size_t i = 0; i < state.badge_text.size() && characters < 4;
+       ++characters) {
+    const wchar_t unit = state.badge_text[i];
+    const size_t length =
+        unit >= 0xD800 && unit <= 0xDBFF && i + 1 < state.badge_text.size()
+            ? 2
+            : 1;
+    badge.append(state.badge_text, i, length);
+    i += length;
+  }
   HGDIOBJ previous_font = font ? ::SelectObject(dc, font) : nullptr;
   RECT measure = {0, 0, 0, 0};
-  ::DrawTextW(dc, state.badge_text.c_str(), -1, &measure,
+  ::DrawTextW(dc, badge.c_str(), -1, &measure,
               DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX);
   // The Mac's frame(minWidth: 11, minHeight: 11) around 2pt side padding.
   const int text_w = static_cast<int>(measure.right - measure.left);
@@ -93,7 +109,7 @@ void PhiDrawExtensionBadge(HDC dc,
   const int previous_mode = ::SetBkMode(dc, TRANSPARENT);
   const COLORREF previous_color = ::SetTextColor(dc, state.badge_text_color);
   RECT text = pill;
-  PhiDrawTextAA(dc, state.badge_text.c_str(), -1, &text,
+  PhiDrawTextAA(dc, badge.c_str(), -1, &text,
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
   ::SetTextColor(dc, previous_color);
   ::SetBkMode(dc, previous_mode);

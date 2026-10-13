@@ -11,6 +11,7 @@
 
 #include "base/memory/raw_ptr_exclusion.h"
 #include "base/strings/utf_string_conversions.h"
+#include "phibrowser-win/client/phi_agent_transcript.h"
 #include "phibrowser-win/client/phi_dwrite.h"
 #include "phibrowser-win/client/phi_i18n.h"
 #include "phibrowser-win/client/phi_popup_chrome.h"
@@ -38,10 +39,14 @@ class Prompt : public PhiSecondaryWindow {
          int64_t slot,
          AgentHost* host)
       : task_id_(task_id),
+        // The agent's words, cleaned and capped the way the transcript
+        // shows them: this window is TOPMOST and sized to its text.
         message_(base::UTF8ToWide(
             message.empty()
                 ? base::WideToUTF8(PhiStr("agent.handoffPrompt.message"))
-                : message)),
+                : PhiAgentTranscript::SanitizeText(
+                      message, /*keep_newlines=*/true,
+                      PhiAgentTranscript::kMaxDetailChars))),
         slot_(slot),
         host_(host) {}
 
@@ -212,6 +217,16 @@ class Prompt : public PhiSecondaryWindow {
                                static_cast<DWORD>(::GetWindowLongPtrW(
                                    hwnd(), GWL_EXSTYLE)),
                                dpi());
+    // Never taller than the screen it is on: the buttons stay reachable
+    // and the (clipped) text cannot cover the work area.
+    MONITORINFO monitor = {sizeof(monitor)};
+    if (::GetMonitorInfoW(
+            ::MonitorFromWindow(hwnd(), MONITOR_DEFAULTTONEAREST), &monitor)) {
+      const LONG work_height = monitor.rcWork.bottom - monitor.rcWork.top;
+      if (frame.bottom - frame.top > work_height) {
+        frame.bottom = frame.top + work_height;
+      }
+    }
     ::SetWindowPos(hwnd(), nullptr, 0, 0, frame.right - frame.left,
                    frame.bottom - frame.top,
                    SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);

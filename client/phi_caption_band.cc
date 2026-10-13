@@ -4,6 +4,7 @@
 
 #include "phibrowser-win/client/phi_caption_band.h"
 
+#include <shellapi.h>
 #include <windowsx.h>
 
 #include "phibrowser-win/client/phi_dwrite.h"
@@ -20,6 +21,17 @@ void DrawGlyph(HDC dc, const RECT& r, const wchar_t* glyph, COLORREF ink) {
   ::SetTextColor(dc, ink);
   PhiDrawTextAA(dc, glyph, -1, const_cast<RECT*>(&r),
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+}
+
+// An auto-hide taskbar on `edge` of `monitor` (ABE_*). It only slides out
+// when the pointer reaches the screen edge over a window that does not
+// cover the monitor exactly; a maximized window that does reads as
+// fullscreen to the shell.
+bool HasAutoHideAppBar(UINT edge, const RECT& monitor) {
+  APPBARDATA bar = {sizeof(bar)};
+  bar.uEdge = edge;
+  bar.rc = monitor;
+  return ::SHAppBarMessage(ABM_GETAUTOHIDEBAREX, &bar) != 0;
 }
 
 }  // namespace
@@ -119,6 +131,29 @@ bool PhiCaptionBand::OnNcCalcSize(HWND hwnd,
   rect->bottom -= border_y;
   if (::IsZoomed(hwnd)) {
     rect->top += border_y;  // Maximized frames overhang the monitor.
+    // The client now covers the monitor exactly, which hides an auto-hide
+    // taskbar for good: leave a sliver on its edge for the pointer to
+    // reach it through, as Chrome and the Terminal do.
+    APPBARDATA state = {sizeof(state)};
+    MONITORINFO monitor = {sizeof(monitor)};
+    if ((::SHAppBarMessage(ABM_GETSTATE, &state) & ABS_AUTOHIDE) &&
+        ::GetMonitorInfoW(::MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST),
+                          &monitor)) {
+      constexpr int kAutoHideSliver = 2;  // Pixels, Chrome's figure.
+      const RECT& bounds = monitor.rcMonitor;
+      if (HasAutoHideAppBar(ABE_TOP, bounds)) {
+        rect->top += kAutoHideSliver;
+      }
+      if (HasAutoHideAppBar(ABE_BOTTOM, bounds)) {
+        rect->bottom -= kAutoHideSliver;
+      }
+      if (HasAutoHideAppBar(ABE_LEFT, bounds)) {
+        rect->left += kAutoHideSliver;
+      }
+      if (HasAutoHideAppBar(ABE_RIGHT, bounds)) {
+        rect->right -= kAutoHideSliver;
+      }
+    }
   }
   return true;
 }
@@ -143,31 +178,65 @@ bool PhiCaptionBand::OnNcHitTest(HWND hwnd, LPARAM lparam, LRESULT* result) {
   return true;
 }
 
+namespace {
+
+void FireCaptionButton(HWND hwnd, int pressed) {
+  if (pressed == HTMINBUTTON) {
+    ::ShowWindow(hwnd, SW_MINIMIZE);
+  } else if (pressed == HTMAXBUTTON) {
+    ::ShowWindow(hwnd, ::IsZoomed(hwnd) ? SW_RESTORE : SW_MAXIMIZE);
+  } else if (pressed == HTCLOSE) {
+    ::PostMessageW(hwnd, WM_CLOSE, 0, 0);
+  }
+}
+
+}  // namespace
+
 bool PhiCaptionBand::OnNcLButtonDown(WPARAM hit) {
   // Swallow presses on our drawn caption buttons; the action fires on
   // release over the same button, like the OS ones.
   if (hit != HTMINBUTTON && hit != HTMAXBUTTON && hit != HTCLOSE) {
+    pressed_caption_ = 0;  // Any other press disarms a stale one.
     return false;
   }
   pressed_caption_ = static_cast<int>(hit);
+  if (shell_hwnd_) {
+    ::SetCapture(shell_hwnd_);  // The release comes back as WM_LBUTTONUP.
+  }
   return true;
 }
 
 bool PhiCaptionBand::OnNcLButtonUp(HWND hwnd, WPARAM hit) {
-  if (pressed_caption_ && static_cast<int>(hit) == pressed_caption_) {
-    const int pressed = pressed_caption_;
-    pressed_caption_ = 0;
-    if (pressed == HTMINBUTTON) {
-      ::ShowWindow(hwnd, SW_MINIMIZE);
-    } else if (pressed == HTMAXBUTTON) {
-      ::ShowWindow(hwnd, ::IsZoomed(hwnd) ? SW_RESTORE : SW_MAXIMIZE);
-    } else {
-      ::PostMessageW(hwnd, WM_CLOSE, 0, 0);
-    }
+  // Without the capture (it could not be taken) the release still arrives
+  // non-client when it lands on the band.
+  const int pressed = pressed_caption_;
+  pressed_caption_ = 0;
+  if (pressed && static_cast<int>(hit) == pressed) {
+    FireCaptionButton(hwnd, pressed);
     return true;
   }
-  pressed_caption_ = 0;
   return false;
+}
+
+bool PhiCaptionBand::OnLButtonUp(POINT client_pt) {
+  const int pressed = pressed_caption_;
+  if (!pressed) {
+    return false;
+  }
+  pressed_caption_ = 0;
+  if (shell_hwnd_ && ::GetCapture() == shell_hwnd_) {
+    ::ReleaseCapture();
+  }
+  // Released over the button it was pressed on: the action. Anywhere else
+  // (off the button, off the window) the press is simply over.
+  if (shell_hwnd_ && HitTest(client_pt) == pressed) {
+    FireCaptionButton(shell_hwnd_, pressed);
+  }
+  return true;
+}
+
+void PhiCaptionBand::OnCaptureLost() {
+  pressed_caption_ = 0;
 }
 
 void PhiCaptionBand::OnNcMouseMove(WPARAM hit, POINT client_pt) {
@@ -186,8 +255,12 @@ void PhiCaptionBand::OnNcMouseLeave() {
   SetCaptionHot(0);
 }
 
-void PhiCaptionBand::OnMouseMove(POINT) {
-  SetCaptionHot(0);  // Client moves mean we left the buttons.
+void PhiCaptionBand::OnMouseMove(POINT client_pt) {
+  // Client moves mean we left the buttons — except under a press's
+  // capture, where the pressed button stays hot while the pointer is on it.
+  SetCaptionHot(pressed_caption_ && HitTest(client_pt) == pressed_caption_
+                    ? pressed_caption_
+                    : 0);
 }
 
 void PhiCaptionBand::OnMouseLeave() {

@@ -170,7 +170,8 @@ class PhiAuth {
   bool RefreshSession();
   // Any thread: hands `outcome` to the UI thread.
   void PostOutcome(std::unique_ptr<Outcome> outcome);
-  // UI thread: the ONE writer of the session.
+  // UI thread: the ONE writer of the session (a rotated refresh token alone
+  // is stored by RefreshSession first, so a crash cannot lose it).
   void ApplyOutcome(const Outcome& outcome);
   void Persist();
   void NotifyChanged();
@@ -220,6 +221,9 @@ class PhiAuth {
   bool worker_signed_in_ = false;
   std::string worker_refresh_token_;
   std::string worker_access_token_;
+  // The identity the session file carries, for a worker storing a rotated
+  // refresh token itself (RefreshSession persists before it publishes).
+  PhiAuthUser worker_user_;
   // Serializes refresh round trips: a rotating tenant hands out a new
   // refresh token per exchange, so two concurrent refreshes (the launch
   // validation and a worker asking for a bearer token) would invalidate

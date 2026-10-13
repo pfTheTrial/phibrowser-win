@@ -28,15 +28,24 @@
 #include "phibrowser-win/client/phi_icons.h"
 #include "phibrowser-win/client/phi_mac_icons.h"
 #include "phibrowser-win/client/phi_new_tab_page.h"
+#include "phibrowser-win/client/phi_search_tabs_panel.h"
 #include "phibrowser-win/client/phi_shell_layout.h"
 #include "phibrowser-win/client/phi_sidebar_drag_session.h"
 #include "phibrowser-win/client/phi_spaces_strip.h"
+#include "phibrowser-win/client/phi_uia.h"
 #include "phibrowser-win/client/phi_shell_window.h"
 #include "phibrowser-win/client/phi_window_model.h"
 
 namespace phi_client {
 
 namespace {
+
+// Comfortable's strip overflow chevron in the keyboard ring, after the
+// tabs. It is no row, so it borrows a key no row (and no Space id) can
+// carry.
+SidebarKey OverflowChevronKey() {
+  return SidebarKey::Space("@strip-overflow");
+}
 
 using phi_framework::SplitSnapshot;
 using phi_framework::TabSnapshot;
@@ -52,6 +61,7 @@ using shell_metrics::kTabRowGap;
 using shell_metrics::kTabRowHeight;
 using shell_metrics::kTopBarSpacing;
 
+using sidebar_metrics::BookmarkIndentDepth;
 using sidebar_metrics::kBookmarkIndent;
 using sidebar_metrics::kChipCollapseControl;
 using sidebar_metrics::kChipCollapseGap;
@@ -94,6 +104,14 @@ using sidebar_metrics::kStripPinFavicon;
 using sidebar_metrics::kStripPinGap;
 using sidebar_metrics::kStripPinSize;
 using sidebar_metrics::kStripPinToTabs;
+using sidebar_metrics::kAutoScrollEdge;
+using sidebar_metrics::kAutoScrollMaxStep;
+using sidebar_metrics::kAutoScrollStripMs;
+using sidebar_metrics::kScrollbarFadeMs;
+using sidebar_metrics::kScrollbarHoldMs;
+using sidebar_metrics::kScrollbarInset;
+using sidebar_metrics::kScrollbarMinThumb;
+using sidebar_metrics::kScrollbarWidth;
 
 // A RECLAIMED tab — restored-but-never-loaded (unloaded) or discarded —
 // draws its favicon at 30% (the Mac's TabFaviconPresentation.reclaimedOpacity,
@@ -360,6 +378,11 @@ PhiSidebarView::PhiSidebarView(PhiSidebarShell* shell,
 // (docs/architecture-review.md §3.5).
 PhiSidebarView::~PhiSidebarView() {
   CancelStripLanding();
+  StopDragAutoScroll();
+  if (scrollbar_animation_) {
+    PhiAnimator::ForThread().Cancel(scrollbar_animation_);
+    scrollbar_animation_ = 0;
+  }
   for (HFONT font : {chip_count_font_, chip_mosaic_font_}) {
     if (font) {
       ::DeleteObject(font);
@@ -440,6 +463,7 @@ bool PhiSidebarView::ToggleExpanded(const std::string& guid) {
 }
 
 bool PhiSidebarView::OnStoredRowClick(POINT pt) {
+  EndKeyboardFocus();  // The ring is the keyboard's; a click retires it.
   for (const ShortcutRow& pin : pinned_) {
     if (::PtInRect(&pin.bounds, pt)) {
       if (pin.attached_surface != SidebarSurface::kContent &&
@@ -478,6 +502,12 @@ bool PhiSidebarView::OnStoredRowClick(POINT pt) {
 }
 
 bool PhiSidebarView::OnContentRowClick(POINT pt) {
+  if (::PtInRect(&strip_overflow_button_, pt)) {
+    // Comfortable's overflow chevron: the tab search palette lists every
+    // tab, the ones scrolled out of the strip's window included.
+    PhiSearchTabsPanel::Toggle(shell_->SidebarOwner());
+    return true;
+  }
   for (const GroupHeader& gh : group_headers_) {
     if (::PtInRect(&gh.bounds, pt)) {
       const BrowserId browser = shell_->SidebarActiveBrowser();
@@ -563,7 +593,24 @@ bool PhiSidebarView::OnMiddleClick(POINT pt) {
 // it, so a drag that ends cannot leave a flag behind.
 
 void PhiSidebarView::ArmDrag(const SidebarKey& key, POINT pt) {
+  StopDragAutoScroll();
   drag_ = std::make_unique<PhiSidebarDragSession>(this, key, pt);
+  // What the drag resolves against: a Space switch, a layout change or the
+  // band collapsing under it abort it (DragContextChanged).
+  const PhiSidebarRects layout = shell_->SidebarRects();
+  drag_space_ = shell_->SidebarActiveSpace();
+  drag_horizontal_ = layout.horizontal_tabs;
+  drag_band_hidden_ = BandHidden(layout);
+}
+
+bool PhiSidebarView::DragContextChanged() const {
+  if (!drag_) {
+    return false;
+  }
+  const PhiSidebarRects layout = shell_->SidebarRects();
+  return shell_->SidebarActiveSpace() != drag_space_ ||
+         layout.horizontal_tabs != drag_horizontal_ ||
+         BandHidden(layout) != drag_band_hidden_;
 }
 
 void PhiSidebarView::NoteDragClickTab(TabId tab_id) {
@@ -573,13 +620,29 @@ void PhiSidebarView::NoteDragClickTab(TabId tab_id) {
 }
 
 void PhiSidebarView::UpdateDrag(POINT pt) {
-  if (drag_) {
-    drag_->Update(pt);
+  if (!drag_) {
+    return;
+  }
+  if (DragContextChanged()) {
+    // The rows it was resolving against belong to another Space / layout
+    // (or to a collapsed band, which would drop the tab at the list's end,
+    // ungrouped): the drag is over, nothing moves.
+    AbortDrag();
+    return;
+  }
+  drag_->Update(pt);
+  if (drag_ && drag_->active()) {
+    UpdateDragAutoScroll(pt);
   }
 }
 
 void PhiSidebarView::CommitDrag() {
+  StopDragAutoScroll();
   if (!drag_) {
+    return;
+  }
+  if (DragContextChanged()) {
+    AbortDrag();  // See UpdateDrag: a release there is no drop.
     return;
   }
   // Held while it commits: the drop can rebuild the rows under it, and the
@@ -590,6 +653,7 @@ void PhiSidebarView::CommitDrag() {
 }
 
 void PhiSidebarView::AbortDrag() {
+  StopDragAutoScroll();
   drag_.reset();  // ~PhiSidebarDragSession IS AbortDrag.
 }
 
@@ -597,6 +661,7 @@ bool PhiSidebarView::CancelDragEscape() {
   if (!drag_ || !drag_->active()) {
     return false;
   }
+  StopDragAutoScroll();
   // Out of the view FIRST: cancelling releases the mouse capture, and
   // WM_CAPTURECHANGED re-enters here to reset drag_ — under the call.
   const std::unique_ptr<PhiSidebarDragSession> session = std::move(drag_);
@@ -708,15 +773,31 @@ RECT PhiSidebarView::RowHoverRect(HoverKind kind, int index) const {
                ? rows[static_cast<size_t>(index)].bounds
                : RECT{};
   };
+  // In a scrolling band a row's hover also shows (or, leaving, hides) the
+  // band's overlay scrollbar: the dirty rect reaches its whole gutter.
+  const auto with_gutter = [&](RECT r, bool stored) {
+    const PhiSidebarRects layout = shell_->SidebarRects();
+    if (layout.horizontal_tabs || r.right <= r.left ||
+        (stored ? stored_scroll_max_ : tabs_scroll_max_) <= 0) {
+      return r;
+    }
+    const RECT gutter = {
+        layout.sidebar.right - Scaled(kScrollbarWidth + 2 * kScrollbarInset),
+        stored ? layout.stored_band.top : layout.tabs_top,
+        layout.sidebar.right,
+        stored ? layout.stored_band.bottom : layout.tabs_limit};
+    ::UnionRect(&r, &r, &gutter);
+    return r;
+  };
   switch (kind) {
     case HoverKind::kTab:
-      return at(tabs_);
+      return with_gutter(at(tabs_), false);
     case HoverKind::kPin:
-      return at(pinned_);
+      return with_gutter(at(pinned_), true);
     case HoverKind::kBookmark:
-      return at(bookmarks_);
+      return with_gutter(at(bookmarks_), true);
     case HoverKind::kGroupHeader: {
-      RECT r = at(group_headers_);
+      RECT r = with_gutter(at(group_headers_), false);
       if (index >= 0 && index < static_cast<int>(group_headers_.size()) &&
           group_headers_[static_cast<size_t>(index)].chip) {
         // The hairlines on either side of a chip hide while it is hovered:
@@ -757,23 +838,36 @@ void PhiSidebarView::PublishHits(const PhiSidebarRects& layout) {
   constexpr int kBookmarkKey = 0x2000;
   constexpr int kHeaderKey = 0x3000;
   constexpr int kTabKey = 0x4000;
+  // The keyboard ring's row, as UI Automation's focused element.
+  int focused_hit = -1;
+  const auto note_focus = [&](const SidebarKey& key, size_t before) {
+    if (kb_focus_ && key == kb_key_ && hits_.size() > before) {
+      focused_hit = static_cast<int>(before);
+    }
+  };
   for (size_t i = 0; i < pinned_.size(); ++i) {
     const ShortcutRow& pin = pinned_[i];
+    const size_t before = hits_.size();
     add(pin.bounds, kPinKey + static_cast<int>(i), pin.title,
         PhiHitRole::kListItem, pin.active);
+    note_focus(pin.key, before);
   }
   for (size_t i = 0; i < bookmarks_.size(); ++i) {
     const ShortcutRow& row = bookmarks_[i];
     // A folder is a container the outline opens, not a page: it announces
     // as a group, and its expanded state rides the selection flag.
+    const size_t before = hits_.size();
     add(row.bounds, kBookmarkKey + static_cast<int>(i), row.title,
         row.folder ? PhiHitRole::kGroup : PhiHitRole::kListItem,
         row.folder ? row.expanded : row.active);
+    note_focus(row.key, before);
   }
   for (size_t i = 0; i < group_headers_.size(); ++i) {
     const GroupHeader& header = group_headers_[i];
+    const size_t before = hits_.size();
     add(header.bounds, kHeaderKey + static_cast<int>(i), header.title,
         PhiHitRole::kGroup, !header.collapsed);
+    note_focus(SidebarKey::Group(header.id), before);
     if (header.chip) {
       // The chip's chevron is its own button: the body opens the overview,
       // so a screen reader needs the toggle by name.
@@ -786,8 +880,10 @@ void PhiSidebarView::PublishHits(const PhiSidebarRects& layout) {
   }
   for (size_t i = 0; i < tabs_.size(); ++i) {
     const TabRow& row = tabs_[i];
+    const size_t before = hits_.size();
     add(row.bounds, kTabKey + static_cast<int>(i), row.title,
         PhiHitRole::kTab, row.active);
+    note_focus(row.key, before);
     // The close box is its own button: a screen reader has to be able to
     // close a tab without simulating a click on a coordinate.
     add(row.close_box, kTabKey + static_cast<int>(i) + 0x800,
@@ -798,7 +894,21 @@ void PhiSidebarView::PublishHits(const PhiSidebarRects& layout) {
     add(layout.new_tab_row, kTabKey - 1, PhiStr("app.newTab"),
         PhiHitRole::kButton, false);
   }
+  // Comfortable's overflow chevron (empty unless the strip overflows).
+  const size_t before_chevron = hits_.size();
+  add(strip_overflow_button_, kTabKey - 2, PhiStr("tabs.strip.overflowButton"),
+      PhiHitRole::kButton, false);
+  note_focus(OverflowChevronKey(), before_chevron);
   shell_->SidebarPublishHits(hits_);
+  if (kb_focus_ || kb_uia_published_) {
+    // The ring as UI Automation's focus (the hits were just republished, so
+    // the index is the shell's): announced when it moved, cleared when the
+    // keyboard leaves the sidebar.
+    PhiUiaSetFocusedHit(shell_->SidebarOwner(), kb_focus_ ? focused_hit : -1,
+                        kb_focus_ && kb_announce_);
+    kb_uia_published_ = kb_focus_;
+    kb_announce_ = false;
+  }
 }
 
 // THE writer of the row vectors (docs/sidebar-architecture.md §2.2, §2.7):
@@ -806,6 +916,11 @@ void PhiSidebarView::PublishHits(const PhiSidebarRects& layout) {
 // the shell's posted rebuild turn. Nothing else fills tabs_, pinned_,
 // bookmarks_ or group_headers_ — not paint, not input, not a menu.
 void PhiSidebarView::Rebuild() {
+  if (DragContextChanged()) {
+    // A Space switch, a layout change or the band collapsing under a drag:
+    // the rows about to be built are not the ones it was dropping among.
+    AbortDrag();
+  }
   tabs_.clear();
   group_headers_.clear();
   // Re-captured from the active row below; empty when the strip is
@@ -890,6 +1005,20 @@ void PhiSidebarView::Rebuild() {
   // called from inside the shortcut rebuild it depended on.)
   const bool comfortable =
       prefs_host_ && prefs_host_->LayoutMode() == PhiLayoutMode::kComfortable;
+  // The scroll state is the Space's own: a switch files the leaving
+  // Space's offsets and brings back the incoming one's (fresh at the top).
+  if (const std::string space = shell_->SidebarActiveSpace();
+      space != scroll_space_) {
+    scroll_by_space_[scroll_space_] = {scroll_offset_, stored_scroll_,
+                                       strip_first_};
+    const auto saved = scroll_by_space_.find(space);
+    const ScrollState state =
+        saved != scroll_by_space_.end() ? saved->second : ScrollState{};
+    scroll_offset_ = state.list;
+    stored_scroll_ = state.stored;
+    strip_first_ = state.strip_first;
+    scroll_space_ = space;
+  }
   {
     std::vector<int> units;
     units.reserve(sidebar_tree_.pins.size());
@@ -908,7 +1037,45 @@ void PhiSidebarView::Rebuild() {
         isolated ? 0 : static_cast<int>(VisibleBookmarkCells().size()));
   }
   const PhiSidebarRects layout = shell_->SidebarRects();
+  // The stored bands' scroll range: how far their natural extent runs past
+  // the capped viewport. Clamped before any stored row is placed.
+  stored_scroll_max_ = 0;
+  if (!layout.horizontal_tabs &&
+      layout.stored_band.bottom > layout.stored_band.top) {
+    const LONG natural_bottom =
+        std::max(layout.favorites.bottom, layout.bookmarks.bottom);
+    stored_scroll_max_ =
+        std::max(0, static_cast<int>(natural_bottom - layout.stored_band.bottom));
+  }
+  stored_scroll_ = std::max(0, std::min(stored_scroll_, stored_scroll_max_));
   RebuildShortcuts(layout, snapshot);
+  // A pinned cell or a bookmark that became active — or the keyboard's
+  // row — scrolled out of the stored viewport comes back into it.
+  if (stored_scroll_max_ > 0) {
+    RECT target = {};
+    const bool newly_active = active_tab_id_ != revealed_stored_tab_;
+    for (const std::vector<ShortcutRow>* rows : {&pinned_, &bookmarks_}) {
+      for (const ShortcutRow& row : *rows) {
+        if ((!reveal_key_.empty() && row.key == reveal_key_) ||
+            (reveal_key_.empty() && newly_active && row.active)) {
+          target = row.frame;
+        }
+      }
+    }
+    const RECT& band = layout.stored_band;
+    int next = stored_scroll_;
+    if (target.bottom > target.top && target.top < band.top) {
+      next -= band.top - target.top;
+    } else if (target.bottom > target.top && target.bottom > band.bottom) {
+      next += target.bottom - band.bottom;
+    }
+    next = std::max(0, std::min(next, stored_scroll_max_));
+    if (next != stored_scroll_) {
+      stored_scroll_ = next;
+      RebuildShortcuts(layout, snapshot);  // Placed again at the new scroll.
+    }
+  }
+  revealed_stored_tab_ = active_tab_id_;
 
   // One paint row per content node; a split node is ONE merged row.
   const auto fill_pane = [&](const TabSnapshot& tab, std::wstring* title,
@@ -1115,22 +1282,115 @@ void PhiSidebarView::Rebuild() {
     }
   };
   int list_scroll_max = 0;
+  strip_overflow_button_ = RECT{};
   if (layout.horizontal_tabs) {
     // The strip: a chip before each group's first member, the tabs abutting
     // left to right after it, a collapsed group's members hidden under its
     // chip. The tabs' widths are already solved around the chips.
+    //
+    // Past the tabs' floor width the items no longer fit, and the strip
+    // becomes a WINDOW onto them (the Mac's scrolling strip, stepped by
+    // whole items here so nothing is ever cut in half): strip_first_ items
+    // scroll out ahead of it, the ones past its end hide, the overflow
+    // chevron stands before the "+". A scrolled-out item keeps its row —
+    // empty bounds, as a list row scrolled out of the sidebar — so the MRU,
+    // the switcher, the app menu and the group menus still see it.
+    struct StripItem {
+      RAW_PTR_EXCLUSION const SidebarContentNode* node = nullptr;
+      int lead = 0;   // Room before it (a chip's lead gap).
+      int width = 0;
+      int trail = 0;  // Room after it (the tab gap, a chip's trail gap).
+    };
+    std::vector<StripItem> items;
+    int active_item = -1;
     for (const SidebarContentNode& node : sidebar_tree_.content) {
       if (node.kind == SidebarNodeKind::kGroup) {
         const auto measured = strip_chips.find(node.group_id);
         if (measured == strip_chips.end()) {
           continue;  // No visuals for it yet: members render flat.
         }
-        GroupHeader chip = measured->second;
-        const int width = static_cast<int>(chip.bounds.right);
-        const int left = x + Scaled(kChipLeadGap);
-        if (left + width > layout.tabs_limit) {
-          break;  // Strip is full; overflow handling is future work.
+        items.push_back({&node, Scaled(kChipLeadGap),
+                         static_cast<int>(measured->second.bounds.right),
+                         Scaled(kChipTrailGap)});
+        continue;
+      }
+      if (node.hidden || !PhiFindTabIn(snapshot, TabId(node.tab_a))) {
+        continue;  // Under a collapsed chip, or not in the window yet.
+      }
+      if (node.active) {
+        active_item = static_cast<int>(items.size());
+      }
+      // The active tab takes the wider slot — it is the one carrying the
+      // page, and the extra room is what separates it from its neighbours
+      // now that the tabs abut instead of standing apart.
+      items.push_back({&node, 0,
+                       node.active ? strip_widths.active : strip_widths.rest,
+                       Scaled(kHTabGap)});
+    }
+    const int count = static_cast<int>(items.size());
+    // A new activation — or a strip that changed under it (resized, a tab
+    // opened or closed) — scrolls the active tab into the window, once: a
+    // wheel may still move away from it afterwards (the Mac's
+    // scrollToMakeTabVisible). A tab just dropped on the strip is revealed
+    // the same way: a drop past the window's last item lands it at the
+    // strip's end.
+    int reveal_item = -1;
+    if (!landing_armed_key_.empty()) {
+      for (int i = 0; i < count; ++i) {
+        if (items[static_cast<size_t>(i)].node->key == landing_armed_key_) {
+          reveal_item = i;
+          break;
         }
+      }
+    }
+    for (int i = 0; reveal_item < 0 && !reveal_key_.empty() && i < count;
+         ++i) {
+      if (items[static_cast<size_t>(i)].node->key == reveal_key_) {
+        reveal_item = i;  // The keyboard's item.
+      }
+    }
+    if (reveal_item < 0 && (active_tab_id_ != revealed_active_ ||
+                            layout.tabs_limit != revealed_strip_limit_ ||
+                            count != revealed_strip_items_)) {
+      reveal_item = active_item;
+    }
+    revealed_active_ = active_tab_id_;
+    revealed_strip_limit_ = layout.tabs_limit;
+    revealed_strip_items_ = count;
+    std::vector<StripSpan> spans;
+    spans.reserve(items.size());
+    for (const StripItem& item : items) {
+      spans.push_back({item.lead, item.width, item.trail});
+    }
+    // Overflowing, the window gives the chevron a button's room.
+    const StripWindow window = SolveStripWindow(
+        spans, x, layout.tabs_limit,
+        Scaled(kNavButton) + Scaled(kTopBarSpacing), strip_first_,
+        reveal_item);
+    const bool overflow = window.overflow;
+    strip_first_ = window.first;
+    strip_first_max_ = window.first_max;
+    const int window_end = window.end;
+    strip_window_left_ = x;
+    strip_window_right_ = window.limit;
+    int last_right = x;
+    for (int i = 0; i < count; ++i) {
+      const StripItem& item = items[static_cast<size_t>(i)];
+      const SidebarContentNode& node = *item.node;
+      const bool shown = i >= strip_first_ && i < window_end;
+      if (node.kind == SidebarNodeKind::kGroup) {
+        GroupHeader chip = strip_chips.find(node.group_id)->second;
+        if (!shown) {
+          // Scrolled out: the group keeps its record (the group menus list
+          // it), with no chip to paint or hit — its run starts at its first
+          // member in view, if any.
+          chip.bounds = RECT{};
+          chip.container = RECT{};
+          group_headers_.push_back(std::move(chip));
+          continue;
+        }
+        const int width = item.width;
+        const int left = x + item.lead;
         // 32pt, centred on the 34pt tab cell (chipY).
         const int top = y + (Scaled(kHTabHeight) - Scaled(kChipHeight)) / 2;
         const SidebarRect placed = {left, top, left + width,
@@ -1149,37 +1409,47 @@ void PhiSidebarView::Rebuild() {
         // The group's run — the chip alone until a member extends it.
         chip.container = {chip.bounds.left, y, chip.bounds.right,
                           y + Scaled(kHTabHeight)};
-        x = static_cast<int>(chip.bounds.right) + Scaled(kChipTrailGap);
+        last_right = static_cast<int>(chip.bounds.right);
+        x = last_right + item.trail;
         group_headers_.push_back(std::move(chip));
         continue;
-      }
-      if (node.hidden) {
-        continue;  // Under a collapsed chip.
       }
       TabRow row = make_row(node);
       if (!row.id.valid()) {
         continue;
       }
-      // The active tab takes the wider slot — it is the one carrying the
-      // page, and the extra room is what separates it from its neighbours
-      // now that the tabs abut instead of standing apart.
-      const int tab_w = row.active ? strip_widths.active : strip_widths.rest;
-      if (x + tab_w > layout.tabs_limit) {
-        break;  // Strip is full; overflow handling is future work.
+      if (shown) {
+        // The tab runs from the strip's top inset to the band's bottom
+        // edge, where the active one merges into the toolbar.
+        row.bounds = {x, y, x + item.width, y + Scaled(kHTabHeight)};
+        last_right = x + item.width;
+        x = last_right + item.trail;
+        finish_row(&row);
       }
-      // The tab runs from the strip's top inset to the band's bottom edge,
-      // where the active one merges into the toolbar.
-      row.bounds = {x, y, x + tab_w, y + Scaled(kHTabHeight)};
-      x += tab_w + Scaled(kHTabGap);
-      finish_row(&row);
-      if (!row.group_id.empty() && !group_headers_.empty() &&
+      if (shown && !row.group_id.empty() && !group_headers_.empty() &&
           group_headers_.back().id == row.group_id) {
-        // A member: the group's underline reaches its trailing edge.
+        // A member: the group's underline reaches its trailing edge — and,
+        // with the chip scrolled out, starts at the first member in view.
         GroupHeader& chip = group_headers_.back();
+        if (chip.container.right <= chip.container.left) {
+          chip.container = {row.bounds.left, y, row.bounds.left,
+                            y + Scaled(kHTabHeight)};
+        }
         chip.container.right = row.bounds.right;
         chip.contains_active = chip.contains_active || row.active;
       }
       tabs_.push_back(std::move(row));
+    }
+    const int chevron_left = last_right + Scaled(kTopBarSpacing);
+    if (overflow && chevron_left + Scaled(kNavButton) <= layout.tabs_limit) {
+      // The chevron follows the window's last item, centred on the strip's
+      // line, in the room the window held back; the "+" follows it.
+      const int btn = Scaled(kNavButton);
+      const int left = chevron_left;
+      const int strip_mid = (layout.tabs_top + layout.title_bar.bottom) / 2;
+      strip_overflow_button_ = {left, strip_mid - btn / 2, left + btn,
+                                strip_mid + btn / 2};
+      x = left + btn;
     }
   } else {
     // The list: a header row before each group's members, members hidden
@@ -1236,7 +1506,56 @@ void PhiSidebarView::Rebuild() {
     m.clip = true;
     m.viewport_top = layout.tabs_top;
     m.viewport_bottom = layout.tabs_limit;
-    const ListPlacement list = LayoutList(items, m);
+    ListPlacement list = LayoutList(items, m);
+    // Rows closed under a scrolled list shrink its range: clamp BEFORE the
+    // rows are kept, or the list keeps a blank tail until the next rebuild.
+    if (scroll_offset_ > list.scroll_max) {
+      scroll_offset_ = list.scroll_max;
+      m.scroll = scroll_offset_;
+      list = LayoutList(items, m);
+    }
+    // A new activation scrolls its row into the viewport, once (the Mac
+    // outline's scrollRowToVisible) — a later wheel may still move away. Not
+    // before the band has a viewport at all (a window not yet sized).
+    // The keyboard's row is revealed the same way, whenever it moves.
+    const bool has_viewport = m.viewport_bottom > m.viewport_top;
+    int reveal_index = -1;
+    for (size_t i = 0; has_viewport && !reveal_key_.empty() &&
+                       i < placed.size();
+         ++i) {
+      if (placed[i]->key == reveal_key_) {
+        reveal_index = static_cast<int>(i);
+        break;
+      }
+    }
+    for (size_t i = 0; has_viewport && reveal_index < 0 &&
+                       active_tab_id_ != revealed_active_ && i < placed.size();
+         ++i) {
+      if (placed[i]->kind != SidebarNodeKind::kGroup && placed[i]->active) {
+        reveal_index = static_cast<int>(i);
+        break;
+      }
+    }
+    if (reveal_index >= 0) {
+      // Empty under a collapsed header: nothing to reveal.
+      const SidebarRect& row = list.unclipped[static_cast<size_t>(reveal_index)];
+      int next = scroll_offset_;
+      if (!row.empty() && row.top < m.viewport_top) {
+        next -= m.viewport_top - row.top;
+      } else if (!row.empty() && row.bottom > m.viewport_bottom) {
+        next += row.bottom - m.viewport_bottom;
+      }
+      next = std::max(0, std::min(next, list.scroll_max));
+      if (next != scroll_offset_) {
+        scroll_offset_ = next;
+        m.scroll = next;
+        list = LayoutList(items, m);
+      }
+    }
+    if (has_viewport) {
+      revealed_active_ = active_tab_id_;
+    }
+    revealed_strip_limit_ = 0;  // Back on the strip, it reveals afresh.
     list_scroll_max = list.scroll_max;
     for (size_t i = 0; i < placed.size(); ++i) {
       const SidebarContentNode& node = *placed[i];
@@ -1296,6 +1615,7 @@ void PhiSidebarView::Rebuild() {
                           : RECT{};
   } else {
     add_tab_button_ = RECT{};
+    strip_first_max_ = 0;
     // Overflow bookkeeping for the wheel handler; the tinted group cards are
     // clamped to the viewport so they never bleed into the fixed bands.
     tabs_scroll_max_ = list_scroll_max;
@@ -1344,10 +1664,12 @@ void PhiSidebarView::Rebuild() {
     const RECT none = {};
     for (ShortcutRow& pin : pinned_) {
       pin.bounds = none;
+      pin.frame = none;
       pin.surface_box = none;
     }
     for (ShortcutRow& row : bookmarks_) {
       row.bounds = none;
+      row.frame = none;
       row.surface_box = none;
     }
     for (GroupHeader& header : group_headers_) {
@@ -1359,6 +1681,20 @@ void PhiSidebarView::Rebuild() {
       row.pane_b = none;
       row.close_box = none;
       row.surface_box = none;
+    }
+  }
+  // The reveal is consumed; the keyboard's row, if it went (closed, moved
+  // into a collapsed group), falls back to the active row or the first.
+  reveal_key_ = {};
+  if (kb_focus_) {
+    const std::vector<SidebarKey> order = KeyboardOrder();
+    if (std::find(order.begin(), order.end(), kb_key_) == order.end()) {
+      const bool active_listed =
+          std::find(order.begin(), order.end(), sidebar_tree_.active_key) !=
+          order.end();
+      kb_key_ = active_listed ? sidebar_tree_.active_key
+                : order.empty() ? SidebarKey()
+                                : order.front();
     }
   }
   // The rows the pointer, the keyboard and a screen reader all address.
@@ -1398,6 +1734,20 @@ void PhiSidebarView::RebuildShortcuts(const PhiSidebarRects& layout,
     row.favicon_b_height = view.favicon_b_height;
     row.icon = std::move(view.icon);
     row.layout = std::move(view.layout);
+    // Stored favicons come from disk and from sync: a buffer that is not
+    // exactly width*height*4 bytes is dropped here, before any painter.
+    const auto checked = [](std::vector<unsigned char>* bgra, int* width,
+                            int* height) {
+      if (*width <= 0 || *height <= 0 ||
+          bgra->size() != static_cast<size_t>(*width) *
+                              static_cast<size_t>(*height) * 4) {
+        bgra->clear();
+        *width = 0;
+        *height = 0;
+      }
+    };
+    checked(&row.favicon, &row.favicon_width, &row.favicon_height);
+    checked(&row.favicon_b, &row.favicon_b_width, &row.favicon_b_height);
     return row;
   };
   // The tree decides what a cell IS (open, active, which live panes); the
@@ -1497,14 +1847,28 @@ void PhiSidebarView::RebuildShortcuts(const PhiSidebarRects& layout,
       // A merged split cell takes two strip slots.
       const int w = pin.url_b.empty() ? cell : 2 * cell + Scaled(kStripPinGap);
       pin.bounds = {x, mid_y - cell / 2, x + w, mid_y + cell / 2};
+      pin.frame = pin.bounds;
       x += w + Scaled(kStripPinGap);
     }
     const int by = layout.favorites.bottom;
     for (ShortcutRow& row : bookmarks_) {
       row.bounds = {0, by, 0, by};  // Off-strip; bookmarks live in the menu.
+      row.frame = row.bounds;
     }
     return;
   }
+
+  // The two stored bands scroll together inside their capped viewport: a
+  // row sits at its scrolled frame, and is hit only where the viewport
+  // shows it.
+  const auto clip_to_band = [&](const RECT& frame) {
+    if (layout.stored_band.bottom <= layout.stored_band.top) {
+      return frame;
+    }
+    RECT shown = {};
+    ::IntersectRect(&shown, &frame, &layout.stored_band);
+    return shown;
+  };
 
   // The pinned grid (the Mac's PinnedTabLayout) — LayoutPinnedGrid, shared
   // with the drag previews. A split cell spans two units.
@@ -1517,15 +1881,17 @@ void PhiSidebarView::RebuildShortcuts(const PhiSidebarRects& layout,
     const PinnedGridPlacement grid = LayoutPinnedGrid(units, GridMetrics(layout));
     for (size_t i = 0; i < pinned_.size(); ++i) {
       ShortcutRow& pin = pinned_[i];
-      pin.bounds = PhiToRect(grid.cells[i]);
-      if (pin.attached_surface != SidebarSurface::kContent) {
+      pin.frame = PhiToRect(grid.cells[i]);
+      pin.bounds = clip_to_band(pin.frame);
+      if (pin.attached_surface != SidebarSurface::kContent &&
+          pin.bounds.right > pin.bounds.left) {
         // §5.8: an 18 dip tile overhanging the cell's top-right by 2 (the
         // Mac's PinnedPeekBadgeView circle, squared to Fluent).
         const int tile = Scaled(18);
-        pin.surface_box = {pin.bounds.right + Scaled(2) - tile,
-                           pin.bounds.top - Scaled(2),
-                           pin.bounds.right + Scaled(2),
-                           pin.bounds.top - Scaled(2) + tile};
+        pin.surface_box = {pin.frame.right + Scaled(2) - tile,
+                           pin.frame.top - Scaled(2),
+                           pin.frame.right + Scaled(2),
+                           pin.frame.top - Scaled(2) + tile};
       }
     }
   }
@@ -1543,17 +1909,19 @@ void PhiSidebarView::RebuildShortcuts(const PhiSidebarRects& layout,
                       (pinned_grid_rows_ > 0 ? Scaled(kFavoritesSpacer) : 0);
     m.row_height = Scaled(kTabRowHeight);
     m.row_gap = Scaled(kTabRowGap);
+    m.scroll = stored_scroll_;
     const std::vector<ListItem> items(bookmarks_.size(), ListItem{});
     const ListPlacement placed = LayoutList(items, m);
     for (size_t i = 0; i < bookmarks_.size(); ++i) {
       ShortcutRow& row = bookmarks_[i];
-      row.bounds = PhiToRect(placed.rects[i]);
+      row.frame = PhiToRect(placed.rects[i]);
+      row.bounds = clip_to_band(row.frame);
       if (row.attached_surface != SidebarSurface::kContent &&
           row.bounds.right > row.bounds.left) {
         const int box = Scaled(kCloseBoxSize);
-        const int mid = (row.bounds.top + row.bounds.bottom) / 2;
-        row.surface_box = {row.bounds.right - box - Scaled(4), mid - box / 2,
-                           row.bounds.right - Scaled(4), mid + box / 2};
+        const int mid = (row.frame.top + row.frame.bottom) / 2;
+        row.surface_box = {row.frame.right - box - Scaled(4), mid - box / 2,
+                           row.frame.right - Scaled(4), mid + box / 2};
       }
     }
   }
@@ -1567,7 +1935,9 @@ PinnedGridMetrics PhiSidebarView::GridMetrics(
   m.gap_dip = kPinnedGap;
   m.min_cell_width_dip = kPinnedMinWidth;
   m.origin_x = layout.favorites.left + Scaled(kEdgeInset);
-  m.origin_y = layout.favorites.top;
+  // The grid scrolls with the stored bands; `layout` is the shell's
+  // natural one, so the real cells and the drag previews agree.
+  m.origin_y = layout.favorites.top - stored_scroll_;
   m.sidebar_px = Scaled(sidebar_dip());
   m.edge_inset_px = Scaled(kEdgeInset);
   m.gap_px = Scaled(kPinnedGap);
@@ -1685,11 +2055,13 @@ std::vector<DropRow> PhiSidebarView::TabDropRows() const {
 
 std::vector<DropRow> PhiSidebarView::PinnedDropRows() const {
   std::vector<DropRow> rows;
+  // The stored rows' FRAMES: where they sit, scrolled — the same geometry
+  // the slide targets (PinnedGridWalk) are walked in.
   for (const ShortcutRow& pin : pinned_) {
     DropRow row;
     row.key = pin.key;
-    row.bounds = {pin.bounds.left, pin.bounds.top, pin.bounds.right,
-                  pin.bounds.bottom};
+    row.bounds = {pin.frame.left, pin.frame.top, pin.frame.right,
+                  pin.frame.bottom};
     rows.push_back(std::move(row));
   }
   return rows;
@@ -1700,8 +2072,8 @@ std::vector<DropRow> PhiSidebarView::BookmarkDropRows() const {
   for (const ShortcutRow& bookmark : bookmarks_) {
     DropRow row;
     row.key = bookmark.key;
-    row.bounds = {bookmark.bounds.left, bookmark.bounds.top,
-                  bookmark.bounds.right, bookmark.bounds.bottom};
+    row.bounds = {bookmark.frame.left, bookmark.frame.top,
+                  bookmark.frame.right, bookmark.frame.bottom};
     row.depth = bookmark.depth;
     row.folder = bookmark.folder;
     row.expanded = bookmark.expanded;
@@ -1812,11 +2184,28 @@ base::ListValue PhiSidebarView::LayoutRowsJson() const {
 }
 
 bool PhiSidebarView::OnWheel(POINT client_pt, int wheel_delta) {
-  if (!prefs_host_ ||
-      prefs_host_->LayoutMode() == PhiLayoutMode::kComfortable) {
+  if (!prefs_host_ || wheel_delta == 0) {
     return false;
   }
   const PhiSidebarRects layout = shell_->SidebarRects();
+  if (layout.horizontal_tabs) {
+    // Comfortable's strip: one item per notch, a notch toward the user
+    // revealing later items (the direction a vertical list scrolls, as the
+    // Spaces strip steps its pips) — over the tabs' run only.
+    if (strip_first_max_ <= 0 || !::PtInRect(&layout.title_bar, client_pt) ||
+        client_pt.x < layout.tabs_left ||
+        client_pt.x >= layout.search_tabs.left) {
+      return false;
+    }
+    const int next = std::max(
+        0, std::min(strip_first_ + (wheel_delta < 0 ? 1 : -1),
+                    strip_first_max_));
+    if (next != strip_first_) {
+      strip_first_ = next;
+      shell_->SidebarScheduleRefresh();
+    }
+    return true;
+  }
   PhiSpacesStrip* const strip = shell_->SidebarSpacesStrip();
   if (::PtInRect(&layout.spaces_strip, client_pt)) {
     // Over the strip the wheel slides the pip viewport by whole pips, one
@@ -1824,16 +2213,487 @@ bool PhiSidebarView::OnWheel(POINT client_pt, int wheel_delta) {
     // user reveals later pips, the direction a vertical list would scroll.
     return strip->OnWheel(wheel_delta);
   }
-  if (!::PtInRect(&layout.sidebar, client_pt) || tabs_scroll_max_ <= 0) {
+  if (!::PtInRect(&layout.sidebar, client_pt)) {
     return false;
   }
   const int step = Scaled(kTabRowHeight + kTabRowGap);
+  if (stored_scroll_max_ > 0 && ::PtInRect(&layout.stored_band, client_pt)) {
+    // Over the stored bands' capped viewport: the pinned grid and the
+    // outline scroll together, an outline row per notch.
+    int next = stored_scroll_ - wheel_delta * step / WHEEL_DELTA;
+    next = std::max(0, std::min(next, stored_scroll_max_));
+    if (next != stored_scroll_) {
+      stored_scroll_ = next;
+      ShowScrollbars();
+      shell_->SidebarScheduleRefresh();
+    }
+    return true;
+  }
+  if (tabs_scroll_max_ <= 0) {
+    return false;
+  }
   int next = scroll_offset_ - wheel_delta * step / WHEEL_DELTA;
   next = std::max(0, std::min(next, tabs_scroll_max_));
   if (next != scroll_offset_) {
     scroll_offset_ = next;
+    ShowScrollbars();
     shell_->SidebarScheduleRefresh();
   }
+  return true;
+}
+
+PhiSidebarRects PhiSidebarView::ScrolledStoredBands(
+    const PhiSidebarRects& layout) const {
+  PhiSidebarRects out = layout;
+  if (layout.horizontal_tabs ||
+      layout.stored_band.bottom <= layout.stored_band.top) {
+    return out;
+  }
+  const auto place = [&](RECT* band) {
+    if (band->bottom <= band->top) {
+      return;  // No band (a zero-high grid keeps its natural edge).
+    }
+    ::OffsetRect(band, 0, -stored_scroll_);
+    RECT shown = {};
+    ::IntersectRect(&shown, band, &layout.stored_band);
+    *band = shown;
+  };
+  place(&out.favorites);
+  place(&out.bookmarks);
+  return out;
+}
+
+// --- The overlay scrollbars --------------------------------------------------
+
+void PhiSidebarView::ShowScrollbars() {
+  scrollbar_shown_at_ = ::GetTickCount64();
+  const HWND hwnd = shell_hwnd();
+  if (!hwnd) {
+    return;
+  }
+  // The trailing gutter both bars live in: repainted on the animator's
+  // clock while the bars hold and fade.
+  const PhiSidebarRects layout = shell_->SidebarRects();
+  const RECT gutter = {
+      layout.sidebar.right - Scaled(kScrollbarWidth + 2 * kScrollbarInset),
+      layout.sidebar.top, layout.sidebar.right, layout.sidebar.bottom};
+  if (scrollbar_animation_) {
+    PhiAnimator::ForThread().Cancel(scrollbar_animation_);
+  }
+  scrollbar_animation_ = PhiAnimator::ForThread().Animate(
+      hwnd, kScrollbarHoldMs + kScrollbarFadeMs, PhiEasing::kLinear,
+      [gutter](double, RECT* dirty) { *dirty = gutter; },
+      [this, hwnd, gutter] {
+        scrollbar_animation_ = 0;
+        ::InvalidateRect(hwnd, &gutter, FALSE);  // Faded out.
+      });
+}
+
+double PhiSidebarView::ScrollbarOpacity(bool hovered) const {
+  if (hovered) {
+    return 1.0;
+  }
+  if (!scrollbar_shown_at_) {
+    return 0.0;
+  }
+  const ULONGLONG age = ::GetTickCount64() - scrollbar_shown_at_;
+  if (age <= static_cast<ULONGLONG>(kScrollbarHoldMs)) {
+    return 1.0;
+  }
+  if (age >= static_cast<ULONGLONG>(kScrollbarHoldMs + kScrollbarFadeMs)) {
+    return 0.0;
+  }
+  return 1.0 - static_cast<double>(age - kScrollbarHoldMs) / kScrollbarFadeMs;
+}
+
+void PhiSidebarView::PaintScrollbar(HDC dc,
+                                    const RECT& track,
+                                    int scroll,
+                                    int scroll_max,
+                                    const PhiPalette& palette,
+                                    double opacity) {
+  const int track_h = static_cast<int>(track.bottom - track.top);
+  if (scroll_max <= 0 || opacity <= 0.0 ||
+      track_h < Scaled(kScrollbarMinThumb)) {
+    return;
+  }
+  // Windows 11's thin overlay bar: the thumb's length is the viewport's
+  // share of the content, its travel the scroll's share of the range.
+  const long long content = static_cast<long long>(track_h) + scroll_max;
+  const int thumb_h = std::min(
+      track_h, std::max(Scaled(kScrollbarMinThumb),
+                        static_cast<int>(static_cast<long long>(track_h) *
+                                         track_h / content)));
+  const int top = static_cast<int>(
+      track.top + static_cast<long long>(track_h - thumb_h) *
+                      std::max(0, std::min(scroll, scroll_max)) / scroll_max);
+  const int width = Scaled(kScrollbarWidth);
+  const int right = static_cast<int>(track.right) - Scaled(kScrollbarInset);
+  const RECT thumb = {right - width, top, right, top + thumb_h};
+  const int alpha =
+      static_cast<int>((palette.dark ? 110 : 90) * std::min(1.0, opacity));
+  PhiFillRoundRectAA(dc, thumb, width / 2,
+                     PhiBlendOver(palette.ink, palette.ground_top, alpha));
+}
+
+// --- Drag auto-scroll (D31) ---------------------------------------------------
+
+int PhiSidebarView::DragAutoScrollZone(POINT pt, int* target,
+                                       int* depth) const {
+  const PhiSidebarRects layout = shell_->SidebarRects();
+  const int edge = Scaled(kAutoScrollEdge);
+  const auto zone = [&](int near_edge, int far_edge, int v) {
+    // -1 within `edge` either side of the near (top/left) edge, +1 of the
+    // far one; the depth is how far into the zone, capped at its width.
+    if (v < near_edge + edge && v >= near_edge - edge) {
+      *depth = std::min(edge, near_edge + edge - v);
+      return -1;
+    }
+    if (v > far_edge - edge && v <= far_edge + edge) {
+      *depth = std::min(edge, v - (far_edge - edge));
+      return 1;
+    }
+    return 0;
+  };
+  if (layout.horizontal_tabs) {
+    if (strip_first_max_ <= 0 || pt.y < layout.title_bar.top ||
+        pt.y >= layout.title_bar.bottom) {
+      return 0;
+    }
+    *target = 2;
+    return zone(strip_window_left_, strip_window_right_, pt.x);
+  }
+  if (BandHidden(layout) || pt.x < layout.sidebar.left ||
+      pt.x >= layout.sidebar.right) {
+    return 0;
+  }
+  const RECT& band = layout.stored_band;
+  if (stored_scroll_max_ > 0 && pt.y >= band.top && pt.y < band.bottom) {
+    // Inside the viewport only: the zones must not reach the header.
+    *target = 1;
+    if (pt.y < band.top + edge) {
+      *depth = static_cast<int>(band.top + edge - pt.y);
+      return -1;
+    }
+    if (pt.y > band.bottom - edge) {
+      *depth = static_cast<int>(pt.y - (band.bottom - edge));
+      return 1;
+    }
+    return 0;
+  }
+  if (tabs_scroll_max_ > 0) {
+    *target = 0;
+    return zone(layout.tabs_top, layout.tabs_limit, pt.y);
+  }
+  return 0;
+}
+
+void PhiSidebarView::UpdateDragAutoScroll(POINT pt) {
+  auto_scroll_pt_ = pt;
+  int target = 0;
+  int depth = 0;
+  if (DragAutoScrollZone(pt, &target, &depth) == 0) {
+    StopDragAutoScroll();
+    return;
+  }
+  const HWND hwnd = shell_hwnd();
+  if (auto_scroll_animation_ || !hwnd) {
+    return;  // Already running: the tick reads the new point.
+  }
+  auto_scroll_last_ = 0;
+  // An open-ended run on the animator's clock (a minute; a drag resting
+  // longer re-arms on its next move).
+  auto_scroll_animation_ = PhiAnimator::ForThread().Animate(
+      hwnd, 60000, PhiEasing::kLinear,
+      [this](double, RECT*) { DragAutoScrollTick(); },
+      [this] { auto_scroll_animation_ = 0; });
+}
+
+void PhiSidebarView::DragAutoScrollTick() {
+  if (!drag_ || !drag_->active()) {
+    return;  // Stopped by the drag's own end.
+  }
+  int target = 0;
+  int depth = 0;
+  const int dir = DragAutoScrollZone(auto_scroll_pt_, &target, &depth);
+  if (dir == 0) {
+    return;
+  }
+  bool moved = false;
+  if (target == 2) {
+    // The strip steps by whole items, at a walking pace.
+    const ULONGLONG now = ::GetTickCount64();
+    if (auto_scroll_last_ &&
+        now - auto_scroll_last_ < static_cast<ULONGLONG>(kAutoScrollStripMs)) {
+      return;
+    }
+    auto_scroll_last_ = now;
+    const int next = std::max(0, std::min(strip_first_ + dir, strip_first_max_));
+    moved = next != strip_first_;
+    strip_first_ = next;
+  } else {
+    // Faster the deeper into the zone.
+    const int edge = Scaled(kAutoScrollEdge);
+    const int step =
+        std::max(1, Scaled(kAutoScrollMaxStep) * std::max(1, depth) / edge);
+    int& scroll = target == 1 ? stored_scroll_ : scroll_offset_;
+    const int limit = target == 1 ? stored_scroll_max_ : tabs_scroll_max_;
+    const int next = std::max(0, std::min(scroll + dir * step, limit));
+    moved = next != scroll;
+    scroll = next;
+    if (moved) {
+      ShowScrollbars();
+    }
+  }
+  if (moved) {
+    // The rebuild re-resolves the drag against the moved rows
+    // (OnRowsRebuilt).
+    shell_->SidebarScheduleRefresh();
+  }
+}
+
+void PhiSidebarView::StopDragAutoScroll() {
+  if (auto_scroll_animation_) {
+    PhiAnimator::ForThread().Cancel(auto_scroll_animation_);
+    auto_scroll_animation_ = 0;
+  }
+}
+
+// --- Keyboard (F6) ------------------------------------------------------------
+
+std::vector<SidebarKey> PhiSidebarView::KeyboardOrder() const {
+  std::vector<SidebarKey> order;
+  for (const ShortcutRow& pin : pinned_) {
+    order.push_back(pin.key);
+  }
+  for (const ShortcutRow& row : bookmarks_) {
+    if (row.frame.right > row.frame.left) {
+      order.push_back(row.key);  // Not comfortable's parked rows.
+    }
+  }
+  // The content in tree order: a group's header (or chip) before its
+  // members, members of a collapsed group skipped.
+  for (const SidebarContentNode& node : sidebar_tree_.content) {
+    if (node.kind == SidebarNodeKind::kGroup) {
+      for (const GroupHeader& header : group_headers_) {
+        if (header.id == node.group_id) {
+          order.push_back(SidebarKey::Group(header.id));
+          break;
+        }
+      }
+      continue;
+    }
+    if (node.hidden) {
+      continue;
+    }
+    for (const TabRow& row : tabs_) {
+      if (row.key == node.key) {
+        order.push_back(row.key);
+        break;
+      }
+    }
+  }
+  if (strip_overflow_button_.right > strip_overflow_button_.left) {
+    order.push_back(OverflowChevronKey());
+  }
+  return order;
+}
+
+RECT PhiSidebarView::KeyRect(const SidebarKey& key) const {
+  if (key.empty()) {
+    return RECT{};
+  }
+  if (key == OverflowChevronKey()) {
+    return strip_overflow_button_;
+  }
+  for (const std::vector<ShortcutRow>* rows : {&pinned_, &bookmarks_}) {
+    for (const ShortcutRow& row : *rows) {
+      if (row.key == key) {
+        return row.bounds;
+      }
+    }
+  }
+  if (key.kind == SidebarKey::Kind::kGroup) {
+    for (const GroupHeader& header : group_headers_) {
+      if (header.id == key.id) {
+        return header.bounds;
+      }
+    }
+    return RECT{};
+  }
+  for (const TabRow& row : tabs_) {
+    if (row.key == key) {
+      return row.bounds;
+    }
+  }
+  return RECT{};
+}
+
+bool PhiSidebarView::BeginKeyboardFocus() {
+  const PhiSidebarRects layout = shell_->SidebarRects();
+  const std::vector<SidebarKey> order = KeyboardOrder();
+  if (BandHidden(layout) || order.empty()) {
+    return false;
+  }
+  // The ring starts on the active row, as a list's focus does.
+  const bool active_listed =
+      std::find(order.begin(), order.end(), sidebar_tree_.active_key) !=
+      order.end();
+  // On BEFORE the shell takes the focus: its WM_SETFOCUS hands the focus to
+  // the page unless the sidebar holds it.
+  kb_focus_ = true;
+  if (const HWND hwnd = shell_hwnd()) {
+    ::SetFocus(hwnd);
+  }
+  MoveKeyboardFocus(active_listed ? sidebar_tree_.active_key : order.front());
+  return true;
+}
+
+void PhiSidebarView::EndKeyboardFocus() {
+  if (!kb_focus_) {
+    return;
+  }
+  kb_focus_ = false;
+  RECT ring = KeyRect(kb_key_);
+  ::InflateRect(&ring, Scaled(3), Scaled(3));
+  if (const HWND hwnd = shell_hwnd()) {
+    ::InvalidateRect(hwnd, &ring, FALSE);
+  }
+  shell_->SidebarScheduleRefresh();  // Republishes the hits unfocused.
+}
+
+void PhiSidebarView::MoveKeyboardFocus(const SidebarKey& key) {
+  const HWND hwnd = shell_hwnd();
+  const SidebarKey before = kb_key_;
+  for (const SidebarKey* k : {&before, &key}) {
+    RECT ring = KeyRect(*k);
+    ::InflateRect(&ring, Scaled(3), Scaled(3));
+    if (hwnd && ring.right > ring.left) {
+      ::InvalidateRect(hwnd, &ring, FALSE);
+    }
+  }
+  kb_key_ = key;
+  kb_announce_ = true;
+  // The rebuild scrolls the row into view and publishes it to UI Automation.
+  reveal_key_ = key;
+  shell_->SidebarScheduleRefresh();
+}
+
+void PhiSidebarView::ActivateKey(const SidebarKey& key, bool toggle) {
+  if (key == OverflowChevronKey()) {
+    // As its click: the tab search palette lists every tab.
+    PhiSearchTabsPanel::Toggle(shell_->SidebarOwner());
+    return;
+  }
+  switch (key.kind) {
+    case SidebarKey::Kind::kFolder:
+      ToggleExpanded(key.id);
+      shell_->SidebarScheduleRefresh();
+      return;
+    case SidebarKey::Kind::kGroup:
+      for (const GroupHeader& header : group_headers_) {
+        const BrowserId browser = shell_->SidebarActiveBrowser();
+        if (header.id == key.id && framework_ && browser.valid()) {
+          framework_->SetTabGroupCollapsed(browser.value, header.id.c_str(),
+                                           !header.collapsed);
+          return;
+        }
+      }
+      return;
+    case SidebarKey::Kind::kCell:
+      for (const std::vector<ShortcutRow>* rows : {&pinned_, &bookmarks_}) {
+        for (const ShortcutRow& row : *rows) {
+          if (row.key == key && !row.url.empty()) {
+            OpenOrFocusPinned(row.guid, row.url);
+            return;
+          }
+        }
+      }
+      return;
+    case SidebarKey::Kind::kTab:
+    case SidebarKey::Kind::kSplit:
+      Apply(SidebarActivate{key, 0});
+      return;
+    case SidebarKey::Kind::kNone:
+    case SidebarKey::Kind::kSpace:
+      break;
+  }
+  (void)toggle;  // Space on a row that has nothing to toggle activates it.
+}
+
+bool PhiSidebarView::OnKeyDown(UINT vk) {
+  if (!kb_focus_) {
+    return false;
+  }
+  const std::vector<SidebarKey> order = KeyboardOrder();
+  if (order.empty()) {
+    EndKeyboardFocus();
+    return false;
+  }
+  const auto found = std::find(order.begin(), order.end(), kb_key_);
+  const int at = found == order.end()
+                     ? -1
+                     : static_cast<int>(found - order.begin());
+  const int last = static_cast<int>(order.size()) - 1;
+  const auto go = [&](int index) {
+    MoveKeyboardFocus(order[static_cast<size_t>(std::max(0, std::min(index, last)))]);
+    return true;
+  };
+  switch (vk) {
+    case VK_UP:
+    case VK_LEFT:
+      return go(at < 0 ? 0 : at - 1);
+    case VK_DOWN:
+    case VK_RIGHT:
+      return go(at + 1);
+    case VK_HOME:
+      return go(0);
+    case VK_END:
+      return go(last);
+    case VK_RETURN:
+    case VK_SPACE:
+      if (at >= 0) {
+        ActivateKey(order[static_cast<size_t>(at)], vk == VK_SPACE);
+      }
+      return true;
+    case VK_DELETE: {
+      if (at < 0 || agent_holds_input_) {
+        return true;
+      }
+      const SidebarKey key = order[static_cast<size_t>(at)];
+      if (key.kind != SidebarKey::Kind::kTab &&
+          key.kind != SidebarKey::Kind::kSplit) {
+        return true;  // Pins and bookmarks are persistent (the menu deletes).
+      }
+      // The ring moves on to the next row (the previous at the end) before
+      // the row goes.
+      const int next = at < last ? at + 1 : at - 1;
+      if (next >= 0) {
+        MoveKeyboardFocus(order[static_cast<size_t>(next)]);
+      }
+      Apply(SidebarClose{key, -1});
+      return true;
+    }
+    case VK_ESCAPE:
+      EndKeyboardFocus();
+      if (const HWND hwnd = shell_hwnd()) {
+        ::PostMessageW(hwnd, kMsgPhiCycleFocus, kPhiFocusPage, 0);
+      }
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool PhiSidebarView::KeyboardMenuPoint(POINT* client_pt) const {
+  if (!kb_focus_) {
+    return false;
+  }
+  const RECT r = KeyRect(kb_key_);
+  if (r.right <= r.left || r.bottom <= r.top) {
+    return false;
+  }
+  *client_pt = {(r.left + r.right) / 2, (r.top + r.bottom) / 2};
   return true;
 }
 
@@ -2000,6 +2860,24 @@ bool PhiSidebarView::SplitTabsNormalized(BrowserId browser,
   const char* split = framework_->CreateSplitViewForTabs(
       browser.value, primary.value, secondary.value, "vertical");
   return split && *split;
+}
+
+void PhiSidebarView::DrawFavicon(HDC dc,
+                                 const RECT& dest,
+                                 const std::vector<unsigned char>& bgra,
+                                 int width,
+                                 int height,
+                                 COLORREF background,
+                                 float opacity) {
+  // Stored favicons arrive from disk and from sync: a buffer that is not
+  // exactly width*height*4 bytes is not drawn (the raw-pointer form below
+  // trusts its caller's dimensions).
+  if (width <= 0 || height <= 0 ||
+      bgra.size() != static_cast<size_t>(width) * static_cast<size_t>(height) *
+                         4) {
+    return;
+  }
+  DrawFavicon(dc, dest, bgra.data(), width, height, background, opacity);
 }
 
 void PhiSidebarView::DrawFavicon(HDC dc,
@@ -2231,7 +3109,7 @@ void PhiSidebarView::DrawSurfaceTile(HDC dc,
                  (tile.top + tile.bottom - icon_px) / 2, 0, 0};
     icon.right = icon.left + icon_px;
     icon.bottom = icon.top + icon_px;
-    DrawFavicon(dc, icon, bgra.data(), width, height, palette.card);
+    DrawFavicon(dc, icon, bgra, width, height, palette.card);
     return;
   }
   PhiDrawIconGlyph(dc, tile, fluent::kOpenInNewWindow, Scaled(12),
@@ -2297,9 +3175,22 @@ void PhiSidebarView::PaintBand(HDC dc,
   const int band_shift = drag_active && !layout.horizontal_tabs
                              ? static_cast<int>(RowSlide(band_key).dy)
                              : 0;
+  // The stored bands paint inside their capped viewport — scrolled, never
+  // over "+ New Tab", the tab list or the bottom bar. Its bottom rides the
+  // band shift with everything under the grid.
+  const bool clip_stored = !layout.horizontal_tabs &&
+                           layout.stored_band.bottom > layout.stored_band.top;
+  int stored_clip_save = 0;
+  if (clip_stored) {
+    stored_clip_save = ::SaveDC(dc);
+    ::IntersectClipRect(dc, layout.stored_band.left, layout.stored_band.top,
+                        layout.stored_band.right,
+                        layout.stored_band.bottom + band_shift);
+  }
   if (drag_active && !layout.horizontal_tabs && pinned_.empty() &&
       layout.favorites.bottom > layout.favorites.top) {
     RECT zone = layout.favorites;
+    ::OffsetRect(&zone, 0, -stored_scroll_);
     zone.left += Scaled(16);  // The emptyView's leading/trailing 16.
     zone.right -= Scaled(16);
     zone.top += Scaled(kPinnedGap);
@@ -2328,7 +3219,7 @@ void PhiSidebarView::PaintBand(HDC dc,
     // Siblings glide by their slide offsets (both axes — a grid gap wraps
     // rows); the dragged cell is only ever painted here at home, lifted,
     // for its snapshot.
-    RECT cell = pin.bounds;
+    RECT cell = pin.frame;
     if (!pin_dragged && drag_active && !layout.horizontal_tabs) {
       // The cell glides AND resizes toward its previewed slot: a phantom
       // entering its row shrinks it, one leaving lets it widen.
@@ -2375,7 +3266,7 @@ void PhiSidebarView::PaintBand(HDC dc,
                                  const std::vector<unsigned char>& bgra,
                                  int width, int height, bool dormant) {
         if (!bgra.empty()) {
-          DrawFavicon(dc, slot, bgra.data(), width, height, pin_bg,
+          DrawFavicon(dc, slot, bgra, width, height, pin_bg,
                       dormant ? kReclaimedOpacity : 1.0f);
         } else {
           HGDIOBJ previous_glyph_font =
@@ -2394,7 +3285,7 @@ void PhiSidebarView::PaintBand(HDC dc,
       const int size = icon_size;
       const RECT icon = {cx - size / 2, cy - size / 2, cx + size / 2,
                          cy + size / 2};
-      DrawFavicon(dc, icon, pin.favicon.data(), pin.favicon_width,
+      DrawFavicon(dc, icon, pin.favicon, pin.favicon_width,
                   pin.favicon_height, pin_bg,
                   dormant_a ? kReclaimedOpacity : 1.0f);
     } else {
@@ -2402,7 +3293,7 @@ void PhiSidebarView::PaintBand(HDC dc,
       const std::wstring initial =
           pin.title.empty() ? std::wstring(L"?") : pin.title.substr(0, 1);
       PhiDrawTextAA(dc, initial.c_str(), -1, &cell,
-                  DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                  DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
     }
     // The open dot: an inactive cell whose tab is open, centred under the
     // favicon (under the PAIR for a split cell), faded when a pane is
@@ -2420,8 +3311,8 @@ void PhiSidebarView::PaintBand(HDC dc,
     if (pin.attached_surface != SidebarSurface::kContent &&
         pin.surface_box.right > pin.surface_box.left) {
       RECT badge = pin.surface_box;  // Pinned to the cell's top-right.
-      ::OffsetRect(&badge, cell.right - pin.bounds.right,
-                   cell.top - pin.bounds.top);
+      ::OffsetRect(&badge, cell.right - pin.frame.right,
+                   cell.top - pin.frame.top);
       DrawSurfaceTile(dc, badge, pin.attached_surface,
                       pin_hovered && !pin_dragged &&
                           shell_->SidebarSurfaceTileHovered(),
@@ -2438,7 +3329,7 @@ void PhiSidebarView::PaintBand(HDC dc,
   if (drag_active && !layout.horizontal_tabs && bookmarks_.empty() &&
       layout.bookmarks.bottom > layout.bookmarks.top) {
     RECT zone = layout.bookmarks;  // The one reserved row, pill-inset.
-    ::OffsetRect(&zone, 0, band_shift);
+    ::OffsetRect(&zone, 0, band_shift - stored_scroll_);
     zone.top += Scaled(kRowPad);
     zone.bottom = zone.top + Scaled(kTabRowHeight) - 2 * Scaled(kRowPad);
     PaintDropZone(dc, zone, drag_band == PhiDropBand::kBookmarks, L"\uE8A4",
@@ -2470,7 +3361,7 @@ void PhiSidebarView::PaintBand(HDC dc,
         break;
       }
       last_row = static_cast<int>(i);
-      RECT r = row.bounds;
+      RECT r = row.frame;
       const SlideVec offset = RowSlide(row.guid);
       ::OffsetRect(&r, static_cast<int>(offset.dx), static_cast<int>(offset.dy));
       if (!any) {
@@ -2488,7 +3379,9 @@ void PhiSidebarView::PaintBand(HDC dc,
     if (any) {
       area.top += Scaled(kRowPad);
       area.bottom -= Scaled(kRowPad);
-      area.left += folder_depth * Scaled(kBookmarkIndent);
+      area.left = std::min(
+          area.left + BookmarkIndentDepth(folder_depth) * Scaled(kBookmarkIndent),
+          area.right - Scaled(kFaviconSlot));
       PhiFillRounded(dc, area, palette.hover_strong, Scaled(kCornerRadius));
       PhiStrokeRounded(dc, area, palette.hover_strong, palette.accent,
                        Scaled(kCornerRadius));
@@ -2517,7 +3410,7 @@ void PhiSidebarView::PaintBand(HDC dc,
     if (bookmark_dragged && !drag_capture) {
       continue;  // It rides the drag image window; its slot is the gap.
     }
-    RECT pill = bookmark.bounds;
+    RECT pill = bookmark.frame;
     if (!bookmark_dragged && drag_active && !layout.horizontal_tabs) {
       const SlideVec offset = RowSlide(bookmark.guid);
       ::OffsetRect(&pill, static_cast<int>(offset.dx),
@@ -2526,7 +3419,10 @@ void PhiSidebarView::PaintBand(HDC dc,
     pill.top += Scaled(kRowPad);
     pill.bottom -= Scaled(kRowPad);
     // Outline depth indents the pill itself, as the Mac outline rows do.
-    pill.left += bookmark.depth * Scaled(kBookmarkIndent);
+    // Capped (BookmarkIndentDepth), and never past room for the icon slot.
+    pill.left = std::min(
+        pill.left + BookmarkIndentDepth(bookmark.depth) * Scaled(kBookmarkIndent),
+        pill.right - Scaled(kFaviconSlot) - Scaled(12));
     const bool bookmark_hovered =
         hover_kind == HoverKind::kBookmark &&
         hover_index == static_cast<int>(&bookmark - bookmarks_.data());
@@ -2577,7 +3473,7 @@ void PhiSidebarView::PaintBand(HDC dc,
       // (§4.2).
       DrawFolderIcon(dc, icon, bookmark.icon, kLabelDim, bookmark.expanded);
     } else if (!bookmark.favicon.empty()) {
-      DrawFavicon(dc, icon, bookmark.favicon.data(), bookmark.favicon_width,
+      DrawFavicon(dc, icon, bookmark.favicon, bookmark.favicon_width,
                   bookmark.favicon_height, bookmark_bg,
                   dim_a ? kReclaimedOpacity : 1.0f);
     } else {
@@ -2596,7 +3492,7 @@ void PhiSidebarView::PaintBand(HDC dc,
       RECT icon_b = icon;
       ::OffsetRect(&icon_b, Scaled(24), 0);
       if (!bookmark.favicon_b.empty()) {
-        DrawFavicon(dc, icon_b, bookmark.favicon_b.data(),
+        DrawFavicon(dc, icon_b, bookmark.favicon_b,
                     bookmark.favicon_b_width, bookmark.favicon_b_height,
                     bookmark_bg, dim_b ? kReclaimedOpacity : 1.0f);
       } else {
@@ -2673,7 +3569,8 @@ void PhiSidebarView::PaintBand(HDC dc,
       text.right = bookmark_badge.left - Scaled(4);
     }
     PhiDrawTextAA(dc, label.c_str(), -1, &text,
-                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
+                    DT_NOPREFIX);
     if (bookmark_attached) {
       DrawSurfaceTile(dc, bookmark_badge, bookmark.attached_surface,
                       bookmark_hovered && !bookmark_dragged &&
@@ -2681,6 +3578,17 @@ void PhiSidebarView::PaintBand(HDC dc,
                       bookmark.active ? kRowSelectedBg : kTintTop,
                       bookmark.tab_id, 20);
     }
+  }
+
+  if (clip_stored) {
+    // Its overlay scrollbar, while it scrolls or the pointer is on it.
+    if (!drag_capture) {
+      PaintScrollbar(dc, layout.stored_band, stored_scroll_,
+                     stored_scroll_max_, palette,
+                     ScrollbarOpacity(hover_kind == HoverKind::kPin ||
+                                      hover_kind == HoverKind::kBookmark));
+    }
+    ::RestoreDC(dc, stored_clip_save);
   }
 
   // "New Tab": the row heading the tab list -- a 16pt "+" 6pt in, an 8pt
@@ -2799,7 +3707,8 @@ void PhiSidebarView::PaintBand(HDC dc,
     HGDIOBJ previous_title_font =
         semibold_font ? ::SelectObject(dc, semibold_font) : nullptr;
     PhiDrawTextAA(dc, gh.title.c_str(), -1, &title_rc,
-                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
+                    DT_NOPREFIX);
     if (previous_title_font) {
       ::SelectObject(dc, previous_title_font);
     }
@@ -2974,7 +3883,7 @@ void PhiSidebarView::PaintBand(HDC dc,
       const bool dormant = r.unloaded && !r.active;
       const bool dim = dormant && dim_reclaimed;
       if (!favicon.empty()) {
-        DrawFavicon(dc, icon, favicon.data(),
+        DrawFavicon(dc, icon, favicon,
                     pane_b ? r.b_favicon_width : r.favicon_width,
                     pane_b ? r.b_favicon_height : r.favicon_height, row_bg,
                     dim ? kReclaimedOpacity : 1.0f);
@@ -2995,7 +3904,8 @@ void PhiSidebarView::PaintBand(HDC dc,
       RECT title_rc = {slot.right + Scaled(8), pill.top, right - Scaled(4),
                        pill.bottom};
       PhiDrawTextAA(dc, (pane_b ? r.b_title : r.title).c_str(), -1, &title_rc,
-                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
+                      DT_NOPREFIX);
     };
     // The close box shows on HOVER only (SideTabView) \u2014 the active row
     // included; the title reclaims its slot the rest of the time. A row with
@@ -3047,8 +3957,42 @@ void PhiSidebarView::PaintBand(HDC dc,
   if (rows_clip_active) {
     ::RestoreDC(dc, rows_clip_save);
   }
+  if (!layout.horizontal_tabs && !drag_capture) {
+    // The tab list's overlay scrollbar, while it scrolls or is hovered.
+    const RECT track = {layout.sidebar.left, layout.tabs_top,
+                        layout.sidebar.right, layout.tabs_limit};
+    PaintScrollbar(dc, track, scroll_offset_, tabs_scroll_max_, palette,
+                   ScrollbarOpacity(hover_kind == HoverKind::kTab ||
+                                    hover_kind == HoverKind::kGroupHeader));
+  }
+  if (kb_focus_ && !drag_capture) {
+    // The keyboard-only focus ring (F6): 2 dip in the accent round the
+    // row's pill, never shown for the mouse.
+    RECT ring = KeyRect(kb_key_);
+    const bool pin_cell =
+        std::any_of(pinned_.begin(), pinned_.end(),
+                    [&](const ShortcutRow& pin) { return pin.key == kb_key_; });
+    if (ring.right > ring.left) {
+      if (!layout.horizontal_tabs && !pin_cell) {
+        ring.top += Scaled(kRowPad);
+        ring.bottom -= Scaled(kRowPad);
+      }
+      PhiStrokeRoundRectAA(dc, ring, Scaled(kCornerRadius), palette.accent,
+                           Scaled(2));
+    }
+  }
   if (layout.horizontal_tabs) {
     PaintStripGroups(dc, layout, palette);
+    if (strip_overflow_button_.right > strip_overflow_button_.left) {
+      // The overflow chevron: a toolbar button on the strip's line, its
+      // hover the shell's (nav-hover ordinal kStripOverflowNavOrdinal).
+      const bool hot = hover_kind == HoverKind::kNav &&
+                       hover_index == kStripOverflowNavOrdinal;
+      PhiPaintIconButton(dc, strip_overflow_button_, fluent::kChevronDown,
+                         hot ? PhiButtonState::kHover : PhiButtonState::kRest,
+                         palette, palette.label, Scaled(fluent::kIconToolbar),
+                         Scaled(fluent::kButtonRadius));
+    }
   }
 }
 
@@ -3092,9 +4036,70 @@ void PhiSidebarView::PaintStripGroups(HDC dc,
                : 0;
   };
   ::SetBkMode(dc, TRANSPARENT);
+  // The underline (updateGroupBoundaryLayers): an expanded group's colour
+  // runs along the strip's bottom edge from the chip — or, with the chip
+  // scrolled out of the strip's window, from its first member in view — to
+  // its last member and, where the group holds the active tab, climbs over
+  // that tab's outline — one path, so the line and the outline meet
+  // without a seam. The Windows tab has no inverse corners: the outline is
+  // its top-rounded shape, cut off at the strip's bottom edge so its sides
+  // run straight into the line.
+  const auto paint_underline = [&](const GroupHeader& gh) {
+    const int line_y = strip_bottom - 1;
+    const int inset = Scaled(kChipUnderlineInset);
+    const int left = static_cast<int>(gh.container.left) + inset;
+    const int right = static_cast<int>(gh.container.right) - inset;
+    HBRUSH ink = ::CreateSolidBrush(gh.color);
+    // The active member's outline, where it is painted — not while it is
+    // the tab being dragged (the line runs straight under the gap).
+    RECT active_bounds = {};
+    bool active = false;
+    if (gh.contains_active) {
+      for (size_t t = 0; t < tabs_.size(); ++t) {
+        const TabRow& row = tabs_[t];
+        if (row.active && row.group_id == gh.id &&
+            row.bounds.right > row.bounds.left &&
+            static_cast<int>(t) != dragged_tab) {
+          active = true;
+          active_bounds = row.bounds;
+          ::OffsetRect(&active_bounds, tab_dx(t), 0);
+          break;
+        }
+      }
+    }
+    const auto line = [&](int from, int to) {
+      if (to > from) {
+        RECT r = {from, line_y, to, line_y + 1};
+        ::FillRect(dc, &r, ink);
+      }
+    };
+    if (active) {
+      line(left, static_cast<int>(active_bounds.left));
+      line(static_cast<int>(active_bounds.right), right);
+      const int save = ::SaveDC(dc);
+      ::IntersectClipRect(dc, active_bounds.left - 1, active_bounds.top - 1,
+                          active_bounds.right + 1, line_y + 1);
+      RECT outline = active_bounds;
+      outline.bottom += radius;
+      PhiStrokeRoundRectAA(dc, outline, radius, gh.color, 1);
+      ::RestoreDC(dc, save);
+    } else {
+      line(left, right);
+    }
+    ::DeleteObject(ink);
+  };
   for (size_t i = 0; i < group_headers_.size(); ++i) {
     const GroupHeader& header = group_headers_[i];
-    if (!header.chip || header.bounds.right <= header.bounds.left) {
+    if (!header.chip) {
+      continue;
+    }
+    if (header.bounds.right <= header.bounds.left) {
+      // Scrolled out of the strip's window: the members still in view
+      // carry the group's underline.
+      if (!header.collapsed &&
+          header.container.right > header.container.left) {
+        paint_underline(header);
+      }
       continue;
     }
     GroupHeader gh = header;
@@ -3173,7 +4178,7 @@ void PhiSidebarView::PaintStripGroups(HDC dc,
           const GroupHeader::MosaicIcon& icon =
               gh.icons[static_cast<size_t>(slot.favicon_index)];
           if (!icon.bgra.empty()) {
-            DrawFavicon(dc, cell, icon.bgra.data(), icon.width, icon.height,
+            DrawFavicon(dc, cell, icon.bgra, icon.width, icon.height,
                         ground);
             continue;
           }
@@ -3260,55 +4265,7 @@ void PhiSidebarView::PaintStripGroups(HDC dc,
       }
     }
     if (!gh.collapsed && gh.container.right > gh.bounds.right) {
-      // The underline (updateGroupBoundaryLayers): an expanded group's
-      // colour runs along the strip's bottom edge from the chip to its last
-      // member and, where the group holds the active tab, climbs over that
-      // tab's outline — one path, so the line and the outline meet without
-      // a seam. The Windows tab has no inverse corners: the outline is its
-      // top-rounded shape, cut off at the strip's bottom edge so its sides
-      // run straight into the line.
-      const int line_y = strip_bottom - 1;
-      const int inset = Scaled(kChipUnderlineInset);
-      const int left = static_cast<int>(gh.container.left) + inset;
-      const int right = static_cast<int>(gh.container.right) - inset;
-      HBRUSH ink = ::CreateSolidBrush(gh.color);
-      // The active member's outline, where it is painted — not while it is
-      // the tab being dragged (the line runs straight under the gap).
-      RECT active_bounds = {};
-      bool active = false;
-      if (gh.contains_active) {
-        for (size_t t = 0; t < tabs_.size(); ++t) {
-          const TabRow& row = tabs_[t];
-          if (row.active && row.group_id == gh.id &&
-              row.bounds.right > row.bounds.left &&
-              static_cast<int>(t) != dragged_tab) {
-            active = true;
-            active_bounds = row.bounds;
-            ::OffsetRect(&active_bounds, tab_dx(t), 0);
-            break;
-          }
-        }
-      }
-      const auto line = [&](int from, int to) {
-        if (to > from) {
-          RECT r = {from, line_y, to, line_y + 1};
-          ::FillRect(dc, &r, ink);
-        }
-      };
-      if (active) {
-        line(left, static_cast<int>(active_bounds.left));
-        line(static_cast<int>(active_bounds.right), right);
-        const int save = ::SaveDC(dc);
-        ::IntersectClipRect(dc, active_bounds.left - 1, active_bounds.top - 1,
-                            active_bounds.right + 1, line_y + 1);
-        RECT outline = active_bounds;
-        outline.bottom += radius;
-        PhiStrokeRoundRectAA(dc, outline, radius, gh.color, 1);
-        ::RestoreDC(dc, save);
-      } else {
-        line(left, right);
-      }
-      ::DeleteObject(ink);
+      paint_underline(gh);
     }
   }
 }

@@ -743,6 +743,24 @@ Done, live against the staging account together with the Mac:
 - Host tests: `sync_engine_test` 27 scenarios (+ status phases incl.
   offline), `sync_status_test`.
 
+- Unanswered is never "gone" (2026-10-13, release review): the Space
+  access's presence queries are tri-state (`LocalPresence`: present /
+  absent / unreachable) and its Space lists are nullopt when unread. A
+  stalled or withdrawn UI hop (`RunOnUiAndWait` withdraws a hop it gave up
+  on, so a late write never lands) makes the engine drop, create and
+  publish nothing for Spaces; the page's marker stays and the next round
+  replays it (outcome `local_read_failed`). A store that cannot open
+  (failed, needs a newer Phi — `space_store_unavailable`) is no stall:
+  Space arrivals park in `pending_apply`, the owned kinds park, and the
+  marker, settings and the other kinds move on. An account switch or the
+  guest-migration window counts as a stall.
+- Files that are there but unreadable (an antivirus or backup lock) read
+  as `kUnreadable`, never "missing": the engine's state, sidecars, marker,
+  Space and owned tables, key_state.json and the PhiStore files keep
+  defaults in memory and refuse every save until a read succeeds; a locked
+  device key is never re-minted. A refusal of the settings entity already
+  on record no longer rewinds the marker every round.
+
 Not yet:
 - The Spaces step of the setup wizard (map local Spaces to account Spaces
   before the first publish); unmapped Spaces are kept separate meanwhile.

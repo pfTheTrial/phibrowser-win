@@ -6,14 +6,51 @@
 
 #include <optional>
 #include <utility>
+#include <vector>
 
 #include "base/json/json_reader.h"
+#include "base/logging.h"
 #include "base/values.h"
 #include "phibrowser-win/client/phi_client_analytics.h"
 #include "phibrowser-win/client/phi_feedback_outbox.h"
+#include "phibrowser-win/client/phi_i18n.h"
 #include "phibrowser-win/client/phi_ids.h"
+#include "phibrowser-win/client/phi_theme.h"
+#include "phibrowser-win/client/phi_toast.h"
 
 namespace phi_client {
+
+namespace {
+
+// The outbox gave up on reports the user already saw "sent" for: say so
+// over whichever Phi window is in front. None in front (the user is in
+// another app) — the log line is all there is.
+void NotifyAbandonedFeedback(int count) {
+  if (count <= 0) {
+    return;
+  }
+  HWND owner = ::GetForegroundWindow();
+  DWORD pid = 0;
+  if (owner) {
+    ::GetWindowThreadProcessId(owner, &pid);
+  }
+  if (!owner || pid != ::GetCurrentProcessId()) {
+    LOG(WARNING) << "[Feedback] " << count
+                 << " abandoned report(s); no window to tell the user in";
+    return;
+  }
+  owner = ::GetAncestor(owner, GA_ROOT);
+  const std::vector<PhiTheme>& themes = PhiBuiltInThemes();
+  if (!owner || themes.empty()) {
+    return;
+  }
+  const PhiPalette palette =
+      PhiResolvePalette(themes.front(), PhiAppearance::kSystem);
+  PhiShowToast(owner, palette, PhiStr("feedback.outbox.abandoned.title"),
+               PhiStr("feedback.outbox.abandoned.message"), 6000);
+}
+
+}  // namespace
 
 PhiAccountAndFeedback::PhiAccountAndFeedback(Host& host) : host_(host) {}
 
@@ -33,6 +70,8 @@ void PhiAccountAndFeedback::Init(phi_framework::PhiFramework* framework,
   // The feedback outbox: reports queued by earlier runs resume uploading
   // once the account is known (the Mac's FeedbackOutboxUploader.start).
   PhiFeedbackOutbox::Get().Start(user_data_dir, &auth_);
+  // An abandoned report rides the same message back to the UI thread.
+  PhiFeedbackOutbox::Get().SetNotify(notify_hwnd, notify_msg);
   SyncFeedbackAccount();
 }
 
@@ -51,6 +90,7 @@ void PhiAccountAndFeedback::OnAuthChanged() {
   profile_.ApplyPending();
   host_.NoteAccountChanged();
   SyncFeedbackAccount();
+  NotifyAbandonedFeedback(PhiFeedbackOutbox::Get().TakeAbandonedJobCount());
 }
 
 void PhiAccountAndFeedback::FlushForShutdown() {
@@ -141,6 +181,10 @@ void PhiAccountAndFeedback::RequestSignOut() {
   // required session is already dead there).
   const bool tenant_session = auth_.signed_in() && !auth_.reauth_required();
   const std::string logout_url = auth_.LogoutUrl();
+  // The account's queued feedback (description, page URL, attachments)
+  // does not outlive its sign-out on a shared machine.
+  const std::string signed_out_user =
+      auth_.signed_in() ? auth_.user().sub : std::string();
   if (auth_.signed_in()) {
     // The Mac's user_logged_out, captured before the session clears (the
     // identity it belongs to is still the sender's).
@@ -155,6 +199,7 @@ void PhiAccountAndFeedback::RequestSignOut() {
   }
   host_.NoteAccountChanged();
   SyncFeedbackAccount();
+  PhiFeedbackOutbox::Get().PurgeAccount(signed_out_user);
 }
 
 void PhiAccountAndFeedback::DiscardSession() {

@@ -16,6 +16,7 @@
 #include "phibrowser-win/client/phi_coordinator.h"
 #include "phibrowser-win/client/phi_credentials.h"
 #include "phibrowser-win/client/phi_features.h"
+#include "phibrowser-win/client/phi_i18n.h"
 
 // The vault verbs. Both prompting ones are marked `prompts` in the registry,
 // so the dispatcher serialises them behind its prompt mutex before either
@@ -64,6 +65,59 @@ std::string FieldOf(const base::DictValue& item, const std::string& key) {
   return value ? *value : std::string();
 }
 
+// Resolves `q` to ONE item for an agent. An ambiguous match is put to the
+// user (PromptCredentialPick) and re-resolved by the id they chose; the
+// agent only ever learns how many items matched — which accounts exist is
+// not its to see before anyone approved anything. False with `*refusal` set.
+bool ResolveForAgent(PhiCoordinator* coordinator,
+                     const CredentialQuery& q,
+                     const std::wstring& detail,
+                     model::CredentialAccessKind kind,
+                     base::DictValue* item,
+                     PhiVerbResult* refusal) {
+  base::DictValue body;
+  if (coordinator->ResolveCredentialItem(q.domain, q.id, q.search, q.username,
+                                         item, &body)) {
+    return true;
+  }
+  const std::string* error = body.FindString("error");
+  if (!error || *error != "ambiguous") {
+    // `body` already carries the wire error the resolver chose.
+    *refusal = PhiVerbResult::FromLegacyDict(std::move(body));
+    return false;
+  }
+  const int matches = body.FindInt("matches").value_or(0);
+  const std::string scope = !q.domain.empty()   ? q.domain
+                            : !q.search.empty() ? q.search
+                                                : q.id;
+  std::string chosen;
+  const base::ListValue* candidates = body.FindList("candidates");
+  const PhiCredentialService::PickResult pick =
+      candidates ? coordinator->credential_service().PromptCredentialPick(
+                       detail, *candidates, kind, scope, &chosen)
+                 : PhiCredentialService::PickResult::kUnavailable;
+  if (pick == PhiCredentialService::PickResult::kChosen) {
+    base::DictValue again;
+    if (coordinator->ResolveCredentialItem(std::string(), chosen,
+                                           std::string(), std::string(), item,
+                                           &again)) {
+      return true;
+    }
+    *refusal = PhiVerbResult::FromLegacyDict(std::move(again));
+    return false;
+  }
+  if (pick == PhiCredentialService::PickResult::kDenied) {
+    *refusal = PhiVerbResult::Fail(PhiErrorCode::kUserDenied);
+    return false;
+  }
+  base::DictValue count_only;
+  count_only.Set("ok", false);
+  count_only.Set("error", "ambiguous");
+  count_only.Set("matches", matches);
+  *refusal = PhiVerbResult::FromLegacyDict(std::move(count_only));
+  return false;
+}
+
 }  // namespace
 
 void PhiControlDispatcher::CaptureCredentialDecision(
@@ -90,7 +144,7 @@ PhiVerbResult PhiControlDispatcher::VerbCredentialsStatus(
     // A release build knows one provider, the vault helper. Without it
     // there is nothing to ask — not the dev store, which only a --dev-hooks
     // build ever loads.
-    if (!coordinator_->vault_helper().running()) {
+    if (!coordinator_->credential_service().HelperUp()) {
       out.Set("status", "not_installed");
       out.Set("ready", false);
       return PhiVerbResult::Ok(std::move(out));
@@ -134,7 +188,7 @@ PhiVerbResult PhiControlDispatcher::VerbCredentialsGetTotp(
   if constexpr (!kPhiDevHooks) {
     // No provider, nothing to refuse about: the same answer every other
     // vault verb gives on a build with no helper.
-    if (!coordinator_->vault_helper().running()) {
+    if (!coordinator_->credential_service().HelperUp()) {
       return PhiVerbResult::Fail("not_installed");
     }
   }
@@ -148,7 +202,7 @@ PhiVerbResult PhiControlDispatcher::VerbCredentialsGetTotp(
 PhiVerbResult PhiControlDispatcher::VerbCredentialsGet(
     const PhiVerbContext& ctx) {
   if constexpr (!kPhiDevHooks) {
-    if (!coordinator_->vault_helper().running()) {
+    if (!coordinator_->credential_service().HelperUp()) {
       return PhiVerbResult::Fail("not_installed");
     }
   }
@@ -160,12 +214,16 @@ PhiVerbResult PhiControlDispatcher::VerbCredentialsGet(
   if (!q.valid) {
     return PhiVerbResult::Fail(PhiErrorCode::kInvalidPayload);
   }
+  const std::string purpose = ctx.params.String("purpose");
+  std::wstring ask = L"An agent is requesting a credential from your Phi vault.";
+  if (!purpose.empty()) {
+    ask += L"\n" + base::UTF8ToWide(purpose);
+  }
   base::DictValue item;
-  base::DictValue body;
-  if (!coordinator_->ResolveCredentialItem(q.domain, q.id, q.search, q.username,
-                                           &item, &body)) {
-    // `body` already carries the wire error the resolver chose.
-    return PhiVerbResult::FromLegacyDict(std::move(body));
+  PhiVerbResult refusal = PhiVerbResult::Fail(PhiErrorCode::kInternal);
+  if (!ResolveForAgent(coordinator_, q, ask, CredentialAccessKind::kReveal,
+                       &item, &refusal)) {
+    return refusal;
   }
   const std::string item_type =
       FieldOf(item, "type").empty() ? "login" : FieldOf(item, "type");
@@ -173,10 +231,29 @@ PhiVerbResult PhiControlDispatcher::VerbCredentialsGet(
                                 ? FieldOf(item, "domain")
                                 : FieldOf(item, "name");
   const std::string username = FieldOf(item, "username");
+  // The requested (or type-default) field set, decided BEFORE the prompt so
+  // the user sees exactly what would leave the vault.
+  std::vector<std::string> fields = ctx.params.StringList("fields");
+  if (fields.empty()) {
+    if (item_type == "note") {
+      fields = {"notes"};
+    } else {
+      fields = {"username", "password", "uri", "domain"};
+    }
+  }
+  std::string field_list;
+  for (const std::string& field : fields) {
+    if (field != "totp") {  // Never served (below), so never named.
+      field_list += (field_list.empty() ? "" : ", ") + field;
+    }
+  }
   std::wstring detail = base::UTF8ToWide(
       "An agent is requesting a credential from your Phi vault:\n\n" + scope +
       (username.empty() ? "" : "  (" + username + ")"));
-  const std::string purpose = ctx.params.String("purpose");
+  detail += L"\n" + PhiStrF("agent.credentialPrompt.typeLine",
+                             {base::UTF8ToWide(item_type)});
+  detail += L"\n" + PhiStrF("agent.credentialPrompt.fieldsLine",
+                             {base::UTF8ToWide(field_list)});
   if (!purpose.empty()) {
     detail += L"\n" + base::UTF8ToWide(purpose);
   }
@@ -191,15 +268,7 @@ PhiVerbResult PhiControlDispatcher::VerbCredentialsGet(
   if (!allowed) {
     return PhiVerbResult::Fail(PhiErrorCode::kUserDenied);
   }
-  // Build the credential by the requested (or type-default) field set.
-  std::vector<std::string> fields = ctx.params.StringList("fields");
-  if (fields.empty()) {
-    if (item_type == "note") {
-      fields = {"notes"};
-    } else {
-      fields = {"username", "password", "uri", "domain"};
-    }
-  }
+  // Build the credential by the field set the prompt named.
   base::DictValue cred;
   cred.Set("type", item_type);
   cred.Set("name", FieldOf(item, "name"));
@@ -220,7 +289,7 @@ PhiVerbResult PhiControlDispatcher::VerbCredentialsGet(
 PhiVerbResult PhiControlDispatcher::VerbCredentialsAutofill(
     const PhiVerbContext& ctx) {
   if constexpr (!kPhiDevHooks) {
-    if (!coordinator_->vault_helper().running()) {
+    if (!coordinator_->credential_service().HelperUp()) {
       return PhiVerbResult::Fail("not_installed");
     }
   }
@@ -245,10 +314,13 @@ PhiVerbResult PhiControlDispatcher::VerbCredentialsAutofill(
     return PhiVerbResult::Fail("page_not_found");
   }
   base::DictValue item;
-  base::DictValue body;
-  if (!coordinator_->ResolveCredentialItem(q.domain, q.id, q.search, q.username,
-                                           &item, &body)) {
-    return PhiVerbResult::FromLegacyDict(std::move(body));
+  PhiVerbResult refusal = PhiVerbResult::Fail(PhiErrorCode::kInternal);
+  if (!ResolveForAgent(
+          coordinator_, q,
+          base::UTF8ToWide("An agent is requesting a credential fill (" +
+                           field + ") on " + page_host + "."),
+          CredentialAccessKind::kFill, &item, &refusal)) {
+    return refusal;
   }
   const std::string item_type =
       FieldOf(item, "type").empty() ? "login" : FieldOf(item, "type");
@@ -286,7 +358,14 @@ PhiVerbResult PhiControlDispatcher::VerbCredentialsAutofill(
   // prompts, says so in capitals, and is approved once only — never
   // through a timed grant, never into one.
   std::string detail_utf8 = "An agent is requesting a credential fill:\n\n" +
-                            scope + "  → " + field + " on " + page_host;
+                            scope + "  → " + field + " on " + page_host + "\n" +
+                            base::WideToUTF8(PhiStrF(
+                                "agent.credentialPrompt.typeLine",
+                                {base::UTF8ToWide(item_type)})) +
+                            "\n" +
+                            base::WideToUTF8(PhiStrF(
+                                "agent.credentialPrompt.fieldsLine",
+                                {base::UTF8ToWide(field)}));
   if (cross_origin) {
     detail_utf8 += "\n\nCROSS-ORIGIN: " + cred_host + " → " + page_host;
   }

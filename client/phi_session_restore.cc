@@ -85,7 +85,9 @@ void PhiSessionRestore::OnColdStartRestorePlan(
   const std::vector<int> eager = ghosts_.EagerWindowIds(LastActiveSpaceId());
   for (int window_id : eager) {
     plan->AddEagerWindow(window_id);
+    awaiting_eager_.insert(window_id);
   }
+  unreported_profiles_ = ghosts_.Profiles();
   *armed = true;
   LOG(INFO) << "[PhiClient] ColdStartRestorePlan: armed space="
             << LastActiveSpaceId() << " eager="
@@ -117,6 +119,9 @@ void PhiSessionRestore::OnColdStartParkedWindows(
   LOG(INFO) << "[PhiClient] ColdStartParked profile=" << reporting_profile
             << " parked=" << (parked_json ? parked_json : "(null)");
   ghosts_.ReplaceFromReceipt(json);
+  if (reporting_profile) {
+    unreported_profiles_.erase(reporting_profile);
+  }
   host_.PushSpaceMenu();
   host_.NoteRestoring();
   if (host_.RestoreSettled()) {
@@ -137,6 +142,7 @@ void PhiSessionRestore::OnSessionRestoreSettled(const char* receipt_json) {
   last_receipt_ = receipt_json ? receipt_json : "";
   // REPLACE, never merge — the receipt describes the whole ghost store.
   ghosts_.ReplaceFromReceipt(last_receipt_);
+  unreported_profiles_.clear();
   host_.PushSpaceMenu();
   // The receipt's verdict names the settle reason: an armed eager set that
   // matched nothing parks the whole session with no window up, and a replay
@@ -152,6 +158,12 @@ void PhiSessionRestore::OnSessionRestoreSettled(const char* receipt_json) {
 }
 
 void PhiSessionRestore::Settle(const char* reason) {
+  // An eager window that has not come by now is not coming (the session
+  // file no longer held it), and a profile that has not reported its
+  // parked windows replays nothing more this launch: their Spaces' primary
+  // rows stop being guarded (PrimaryAwaited).
+  awaiting_eager_.clear();
+  unreported_profiles_.clear();
   // Parked windows no Space claims (the Space was deleted while its window
   // sat parked) would be replayed as loose windows by the next unfiltered
   // restore; drop them once the receipt is in, whichever path brought it.
@@ -178,8 +190,33 @@ void PhiSessionRestore::NoteUserWindowUp() {
 }
 
 const std::string* PhiSessionRestore::SpaceForWindowId(
-    BrowserId window_id) const {
-  return ghosts_.SpaceForWindowId(window_id);
+    BrowserId window_id,
+    bool* secondary) const {
+  return ghosts_.SpaceForWindowId(window_id, secondary);
+}
+
+std::optional<PhiGhostSpaces::Remembered> PhiSessionRestore::PrimaryWindow(
+    const std::string& space_id) const {
+  return ghosts_.PrimaryWindow(space_id);
+}
+
+bool PhiSessionRestore::PrimaryAwaited(const std::string& space_id) const {
+  const std::optional<PhiGhostSpaces::Remembered> primary =
+      ghosts_.PrimaryWindow(space_id);
+  if (!primary || ghosts_.PrimaryNotedThisRun(space_id)) {
+    return false;  // A row of this run names a window of this run.
+  }
+  return awaiting_eager_.count(primary->window_id.value) > 0 ||
+         unreported_profiles_.count(primary->profile) > 0;
+}
+
+bool PhiSessionRestore::HasSecondaryWindow(const std::string& space_id,
+                                           BrowserId window_id) const {
+  return ghosts_.HasSecondaryWindow(space_id, window_id);
+}
+
+void PhiSessionRestore::NoteRestoredWindowArrived(BrowserId restored_from) {
+  awaiting_eager_.erase(restored_from.value);
 }
 
 const PhiGhostSpaces::Remembered* PhiSessionRestore::Parked(
@@ -193,12 +230,28 @@ void PhiSessionRestore::NoteLiveWindow(const std::string& space_id,
   ghosts_.NoteLiveWindow(space_id, profile, window_id);
 }
 
+void PhiSessionRestore::NoteSecondaryWindow(const std::string& space_id,
+                                            const std::string& profile,
+                                            BrowserId window_id) {
+  ghosts_.NoteSecondaryWindow(space_id, profile, window_id);
+}
+
+void PhiSessionRestore::ForgetSecondaryWindow(const std::string& space_id,
+                                              BrowserId window_id) {
+  ghosts_.ForgetSecondaryWindow(space_id, window_id);
+}
+
 void PhiSessionRestore::ClearParked(const std::string& space_id) {
   ghosts_.ClearParked(space_id);
 }
 
 void PhiSessionRestore::ForgetSpace(const std::string& space_id) {
   const bool was_parked = ghosts_.Parked(space_id) != nullptr;
+  // Its parked secondary windows go with it, like its primary.
+  for (const PhiGhostSpaces::Stray& stray : ghosts_.TakeStrays(space_id)) {
+    framework_.DropGhostWindow(stray.window.profile.c_str(),
+                               static_cast<int>(stray.window.window_id.value));
+  }
   const PhiGhostSpaces::Remembered ghost = ghosts_.Forget(space_id);
   if (was_parked && ghost.window_id.valid()) {
     framework_.DropGhostWindow(ghost.profile.c_str(),
@@ -207,6 +260,29 @@ void PhiSessionRestore::ForgetSpace(const std::string& space_id) {
 }
 
 void PhiSessionRestore::DropOrphanGhosts() {
+  // Only windows NO row claims are dropped: one a secondary row claims
+  // holds the tabs of a Space that still exists. It cannot park behind the
+  // Space (the primary does), so it is re-hosted as the shell of its own
+  // it was — announced with its previous-session id, AttachRestoredGhost
+  // finds the row and hosts it on its Space. Taken first: a
+  // materialization may announce inside the call.
+  for (const PhiGhostSpaces::Stray& stray : ghosts_.TakeStrays()) {
+    const int window_id = static_cast<int>(stray.window.window_id.value);
+    if (!host_.HasSpace(stray.space_id)) {
+      framework_.DropGhostWindow(stray.window.profile.c_str(), window_id);
+      continue;
+    }
+    const int outcome = framework_.MaterializeGhostWindow(
+        stray.window.profile.c_str(), window_id);
+    LOG(INFO) << "[PhiClient] re-hosting parked window " << window_id
+              << " of Space " << stray.space_id << " outcome=" << outcome;
+    if (outcome == 2) {
+      // No such ghost: nothing will ever bring it back.
+      ghosts_.ForgetSecondaryWindow(stray.space_id, stray.window.window_id);
+    }
+    // 1 (refused for now) leaves it parked: the next receipt offers it
+    // again. Never dropped.
+  }
   for (const PhiGhostSpaces::Remembered& orphan : ghosts_.Orphans()) {
     framework_.DropGhostWindow(orphan.profile.c_str(),
                                static_cast<int>(orphan.window_id.value));

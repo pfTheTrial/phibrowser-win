@@ -29,8 +29,11 @@ class PhiSettingsHost;
 // Rows drag to reorder (the order is the routing tiebreak). Nothing is
 // written until Save: the whole list replaces the stored rules at once
 // (PhiUrlRouter::ReplaceRules, the Mac's setAllRules), and a save whose
-// rows equal what was loaded is a no-op; Cancel, Escape and the close
-// button discard.
+// rows equal what was loaded is a no-op. A row Save cannot store (no
+// usable pattern, or an auto-route rule whose Space is gone) is outlined
+// and the window stays open with a note instead of dropping it silently.
+// Cancel, Escape and the close button discard — after asking, when there
+// are unsaved edits.
 //
 // App-global like Settings and Feedback: one window, re-shown by a second
 // request. A PhiSecondaryWindow on the shared popup chrome; the rule list
@@ -56,6 +59,7 @@ class PhiUrlRulesWindow : public PhiSecondaryWindow {
     std::string value;      // The display value the field shows.
     std::string target_id;  // A Space id, or an action target.
     bool ask = false;       // "Ask every time" (target_id is the default).
+    bool invalid = false;   // The last Save could not store it (outlined).
   };
 
   // What the list panel reads and drives (the window owns the rows).
@@ -68,6 +72,8 @@ class PhiUrlRulesWindow : public PhiSecondaryWindow {
   void RemoveRow(int row_index);
   // A row's field changed: keep the model in step so a reorder survives.
   void SetRowValue(int row_id, std::string value);
+  // Any row the last Save refused (the footer shows its note).
+  bool HasInvalidRows() const;
   // The destination picker's label for a row.
   std::wstring TargetLabel(const Row& row) const;
   const wchar_t* MatchTypeLabel(UrlRuleMatchType type) const;
@@ -84,6 +90,11 @@ class PhiUrlRulesWindow : public PhiSecondaryWindow {
   void Load();
   void AddBlankRow();
   void Save();
+  // Cancel / Escape / close: true when the window may go — nothing unsaved,
+  // or the user chose Discard.
+  bool ConfirmDiscard();
+  // The edits moved a row: it is no longer the one Save refused.
+  void ClearInvalid(Row* row);
   std::string Fingerprint() const;
   // Destinations a rule may target, in picker order: every user Space,
   // then Incognito, then Kiosk (the Mac's ruleTargetSpaces).

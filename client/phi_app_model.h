@@ -229,9 +229,11 @@ struct PhiSettings {
   // peer, so there is nothing meaningful to ask the user about it. Off,
   // the first connection raises a prompt that offers to turn it on.
   bool allow_agent_control = false;
-  // The Mac's PhiAgentUserSpaceOperationsEnabled, and its default: on, but
-  // behind the master switch above.
-  bool allow_agent_user_spaces = true;
+  // The Mac's PhiAgentUserSpaceOperationsEnabled, behind the master switch
+  // above. OFF by default on Windows (the Mac defaults it on): with no
+  // program identity to judge, admitted agents start in their own Spaces
+  // and the user opts into the rest in Settings ▸ Developer.
+  bool allow_agent_user_spaces = false;
   // View ▸ Agent Autoview (the Mac's AgentSpaces.autoViewEnabled): while
   // on, the focused window follows the operating agent — a running,
   // agent-owned Space is surfaced when the user is not already watching

@@ -101,8 +101,8 @@ bookmarks, rewriting their rule table — confirm first; for additive
 single-item asks ("pin this", "bookmark that") just do it.
 
 This whole surface (and the `{space}` tab-layout path) sits behind a user
-permission: Settings ▸ Developer ▸ "Allow agents to operate your Spaces".
-When it's off, these helpers fail with `user_space_operations_disabled` —
+permission: Settings ▸ Developer ▸ "Allow agents to operate your Spaces"
+(off by default on Windows). When it's off, these helpers fail with `user_space_operations_disabled` —
 don't retry or work around it; tell the user to flip the toggle if they want
 the operation, and continue inside the agent Space otherwise. Agent-Space
 work is never affected.

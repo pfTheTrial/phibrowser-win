@@ -137,8 +137,11 @@ bool EnsureState() {
     return false;
   }
   // 96 DPI: one DIP == one pixel, so callers pass physical pixel sizes.
+  // SOFTWARE, as for the shape target: these draws are an icon or a
+  // thumbnail into a GDI DC, where a GPU target pays a submit and a readback
+  // per call and puts different pixels on different machines.
   const D2D1_RENDER_TARGET_PROPERTIES properties = D2D1::RenderTargetProperties(
-      D2D1_RENDER_TARGET_TYPE_DEFAULT,
+      D2D1_RENDER_TARGET_TYPE_SOFTWARE,
       D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,
                         D2D1_ALPHA_MODE_IGNORE),
       96.0f, 96.0f, D2D1_RENDER_TARGET_USAGE_GDI_COMPATIBLE);
@@ -384,8 +387,13 @@ namespace {
 // inside its corner — pulled inside the DC's clip box first: a pixel outside
 // the clip reads CLR_INVALID (a pip half-hidden by the Spaces strip's
 // viewport clip would otherwise clear to white).
-COLORREF SampleBackground(HDC dc, const RECT& rect) {
+// `centre` samples the middle instead — for a glyph drawn over a rounded
+// pill, whose corner pixel is the ground OUTSIDE the pill.
+COLORREF SampleBackground(HDC dc, const RECT& rect, bool centre = false) {
   POINT sample = {rect.left + 1, rect.top + 1};
+  if (centre) {
+    sample = {(rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2};
+  }
   RECT clip = {};
   if (::GetClipBox(dc, &clip) > NULLREGION && clip.right > clip.left &&
       clip.bottom > clip.top) {
@@ -394,6 +402,15 @@ COLORREF SampleBackground(HDC dc, const RECT& rect) {
   }
   return ::GetPixel(dc, sample.x, sample.y);
 }
+
+// Defined with the shapes below; the colour text borrows its scratch blend.
+template <typename Draw>
+bool BlendD2DShape(HDC dc,
+                   const RECT& dest,
+                   int origin_x,
+                   int origin_y,
+                   COLORREF ink,
+                   Draw draw);
 
 }  // namespace
 
@@ -411,9 +428,32 @@ bool PhiDrawColorText(HDC dc,
     return false;
   }
   DWriteState& state = State();
-  // D2D repaints the whole bound rect on EndDraw, so start from what is
-  // already painted beneath (the caller's pill or ground fill).
-  const COLORREF background = SampleBackground(dc, rect);
+  const float width = static_cast<float>(rect.right - rect.left);
+  const float height = static_cast<float>(rect.bottom - rect.top);
+  // Drawn ink-centred in the rect, not advance-centred (see above).
+  const InkMetrics& metrics = MetricsFor(text, pixel_size);
+  const D2D1_RECT_F bounds =
+      D2D1::RectF(metrics.dx, metrics.dy, width + metrics.dx,
+                  height + metrics.dy);
+  // First choice: over a transparent clear on the shape target, blended onto
+  // the DC like any shape — so a rounded hover or selection fill under the
+  // glyph survives. Grayscale: ClearType needs an opaque ground to resolve
+  // against, and a premultiplied target has none.
+  if (BlendD2DShape(dc, rect, 0, 0, ink,
+                    [&](ID2D1RenderTarget* target, ID2D1Brush* brush) {
+                      target->SetTextAntialiasMode(
+                          D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+                      target->DrawTextW(
+                          text.c_str(), static_cast<UINT32>(text.size()),
+                          format, bounds, brush,
+                          D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT);
+                    })) {
+    return true;
+  }
+  // No scratch to be had (an outsized rect): bound straight to the DC. D2D
+  // repaints the whole bound rect on EndDraw, so start from what is already
+  // painted beneath — sampled at the centre, inside the caller's pill.
+  const COLORREF background = SampleBackground(dc, rect, /*centre=*/true);
   if (FAILED(state.target->BindDC(dc, &rect))) {
     return false;
   }
@@ -422,13 +462,6 @@ bool PhiDrawColorText(HDC dc,
       ToColor(background == CLR_INVALID ? RGB(0xFF, 0xFF, 0xFF)
                                         : background));
   state.text_brush->SetColor(ToColor(ink));
-  const float width = static_cast<float>(rect.right - rect.left);
-  const float height = static_cast<float>(rect.bottom - rect.top);
-  // Drawn ink-centred in the rect, not advance-centred (see above).
-  const InkMetrics& metrics = MetricsFor(text, pixel_size);
-  const D2D1_RECT_F bounds =
-      D2D1::RectF(metrics.dx, metrics.dy, width + metrics.dx,
-                  height + metrics.dy);
   // ENABLE_COLOR_FONT is the whole point: COLR glyph layers render in
   // colour; non-colour glyphs take the ink brush.
   state.target->DrawTextW(text.c_str(), static_cast<UINT32>(text.size()),

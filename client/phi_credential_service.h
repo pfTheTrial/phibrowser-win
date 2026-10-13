@@ -7,6 +7,7 @@
 
 #include <windows.h>
 
+#include <deque>
 #include <functional>
 #include <map>
 #include <optional>
@@ -43,8 +44,8 @@ class PhiCredentialService {
   class Host {
    public:
     virtual ~Host() = default;
-    // Any shell window to own the approval dialog, or null (the degraded
-    // MessageBox path, which offers allow-ONCE only).
+    // Any shell window to own the approval dialog, or null (the request is
+    // then refused: there is no hardened prompt to ask in).
     virtual HWND CredentialPromptOwner() = 0;
     // A grant or audit row changed: the Settings pane re-reads them.
     virtual void NoteCredentialConsentChanged() = 0;
@@ -73,7 +74,11 @@ class PhiCredentialService {
   const PhiVaultHelper& vault_helper() const { return vault_helper_; }
   const PhiCredentialVault& credentials() const { return credentials_; }
   // The helper's vault status wire string, or empty when it is not running.
+  // Reused for a couple of seconds; asked with a short timeout.
   std::string HelperStatus();
+  // True when the helper is running — respawning it first when an earlier
+  // call stopped it (PhiVaultHelper::Restart).
+  bool HelperUp();
 
   // Resolves a query through whichever provider is active (helper first, dev
   // vault otherwise) to exactly ONE item. True fills `item` with the vault
@@ -110,6 +115,21 @@ class PhiCredentialService {
                                 bool once_only,
                                 Decision* decision = nullptr);
 
+  // An ambiguous query settled by the USER, never the agent: a chooser
+  // over the matching items (`candidates`, the non-secret rows the
+  // resolver returned), with "none" preselected and hardware-confirmed
+  // like the approval prompt. kChosen sets `credential_id`; kDenied is the
+  // user choosing none (counted as a denial) or prompts being paused;
+  // kUnavailable means no prompt could be shown (no window, or a candidate
+  // without an id to re-query by). The candidates never reach the agent.
+  // `scope` names the request in the audit.
+  enum class PickResult { kChosen, kDenied, kUnavailable };
+  PickResult PromptCredentialPick(const std::wstring& detail,
+                            const base::ListValue& candidates,
+                            model::CredentialAccessKind kind,
+                            const std::string& scope,
+                            std::string* credential_id);
+
   // Appends one line to the credential audit trail (newest first, capped)
   // and persists it — every approval decision is recorded, allowed or not.
   void AppendCredentialAudit(const std::string& scope,
@@ -129,6 +149,13 @@ class PhiCredentialService {
                                               const std::string& search,
                                               const std::string& username,
                                               std::string* error);
+  // The prompt-spam brake. InDenialBackoff answers (and audits) a request
+  // while prompts are paused; NoteDenial records one denial and pauses
+  // prompts after kDenialBurst of them inside kDenialWindowMs, whatever
+  // items they named.
+  bool InDenialBackoff(const std::string& scope,
+                       model::CredentialAccessKind kind);
+  void NoteDenial(const std::string& scope, model::CredentialAccessKind kind);
   // True while a live TIMED grant covers `grant_key`. The kind is not
   // consulted: fill and reveal are one exposure (model::CredentialAccessKind).
   bool GrantCovers(const std::string& grant_key) const;
@@ -155,6 +182,12 @@ class PhiCredentialService {
   // Denial memory: grant key -> tick until which the request is refused
   // without a prompt (5 minutes), so a denied ask cannot re-prompt at once.
   std::map<std::string, ULONGLONG> denials_;
+  // The brake's recent denial ticks and the end of the current pause.
+  std::deque<ULONGLONG> recent_denials_;
+  ULONGLONG backoff_until_tick_ = 0;
+  // HelperStatus's last answer and when it was read.
+  std::string cached_status_;
+  ULONGLONG cached_status_tick_ = 0;
 };
 
 }  // namespace phi_client

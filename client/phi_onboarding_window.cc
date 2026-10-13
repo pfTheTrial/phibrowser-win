@@ -65,6 +65,16 @@ constexpr int kLayoutPreviewHeight = 81;
 constexpr int kStepMarker = 24;
 constexpr int kStepGap = 18;
 constexpr int kGuideHeight = 260;
+// A page taller than the work area (1366x768 at 100 %, 1080p at 150 %)
+// splits here: everything above scrolls, the footer below stays anchored to
+// the window's bottom edge so the primary button never sits under the
+// taskbar. The Next pill's top less 16 of air; the Login page's footer
+// starts above its sign-in pill instead (its guest link and retry note
+// sit below that).
+constexpr int kFooterTop = kHeight - kButtonBottom - kPillHeight - 16;
+constexpr int kLoginFooterTop = kHeight - 91 - 22 - 12 - kPillHeight - 16;
+// One wheel notch / arrow key of scroll.
+constexpr int kScrollStep = 48;
 constexpr UINT kMsgNavigate = WM_APP + 0x3B1;
 constexpr UINT_PTR kIdNameField = 1;
 // The Mac's link gradient #9452F9 -> #E8C0FF, sampled at its middle.
@@ -408,6 +418,7 @@ bool PhiOnboardingWindow::Open(Page page) {
 void PhiOnboardingWindow::ShowPage(Page page) {
   page_ = page;
   pressed_ = -1;
+  scroll_ = 0;
   oobe_.Present(StepFor(page), Uptime());
   if (page == Page::kSetName) {
     std::string name;
@@ -437,9 +448,64 @@ void PhiOnboardingWindow::ShowPage(Page page) {
 }
 
 RECT PhiOnboardingWindow::ContentDip(int x, int y, int w, int h) const {
-  const RECT content = ContentRect();
+  // Footer rows ride the bottom-anchored page, everything else the
+  // scrolled one; on a page that fits the two are the same rect.
+  const RECT content = PageRect(/*footer=*/y >= FooterTopDip());
   return RECT{content.left + Scaled(x), content.top + Scaled(y),
               content.left + Scaled(x + w), content.top + Scaled(y + h)};
+}
+
+int PhiOnboardingWindow::FooterTopDip() const {
+  return page_ == Page::kLogin ? kLoginFooterTop : kFooterTop;
+}
+
+int PhiOnboardingWindow::MaxScroll() const {
+  if (page_ == Page::kSigningIn) {
+    return 0;  // The hosted login fills the window and scrolls itself.
+  }
+  const RECT content = ContentRect();
+  const int short_by = Scaled(kHeight) - (content.bottom - content.top);
+  // A pixel or two is the caption's rounding, not a short screen.
+  return short_by > 2 ? short_by : 0;
+}
+
+RECT PhiOnboardingWindow::PageRect(bool footer) const {
+  const RECT content = ContentRect();
+  const int top = footer && MaxScroll() > 0
+                      ? content.bottom - Scaled(kHeight)
+                      : content.top - scroll_;
+  return RECT{content.left, top, content.right, top + Scaled(kHeight)};
+}
+
+int PhiOnboardingWindow::FooterSplit() const {
+  return PageRect(/*footer=*/true).top + Scaled(FooterTopDip());
+}
+
+void PhiOnboardingWindow::ScrollTo(int px) {
+  const int next = std::clamp(px, 0, MaxScroll());
+  if (next == scroll_) {
+    return;
+  }
+  scroll_ = next;
+  Layout();
+  if (name_field_ && page_ == Page::kSetName) {
+    EnsureNameField();  // Re-seats the EDIT with the page.
+  }
+  Invalidate();
+}
+
+void PhiOnboardingWindow::Refit() {
+  // The design size at this DPI, cut down to the work area again.
+  const SIZE outer = chrome().OuterSize(kWidth, kHeight);
+  ::SetWindowPos(hwnd(), nullptr, 0, 0, outer.cx, outer.cy,
+                 SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+  FitToWorkArea();
+  Layout();
+  if (name_field_ && page_ == Page::kSetName) {
+    EnsureNameField();
+  }
+  PlaceEmbeddedBrowser();
+  Invalidate();
 }
 
 void PhiOnboardingWindow::AddControl(Control control, int key,
@@ -452,7 +518,24 @@ void PhiOnboardingWindow::AddControl(Control control, int key,
   hit.bounds = bounds;
   hit.enabled = enabled;
   hits_.push_back(hit);
-  AddHit(bounds, static_cast<int>(hits_.size()) - 1, std::move(name), role,
+  // On a split page the pointer reaches only the part of a control showing
+  // in its own region: a row scrolled under the footer is not clickable
+  // through the pill. The footer's controls are the ones ContentDip
+  // anchors (their tops all sit below FooterTopDip()).
+  RECT reach = bounds;
+  if (MaxScroll() > 0) {
+    const RECT content = ContentRect();
+    const int split = FooterSplit();
+    const bool footer = control == Control::kNext ||
+                        control == Control::kSignIn ||
+                        control == Control::kContinueAsGuest;
+    const RECT region = {content.left, footer ? split : content.top,
+                         content.right, footer ? content.bottom : split};
+    if (!::IntersectRect(&reach, &bounds, &region)) {
+      reach = RECT{};
+    }
+  }
+  AddHit(reach, static_cast<int>(hits_.size()) - 1, std::move(name), role,
          selected, enabled);
 }
 
@@ -470,6 +553,7 @@ const PhiOnboardingWindow::Hit* PhiOnboardingWindow::HitOf(int index) const {
 void PhiOnboardingWindow::Layout() {
   ClearHits();
   hits_.clear();
+  scroll_ = std::clamp(scroll_, 0, MaxScroll());
   const bool guest = prefs_->GuestModeEnabled();
   switch (page_) {
     case Page::kLogin: {
@@ -707,6 +791,48 @@ PhiPopupColors PhiOnboardingWindow::QueryColors() const {
 void PhiOnboardingWindow::Paint(HDC dc, const RECT&) {
   const RECT content = ContentRect();
   ::SetBkMode(dc, TRANSPARENT);
+  if (MaxScroll() == 0) {
+    PaintPage(dc, page_ == Page::kSigningIn ? content : PageRect(false));
+    PaintFooterControls(dc);
+  } else {
+    // Taller than the work area: the page above the split scrolls in its
+    // viewport; below it the footer — the page's own bottom, anchored —
+    // keeps the primary button on screen.
+    const int split = FooterSplit();
+    int saved = ::SaveDC(dc);
+    ::IntersectClipRect(dc, content.left, content.top, content.right, split);
+    PaintPage(dc, PageRect(/*footer=*/false));
+    ::RestoreDC(dc, saved);
+    saved = ::SaveDC(dc);
+    ::IntersectClipRect(dc, content.left, split, content.right, content.bottom);
+    PaintGround(dc, PageRect(/*footer=*/true));
+    PaintFooterControls(dc);
+    ::RestoreDC(dc, saved);
+    if (scroll_ < MaxScroll()) {
+      // More page under the footer: its edge, and a thin scroll thumb.
+      RECT edge = {content.left, split, content.right,
+                   split + std::max(1, Scaled(1))};
+      HBRUSH brush = ::CreateSolidBrush(RGB(0x44, 0x44, 0x44));
+      ::FillRect(dc, &edge, brush);
+      ::DeleteObject(brush);
+    }
+    const int view_h = split - content.top;
+    const int total = view_h + MaxScroll();
+    const int thumb_h =
+        std::max(Scaled(24), static_cast<int>(static_cast<int64_t>(view_h) *
+                                              view_h / std::max(1, total)));
+    const int thumb_top =
+        content.top + static_cast<int>(static_cast<int64_t>(view_h - thumb_h) *
+                                       scroll_ / MaxScroll());
+    const RECT thumb = {content.right - Scaled(6), thumb_top + Scaled(2),
+                        content.right - Scaled(3),
+                        thumb_top + thumb_h - Scaled(2)};
+    PhiFillCapsuleAA(dc, thumb, RGB(0x8A, 0x8A, 0x8A));
+  }
+  PaintBand(dc);
+}
+
+void PhiOnboardingWindow::PaintPage(HDC dc, const RECT& content) {
   switch (page_) {
     case Page::kLogin:
       PaintLogin(dc, content);
@@ -730,7 +856,75 @@ void PhiOnboardingWindow::Paint(HDC dc, const RECT&) {
       PaintNextSteps(dc, content);
       break;
   }
-  PaintBand(dc);
+}
+
+void PhiOnboardingWindow::PaintGround(HDC dc, const RECT& content) {
+  switch (page_) {
+    case Page::kLogin:
+      PaintImage(dc, content,
+                 ResourceImage(L"login-bg.jpg", content.right - content.left,
+                               content.bottom - content.top),
+                 false);
+      break;
+    case Page::kWelcome:
+      conch_.Paint(dc, content);
+      break;
+    case Page::kSigningIn:
+      break;
+    default:
+      PaintDarkGround(dc, content);
+      break;
+  }
+}
+
+void PhiOnboardingWindow::PaintFooterControls(HDC dc) {
+  // The page's bottom row — painted after the page, or alone in the
+  // anchored footer when the page is split.
+  for (size_t i = 0; i < hits_.size(); ++i) {
+    const Hit& hit = hits_[i];
+    const bool hot = hovered() == static_cast<int>(i);
+    if (hit.control == Control::kSignIn) {
+      PaintPillButton(dc, hit.bounds, PhiStr("oobe.login.loginButton"),
+                      hit.enabled, hot, /*gradient_border=*/true,
+                      RGB(255, 255, 255), RGB(255, 255, 255), RGB(0, 0, 0));
+    } else if (hit.control == Control::kContinueAsGuest) {
+      HGDIOBJ old_font = ::SelectObject(dc, fonts().Get(13, FW_NORMAL));
+      ::SetTextColor(dc, hot ? RGB(0xFF, 0xFF, 0xFF) : RGB(0xA6, 0xA6, 0xA6));
+      RECT rc = hit.bounds;
+      PhiDrawTextAA(dc, PhiStr("oobe.login.continueAsGuestButton"), -1, &rc,
+                    DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+      ::SelectObject(dc, old_font);
+    } else if (hit.control == Control::kNext && page_ == Page::kWelcome) {
+      const COLORREF accent = Accent();
+      PaintPillButton(dc, hit.bounds, PhiStr("oobe.welcome.nextButton"),
+                      hit.enabled, hot, false, accent, accent, Tint());
+    } else if (hit.control == Control::kNext) {
+      const char* label = page_ == Page::kGuestPrivacy
+                              ? "oobe.guestPrivacy.beginButton"
+                          : page_ == Page::kNextSteps
+                              ? "oobe.nextSteps.beginButton"
+                              : "oobe.navigation.continueButton";
+      PaintPillButton(dc, hit.bounds, PhiStr(label), hit.enabled, hot, true,
+                      RGB(255, 255, 255), RGB(255, 255, 255), RGB(0, 0, 0));
+    }
+  }
+  if (page_ != Page::kLogin) {
+    return;
+  }
+  // A failed attempt's note, under the guest link (the Mac's retry hint).
+  const std::string error = account_->AccountLastError();
+  if (!error.empty() && !account_->AccountSigningIn()) {
+    const char* key = error == "account_mismatch"
+                          ? "settings.account.error.accountMismatch"
+                      : error == "refused" ? "settings.account.error.refused"
+                                           : "settings.account.error.incomplete";
+    HGDIOBJ old_font = ::SelectObject(dc, fonts().Get(13, FW_NORMAL));
+    ::SetTextColor(dc, kLinkInk);
+    RECT rc = ContentDip(40, kHeight - 60, kWidth - 80, 22);
+    PhiDrawTextAA(dc, PhiStr(key), -1, &rc,
+                  DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    ::SelectObject(dc, old_font);
+  }
 }
 
 void PhiOnboardingWindow::PaintDarkGround(HDC dc, const RECT& content) {
@@ -934,36 +1128,8 @@ void PhiOnboardingWindow::PaintLogin(HDC dc, const RECT& content) {
                 content.left + (w - brand_w) / 2 + brand_w,
                 content.top + Scaled(91) + brand_h};
   PaintImage(dc, brand, ResourceImage(L"brand.png", brand_w, brand_h), true);
-  for (size_t i = 0; i < hits_.size(); ++i) {
-    const Hit& hit = hits_[i];
-    const bool hot = hovered() == static_cast<int>(i);
-    if (hit.control == Control::kSignIn) {
-      PaintPillButton(dc, hit.bounds, PhiStr("oobe.login.loginButton"),
-                      hit.enabled, hot, /*gradient_border=*/true,
-                      RGB(255, 255, 255), RGB(255, 255, 255), RGB(0, 0, 0));
-    } else if (hit.control == Control::kContinueAsGuest) {
-      HGDIOBJ old_font = ::SelectObject(dc, fonts().Get(13, FW_NORMAL));
-      ::SetTextColor(dc, hot ? RGB(0xFF, 0xFF, 0xFF) : RGB(0xA6, 0xA6, 0xA6));
-      RECT rc = hit.bounds;
-      PhiDrawTextAA(dc, PhiStr("oobe.login.continueAsGuestButton"), -1, &rc,
-                    DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-      ::SelectObject(dc, old_font);
-    }
-  }
-  // A failed attempt's note, under the guest link (the Mac's retry hint).
-  const std::string error = account_->AccountLastError();
-  if (!error.empty() && !account_->AccountSigningIn()) {
-    const char* key = error == "account_mismatch"
-                          ? "settings.account.error.accountMismatch"
-                      : error == "refused" ? "settings.account.error.refused"
-                                           : "settings.account.error.incomplete";
-    HGDIOBJ old_font = ::SelectObject(dc, fonts().Get(13, FW_NORMAL));
-    ::SetTextColor(dc, kLinkInk);
-    RECT rc = ContentDip(40, kHeight - 60, kWidth - 80, 22);
-    PhiDrawTextAA(dc, PhiStr(key), -1, &rc,
-                  DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-    ::SelectObject(dc, old_font);
-  }
+  // The sign-in pill, the guest link and the retry note are the footer
+  // (PaintFooterControls).
 }
 
 void PhiOnboardingWindow::PaintSigningIn(HDC dc, const RECT& content) {
@@ -1024,9 +1190,7 @@ void PhiOnboardingWindow::PaintGuestPrivacy(HDC dc, const RECT& content) {
   HBRUSH line = ::CreateSolidBrush(RGB(0x3A, 0x3A, 0x3A));
   ::FillRect(dc, &divider, line);
   ::DeleteObject(line);
-  for (size_t i = 0; i < hits_.size(); ++i) {
-    const Hit& hit = hits_[i];
-    const bool hot = hovered() == static_cast<int>(i);
+  for (const Hit& hit : hits_) {
     if (hit.control == Control::kLegalCheck) {
       PaintCheckRow(dc, hit.bounds, legal_checked_,
                     PhiStr("oobe.guestPrivacy.legalAgreement"),
@@ -1036,10 +1200,6 @@ void PhiOnboardingWindow::PaintGuestPrivacy(HDC dc, const RECT& content) {
       PaintCheckRow(dc, hit.bounds, metrics_checked_,
                     PhiStr("oobe.guestPrivacy.metricsConsent"), std::wstring(),
                     std::wstring());
-    } else if (hit.control == Control::kNext) {
-      PaintPillButton(dc, hit.bounds, PhiStr("oobe.guestPrivacy.beginButton"),
-                      hit.enabled, hot, true, RGB(255, 255, 255),
-                      RGB(255, 255, 255), RGB(0, 0, 0));
     }
   }
 }
@@ -1093,9 +1253,7 @@ void PhiOnboardingWindow::PaintNextSteps(HDC dc, const RECT& content) {
   HBRUSH line = ::CreateSolidBrush(RGB(0x3A, 0x3A, 0x3A));
   ::FillRect(dc, &divider, line);
   ::DeleteObject(line);
-  for (size_t i = 0; i < hits_.size(); ++i) {
-    const Hit& hit = hits_[i];
-    const bool hot = hovered() == static_cast<int>(i);
+  for (const Hit& hit : hits_) {
     if (hit.control == Control::kLegalCheck) {
       PaintCheckRow(dc, hit.bounds, legal_checked_,
                     PhiStr("oobe.nextSteps.legalAgreement"),
@@ -1105,10 +1263,6 @@ void PhiOnboardingWindow::PaintNextSteps(HDC dc, const RECT& content) {
       PaintCheckRow(dc, hit.bounds, metrics_checked_,
                     PhiStr("oobe.nextSteps.metricsConsent"), std::wstring(),
                     std::wstring());
-    } else if (hit.control == Control::kNext) {
-      PaintPillButton(dc, hit.bounds, PhiStr("oobe.nextSteps.beginButton"),
-                      hit.enabled, hot, true, RGB(255, 255, 255),
-                      RGB(255, 255, 255), RGB(0, 0, 0));
     }
   }
 }
@@ -1128,14 +1282,6 @@ void PhiOnboardingWindow::PaintSetName(HDC dc, const RECT& content) {
     PhiDrawTextAA(dc, name_error_.c_str(), -1, &rc,
                   DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
     ::SelectObject(dc, old_font);
-  }
-  for (size_t i = 0; i < hits_.size(); ++i) {
-    const Hit& hit = hits_[i];
-    if (hit.control == Control::kNext) {
-      PaintPillButton(dc, hit.bounds, PhiStr("oobe.navigation.continueButton"),
-                      hit.enabled, hovered() == static_cast<int>(i), true,
-                      RGB(255, 255, 255), RGB(255, 255, 255), RGB(0, 0, 0));
-    }
   }
 }
 
@@ -1171,10 +1317,6 @@ void PhiOnboardingWindow::PaintWelcome(HDC dc, const RECT& content) {
                            pure ? RGB(0, 0, 0) : theme.light.overlay,
                            std::max(2, Scaled(2)));
       }
-    } else if (hit.control == Control::kNext) {
-      PaintPillButton(dc, hit.bounds, PhiStr("oobe.welcome.nextButton"),
-                      hit.enabled, hovered() == static_cast<int>(i), false,
-                      accent, accent, Tint());
     }
   }
 }
@@ -1229,10 +1371,6 @@ void PhiOnboardingWindow::PaintLayout(HDC dc, const RECT& content) {
       PaintImage(dc, preview, ResourceImage(file, pw, ph), false);
       PhiStrokeRoundRectAA(dc, preview, Scaled(6), RGB(0x4A, 0x4A, 0x4A),
                            std::max(1, Scaled(1)));
-    } else if (hit.control == Control::kNext) {
-      PaintPillButton(dc, hit.bounds, PhiStr("oobe.navigation.continueButton"),
-                      hit.enabled, hot, true, RGB(255, 255, 255),
-                      RGB(255, 255, 255), RGB(0, 0, 0));
     }
   }
 }
@@ -1241,6 +1379,47 @@ void PhiOnboardingWindow::PaintLayout(HDC dc, const RECT& content) {
 
 void PhiOnboardingWindow::OnHover(int, int) {
   Invalidate();
+}
+
+void PhiOnboardingWindow::OnWheel(int delta, POINT) {
+  if (MaxScroll() > 0 && !conch_drag_) {
+    ScrollTo(scroll_ - delta * Scaled(kScrollStep) / WHEEL_DELTA);
+  }
+}
+
+bool PhiOnboardingWindow::OnKey(WPARAM virtual_key) {
+  // A split page scrolls from the keyboard too; the footer's button stays
+  // reachable with Enter regardless.
+  const int max = MaxScroll();
+  if (max > 0) {
+    const int stride = std::max(
+        Scaled(kScrollStep),
+        static_cast<int>(FooterSplit() - ContentRect().top -
+                         Scaled(kScrollStep)));
+    switch (virtual_key) {
+      case VK_DOWN:
+        ScrollTo(scroll_ + Scaled(kScrollStep));
+        return true;
+      case VK_UP:
+        ScrollTo(scroll_ - Scaled(kScrollStep));
+        return true;
+      case VK_NEXT:
+        ScrollTo(scroll_ + stride);
+        return true;
+      case VK_PRIOR:
+        ScrollTo(scroll_ - stride);
+        return true;
+      case VK_END:
+        ScrollTo(max);
+        return true;
+      case VK_HOME:
+        ScrollTo(0);
+        return true;
+      default:
+        break;
+    }
+  }
+  return PhiSecondaryWindow::OnKey(virtual_key);
 }
 
 void PhiOnboardingWindow::OnMouseDown(int hit, POINT client_pt) {
@@ -1417,8 +1596,9 @@ void PhiOnboardingWindow::OnDpiChanged(UINT old_dpi) {
     ::SendMessageW(name_field_, WM_SETFONT,
                    reinterpret_cast<WPARAM>(fonts().Get(24, FW_NORMAL)), TRUE);
   }
-  Layout();
-  PlaceEmbeddedBrowser();
+  // The suggested rect scaled the old (possibly cut-down) size: back to
+  // the design size at the new DPI, then into this monitor's work area.
+  Refit();
 }
 
 void PhiOnboardingWindow::OnNcDestroy() {
@@ -1671,6 +1851,14 @@ LRESULT PhiOnboardingWindow::OnWindowMessage(UINT msg, WPARAM wparam,
       FocusEmbeddedBrowser();
       *handled = true;
       return 0;
+    case WM_DISPLAYCHANGE:
+      Refit();  // A resolution or scaling change: fit the work area again.
+      break;
+    case WM_SETTINGCHANGE:
+      if (wparam == SPI_SETWORKAREA) {
+        Refit();  // The taskbar moved or grew.
+      }
+      break;
     case kMsgNavigate + 1:  // A conch frame decoded.
       Invalidate();
       if (conch_.animating() && !conch_timer_.running()) {

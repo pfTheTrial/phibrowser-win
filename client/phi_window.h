@@ -244,6 +244,16 @@ int PhiLerpInt(int from, int to, double t);
 // ---------------------------------------------------------------------------
 // Win32.
 
+// THE tooltip (PhiWindow::EnableTooltips) for a surface that is not a
+// PhiWindow: the shell, whose hand-rolled window procedure keeps its own
+// hover. Shows `text` by the cursor in `palette`, at `owner`'s scale; the
+// caller runs the dwell. PhiHideTooltipFor hides it while `owner` is the
+// one showing it.
+void PhiShowTooltipFor(HWND owner,
+                       const std::wstring& text,
+                       const PhiPalette& palette);
+void PhiHideTooltipFor(HWND owner);
+
 // What the accessibility provider needs from a surface, and nothing more.
 // PhiWindow implements it, and so does the shell — which owns a hand-rolled
 // window procedure of its own and is therefore not a PhiWindow, yet holds
@@ -427,11 +437,13 @@ class PhiWindow : public PhiHitSource {
   bool InvokeHit(int index) override;
 
   // Tooltips, from the same hit list (lane 3 §2 "Tooltips", §7 item 15).
-  // OFF by default and opt-in per surface: hovering a hit whose name is
-  // non-empty for the system's tooltip delay shows that name, and nothing
-  // else in the client needs a TOOLTIPS_CLASS, a TTM_ message or a second
-  // rect list. PhiHit::name is the accessible name AND the tooltip text,
-  // so a surface cannot label one and forget the other.
+  // OFF in this base; the PhiPopover and PhiPanel families turn them on for
+  // every surface they create: hovering a hit whose name is non-empty for
+  // the system's tooltip delay shows that name, and nothing else in the
+  // client needs a TOOLTIPS_CLASS, a TTM_ message or a second rect list.
+  // PhiHit::name is the accessible name AND the tooltip text, so a surface
+  // cannot label one and forget the other — name hits for a user, never
+  // with an internal verb.
   void EnableTooltips(bool enabled);
   bool tooltips_enabled() const { return tooltips_enabled_; }
 

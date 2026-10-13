@@ -128,9 +128,90 @@ bool PhiSystemPrefersDark() {
 #endif
 }
 
+bool PhiHighContrastActive() {
+#if !defined(_WIN32)
+  return false;
+#else
+  HIGHCONTRASTW contrast = {};
+  contrast.cbSize = sizeof(contrast);
+  return ::SystemParametersInfoW(SPI_GETHIGHCONTRAST, sizeof(contrast),
+                                 &contrast, 0) &&
+         (contrast.dwFlags & HCF_HIGHCONTRASTON) != 0;
+#endif
+}
+
+PhiPalette PhiPaletteFromSystemColors(const PhiSystemColors& colors) {
+  PhiPalette palette;
+  // The window's lightness only sets the ink-set FLAG (DWM's dark caption,
+  // the NTP mark); every colour below is the system's.
+  palette.dark = PhiContrastRatio(colors.window, PhiRgb(0xFF, 0xFF, 0xFF)) >
+                 PhiContrastRatio(colors.window, PhiRgb(0, 0, 0));
+  // Grounds: one flat window colour — no tint, no gradient.
+  palette.ground_top = colors.window;
+  palette.ground_bottom = colors.window;
+  palette.window_bg = colors.window;
+  palette.ground_fixed = colors.window;
+  palette.card = colors.window;
+  palette.flyout = colors.window;
+  palette.dialog_footer = colors.window;
+  palette.overlay_scrim = colors.window;
+  // Text. Secondary text keeps the full text colour — a contrast theme has
+  // no "dimmer but legible" step; gray text is for what is disabled or a
+  // placeholder, which is the tertiary role.
+  palette.ink = colors.window_text;
+  palette.label = colors.window_text;
+  palette.label_dim = colors.window_text;
+  palette.label_tertiary = colors.gray_text;
+  // The washes sit under label-coloured text: the button face, which the
+  // theme pairs with a text colour of the same contrast. (The highlight
+  // needs its own text colour, and no wash's caller switches to it.)
+  palette.selected = colors.button_face;
+  palette.hover = colors.button_face;
+  palette.hover_strong = colors.button_face;
+  palette.pressed = colors.button_face;
+  palette.bar_hover = colors.button_face;
+  palette.bar_hover_strong = colors.button_face;
+  palette.control_fill = colors.button_face;
+  palette.accent_soft = colors.button_face;
+  // Edges in the text colour: a contrast theme draws its boundaries.
+  palette.border = colors.window_text;
+  palette.stroke_strong = colors.window_text;
+  palette.separator = colors.gray_text;
+  // The accent is the selection; an accent fill carries on_accent text.
+  palette.accent = colors.highlight;
+  palette.on_accent = colors.highlight_text;
+  palette.accent_hover = colors.hot_light;
+  // No red or amber of our own: a status colour that fails the user's
+  // contrast is worse than the theme's own.
+  palette.destructive = colors.highlight;
+  palette.destructive_hover = colors.hot_light;
+  palette.warning = colors.window_text;
+  palette.error = colors.window_text;
+  return palette;
+}
+
+PhiPalette PhiHighContrastPalette() {
+  PhiSystemColors colors;
+#if defined(_WIN32)
+  colors.window = ::GetSysColor(COLOR_WINDOW);
+  colors.window_text = ::GetSysColor(COLOR_WINDOWTEXT);
+  colors.highlight = ::GetSysColor(COLOR_HIGHLIGHT);
+  colors.highlight_text = ::GetSysColor(COLOR_HIGHLIGHTTEXT);
+  colors.hot_light = ::GetSysColor(COLOR_HOTLIGHT);
+  colors.gray_text = ::GetSysColor(COLOR_GRAYTEXT);
+  colors.button_face = ::GetSysColor(COLOR_BTNFACE);
+#endif
+  return PhiPaletteFromSystemColors(colors);
+}
+
 PhiPalette PhiResolvePalette(const PhiTheme& theme,
                              PhiAppearance appearance,
                              int saturation) {
+  // A contrast theme overrides the app's theme, its appearance and the
+  // Space tint alike (see the header).
+  if (PhiHighContrastActive()) {
+    return PhiHighContrastPalette();
+  }
   saturation = PhiClamp(saturation, 0, 100);
   const int top_alpha =
       kTintMinAlpha + (kTintMaxAlpha - kTintMinAlpha) * saturation / 100;
@@ -246,6 +327,9 @@ double PhiContrastRatio(PhiColor a, PhiColor b) {
 }
 
 PhiPalette PhiPageBarPalette(const PhiPalette& base, PhiColor page) {
+  if (PhiHighContrastActive()) {
+    return base;  // A page's colour never replaces the user's contrast.
+  }
   const PhiColor white = PhiRgb(0xFF, 0xFF, 0xFF);
   const PhiColor black = PhiRgb(0, 0, 0);
   // WebContentHeader.updatePageColor: dark ink-set when white reads better.

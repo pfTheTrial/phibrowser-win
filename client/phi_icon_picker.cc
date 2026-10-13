@@ -106,6 +106,16 @@ class Picker : public PhiPopover {
     return true;
   }
 
+  // Open() failed before a window existed, so OnNcDestroy will never give
+  // the answer: give it now, or a caller waiting on it waits forever.
+  void AnswerUnopened() {
+    if (on_chosen_) {
+      PhiSpaceIconChosen callback = std::move(on_chosen_);
+      on_chosen_ = PhiSpaceIconChosen();
+      callback(std::string());
+    }
+  }
+
  protected:
   PhiPalette QueryPalette() const override { return palette_; }
 
@@ -551,6 +561,7 @@ void PhiOpenSpaceIconPicker(HWND owner,
   Picker* picker = new Picker(palette, current_storage, std::move(on_chosen));
   picker->DeleteWhenDestroyed();
   if (!picker->Open(owner, anchor_screen)) {
+    picker->AnswerUnopened();
     delete picker;  // Never shown: OnNcDestroy will not run.
   }
 }
@@ -571,7 +582,15 @@ std::string PhiPickSpaceIcon(HWND owner,
   }
   PhiModalScope modal;
   MSG msg;
-  while (!done && ::GetMessageW(&msg, nullptr, 0, 0)) {
+  while (!done) {
+    const BOOL got = ::GetMessageW(&msg, nullptr, 0, 0);
+    if (got <= 0) {
+      if (got == 0) {
+        // WM_QUIT is the OUTER loop's: put it back, or the app never exits.
+        ::PostQuitMessage(static_cast<int>(msg.wParam));
+      }
+      break;
+    }
     ::TranslateMessage(&msg);
     ::DispatchMessageW(&msg);
   }

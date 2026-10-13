@@ -99,9 +99,14 @@ bool PhiPopover::CreatePopover(const ClassSpec& spec,
                  SWP_NOZORDER | SWP_NOACTIVATE);
   if (options_.dwm_round) {
     const DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_ROUND;
-    ::DwmSetWindowAttribute(hwnd(), DWMWA_WINDOW_CORNER_PREFERENCE, &corner,
-                            sizeof(corner));
+    // Windows 10 has no rounding and refuses the attribute: the popover is
+    // then square and keeps drawing its own rim.
+    dwm_rounded_ = SUCCEEDED(::DwmSetWindowAttribute(
+        hwnd(), DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner)));
   }
+  // Hit names are the tooltips (phi_window.h): the icon-only actions on a
+  // popover are otherwise unlabelled to a sighted user.
+  EnableTooltips(true);
   return true;
 }
 

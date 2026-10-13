@@ -275,7 +275,15 @@ void PhiSpaceManager::RetreatFromMissingSpaces() {
       continue;
     }
     if (!has_valid) {
+      // Nothing valid left here: the vanished Spaces' browsers stay on
+      // screen, retired, until the default Space's attaches — closing them
+      // first closed the window (the app, if it was the last) before the
+      // replacement came.
       host_.SurfaceSpaceInSlot(controller->slot(), retreat, nullptr);
+      for (const std::string& id : missing) {
+        controller->RetireAndUnmapSpaceBrowser(id);
+      }
+      continue;
     }
     for (const std::string& id : missing) {
       controller->CloseSpaceBrowser(id);
@@ -537,8 +545,11 @@ bool PhiSpaceManager::SetSpaceProfile(const std::string& space_id,
       }
     }
     // A slot whose ONLY browser is this Space's would be torn down by the
-    // close below (a window closes with its last browser) — retreat it to
-    // the default Space first, the delete path's order.
+    // close below (a window closes with its last browser — the app with
+    // its last window) before any replacement exists. Its browser is
+    // RETIRED instead: it stays on screen, no longer holding the Space,
+    // until the replacement attaches — the respawn in the slot that gets
+    // one, the default Space in any other.
     bool has_other = false;
     for (const model::Space& space : model_.spaces) {
       if (space.id != space_id && controller->HasSpace(space.id)) {
@@ -547,11 +558,14 @@ bool PhiSpaceManager::SetSpaceProfile(const std::string& space_id,
       }
     }
     if (!has_other) {
-      host_.SurfaceSpaceInSlot(controller->slot(), retreat, nullptr);
+      if (controller->slot() != respawn_slot) {
+        host_.SurfaceSpaceInSlot(controller->slot(), retreat, nullptr);
+      }
+      controller->RetireAndUnmapSpaceBrowser(space_id);
     }
   }
   for (PhiShellWindow* controller : registry_.Controllers()) {
-    controller->CloseSpaceBrowser(space_id);
+    controller->CloseSpaceBrowser(space_id);  // No-op where retired above.
   }
   it->profile_id = profile_id;
   MarkDirty();
@@ -733,8 +747,10 @@ void PhiSpaceManager::PushSpaceMenuNow() {
     d.Set("name", space.name);
     // The session id of the Space's open browser (any slot), so the menu
     // can exclude the Space the user is already looking at.
+    // User shells only: an incognito window or a hidden agent shell
+    // nominally holds the default Space and is never its window.
     BrowserId browser_id;
-    for (PhiShellWindow* controller : registry_.Controllers()) {
+    for (PhiShellWindow* controller : registry_.UserControllers()) {
       browser_id = controller->BrowserIdForSpace(space.id);
       if (browser_id.valid()) {
         break;

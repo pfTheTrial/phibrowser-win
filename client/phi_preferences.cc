@@ -133,10 +133,18 @@ void PhiPreferences::BindAccount(PhiAccountDefaults* defaults) {
   // and place. The chords are Windows virtual keys keyed by the rebind
   // name (a Mac key code means nothing here; shortcuts are not synced).
   std::map<std::string, model::ShortcutChord> overrides;
+  shortcuts_save_blocked_ = false;
   if (account_ && !account_->dir().empty()) {
     std::string bytes;
-    if (PhiReadFileBytes(account_->dir() + L"\\CustomShortcuts.json",
-                         &bytes)) {
+    const PhiReadStatus read =
+        PhiReadFile(account_->dir() + L"\\CustomShortcuts.json", &bytes);
+    if (read == PhiReadStatus::kError) {
+      // Locked: the defaults stand in, and the user's file is never
+      // replaced this session.
+      shortcuts_save_blocked_ = true;
+      LOG(ERROR) << "[PhiClient] shortcuts could not be read; saves off";
+    }
+    if (read == PhiReadStatus::kOk) {
       std::optional<base::Value> list =
           base::JSONReader::Read(bytes, base::JSON_PARSE_RFC);
       if (list && list->is_list()) {
@@ -166,7 +174,7 @@ void PhiPreferences::BindAccount(PhiAccountDefaults* defaults) {
 }
 
 void PhiPreferences::SaveShortcuts() const {
-  if (!account_ || account_->dir().empty()) {
+  if (!account_ || account_->dir().empty() || shortcuts_save_blocked_) {
     return;
   }
   base::ListValue list;

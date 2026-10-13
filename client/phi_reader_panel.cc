@@ -19,11 +19,6 @@ namespace {
 
 constexpr wchar_t kReaderPanelClassName[] = L"PhiReaderPanel";
 
-// The page card's corner radius (PhiShellWindow's kContentRadius,
-// webContentContainerCornerRadius on macOS 26) — the reading surface wears
-// the same corners as the page it covers.
-constexpr int kContentRadius = 8;  // §5.7: the sheet family's radius.
-
 }  // namespace
 
 PhiReaderPanel::PhiReaderPanel(int64_t window_id,
@@ -121,9 +116,9 @@ void PhiReaderPanel::BindSurfaceTab(int64_t surface_tab_id) {
 }
 
 PhiReaderPanel::~PhiReaderPanel() {
-  if (browser_hwnd_ && ::IsWindow(browser_hwnd_)) {
-    ::SetParent(browser_hwnd_, nullptr);
-  }
+  // Out from under the panel before it goes, hidden first — never a
+  // visible page at the desktop's top-left while Chromium closes it.
+  PhiReleaseHostedChild(browser_hwnd_);
   // The base clears GWLP_USERDATA at WM_NCDESTROY, so nothing delivered
   // during the teardown can reach a half-destroyed object.
   Destroy();
@@ -159,35 +154,13 @@ void PhiReaderPanel::ApplyCardShape() {
   if (!alive()) {
     return;
   }
-  RECT client = {};
-  ::GetClientRect(hwnd(), &client);
-  if (client.right <= 0 || client.bottom <= 0) {
-    return;
-  }
-  // The page card's radius (kContentRadius), so the reading surface wears the
-  // same corners as the page it covers. The shell rounds ITS card with
-  // sibling corner caps because DirectComposition ignores a region on the
-  // browser child — but the reader's browser is a child of THIS window, so
-  // the region that clips it is this one's.
-  // Only the bottom pair: the panel starts under the address row, where the
-  // card has no corners of its own.
-  const bool round_top = false;
-  bool round_bottom = false;
-  if (origin_) {
-    origin_->CardRoundedCorners(nullptr, &round_bottom);
-  }
-  if (!round_top && !round_bottom) {
-    ::SetWindowRgn(hwnd(), nullptr, TRUE);  // Square, as the card is.
-    return;
-  }
-  // CreateRoundRectRgn takes the ELLIPSE size, so it is twice the radius.
-  const int ellipse = Scaled(kContentRadius) * 2;
-  // Rounding only the bottom pair is the status bubble's trick: oversize the
-  // rect past the top edge so those corners' curves fall outside the window.
-  const int top = round_top ? 0 : -ellipse;
-  HRGN shape = ::CreateRoundRectRgn(0, top, client.right + 1,
-                                    client.bottom + 1, ellipse, ellipse);
-  ::SetWindowRgn(hwnd(), shape, TRUE);  // The window owns it now.
+  // Square: the panel covers the content card exactly, and the shell's
+  // antialiased corner caps round the card from ABOVE it — the reader comes
+  // up before them on every caps raise (kMsgRaiseCaps), and Reposition and
+  // the show paths ask for one. The region this used to cut stair-stepped
+  // the same curve under the caps, and was all that showed whenever they
+  // were not on top.
+  ClearCornerFringe();
 }
 
 void PhiReaderPanel::Raise() {

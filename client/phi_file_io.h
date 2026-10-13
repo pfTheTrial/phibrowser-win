@@ -18,8 +18,19 @@ namespace phi_client {
 // on purpose: base::ReadFileToString DCHECKs on the browser UI thread and
 // every client store is loaded there.
 //
-// Reads the whole file. False when it is missing or unreadable; `out` is
-// left empty then.
+enum class PhiReadStatus {
+  kOk,
+  kNotFound,  // ERROR_FILE_NOT_FOUND / ERROR_PATH_NOT_FOUND only
+  kError,     // there (or unknowable), but not readable: locked, denied, I/O
+};
+
+// Reads the whole file; `out` is left empty unless kOk. A failure other
+// than "not there" (an antivirus or backup scanner's lock, a sharing
+// violation) is retried briefly, then kError — never "missing", or a caller
+// would write defaults over the user's file.
+PhiReadStatus PhiReadFile(const std::wstring& path, std::string* out);
+
+// PhiReadFile() == kOk: for callers that never write the file back.
 bool PhiReadFileBytes(const std::wstring& path, std::string* out);
 
 // Atomic replace: write `<path>.tmp`, flush, ReplaceFileW (MoveFileEx on a
@@ -37,9 +48,11 @@ bool PhiRemoveFileIfPresent(const std::wstring& path);
 void PhiQuarantineFile(const std::wstring& path, const char* reason);
 
 enum class PhiJsonFileStatus {
-  kMissing,  // no file — first run; caller keeps its defaults
-  kOk,       // parsed; *dict is filled
-  kCorrupt,  // unparseable or not an object; the file was QUARANTINED
+  kMissing,     // no file — first run; caller keeps its defaults
+  kOk,          // parsed; *dict is filled
+  kCorrupt,     // unparseable or not an object; the file was QUARANTINED
+  kUnreadable,  // there but not readable (locked, denied): the caller keeps
+                // defaults IN MEMORY and must not save over the file
 };
 
 // Load-with-quarantine for every JSON store: read, parse as an object, and

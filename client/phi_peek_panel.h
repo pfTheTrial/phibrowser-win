@@ -113,6 +113,7 @@ class PhiPeekPanel : public PhiSurfacePanel, public PhiPanel {
   void Paint(HDC dc, const RECT& dirty) override;
   void OnSize(int width, int height) override;
   PhiPalette QueryPalette() const override;
+  void OnThemeChanged() override;
 
  private:
   // §5.7: a 36 dip header on the flyout ground (the peeked page's favicon,
@@ -139,9 +140,9 @@ class PhiPeekPanel : public PhiSurfacePanel, public PhiPanel {
   void OnHover(int hit, int previous) override;
   void OnClick(int hit, POINT client_pt) override;
   int64_t surface_tab_id() const override;
-  // Rounds the card. THE sanctioned SetWindowRgn (lane 3 §3.6): the hosted
-  // browser is a child of this window, so the region that clips it is this
-  // one's. The CHIPS, which host nothing, are a shaped layer instead.
+  // Rounds the card with a corner fringe (PhiPanel::SetCornerFringe): the
+  // hosted browser is a child of this window, so only this window's region
+  // can clip it, and the fringe antialiases the curve that region cuts.
   void ApplyCardShape();
   // Re-renders and repositions the drop shadow under the card.
   void UpdateShadow();

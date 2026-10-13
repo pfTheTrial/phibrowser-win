@@ -191,8 +191,13 @@ class PhiWindowRegistry {
   bool HasPending() const {
     return !pending_.empty() || !pending_ghosts_.empty();
   }
-  // Removes and returns every request whose deadline has passed.
+  // Removes and returns every request whose deadline has passed. An expired
+  // kSpace request that carries URLs to open is also kept aside (the last
+  // few), so a browser arriving after its deadline can still be hosted with
+  // them rather than closed (TakeExpiredSpace).
   std::vector<PendingCreation> ExpirePending(uint64_t now_tick);
+  std::optional<PendingCreation> TakeExpiredSpace(
+      phi_framework::RequestToken token);
 
  private:
   PhiShellWindow* AddOwned(SlotId slot,
@@ -207,6 +212,10 @@ class PhiWindowRegistry {
   std::map<BrowserId, KioskPtr> kiosks_;
   std::map<phi_framework::RequestToken, PendingCreation> pending_;
   std::map<BrowserId, PendingCreation> pending_ghosts_;
+  // Expired kSpace requests carrying open_urls, by token (oldest dropped
+  // past kMaxExpiredSpaces).
+  std::map<phi_framework::RequestToken, PendingCreation> expired_spaces_;
+  static constexpr size_t kMaxExpiredSpaces = 16;
 };
 
 }  // namespace phi_client

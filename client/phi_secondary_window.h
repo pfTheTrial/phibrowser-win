@@ -111,6 +111,22 @@ PhiCaptionPart PhiCaptionHitTest(const PhiCaptionMetrics& metrics,
 int PhiCaptionTitleInset(const PhiCaptionMetrics& metrics, int leading);
 
 // ---------------------------------------------------------------------------
+// Pure placement: where a secondary window opens. Device px, any origin —
+// a monitor left of or above the primary has negative coordinates and is
+// no special case.
+//
+// `frame` moved the least distance that puts it wholly inside `work`, after
+// being cut down to no wider and no taller than `work`: a dialog designed
+// taller than the screen still shows its footer above the taskbar.
+PhiRectI PhiFitRectInto(const PhiRectI& frame, const PhiRectI& work);
+// A `width` x `height` frame centred across `anchor`, one third down (how
+// all of the family open), then fitted into `work`.
+PhiRectI PhiPlaceCentered(int width,
+                          int height,
+                          const PhiRectI& anchor,
+                          const PhiRectI& work);
+
+// ---------------------------------------------------------------------------
 // Pure dialog-list decisions (see contract point 4).
 //
 // Virtual-key numbers, spelled here so the pure half needs no windows.h.
@@ -216,9 +232,17 @@ class PhiSecondaryWindow : public PhiWindow {
   int CaptionHeight() const;
   // The client rect below the band.
   RECT ContentRect() const;
-  // Centres the window over `around` (its work area when null) at its
-  // current size, one third down — how all five open.
+  // Centres the window over `around` (the work area of the owner's
+  // monitor, else the pointer's, when null) at its current size, one third
+  // down — how all five open — kept inside that monitor's work area and cut
+  // down to fit it.
   void CenterOn(HWND around);
+  // The work area of the monitor the window is on, in screen px.
+  RECT WorkArea() const;
+  // Moves the window back inside WorkArea(), shrinking it when it is
+  // taller or wider (a DPI move, a display or taskbar change). A maximized
+  // or minimized window is left alone.
+  void FitToWorkArea();
 
   // PhiPopupChrome's client probe calls this and nothing else does: the
   // frame asks, through a plain function pointer, whether the band pixel

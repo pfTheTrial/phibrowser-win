@@ -62,6 +62,10 @@ constexpr UINT WM_PHI_AUTHORIZE = WM_APP + 2;
 // A connection thread asking the UI thread to re-sync the DevTools scopes
 // (a session opened or closed); arms kScopeSyncTimer while any is open.
 constexpr UINT WM_PHI_SCOPE_SYNC = WM_APP + 3;
+// A connection thread asking which DevTools targets its principal may see
+// (/json/list, a session open). Read-only, so it runs at once — even inside
+// a nested modal loop — rather than queueing behind a prompt.
+constexpr UINT WM_PHI_TARGET_SCOPE = WM_APP + 4;
 // How long a minted agent capability stays presentable.
 constexpr uint64_t kCapabilityTtlMs = 24ull * 60 * 60 * 1000;
 
@@ -90,7 +94,7 @@ constexpr DWORD kPendingReplyTimeoutMs = 40 * 1000;
 // not pull the call from under a UI thread still about to run it, and the
 // UI thread must not free a result the waiter is about to read.
 struct PhiUiCall {
-  enum class Kind { kControl, kAuthorize };
+  enum class Kind { kControl, kAuthorize, kTargetScope };
   Kind kind = Kind::kControl;
   // The pipe connection asking (its principal's key).
   uint64_t connection_id = 0;
@@ -103,6 +107,11 @@ struct PhiUiCall {
   PhiAgentPeer peer;
   bool allowed = false;
   std::string capability_id;
+  // kTargetScope: the targets asked about and one answer per target.
+  std::vector<PhiDevToolsTargetRef> targets;
+  std::vector<bool> in_scope;
+  // When a kAuthorize call was parked waiting for a window (GetTickCount64).
+  uint64_t parked_tick = 0;
   // Manual-reset; signalled once the UI thread has run the call.
   HANDLE done = nullptr;
   std::atomic<int> refs{2};
@@ -162,6 +171,12 @@ PhiControlDispatcher::PhiControlDispatcher(
 }
 
 PhiControlDispatcher::~PhiControlDispatcher() {
+  // Consent requests still waiting for a window are refused.
+  for (PhiUiCall* call : awaiting_window_) {
+    ::SetEvent(call->done);
+    call->Release();
+  }
+  awaiting_window_.clear();
   if (msg_hwnd_) {
     // Detach first: a call still in the queue is answered not_ready by the
     // window procedure rather than run against a dead dispatcher.
@@ -189,6 +204,8 @@ LRESULT CALLBACK PhiControlDispatcher::MsgWndProc(HWND hwnd,
       self->DrainDeferredUiCalls();
     } else if (self && wparam == kScopeSyncTimer) {
       self->SyncDevToolsScopes();
+    } else if (self && wparam == kAwaitWindowTimer) {
+      self->ResumeAuthorizationsAwaitingWindow();
     }
     return 0;
   }
@@ -198,6 +215,21 @@ LRESULT CALLBACK PhiControlDispatcher::MsgWndProc(HWND hwnd,
     if (self) {
       self->SyncDevToolsScopes();
     }
+    return 0;
+  }
+  if (msg == WM_PHI_TARGET_SCOPE) {
+    auto* self = reinterpret_cast<PhiControlDispatcher*>(
+        ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    auto* call = reinterpret_cast<PhiUiCall*>(lparam);
+    if (!call) {
+      return 0;
+    }
+    if (self) {
+      call->in_scope =
+          self->TargetsInScopeOnUi(call->connection_id, call->targets);
+    }
+    ::SetEvent(call->done);
+    call->Release();
     return 0;
   }
   if (msg == WM_PHI_CONTROL || msg == WM_PHI_AUTHORIZE) {
@@ -370,8 +402,9 @@ bool PhiControlDispatcher::AuthorizeAgentPeerOnUi(uint64_t connection_id,
   // send the user into Settings first. Allow flips the setting (persisted,
   // shown in Developer ▸ Agent control); Deny refuses this and every later
   // connection until the user touches the switch. Owned by a shell window
-  // when one exists; a MessageBox fallback covers the pre-window startup
-  // connection.
+  // when one exists; a connection that arrives before any window waits for
+  // one (RunUiCall parks it) instead of meeting a MessageBox any program
+  // could click.
   std::wstring message =
       L"A program wants to connect to Phi as an agent:\n" +
       base::UTF8ToWide(who) +
@@ -384,33 +417,21 @@ bool PhiControlDispatcher::AuthorizeAgentPeerOnUi(uint64_t connection_id,
   }
   message += L". Phi cannot tell such programs apart, so this stays on "
              L"for every one of them until you turn it off.";
-  HWND owner = nullptr;
-  for (PhiShellWindow* controller :
-       coordinator_->registry().Controllers()) {
-    if (controller->shell_hwnd()) {
-      owner = controller->shell_hwnd();
-      break;
-    }
+  HWND owner = PromptOwner();
+  if (!owner) {
+    // Only reachable if the window went away after the call was parked
+    // for it: refuse this one, remember nothing.
+    LOG(INFO) << "[PhiAgent] refused " << who << " (no window to ask in)";
+    return false;
   }
   // Deny is the default action, so a stray Enter refuses.
   const std::vector<std::wstring> options = {L"Allow", L"Deny"};
   const int deny_index = 1;
-  int chosen = deny_index;
-  if (owner) {
-    chosen = PhiPromptChoose(owner, L"Agent access request", message.c_str(),
-                             options, deny_index, L"Continue", L"Cancel",
-                             /*cancel_is_default=*/true);
-  } else {
-    PhiModalScope modal;
-    chosen = ::MessageBoxW(nullptr,
-                           (message + L"\n\nAllow agents to control Phi?")
-                               .c_str(),
-                           L"Phi \u2014 Agent access request",
-                           MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2 |
-                               MB_SETFOREGROUND) == IDYES
-                 ? 0
-                 : deny_index;
-  }
+  const int chosen =
+      PhiPromptChoose(owner, L"Agent access request", message.c_str(),
+                      options, deny_index, L"Continue", L"Cancel",
+                      /*cancel_is_default=*/true,
+                      /*require_hardware_input=*/true);
   if (chosen == 0) {
     coordinator_->SetAllowAgentControl(true);  // Persists; Settings refreshes.
     return admit();
@@ -446,12 +467,72 @@ void PhiControlDispatcher::RunUiCall(PhiUiCall* call) {
                                         call->connection_id);
       break;
     case PhiUiCall::Kind::kAuthorize:
+      if (AuthorizeWaitsForWindow()) {
+        // The turn-on prompt needs a window to ask in; startup connections
+        // arrive before the first one. Parked, not answered: the waiter
+        // keeps waiting (up to kUiCallTimeoutMs).
+        call->parked_tick = ::GetTickCount64();
+        awaiting_window_.push_back(call);
+        if (msg_hwnd_) {
+          ::SetTimer(msg_hwnd_, kAwaitWindowTimer, kAwaitWindowPollMs,
+                     nullptr);
+        }
+        return;
+      }
       call->allowed = AuthorizeAgentPeerOnUi(call->connection_id, call->peer,
                                              &call->capability_id);
+      break;
+    case PhiUiCall::Kind::kTargetScope:
+      // Never queued (WM_PHI_TARGET_SCOPE answers at once); fail closed.
+      call->in_scope.assign(call->targets.size(), false);
       break;
   }
   ::SetEvent(call->done);
   call->Release();  // The UI side's reference; the waiter holds the other.
+}
+
+HWND PhiControlDispatcher::PromptOwner() {
+  for (PhiShellWindow* controller : coordinator_->registry().Controllers()) {
+    if (controller->shell_hwnd()) {
+      return controller->shell_hwnd();
+    }
+  }
+  return nullptr;
+}
+
+bool PhiControlDispatcher::AuthorizeWaitsForWindow() {
+  // Exactly the case that would prompt (switch off, no "Deny" this
+  // session) with nothing to own the prompt.
+  return !coordinator_->settings().allow_agent_control &&
+         !agent_control_denied_ && !PromptOwner();
+}
+
+void PhiControlDispatcher::ResumeAuthorizationsAwaitingWindow() {
+  if (!awaiting_window_.empty() && AuthorizeWaitsForWindow()) {
+    // Still no window: let go of the ones whose waiter has given up.
+    const uint64_t now = ::GetTickCount64();
+    std::vector<PhiUiCall*> keep;
+    for (PhiUiCall* call : awaiting_window_) {
+      if (now - call->parked_tick >= kUiCallTimeoutMs) {
+        ::SetEvent(call->done);  // `allowed` stays false.
+        call->Release();
+      } else {
+        keep.push_back(call);
+      }
+    }
+    awaiting_window_.swap(keep);
+    if (!awaiting_window_.empty()) {
+      return;
+    }
+  }
+  if (msg_hwnd_) {
+    ::KillTimer(msg_hwnd_, kAwaitWindowTimer);
+  }
+  std::vector<PhiUiCall*> calls;
+  calls.swap(awaiting_window_);
+  for (PhiUiCall* call : calls) {
+    RunOrDeferUiCall(call);  // Prompts now, or meets the switch's answer.
+  }
 }
 
 void PhiControlDispatcher::DrainDeferredUiCalls() {
@@ -600,8 +681,13 @@ class AgentDriveContext {
 
 uint32_t PhiControlDispatcher::EvaluatePipeCaps() const {
   const model::PhiSettings& settings = coordinator_->settings();
-  if (settings.test_rig) {
-    return kAll;  // The box IS the host: every hook, every task.
+  // The box IS the host: every hook, every task. A --dev-hooks build only:
+  // testRig lives in the user-writable PhiPreferences.json, so in a release
+  // any process running as the user could grant itself kAll with it.
+  if constexpr (kPhiDevHooks) {
+    if (settings.test_rig) {
+      return kAll;
+    }
   }
   uint32_t caps = kAgentSpace | kCredentialFill | kCredentialReveal;
   if (settings.allow_agent_user_spaces) {
@@ -907,6 +993,14 @@ bool PhiControlDispatcher::AuthorizeVerb(const PhiPrincipal& principal,
       return false;
     }
     if (scope.kind == Scope::Kind::kUser) {
+      // Off the record stays off the agents' record: an incognito window or
+      // an Incognito Space is no agent's scope (the host's alone).
+      if (!(principal.caps & kHost) &&
+          ((scope.controller && scope.controller->is_incognito()) ||
+           model::IsIncognitoSpaceId(scope.space_id))) {
+        *code = PhiErrorCode::kScopeNotAllowed;
+        return false;
+      }
       // A scope that names nothing live is gated as the user's: the
       // handler's own answer (window_not_open, space_not_open, ...) is for
       // callers allowed to ask about the user's windows at all.
@@ -992,9 +1086,13 @@ std::set<int64_t> PhiControlDispatcher::VisibleWindows(
                     record->granted_spaces.end());
     }
     for (const std::string& space_id : spaces) {
+      // An Incognito Space is never an agent's to see, whatever it entered.
+      if (model::IsIncognitoSpaceId(space_id)) {
+        continue;
+      }
       for (PhiShellWindow* controller :
            coordinator_->registry().Controllers()) {
-        if (controller->is_agent()) {
+        if (controller->is_agent() || controller->is_incognito()) {
           continue;
         }
         const BrowserId browser = controller->BrowserIdForSpace(space_id);
@@ -1124,6 +1222,135 @@ void PhiControlDispatcher::OnDevToolsSessionClosed(uint64_t connection_id,
   }
 }
 
+std::vector<bool> PhiControlDispatcher::DevToolsTargetsInScope(
+    uint64_t connection_id,
+    const std::vector<PhiDevToolsTargetRef>& targets) {
+  // Connection thread. The tab and window registries are the UI thread's,
+  // so the answer is computed there (WM_PHI_TARGET_SCOPE); anything short
+  // of an answer refuses every target.
+  std::vector<bool> none(targets.size(), false);
+  if (!msg_hwnd_ || targets.empty()) {
+    return none;
+  }
+  PhiUiCall* call = NewUiCall(PhiUiCall::Kind::kTargetScope);
+  if (!call) {
+    return none;
+  }
+  call->connection_id = connection_id;
+  call->targets = targets;
+  if (!::PostMessageW(msg_hwnd_, WM_PHI_TARGET_SCOPE, 0,
+                      reinterpret_cast<LPARAM>(call))) {
+    call->Release();
+    call->Release();
+    return none;
+  }
+  if (!WaitUiCall(call)) {
+    call->Release();
+    return none;
+  }
+  std::vector<bool> result = std::move(call->in_scope);
+  call->Release();
+  return result.size() == targets.size() ? result : none;
+}
+
+bool PhiControlDispatcher::DevToolsMayCreateTargets(uint64_t connection_id) {
+  // Connection thread: the caps cached at the last request / scope sync
+  // (kScopeSyncTimer re-evaluates them every second while a session is
+  // open), so no UI hop on the CDP path.
+  base::AutoLock lock(principals_lock_);
+  auto it = principals_.find(connection_id);
+  return it != principals_.end() &&
+         (it->second.caps & (kHost | kUserSpaceWrite)) != 0;
+}
+
+std::optional<std::set<uint64_t>> PhiControlDispatcher::EventAudience(
+    const std::string& type,
+    const base::DictValue& payload) {
+  // UI thread (task_owners_ is its). An event about a task reaches the
+  // connections of the capability that owns it — and the host's, which
+  // sees everything — never the other agents connected to the same Phi.
+  const std::string* task_id = payload.FindString("taskId");
+  if (!task_id) {
+    return std::nullopt;  // App-wide: every channel.
+  }
+  auto owner = task_owners_.find(*task_id);
+  std::set<uint64_t> ids;
+  base::AutoLock lock(principals_lock_);
+  for (const auto& [id, principal] : principals_) {
+    if ((principal.caps & kHost) ||
+        (owner != task_owners_.end() &&
+         principal.capability_id == owner->second)) {
+      ids.insert(id);
+    }
+  }
+  return ids;
+}
+
+std::vector<bool> PhiControlDispatcher::TargetsInScopeOnUi(
+    uint64_t connection_id,
+    const std::vector<PhiDevToolsTargetRef>& targets) {
+  std::vector<bool> out(targets.size(), false);
+  const PhiPrincipal principal =
+      PrincipalFor(ControlCaller::kPipe, connection_id);
+  if (principal.connection_id == 0) {
+    return out;  // Never consented (or already gone).
+  }
+  bool unrestricted = false;
+  const std::set<int64_t> windows = VisibleWindows(principal, &unrestricted);
+  for (size_t i = 0; i < targets.size(); ++i) {
+    if (unrestricted) {
+      out[i] = true;
+      continue;
+    }
+    // Only targets that live in a tab have a window to be scoped by;
+    // service and shared workers, extension backgrounds and the rest stay
+    // the host's.
+    const std::string& type = targets[i].type;
+    if (!type.empty() && type != "page" && type != "iframe" && type != "tab") {
+      continue;
+    }
+    out[i] = TargetWindowIn(targets[i].id, windows);
+  }
+  return out;
+}
+
+bool PhiControlDispatcher::TargetInScope(const PhiPrincipal& principal,
+                                         const std::string& target_id) {
+  bool unrestricted = false;
+  const std::set<int64_t> windows = VisibleWindows(principal, &unrestricted);
+  return unrestricted || TargetWindowIn(target_id, windows);
+}
+
+bool PhiControlDispatcher::TargetWindowIn(const std::string& target_id,
+                                          const std::set<int64_t>& windows) {
+  if (target_id.empty() || windows.empty() || !framework_) {
+    return false;
+  }
+  const TabId tab{framework_->TabIdForCdpTarget(target_id.c_str())};
+  if (!tab.valid()) {
+    return false;
+  }
+  if (std::optional<BrowserId> browser =
+          coordinator_->window_model().BrowserOfTab(tab)) {
+    return windows.count(browser->value) > 0;
+  }
+  // A tab the model has not heard of yet (the push trails the strip): pull
+  // the candidate windows into local copies — never into the shared model,
+  // since this may run inside a nested loop.
+  for (int64_t window : windows) {
+    phi_framework::WindowSnapshot snapshot;
+    if (!PhiWindowModel::Pull(framework_, BrowserId{window}, &snapshot)) {
+      continue;
+    }
+    for (const phi_framework::TabSnapshot& candidate : snapshot.tabs) {
+      if (candidate.id == tab) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 void PhiControlDispatcher::RevokeAgentAccess() {
   capabilities_.clear();
   session_capability_id_.clear();
@@ -1212,6 +1439,15 @@ PhiVerbResult PhiControlDispatcher::Execute(const std::string& type,
     std::string drive_tag;
     if (!AuthorizeVerb(principal, *spec, params, scope, &code, &drive_tag)) {
       return PhiVerbResult::Fail(code);
+    }
+    // A `targetId` names a CDP target, not a window, so ResolveScope never
+    // saw it: the target's tab must sit in a window this principal may see
+    // (the same rule as /json/list and the CDP session open), or an agent
+    // could read or drive any tab — the user's, an Incognito Space's — by
+    // id.
+    if (const std::string* target = payload.FindString("targetId");
+        target && !target->empty() && !TargetInScope(principal, *target)) {
+      return PhiVerbResult::Fail(PhiErrorCode::kScopeNotAllowed);
     }
     drive.Arm(drive_tag);
     // The Mac's agent_user_space_command: an agent's command that passed

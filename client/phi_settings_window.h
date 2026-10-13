@@ -254,6 +254,11 @@ class PhiSettingsHost {
   // Opens any browser page in a tab — the Mac profile pane's data links
   // (chrome://settings/privacy and friends).
   virtual void OpenBrowserPage(const std::string& url) = 0;
+  // The same, in a browser of `profile_id` — a window showing one of its
+  // Spaces, else a new window of one. Never another profile's: nothing
+  // opens when the profile has no Space to open in.
+  virtual void OpenBrowserPageInProfile(const std::string& profile_id,
+                                        const std::string& url) = 0;
 };
 
 // The settings window, shaped like the Mac's Preferences: a TOOLBAR of panes
@@ -365,6 +370,8 @@ class PhiSettingsWindow : public PhiSecondaryWindow,
     // one tab-separated payload the click handler has to split again.
     std::string payload;
     std::string space;
+    // The profile a profile-SCOPED action (a "Your data" page) runs in.
+    std::string profile;
   };
 
   void Rebuild();
@@ -472,6 +479,15 @@ class PhiSettingsWindow : public PhiSecondaryWindow,
   // through the same DrawTextW the paint pass ends in, so what is measured
   // and what is drawn cannot disagree.
   int WrappedHeight(HFONT font, const wchar_t* text, int width) const;
+  // A ComboBox pill's width (dip) for its current `text`: kPillWidth at
+  // least, grown to fit a longer (translated) value up to kPillMaxWidth,
+  // past which the paint ellipsizes.
+  int PillWidthFor(const std::wstring& text) const;
+  // AddRow + its trailing ComboBox pill showing `value`, sized to fit it;
+  // a click runs `action`.
+  void AddPopupRow(int* y, const wchar_t* title, const std::wstring& value,
+                   const char* action, const wchar_t* hint, int text_indent,
+                   wchar_t chip_glyph);
   void AddChips(const RECT& area,
                 const std::vector<std::wstring>& labels,
                 int selected_index,
@@ -487,8 +503,69 @@ class PhiSettingsWindow : public PhiSecondaryWindow,
   void OnClick(int hit, POINT client_pt) override;
   void OnWheel(int delta, POINT client_pt) override;
   void OnEscape() override;
+  // UIA's Invoke. A row scrolled out of the page is published with an
+  // empty rect (PublishHits), which no synthesized click can land on, so
+  // the row is scrolled into view first and THEN clicked through the base.
+  bool InvokeHit(int index) override;
   // items_ index for a hit index, or -1. The hit's `key` IS that index.
   int ItemOfHit(int hit) const;
+  // The hit index publishing items_[item], or -1.
+  int HitOfItem(int item) const;
+
+  // --- Keyboard focus (docs/2026-10-10-release-review.md: Settings had no
+  // keyboard model at all) -------------------------------------------------
+  // One drawn item takes the focus at a time. Tab / Shift+Tab walk the TAB
+  // STOPS in build order — which is visual order: the rail, then the page
+  // top to bottom — and a GROUP (the rail's pages, one row of theme dots,
+  // one picture-card picker) is a single stop whose members the arrows walk,
+  // as a Windows radio group is. Space / Enter act exactly as a click does
+  // (Apply), sliders step on Left / Right, and the focused item is scrolled
+  // into view. The ring is drawn only after keyboard use; a press hides it.
+  //
+  // Identity across a rebuild: items_ is rebuilt on every change, so the
+  // focus is remembered by WHAT it is (kind, action, ids, and its ordinal
+  // among equals) and found again after each Rebuild().
+  struct FocusKey {
+    ItemKind kind = ItemKind::kRowLabel;
+    std::string action;
+    std::string payload;
+    std::string space;
+    int value = 0;
+    int ordinal = 0;  // Among earlier items with the same key.
+  };
+  bool Focusable(const Item& item) const;
+  // A text input: the rail's "Find a setting" or the Shortcuts filter.
+  // Typing goes into it, so Space types rather than activates.
+  bool IsTextInput(const Item& item) const;
+  // Items in the rail (never scrolled; their ring is clipped to the rail).
+  bool InRail(const Item& item) const;
+  // Whether two focusable items are members of one arrow-key group.
+  bool SameFocusGroup(const Item& a, const Item& b) const;
+  // The focusable items in order, and the group (tab stop) each one is in.
+  void FocusOrder(std::vector<int>* order, std::vector<int>* group) const;
+  FocusKey FocusKeyOf(int item) const;
+  bool MatchesFocusKey(const Item& item, const FocusKey& key) const;
+  // Re-finds the focused item after a rebuild (or the nearest focusable
+  // one when it went away) and tells UIA which hit it is.
+  void ResolveFocus();
+  // Moves the focus to items_[item], scrolls it into view and announces it.
+  // `keyboard` shows the ring.
+  void SetFocusItem(int item, bool keyboard);
+  void TabFocus(bool backward);
+  // Within the focused item's group; no wrap.
+  void ArrowFocus(int delta);
+  // True (and the page rebuilt) when the scroll had to move.
+  bool ScrollItemIntoView(int item);
+  void ScrollTo(int scroll);
+  int MaxScroll() const;
+  // Space / Enter on the focused item: what a click on it does.
+  void ActivateFocus();
+  // A slider's keyboard step, in the slider's own 0..100 units.
+  void StepSlider(const Item& item, int delta);
+  // WM_KEYDOWN / WM_SYSKEYDOWN; true when the key was used.
+  bool HandleKey(WPARAM virtual_key, LPARAM lparam, bool alt);
+  // The rail field ("Find a setting") or the Shortcuts filter, or -1.
+  int SearchFieldItem(bool rail) const;
   // Publishes every actionable item into hits_ — the one rect list hover,
   // clicks, tooltips and UIA all read.
   void PublishHits();
@@ -579,6 +656,15 @@ class PhiSettingsWindow : public PhiSecondaryWindow,
   // re-hit-testing each move is what let a drag act on its neighbours.
   Item drag_item_;
   Capture drag_;
+  // The keyboard focus (items_ index, or -1) and what it is, so a rebuild
+  // can find it again; whether its ring shows (keyboard use since the last
+  // press); whether the window is active (no ring on an inactive window);
+  // and the WM_CHAR a Space that activated something leaves behind.
+  int focus_ = -1;
+  FocusKey focus_key_;
+  bool focus_visible_ = false;
+  bool window_active_ = false;
+  bool swallow_space_char_ = false;
   // Rows added to the card BeginSection opened, so a lone hint knows
   // whether it tucks under a row or is the card's own first line.
   int card_rows_ = 0;

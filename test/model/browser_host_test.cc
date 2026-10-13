@@ -175,6 +175,31 @@ void RetirementTracksBrowserIdentityAndExplicitClose() {
   CHECK(spaces.retiring().empty());
 }
 
+// A re-profiled Space's respawn / a vanished Space's retreat: the slot's
+// only browser stays SHOWN while no longer holding the Space (a switch to it
+// asks for a new browser), and is handed over for closing only once the
+// replacement attached.
+void RetireAndUnmapKeepsTheWindowUntilTheReplacement() {
+  PhiSpaceBrowsers spaces;
+  spaces.Attach("work", Id(7));
+  spaces.RetireAndUnmap("work");
+  CHECK(!spaces.Has("work"));
+  CHECK(spaces.order().empty());
+  CHECK(!spaces.empty());
+  CHECK(spaces.active() == Id(7));
+  CHECK(spaces.NeedsReplacement());
+  CHECK(!spaces.TakeRetiredBrowser().valid());
+  spaces.Attach("work", Id(9));
+  CHECK(spaces.ForSpace("work") == Id(9));
+  CHECK(spaces.TakeRetiredBrowser() == Id(7));
+  CHECK(!spaces.Forget(Id(7)));
+  CHECK(spaces.active() == Id(9));
+  CHECK(spaces.retiring().empty());
+  // An unknown Space changes nothing.
+  spaces.RetireAndUnmap("missing");
+  CHECK(spaces.retiring().empty());
+}
+
 }  // namespace
 
 int main() {
@@ -187,6 +212,7 @@ int main() {
   RetirementWaitsForAnAttachedReplacement();
   RetiringTheReplacementStillKeepsABrowserAlive();
   RetirementTracksBrowserIdentityAndExplicitClose();
+  RetireAndUnmapKeepsTheWindowUntilTheReplacement();
   if (g_failures == 0) {
     std::printf("browser_host_test: all checks passed\n");
   }

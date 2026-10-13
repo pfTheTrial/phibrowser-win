@@ -22,6 +22,7 @@
 #include "phibrowser-win/client/phi_coordinator.h"
 #include "phibrowser-win/client/phi_sidebar_model.h"
 #include "phibrowser-win/client/phi_emoji.h"
+#include "phibrowser-win/client/phi_features.h"
 #include "phibrowser-win/client/phi_folder_icons.h"
 #include "phibrowser-win/client/phi_icons.h"
 #include "phibrowser-win/client/phi_tab_store.h"
@@ -260,10 +261,23 @@ PhiVerbResult PhiControlDispatcher::VerbSpacesCreate(
 
 PhiVerbResult PhiControlDispatcher::VerbSpacesSwitch(
     const PhiVerbContext& ctx) {
+  // Only a user shell shows Spaces: an agent's window belongs to its task
+  // and a lone incognito window to its off-the-record session, so neither
+  // may be switched — by anyone. And an agent never surfaces an Incognito
+  // Space (the host may).
+  const SlotId slot = SlotOf(ctx);
+  if (slot.value && (coordinator_->registry().IsAgentSlot(slot) ||
+                     coordinator_->registry().IsIncognitoSlot(slot))) {
+    return PhiVerbResult::Fail(PhiErrorCode::kScopeNotAllowed);
+  }
+  const std::string space_id = ctx.params.String("spaceId");
+  if (ctx.caller == ControlCaller::kPipe && !(ctx.principal.caps & kHost) &&
+      model::IsIncognitoSpaceId(space_id)) {
+    return PhiVerbResult::Fail(PhiErrorCode::kScopeNotAllowed);
+  }
   bool pending = false, cold = false;
-  const bool ok = coordinator_->SwitchSlotToSpace(
-      SlotOf(ctx), ctx.params.String("spaceId"),
-      &pending, &cold);
+  const bool ok = coordinator_->SwitchSlotToSpace(slot, space_id, &pending,
+                                                  &cold);
   base::DictValue out;
   if (cold) {
     out.Set("pending", pending);  // Attaching when the browser arrives.
@@ -283,6 +297,10 @@ PhiVerbResult PhiControlDispatcher::VerbSpacesDelete(
   // dialogs' (the coordinator's host override), never an agent's verb.
   const std::string space_id = ctx.params.String("spaceId");
   if (model::IsIncognitoSpaceId(space_id)) {
+    // Never an agent's to close (see VerbSpacesSwitch).
+    if (ctx.caller == ControlCaller::kPipe && !(ctx.principal.caps & kHost)) {
+      return PhiVerbResult::Fail(PhiErrorCode::kScopeNotAllowed);
+    }
     // Deleting an Incognito Space closes it (the Mac passes it through).
     const bool live = coordinator_->space_manager().Find(space_id) != nullptr;
     coordinator_->RequestCloseIncognitoSpace(space_id);
@@ -639,8 +657,12 @@ PhiVerbResult PhiControlDispatcher::VerbProfilesDelete(
   // profiles but never delete them, so from the pipe this is a test-rig
   // verb only; and even the rig has to say `confirm:true`, the nod the
   // Settings pane asks the user for.
-  if (ctx.caller == ControlCaller::kPipe &&
-      !coordinator_->settings().test_rig) {
+  // testRig counts only in a --dev-hooks build (see EvaluatePipeCaps).
+  bool test_rig = false;
+  if constexpr (kPhiDevHooks) {
+    test_rig = coordinator_->settings().test_rig;
+  }
+  if (ctx.caller == ControlCaller::kPipe && !test_rig) {
     return PhiVerbResult::Fail(PhiErrorCode::kTestRigOnly);
   }
   if (!ctx.params.Bool("confirm", false)) {

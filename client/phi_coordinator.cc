@@ -48,6 +48,7 @@
 #include "phibrowser-win/client/phi_startup_profile.h"
 #include "phibrowser-win/client/phi_sync_settings_win.h"
 #include "phibrowser-win/client/phi_telemetry.h"
+#include "phibrowser-win/client/phi_theme_bus.h"
 #include "phibrowser-win/client/phi_updater.h"
 #include "phibrowser-win/client/phi_url_rules_window.h"
 #include "phibrowser-win/client/phi_version.h"
@@ -69,17 +70,32 @@ PhiCoordinator::PhiCoordinator() : tab_store_(local_store_) {
   // settings window) is this class's observer; the Space manager's is
   // subscribed once it exists (OnFrameworkReady).
   preferences_.AddObserver(this);
+  // A live OS light/dark or contrast switch re-resolves every Space's
+  // palette and repaints the shells, as a theme pick does (phi_theme_bus.h).
+  PhiThemeBus::Get().AddObserver([this] {
+    preferences_.RefreshPalette();  // Popups read it through a pointer.
+    if (space_manager_) {
+      space_manager_->RebuildSpacePalettes();
+      for (PhiShellWindow* controller : registry_.Controllers()) {
+        controller->ApplyPalette();
+      }
+    }
+  });
 }
 
 PhiCoordinator::~PhiCoordinator() {
   if (mouse_hook_) {
     ::UnhookWindowsHookEx(mouse_hook_);
   }
+  if (session_hwnd_) {
+    ::DestroyWindow(session_hwnd_);  // Its proc must not reach `this` after.
+  }
   g_coordinator = nullptr;
 }
 
 namespace {
 constexpr wchar_t kMsgClassName[] = L"PhiClientControlMsg";
+constexpr wchar_t kSessionClassName[] = L"PhiClientSessionEnd";
 // (WM_APP + 1 / + 2 were WM_PHI_CONTROL / WM_PHI_AUTHORIZE: the control
 // verbs and consent decisions now marshal to PhiControlDispatcher's own
 // message window.)
@@ -161,6 +177,21 @@ void PhiCoordinator::OnFrameworkReady(phi_framework::PhiFramework* framework,
   msg_hwnd_ = ::CreateWindowExW(0, kMsgClassName, L"", 0, 0, 0, 0, 0,
                                 HWND_MESSAGE, nullptr,
                                 ::GetModuleHandleW(nullptr), this);
+  // Logoff / shutdown reach top-level windows only (a message-only window
+  // gets no broadcasts): a hidden popup of our own takes them. Never shown,
+  // no owner, a tool window so it never shows on the taskbar.
+  static bool session_class_registered = [] {
+    WNDCLASSEXW wc = {};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = &PhiCoordinator::SessionWndProc;
+    wc.hInstance = ::GetModuleHandleW(nullptr);
+    wc.lpszClassName = kSessionClassName;
+    return ::RegisterClassExW(&wc) != 0;
+  }();
+  (void)session_class_registered;
+  session_hwnd_ = ::CreateWindowExW(
+      WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, kSessionClassName, L"", WS_POPUP,
+      0, 0, 0, 0, nullptr, nullptr, ::GetModuleHandleW(nullptr), this);
   // The control plane (docs/architecture-review.md §3.4): the verb ladder,
   // peer consent and the deferred replies, behind the pipe server's
   // delegate. Built before anything can ask it to run a verb.
@@ -258,6 +289,43 @@ void PhiCoordinator::OnFrameworkReady(phi_framework::PhiFramework* framework,
 }
 
 // static
+LRESULT CALLBACK PhiCoordinator::SessionWndProc(HWND hwnd,
+                                                UINT msg,
+                                                WPARAM wparam,
+                                                LPARAM lparam) {
+  if (msg == WM_NCCREATE) {
+    auto* cs = reinterpret_cast<CREATESTRUCTW*>(lparam);
+    ::SetWindowLongPtrW(hwnd, GWLP_USERDATA,
+                        reinterpret_cast<LONG_PTR>(cs->lpCreateParams));
+    return ::DefWindowProcW(hwnd, msg, wparam, lparam);
+  }
+  auto* self = reinterpret_cast<PhiCoordinator*>(
+      ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+  if (msg == WM_QUERYENDSESSION) {
+    // Only a question — the logoff may still be cancelled. Save what is
+    // dirty (a flushed store is never wrong) and change nothing else: no
+    // phase move, no service stopped, so a cancelled logoff leaves a whole
+    // app behind (and QuitForUpdate still runs).
+    if (self) {
+      self->FlushDirtyStores();
+    }
+    return TRUE;
+  }
+  if (msg == WM_ENDSESSION) {
+    // wparam TRUE: the session IS ending, and no second chance follows —
+    // the shutdown flush now. FALSE: the logoff was cancelled; nothing.
+    if (self && wparam) {
+      if (self->phase_ < AppPhase::kClosing) {
+        self->Transition(AppPhase::kClosing, "endsession");
+      }
+      self->FlushForShutdown();
+    }
+    return 0;
+  }
+  return ::DefWindowProcW(hwnd, msg, wparam, lparam);
+}
+
+// static
 LRESULT CALLBACK PhiCoordinator::MsgWndProc(HWND hwnd,
                                             UINT msg,
                                             WPARAM wparam,
@@ -291,23 +359,6 @@ LRESULT CALLBACK PhiCoordinator::MsgWndProc(HWND hwnd,
       default:
         return 0;
     }
-  }
-  if (msg == WM_QUERYENDSESSION || msg == WM_ENDSESSION) {
-    // Logoff / shutdown: Windows gives no second chance after WM_ENDSESSION,
-    // so flush on the query already (idempotent; the session may still be
-    // cancelled, and a flushed store is never wrong). Message-only windows
-    // do get these — they are broadcast to every top-level window of the
-    // session, HWND_MESSAGE children included on modern Windows — and the
-    // shells do not handle them themselves.
-    auto* self = reinterpret_cast<PhiCoordinator*>(
-        ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
-    if (self && (msg == WM_QUERYENDSESSION || wparam)) {
-      if (self->phase_ < AppPhase::kClosing) {
-        self->Transition(AppPhase::kClosing, "endsession");
-      }
-      self->FlushForShutdown();
-    }
-    return msg == WM_QUERYENDSESSION ? TRUE : 0;
   }
   if (msg == WM_PHI_AUTOVIEW) {
     auto* self = reinterpret_cast<PhiCoordinator*>(
@@ -615,6 +666,13 @@ bool PhiCoordinator::AnySpaceUsesProfile(const std::string& profile_id) const {
       return true;
     }
   }
+  // A sync-hidden Space is still stored and bound: deleting its profile
+  // would strand it (and its data) the moment it is un-hidden.
+  for (const Space& space : space_manager_->hidden_spaces()) {
+    if (space.profile_id == profile_id) {
+      return true;
+    }
+  }
   return false;
 }
 
@@ -711,6 +769,15 @@ bool PhiCoordinator::OwnerForSlot(SlotId slot, std::string* profile_id,
   if (!controller) {
     return false;
   }
+  // Off the record — an incognito window, or a shell showing an Incognito
+  // Space — owns no rows. Every store write keyed on a slot (Ctrl+D,
+  // AddBookmarkRow/Folder, a drop into the sidebar, a split, the verbs,
+  // the Chrome import) resolves its owner here, and would otherwise file
+  // an incognito page in the regular, synced store.
+  if (registry_.IsIncognitoSlot(slot) || controller->is_incognito() ||
+      model::IsIncognitoSpaceId(controller->active_space())) {
+    return false;
+  }
   *space_id = controller->active_space();
   *profile_id = "Default";
   if (const Space* space = space_manager_->Find(*space_id)) {
@@ -751,6 +818,14 @@ std::string PhiCoordinator::CaptureFavicon(SlotId slot, int* width,
 
 namespace {
 
+// Whether `bytes` is exactly a width x height BGRA image. A stored favicon
+// whose size disagrees with its dimensions (a corrupt or synced-in row)
+// would have the painter read past the end of the buffer: it is dropped.
+bool BgraSizeMatches(size_t bytes, int width, int height) {
+  return width > 0 && height > 0 &&
+         bytes == static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
+}
+
 // Store row → chrome view, decoding the favicon ONCE here instead of at
 // every consumer (the old JSON interface base64-round-tripped per rebuild).
 PhiStoredRowView StoredRowView(const PhiRow& row) {
@@ -763,17 +838,38 @@ PhiStoredRowView StoredRowView(const PhiRow& row) {
   view.title_b = row.title_b;
   view.icon = row.icon;
   view.layout = row.layout;
-  if (!row.favicon_base64.empty()) {
+  // The sidebar reads the store's raw bytes (PhiFaviconForm::kRaw), sized
+  // and checked there; base64 is the fallback for any other reader.
+  if (!row.favicon_raw.empty()) {
+    if (BgraSizeMatches(row.favicon_raw.size(), row.favicon_width,
+                        row.favicon_height)) {
+      view.favicon_bgra.assign(row.favicon_raw.begin(), row.favicon_raw.end());
+      view.favicon_width = row.favicon_width;
+      view.favicon_height = row.favicon_height;
+    }
+  } else if (!row.favicon_base64.empty()) {
     std::string decoded;
-    if (base::Base64Decode(row.favicon_base64, &decoded)) {
+    if (base::Base64Decode(row.favicon_base64, &decoded) &&
+        BgraSizeMatches(decoded.size(), row.favicon_width,
+                        row.favicon_height)) {
       view.favicon_bgra.assign(decoded.begin(), decoded.end());
       view.favicon_width = row.favicon_width;
       view.favicon_height = row.favicon_height;
     }
   }
-  if (!row.favicon_b_base64.empty()) {
+  if (!row.favicon_b_raw.empty()) {
+    if (BgraSizeMatches(row.favicon_b_raw.size(), row.favicon_b_width,
+                        row.favicon_b_height)) {
+      view.favicon_b_bgra.assign(row.favicon_b_raw.begin(),
+                                 row.favicon_b_raw.end());
+      view.favicon_b_width = row.favicon_b_width;
+      view.favicon_b_height = row.favicon_b_height;
+    }
+  } else if (!row.favicon_b_base64.empty()) {
     std::string decoded;
-    if (base::Base64Decode(row.favicon_b_base64, &decoded)) {
+    if (base::Base64Decode(row.favicon_b_base64, &decoded) &&
+        BgraSizeMatches(decoded.size(), row.favicon_b_width,
+                        row.favicon_b_height)) {
       view.favicon_b_bgra.assign(decoded.begin(), decoded.end());
       view.favicon_b_width = row.favicon_b_width;
       view.favicon_b_height = row.favicon_b_height;
@@ -804,7 +900,8 @@ std::vector<PhiStoredRowView> PhiCoordinator::PinnedRows(int64_t slot) const {
   std::vector<PhiStoredRowView> out;
   std::string profile_id, space_id;
   if (OwnerForSlot(SlotId{slot}, &profile_id, &space_id)) {
-    for (const PhiRow& row : tab_store_.PinnedFor(profile_id, space_id)) {
+    for (const PhiRow& row : tab_store_.PinnedFor(profile_id, space_id,
+                                                  PhiFaviconForm::kRaw)) {
       out.push_back(StoredRowView(row));
       UpgradeFavicon(SlotId{slot}, row.url, &out.back());
     }
@@ -819,7 +916,8 @@ std::vector<PhiStoredRowView> PhiCoordinator::BookmarkRows(
   std::string profile_id, space_id;
   if (OwnerForSlot(SlotId{slot}, &profile_id, &space_id)) {
     for (const PhiRow& row :
-         tab_store_.BookmarksFor(profile_id, space_id, parent_guid)) {
+         tab_store_.BookmarksFor(profile_id, space_id, parent_guid,
+                                 PhiFaviconForm::kRaw)) {
       out.push_back(StoredRowView(row));
       UpgradeFavicon(SlotId{slot}, row.url, &out.back());
     }
@@ -832,13 +930,17 @@ std::vector<SidebarStoredItem> PhiCoordinator::SidebarStoredItems(
   std::vector<SidebarStoredItem> items;
   std::string profile_id, space_id;
   if (!OwnerForSlot(SlotId{slot}, &profile_id, &space_id)) return items;
-  for (const PhiRow& row : tab_store_.PinnedFor(profile_id, space_id)) {
+  // Keys only: no favicon is read, let alone encoded, on this per-rebuild
+  // path.
+  for (const PhiRow& row : tab_store_.PinnedFor(profile_id, space_id,
+                                                PhiFaviconForm::kNone)) {
     items.push_back({row.guid, SidebarStoredKind::kPin, {}, row.index,
                      !row.url_b.empty()});
   }
   // Read the entire owned tree, including children of collapsed folders.
   // Expansion is presentation state and cannot decide whether a tab binds.
-  for (const PhiRow& row : tab_store_.BookmarkTree(profile_id, space_id)) {
+  for (const PhiRow& row : tab_store_.BookmarkTree(profile_id, space_id,
+                                                   PhiFaviconForm::kNone)) {
     items.push_back({row.guid,
                      row.type == PhiRowType::kBookmarkFolder
                          ? SidebarStoredKind::kFolder
@@ -1575,6 +1677,9 @@ std::string PhiCoordinator::LastActiveSpaceId() const {
 }
 
 void PhiCoordinator::NoteActiveSpace(const std::string& space_id) {
+  if (closing_all_windows_) {
+    return;  // Frozen by QuitForUpdate on the focused window's Space.
+  }
   if (PhiIsAgentSpaceId(space_id) || model::IsIncognitoSpaceId(space_id)) {
     // A hosted agent Space is never the one to restore first, and an
     // Incognito Space does not outlive the run (the slot is remembered on
@@ -1586,16 +1691,26 @@ void PhiCoordinator::NoteActiveSpace(const std::string& space_id) {
 
 // The live user window's Space, for the restore service's LastActiveSpaceId.
 std::string PhiCoordinator::ActiveSpaceOfLiveWindow() const {
-  for (PhiShellWindow* controller : registry_.Controllers()) {
-    if (controller->is_agent()) {
+  // A regular window's regular Space, the foreground one first: an
+  // incognito window (it nominally shows the default Space) or an
+  // Incognito Space is never the Space to restore, and map order says
+  // nothing about where the user is.
+  const HWND foreground = ::GetForegroundWindow();
+  std::string first;
+  for (PhiShellWindow* controller : registry_.UserControllers()) {
+    const std::string& active = controller->active_space();
+    if (active.empty() || model::IsIncognitoSpaceId(active) ||
+        PhiIsAgentSpaceId(active)) {
       continue;
     }
-    const std::string& active = controller->active_space();
-    if (!active.empty()) {
+    if (controller->shell_hwnd() == foreground) {
       return active;
     }
+    if (first.empty()) {
+      first = active;
+    }
   }
-  return std::string();
+  return first;
 }
 
 bool PhiCoordinator::HasSpace(const std::string& space_id) const {
@@ -1887,8 +2002,37 @@ void PhiCoordinator::NoteSpaceWindow(const std::string& space_id,
   if (const Space* space = space_manager_->Find(space_id)) {
     profile = space->profile_id;
   }
-  session_restore_->NoteLiveWindow(space_id, profile,
-                                   BrowserId{browser_window_id});
+  const BrowserId browser{browser_window_id};
+  // Release review B6: a second window of the Space (Ctrl+N, a tear-off,
+  // a switch in another shell, a sibling restored first) must not take the
+  // Space's remembered row while the window it names still holds tabs —
+  // the overwritten window was orphan-dropped on the next restore. It is
+  // remembered beside it instead and comes back as a shell of its own. A
+  // window already remembered that way stays so.
+  if (session_restore_->HasSecondaryWindow(space_id, browser)) {
+    session_restore_->NoteSecondaryWindow(space_id, profile, browser);
+    return;
+  }
+  const std::optional<PhiGhostSpaces::Remembered> primary =
+      session_restore_->PrimaryWindow(space_id);
+  bool primary_live_elsewhere = false;
+  if (primary && primary->window_id != browser) {
+    for (PhiShellWindow* controller : registry_.UserControllers()) {
+      if (controller->BrowserIdForSpace(space_id) == primary->window_id) {
+        primary_live_elsewhere = true;
+        break;
+      }
+    }
+  }
+  if (PhiSessionRestore::KeepsPrimary(
+          primary.has_value(), primary && primary->window_id == browser,
+          session_restore_->Parked(space_id) != nullptr,
+          session_restore_->PrimaryAwaited(space_id),
+          primary_live_elsewhere)) {
+    session_restore_->NoteSecondaryWindow(space_id, profile, browser);
+    return;
+  }
+  session_restore_->NoteLiveWindow(space_id, profile, browser);
 }
 
 void PhiCoordinator::RecordAnalyticsEvent(const char* module,
@@ -1950,6 +2094,9 @@ void PhiCoordinator::NoteAppActivation(bool active) {
   // WM_ACTIVATEAPP reaches every top-level window of the process on each
   // transition; only the edge is an event. The pair is the Mac SDK's
   // didBecomeActive / didResignActive, which is what its DAU counts.
+  if (accelerators_) {
+    accelerators_->OnAppActivationChanged();  // Alt+Tab is no solo Alt.
+  }
   if (active == app_active_) {
     return;
   }
@@ -2331,6 +2478,12 @@ void PhiCoordinator::RequestTabToSpace(SlotId slot,
   if (source->active_space() == space_id) {
     return;
   }
+  // An off-the-record tab never lands in a regular Space: the cold path
+  // below re-opens its URL in the regular profile (history, cookies, sync)
+  // and closes the original. Incognito → Incognito Space stays allowed.
+  if (source->ShowsIncognito() && !model::IsIncognitoSpaceId(space_id)) {
+    return;
+  }
   const BrowserId source_browser = ResolveBrowser(slot);
   // The tab's URL — the clone and cold-Space paths re-open it.
   std::string url;
@@ -2683,6 +2836,62 @@ void PhiCoordinator::OpenBrowserPage(const std::string& url) {
   }
 }
 
+void PhiCoordinator::OpenBrowserPageInProfile(const std::string& profile_id,
+                                              const std::string& url) {
+  // Settings ▸ Profiles' data pages (Clear browsing data and friends) act
+  // on the profile whose tab shows them: opened in the first window, they
+  // cleared ANOTHER profile's data. So a window of this profile only —
+  // nothing at all rather than a fallback into another one.
+  if (!framework_ || profile_id.empty() || url.empty()) {
+    return;
+  }
+  const auto of_profile = [&](const std::string& space_id) {
+    const Space* space = space_manager_->Find(space_id);
+    return space && space->profile_id == profile_id &&
+           !model::IsIncognitoSpaceId(space_id) &&
+           !PhiIsAgentSpaceId(space_id);
+  };
+  // A user window showing one of its Spaces: the focused one first.
+  PhiShellWindow* showing = nullptr;
+  const HWND foreground = ::GetForegroundWindow();
+  for (PhiShellWindow* controller : registry_.UserControllers()) {
+    if (!of_profile(controller->active_space())) {
+      continue;
+    }
+    if (!showing || controller->shell_hwnd() == foreground) {
+      showing = controller;
+    }
+  }
+  if (showing) {
+    RequestOpen(showing->slot().value, url);
+    return;
+  }
+  // Else a window of its own for one of its Spaces — the last-active one
+  // when it is this profile's, else the first in strip order — with the
+  // page opened in it once its browser exists.
+  std::string space_id;
+  if (const std::string last = LastActiveSpaceId(); of_profile(last)) {
+    space_id = last;
+  }
+  for (const Space& space : space_manager_->spaces()) {
+    if (!space_id.empty()) {
+      break;
+    }
+    if (of_profile(space.id)) {
+      space_id = space.id;
+    }
+  }
+  if (space_id.empty() || !CanUseBrowser()) {
+    LOG(WARNING) << "[PhiClient] no window or Space of profile " << profile_id
+                 << " to open " << url << " in";
+    return;
+  }
+  PendingCreation creation;
+  creation.space_id = space_id;
+  creation.open_urls.push_back(url);
+  RequestSpaceBrowser(std::move(creation), /*pending=*/nullptr);
+}
+
 std::vector<std::string> PhiCoordinator::ProfileSummaries() const {
   return profile_service_->ProfileSummaries();
 }
@@ -2992,6 +3201,10 @@ std::string PhiCoordinator::KioskTargetSpaceId() const {
   return space_manager_->KioskTargetSpaceId();
 }
 
+std::string PhiCoordinator::KioskIncognitoSpaceId() {
+  return ResolveIncognitoRouteSpace();
+}
+
 const PhiPalette& PhiCoordinator::PaletteForSlot(int64_t slot) const {
   return space_manager_->PaletteForSlot(slot);
 }
@@ -3053,7 +3266,15 @@ void PhiCoordinator::RequestFeedback(int64_t slot,
 
 void PhiCoordinator::OnShowFeedbackRequested() {
   // Chromium's IDC_FEEDBACK (Help ▸ Report an Issue via the framework, the
-  // sad tab's Send feedback, …): the window the user is looking at.
+  // sad tab's Send feedback, …): the window the user is looking at —
+  // an incognito one included.
+  const HWND foreground = ::GetForegroundWindow();
+  for (PhiShellWindow* controller : registry_.Controllers()) {
+    if (!controller->is_agent() && controller->shell_hwnd() == foreground) {
+      controller->OpenFeedback();
+      return;
+    }
+  }
   if (PhiShellWindow* controller = FocusedUserController()) {
     controller->OpenFeedback();
   }
@@ -3304,6 +3525,15 @@ void PhiCoordinator::RequireLogin() {
   preferences_.SetGuestModeEnabled(false);
   for (PhiShellWindow* controller : registry_.UserControllers()) {
     controller->HideShell();
+  }
+  // Incognito windows are no user slots, so the loop above left them up
+  // and usable behind the login gate. They hold nothing worth keeping:
+  // closed (through the normal close path), not hidden.
+  for (PhiShellWindow* controller : registry_.Controllers()) {
+    if (controller->is_incognito() && !controller->is_agent() &&
+        controller->shell_hwnd()) {
+      ::PostMessageW(controller->shell_hwnd(), WM_CLOSE, 0, 0);
+    }
   }
   OpenOnboarding(PhiOnboardingWindow::Page::kLogin);
 }
@@ -3611,6 +3841,11 @@ void PhiCoordinator::UpdateSyncKeyService() {
     FlushDirtyStores();
     return space_manager_.get();
   };
+  // This account's data is the one meant to be open, yet its store is not
+  // (failed, or needs a newer Phi): persistent, unlike an account switch.
+  native.space_store_unavailable = [this, subject] {
+    return data_account_ == subject && !local_store_.is_open();
+  };
   native.known_profiles = [this] {
     std::set<std::string> ids = {store::kDefaultProfileId};
     for (const keys::LocalProfile& local : SyncLocalProfiles()) {
@@ -3893,8 +4128,10 @@ void PhiCoordinator::AutoViewReevaluate() {
 }
 
 PhiShellWindow* PhiCoordinator::FirstUserController() {
-  for (PhiShellWindow* controller : registry_.Controllers()) {
-    if (!controller->is_agent() && controller->shell_hwnd()) {
+  // A regular window: an incognito one has no Spaces to switch, watch an
+  // agent in, or present a hand-over over.
+  for (PhiShellWindow* controller : registry_.UserControllers()) {
+    if (controller->shell_hwnd()) {
       return controller;
     }
   }
@@ -4209,6 +4446,16 @@ void PhiCoordinator::AdoptCreatedWindow(
     pending = registry_.TakePending(creation.request_token);
     if (!pending) {
       if (kind == WindowKind::kSpace) {
+        // A Space browser past its request's deadline. One that carries
+        // pages to open (Open Link in Space, a routed URL, a re-profiled
+        // Space's tabs) is the only place those pages still exist: host it
+        // as a shell of its own instead of closing it with them.
+        if (std::optional<PendingCreation> late =
+                registry_.TakeExpiredSpace(creation.request_token)) {
+          HostLateSpaceBrowser(browser, hwnd, creation, std::move(*late));
+          UpdateSweepTimer();
+          return;
+        }
         ::PostMessageW(hwnd, WM_CLOSE, 0, 0);
         UpdateSweepTimer();
         return;
@@ -4246,9 +4493,11 @@ void PhiCoordinator::AdoptCreatedWindow(
   switch (kind) {
     case WindowKind::kKiosk:
       // Ephemeral, single-tab, no Space and no slot.
+      // An off-the-record Kiosk hands its page only to an Incognito Space.
       registry_.AddKiosk(browser, std::make_unique<PhiKioskWindow>(
                                       browser.value, hwnd, framework_,
-                                      &window_model_, this));
+                                      &window_model_, this,
+                                      creation.incognito));
       // The Mac's kiosk_opened (its window is up with its one tab; this
       // client has no profile-replacement Kiosk to exclude).
       CaptureAnalytics(kAnalyticsModuleKiosk, kEventKioskOpened,
@@ -4288,7 +4537,8 @@ void PhiCoordinator::AdoptCreatedWindow(
   // run's session_id() is freshly allocated and never matches what the
   // client persisted.
   if (creation.restored_from > 0 &&
-      AttachRestoredGhost(browser, hwnd, BrowserId{creation.restored_from})) {
+      AttachRestoredGhost(browser, hwnd, BrowserId{creation.restored_from},
+                          creation.profile_id ? creation.profile_id : "")) {
     return;
   }
   HostUserShell(browser, hwnd, creation.incognito,
@@ -4297,6 +4547,38 @@ void PhiCoordinator::AdoptCreatedWindow(
                     : SpaceForUserBrowser(creation.profile_id
                                               ? creation.profile_id
                                               : ""));
+}
+
+void PhiCoordinator::HostLateSpaceBrowser(
+    BrowserId browser,
+    HWND hwnd,
+    const phi_framework::WindowCreation& creation,
+    PendingCreation late) {
+  // Its waiting reply was already answered (create_timeout), and the slot
+  // it was for has moved on: a shell of its own, on its Space when that
+  // still exists in this browser's profile, else where any user window of
+  // the profile lands.
+  late.slot = SlotId();
+  late.pending_reply_id = 0;
+  late.background = false;
+  const std::string profile = creation.profile_id ? creation.profile_id : "";
+  const Space* space = space_manager_->Find(late.space_id);
+  LOG(WARNING) << "[PhiClient] Space browser " << browser.value
+               << " arrived after its request expired; hosting it with "
+               << late.open_urls.size() << " url(s)";
+  if (space && (profile.empty() || space->profile_id == profile)) {
+    HostRequestedSpaceShell(browser, hwnd, late);
+    return;
+  }
+  if (creation.incognito) {
+    // Its Incognito Space is gone: an incognito window, never a regular
+    // Space's.
+    HostUserShell(browser, hwnd, /*incognito=*/true);
+  } else {
+    late.space_id = SpaceForUserBrowser(profile);  // "" = the default.
+    HostUserShell(browser, hwnd, /*incognito=*/false, late.space_id);
+  }
+  FinishRequestedSpaceBrowser(browser, late);
 }
 
 std::string PhiCoordinator::SpaceForUserBrowser(
@@ -4565,26 +4847,57 @@ void PhiCoordinator::OpenUserSpaceWindow(const std::string& space_id,
 
 bool PhiCoordinator::AttachRestoredGhost(BrowserId browser,
                                          HWND hwnd,
-                                         BrowserId restored_from) {
+                                         BrowserId restored_from,
+                                         const std::string& profile_id) {
   // The slot that asked for the materialization when one did
-  // (SwitchSlotToSpace); the first user slot for a window the cold start
-  // rebuilt on its own.
+  // (SwitchSlotToSpace). A window restore rebuilt on its own joins no slot:
+  // it is the shell of its own it was last run (below).
   std::optional<PendingCreation> pending =
       registry_.TakePendingGhost(restored_from);
   UpdateSweepTimer();
-  std::string space_id;
-  SlotId slot;
-  if (pending) {
-    space_id = pending->space_id;
-    slot = pending->slot;
-  } else if (const std::string* space =
-                 session_restore_->SpaceForWindowId(restored_from)) {
-    space_id = *space;
-    slot = registry_.FirstUserSlot();
+  session_restore_->NoteRestoredWindowArrived(restored_from);
+  if (!pending) {
+    bool secondary = false;
+    const std::string* remembered =
+        session_restore_->SpaceForWindowId(restored_from, &secondary);
+    if (!remembered) {
+      return false;  // No Space claims it: a user window of its profile.
+    }
+    const std::string space_id = *remembered;
+    const Space* space = space_manager_->Find(space_id);
+    if (!space || (!profile_id.empty() && space->profile_id != profile_id)) {
+      // Its Space is gone, or moved to another profile since (its pages
+      // would run in the wrong one): the caller hosts it as a user window
+      // of its own profile, where the shell's note files it afresh.
+      if (secondary) {
+        session_restore_->ForgetSecondaryWindow(space_id, restored_from);
+      }
+      return false;
+    }
+    if (secondary) {
+      // One of the Space's further windows: re-keyed under this run's id
+      // BEFORE the shell exists, so its note keeps it beside the Space's
+      // own window (still parked, or on its way) instead of over it.
+      session_restore_->ForgetSecondaryWindow(space_id, restored_from);
+      session_restore_->NoteSecondaryWindow(space_id, space->profile_id,
+                                            browser);
+    } else {
+      // The Space's own window: its primary under this run's id.
+      session_restore_->NoteLiveWindow(space_id, space->profile_id, browser);
+    }
+    // Release review B6: a shell of its own bound to THIS Space. With no
+    // slot to join (the cold start's first window) this used to fall
+    // through to the default Space: it overwrote the default Space's
+    // remembered window, and the settle pass dropped the real one, deleting
+    // its tabs.
+    HostUserShell(browser, hwnd, /*incognito=*/false, space_id);
+    return true;
   }
+  const std::string space_id = pending->space_id;
+  const SlotId slot = pending->slot;
   PhiShellWindow* target = registry_.Get(slot);
   const Space* space = space_manager_->Find(space_id);
-  if (pending && (!space || space->profile_id != pending->profile_id)) {
+  if (!space || space->profile_id != pending->profile_id) {
     ::PostMessageW(hwnd, WM_CLOSE, 0, 0);
     if (pending->pending_reply_id) {
       dispatcher().CompletePendingReply(pending->pending_reply_id,
@@ -4592,24 +4905,24 @@ bool PhiCoordinator::AttachRestoredGhost(BrowserId browser,
     }
     return true;
   }
-  if (pending && !target && space) {
-    // Asked for with no slot to join (OpenUserSpaceWindow): the rebuilt
-    // window is a shell of its own, as a fresh one would have been.
-    session_restore_->ClearParked(space_id);
+  // The Space's parked window, materialized: its primary under this run's
+  // id — before it is hosted (the materialization may announce before the
+  // caller has cleared the parked record, and the host's own note would
+  // then keep the old row).
+  session_restore_->ClearParked(space_id);
+  session_restore_->NoteLiveWindow(space_id, space->profile_id, browser);
+  if (!target || target->HasSpace(space_id)) {
+    // Asked for with no slot to join (OpenUserSpaceWindow), or the slot
+    // that asked closed (or got the Space another way) meanwhile: the
+    // rebuilt window is a shell of its own, as a fresh one would have been.
     HostRequestedSpaceShell(browser, hwnd, *pending);
     return true;
   }
-  if (space_id.empty() || !target) {
-    return false;
-  }
   target->AttachSpaceBrowser(space_id, browser, hwnd);
   registry_.Bind(browser, slot);
-  session_restore_->ClearParked(space_id);
   NoteActiveSpace(target->active_space());
   PushSpaceMenu();
-  if (pending) {
-    FinishRequestedSpaceBrowser(browser, *pending);
-  }
+  FinishRequestedSpaceBrowser(browser, *pending);
   return true;
 }
 
@@ -4983,6 +5296,12 @@ void PhiCoordinator::QuitForUpdate() {
   // is dismissed. Chromium exits with its last Browser (MaybeEnterClosing
   // flushes the stores then) — the installer waits for that.
   CloseOnboarding();
+  // The Space the user is looking at is the one the next launch opens on;
+  // the shells closing in map order must not overwrite it.
+  if (PhiShellWindow* focused = FocusedUserController()) {
+    NoteActiveSpace(focused->active_space());
+  }
+  closing_all_windows_ = true;  // A quit: every window's restore rows stay.
   for (PhiShellWindow* controller : registry_.Controllers()) {
     ::PostMessageW(controller->shell_hwnd(), WM_CLOSE, 0, 0);
   }
@@ -5093,11 +5412,26 @@ void PhiCoordinator::RetireClosingBrowser(BrowserId browser) {
     return;
   }
   // The Space on screen as the window goes is what the next cold start
-  // should rebuild first — noted before the controller can vanish.
-  if (!shell->is_incognito()) {
+  // should rebuild first — noted before the controller can vanish. Not for
+  // a window closing whole: RequestClose noted it once, and the Spaces the
+  // slot falls back to as its browsers go one by one are no user choice.
+  if (!shell->is_incognito() && !shell->closing()) {
     NoteActiveSpace(shell->active_space());
   }
   const std::string closed_space = shell->SpaceForBrowser(browser);
+  if (!shell->is_incognito() && !closing_all_windows_ &&
+      phase_ < AppPhase::kClosing) {
+    // A window of a Space's SECONDARY row closed by hand while other user
+    // windows stay up is closed for good: forget the row, or the next run
+    // would re-host it (the session keeps every close pending). The last
+    // window's close is the quit, and keeps everything.
+    for (PhiShellWindow* controller : registry_.UserControllers()) {
+      if (controller->slot() != *slot) {
+        session_restore_->ForgetSecondaryWindow(closed_space, browser);
+        break;
+      }
+    }
+  }
   // The slot survives while any Space browser remains.
   if (!shell->ForgetBrowser(browser)) {
     registry_.Remove(*slot);
@@ -5129,6 +5463,12 @@ bool PhiCoordinator::SwitchSlotToSpace(
   PhiShellWindow* shell = ControllerForSlot(slot);
   const Space* space = space_manager_->Find(space_id);
   if (!shell || !space) {
+    return false;
+  }
+  // An incognito window has no Spaces, and a hidden agent shell switches
+  // through the agent manager: neither takes a user Space switch (it
+  // hijacked a lone incognito window for Ctrl+Alt+N).
+  if (shell->is_incognito() || shell->is_agent()) {
     return false;
   }
   if (shell->HasSpace(space_id)) {
@@ -5259,6 +5599,11 @@ BrowserId PhiCoordinator::BrowserForSpace(const std::string& space_id) const {
     if (controller->is_agent() && !agent_space) {
       continue;
     }
+    // Nor an incognito WINDOW: it nominally holds the default Space too,
+    // and a regular Space's tab must never resolve into it.
+    if (controller->is_incognito()) {
+      continue;
+    }
     const BrowserId browser = controller->BrowserIdForSpace(space_id);
     if (browser.valid()) {
       return browser;
@@ -5268,12 +5613,11 @@ BrowserId PhiCoordinator::BrowserForSpace(const std::string& space_id) const {
 }
 
 PhiShellWindow* PhiCoordinator::FocusedUserController() {
+  // Regular windows only: what callers do with it (open a Space or a page,
+  // present a Space form) must never land in an incognito window.
   const HWND foreground = ::GetForegroundWindow();
   PhiShellWindow* first_user = nullptr;
-  for (PhiShellWindow* controller : registry_.Controllers()) {
-    if (controller->is_agent()) {
-      continue;
-    }
+  for (PhiShellWindow* controller : registry_.UserControllers()) {
     if (foreground && controller->shell_hwnd() == foreground) {
       return controller;
     }

@@ -44,6 +44,8 @@ class PhiSyncMarkerFile : public sync::MarkerStore {
  private:
   const std::wstring path_;
   std::mutex lock_;
+  // The last Load found the file there but unreadable.
+  bool save_blocked_ = false;
 };
 
 class PhiSyncStateFile : public sync::EngineStateStore {
@@ -52,7 +54,7 @@ class PhiSyncStateFile : public sync::EngineStateStore {
   ~PhiSyncStateFile() override;
 
   std::optional<std::string> Get(const std::string& key) const override;
-  void Set(const std::string& key,
+  bool Set(const std::string& key,
            const std::optional<std::string>& value) override;
   bool ClearSyncState();
 
@@ -60,6 +62,8 @@ class PhiSyncStateFile : public sync::EngineStateStore {
   const std::wstring path_;
   mutable std::mutex lock_;
   base::DictValue values_;
+  // The file was there but unreadable at construction: never overwritten.
+  bool save_blocked_ = false;
 };
 
 class PhiSpaceTableFile : public sync::SpaceTableStore {
@@ -79,6 +83,8 @@ class PhiSpaceTableFile : public sync::SpaceTableStore {
   const std::wstring path_;
   std::mutex lock_;
   std::function<void(const sync::SpaceSyncTable&)> on_saved_;
+  // The last Load found the file unreadable or a newer build's.
+  bool save_blocked_ = false;
 };
 
 class PhiSyncSidecarFile : public sync::SettingsSidecars {
@@ -88,7 +94,7 @@ class PhiSyncSidecarFile : public sync::SettingsSidecars {
 
   std::optional<int64_t> Timestamp(const std::string& key) const override;
   std::optional<std::string> Value(const std::string& key) const override;
-  void Set(const std::string& key,
+  bool Set(const std::string& key,
            int64_t stamp,
            const std::string& value_signature) override;
 
@@ -100,12 +106,15 @@ class PhiSyncSidecarFile : public sync::SettingsSidecars {
   bool ClearSidecars();
 
   std::optional<std::string> Extra(const std::string& key) const;
-  void SetExtra(const std::string& key, const std::optional<std::string>& value);
+  // False when it did not persist (memory keeps the old value).
+  bool SetExtra(const std::string& key, const std::optional<std::string>& value);
 
  private:
   const std::wstring path_;
   mutable std::mutex lock_;
   base::DictValue values_;
+  // The file was there but unreadable at construction: never overwritten.
+  bool save_blocked_ = false;
 };
 
 }  // namespace phi_client

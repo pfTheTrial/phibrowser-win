@@ -292,6 +292,7 @@ JournalRead LoadJournal(const std::wstring& user_data_dir, Journal* out) {
     case PhiJsonFileStatus::kMissing:
       return JournalRead::kMissing;
     case PhiJsonFileStatus::kCorrupt:
+    case PhiJsonFileStatus::kUnreadable:  // locked: never "no journal"
       return JournalRead::kCorrupt;
     case PhiJsonFileStatus::kOk:
       break;
