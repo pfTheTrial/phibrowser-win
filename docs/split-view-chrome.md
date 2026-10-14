@@ -3,8 +3,8 @@
 Since 2026-10-13 a split follows the Figma design (node 9044:26952): no
 pane cards. Both panes sit **flush** in the content card, under the
 address row's separator — no inset, no per-pane border, radius or shadow,
-no gap but the divider. The divider is a 1 DIP hairline down a 4 DIP drag
-strip; the focused pane wears a 2 DIP accent ring **inside** its bounds
+no gap but the divider. The divider is a 1 DIP hairline, the panes flush
+against it (its grab reaches 2 DIP into each pane); the focused pane wears a 2 DIP accent ring **inside** its bounds
 (over the page edge), the other pane no edge at all. Snap points at 1/3,
 1/2 and 2/3, no mini toolbars, no attention dimming. (It replaced the
 2026-09-16 port of the Mac's `SplitPaneHostView` pane cards and the
@@ -33,16 +33,28 @@ chrome — the Windows client drives the native side-by-side through
 | --- | --- |
 | panes flush, inset 0 | `kPhiSplitPaneInset` 0; top from the pushed style (0) |
 | no per-pane border | split border insets 0 (`kSplitViewContentPadding` = −outline thickness): the page fills its pane |
-| divider 1 px, rgba(0,0,0,.04) over #FAFAFA | resize area `kPhiSplitDivider` 4 DIP (the hit strip, handle never shown); the ground paints the strip in `divider_ground_argb` and a `kPhiSplitHairline` 1 DIP line (whole device pixels) down its middle in `border_argb` |
+| divider 1 px, rgba(0,0,0,.04) over #FAFAFA | resize area `kPhiSplitDivider` 1 DIP (handle never shown); the ground paints it in `divider_ground_argb` with the `kPhiSplitHairline` 1 DIP line (whole device pixels) over it in `border_argb` |
 | focus ring 2 px inside the active pane | `kPhiSplitFocusRing` 2, stroked inside the pane's bounds on the outline's layer (over the page); nothing on the inactive pane |
 | corners: square but at the card's | `PhiSplitPaneCorners` (`kPhiSplitPaneRadius` 8) clips the page and shapes the ring |
 | snap (unspecified) | `snap_points_` 1/3, 1/2, 2/3 + `kSnapDistance` 18 |
 | no mini toolbar, no dimming | mini toolbar hidden, no `SplitTabHighlightController` |
 
-The drag strip stays 4 DIP wide, not 1: a view over the page cannot take
-the mouse (the page's aura window is hit first), so the hit area is the
-gap between the panes. The 1.5 DIP of #FAFAFA either side of the hairline
-is what shows of the design's split ground.
+Until 2026-10-14 the ground only started watching the panes on its first
+paint while split, and forming a split does not resize the ground, so the
+gap kept the unsplit paint — the translucent tint — and showed the shell's
+backdrop. It now watches them (bounds and visibility) from its first paint.
+
+The divider is 1 DIP wide but grabs `kPhiSplitDividerGrab` (2 DIP) into
+each pane (2026-10-14; it was a 4 DIP strip whose #FAFAFA showed either
+side of the hairline). A view over the page cannot take the mouse — the
+page's aura window is hit first — so `PhiInstallSplitDividerTargeting`
+installs two targeters: an `aura::WindowTargeter` on the browser widget's
+window makes the panes' page windows (the native views of the
+MultiContentsView's `NativeViewHost`s — they carry no `kHostViewKey`, their
+layer is views-managed) decline the band, and a `views::ViewTargeter` on the
+MultiContentsView hands the band to its resize area (the end pane sits
+above it in z-order). The 2 DIP match the inset of a pane-hosted native
+NTP, which is a client HWND the framework cannot target through.
 
 Colours are the client's: `PhiShellWindow::PushSplitViewStyle` sends
 `PhiFramework::SetSplitViewStyle(window_id, {background, border, focus,
@@ -99,7 +111,7 @@ Chromium fork; deployment needs both the matching client and framework.
 laid out: `PhiSplitDropHints` carries the two pane rects from
 `PhiSidebarShell::SidebarSplitPaneRects` (the framework's
 `TabContentBoundsById`, mapped into the shell). The ratio estimate (flush
-panes + the 4 DIP divider strip over the page area) only stands in before
+panes + the 1 DIP divider over the page area) only stands in before
 the first layout.
 
 ## Model notifications
@@ -121,7 +133,7 @@ ring), drag the divider or a strip tab with PhiDragCap.
 Transparency verification uses desktop captures, because `PrintWindow`
 does not include the composed Windows backdrop. Put a black, then white,
 window behind Phi: a split pane's rounded corner should show the same
-backdrop as the sidebar, the divider strip stays opaque (#FAFAFA in light)
+backdrop as the sidebar, the divider stays opaque (#FAFAFA + 4 % ink in light)
 and opaque page pixels must remain unchanged. Check both split axes and a hidden sidebar.
 The host layout test checks that Skia's straight-alpha tint reconstructs
 the same premultiplied color as the sidebar in light and dark appearances.

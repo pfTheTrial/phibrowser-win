@@ -48,10 +48,10 @@ constexpr double kEdgeZoneFraction = 1.0 / 3.0;
 // this much, so tremble in a corner cannot alternate two cards.
 constexpr int kZoneExitTolerance = 12;
 // The framework's split geometry (phi_split_view_style.h): the panes flush
-// in the page area, a 4 DIP divider strip between them. Only the ESTIMATE
-// uses these — the real pane rects arrive with the hints.
+// in the page area, a 1 DIP divider between them. Only the ESTIMATE uses
+// these — the real pane rects arrive with the hints.
 constexpr int kSplitPaneInset = 0;
-constexpr int kSplitDividerThickness = 4;
+constexpr int kSplitDividerThickness = 1;
 
 int Width(const RECT& r) {
   return r.right - r.left;
