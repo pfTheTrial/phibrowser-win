@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <map>
 #include <utility>
+#include <vector>
 
 #include "phibrowser-win/client/phi_dwrite.h"
 #include "phibrowser-win/client/phi_fluent.h"
@@ -496,6 +497,10 @@ bool PhiMenuOnDrawItem(HWND owner,
       PhiDrawIconGlyph(dc, icon, fluent::kCheckMark, Scale(12, dpi),
                        disabled ? label_ink : palette.accent);
     }
+  } else if (row->mask) {
+    const std::vector<unsigned char> bgra =
+        PhiTintedIconBgra(*row->mask, label_ink, icon_px);
+    PhiBlendBgra(dc, icon, bgra.data(), icon_px, icon_px);
   } else if (!row->icon.empty()) {
     PhiDrawIconGlyph(dc, icon, row->icon, icon_px, label_ink);
   }

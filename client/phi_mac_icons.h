@@ -22,9 +22,10 @@ struct PhiMacIcon {
 };
 
 const PhiMacIcon& PhiMemoryIcon();
-// The bug the canvas draws on the sidebar's Feedback pill
-// (sidebar-feedback.imageset/solar_bug-line-duotone.pdf): the Fluent face
-// has no bug near it, so this one mask stays (§2.2a's exception list).
+// The bug on the sidebar's Feedback capsule and the app menu's Report an
+// issue row (sidebar-feedback.imageset/solar_bug-line-duotone.pdf): the
+// Fluent face has no bug near it, so this one mask stays (§2.2a's exception
+// list).
 const PhiMacIcon& PhiFeedbackIcon();
 const PhiMacIcon& PhiChatIcon();
 // The sidebar bottom bar's Download line icon (Figma node 9044:27222): a

@@ -11,6 +11,8 @@
 #include <string>
 #include <vector>
 
+#include "base/memory/raw_ptr_exclusion.h"
+#include "phibrowser-win/client/phi_mac_icons.h"
 #include "phibrowser-win/client/phi_theme.h"
 
 // The Fluent flyout look for Win32 popup menus (docs/windows-native-ui.md
@@ -46,6 +48,10 @@ struct PhiMenuRow {
   // A Space picture instead: catalog artwork or an emoji, drawn through the
   // icon pipeline. Wins over `icon`.
   std::wstring picture;
+  // A template mask (phi_mac_icons.h) instead of `icon`, tinted with the
+  // label's ink at the icon column's size: artwork the icon face lacks.
+  // The icons are function statics, so a plain pointer never dangles.
+  RAW_PTR_EXCLUSION const PhiMacIcon* mask = nullptr;
   bool separator = false;
   bool submenu = false;
   bool danger = false;   // Destructive row: red label and icon.

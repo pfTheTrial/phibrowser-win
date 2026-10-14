@@ -123,6 +123,9 @@ inline constexpr int kHTabStripLeading = 8;
 // The bottom bar's Chat capsule (on the accent).
 inline constexpr int kChatWidth = 58;
 inline constexpr int kPillHeight = 24;
+// The bottom bar's Feedback capsule (Figma Frame 48): 38 x kPillHeight,
+// a 1 px ink-8 % outline round a 16 dip bug.
+inline constexpr int kFeedbackPillWidth = 38;
 // The Update reminder (the Mac's upgrade button): a 24 dip accent pill at
 // least 56 wide, left of the tab-search button. The sidebar header drops it
 // at or below 225 dip (SidebarHeaderView's tooNarrowForUpgrade).

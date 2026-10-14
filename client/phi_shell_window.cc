@@ -7683,8 +7683,22 @@ void PhiShellWindow::PaintChrome(HDC dc,
       tool(layout.extensions, fluent::kPuzzle, bottom_hot(4));
     }
     if (layout.feedback.right > layout.feedback.left) {
-      // Feedback: the app menu's Report-an-issue glyph, icon only.
-      tool(layout.feedback, fluent::kFeedback, bottom_hot(2));
+      // Feedback (Figma Frame 48): a capsule with a 1 px ink-8 % outline
+      // round the 16 dip bug; hover washes the capsule.
+      const PhiButtonState state =
+          bottom_hot(2) ? PhiButtonState::kHover : PhiButtonState::kRest;
+      const RECT& b = layout.feedback;
+      if (state == PhiButtonState::kHover) {
+        PhiFillCapsuleAA(dc, b, palette.hover);
+      }
+      PhiStrokeCapsuleAA(dc, b, palette.border, std::max(1, Scaled(1)));
+      const int art = Scaled(16);
+      const int left = (b.left + b.right - art) / 2;
+      const int top = (b.top + b.bottom - art) / 2;
+      const RECT art_rc = {left, top, left + art, top + art};
+      const std::vector<unsigned char> bug_bgra = PhiTintedIconBgra(
+          PhiFeedbackIcon(), PhiButtonInk(state, palette, kLabel), art);
+      PhiBlendBgra(dc, art_rc, bug_bgra.data(), art, art);
     }
   }
   if (layout.chat.right > layout.chat.left) {

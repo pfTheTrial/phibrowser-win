@@ -26,6 +26,7 @@
 #include "phibrowser-win/client/phi_fluent.h"
 #include "phibrowser-win/client/phi_i18n.h"
 #include "phibrowser-win/client/phi_icons.h"
+#include "phibrowser-win/client/phi_mac_icons.h"
 #include "phibrowser-win/client/phi_modal_scope.h"
 #include "phibrowser-win/client/phi_prompt.h"
 #include "phibrowser-win/client/phi_updater.h"
@@ -279,7 +280,10 @@ void PhiAppMenu::BuildStatic() {
   row(help_, kCmdDocumentation, "appMenu.documentation", fluent::kDocument,
       false);
   rows_.AppendSeparator(help_);
-  row(help_, kCmdReportIssue, "appMenu.reportIssue", fluent::kFeedback);
+  // The sidebar Feedback pill's bug (Figma solar:bug-line-duotone), not
+  // the icon face's Feedback glyph.
+  row(help_, kCmdReportIssue, "appMenu.reportIssue", nullptr)->mask =
+      &PhiFeedbackIcon();
 
   // Spaces / Bookmarks / Extensions hold dynamic rows; filled on open.
   RefreshSpaces();

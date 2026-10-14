@@ -398,8 +398,10 @@ ShellLayout ComputeShellLayout(const ShellLayoutInputs& in) {
                 chat_top + scaled(kPillHeight)};
     br = out.chat.left - btn_gap;
   }
-  // Feedback trails as an icon button, the same slot as Downloads leads.
-  out.feedback = {br - btn, bar_mid - btn / 2, br, bar_mid + btn / 2};
+  // Feedback trails as an outlined capsule (Figma Frame 48).
+  const int feedback_top = bar_mid - scaled(kPillHeight) / 2;
+  out.feedback = {br - scaled(kFeedbackPillWidth), feedback_top, br,
+                  feedback_top + scaled(kPillHeight)};
 
   out.tabs_left = inset;
   out.tabs_limit = out.bottom_bar.top - scaled(kFavoritesSpacer);
