@@ -36,6 +36,7 @@
 #include "phibrowser-win/client/phi_account_feedback.h"
 #include "phibrowser-win/client/phi_onboarding_window.h"
 #include "phibrowser-win/client/phi_feedback_window.h"
+#include "phibrowser-win/client/phi_folio.h"
 #include "phibrowser-win/client/phi_settings_window.h"
 #include "phibrowser-win/client/phi_transcript_panel.h"
 #include "phibrowser-win/client/phi_url_router.h"
@@ -86,7 +87,8 @@ class PhiCoordinator : public SidebarHost,
                        public PhiProfileService::Host,
                        public PhiSyncSetupWindow::Host,
                        public PhiSurfaceCoordinator::Host,
-                       public PhiAgentSpaceManager::Host {
+                       public PhiAgentSpaceManager::Host,
+                       public PhiFolio::Host {
  public:
   PhiCoordinator();
   ~PhiCoordinator() override;
@@ -200,6 +202,7 @@ class PhiCoordinator : public SidebarHost,
   // the panels, the settings window and the verb ladder reach it through.
   PhiSurfaceCoordinator& surface_coordinator() { return surface_coordinator_; }
   PhiReaderBridge& reader() { return surface_coordinator_.reader(); }
+  PhiFolio& folio() { return folio_; }
   // The window whose ON-SCREEN browser holds `tab_id` (by the model, so a
   // tab hidden in a pin or bookmark cell still counts), or null when the
   // tab is not on screen anywhere (a background Space, or a tab already
@@ -399,6 +402,9 @@ class PhiCoordinator : public SidebarHost,
                                const std::string& url,
                                const char* entry_point) override;
   void RequestCloseSurfaces(int tab_id) override;
+  bool CanSaveToFolio(int tab_id) const override;
+  void RequestSaveToFolio(int tab_id) override;
+  void RequestOpenFolio() override;
   bool RequestClosePartnerPeek(int64_t browser, int tab_id) override;
   bool SurfaceFaviconForOrigin(int tab_id,
                                std::vector<unsigned char>* bgra,
@@ -436,6 +442,11 @@ class PhiCoordinator : public SidebarHost,
   void PushPeekPreferences();
   bool OpenKioskOnCtrlAltClick() const;
   void SetOpenKioskOnCtrlAltClick(bool enabled) override;
+  void SetFolioGlobalFolder(const std::string& path) override;
+  void SetFolioFolderOverride(const std::string& profile_id,
+                              const std::string& path) override;
+  void SetFolioAutoSaveOnSiteActions(bool enabled) override;
+  void OpenFolioAutoSaveSites() override;
   // Pushes the Ctrl+Alt-click Kiosk switch the same way: the framework's
   // Browser::OpenURLFromTab is where the click is remapped.
   void PushKioskPreferences();
@@ -977,6 +988,28 @@ class PhiCoordinator : public SidebarHost,
   // panel hops (docs/architecture-review.md §3.4). Declared after the
   // window model it reads; the framework arrives through Init.
   PhiSurfaceCoordinator surface_coordinator_{window_model_, *this};
+  // Folio's native half (docs/folio-port.md): the save RPC, the extension's
+  // file broker and the toasts. Mirage messages reach it before the
+  // surface coordinator's.
+  PhiFolio folio_{this};
+  // PhiFolio::Host:
+  void RespondToExtension(const std::string& request_id,
+                          const std::string& json) override;
+  bool BroadcastToExtensions(const std::string& type,
+                             const std::string& payload_json) override;
+  std::optional<PhiFolio::TabInfo> FolioFindTab(int tab_id) const override;
+  int64_t FolioActiveWindow() const override;
+  std::string FolioProfileOfWindow(int64_t window_id) const override;
+  std::vector<int64_t> FolioWindowPerProfile() const override;
+  HWND FolioShellForWindow(int64_t window_id) const override;
+  void FolioShowToast(int64_t window_id,
+                      const std::wstring& title,
+                      const std::wstring& message,
+                      int duration_ms,
+                      const std::wstring& action_label,
+                      std::function<void()> action) override;
+  void FolioOpenTab(const std::string& url) override;
+  PhiPreferences& FolioPreferences() override;
   // PhiSurfaceCoordinator::Host (WindowShowingTab is public, above):
   void ScheduleRefreshForTab(TabId tab_id) override;
   SlotId SlotForBrowser(BrowserId browser) const override;

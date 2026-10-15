@@ -1548,6 +1548,10 @@
     "zh-Hant": "開啟檔案…"
    }
   },
+  "appMenu.openFolio": {
+   "comment": "app menu — Folio: opens the library page listing saved pages; used at phi_app_menu.cc",
+   "en": "Open Folio"
+  },
   "appMenu.previousSpace": {
    "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
    "en": "Previous Space\tCtrl+Alt+Left",
@@ -1659,6 +1663,10 @@
     "zh-Hans": "网页另存为…",
     "zh-Hant": "另存網頁為…"
    }
+  },
+  "appMenu.saveToFolio": {
+   "comment": "appMenu — Folio: saves the current page as a markdown article plus a webpage copy; \"\\t<chord>\" is the right-aligned shortcut; used at phi_app_menu.cc",
+   "en": "Save to Folio\tCtrl+Alt+S"
   },
   "appMenu.settings": {
    "comment": "appMenu — the ⋯ Settings-and-more flyout (docs/windows-native-ui.md §3.1); \"\\t<chord>\" is the right-aligned shortcut. Translations authored for Windows (impl log D14).",
@@ -2071,6 +2079,86 @@
   "browser.addressBarMenu.siteSettingsAction": {
    "comment": "addressBar — the in-field site menu (the Mac WebContentAddressBarMenu), phi_shell_menus.cc PhiBuildSiteMenu",
    "en": "Site Settings"
+  },
+  "browser.folio.addNoteAction": {
+   "comment": "folio — the Mac key of the same name; used at phi_folio.cc",
+   "en": "Add Note"
+  },
+  "browser.folio.addNoteConfirmButton": {
+   "comment": "folio — the Mac key of the same name; used at phi_folio.cc",
+   "en": "Save Note"
+  },
+  "browser.folio.addNoteMessage": {
+   "comment": "folio — the Mac key of the same name; used at phi_folio.cc",
+   "en": "The note is written into the saved markdown, under the highlight."
+  },
+  "browser.folio.addNoteTitle": {
+   "comment": "folio — the Mac key of the same name; used at phi_folio.cc",
+   "en": "Add Note"
+  },
+  "browser.folio.alreadySavedToast": {
+   "comment": "folio — the Mac key of the same name; used at phi_folio.cc",
+   "en": "Already in Folio"
+  },
+  "browser.folio.failedToast": {
+   "comment": "folio — the Mac key of the same name; used at phi_folio.cc",
+   "en": "Couldn't save this page"
+  },
+  "browser.folio.highlightSavedToast": {
+   "comment": "folio — the Mac key of the same name; used at phi_folio.cc",
+   "en": "Highlight saved"
+  },
+  "browser.folio.noteLabel": {
+   "comment": "folio — the Mac key of the same name; used at phi_folio.cc",
+   "en": "Note"
+  },
+  "browser.folio.reasonFolderUnreadable": {
+   "comment": "folio — the Mac key of the same name; used at phi_folio.cc",
+   "en": "The Folio folder could not be read."
+  },
+  "browser.folio.reasonNotAWebPage": {
+   "comment": "folio — the Mac key of the same name; used at phi_folio.cc",
+   "en": "Only web pages can be saved."
+  },
+  "browser.folio.reasonNothingCaptured": {
+   "comment": "folio — the Mac key of the same name; used at phi_folio.cc",
+   "en": "Neither the article nor a webpage copy could be captured."
+  },
+  "browser.folio.reasonPageGone": {
+   "comment": "folio — the Mac key of the same name; used at phi_folio.cc",
+   "en": "The page closed before it could be saved."
+  },
+  "browser.folio.reasonSaveTimedOut": {
+   "comment": "folio — the Mac key of the same name; used at phi_folio.cc",
+   "en": "The page took too long to read."
+  },
+  "browser.folio.reasonWriteFailed": {
+   "comment": "folio — the Mac key of the same name; used at phi_folio.cc",
+   "en": "Nothing could be written to the Folio folder."
+  },
+  "browser.folio.savedPartialToast": {
+   "comment": "folio — the Mac key of the same name; used at phi_folio.cc",
+   "en": "Saved only what had loaded"
+  },
+  "browser.folio.savedToast": {
+   "comment": "folio — the Mac key of the same name; used at phi_folio.cc",
+   "en": "Saved to Folio"
+  },
+  "browser.folio.savedWithoutArticleToast": {
+   "comment": "folio — the Mac key of the same name; used at phi_folio.cc",
+   "en": "Saved without video article"
+  },
+  "browser.folio.savedWithoutWebpageToast": {
+   "comment": "folio — the Mac key of the same name; used at phi_folio.cc",
+   "en": "Saved without webpage copy"
+  },
+  "browser.folio.staleExtensionToast": {
+   "comment": "folio — the Mac key of the same name; used at phi_folio.cc",
+   "en": "Folio needs a browser restart"
+  },
+  "browser.folio.undoAction": {
+   "comment": "folio — the Mac key of the same name; used at phi_folio.cc",
+   "en": "Undo"
   },
   "browser.headerMoreMenu.downloadsAction": {
    "comment": "menuBar — used at phi_menu_bar.cc:384",
@@ -6671,6 +6759,44 @@
    "comment": "menuBar — used at phi_menu_bar.cc:351",
    "en": "Developer"
   },
+  "settings.general.folio.autoSaveHintWindows": {
+   "comment": "settings — General ▸ Folio: hint under the site-action auto-save toggle (the Mac hint, \"this Mac\" -> \"this PC\"); used at phi_settings_window.cc",
+   "en": "Liking a YouTube video or bookmarking on X, Reddit, or Stack Overflow also saves that page here. Everything stays on this PC.",
+   "translations": {
+    "de": "Wenn du ein YouTube-Video mit „Gefällt mir“ markierst oder auf X, Reddit oder Stack Overflow ein Lesezeichen setzt, wird die Seite ebenfalls hier gesichert. Alles bleibt auf diesem PC.",
+    "es": "Cuando le das Me gusta a un video de YouTube o agregas un marcador en X, Reddit o Stack Overflow, esa página también se guarda aquí. Todo se queda en este PC.",
+    "fr": "Aimer une vidéo YouTube ou ajouter un signet sur X, Reddit ou Stack Overflow enregistre aussi la page ici. Tout reste sur ce PC.",
+    "ja": "YouTubeの動画を高評価にしたり、X、Reddit、Stack Overflowでブックマークしたりすると、そのページもここに保存されます。すべてこのPC上にのみ保存されます。",
+    "ko": "YouTube 영상에 좋아요를 누르거나 X, Reddit, Stack Overflow에서 북마크하면 그 페이지도 여기에 저장돼요. 모든 데이터는 이 PC에만 보관돼요.",
+    "nl": "Een YouTube-video liken of bookmarken op X, Reddit of Stack Overflow bewaart die pagina ook hier. Alles blijft op deze pc.",
+    "zh-Hans": "在 YouTube 上点赞视频，或在 X、Reddit 或 Stack Overflow 上添加书签时，也会将该页面存储到这里。所有内容都只保留在这台电脑上。",
+    "zh-Hant": "為 YouTube 影片按讚，或在 X、Reddit 或 Stack Overflow 加入書籤時，也會將該網頁儲存到這裡。所有內容都會留在這部電腦上。"
+   }
+  },
+  "settings.general.folio.autoSaveSites": {
+   "comment": "settings — General ▸ Folio, the Mac key of the same name; used at phi_settings_window.cc",
+   "en": "Choose sites…"
+  },
+  "settings.general.folio.autoSaveToggle": {
+   "comment": "settings — General ▸ Folio, the Mac key of the same name; used at phi_settings_window.cc",
+   "en": "Save when you like or bookmark on supported sites"
+  },
+  "settings.general.folio.folderHint": {
+   "comment": "settings — General ▸ Folio, the Mac key of the same name; used at phi_settings_window.cc",
+   "en": "Each save writes a markdown article and a webpage copy side by side. Profiles can override this folder in their own settings."
+  },
+  "settings.general.folio.folderTitle": {
+   "comment": "settings — General ▸ Folio, the Mac key of the same name; used at phi_settings_window.cc",
+   "en": "Save pages to"
+  },
+  "settings.general.folio.pickerMessage": {
+   "comment": "settings — General ▸ Folio, the Mac key of the same name; used at phi_settings_window.cc",
+   "en": "Choose where saved pages are stored."
+  },
+  "settings.general.folio.sectionTitle": {
+   "comment": "settings — General ▸ Folio, the Mac key of the same name; used at phi_settings_window.cc",
+   "en": "Folio"
+  },
   "settings.general.language.displayLanguageTitle": {
    "comment": "settings — used at phi_settings_window.cc:590",
    "en": "Display language"
@@ -7213,6 +7339,10 @@
    "comment": "settings — used at phi_settings_window.cc:1687",
    "en": "Select a profile to view its settings."
   },
+  "settings.profiles.details.folioLabel": {
+   "comment": "settings — profile detail row: the per-profile Folio folder override; used at phi_settings_window.cc",
+   "en": "Folio Folder"
+  },
   "settings.profiles.details.searchEngineLabel": {
    "comment": "settings — used at phi_settings_window.cc:1768",
    "en": "Search Engine"
@@ -7238,6 +7368,18 @@
   "settings.profiles.downloadLocation.pickerMessage": {
    "comment": "settings — used at phi_settings_window.cc:3190",
    "en": "Choose a download location for this profile."
+  },
+  "settings.profiles.folio.chooseFolder": {
+   "comment": "settings — the Folio Folder override menu: pick a folder for this profile; used at phi_settings_window.cc",
+   "en": "Choose…"
+  },
+  "settings.profiles.folio.pickerMessage": {
+   "comment": "settings — a profile's Folio Folder override, the Mac key of the same name; used at phi_settings_window.cc",
+   "en": "Choose where this profile's saved pages are stored."
+  },
+  "settings.profiles.folio.sameAsGeneral": {
+   "comment": "settings — a profile's Folio Folder override, the Mac key of the same name; used at phi_settings_window.cc",
+   "en": "Same as General"
   },
   "settings.profiles.footerHint": {
    "comment": "settings — Settings window (phi_settings_window.cc): Profiles page footnote",

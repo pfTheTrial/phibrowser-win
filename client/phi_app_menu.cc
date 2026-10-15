@@ -24,6 +24,7 @@
 #include "base/values.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "phibrowser-win/client/phi_fluent.h"
+#include "phibrowser-win/client/phi_folio.h"
 #include "phibrowser-win/client/phi_i18n.h"
 #include "phibrowser-win/client/phi_icons.h"
 #include "phibrowser-win/client/phi_mac_icons.h"
@@ -212,6 +213,11 @@ void PhiAppMenu::BuildStatic() {
   row(root_, kCmdPrint, "appMenu.print", fluent::kPrint, false);
   row(root_, kCmdFind, "appMenu.findOnPage", fluent::kFind, false);
   row(root_, kCmdToggleReader, "appMenu.readerView", fluent::kReadingMode);
+  // Folio (docs/folio-port.md): the Mac's File ▸ Save to Folio / Open Folio.
+  if (PhiFolio::Enabled()) {
+    row(root_, kCmdSaveToFolio, "appMenu.saveToFolio", fluent::kSaveLocal);
+    row(root_, kCmdOpenFolio, "appMenu.openFolio", fluent::kLibrary);
+  }
   sub(root_, layout_, "appMenu.layout", fluent::kView);
   sub(root_, tools_, "appMenu.moreTools", fluent::kDeveloperTools);
   rows_.AppendSeparator(root_);
@@ -337,6 +343,11 @@ void PhiAppMenu::RefreshRoot() {
   SetEnabled(root_, kCmdToggleReader,
              reader_active || services_->MenuReaderOfferable());
   SetChecked(root_, kCmdToggleReader, reader_active);
+  // Save to Folio: an http(s) page with no save of it in flight.
+  SidebarHost* sidebar = services_->MenuSidebarHost();
+  const TabId tab = services_->MenuActiveTab();
+  SetEnabled(root_, kCmdSaveToFolio,
+             sidebar && tab.valid() && sidebar->CanSaveToFolio(tab.value));
 }
 
 void PhiAppMenu::RefreshLayout() {
@@ -1078,6 +1089,18 @@ bool PhiAppMenu::OnCommand(UINT id, bool from_accelerator) {
         c->MenuFramework()->OpenTab(target, "chrome://extensions");
       }
       return true;
+    case kCmdSaveToFolio:
+      // Re-checked there: the chord arrives without the menu's enable pass.
+      if (SidebarHost* sidebar = c->MenuSidebarHost();
+          sidebar && c->MenuActiveTab().valid()) {
+        sidebar->RequestSaveToFolio(c->MenuActiveTab().value);
+      }
+      return true;
+    case kCmdOpenFolio:
+      if (SidebarHost* sidebar = c->MenuSidebarHost()) {
+        sidebar->RequestOpenFolio();
+      }
+      return true;
     case kCmdNewSpace:
       c->MenuCreateSpace();  // The sidebar form, or at once without one.
       return true;
@@ -1309,7 +1332,7 @@ bool PhiAppMenu::OnCommand(UINT id, bool from_accelerator) {
       break;
   }
   // Disabled placeholders land here when invoked programmatically.
-  return id >= kCmdAbout && id <= kCmdManageExtensions;
+  return id >= kCmdAbout && id <= kCmdOpenFolio;
 }
 
 std::string PhiAppMenu::BuildBookmarksHtml() const {

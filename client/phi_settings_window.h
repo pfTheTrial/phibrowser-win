@@ -223,6 +223,17 @@ class PhiSettingsHost {
   // Browser::OpenURLFromTab is where the click is remapped.
   virtual void SetOpenKioskOnCtrlAltClick(bool enabled) = 0;
 
+  // --- Folio (docs/folio-port.md) -------------------------------------------
+  // The global folder, a profile's override (empty path clears it), and the
+  // site-action opt-in, which re-arms every profile's Mirage. Reads go
+  // through Preferences().
+  virtual void SetFolioGlobalFolder(const std::string& path) = 0;
+  virtual void SetFolioFolderOverride(const std::string& profile_id,
+                                      const std::string& path) = 0;
+  virtual void SetFolioAutoSaveOnSiteActions(bool enabled) = 0;
+  // Choose sites…: the extension's per-site auto-save switches.
+  virtual void OpenFolioAutoSaveSites() = 0;
+
   // --- Shortcuts (the Mac Shortcuts pane's customising) ---------------------
   // Rebinding takes the chord's raw parts; a chord already held by another
   // rebindable shortcut is STOLEN (that one goes unbound), as the Mac pane

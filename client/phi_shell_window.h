@@ -160,6 +160,11 @@ class SidebarHost {
   virtual void RequestToggleReaderView(int tab_id,
                                        const std::string& url,
                                        const char* entry_point) = 0;
+  // Folio (docs/folio-port.md): whether Save to Folio is offered for the
+  // tab, the save itself (Mirage runs it), and Open Folio.
+  virtual bool CanSaveToFolio(int tab_id) const = 0;
+  virtual void RequestSaveToFolio(int tab_id) = 0;
+  virtual void RequestOpenFolio() = 0;
   // The page underneath the tab's attached surfaces (Reader View, Peek) is
   // about to change or move — an address-bar navigation or Back/Forward on
   // the origin — so every surface attached to it closes first. A surface

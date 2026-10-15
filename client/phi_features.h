@@ -26,6 +26,15 @@ inline constexpr bool kPhiAiEnabled = false;
 // the store behind agentSpace.log stays, the panel is never opened and the
 // skill's transcriptMirror reads false so no mirror daemon is spawned.
 inline constexpr bool kPhiTranscriptEnabled = false;
+// Folio (the Mac's Save for Later, docs/folio-port.md): Save to Folio, Open
+// Folio, the Settings rows and the extension's file broker. The Mac rides a
+// PostHog flag ("folio"); this client has no remote flags, so it is a
+// constant here.
+inline constexpr bool kPhiFolioEnabled = true;
+// The site-action auto-save machinery (the Mac's "save-for-later-auto-
+// trigger" flag, its kill switch for misfiring site rules). The user's own
+// opt-in stays OFF by default; this only lets them turn it on.
+inline constexpr bool kPhiFolioAutoTriggerEnabled = true;
 
 // Developer-only hooks. A release build NEVER defines PHI_DEV_HOOKS
 // (build-client.py --dev-hooks is the only way to set it), so everything

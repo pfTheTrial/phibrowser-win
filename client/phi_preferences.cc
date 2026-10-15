@@ -14,6 +14,7 @@
 #include "base/logging.h"
 #include "base/strings/utf_string_conversions.h"
 #include "phibrowser-win/client/phi_file_io.h"
+#include "phibrowser-win/client/phi_folio.h"
 #include "phibrowser-win/client/phi_i18n.h"
 #include "phibrowser-win/client/phi_app_menu.h"
 
@@ -44,6 +45,9 @@ constexpr RebindableShortcut kRebindableShortcuts[] = {
        kCmdNewIncognitoSpace, {'N', true, false, true}},
       {"reopenClosedTab", L"File", L"Reopen Closed Tab", kCmdReopenClosedTab,
        {'T', true, true, false}},
+      // The Mac's ⌘⌥S, as Reader's ⌘⌥R became Ctrl+Alt+R.
+      {"saveToFolio", L"File", L"Save to Folio", kCmdSaveToFolio,
+       {'S', true, false, true}},
       {"openLocation", L"File", L"Open Location", kCmdOpenLocation,
        {'L', true, false, false}},
       {"closeTab", L"File", L"Close Tab", kCmdCloseTab,
@@ -455,6 +459,58 @@ void PhiPreferences::SetOpenKioskOnCtrlAltClick(bool enabled) {
   settings_.open_kiosk_on_ctrl_alt_click = enabled;
   MarkDirty();
   Notify(PreferenceChange::kKiosk);
+}
+
+std::string PhiPreferences::FolioGlobalFolder() const {
+  return settings_.folio_folder.empty() ? PhiFolioDefaultFolder()
+                                        : settings_.folio_folder;
+}
+
+void PhiPreferences::SetFolioGlobalFolder(const std::string& path) {
+  const std::string stored =
+      path == PhiFolioDefaultFolder() ? std::string() : path;
+  if (stored == settings_.folio_folder) {
+    return;
+  }
+  settings_.folio_folder = stored;
+  MarkDirty();
+  Notify(PreferenceChange::kFolio);
+}
+
+std::string PhiPreferences::FolioFolderOverride(
+    const std::string& profile_id) const {
+  const auto it = settings_.folio_profile_folders.find(profile_id);
+  return it == settings_.folio_profile_folders.end() ? std::string()
+                                                     : it->second;
+}
+
+void PhiPreferences::SetFolioFolderOverride(const std::string& profile_id,
+                                            const std::string& path) {
+  if (profile_id.empty() || FolioFolderOverride(profile_id) == path) {
+    return;
+  }
+  if (path.empty()) {
+    settings_.folio_profile_folders.erase(profile_id);
+  } else {
+    settings_.folio_profile_folders[profile_id] = path;
+  }
+  MarkDirty();
+  Notify(PreferenceChange::kFolio);
+}
+
+std::string PhiPreferences::FolioFolderForProfile(
+    const std::string& profile_id) const {
+  const std::string override_path = FolioFolderOverride(profile_id);
+  return override_path.empty() ? FolioGlobalFolder() : override_path;
+}
+
+void PhiPreferences::SetFolioAutoSaveOnSiteActions(bool enabled) {
+  if (enabled == settings_.folio_auto_save_on_site_actions) {
+    return;
+  }
+  settings_.folio_auto_save_on_site_actions = enabled;
+  MarkDirty();
+  Notify(PreferenceChange::kFolio);
 }
 
 void PhiPreferences::SetRestoreLastSession(bool enabled) {

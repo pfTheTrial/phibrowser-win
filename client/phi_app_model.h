@@ -210,6 +210,12 @@ struct PhiSettings {
   // with Ctrl+Alt held (the Mac's Cmd+Opt) opens in a Kiosk window. On by
   // default, as on Mac.
   bool open_kiosk_on_ctrl_alt_click = true;
+  // Folio (docs/folio-port.md), the Mac's PhiPreferences.SaveForLater:
+  // the global folder (empty = Documents\PhiFolio), per-profile overrides
+  // keyed by profile id, and the opt-in for site-action auto-saves.
+  std::string folio_folder;
+  std::map<std::string, std::string> folio_profile_folders;
+  bool folio_auto_save_on_site_actions = false;
   bool restore_last_session = false;
   bool always_show_bookmark_bar = false;
   // The Mac's showBookmarkBarOnNewTabPage, and its default.

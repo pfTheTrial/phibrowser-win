@@ -67,6 +67,7 @@ class PhiPreferences : public ChromePrefsHost {
     kAnalytics,      // The telemetry consent.
     kPinScope,       // The write-through mirror of the tab store's scope.
     kSyncedMisc,     // A synced value with no Windows consumer yet changed.
+    kFolio,          // Folio's folder or auto-save opt-in (re-arm Mirage).
   };
   class Observer {
    public:
@@ -171,6 +172,22 @@ class PhiPreferences : public ChromePrefsHost {
     return settings_.open_kiosk_on_ctrl_alt_click;
   }
   void SetOpenKioskOnCtrlAltClick(bool enabled);
+  // Folio (docs/folio-port.md), the Mac's PhiPreferences.SaveForLater.
+  // The global folder, never empty: Documents\PhiFolio when unset.
+  std::string FolioGlobalFolder() const;
+  // Empty or the default path stores "unset", as on Mac.
+  void SetFolioGlobalFolder(const std::string& path);
+  // The profile's own override, or empty when it follows the global folder.
+  std::string FolioFolderOverride(const std::string& profile_id) const;
+  // Empty clears the override.
+  void SetFolioFolderOverride(const std::string& profile_id,
+                              const std::string& path);
+  // The folder a save from `profile_id` writes into.
+  std::string FolioFolderForProfile(const std::string& profile_id) const;
+  bool FolioAutoSaveOnSiteActions() const {
+    return settings_.folio_auto_save_on_site_actions;
+  }
+  void SetFolioAutoSaveOnSiteActions(bool enabled);
   bool RestoreLastSession() const { return settings_.restore_last_session; }
   void SetRestoreLastSession(bool enabled);
   bool DeveloperMode() const { return settings_.developer_mode; }

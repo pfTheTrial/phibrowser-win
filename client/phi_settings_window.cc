@@ -38,6 +38,7 @@
 #include "phibrowser-win/client/phi_features.h"
 #include "phibrowser-win/client/phi_dwrite.h"
 #include "phibrowser-win/client/phi_fluent.h"
+#include "phibrowser-win/client/phi_folio.h"
 #include "phibrowser-win/client/phi_sync_key_service.h"
 #include "phibrowser-win/client/phi_version.h"
 #include "phibrowser-win/client/phi_updater.h"
@@ -391,6 +392,27 @@ std::wstring PickFolder(HWND owner, const wchar_t* title) {
   std::wstring result = path;
   ::CoTaskMemFree(path);
   return result;
+}
+
+// A folder's last path component — the Mac pill shows only that.
+std::wstring FolderLeaf(const std::string& path) {
+  std::string trimmed = path;
+  while (!trimmed.empty() &&
+         (trimmed.back() == '\\' || trimmed.back() == '/')) {
+    trimmed.pop_back();
+  }
+  const size_t cut = trimmed.find_last_of("\\/");
+  return base::UTF8ToWide(cut == std::string::npos ? trimmed
+                                                   : trimmed.substr(cut + 1));
+}
+
+// A profile's Folio Folder pill: its override's leaf, or "Same as General".
+std::wstring FolioOverrideLabel(const PhiPreferences& prefs,
+                                const std::string& profile_id) {
+  const std::string path = prefs.FolioFolderOverride(profile_id);
+  return path.empty() ? std::wstring(
+                            PhiStr("settings.profiles.folio.sameAsGeneral"))
+                      : FolderLeaf(path);
 }
 
 }  // namespace
@@ -1329,6 +1351,48 @@ void PhiSettingsWindow::BuildGeneral(int* y) {
                  0xE9D9);
   }
   EndSection(y);
+
+  // Folio (docs/folio-port.md), the Mac's SaveForLaterSectionView: where
+  // saves land and, behind the auto-trigger switch, the site-action opt-in.
+  if (PhiFolio::Enabled()) {
+    BeginSection(y, PhiStr("settings.general.folio.sectionTitle"));
+    AddPopupRow(y, PhiStr("settings.general.folio.folderTitle"),
+                FolderLeaf(prefs_->FolioGlobalFolder()), "foliofolder",
+                PhiStr("settings.general.folio.folderHint"), kChipIndent,
+                0xE8B7);  // Folder.
+    if (kPhiFolioAutoTriggerEnabled) {
+      AddDividerRow(y);
+      AddToggleRow(y, PhiStr("settings.general.folio.autoSaveToggle"),
+                   prefs_->FolioAutoSaveOnSiteActions(), /*enabled=*/true,
+                   "folioautosave",
+                   PhiStr("settings.general.folio.autoSaveHintWindows"),
+                   kChipIndent, 0xEB51);  // Heart.
+      // The sites are the extension's rule corpus, so their switches live
+      // on its page; this row is the way in.
+      AddDividerRow(y);
+      Item row;
+      row.kind = ItemKind::kListRow;
+      row.action = "foliosites";
+      row.enabled = prefs_->FolioAutoSaveOnSiteActions();
+      items_.push_back(std::move(row));
+      const size_t row_index = items_.size() - 1;
+      const RECT area =
+          AddRow(y, PhiStr("settings.general.folio.autoSaveSites"),
+                 kRowLabelHeight, 20, nullptr, kChipIndent);
+      Item chevron;
+      chevron.kind = ItemKind::kIcon;
+      chevron.text = std::wstring(1, wchar_t(0xE76C));  // ChevronRight
+      chevron.value = 12;
+      chevron.enabled = prefs_->FolioAutoSaveOnSiteActions();
+      chevron.bounds = area;
+      items_.push_back(std::move(chevron));
+      items_[row_index].bounds = {content_left_ + Scaled(4),
+                                  area.top - Scaled(6),
+                                  content_right_ - Scaled(4),
+                                  area.bottom + Scaled(6)};
+    }
+    EndSection(y);
+  }
 
   // Profile: with several profiles just the jump link; with one, the Mac
   // INLINES the profile detail (search engine, downloads, data links).
@@ -2583,6 +2647,20 @@ void PhiSettingsWindow::AddProfileBody(
                        area.bottom};
       items_.push_back(std::move(choose));
     }
+    if (PhiFolio::Enabled()) {
+      // Folio Folder: the profile's override, or "Same as General".
+      const std::wstring label = FolioOverrideLabel(*prefs_, id);
+      const RECT area =
+          AddDetailRow(y, PhiStr("settings.profiles.details.folioLabel"),
+                       kPillHeight, kDetailFieldWidth);
+      Item pill;
+      pill.kind = ItemKind::kPopup;
+      pill.text = label;
+      pill.action = "foliooverride";
+      pill.payload = id;
+      pill.bounds = area;
+      items_.push_back(std::move(pill));
+    }
   }
   // Used by — the Spaces bound to this profile.
   int bound = 0;
@@ -2856,9 +2934,10 @@ void PhiSettingsWindow::BuildProfileDetail(int* y, int left, int right,
                                    : download_dir.substr(cut + 1));
     }
 
+    const int rows = PhiFolio::Enabled() ? 3 : 2;
     Item card;
     card.kind = ItemKind::kCard;
-    card.bounds = {left, *y, right, *y + 2 * row_h};
+    card.bounds = {left, *y, right, *y + rows * row_h};
     items_.push_back(std::move(card));
     detail_row(*y, 0xE721, PhiStr("settings.profiles.searchEngine.label"),
                !engines.empty());
@@ -2872,7 +2951,19 @@ void PhiSettingsWindow::BuildProfileDetail(int* y, int left, int right,
                !download_dir.empty());
     trailing_pill(*y + row_h, download_leaf, !download_dir.empty(),
                   "downloadfolder");
-    *y += 2 * row_h + Scaled(kSectionGap);
+    if (PhiFolio::Enabled()) {
+      // Folio Folder: this profile's override, or "Same as General".
+      Item folio_divider;
+      folio_divider.kind = ItemKind::kDivider;
+      folio_divider.bounds = {left + 1, *y + 2 * row_h, right - 1,
+                              *y + 2 * row_h + 1};
+      items_.push_back(std::move(folio_divider));
+      detail_row(*y + 2 * row_h, 0xE8B7,
+                 PhiStr("settings.profiles.details.folioLabel"), true);
+      trailing_pill(*y + 2 * row_h, FolioOverrideLabel(*prefs_, profile_id), true,
+                    "foliooverride");
+    }
+    *y += rows * row_h + Scaled(kSectionGap);
   }
 
   // "Your data": three live links into chrome://settings for this
@@ -6109,6 +6200,40 @@ void PhiSettingsWindow::Apply(const Item& item, int x) {
     host_->SetAlwaysShowFullUrl(!item.on);
   } else if (item.action == "restoresession") {
     host_->SetRestoreLastSession(!item.on);
+  } else if (item.action == "foliofolder") {
+    const std::wstring folder =
+        PickFolder(hwnd(), PhiStr("settings.general.folio.pickerMessage"));
+    if (!folder.empty()) {
+      host_->SetFolioGlobalFolder(base::WideToUTF8(folder));
+    }
+  } else if (item.action == "folioautosave") {
+    host_->SetFolioAutoSaveOnSiteActions(!item.on);
+  } else if (item.action == "foliosites") {
+    host_->OpenFolioAutoSaveSites();
+  } else if (item.action == "foliooverride") {
+    // The Mac's override control: choose a folder, or follow General's.
+    HMENU menu = ::CreatePopupMenu();
+    ::AppendMenuW(menu, MF_STRING, 1,
+                  PhiStr("settings.profiles.folio.chooseFolder"));
+    const bool overridden =
+        !prefs_->FolioFolderOverride(item.payload).empty();
+    ::AppendMenuW(menu, MF_STRING | (overridden ? 0 : MF_CHECKED), 2,
+                  PhiStr("settings.profiles.folio.sameAsGeneral"));
+    POINT anchor = {item.bounds.left, item.bounds.bottom};
+    ::ClientToScreen(hwnd(), &anchor);
+    const UINT chosen = static_cast<UINT>(::TrackPopupMenu(
+        menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, anchor.x,
+        anchor.y, 0, hwnd(), nullptr));
+    ::DestroyMenu(menu);
+    if (chosen == 1) {
+      const std::wstring folder = PickFolder(
+          hwnd(), PhiStr("settings.profiles.folio.pickerMessage"));
+      if (!folder.empty()) {
+        host_->SetFolioFolderOverride(item.payload, base::WideToUTF8(folder));
+      }
+    } else if (chosen == 2) {
+      host_->SetFolioFolderOverride(item.payload, std::string());
+    }
   } else if (item.action == "analytics") {
     // The Mac's metrics_reporting_changed: the consent transition itself,
     // captured BEFORE the switch moves so an opt-out is the last event the

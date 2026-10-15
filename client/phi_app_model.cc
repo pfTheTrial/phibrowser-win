@@ -119,6 +119,20 @@ void DecodePreferences(const base::DictValue& dict, PhiSettings* out) {
   out->open_kiosk_on_ctrl_alt_click =
       dict.FindBool("openKioskOnCommandOptionClick")
           .value_or(out->open_kiosk_on_ctrl_alt_click);
+  if (const std::string* folder = dict.FindString("PhiSaveForLaterFolder")) {
+    out->folio_folder = *folder;
+  }
+  if (const base::DictValue* folders =
+          dict.FindDict("PhiSaveForLaterProfileFolders")) {
+    for (const auto [profile, path] : *folders) {
+      if (path.is_string() && !profile.empty() && !path.GetString().empty()) {
+        out->folio_profile_folders[profile] = path.GetString();
+      }
+    }
+  }
+  out->folio_auto_save_on_site_actions =
+      dict.FindBool("PhiSaveForLaterAutoSaveOnSiteActions")
+          .value_or(out->folio_auto_save_on_site_actions);
   out->restore_last_session =
       dict.FindBool("restoreLastSession").value_or(out->restore_last_session);
   out->always_show_bookmark_bar = dict.FindBool("alwaysShowBookmarkBar")
@@ -294,6 +308,18 @@ base::DictValue PhiStoreTraits<PhiSettings>::Encode(const PhiSettings& value) {
   root.Set("peekViewEnabled", value.peek_view_enabled);
   root.Set("autoPeekViewEnabled", value.auto_peek_view_enabled);
   root.Set("openKioskOnCommandOptionClick", value.open_kiosk_on_ctrl_alt_click);
+  if (!value.folio_folder.empty()) {
+    root.Set("PhiSaveForLaterFolder", value.folio_folder);
+  }
+  if (!value.folio_profile_folders.empty()) {
+    base::DictValue folders;
+    for (const auto& [profile, path] : value.folio_profile_folders) {
+      folders.Set(profile, path);
+    }
+    root.Set("PhiSaveForLaterProfileFolders", std::move(folders));
+  }
+  root.Set("PhiSaveForLaterAutoSaveOnSiteActions",
+           value.folio_auto_save_on_site_actions);
   root.Set("restoreLastSession", value.restore_last_session);
   root.Set("alwaysShowBookmarkBar", value.always_show_bookmark_bar);
   root.Set("showBookmarkBarOnNewTabPage", value.bookmark_bar_on_new_tab);

@@ -1807,6 +1807,17 @@
    "zh-Hans": "打开文件…\tCtrl+O",
    "zh-Hant": "開啟檔案…\tCtrl+O"
   },
+  "appMenu.openFolio": {
+   "de": "Folio öffnen",
+   "en": "Open Folio",
+   "es": "Abrir Folio",
+   "fr": "Ouvrir Folio",
+   "ja": "Folioを開く",
+   "ko": "Folio 열기",
+   "nl": "Open Folio",
+   "zh-Hans": "打开 Folio",
+   "zh-Hant": "開啟 Folio"
+  },
   "appMenu.previousSpace": {
    "de": "Vorheriger Space\tCtrl+Alt+Left",
    "en": "Previous Space\tCtrl+Alt+Left",
@@ -1894,6 +1905,17 @@
    "nl": "Pagina opslaan als…\tCtrl+Shift+S",
    "zh-Hans": "网页另存为…\tCtrl+Shift+S",
    "zh-Hant": "另存網頁為…\tCtrl+Shift+S"
+  },
+  "appMenu.saveToFolio": {
+   "de": "In Folio sichern\tCtrl+Alt+S",
+   "en": "Save to Folio\tCtrl+Alt+S",
+   "es": "Guardar en Folio\tCtrl+Alt+S",
+   "fr": "Enregistrer dans Folio\tCtrl+Alt+S",
+   "ja": "Folioに保存\tCtrl+Alt+S",
+   "ko": "Folio에 저장\tCtrl+Alt+S",
+   "nl": "Bewaar in Folio\tCtrl+Alt+S",
+   "zh-Hans": "存储到 Folio\tCtrl+Alt+S",
+   "zh-Hant": "儲存到 Folio\tCtrl+Alt+S"
   },
   "appMenu.settings": {
    "de": "Einstellungen\tCtrl+,",
@@ -2312,6 +2334,226 @@
    "nl": "Site-instellingen",
    "zh-Hans": "网站设置",
    "zh-Hant": "網站設定"
+  },
+  "browser.folio.addNoteAction": {
+   "de": "Notiz hinzufügen",
+   "en": "Add Note",
+   "es": "Agregar nota",
+   "fr": "Ajouter une note",
+   "ja": "メモを追加",
+   "ko": "메모 추가",
+   "nl": "Voeg notitie toe",
+   "zh-Hans": "添加笔记",
+   "zh-Hant": "加入備註"
+  },
+  "browser.folio.addNoteConfirmButton": {
+   "de": "Notiz sichern",
+   "en": "Save Note",
+   "es": "Guardar nota",
+   "fr": "Enregistrer la note",
+   "ja": "メモを保存",
+   "ko": "메모 저장",
+   "nl": "Bewaar notitie",
+   "zh-Hans": "存储笔记",
+   "zh-Hant": "儲存備註"
+  },
+  "browser.folio.addNoteMessage": {
+   "de": "Die Notiz wird unterhalb der Markierung in die gesicherte Markdown-Datei geschrieben.",
+   "en": "The note is written into the saved markdown, under the highlight.",
+   "es": "La nota se escribe en el markdown guardado, debajo del texto destacado.",
+   "fr": "La note est écrite dans le fichier Markdown enregistré, sous le texte en surbrillance.",
+   "ja": "メモは保存されたMarkdown内のハイライトの下に書き込まれます。",
+   "ko": "메모는 저장된 마크다운 파일의 하이라이트 아래에 기록돼요.",
+   "nl": "De notitie wordt in de bewaarde markdown geschreven, onder de markering.",
+   "zh-Hans": "笔记会写入存储的 Markdown 文件，位于突出显示的内容下方。",
+   "zh-Hant": "備註會寫入已儲存的 Markdown 檔案，位於醒目顯示文字下方。"
+  },
+  "browser.folio.addNoteTitle": {
+   "de": "Notiz hinzufügen",
+   "en": "Add Note",
+   "es": "Agregar nota",
+   "fr": "Ajouter une note",
+   "ja": "メモを追加",
+   "ko": "메모 추가",
+   "nl": "Voeg notitie toe",
+   "zh-Hans": "添加笔记",
+   "zh-Hant": "加入備註"
+  },
+  "browser.folio.alreadySavedToast": {
+   "de": "Bereits in Folio",
+   "en": "Already in Folio",
+   "es": "Ya está en Folio",
+   "fr": "Déjà dans Folio",
+   "ja": "すでにFolioに保存されています",
+   "ko": "이미 Folio에 저장돼 있어요",
+   "nl": "Staat al in Folio",
+   "zh-Hans": "已在 Folio 中",
+   "zh-Hant": "已在 Folio 中"
+  },
+  "browser.folio.failedToast": {
+   "de": "Diese Seite konnte nicht gesichert werden",
+   "en": "Couldn't save this page",
+   "es": "No se pudo guardar esta página",
+   "fr": "Impossible d'enregistrer cette page",
+   "ja": "このページを保存できませんでした",
+   "ko": "이 페이지를 저장하지 못했어요",
+   "nl": "Kan deze pagina niet bewaren",
+   "zh-Hans": "无法存储此网页",
+   "zh-Hant": "無法儲存這個網頁"
+  },
+  "browser.folio.highlightSavedToast": {
+   "de": "Markierung gesichert",
+   "en": "Highlight saved",
+   "es": "Texto destacado guardado",
+   "fr": "Texte en surbrillance enregistré",
+   "ja": "ハイライトを保存しました",
+   "ko": "하이라이트가 저장됐어요",
+   "nl": "Markering bewaard",
+   "zh-Hans": "已存储突出显示的内容",
+   "zh-Hant": "已儲存醒目顯示文字"
+  },
+  "browser.folio.noteLabel": {
+   "de": "Notiz",
+   "en": "Note",
+   "es": "Nota",
+   "fr": "Note",
+   "ja": "メモ",
+   "ko": "메모",
+   "nl": "Notitie",
+   "zh-Hans": "笔记",
+   "zh-Hant": "備註"
+  },
+  "browser.folio.reasonFolderUnreadable": {
+   "de": "Der Folio-Ordner konnte nicht gelesen werden.",
+   "en": "The Folio folder could not be read.",
+   "es": "No se pudo leer la carpeta de Folio.",
+   "fr": "Le dossier Folio n'a pas pu être lu.",
+   "ja": "Folioフォルダを読み込めませんでした。",
+   "ko": "Folio 폴더를 읽을 수 없었어요.",
+   "nl": "De Folio-map kon niet worden gelezen.",
+   "zh-Hans": "无法读取 Folio 文件夹。",
+   "zh-Hant": "無法讀取 Folio 檔案夾。"
+  },
+  "browser.folio.reasonNotAWebPage": {
+   "de": "Nur Webseiten können gesichert werden.",
+   "en": "Only web pages can be saved.",
+   "es": "Solo se pueden guardar páginas web.",
+   "fr": "Seules les pages web peuvent être enregistrées.",
+   "ja": "保存できるのはWebページのみです。",
+   "ko": "웹페이지만 저장할 수 있어요.",
+   "nl": "Alleen webpagina's kunnen worden bewaard.",
+   "zh-Hans": "只能存储网页。",
+   "zh-Hant": "只能儲存網頁。"
+  },
+  "browser.folio.reasonNothingCaptured": {
+   "de": "Weder der Artikel noch eine Webseitenkopie konnten erfasst werden.",
+   "en": "Neither the article nor a webpage copy could be captured.",
+   "es": "No se pudo capturar ni el artículo ni una copia de la página web.",
+   "fr": "Ni l'article ni une copie de la page web n'ont pu être récupérés.",
+   "ja": "記事もWebページのコピーも取得できませんでした。",
+   "ko": "기사도 웹페이지 사본도 가져오지 못했어요.",
+   "nl": "Noch het artikel, noch een webpaginakopie kon worden vastgelegd.",
+   "zh-Hans": "文章和网页副本都无法获取。",
+   "zh-Hant": "文章內容和網頁副本都無法擷取。"
+  },
+  "browser.folio.reasonPageGone": {
+   "de": "Die Seite wurde geschlossen, bevor sie gesichert werden konnte.",
+   "en": "The page closed before it could be saved.",
+   "es": "La página se cerró antes de que pudiera guardarse.",
+   "fr": "La page s'est fermée avant d'avoir pu être enregistrée.",
+   "ja": "保存が完了する前にページが閉じられました。",
+   "ko": "저장이 끝나기 전에 페이지가 닫혔어요.",
+   "nl": "De pagina werd gesloten voordat deze kon worden bewaard.",
+   "zh-Hans": "此网页在存储完成前就已关闭。",
+   "zh-Hant": "網頁在儲存完成前已關閉。"
+  },
+  "browser.folio.reasonSaveTimedOut": {
+   "de": "Das Lesen der Seite hat zu lange gedauert.",
+   "en": "The page took too long to read.",
+   "es": "La página tardó demasiado en leerse.",
+   "fr": "La lecture de la page a pris trop de temps.",
+   "ja": "ページの読み取りに時間がかかりすぎました。",
+   "ko": "페이지를 읽는 데 시간이 너무 오래 걸렸어요.",
+   "nl": "Het lezen van de pagina duurde te lang.",
+   "zh-Hans": "读取此网页耗时过长。",
+   "zh-Hant": "讀取這個網頁的時間過久。"
+  },
+  "browser.folio.reasonWriteFailed": {
+   "de": "In den Folio-Ordner konnte nichts geschrieben werden.",
+   "en": "Nothing could be written to the Folio folder.",
+   "es": "No se pudo escribir nada en la carpeta de Folio.",
+   "fr": "Rien n'a pu être écrit dans le dossier Folio.",
+   "ja": "Folioフォルダに何も書き込めませんでした。",
+   "ko": "Folio 폴더에 아무것도 기록하지 못했어요.",
+   "nl": "Er kon niets naar de Folio-map worden geschreven.",
+   "zh-Hans": "无法向 Folio 文件夹写入任何内容。",
+   "zh-Hant": "無法將任何內容寫入 Folio 檔案夾。"
+  },
+  "browser.folio.savedPartialToast": {
+   "de": "Nur bereits geladene Inhalte gesichert",
+   "en": "Saved only what had loaded",
+   "es": "Solo se guardó lo que estaba cargado",
+   "fr": "Seul le contenu déjà chargé a été enregistré",
+   "ja": "読み込み済みの部分のみを保存しました",
+   "ko": "불러온 내용만 저장됐어요",
+   "nl": "Alleen bewaard wat al geladen was",
+   "zh-Hans": "仅存储了已加载的内容",
+   "zh-Hant": "只儲存了已載入的內容"
+  },
+  "browser.folio.savedToast": {
+   "de": "In Folio gesichert",
+   "en": "Saved to Folio",
+   "es": "Guardado en Folio",
+   "fr": "Enregistré dans Folio",
+   "ja": "Folioに保存しました",
+   "ko": "Folio에 저장됐어요",
+   "nl": "Bewaard in Folio",
+   "zh-Hans": "已存储到 Folio",
+   "zh-Hant": "已儲存到 Folio"
+  },
+  "browser.folio.savedWithoutArticleToast": {
+   "de": "Ohne Videoartikel gesichert",
+   "en": "Saved without video article",
+   "es": "Guardado sin artículo del video",
+   "fr": "Enregistré sans article de la vidéo",
+   "ja": "動画の記事なしで保存しました",
+   "ko": "영상 아티클 없이 저장됐어요",
+   "nl": "Bewaard zonder videoartikel",
+   "zh-Hans": "已存储，但未生成视频文章",
+   "zh-Hant": "已儲存，但沒有影片文章"
+  },
+  "browser.folio.savedWithoutWebpageToast": {
+   "de": "Ohne Webseitenkopie gesichert",
+   "en": "Saved without webpage copy",
+   "es": "Guardado sin copia de la página web",
+   "fr": "Enregistré sans copie de la page web",
+   "ja": "Webページのコピーなしで保存しました",
+   "ko": "웹페이지 사본 없이 저장됐어요",
+   "nl": "Bewaard zonder webpaginakopie",
+   "zh-Hans": "已存储，但无网页副本",
+   "zh-Hant": "已儲存，但沒有網頁副本"
+  },
+  "browser.folio.staleExtensionToast": {
+   "de": "Folio benötigt einen Browser-Neustart",
+   "en": "Folio needs a browser restart",
+   "es": "Folio necesita que reinicies el navegador",
+   "fr": "Folio nécessite un redémarrage du navigateur",
+   "ja": "Folioにはブラウザの再起動が必要です",
+   "ko": "Folio를 사용하려면 브라우저를 다시 시작해야 해요",
+   "nl": "Folio vereist een herstart van de browser",
+   "zh-Hans": "Folio 需要重新启动浏览器",
+   "zh-Hant": "Folio 需要重新啟動瀏覽器"
+  },
+  "browser.folio.undoAction": {
+   "de": "Widerrufen",
+   "en": "Undo",
+   "es": "Deshacer",
+   "fr": "Annuler",
+   "ja": "取り消す",
+   "ko": "실행 취소",
+   "nl": "Herstel",
+   "zh-Hans": "撤销",
+   "zh-Hant": "還原"
   },
   "browser.headerMoreMenu.downloadsAction": {
    "de": "Downloads\tCtrl+J",
@@ -7577,6 +7819,83 @@
    "zh-Hans": "开发者",
    "zh-Hant": "開發者"
   },
+  "settings.general.folio.autoSaveHintWindows": {
+   "de": "Wenn du ein YouTube-Video mit „Gefällt mir“ markierst oder auf X, Reddit oder Stack Overflow ein Lesezeichen setzt, wird die Seite ebenfalls hier gesichert. Alles bleibt auf diesem PC.",
+   "en": "Liking a YouTube video or bookmarking on X, Reddit, or Stack Overflow also saves that page here. Everything stays on this PC.",
+   "es": "Cuando le das Me gusta a un video de YouTube o agregas un marcador en X, Reddit o Stack Overflow, esa página también se guarda aquí. Todo se queda en este PC.",
+   "fr": "Aimer une vidéo YouTube ou ajouter un signet sur X, Reddit ou Stack Overflow enregistre aussi la page ici. Tout reste sur ce PC.",
+   "ja": "YouTubeの動画を高評価にしたり、X、Reddit、Stack Overflowでブックマークしたりすると、そのページもここに保存されます。すべてこのPC上にのみ保存されます。",
+   "ko": "YouTube 영상에 좋아요를 누르거나 X, Reddit, Stack Overflow에서 북마크하면 그 페이지도 여기에 저장돼요. 모든 데이터는 이 PC에만 보관돼요.",
+   "nl": "Een YouTube-video liken of bookmarken op X, Reddit of Stack Overflow bewaart die pagina ook hier. Alles blijft op deze pc.",
+   "zh-Hans": "在 YouTube 上点赞视频，或在 X、Reddit 或 Stack Overflow 上添加书签时，也会将该页面存储到这里。所有内容都只保留在这台电脑上。",
+   "zh-Hant": "為 YouTube 影片按讚，或在 X、Reddit 或 Stack Overflow 加入書籤時，也會將該網頁儲存到這裡。所有內容都會留在這部電腦上。"
+  },
+  "settings.general.folio.autoSaveSites": {
+   "de": "Websites auswählen…",
+   "en": "Choose sites…",
+   "es": "Seleccionar sitios…",
+   "fr": "Choisir les sites…",
+   "ja": "サイトを選択…",
+   "ko": "사이트 선택…",
+   "nl": "Kies sites…",
+   "zh-Hans": "选取网站…",
+   "zh-Hant": "選擇網站…"
+  },
+  "settings.general.folio.autoSaveToggle": {
+   "de": "Bei „Gefällt mir“ oder Lesezeichen auf unterstützten Websites sichern",
+   "en": "Save when you like or bookmark on supported sites",
+   "es": "Guardar al dar Me gusta o agregar un marcador en sitios compatibles",
+   "fr": "Enregistrer lorsque vous aimez ou ajoutez un signet sur les sites pris en charge",
+   "ja": "対応サイトで高評価やブックマークをしたときに保存",
+   "ko": "지원 사이트에서 좋아요나 북마크할 때 저장",
+   "nl": "Bewaar wanneer je liket of bookmarkt op ondersteunde sites",
+   "zh-Hans": "在支持的网站上点赞或添加书签时存储",
+   "zh-Hant": "在支援的網站按讚或加入書籤時儲存"
+  },
+  "settings.general.folio.folderHint": {
+   "de": "Bei jedem Sichern werden ein Markdown-Artikel und eine Webseitenkopie nebeneinander abgelegt. Profile können in ihren eigenen Einstellungen einen anderen Ordner festlegen.",
+   "en": "Each save writes a markdown article and a webpage copy side by side. Profiles can override this folder in their own settings.",
+   "es": "Cada guardado escribe un artículo en markdown y una copia de la página web, uno junto al otro. Los perfiles pueden reemplazar esta carpeta en su propia configuración.",
+   "fr": "Chaque enregistrement écrit un article Markdown et une copie de la page web, côte à côte. Les profils peuvent remplacer ce dossier dans leurs propres réglages.",
+   "ja": "保存するたびに、Markdownの記事とWebページのコピーが並んで書き込まれます。プロファイルごとの設定でこのフォルダを変更できます。",
+   "ko": "저장할 때마다 마크다운 아티클과 웹페이지 사본이 나란히 기록돼요. 프로필마다 자체 설정에서 이 폴더를 다르게 지정할 수 있어요.",
+   "nl": "Elke bewaaractie schrijft een markdown-artikel en een webpaginakopie naast elkaar. Profielen kunnen in hun eigen instellingen een andere map instellen.",
+   "zh-Hans": "每次存储都会并排写入一篇 Markdown 文章和一份网页副本。个人资料可在各自的设置中覆盖此文件夹。",
+   "zh-Hant": "每次儲存都會寫入一篇 Markdown 文章和一份網頁副本，兩者並列存放。各設定檔可以在自己的設定中覆寫此檔案夾。"
+  },
+  "settings.general.folio.folderTitle": {
+   "de": "Speicherort für gesicherte Seiten",
+   "en": "Save pages to",
+   "es": "Guardar páginas en",
+   "fr": "Enregistrer les pages dans",
+   "ja": "ページの保存先",
+   "ko": "페이지 저장 위치",
+   "nl": "Bewaar pagina's in",
+   "zh-Hans": "将页面存储到",
+   "zh-Hant": "將網頁儲存到"
+  },
+  "settings.general.folio.pickerMessage": {
+   "de": "Wähle einen Speicherort für gesicherte Seiten.",
+   "en": "Choose where saved pages are stored.",
+   "es": "Elige dónde se almacenan las páginas guardadas.",
+   "fr": "Choisissez l'emplacement de stockage des pages enregistrées.",
+   "ja": "保存したページの保存先を選択してください。",
+   "ko": "저장된 페이지를 보관할 위치를 선택해 주세요.",
+   "nl": "Kies waar bewaarde pagina's worden opgeslagen.",
+   "zh-Hans": "选取存储页面的位置。",
+   "zh-Hant": "請選擇網頁的儲存位置。"
+  },
+  "settings.general.folio.sectionTitle": {
+   "de": "Folio",
+   "en": "Folio",
+   "es": "Folio",
+   "fr": "Folio",
+   "ja": "Folio",
+   "ko": "Folio",
+   "nl": "Folio",
+   "zh-Hans": "Folio",
+   "zh-Hant": "Folio"
+  },
   "settings.general.language.displayLanguageTitle": {
    "de": "Anzeigesprache",
    "en": "Display language",
@@ -8372,6 +8691,17 @@
    "zh-Hans": "选择一个个人资料以查看其设置。",
    "zh-Hant": "選取設定檔以查看其設定。"
   },
+  "settings.profiles.details.folioLabel": {
+   "de": "Folio-Ordner",
+   "en": "Folio Folder",
+   "es": "Carpeta de Folio",
+   "fr": "Dossier Folio",
+   "ja": "Folioフォルダ",
+   "ko": "Folio 폴더",
+   "nl": "Folio-map",
+   "zh-Hans": "Folio 文件夹",
+   "zh-Hant": "Folio 檔案夾"
+  },
   "settings.profiles.details.searchEngineLabel": {
    "de": "Suchmaschine",
    "en": "Search Engine",
@@ -8415,6 +8745,39 @@
    "nl": "Kies een downloadlocatie voor dit profiel.",
    "zh-Hans": "为此个人资料选取下载位置。",
    "zh-Hant": "請為此設定檔選擇下載位置。"
+  },
+  "settings.profiles.folio.chooseFolder": {
+   "de": "Auswählen…",
+   "en": "Choose…",
+   "es": "Seleccionar…",
+   "fr": "Choisir…",
+   "ja": "選択…",
+   "ko": "선택…",
+   "nl": "Kies…",
+   "zh-Hans": "选取…",
+   "zh-Hant": "選擇…"
+  },
+  "settings.profiles.folio.pickerMessage": {
+   "de": "Wähle einen Speicherort für die gesicherten Seiten dieses Profils.",
+   "en": "Choose where this profile's saved pages are stored.",
+   "es": "Elige dónde se almacenan las páginas guardadas de este perfil.",
+   "fr": "Choisissez l'emplacement de stockage des pages enregistrées de ce profil.",
+   "ja": "このプロファイルで保存したページの保存先を選択してください。",
+   "ko": "이 프로필의 저장된 페이지를 보관할 위치를 선택해 주세요.",
+   "nl": "Kies waar de bewaarde pagina's van dit profiel worden opgeslagen.",
+   "zh-Hans": "为此个人资料选取存储页面的位置。",
+   "zh-Hant": "請為此設定檔選擇網頁的儲存位置。"
+  },
+  "settings.profiles.folio.sameAsGeneral": {
+   "de": "Wie „Allgemein“",
+   "en": "Same as General",
+   "es": "Igual que General",
+   "fr": "Identique à Général",
+   "ja": "「一般」と同じ",
+   "ko": "일반 설정과 동일",
+   "nl": "Zelfde als Algemeen",
+   "zh-Hans": "与通用设置相同",
+   "zh-Hant": "與「一般」設定相同"
   },
   "settings.profiles.footerHint": {
    "de": "Ein Profil ist ein eigener Satz aus Cookies, Verlauf, Erweiterungen und gespeicherten Daten. Jeder Space läuft in einem Profil; das Standardprofil kann nicht gelöscht werden.",

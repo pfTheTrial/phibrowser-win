@@ -49,6 +49,7 @@
 #include "phibrowser-win/client/phi_sync_settings_win.h"
 #include "phibrowser-win/client/phi_telemetry.h"
 #include "phibrowser-win/client/phi_theme_bus.h"
+#include "phibrowser-win/client/phi_toast.h"
 #include "phibrowser-win/client/phi_updater.h"
 #include "phibrowser-win/client/phi_url_rules_window.h"
 #include "phibrowser-win/client/phi_version.h"
@@ -1836,6 +1837,11 @@ void PhiCoordinator::OnExtensionMessage(const char* request_id,
   }
 }
 
+  if (folio_.HandleExtensionMessage(
+          id, sender, message_type,
+          payload_json && *payload_json ? payload_json : "{}")) {
+    return;
+  }
 PhiShellWindow* PhiCoordinator::WindowShowingTab(TabId tab_id) {
   const std::optional<BrowserId> browser = window_model_.BrowserOfTab(tab_id);
   if (!browser) {
@@ -1923,6 +1929,148 @@ bool PhiCoordinator::SurfaceFaviconForOrigin(int tab_id,
   if (!panel || !framework_) {
     return false;
   }
+bool PhiCoordinator::CanSaveToFolio(int tab_id) const {
+  return folio_.CanSave(tab_id);
+}
+
+void PhiCoordinator::RequestSaveToFolio(int tab_id) {
+  folio_.Save(tab_id);
+}
+
+void PhiCoordinator::RequestOpenFolio() {
+  folio_.OpenLibrary();
+}
+
+// PhiFolio::Host --------------------------------------------------------------
+
+void PhiCoordinator::RespondToExtension(const std::string& request_id,
+                                        const std::string& json) {
+  if (framework_ && !request_id.empty()) {
+    framework_->RespondToExtensionMessage(request_id.c_str(), json.c_str());
+  }
+}
+
+bool PhiCoordinator::BroadcastToExtensions(const std::string& type,
+                                           const std::string& payload_json) {
+  return framework_ &&
+         framework_->BroadcastToExtensions(type.c_str(), payload_json.c_str());
+}
+
+std::optional<PhiFolio::TabInfo> PhiCoordinator::FolioFindTab(
+    int tab_id) const {
+  const std::optional<BrowserId> browser =
+      window_model_.BrowserOfTab(TabId{tab_id});
+  if (!browser) {
+    return std::nullopt;
+  }
+  const PhiWindowModel::Tab* tab = window_model_.FindTab(*browser, TabId{tab_id});
+  if (!tab) {
+    return std::nullopt;
+  }
+  PhiFolio::TabInfo info;
+  info.window_id = browser->value;
+  info.url = tab->url;
+  info.title = tab->title;
+  return info;
+}
+
+int64_t PhiCoordinator::FolioActiveWindow() const {
+  // The window in front, else the first user window.
+  const HWND foreground = ::GetForegroundWindow();
+  PhiShellWindow* chosen = nullptr;
+  for (PhiShellWindow* controller : registry_.Controllers()) {
+    if (!controller->active_browser_id().valid()) {
+      continue;
+    }
+    if (!chosen || controller->shell_hwnd() == foreground) {
+      chosen = controller;
+    }
+  }
+  return chosen ? chosen->active_browser_id().value : 0;
+}
+
+std::string PhiCoordinator::FolioProfileOfWindow(int64_t window_id) const {
+  if (!framework_ || window_id == 0) {
+    return std::string();
+  }
+  const char* json = framework_->WindowProfileJson(window_id);
+  std::optional<base::DictValue> profile =
+      base::JSONReader::ReadDict(json ? json : "", base::JSON_PARSE_RFC);
+  const std::string* id = profile ? profile->FindString("id") : nullptr;
+  return id ? *id : std::string();
+}
+
+std::vector<int64_t> PhiCoordinator::FolioWindowPerProfile() const {
+  std::vector<int64_t> windows;
+  std::set<std::string> profiles;
+  for (PhiShellWindow* controller : registry_.Controllers()) {
+    const BrowserId browser = controller->active_browser_id();
+    if (!browser.valid()) {
+      continue;
+    }
+    const std::string profile = FolioProfileOfWindow(browser.value);
+    if (!profile.empty() && profiles.insert(profile).second) {
+      windows.push_back(browser.value);
+    }
+  }
+  return windows;
+}
+
+HWND PhiCoordinator::FolioShellForWindow(int64_t window_id) const {
+  if (PhiShellWindow* window =
+          registry_.ControllerForBrowser(BrowserId{window_id})) {
+    return window->shell_hwnd();
+  }
+  return ShellForFocus();
+}
+
+void PhiCoordinator::FolioShowToast(int64_t window_id,
+                                    const std::wstring& title,
+                                    const std::wstring& message,
+                                    int duration_ms,
+                                    const std::wstring& action_label,
+                                    std::function<void()> action) {
+  PhiShellWindow* window =
+      registry_.ControllerForBrowser(BrowserId{window_id});
+  if (!window) {
+    window = registry_.ControllerForBrowser(BrowserId{FolioActiveWindow()});
+  }
+  if (!window || !window->shell_hwnd()) {
+    return;
+  }
+  PhiShowToastWithAction(window->shell_hwnd(), window->CurrentPalette(), title,
+                         message, duration_ms, action_label,
+                         std::move(action));
+}
+
+PhiPreferences& PhiCoordinator::FolioPreferences() {
+  return preferences_;
+}
+
+void PhiCoordinator::FolioOpenTab(const std::string& url) {
+  const int64_t window = FolioActiveWindow();
+  if (framework_ && window != 0) {
+    framework_->OpenTab(BrowserId{window}, url.c_str());
+  }
+}
+
+void PhiCoordinator::SetFolioGlobalFolder(const std::string& path) {
+  preferences_.SetFolioGlobalFolder(path);
+}
+
+void PhiCoordinator::SetFolioFolderOverride(const std::string& profile_id,
+                                            const std::string& path) {
+  preferences_.SetFolioFolderOverride(profile_id, path);
+}
+
+void PhiCoordinator::SetFolioAutoSaveOnSiteActions(bool enabled) {
+  preferences_.SetFolioAutoSaveOnSiteActions(enabled);
+}
+
+void PhiCoordinator::OpenFolioAutoSaveSites() {
+  folio_.OpenAutoSaveSites();
+}
+
   // A reader shows the ORIGIN page (reader.html has no favicon of its
   // own); a peek shows the page it previews.
   int64_t window_id = panel->window_id();
@@ -3160,6 +3308,11 @@ void PhiCoordinator::OnSpacesChanged(PhiSpaceManager::SpacesChange what) {
       registry_.InvalidateAll();
       break;
     case SpacesChange::kTheme:
+    case PreferenceChange::kFolio:
+      // The opt-in arms Mirage's site rules; a folder change needs nothing
+      // live (each save resolves its folder when it starts).
+      folio_.BroadcastArmedState();
+      break;
       for (PhiShellWindow* controller : registry_.Controllers()) {
         controller->ApplyPalette();
       }

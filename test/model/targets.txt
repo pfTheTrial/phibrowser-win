@@ -136,6 +136,9 @@ sidebar_drag_test.cc         phi_sidebar_model.cc
 # and reaches it through stubs/base/no_destructor.h, the same mechanism
 # raw_ptr_exclusion.h already uses.
 util_test.cc                 phi_util.cc phi_log.cc phi_theme.cc
+# Folio's pure rules (docs/folio-port.md): the broker's file-name jail and
+# the listing/rename helpers.
+folio_paths_test.cc          phi_folio_paths.cc
 # The sync conformance gate (docs/user-data-parity.md, phase S0): the C++
 # port of the Mac's sync merge core replayed against the vectors the Mac's
 # own code wrote (test/sync-vectors; argument ../sync-vectors).

@@ -7,6 +7,7 @@
 
 #include <windows.h>
 
+#include <functional>
 #include <string>
 
 #include "phibrowser-win/client/phi_theme.h"
@@ -22,6 +23,18 @@ void PhiShowToast(HWND owner,
                   const std::wstring& title,
                   const std::wstring& message = std::wstring(),
                   int duration_ms = 3000);
+
+// The same toast with one action button at its trailing edge (the Mac's
+// OverlayToastAction: Folio's Undo and Add Note). Such a toast takes clicks
+// — only the button does anything — and still never takes focus. A click
+// on the button runs `action` once and dismisses the toast.
+void PhiShowToastWithAction(HWND owner,
+                            const PhiPalette& palette,
+                            const std::wstring& title,
+                            const std::wstring& message,
+                            int duration_ms,
+                            const std::wstring& action_label,
+                            std::function<void()> action);
 
 }  // namespace phi_client
 

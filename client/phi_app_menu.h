@@ -155,6 +155,10 @@ enum : UINT {
   // Spaces ▸ Close Incognito Space — the Mac Spaces menu's row, present
   // while an Incognito Space is the active one.
   kCmdCloseIncognitoSpace,
+  // Folio (docs/folio-port.md): save the active page as Markdown + MHTML,
+  // and open the library (Mirage's library.html). The Mac's File menu rows.
+  kCmdSaveToFolio,
+  kCmdOpenFolio,
   // Layout ▸ Show sidebar — the same toggle as kCmdToggleSidebar, listed
   // under its own name so the remote surface can address the row.
   kCmdShowBookmarksBar = kCmdAlwaysShowBookmarkBar,

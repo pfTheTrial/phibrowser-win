@@ -172,6 +172,12 @@ $CXX ../../client/phi_sidebar_model.cc sidebar_drag_test.cc \
 $CXX ../../client/phi_util.cc ../../client/phi_log.cc \
      ../../client/phi_theme.cc util_test.cc -o /tmp/phi_util_test
 /tmp/phi_util_test
+# Folio's pure rules (docs/folio-port.md): the broker's file-name jail, the
+# listing's frontmatter cut and UTF-8 trim, the free-basename bump, the
+# highlights check Undo yields to and the saveable-URL gate.
+$CXX ../../client/phi_folio_paths.cc folio_paths_test.cc \
+     -o /tmp/phi_folio_paths_test
+/tmp/phi_folio_paths_test
 # Bucket D's auth (docs/login-port.md): the pure half of the Auth0 sign-in —
 # base64url, SHA-256 and the PKCE challenge (RFC 7636's vectors), the
 # loopback callback's request line, the JWT payload split and the tenant ->
