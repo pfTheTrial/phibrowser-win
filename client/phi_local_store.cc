@@ -1773,9 +1773,19 @@ void LocalStore::MigratePins(PinScope from,
   }
 
   // The inactive target's old rows were backups, not input: they go, after
-  // the insertion (dormant Profile rows can be both).
-  std::set<std::string> deleted_targets(target_guids.begin(),
-                                        target_guids.end());
+  // the insertion (dormant Profile rows can be both). The dormant rows that
+  // outlive the deletion are resolved BEFORE it: the Mac keeps object
+  // identity across context.delete, but here a deleted row's map node is
+  // gone, and reading its guid afterwards was a use-after-free (the pinned
+  // suite's Space -> Profile change crashed the client, 2026-10-16).
+  const std::set<std::string> deleted_targets(target_guids.begin(),
+                                              target_guids.end());
+  std::vector<Tab*> dormant_survivors;
+  for (Tab* tab : dormant_source) {
+    if (!deleted_targets.count(tab->guid)) {
+      dormant_survivors.push_back(tab);
+    }
+  }
   for (const std::string& g : target_guids) {
     DeleteTab(g);
   }
@@ -1794,8 +1804,8 @@ void LocalStore::MigratePins(PinScope from,
       }
     }
   } else {
-    for (Tab* tab : dormant_source) {
-      if (!deleted_targets.count(tab->guid) && tab->pin_dormant) {
+    for (Tab* tab : dormant_survivors) {
+      if (tab->pin_dormant) {
         tab->pin_dormant = false;
         PutTab(*tab);
       }

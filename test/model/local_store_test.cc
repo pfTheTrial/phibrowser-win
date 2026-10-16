@@ -362,6 +362,34 @@ void TestDormantPins() {
   CHECK(!store.FindTab(lonely)->pin_dormant);
 }
 
+// Space -> Profile with a dormant Profile row: the row is live input (it is
+// rebuilt into the Profile collection) AND a target-scope backup (it goes).
+// The port read the deleted row's guid to tell the two apart and crashed the
+// client on every such change (use-after-free, 2026-10-16); the survivors are
+// resolved before the deletion now.
+void TestDormantPinSpaceToProfile() {
+  FakeEnv env;
+  LocalStore store(env.Make());
+  CHECK(store.Open(TempDir("dormant_profile")) == LocalStore::OpenResult::kOk);
+  store.EnsureDefaultSpace("Default");
+  LocalStore::PinCreate in;
+  in.url = "https://lonely.example/";
+  in.title = "lonely";
+  in.profile_id = "Profile 9";
+  in.space_id = "nowhere";
+  const std::string lonely = store.CreatePin(in);
+  CHECK(store.ChangePinScope(PinScope::kSpace, "", ""));
+  CHECK(store.FindTab(lonely)->pin_dormant);
+  CHECK(store.ChangePinScope(PinScope::kProfile, "", ""));
+  CHECK(store.pin_scope() == PinScope::kProfile);
+  // The old row was the Profile collection's backup and is gone; its copy
+  // carries the lineage, active and awake.
+  CHECK(store.FindTab(lonely) == nullptr);
+  const auto rebuilt = store.ActivePins("Profile 9", "nowhere");
+  CHECK(Titles(rebuilt) == (std::vector<std::string>{"lonely"}));
+  CHECK(rebuilt[0]->pin_lineage_id == lonely && !rebuilt[0]->pin_dormant);
+}
+
 void TestTransferPin() {
   FakeEnv env;
   LocalStore store(env.Make());
@@ -479,6 +507,7 @@ int main() {
   TestMoveBookmarksToSpace();
   TestPins();
   TestDormantPins();
+  TestDormantPinSpaceToProfile();
   TestTransferPin();
   TestSpaceCascadeAndProfileChange();
   TestUrlRuleEdits();
