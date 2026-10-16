@@ -48,8 +48,10 @@ test('persist: space ids keep increasing after a restart', async () => {
   ctl = await openControl()
   try {
     const second = await ctl.send('agentSpace.spaces.create', { name: 'Seq B' })
-    assert(Number(second.id) > Number(first.id),
-           `new id ${second.id} continues past ${first.id} (no reuse)`)
+    // Space ids are UUIDs since the LocalStore V13 port (docs/user-data-parity.md),
+    // so "increasing" means: a fresh id, never the one from before the restart.
+    assert(second.id && second.id !== first.id,
+           `new id ${second.id} is not ${first.id} (no reuse after restart)`)
     const { windows } = await ctl.send('agentSpace.list')
     const spaces = (await ctl.send('agentSpace.spaces.list',
                                    { windowId: windows[0] })).spaces

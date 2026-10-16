@@ -240,8 +240,12 @@ $CXX ../../client/phi_key_crypto.cc key_crypto_test.cc $BSSL \
 # The key layer's managers (AccountKeyManager, approvals, profile keys, the
 # controller's mapping pass and pairing gate) device to device, against an
 # in-memory /keys/v1 that keeps the server's refusals.
-$CXX ../../client/phi_key_crypto.cc ../../client/phi_sync_keys.cc \
-     sync_keys_test.cc $BSSL -o /tmp/phi_sync_keys_test
+# -Wno-dangling-pointer: g++ 15 misreads the braced temporary vector passed
+# to ApplyDecisions (taken by const&, used only inside the call) as outliving
+# the statement.
+$CXX -Wno-dangling-pointer ../../client/phi_key_crypto.cc \
+     ../../client/phi_sync_keys.cc sync_keys_test.cc $BSSL \
+     -o /tmp/phi_sync_keys_test
 /tmp/phi_sync_keys_test
 # Phi native sync's engine (docs/user-data-parity.md S5): the settings and
 # Space paths device to device through a fake sync server that keeps the
