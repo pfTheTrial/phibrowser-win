@@ -213,9 +213,12 @@ Add to `phi_framework_api.h`, gated the same way as the other
 ## 5. What was built (2026-09-09)
 
 Decisions taken as recommended: optional account, flat stores, no
-onboarding gate, telemetry untouched, Chromium hook deferred. Tenant by
-channel: `PHI_WIN_CHANNEL` "stable" ⇒ production, anything else ⇒ staging
-(the Mac's Release/Nightly split); env overrides only under `kPhiDevHooks`.
+onboarding gate, telemetry untouched, Chromium hook deferred. Tenant: was
+by channel (`PHI_WIN_CHANNEL` "stable" ⇒ production, anything else ⇒
+staging, the Mac's Release/Nightly split); since 2026-10-16 every ring
+signs in against PRODUCTION — Windows testers hold production accounts —
+and the ring (feed pairing, feedback and analytics channel) is untouched.
+Staging is reached only through the env overrides, under `kPhiDevHooks`.
 
 New files:
 - `client/phi_auth_codec.{h,cc}` — the pure half of the sign-in: base64url,

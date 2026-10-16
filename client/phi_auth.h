@@ -42,10 +42,10 @@ struct PhiAuthUser {
 // PhiAuth.dat — the PhiCredentials.dat pattern; access tokens live in
 // memory only.
 //
-// Tenant: the staging application for the canary channel, production for
-// stable (the Mac's Nightly/Release split, PHI_WIN_CHANNEL). A dev-hooks
-// build (kPhiDevHooks) also honours PHI_AUTH0_DOMAIN / _CLIENT_ID /
-// _AUDIENCE and PHI_ACCOUNT_BASE_URL.
+// Tenant: production for every ring (since 2026-10-16; the canary ring no
+// longer follows the Mac Nightly onto staging). A dev-hooks build
+// (kPhiDevHooks) also honours PHI_AUTH0_DOMAIN / _CLIENT_ID / _AUDIENCE and
+// PHI_ACCOUNT_BASE_URL, which is how staging is still reached.
 //
 // Threading: SINGLE WRITER. The session (signed_in_, user_, refresh_token_)
 // is UI-thread state, read by the coordinator and written only by

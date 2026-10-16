@@ -42,15 +42,17 @@ struct Tenant {
   const char* client_id;
   const char* audience;
 };
-constexpr Tenant kStagingTenant = {
+[[maybe_unused]] constexpr Tenant kStagingTenant = {
     "auth.stag.phibrowser.com", "360ZYEcp1T2AexR9rzoUkIn0VTVWc0pv",
     "https://phibrowser-stag.us.auth0.com/api/v2/"};
 constexpr Tenant kProductionTenant = {
     "auth.phibrowser.com", "jrFgfm2FA8DoPBzs4ysOePZKwFCcDbo4",
     "https://phibrowser.us.auth0.com/api/v2/"};
-constexpr bool kStableChannel = std::string_view(PHI_WIN_CHANNEL) == "stable";
-constexpr const Tenant& kTenant =
-    kStableChannel ? kProductionTenant : kStagingTenant;
+// Every Windows ring signs in against production (decided 2026-10-16): the
+// canary ring used to follow the Mac Nightly onto staging, but Windows
+// testers hold production accounts and their data lives there. The staging
+// tenant stays reachable through the dev-hooks overrides below.
+constexpr const Tenant& kTenant = kProductionTenant;
 
 // The Mac WebAuth's scope: offline_access buys the refresh token.
 constexpr char kScope[] = "openid profile email offline_access";
