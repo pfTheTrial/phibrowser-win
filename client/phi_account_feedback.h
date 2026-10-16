@@ -41,10 +41,15 @@ class PhiAccountAndFeedback : public PhiFeedbackHost {
   class Host {
    public:
     virtual ~Host() = default;
-    // Opens `url` as a foreground tab in the FIRST user window (the hosted
-    // login — Phi IS the browser RFC 8252 wants the flow to ride in). A no-op
-    // when no user window is up.
+    // Opens `url` as a foreground tab in the FIRST user window (the account
+    // site's own pages, the avatar editor). A no-op when no user window is up.
     virtual void OpenUrlInFirstUserSlot(const std::string& url) = 0;
+    // Loads the hosted login at `url` into the onboarding window's embedded
+    // OFF-THE-RECORD browser (opening the window on its signing-in page when
+    // it is not up). The tenant's session cookie therefore never lands in a
+    // browsing profile: it dies with that browser. The redirect to the
+    // callback scheme comes back through HandleAuthCallbackUrl.
+    virtual void OpenHostedLogin(const std::string& url) = 0;
     // Raises the shell showing `browser_window_id`.
     virtual void FocusWindowForBrowser(int64_t browser_window_id) = 0;
     // The session or profile state moved: the Account pane re-reads it.
@@ -95,10 +100,8 @@ class PhiAccountAndFeedback : public PhiFeedbackHost {
   const PhiAccountProfileService& Profile() const { return profile_; }
   // The avatar as a `px` circle (premultiplied BGRA), empty when none.
   const std::vector<uint8_t>& AccountAvatarCircle(int px);
+  // Starts the hosted login (Host::OpenHostedLogin opens it).
   void RequestSignIn();
-  // The same, with the hosted login opened through `open_url` instead of
-  // a tab of the first user window — the onboarding window embeds it.
-  void RequestSignInVia(std::function<void(const std::string& url)> open_url);
   void RequestCancelSignIn();
   // The framework's auth-callback throttle saw a navigation to the callback
   // scheme (PhiFrameworkDelegate::OnAuthCallbackUrl, inside the throttle —

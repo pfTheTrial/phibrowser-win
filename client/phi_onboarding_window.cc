@@ -1474,6 +1474,10 @@ void PhiOnboardingWindow::Activate(const Hit& hit) {
       break;
     case Control::kCancelSignIn:
       host_->OnboardingCancelSignIn();
+      if (standalone_sign_in_) {
+        host_->OnboardingClosed();  // Dismissed; the window may be gone now.
+        break;
+      }
       ShowPage(Page::kLogin);
       break;
     case Control::kLegalCheck:
@@ -1778,6 +1782,10 @@ void PhiOnboardingWindow::OnAccountChanged() {
         return;
       }
       AdvanceTo(PageForPhase(phase));
+      return;
+    }
+    if (standalone_sign_in_) {
+      host_->OnboardingClosed();  // Refused: the Settings pane shows the note.
       return;
     }
     ShowPage(Page::kLogin);  // Refused or abandoned: the note shows there.

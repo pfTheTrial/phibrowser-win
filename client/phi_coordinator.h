@@ -1066,6 +1066,7 @@ class PhiCoordinator : public SidebarHost,
 
   // PhiAccountAndFeedback::Host:
   void OpenUrlInFirstUserSlot(const std::string& url) override;
+  void OpenHostedLogin(const std::string& url) override;
   void NoteAccountChanged() override;
   // The shared store-tab/split bodies behind the menu (append, bookmark
   // unbound) and drag (placed + bound) entry points.

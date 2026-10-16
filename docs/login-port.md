@@ -402,3 +402,49 @@ turn of its own (`WM_PHI_OPEN_ONBOARDING`).
 (test rig). Rig: `PhiFxLaunchOobe` launches a fresh profile at
 `C:\phi-fx-oobe`; `set-shot.ps1` takes `PHI_SETSHOT_CLASS` / `_HWND`.
 `seed-fx-prefs.sh` seeds `skipOnboarding` so the suites run ungated.
+
+## 9. The hosted login goes off the record (2026-10-16)
+
+Jixiang: "run the hosted login in an off-the-record browser." Until now the
+Auth0 pages ran in a browsing profile — the onboarding's embedded browser in
+`Default`, a Settings ▸ You sign-in as a tab of the first user Space — so the
+tenant's SSO cookie persisted in that profile's jar next to the user's own
+cookies, and sign-out depended on the logout page landing in the right jar.
+
+**Now**: `RequestOnboardingBrowser` asks for the embedded browser with
+`incognito=true`. The framework's `kSpace + incognito` answer is a window in
+its Incognito Space OTR profile (`CreateIncognitoSpaceBrowser`), which dies
+with its last window — this one, unless an Incognito Space is open, in which
+case the cookie lives until that Space closes. The Auth0 cookie never reaches
+a persistent jar.
+
+**One path for every sign-in**: `PhiAccountAndFeedback::RequestSignIn` →
+`Host::OpenHostedLogin(url)` → `PhiCoordinator::OpenHostedLogin`, which opens
+the onboarding window on its SigningIn page when it is not up (a guest from
+Settings ▸ You, a reauthentication-required account's "Sign in again", the
+feedback form, `agentSpace.account.signIn`) and navigates the embedded
+browser. Such a window is a **standalone sign-in**
+(`PhiOnboardingWindow::SetStandaloneSignIn`): cancel, a refused sign-in or
+closing the window dismiss it (and abandon the attempt) instead of showing
+the gate's Login page; success runs the usual `OnAccountChanged` route
+(finished account ⇒ `OnboardingFinished` ⇒ `GrantAccess`, which closes the
+window and its browser; a new account ⇒ its remaining pages).
+`OpenUrlInFirstUserSlot` remains for the account site's own pages (avatar
+editor). `RequestSignInVia` is gone.
+
+**Sign-out** no longer opens the tenant's logout page: there is no cookie in
+a browsing profile to end; the refresh-token revoke stays. `LogoutUrl()` is
+kept but unused. A cookie left by an OLDER build in `Default` is not wiped
+(it only matters to a tab the user opens on the tenant domain by hand).
+
+**Trade-off**: the tenant asks for credentials on every sign-in (no SSO
+cookie survives). The refresh token in `PhiAuth.dat` is the session; this
+only shows after an explicit sign-out.
+
+**Sign-out from Settings** (box test, Jixiang): the Settings window stayed up
+over the Login page. `RequireLogin` now posts it `WM_CLOSE` (which hides it)
+along with hiding the shells.
+
+**Harness**: `agentSpace.account.signIn` no longer needs a user window;
+`agentSpace.onboarding.drive {action:"cancel"}` on a standalone window
+closes it.

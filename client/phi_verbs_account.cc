@@ -66,11 +66,8 @@ PhiVerbResult PhiControlDispatcher::VerbAccountStatus(
 
 PhiVerbResult PhiControlDispatcher::VerbAccountSignIn(
     const PhiVerbContext& ctx) {
-  // The hosted login rides in the first user window; without one there is
-  // nowhere to open it.
-  if (!coordinator_->registry().FirstUserSlot().valid()) {
-    return PhiVerbResult::Fail(PhiErrorCode::kWindowNotOpen);
-  }
+  // The hosted login rides in the onboarding window's off-the-record
+  // browser, which needs no user window.
   coordinator_->account().RequestSignIn();
   base::DictValue out;
   out.Set("signingIn", coordinator_->auth().signing_in());

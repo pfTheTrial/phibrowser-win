@@ -3725,6 +3725,13 @@ void PhiCoordinator::RequireLogin() {
       ::PostMessageW(controller->shell_hwnd(), WM_CLOSE, 0, 0);
     }
   }
+  // The Settings window (whose Sign out usually brought us here) belongs to
+  // the signed-in session: hidden with the shells, not left over the Login
+  // page. Posted — this runs inside its own click handler. Its WM_CLOSE
+  // hides it; reopening after the sign-in is instant.
+  if (const HWND settings = PhiSettingsWindow::Handle()) {
+    ::PostMessageW(settings, WM_CLOSE, 0, 0);
+  }
   OpenOnboarding(PhiOnboardingWindow::Page::kLogin);
 }
 
@@ -3782,11 +3789,15 @@ void PhiCoordinator::RequestOnboardingBrowser() {
   PendingCreation pending;
   pending.onboarding = true;
   onboarding_browser_pending_ =
-      // kSpace: a plain NewEmptyWindow in the named profile (kUser needs a
-      // source window to take the profile from, and there is none behind
-      // the gate). The pending marker, not the kind, decides the hosting.
+      // kSpace (kUser needs a source window to take the profile from, and
+      // there is none behind the gate) and OFF THE RECORD: the framework
+      // answers with a window in its Incognito Space OTR profile, so the
+      // tenant's session cookie never reaches a browsing profile and goes
+      // when that OTR profile's last window closes (this one, unless an
+      // Incognito Space is open). The pending marker, not the kind or the
+      // incognito bit, decides the hosting.
       RequestCreation(phi_framework::WindowKind::kSpace, "Default",
-                      /*incognito=*/false, BrowserId(), std::move(pending))
+                      /*incognito=*/true, BrowserId(), std::move(pending))
           .valid();
 }
 
@@ -3826,12 +3837,27 @@ void PhiCoordinator::ReconcileAccessAfterAuth() {
 }
 
 void PhiCoordinator::OnboardingSignIn() {
-  RequestOnboardingBrowser();
-  account_.RequestSignInVia([this](const std::string& url) {
-    if (onboarding_) {
-      onboarding_->NavigateEmbedded(url);
+  account_.RequestSignIn();  // Lands in OpenHostedLogin below.
+}
+
+void PhiCoordinator::OpenHostedLogin(const std::string& url) {
+  // Every sign-in — the gate's Login page, Settings ▸ You, the feedback
+  // form, the test rig — rides in the onboarding window's embedded
+  // off-the-record browser. Opened here when it is not up (a guest or a
+  // reauthentication-required account signing in over the browser): a
+  // STANDALONE sign-in, whose cancel or refusal dismisses the window rather
+  // than falling back to the gate's Login page.
+  if (!onboarding_) {
+    OpenOnboarding(PhiOnboardingWindow::Page::kSigningIn);
+    if (!onboarding_) {
+      return;
     }
-  });
+    onboarding_->SetStandaloneSignIn(true);
+  } else if (onboarding_->page() != PhiOnboardingWindow::Page::kSigningIn) {
+    onboarding_->ShowPage(PhiOnboardingWindow::Page::kSigningIn);
+  }
+  RequestOnboardingBrowser();
+  onboarding_->NavigateEmbedded(url);
 }
 
 void PhiCoordinator::OnboardingCancelSignIn() {
@@ -3878,7 +3904,13 @@ void PhiCoordinator::OnboardingFinished(bool share_metrics) {
 
 void PhiCoordinator::OnboardingClosed() {
   if (CanUseBrowser()) {
-    CloseOnboarding();  // Onboarding over a usable browser: just dismissed.
+    // Onboarding over a usable browser: just dismissed. A sign-in still
+    // pending loses its browser with the window, so it is abandoned here
+    // (the Settings pane's "finish signing in" note would otherwise stay).
+    if (account_.auth().signing_in()) {
+      account_.RequestCancelSignIn();
+    }
+    CloseOnboarding();
     return;
   }
   // Behind the gate the window IS the app: closing it quits. Every browser
@@ -4664,10 +4696,10 @@ void PhiCoordinator::AdoptCreatedWindow(
     kind = WindowKind::kUser;
   }
   if (pending && pending->onboarding) {
-    // The onboarding window's embedded browser — a plain browser (a shadow
-    // one skips activation and could never take the keyboard), reparented
-    // into that window here (inside the announcement: nothing else) and
-    // navigated on a later turn. Its bounds are a child's inside a dialog:
+    // The onboarding window's embedded browser — a plain off-the-record
+    // browser (a shadow one skips activation and could never take the
+    // keyboard), reparented into that window here (inside the announcement:
+    // nothing else) and navigated on a later turn. Its bounds are a child's inside a dialog:
     // "space.agent" keeps them out of the profile's saved placement, as an
     // agent window's are.
     onboarding_browser_pending_ = false;

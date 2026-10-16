@@ -152,23 +152,18 @@ const std::vector<uint8_t>& PhiAccountAndFeedback::AccountAvatarCircle(
 
 void PhiAccountAndFeedback::RequestSignIn() {
   auth_.BeginSignIn([this](const std::string& url) {
-    // The hosted login opens as an ordinary Phi tab; its redirect to the
-    // callback scheme comes back through HandleAuthCallbackUrl.
-    host_.OpenUrlInFirstUserSlot(url);
+    // The hosted login rides in the onboarding window's off-the-record
+    // browser, never a browsing-profile tab (its cookies would persist
+    // there); its redirect to the callback scheme comes back through
+    // HandleAuthCallbackUrl.
+    host_.OpenHostedLogin(url);
   });
   sign_in_in_flight_ = auth_.signing_in();
   host_.NoteAccountChanged();
 }
 
-void PhiAccountAndFeedback::RequestSignInVia(
-    std::function<void(const std::string& url)> open_url) {
-  auth_.BeginSignIn(std::move(open_url));
-  sign_in_in_flight_ = auth_.signing_in();
-  host_.NoteAccountChanged();
-}
-
 void PhiAccountAndFeedback::RequestCancelSignIn() {
-  auth_.CancelSignIn();  // Notifies; the hosted-login tab is the user's.
+  auth_.CancelSignIn();  // Notifies; the onboarding window closes its browser.
 }
 
 bool PhiAccountAndFeedback::HandleAuthCallbackUrl(const std::string& url) {
@@ -176,11 +171,9 @@ bool PhiAccountAndFeedback::HandleAuthCallbackUrl(const std::string& url) {
 }
 
 void PhiAccountAndFeedback::RequestSignOut() {
-  // The tenant's own session ends through its logout page; only worth a
-  // tab when the tenant still has a session to end (a reauthentication-
-  // required session is already dead there).
-  const bool tenant_session = auth_.signed_in() && !auth_.reauth_required();
-  const std::string logout_url = auth_.LogoutUrl();
+  // No logout page: the tenant's session cookie lived in the off-the-record
+  // login browser and died with it, so there is nothing in a browsing
+  // profile to end. The refresh token is revoked below.
   // The account's queued feedback (description, page URL, attachments)
   // does not outlive its sign-out on a shared machine.
   const std::string signed_out_user =
@@ -194,9 +187,6 @@ void PhiAccountAndFeedback::RequestSignOut() {
   auth_.SignOut();  // Revokes the refresh token, notifies.
   profile_.Clear();
   avatar_edit_pending_ = false;
-  if (tenant_session) {
-    host_.OpenUrlInFirstUserSlot(logout_url);
-  }
   host_.NoteAccountChanged();
   SyncFeedbackAccount();
   PhiFeedbackOutbox::Get().PurgeAccount(signed_out_user);

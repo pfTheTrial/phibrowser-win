@@ -102,6 +102,10 @@ class PhiOnboardingWindow : public PhiSecondaryWindow {
   // settled): the step on screen is paused, not completed.
   void ShowPage(Page page);
   Page page() const { return page_; }
+  // A sign-in requested over a usable browser (Settings ▸ You, the feedback
+  // form): the window exists for the hosted login alone, so a cancelled or
+  // refused sign-in dismisses it instead of showing the gate's Login page.
+  void SetStandaloneSignIn(bool standalone) { standalone_sign_in_ = standalone; }
   // Phi is exiting while this window is up: the funnel's interruption.
   void NoteAppTerminating();
 
@@ -259,6 +263,7 @@ class PhiOnboardingWindow : public PhiSecondaryWindow {
   RAW_PTR_EXCLUSION PhiPreferences* prefs_;
   RAW_PTR_EXCLUSION PhiAccountAndFeedback* account_;
   Page page_ = Page::kLogin;
+  bool standalone_sign_in_ = false;
   std::vector<Hit> hits_;
   // Per-page state.
   bool legal_checked_ = false;

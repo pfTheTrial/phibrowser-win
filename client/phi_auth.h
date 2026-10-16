@@ -97,13 +97,14 @@ class PhiAuth {
 
   // Drops the local session (PhiAuth.dat and memory) and revokes the
   // refresh token at the tenant (fire-and-forget, the Mac's
-  // startRefreshTokenRevocationForLogout). The tenant's SSO cookie is the
-  // caller's business: open LogoutUrl() in a tab. UI thread.
+  // startRefreshTokenRevocationForLogout). The tenant's SSO cookie lived in
+  // the off-the-record login browser and went with it: nothing to end. UI
+  // thread.
   void SignOut();
   // https://<domain>/v2/logout?client_id=…&returnTo=<callback> — ends the
-  // hosted-login session so the next sign-in asks for credentials again,
-  // and returns to the callback, which HandleCallbackUrl acknowledges (and
-  // the framework's throttle then retires the tab).
+  // hosted-login session and returns to the callback, which
+  // HandleCallbackUrl acknowledges. Unused since the login went off the
+  // record (kept for the dev hooks and a persistent-profile fallback).
   std::string LogoutUrl() const;
   // "https://<domain>/": where the hosted login and the logout page live.
   std::string TenantOrigin() const;
