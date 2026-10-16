@@ -55,6 +55,50 @@
    "zh-Hans": "搜索或输入网址",
    "zh-Hant": "搜尋或輸入網址"
   },
+  "addressBar.keywordSearch.queryPlaceholder": {
+   "de": "Suchen…",
+   "en": "Search…",
+   "es": "Buscar…",
+   "fr": "Rechercher…",
+   "ja": "検索…",
+   "ko": "검색…",
+   "nl": "Zoek…",
+   "zh-Hans": "搜索…",
+   "zh-Hant": "搜尋…"
+  },
+  "addressBar.keywordSearch.suggestionTitle": {
+   "de": "{0} durchsuchen",
+   "en": "Search {0}",
+   "es": "Buscar en {0}",
+   "fr": "Rechercher sur {0}",
+   "ja": "{0}で検索",
+   "ko": "{0} 검색",
+   "nl": "Zoek met {0}",
+   "zh-Hans": "搜索 {0}",
+   "zh-Hant": "搜尋 {0}"
+  },
+  "addressBar.keywordSearch.tabHint": {
+   "de": "Tabulatortaste drücken, um {0} zu durchsuchen",
+   "en": "Tab to search {0}",
+   "es": "Tabulador para buscar en {0}",
+   "fr": "Tab pour rechercher sur {0}",
+   "ja": "Tabキーで{0}を検索",
+   "ko": "Tab 키를 눌러 {0} 검색",
+   "nl": "Tab om te zoeken met {0}",
+   "zh-Hans": "按 Tab 键搜索 {0}",
+   "zh-Hant": "按 Tab 鍵搜尋 {0}"
+  },
+  "addressBar.keywordSearch.tabOrSpaceHint": {
+   "de": "Tabulatortaste oder Leertaste drücken, um {0} zu durchsuchen",
+   "en": "Tab or Space to search {0}",
+   "es": "Tabulador o barra espaciadora para buscar en {0}",
+   "fr": "Tab ou Barre d'espace pour rechercher sur {0}",
+   "ja": "Tabキーまたはスペースキーで{0}を検索",
+   "ko": "Tab 또는 스페이스 바를 눌러 {0} 검색",
+   "nl": "Tab of spatiebalk om te zoeken met {0}",
+   "zh-Hans": "按 Tab 键或空格键搜索 {0}",
+   "zh-Hant": "按 Tab 鍵或空白鍵搜尋 {0}"
+  },
   "agent.credentialPick.continueButton": {
    "de": "Weiter",
    "en": "Continue",

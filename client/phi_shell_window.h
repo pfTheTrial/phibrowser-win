@@ -1723,6 +1723,8 @@ class PhiShellWindow : public PhiHitSource,
   int OmniboxScaled(int design_units) const override;
   HFONT OmniboxTextFont() const override;
   HFONT OmniboxIconFont() const override;
+  HFONT OmniboxChipFont() const override;
+  HFONT OmniboxHintFont() const override;
   PhiPalette OmniboxPalette() const override;
   PhiPalette OmniboxFieldPalette() const override;
   PhiLayoutMode OmniboxLayoutMode() const override;

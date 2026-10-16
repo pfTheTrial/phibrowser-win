@@ -16,6 +16,22 @@
    "comment": "sidebar — used at phi_shell_window.cc:1116",
    "en": "Search or Enter URL"
   },
+  "addressBar.keywordSearch.queryPlaceholder": {
+   "comment": "sidebar — the empty address field beside the search-engine chip (used at phi_omnibox_session.cc)",
+   "en": "Search…"
+  },
+  "addressBar.keywordSearch.suggestionTitle": {
+   "comment": "sidebar — suggestion row that picks the named search engine; {0} is the engine name (used at phi_omnibox_session.cc)",
+   "en": "Search {0}"
+  },
+  "addressBar.keywordSearch.tabHint": {
+   "comment": "sidebar — hint at the address field's trailing end to press Tab to search with the named engine; {0} is the engine name (used at phi_omnibox_session.cc)",
+   "en": "Tab to search {0}"
+  },
+  "addressBar.keywordSearch.tabOrSpaceHint": {
+   "comment": "sidebar — hint at the address field's trailing end when Tab or Space picks the highlighted search engine; {0} is the engine name (used at phi_omnibox_session.cc)",
+   "en": "Tab or Space to search {0}"
+  },
   "agent.credentialPick.continueButton": {
    "comment": "agent — credential chooser confirm button (an ambiguous vault query); used at phi_credential_service.cc",
    "en": "Continue"

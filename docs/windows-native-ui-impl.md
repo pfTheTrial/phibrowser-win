@@ -742,3 +742,45 @@ with the session.
   third after. Host test updated; `bm-drop-space.mjs` stop e shows the
   gap opening above Work. The probe keeps one pin so the empty band's
   reserved zone does not move the outline under its pre-read rects.
+
+## Round H — search-engine keyword chip in the address field (2026-10-16)
+
+* The Mac's keyword search (OmniBoxViewModel `acceptKeywordSearch` /
+  `exitKeywordSearchIfEmpty`, the accent `searchEngineBadge`) on the
+  Windows field. Typing an engine's keyword prefix ("bing") brings the
+  keyword provider's engine-selection row — shown as "Search Microsoft
+  Bing — bing.com" (`addressBar.keywordSearch.suggestionTitle`) — and a
+  hint at the capsule's trailing end, "Tab to search Microsoft Bing", or
+  "Tab or Space to search …" once that row is armed
+  (`addressBar.keywordSearch.tabHint` / `tabOrSpaceHint`, in the 11
+  small face, at most a third of the capsule). Tab, Space on the armed
+  row (or with the whole keyword typed — Chrome's own rule; gated on the
+  profile's "Space enters keyword search" pref), or opening that row
+  raises the CHIP: a 24-dip `accent` capsule with the engine's name in the
+  13/600 face and `on_accent` ink, ahead of the text; the EDIT yields its
+  width plus 8 (`PhiOmniboxTextRect` leading / trailing extras) and shows
+  `addressBar.keywordSearch.queryPlaceholder` ("Search…") while empty.
+  Enter builds the URL through the new framework entry
+  `PhiFramework::KeywordSearchUrl` (the fork's
+  `OmniboxProxy::GetKeywordSearchURL`, TemplateURL::GenerateSearchURL —
+  POST engines, starter packs and inactive engines refused) and
+  navigates as a commit does (new-tab mode and placeholder birth
+  included). Backspace on an empty query takes the chip off and puts the
+  keyword back (its hint returns with the requery; handled at the WM_CHAR
+  stage, since TranslateMessage has queued that character before the
+  key-down is dispatched and the EDIT deletes on it); Escape takes it off
+  and clears; losing focus takes it off and restores the URL. The chip
+  and hint belong to the shell's capsule only — the new-tab page's box
+  never enters keyword search. Behind the chip no autocomplete runs (the
+  Mac's handleInputChanged guard). Pure rules (`PhiOmniboxRow`,
+  `PhiOmniboxRowOffersKeyword`, `PhiOmniboxKeywordHintRow`,
+  `PhiOmniboxSpaceKeywordRow`) are host-tested in
+  `test/model/omnibox_session_test.cc`. Framework json: a
+  search-other-engine match carries `keyword` + `engine`; empty `url` is
+  the selection hint. Box rig: `modclick.ps1` grew `keys` / `vk`
+  (SendInput — the user's path) and `edit,*` steps (`selall`, `chars`,
+  `key`, `space`, `back`, `text`, `ime`) that post straight to the EDIT;
+  a POSTED key-down arrives twice through the box's Chinese IME layer
+  (one real `vk,32` = one space, one `edit,space` = two), and a relaunched
+  Phi starts with that IME in Chinese mode — `edit,ime,eng` first, then
+  drive keyword tests with `keys`/`vk`; `edit,chars` only for letters.

@@ -85,6 +85,80 @@ void TextRectNeverInvertsWhenTheCapsuleIsTiny() {
   CHECK(r.right == r.left + 1);  // One pixel, never a negative width.
 }
 
+void TextRectMakesRoomForTheChipAndTheHint() {
+  // The keyword chip takes its width plus a gap ahead of the text; the hint
+  // the same behind it. Both ride on top of the inset and the trailing stop.
+  PhiOmniboxCapsule capsule = BareCapsule();
+  CHECK(PhiOmniboxTextRect(capsule, 20, 12, 8, 8, 108, 0).left == 132);
+  CHECK(PhiOmniboxTextRect(capsule, 20, 12, 8, 8, 0, 88).right == 156);
+  capsule.site_menu = SidebarRect{200, 104, 224, 126};
+  CHECK(PhiOmniboxTextRect(capsule, 20, 12, 8, 8, 0, 88).right == 104);
+  capsule.page_icon = SidebarRect{16, 106, 36, 124};
+  CHECK(PhiOmniboxTextRect(capsule, 20, 12, 8, 8, 108, 0).left == 152);
+}
+
+std::vector<PhiOmniboxRow> KeywordRows() {
+  // What "bing" brings back: the verbatim search first (the default), then
+  // the engine-selection hint (no destination), then a history row.
+  PhiOmniboxRow verbatim;
+  verbatim.type = "search-what-you-typed";
+  verbatim.url = L"https://www.google.com/search?q=bing";
+  PhiOmniboxRow hint;
+  hint.type = "search-other-engine";
+  hint.keyword = L"bing.com";
+  hint.engine = L"Microsoft Bing";
+  PhiOmniboxRow history;
+  history.type = "history-url";
+  history.url = L"https://bing.com/";
+  return {verbatim, hint, history};
+}
+
+void AnEngineRowOffersItsKeywordForTheTextItAnswers() {
+  const std::vector<PhiOmniboxRow> rows = KeywordRows();
+  CHECK(PhiOmniboxRowOffersKeyword(rows[1], L"bing", true));
+  CHECK(PhiOmniboxRowOffersKeyword(rows[1], L"  bing ", true));
+  CHECK(!PhiOmniboxRowOffersKeyword(rows[0], L"bing", true));  // No engine.
+  CHECK(!PhiOmniboxRowOffersKeyword(rows[1], L"", true));
+  CHECK(!PhiOmniboxRowOffersKeyword(rows[1], L"   ", true));
+  // Rows still answering the OLD text: the hint holds while its keyword
+  // still starts with what is typed, case-blind, and no longer than it.
+  CHECK(PhiOmniboxRowOffersKeyword(rows[1], L"Bing.", false));
+  CHECK(PhiOmniboxRowOffersKeyword(rows[1], L"bing.com", false));
+  CHECK(!PhiOmniboxRowOffersKeyword(rows[1], L"bing.com ma", false));
+  CHECK(!PhiOmniboxRowOffersKeyword(rows[1], L"bingo", false));
+  // A row with a destination carries a query: never trusted across a text
+  // change.
+  PhiOmniboxRow query = rows[1];
+  query.url = L"https://www.bing.com/search?q=maps";
+  query.contents = L"maps";
+  CHECK(PhiOmniboxRowOffersKeyword(query, L"bing.com maps", true));
+  CHECK(!PhiOmniboxRowOffersKeyword(query, L"bing.com map", false));
+}
+
+void TheHintNamesTheArmedRowElseTheFirstEngineRow() {
+  const std::vector<PhiOmniboxRow> rows = KeywordRows();
+  CHECK(PhiOmniboxKeywordHintRow(rows, -1, L"bing", true) == 1);
+  CHECK(PhiOmniboxKeywordHintRow(rows, 0, L"bing", true) == 1);
+  CHECK(PhiOmniboxKeywordHintRow(rows, 1, L"bing", true) == 1);
+  CHECK(PhiOmniboxKeywordHintRow(rows, 2, L"bing", true) == 1);
+  CHECK(PhiOmniboxKeywordHintRow(rows, -1, L"bingo", false) == -1);
+  CHECK(PhiOmniboxKeywordHintRow({}, -1, L"bing", true) == -1);
+}
+
+void SpaceNeedsTheArmedRowOrTheWholeKeyword() {
+  const std::vector<PhiOmniboxRow> rows = KeywordRows();
+  // The hint alone is a Tab affordance: "bing" + Space is a space.
+  CHECK(PhiOmniboxSpaceKeywordRow(rows, -1, L"bing", true, true) == -1);
+  CHECK(PhiOmniboxSpaceKeywordRow(rows, 0, L"bing", true, true) == -1);
+  // The armed engine row, or the whole keyword typed (Chrome's rule).
+  CHECK(PhiOmniboxSpaceKeywordRow(rows, 1, L"bing", true, true) == 1);
+  CHECK(PhiOmniboxSpaceKeywordRow(rows, -1, L"Bing.com", true, true) == 1);
+  CHECK(PhiOmniboxSpaceKeywordRow(rows, -1, L"bing.com", false, true) == 1);
+  // The profile's setting turns it off wholesale.
+  CHECK(PhiOmniboxSpaceKeywordRow(rows, 1, L"bing", true, false) == -1);
+  CHECK(PhiOmniboxSpaceKeywordRow(rows, -1, L"bing.com", true, false) == -1);
+}
+
 void PopupHeightIsRowsPlusPadding() {
   CHECK(PhiOmniboxPopupHeight(0, 32, 12) == 12);
   CHECK(PhiOmniboxPopupHeight(3, 32, 12) == 108);
@@ -157,6 +231,10 @@ int main() {
   TextRectStopsBeforeTheHoverOnlyPair();
   TextRectIgnoresAccessoriesOutsideTheCapsule();
   TextRectNeverInvertsWhenTheCapsuleIsTiny();
+  TextRectMakesRoomForTheChipAndTheHint();
+  AnEngineRowOffersItsKeywordForTheTextItAnswers();
+  TheHintNamesTheArmedRowElseTheFirstEngineRow();
+  SpaceNeedsTheArmedRowOrTheWholeKeyword();
   PopupHeightIsRowsPlusPadding();
   RowAtYPicksTheRowUnderThePointer();
   SelectionWrapsThroughTheFieldsOwnText();

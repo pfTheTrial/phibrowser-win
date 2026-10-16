@@ -229,7 +229,8 @@ void PhiOmniboxSession::Position() {
       // clear before the in-field trailing stack (or the bare trailing edge
       // without one).
       /*leading_inset=*/Scaled(12), /*icon_gap=*/Scaled(8),
-      /*trailing_gap=*/Scaled(8)));
+      /*trailing_gap=*/Scaled(8), KeywordLeadingAdvance(),
+      KeywordTrailingAdvance()));
   // Idempotent, because the paint path calls this too: the in-field
   // accessory set changes with the page — the reader button comes and goes —
   // and the EDIT is a real child window, so a stale width paints straight
@@ -454,15 +455,28 @@ void PhiOmniboxSession::OnFieldChanged(HWND edit) {
     return;
   }
   const std::wstring typed = TextOf(edit);
+  const BrowserId browser = shell_->OmniboxBrowser();
+  if (keyword_mode() && edit == field_) {
+    // Behind the chip the text is the engine's query: no suggestions for it
+    // (the Mac's handleInputChanged clears them) — and the new-tab gesture
+    // stays armed for the commit, so this is not ClosePopup(true).
+    HidePopup();
+    if (browser.valid()) {
+      framework->StopOmniboxQuery(browser.value);
+    }
+    return;
+  }
   if (typed.empty()) {
     ClosePopup(/*stop_query=*/true);
     return;
   }
-  const BrowserId browser = shell_->OmniboxBrowser();
   if (!browser.valid()) {
     return;
   }
   framework->StartOmniboxQuery(browser.value, base::WideToUTF8(typed).c_str());
+  // A hint that no longer prefixes what is typed goes now, not when the
+  // next row set lands.
+  UpdateKeywordHint();
 }
 
 // --- Navigation state ----------------------------------------------------
@@ -565,15 +579,22 @@ void PhiOmniboxSession::RevertCopyLinkFlash() {
 
 void PhiOmniboxSession::OnResults(BrowserId browser_id,
                                   const std::string& json) {
-  if (browser_id != shell_->OmniboxBrowser() || !FocusedField()) {
-    return;  // A stale query, or the user is no longer typing.
+  if (browser_id != shell_->OmniboxBrowser() || !FocusedField() ||
+      keyword_mode()) {
+    // A stale query, the user is no longer typing — or the chip went up
+    // while the query's last update was still on its way.
+    return;
   }
   std::optional<base::DictValue> root =
       base::JSONReader::ReadDict(json, base::JSON_PARSE_RFC);
   rows_.clear();
+  results_input_.clear();
   selected_ = -1;
   hovered_ = -1;
   if (root) {
+    if (const std::string* input = root->FindString("input")) {
+      results_input_ = base::UTF8ToWide(*input);
+    }
     if (const base::ListValue* matches = root->FindList("matches")) {
       for (const base::Value& v : *matches) {
         const base::DictValue* m = v.GetIfDict();
@@ -594,7 +615,24 @@ void PhiOmniboxSession::OnResults(BrowserId browser_id,
         if (const std::string* s = m->FindString("fillIntoEdit")) {
           row.fill = base::UTF8ToWide(*s);
         }
+        if (const std::string* s = m->FindString("url")) {
+          row.url = base::UTF8ToWide(*s);
+        }
+        if (const std::string* s = m->FindString("keyword")) {
+          row.keyword = base::UTF8ToWide(*s);
+        }
+        if (const std::string* s = m->FindString("engine")) {
+          row.engine = base::UTF8ToWide(*s);
+        }
         row.has_tab_match = m->FindBool("hasTabMatch").value_or(false);
+        if (!row.engine.empty() && row.url.empty()) {
+          // The engine-selection hint reads "Search Microsoft Bing —
+          // bing.com" (the Mac's suggestionTitle row), not the bare
+          // keyword the provider fills in.
+          row.contents = PhiStrF("addressBar.keywordSearch.suggestionTitle",
+                                 {row.engine});
+          row.description = row.keyword;
+        }
         rows_.push_back(std::move(row));
       }
     }
@@ -604,6 +642,7 @@ void PhiOmniboxSession::OnResults(BrowserId browser_id,
   } else {
     ShowPopup();
   }
+  UpdateKeywordHint();
 }
 
 void PhiOmniboxSession::ShowPopup() {
@@ -654,15 +693,21 @@ void PhiOmniboxSession::ShowPopup() {
   ::InvalidateRect(popup_, nullptr, TRUE);
 }
 
-void PhiOmniboxSession::ClosePopup(bool stop_query) {
+void PhiOmniboxSession::HidePopup() {
   rows_.clear();
+  results_input_.clear();
   selected_ = -1;
   hovered_ = -1;
-  if (stop_query) {
-    new_tab_pending_ = false;  // The gesture was abandoned.
-  }
   if (popup_ && ::IsWindow(popup_)) {
     ::ShowWindow(popup_, SW_HIDE);
+  }
+  UpdateKeywordHint();  // No rows, no hint.
+}
+
+void PhiOmniboxSession::ClosePopup(bool stop_query) {
+  HidePopup();
+  if (stop_query) {
+    new_tab_pending_ = false;  // The gesture was abandoned.
   }
   const BrowserId browser = shell_->OmniboxBrowser();
   phi_framework::PhiFramework* framework = shell_->OmniboxFramework();
@@ -692,6 +737,7 @@ void PhiOmniboxSession::MoveSelection(int delta) {
   if (popup_) {
     ::InvalidateRect(popup_, nullptr, TRUE);
   }
+  UpdateKeywordHint();
 }
 
 void PhiOmniboxSession::CommitSelection() {
@@ -703,7 +749,14 @@ void PhiOmniboxSession::CommitRow(int index) {
   if (index < 0 || index >= static_cast<int>(rows_.size()) || !framework) {
     return;
   }
-  const int line = rows_[static_cast<size_t>(index)].line;
+  const Row& row = rows_[static_cast<size_t>(index)];
+  if (!row.engine.empty() && row.url.empty()) {
+    // The "Search X" row has nowhere to go (the Mac opens the engine's
+    // site; Chrome's own row enters keyword search): the chip goes up.
+    AcceptKeyword(index);
+    return;
+  }
+  const int line = row.line;
   // The framework opens it with Chromium's own semantics (fixup,
   // switch-to-tab, shortcuts learning). Omnibox new-tab mode opens it in a
   // FRESH tab.
@@ -810,6 +863,243 @@ void PhiOmniboxSession::PaintPopup(HWND popup, HDC dc) {
   }
 }
 
+// --- Keyword search ------------------------------------------------------
+
+int PhiOmniboxSession::KeywordLeadingAdvance() const {
+  return chip_width_px_ > 0 ? chip_width_px_ + Scaled(8) : 0;
+}
+
+int PhiOmniboxSession::KeywordTrailingAdvance() const {
+  return hint_width_px_ > 0 ? hint_width_px_ + Scaled(8) : 0;
+}
+
+bool PhiOmniboxSession::ResultsCurrent(const std::wstring& typed) const {
+  return !results_input_.empty() &&
+         PhiOmniboxTrimTyped(results_input_) == PhiOmniboxTrimTyped(typed);
+}
+
+bool PhiOmniboxSession::SpaceShortcutEnabled() const {
+  phi_framework::PhiFramework* framework = shell_->OmniboxFramework();
+  const BrowserId browser = shell_->OmniboxBrowser();
+  return framework && browser.valid() &&
+         framework->KeywordSpaceShortcutEnabled(browser.value);
+}
+
+int PhiOmniboxSession::MeasureText(HFONT font,
+                                   const std::wstring& text) const {
+  const HWND shell_hwnd = shell_->OmniboxShellWindow();
+  if (!shell_hwnd || text.empty()) {
+    return 0;
+  }
+  HDC dc = ::GetDC(shell_hwnd);
+  if (!dc) {
+    return 0;
+  }
+  HGDIOBJ previous = font ? ::SelectObject(dc, font) : nullptr;
+  SIZE extent = {};
+  ::GetTextExtentPoint32W(dc, text.c_str(), static_cast<int>(text.size()),
+                          &extent);
+  if (previous) {
+    ::SelectObject(dc, previous);
+  }
+  ::ReleaseDC(shell_hwnd, dc);
+  return extent.cx;
+}
+
+void PhiOmniboxSession::InvalidateCapsule() {
+  const HWND shell_hwnd = shell_->OmniboxShellWindow();
+  if (shell_hwnd) {
+    RECT field = ToRect(shell_->OmniboxCapsule().field);
+    ::InflateRect(&field, Scaled(2), Scaled(2));
+    ::InvalidateRect(shell_hwnd, &field, FALSE);
+  }
+  if (field_ && ::IsWindow(field_)) {
+    ::InvalidateRect(field_, nullptr, TRUE);
+  }
+}
+
+bool PhiOmniboxSession::AcceptKeyword(int row) {
+  // The chip lives in the shell's capsule: only its own field enters
+  // keyword search (the new-tab page's box has nowhere to draw it).
+  if (keyword_mode() || !field_ || FocusedField() != field_ || row < 0 ||
+      row >= static_cast<int>(rows_.size())) {
+    return false;
+  }
+  const Row& picked = rows_[static_cast<size_t>(row)];
+  if (picked.engine.empty() || picked.keyword.empty()) {
+    return false;
+  }
+  // A row that already carried a query ("bing.com maps") keeps it as the
+  // text; the selection hint starts the query empty.
+  const std::wstring query = picked.url.empty() ? std::wstring()
+                                                : picked.contents;
+  keyword_keyword_ = picked.keyword;
+  keyword_engine_ = picked.engine;
+  // The Mac badge: 10 of padding either side of the 13/600 label, at most
+  // 160 wide.
+  chip_width_px_ =
+      Scaled(20) + std::min(MeasureText(shell_->OmniboxChipFont(),
+                                        keyword_engine_),
+                            Scaled(140));
+  hint_text_.clear();
+  hint_width_px_ = 0;
+  HidePopup();
+  phi_framework::PhiFramework* framework = shell_->OmniboxFramework();
+  const BrowserId browser = shell_->OmniboxBrowser();
+  if (framework && browser.valid()) {
+    framework->StopOmniboxQuery(browser.value);
+  }
+  programmatic_ = true;
+  ::SetWindowTextW(field_, query.c_str());
+  ::SendMessageW(field_, EM_SETSEL, query.size(), query.size());
+  programmatic_ = false;
+  // Beside the chip the empty field asks for the query, not for a URL.
+  ::SendMessageW(field_, EM_SETCUEBANNER, TRUE,
+                 reinterpret_cast<LPARAM>(
+                     PhiStr("addressBar.keywordSearch.queryPlaceholder")));
+  Position();
+  InvalidateCapsule();
+  return true;
+}
+
+void PhiOmniboxSession::ExitKeyword(const std::wstring& text, bool requery) {
+  if (!keyword_mode()) {
+    return;
+  }
+  // Backspace passes keyword_keyword_ itself: copy before it is cleared.
+  const std::wstring restore = text;
+  keyword_keyword_.clear();
+  keyword_engine_.clear();
+  chip_width_px_ = 0;
+  if (field_ && ::IsWindow(field_)) {
+    ::SendMessageW(field_, EM_SETCUEBANNER, TRUE,
+                   reinterpret_cast<LPARAM>(PhiStr(
+                       "addressBar.configuration.defaultPlaceholder")));
+    // Unsuppressed, the EDIT's EN_CHANGE runs autocomplete on `text` —
+    // the keyword's hint comes back with it.
+    programmatic_ = !requery;
+    ::SetWindowTextW(field_, restore.c_str());
+    ::SendMessageW(field_, EM_SETSEL, restore.size(), restore.size());
+    programmatic_ = false;
+  }
+  Position();
+  InvalidateCapsule();
+}
+
+void PhiOmniboxSession::CommitKeyword(HWND edit) {
+  phi_framework::PhiFramework* framework = shell_->OmniboxFramework();
+  const BrowserId browser = shell_->OmniboxBrowser();
+  if (!edit || !::IsWindow(edit) || !framework || !browser.valid()) {
+    return;
+  }
+  const std::wstring query = PhiOmniboxTrimTyped(TextOf(edit));
+  if (query.empty()) {
+    return;  // Nothing to search yet (the Mac's guard).
+  }
+  const std::string url = framework->KeywordSearchUrl(
+      browser.value, base::WideToUTF8(keyword_keyword_).c_str(),
+      base::WideToUTF8(query).c_str());
+  if (url.empty()) {
+    // The engine went away or cannot take a query any more — the Mac beeps.
+    ::MessageBeep(MB_OK);
+    return;
+  }
+  shell_->OmniboxNativePageCommitting();
+  if (new_tab_pending_ || shell_->OmniboxBrowserPlaceholding()) {
+    new_tab_pending_ = false;  // As Commit: the tab is born on commit.
+    framework->NewTab(browser.value, "");
+  }
+  shell_->OmniboxLeaveReader();
+  framework->Navigate(browser.value, url.c_str());
+  // The chip comes down with the commit; the URL fills the field once the
+  // navigation reports, as after any commit.
+  ExitKeyword(std::wstring(), /*requery=*/false);
+  Sync(/*force=*/true);
+  shell_->OmniboxFocusContent();
+}
+
+void PhiOmniboxSession::UpdateKeywordHint() {
+  std::wstring text;
+  int width = 0;
+  // The hint (and the chip) belong to the shell's own field; the new-tab
+  // page's box has no capsule to draw them in.
+  if (!keyword_mode() && field_ && FocusedField() == field_ &&
+      !rows_.empty()) {
+    const std::wstring typed = TextOf(field_);
+    const bool current = ResultsCurrent(typed);
+    const int hint = PhiOmniboxKeywordHintRow(rows_, selected_, typed, current);
+    if (hint >= 0) {
+      const bool space =
+          PhiOmniboxSpaceKeywordRow(rows_, selected_, typed, current,
+                                    SpaceShortcutEnabled()) >= 0;
+      text = PhiStrF(space ? "addressBar.keywordSearch.tabOrSpaceHint"
+                           : "addressBar.keywordSearch.tabHint",
+                     {rows_[static_cast<size_t>(hint)].engine});
+      // Never more than a third of the capsule: the text keeps its room.
+      const SidebarRect field = shell_->OmniboxCapsule().field;
+      width = std::min(MeasureText(shell_->OmniboxHintFont(), text),
+                       (field.right - field.left) / 3);
+    }
+  }
+  if (text == hint_text_ && width == hint_width_px_) {
+    return;
+  }
+  hint_text_ = std::move(text);
+  hint_width_px_ = width;
+  Position();
+  InvalidateCapsule();
+}
+
+void PhiOmniboxSession::PaintKeyword(HDC dc) {
+  if (!field_ || !dc || (!keyword_mode() && hint_text_.empty())) {
+    return;
+  }
+  const PhiOmniboxCapsule capsule = shell_->OmniboxCapsule();
+  if (capsule.field.right <= capsule.field.left) {
+    return;
+  }
+  // Where the text would start and stop WITHOUT the two: the chip sits at
+  // the start, the hint ends at the stop, and the EDIT runs between.
+  const SidebarRect text = PhiOmniboxTextRect(
+      capsule, Scaled(20), Scaled(12), Scaled(8), Scaled(8));
+  const PhiPalette palette = shell_->OmniboxFieldPalette();
+  const int previous_mode = ::SetBkMode(dc, TRANSPARENT);
+  if (keyword_mode()) {
+    // The Mac badge: a 24-tall accent capsule carrying the engine's name in
+    // the 13/600 face, legible ink on the accent.
+    const int half = Scaled(12);
+    const int mid = (capsule.field.top + capsule.field.bottom) / 2;
+    const RECT chip = {text.left, mid - half, text.left + chip_width_px_,
+                       mid + half};
+    PhiFillCapsuleAA(dc, chip, palette.accent);
+    RECT label = {chip.left + Scaled(10), chip.top, chip.right - Scaled(10),
+                  chip.bottom};
+    HFONT font = shell_->OmniboxChipFont();
+    HGDIOBJ previous = font ? ::SelectObject(dc, font) : nullptr;
+    ::SetTextColor(dc, palette.on_accent);
+    PhiDrawTextAA(dc, keyword_engine_.c_str(), -1, &label,
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
+                      DT_NOPREFIX);
+    if (previous) {
+      ::SelectObject(dc, previous);
+    }
+  }
+  if (!hint_text_.empty()) {
+    RECT hint = {text.right - hint_width_px_, capsule.field.top, text.right,
+                 capsule.field.bottom};
+    HFONT font = shell_->OmniboxHintFont();
+    HGDIOBJ previous = font ? ::SelectObject(dc, font) : nullptr;
+    ::SetTextColor(dc, palette.label_dim);
+    PhiDrawTextAA(dc, hint_text_.c_str(), -1, &hint,
+                  DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
+                      DT_NOPREFIX);
+    if (previous) {
+      ::SelectObject(dc, previous);
+    }
+  }
+  ::SetBkMode(dc, previous_mode);
+}
+
 bool PhiOmniboxSession::PaintField(HWND field) {
   RECT rc = {};
   ::GetClientRect(field, &rc);
@@ -880,7 +1170,9 @@ LRESULT CALLBACK PhiOmniboxSession::FieldProc(HWND hwnd,
     case WM_KEYDOWN:
       if (wparam == VK_RETURN) {
         if (self) {
-          if (self->selected_ >= 0) {
+          if (self->keyword_mode() && hwnd == self->field_) {
+            self->CommitKeyword(hwnd);
+          } else if (self->selected_ >= 0) {
             self->CommitSelection();
           } else {
             // stop_query=false: the omnibox-new-tab pending flag must
@@ -893,6 +1185,12 @@ LRESULT CALLBACK PhiOmniboxSession::FieldProc(HWND hwnd,
       }
       if (wparam == VK_ESCAPE) {
         if (self) {
+          if (self->keyword_mode() && hwnd == self->field_) {
+            // The chip comes down and the query with it; the next Escape
+            // reverts the field as usual.
+            self->ExitKeyword(std::wstring(), /*requery=*/true);
+            return 0;
+          }
           if (self->popup_ && ::IsWindowVisible(self->popup_)) {
             // First Escape closes the list; the second reverts the field.
             self->ClosePopup(/*stop_query=*/true);
@@ -914,6 +1212,19 @@ LRESULT CALLBACK PhiOmniboxSession::FieldProc(HWND hwnd,
         self->MoveSelection(wparam == VK_DOWN ? 1 : -1);
         return 0;
       }
+      if (wparam == VK_TAB && self && hwnd == self->field_ &&
+          ::GetKeyState(VK_CONTROL) >= 0) {
+        // Tab picks the hinted engine (the Mac's
+        // omniBoxTextFieldDidReceiveTabEvent); behind the chip it is inert.
+        // Either way the EDIT never sees it — it has no tab stop to go to.
+        if (!self->keyword_mode()) {
+          const std::wstring typed = TextOf(hwnd);
+          self->AcceptKeyword(PhiOmniboxKeywordHintRow(
+              self->rows_, self->selected_, typed,
+              self->ResultsCurrent(typed)));
+        }
+        return 0;
+      }
       if (wparam == VK_INSERT && self && ::GetKeyState(VK_SHIFT) < 0 &&
           ::GetKeyState(VK_CONTROL) >= 0) {
         self->PasteInto(hwnd);  // Shift+Insert: the EDIT's own paste.
@@ -921,10 +1232,39 @@ LRESULT CALLBACK PhiOmniboxSession::FieldProc(HWND hwnd,
       }
       break;
     case WM_CHAR:
-      // Both keys are handled above; letting them reach the EDIT would only
-      // produce the "unhandled character" beep.
-      if (wparam == VK_RETURN || wparam == VK_ESCAPE) {
+      // These keys are handled above; letting them reach the EDIT would
+      // only produce the "unhandled character" beep.
+      if (wparam == VK_RETURN || wparam == VK_ESCAPE || wparam == VK_TAB) {
         return 0;
+      }
+      if (wparam == VK_BACK && self && self->keyword_mode() &&
+          hwnd == self->field_ && ::GetWindowTextLengthW(hwnd) == 0) {
+        // Backspace on an empty query takes the chip off and puts the
+        // keyword back (the Mac's exitKeywordSearchIfEmpty). At the CHAR
+        // stage, not the key-down: TranslateMessage has already queued
+        // this character by the time the key-down is dispatched, and the
+        // EDIT deletes on it — handled there, it would eat the restored
+        // keyword's last letter.
+        self->ExitKeyword(self->keyword_keyword_, /*requery=*/true);
+        return 0;
+      }
+      if (wparam == L' ' && self && hwnd == self->field_ &&
+          !self->keyword_mode() && ::GetKeyState(VK_CONTROL) >= 0 &&
+          ::GetKeyState(VK_MENU) >= 0) {
+        // Space at the end of the text, nothing selected: picks the armed
+        // engine row (the Mac's handleKeywordSearchSpaceKeyDown). Anywhere
+        // else it is a space.
+        DWORD sel_start = 0;
+        DWORD sel_end = 0;
+        ::SendMessageW(hwnd, EM_GETSEL, reinterpret_cast<WPARAM>(&sel_start),
+                       reinterpret_cast<LPARAM>(&sel_end));
+        const std::wstring typed = TextOf(hwnd);
+        if (sel_start == sel_end && sel_end == typed.size() &&
+            self->AcceptKeyword(PhiOmniboxSpaceKeywordRow(
+                self->rows_, self->selected_, typed,
+                self->ResultsCurrent(typed), self->SpaceShortcutEnabled()))) {
+          return 0;
+        }
       }
       if (wparam == 0x16 && self) {
         self->PasteInto(hwnd);  // Ctrl+V pastes inside the EDIT, not by
@@ -938,9 +1278,14 @@ LRESULT CALLBACK PhiOmniboxSession::FieldProc(HWND hwnd,
       }
       break;
     case WM_KILLFOCUS:
-      // The user left the field: the dropdown has nothing to complete.
+      // The user left the field: the dropdown has nothing to complete, and
+      // a chip left standing would search the next thing typed.
       if (self) {
         self->ClosePopup(/*stop_query=*/true);
+        if (self->keyword_mode() && hwnd == self->field_) {
+          self->ExitKeyword(std::wstring(), /*requery=*/false);
+          self->Sync(/*force=*/true);
+        }
       }
       break;
     case WM_MOUSEMOVE:

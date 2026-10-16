@@ -1356,6 +1356,14 @@ HFONT PhiShellWindow::OmniboxIconFont() const {
   return chip_icon_font_;
 }
 
+HFONT PhiShellWindow::OmniboxChipFont() const {
+  return ui_semibold_font_;  // The 13/600 the Space chip's label uses.
+}
+
+HFONT PhiShellWindow::OmniboxHintFont() const {
+  return small_font_;
+}
+
 PhiPalette PhiShellWindow::OmniboxPalette() const {
   // CurrentPalette, not the host's: incognito overrides to fixed-dark, and
   // a Space switch ramps.
@@ -7483,15 +7491,19 @@ void PhiShellWindow::PaintChrome(HDC dc,
                        ShowsIncognito() ? fluent::kIncognito : fluent::kGlobe,
                        Scaled(fluent::kIconToolbar), bar.label_dim);
     }
+    // The keyword chip ahead of the text and the "Tab to search X" hint
+    // behind it, when the session has either up.
+    omnibox_->PaintKeyword(dc);
   }
   if (include_child_controls) {
     // What the user actually sees, mid-edit.
     const std::wstring shown = omnibox_->DisplayedUrl();
     ::SetTextColor(dc, shown.empty() ? bar.label_dim : bar.label);
     RECT url_rc = layout.url_field;
-    url_rc.left = layout.page_icon.right > layout.page_icon.left
-                      ? layout.page_icon.right + Scaled(4)
-                      : url_rc.left + Scaled(kFieldTextInset);
+    url_rc.left = (layout.page_icon.right > layout.page_icon.left
+                       ? layout.page_icon.right + Scaled(4)
+                       : url_rc.left + Scaled(kFieldTextInset)) +
+                  omnibox_->KeywordLeadingAdvance();
     // Stop before the in-field trailing stack when it exists — the leftmost
     // accessory that actually sits inside the capsule (the same rule
     // PhiOmniboxTextRect applies to the EDIT).
@@ -7504,9 +7516,14 @@ void PhiShellWindow::PaintChrome(HDC dc,
         text_right = accessory.left;
       }
     }
-    url_rc.right = text_right - Scaled(8);
-    PhiDrawTextAA(dc, shown.empty() ? L"Search or enter address" : shown.c_str(),
-                -1, &url_rc,
+    url_rc.right = text_right - Scaled(8) - omnibox_->KeywordTrailingAdvance();
+    PhiDrawTextAA(dc,
+                  shown.empty()
+                      ? (omnibox_->keyword_mode()
+                             ? PhiStr("addressBar.keywordSearch.queryPlaceholder")
+                             : L"Search or enter address")
+                      : shown.c_str(),
+                  -1, &url_rc,
                 DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_PATH_ELLIPSIS |
                     DT_NOPREFIX);
   }

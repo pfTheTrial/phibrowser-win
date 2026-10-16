@@ -45,12 +45,16 @@ struct PhiOmniboxCapsule {
 // box, starting after the page icon (plus `icon_gap`) or at `leading_inset`
 // without one, and stopping `trailing_gap` before the LEFTMOST accessory
 // that actually sits inside the capsule — the EDIT must not extend under the
-// buttons or it eats their clicks. All arguments are already in pixels.
+// buttons or it eats their clicks. `leading_extra` is the room the keyword
+// chip takes ahead of the text and `trailing_extra` what the keyword hint
+// takes behind it (0 without them). All arguments are already in pixels.
 inline SidebarRect PhiOmniboxTextRect(const PhiOmniboxCapsule& capsule,
                                       int text_height,
                                       int leading_inset,
                                       int icon_gap,
-                                      int trailing_gap) {
+                                      int trailing_gap,
+                                      int leading_extra = 0,
+                                      int trailing_extra = 0) {
   const SidebarRect& box = capsule.field;
   // SideAddressBar: the text stops at the LEFTMOST accessory that sits
   // inside the capsule. Rects outside it (the comfortable layout keeps its
@@ -64,10 +68,11 @@ inline SidebarRect PhiOmniboxTextRect(const PhiOmniboxCapsule& capsule,
       right_stop = accessory.left;
     }
   }
-  const int text_left = capsule.page_icon.right > capsule.page_icon.left
-                            ? capsule.page_icon.right + icon_gap
-                            : box.left + leading_inset;
-  const int width = right_stop - trailing_gap - text_left;
+  const int text_left = (capsule.page_icon.right > capsule.page_icon.left
+                             ? capsule.page_icon.right + icon_gap
+                             : box.left + leading_inset) +
+                        leading_extra;
+  const int width = right_stop - trailing_gap - trailing_extra - text_left;
   // A single-line EDIT draws its text at the top of its own rect, so filling
   // the whole box would leave the text hugging the upper edge.
   const int top = box.top + (box.bottom - box.top - text_height) / 2;
@@ -198,6 +203,109 @@ inline std::wstring PhiOmniboxSanitizePaste(const std::wstring& text) {
   return PhiOmniboxStripJavascript(result);
 }
 
+// One autocomplete row as the framework's OnOmniboxResults json carries it.
+struct PhiOmniboxRow {
+  int line = 0;
+  std::string type;
+  std::wstring contents;
+  std::wstring description;
+  std::wstring fill;  // fillIntoEdit — what arrowing onto the row types.
+  std::wstring url;   // The destination; EMPTY on an engine-selection hint.
+  // The engine behind a search-other-engine row — its keyword ("bing.com")
+  // and display name ("Microsoft Bing"); empty on every other row.
+  std::wstring keyword;
+  std::wstring engine;
+  bool has_tab_match = false;
+};
+
+// ASCII case folding — keywords are hostnames, so this is all that matching
+// one needs, and it keeps the header free of locale state.
+inline std::wstring PhiOmniboxFoldAscii(std::wstring text) {
+  for (wchar_t& c : text) {
+    if (c >= L'A' && c <= L'Z') {
+      c = static_cast<wchar_t>(c - L'A' + L'a');
+    }
+  }
+  return text;
+}
+
+// The row offers keyword search for `typed` (the Mac's
+// canUseKeywordSearchSuggestion): it names an engine, and either the row set
+// answers exactly this text (`results_current`) or — while a fresh set is
+// still on its way — it is the engine-selection hint whose keyword still
+// starts with what is typed. A row with a destination is never trusted
+// across a text change: its query would be stale.
+inline bool PhiOmniboxRowOffersKeyword(const PhiOmniboxRow& row,
+                                       const std::wstring& typed,
+                                       bool results_current) {
+  if (row.engine.empty() || row.keyword.empty()) {
+    return false;
+  }
+  const std::wstring input = PhiOmniboxFoldAscii(PhiOmniboxTrimTyped(typed));
+  if (input.empty()) {
+    return false;
+  }
+  if (results_current) {
+    return true;
+  }
+  if (!row.url.empty()) {
+    return false;
+  }
+  const std::wstring keyword = PhiOmniboxFoldAscii(row.keyword);
+  return input.size() <= keyword.size() &&
+         keyword.compare(0, input.size(), input) == 0;
+}
+
+// The row whose engine the keyword HINT names ("Tab to search X") and Tab
+// picks: the armed row when it offers one, else the first row that does;
+// -1 for none.
+inline int PhiOmniboxKeywordHintRow(const std::vector<PhiOmniboxRow>& rows,
+                                    int selected,
+                                    const std::wstring& typed,
+                                    bool results_current) {
+  if (selected >= 0 && selected < static_cast<int>(rows.size()) &&
+      PhiOmniboxRowOffersKeyword(rows[static_cast<size_t>(selected)], typed,
+                                 results_current)) {
+    return selected;
+  }
+  for (size_t i = 0; i < rows.size(); ++i) {
+    if (PhiOmniboxRowOffersKeyword(rows[i], typed, results_current)) {
+      return static_cast<int>(i);
+    }
+  }
+  return -1;
+}
+
+// The row SPACE picks, or -1. Space is narrower than Tab (the Mac's
+// canAcceptKeywordSearchWithSpace): the user must have ARMED an engine row —
+// the hint alone is a Tab affordance, so "bing maps" typed at speed still
+// searches the default engine — or typed the whole keyword itself (Chrome's
+// own rule: "bing.com" + Space). Off entirely when the profile's "Space
+// enters keyword search" setting is.
+inline int PhiOmniboxSpaceKeywordRow(const std::vector<PhiOmniboxRow>& rows,
+                                     int selected,
+                                     const std::wstring& typed,
+                                     bool results_current,
+                                     bool space_shortcut) {
+  if (!space_shortcut) {
+    return -1;
+  }
+  if (selected >= 0 && selected < static_cast<int>(rows.size()) &&
+      PhiOmniboxRowOffersKeyword(rows[static_cast<size_t>(selected)], typed,
+                                 results_current)) {
+    return selected;
+  }
+  const std::wstring input = PhiOmniboxFoldAscii(PhiOmniboxTrimTyped(typed));
+  for (size_t i = 0; i < rows.size(); ++i) {
+    if (rows[i].url.empty() && !rows[i].keyword.empty() &&
+        PhiOmniboxFoldAscii(rows[i].keyword) == input &&
+        PhiOmniboxRowOffersKeyword(rows[i], typed, results_current)) {
+      return static_cast<int>(i);
+    }
+  }
+  return -1;
+}
+
 // True when the page's url must show as the PLACEHOLDER rather than itself —
 // the new-tab page, whose chrome:// url the user never typed (the Mac's
 // updateDisplayedURL isNTP blank).
@@ -237,6 +345,10 @@ class PhiOmniboxShell {
   virtual int OmniboxScaled(int design_units) const = 0;
   virtual HFONT OmniboxTextFont() const = 0;
   virtual HFONT OmniboxIconFont() const = 0;
+  // The keyword chip's label face (the Space chip's 13/600) and the keyword
+  // hint's (the 11 small face).
+  virtual HFONT OmniboxChipFont() const = 0;
+  virtual HFONT OmniboxHintFont() const = 0;
   virtual PhiPalette OmniboxPalette() const = 0;
   // The palette of the row the field sits in: OmniboxPalette, or the page's
   // own colour when the address row follows the page (the Mac's
@@ -346,6 +458,24 @@ class PhiOmniboxSession {
   // EN_CHANGE while the user types: run/refresh the autocomplete query.
   void OnFieldChanged(HWND edit);
 
+  // --- Keyword search (the Mac's search-engine badge) ----------------------
+  // Typing an engine's keyword offers it (the hint at the field's trailing
+  // end, the "Search X" row); Tab, Space on the armed row, or opening that
+  // row turns it into a CHIP ahead of the text, and the text is then the
+  // query that engine searches on Enter. Backspace on an empty query takes
+  // the chip off and puts the keyword back; Escape takes it off and clears.
+  // The chip is up: the field's text is the query for `keyword_engine()`.
+  bool keyword_mode() const { return !keyword_keyword_.empty(); }
+  const std::wstring& keyword_engine() const { return keyword_engine_; }
+  // Room the chip takes ahead of the text and the hint behind it, in pixels
+  // (0 without them) — the shell's capture path indents its own copy of the
+  // text by the same.
+  int KeywordLeadingAdvance() const;
+  int KeywordTrailingAdvance() const;
+  // Paints the chip and the hint into the capsule on the shell's `dc`, after
+  // the field's fill.
+  void PaintKeyword(HDC dc);
+
   // --- Navigation state ----------------------------------------------------
   // Re-reads the toolbar's navigation state from the active browser's
   // snapshot (null = no browser, which clears it).
@@ -385,22 +515,40 @@ class PhiOmniboxSession {
   // Rows mirror the framework's OnOmniboxResults json; the popup is a
   // non-activating WS_POPUP under the address field, so the EDIT keeps focus
   // and its caret while the list is up.
-  struct Row {
-    int line = 0;
-    std::string type;
-    std::wstring contents;
-    std::wstring description;
-    std::wstring fill;  // fillIntoEdit — what arrowing onto the row types.
-    bool has_tab_match = false;
-  };
+  using Row = PhiOmniboxRow;
 
   void ShowPopup();  // Creates/positions the popup under the focused field.
+  // Rows gone and the window hidden; the running query and the new-tab
+  // gesture untouched (ClosePopup decides those).
+  void HidePopup();
   void MoveSelection(int delta);
   void CommitSelection();  // CommitRow(selected_).
   void CommitRow(int index);
   int RowAtY(int y) const;
   int Scaled(int design_units) const;
   bool PaintField(HWND field);
+
+  // Enters keyword search on rows_[row] (an engine row): the chip goes up,
+  // the row's query (if it had one) becomes the text. False when the row
+  // names no engine or the chip is already up.
+  bool AcceptKeyword(int row);
+  // Takes the chip down and puts `text` in the field. `requery` lets the
+  // EDIT's change notification run autocomplete on it (Backspace puts the
+  // keyword back and its hint returns); a silent exit is for the commit and
+  // the focus-loss paths.
+  void ExitKeyword(const std::wstring& text, bool requery);
+  // Enter with the chip up: the engine's search URL for the text.
+  void CommitKeyword(HWND edit);
+  // Recomputes the hint from the rows, the armed row and the typed text;
+  // re-seats the EDIT and repaints the capsule when it changed.
+  void UpdateKeywordHint();
+  bool SpaceShortcutEnabled() const;
+  // The width of `text` in `font`, in pixels, on the shell's DC.
+  int MeasureText(HFONT font, const std::wstring& text) const;
+  // The capsule and its antialiased rim repaint.
+  void InvalidateCapsule();
+  // The rows answer this typed text (the framework echoes the query).
+  bool ResultsCurrent(const std::wstring& typed) const;
 
   // Subclass proc: Enter commits, Escape reverts, focus selects all.
   static LRESULT CALLBACK FieldProc(HWND hwnd,
@@ -430,6 +578,7 @@ class PhiOmniboxSession {
   bool field_hover_ = false;
 
   std::vector<Row> rows_;
+  std::wstring results_input_;  // The typed text rows_ answers.
   int selected_ = -1;  // -1 = nothing armed; Enter commits the text.
   // The row under the pointer — a lighter wash only. Only the arrows set
   // selected_, so hovering never changes what Enter commits.
@@ -438,6 +587,15 @@ class PhiOmniboxSession {
   bool programmatic_ = false;  // Suppresses EN_CHANGE feedback.
   // Set by StartNewTab in omnibox mode: the next commit opens a NEW tab.
   bool new_tab_pending_ = false;
+
+  // The chip: the engine's keyword (empty = no chip) and display name, and
+  // the pill's measured width.
+  std::wstring keyword_keyword_;
+  std::wstring keyword_engine_;
+  int chip_width_px_ = 0;
+  // The hint at the field's trailing end ("Tab to search X"), measured.
+  std::wstring hint_text_;
+  int hint_width_px_ = 0;
 };
 
 }  // namespace phi_client

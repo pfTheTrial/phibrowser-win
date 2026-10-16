@@ -8,6 +8,18 @@
 #   rclick,x,y        the same with the right button (a context menu)
 #   sclick,x,y        a left click at SCREEN px (a menu item)
 #   sdrag,x1,y1,x2,y2 press at SCREEN x1,y1, glide to x2,y2, release (a resize grab)
+#   keys,<spec>       type into the focused window (SendKeys syntax: text,
+#                     {TAB} {ENTER} {BS} {ESC} {DOWN}; the rest of the line)
+#   vk,<code>         press + release one virtual key (0x09 tab, 0x20 space)
+#   edit,selall       the address EDIT (the shell's topmost Edit child):
+#   edit,chars,<text>   select all / post WM_CHAR per character / post
+#   edit,key,<vk>       WM_KEYDOWN+UP (space, backspace: the same by name)
+#   edit,space          — posted straight to the control, so the box's IME
+#   edit,back           never composes them (keys/vk go through it)
+#   edit,text           the EDIT's text and length -> the log
+#   edit,ime,get|0|1|eng  log / close / open the EDIT's IME, or put it in
+#                       English conversion so keys/vk type plain ASCII (the
+#                       box's Chinese IME otherwise composes them)
 #   shot,<name>       full-screen capture to C:\Users\jdxin\mod-<name>.png
 #   list              every PhiClientShell/PhiPeekPanel/PhiKioskShell window:
 #                     class, visible, rect -> the log
@@ -36,6 +48,9 @@ public static class M {
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetClassNameW(IntPtr h, StringBuilder s, int n);
   [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr h, uint cmd);
   [DllImport("user32.dll")] public static extern int GetWindowLongW(IntPtr h, int i);
+  [DllImport("user32.dll")] public static extern IntPtr SendMessageW(IntPtr h, uint m, IntPtr w, IntPtr l);
+  [DllImport("user32.dll")] public static extern bool PostMessageW(IntPtr h, uint m, IntPtr w, IntPtr l);
+  [DllImport("imm32.dll")] public static extern IntPtr ImmGetDefaultIMEWnd(IntPtr h);
   [StructLayout(LayoutKind.Sequential)] public struct P { public int X,Y; }
   [StructLayout(LayoutKind.Sequential)] public struct R { public int L,T,Rr,B; }
 }
@@ -72,6 +87,27 @@ function ListWindows() {
     }
   }
   return $s
+}
+# The address EDIT: of the shell's Edit children, the one nearest the top.
+function AddressEdit() {
+  $best = [IntPtr]::Zero; $bestTop = 999999
+  $c = [IntPtr]::Zero
+  while ($true) {
+    $c = [M]::FindWindowExW($h, $c, "Edit", [NullString]::Value)
+    if ($c -eq [IntPtr]::Zero) { break }
+    if (-not [M]::IsWindowVisible($c)) { continue }
+    $r = New-Object M+R; [M]::GetWindowRect($c, [ref]$r) | Out-Null
+    if ($r.T -lt $bestTop) { $bestTop = $r.T; $best = $c }
+  }
+  return $best
+}
+# WM_KEYDOWN + WM_KEYUP only: the client's TranslateMessage synthesizes the
+# WM_CHAR for a character key itself (posting one too lands it twice).
+function PostKey($e, $vk) {
+  [M]::PostMessageW($e, 0x0100, [IntPtr][int]$vk, [IntPtr]0) | Out-Null
+  Start-Sleep -Milliseconds 30
+  [M]::PostMessageW($e, 0x0101, [IntPtr][int]$vk, [IntPtr]0) | Out-Null
+  Start-Sleep -Milliseconds 300
 }
 # tree: the shell's child windows, z-order top-down, three levels deep.
 function Tree($w, $depth) {
@@ -160,6 +196,80 @@ if ($h -ne [IntPtr]::Zero) {
         [M]::mouse_event(0x0004, 0, 0, 0, [IntPtr]::Zero)
         Start-Sleep -Milliseconds 700
         $out += " sdrag=$($spec[1]),$($spec[2])->$($spec[3]),$($spec[4])"
+      }
+      'keys' {
+        $text = $line.Trim().Substring(5)
+        [System.Windows.Forms.SendKeys]::SendWait($text)
+        Start-Sleep -Milliseconds 400
+        $out += " keys=$text"
+      }
+      'vk' {
+        [M]::keybd_event([byte][int]$spec[1], 0, 0, [IntPtr]::Zero)
+        Start-Sleep -Milliseconds 60
+        [M]::keybd_event([byte][int]$spec[1], 0, 2, [IntPtr]::Zero)
+        Start-Sleep -Milliseconds 300
+        $out += " vk=$($spec[1])"
+      }
+      'edit' {
+        $e = AddressEdit
+        switch ($spec[1]) {
+          'selall' { [M]::SendMessageW($e, 0x00B1, [IntPtr]0, [IntPtr](-1)) | Out-Null }
+          'chars' {
+            $text = $line.Trim().Substring(11)
+            foreach ($ch in $text.ToCharArray()) {
+              [M]::PostMessageW($e, 0x0102, [IntPtr][int]$ch, [IntPtr]0) | Out-Null
+              Start-Sleep -Milliseconds 60
+            }
+            Start-Sleep -Milliseconds 300
+          }
+          'text' {
+            # WM_GETTEXTLENGTH + WM_GETTEXT into an unmanaged buffer:
+            # GetWindowText never crosses into another process's control.
+            $n = [int][M]::SendMessageW($e, 0x000E, [IntPtr]0, [IntPtr]0)
+            $buf = [System.Runtime.InteropServices.Marshal]::AllocHGlobal(4096)
+            $got = [int][M]::SendMessageW($e, 0x000D, [IntPtr]2048, $buf)
+            $txt = [System.Runtime.InteropServices.Marshal]::PtrToStringUni($buf, $got)
+            [System.Runtime.InteropServices.Marshal]::FreeHGlobal($buf)
+            $out += " text=[" + $txt + "] len=" + $n
+          }
+          'ime' {
+            # The EDIT's IME open state through its default IME window
+            # (WM_IME_CONTROL IMC_GET/SETOPENSTATUS): "get" logs it, 0 / 1
+            # close / open it. The box's Chinese IME composes real keys and
+            # doubles posted ones; closed, both type plain ASCII.
+            $ime = [M]::ImmGetDefaultIMEWnd($e)
+            if ($spec[2] -eq 'get') {
+              $open = [int][M]::SendMessageW($ime, 0x0283, [IntPtr]0x0005, [IntPtr]0)
+              $mode = [int][M]::SendMessageW($ime, 0x0283, [IntPtr]0x0001, [IntPtr]0)
+              $out += " imeopen=$open imemode=$mode"
+            } elseif ($spec[2] -eq 'eng') {
+              # English (alphanumeric) conversion: IMC_SETCONVERSIONMODE
+              # without IME_CMODE_NATIVE, else the IME's Shift toggle.
+              $mode = [int][M]::SendMessageW($ime, 0x0283, [IntPtr]0x0001, [IntPtr]0)
+              $trail = "imemode=$mode"
+              if ($mode -band 1) {
+                [M]::SendMessageW($ime, 0x0283, [IntPtr]0x0002, [IntPtr]($mode -band (-bnot 1))) | Out-Null
+                Start-Sleep -Milliseconds 300
+                $mode = [int][M]::SendMessageW($ime, 0x0283, [IntPtr]0x0001, [IntPtr]0)
+                $trail += "->$mode"
+              }
+              if ($mode -band 1) {
+                [M]::keybd_event(0x10, 0, 0, [IntPtr]::Zero); Start-Sleep -Milliseconds 80
+                [M]::keybd_event(0x10, 0, 2, [IntPtr]::Zero); Start-Sleep -Milliseconds 400
+                $mode = [int][M]::SendMessageW($ime, 0x0283, [IntPtr]0x0001, [IntPtr]0)
+                $trail += "->shift->$mode"
+              }
+              $out += " $trail"
+            } else {
+              [M]::SendMessageW($ime, 0x0283, [IntPtr]0x0006, [IntPtr][int]$spec[2]) | Out-Null
+              Start-Sleep -Milliseconds 200
+            }
+          }
+          'key' { PostKey $e ([int]$spec[2]) }
+          'space' { PostKey $e 0x20 }
+          'back' { PostKey $e 0x08 }
+        }
+        $out += " edit=$($spec[1]) hwnd=$e"
       }
       'shot' { Shot $spec[1]; $out += " shot=$($spec[1])" }
       'list' { $out += (ListWindows) }
