@@ -1713,6 +1713,21 @@ void PhiShellWindow::ShowHeldShell() {
   ::ShowWindow(shell_hwnd_, SW_SHOW);
   ::SetForegroundWindow(shell_hwnd_);
   LayoutContents();
+  // Chromium showed these browsers while the shell was hidden, and
+  // BrowserView::Show shows its Widget only for a PRESENTED shell
+  // (OnHostedWindowShow): their compositors never came on, so the page area
+  // stayed transparent after the gate opened (2026-10-16). Run Chromium's
+  // Show again now that the shell is up — the active browser with its
+  // first-show work, the others inactive, which never switches the Space.
+  if (framework_) {
+    const BrowserId active = active_browser_id();
+    for (const std::string& space : browsers_->spaces().order()) {
+      const BrowserId browser = browsers_->spaces().ForSpace(space);
+      if (browser.valid()) {
+        framework_->ShowBrowserWindow(browser.value, browser == active);
+      }
+    }
+  }
   browsers_->FocusActiveBrowser();
 }
 
