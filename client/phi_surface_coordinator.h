@@ -10,6 +10,8 @@
 #include <cstdint>
 #include <map>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "base/memory/raw_ptr_exclusion.h"
 #include "base/values.h"
@@ -66,6 +68,10 @@ class PhiSurfaceCoordinator {
     // WM_PHI_READER_RETIRE (a panel lost its only tab).
     virtual void PostReaderExpand(BrowserId panel) = 0;
     virtual void PostReaderRetire(BrowserId panel) = 0;
+    // The deferred surface turn (WM_PHI_SURFACE_TURN): the closes and split
+    // opens that may not run on the stack that asked for them
+    // (RunDeferredSurfaceWork).
+    virtual void PostSurfaceTurn() = 0;
     // The client's one analytics capture path (phi_client_analytics.h):
     // the harness ring, then the collector's consent gate and allow-list.
     virtual void CaptureAnalytics(const char* module,
@@ -133,6 +139,20 @@ class PhiSurfaceCoordinator {
                               SidebarSurface kind = SidebarSurface::kContent,
                               const char* peek_end_reason = "closed",
                               bool hands_back_strip = true);
+  // The same close for a caller inside OnBrowserWindowCreated, where
+  // contract rule 2 forbids closing a browser — and where the surface being
+  // replaced may be the very page whose gesture is still on the stack (a
+  // Shift-click inside a Peek). The surfaces are marked and hidden now;
+  // their browsers close on the coordinator's next turn
+  // (RunDeferredSurfaceWork), and UpdateReaderPanelsForWindow treats them
+  // as gone meanwhile.
+  void DeferCloseSurfacesForOrigin(TabId origin_tab_id,
+                                   SidebarSurface kind,
+                                   const char* peek_end_reason,
+                                   bool hands_back_strip);
+  // The deferred turn (Host::PostSurfaceTurn): the queued split opens,
+  // then the queued closes.
+  void RunDeferredSurfaceWork();
   // A link inside the reading surface navigated it away from reader.html:
   // hand `url` back to the origin window as a normal tab and drop the panel.
   void ExpandReaderPanelIntoTab(int64_t panel_window_id,
@@ -161,6 +181,10 @@ class PhiSurfaceCoordinator {
   // A reader's page cannot be a strip tab here (the framework diverts a
   // reader page out of every user strip), so the tab the reader stands over
   // pairs with the link instead and keeps its reader, now over its pane.
+  // Queued for the deferred turn: the framework reports the gesture from
+  // the surface page's own context-menu command or OpenURLFromTab, with
+  // that page's WebContents on the stack, and the peek case closes its
+  // browser.
   void OpenSurfaceLinkAsSplit(BrowserId surface_window, const std::string& url);
   // The peek's "Open as Split View" when its opener is already a pane: the
   // opener stays in its split, and a duplicate of it (its URL, on the left)
@@ -219,6 +243,11 @@ class PhiSurfaceCoordinator {
   bool PairPeekPageWith(PhiSurfacePanel& peek,
                         const std::string& partner_url,
                         bool partner_leading);
+  // OpenSurfaceLinkAsSplit's work, on the deferred turn.
+  void FinishOpenSurfaceLinkAsSplit(BrowserId surface_window,
+                                    const std::string& url);
+  // Whether the panel is marked for a deferred close.
+  bool PendingClose(BrowserId panel) const;
 
   RAW_PTR_EXCLUSION const PhiWindowModel& window_model_;
   RAW_PTR_EXCLUSION Host& host_;
@@ -230,6 +259,11 @@ class PhiSurfaceCoordinator {
   // Panels whose page left reader.html, with the url to re-open, until the
   // deferred expand runs.
   std::map<BrowserId, std::string> pending_reader_expands_;
+  // Surfaces marked for a close that may not run on the caller's stack,
+  // until the deferred turn closes their browsers.
+  std::vector<BrowserId> pending_closes_;
+  // Split opens from a surface page's own gesture, until the deferred turn.
+  std::vector<std::pair<BrowserId, std::string>> pending_split_opens_;
   PhiReaderBridge reader_{this};
 };
 

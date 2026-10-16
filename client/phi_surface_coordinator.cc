@@ -341,6 +341,59 @@ void PhiSurfaceCoordinator::CloseSurfacesForOrigin(TabId origin_tab_id,
   }
 }
 
+void PhiSurfaceCoordinator::DeferCloseSurfacesForOrigin(
+    TabId origin_tab_id,
+    SidebarSurface kind,
+    const char* peek_end_reason,
+    bool hands_back_strip) {
+  if (!framework_) {
+    return;
+  }
+  bool queued = false;
+  surfaces_.ForEach([&](PhiSurfacePanel& panel) {
+    const BrowserId window{panel.window_id()};
+    if (panel.origin_tab_id() != origin_tab_id.value ||
+        (kind != SidebarSurface::kContent && panel.kind() != kind) ||
+        PendingClose(window)) {
+      return;
+    }
+    panel.NoteEndReason(peek_end_reason);
+    if (!hands_back_strip) {
+      panel.set_hands_back_strip(false);
+    }
+    // Out of sight now; the browser goes on the next turn.
+    panel.SetSurfaceShown(false);
+    pending_closes_.push_back(window);
+    queued = true;
+  });
+  if (queued) {
+    host_.PostSurfaceTurn();
+  }
+}
+
+bool PhiSurfaceCoordinator::PendingClose(BrowserId panel) const {
+  return std::find(pending_closes_.begin(), pending_closes_.end(), panel) !=
+         pending_closes_.end();
+}
+
+void PhiSurfaceCoordinator::RunDeferredSurfaceWork() {
+  // Taken first: a split open closes a peek, and a close runs
+  // OnBrowserWindowClosing, either of which may queue more.
+  std::vector<std::pair<BrowserId, std::string>> splits;
+  splits.swap(pending_split_opens_);
+  for (const auto& [surface_window, url] : splits) {
+    FinishOpenSurfaceLinkAsSplit(surface_window, url);
+  }
+  std::vector<BrowserId> closes;
+  closes.swap(pending_closes_);
+  for (const BrowserId window : closes) {
+    // Gone already (dismissed, its opener closed) — nothing to close.
+    if (framework_ && surfaces_.Find(window)) {
+      framework_->CloseBrowserWindow(window.value);
+    }
+  }
+}
+
 void PhiSurfaceCoordinator::ExpandReaderPanelIntoTab(int64_t panel_window_id,
                                                      const std::string& url) {
   const BrowserId panel{panel_window_id};
@@ -413,6 +466,9 @@ void PhiSurfaceCoordinator::UpdateReaderPanelsForWindow(BrowserId window_id) {
   std::set<int> readers;     // Origin tabs with a reader over them.
   for (PhiSurfacePanel* panel : surfaces_.OverWindow(window_id)) {
     const int origin = static_cast<int>(panel->origin_tab_id());
+    if (PendingClose(BrowserId{panel->window_id()})) {
+      continue;  // Closing on the next turn: already out of the picture.
+    }
     if (!window_model_.FindTab(window_id, TabId{origin})) {
       panel->NoteEndReason("opener_closed");
       orphaned.push_back(BrowserId{panel->window_id()});
@@ -504,11 +560,25 @@ bool PhiSurfaceCoordinator::PairPeekPageWith(PhiSurfacePanel& peek,
 
 void PhiSurfaceCoordinator::OpenSurfaceLinkAsSplit(BrowserId surface_window,
                                                    const std::string& url) {
-  PhiSurfacePanel* surface = surfaces_.Find(surface_window);
-  if (!surface || !framework_ || url.empty()) {
+  // The framework reports this from the surface page's own gesture — the
+  // context menu's command, OpenURLFromTab for an Alt-click — with that
+  // page's WebContents on the stack, and the peek case closes its browser
+  // (PairPeekPageWith). Deferred a turn, like the reader expand.
+  if (!surfaces_.Find(surface_window) || !framework_ || url.empty()) {
     LOG(WARNING) << "[PhiClient] split from surface " << surface_window.value
                  << ": no such surface";
     return;
+  }
+  pending_split_opens_.emplace_back(surface_window, url);
+  host_.PostSurfaceTurn();
+}
+
+void PhiSurfaceCoordinator::FinishOpenSurfaceLinkAsSplit(
+    BrowserId surface_window,
+    const std::string& url) {
+  PhiSurfacePanel* surface = surfaces_.Find(surface_window);
+  if (!surface || !framework_ || url.empty()) {
+    return;  // The surface went while the turn was pending.
   }
   if (surface->kind() == SidebarSurface::kPeek) {
     if (!PairPeekPageWith(*surface, url, /*partner_leading=*/false)) {

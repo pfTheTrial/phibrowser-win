@@ -150,6 +150,12 @@ constexpr UINT WM_PHI_UPDATE_STATE = WM_APP + 14;
 // A user window came up: agent notification cards that waited for one show
 // in it, on a turn after the shell finished hosting its browser.
 constexpr UINT WM_PHI_REFRESH_CARDS = WM_APP + 15;
+// The surface coordinator's deferred turn: closes of surface browsers and
+// split opens from a surface that may not run on the stack that asked —
+// a Peek replaced from inside OnBrowserWindowCreated (contract rule 2),
+// "Open in Split View" from a surface page's own gesture, where that
+// page's WebContents is on the stack (2026-10-14 review H1/H2).
+constexpr UINT WM_PHI_SURFACE_TURN = WM_APP + 16;
 }  // namespace
 
 void PhiCoordinator::OnFrameworkReady(phi_framework::PhiFramework* framework,
@@ -399,6 +405,14 @@ LRESULT CALLBACK PhiCoordinator::MsgWndProc(HWND hwnd,
     if (self) {
       self->surface_coordinator_.FinishReaderPanelExpand(
           BrowserId{static_cast<int64_t>(wparam)});
+    }
+    return 0;
+  }
+  if (msg == WM_PHI_SURFACE_TURN) {
+    auto* self = reinterpret_cast<PhiCoordinator*>(
+        ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    if (self) {
+      self->surface_coordinator_.RunDeferredSurfaceWork();
     }
     return 0;
   }
@@ -1823,6 +1837,11 @@ void PhiCoordinator::OnExtensionMessage(const char* request_id,
   const std::string id = request_id ? request_id : "";
   const std::string sender = sender_id ? sender_id : "";
   const std::string message_type = type ? type : "";
+  if (folio_.HandleExtensionMessage(
+          id, sender, message_type,
+          payload_json && *payload_json ? payload_json : "{}")) {
+    return;
+  }
   if (surface_coordinator_.HandleExtensionMessage(
           id, sender, message_type,
           payload_json && *payload_json ? payload_json : "{}")) {
@@ -1837,11 +1856,6 @@ void PhiCoordinator::OnExtensionMessage(const char* request_id,
   }
 }
 
-  if (folio_.HandleExtensionMessage(
-          id, sender, message_type,
-          payload_json && *payload_json ? payload_json : "{}")) {
-    return;
-  }
 PhiShellWindow* PhiCoordinator::WindowShowingTab(TabId tab_id) {
   const std::optional<BrowserId> browser = window_model_.BrowserOfTab(tab_id);
   if (!browser) {
@@ -1894,6 +1908,12 @@ void PhiCoordinator::PostReaderRetire(BrowserId panel) {
   }
 }
 
+void PhiCoordinator::PostSurfaceTurn() {
+  if (msg_hwnd_) {
+    ::PostMessageW(msg_hwnd_, WM_PHI_SURFACE_TURN, 0, 0);
+  }
+}
+
 bool PhiCoordinator::IsReaderOfferable(int tab_id,
                                        const std::string& url) const {
   return surface_coordinator_.IsReaderOfferable(tab_id, url);
@@ -1909,26 +1929,6 @@ void PhiCoordinator::RequestToggleReaderView(int tab_id,
   surface_coordinator_.RequestToggleReaderView(tab_id, url, entry_point);
 }
 
-void PhiCoordinator::RequestCloseSurfaces(int tab_id) {
-  surface_coordinator_.CloseSurfacesForOrigin(TabId{tab_id});
-}
-
-bool PhiCoordinator::RequestClosePartnerPeek(int64_t browser, int tab_id) {
-  return surface_coordinator_.ClosePartnerPeek(BrowserId{browser},
-                                               TabId{tab_id});
-}
-
-bool PhiCoordinator::SurfaceFaviconForOrigin(int tab_id,
-                                             std::vector<unsigned char>* bgra,
-                                             int* width,
-                                             int* height) {
-  bgra->clear();
-  *width = *height = 0;
-  const PhiSurfacePanel* panel =
-      surface_coordinator_.registry().ForOrigin(TabId{tab_id});
-  if (!panel || !framework_) {
-    return false;
-  }
 bool PhiCoordinator::CanSaveToFolio(int tab_id) const {
   return folio_.CanSave(tab_id);
 }
@@ -2071,6 +2071,26 @@ void PhiCoordinator::OpenFolioAutoSaveSites() {
   folio_.OpenAutoSaveSites();
 }
 
+void PhiCoordinator::RequestCloseSurfaces(int tab_id) {
+  surface_coordinator_.CloseSurfacesForOrigin(TabId{tab_id});
+}
+
+bool PhiCoordinator::RequestClosePartnerPeek(int64_t browser, int tab_id) {
+  return surface_coordinator_.ClosePartnerPeek(BrowserId{browser},
+                                               TabId{tab_id});
+}
+
+bool PhiCoordinator::SurfaceFaviconForOrigin(int tab_id,
+                                             std::vector<unsigned char>* bgra,
+                                             int* width,
+                                             int* height) {
+  bgra->clear();
+  *width = *height = 0;
+  const PhiSurfacePanel* panel =
+      surface_coordinator_.registry().ForOrigin(TabId{tab_id});
+  if (!panel || !framework_) {
+    return false;
+  }
   // A reader shows the ORIGIN page (reader.html has no favicon of its
   // own); a peek shows the page it previews.
   int64_t window_id = panel->window_id();
@@ -3288,6 +3308,11 @@ void PhiCoordinator::OnPreferencesChanged(
     case PreferenceChange::kAgentAutoView:
       AgentRunStateChanged();  // Turning it on surfaces a running agent now.
       break;
+    case PreferenceChange::kFolio:
+      // The opt-in arms Mirage's site rules; a folder change needs nothing
+      // live (each save resolves its folder when it starts).
+      folio_.BroadcastArmedState();
+      break;
     case PreferenceChange::kDeveloper:
     case PreferenceChange::kAgentUserSpaces:
     case PreferenceChange::kPinScope:
@@ -3315,11 +3340,6 @@ void PhiCoordinator::OnSpacesChanged(PhiSpaceManager::SpacesChange what) {
       registry_.InvalidateAll();
       break;
     case SpacesChange::kTheme:
-    case PreferenceChange::kFolio:
-      // The opt-in arms Mirage's site rules; a folder change needs nothing
-      // live (each save resolves its folder when it starts).
-      folio_.BroadcastArmedState();
-      break;
       for (PhiShellWindow* controller : registry_.Controllers()) {
         controller->ApplyPalette();
       }
@@ -4849,9 +4869,13 @@ bool PhiCoordinator::HostSurfacePanel(
   LOG(INFO) << "[PhiClient] peek " << browser.value << " over tab "
             << opener_tab.value << " in window " << opener_window.value;
   // The replaced peek hands no focus back: the new one takes its place
-  // over whichever pane is focused.
-  CloseSurfacesForOrigin(opener_tab, SidebarSurface::kPeek, "replaced",
-                         /*hands_back_strip=*/false);
+  // over whichever pane is focused. DEFERRED: this runs inside
+  // Browser::Create (contract rule 2 — no closing browsers here), and for
+  // a peek opened from inside a Peek the replaced one is the page whose
+  // Shift-click is still on the stack.
+  surface_coordinator_.DeferCloseSurfacesForOrigin(
+      opener_tab, SidebarSurface::kPeek, "replaced",
+      /*hands_back_strip=*/false);
   surfaces().Attach(std::make_unique<PhiPeekPanel>(
       browser.value, hwnd, opener_window.value, opener_tab.value, opener,
       framework_, &window_model_, this));

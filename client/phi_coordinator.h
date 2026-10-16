@@ -1020,6 +1020,7 @@ class PhiCoordinator : public SidebarHost,
   void CompleteReaderReply(int request_id, std::string json) override;
   void PostReaderExpand(BrowserId panel) override;
   void PostReaderRetire(BrowserId panel) override;
+  void PostSurfaceTurn() override;
   // The services (docs/architecture-review.md §3.4). The preferences need
   // nothing but their dirty callback and exist from construction (the
   // popup chrome takes a pointer to their palette in the constructor); the
