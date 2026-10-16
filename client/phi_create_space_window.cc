@@ -200,7 +200,7 @@ void PhiCreateSpaceWindow::FormCommit(const PhiNewSpaceSpec& spec) {
   // Space presents in the slot the request came from.
   if (controller_ && controller_->spaces_host()) {
     controller_->spaces_host()->RequestCreateSpaceWithOptions(
-        controller_->slot().value, spec);
+        controller_->slot().value, spec, "standalone_window");
   }
   CloseFromForm();
 }

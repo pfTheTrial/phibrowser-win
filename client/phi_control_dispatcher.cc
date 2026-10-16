@@ -1454,11 +1454,13 @@ PhiVerbResult PhiControlDispatcher::Execute(const std::string& type,
     // the gate INTO the user's own Spaces — one aimed at a user window, or
     // an app-wide one that needs the user-Space capability (spaces.create,
     // a switch). Agent-Space work is the agent's own and is not counted;
-    // neither is the box (kHost is the user, not an agent).
+    // neither is the box (kHost is the user, not an agent), nor a read or
+    // a liveness probe (PhiAgentUserSpaceCommandIsTracked).
     const bool user_space_verb =
         (spec->scopes != kScopeNone && scope.kind == Scope::Kind::kUser) ||
         (spec->required & (kUserSpaceRead | kUserSpaceWrite));
-    if (user_space_verb && !(principal.caps & kHost)) {
+    if (user_space_verb && !(principal.caps & kHost) &&
+        PhiAgentUserSpaceCommandIsTracked(spec->name)) {
       coordinator_->CaptureAnalytics(
           kAnalyticsModuleAgent, kEventAgentUserSpaceCommand,
           PhiAgentUserSpaceCommandProperties(std::string(spec->name),

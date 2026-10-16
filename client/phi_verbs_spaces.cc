@@ -223,12 +223,13 @@ PhiVerbResult PhiControlDispatcher::VerbSpacesCreate(
   }
   if (ctx.caller == ControlCaller::kInternal) {
     // The user's own create form (the Mac's space_created is the panel's,
-    // never an agent's spaces.create): counts, not the Space.
+    // never an agent's spaces.create): counts and the form's surface
+    // (RequestCreateSpaceWithOptions), not the Space.
     coordinator_->CaptureAnalytics(
         kAnalyticsModuleSpaces, kEventSpaceCreated,
         PhiSpaceCreatedProperties(
             static_cast<int>(coordinator_->spaces_model().spaces.size()),
-            profile_id != "Default"));
+            profile_id != "Default", ctx.params.String("surface")));
     coordinator_->NoteFirstTimeAction(kFirstTimeActionSpaceCreated);
   }
   // A wire colorHex tints the new Space.

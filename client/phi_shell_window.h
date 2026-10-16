@@ -328,9 +328,13 @@ class SpacesHost {
                                                 const std::string& name) = 0;
   // Creates the Space the form described, pins its theme, and switches
   // `slot` to it. Returns the new Space's id, or empty on failure.
+  // `surface` is where the form was hosted, for the analytics (the Mac's
+  // CreateSpacePanel.Style.analyticsSurface): "sidebar" for the strip's
+  // and the pip flyout's form, "standalone_window" for the create window.
   virtual std::string RequestCreateSpaceWithOptions(
       int64_t slot,
-      const PhiNewSpaceSpec& spec) = 0;
+      const PhiNewSpaceSpec& spec,
+      const char* surface) = 0;
 };
 
 // The client-wide chrome preferences: layout, palette, previews, the
@@ -446,9 +450,10 @@ class WindowHost {
   // switching it to that browser's Space when it is hidden) — the search
   // palette's cross-window jump.
   virtual void FocusWindowForBrowser(int64_t browser_window_id) = 0;
-  // Observations the analytics count (phi_client_analytics.h): the process
-  // gained or lost the foreground (WM_ACTIVATEAPP, every shell reports it,
-  // the host keeps the edge), and the user switched Space in this shell.
+  // The process gained or lost the foreground (WM_ACTIVATEAPP, every shell
+  // reports it) — the accelerators' Alt state, no analytics (the Mac stopped
+  // counting Cmd-Tab, e748d9f4). NoteUserSpaceSwitched is an observation
+  // the analytics count (phi_client_analytics.h).
   virtual void NoteAppActivation(bool active) = 0;
   virtual void NoteUserSpaceSwitched() = 0;
   // The menu bar's "Import from Google Chrome…": the prompt shown, the run

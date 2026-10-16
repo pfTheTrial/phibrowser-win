@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "base/values.h"
@@ -46,12 +47,12 @@ inline constexpr char kAnalyticsModuleOobe[] = "oobe";
 inline constexpr char kAnalyticsModuleAccount[] = "account";
 inline constexpr char kAnalyticsModuleImport[] = "import";
 inline constexpr char kAnalyticsModuleFeature[] = "feature";
+inline constexpr char kAnalyticsModuleNotifications[] = "notifications";
 
 // Event names. The four capitalised ones are what the Mac PostHog SDK
 // auto-captures for the app lifecycle; matching them verbatim is what makes
 // the Mac's DAU and retention insights count Windows sessions too.
 inline constexpr char kEventAppOpened[] = "Application Opened";
-inline constexpr char kEventAppBackgrounded[] = "Application Backgrounded";
 inline constexpr char kEventAppInstalled[] = "Application Installed";
 inline constexpr char kEventAppUpdated[] = "Application Updated";
 inline constexpr char kEventUserDefaultsSnapshot[] = "user_defaults_snapshot";
@@ -99,13 +100,17 @@ inline constexpr char kEventImportTypesSelected[] = "import_types_selected";
 inline constexpr char kEventImportStarted[] = "import_started";
 inline constexpr char kEventImportFinished[] = "import_finished";
 inline constexpr char kEventFirstTimeAction[] = "first_time_action";
+inline constexpr char kEventNotificationCardAction[] =
+    "notification_card_action";
 
-// "Application Opened": the Mac SDK's lifecycle event plus the enrichment
-// AppController's beforeSend hook adds (layout_mode, ai_enabled,
-// is_guest_mode). `from_background` is false for the launch and true for
-// every later return to the foreground.
-base::DictValue PhiAppOpenedProperties(const model::PhiSettings& settings,
-                                       bool from_background);
+// "Application Opened": once per launch, in the shape the Mac SDK's
+// fresh-launch lifecycle event had (`from_background` false, the version)
+// plus the enrichment AppController's beforeSend hook adds (layout_mode,
+// ai_enabled, is_guest_mode). Never on a return to the foreground: the Mac
+// (e748d9f4) turned the SDK's didBecomeActive / didResignActive pair off —
+// every Cmd-Tab was an Opened / Backgrounded pair, ~35 a user a day — and
+// captures the one launch event by hand; no Backgrounded event exists.
+base::DictValue PhiAppOpenedProperties(const model::PhiSettings& settings);
 
 // A single boolean property, for the events that carry exactly one
 // ("enabled", "incognito", "success", …).
@@ -130,15 +135,26 @@ struct PhiVersionTransition {
 PhiVersionTransition PhiNoteAppVersion(const std::wstring& user_data_dir);
 
 // "space_created" / "space_switched": the Mac's counts, never a Space's
-// name, id or profile.
+// name, id or profile. `surface` is where the create form was hosted
+// ("sidebar" / "standalone_window"; the Mac also has "library").
 base::DictValue PhiSpaceCreatedProperties(int total_spaces,
-                                          bool non_default_profile);
+                                          bool non_default_profile,
+                                          const std::string& surface);
 base::DictValue PhiSpaceSwitchedProperties(int total_spaces);
 
 // The Mac's AgentDriverBadge.telemetryName: a known brand's product label
 // ("Claude Code"), "other" for a name that is not one, "unknown" for none.
 // Never the raw name — a process name or path is not for the collector.
 std::string PhiAgentTelemetryName(const std::string& agent_name);
+
+// The Mac's ExtensionMessageRouter.untrackedUserSpaceCommands: false for
+// the verbs that read state or probe liveness (the lists, shadow.ping,
+// credentials.status) — they ride machine loops (a CDP connection's 30 s
+// spaces.list heartbeat, the shadow keep-alive) and were 98.7% of a 2.2M-
+// event week on the Mac with no user action behind them. Every mutating
+// verb is tracked, as are credentials.get / getTotp: reading a secret is
+// consequential even though it changes nothing.
+bool PhiAgentUserSpaceCommandIsTracked(std::string_view verb);
 
 // "agent_task_started" / "agent_task_completed" / "agent_user_space_command".
 // `origin` is the Mac's "cdp" or "phi_agent"; on Windows every task arrives
@@ -209,6 +225,13 @@ base::DictValue PhiLanguageChangedProperties(const std::string& from,
 // ("sidebar" / "web_content_header").
 base::DictValue PhiFeatureEntryProperties(const char* button,
                                           const char* surface);
+
+// "notification_card_action" (the Mac's NotificationCardAnalytics): what
+// the user did with an agent notification card — "show" (a card became
+// the visible one), "run" (its button), "dismiss" (the hide glyph),
+// "delete" (the close glyph). The Mac's "popup" / "mute" are its sidebar
+// presentation settings, which this client does not have.
+base::DictValue PhiNotificationCardActionProperties(const char* action);
 
 // The browser-data import, the Mac's BrowserImportAnalytics. This client
 // imports from Google Chrome only, so the sources are always ["chrome"].

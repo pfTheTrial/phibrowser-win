@@ -281,7 +281,13 @@ void PhiCoordinator::OnFrameworkReady(phi_framework::PhiFramework* framework,
                    ? shell->shell_hwnd()
                    : nullptr;
       },
-      [this] { return Palette(); });
+      [this] { return Palette(); },
+      // The Mac's notification_card_action.
+      [this](const char* action) {
+        CaptureAnalytics(kAnalyticsModuleNotifications,
+                         kEventNotificationCardAction,
+                         PhiNotificationCardActionProperties(action));
+      });
 
   // Background update checks (WinSparkle over the Mac's appcast pipeline).
   // A no-op when WinSparkle.dll is not deployed beside the client.
@@ -2269,22 +2275,11 @@ void PhiCoordinator::NoteImportStarted() {
 
 void PhiCoordinator::NoteAppActivation(bool active) {
   // WM_ACTIVATEAPP reaches every top-level window of the process on each
-  // transition; only the edge is an event. The pair is the Mac SDK's
-  // didBecomeActive / didResignActive, which is what its DAU counts.
+  // transition. No analytics ride it any more: the Opened / Backgrounded
+  // pair this used to capture was the Mac SDK's Cmd-Tab noise, and the Mac
+  // (e748d9f4) now sends Application Opened once per launch (LoadStores).
   if (accelerators_) {
     accelerators_->OnAppActivationChanged();  // Alt+Tab is no solo Alt.
-  }
-  if (active == app_active_) {
-    return;
-  }
-  app_active_ = active;
-  if (active) {
-    CaptureAnalytics(kAnalyticsModuleApp, kEventAppOpened,
-                     PhiAppOpenedProperties(preferences_.settings(),
-                                            /*from_background=*/true));
-  } else {
-    CaptureAnalytics(kAnalyticsModuleApp, kEventAppBackgrounded,
-                     base::DictValue());
   }
 }
 
@@ -2506,7 +2501,7 @@ void PhiCoordinator::LoadStores(const std::wstring& user_data_dir) {
                      std::move(transition.properties));
   }
   CaptureAnalytics(kAnalyticsModuleApp, kEventAppOpened,
-                   PhiAppOpenedProperties(settings, /*from_background=*/false));
+                   PhiAppOpenedProperties(settings));
   CaptureAnalytics(
       kAnalyticsModuleSettings, kEventUserDefaultsSnapshot,
       PhiUserDefaultsSnapshotProperties(settings, PhiThisExeIsDefaultBrowser()));
@@ -4554,7 +4549,8 @@ void PhiCoordinator::RequestCreateProfileForSpaceForm(int64_t slot,
 
 std::string PhiCoordinator::RequestCreateSpaceWithOptions(
     int64_t slot,
-    const PhiNewSpaceSpec& spec) {
+    const PhiNewSpaceSpec& spec,
+    const char* surface) {
   // CreateSpacePanel.create: the Space through the one creation flow, then
   // its theme pinned (setTheme / setOverlaySaturation), then activated in
   // the window the form was in.
@@ -4570,6 +4566,9 @@ std::string PhiCoordinator::RequestCreateSpaceWithOptions(
   if (!spec.color_hex.empty()) {
     payload.Set("colorHex", spec.color_hex);
   }
+  // For space_created's `surface` only; an internal field the verb's
+  // schema does not list, so the pipe never learns it.
+  payload.Set("surface", surface);
   std::string json;
   base::JSONWriter::Write(payload, &json);
   const std::string created = dispatcher().ExecuteControlOnUi(

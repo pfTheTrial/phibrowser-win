@@ -46,10 +46,15 @@ class PhiNotificationCards {
   // The user window the stack shows over; null when there is none.
   using OwnerProvider = std::function<HWND()>;
   using PaletteProvider = std::function<PhiPalette()>;
+  // The user's doings with the cards, for notification_card_action
+  // (phi_client_analytics.h): "show", "run", "dismiss", "delete". Never a
+  // timeout or an eviction — those are nobody's action.
+  using ActionSink = std::function<void(const char* action)>;
 
   PhiNotificationCards(DecisionSink sink,
                        OwnerProvider owner,
-                       PaletteProvider palette);
+                       PaletteProvider palette,
+                       ActionSink action);
   ~PhiNotificationCards();
 
   PhiNotificationCards(const PhiNotificationCards&) = delete;
@@ -85,6 +90,7 @@ class PhiNotificationCards {
 
   // Removes cards_[index] and answers `decision` to its asker.
   void Answer(size_t index, const char* decision);
+  void NoteAction(const char* action);
   // Brings the view in line with the queue. `allow_recreate` is false on
   // the view's own click path, where the view must outlive the call.
   void Present(bool allow_recreate);
@@ -95,7 +101,12 @@ class PhiNotificationCards {
   DecisionSink sink_;
   OwnerProvider owner_;
   PaletteProvider palette_;
+  ActionSink action_;
   std::vector<Card> cards_;  // Newest first.
+  // The card the view shows, for "show" once per card that becomes the
+  // visible one (the Mac's onChange of the presented card's id); cleared
+  // when nothing is on screen, so a re-presented stack counts again.
+  std::string shown_id_;
   size_t current_ = 0;
   // The user hid the stack; a NEW card shows it again (the Mac's
   // isExplicitlyHidden).

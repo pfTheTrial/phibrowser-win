@@ -367,11 +367,12 @@ std::string_view PhiTelemetry::AllowedProperties(std::string_view module) {
            "show_tab_previews|show_open_tab_indicators|"
            "dim_unloaded_tab_icons|restore_last_session_enabled|"
            "developer_mode_enabled|cdp_agent_access_enabled|"
-           "agent_user_spaces_enabled|always_show_bookmark_bar|enabled|"
-           "from|to|";
+           "agent_user_spaces_enabled|always_show_bookmark_bar|"
+           "open_kiosk_on_command_option_click|auto_picture_in_picture_mode|"
+           "enabled|from|to|";
   }
   if (module == "spaces") {
-    return "|total_spaces|non_default_profile|total_profiles|";
+    return "|total_spaces|non_default_profile|total_profiles|surface|";
   }
   if (module == "profiles") {
     return "|total_profiles|";
@@ -405,6 +406,9 @@ std::string_view PhiTelemetry::AllowedProperties(std::string_view module) {
   }
   if (module == "feature") {
     return "|button|surface|";
+  }
+  if (module == "notifications") {
+    return "|action|";
   }
   return std::string_view();
 }

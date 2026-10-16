@@ -30,10 +30,9 @@ base::ListValue StringList(std::initializer_list<const char*> items) {
 
 }  // namespace
 
-base::DictValue PhiAppOpenedProperties(const model::PhiSettings& settings,
-                                       bool from_background) {
+base::DictValue PhiAppOpenedProperties(const model::PhiSettings& settings) {
   base::DictValue props;
-  props.Set("from_background", from_background);
+  props.Set("from_background", false);
   props.Set("version", PHI_WIN_VERSION_FULL_STRING);
   props.Set("layout_mode", PhiLayoutModeName(settings.layout_mode));
   // The Mac's beforeSend enrichment. AI features do not exist in this
@@ -79,6 +78,12 @@ base::DictValue PhiUserDefaultsSnapshotProperties(
   // The Mac's cdpAgentAccessEnabled is the same switch as Developer ▸
   // "Allow agents to control Phi".
   props.Set("cdp_agent_access_enabled", settings.allow_agent_control);
+  // The Mac's key for its Cmd+Option click; the Windows chord is Ctrl+Alt.
+  props.Set("open_kiosk_on_command_option_click",
+            settings.open_kiosk_on_ctrl_alt_click);
+  // The Mac's AutoPictureInPictureMode raw value: off / normal / parked.
+  props.Set("auto_picture_in_picture_mode",
+            settings.auto_picture_in_picture_mode);
   // Windows-only switches, named for what they are.
   props.Set("agent_user_spaces_enabled", settings.allow_agent_user_spaces);
   props.Set("always_show_bookmark_bar", settings.always_show_bookmark_bar);
@@ -120,10 +125,12 @@ PhiVersionTransition PhiNoteAppVersion(const std::wstring& user_data_dir) {
 }
 
 base::DictValue PhiSpaceCreatedProperties(int total_spaces,
-                                          bool non_default_profile) {
+                                          bool non_default_profile,
+                                          const std::string& surface) {
   base::DictValue props;
   props.Set("total_spaces", total_spaces);
   props.Set("non_default_profile", non_default_profile);
+  props.Set("surface", surface);
   return props;
 }
 
@@ -148,6 +155,21 @@ std::string PhiAgentTelemetryName(const std::string& agent_name) {
   // name it gives no mark to is "other", never the name itself.
   const PhiAgentDriverBadge badge = PhiAgentDriverBadgeFor(agent_name);
   return badge.icon.empty() ? std::string("other") : badge.label;
+}
+
+bool PhiAgentUserSpaceCommandIsTracked(std::string_view verb) {
+  static constexpr std::string_view kUntracked[] = {
+      "agentSpace.bookmarks.list", "agentSpace.pinnedTabs.list",
+      "agentSpace.shadow.list",    "agentSpace.shadow.ping",
+      "agentSpace.spaces.list",    "agentSpace.spaces.listTabs",
+      "agentSpace.urlRules.list",  "credentials.status",
+  };
+  for (const std::string_view untracked : kUntracked) {
+    if (verb == untracked) {
+      return false;
+    }
+  }
+  return true;
 }
 
 base::DictValue PhiAgentTaskProperties(const std::string& origin,
@@ -290,6 +312,12 @@ base::DictValue PhiFeatureEntryProperties(const char* button,
   base::DictValue props;
   props.Set("button", button);
   props.Set("surface", surface);
+  return props;
+}
+
+base::DictValue PhiNotificationCardActionProperties(const char* action) {
+  base::DictValue props;
+  props.Set("action", action);
   return props;
 }
 

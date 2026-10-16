@@ -680,7 +680,7 @@ void PhiSpacesStrip::CommitCreateForm(const PhiNewSpaceSpec& spec) {
   preview_until_switch_ = true;
   const std::string id =
       spaces_host_ ? spaces_host_->RequestCreateSpaceWithOptions(
-                         shell_->SpacesSlot().value, spec)
+                         shell_->SpacesSlot().value, spec, "sidebar")
                    : std::string();
   if (id.empty()) {
     EndPreview();  // Creation failed: back to the source theme.

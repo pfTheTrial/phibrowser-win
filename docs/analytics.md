@@ -1,6 +1,6 @@
 # Analytics
 
-Last updated: 2026-09-11 (second tranche: peek, reader, bookmarks, kiosk, profiles, credentials, onboarding, account, import, first-time actions)
+Last updated: 2026-10-16 (Mac parity as of 2026-10-16: agent heartbeats and foreground edges no longer counted, `space_created.surface`, the kiosk-click and auto-PiP snapshot keys, `notification_card_action`)
 
 The Windows client reports product analytics to PostHog Cloud (US), project
 **phibrowser-win** (id 604357, <https://us.posthog.com/project/604357>). The
@@ -67,14 +67,13 @@ module is the allow-list row.
 | --- | --- | --- | --- |
 | `Application Installed` | `app` | `version`, `build` | First launch over a user data directory (no `phi_last_version` file) |
 | `Application Updated` | `app` | `version`, `build`, `previous_version` | A launch whose version differs from the one recorded at the previous launch |
-| `Application Opened` | `app` | `from_background` (false at launch, true on a return to the foreground), `version`, `layout_mode` (`performance` / `balanced` / `comfortable`), `ai_enabled` (always false today), `is_guest_mode` (Guest Mode — "Explore Phi without signing in") | Launch (`PhiCoordinator::LoadStores`, once the settings and the consent are in), and every `WM_ACTIVATEAPP` that brings Phi to the foreground |
-| `Application Backgrounded` | `app` | — | `WM_ACTIVATEAPP` taking the foreground away from Phi (the process-wide edge, not per window) |
-| `user_defaults_snapshot` | `settings` | `new_tab_behavior` (`ntp` / `omnibox`), `layout_mode`, `app_language`, `appearance` (`system` / `light` / `dark`), `is_phi_default_browser`, `peek_view_enabled`, `always_show_full_url`, `show_tab_previews`, `show_open_tab_indicators`, `dim_unloaded_tab_icons`, `restore_last_session_enabled`, `developer_mode_enabled`, `cdp_agent_access_enabled` (Developer ▸ "Allow agents to control Phi"), `agent_user_spaces_enabled`, `always_show_bookmark_bar` | Launch, right after `Application Opened`. The Mac's keys where the setting exists on Windows; the last two are Windows-only |
-| `space_created` | `spaces` | `total_spaces`, `non_default_profile` | The user's own create form commits (`agentSpace.spaces.create` from an internal caller); an agent's create is not counted |
+| `Application Opened` | `app` | `from_background` (always false), `version`, `layout_mode` (`performance` / `balanced` / `comfortable`), `ai_enabled` (always false today), `is_guest_mode` (Guest Mode — "Explore Phi without signing in") | Launch only (`PhiCoordinator::LoadStores`, once the settings and the consent are in). Until 2026-10-16 every `WM_ACTIVATEAPP` edge also sent an Opened (`from_background: true`) / `Application Backgrounded` pair — the Mac SDK's Cmd-Tab noise, which the Mac stopped counting (e748d9f4); neither is sent any more |
+| `user_defaults_snapshot` | `settings` | `new_tab_behavior` (`ntp` / `omnibox`), `layout_mode`, `app_language`, `appearance` (`system` / `light` / `dark`), `is_phi_default_browser`, `peek_view_enabled`, `always_show_full_url`, `show_tab_previews`, `show_open_tab_indicators`, `dim_unloaded_tab_icons`, `restore_last_session_enabled`, `developer_mode_enabled`, `cdp_agent_access_enabled` (Developer ▸ "Allow agents to control Phi"), `open_kiosk_on_command_option_click` (the Mac's key; the Windows chord is Ctrl+Alt, pref `openKioskOnCtrlAltClick`), `auto_picture_in_picture_mode` (`off` / `normal` / `parked`, pref `autoPictureInPictureMode`), `agent_user_spaces_enabled`, `always_show_bookmark_bar` | Launch, right after `Application Opened`. The Mac's keys where the setting exists on Windows; the last two are Windows-only |
+| `space_created` | `spaces` | `total_spaces`, `non_default_profile`, `surface` (`sidebar` — the strip's form and the pip flyout; `standalone_window` — the create-Space window; the Mac's `library` has no Windows host) | The user's own create form commits (`agentSpace.spaces.create` from an internal caller, `RequestCreateSpaceWithOptions` naming the surface); an agent's create is not counted |
 | `space_switched` | `spaces` | `total_spaces` | The user switches Space in a shell window — a pip, the Space menu, Ctrl+N (`PhiShellWindow::SwitchToSpace`); not restores, not agent-driven switches |
 | `agent_task_started` | `agent` | `origin` (always `phi_agent`), `persistent`, `agent_name` | An agent Space's window is up (`HostAgentWindow`), and a re-bind to an existing task |
 | `agent_task_completed` | `agent` | `origin`, `persistent`, `agent_name`, `success` | `agentSpace.complete` — the completion path only; a Space the user closes under a task is not a completion |
-| `agent_user_space_command` | `agent` | `command` (the verb name), `agent_name` | A pipe caller's verb passes the capability gate into the user's own Spaces: one aimed at a user window, or an app-wide one needing `kUserSpaceRead`/`kUserSpaceWrite`. Never for the test-rig host |
+| `agent_user_space_command` | `agent` | `command` (the verb name), `agent_name` | A pipe caller's verb passes the capability gate into the user's own Spaces: one aimed at a user window, or an app-wide one needing `kUserSpaceRead`/`kUserSpaceWrite`. Never for the test-rig host, and never for the reads and liveness probes the Mac exempts (`PhiAgentUserSpaceCommandIsTracked`: `agentSpace.bookmarks.list`, `pinnedTabs.list`, `shadow.list`, `shadow.ping`, `spaces.list`, `spaces.listTabs`, `urlRules.list`, `credentials.status`) — a CDP connection heartbeats with `spaces.list` every 30 s. `credentials.get` / `getTotp` stay counted |
 | `agent_shadow_window_opened` | `agent` | `origin` (always `phi_agent`), `incognito` | A shadow window's browser is up (`HostAgentWindow` for `kShadow`) — a surface without a task |
 | `agent_credential_access_requested` | `agent` | `kind` (`fill` / `reveal`; this client has no `run`), `approved`, `prompted`, `agent_name` | Every `credentials.get` / `credentials.autofill` decision (`PhiCredentialService::PromptCredentialApproval`): a remembered denial is `approved: false, prompted: false`; a live 10-minute grant `approved: true, prompted: false` |
 | `agent_credential_access_approved` | `agent` | `kind`, `approval_type` (`existing_grant` / `once` / `ten_minutes`; there is no `always` here), `agent_name` | The allowed ones of the above. Never the scope, the purpose or anything from the vault |
@@ -107,6 +106,7 @@ module is the allow-list row.
 | `import_types_selected` | `import` | `source_browser` (`chrome`), `types` (`["bookmarks","cookies","extensions","history"]`) | The confirm is accepted |
 | `import_started` | `import` | `source_browsers` (`["chrome"]`) | `StartChromeImport` accepted the run |
 | `import_finished` | `import` | `source_browsers`, `success`, `failed_sources`, `duration_seconds`, `error_code` (`source_import_failed`, on failure only) | `OnImportCompleted` |
+| `notification_card_action` | `notifications` | `action` (`show` — a card became the visible one, once per card, again after the stack was hidden and re-shown; `run` — its button; `dismiss` — the hide glyph; `delete` — the close glyph) | The agent notification cards (`PhiNotificationCards`, `notification.show`). A timeout or a queue eviction is nobody's action and is not counted |
 | `first_time_action` | `app` | `action` (`space_created`, `agent_task`, `import_finished`), `seconds_since_install` | The action's first success over this user data directory. The record is `<user_data_dir>\phi_first_time_actions` (first line the install's unix ms, then one action per line); a profile from before the record counts from the first launch that wrote it |
 | *Chromium-originated events* | `memory_saver`, `renderer_health` | see the registry | Captured in the browser core through `phi_analytics::Capture()`; inventoried in `chrome/browser/phinomenon/analytics/README.md` in the fork |
 
@@ -130,6 +130,14 @@ Mac events with no Windows counterpart, and why:
 | `agent_credential_access_*` with `kind: run`, `approval_type: always` | This client has no command-env injection and offers no standing grant |
 | `peek_view_opened` with `entry_point: restored` | A peek is omitted from session restore here |
 | `reader_view_opened` with `entry_point: automation` | No `-phi-auto-reader` trigger |
+| `library_section_viewed` | No native Library; Windows opens Mirage's `library.html` |
+| `mini_player_action` | No Mini Player |
+| `space_created` with `surface: library` | No Library card hosts the create form |
+| `notification_card_action` with `popup` / `mute` | The Mac's sidebar notification presentation settings; the Windows cards have no such menu |
+| `user_defaults_snapshot` keys `mini_player_enabled`, `mini_player_presentation_mode`, `short_highlight_links_enabled`, `bitwarden_enabled`, `proactive_suggestions_enabled`, `automatically_add_context_enabled`, `open_external_links_in_kiosk` | No Mini Player, short highlight links, Bitwarden, AI features or external-link Kiosk setting in this client |
+| `user_defaults_snapshot` key `selection_tint_enabled` | Synced from the Mac (`PhiSelectionTintEnabled`) but no Windows UI or effect reads it |
+| `user_defaults_snapshot` keys `default_browser_name`, `default_browser_bundle_id` | A bundle id is a Mac notion; `is_phi_default_browser` is the one default-browser fact reported |
+| `user_defaults_snapshot` keys `block_ads_enabled`, `block_trackers_enabled`, `block_cookie_banners_enabled` | No profile-wide content blocking switches in this client (the site menu's per-site toggle is the only control) |
 
 Add a row above in the same change that adds a capture site.
 
@@ -140,6 +148,9 @@ node C:\Users\jdxin\phitest\tele-status.mjs     # endpoint, sent, lastStatus
 ```
 
 `agentSpace.analytics.list` over the control pipe returns everything
-captured this session (properties included, pre-scrub); PostHog's Activity
-view for project 604357 shows what arrived. `/batch/` answers 200 even for
+captured this session (properties included, pre-scrub) — a `--dev-hooks`
+client with `testRig` only (`test_rig_only` otherwise).
+`test/probes/analytics-verify.mjs` drives the 2026-10-16 parity through it
+(a menu-created Space, a card's Run, a foreground round trip); PostHog's
+Activity view for project 604357 shows what arrived. `/batch/` answers 200 even for
 a wrong key, so the Activity view is the proof, not the status.

@@ -7835,8 +7835,7 @@ LRESULT CALLBACK PhiShellWindow::ShellWndProc(HWND hwnd,
       break;
     case WM_ACTIVATEAPP:
       // Phi as a whole gained or lost the foreground (every top-level
-      // window hears it; the host keeps the one edge). The Mac SDK's
-      // Application Opened / Backgrounded pair, for the analytics.
+      // window hears it): the accelerators drop a half-seen Alt.
       if (self && self->services_.window) {
         self->services_.window->NoteAppActivation(wparam != FALSE);
       }

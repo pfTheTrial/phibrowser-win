@@ -5,6 +5,7 @@
 #include "phibrowser-win/client/phi_notification_cards.h"
 
 #include <algorithm>
+#include <string_view>
 #include <utility>
 
 #include "base/json/json_writer.h"
@@ -313,10 +314,12 @@ class PhiNotificationCardView : public PhiPopover {
 
 PhiNotificationCards::PhiNotificationCards(DecisionSink sink,
                                            OwnerProvider owner,
-                                           PaletteProvider palette)
+                                           PaletteProvider palette,
+                                           ActionSink action)
     : sink_(std::move(sink)),
       owner_(std::move(owner)),
-      palette_(std::move(palette)) {
+      palette_(std::move(palette)),
+      action_(std::move(action)) {
   g_cards = this;
 }
 
@@ -374,6 +377,8 @@ void PhiNotificationCards::NoteOwnerMoved(HWND owner) {
 
 void PhiNotificationCards::Decide(size_t index, const char* decision) {
   if (index < cards_.size()) {
+    // The view's two buttons: the Mac's onRun / onDelete.
+    NoteAction(std::string_view(decision) == "accept" ? "run" : "delete");
     Answer(index, decision);
     ArmExpiry();
     Present(/*allow_recreate=*/false);
@@ -381,8 +386,15 @@ void PhiNotificationCards::Decide(size_t index, const char* decision) {
 }
 
 void PhiNotificationCards::HideStack() {
+  NoteAction("dismiss");  // The Mac's onDismiss.
   hidden_ = true;
   Present(/*allow_recreate=*/false);
+}
+
+void PhiNotificationCards::NoteAction(const char* action) {
+  if (action_) {
+    action_(action);
+  }
 }
 
 void PhiNotificationCards::Page(int delta) {
@@ -421,6 +433,7 @@ void PhiNotificationCards::Present(bool allow_recreate) {
     if (view_) {
       view_->Hide();
     }
+    shown_id_.clear();
     return;
   }
   const HWND owner = owner_ ? owner_() : nullptr;
@@ -433,18 +446,26 @@ void PhiNotificationCards::Present(bool allow_recreate) {
   }
   if (!view_) {
     if (!owner) {
+      shown_id_.clear();
       return;  // No user window: the cards wait for one.
     }
     auto view = std::make_unique<PhiNotificationCardView>(this);
     if (!view->Open(owner, palette_ ? palette_() : PhiPalette())) {
+      shown_id_.clear();
       return;
     }
     view_ = std::move(view);
   }
   if (!view_->alive()) {
+    shown_id_.clear();
     return;
   }
-  view_->Render(cards_[current_], current_, cards_.size());
+  const Card& card = cards_[current_];
+  view_->Render(card, current_, cards_.size());
+  if (card.id != shown_id_) {
+    shown_id_ = card.id;
+    NoteAction("show");
+  }
 }
 
 void PhiNotificationCards::ArmExpiry() {

@@ -327,9 +327,9 @@ class PhiCoordinator : public SidebarHost,
 
   void RequestCreateProfileForSpaceForm(int64_t slot,
                                         const std::string& name) override;
-  std::string RequestCreateSpaceWithOptions(
-      int64_t slot,
-      const PhiNewSpaceSpec& spec) override;
+  std::string RequestCreateSpaceWithOptions(int64_t slot,
+                                            const PhiNewSpaceSpec& spec,
+                                            const char* surface) override;
   int64_t SlotAtScreenPoint(POINT screen, int64_t exclude_slot) const override;
   bool RequestDropTabOnWindow(int64_t source_slot,  // tab ids
                               int index,
@@ -805,11 +805,6 @@ class PhiCoordinator : public SidebarHost,
  private:
   static constexpr size_t kAnalyticsRingSize = 256;
   std::deque<AnalyticsEvent> analytics_events_;
-  // Whether Phi is the foreground application, as WM_ACTIVATEAPP last said
-  // (NoteAppActivation). Every top-level window hears each transition, so
-  // the edge is detected here, once. Starts true: the launch is the first
-  // "Application Opened", captured from LoadStores.
-  bool app_active_ = true;
 
   // The model's value types under the names this file has always used
   // (docs/architecture-review.md §3.4: one definition, in phi_app_model.h).
