@@ -17,8 +17,11 @@
 ;   - PER MACHINE by default: C:\Program Files\Phi Browser, elevated (UAC),
 ;     Apps & Features entry and shortcuts for all users. The user may point
 ;     it anywhere else in the expander; a folder outside Program Files makes
-;     install_static treat the install as per-user, so the consent and
-;     data-dir values are written to BOTH HKLM and HKCU.
+;     install_static treat the install as per-user, so the data-dir value
+;     is written to BOTH HKLM and HKCU. Crash-upload consent is NOT the
+;     installer's: the client writes HKCU\Software\Phi\usagestats from the
+;     user's own data-sharing choice (onboarding, Settings), and the fork's
+;     crash reporter reads it per user (release review R1).
 ;   - THE DATA FOLDER IS THE USER'S CHOICE: profiles, history, settings and
 ;     the telemetry config live in a folder separate from the program,
 ;     default %LOCALAPPDATA%\Phi\User Data. Another folder is recorded as
@@ -1198,20 +1201,19 @@ Section "Install"
   ; Deployment configuration (docs/sentry-crash-reporting.md): the crash
   ; endpoint and the analytics key, read once at startup from the data
   ; folder. The installer OWNS this file - rewritten on every install so a
-  ; rotated key or endpoint reaches the machine with the next update.
-  ; Crash uploads also need the consent install_static reads
-  ; (Software\Phi\usagestats = 1 - HKLM for a Program Files install, HKCU
-  ; otherwise; both are written, HKCU only when it is the session user's).
-  ; Analytics stay behind the in-app switch.
+  ; rotated key or endpoint reaches the machine with the next update. The
+  ; file names WHERE reports go; WHETHER anything goes is the user's
+  ; data-sharing switch in the app, for crash uploads and analytics alike.
   CreateDirectory "$DataDir"
   SetOutPath "$DataDir"
   File "/oname=phi_telemetry.json" "${PHI_TELEMETRY_JSON}"
   SetOutPath "$INSTDIR"
-  WriteRegDWORD HKLM "${REG_PRODUCT}" "usagestats" 1
-  ${If} $OtherAdmin != 1
-    WriteRegDWORD HKCU "${REG_PRODUCT}" "usagestats" 1
-  ${EndIf}
 !endif
+  ; Installers before 2026-10-14 wrote usagestats = 1 here (HKLM, and HKCU
+  ; for the session user), which had Crashpad uploading with no consent.
+  ; The HKLM value is not read any more and goes; the HKCU value is the
+  ; client's now - it rewrites it from the user's choice on every launch.
+  DeleteRegValue HKLM "${REG_PRODUCT}" "usagestats"
 
   WriteUninstaller "$INSTDIR\Uninstall.exe"
   ; Apps & Features: the 64-bit view, where a 64-bit program's entry

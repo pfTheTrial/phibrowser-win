@@ -2471,8 +2471,12 @@ void PhiCoordinator::LoadStores(const std::wstring& user_data_dir) {
   surface_coordinator_.SetReaderStyleFromModel(settings.reader);
   space_manager_->RebuildSpacePalettes();
   // The consent reaches the pipeline the moment it is known: Start() ran
-  // before this file was read, and every event until now was dropped.
+  // before this file was read, and every event until now was dropped. The
+  // same switch is Chromium's metrics + crash-upload consent (release
+  // review R1): pushed through the framework, as the Mac's onboarding does,
+  // so Crashpad and UMA follow the user's choice and nothing else.
   PhiTelemetry::Get().SetEnabled(settings.analytics_enabled);
+  framework_->SetMetricsReportingEnabled(settings.analytics_enabled);
   // The launch's events, now that both the settings they describe and the
   // consent that gates them are in: the Mac SDK's install / update /
   // opened lifecycle, then the settings snapshot AppController takes.
@@ -3261,6 +3265,9 @@ void PhiCoordinator::OnPreferencesChanged(
       return;
     case PreferenceChange::kAnalytics:
       PhiTelemetry::Get().SetEnabled(preferences_.AnalyticsEnabled());
+      if (framework_) {
+        framework_->SetMetricsReportingEnabled(preferences_.AnalyticsEnabled());
+      }
       break;
     case PreferenceChange::kShortcuts:
       return;  // The keyboard hook reads the effective chords live.

@@ -86,15 +86,26 @@ passes it by default, rendering the file with the sibling
    or update rewrites it, so an endpoint change ships with the next
    version. A `--user-data-dir` profile does not see it (the test box's
    `C:\phi-fx-test` still needs the push script).
-2. Upload consent: `install_static::GetCollectStatsConsent()` reads
-   `HKCU\Software\Phi\usagestats == 1` — `Software\Phi` itself
-   (`GetUnregisteredKeyPathForProduct`; there is no Google Update
-   integration, so no `ClientState` sub-key). Absent = dumps captured,
-   never uploaded. The installer writes it; uninstall deletes it. The
-   client's `analyticsEnabled` pref does not touch it — analytics consent
-   and crash-upload consent are separate switches today.
+2. Upload consent (since 2026-10-14, release review R1): the user's
+   data-sharing switch — the onboarding "usage metrics and crash reports"
+   checkbox, Settings ▸ General ▸ "Share anonymous usage analytics and
+   crash reports", `PhiPreferences.json analyticsEnabled`. The coordinator
+   pushes it through `PhiFramework::SetMetricsReportingEnabled` when the
+   settings load and on every change; that is Chromium's own
+   `metrics::ChangeMetricsReportingState` (the chrome://settings toggle's
+   path, and the Mac bridge's `setMetricsReportingEnabled`), which writes
+   the Local State pref, the `HKCU\Software\Phi\usagestats` value, and
+   starts or stops UMA + Crashpad uploads live. Three fork guards make the
+   Windows consent per USER whatever the install level
+   (`install_static::GetCollectStatsConsent`,
+   `GoogleUpdateSettings::GetCollectStatsConsentImpl` /
+   `SetCollectStatsConsent`): the stock lookup consults HKLM for a Program
+   Files install, which unelevated Phi could never write. The pref defaults
+   OFF for the Windows client (`browser_process_impl.cc`; the Mac keeps its
+   opt-out default), so nothing uploads before the user answers. Policy
+   still wins. The installer writes NO consent; it deletes the HKLM value
+   older installers wrote.
 
 Still open: a compiled-in default for builds that ship without the file;
-consent following the Phi analytics pref (a fork change); Crashpad `prod`
-(empty, Phi.exe has no product name in its version resource) and a release
-tag, so Sentry cannot group by build yet.
+Crashpad `prod` (empty, Phi.exe has no product name in its version
+resource) and a release tag, so Sentry cannot group by build yet.

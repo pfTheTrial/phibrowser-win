@@ -6685,30 +6685,30 @@
   },
   "settings.general.analytics.hint": {
    "comment": "settings — hint under the analytics toggle",
-   "en": "Send anonymous usage statistics to help improve Phi. Never your pages, searches or account.",
+   "en": "Send anonymous usage statistics and crash reports to help improve Phi. Never your pages, searches or account.",
    "translations": {
-    "de": "Sende anonyme Nutzungsstatistiken, um Phi zu verbessern. Niemals deine Seiten, Suchanfragen oder Kontodaten.",
-    "es": "Envía estadísticas de uso anónimas para ayudar a mejorar Phi. Nunca tus páginas, búsquedas ni tu cuenta.",
-    "fr": "Envoyez des statistiques d'utilisation anonymes pour aider à améliorer Phi. Jamais vos pages, vos recherches ni votre compte.",
-    "ja": "Phiの改善のため、匿名の使用状況統計を送信します。閲覧したページ、検索内容、アカウント情報が送信されることはありません。",
-    "ko": "Phi 개선을 위해 익명 사용 통계를 보내요. 방문한 페이지, 검색어, 계정 정보는 절대 보내지 않아요.",
-    "nl": "Stuur anonieme gebruiksstatistieken om Phi te helpen verbeteren. Nooit je pagina's, zoekopdrachten of account.",
-    "zh-Hans": "发送匿名使用统计信息，帮助改进 Phi。绝不包含你的页面、搜索内容或账号信息。",
-    "zh-Hant": "傳送匿名使用統計資料，協助改善 Phi。絕不包含你的頁面、搜尋內容或帳號資訊。"
+    "de": "Sende anonyme Nutzungsstatistiken und Absturzberichte, um Phi zu verbessern. Niemals deine Seiten, Suchanfragen oder Kontodaten.",
+    "es": "Envía estadísticas de uso anónimas e informes de fallos para ayudar a mejorar Phi. Nunca tus páginas, búsquedas ni tu cuenta.",
+    "fr": "Envoyez des statistiques d'utilisation anonymes et des rapports de plantage pour aider à améliorer Phi. Jamais vos pages, vos recherches ni votre compte.",
+    "ja": "Phiの改善のため、匿名の使用状況統計とクラッシュレポートを送信します。閲覧したページ、検索内容、アカウント情報が送信されることはありません。",
+    "ko": "Phi 개선을 위해 익명 사용 통계와 충돌 보고서를 보내요. 방문한 페이지, 검색어, 계정 정보는 절대 보내지 않아요.",
+    "nl": "Stuur anonieme gebruiksstatistieken en crashrapporten om Phi te helpen verbeteren. Nooit je pagina's, zoekopdrachten of account.",
+    "zh-Hans": "发送匿名使用统计信息和崩溃报告，帮助改进 Phi。绝不包含你的页面、搜索内容或账号信息。",
+    "zh-Hant": "傳送匿名使用統計資料和當機報告，協助改善 Phi。絕不包含你的頁面、搜尋內容或帳號資訊。"
    }
   },
   "settings.general.analytics.toggle": {
    "comment": "settings — General pane, the telemetry consent switch",
-   "en": "Share anonymous usage analytics",
+   "en": "Share anonymous usage analytics and crash reports",
    "translations": {
-    "de": "Anonyme Nutzungsanalysen teilen",
-    "es": "Compartir análisis de uso anónimos",
-    "fr": "Partager des statistiques d'utilisation anonymes",
-    "ja": "匿名の使用状況データを共有",
-    "ko": "익명 사용 분석 공유",
-    "nl": "Anonieme gebruiksanalyses delen",
-    "zh-Hans": "共享匿名使用分析数据",
-    "zh-Hant": "分享匿名使用分析資料"
+    "de": "Anonyme Nutzungsanalysen und Absturzberichte teilen",
+    "es": "Compartir análisis de uso anónimos e informes de fallos",
+    "fr": "Partager des statistiques d'utilisation anonymes et des rapports de plantage",
+    "ja": "匿名の使用状況データとクラッシュレポートを共有",
+    "ko": "익명 사용 분석 및 충돌 보고서 공유",
+    "nl": "Anonieme gebruiksanalyses en crashrapporten delen",
+    "zh-Hans": "共享匿名使用分析数据和崩溃报告",
+    "zh-Hant": "分享匿名使用分析資料和當機報告"
    }
   },
   "settings.general.appearance.hint": {

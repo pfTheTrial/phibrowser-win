@@ -12,6 +12,49 @@ baseline; every item there was re-read, not trusted.
 holds. **Plausible** = the path is real but the consequence was not traced
 to the end (needs a box run). Line numbers are the current tree.
 
+## Fix status — 2026-10-14 (same day)
+
+R1, H1, H2 and H3 are fixed in the working tree (uncommitted, fork and
+client); the framework and client build clean and are deployed to the box
+(`phi-fx-ship`).
+
+- **H1 / H2** — one deferred hop, `WM_PHI_SURFACE_TURN` on the coordinator's
+  message window (`PhiSurfaceCoordinator::Host::PostSurfaceTurn`). A Peek
+  replaced from inside `OnBrowserWindowCreated` is marked, hidden and closed
+  on the next turn (`DeferCloseSurfacesForOrigin`; the show/hide pass skips a
+  pending close), and `OpenSurfaceLinkAsSplit` queues its work the same way.
+  Box-smoked with `test/probes/pk.mjs` real input: Shift-click on left.html
+  → Peek; Shift-click inside the Peek → one Peek showing next.html, the first
+  gone; Alt-click inside the Peek → `next.html` + `final.html` split, no
+  surface left; Phi alive throughout.
+- **R1** — crash-upload consent follows the user's data-sharing switch,
+  the Mac's way: the coordinator pushes `analyticsEnabled` through a new
+  `PhiFramework::SetMetricsReportingEnabled` (Chromium's
+  `ChangeMetricsReportingState`, the chrome://settings toggle's path), which
+  writes the Local State pref and `HKCU\Software\Phi\usagestats` and
+  starts/stops UMA + Crashpad uploads live. Fork: three `IS_PHI_BROWSER`
+  guards make the Windows consent per user whatever the install level
+  (`install_static::GetCollectStatsConsent`,
+  `GoogleUpdateSettings::GetCollectStatsConsentImpl` /
+  `SetCollectStatsConsent`), and `kMetricsReportingEnabled` defaults OFF
+  under `IS_WIN_PHI_CLIENT` (it was the Mac's opt-out `true`, which is why
+  UMA and crash dumps uploaded with no consent on Windows at all — the
+  installer's `usagestats=1` was only half of it; Chromium's own
+  `SetupMetrics` re-wrote that value from the pref). Installer writes no
+  consent and deletes the HKLM value older installers wrote. Settings
+  toggle + hint strings now say "and crash reports". Box-verified with the
+  deployed build: `analyticsEnabled` false → Local State
+  `reporting_enabled` false, `usagestats` 0, Crashpad `upload_enabled` 0;
+  true → all three on. The live toggle (no relaunch) rides Chromium's own
+  path and was not separately exercised. Fork change is uncommitted in the
+  working tree and must be folded into `feat/phi-r154-framework-win`.
+- **H3** — `PhiSessionRestore::Settle` lifts the `PrimaryAwaited` guards only
+  for a verdict settle (receipt or fallback timer, `SettleLiftsGuards`); the
+  first user shell's "window" settle leaves `unreported_profiles_` and
+  `awaiting_eager_` in place until each profile's park report lands. Host
+  test added; code-only, not box-tested (needs a two-profile cold start with
+  a racing switch).
+
 ## Verdict
 
 **Almost there. NO-GO until two items land; GO for the first official build
