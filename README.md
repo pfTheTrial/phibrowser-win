@@ -50,7 +50,7 @@ Do not present a build of your own as the application we distribute.
 
 Phi on Windows is a **framework + client** split. The Phi framework is our Chromium build, shipped as a binary. `phi_client.exe` is the native Windows host that launches the browser process and owns everything the user sees: the window chrome, tabs, sidebar, spaces, settings, and the agent surfaces. The UI is native Win32 drawn with Direct2D/DirectWrite, driven by framework → client callbacks, not an embedded web layer. Child processes (renderer, GPU, utility) are the stock Chromium `chrome.exe` that sits beside `phi_client.exe`.
 
-The deeper design notes live in [`docs/`](docs/) — start with `docs/windows-framework-design.md` and `docs/static-build-plan.md`.
+The deeper design and build notes live in [`docs/`](docs/) — see `docs/static-build-plan.md` for the build, and `docs/windows-native-ui.md` and `docs/sidebar-architecture.md` for the UI design.
 
 <br>
 

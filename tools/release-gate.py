@@ -23,7 +23,9 @@ import sys
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CLIENT = os.path.join(REPO, "client")
-DEFAULT_OUT = "/home/jx/Phi/chromuim/src/out/PhiFxWinShip"
+DEFAULT_OUT = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "out", "PhiFxWinShip")
 
 # Strings that only exist in the exe when PHI_DEV_HOOKS was defined. They
 # are the environment-variable NAMES the hooks read, which the compiler

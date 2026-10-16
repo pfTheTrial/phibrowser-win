@@ -144,7 +144,7 @@ Add a row above in the same change that adds a capture site.
 ## Verifying on the box
 
 ```
-node C:\Users\jdxin\phitest\tele-status.mjs     # endpoint, sent, lastStatus
+node C:\Users\<you>\phitest\tele-status.mjs     # endpoint, sent, lastStatus
 ```
 
 `agentSpace.analytics.list` over the control pipe returns everything

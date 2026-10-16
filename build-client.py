@@ -19,7 +19,7 @@ Modes:
                 the winsysroot comes from --winsysroot or $PHI_WINSYSROOT
                 if the SDK doesn't already have one placed
   --out <dir>   build inside a local framework out dir (the default,
-                /home/jx/Phi/chromuim/src/out/PhiFxWinShip; the arm64
+                <chromium-src>/out/PhiFxWinShip; the arm64
                 ship build is out/PhiFxWinShipArm64 — the kit's link
                 recipe carries the /MACHINE, nothing here is per-arch
                 except the WinSparkle.dll staged beside the exe)
@@ -39,7 +39,9 @@ import sys
 
 REPO_DIR = os.path.dirname(os.path.abspath(__file__))
 CLIENT_DIR = os.path.join(REPO_DIR, "client")
-DEFAULT_OUT = "/home/jx/Phi/chromuim/src/out/PhiFxWinShip"
+DEFAULT_OUT = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "out", "PhiFxWinShip")
 KIT = "phi_clientkit/kit.json"
 OBJ_DIR = "phi_clientkit/obj"
 RESOURCES = ("emoji-catalog.json", "phi.ico", "strings.json")

@@ -7,7 +7,7 @@
 # run never needs the toolchain; re-run this after editing the .c file.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-SRC_ROOT=${PHI_SRC_ROOT:-/home/jx/Phi/chromuim/src}
+SRC_ROOT=${PHI_SRC_ROOT:-$(cd "$HERE/../../.." && pwd)}
 LLVM="$SRC_ROOT/third_party/llvm-build/Release+Asserts/bin"
 VS=$(ls -d "$SRC_ROOT"/third_party/depot_tools/win_toolchain/vs_files/*/ | head -1)
 [[ -x "$LLVM/clang-cl" && -d "$VS" ]] || {

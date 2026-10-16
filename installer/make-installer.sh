@@ -45,7 +45,7 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-SRC_ROOT=/home/jx/Phi/chromuim/src
+SRC_ROOT="${PHI_SRC_ROOT:-$(cd "$HERE/../.." && pwd)}"
 VERSION=""
 BUILD_NUMBER=""
 ARCH=x64

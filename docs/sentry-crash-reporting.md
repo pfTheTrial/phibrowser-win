@@ -24,7 +24,7 @@ Cloud; nothing Sentry-specific is compiled into the client.
 - Symbols are matched by debug ID, which every build re-stamps, so each
   deployed build needs its own upload.
 
-## Tooling (outside this repo, in /home/jx/Phi)
+## Tooling (outside this repo, in <PHI_ROOT>)
 
 | file | role |
 |---|---|

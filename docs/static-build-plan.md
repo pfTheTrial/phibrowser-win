@@ -263,7 +263,7 @@ contract is proven before the 3½-hour build exists.
   (`is_debug = false`, `dcheck_always_on = false`, `symbol_level = 1`,
   `is_phi_browser`, `is_win_phi_client`, codecs, keys — unchanged.)
 * B2 `gn gen out/PhiFxWinShip` with build-fx.sh's env
-  (`DEPOT_TOOLS_WIN_TOOLCHAIN_BASE_URL=/home/jx/Phi/win_sdk`,
+  (`DEPOT_TOOLS_WIN_TOOLCHAIN_BASE_URL=<PHI_ROOT>/win_sdk`,
   `GYP_MSVS_HASH_e66617bc68=800603caaa`). The 2026-08 gn-gen breakage was
   the missing SDK on disk; it is real now.
 * B3 `build-fx.sh`: `OUT=${PHI_OUT:-out/PhiFxWin}`, log
@@ -321,7 +321,7 @@ contract is proven before the 3½-hour build exists.
   DLLs and make-installer.sh would package them. The AppContainer ACL grant
   and the Phi.exe symbol hook follow the variable.
 * D2 box task `PhiShipLaunch` — a clone of PhiFxLaunch pointing at
-  `C:\Users\jdxin\phi-fx-ship\Phi.exe` (mk-eval-task.ps1 is the template
+  `C:\Users\<you>\phi-fx-ship\Phi.exe` (mk-eval-task.ps1 is the template
   for cloning a task from XML).
 * D3 smoke (targeted, in this order): cold start with saved Spaces;
   window/tab/Space operations; Kiosk, Peek, Reader; sidebar drag reorder and
@@ -522,7 +522,7 @@ naming and packaging.
   makensis on POSIX maps the script's `\` paths, and resolves a bare
   `OutFile` against the .nsi's directory — hence `-DPHI_OUTDIR`); the
   box-side staging (`stage-payload.ps1`, robocopy, the portable NSIS under
-  `C:\Users\jdxin\nsis`) is gone, the box is no longer part of the release
+  `C:\Users\<you>\nsis`) is gone, the box is no longer part of the release
   path. The NSIS stub is 32-bit x86 either way and
   runs on every Windows; `.onInit` checks the MACHINE (`x64.nsh`
   `${IsNativeARM64}`): the arm64 installer refuses a non-ARM PC, the x64

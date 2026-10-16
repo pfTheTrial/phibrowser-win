@@ -149,7 +149,7 @@ them; verified at 125 % DPI with the px→DIP conversion.
 
 ## 7. Box rig for this note
 
-Probe extensions `C:\Users\jdxin\phitest\ext-badge` (badge "12", popup) and
+Probe extensions `C:\Users\<you>\phitest\ext-badge` (badge "12", popup) and
 `ext-gray` (`chrome.action.disable()`), task `PhiFxLaunchExt2`; PhiSkillCap
 `list Chrome_WidgetWin_1` prints every Chromium widget with its owner and
 rect (a bubble/popup is `owner=<shell hwnd>`); `phitest\bounds.mjs` moves
