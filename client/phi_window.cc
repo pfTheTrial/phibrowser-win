@@ -311,6 +311,16 @@ void PhiTipWindow::ShowFor(const void* key,
     Hide();
     return;
   }
+  // The tip is an owned popup of `owner_hwnd`, and showing an owned window
+  // pulls its owner above any unrelated top-level that was in front of it.
+  // A hover tip armed while the pointer rested on a background window (the
+  // shell's chrome behind the Send feedback form or Settings) would yank
+  // that window over the one the user is looking at, which read as the
+  // front window closing by itself. A background window shows no tip.
+  if (::GetForegroundWindow() != owner_hwnd) {
+    Hide();
+    return;
+  }
   if (alive() && owner_window_ != key) {
     Destroy();  // A different owner means a different dpi and palette.
   }
