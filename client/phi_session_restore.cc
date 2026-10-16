@@ -158,12 +158,21 @@ void PhiSessionRestore::OnSessionRestoreSettled(const char* receipt_json) {
 }
 
 void PhiSessionRestore::Settle(const char* reason) {
-  // An eager window that has not come by now is not coming (the session
-  // file no longer held it), and a profile that has not reported its
-  // parked windows replays nothing more this launch: their Spaces' primary
-  // rows stop being guarded (PrimaryAwaited).
-  awaiting_eager_.clear();
-  unreported_profiles_.clear();
+  // After a receipt or the fallback timer, an eager window that has not
+  // come is not coming (the session file no longer held it), and a profile
+  // that has not reported its parked windows replays nothing more this
+  // launch: their Spaces' primary rows stop being guarded (PrimaryAwaited).
+  // The first user shell's snapshot settles the phase too, but it is no
+  // verdict on the replay: it can beat a profile's park report (see
+  // OnColdStartParkedWindows), and a primary row unguarded in that gap is
+  // overwritten by the next fresh window of its Space — the report then
+  // finds the parked window unclaimed and the orphan drop deletes its
+  // tabs. Those rows stay guarded until each profile reports or a receipt
+  // replaces the store.
+  if (SettleLiftsGuards(reason)) {
+    awaiting_eager_.clear();
+    unreported_profiles_.clear();
+  }
   // Parked windows no Space claims (the Space was deleted while its window
   // sat parked) would be replayed as loose windows by the next unfiltered
   // restore; drop them once the receipt is in, whichever path brought it.

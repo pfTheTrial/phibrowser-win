@@ -84,12 +84,26 @@ void TestKeepsPrimary() {
   CHECK(!PhiSessionRestore::KeepsPrimary(true, false, false, false, false));
 }
 
+// Which settles lift the PrimaryAwaited guards: a verdict on the replay
+// does, the first user shell's snapshot does not — a profile's park report
+// can trail it, and a row unguarded in that gap loses the parked window's
+// tabs to the orphan drop.
+void TestSettleLiftsGuards() {
+  CHECK(PhiSessionRestore::SettleLiftsGuards("receipt"));
+  CHECK(PhiSessionRestore::SettleLiftsGuards("matchednothing"));
+  CHECK(PhiSessionRestore::SettleLiftsGuards("nothingrestored"));
+  CHECK(PhiSessionRestore::SettleLiftsGuards("fallback"));
+  CHECK(!PhiSessionRestore::SettleLiftsGuards("window"));
+  CHECK(!PhiSessionRestore::SettleLiftsGuards(nullptr));
+}
+
 }  // namespace
 
 int main() {
   TestSettleReason();
   TestLastActiveSpace();
   TestKeepsPrimary();
+  TestSettleLiftsGuards();
   if (g_failures) {
     std::fprintf(stderr, "%d failure(s)\n", g_failures);
     return EXIT_FAILURE;

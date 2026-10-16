@@ -10,6 +10,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "base/memory/raw_ptr_exclusion.h"
@@ -194,11 +195,12 @@ class PhiSessionRestore {
   // exists — the window the fallback timer checks for.
   bool cold_start_armed_ = false;
   // The cold start's eager window ids (previous-session) not announced yet;
-  // emptied when the restore settles.
+  // emptied by a receipt or the fallback settle (SettleLiftsGuards).
   std::set<int64_t> awaiting_eager_;
   // The profiles the armed cold start has not heard a parked report from
-  // yet (one arrives per profile as its diversion lands); emptied when the
-  // restore settles.
+  // yet (one arrives per profile as its diversion lands); emptied by a
+  // receipt or the fallback settle (SettleLiftsGuards), never by the first
+  // user shell's snapshot, which a report can trail.
   std::set<std::string> unreported_profiles_;
 
  public:
@@ -214,6 +216,16 @@ class PhiSessionRestore {
       return "matchednothing";
     }
     return restored_any ? "receipt" : "nothingrestored";
+  }
+  // Whether a settle with this reason is a verdict on the replay — a
+  // receipt ("receipt", "matchednothing", "nothingrestored") or the cold
+  // start's fallback timer ("fallback") — and so lifts the PrimaryAwaited
+  // guards. The first user shell's snapshot ("window") is not one: a
+  // profile's park report may still land after it, and a row unguarded
+  // before then is overwritten by a fresh window of its Space, leaving the
+  // parked window to the orphan drop (2026-10-14 review H3).
+  static bool SettleLiftsGuards(const char* reason) {
+    return reason && std::string_view(reason) != "window";
   }
   // Release review B6: whether a Space's newly noted window must stand
   // BESIDE the Space's remembered primary (a secondary row) rather than
