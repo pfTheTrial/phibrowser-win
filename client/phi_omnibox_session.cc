@@ -751,9 +751,9 @@ void PhiOmniboxSession::CommitRow(int index) {
   }
   const Row& row = rows_[static_cast<size_t>(index)];
   if (!row.engine.empty() && row.url.empty()) {
-    // The "Search X" row has nowhere to go (the Mac opens the engine's
-    // site; Chrome's own row enters keyword search): the chip goes up.
-    AcceptKeyword(index);
+    // The "Search X" row has nowhere to go: Enter and a click open the
+    // engine's site (the Mac's b0a536db); Tab alone raises the chip.
+    OpenEngineSite(row);
     return;
   }
   const int line = row.line;
@@ -1004,6 +1004,33 @@ void PhiOmniboxSession::CommitKeyword(HWND edit) {
     ::MessageBeep(MB_OK);
     return;
   }
+  NavigateCommitted(framework, browser, url);
+}
+
+void PhiOmniboxSession::OpenEngineSite(const PhiOmniboxRow& row) {
+  phi_framework::PhiFramework* framework = shell_->OmniboxFramework();
+  const BrowserId browser = shell_->OmniboxBrowser();
+  if (!framework || !browser.valid() || row.keyword.empty()) {
+    return;
+  }
+  // The framework needs search terms to build any URL; the keyword itself
+  // serves, since only the scheme and host survive.
+  const std::string keyword = base::WideToUTF8(row.keyword);
+  const std::string site = PhiOmniboxEngineSite(
+      framework->KeywordSearchUrl(browser.value, keyword.c_str(),
+                                  keyword.c_str()));
+  if (site.empty()) {
+    ::MessageBeep(MB_OK);  // As the Mac: no site to open.
+    return;
+  }
+  ClosePopup(/*stop_query=*/false);
+  NavigateCommitted(framework, browser, site);
+}
+
+void PhiOmniboxSession::NavigateCommitted(
+    phi_framework::PhiFramework* framework,
+    BrowserId browser,
+    const std::string& url) {
   shell_->OmniboxNativePageCommitting();
   if (new_tab_pending_ || shell_->OmniboxBrowserPlaceholding()) {
     new_tab_pending_ = false;  // As Commit: the tab is born on commit.
@@ -1011,8 +1038,8 @@ void PhiOmniboxSession::CommitKeyword(HWND edit) {
   }
   shell_->OmniboxLeaveReader();
   framework->Navigate(browser.value, url.c_str());
-  // The chip comes down with the commit; the URL fills the field once the
-  // navigation reports, as after any commit.
+  // The chip (if up) comes down with the commit; the URL fills the field
+  // once the navigation reports, as after any commit.
   ExitKeyword(std::wstring(), /*requery=*/false);
   Sync(/*force=*/true);
   shell_->OmniboxFocusContent();

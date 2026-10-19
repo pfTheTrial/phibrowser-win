@@ -256,6 +256,33 @@ inline bool PhiOmniboxRowOffersKeyword(const PhiOmniboxRow& row,
          keyword.compare(0, input.size(), input) == 0;
 }
 
+// The engine's SITE for a "Search X" row that carries no query — the Mac's
+// b0a536db: Enter or a click on that row opens the engine's home instead of
+// entering keyword search (Tab still does that). `search_url` is any search
+// URL the engine builds; the result keeps its scheme and authority (port
+// included) with path "/", no query, no fragment. Empty unless http(s) with
+// a host.
+inline std::string PhiOmniboxEngineSite(const std::string& search_url) {
+  const size_t scheme_end = search_url.find("://");
+  if (scheme_end == std::string::npos) {
+    return std::string();
+  }
+  const std::string scheme = search_url.substr(0, scheme_end);
+  if (scheme != "http" && scheme != "https") {
+    return std::string();
+  }
+  const size_t host_begin = scheme_end + 3;
+  const size_t host_end = search_url.find_first_of("/?#", host_begin);
+  const std::string authority =
+      search_url.substr(host_begin, host_end == std::string::npos
+                                        ? std::string::npos
+                                        : host_end - host_begin);
+  if (authority.empty() || authority[0] == ':' || authority[0] == '@') {
+    return std::string();
+  }
+  return scheme + "://" + authority + "/";
+}
+
 // The row whose engine the keyword HINT names ("Tab to search X") and Tab
 // picks: the armed row when it offers one, else the first row that does;
 // -1 for none.
@@ -539,6 +566,15 @@ class PhiOmniboxSession {
   void ExitKeyword(const std::wstring& text, bool requery);
   // Enter with the chip up: the engine's search URL for the text.
   void CommitKeyword(HWND edit);
+  // Enter or a click on a "Search X" row with no query: the engine's site
+  // (PhiOmniboxEngineSite), the Mac's b0a536db. Beeps when the engine cannot
+  // name one.
+  void OpenEngineSite(const PhiOmniboxRow& row);
+  // The commit shared by the chip and the engine row: births the pending
+  // new tab, leaves Reader, navigates, drops the chip and refocuses content.
+  void NavigateCommitted(phi_framework::PhiFramework* framework,
+                         BrowserId browser,
+                         const std::string& url);
   // Recomputes the hint from the rows, the armed row and the typed text;
   // re-seats the EDIT and repaints the capsule when it changed.
   void UpdateKeywordHint();
