@@ -543,6 +543,29 @@ KeyStatus PhiKeyApiClient::PutProfileKey(const std::string& uuid,
   return Unexpected(r.status, r.body);
 }
 
+KeyStatus PhiKeyApiClient::ReplaceProfileKeyEnvelope(const std::string& uuid,
+                                                     const Bytes& expected,
+                                                     const Bytes& envelope,
+                                                     bool* replaced) {
+  base::DictValue body;
+  body.Set("expected_profile_key_envelope", keys::Base64Encode(expected));
+  body.Set("profile_key_envelope", keys::Base64Encode(envelope));
+  Response r;
+  KeyStatus status = Send(L"PATCH", "/keys/v1/profiles/" + uuid, &body, &r);
+  if (!status.ok()) {
+    return status;
+  }
+  if (r.status == 200 || r.status == 204) {
+    *replaced = true;
+    return KeyStatus::Ok();
+  }
+  if (r.status == 409) {
+    *replaced = false;  // changed underneath: re-read and merge again
+    return KeyStatus::Ok();
+  }
+  return Unexpected(r.status, r.body);
+}
+
 KeyStatus PhiKeyApiClient::GetDomainKey(const std::string& domain,
                                         std::optional<Bytes>* envelope) {
   Response r;
@@ -798,19 +821,37 @@ bool PhiKeyStateFile::SetEnrollment(const keys::EnrollmentRecord& record) {
 // --- PhiProfilePayloadJson -----------------------------------------------------
 
 std::string PhiProfilePayloadJson::Encode(const Bytes& key,
-                                          const std::string& name) const {
+                                          const std::string& name,
+                                          std::optional<bool> is_default) const {
   base::DictValue dict;
   dict.Set("v", 1);
   dict.Set("key", keys::Base64Encode(key));
   dict.Set("name", name);
+  if (is_default) {
+    dict.Set("default", *is_default);
+  }
   std::string json;
   base::JSONWriter::Write(dict, &json);
   return json;
 }
 
+std::string PhiProfilePayloadJson::WithDefaultFlag(const std::string& json,
+                                                   bool is_default) const {
+  std::optional<base::Value> value = ParseJson(json);
+  base::DictValue* dict = value ? value->GetIfDict() : nullptr;
+  if (!dict) {
+    return std::string();
+  }
+  dict->Set("default", is_default);
+  std::string out;
+  base::JSONWriter::Write(*dict, &out);
+  return out;
+}
+
 bool PhiProfilePayloadJson::Decode(const std::string& json,
                                    Bytes* key,
-                                   std::string* name) const {
+                                   std::string* name,
+                                   std::optional<bool>* is_default) const {
   std::optional<base::Value> value = ParseJson(json);
   const base::DictValue* dict = value ? value->GetIfDict() : nullptr;
   // The Mac's `obj["v"] as? Int == 1`: a JSON 1 (or 1.0) only.
@@ -820,6 +861,8 @@ bool PhiProfilePayloadJson::Decode(const std::string& json,
   }
   const std::string* text = dict->FindString("name");
   *name = text ? *text : std::string();
+  // Tri-state, as the Mac's `obj["default"] as? Bool`: absent = unknown.
+  *is_default = dict->FindBool("default");
   return true;
 }
 

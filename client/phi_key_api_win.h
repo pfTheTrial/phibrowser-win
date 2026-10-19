@@ -68,6 +68,10 @@ class PhiKeyApiClient : public keys::KeyApi {
   keys::KeyStatus PutProfileKey(const std::string& uuid,
                                 const keys::Bytes& envelope,
                                 bool* created) override;
+  keys::KeyStatus ReplaceProfileKeyEnvelope(const std::string& uuid,
+                                            const keys::Bytes& expected,
+                                            const keys::Bytes& envelope,
+                                            bool* replaced) override;
   keys::KeyStatus GetDomainKey(const std::string& domain,
                                std::optional<keys::Bytes>* envelope) override;
   keys::KeyStatus PutDomainKey(const std::string& domain,
@@ -154,10 +158,14 @@ class PhiKeyStateFile : public keys::KeyStateStore {
 class PhiProfilePayloadJson : public keys::ProfilePayloadCodec {
  public:
   std::string Encode(const keys::Bytes& key,
-                     const std::string& name) const override;
+                     const std::string& name,
+                     std::optional<bool> is_default) const override;
   bool Decode(const std::string& json,
               keys::Bytes* key,
-              std::string* name) const override;
+              std::string* name,
+              std::optional<bool>* is_default) const override;
+  std::string WithDefaultFlag(const std::string& json,
+                              bool is_default) const override;
 };
 
 // Phi native sync's transport: POST <base>/chromium-sync/phi/command/

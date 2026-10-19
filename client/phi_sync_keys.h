@@ -62,6 +62,11 @@ enum class KeyErrorKind {
   kNotUnlocked,
   kBadEnvelope,
   kAlreadyMapped,
+  // The default-profile rule (docs/sync.md on the Mac, "Profile pairing and
+  // the default profile"): a device's Default never takes a profile another
+  // device registered as non-default. Refused at the mapping write.
+  kDefaultMismatch,
+  kMetadataConflict,  // envelope replace: three 409s in a row
   kCrypto,
   kDeviceKey,
   kStorage,
@@ -166,6 +171,12 @@ class KeyApi {
   virtual KeyStatus PutProfileKey(const std::string& uuid,
                                   const Bytes& envelope,
                                   bool* created) = 0;
+  // PATCH: replaces the envelope only while the server still holds
+  // `expected` byte for byte. `replaced` false: it changed underneath (409).
+  virtual KeyStatus ReplaceProfileKeyEnvelope(const std::string& uuid,
+                                              const Bytes& expected,
+                                              const Bytes& envelope,
+                                              bool* replaced) = 0;
   virtual KeyStatus GetDomainKey(const std::string& domain,
                                  std::optional<Bytes>* envelope) = 0;
   virtual KeyStatus PutDomainKey(const std::string& domain,
@@ -212,15 +223,28 @@ class KeyStateStore {
   virtual bool SetEnrollment(const EnrollmentRecord& record) = 0;
 };
 
-// The profile key envelope's plaintext, {"v":1,"key":<base64>,"name":…}.
+// The profile key envelope's plaintext,
+// {"v":1,"key":<base64>,"name":…,"default":<bool>}. "default" is additive:
+// every registration writes it (true only for the registering device's
+// Default profile); an envelope without it was sealed before the flag
+// existed and reads as UNKNOWN (nullopt), never as false. `is_default`
+// nullopt on Encode writes no key — the shape of the Phi domain-key
+// envelope, which is not a profile.
 class ProfilePayloadCodec {
  public:
   virtual ~ProfilePayloadCodec() = default;
-  virtual std::string Encode(const Bytes& key, const std::string& name) const = 0;
+  virtual std::string Encode(const Bytes& key,
+                             const std::string& name,
+                             std::optional<bool> is_default) const = 0;
   // False unless v == 1 and key is valid base64; a missing name is "".
   virtual bool Decode(const std::string& json,
                       Bytes* key,
-                      std::string* name) const = 0;
+                      std::string* name,
+                      std::optional<bool>* is_default) const = 0;
+  // `json` with its "default" set to `is_default`, every other field kept
+  // (the backfill keeps unknown fields). Empty when `json` is not an object.
+  virtual std::string WithDefaultFlag(const std::string& json,
+                                      bool is_default) const = 0;
 };
 
 // Lowercase random (v4) UUID, the Mac's UUID().uuidString.lowercased().
@@ -350,11 +374,32 @@ struct ProfileKeyRecord {
   std::string uuid;
   std::string passphrase;  // the 32-byte key as 64 lowercase hex chars
   std::string name;
+  std::optional<bool> is_default;  // the envelope's flag; nullopt = legacy
 };
 
 struct RemoteProfile {
   std::string uuid;
   std::optional<std::string> name;  // nullopt: the envelope does not open
+  // True for the account's default profile, false for any other, nullopt
+  // when unknown: a legacy envelope, or one that does not open.
+  std::optional<bool> is_default;
+
+  // The default-profile rule for one pairing. Exactly one account default
+  // is authoritative on this device: the one its Default is live-mapped to,
+  // or, while the Default is undecided, the one chosen for it. Every other
+  // account default is demoted to an ordinary profile (two concurrently
+  // paired devices can create that). A local Default may take any account
+  // default or a legacy profile, never a known non-default; any other local
+  // may take anything but the authoritative default.
+  bool MayPair(bool local_is_default,
+               const std::optional<std::string>& authoritative_default_uuid)
+      const {
+    if (local_is_default) {
+      return is_default != false;
+    }
+    return !(is_default == true && authoritative_default_uuid &&
+             uuid == *authoritative_default_uuid);
+  }
 };
 
 class ProfileKeyManager {
@@ -368,12 +413,29 @@ class ProfileKeyManager {
   std::optional<std::string> MappedGlobalUuid(const std::string& profile_id) const;
   // Mint a uuid + key for a local profile; a 409 adopts the winner.
   // kAlreadyMapped when the profile still has a live server record.
+  // `is_default`: the local is this device's Default, so its envelope
+  // registers as the account's default profile.
   KeyStatus RegisterLocalProfile(const std::string& profile_id,
                                  const std::string& display_name,
+                                 bool is_default,
                                  ProfileKeyRecord* out);
+  // `is_default`: the local is this device's Default; a known non-default
+  // envelope is refused for it with kDefaultMismatch before any mapping is
+  // written. A legacy envelope (no flag) is accepted either way.
   KeyStatus AdoptRemoteProfile(const std::string& uuid,
                                const std::string& profile_id,
+                               bool is_default,
                                ProfileKeyRecord* out);
+  // Best-effort upgrade of a mapped legacy envelope with the "default" flag
+  // so OTHER devices' pairing can tell this device's Default from its other
+  // profiles. True is monotonic (false may become true, never the reverse).
+  // Keeps the whole payload. `confirmed` true once the envelope is known to
+  // carry a flag this device agrees with (already there, or written now);
+  // false with Ok() when there is nothing to do (no mapping, envelope gone).
+  // kMetadataConflict after three 409s; the next pass retries.
+  KeyStatus BackfillDefaultFlag(const std::string& profile_id,
+                                bool is_default,
+                                bool* confirmed);
   // nullopt: unmapped, or the mapping's remote is gone (404).
   KeyStatus ResolvedRecord(const std::string& profile_id,
                            std::optional<ProfileKeyRecord>* out);
@@ -392,12 +454,14 @@ class ProfileKeyManager {
   static std::optional<Bytes> SealPayload(const ProfilePayloadCodec& codec,
                                           const Bytes& key,
                                           const std::string& name,
+                                          std::optional<bool> is_default,
                                           const Bytes& ark);
   static bool OpenPayload(const ProfilePayloadCodec& codec,
                           const Bytes& envelope,
                           const Bytes& ark,
                           Bytes* key,
-                          std::string* name);
+                          std::string* name,
+                          std::optional<bool>* is_default = nullptr);
 
  private:
   bool SetMapping(const std::string& profile_id, const std::string& uuid);
@@ -442,6 +506,7 @@ class DomainKeyManager {
 struct LocalProfile {
   std::string profile_id;
   std::string display_name;
+  bool is_default = false;  // this device's Default profile
 };
 
 // What an announcement says about the two pairing predicates: only
@@ -478,6 +543,12 @@ class SyncKeyCore {
               ProfileKeyManager& profiles,
               KeyStateStore& state);
   ~SyncKeyCore();
+
+  // Metadata-only warnings (the default-profile conflicts, backfill
+  // failures) for the owner to log; this layer has no logger of its own.
+  void set_warning_sink(std::function<void(const std::string&)> sink) {
+    warn_ = std::move(sink);
+  }
 
   SyncKeyCore(const SyncKeyCore&) = delete;
   SyncKeyCore& operator=(const SyncKeyCore&) = delete;
@@ -539,6 +610,14 @@ class SyncKeyCore {
   bool needs_pairing_ = false;
   bool needs_pairing_actionable_ = false;
   std::set<std::string> undecryptable_remote_uuids_;
+  // The default-profile rule's bookkeeping: extra account defaults already
+  // demoted and logged (once per uuid, not every pass); legacy envelopes of
+  // this device's mappings whose "default" flag is confirmed (profile id ->
+  // uuid, so a changed mapping re-checks); backfill failures logged once.
+  std::set<std::string> logged_default_conflict_uuids_;
+  std::map<std::string, std::string> confirmed_default_flag_;
+  std::set<std::string> logged_default_flag_failure_uuids_;
+  std::function<void(const std::string&)> warn_;
   MappingsOutcome last_outcome_ = MappingsOutcome::kCleared;
 };
 

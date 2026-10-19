@@ -11521,6 +11521,9 @@
    "zh-Hans": "无法在这台电脑上创建名为「{0}」的个人资料。",
    "zh-Hant": "無法在這部電腦上建立名為「{0}」的設定檔。"
   },
+  "sync.setup.error.defaultProfileMismatch": {
+   "en": "This PC’s default profile can only be matched with the account’s default profile. Review the matches and try again."
+  },
   "sync.setup.error.profileDecisionFailed": {
    "de": "Eine deiner Profilauswahlen konnte nicht angewendet werden. Überprüfe deine Verbindung und versuche es erneut.",
    "en": "Couldn’t apply one of your profile choices. Check your connection and retry.",

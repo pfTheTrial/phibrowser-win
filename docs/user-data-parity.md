@@ -583,6 +583,20 @@ device from sync…, confirmed by "Remove this PC from account sync?").
 Refreshes every 3 s while shown. The sync STATUS card is S5's (status
 card).
 
+**Default-profile rule (2026-10-19, Mac `7a967bd3` / `e13e6dca`):** the
+profile envelope carries `"default"` (true for the registering device's
+Default — Chromium's `Default` profile here — false otherwise; absent =
+legacy, unknown). A Default never adopts a known non-default
+(`kDefaultMismatch`, refused before the mapping is written); the mapping
+pass gives a free Default the first account default by uuid before any
+name match, demotes every other account default to an ordinary profile
+(logged once per uuid), and backfills the flag onto this device's legacy
+envelopes through `PATCH /keys/v1/profiles/<uuid>` with the expected
+ciphertext (409 → re-read, three attempts). The pairing sheet fixes the
+Default's row to the first readable account default (shown, not chosen),
+filters every picker and "Assign to" by the rule and never offers "Create
+on this PC" for the authoritative default. Not live-tested yet.
+
 ### S4 — merge layer (done 2026-09-24)
 
 - `client/phi_sync_proto.*` — `phi.PhiEntity` as structs with a hand-written

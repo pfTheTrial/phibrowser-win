@@ -4187,7 +4187,11 @@ std::vector<keys::LocalProfile> PhiCoordinator::SyncLocalProfiles() {
     const std::string* id = d ? d->FindString("id") : nullptr;
     const std::string* name = d ? d->FindString("name") : nullptr;
     if (id && !id->empty()) {
-      out.push_back(keys::LocalProfile{*id, name ? *name : std::string()});
+      // Chromium's "Default" basename is this device's Default profile
+      // (the Mac's LocalStore.defaultProfileId): the one that registers as
+      // the account default and pairs only with one.
+      out.push_back(keys::LocalProfile{*id, name ? *name : std::string(),
+                                       *id == "Default"});
     }
   }
   return out;

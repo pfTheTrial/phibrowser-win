@@ -144,6 +144,7 @@ class PhiSyncSetupWindow : public PhiSecondaryWindow {
     std::wstring label;
     std::wstring value;  // The pill's text; empty = read-only line below.
     std::wstring note;   // Read-only rows.
+    bool fixed = false;  // The pill shows a value nobody can change.
     RECT label_rect{};
     RECT pill_rect{};
   };
@@ -177,7 +178,27 @@ class PhiSyncSetupWindow : public PhiSecondaryWindow {
   bool CanClose() const;
 
   // --- The Profiles model ---------------------------------------------------
+  // The default-profile rule (the Mac's ProfilePairingModel, docs/sync.md
+  // "Profile pairing and the default profile"): this device's Default
+  // profile pairs only with the account's default profile. The account
+  // default it is fixed to is authoritative; no other local is offered it
+  // and it is never created as a new local; every other account default is
+  // an ordinary profile in this sheet.
   void SeedSelections();
+  bool LocalIsDefault(size_t local) const;
+  // The first readable account default, which the local Default's row is
+  // fixed to (shown, not chosen); -1 without a local Default in the sheet
+  // or a readable account default.
+  int FixedDefaultRemote() const;
+  // The account default this sheet treats as THE default: the local
+  // Default's (fixed or picked) remote when flagged, else a remote row
+  // assigned to the local Default; empty when the local Default takes none.
+  std::optional<std::string> AuthoritativeDefaultUuid() const;
+  bool MayPair(size_t local, int remote) const;
+  // The local row's LIVE choice: the fixed account default for the local
+  // Default; a stored remote the rule forbids reads back as kRegisterNew.
+  int LocalChoice(size_t local) const;
+  bool OffersCreateLocal(int remote) const;
   bool RemoteClaimedByLocal(int remote) const;
   bool RemoteAssignmentValid(int remote) const;
   bool AllRowsDecided() const;

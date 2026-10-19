@@ -60,6 +60,10 @@ std::string KeyStatusName(const KeyStatus& status) {
       return "bad_envelope";
     case KeyErrorKind::kAlreadyMapped:
       return "already_mapped";
+    case KeyErrorKind::kDefaultMismatch:
+      return "default_mismatch";
+    case KeyErrorKind::kMetadataConflict:
+      return "metadata_conflict";
     case KeyErrorKind::kCrypto:
       return "crypto";
     case KeyErrorKind::kDeviceKey:
@@ -469,8 +473,9 @@ std::optional<Bytes> ProfileKeyManager::SealPayload(
     const ProfilePayloadCodec& codec,
     const Bytes& key,
     const std::string& name,
+    std::optional<bool> is_default,
     const Bytes& ark) {
-  const std::string payload = codec.Encode(key, name);
+  const std::string payload = codec.Encode(key, name, is_default);
   return SealWithSymmetric(Bytes(payload.begin(), payload.end()), ark);
 }
 
@@ -478,10 +483,77 @@ bool ProfileKeyManager::OpenPayload(const ProfilePayloadCodec& codec,
                                     const Bytes& envelope,
                                     const Bytes& ark,
                                     Bytes* key,
-                                    std::string* name) {
+                                    std::string* name,
+                                    std::optional<bool>* is_default) {
   const std::optional<Bytes> plain = OpenWithSymmetric(envelope, ark);
-  return plain &&
-         codec.Decode(std::string(plain->begin(), plain->end()), key, name);
+  std::optional<bool> flag;
+  const bool ok =
+      plain && codec.Decode(std::string(plain->begin(), plain->end()), key,
+                            name, &flag);
+  if (is_default) {
+    *is_default = ok ? flag : std::nullopt;
+  }
+  return ok;
+}
+
+KeyStatus ProfileKeyManager::BackfillDefaultFlag(const std::string& profile_id,
+                                                 bool is_default,
+                                                 bool* confirmed) {
+  *confirmed = false;
+  const std::optional<std::string> uuid = MappedGlobalUuid(profile_id);
+  if (!uuid) {
+    return KeyStatus::Ok();
+  }
+  const std::optional<Bytes> ark = manager_.current_ark();
+  if (!ark) {
+    return KeyStatus::Error(KeyErrorKind::kNotUnlocked);
+  }
+  for (int attempt = 0; attempt < 3; ++attempt) {
+    if (MappedGlobalUuid(profile_id) != uuid) {
+      return KeyStatus::Ok();  // remapped underneath: the next pass decides
+    }
+    std::optional<Bytes> envelope;
+    KeyStatus status = api_.GetProfileKey(*uuid, &envelope);
+    if (!status.ok()) {
+      return status;
+    }
+    if (!envelope) {
+      return KeyStatus::Ok();  // gone: mapping repair's business, never re-mint
+    }
+    Bytes key;
+    std::string name;
+    std::optional<bool> flag;
+    if (!OpenPayload(codec_, *envelope, *ark, &key, &name, &flag)) {
+      return KeyStatus::Error(KeyErrorKind::kBadEnvelope);
+    }
+    // True wins across devices: a Default promotes false to true, an
+    // ordinary local never demotes another device's Default.
+    if (flag == true || flag == is_default) {
+      *confirmed = true;
+      return KeyStatus::Ok();
+    }
+    const std::optional<Bytes> plain = OpenWithSymmetric(*envelope, *ark);
+    const std::string rewritten = codec_.WithDefaultFlag(
+        std::string(plain->begin(), plain->end()), is_default);
+    if (rewritten.empty()) {
+      return KeyStatus::Error(KeyErrorKind::kBadEnvelope);
+    }
+    const std::optional<Bytes> sealed =
+        SealWithSymmetric(Bytes(rewritten.begin(), rewritten.end()), *ark);
+    if (!sealed) {
+      return KeyStatus::Error(KeyErrorKind::kCrypto, "seal profile envelope");
+    }
+    bool replaced = false;
+    status = api_.ReplaceProfileKeyEnvelope(*uuid, *envelope, *sealed, &replaced);
+    if (!status.ok()) {
+      return status;
+    }
+    if (replaced) {
+      *confirmed = true;
+      return KeyStatus::Ok();
+    }
+  }
+  return KeyStatus::Error(KeyErrorKind::kMetadataConflict);
 }
 
 std::optional<std::string> ProfileKeyManager::MappedGlobalUuid(
@@ -504,6 +576,7 @@ bool ProfileKeyManager::SetMapping(const std::string& profile_id,
 KeyStatus ProfileKeyManager::RegisterLocalProfile(
     const std::string& profile_id,
     const std::string& display_name,
+    bool is_default,
     ProfileKeyRecord* out) {
   if (const std::optional<std::string> prior = MappedGlobalUuid(profile_id)) {
     // Only a DEFINITIVE missing record permits a replacement: minting over
@@ -523,8 +596,11 @@ KeyStatus ProfileKeyManager::RegisterLocalProfile(
   }
   const Bytes key = RandomBytes(kKeyBytes);
   const std::string uuid = NewLowercaseUuid();
+  // Every registration writes the flag, false included: an omitted key
+  // reads as unknown and would leave a new non-default pairable with
+  // another device's Default.
   const std::optional<Bytes> envelope =
-      SealPayload(codec_, key, display_name, *ark);
+      SealPayload(codec_, key, display_name, is_default, *ark);
   if (!envelope) {
     return KeyStatus::Error(KeyErrorKind::kCrypto, "seal profile envelope");
   }
@@ -534,7 +610,7 @@ KeyStatus ProfileKeyManager::RegisterLocalProfile(
     return status;
   }
   if (!created) {
-    return AdoptRemoteProfile(uuid, profile_id, out);
+    return AdoptRemoteProfile(uuid, profile_id, is_default, out);
   }
   if (!SetMapping(profile_id, uuid)) {
     // The envelope is up but unmapped here: the account-profile refresh
@@ -544,11 +620,13 @@ KeyStatus ProfileKeyManager::RegisterLocalProfile(
   out->uuid = uuid;
   out->passphrase = HexLower(key);
   out->name = display_name;
+  out->is_default = is_default;
   return KeyStatus::Ok();
 }
 
 KeyStatus ProfileKeyManager::AdoptRemoteProfile(const std::string& uuid,
                                                 const std::string& profile_id,
+                                                bool is_default,
                                                 ProfileKeyRecord* out) {
   const std::optional<Bytes> ark = manager_.current_ark();
   if (!ark) {
@@ -561,8 +639,15 @@ KeyStatus ProfileKeyManager::AdoptRemoteProfile(const std::string& uuid,
   }
   Bytes key;
   std::string name;
-  if (!envelope || !OpenPayload(codec_, *envelope, *ark, &key, &name)) {
+  std::optional<bool> remote_default;
+  if (!envelope ||
+      !OpenPayload(codec_, *envelope, *ark, &key, &name, &remote_default)) {
     return KeyStatus::Error(KeyErrorKind::kBadEnvelope);
+  }
+  // A device's Default never takes a known non-default; refused before
+  // anything is written. A legacy envelope (no flag) is accepted.
+  if (is_default && remote_default == false) {
+    return KeyStatus::Error(KeyErrorKind::kDefaultMismatch);
   }
   // The mapping is written only once the envelope has opened.
   if (!SetMapping(profile_id, uuid)) {
@@ -571,6 +656,7 @@ KeyStatus ProfileKeyManager::AdoptRemoteProfile(const std::string& uuid,
   out->uuid = uuid;
   out->passphrase = HexLower(key);
   out->name = name;
+  out->is_default = remote_default;
   return KeyStatus::Ok();
 }
 
@@ -593,12 +679,13 @@ KeyStatus ProfileKeyManager::ResolvedRecord(
   }
   Bytes key;
   std::string name;
-  if (!OpenPayload(codec_, *envelope, *ark, &key, &name)) {
+  std::optional<bool> is_default;
+  if (!OpenPayload(codec_, *envelope, *ark, &key, &name, &is_default)) {
     // The Mac throws here: a record that will not open is UNKNOWN, never
     // "unmapped" (which would re-register over it).
     return KeyStatus::Error(KeyErrorKind::kBadEnvelope);
   }
-  *out = ProfileKeyRecord{*uuid, HexLower(key), name};
+  *out = ProfileKeyRecord{*uuid, HexLower(key), name, is_default};
   return KeyStatus::Ok();
 }
 
@@ -652,6 +739,7 @@ KeyStatus ProfileKeyManager::Remote(const std::string& uuid,
   }
   out->uuid = uuid;
   out->name.reset();
+  out->is_default.reset();
   std::optional<Bytes> envelope;
   KeyStatus status = api_.GetProfileKey(uuid, &envelope);
   if (!status.ok()) {
@@ -659,8 +747,11 @@ KeyStatus ProfileKeyManager::Remote(const std::string& uuid,
   }
   Bytes key;
   std::string name;
-  if (envelope && OpenPayload(codec_, *envelope, *ark, &key, &name)) {
+  std::optional<bool> is_default;
+  if (envelope &&
+      OpenPayload(codec_, *envelope, *ark, &key, &name, &is_default)) {
     out->name = name;
+    out->is_default = is_default;
   }
   return KeyStatus::Ok();
 }
@@ -740,7 +831,8 @@ KeyStatus DomainKeyManager::DomainKey(Bytes* out) {
   } else {
     key = RandomBytes(kKeyBytes);
     const std::optional<Bytes> sealed =
-        ProfileKeyManager::SealPayload(codec_, key, kDomain, *ark);
+        ProfileKeyManager::SealPayload(codec_, key, kDomain, std::nullopt,
+                                       *ark);
     if (!sealed) {
       return KeyStatus::Error(KeyErrorKind::kCrypto, "seal domain envelope");
     }
@@ -866,6 +958,9 @@ void SyncKeyCore::ResolveOnce(const std::vector<LocalProfile>& locals) {
   std::map<std::string, ResolvedKey> next;
   std::vector<LocalProfile> unmapped;
   bool has_unknown_local = false;
+  // Each mapped local's envelope flag as this pass read it: the backfill
+  // below needs no second read for one that already carries it.
+  std::map<std::string, std::optional<bool>> mapped_flags;
   for (const LocalProfile& local : locals) {
     std::optional<ProfileKeyRecord> record;
     const KeyStatus status = profiles_.ResolvedRecord(local.profile_id, &record);
@@ -879,6 +974,7 @@ void SyncKeyCore::ResolveOnce(const std::vector<LocalProfile>& locals) {
       }
     } else if (record) {
       next[local.profile_id] = ResolvedKey{record->uuid, record->passphrase};
+      mapped_flags[local.profile_id] = record->is_default;
     } else {
       unmapped.push_back(local);
     }
@@ -904,37 +1000,132 @@ void SyncKeyCore::ResolveOnce(const std::vector<LocalProfile>& locals) {
     for (const auto& [id, key] : next) {
       claimed.insert(key.uuid);
     }
-    std::vector<std::string> unclaimed;
+    // The unclaimed account profiles WITH their envelopes' flags (uuid
+    // order, as the Mac's scan): the default-profile rule needs to know
+    // which are account defaults. A read that fails holds every decision
+    // this pass — never register or adopt around a profile that could not
+    // be read.
+    std::vector<RemoteProfile> unclaimed;
+    bool unclaimed_unknown = false;
     for (const std::string& uuid : remote_uuids) {
-      if (!claimed.count(uuid)) {
-        unclaimed.push_back(uuid);
+      if (claimed.count(uuid)) {
+        continue;
+      }
+      RemoteProfile remote;
+      if (!profiles_.Remote(uuid, &remote).ok()) {
+        unclaimed_unknown = true;
+        break;
+      }
+      unclaimed.push_back(std::move(remote));
+    }
+    if (retired_) {
+      return;
+    }
+    // The authoritative account default: the one this device's Default is
+    // live-mapped to (its record is in the listing, or it would not be in
+    // `next`). `free_default` is the Default while it is still unmapped.
+    std::optional<std::string> authoritative;
+    const LocalProfile* free_default = nullptr;
+    for (const LocalProfile& local : locals) {
+      if (!local.is_default) {
+        continue;
+      }
+      const auto mapped = next.find(local.profile_id);
+      if (mapped != next.end()) {
+        authoritative = mapped->second.uuid;
+      } else if (!has_unknown_local) {
+        free_default = &local;
       }
     }
-    if (unclaimed.empty()) {
-      // First device (or every remote claimed): register the rest.
+    if (!unclaimed_unknown) {
+      // 1. A free Default adopts an account default first, regardless of
+      //    name (the first by uuid). One attempt per pass: a failure leaves
+      //    it free and the next pass retries; no unflagged profile may take
+      //    it while a flagged one is among the candidates.
+      bool flagged_candidate = false;
+      if (free_default) {
+        for (const RemoteProfile& remote : unclaimed) {
+          if (remote.is_default != true) {
+            continue;
+          }
+          flagged_candidate = true;
+          if (retired_) {
+            return;
+          }
+          ProfileKeyRecord record;
+          if (profiles_
+                  .AdoptRemoteProfile(remote.uuid, free_default->profile_id,
+                                      /*is_default=*/true, &record)
+                  .ok()) {
+            next[free_default->profile_id] =
+                ResolvedKey{record.uuid, record.passphrase};
+            claimed.insert(remote.uuid);
+            authoritative = remote.uuid;
+            free_default = nullptr;
+          }
+          break;
+        }
+      }
+      std::vector<LocalProfile> still_unmapped;
       for (const LocalProfile& local : unmapped) {
-        if (retired_) {
-          return;
-        }
-        ProfileKeyRecord record;
-        if (profiles_
-                .RegisterLocalProfile(local.profile_id, local.display_name,
-                                      &record)
-                .ok()) {
-          next[local.profile_id] = ResolvedKey{record.uuid, record.passphrase};
+        if (!next.count(local.profile_id)) {
+          still_unmapped.push_back(local);
         }
       }
-    } else if (unclaimed.size() == 1 && unmapped.size() == 1) {
-      if (retired_) {
-        return;
+      std::vector<RemoteProfile> still_unclaimed;
+      for (const RemoteProfile& remote : unclaimed) {
+        if (!claimed.count(remote.uuid)) {
+          still_unclaimed.push_back(remote);
+        }
       }
-      ProfileKeyRecord record;
-      if (profiles_
-              .AdoptRemoteProfile(unclaimed.front(), unmapped.front().profile_id,
-                                  &record)
-              .ok()) {
-        next[unmapped.front().profile_id] =
-            ResolvedKey{record.uuid, record.passphrase};
+      // 2. Every account default other than the authoritative one is an
+      //    ordinary profile here (two devices paired concurrently); the
+      //    conflict is logged once per uuid, metadata only.
+      for (const RemoteProfile& remote : still_unclaimed) {
+        if (remote.is_default == true && authoritative &&
+            logged_default_conflict_uuids_.insert(remote.uuid).second && warn_) {
+          warn_("[SyncKeys] account default " + remote.uuid.substr(0, 8) +
+                " demoted to an ordinary profile (authoritative " +
+                authoritative->substr(0, 8) + ")");
+        }
+      }
+      if (still_unclaimed.empty()) {
+        // First device (or every remote claimed): register the rest, the
+        // Default as the account default.
+        for (const LocalProfile& local : still_unmapped) {
+          if (retired_) {
+            return;
+          }
+          ProfileKeyRecord record;
+          if (profiles_
+                  .RegisterLocalProfile(local.profile_id, local.display_name,
+                                        local.is_default, &record)
+                  .ok()) {
+            next[local.profile_id] =
+                ResolvedKey{record.uuid, record.passphrase};
+          }
+        }
+      } else if (still_unclaimed.size() == 1 && still_unmapped.size() == 1) {
+        const RemoteProfile& remote = still_unclaimed.front();
+        const LocalProfile& local = still_unmapped.front();
+        // Under the rule: a Default never takes a known non-default (and
+        // waits while a flagged default it could not adopt is among the
+        // candidates); another local never takes the authoritative default.
+        const bool blocked_default =
+            local.is_default && flagged_candidate && remote.is_default != true;
+        if (!blocked_default && remote.MayPair(local.is_default, authoritative)) {
+          if (retired_) {
+            return;
+          }
+          ProfileKeyRecord record;
+          if (profiles_
+                  .AdoptRemoteProfile(remote.uuid, local.profile_id,
+                                      local.is_default, &record)
+                  .ok()) {
+            next[local.profile_id] =
+                ResolvedKey{record.uuid, record.passphrase};
+          }
+        }
       }
     }
   }
@@ -945,6 +1136,45 @@ void SyncKeyCore::ResolveOnce(const std::vector<LocalProfile>& locals) {
   // Monotonic within a session: merge, never replace.
   for (auto& [id, key] : next) {
     resolved_[id] = key;
+  }
+  // Best effort, after the pass's decisions: the "default" flag onto this
+  // device's mapped legacy envelopes, so OTHER devices' pairing can tell
+  // its Default from its other profiles. Nothing here reads the result;
+  // it never holds the outcome below. A uuid is confirmed once its
+  // envelope carries a flag this device agrees with (read above, or
+  // written now); failures are logged once per uuid and retried next pass.
+  for (const LocalProfile& local : locals) {
+    const auto mapped = next.find(local.profile_id);
+    if (mapped == next.end()) {
+      continue;
+    }
+    const std::string& uuid = mapped->second.uuid;
+    const auto confirmed = confirmed_default_flag_.find(local.profile_id);
+    if (confirmed != confirmed_default_flag_.end() &&
+        confirmed->second == uuid) {
+      continue;
+    }
+    const auto flag = mapped_flags.find(local.profile_id);
+    if (flag != mapped_flags.end() &&
+        (flag->second == true || flag->second == local.is_default)) {
+      confirmed_default_flag_[local.profile_id] = uuid;
+      continue;
+    }
+    if (retired_) {
+      return;
+    }
+    bool ok = false;
+    const KeyStatus status =
+        profiles_.BackfillDefaultFlag(local.profile_id, local.is_default, &ok);
+    if (status.ok()) {
+      if (ok) {
+        confirmed_default_flag_[local.profile_id] = uuid;
+      }
+    } else if (logged_default_flag_failure_uuids_.insert(uuid).second &&
+               warn_) {
+      warn_("[SyncKeys] default flag backfill failed for " +
+            uuid.substr(0, 8) + ": " + KeyStatusName(status));
+    }
   }
   if (has_unknown_local) {
     last_outcome_ = MappingsOutcome::kHeld;
@@ -1018,6 +1248,14 @@ KeyStatus SyncKeyCore::StartPairing(const std::vector<LocalProfile>& locals,
 KeyStatus SyncKeyCore::ApplyDecisions(
     const std::vector<PairingDecision>& decisions,
     const std::vector<LocalProfile>& locals) {
+  const auto local_is_default = [&locals](const std::string& profile_id) {
+    for (const LocalProfile& local : locals) {
+      if (local.profile_id == profile_id) {
+        return local.is_default;
+      }
+    }
+    return false;
+  };
   for (const PairingDecision& decision : decisions) {
     if (retired_) {
       return KeyStatus::Error(KeyErrorKind::kCancelled);
@@ -1027,19 +1265,23 @@ KeyStatus SyncKeyCore::ApplyDecisions(
     switch (decision.kind) {
       case PairingDecision::Kind::kAdopt:
         status = profiles_.AdoptRemoteProfile(
-            decision.remote_uuid, decision.local_profile_id, &record);
+            decision.remote_uuid, decision.local_profile_id,
+            local_is_default(decision.local_profile_id), &record);
         break;
       case PairingDecision::Kind::kRegisterNew:
         status = profiles_.RegisterLocalProfile(
-            decision.local_profile_id, decision.display_name, &record);
+            decision.local_profile_id, decision.display_name,
+            local_is_default(decision.local_profile_id), &record);
         break;
       case PairingDecision::Kind::kCreateLocal:
         // Idempotent replay: an account uuid already mapped here is done.
         if (profiles_.LocalProfileIdFor(decision.remote_uuid)) {
           continue;
         }
-        status = profiles_.AdoptRemoteProfile(
-            decision.remote_uuid, decision.local_profile_id, &record);
+        // A profile created for an account profile is never the Default.
+        status = profiles_.AdoptRemoteProfile(decision.remote_uuid,
+                                              decision.local_profile_id,
+                                              /*is_default=*/false, &record);
         break;
     }
     if (!status.ok() && status.kind != KeyErrorKind::kAlreadyMapped) {

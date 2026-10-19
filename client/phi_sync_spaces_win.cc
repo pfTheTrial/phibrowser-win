@@ -392,7 +392,12 @@ sync::ProfileRefreshOutcome PhiSyncSpaceAccess::RefreshAccountProfiles() {
                    LowerAscii(p.display_name) == LowerAscii(*remote.name);
           });
       if (twin != locals->end()) {
-        if (profiles_.AdoptRemoteProfile(uuid, twin->profile_id, &record).ok()) {
+        // The default-profile rule rides along: a twin that is this device's
+        // Default refuses a known non-default (kDefaultMismatch).
+        if (profiles_
+                .AdoptRemoteProfile(uuid, twin->profile_id,
+                                    twin->profile_id == "Default", &record)
+                .ok()) {
           mapped_ids.insert(twin->profile_id);
           ++created;
         }
@@ -447,7 +452,10 @@ sync::ProfileRefreshOutcome PhiSyncSpaceAccess::RefreshAccountProfiles() {
     if (profiles_.LocalProfileIdFor(uuid)) {
       continue;
     }
-    if (profiles_.AdoptRemoteProfile(uuid, profile_id, &record).ok()) {
+    if (profiles_
+            .AdoptRemoteProfile(uuid, profile_id, profile_id == "Default",
+                                &record)
+            .ok()) {
       pending_created_.erase(uuid);
       mapped_ids.insert(profile_id);
       ++created;

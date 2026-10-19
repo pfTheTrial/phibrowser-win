@@ -148,7 +148,10 @@ struct PhiSyncKeyService::Worker {
         domain(api, manager, codec),
         domain_keys(domain),
         stream_auth(auth),
-        stream_subject(subject) {}
+        stream_subject(subject) {
+    core.set_warning_sink(
+        [](const std::string& line) { LOG(WARNING) << line; });
+  }
 
   // Runs `work` on the UI thread and waits (up to 10 s). The closure owns
   // everything it touches: one that runs after a timeout finds nothing
