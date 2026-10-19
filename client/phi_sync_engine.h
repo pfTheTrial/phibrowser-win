@@ -277,6 +277,11 @@ class OwnedKindAdapter {
                           const OwnedOwnerMaps& maps,
                           OwnedLiveRows* out) = 0;
 
+  // Re-probed right before each commit batch, after the last local read.
+  // False drops the batch unsent (a later round retries); the kind's own
+  // guard against publishing rows a concurrent local migration moved. Pins
+  // only; true elsewhere.
+  virtual bool CommitFenceHolds();
   // Rules only (§8.4.5 and the soft-delete lifecycle); no-ops elsewhere.
   virtual void NotePublishApplied(const std::set<std::string>& identities);
   virtual void ClearPendingLocalEdits(const std::set<std::string>& candidates);

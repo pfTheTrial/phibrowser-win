@@ -653,6 +653,15 @@ Done, live against the staging account together with the Mac:
 - `PhiPinnedTabScope` is registered: landing migrates the store's scope
   (the coordinator's SetPinScope). A key registered after adoption is
   seeded at stamp 0 (the Mac's reseed), so the account's value wins.
+- Pin-scope fence (2026-10-19, the Mac's B-3 stage 1, `05160468`):
+  `LocalStore::pin_scope_generation` is bumped by every `ChangePinScope`;
+  `PinOwnedKind::BeginRound` samples it before the rows and `RescanScopes`
+  compares it with the two scope names (a round trip X → Y → X blocks);
+  `CommitFenceHolds` re-probes right before each commit batch and drops it
+  unsent; `PhiSyncPinAccess::Apply` writes nothing and returns kFailed
+  (parked) when the generation or scope moved since the sample. The Mac's
+  follower and "not applied yet" status line have no Windows twin: the
+  migration and the key write are one UI call here.
 - Windows-only: `SpaceSyncTable.replayed_kinds` — a kind the last full
   replay did not route (a newer build added it) arms one replay, marker
   first.

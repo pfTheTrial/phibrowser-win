@@ -1534,6 +1534,7 @@ bool LocalStore::ChangePinScope(PinScope scope,
   }
   MigratePins(pin_scope_, scope, preferred_profile_id, preferred_space_id);
   pin_scope_ = scope;
+  ++pin_scope_generation_;
   dirty_.settings = true;
   return Flush();
 }

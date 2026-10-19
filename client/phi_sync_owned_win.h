@@ -98,6 +98,7 @@ class PhiSyncPinAccess : public sync::PinLocalAccess {
   ~PhiSyncPinAccess() override;
 
   std::string CurrentScope() override;
+  uint64_t ScopeGeneration() override;
   std::optional<std::string> AccountScope() override;
   bool AllPins(std::vector<sync::LocalPin>* out) override;
   bool AllPinRows(std::vector<sync::LocalPin>* out) override;
@@ -110,6 +111,7 @@ class PhiSyncPinAccess : public sync::PinLocalAccess {
   struct Snapshot {
     bool loaded = false;
     std::string scope = "profile";
+    uint64_t generation = 0;  // the store's pin_scope_generation when read
     std::vector<sync::LocalPin> active;
     std::vector<sync::LocalPin> all;
     std::set<std::string> identity_pairs;

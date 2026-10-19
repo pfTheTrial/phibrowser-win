@@ -1990,6 +1990,10 @@ OwnedLandingOutcome& OwnedLandingOutcome::operator=(OwnedLandingOutcome&&) =
     default;
 OwnedLandingOutcome::~OwnedLandingOutcome() = default;
 
+bool OwnedKindAdapter::CommitFenceHolds() {
+  return true;
+}
+
 bool OwnedKindAdapter::lands_empty_batch() const {
   return false;
 }
@@ -2948,6 +2952,12 @@ void PhiSyncEngine::PublishOwnedKind(
       break;
     }
     if (stopped_ || !can_publish_this_round_) {
+      break;
+    }
+    // The commit fence: a pin-scope migration since the sample means these
+    // entries describe rows of a scope that is gone; dropped unsent, the
+    // next round recomputes them from the cursors (delayed, not lost).
+    if (!kind.CommitFenceHolds()) {
       break;
     }
     std::vector<CommitOutcome> outcomes;

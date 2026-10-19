@@ -521,6 +521,7 @@ PhiSyncPinAccess::Snapshot PhiSyncPinAccess::Read(const store::LocalStore& store
   Snapshot snapshot;
   const store::PinScope scope = store.pin_scope();
   snapshot.scope = store::PinScopeName(scope);
+  snapshot.generation = store.pin_scope_generation();
   std::map<std::string, std::string> lineage_by_guid;
   for (const auto& [guid, tab] : store.tabs()) {
     if (tab.type == store::RowType::kPinnedTab && !tab.pin_dormant) {
@@ -576,6 +577,17 @@ std::string PhiSyncPinAccess::CurrentScope() {
     }
   });
   return *scope;
+}
+
+uint64_t PhiSyncPinAccess::ScopeGeneration() {
+  auto generation = std::make_shared<uint64_t>(cache_.generation);
+  std::function<store::LocalStore*()> store = host_.store;
+  run_on_ui_([generation, store] {
+    if (store::LocalStore* s = store()) {
+      *generation = s->pin_scope_generation();
+    }
+  });
+  return *generation;
 }
 
 // The account's scope is the synced PhiPinnedTabScope, which Windows lands
@@ -659,17 +671,30 @@ sync::PinApplyResult PhiSyncPinAccess::Apply(
   }
   struct Result {
     bool ran = false;
+    bool scope_changed = false;
     store::WriteError error = store::WriteError::kUnavailable;
     Snapshot snapshot;
   };
   auto result = std::make_shared<Result>();
   PhiOwnedSyncHost host = host_;
-  if (!run_on_ui_([result, host, writes] {
+  const uint64_t expected_generation = cache_.generation;
+  const std::string expected_scope = cache_.scope;
+  if (!run_on_ui_([result, host, writes, expected_generation, expected_scope] {
         store::LocalStore* s = host.store();
         if (!s) {
           return;
         }
         result->ran = true;
+        // The batch fence (the Mac's applyPinSyncBatch expectedGeneration /
+        // expectedScope): the plan was made against the sampled rows; a
+        // migration since would land it on another scope's collections.
+        // Nothing is written; the engine parks the batch and replans.
+        if (s->pin_scope_generation() != expected_generation ||
+            store::PinScopeName(s->pin_scope()) != expected_scope) {
+          result->scope_changed = true;
+          result->snapshot = Read(*s);
+          return;
+        }
         host.applying(true);
         result->error = s->ApplyPinSyncBatch(writes);
         host.applying(false);
@@ -683,6 +708,9 @@ sync::PinApplyResult PhiSyncPinAccess::Apply(
     return sync::PinApplyResult::kFailed;
   }
   cache_ = result->snapshot;
+  if (result->scope_changed) {
+    return sync::PinApplyResult::kFailed;  // parked: the next round replans
+  }
   switch (result->error) {
     case store::WriteError::kNone:
       return sync::PinApplyResult::kOk;

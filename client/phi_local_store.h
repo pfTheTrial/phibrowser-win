@@ -253,6 +253,11 @@ class LocalStore {
   // getAllURLRules: (spaceId, sortOrder); soft-deleted rows only on request.
   std::vector<UrlRule> UrlRules(bool include_deleted = false) const;
   PinScope pin_scope() const { return pin_scope_; }
+  // Bumped by every ChangePinScope (the Mac's LocalStore.pinScopeGeneration):
+  // a pin sync round samples it with its rows and refuses to commit or land
+  // over a migration that ran since — a name compare alone misses a round
+  // trip X → Y → X.
+  uint64_t pin_scope_generation() const { return pin_scope_generation_; }
   // An arbitrary change counter, bumped by every successful mutation.
   uint64_t revision() const { return revision_; }
 
@@ -620,6 +625,7 @@ class LocalStore {
   std::map<std::string, Space> spaces_;
   std::map<std::string, UrlRule> rules_;
   PinScope pin_scope_ = PinScope::kProfile;
+  uint64_t pin_scope_generation_ = 0;
   bool settings_row_exists_ = false;
   uint64_t revision_ = 0;
   std::function<void()> on_rows_changed_;

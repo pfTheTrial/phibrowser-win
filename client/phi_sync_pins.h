@@ -59,6 +59,10 @@ class PinLocalAccess {
   virtual ~PinLocalAccess() = default;
   // "space" / "profile" / "app".
   virtual std::string CurrentScope() = 0;
+  // The store's pin-scope migration counter (LocalStore::pin_scope_generation),
+  // sampled with the rows at BeginRound and re-probed before every commit
+  // and landing; a change means the sampled rows are a stale scope's.
+  virtual uint64_t ScopeGeneration() = 0;
   // The account's scope (the synced PhiPinnedTabScope mirror); nullopt
   // before it is known.
   virtual std::optional<std::string> AccountScope() = 0;
@@ -96,6 +100,9 @@ class PinOwnedKind : public OwnedKindAdapter {
       int64_t now,
       const OwnedOwnerMaps& maps) override;
   bool BeginRound() override;
+  // The commit fence (the Mac's B-3 stage 1): re-probes the scopes right
+  // before a commit; false drops the commit unsent for a later round.
+  bool CommitFenceHolds() override;
   std::set<std::string> LocalIdentities() override;
   OwnedSnapshotBytes Snapshot(const OwnedTable& table,
                               const OwnedOwnerMaps& maps,
@@ -122,7 +129,8 @@ class PinOwnedKind : public OwnedKindAdapter {
   // PinSyncRoundState.
   void Reload(const std::vector<LocalPin>& rows,
               const std::string& local_scope,
-              const std::optional<std::string>& account_scope);
+              const std::optional<std::string>& account_scope,
+              uint64_t scope_generation);
   void RescanScopes();
   bool scope_blocked() const;
   void RefreshLandedRows(const std::vector<LocalPin>& rows);
@@ -145,6 +153,7 @@ class PinOwnedKind : public OwnedKindAdapter {
   std::vector<LocalPin> locals_;
   std::string local_scope_ = "profile";
   std::optional<std::string> account_scope_;
+  uint64_t scope_generation_ = 0;
   bool scope_moved_mid_round_ = false;
 };
 

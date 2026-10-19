@@ -184,18 +184,27 @@ std::map<std::string, std::string> PinOwnedKind::ClearedSplitPartners(
 
 void PinOwnedKind::Reload(const std::vector<LocalPin>& rows,
                           const std::string& local_scope,
-                          const std::optional<std::string>& account_scope) {
+                          const std::optional<std::string>& account_scope,
+                          uint64_t scope_generation) {
   locals_ = rows;
   local_scope_ = local_scope;
   account_scope_ = account_scope;
+  scope_generation_ = scope_generation;
   scope_moved_mid_round_ = false;
 }
 
 void PinOwnedKind::RescanScopes() {
+  // All three, so a round trip X → Y → X since the sample still blocks.
   if (access_.CurrentScope() != local_scope_ ||
-      access_.AccountScope() != account_scope_) {
+      access_.AccountScope() != account_scope_ ||
+      access_.ScopeGeneration() != scope_generation_) {
     scope_moved_mid_round_ = true;
   }
+}
+
+bool PinOwnedKind::CommitFenceHolds() {
+  RescanScopes();
+  return !scope_blocked();
 }
 
 bool PinOwnedKind::scope_blocked() const {
@@ -237,13 +246,17 @@ bool PinOwnedKind::StillCarriesSplitLink(const std::string& identity,
 
 bool PinOwnedKind::BeginRound() {
   std::vector<LocalPin> rows;
+  // The generation and scopes BEFORE the rows (the Mac's sample order): a
+  // migration between the two reads shows as a changed probe, never as
+  // rows of one scope under another's sample.
+  const uint64_t generation = access_.ScopeGeneration();
   const std::string local_scope = access_.CurrentScope();
   const std::optional<std::string> account_scope = access_.AccountScope();
   if (!access_.AllPins(&rows)) {
-    Reload({}, local_scope, account_scope);
+    Reload({}, local_scope, account_scope, generation);
     return false;
   }
-  Reload(rows, local_scope, account_scope);
+  Reload(rows, local_scope, account_scope, generation);
   return true;
 }
 
