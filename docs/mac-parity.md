@@ -263,7 +263,7 @@ One table per pass, newest first. Commits are in Mac history order.
 
 ### 2026-10-19 — phibrowser-mac `208eede5` → `68638148` (65 commits; the Folio port's baseline to the first ledger)
 
-**Port recommendations this pass (4; all four landed 2026-10-19, uncommitted — 1 and 2 box-verified, 3 and 4 build-verified only, see the rows):**
+**Port recommendations this pass (4; all four landed 2026-10-19 as commits e062e80, 82fe397, 6e24f6a and c520431 — 1 and 2 box-verified, 3 and 4 build-verified only, see the rows):**
 
 1. `b0a536db` **Enter on an engine row with an empty query opens the
    engine's site** (scheme + host, path `/`). Windows `CommitKeyword`
