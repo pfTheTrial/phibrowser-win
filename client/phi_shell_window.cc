@@ -2148,6 +2148,7 @@ void PhiShellWindow::OnTargetURLChanged(BrowserId browser_id,
 void PhiShellWindow::OnPlaceholderModeChanged(BrowserId browser_id,
                                                    bool entered) {
   browsers_->OnPlaceholderModeChanged(browser_id, entered);
+  RetitleShell();
 }
 
 void PhiShellWindow::OnContentFullscreenChanged(BrowserId browser_id,
@@ -5011,6 +5012,42 @@ void PhiShellWindow::RebuildTabs() {
     laid_out_spaces_switch_ = spaces_switch;
     LayoutContents();
   }
+  RetitleShell();
+}
+
+void PhiShellWindow::RetitleShell() {
+  if (!shell_hwnd_ || !::IsWindow(shell_hwnd_)) {
+    return;
+  }
+  // The active tab's title; the Space's name while the placeholder page is
+  // up or the tab has none yet; "Phi" with neither. The Mac's placeholder
+  // is its native new-tab page, so a tab showing ours counts as one here
+  // too (Chromium would title it "New Tab"). The taskbar and Alt+Tab read
+  // this — the caption band draws no title of its own.
+  std::string title;
+  if (!browsers_->ActiveBrowserPlaceholding() &&
+      !PhiNewTabPage::IsNewTabUrl(active_tab_url()) && model_) {
+    if (const PhiWindowModel::Tab* tab = model_->ActiveTab(active_browser_id())) {
+      title = tab->title;
+    }
+  }
+  if (title.empty() && services_.spaces) {
+    for (const PhiSpaceView& space : services_.spaces->Spaces()) {
+      if (space.id == active_space()) {
+        title = space.name;
+        break;
+      }
+    }
+  }
+  if (title.empty()) {
+    title = "Phi";
+  }
+  std::wstring text = base::UTF8ToWide(title);
+  if (text == shell_title_) {
+    return;
+  }
+  shell_title_ = std::move(text);
+  ::SetWindowTextW(shell_hwnd_, shell_title_.c_str());
 }
 
 // --- The sidebar's public surface, forwarded --------------------------------

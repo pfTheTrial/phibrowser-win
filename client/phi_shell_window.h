@@ -1412,6 +1412,7 @@ class PhiShellWindow : public PhiHitSource,
   // notification: client and non-client leaves cross in either order).
   void RetipAtCursor();
   std::wstring chrome_tip_;
+  std::wstring shell_title_;  // What SetWindowText last received.
   // The client rect a hovered element's wash covers, empty for none — so a
   // hover change invalidates the old and new element, not the whole shell
   // (lane 3 §7 item 3).
@@ -1879,6 +1880,10 @@ class PhiShellWindow : public PhiHitSource,
   // opening) run it directly through RefreshTabs so the next frame is not a
   // frame of the old geometry.
   void RebuildTabs();
+  // Titles the shell after the presented Space's active tab, or after the
+  // Space while the placeholder page is up (the Mac's 9387a460 / 9068b449).
+  // Idempotent; every rows rebuild and placeholder change calls it.
+  void RetitleShell();
   // RebuildTabs + an invalidation of the whole shell. For the structural
   // view changes above only — a framework mutation never needs it, the
   // model's push schedules the rebuild.

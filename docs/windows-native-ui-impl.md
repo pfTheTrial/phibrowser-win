@@ -110,6 +110,9 @@ decisions and I will check." The box is mine for testing.
 * **D29 — no "Claude — Research" window title**: the shell never sets
   its own title today (nothing in the client calls SetWindowText on
   it), so cue 7 is a separate piece of plumbing.
+  2026-10-19: the shell now titles itself after the active tab (Space
+  name on the new-tab page; `RetitleShell`, `docs/mac-parity.md`); the
+  agent-task title of cue 7 is still not done.
 * **D30 — the expanded capsule keeps a Finish button** where §5.10 puts
   a ⋯ menu (Take control · ⋯ · chevron); the pip's agent menu already
   has the rest. Tile tooltips ("Close Peek") are not wired either: the
