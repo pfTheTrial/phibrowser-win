@@ -4754,6 +4754,14 @@ void PhiCoordinator::AdoptCreatedWindow(
         return;
       }
       break;
+    case WindowKind::kPopup:
+      // A window.open popup (a site's sign-in window), an app window,
+      // undocked DevTools: Chromium frames and places it itself, with its
+      // own caption and read-only location bar, as the Mac leaves these
+      // alone too. Announced as kUser it was wrapped in a full shell —
+      // sidebar, strip and all (feedback 206). The model keeps the id so
+      // a quit still closes it; nothing of ours is built on it.
+      return;
     case WindowKind::kUser:
       break;
   }
